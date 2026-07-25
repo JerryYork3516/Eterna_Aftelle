@@ -107,10 +107,20 @@ struct ParticleSimulation {
 
     mutating func rebuildParticles() {
         let count = ParticleTuning.Engine.particleCount
-        let surfaceRatio = ParticleTuning.Engine.value(
+        let baseSurfaceRatio = ParticleTuning.Engine.value(
             tuning.surfaceRatio,
             minimum: ParticleTuning.Engine.minimumSurfaceRatio,
             maximum: ParticleTuning.Engine.maximumSurfaceRatio
+        )
+        let surfaceRatio = min(
+            1,
+            max(
+                0,
+                ParticleTuning.Engine.amplifiedAround(
+                    baseSurfaceRatio,
+                    center: 0.5
+                )
+            )
         )
         var generator = ParticleSeededGenerator(seed: ParticleTuning.Engine.modelSeed)
         var rebuilt: [SimulatedParticle] = []
@@ -197,18 +207,26 @@ struct ParticleSimulation {
     }
 
     private var sphereRadius: Float {
-        ParticleTuning.Engine.value(
+        let minimum = ParticleTuning.Engine.minimumSphereRadius
+        let maximum = ParticleTuning.Engine.maximumSphereRadius
+        let radius = ParticleTuning.Engine.value(
             tuning.sphereRadius,
-            minimum: ParticleTuning.Engine.minimumSphereRadius,
-            maximum: ParticleTuning.Engine.maximumSphereRadius
+            minimum: minimum,
+            maximum: maximum
+        )
+        return ParticleTuning.Engine.amplifiedAround(
+            radius,
+            center: (minimum + maximum) * 0.5
         )
     }
 
     private mutating func integrate(time: Float, timeStep: Float) {
         let baseRadius = sphereRadius
-        let breathingAmplitude = Float(tuning.breathingAmount)
+        let breathingAmplitude = ParticleTuning.Engine.amplifiedStrength(
+            tuning.breathingAmount
+        )
             * ParticleTuning.Engine.maximumBreathingScale
-        let breathingFrequency = ParticleTuning.Engine.value(
+        let breathingFrequency = ParticleTuning.Engine.amplifiedValue(
             tuning.breathingSpeed,
             minimum: ParticleTuning.Engine.minimumBreathingFrequency,
             maximum: ParticleTuning.Engine.maximumBreathingFrequency
@@ -220,25 +238,29 @@ struct ParticleSimulation {
         ) * ParticleTuning.Engine.secondaryBreathingAmplitude
         let breathingScale = 1 + breathingAmplitude * (primaryBreath + secondaryBreath)
         let targetRadius = baseRadius * breathingScale
-        let aggregation = ParticleTuning.Engine.value(
+        let aggregation = ParticleTuning.Engine.amplifiedValue(
             tuning.aggregationStrength,
             minimum: ParticleTuning.Engine.minimumAggregation,
             maximum: ParticleTuning.Engine.maximumAggregation
         )
-        let damping = ParticleTuning.Engine.value(
+        let damping = ParticleTuning.Engine.amplifiedValue(
             tuning.damping,
             minimum: ParticleTuning.Engine.minimumDamping,
             maximum: ParticleTuning.Engine.maximumDamping
         )
         let dampingFactor = exp(-damping * timeStep)
-        let flowAcceleration = Float(tuning.flowStrength)
+        let flowAcceleration = ParticleTuning.Engine.amplifiedStrength(
+            tuning.flowStrength
+        )
             * ParticleTuning.Engine.maximumFlowAcceleration
-        let flowFrequency = ParticleTuning.Engine.value(
+        let flowFrequency = ParticleTuning.Engine.amplifiedValue(
             tuning.flowSpeed,
             minimum: ParticleTuning.Engine.minimumFlowFrequency,
             maximum: ParticleTuning.Engine.maximumFlowFrequency
         )
-        let disturbanceAcceleration = Float(tuning.disturbanceStrength)
+        let disturbanceAcceleration = ParticleTuning.Engine.amplifiedStrength(
+            tuning.disturbanceStrength
+        )
             * ParticleTuning.Engine.maximumDisturbanceAcceleration
         let axisPhase = time * flowFrequency * ParticleTuning.Engine.flowAxisPrecession
         let flowAxis = simd_normalize(SIMD3<Float>(

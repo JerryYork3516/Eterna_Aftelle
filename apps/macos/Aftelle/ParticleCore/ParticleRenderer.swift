@@ -258,12 +258,12 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         let tuning = frame.tuning
         let visualState = frame.visualState
         let colorProfile = frame.colorProfile
-        let pointSize = ParticleTuning.Engine.value(
+        let pointSize = ParticleTuning.Engine.amplifiedValue(
             tuning.pointSizeScale,
             minimum: ParticleTuning.Engine.minimumPointSize,
             maximum: ParticleTuning.Engine.maximumPointSize
         )
-        let brightness = ParticleTuning.Engine.value(
+        let brightness = ParticleTuning.Engine.amplifiedValue(
             tuning.brightness,
             minimum: ParticleTuning.Engine.minimumBrightness,
             maximum: ParticleTuning.Engine.maximumBrightness

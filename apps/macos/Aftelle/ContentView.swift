@@ -22,6 +22,10 @@ final class ParticlePresentationSettings: ObservableObject {
     func updateViewOrientation(_ orientation: ParticleViewOrientation) {
         viewOrientation = orientation
     }
+
+    func resetViewOrientation() {
+        viewOrientation = .identity
+    }
 }
 
 struct ContentView: View {
@@ -392,38 +396,27 @@ private struct ParticleOrientationDebugOverlay: View {
 
         for hour in 1...12 {
             let angle = Double(hour % 12) / 12.0 * 2.0 * Double.pi - Double.pi / 2.0
-            let viewed = rotate(
-                SIMD3<Double>(
-                    cos(angle),
-                    -sin(angle),
-                    0
-                )
-            )
             let point = CGPoint(
-                x: center.x + CGFloat(viewed.x) * radiusX,
-                y: center.y - CGFloat(viewed.y) * radiusY
+                x: center.x + CGFloat(cos(angle)) * radiusX,
+                y: center.y + CGFloat(sin(angle)) * radiusY
             )
-            let depth = min(1, max(0, (viewed.z + 1) * 0.5))
-            let opacity = ParticleTuning.Engine.orientationGuideBackLabelOpacity
-                + depth
-                * (
-                    ParticleTuning.Engine.orientationGuideFrontLabelOpacity
-                        - ParticleTuning.Engine.orientationGuideBackLabelOpacity
-                )
-            drawAxisLabel("\(hour)", at: point, opacity: opacity, in: &canvas)
+            drawAxisLabel("\(hour)", at: point, in: &canvas)
         }
     }
 
     private func drawAxisLabel(
         _ value: String,
         at point: CGPoint,
-        opacity: Double = ParticleTuning.Engine.orientationGuideLabelOpacity,
         in canvas: inout GraphicsContext
     ) {
         canvas.draw(
             Text(value)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(opacity)),
+                .foregroundStyle(
+                    .white.opacity(
+                        ParticleTuning.Engine.orientationGuideLabelOpacity
+                    )
+                ),
             at: point
         )
     }
@@ -460,6 +453,7 @@ struct ParticleDebugWindow: View {
             setShellMode: controller.setParticleShellMode,
             setRenderKind: controller.setParticleRenderKind,
             rebuildFixedSeed: presentationSettings.rebuildWithFixedSeed,
+            resetRotation: presentationSettings.resetViewOrientation,
             refreshColorProfileSnapshot: {
                 controller.updateEffectiveParticleColorProfile(
                     presentationSettings.colorProfile,
@@ -523,6 +517,7 @@ private struct ParticleDebugPanel: View {
     let setShellMode: (ParticleShellMode) -> Void
     let setRenderKind: (ParticleRenderKind) -> Void
     let rebuildFixedSeed: () -> Void
+    let resetRotation: () -> Void
     let refreshColorProfileSnapshot: () -> Void
     let importDR: () -> Void
     let saveProviderConfiguration: (ProviderProfile) -> Void
@@ -571,12 +566,22 @@ private struct ParticleDebugPanel: View {
                 .font(.system(size: 12))
                 .toggleStyle(.checkbox)
 
-            Toggle(
-                String(localized: "particleDebug.orientation.manualRotation"),
-                isOn: $manualRotationEnabled
-            )
-            .font(.system(size: 12))
-            .toggleStyle(.checkbox)
+            HStack {
+                Toggle(
+                    String(localized: "particleDebug.orientation.manualRotation"),
+                    isOn: $manualRotationEnabled
+                )
+                .font(.system(size: 12))
+                .toggleStyle(.checkbox)
+
+                Spacer()
+
+                Button(
+                    String(localized: "particleDebug.orientation.resetRotation"),
+                    action: resetRotation
+                )
+                .controlSize(.small)
+            }
 
             if section == .color {
                 Button {

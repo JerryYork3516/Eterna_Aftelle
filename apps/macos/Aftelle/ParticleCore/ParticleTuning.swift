@@ -91,6 +91,7 @@ struct ParticleTuning: Codable, Equatable {
         static let preferredFramesPerSecond = 60
         static let visualChannelsVersion: UInt32 = 1
         static let modelRebuildDelay = 0.12
+        static let controlEffectMultiplier: Float = 2
         static let maximumSimulationStep: Float = 1.0 / 30.0
         static let goldenAngle: Float = 2.399_963_1
         static let angularJitterScale: Float = 0.34
@@ -136,8 +137,6 @@ struct ParticleTuning: Codable, Equatable {
         static let projectionScale: Float = 1
         static let manualRotationArcballRadiusScale: CGFloat = 0.82
         static let quaternionNormalizationEpsilon: Float = 0.000_01
-        static let orientationGuideBackLabelOpacity = 0.24
-        static let orientationGuideFrontLabelOpacity = 0.68
         static let orientationGuideLabelOpacity = 0.52
         static let minimumPointSize: Float = 2.2
         static let maximumPointSize: Float = 6.4
@@ -182,6 +181,22 @@ struct ParticleTuning: Codable, Equatable {
 
         static func value(_ control: Double, minimum: Float, maximum: Float) -> Float {
             minimum + Float(min(1, max(0, control))) * (maximum - minimum)
+        }
+
+        static func amplifiedStrength(_ control: Double) -> Float {
+            Float(min(1, max(0, control))) * controlEffectMultiplier
+        }
+
+        static func amplifiedValue(
+            _ control: Double,
+            minimum: Float,
+            maximum: Float
+        ) -> Float {
+            minimum + amplifiedStrength(control) * (maximum - minimum)
+        }
+
+        static func amplifiedAround(_ value: Float, center: Float) -> Float {
+            center + (value - center) * controlEffectMultiplier
         }
     }
 }
