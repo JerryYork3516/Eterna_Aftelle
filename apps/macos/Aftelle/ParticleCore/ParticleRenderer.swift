@@ -5,49 +5,20 @@ import QuartzCore
 import simd
 
 struct ParticleFrameUniforms {
-    var time: Float
-    var breathing: Float
-    var edgeBreathing: Float
-    var coreStability: Float
-    var resolution: SIMD2<Float>
-    var seed: UInt32
-    var particleCount: UInt32
-    var mousePosition: SIMD2<Float>
-    var mouseVelocity: SIMD2<Float>
-    var mouseInfluence: Float
-    var visualChannelsVersion: UInt32
-    var focusStrength: Float
-    var pulseStrength: Float
-    var circulationStrength: Float
-    var disruptionStrength: Float
-    var dissolutionStrength: Float
-    var transitionElapsedTime: Float
-    var globalScale: Float
-    var pointSizeScale: Float
-    var brightness: Float
-    var alphaScale: Float
-    var ridgeStrength: Float
-    var ridgeWidth: Float
-    var ridgeBreakup: Float
-    var ridgeSeed: Float
-    var ridgeFlowBinding: Float
-    var breathingAmount: Float
-    var breathingTime: Float
-    var flowStrength: Float
-    var flowTime: Float
-    var flowDirection: Float
-    var flowSeed: Float
-    var flowBrightnessStrength: Float
-    var rotationSpeed: Float
-    var rotationDirection: Float
-    var edgeDustAmount: Float
-    var edgeFrayAmount: Float
-    var surfaceLightStrength: Float
+    var viewportAndRender: SIMD4<Float>
+    var interaction: SIMD4<Float>
+    var visualChannelsA: SIMD4<Float>
+    var visualChannelsB: SIMD4<Float>
     var baseColor: SIMD4<Float>
     var ridgeColor: SIMD4<Float>
     var dimColor: SIMD4<Float>
     var highlightColor: SIMD4<Float>
-    var colorAlphaScale: Float
+    var renderGeometry: SIMD4<Float>
+    var renderChannels: SIMD4<Float>
+    var renderAlpha: SIMD4<Float>
+    var renderPoint: SIMD4<Float>
+    var renderLight: SIMD4<Float>
+    var renderColor: SIMD4<Float>
 }
 
 final class ParticleRenderer: NSObject, MTKViewDelegate {
@@ -57,27 +28,21 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     private var particleBuffer: MTLBuffer
     private let uniformsBuffer: MTLBuffer
     private let startTime: TimeInterval
-    private let frameSeed: UInt32
     private let stateController: ParticleStateController
     private var simulation: ParticleSimulation
     private var pendingModelRebuild: DispatchWorkItem?
     private var metricsStartTime: TimeInterval
     private var metricsFrameCount = 0
-    private var metricsFlowStepMin = Float.greatestFiniteMagnitude
-    private var metricsFlowStepMax: Float = 0
-    private var metricsFlowStepNegativeCount = 0
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
 
     init?(device: MTLDevice, visualIntent: ResidentVisualIntent = .idle) {
         let now = CACurrentMediaTime()
-        let flowSeed = UInt64.random(in: 1...UInt64.max)
         let simulation = ParticleSimulation(time: now)
         let stateController = ParticleStateController(intent: visualIntent, time: now)
 
         self.device = device
-        self.startTime = now
-        self.metricsStartTime = now
-        self.frameSeed = UInt32(truncatingIfNeeded: flowSeed ^ (flowSeed >> 32))
+        startTime = now
+        metricsStartTime = now
         self.simulation = simulation
         self.stateController = stateController
 
@@ -139,13 +104,6 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         metricsFrameCount += 1
-        guard let drawable = view.currentDrawable,
-              let renderPassDescriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(
-                  descriptor: renderPassDescriptor
-              ) else { return }
-
         let now = CACurrentMediaTime()
         let visualState = stateController.advance(time: now)
         let frame = simulation.advance(
@@ -153,7 +111,15 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             drawableSize: view.drawableSize,
             visualState: visualState
         )
-        trackFlowStep(frame.flowStep)
+        uploadParticles()
+
+        guard let drawable = view.currentDrawable,
+              let renderPassDescriptor = view.currentRenderPassDescriptor,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(
+                  descriptor: renderPassDescriptor
+              ) else { return }
+
         var uniforms = makeUniforms(from: frame)
         memcpy(
             uniformsBuffer.contents(),
@@ -164,20 +130,22 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         encoder.setRenderPipelineState(pipelineState)
         encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
         encoder.setVertexBuffer(uniformsBuffer, offset: 0, index: 1)
+        encoder.setFragmentBuffer(uniformsBuffer, offset: 0, index: 1)
         encoder.drawPrimitives(
             type: .point,
             vertexStart: 0,
             vertexCount: simulation.particleCount
         )
+        encoder.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+
         publishDebugMetricsIfNeeded(
             view: view,
             renderElapsedTime: Float(now - startTime),
             frame: frame,
             time: now
         )
-        encoder.endEncoding()
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -229,95 +197,129 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         simulation.setColorProfile(colorProfile)
     }
 
+    func rebuildParticles() {
+        simulation.rebuildParticles()
+        let requiredLength = MemoryLayout<SIMD4<Float>>.stride * simulation.particleCount
+        if particleBuffer.length != requiredLength {
+            guard let rebuiltBuffer = device.makeBuffer(
+                length: requiredLength,
+                options: .storageModeShared
+            ) else {
+                print("[ParticleCore] model rebuild buffer failed")
+                return
+            }
+            particleBuffer = rebuiltBuffer
+        }
+        uploadParticles()
+        print(
+            "[ParticleCore] simulation rebuilt "
+                + "seed=\(ParticleTuning.Engine.modelSeed) "
+                + "particleCount=\(simulation.particleCount)"
+        )
+    }
+
     private func makeUniforms(
         from frame: ParticleSimulationFrame
     ) -> ParticleFrameUniforms {
         let tuning = frame.tuning
+        let visualState = frame.visualState
         let colorProfile = frame.colorProfile
+        let pointSize = ParticleTuning.Engine.value(
+            tuning.pointSizeScale,
+            minimum: ParticleTuning.Engine.minimumPointSize,
+            maximum: ParticleTuning.Engine.maximumPointSize
+        )
+        let brightness = ParticleTuning.Engine.value(
+            tuning.brightness,
+            minimum: ParticleTuning.Engine.minimumBrightness,
+            maximum: ParticleTuning.Engine.maximumBrightness
+        )
         return ParticleFrameUniforms(
-            time: frame.motionElapsedTime,
-            breathing: frame.breathing,
-            edgeBreathing: frame.edgeBreathing,
-            coreStability: frame.coreStability,
-            resolution: frame.resolution,
-            seed: frameSeed,
-            particleCount: UInt32(simulation.particleCount),
-            mousePosition: frame.mousePosition,
-            mouseVelocity: frame.mouseVelocity,
-            mouseInfluence: frame.mouseInfluence,
-            visualChannelsVersion: ParticleTuning.Engine.visualChannelsVersion,
-            focusStrength: frame.visualState.focusStrength,
-            pulseStrength: frame.visualState.pulseStrength,
-            circulationStrength: frame.visualState.circulationStrength,
-            disruptionStrength: frame.visualState.disruptionStrength,
-            dissolutionStrength: frame.visualState.dissolutionStrength,
-            transitionElapsedTime: frame.visualState.transitionElapsedTime,
-            globalScale: Float(tuning.globalScale),
-            pointSizeScale: Float(tuning.pointSizeScale),
-            brightness: Float(tuning.brightness),
-            alphaScale: Float(tuning.alphaScale),
-            ridgeStrength: Float(tuning.ridgeBrightness),
-            ridgeWidth: Float(tuning.ridgeWidth),
-            ridgeBreakup: Float(tuning.ridgeBreakup),
-            ridgeSeed: Float(tuning.ridgeSeed),
-            ridgeFlowBinding: Float(tuning.ridgeFlowBinding),
-            breathingAmount: frame.breathingAmount,
-            breathingTime: frame.breathingTime,
-            flowStrength: Float(tuning.flowStrength),
-            flowTime: frame.flowTime,
-            flowDirection: Float(tuning.flowDirection),
-            flowSeed: Float(tuning.flowSeed),
-            flowBrightnessStrength: Float(tuning.flowBrightnessStrength),
-            rotationSpeed: Float(tuning.rotationSpeed),
-            rotationDirection: Float(tuning.rotationDirection),
-            edgeDustAmount: Float(tuning.edgeDustAmount),
-            edgeFrayAmount: Float(tuning.edgeFrayAmount),
-            surfaceLightStrength: Float(tuning.surfaceLightStrength),
+            viewportAndRender: SIMD4(
+                frame.resolution.x,
+                frame.resolution.y,
+                pointSize,
+                brightness
+            ),
+            interaction: SIMD4(
+                frame.mousePosition.x,
+                frame.mousePosition.y,
+                frame.mouseInfluence,
+                ParticleTuning.Engine.projectionScale
+            ),
+            visualChannelsA: SIMD4(
+                visualState.focusStrength,
+                visualState.pulseStrength,
+                visualState.circulationStrength,
+                visualState.disruptionStrength
+            ),
+            visualChannelsB: SIMD4(
+                visualState.dissolutionStrength,
+                visualState.transitionElapsedTime,
+                Float(simulation.particleCount),
+                Float(ParticleTuning.Engine.visualChannelsVersion)
+            ),
             baseColor: colorProfile.baseVector,
             ridgeColor: colorProfile.ridgeVector,
             dimColor: colorProfile.dimVector,
-            highlightColor: colorProfile.highlightVector,
-            colorAlphaScale: Float(colorProfile.alphaScale)
+            highlightColor: SIMD4(
+                colorProfile.highlightVector.x,
+                colorProfile.highlightVector.y,
+                colorProfile.highlightVector.z,
+                Float(colorProfile.alphaScale)
+            ),
+            renderGeometry: SIMD4(
+                ParticleTuning.Engine.depthPointSizeMinimum,
+                ParticleTuning.Engine.depthPointSizeMaximum,
+                ParticleTuning.Engine.volumePointSizeScale,
+                ParticleTuning.Engine.surfacePointSizeScale
+            ),
+            renderChannels: SIMD4(
+                ParticleTuning.Engine.focusPointSizeReduction,
+                ParticleTuning.Engine.pulsePointSizeIncrease,
+                ParticleTuning.Engine.channelBrightnessRange,
+                ParticleTuning.Engine.disruptionBrightnessReduction
+            ),
+            renderAlpha: SIMD4(
+                ParticleTuning.Engine.minimumDissolutionAlpha,
+                ParticleTuning.Engine.volumeAlpha,
+                ParticleTuning.Engine.surfaceAlpha,
+                ParticleTuning.Engine.coreAlphaWeight
+            ),
+            renderPoint: SIMD4(
+                ParticleTuning.Engine.pointCoreStart,
+                ParticleTuning.Engine.pointCoreEnd,
+                ParticleTuning.Engine.pointHaloStart,
+                ParticleTuning.Engine.pointHaloEnd
+            ),
+            renderLight: SIMD4(
+                ParticleTuning.Engine.keyLightDirection.x,
+                ParticleTuning.Engine.keyLightDirection.y,
+                ParticleTuning.Engine.keyLightDirection.z,
+                ParticleTuning.Engine.haloAlphaWeight
+            ),
+            renderColor: SIMD4(
+                ParticleTuning.Engine.frontDepthScale,
+                ParticleTuning.Engine.surfaceColorBaseMix,
+                ParticleTuning.Engine.surfaceColorLightMix,
+                ParticleTuning.Engine.highlightColorMix
+            )
         )
     }
 
     private func uploadParticles() {
         let payloads = simulation.vertexPayloads
-        let pointer = particleBuffer.contents().bindMemory(
-            to: SIMD4<Float>.self,
-            capacity: payloads.count
-        )
-        for (index, payload) in payloads.enumerated() {
-            pointer[index] = payload
-        }
-    }
-
-    private func rebuildParticles() {
-        simulation.rebuildParticles()
-        let payloads = simulation.vertexPayloads
-        guard let rebuiltBuffer = device.makeBuffer(
-            length: MemoryLayout<SIMD4<Float>>.stride * payloads.count,
-            options: .storageModeShared
-        ) else {
-            print("[ParticleCore] model rebuild buffer failed")
+        let byteCount = MemoryLayout<SIMD4<Float>>.stride * payloads.count
+        guard byteCount <= particleBuffer.length else {
+            print(
+                "[ParticleCore] particle upload skipped "
+                    + "bytes=\(byteCount) capacity=\(particleBuffer.length)"
+            )
             return
         }
-
-        particleBuffer = rebuiltBuffer
-        uploadParticles()
-        let tuning = simulation.tuning
-        print(
-            "[ParticleCore] simulation rebuilt "
-                + "shapeStrength=\(String(format: "%.2f", tuning.shapeStrength)) "
-                + "scatterStrength=\(String(format: "%.2f", tuning.scatterStrength))"
-        )
-    }
-
-    private func trackFlowStep(_ flowStep: Float) {
-        metricsFlowStepMin = min(metricsFlowStepMin, flowStep)
-        metricsFlowStepMax = max(metricsFlowStepMax, flowStep)
-        if flowStep < 0 {
-            metricsFlowStepNegativeCount += 1
+        payloads.withUnsafeBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            memcpy(particleBuffer.contents(), baseAddress, byteCount)
         }
     }
 
@@ -333,14 +335,6 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         let fps = Double(metricsFrameCount) / max(interval, 0.001)
         metricsFrameCount = 0
         metricsStartTime = time
-        let flowStepMin = metricsFlowStepMin == Float.greatestFiniteMagnitude
-            ? 0
-            : metricsFlowStepMin
-        let flowStepMax = metricsFlowStepMax
-        let flowStepNegativeCount = metricsFlowStepNegativeCount
-        metricsFlowStepMin = Float.greatestFiniteMagnitude
-        metricsFlowStepMax = 0
-        metricsFlowStepNegativeCount = 0
 
         let visualState = frame.visualState
         let drawableSize = "\(Int(view.drawableSize.width))x\(Int(view.drawableSize.height))"
@@ -371,10 +365,9 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "transitionElapsedTime=\(String(format: "%.2f", visualState.transitionElapsedTime)) "
                 + "reason=\(visualState.transitionReason) "
                 + "interactionStrength=\(String(format: "%.2f", frame.mouseInfluence)) "
-                + "flowTime=\(String(format: "%.3f", frame.flowTime)) "
-                + "flowStepMin=\(String(format: "%.5f", flowStepMin)) "
-                + "flowStepMax=\(String(format: "%.5f", flowStepMax)) "
-                + "flowStepNegativeCount=\(flowStepNegativeCount)"
+                + "centerDrift=\(String(format: "%.6f", frame.stability.centerDrift)) "
+                + "maximumRadius=\(String(format: "%.4f", frame.stability.maximumRadius)) "
+                + "maximumSpeed=\(String(format: "%.4f", frame.stability.maximumSpeed))"
         )
     }
 }

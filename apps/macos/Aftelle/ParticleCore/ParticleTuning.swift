@@ -2,193 +2,67 @@ import Foundation
 import simd
 
 struct ParticleTuning: Codable, Equatable {
-    var globalScale: Double
-    var pointSizeScale: Double
-    var brightness: Double
-    var alphaScale: Double
-    var ridgeBrightness: Double
-    var ridgeWidth: Double
-    var ridgeBreakup: Double
-    var ridgeSeed: Double
-    var ridgeFlowBinding: Double
+    var sphereRadius: Double
+    var surfaceRatio: Double
     var breathingAmount: Double
     var breathingSpeed: Double
     var flowStrength: Double
     var flowSpeed: Double
-    var flowDirection: Double
-    var flowSeed: Double
-    var flowBrightnessStrength: Double
+    var disturbanceStrength: Double
+    var aggregationStrength: Double
+    var damping: Double
+    var pointSizeScale: Double
+    var brightness: Double
     var rotationSpeed: Double
     var rotationDirection: Double
-    var edgeDustAmount: Double
-    var edgeFrayAmount: Double
-    var surfaceLightStrength: Double
-    var shapeStrength: Double
-    var shapeFeatureScale: Double
-    var shapeSeed: Double
-    var scatterStrength: Double
-    var scatterClusterStrength: Double
-    var scatterClusterScale: Double
-    var scatterSeed: Double
 
     init(
-        globalScale: Double,
-        pointSizeScale: Double,
-        brightness: Double,
-        alphaScale: Double,
-        ridgeBrightness: Double,
-        ridgeWidth: Double,
-        ridgeBreakup: Double,
-        ridgeSeed: Double,
-        ridgeFlowBinding: Double,
+        sphereRadius: Double,
+        surfaceRatio: Double,
         breathingAmount: Double,
         breathingSpeed: Double,
         flowStrength: Double,
         flowSpeed: Double,
-        flowDirection: Double,
-        flowSeed: Double,
-        flowBrightnessStrength: Double,
+        disturbanceStrength: Double,
+        aggregationStrength: Double,
+        damping: Double,
+        pointSizeScale: Double,
+        brightness: Double,
         rotationSpeed: Double,
-        rotationDirection: Double,
-        edgeDustAmount: Double,
-        edgeFrayAmount: Double,
-        surfaceLightStrength: Double,
-        shapeStrength: Double,
-        shapeFeatureScale: Double,
-        shapeSeed: Double,
-        scatterStrength: Double,
-        scatterClusterStrength: Double,
-        scatterClusterScale: Double,
-        scatterSeed: Double
+        rotationDirection: Double
     ) {
-        self.globalScale = globalScale
-        self.pointSizeScale = pointSizeScale
-        self.brightness = brightness
-        self.alphaScale = alphaScale
-        self.ridgeBrightness = ridgeBrightness
-        self.ridgeWidth = ridgeWidth
-        self.ridgeBreakup = ridgeBreakup
-        self.ridgeSeed = ridgeSeed
-        self.ridgeFlowBinding = ridgeFlowBinding
+        self.sphereRadius = sphereRadius
+        self.surfaceRatio = surfaceRatio
         self.breathingAmount = breathingAmount
         self.breathingSpeed = breathingSpeed
         self.flowStrength = flowStrength
         self.flowSpeed = flowSpeed
-        self.flowDirection = flowDirection
-        self.flowSeed = flowSeed
-        self.flowBrightnessStrength = flowBrightnessStrength
+        self.disturbanceStrength = disturbanceStrength
+        self.aggregationStrength = aggregationStrength
+        self.damping = damping
+        self.pointSizeScale = pointSizeScale
+        self.brightness = brightness
         self.rotationSpeed = rotationSpeed
         self.rotationDirection = rotationDirection
-        self.edgeDustAmount = edgeDustAmount
-        self.edgeFrayAmount = edgeFrayAmount
-        self.surfaceLightStrength = surfaceLightStrength
-        self.shapeStrength = shapeStrength
-        self.shapeFeatureScale = shapeFeatureScale
-        self.shapeSeed = shapeSeed
-        self.scatterStrength = scatterStrength
-        self.scatterClusterStrength = scatterClusterStrength
-        self.scatterClusterScale = scatterClusterScale
-        self.scatterSeed = scatterSeed
     }
 
     static let systemDefault = ParticleTuning(
-        globalScale: 0.5,
-        pointSizeScale: 0.5,
-        brightness: 0.5,
-        alphaScale: 0.5,
-        ridgeBrightness: 0.5,
-        ridgeWidth: 0.5,
-        ridgeBreakup: 0.5,
-        ridgeSeed: 0.5,
-        ridgeFlowBinding: 0.35,
-        breathingAmount: 0.5,
-        breathingSpeed: 0.5,
-        flowStrength: 0.5,
-        flowSpeed: 0.5,
-        flowDirection: 1.0,
-        flowSeed: 0.5,
-        flowBrightnessStrength: 0.5,
+        sphereRadius: 0.5,
+        surfaceRatio: 0.62,
+        breathingAmount: 0.34,
+        breathingSpeed: 0.34,
+        flowStrength: 0.38,
+        flowSpeed: 0.32,
+        disturbanceStrength: 0.24,
+        aggregationStrength: 0.58,
+        damping: 0.58,
+        pointSizeScale: 0.42,
+        brightness: 0.46,
         rotationSpeed: 0.5,
-        rotationDirection: 1.0,
-        edgeDustAmount: 0.5,
-        edgeFrayAmount: 0.5,
-        surfaceLightStrength: 0.5,
-        shapeStrength: 0.5,
-        shapeFeatureScale: 0.5,
-        shapeSeed: 0.5,
-        scatterStrength: 0.5,
-        scatterClusterStrength: 0.5,
-        scatterClusterScale: 0.5,
-        scatterSeed: 0.5
+        rotationDirection: 1.0
     )
 
-    private enum CodingKeys: String, CodingKey {
-        case globalScale
-        case pointSizeScale
-        case brightness
-        case alphaScale
-        case ridgeBrightness
-        case ridgeWidth
-        case ridgeBreakup
-        case ridgeSeed
-        case ridgeFlowBinding
-        case breathingAmount
-        case breathingSpeed
-        case flowStrength
-        case flowSpeed
-        case flowDirection
-        case flowSeed
-        case flowBrightnessStrength
-        case rotationSpeed
-        case rotationDirection
-        case edgeDustAmount
-        case edgeFrayAmount
-        case surfaceLightStrength
-        case shapeStrength
-        case shapeFeatureScale
-        case shapeSeed
-        case scatterStrength
-        case scatterClusterStrength
-        case scatterClusterScale
-        case scatterSeed
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let defaults = Self.systemDefault
-        self.init(
-            globalScale: try container.decodeIfPresent(Double.self, forKey: .globalScale) ?? defaults.globalScale,
-            pointSizeScale: try container.decodeIfPresent(Double.self, forKey: .pointSizeScale) ?? defaults.pointSizeScale,
-            brightness: try container.decodeIfPresent(Double.self, forKey: .brightness) ?? defaults.brightness,
-            alphaScale: try container.decodeIfPresent(Double.self, forKey: .alphaScale) ?? defaults.alphaScale,
-            ridgeBrightness: try container.decodeIfPresent(Double.self, forKey: .ridgeBrightness) ?? defaults.ridgeBrightness,
-            ridgeWidth: try container.decodeIfPresent(Double.self, forKey: .ridgeWidth) ?? defaults.ridgeWidth,
-            ridgeBreakup: try container.decodeIfPresent(Double.self, forKey: .ridgeBreakup) ?? defaults.ridgeBreakup,
-            ridgeSeed: try container.decodeIfPresent(Double.self, forKey: .ridgeSeed) ?? defaults.ridgeSeed,
-            ridgeFlowBinding: try container.decodeIfPresent(Double.self, forKey: .ridgeFlowBinding) ?? defaults.ridgeFlowBinding,
-            breathingAmount: try container.decodeIfPresent(Double.self, forKey: .breathingAmount) ?? defaults.breathingAmount,
-            breathingSpeed: try container.decodeIfPresent(Double.self, forKey: .breathingSpeed) ?? defaults.breathingSpeed,
-            flowStrength: try container.decodeIfPresent(Double.self, forKey: .flowStrength) ?? defaults.flowStrength,
-            flowSpeed: try container.decodeIfPresent(Double.self, forKey: .flowSpeed) ?? defaults.flowSpeed,
-            flowDirection: try container.decodeIfPresent(Double.self, forKey: .flowDirection) ?? defaults.flowDirection,
-            flowSeed: try container.decodeIfPresent(Double.self, forKey: .flowSeed) ?? defaults.flowSeed,
-            flowBrightnessStrength: try container.decodeIfPresent(Double.self, forKey: .flowBrightnessStrength) ?? defaults.flowBrightnessStrength,
-            rotationSpeed: try container.decodeIfPresent(Double.self, forKey: .rotationSpeed) ?? defaults.rotationSpeed,
-            rotationDirection: try container.decodeIfPresent(Double.self, forKey: .rotationDirection) ?? defaults.rotationDirection,
-            edgeDustAmount: try container.decodeIfPresent(Double.self, forKey: .edgeDustAmount) ?? defaults.edgeDustAmount,
-            edgeFrayAmount: try container.decodeIfPresent(Double.self, forKey: .edgeFrayAmount) ?? defaults.edgeFrayAmount,
-            surfaceLightStrength: try container.decodeIfPresent(Double.self, forKey: .surfaceLightStrength) ?? defaults.surfaceLightStrength,
-            shapeStrength: try container.decodeIfPresent(Double.self, forKey: .shapeStrength) ?? defaults.shapeStrength,
-            shapeFeatureScale: try container.decodeIfPresent(Double.self, forKey: .shapeFeatureScale) ?? defaults.shapeFeatureScale,
-            shapeSeed: try container.decodeIfPresent(Double.self, forKey: .shapeSeed) ?? defaults.shapeSeed,
-            scatterStrength: try container.decodeIfPresent(Double.self, forKey: .scatterStrength) ?? defaults.scatterStrength,
-            scatterClusterStrength: try container.decodeIfPresent(Double.self, forKey: .scatterClusterStrength) ?? defaults.scatterClusterStrength,
-            scatterClusterScale: try container.decodeIfPresent(Double.self, forKey: .scatterClusterScale) ?? defaults.scatterClusterScale,
-            scatterSeed: try container.decodeIfPresent(Double.self, forKey: .scatterSeed) ?? defaults.scatterSeed
-        )
-    }
-
-    static let storageKey = "ParticleCoreTuning.debug.v1"
+    static let storageKey = "ParticleCoreTuning.debug.v2"
 
     static func loadSaved() -> ParticleTuning {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
@@ -212,6 +86,8 @@ struct ParticleTuning: Codable, Equatable {
         for parameter in ParticleTuningParameter.allCases {
             value[keyPath: parameter.keyPath] = Self.clamp(value[keyPath: parameter.keyPath])
         }
+        value.rotationSpeed = Self.clamp(value.rotationSpeed)
+        value.rotationDirection = Self.clamp(value.rotationDirection)
         return value
     }
 
@@ -225,11 +101,77 @@ struct ParticleTuning: Codable, Equatable {
         static let preferredFramesPerSecond = 60
         static let visualChannelsVersion: UInt32 = 1
         static let modelRebuildDelay = 0.12
-        static let maximumMotionStep: Float = 0.05
-        static let speedPhaseRate: Float = 0.025
-        static let motionBaseRate: Float = 0.42
-        static let motionDriftAmplitude: Float = 0.08
-        static let flowTimeScale: Float = 0.92
+        static let maximumSimulationStep: Float = 1.0 / 30.0
+        static let goldenAngle: Float = 2.399_963_1
+        static let angularJitterScale: Float = 0.34
+        static let surfaceThickness: Float = 0.075
+        static let minimumSurfaceRatio: Float = 0.10
+        static let maximumSurfaceRatio: Float = 0.90
+        static let minimumSphereRadius: Float = 0.46
+        static let maximumSphereRadius: Float = 0.64
+        static let maximumBreathingScale: Float = 0.045
+        static let minimumBreathingFrequency: Float = 0.16
+        static let maximumBreathingFrequency: Float = 0.52
+        static let secondaryBreathingAmplitude: Float = 0.28
+        static let secondaryBreathingFrequencyRatio: Float = 0.57
+        static let secondaryBreathingPhase: Float = 0.84
+        static let maximumFlowAcceleration: Float = 0.095
+        static let minimumFlowFrequency: Float = 0.10
+        static let maximumFlowFrequency: Float = 0.42
+        static let flowAxisTilt: Float = 0.24
+        static let flowAxisPrecession: Float = 0.17
+        static let flowAxisSecondaryRateRatio: Float = 0.83
+        static let secondaryFlowAxis = SIMD3<Float>(0.74, -0.18, 0.65)
+        static let secondaryFlowStrength: Float = 0.34
+        static let secondaryFlowFrequencyRatio: Float = 0.71
+        static let minimumFlowWeight: Float = 0.42
+        static let anchorFlowWeight: Float = 0.58
+        static let maximumDisturbanceAcceleration: Float = 0.052
+        static let disturbanceFrequency: Float = 0.23
+        static let disturbanceYFrequencyRatio: Float = 0.73
+        static let disturbanceYPhaseRatio: Float = 1.37
+        static let disturbanceZFrequencyRatio: Float = 0.61
+        static let disturbanceZPhaseRatio: Float = 0.79
+        static let disturbanceRadialRetention: Float = 0.62
+        static let minimumDisturbanceWeight: Float = 0.38
+        static let surfaceDisturbanceWeight: Float = 0.62
+        static let minimumAggregation: Float = 1.6
+        static let maximumAggregation: Float = 7.2
+        static let minimumDamping: Float = 0.9
+        static let maximumDamping: Float = 4.6
+        static let boundaryMargin: Float = 0.075
+        static let boundaryVelocityRetention: Float = 0.18
+        static let maximumParticleSpeed: Float = 0.22
+        static let centerCorrection: Float = 1
+        static let projectionScale: Float = 1
+        static let minimumPointSize: Float = 2.2
+        static let maximumPointSize: Float = 6.4
+        static let minimumBrightness: Float = 0.58
+        static let maximumBrightness: Float = 1.52
+        static let depthPointSizeMinimum: Float = 0.72
+        static let depthPointSizeMaximum: Float = 1.24
+        static let volumePointSizeScale: Float = 0.74
+        static let surfacePointSizeScale: Float = 1.08
+        static let focusPointSizeReduction: Float = 0.08
+        static let pulsePointSizeIncrease: Float = 0.06
+        static let channelBrightnessRange: Float = 0.10
+        static let disruptionBrightnessReduction: Float = 0.08
+        static let minimumDissolutionAlpha: Float = 0.08
+        static let pointCoreStart: Float = 0.06
+        static let pointCoreEnd: Float = 0.27
+        static let pointHaloStart: Float = 0.15
+        static let pointHaloEnd: Float = 0.50
+        static let volumeAlpha: Float = 0.28
+        static let surfaceAlpha: Float = 0.72
+        static let coreAlphaWeight: Float = 0.82
+        static let haloAlphaWeight: Float = 0.24
+        static let keyLightDirection = SIMD3<Float>(-0.42, 0.48, 0.77)
+        static let frontDepthScale: Float = 0.92
+        static let surfaceColorBaseMix: Float = 0.16
+        static let surfaceColorLightMix: Float = 0.34
+        static let highlightColorMix: Float = 0.18
+        static let polarReferenceThreshold: Float = 0.92
+        static let normalizationEpsilon: Float = 0.000_01
         static let stateResponse: Float = 0.036
         static let dissolutionRiseResponse: Float = 0.080
         static let dissolutionFallResponse: Float = 0.050
@@ -239,59 +181,28 @@ struct ParticleTuning: Codable, Equatable {
         static let interactionRiseResponse: Float = 0.18
         static let interactionFallResponse: Float = 0.06
         static let metricsInterval = 1.0
-        static let maximumFlowSpeed: Float = 2.75
-        static let maximumBreathingAmount: Float = 2.2
-        static let breathingSpeedScale: Float = 2
-        static let breathingPrimaryAmplitude: Float = 0.010
-        static let breathingPrimaryFrequency: Float = 0.23
-        static let breathingSecondaryAmplitude: Float = 0.006
-        static let breathingSecondaryFrequency: Float = 0.13
-        static let breathingSecondaryPhase: Float = 0.9
-        static let breathingEdgePrimaryAmplitude: Float = 0.012
-        static let breathingEdgePrimaryFrequency: Float = 0.19
-        static let breathingEdgePrimaryPhase: Float = 1.4
-        static let breathingEdgeSecondaryAmplitude: Float = 0.005
-        static let breathingEdgeSecondaryFrequency: Float = 0.37
-        static let breathingEdgeSecondaryPhase: Float = 0.3
-        static let breathingCoreVariationLimit: Float = 0.025
-        static let breathingCoreVariationScale: Float = 0.16
-        static let modelShapeStrengthScale: Float = 2
-        static let modelScatterStrengthScale: Float = 2
         static let focusFlowReduction: Float = 0.40
         static let pulseFlowIncrease: Float = 0.16
         static let instabilityFlowReduction: Float = 0.04
+
+        static func value(_ control: Double, minimum: Float, maximum: Float) -> Float {
+            minimum + Float(min(1, max(0, control))) * (maximum - minimum)
+        }
     }
 }
 
 enum ParticleTuningParameter: String, CaseIterable, Identifiable {
-    case globalScale
-    case pointSizeScale
-    case brightness
-    case alphaScale
-    case ridgeStrength
-    case ridgeWidth
-    case ridgeBreakup
-    case ridgeSeed
-    case ridgeFlowBinding
+    case sphereRadius
+    case surfaceRatio
     case breathingAmount
     case breathingSpeed
+    case flowStrength
     case flowSpeed
-    case flowDirection
-    case flowSeed
-    case flowBrightnessStrength
-    case flowStructureInfluence
-    case rotationSpeed
-    case rotationDirection
-    case edgeDustAmount
-    case edgeFrayAmount
-    case surfaceLightStrength
-    case shapeStrength
-    case shapeFeatureScale
-    case shapeSeed
-    case scatterStrength
-    case scatterClusterStrength
-    case scatterClusterScale
-    case scatterSeed
+    case disturbanceStrength
+    case aggregationStrength
+    case damping
+    case pointSizeScale
+    case brightness
 
     var id: String { rawValue }
 
@@ -301,102 +212,29 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
 
     var keyPath: WritableKeyPath<ParticleTuning, Double> {
         switch self {
-        case .globalScale:
-            return \.globalScale
-        case .pointSizeScale:
-            return \.pointSizeScale
-        case .brightness:
-            return \.brightness
-        case .alphaScale:
-            return \.alphaScale
-        case .ridgeStrength:
-            return \.ridgeBrightness
-        case .ridgeWidth:
-            return \.ridgeWidth
-        case .ridgeBreakup:
-            return \.ridgeBreakup
-        case .ridgeSeed:
-            return \.ridgeSeed
-        case .ridgeFlowBinding:
-            return \.ridgeFlowBinding
+        case .sphereRadius:
+            return \.sphereRadius
+        case .surfaceRatio:
+            return \.surfaceRatio
         case .breathingAmount:
             return \.breathingAmount
         case .breathingSpeed:
             return \.breathingSpeed
+        case .flowStrength:
+            return \.flowStrength
         case .flowSpeed:
             return \.flowSpeed
-        case .flowDirection:
-            return \.flowDirection
-        case .flowSeed:
-            return \.flowSeed
-        case .flowBrightnessStrength:
-            return \.flowBrightnessStrength
-        case .flowStructureInfluence:
-            return \.flowStrength
-        case .rotationSpeed:
-            return \.rotationSpeed
-        case .rotationDirection:
-            return \.rotationDirection
-        case .edgeDustAmount:
-            return \.edgeDustAmount
-        case .edgeFrayAmount:
-            return \.edgeFrayAmount
-        case .surfaceLightStrength:
-            return \.surfaceLightStrength
-        case .shapeStrength:
-            return \.shapeStrength
-        case .shapeFeatureScale:
-            return \.shapeFeatureScale
-        case .shapeSeed:
-            return \.shapeSeed
-        case .scatterStrength:
-            return \.scatterStrength
-        case .scatterClusterStrength:
-            return \.scatterClusterStrength
-        case .scatterClusterScale:
-            return \.scatterClusterScale
-        case .scatterSeed:
-            return \.scatterSeed
+        case .disturbanceStrength:
+            return \.disturbanceStrength
+        case .aggregationStrength:
+            return \.aggregationStrength
+        case .damping:
+            return \.damping
+        case .pointSizeScale:
+            return \.pointSizeScale
+        case .brightness:
+            return \.brightness
         }
-    }
-}
-
-enum ParticleRotationDirection: CaseIterable, Identifiable {
-    case up
-    case down
-    case left
-    case right
-
-    var id: String { localizedKey }
-
-    var localizedKey: String {
-        switch self {
-        case .up:
-            return "particleDebug.direction.up"
-        case .down:
-            return "particleDebug.direction.down"
-        case .left:
-            return "particleDebug.direction.left"
-        case .right:
-            return "particleDebug.direction.right"
-        }
-    }
-
-    var tuningValue: Double {
-        switch self {
-        case .up:
-            return 0.0
-        case .down:
-            return 1.0 / 3.0
-        case .left:
-            return 2.0 / 3.0
-        case .right:
-            return 1.0
-        }
-    }
-
-    static func nearest(to value: Double) -> ParticleRotationDirection {
-        allCases.min { abs($0.tuningValue - value) < abs($1.tuningValue - value) } ?? .right
     }
 }
 

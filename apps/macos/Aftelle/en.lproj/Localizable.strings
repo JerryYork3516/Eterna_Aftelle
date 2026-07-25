@@ -85,6 +85,9 @@
 "particleDebug.importDR" = "Import DR";
 "particleDebug.save" = "Save";
 "particleDebug.restoreDefault" = "Restore Default";
+"particleDebug.rebuildFixedSeed" = "Rebuild Fixed Seed";
+"particleDebug.parameter.sphereRadius" = "Sphere Radius";
+"particleDebug.parameter.surfaceRatio" = "Surface / Volume Mix";
 "particleDebug.parameter.globalScale" = "Global Scale";
 "particleDebug.parameter.pointSizeScale" = "Particle Size";
 "particleDebug.parameter.brightness" = "Brightness";
@@ -96,7 +99,11 @@
 "particleDebug.parameter.ridgeFlowBinding" = "Flow Binding";
 "particleDebug.parameter.breathingAmount" = "Breathing Amount";
 "particleDebug.parameter.breathingSpeed" = "Breathing Speed";
+"particleDebug.parameter.flowStrength" = "Circulation Flow";
 "particleDebug.parameter.flowSpeed" = "Surface Flow Speed";
+"particleDebug.parameter.disturbanceStrength" = "Asymmetric Disturbance";
+"particleDebug.parameter.aggregationStrength" = "Aggregation";
+"particleDebug.parameter.damping" = "Damping";
 "particleDebug.parameter.flowDirection" = "Surface Flow Direction";
 "particleDebug.parameter.flowSeed" = "Flow Pattern Seed";
 "particleDebug.parameter.flowBrightnessStrength" = "Flow Brightness";

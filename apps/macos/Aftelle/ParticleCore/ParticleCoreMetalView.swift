@@ -6,6 +6,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
     var visualIntent: ResidentVisualIntent = .idle
     var tuning: ParticleTuning = .systemDefault
     var colorProfile: ParticleColorProfile = .systemDefault
+    var rebuildGeneration = 0
     var isTransparentBackground = false
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
 
@@ -33,6 +34,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         context.coordinator.swiftUIVisualIntent = visualIntent
         context.coordinator.tuning = tuning
         context.coordinator.colorProfile = colorProfile
+        context.coordinator.rebuildGeneration = rebuildGeneration
         context.coordinator.debugMetricsHandler = debugMetricsHandler
         renderer.debugMetricsHandler = { metrics in
             DispatchQueue.main.async {
@@ -59,6 +61,10 @@ struct ParticleCoreMetalView: NSViewRepresentable {
             context.coordinator.renderer?.setColorProfile(colorProfile)
             context.coordinator.colorProfile = colorProfile
         }
+        if context.coordinator.rebuildGeneration != rebuildGeneration {
+            context.coordinator.renderer?.rebuildParticles()
+            context.coordinator.rebuildGeneration = rebuildGeneration
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -82,6 +88,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         var swiftUIVisualIntent: ResidentVisualIntent = .idle
         var tuning: ParticleTuning = .systemDefault
         var colorProfile: ParticleColorProfile = .systemDefault
+        var rebuildGeneration = 0
         var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
     }
 }

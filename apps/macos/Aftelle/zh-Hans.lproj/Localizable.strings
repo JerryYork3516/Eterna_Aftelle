@@ -85,6 +85,9 @@
 "particleDebug.importDR" = "导入 DR";
 "particleDebug.save" = "保存";
 "particleDebug.restoreDefault" = "恢复默认";
+"particleDebug.rebuildFixedSeed" = "固定种子重建";
+"particleDebug.parameter.sphereRadius" = "球体半径";
+"particleDebug.parameter.surfaceRatio" = "球面 / 体积分布";
 "particleDebug.parameter.globalScale" = "整体尺寸";
 "particleDebug.parameter.pointSizeScale" = "粒子大小";
 "particleDebug.parameter.brightness" = "整体亮度";
@@ -96,7 +99,11 @@
 "particleDebug.parameter.ridgeFlowBinding" = "背脊流动绑定";
 "particleDebug.parameter.breathingAmount" = "呼吸幅度";
 "particleDebug.parameter.breathingSpeed" = "呼吸速度";
+"particleDebug.parameter.flowStrength" = "循环流动";
 "particleDebug.parameter.flowSpeed" = "表面流动速度";
+"particleDebug.parameter.disturbanceStrength" = "非对称扰动";
+"particleDebug.parameter.aggregationStrength" = "聚合力";
+"particleDebug.parameter.damping" = "阻尼";
 "particleDebug.parameter.flowDirection" = "表面流动方向";
 "particleDebug.parameter.flowSeed" = "流动形态 Seed";
 "particleDebug.parameter.flowBrightnessStrength" = "流动亮区强度";
