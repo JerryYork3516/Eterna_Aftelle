@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-struct ParticleCoreTuning: Codable, Equatable {
+struct ParticleTuning: Codable, Equatable {
     var globalScale: Double
     var pointSizeScale: Double
     var brightness: Double
@@ -91,7 +91,7 @@ struct ParticleCoreTuning: Codable, Equatable {
         self.scatterSeed = scatterSeed
     }
 
-    static let systemDefault = ParticleCoreTuning(
+    static let systemDefault = ParticleTuning(
         globalScale: 0.5,
         pointSizeScale: 0.5,
         brightness: 0.5,
@@ -190,9 +190,9 @@ struct ParticleCoreTuning: Codable, Equatable {
 
     static let storageKey = "ParticleCoreTuning.debug.v1"
 
-    static func loadSaved() -> ParticleCoreTuning {
+    static func loadSaved() -> ParticleTuning {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode(ParticleCoreTuning.self, from: data) else {
+              let decoded = try? JSONDecoder().decode(ParticleTuning.self, from: data) else {
             return systemDefault
         }
         return decoded.clamped()
@@ -207,9 +207,9 @@ struct ParticleCoreTuning: Codable, Equatable {
         UserDefaults.standard.removeObject(forKey: storageKey)
     }
 
-    func clamped() -> ParticleCoreTuning {
+    func clamped() -> ParticleTuning {
         var value = self
-        for parameter in ParticleCoreTuningParameter.allCases {
+        for parameter in ParticleTuningParameter.allCases {
             value[keyPath: parameter.keyPath] = Self.clamp(value[keyPath: parameter.keyPath])
         }
         return value
@@ -218,9 +218,52 @@ struct ParticleCoreTuning: Codable, Equatable {
     private static func clamp(_ value: Double) -> Double {
         min(1, max(0, value))
     }
+
+    enum Engine {
+        static let particleCount = 12_000
+        static let modelSeed: UInt64 = 0xA7F7E11E
+        static let preferredFramesPerSecond = 60
+        static let visualChannelsVersion: UInt32 = 1
+        static let modelRebuildDelay = 0.12
+        static let maximumMotionStep: Float = 0.05
+        static let speedPhaseRate: Float = 0.025
+        static let motionBaseRate: Float = 0.42
+        static let motionDriftAmplitude: Float = 0.08
+        static let flowTimeScale: Float = 0.92
+        static let stateResponse: Float = 0.036
+        static let dissolutionRiseResponse: Float = 0.080
+        static let dissolutionFallResponse: Float = 0.050
+        static let interactionTimeout = 0.35
+        static let positionResponse: Float = 0.16
+        static let velocityResponse: Float = 0.12
+        static let interactionRiseResponse: Float = 0.18
+        static let interactionFallResponse: Float = 0.06
+        static let metricsInterval = 1.0
+        static let maximumFlowSpeed: Float = 2.75
+        static let maximumBreathingAmount: Float = 2.2
+        static let breathingSpeedScale: Float = 2
+        static let breathingPrimaryAmplitude: Float = 0.010
+        static let breathingPrimaryFrequency: Float = 0.23
+        static let breathingSecondaryAmplitude: Float = 0.006
+        static let breathingSecondaryFrequency: Float = 0.13
+        static let breathingSecondaryPhase: Float = 0.9
+        static let breathingEdgePrimaryAmplitude: Float = 0.012
+        static let breathingEdgePrimaryFrequency: Float = 0.19
+        static let breathingEdgePrimaryPhase: Float = 1.4
+        static let breathingEdgeSecondaryAmplitude: Float = 0.005
+        static let breathingEdgeSecondaryFrequency: Float = 0.37
+        static let breathingEdgeSecondaryPhase: Float = 0.3
+        static let breathingCoreVariationLimit: Float = 0.025
+        static let breathingCoreVariationScale: Float = 0.16
+        static let modelShapeStrengthScale: Float = 2
+        static let modelScatterStrengthScale: Float = 2
+        static let focusFlowReduction: Float = 0.40
+        static let pulseFlowIncrease: Float = 0.16
+        static let instabilityFlowReduction: Float = 0.04
+    }
 }
 
-enum ParticleCoreTuningParameter: String, CaseIterable, Identifiable {
+enum ParticleTuningParameter: String, CaseIterable, Identifiable {
     case globalScale
     case pointSizeScale
     case brightness
@@ -256,7 +299,7 @@ enum ParticleCoreTuningParameter: String, CaseIterable, Identifiable {
         "particleDebug.parameter.\(rawValue)"
     }
 
-    var keyPath: WritableKeyPath<ParticleCoreTuning, Double> {
+    var keyPath: WritableKeyPath<ParticleTuning, Double> {
         switch self {
         case .globalScale:
             return \.globalScale
@@ -318,7 +361,7 @@ enum ParticleCoreTuningParameter: String, CaseIterable, Identifiable {
     }
 }
 
-enum ParticleCoreRotationDirection: CaseIterable, Identifiable {
+enum ParticleRotationDirection: CaseIterable, Identifiable {
     case up
     case down
     case left
@@ -352,12 +395,12 @@ enum ParticleCoreRotationDirection: CaseIterable, Identifiable {
         }
     }
 
-    static func nearest(to value: Double) -> ParticleCoreRotationDirection {
+    static func nearest(to value: Double) -> ParticleRotationDirection {
         allCases.min { abs($0.tuningValue - value) < abs($1.tuningValue - value) } ?? .right
     }
 }
 
-enum ParticleCoreSpinDirection: CaseIterable, Identifiable {
+enum ParticleSpinDirection: CaseIterable, Identifiable {
     case up
     case down
     case left
@@ -404,12 +447,12 @@ enum ParticleCoreSpinDirection: CaseIterable, Identifiable {
         self == .up || self == .down
     }
 
-    static func nearest(to value: Double) -> ParticleCoreSpinDirection {
+    static func nearest(to value: Double) -> ParticleSpinDirection {
         allCases.min { abs($0.tuningValue - value) < abs($1.tuningValue - value) } ?? .right
     }
 }
 
-struct ParticleCoreColorProfile: Codable, Equatable {
+struct ParticleColorProfile: Codable, Equatable {
     var baseRed: Double
     var baseGreen: Double
     var baseBlue: Double
@@ -424,7 +467,7 @@ struct ParticleCoreColorProfile: Codable, Equatable {
     var highlightBlue: Double
     var alphaScale: Double
 
-    static let systemDefault = ParticleCoreColorProfile(
+    static let systemDefault = ParticleColorProfile(
         baseRed: 0.82,
         baseGreen: 0.84,
         baseBlue: 0.88,
@@ -442,9 +485,9 @@ struct ParticleCoreColorProfile: Codable, Equatable {
 
     static let storageKey = "ParticleCoreColorProfile.debug.v1"
 
-    static func loadSaved() -> ParticleCoreColorProfile? {
+    static func loadSaved() -> ParticleColorProfile? {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode(ParticleCoreColorProfile.self, from: data) else {
+              let decoded = try? JSONDecoder().decode(ParticleColorProfile.self, from: data) else {
             return nil
         }
         return decoded.clamped()
@@ -463,7 +506,7 @@ struct ParticleCoreColorProfile: Codable, Equatable {
         UserDefaults.standard.removeObject(forKey: storageKey)
     }
 
-    static func make(fromDRData data: Data) -> ParticleCoreColorProfile {
+    static func make(fromDRData data: Data) -> ParticleColorProfile {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let lattice = object["lattice_config"] as? [String: Any],
               let palette = lattice["color_palette"] as? [String],
@@ -476,7 +519,7 @@ struct ParticleCoreColorProfile: Codable, Equatable {
         let dim = subtleColor(from: color, target: 0.39, chroma: 0.30)
         let highlight = subtleColor(from: color, target: 0.965, chroma: 0.14)
 
-        return ParticleCoreColorProfile(
+        return ParticleColorProfile(
             baseRed: Double(base.x),
             baseGreen: Double(base.y),
             baseBlue: Double(base.z),
@@ -509,9 +552,9 @@ struct ParticleCoreColorProfile: Codable, Equatable {
         SIMD4(Float(highlightRed), Float(highlightGreen), Float(highlightBlue), 1)
     }
 
-    func clamped() -> ParticleCoreColorProfile {
+    func clamped() -> ParticleColorProfile {
         var value = self
-        for parameter in ParticleCoreColorParameter.allCases {
+        for parameter in ParticleColorParameter.allCases {
             value[keyPath: parameter.keyPath] = Self.clamp(value[keyPath: parameter.keyPath])
         }
         return value
@@ -565,7 +608,7 @@ struct ParticleCoreColorProfile: Codable, Equatable {
     }
 }
 
-enum ParticleCoreColorParameter: String, CaseIterable, Identifiable {
+enum ParticleColorParameter: String, CaseIterable, Identifiable {
     case baseRed
     case baseGreen
     case baseBlue
@@ -586,7 +629,7 @@ enum ParticleCoreColorParameter: String, CaseIterable, Identifiable {
         "particleDebug.color.\(rawValue)"
     }
 
-    var keyPath: WritableKeyPath<ParticleCoreColorProfile, Double> {
+    var keyPath: WritableKeyPath<ParticleColorProfile, Double> {
         switch self {
         case .baseRed:
             return \.baseRed

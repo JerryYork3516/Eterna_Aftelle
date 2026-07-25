@@ -38,12 +38,12 @@ final class AppController: ObservableObject {
     @Published private(set) var clockState = RuntimeClockViewState()
     @Published private(set) var debugPanelState = DebugPanelViewState()
     @Published private(set) var runtimeState: AppRuntimeState = .idle
-    @Published private(set) var particleVisualState: ParticleCoreVisualState = .idle
+    @Published private(set) var residentVisualIntent: ResidentVisualIntent = .idle
     @Published private(set) var particleAvatarMode: ParticleAvatarMode = .particleCore
     @Published private(set) var particleRenderKind: ParticleRenderKind = .particleCore
     @Published private(set) var particleShellMode: ParticleShellMode = .darkShell
     @Published var isParticleDebugPanelPresented = false
-    @Published private(set) var particleColorProfile = ParticleCoreColorProfile.systemDefault
+    @Published private(set) var particleColorProfile = ParticleColorProfile.systemDefault
     @Published private(set) var particleSubtitleState = ParticleSubtitleState.hidden
     @Published private(set) var particleDebugSnapshot = ParticleDebugSnapshot.empty
     @Published private(set) var residentTextInputState = ResidentTextInputViewState()
@@ -62,7 +62,7 @@ final class AppController: ObservableObject {
     private var loadedSessionID = ""
     private var dialogueEntries: [AppDialogueEntryState] = []
     private var latestParticleRenderMetrics = ParticleRenderMetrics.empty
-    private var effectiveParticleColorProfile = ParticleCoreColorProfile.systemDefault
+    private var effectiveParticleColorProfile = ParticleColorProfile.systemDefault
     private var effectiveColorProfileSource = "systemDefault"
     private var effectiveColorProfileFallbackUsed = true
     private var residentTextRequestID: UUID?
@@ -97,7 +97,7 @@ final class AppController: ObservableObject {
 
     func start() {
         startupState = .loading
-        refreshParticleVisualState()
+        refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
 
         let bookmarkedResident = loadBookmarkedResident()
@@ -162,7 +162,7 @@ final class AppController: ObservableObject {
             traceState = RuntimeTraceViewState(summary: diagnostics, entries: [])
             refreshDebugPanelState(shutdownState: restoreResult.shutdownState.rawValue, recoveryRequired: restoreResult.recoveryRequired, recoveredAt: restoreResult.recoveredAt.map { ISO8601DateFormatter().string(from: $0) } ?? "")
             startupState = .loaded
-            refreshParticleVisualState()
+            refreshResidentVisualIntent()
             refreshParticleDebugSnapshot()
             return
         }
@@ -173,7 +173,7 @@ final class AppController: ObservableObject {
 
         startupState = .idle
         runtimeState = .idle
-        refreshParticleVisualState()
+        refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
     }
 
@@ -182,7 +182,7 @@ final class AppController: ObservableObject {
         refreshParticleDebugSnapshot()
     }
 
-    func updateEffectiveParticleColorProfile(_ profile: ParticleCoreColorProfile, savedOverride: Bool) {
+    func updateEffectiveParticleColorProfile(_ profile: ParticleColorProfile, savedOverride: Bool) {
         effectiveParticleColorProfile = profile
         if savedOverride {
             effectiveColorProfileSource = "debugSavedOverride"
@@ -219,7 +219,7 @@ final class AppController: ObservableObject {
 
         residentTextInputState = ResidentTextInputViewState(isSubmitting: true)
         runtimeState = .running
-        refreshParticleVisualState(visualStateMode: "thinking")
+        refreshResidentVisualIntent(visualStateMode: "thinking")
         refreshParticleDebugSnapshot()
         #if DEBUG
         appendDialogueAuditUser(trimmedInput)
@@ -261,7 +261,7 @@ final class AppController: ObservableObject {
                 interactionID: requestID,
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: String(describing: particleSubtitleState.phase),
-                particleState: String(describing: particleVisualState),
+                particleState: String(describing: residentVisualIntent),
                 status: .completed
             )
             #endif
@@ -301,7 +301,7 @@ final class AppController: ObservableObject {
                 interactionID: requestID,
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: String(describing: particleSubtitleState.phase),
-                particleState: String(describing: particleVisualState),
+                particleState: String(describing: residentVisualIntent),
                 status: .completed
             )
             #endif
@@ -315,7 +315,7 @@ final class AppController: ObservableObject {
                 interactionID: requestID,
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: String(describing: particleSubtitleState.phase),
-                particleState: String(describing: particleVisualState),
+                particleState: String(describing: residentVisualIntent),
                 status: .completed
             )
             #endif
@@ -567,7 +567,7 @@ final class AppController: ObservableObject {
             dialogueAuditState.clear()
             dialogueAuditState.statusKey = "dialogueAudit.status.testDataCleared"
             refreshDebugPanelState()
-            refreshParticleVisualState()
+            refreshResidentVisualIntent()
             refreshParticleDebugSnapshot()
         } catch {
             dialogueAuditState.statusKey = "dialogueAudit.status.testDataClearFailed"
@@ -750,7 +750,7 @@ final class AppController: ObservableObject {
     func debugImportResident(from url: URL) {
         invalidateResidentTextSubmission()
         startupState = .loading
-        refreshParticleVisualState()
+        refreshResidentVisualIntent()
         let hasScopedAccess = url.startAccessingSecurityScopedResource()
         defer {
             if hasScopedAccess {
@@ -871,7 +871,7 @@ final class AppController: ObservableObject {
                 interactionID: requestID,
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: "unchanged",
-                particleState: String(describing: particleVisualState),
+                particleState: String(describing: residentVisualIntent),
                 status: .skipped
             )
             return
@@ -888,7 +888,7 @@ final class AppController: ObservableObject {
             interactionID: requestID,
             expectedSessionID: sessionIDAtStart,
             subtitleState: "unchanged",
-            particleState: String(describing: particleVisualState),
+            particleState: String(describing: residentVisualIntent),
             status: .skipped
         )
     }
@@ -957,7 +957,7 @@ final class AppController: ObservableObject {
     private func presentResidentTextVisualState(_ visualStateMode: String) {
         let presentationID = UUID()
         residentTextPresentationID = presentationID
-        refreshParticleVisualState(visualStateMode: visualStateMode)
+        refreshResidentVisualIntent(visualStateMode: visualStateMode)
         refreshParticleDebugSnapshot()
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 900_000_000)
@@ -965,7 +965,7 @@ final class AppController: ObservableObject {
                   self.residentTextPresentationID == presentationID,
                   !self.residentTextInputState.isSubmitting else { return }
             self.residentTextPresentationID = nil
-            self.refreshParticleVisualState()
+            self.refreshResidentVisualIntent()
             self.refreshParticleDebugSnapshot()
         }
     }
@@ -993,14 +993,14 @@ final class AppController: ObservableObject {
             runtimeState = .idle
             refreshDebugPanelState()
             startupState = .failed
-            refreshParticleVisualState()
+            refreshResidentVisualIntent()
             refreshParticleDebugSnapshot()
             return
         }
 
         loadedResidentID = result.residentID
         loadedSessionID = result.sessionID?.rawValue ?? ""
-        particleColorProfile = ParticleCoreColorProfile.make(fromDRData: drData)
+        particleColorProfile = ParticleColorProfile.make(fromDRData: drData)
         effectiveParticleColorProfile = particleColorProfile
         effectiveColorProfileFallbackUsed = particleColorProfile == .systemDefault
         effectiveColorProfileSource = effectiveColorProfileFallbackUsed ? "systemDefault" : "\(sourceLabel) lattice_config.color_palette"
@@ -1052,11 +1052,11 @@ final class AppController: ObservableObject {
                 text: firstAppearance.greetingText,
                 phase: .showing
             )
-            refreshParticleVisualState(
+            refreshResidentVisualIntent(
                 visualStateMode: firstAppearance.particleState == "calm" ? "idle" : nil
             )
         } else {
-            refreshParticleVisualState()
+            refreshResidentVisualIntent()
         }
         refreshParticleDebugSnapshot()
     }
@@ -1121,7 +1121,7 @@ final class AppController: ObservableObject {
             }
         )
         refreshDebugPanelState()
-        refreshParticleVisualState(visualStateMode: response.visualState.mode.rawValue)
+        refreshResidentVisualIntent(visualStateMode: response.visualState.mode.rawValue)
         refreshParticleDebugSnapshot()
         return response
     }
@@ -1129,14 +1129,14 @@ final class AppController: ObservableObject {
     func cancelCurrentStep() {
         orchestrationKernel.cancelCurrentStep()
         runtimeState = .cancelled
-        refreshParticleVisualState()
+        refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
     }
 
     func interrupt() {
         orchestrationKernel.interrupt()
         runtimeState = .interrupted
-        refreshParticleVisualState()
+        refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
     }
 
@@ -1153,7 +1153,7 @@ final class AppController: ObservableObject {
             ]
         )
         refreshDebugPanelState()
-        refreshParticleVisualState()
+        refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
     }
 
@@ -1218,8 +1218,8 @@ final class AppController: ObservableObject {
         )
     }
 
-    private func refreshParticleVisualState(visualStateMode: String? = nil) {
-        particleVisualState = AppParticleVisualStateMapper.map(
+    private func refreshResidentVisualIntent(visualStateMode: String? = nil) {
+        residentVisualIntent = AppResidentVisualIntentMapper.map(
             visualStateMode: visualStateMode,
             avatarState: avatarState,
             residentState: residentState,
@@ -1230,7 +1230,7 @@ final class AppController: ObservableObject {
 
     private func refreshParticleDebugSnapshot() {
         let renderState = latestParticleRenderMetrics.currentVisualState
-        let mappedState = String(describing: particleVisualState)
+        let mappedState = String(describing: residentVisualIntent)
         let renderResolution = ParticleRenderResolution.resolve(requested: particleRenderKind)
         let shellResolution = ParticleShellResolution.resolve(current: particleShellMode)
         particleDebugSnapshot = ParticleDebugSnapshot(
@@ -1308,7 +1308,7 @@ final class AppController: ObservableObject {
             diagnostics = diagnosticsMessage
             refreshDebugPanelState()
             startupState = .failed
-            refreshParticleVisualState()
+            refreshResidentVisualIntent()
             refreshParticleDebugSnapshot()
             return
         }
@@ -1331,7 +1331,7 @@ final class AppController: ObservableObject {
         diagnostics = diagnosticsMessage
         refreshDebugPanelState()
         startupState = .failed
-        refreshParticleVisualState()
+        refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
     }
 

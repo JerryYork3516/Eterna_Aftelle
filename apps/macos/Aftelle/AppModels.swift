@@ -333,14 +333,14 @@ public struct ParticleDebugSnapshot: Equatable {
     )
 }
 
-struct AppParticleVisualStateMapper {
+struct AppResidentVisualIntentMapper {
     static func map(
         visualStateMode: String? = nil,
         avatarState: AppAvatarState? = nil,
         residentState: AppResidentState? = nil,
         startupState: AppStartupState = .idle,
         runtimeState: AppRuntimeState = .idle
-    ) -> ParticleCoreVisualState {
+    ) -> ResidentVisualIntent {
         let tokens = [
             visualStateMode,
             avatarState?.mode,

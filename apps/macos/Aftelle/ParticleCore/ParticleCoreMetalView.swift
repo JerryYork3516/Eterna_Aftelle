@@ -3,9 +3,9 @@ import MetalKit
 import SwiftUI
 
 struct ParticleCoreMetalView: NSViewRepresentable {
-    var visualState: ParticleCoreVisualState = .idle
-    var tuning: ParticleCoreTuning = .systemDefault
-    var colorProfile: ParticleCoreColorProfile = .systemDefault
+    var visualIntent: ResidentVisualIntent = .idle
+    var tuning: ParticleTuning = .systemDefault
+    var colorProfile: ParticleColorProfile = .systemDefault
     var isTransparentBackground = false
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
 
@@ -17,20 +17,20 @@ struct ParticleCoreMetalView: NSViewRepresentable {
 
         let view = ParticleCoreInputView(frame: .zero, device: device)
         view.colorPixelFormat = .bgra8Unorm
-        view.preferredFramesPerSecond = 60
+        view.preferredFramesPerSecond = ParticleTuning.Engine.preferredFramesPerSecond
         view.enableSetNeedsDisplay = false
         view.isPaused = false
         view.framebufferOnly = true
         configureBackground(for: view, transparent: isTransparentBackground)
 
-        guard let renderer = ParticleCoreRenderer(device: device, visualState: visualState) else {
+        guard let renderer = ParticleRenderer(device: device, visualIntent: visualIntent) else {
             print("[ParticleCore] renderer init failed")
             return view
         }
         view.inputRenderer = renderer
         view.delegate = renderer
         context.coordinator.renderer = renderer
-        context.coordinator.swiftUIVisualState = visualState
+        context.coordinator.swiftUIVisualIntent = visualIntent
         context.coordinator.tuning = tuning
         context.coordinator.colorProfile = colorProfile
         context.coordinator.debugMetricsHandler = debugMetricsHandler
@@ -46,9 +46,9 @@ struct ParticleCoreMetalView: NSViewRepresentable {
 
     func updateNSView(_ nsView: MTKView, context: Context) {
         configureBackground(for: nsView, transparent: isTransparentBackground)
-        if context.coordinator.swiftUIVisualState != visualState {
-            context.coordinator.renderer?.setVisualState(visualState, reason: "appMapping")
-            context.coordinator.swiftUIVisualState = visualState
+        if context.coordinator.swiftUIVisualIntent != visualIntent {
+            context.coordinator.renderer?.setVisualIntent(visualIntent, reason: "appMapping")
+            context.coordinator.swiftUIVisualIntent = visualIntent
         }
         context.coordinator.debugMetricsHandler = debugMetricsHandler
         if context.coordinator.tuning != tuning {
@@ -78,16 +78,16 @@ struct ParticleCoreMetalView: NSViewRepresentable {
     }
 
     final class Coordinator {
-        var renderer: ParticleCoreRenderer?
-        var swiftUIVisualState: ParticleCoreVisualState = .idle
-        var tuning: ParticleCoreTuning = .systemDefault
-        var colorProfile: ParticleCoreColorProfile = .systemDefault
+        var renderer: ParticleRenderer?
+        var swiftUIVisualIntent: ResidentVisualIntent = .idle
+        var tuning: ParticleTuning = .systemDefault
+        var colorProfile: ParticleColorProfile = .systemDefault
         var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
     }
 }
 
 private final class ParticleCoreInputView: MTKView {
-    weak var inputRenderer: ParticleCoreRenderer?
+    weak var inputRenderer: ParticleRenderer?
     private var trackingAreaRef: NSTrackingArea?
     private var lastMousePosition: SIMD2<Float>?
     private var lastMouseTime: TimeInterval?
@@ -137,7 +137,7 @@ private final class ParticleCoreInputView: MTKView {
     override func mouseExited(with event: NSEvent) {
         lastMousePosition = nil
         lastMouseTime = nil
-        inputRenderer?.updateMouse(position: .zero, velocity: .zero, active: false)
+        inputRenderer?.updateInteraction(position: .zero, velocity: .zero, active: false)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -150,17 +150,17 @@ private final class ParticleCoreInputView: MTKView {
 
         switch key {
         case "i":
-            inputRenderer?.setVisualState(.idle, reason: "debugKey.I")
+            inputRenderer?.setVisualIntent(.idle, reason: "debugKey.I")
         case "t":
-            inputRenderer?.setVisualState(.thinking, reason: "debugKey.T")
+            inputRenderer?.setVisualIntent(.thinking, reason: "debugKey.T")
         case "s":
-            inputRenderer?.setVisualState(.speaking, reason: "debugKey.S")
+            inputRenderer?.setVisualIntent(.speaking, reason: "debugKey.S")
         case "l":
-            inputRenderer?.setVisualState(.loading, reason: "debugKey.L")
+            inputRenderer?.setVisualIntent(.loading, reason: "debugKey.L")
         case "e":
-            inputRenderer?.setVisualState(.error, reason: "debugKey.E")
+            inputRenderer?.setVisualIntent(.error, reason: "debugKey.E")
         case "x":
-            inputRenderer?.setVisualState(.exit, reason: "debugKey.X")
+            inputRenderer?.setVisualIntent(.exit, reason: "debugKey.X")
         default:
             super.keyDown(with: event)
         }
@@ -194,6 +194,6 @@ private final class ParticleCoreInputView: MTKView {
 
         lastMousePosition = position
         lastMouseTime = timestamp
-        inputRenderer?.updateMouse(position: position, velocity: velocity, active: active)
+        inputRenderer?.updateInteraction(position: position, velocity: velocity, active: active)
     }
 }

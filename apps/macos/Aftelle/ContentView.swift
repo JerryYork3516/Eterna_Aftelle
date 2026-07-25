@@ -5,8 +5,8 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class ParticlePresentationSettings: ObservableObject {
-    @Published var tuning = ParticleCoreTuning.loadSaved()
-    @Published var colorProfile = ParticleCoreColorProfile.loadSaved() ?? .systemDefault
+    @Published var tuning = ParticleTuning.loadSaved()
+    @Published var colorProfile = ParticleColorProfile.loadSaved() ?? .systemDefault
     #if DEBUG
     @Published var isOrientationOverlayVisible = false
     #endif
@@ -29,7 +29,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             ParticleCoreMetalView(
-                visualState: controller.particleVisualState,
+                visualIntent: controller.residentVisualIntent,
                 tuning: presentationSettings.tuning,
                 colorProfile: presentationSettings.colorProfile,
                 isTransparentBackground: controller.particleShellMode == .transparentShell,
@@ -72,14 +72,14 @@ struct ContentView: View {
             controller.start()
         }
         .onChange(of: controller.particleColorProfile) { _, newValue in
-            guard !ParticleCoreColorProfile.hasSavedProfile() else { return }
+            guard !ParticleColorProfile.hasSavedProfile() else { return }
             presentationSettings.colorProfile = newValue
             controller.updateEffectiveParticleColorProfile(newValue, savedOverride: false)
         }
         .onChange(of: presentationSettings.colorProfile) { _, newValue in
             controller.updateEffectiveParticleColorProfile(
                 newValue,
-                savedOverride: ParticleCoreColorProfile.hasSavedProfile()
+                savedOverride: ParticleColorProfile.hasSavedProfile()
             )
         }
         .onChange(of: controller.sessionState.sessionID) { _, _ in
@@ -89,7 +89,7 @@ struct ContentView: View {
         .onAppear {
             controller.updateEffectiveParticleColorProfile(
                 presentationSettings.colorProfile,
-                savedOverride: ParticleCoreColorProfile.hasSavedProfile()
+                savedOverride: ParticleColorProfile.hasSavedProfile()
             )
             installDebugSubtitleKeyMonitor()
         }
@@ -290,7 +290,7 @@ private struct ParticleOrientationTimeSample: Equatable {
 }
 
 private struct ParticleOrientationDebugOverlay: View {
-    let tuning: ParticleCoreTuning
+    let tuning: ParticleTuning
     let timeSample: ParticleOrientationTimeSample
 
     var body: some View {
@@ -309,7 +309,7 @@ private struct ParticleOrientationDebugOverlay: View {
     private func rotationState(at motionTime: TimeInterval) -> ParticleRotationState {
         let tuneRotationSpeed = centeredControl(tuning.rotationSpeed, maximum: 2.40)
         let rotationTime = motionTime * 0.76 * tuneRotationSpeed
-        let direction = ParticleCoreSpinDirection.nearest(to: tuning.rotationDirection)
+        let direction = ParticleSpinDirection.nearest(to: tuning.rotationDirection)
         let bodySpinAngle = rotationTime * direction.spinSign * 3.0
         return ParticleRotationState(
             rotationTime: rotationTime,
@@ -323,7 +323,7 @@ private struct ParticleOrientationDebugOverlay: View {
         let rotationTime: TimeInterval
         let bodySpinAngle: Double
         let angularVelocityPerMotionSecond: Double
-        let direction: ParticleCoreSpinDirection
+        let direction: ParticleSpinDirection
     }
 
     private func drawAxisSet(in canvas: inout GraphicsContext, origin: CGPoint, length: CGFloat, motionTime: TimeInterval, lineWidth: CGFloat) {
@@ -460,7 +460,7 @@ private struct ParticleOrientationDebugOverlay: View {
         let opacity: Double
     }
 
-    private func rotationMarkers(direction: ParticleCoreSpinDirection) -> [RotationMarker] {
+    private func rotationMarkers(direction: ParticleSpinDirection) -> [RotationMarker] {
         if direction.rotatesVertically {
             let firstDirectionKey = direction == .up
                 ? "particleDebug.direction.up"
@@ -551,7 +551,7 @@ struct ParticleDebugWindow: View {
             refreshColorProfileSnapshot: {
                 controller.updateEffectiveParticleColorProfile(
                     presentationSettings.colorProfile,
-                    savedOverride: ParticleCoreColorProfile.hasSavedProfile()
+                    savedOverride: ParticleColorProfile.hasSavedProfile()
                 )
             },
             importDR: openDebugDRImportPanel,
@@ -610,7 +610,7 @@ private enum ParticleTuningGroup: String, CaseIterable, Identifiable {
         "particleDebug.tuningGroup.\(rawValue)"
     }
 
-    var parameters: [ParticleCoreTuningParameter] {
+    var parameters: [ParticleTuningParameter] {
         switch self {
         case .basics:
             return [.globalScale, .pointSizeScale, .brightness, .alphaScale]
@@ -652,10 +652,10 @@ private struct ParticleDebugPanel: View {
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let shellMode: ParticleShellMode
     let renderKind: ParticleRenderKind
-    @Binding var tuning: ParticleCoreTuning
-    @Binding var colorProfile: ParticleCoreColorProfile
+    @Binding var tuning: ParticleTuning
+    @Binding var colorProfile: ParticleColorProfile
     @Binding var orientationOverlayVisible: Bool
-    let defaultColorProfile: ParticleCoreColorProfile
+    let defaultColorProfile: ParticleColorProfile
     let setShellMode: (ParticleShellMode) -> Void
     let setRenderKind: (ParticleRenderKind) -> Void
     let refreshColorProfileSnapshot: () -> Void
@@ -779,7 +779,7 @@ private struct ParticleDebugPanel: View {
                             }
                         }
                     case .color:
-                        ForEach(ParticleCoreColorParameter.allCases) { parameter in
+                        ForEach(ParticleColorParameter.allCases) { parameter in
                             ParticleColorParameterRow(parameter: parameter, colorProfile: $colorProfile)
                         }
                     }
@@ -854,10 +854,10 @@ private struct ParticleDebugPanel: View {
             break
         case .particle:
             tuning = .systemDefault
-            ParticleCoreTuning.clearSaved()
+            ParticleTuning.clearSaved()
         case .color:
             colorProfile = defaultColorProfile
-            ParticleCoreColorProfile.clearSaved()
+            ParticleColorProfile.clearSaved()
             refreshColorProfileSnapshot()
         }
     }
@@ -1596,8 +1596,8 @@ private struct ParticleDiagnosticsRow: View {
 }
 
 private struct ParticleParameterRow: View {
-    let parameter: ParticleCoreTuningParameter
-    @Binding var tuning: ParticleCoreTuning
+    let parameter: ParticleTuningParameter
+    @Binding var tuning: ParticleTuning
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1623,8 +1623,8 @@ private struct ParticleParameterRow: View {
 }
 
 private struct ParticleDirectionRow: View {
-    let parameter: ParticleCoreTuningParameter
-    @Binding var tuning: ParticleCoreTuning
+    let parameter: ParticleTuningParameter
+    @Binding var tuning: ParticleTuning
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1633,7 +1633,7 @@ private struct ParticleDirectionRow: View {
                 .frame(width: 116, alignment: .leading)
 
             Picker("", selection: direction) {
-                ForEach(ParticleCoreRotationDirection.allCases) { direction in
+                ForEach(ParticleRotationDirection.allCases) { direction in
                     Text(String(localized: String.LocalizationValue(direction.localizedKey)))
                         .tag(direction)
                 }
@@ -1642,9 +1642,9 @@ private struct ParticleDirectionRow: View {
         }
     }
 
-    private var direction: Binding<ParticleCoreRotationDirection> {
+    private var direction: Binding<ParticleRotationDirection> {
         Binding {
-            ParticleCoreRotationDirection.nearest(to: tuning[keyPath: parameter.keyPath])
+            ParticleRotationDirection.nearest(to: tuning[keyPath: parameter.keyPath])
         } set: { newValue in
             tuning[keyPath: parameter.keyPath] = newValue.tuningValue
         }
@@ -1652,7 +1652,7 @@ private struct ParticleDirectionRow: View {
 }
 
 private struct ParticleSpinDirectionRow: View {
-    @Binding var tuning: ParticleCoreTuning
+    @Binding var tuning: ParticleTuning
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1661,7 +1661,7 @@ private struct ParticleSpinDirectionRow: View {
                 .frame(width: 116, alignment: .leading)
 
             Picker("", selection: direction) {
-                ForEach(ParticleCoreSpinDirection.allCases) { direction in
+                ForEach(ParticleSpinDirection.allCases) { direction in
                     Text(String(localized: String.LocalizationValue(direction.localizedKey)))
                         .tag(direction)
                 }
@@ -1670,9 +1670,9 @@ private struct ParticleSpinDirectionRow: View {
         }
     }
 
-    private var direction: Binding<ParticleCoreSpinDirection> {
+    private var direction: Binding<ParticleSpinDirection> {
         Binding {
-            ParticleCoreSpinDirection.nearest(to: tuning.rotationDirection)
+            ParticleSpinDirection.nearest(to: tuning.rotationDirection)
         } set: { newValue in
             tuning.rotationDirection = newValue.tuningValue
         }
@@ -1680,8 +1680,8 @@ private struct ParticleSpinDirectionRow: View {
 }
 
 private struct ParticleColorParameterRow: View {
-    let parameter: ParticleCoreColorParameter
-    @Binding var colorProfile: ParticleCoreColorProfile
+    let parameter: ParticleColorParameter
+    @Binding var colorProfile: ParticleColorProfile
 
     var body: some View {
         HStack(spacing: 10) {
