@@ -210,19 +210,22 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         viewOrientation = orientation
     }
 
-    func rotateView(by delta: SIMD2<Float>) -> ParticleViewOrientation {
-        let sensitivity = ParticleTuning.Engine.manualRotationRadiansPerPoint
-        let yaw = simd_quatf(
-            angle: -delta.x * sensitivity,
-            axis: SIMD3<Float>(0, 1, 0)
-        )
-        let pitch = simd_quatf(
-            angle: delta.y * sensitivity,
-            axis: SIMD3<Float>(1, 0, 0)
+    func rotateView(
+        fromArcballPoint start: SIMD2<Float>,
+        to end: SIMD2<Float>
+    ) -> ParticleViewOrientation? {
+        guard simd_length_squared(end - start)
+            > ParticleTuning.Engine.quaternionNormalizationEpsilon else {
+            return nil
+        }
+
+        let delta = simd_quatf(
+            from: Self.arcballVector(start),
+            to: Self.arcballVector(end)
         )
         let current = simd_quatf(vector: viewOrientation.quaternion)
         let orientation = ParticleViewOrientation(
-            quaternion: (yaw * current * pitch).vector
+            quaternion: (delta * current).vector
         )
         viewOrientation = orientation
         return orientation
@@ -416,5 +419,19 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             value.z,
             value.w
         )
+    }
+
+    private static func arcballVector(_ point: SIMD2<Float>) -> SIMD3<Float> {
+        let lengthSquared = simd_length_squared(point)
+        if lengthSquared <= 1 {
+            return SIMD3<Float>(
+                point.x,
+                point.y,
+                sqrt(max(0, 1 - lengthSquared))
+            )
+        }
+
+        let normalized = simd_normalize(point)
+        return SIMD3<Float>(normalized.x, normalized.y, 0)
     }
 }

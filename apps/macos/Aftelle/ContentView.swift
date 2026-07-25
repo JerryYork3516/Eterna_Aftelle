@@ -392,19 +392,38 @@ private struct ParticleOrientationDebugOverlay: View {
 
         for hour in 1...12 {
             let angle = Double(hour % 12) / 12.0 * 2.0 * Double.pi - Double.pi / 2.0
-            let point = CGPoint(
-                x: center.x + CGFloat(cos(angle)) * radiusX,
-                y: center.y + CGFloat(sin(angle)) * radiusY
+            let viewed = rotate(
+                SIMD3<Double>(
+                    cos(angle),
+                    -sin(angle),
+                    0
+                )
             )
-            drawAxisLabel("\(hour)", at: point, in: &canvas)
+            let point = CGPoint(
+                x: center.x + CGFloat(viewed.x) * radiusX,
+                y: center.y - CGFloat(viewed.y) * radiusY
+            )
+            let depth = min(1, max(0, (viewed.z + 1) * 0.5))
+            let opacity = ParticleTuning.Engine.orientationGuideBackLabelOpacity
+                + depth
+                * (
+                    ParticleTuning.Engine.orientationGuideFrontLabelOpacity
+                        - ParticleTuning.Engine.orientationGuideBackLabelOpacity
+                )
+            drawAxisLabel("\(hour)", at: point, opacity: opacity, in: &canvas)
         }
     }
 
-    private func drawAxisLabel(_ value: String, at point: CGPoint, in canvas: inout GraphicsContext) {
+    private func drawAxisLabel(
+        _ value: String,
+        at point: CGPoint,
+        opacity: Double = ParticleTuning.Engine.orientationGuideLabelOpacity,
+        in canvas: inout GraphicsContext
+    ) {
         canvas.draw(
             Text(value)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.52)),
+                .foregroundStyle(.white.opacity(opacity)),
             at: point
         )
     }

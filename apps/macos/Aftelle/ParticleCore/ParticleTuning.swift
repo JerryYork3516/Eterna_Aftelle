@@ -134,8 +134,11 @@ struct ParticleTuning: Codable, Equatable {
         static let maximumParticleSpeed: Float = 0.22
         static let centerCorrection: Float = 1
         static let projectionScale: Float = 1
-        static let manualRotationRadiansPerPoint: Float = 0.006
+        static let manualRotationArcballRadiusScale: CGFloat = 0.82
         static let quaternionNormalizationEpsilon: Float = 0.000_01
+        static let orientationGuideBackLabelOpacity = 0.24
+        static let orientationGuideFrontLabelOpacity = 0.68
+        static let orientationGuideLabelOpacity = 0.52
         static let minimumPointSize: Float = 2.2
         static let maximumPointSize: Float = 6.4
         static let minimumBrightness: Float = 0.58

@@ -260,16 +260,27 @@ private final class ParticleCoreInputView: MTKView {
             return
         }
 
-        let delta = SIMD2<Float>(
-            Float(location.x - lastManualDragLocation.x),
-            Float(location.y - lastManualDragLocation.y)
-        )
         self.lastManualDragLocation = location
-        guard delta != .zero,
-              let orientation = inputRenderer?.rotateView(by: delta) else {
+        guard let orientation = inputRenderer?.rotateView(
+            fromArcballPoint: arcballPoint(lastManualDragLocation),
+            to: arcballPoint(location)
+        ) else {
             return
         }
         viewOrientationHandler?(orientation)
+    }
+
+    private func arcballPoint(_ point: CGPoint) -> SIMD2<Float> {
+        let radius = max(
+            min(bounds.width, bounds.height)
+                * 0.5
+                * ParticleTuning.Engine.manualRotationArcballRadiusScale,
+            1
+        )
+        return SIMD2<Float>(
+            Float((point.x - bounds.midX) / radius),
+            Float((point.y - bounds.midY) / radius)
+        )
     }
 
     private func updateMouse(with event: NSEvent, active: Bool) {
