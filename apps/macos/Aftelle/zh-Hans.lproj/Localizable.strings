@@ -192,6 +192,7 @@
 "particleDebug.value.true" = "是";
 "particleDebug.value.false" = "否";
 "particleDebug.orientation.overlay" = "方位辅助";
+"particleDebug.orientation.manualRotation" = "手动旋转（拖动粒子体）";
 "particleDebug.orientation.screenLeft" = "屏幕左";
 "particleDebug.orientation.screenCenter" = "屏幕中";
 "particleDebug.orientation.screenRight" = "屏幕右";

@@ -19,6 +19,7 @@ struct ParticleFrameUniforms {
     var renderPoint: SIMD4<Float>
     var renderLight: SIMD4<Float>
     var renderColor: SIMD4<Float>
+    var viewOrientation: SIMD4<Float>
 }
 
 final class ParticleRenderer: NSObject, MTKViewDelegate {
@@ -33,6 +34,8 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     private var pendingModelRebuild: DispatchWorkItem?
     private var metricsStartTime: TimeInterval
     private var metricsFrameCount = 0
+    private var viewOrientation: ParticleViewOrientation = .identity
+    private var isManualRotationEnabled = false
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
 
     init?(device: MTLDevice, visualIntent: ResidentVisualIntent = .idle) {
@@ -197,6 +200,34 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         simulation.setColorProfile(colorProfile)
     }
 
+    func setManualRotationEnabled(_ enabled: Bool) {
+        guard isManualRotationEnabled != enabled else { return }
+        isManualRotationEnabled = enabled
+        print("[ParticleCore] manualRotation enabled=\(enabled)")
+    }
+
+    func setViewOrientation(_ orientation: ParticleViewOrientation) {
+        viewOrientation = orientation
+    }
+
+    func rotateView(by delta: SIMD2<Float>) -> ParticleViewOrientation {
+        let sensitivity = ParticleTuning.Engine.manualRotationRadiansPerPoint
+        let yaw = simd_quatf(
+            angle: -delta.x * sensitivity,
+            axis: SIMD3<Float>(0, 1, 0)
+        )
+        let pitch = simd_quatf(
+            angle: delta.y * sensitivity,
+            axis: SIMD3<Float>(1, 0, 0)
+        )
+        let current = simd_quatf(vector: viewOrientation.quaternion)
+        let orientation = ParticleViewOrientation(
+            quaternion: (yaw * current * pitch).vector
+        )
+        viewOrientation = orientation
+        return orientation
+    }
+
     func rebuildParticles() {
         simulation.rebuildParticles()
         let requiredLength = MemoryLayout<SIMD4<Float>>.stride * simulation.particleCount
@@ -303,7 +334,8 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 ParticleTuning.Engine.surfaceColorBaseMix,
                 ParticleTuning.Engine.surfaceColorLightMix,
                 ParticleTuning.Engine.highlightColorMix
-            )
+            ),
+            viewOrientation: viewOrientation.quaternion
         )
     }
 
@@ -365,9 +397,24 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "transitionElapsedTime=\(String(format: "%.2f", visualState.transitionElapsedTime)) "
                 + "reason=\(visualState.transitionReason) "
                 + "interactionStrength=\(String(format: "%.2f", frame.mouseInfluence)) "
+                + "manualRotation=\(isManualRotationEnabled) "
+                + "orientation=\(Self.orientationDescription(viewOrientation)) "
                 + "centerDrift=\(String(format: "%.6f", frame.stability.centerDrift)) "
                 + "maximumRadius=\(String(format: "%.4f", frame.stability.maximumRadius)) "
                 + "maximumSpeed=\(String(format: "%.4f", frame.stability.maximumSpeed))"
+        )
+    }
+
+    private static func orientationDescription(
+        _ orientation: ParticleViewOrientation
+    ) -> String {
+        let value = orientation.quaternion
+        return String(
+            format: "[%.3f,%.3f,%.3f,%.3f]",
+            value.x,
+            value.y,
+            value.z,
+            value.w
         )
     }
 }

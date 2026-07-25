@@ -2,18 +2,25 @@ import AppKit
 import SwiftUI
 import Combine
 import UniformTypeIdentifiers
+import simd
 
 @MainActor
 final class ParticlePresentationSettings: ObservableObject {
     @Published var tuning = ParticleTuning.loadSaved()
     @Published var colorProfile = ParticleColorProfile.loadSaved() ?? .systemDefault
     @Published private(set) var rebuildGeneration = 0
+    @Published var isManualRotationEnabled = false
+    @Published var viewOrientation: ParticleViewOrientation = .identity
     #if DEBUG
     @Published var isOrientationOverlayVisible = false
     #endif
 
     func rebuildWithFixedSeed() {
         rebuildGeneration &+= 1
+    }
+
+    func updateViewOrientation(_ orientation: ParticleViewOrientation) {
+        viewOrientation = orientation
     }
 }
 
@@ -25,7 +32,6 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var debugSubtitleKeyMonitor: Any?
-    @State private var particleOrientationTimeSample = ParticleOrientationTimeSample.empty
     #endif
 
     var body: some View {
@@ -38,17 +44,13 @@ struct ContentView: View {
                 tuning: presentationSettings.tuning,
                 colorProfile: presentationSettings.colorProfile,
                 rebuildGeneration: presentationSettings.rebuildGeneration,
+                isManualRotationEnabled: presentationSettings.isManualRotationEnabled,
+                viewOrientation: presentationSettings.viewOrientation,
                 isTransparentBackground: controller.particleShellMode == .transparentShell,
                 debugMetricsHandler: { metrics in
                     controller.updateParticleRenderMetrics(metrics)
-                    #if DEBUG
-                    particleOrientationTimeSample = ParticleOrientationTimeSample(
-                        renderElapsedTime: metrics.renderElapsedTime,
-                        motionElapsedTime: metrics.motionElapsedTime,
-                        sampleDate: Date()
-                    )
-                    #endif
-                }
+                },
+                viewOrientationHandler: presentationSettings.updateViewOrientation
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
@@ -66,7 +68,9 @@ struct ContentView: View {
 
             #if DEBUG
             if presentationSettings.isOrientationOverlayVisible {
-                ParticleOrientationDebugOverlay(tuning: presentationSettings.tuning, timeSample: particleOrientationTimeSample)
+                ParticleOrientationDebugOverlay(
+                    orientation: presentationSettings.viewOrientation
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .allowsHitTesting(false)
             }
@@ -273,67 +277,33 @@ private struct ResidentTextInputBar: View {
 }
 
 #if DEBUG
-private struct ParticleOrientationTimeSample: Equatable {
-    var renderElapsedTime: TimeInterval
-    var motionElapsedTime: TimeInterval
-    var sampleDate: Date
-
-    static let empty = ParticleOrientationTimeSample(renderElapsedTime: 0, motionElapsedTime: 0, sampleDate: Date())
-
-    func renderElapsed(at date: Date) -> TimeInterval {
-        max(0, renderElapsedTime + date.timeIntervalSince(sampleDate))
-    }
-
-    func motionElapsed(at date: Date) -> TimeInterval {
-        let currentRenderElapsed = renderElapsed(at: date)
-        return motionElapsedTime + motionElapsedFormula(currentRenderElapsed) - motionElapsedFormula(renderElapsedTime)
-    }
-
-    private func motionElapsedFormula(_ renderElapsed: TimeInterval) -> TimeInterval {
-        let speedPhaseRate: TimeInterval = 0.025
-        return 0.42 * renderElapsed + (0.08 / speedPhaseRate) * (1 - cos(renderElapsed * speedPhaseRate))
-    }
-}
-
 private struct ParticleOrientationDebugOverlay: View {
-    let tuning: ParticleTuning
-    let timeSample: ParticleOrientationTimeSample
+    let orientation: ParticleViewOrientation
 
     var body: some View {
-        TimelineView(.animation) { context in
-            Canvas { canvas, size in
-                let motionTime = timeSample.motionElapsed(at: context.date)
-                let renderElapsed = timeSample.renderElapsed(at: context.date)
-                drawClockLabels(in: &canvas, size: size)
-                drawMotionTimeline(in: &canvas, size: size, motionTime: motionTime, renderElapsed: renderElapsed)
-                drawAxisSet(in: &canvas, origin: CGPoint(x: size.width * 0.5, y: size.height * 0.5), length: 78, motionTime: motionTime, lineWidth: 2.0)
-                drawAxisSet(in: &canvas, origin: CGPoint(x: 82, y: size.height - 92), length: 42, motionTime: motionTime, lineWidth: 1.7)
-            }
+        Canvas { canvas, size in
+            drawClockLabels(in: &canvas, size: size)
+            drawAxisSet(
+                in: &canvas,
+                origin: CGPoint(x: size.width * 0.5, y: size.height * 0.5),
+                length: 78,
+                lineWidth: 2
+            )
+            drawAxisSet(
+                in: &canvas,
+                origin: CGPoint(x: 82, y: size.height - 92),
+                length: 42,
+                lineWidth: 1.7
+            )
         }
     }
 
-    private func rotationState(at motionTime: TimeInterval) -> ParticleRotationState {
-        let tuneRotationSpeed = centeredControl(tuning.rotationSpeed, maximum: 2.40)
-        let rotationTime = motionTime * 0.76 * tuneRotationSpeed
-        let direction = ParticleSpinDirection.nearest(to: tuning.rotationDirection)
-        let bodySpinAngle = rotationTime * direction.spinSign * 3.0
-        return ParticleRotationState(
-            rotationTime: rotationTime,
-            bodySpinAngle: bodySpinAngle,
-            angularVelocityPerMotionSecond: 0.76 * tuneRotationSpeed * direction.spinSign * 3.0,
-            direction: direction
-        )
-    }
-
-    private struct ParticleRotationState {
-        let rotationTime: TimeInterval
-        let bodySpinAngle: Double
-        let angularVelocityPerMotionSecond: Double
-        let direction: ParticleSpinDirection
-    }
-
-    private func drawAxisSet(in canvas: inout GraphicsContext, origin: CGPoint, length: CGFloat, motionTime: TimeInterval, lineWidth: CGFloat) {
-        let rotationState = rotationState(at: motionTime)
+    private func drawAxisSet(
+        in canvas: inout GraphicsContext,
+        origin: CGPoint,
+        length: CGFloat,
+        lineWidth: CGFloat
+    ) {
         let axes: [(String, SIMD3<Double>, Color)] = [
             ("X", SIMD3<Double>(1, 0, 0), .red),
             ("Y", SIMD3<Double>(0, 1, 0), .green),
@@ -341,7 +311,11 @@ private struct ParticleOrientationDebugOverlay: View {
         ]
 
         for axis in axes {
-            let endpoint = projectedAxisPoint(axis.1 * -0.42, rotationState: rotationState, origin: origin, length: length)
+            let endpoint = projectedAxisPoint(
+                axis.1 * -0.42,
+                origin: origin,
+                length: length
+            )
             var path = Path()
             path.move(to: origin)
             path.addLine(to: endpoint.point)
@@ -349,7 +323,11 @@ private struct ParticleOrientationDebugOverlay: View {
         }
 
         for axis in axes {
-            let endpoint = projectedAxisPoint(axis.1, rotationState: rotationState, origin: origin, length: length)
+            let endpoint = projectedAxisPoint(
+                axis.1,
+                origin: origin,
+                length: length
+            )
             var path = Path()
             path.move(to: origin)
             path.addLine(to: endpoint.point)
@@ -372,10 +350,12 @@ private struct ParticleOrientationDebugOverlay: View {
         }
     }
 
-    private func projectedAxisPoint(_ vector: SIMD3<Double>, rotationState: ParticleRotationState, origin: CGPoint, length: CGFloat) -> (point: CGPoint, scale: CGFloat, opacity: Double) {
-        let viewed = rotationState.direction.rotatesVertically
-            ? rotateX(vector, rotationState.bodySpinAngle)
-            : rotateY(vector, rotationState.bodySpinAngle)
+    private func projectedAxisPoint(
+        _ vector: SIMD3<Double>,
+        origin: CGPoint,
+        length: CGFloat
+    ) -> (point: CGPoint, scale: CGFloat, opacity: Double) {
+        let viewed = rotate(vector)
         let bodyPerspective = max(0.84, min(1.20, 1.0 / (1.0 - viewed.z * 0.30)))
         let depth = 3.2 - viewed.z
         let depthPerspective = 2.8 / max(1.4, depth)
@@ -391,113 +371,18 @@ private struct ParticleOrientationDebugOverlay: View {
         )
     }
 
-    private func rotateX(_ vector: SIMD3<Double>, _ angle: Double) -> SIMD3<Double> {
-        let c = cos(angle)
-        let s = sin(angle)
-        return SIMD3<Double>(
-            vector.x,
-            vector.y * c - vector.z * s,
-            vector.y * s + vector.z * c
+    private func rotate(_ vector: SIMD3<Double>) -> SIMD3<Double> {
+        let rawQuaternion = orientation.quaternion
+        let quaternionVector = SIMD3<Double>(
+            Double(rawQuaternion.x),
+            Double(rawQuaternion.y),
+            Double(rawQuaternion.z)
         )
-    }
-
-    private func rotateY(_ vector: SIMD3<Double>, _ angle: Double) -> SIMD3<Double> {
-        let c = cos(angle)
-        let s = sin(angle)
-        return SIMD3<Double>(
-            vector.x * c + vector.z * s,
-            vector.y,
-            -vector.x * s + vector.z * c
+        let quaternionReal = Double(rawQuaternion.w)
+        return vector + 2 * simd_cross(
+            quaternionVector,
+            simd_cross(quaternionVector, vector) + quaternionReal * vector
         )
-    }
-
-
-    private func centeredControl(_ value: Double, maximum: Double) -> Double {
-        let control = min(1, max(0, value))
-        if control <= 0.5 {
-            return control * 2
-        }
-        return 1 + (control - 0.5) * 2 * (maximum - 1)
-    }
-
-    private func drawMotionTimeline(in canvas: inout GraphicsContext, size: CGSize, motionTime: TimeInterval, renderElapsed: TimeInterval) {
-        let rotationState = rotationState(at: motionTime)
-        let angularVelocity = rotationState.angularVelocityPerMotionSecond
-        let realTimeAngularVelocity = abs(angularVelocity) * max(0.001, 0.42 + 0.08 * sin(renderElapsed * 0.025))
-        let duration = (2.0 * Double.pi) / max(realTimeAngularVelocity, 0.001)
-        let y = size.height - 52
-        let start = CGPoint(x: 120, y: y)
-        let end = CGPoint(x: max(180, size.width - 120), y: y)
-        var path = Path()
-        path.move(to: start)
-        path.addLine(to: end)
-        canvas.stroke(path, with: .color(.white.opacity(0.32)), lineWidth: 1)
-
-        for marker in rotationMarkers(direction: rotationState.direction) {
-            let fraction = CGFloat(marker.degrees / 360.0)
-            let x = start.x + (end.x - start.x) * fraction
-            let markerTime = duration * marker.degrees / 360.0
-            var tick = Path()
-            tick.move(to: CGPoint(x: x, y: y - marker.tickHeight))
-            tick.addLine(to: CGPoint(x: x, y: y + marker.tickHeight))
-            canvas.stroke(tick, with: .color(.white.opacity(marker.opacity)), lineWidth: marker.lineWidth)
-            drawAxisLabel(marker.label, at: CGPoint(x: x, y: y + 19), in: &canvas)
-            drawAxisLabel(String(format: "%.2fs", markerTime), at: CGPoint(x: x, y: y + 34), in: &canvas)
-        }
-
-        let phase = abs(rotationState.bodySpinAngle).truncatingRemainder(dividingBy: 2.0 * Double.pi)
-        let playheadFraction = CGFloat(phase / (2.0 * Double.pi))
-        let playheadX = start.x + (end.x - start.x) * playheadFraction
-        var playhead = Path()
-        playhead.move(to: CGPoint(x: playheadX, y: y - 18))
-        playhead.addLine(to: CGPoint(x: playheadX, y: y + 10))
-        canvas.stroke(playhead, with: .color(.white.opacity(0.72)), lineWidth: 1.4)
-        canvas.fill(Path(ellipseIn: CGRect(x: playheadX - 4, y: y - 22, width: 8, height: 8)), with: .color(.white.opacity(0.72)))
-
-        drawAxisLabel(String(localized: "particleDebug.orientation.timeline"), at: CGPoint(x: (start.x + end.x) * 0.5, y: y - 18), in: &canvas)
-        drawAxisLabel(String(localized: "particleDebug.orientation.playhead"), at: CGPoint(x: playheadX, y: y - 34), in: &canvas)
-    }
-
-    private struct RotationMarker {
-        let degrees: Double
-        let label: String
-        let tickHeight: CGFloat
-        let lineWidth: CGFloat
-        let opacity: Double
-    }
-
-    private func rotationMarkers(direction: ParticleSpinDirection) -> [RotationMarker] {
-        if direction.rotatesVertically {
-            let firstDirectionKey = direction == .up
-                ? "particleDebug.direction.up"
-                : "particleDebug.direction.down"
-            let oppositeDirectionKey = direction == .up
-                ? "particleDebug.direction.down"
-                : "particleDebug.direction.up"
-            return [
-                RotationMarker(degrees: 0, label: "0°\n\(String(localized: "particleDebug.orientation.front"))", tickHeight: 11, lineWidth: 1.5, opacity: 0.64),
-                RotationMarker(degrees: 45, label: "45°\n\(String(localized: String.LocalizationValue(firstDirectionKey)))", tickHeight: 7, lineWidth: 1.0, opacity: 0.36),
-                RotationMarker(degrees: 90, label: "90°\n\(String(localized: String.LocalizationValue(firstDirectionKey)))", tickHeight: 9, lineWidth: 1.2, opacity: 0.50),
-                RotationMarker(degrees: 135, label: "135°", tickHeight: 6, lineWidth: 1.0, opacity: 0.28),
-                RotationMarker(degrees: 180, label: "180°\n\(String(localized: "particleDebug.orientation.back"))", tickHeight: 10, lineWidth: 1.3, opacity: 0.56),
-                RotationMarker(degrees: 225, label: "225°", tickHeight: 6, lineWidth: 1.0, opacity: 0.28),
-                RotationMarker(degrees: 270, label: "270°\n\(String(localized: String.LocalizationValue(oppositeDirectionKey)))", tickHeight: 9, lineWidth: 1.2, opacity: 0.50),
-                RotationMarker(degrees: 315, label: "315°\n\(String(localized: String.LocalizationValue(oppositeDirectionKey)))", tickHeight: 7, lineWidth: 1.0, opacity: 0.36),
-                RotationMarker(degrees: 360, label: "360°\n\(String(localized: "particleDebug.orientation.front"))", tickHeight: 11, lineWidth: 1.5, opacity: 0.64)
-            ]
-        }
-        let isReversed = direction == .left
-        return [
-            RotationMarker(degrees: 0, label: "0°\n\(String(localized: "particleDebug.orientation.front"))", tickHeight: 11, lineWidth: 1.5, opacity: 0.64),
-            RotationMarker(degrees: 45, label: "45°\n\(String(localized: isReversed ? "particleDebug.orientation.left45" : "particleDebug.orientation.right45"))", tickHeight: 7, lineWidth: 1.0, opacity: 0.36),
-            RotationMarker(degrees: 90, label: "90°\n\(String(localized: isReversed ? "particleDebug.orientation.leftSide" : "particleDebug.orientation.rightSide"))", tickHeight: 9, lineWidth: 1.2, opacity: 0.50),
-            RotationMarker(degrees: 135, label: "135°", tickHeight: 6, lineWidth: 1.0, opacity: 0.28),
-            RotationMarker(degrees: 180, label: "180°\n\(String(localized: "particleDebug.orientation.back"))", tickHeight: 10, lineWidth: 1.3, opacity: 0.56),
-            RotationMarker(degrees: 225, label: "225°", tickHeight: 6, lineWidth: 1.0, opacity: 0.28),
-            RotationMarker(degrees: 270, label: "270°\n\(String(localized: isReversed ? "particleDebug.orientation.rightSide" : "particleDebug.orientation.leftSide"))", tickHeight: 9, lineWidth: 1.2, opacity: 0.50),
-            RotationMarker(degrees: 315, label: "315°\n\(String(localized: isReversed ? "particleDebug.orientation.right45" : "particleDebug.orientation.left45"))", tickHeight: 7, lineWidth: 1.0, opacity: 0.36),
-            RotationMarker(degrees: 360, label: "360°\n\(String(localized: "particleDebug.orientation.front"))", tickHeight: 11, lineWidth: 1.5, opacity: 0.64)
-        ]
     }
 
     private func drawClockLabels(in canvas: inout GraphicsContext, size: CGSize) {
@@ -551,6 +436,7 @@ struct ParticleDebugWindow: View {
             tuning: $presentationSettings.tuning,
             colorProfile: $presentationSettings.colorProfile,
             orientationOverlayVisible: $presentationSettings.isOrientationOverlayVisible,
+            manualRotationEnabled: $presentationSettings.isManualRotationEnabled,
             defaultColorProfile: controller.particleColorProfile,
             setShellMode: controller.setParticleShellMode,
             setRenderKind: controller.setParticleRenderKind,
@@ -613,6 +499,7 @@ private struct ParticleDebugPanel: View {
     @Binding var tuning: ParticleTuning
     @Binding var colorProfile: ParticleColorProfile
     @Binding var orientationOverlayVisible: Bool
+    @Binding var manualRotationEnabled: Bool
     let defaultColorProfile: ParticleColorProfile
     let setShellMode: (ParticleShellMode) -> Void
     let setRenderKind: (ParticleRenderKind) -> Void
@@ -664,6 +551,13 @@ private struct ParticleDebugPanel: View {
             Toggle(String(localized: "particleDebug.orientation.overlay"), isOn: $orientationOverlayVisible)
                 .font(.system(size: 12))
                 .toggleStyle(.checkbox)
+
+            Toggle(
+                String(localized: "particleDebug.orientation.manualRotation"),
+                isOn: $manualRotationEnabled
+            )
+            .font(.system(size: 12))
+            .toggleStyle(.checkbox)
 
             if section == .color {
                 Button {

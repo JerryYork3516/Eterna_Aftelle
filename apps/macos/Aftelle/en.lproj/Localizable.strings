@@ -192,6 +192,7 @@
 "particleDebug.value.true" = "true";
 "particleDebug.value.false" = "false";
 "particleDebug.orientation.overlay" = "Orientation Guides";
+"particleDebug.orientation.manualRotation" = "Manual Rotation (Drag Particle Body)";
 "particleDebug.orientation.screenLeft" = "screen left";
 "particleDebug.orientation.screenCenter" = "screen center";
 "particleDebug.orientation.screenRight" = "screen right";

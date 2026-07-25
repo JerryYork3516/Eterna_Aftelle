@@ -16,6 +16,7 @@ struct ParticleFrameUniforms {
     float4 renderPoint;
     float4 renderLight;
     float4 renderColor;
+    float4 viewOrientation;
 };
 
 struct ParticleVertexOut {
@@ -35,13 +36,23 @@ struct ParticleVertexOut {
 constant float kMinimumAspect = 0.001;
 constant float kMinimumRadius = 0.00001;
 
+float3 rotateByQuaternion(float3 vector, float4 quaternion) {
+    return vector + 2 * cross(
+        quaternion.xyz,
+        cross(quaternion.xyz, vector) + quaternion.w * vector
+    );
+}
+
 vertex ParticleVertexOut particleVertex(
     const device float4 *particles [[buffer(0)]],
     constant ParticleFrameUniforms &uniforms [[buffer(1)]],
     uint vertexID [[vertex_id]]
 ) {
     const float4 particle = particles[vertexID];
-    const float3 position = particle.xyz;
+    const float3 position = rotateByQuaternion(
+        particle.xyz,
+        uniforms.viewOrientation
+    );
     const float surfaceWeight = saturate(particle.w);
     const float aspect = uniforms.viewportAndRender.x
         / max(uniforms.viewportAndRender.y, kMinimumAspect);

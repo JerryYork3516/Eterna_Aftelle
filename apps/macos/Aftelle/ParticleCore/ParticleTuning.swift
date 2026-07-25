@@ -13,8 +13,6 @@ struct ParticleTuning: Codable, Equatable {
     var damping: Double
     var pointSizeScale: Double
     var brightness: Double
-    var rotationSpeed: Double
-    var rotationDirection: Double
 
     init(
         sphereRadius: Double,
@@ -27,9 +25,7 @@ struct ParticleTuning: Codable, Equatable {
         aggregationStrength: Double,
         damping: Double,
         pointSizeScale: Double,
-        brightness: Double,
-        rotationSpeed: Double,
-        rotationDirection: Double
+        brightness: Double
     ) {
         self.sphereRadius = sphereRadius
         self.surfaceRatio = surfaceRatio
@@ -42,8 +38,6 @@ struct ParticleTuning: Codable, Equatable {
         self.damping = damping
         self.pointSizeScale = pointSizeScale
         self.brightness = brightness
-        self.rotationSpeed = rotationSpeed
-        self.rotationDirection = rotationDirection
     }
 
     static let systemDefault = ParticleTuning(
@@ -57,9 +51,7 @@ struct ParticleTuning: Codable, Equatable {
         aggregationStrength: 0.58,
         damping: 0.58,
         pointSizeScale: 0.42,
-        brightness: 0.46,
-        rotationSpeed: 0.5,
-        rotationDirection: 1.0
+        brightness: 0.46
     )
 
     static let storageKey = "ParticleCoreTuning.debug.v2"
@@ -86,8 +78,6 @@ struct ParticleTuning: Codable, Equatable {
         for parameter in ParticleTuningParameter.allCases {
             value[keyPath: parameter.keyPath] = Self.clamp(value[keyPath: parameter.keyPath])
         }
-        value.rotationSpeed = Self.clamp(value.rotationSpeed)
-        value.rotationDirection = Self.clamp(value.rotationDirection)
         return value
     }
 
@@ -144,6 +134,8 @@ struct ParticleTuning: Codable, Equatable {
         static let maximumParticleSpeed: Float = 0.22
         static let centerCorrection: Float = 1
         static let projectionScale: Float = 1
+        static let manualRotationRadiansPerPoint: Float = 0.006
+        static let quaternionNormalizationEpsilon: Float = 0.000_01
         static let minimumPointSize: Float = 2.2
         static let maximumPointSize: Float = 6.4
         static let minimumBrightness: Float = 0.58
@@ -235,58 +227,6 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
         case .brightness:
             return \.brightness
         }
-    }
-}
-
-enum ParticleSpinDirection: CaseIterable, Identifiable {
-    case up
-    case down
-    case left
-    case right
-
-    var id: String { localizedKey }
-
-    var localizedKey: String {
-        switch self {
-        case .up:
-            return "particleDebug.direction.up"
-        case .down:
-            return "particleDebug.direction.down"
-        case .left:
-            return "particleDebug.direction.left"
-        case .right:
-            return "particleDebug.direction.right"
-        }
-    }
-
-    var tuningValue: Double {
-        switch self {
-        case .up:
-            return 1.0 / 3.0
-        case .down:
-            return 2.0 / 3.0
-        case .left:
-            return 0
-        case .right:
-            return 1
-        }
-    }
-
-    var spinSign: Double {
-        switch self {
-        case .up, .left:
-            return -1
-        case .down, .right:
-            return 1
-        }
-    }
-
-    var rotatesVertically: Bool {
-        self == .up || self == .down
-    }
-
-    static func nearest(to value: Double) -> ParticleSpinDirection {
-        allCases.min { abs($0.tuningValue - value) < abs($1.tuningValue - value) } ?? .right
     }
 }
 

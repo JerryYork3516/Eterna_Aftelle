@@ -1,14 +1,33 @@
 import AppKit
 import MetalKit
 import SwiftUI
+import simd
+
+struct ParticleViewOrientation: Equatable {
+    let quaternion: SIMD4<Float>
+
+    static let identity = ParticleViewOrientation(
+        quaternion: SIMD4<Float>(0, 0, 0, 1)
+    )
+
+    init(quaternion: SIMD4<Float>) {
+        let length = simd_length(quaternion)
+        self.quaternion = length > ParticleTuning.Engine.quaternionNormalizationEpsilon
+            ? quaternion / length
+            : SIMD4<Float>(0, 0, 0, 1)
+    }
+}
 
 struct ParticleCoreMetalView: NSViewRepresentable {
     var visualIntent: ResidentVisualIntent = .idle
     var tuning: ParticleTuning = .systemDefault
     var colorProfile: ParticleColorProfile = .systemDefault
     var rebuildGeneration = 0
+    var isManualRotationEnabled = false
+    var viewOrientation: ParticleViewOrientation = .identity
     var isTransparentBackground = false
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
+    var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
 
     func makeNSView(context: Context) -> MTKView {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -29,13 +48,23 @@ struct ParticleCoreMetalView: NSViewRepresentable {
             return view
         }
         view.inputRenderer = renderer
+        view.setManualRotationEnabled(isManualRotationEnabled)
         view.delegate = renderer
         context.coordinator.renderer = renderer
         context.coordinator.swiftUIVisualIntent = visualIntent
         context.coordinator.tuning = tuning
         context.coordinator.colorProfile = colorProfile
         context.coordinator.rebuildGeneration = rebuildGeneration
+        context.coordinator.isManualRotationEnabled = isManualRotationEnabled
+        context.coordinator.viewOrientation = viewOrientation
         context.coordinator.debugMetricsHandler = debugMetricsHandler
+        context.coordinator.viewOrientationHandler = viewOrientationHandler
+        view.viewOrientationHandler = { orientation in
+            context.coordinator.viewOrientation = orientation
+            DispatchQueue.main.async {
+                context.coordinator.viewOrientationHandler?(orientation)
+            }
+        }
         renderer.debugMetricsHandler = { metrics in
             DispatchQueue.main.async {
                 context.coordinator.debugMetricsHandler?(metrics)
@@ -43,6 +72,8 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         }
         renderer.setTuning(tuning)
         renderer.setColorProfile(colorProfile)
+        renderer.setViewOrientation(viewOrientation)
+        renderer.setManualRotationEnabled(isManualRotationEnabled)
         return view
     }
 
@@ -64,6 +95,17 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         if context.coordinator.rebuildGeneration != rebuildGeneration {
             context.coordinator.renderer?.rebuildParticles()
             context.coordinator.rebuildGeneration = rebuildGeneration
+        }
+        context.coordinator.viewOrientationHandler = viewOrientationHandler
+        if context.coordinator.viewOrientation != viewOrientation {
+            context.coordinator.renderer?.setViewOrientation(viewOrientation)
+            context.coordinator.viewOrientation = viewOrientation
+        }
+        if context.coordinator.isManualRotationEnabled != isManualRotationEnabled {
+            context.coordinator.renderer?.setManualRotationEnabled(isManualRotationEnabled)
+            (nsView as? ParticleCoreInputView)?
+                .setManualRotationEnabled(isManualRotationEnabled)
+            context.coordinator.isManualRotationEnabled = isManualRotationEnabled
         }
     }
 
@@ -89,7 +131,10 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         var tuning: ParticleTuning = .systemDefault
         var colorProfile: ParticleColorProfile = .systemDefault
         var rebuildGeneration = 0
+        var isManualRotationEnabled = false
+        var viewOrientation: ParticleViewOrientation = .identity
         var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
+        var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
     }
 }
 
@@ -98,6 +143,9 @@ private final class ParticleCoreInputView: MTKView {
     private var trackingAreaRef: NSTrackingArea?
     private var lastMousePosition: SIMD2<Float>?
     private var lastMouseTime: TimeInterval?
+    private var isManualRotationEnabled = false
+    private var lastManualDragLocation: CGPoint?
+    var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
 
     override var acceptsFirstResponder: Bool {
         true
@@ -133,15 +181,37 @@ private final class ParticleCoreInputView: MTKView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if isManualRotationEnabled {
+            rotateView(with: event)
+            return
+        }
         updateMouse(with: event, active: true)
     }
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        if isManualRotationEnabled {
+            lastManualDragLocation = convert(event.locationInWindow, from: nil)
+            inputRenderer?.updateInteraction(
+                position: .zero,
+                velocity: .zero,
+                active: false
+            )
+            return
+        }
         super.mouseDown(with: event)
     }
 
+    override func mouseUp(with event: NSEvent) {
+        if isManualRotationEnabled {
+            lastManualDragLocation = nil
+            return
+        }
+        super.mouseUp(with: event)
+    }
+
     override func mouseExited(with event: NSEvent) {
+        lastManualDragLocation = nil
         lastMousePosition = nil
         lastMouseTime = nil
         inputRenderer?.updateInteraction(position: .zero, velocity: .zero, active: false)
@@ -174,6 +244,32 @@ private final class ParticleCoreInputView: MTKView {
         #else
         super.keyDown(with: event)
         #endif
+    }
+
+    func setManualRotationEnabled(_ enabled: Bool) {
+        isManualRotationEnabled = enabled
+        if !enabled {
+            lastManualDragLocation = nil
+        }
+    }
+
+    private func rotateView(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        guard let lastManualDragLocation else {
+            self.lastManualDragLocation = location
+            return
+        }
+
+        let delta = SIMD2<Float>(
+            Float(location.x - lastManualDragLocation.x),
+            Float(location.y - lastManualDragLocation.y)
+        )
+        self.lastManualDragLocation = location
+        guard delta != .zero,
+              let orientation = inputRenderer?.rotateView(by: delta) else {
+            return
+        }
+        viewOrientationHandler?(orientation)
     }
 
     private func updateMouse(with event: NSEvent, active: Bool) {
