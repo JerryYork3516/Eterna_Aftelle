@@ -62,6 +62,7 @@ struct ParticleCoreModel {
         let scatterClusterFrequency = 3.4 - tunedScatterClusterScale * 2.0
 
         let candidateCount = Int(Double(count) * 1.8)
+        let overflowVerticalStride = 0.7548776662466927
         var candidateIndex = 0
 
         while values.count < count {
@@ -69,20 +70,25 @@ struct ParticleCoreModel {
             candidateIndex += 1
             let golden = 0.6180339887498949
             let u = (Double(index) * golden + generator.nextUnit() * 0.022).truncatingRemainder(dividingBy: 1)
-            let v = (Double(index % candidateCount) + 0.5) / Double(candidateCount)
+            let v = index < candidateCount
+                ? (Double(index) + 0.5) / Double(candidateCount)
+                : (Double(index - candidateCount) * overflowVerticalStride + 0.5)
+                    .truncatingRemainder(dividingBy: 1)
             let theta = Float(u * .pi * 2)
             let z = Float(1 - 2 * v)
             let shell = sqrt(max(0, 1 - z * z))
+            let baseX = shell * cos(theta)
             let baseDepth = shell * sin(theta)
-            let foldOffset = 0.14 * sin((theta * 3.0 + z * 4.7) * featureFrequency + shapePhase)
-                + 0.09 * sin((theta * 6.0 - z * 2.6) * featureFrequency - shapePhase * 0.72)
-                + 0.05 * sin((theta * 11.0 + z * 5.1) * featureFrequency + shapePhase * 1.31)
+            let foldOffset =
+                0.14 * sin((baseX * 3.0 + z * 4.7 + baseDepth * 2.0) * featureFrequency + shapePhase)
+                + 0.09 * sin((baseDepth * 6.0 - z * 2.6 - baseX * 2.0) * featureFrequency - shapePhase * 0.72)
+                + 0.05 * sin((baseX * 11.0 + baseDepth * 5.1 + z * 3.0) * featureFrequency + shapePhase * 1.31)
             let fold = 1 + foldOffset * tunedShapeStrength
-            var x = (shell * cos(theta) * 0.58 + baseDepth * 0.075 * tunedShapeStrength) * fold
-            var y = (z * 0.44 + 0.035 * tunedShapeStrength * sin((theta * 2.0 + baseDepth * 3.0) * featureFrequency + shapePhase * 0.61)) * fold
+            let verticalDetail =
+                sin((baseX * 2.0 + baseDepth * 3.0 + z * 1.7) * featureFrequency + shapePhase * 0.61)
+            var x = (baseX * 0.58 + baseDepth * 0.075 * tunedShapeStrength) * fold
+            var y = (z * 0.44 + 0.035 * tunedShapeStrength * verticalDetail) * fold
             var depth = baseDepth * fold
-            let projectedRadius = sqrt(x * x / 0.62 / 0.62 + y * y / 0.48 / 0.48)
-            let outlineBand = max(0, min(1, (projectedRadius - 0.62) / 0.32))
             let depthScale: Float = 0.58
             var bodyPosition = SIMD3<Float>(x, y, depth * depthScale)
             let shellNormal = simd_normalize(bodyPosition)
@@ -90,19 +96,16 @@ struct ParticleCoreModel {
                 ? SIMD3<Float>(0, 0, 1)
                 : SIMD3<Float>(0, 1, 0)
             let shellTangent = simd_normalize(simd_cross(tangentReference, shellNormal))
+            let shellBitangent = simd_normalize(simd_cross(shellNormal, shellTangent))
             let strongScatterSample = Self.wrappedUnit(generator.nextUnit() + scatterOffset)
             let radialScatterSample = Self.wrappedUnit(generator.nextUnit() + scatterOffset * 1.73)
             let tangentialScatterSample = Self.wrappedUnit(generator.nextUnit() + scatterOffset * 2.37)
             let scatterClusterA = 0.5 + 0.5 * sin(
-                theta * scatterClusterFrequency
-                    + z * 2.1
-                    - baseDepth * 1.3
+                (baseX * 2.4 + z * 1.6 - baseDepth * 1.2) * scatterClusterFrequency
                     + scatterPhase
             )
             let scatterClusterB = 0.5 + 0.5 * cos(
-                theta * (scatterClusterFrequency * 0.63)
-                    - z * 2.7
-                    + baseDepth * 1.1
+                (baseDepth * 2.2 - z * 1.8 + baseX * 0.9) * (scatterClusterFrequency * 0.63)
                     - scatterPhase * 0.71
             )
             let rawScatterCluster = min(1, max(0, scatterClusterA * 0.64 + scatterClusterB * 0.36))
@@ -123,18 +126,36 @@ struct ParticleCoreModel {
                 * 0.048
                 * tunedScatterStrength
                 * tangentialClusterAmplitude
-            bodyPosition += shellNormal * radialScatter + shellTangent * tangentialScatter
+            let tangentialAngleSeed = Self.wrappedUnit(
+                tangentialScatterSample * 1.6180339887498949
+                    + strongScatterSample * 0.3819660112501051
+            )
+            let tangentialAngle = Float(tangentialAngleSeed) * Float.pi * 2
+            let tangentialDirection =
+                shellTangent * cos(tangentialAngle) + shellBitangent * sin(tangentialAngle)
+            bodyPosition += shellNormal * radialScatter + tangentialDirection * tangentialScatter
             x = bodyPosition.x
             y = bodyPosition.y
             depth = bodyPosition.z / depthScale
-            let silhouette = max(0, min(1, 1 - abs(baseDepth) * 1.85))
-            let threadA = pow(max(0, 0.5 + 0.5 * sin(theta * 3.0 + z * 4.4 + baseDepth * 2.6)), 4)
-            let threadB = pow(max(0, 0.5 + 0.5 * sin(theta * 5.0 - z * 3.1)), 5)
-            let grain = 0.5 + 0.5 * sin(theta * 13.0 + z * 8.7 + baseDepth * 3.1)
+            let threadA = pow(
+                max(0, 0.5 + 0.5 * sin(baseX * 3.0 + z * 4.4 + baseDepth * 2.6 + shapePhase)),
+                4
+            )
+            let threadB = pow(
+                max(0, 0.5 + 0.5 * sin(baseDepth * 5.0 - z * 3.1 - baseX * 2.2 - shapePhase * 0.73)),
+                5
+            )
+            let grain = 0.5 + 0.5 * sin(
+                baseX * 13.0 + z * 8.7 + baseDepth * 3.1 + shapePhase * 1.17
+            )
             let thread = max(threadA, threadB)
-            let ridge = min(1, silhouette * 0.24 + thread * 0.08 + outlineBand * 0.22 + grain * 0.10)
-            let edgeWeight = max(0, min(1, 0.18 + abs(baseDepth) * 0.72 + (1 - silhouette) * 0.34 + outlineBand * 0.16))
-            let ridgeKeep = 0.36 + Double(silhouette) * 0.10 + Double(outlineBand) * 0.24
+            let shapeProminence = max(
+                0,
+                min(1, 0.5 + foldOffset * tunedShapeStrength / 0.56)
+            )
+            let ridge = min(1, shapeProminence * 0.30 + thread * 0.14 + grain * 0.10)
+            let edgeWeight = max(0, min(1, 0.22 + shapeProminence * 0.46 + thread * 0.22))
+            let ridgeKeep = 0.48 + Double(shapeProminence) * 0.08 + Double(thread) * 0.06
             if generator.nextUnit() > ridgeKeep && candidateIndex < candidateCount * 3 {
                 continue
             }
