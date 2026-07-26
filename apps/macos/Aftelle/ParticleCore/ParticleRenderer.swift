@@ -210,6 +210,25 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         )
     }
 
+    func setShapeTarget(
+        _ target: ParticleShapeTarget,
+        reason: String = "appShape"
+    ) {
+        let previousTarget = simulation.targetShape
+        guard simulation.setShapeTarget(
+            target,
+            reason: reason,
+            time: CACurrentMediaTime()
+        ) else {
+            return
+        }
+        print(
+            "[ParticleCore] shapeTarget changed "
+                + "\(target.rawValue) previous=\(previousTarget.rawValue) "
+                + "reason=\(reason)"
+        )
+    }
+
     func setTuning(_ tuning: ParticleTuning) {
         guard simulation.setTuning(tuning) else { return }
         pendingModelRebuild?.cancel()
@@ -294,6 +313,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
 
     func runDebugTransitionStressTest() {
         let rebuildCountBefore = simulation.rebuildCount
+        let morphResult = simulation.debugMorphStressResult()
         var finiteChannels = true
         for index in 0..<ParticleTuning.Engine.debugStressSwitchCount {
             let time = CACurrentMediaTime()
@@ -343,6 +363,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         let afterPause = controller.advance(time: time + 1_800)
         let pauseProgressStep = afterPause.transitionProgress - progressBeforePause
         let passed = finiteChannels
+            && morphResult.passed
             && rebuildCountBefore == rebuildCountAfter
             && continuityError <= ParticleTuning.Engine.debugContinuityTolerance
             && stateContinuityError
@@ -351,13 +372,22 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             && pauseProgressStep <= ParticleTuning.Engine.debugMaximumPauseProgressStep
 
         print(
-            "[ParticleCore][V2.4Test] passed=\(passed) "
+            "[ParticleCore][V2.5Test] passed=\(passed) "
                 + "switches=\(ParticleTuning.Engine.debugStressSwitchCount) "
                 + "speechContinuityError=\(String(format: "%.6f", continuityError)) "
                 + "stateContinuityError=\(String(format: "%.6f", stateContinuityError)) "
-                + "resumeDelta=\(String(format: "%.6f", afterPause.deltaTime)) "
+                + "morphContinuityError="
+                + String(format: "%.6f", morphResult.continuityError)
+                + " morphResumeProgressStep="
+                + String(format: "%.6f", morphResult.resumeProgressStep)
+                + " resumeDelta=\(String(format: "%.6f", afterPause.deltaTime)) "
                 + "resumeProgressStep=\(String(format: "%.6f", pauseProgressStep)) "
-                + "particleRebuildCount=\(rebuildCountBefore)->\(rebuildCountAfter)"
+                + "particleCount="
+                + "\(morphResult.particleCountBefore)"
+                + "->\(morphResult.particleCountAfter) "
+                + "particleRebuildCount="
+                + "\(morphResult.rebuildCountBefore)"
+                + "->\(morphResult.rebuildCountAfter)"
         )
     }
 
@@ -535,6 +565,12 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             speechPhase: visualState.speechSignal.phase.rawValue,
             speechIntensity: Double(visualState.speechSignal.intensity),
             lastTransitionReason: visualState.transitionReason,
+            currentShape: frame.shapeState.currentTarget.rawValue,
+            targetShape: frame.shapeState.targetTarget.rawValue,
+            morphElapsedTime: Double(frame.shapeState.elapsedTime),
+            morphDuration: Double(frame.shapeState.duration),
+            morphProgress: Double(frame.shapeState.progress),
+            lastMorphReason: frame.shapeState.reason,
             mouseInfluenceEnabled: true,
             mouseInsideParticleArea: interactionActive,
             interactionStrength: Double(frame.mouseInfluence)
@@ -549,6 +585,11 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "targetIntent=\(visualState.targetIntent.rawValue) "
                 + "speechPhase=\(visualState.speechSignal.phase.rawValue) "
                 + "speechIntensity=\(String(format: "%.2f", visualState.speechSignal.intensity)) "
+                + "currentShape=\(frame.shapeState.currentTarget.rawValue) "
+                + "targetShape=\(frame.shapeState.targetTarget.rawValue) "
+                + "morphProgress="
+                + String(format: "%.3f", frame.shapeState.progress)
+                + " morphReason=\(frame.shapeState.reason) "
                 + "channels=["
                 + String(
                     format: "%.2f,%.2f,%.2f,%.2f,%.2f",

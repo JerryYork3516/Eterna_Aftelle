@@ -16,6 +16,7 @@ final class ParticlePresentationSettings: ObservableObject {
     @Published private(set) var isDebugAutoCycleEnabled = false
     @Published private(set) var debugStressTestGeneration = 0
     @Published private(set) var debugSpeechSignal: ResidentSpeechSignal?
+    @Published private(set) var shapeTarget: ParticleShapeTarget = .sphere
     @Published private(set) var debugSpeechIntensity = Double(
         ParticleTuning.Engine.defaultSpeechIntensity
     )
@@ -56,6 +57,11 @@ final class ParticlePresentationSettings: ObservableObject {
 
     func runDebugTransitionStressTest() {
         debugStressTestGeneration &+= 1
+    }
+
+    func selectDebugShapeTarget(_ target: ParticleShapeTarget) {
+        guard target.isImplemented else { return }
+        shapeTarget = target
     }
 
     func simulateDebugSpeech(_ phase: ResidentSpeechPhase) {
@@ -107,6 +113,7 @@ struct ContentView: View {
                     ?? controller.residentSpeechSignal,
                 isDebugSpeechOverrideActive:
                     presentationSettings.debugSpeechSignal != nil,
+                shapeTarget: presentationSettings.shapeTarget,
                 tuning: presentationSettings.tuning,
                 colorProfile: presentationSettings.colorProfile,
                 rebuildGeneration: presentationSettings.rebuildGeneration,
@@ -526,6 +533,8 @@ struct ParticleDebugWindow: View {
             setDebugAutoCycleEnabled: presentationSettings.setDebugAutoCycleEnabled,
             followRuntimeVisualIntent: presentationSettings.followRuntimeVisualIntent,
             runDebugTransitionStressTest: presentationSettings.runDebugTransitionStressTest,
+            shapeTarget: presentationSettings.shapeTarget,
+            selectDebugShapeTarget: presentationSettings.selectDebugShapeTarget,
             debugSpeechSignal: presentationSettings.debugSpeechSignal,
             debugSpeechIntensity: presentationSettings.debugSpeechIntensity,
             simulateDebugSpeech: presentationSettings.simulateDebugSpeech,
@@ -601,6 +610,8 @@ private struct ParticleDebugPanel: View {
     let setDebugAutoCycleEnabled: (Bool) -> Void
     let followRuntimeVisualIntent: () -> Void
     let runDebugTransitionStressTest: () -> Void
+    let shapeTarget: ParticleShapeTarget
+    let selectDebugShapeTarget: (ParticleShapeTarget) -> Void
     let debugSpeechSignal: ResidentSpeechSignal?
     let debugSpeechIntensity: Double
     let simulateDebugSpeech: (ResidentSpeechPhase) -> Void
@@ -672,6 +683,29 @@ private struct ParticleDebugPanel: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
+                Text(String(localized: "particleDebug.shapeTest"))
+                    .font(.system(size: 12, weight: .medium))
+
+                HStack(spacing: 5) {
+                    ForEach(
+                        ParticleShapeTarget.allCases.filter(\.isImplemented)
+                    ) { target in
+                        Button(
+                            NSLocalizedString(
+                                target.debugLocalizedKey,
+                                comment: ""
+                            )
+                        ) {
+                            selectDebugShapeTarget(target)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.bordered)
+                        .disabled(shapeTarget == target)
+                    }
+                }
+
+                Divider()
+
                 Text(String(localized: "particleDebug.transitionTest"))
                     .font(.system(size: 12, weight: .medium))
 
@@ -1458,6 +1492,15 @@ private struct ParticleDiagnosticsView: View {
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.speechPhase", value: snapshot.speechPhase)
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.speechIntensity", value: String(format: "%.2f", snapshot.speechIntensity))
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.lastTransitionReason", value: snapshot.lastTransitionReason)
+            }
+
+            ParticleDiagnosticsSection(titleKey: "particleDebug.diagnostics.shape") {
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.currentShape", value: snapshot.currentShape)
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.targetShape", value: snapshot.targetShape)
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.morphElapsedTime", value: String(format: "%.2fs", snapshot.morphElapsedTime))
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.morphDuration", value: String(format: "%.2fs", snapshot.morphDuration))
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.morphProgress", value: String(format: "%.3f", snapshot.morphProgress))
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.lastMorphReason", value: snapshot.lastMorphReason)
             }
 
             ParticleDiagnosticsSection(titleKey: "particleDebug.diagnostics.avatarMapping") {

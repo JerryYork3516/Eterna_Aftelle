@@ -102,9 +102,12 @@ struct ParticleTuning: Codable, Equatable {
         static let controlEffectMultiplier: Float = 2
         static let maximumSimulationStep: Float = 1.0 / 30.0
         static let visualTransitionDuration = 0.60
+        static let shapeMorphDuration = 0.85
         static let minimumTransitionDuration = 0.001
         static let debugAutoCycleInterval = 0.45
         static let debugStressSwitchCount = 100
+        static let debugMorphSwitchInterval = 0.006
+        static let debugResumeInterval = 1_800.0
         static let debugContinuityTolerance: Float = 0.000_001
         static let debugMaximumPauseProgressStep: Float = 0.06
         static let idleProfile = ParticleVisualProfile(
@@ -186,6 +189,7 @@ struct ParticleTuning: Codable, Equatable {
         static let minimumStateFlowScale: Float = 0.28
         static let maximumStateFlowScale: Float = 1.55
         static let goldenAngle: Float = 2.399_963_1
+        static let customShapeCubeScale: Float = 0.577_350_26
         static let angularJitterScale: Float = 0.34
         static let surfaceThickness: Float = 0.075
         static let minimumSurfaceRatio: Float = 0.10

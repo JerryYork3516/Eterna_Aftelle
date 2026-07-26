@@ -153,6 +153,13 @@
 "particleDebug.diagnostics.speechPhase" = "讲话阶段";
 "particleDebug.diagnostics.speechIntensity" = "讲话强度";
 "particleDebug.diagnostics.lastTransitionReason" = "切换原因";
+"particleDebug.diagnostics.shape" = "粒子形态";
+"particleDebug.diagnostics.currentShape" = "当前形态";
+"particleDebug.diagnostics.targetShape" = "目标形态";
+"particleDebug.diagnostics.morphElapsedTime" = "变形时间";
+"particleDebug.diagnostics.morphDuration" = "变形时长";
+"particleDebug.diagnostics.morphProgress" = "变形进度";
+"particleDebug.diagnostics.lastMorphReason" = "变形原因";
 "particleDebug.diagnostics.avatarMapping" = "Avatar 映射";
 "particleDebug.diagnostics.sourceAvatarState" = "来源 Avatar";
 "particleDebug.diagnostics.mappedParticleState" = "映射状态";
@@ -200,6 +207,13 @@
 "particleDebug.orientation.overlay" = "方位辅助";
 "particleDebug.orientation.manualRotation" = "手动旋转（拖动粒子体）";
 "particleDebug.orientation.resetRotation" = "重置旋转";
+"particleDebug.shapeTest" = "形态测试";
+"particleDebug.shape.sphere" = "球体";
+"particleDebug.shape.customShape" = "测试立方体";
+"particleDebug.shape.text" = "文字（预留）";
+"particleDebug.shape.guidePath" = "引导路径（预留）";
+"particleDebug.shape.abstractResident" = "抽象居民（预留）";
+"particleDebug.shape.realisticResident" = "写实居民（预留）";
 "particleDebug.transitionTest" = "过渡测试";
 "particleDebug.transition.autoCycle" = "自动循环";
 "particleDebug.transition.followRuntime" = "跟随 Runtime";

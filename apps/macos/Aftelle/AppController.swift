@@ -206,7 +206,7 @@ final class AppController: ObservableObject {
         guard isResidentTextInputAvailable else {
             residentTextInputState.errorKey = "residentInput.error.residentUnavailable"
             runtimeState = .idle
-            presentResidentTextVisualState("error")
+            presentResidentTextVisualState(.error)
             return false
         }
 
@@ -221,7 +221,9 @@ final class AppController: ObservableObject {
         residentTextInputState = ResidentTextInputViewState(isSubmitting: true)
         residentSpeechSignal = .ended
         runtimeState = .running
-        refreshResidentVisualIntent(visualStateMode: "thinking")
+        refreshResidentVisualIntent(
+            visualStateMode: ResidentVisualIntent.thinking.rawValue
+        )
         refreshParticleDebugSnapshot()
         #if DEBUG
         appendDialogueAuditUser(trimmedInput)
@@ -257,7 +259,7 @@ final class AppController: ObservableObject {
               providerConfigurationGeneration == configurationGenerationAtStart else {
             residentTextInputState.errorKey = statusKey(for: .cancelled)
             runtimeState = .idle
-            presentResidentTextVisualState("error")
+            presentResidentTextVisualState(.error)
             #if DEBUG
             completeRuntimeOrchestrationPresentation(
                 interactionID: requestID,
@@ -297,7 +299,7 @@ final class AppController: ObservableObject {
             residentTextInputState.errorKey = nil
             particleSubtitleState = ParticleSubtitleState(text: reply, phase: .showing)
             runtimeState = .idle
-            presentResidentTextVisualState("speaking")
+            presentResidentTextVisualState(.speaking)
             #if DEBUG
             completeRuntimeOrchestrationPresentation(
                 interactionID: requestID,
@@ -311,7 +313,7 @@ final class AppController: ObservableObject {
         case .failure(let error):
             residentTextInputState.errorKey = statusKey(for: error)
             runtimeState = .idle
-            presentResidentTextVisualState("error")
+            presentResidentTextVisualState(.error)
             #if DEBUG
             completeRuntimeOrchestrationPresentation(
                 interactionID: requestID,
@@ -956,17 +958,19 @@ final class AppController: ObservableObject {
         }
     }
 
-    private func presentResidentTextVisualState(_ visualStateMode: String) {
+    private func presentResidentTextVisualState(
+        _ intent: ResidentVisualIntent
+    ) {
         let presentationID = UUID()
         residentTextPresentationID = presentationID
-        let isSpeaking = visualStateMode == ResidentVisualIntent.speaking.rawValue
+        let isSpeaking = intent == .speaking
         residentSpeechSignal = isSpeaking
             ? ResidentSpeechSignal(
                 phase: .started,
                 intensity: ParticleTuning.Engine.defaultSpeechIntensity
             )
             : .ended
-        refreshResidentVisualIntent(visualStateMode: visualStateMode)
+        refreshResidentVisualIntent(visualStateMode: intent.rawValue)
         refreshParticleDebugSnapshot()
         Task { @MainActor [weak self] in
             if isSpeaking {
@@ -1177,7 +1181,7 @@ final class AppController: ObservableObject {
         refreshDebugPanelState()
         if response.visualState.mode.rawValue
             == ResidentVisualIntent.speaking.rawValue {
-            presentResidentTextVisualState(response.visualState.mode.rawValue)
+            presentResidentTextVisualState(.speaking)
         } else {
             residentSpeechSignal = .ended
             refreshResidentVisualIntent(
@@ -1311,6 +1315,12 @@ final class AppController: ObservableObject {
             speechPhase: latestParticleRenderMetrics.speechPhase,
             speechIntensity: latestParticleRenderMetrics.speechIntensity,
             lastTransitionReason: latestParticleRenderMetrics.lastTransitionReason,
+            currentShape: latestParticleRenderMetrics.currentShape,
+            targetShape: latestParticleRenderMetrics.targetShape,
+            morphElapsedTime: latestParticleRenderMetrics.morphElapsedTime,
+            morphDuration: latestParticleRenderMetrics.morphDuration,
+            morphProgress: latestParticleRenderMetrics.morphProgress,
+            lastMorphReason: latestParticleRenderMetrics.lastMorphReason,
             sourceAvatarState: avatarStateSummary(),
             mappedParticleState: mappedState,
             isDebugOverrideActive: renderState != mappedState

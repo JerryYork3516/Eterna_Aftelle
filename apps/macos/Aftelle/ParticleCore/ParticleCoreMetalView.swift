@@ -22,6 +22,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
     var visualIntent: ResidentVisualIntent = .idle
     var speechSignal: ResidentSpeechSignal = .inactive
     var isDebugSpeechOverrideActive = false
+    var shapeTarget: ParticleShapeTarget = .sphere
     var tuning: ParticleTuning = .systemDefault
     var colorProfile: ParticleColorProfile = .systemDefault
     var rebuildGeneration = 0
@@ -59,6 +60,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         context.coordinator.renderer = renderer
         context.coordinator.swiftUIVisualIntent = visualIntent
         context.coordinator.speechSignal = speechSignal
+        context.coordinator.shapeTarget = shapeTarget
         context.coordinator.tuning = tuning
         context.coordinator.colorProfile = colorProfile
         context.coordinator.rebuildGeneration = rebuildGeneration
@@ -85,6 +87,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         renderer.setColorProfile(colorProfile)
         renderer.setViewOrientation(viewOrientation)
         renderer.setManualRotationEnabled(isManualRotationEnabled)
+        renderer.setShapeTarget(shapeTarget)
         renderer.setSpeechSignal(
             speechSignal,
             reason: isDebugSpeechOverrideActive
@@ -117,6 +120,13 @@ struct ParticleCoreMetalView: NSViewRepresentable {
                     : "appSpeech"
             )
             context.coordinator.speechSignal = speechSignal
+        }
+        if context.coordinator.shapeTarget != shapeTarget {
+            context.coordinator.renderer?.setShapeTarget(
+                shapeTarget,
+                reason: "debugPanel.shape"
+            )
+            context.coordinator.shapeTarget = shapeTarget
         }
         #if DEBUG
         if context.coordinator.isDebugAutoCycleEnabled != isDebugAutoCycleEnabled {
@@ -193,6 +203,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         var renderer: ParticleRenderer?
         var swiftUIVisualIntent: ResidentVisualIntent = .idle
         var speechSignal: ResidentSpeechSignal = .inactive
+        var shapeTarget: ParticleShapeTarget = .sphere
         var tuning: ParticleTuning = .systemDefault
         var colorProfile: ParticleColorProfile = .systemDefault
         var rebuildGeneration = 0

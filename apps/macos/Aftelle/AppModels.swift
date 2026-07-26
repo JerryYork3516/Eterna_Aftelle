@@ -227,6 +227,12 @@ public struct ParticleRenderMetrics: Equatable {
     public var speechPhase: String
     public var speechIntensity: Double
     public var lastTransitionReason: String
+    public var currentShape: String
+    public var targetShape: String
+    public var morphElapsedTime: Double
+    public var morphDuration: Double
+    public var morphProgress: Double
+    public var lastMorphReason: String
     public var mouseInfluenceEnabled: Bool
     public var mouseInsideParticleArea: Bool
     public var interactionStrength: Double
@@ -247,6 +253,12 @@ public struct ParticleRenderMetrics: Equatable {
         speechPhase: "inactive",
         speechIntensity: 0,
         lastTransitionReason: "startup",
+        currentShape: "sphere",
+        targetShape: "sphere",
+        morphElapsedTime: 0,
+        morphDuration: 0,
+        morphProgress: 1,
+        lastMorphReason: "startup",
         mouseInfluenceEnabled: true,
         mouseInsideParticleArea: false,
         interactionStrength: 0
@@ -267,6 +279,12 @@ public struct ParticleDebugSnapshot: Equatable {
     public var speechPhase: String
     public var speechIntensity: Double
     public var lastTransitionReason: String
+    public var currentShape: String
+    public var targetShape: String
+    public var morphElapsedTime: Double
+    public var morphDuration: Double
+    public var morphProgress: Double
+    public var lastMorphReason: String
     public var sourceAvatarState: String
     public var mappedParticleState: String
     public var isDebugOverrideActive: Bool
@@ -316,6 +334,12 @@ public struct ParticleDebugSnapshot: Equatable {
         speechPhase: "inactive",
         speechIntensity: 0,
         lastTransitionReason: "startup",
+        currentShape: "sphere",
+        targetShape: "sphere",
+        morphElapsedTime: 0,
+        morphDuration: 0,
+        morphProgress: 1,
+        lastMorphReason: "startup",
         sourceAvatarState: "mode=idle presence=unknown",
         mappedParticleState: "idle",
         isDebugOverrideActive: false,
@@ -383,6 +407,14 @@ struct AppResidentVisualIntentMapper {
         }
         if runtimeState == .cancelled || runtimeState == .interrupted {
             return .idle
+        }
+        if let visualStateMode,
+           let intent = ResidentVisualIntent(
+               rawValue: visualStateMode
+                   .trimmingCharacters(in: .whitespacesAndNewlines)
+                   .lowercased()
+           ) {
+            return intent
         }
         if matches(tokens, ["sleeping", "asleep", "dormant"]) {
             return .sleeping
