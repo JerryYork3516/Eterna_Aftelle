@@ -178,8 +178,9 @@ vertex ParticleVertexOut particleVertex(
         0.88,
         flowWaveA * 0.62 + flowWaveB * 0.38
     ) * saturate(uniforms.renderRidge.w) * 2;
-    const float frontVisibility = step(
+    const float frontVisibility = smoothstep(
         uniforms.renderVisibility.z,
+        uniforms.renderVisibility.w,
         frontness
     );
     const float depthBrightness = mix(
@@ -196,7 +197,7 @@ vertex ParticleVertexOut particleVertex(
     clipPosition.x /= max(aspect, kMinimumAspect);
 
     ParticleVertexOut out;
-    out.position = frontVisibility > 0
+    out.position = frontVisibility > 0.001
         ? float4(clipPosition, 0, 1)
         : float4(4, 4, 0, 1);
     out.pointSize = uniforms.viewportAndRender.z

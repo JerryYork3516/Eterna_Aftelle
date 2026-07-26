@@ -454,6 +454,8 @@ struct ParticleTuning: Codable, Equatable {
         static let scatterTangentialClusterRange: Float = 0.40
         static let angularJitterScale: Float = 0.34
         static let surfaceThickness: Float = 0.075
+        static let minimumShellConcentration: Float = 1
+        static let maximumShellConcentration: Float = 4
         static let minimumSurfaceRatio: Float = 0.10
         static let maximumSurfaceRatio: Float = 0.90
         static let minimumSphereRadius: Float = 0.46
@@ -529,8 +531,8 @@ struct ParticleTuning: Codable, Equatable {
         static let frontDepthScale: Float = 0.92
         static let minimumVisibleBrightnessScale: Float = 1
         static let frontBrightnessScale: Float = 1.34
-        static let frontVisibilityThreshold: Float = 0.50
-        static let frontBrightnessRampEnd: Float = 0.92
+        static let frontVisibilityFadeStart: Float = 0.46
+        static let frontVisibilityFadeEnd: Float = 0.58
         static let surfaceColorBaseMix: Float = 0.16
         static let surfaceColorLightMix: Float = 0.34
         static let highlightColorMix: Float = 0.18

@@ -564,8 +564,8 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             renderVisibility: SIMD4(
                 ParticleTuning.Engine.minimumVisibleBrightnessScale,
                 ParticleTuning.Engine.frontBrightnessScale,
-                ParticleTuning.Engine.frontVisibilityThreshold,
-                ParticleTuning.Engine.frontBrightnessRampEnd
+                ParticleTuning.Engine.frontVisibilityFadeStart,
+                ParticleTuning.Engine.frontVisibilityFadeEnd
             ),
             renderFlow: SIMD4(
                 flowAxis.x,

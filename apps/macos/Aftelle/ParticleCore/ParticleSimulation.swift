@@ -214,7 +214,7 @@ struct ParticleSimulation {
             minimum: ParticleTuning.Engine.minimumSurfaceRatio,
             maximum: ParticleTuning.Engine.maximumSurfaceRatio
         )
-        let surfaceRatio = min(
+        let surfaceConcentrationControl = min(
             1,
             max(
                 0,
@@ -224,6 +224,13 @@ struct ParticleSimulation {
                 )
             )
         )
+        let shellConcentration =
+            ParticleTuning.Engine.minimumShellConcentration
+            + surfaceConcentrationControl
+            * (
+                ParticleTuning.Engine.maximumShellConcentration
+                    - ParticleTuning.Engine.minimumShellConcentration
+            )
         var generator = ParticleSeededGenerator(seed: ParticleTuning.Engine.modelSeed)
         var rebuilt: [SimulatedParticle] = []
         rebuilt.reserveCapacity(count)
@@ -236,17 +243,13 @@ struct ParticleSimulation {
                 count: count,
                 generator: &generator
             )
-            let isSurface = generator.nextUnit() < surfaceRatio
+            // Preserve the seeded sequence used by each particle's later phases.
+            _ = generator.nextUnit()
             let radialSample = generator.nextUnit()
-            let unitRadius: Float
-            let surfaceWeight: Float
-            if isSurface {
-                unitRadius = 1 - ParticleTuning.Engine.surfaceThickness * radialSample * radialSample
-                surfaceWeight = 1
-            } else {
-                unitRadius = pow(radialSample, 1.0 / 3.0)
-                surfaceWeight = 0
-            }
+            let unitRadius = 1
+                - ParticleTuning.Engine.surfaceThickness
+                * pow(radialSample, shellConcentration)
+            let surfaceWeight: Float = 1
 
             let sphereAnchor = direction * unitRadius
             let scatterSelector = generator.nextUnit()
