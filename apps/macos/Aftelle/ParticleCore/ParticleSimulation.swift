@@ -1293,6 +1293,35 @@ struct ParticleSimulation {
             + zxField * ParticleTuning.Engine.sphereFormZXWeight
             + cos(broadPhaseA) * ParticleTuning.Engine.sphereFormBroadWeightA
             + cos(broadPhaseB) * ParticleTuning.Engine.sphereFormBroadWeightB
+        let xyDensityGradient = sphereFormDensityAngularGradient(
+            first: normal.x,
+            second: normal.y,
+            phase: phase,
+            offset: 0,
+            lowLobeWeight: lowLobeWeight
+        )
+        let yzDensityGradient = sphereFormDensityAngularGradient(
+            first: normal.y,
+            second: normal.z,
+            phase: phase,
+            offset: ParticleTuning.Engine.sphereFormYZPhaseOffset,
+            lowLobeWeight: lowLobeWeight
+        )
+        let zxDensityGradient = sphereFormDensityAngularGradient(
+            first: normal.z,
+            second: normal.x,
+            phase: phase,
+            offset: ParticleTuning.Engine.sphereFormZXPhaseOffset,
+            lowLobeWeight: lowLobeWeight
+        )
+        let angularDensityGradient = SIMD3<Float>(
+            xyDensityGradient.x * ParticleTuning.Engine.sphereFormXYWeight
+                + zxDensityGradient.y * ParticleTuning.Engine.sphereFormZXWeight,
+            xyDensityGradient.y * ParticleTuning.Engine.sphereFormXYWeight
+                + yzDensityGradient.x * ParticleTuning.Engine.sphereFormYZWeight,
+            yzDensityGradient.y * ParticleTuning.Engine.sphereFormYZWeight
+                + zxDensityGradient.x * ParticleTuning.Engine.sphereFormZXWeight
+        ) * ParticleTuning.Engine.sphereFormDensityAngularWeight
         let broadGradientA = ParticleTuning.Engine.sphereFormBroadAxisA
             * (
                 -sin(broadPhaseA)
@@ -1305,7 +1334,8 @@ struct ParticleSimulation {
                     * ParticleTuning.Engine.sphereFormBroadFrequencyB
                     * ParticleTuning.Engine.sphereFormBroadWeightB
             )
-        let combinedGradient = broadGradientA + broadGradientB
+        let combinedGradient =
+            angularDensityGradient + broadGradientA + broadGradientB
         let fieldScale = ParticleTuning.Engine.sphereFormFieldGain
             / ParticleTuning.Engine.sphereFormFieldNormalization
         let value = tanh(combinedField * fieldScale)
@@ -1374,6 +1404,56 @@ struct ParticleSimulation {
                 + upperMediumField
                 + highField
         ) * radialWeight
+    }
+
+    private static func sphereFormDensityAngularGradient(
+        first: Float,
+        second: Float,
+        phase: Float,
+        offset: Float,
+        lowLobeWeight: Float
+    ) -> SIMD2<Float> {
+        let radiusSquared = first * first + second * second
+        guard radiusSquared > ParticleTuning.Engine.normalizationEpsilon else {
+            return .zero
+        }
+
+        let radialWeight = pow(
+            sqrt(radiusSquared),
+            ParticleTuning.Engine.sphereFormAngularFalloff
+        )
+        let angle = atan2(second, first)
+        let basePhase =
+            angle * ParticleTuning.Engine.sphereFormBaseLobeCount
+                + phase
+                * ParticleTuning.Engine.sphereFormBasePhaseRatio
+                + offset
+                * ParticleTuning.Engine.sphereFormBaseOffsetRatio
+        let lowPhase =
+            angle * ParticleTuning.Engine.sphereFormLowLobeCount
+                + phase
+                + offset
+        let angularValue =
+            sin(basePhase) * ParticleTuning.Engine.sphereFormBaseLobeWeight
+            + sin(lowPhase) * lowLobeWeight
+        let angularDerivative =
+            cos(basePhase)
+            * ParticleTuning.Engine.sphereFormBaseLobeCount
+            * ParticleTuning.Engine.sphereFormBaseLobeWeight
+            + cos(lowPhase)
+            * ParticleTuning.Engine.sphereFormLowLobeCount
+            * lowLobeWeight
+        let radialDerivativeScale =
+            ParticleTuning.Engine.sphereFormAngularFalloff
+            * radialWeight
+            / radiusSquared
+        let angularDerivativeScale = radialWeight / radiusSquared
+        return SIMD2<Float>(
+            radialDerivativeScale * first * angularValue
+                - angularDerivativeScale * second * angularDerivative,
+            radialDerivativeScale * second * angularValue
+                + angularDerivativeScale * first * angularDerivative
+        )
     }
 
     private static func easedMorphProgress(_ progress: Float) -> Float {

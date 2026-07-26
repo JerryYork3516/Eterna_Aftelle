@@ -469,9 +469,10 @@ struct ParticleTuning: Codable, Equatable {
         static let sphereFormBroadWeightB: Float = 0.15
         static let sphereFormFieldNormalization: Float = 1.25
         static let sphereFormFieldGain: Float = 1.60
-        static let sphereFormDensityWarpStrength: Float = 0.28
-        static let sphereFormMaximumDensityWarp: Float = 0.48
-        static let sphereFormDensityGradientLimit: Float = 1.15
+        static let sphereFormDensityAngularWeight: Float = 0.40
+        static let sphereFormDensityWarpStrength: Float = 0.16
+        static let sphereFormMaximumDensityWarp: Float = 0.30
+        static let sphereFormDensityGradientLimit: Float = 1
         static let sphereFormDensityFieldFollow: Float = 0.75
         static let scatterMinimumClusterFrequency: Float = 1.4
         static let scatterMaximumClusterFrequency: Float = 3.4
