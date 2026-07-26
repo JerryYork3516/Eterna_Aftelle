@@ -34,6 +34,48 @@ struct ParticleExpressionMultipliers: Equatable {
             && diffusionMultiplier.isFinite
     }
 
+    var visualResponse: ParticleExpressionMultipliers {
+        guard self != .unit else { return .unit }
+        return ParticleExpressionMultipliers(
+            brightnessMultiplier: Self.responsiveValue(
+                brightnessMultiplier,
+                neutral: 1,
+                gain: ParticleTuning.Engine.expressionBrightnessResponseGain,
+                range: ParticleTuning.Engine.expressionBrightnessRange
+            ),
+            saturationMultiplier: Self.responsiveValue(
+                saturationMultiplier,
+                neutral: 1,
+                gain: ParticleTuning.Engine.expressionSaturationResponseGain,
+                range: ParticleTuning.Engine.expressionSaturationRange
+            ),
+            temperatureShift: Self.responsiveValue(
+                temperatureShift,
+                neutral: 0,
+                gain: ParticleTuning.Engine.expressionTemperatureResponseGain,
+                range: ParticleTuning.Engine.expressionTemperatureRange
+            ),
+            energyMultiplier: Self.responsiveValue(
+                energyMultiplier,
+                neutral: 1,
+                gain: ParticleTuning.Engine.expressionEnergyResponseGain,
+                range: ParticleTuning.Engine.expressionEnergyRange
+            ),
+            motionSpeedMultiplier: Self.responsiveValue(
+                motionSpeedMultiplier,
+                neutral: 1,
+                gain: ParticleTuning.Engine.expressionMotionResponseGain,
+                range: ParticleTuning.Engine.expressionMotionRange
+            ),
+            diffusionMultiplier: Self.responsiveValue(
+                diffusionMultiplier,
+                neutral: 1,
+                gain: ParticleTuning.Engine.expressionDiffusionResponseGain,
+                range: ParticleTuning.Engine.expressionDiffusionRange
+            )
+        )
+    }
+
     func interpolated(
         to target: ParticleExpressionMultipliers,
         progress: Float
@@ -68,16 +110,17 @@ struct ParticleExpressionMultipliers: Equatable {
 
     func applyingColor(to color: SIMD4<Float>) -> SIMD4<Float> {
         guard self != .unit else { return color }
+        let response = visualResponse
         let source = SIMD3<Float>(color.x, color.y, color.z)
         let sourceLuminance = Self.luminance(source)
         var adjusted = SIMD3<Float>(repeating: sourceLuminance)
             + (source - SIMD3<Float>(repeating: sourceLuminance))
-            * saturationMultiplier
+            * response.saturationMultiplier
         let luminanceBeforeTemperature = Self.luminance(adjusted)
         adjusted += SIMD3<Float>(
-            temperatureShift,
+            response.temperatureShift,
             0,
-            -temperatureShift
+            -response.temperatureShift
         )
         let luminanceCorrection = luminanceBeforeTemperature
             - Self.luminance(adjusted)
@@ -92,7 +135,7 @@ struct ParticleExpressionMultipliers: Equatable {
 
     func applyingBrightness(to brightness: Float) -> Float {
         guard self != .unit else { return brightness }
-        return brightness * brightnessMultiplier
+        return brightness * visualResponse.brightnessMultiplier
     }
 
     func applyingEnergy(
@@ -102,12 +145,15 @@ struct ParticleExpressionMultipliers: Equatable {
         guard self != .unit else {
             return min(maximum, flowMotionStrength)
         }
-        return min(maximum, flowMotionStrength * energyMultiplier)
+        return min(
+            maximum,
+            flowMotionStrength * visualResponse.energyMultiplier
+        )
     }
 
     func applyingMotionSpeed(to flowTimeStep: Float) -> Float {
         guard self != .unit else { return flowTimeStep }
-        return flowTimeStep * motionSpeedMultiplier
+        return flowTimeStep * visualResponse.motionSpeedMultiplier
     }
 
     func applyingDiffusion(
@@ -115,7 +161,13 @@ struct ParticleExpressionMultipliers: Equatable {
         maximum: Float
     ) -> Float {
         guard self != .unit else { return flowShapeStrength }
-        return min(maximum, max(0, flowShapeStrength * diffusionMultiplier))
+        return min(
+            maximum,
+            max(
+                0,
+                flowShapeStrength * visualResponse.diffusionMultiplier
+            )
+        )
     }
 
     private static func luminance(_ color: SIMD3<Float>) -> Float {
@@ -124,6 +176,25 @@ struct ParticleExpressionMultipliers: Equatable {
 
     private static func clampColor(_ value: Float) -> Float {
         min(1, max(0, value))
+    }
+
+    private static func responsiveValue(
+        _ value: Float,
+        neutral: Float,
+        gain: Float,
+        range: ClosedRange<Float>
+    ) -> Float {
+        let deviation = value - neutral
+        let magnitude = abs(deviation)
+        let responsiveMagnitude = gain * magnitude
+            / (
+                1
+                    + ParticleTuning.Engine.expressionResponseCompression
+                    * magnitude
+            )
+        let response = neutral
+            + (deviation < 0 ? -responsiveMagnitude : responsiveMagnitude)
+        return min(range.upperBound, max(range.lowerBound, response))
     }
 }
 
@@ -452,8 +523,7 @@ private final class ParticleExpressionController {
     }
 
     private static func eased(_ progress: Float) -> Float {
-        progress * progress * progress
-            * (progress * (progress * 6 - 15) + 10)
+        progress * progress * (3 - 2 * progress)
     }
 }
 
@@ -838,8 +908,7 @@ final class ParticleStateController {
     }
 
     private static func eased(_ progress: Float) -> Float {
-        progress * progress * progress
-            * (progress * (progress * 6 - 15) + 10)
+        progress * progress * (3 - 2 * progress)
     }
 
     private static func lifecycleOverridesExpression(

@@ -20,6 +20,7 @@ struct ParticleExpressionTests {
         try testNeutralPreservesBaseline()
         try testFiveStateMappings()
         try testIntensityMappings()
+        try testPerceptualStateSeparation()
         try testRelativeColorMapping()
         try testSameInputDoesNotRestart()
         try testMinimumHoldDuration()
@@ -28,6 +29,8 @@ struct ParticleExpressionTests {
         try testRetargetContinuesFromLiveValue()
         try testChangedMappingRetargets()
         try testLongIdleDoesNotDriveProgress()
+        try testLifecycleStateSeparation()
+        try testLifecycleTransitionCurve()
         try testLifecycleCompositionAndOverrides()
         try testLifecycleOverrideResumeTransition()
         try testInvalidAndCompatibilityFallbacks()
@@ -154,6 +157,46 @@ struct ParticleExpressionTests {
         }
     }
 
+    private static func testPerceptualStateSeparation() throws {
+        let responses = ParticleExpressionState.allCases.map { state in
+            (
+                state,
+                scaled(mapping(for: state), by: 0.5).visualResponse
+            )
+        }
+        for (_, response) in responses {
+            try expect(
+                ParticleTuning.Engine.expressionBrightnessRange
+                    .contains(response.brightnessMultiplier)
+                    && ParticleTuning.Engine.expressionSaturationRange
+                    .contains(response.saturationMultiplier)
+                    && ParticleTuning.Engine.expressionTemperatureRange
+                    .contains(response.temperatureShift)
+                    && ParticleTuning.Engine.expressionEnergyRange
+                    .contains(response.energyMultiplier)
+                    && ParticleTuning.Engine.expressionMotionRange
+                    .contains(response.motionSpeedMultiplier)
+                    && ParticleTuning.Engine.expressionDiffusionRange
+                    .contains(response.diffusionMultiplier),
+                "perceptual expression response remains in safe ranges"
+            )
+        }
+        for firstIndex in responses.indices {
+            for secondIndex in responses.indices
+                where secondIndex > firstIndex {
+                let first = responses[firstIndex]
+                let second = responses[secondIndex]
+                try expect(
+                    maximumMultiplierDifference(
+                        first.1,
+                        second.1
+                    ) >= 0.05,
+                    "\(first.0.rawValue) and \(second.0.rawValue) remain visually distinct"
+                )
+            }
+        }
+    }
+
     private static func testRelativeColorMapping() throws {
         let modifier = mapping(for: .caring)
         let userColor = SIMD4<Float>(0.18, 0.54, 0.91, 1)
@@ -257,7 +300,22 @@ struct ParticleExpressionTests {
             multipliers: mapping(for: .joyful)
         )
         _ = controller.setExpressionInput(input, time: time)
-        let halfway = advance(controller, time: &time, by: 0.3)
+        let quarter = advance(controller, time: &time, by: 0.15)
+        try expectNear(
+            quarter.expression.transitionProgress,
+            0.25,
+            "0.6 second transition quarter",
+            tolerance: 0.002
+        )
+        try expectMultipliers(
+            quarter.expression.currentMultipliers,
+            ParticleExpressionMultipliers.unit.interpolated(
+                to: input.multipliers,
+                progress: 0.156_25
+            ),
+            "cubic expression transition quarter"
+        )
+        let halfway = advance(controller, time: &time, by: 0.15)
         try expectNear(
             halfway.expression.transitionProgress,
             0.5,
@@ -421,6 +479,55 @@ struct ParticleExpressionTests {
         try expect(
             resumed.expression.transitionProgress < 0.06,
             "long pause must contribute at most one clamped frame"
+        )
+    }
+
+    private static func testLifecycleStateSeparation() throws {
+        let states = ResidentVisualIntent.allCases.map {
+            ($0, ParticleVisualChannels.target(for: $0))
+        }
+        for firstIndex in states.indices {
+            for secondIndex in states.indices
+                where secondIndex > firstIndex {
+                let first = states[firstIndex]
+                let second = states[secondIndex]
+                try expect(
+                    maximumChannelDifference(
+                        first.1,
+                        second.1
+                    ) >= 0.30,
+                    "\(first.0.rawValue) and \(second.0.rawValue) lifecycle profiles remain distinct"
+                )
+            }
+        }
+    }
+
+    private static func testLifecycleTransitionCurve() throws {
+        let controller = ParticleStateController(intent: .idle, time: 0)
+        var time: TimeInterval = 0
+        controller.setIntent(
+            .thinking,
+            reason: "test.lifecycle.cubic",
+            time: time
+        )
+        let quarter = advance(
+            controller,
+            time: &time,
+            by: ParticleTuning.Engine.thinkingTransitionDuration * 0.25
+        )
+        try expectNear(
+            quarter.transitionProgress,
+            0.25,
+            "lifecycle transition quarter",
+            tolerance: 0.002
+        )
+        try expectChannels(
+            quarter.channels,
+            ParticleVisualChannels.target(for: .idle).interpolated(
+                to: ParticleVisualChannels.target(for: .thinking),
+                progress: 0.156_25
+            ),
+            "cubic lifecycle transition quarter"
         )
     }
 
@@ -944,9 +1051,20 @@ struct ParticleExpressionTests {
             motionSpeedMultiplier: 1.12,
             diffusionMultiplier: 1.14
         )
+        let response = values.visualResponse
+        try expectNear(
+            response.brightnessMultiplier,
+            1.206_896_5,
+            "brightness perceptual response"
+        )
+        try expectNear(
+            response.energyMultiplier,
+            1.245_454_5,
+            "energy perceptual response"
+        )
         try expectNear(
             values.applyingBrightness(to: 0.5),
-            0.575,
+            0.5 * response.brightnessMultiplier,
             "brightness channel"
         )
         try expect(
@@ -957,17 +1075,17 @@ struct ParticleExpressionTests {
         )
         try expectNear(
             values.applyingEnergy(to: 0.5, maximum: 2),
-            0.59,
+            0.5 * response.energyMultiplier,
             "energy channel"
         )
         try expectNear(
             values.applyingMotionSpeed(to: 0.5),
-            0.56,
+            0.5 * response.motionSpeedMultiplier,
             "motion speed channel"
         )
         try expectNear(
             values.applyingDiffusion(to: 0.5, maximum: 2),
-            0.57,
+            0.5 * response.diffusionMultiplier,
             "diffusion channel"
         )
     }
@@ -1148,6 +1266,33 @@ struct ParticleExpressionTests {
         return controller.advance(time: time)
     }
 
+    private static func maximumMultiplierDifference(
+        _ lhs: ParticleExpressionMultipliers,
+        _ rhs: ParticleExpressionMultipliers
+    ) -> Float {
+        [
+            abs(lhs.brightnessMultiplier - rhs.brightnessMultiplier),
+            abs(lhs.saturationMultiplier - rhs.saturationMultiplier),
+            abs(lhs.temperatureShift - rhs.temperatureShift),
+            abs(lhs.energyMultiplier - rhs.energyMultiplier),
+            abs(lhs.motionSpeedMultiplier - rhs.motionSpeedMultiplier),
+            abs(lhs.diffusionMultiplier - rhs.diffusionMultiplier)
+        ].max() ?? 0
+    }
+
+    private static func maximumChannelDifference(
+        _ lhs: ParticleVisualChannels,
+        _ rhs: ParticleVisualChannels
+    ) -> Float {
+        [
+            abs(lhs.focus - rhs.focus),
+            abs(lhs.pulse - rhs.pulse),
+            abs(lhs.circulation - rhs.circulation),
+            abs(lhs.disruption - rhs.disruption),
+            abs(lhs.dissolution - rhs.dissolution)
+        ].max() ?? 0
+    }
+
     private static func expect(
         _ condition: @autoclosure () -> Bool,
         _ message: String
@@ -1204,6 +1349,38 @@ struct ParticleExpressionTests {
             actual.diffusionMultiplier,
             expected.diffusionMultiplier,
             "\(message) diffusion"
+        )
+    }
+
+    private static func expectChannels(
+        _ actual: ParticleVisualChannels,
+        _ expected: ParticleVisualChannels,
+        _ message: String
+    ) throws {
+        try expectNear(
+            actual.focus,
+            expected.focus,
+            "\(message) focus"
+        )
+        try expectNear(
+            actual.pulse,
+            expected.pulse,
+            "\(message) pulse"
+        )
+        try expectNear(
+            actual.circulation,
+            expected.circulation,
+            "\(message) circulation"
+        )
+        try expectNear(
+            actual.disruption,
+            expected.disruption,
+            "\(message) disruption"
+        )
+        try expectNear(
+            actual.dissolution,
+            expected.dissolution,
+            "\(message) dissolution"
         )
     }
 }
