@@ -67,7 +67,8 @@ final class AppController: ObservableObject {
     private var effectiveColorProfileSource = "systemDefault"
     private var effectiveColorProfileFallbackUsed = true
     private var residentTextRequestID: UUID?
-    private var residentTextTask: Task<Result<String, ProviderRequestError>, Never>?
+    private var residentTextTask:
+        Task<Result<RuntimeResidentReply, ProviderRequestError>, Never>?
     private var residentTextPresentationID: UUID?
     private var providerConfigurationGeneration = 0
     #if DEBUG
@@ -78,7 +79,8 @@ final class AppController: ObservableObject {
     ]
     private var debugSubtitleIndex = 0
     private var providerTestRequestID: UUID?
-    private var providerTestTask: Task<Result<String, ProviderRequestError>, Never>?
+    private var providerTestTask:
+        Task<Result<RuntimeResidentReply, ProviderRequestError>, Never>?
     #endif
 
     init() {
@@ -256,6 +258,7 @@ final class AppController: ObservableObject {
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: "skipped",
                 particleState: "skipped",
+                lifecycleState: .idle,
                 status: .skipped
             )
             #endif
@@ -278,6 +281,7 @@ final class AppController: ObservableObject {
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: String(describing: particleSubtitleState.phase),
                 particleState: String(describing: residentVisualIntent),
+                lifecycleState: .idle,
                 status: .completed
             )
             #endif
@@ -286,6 +290,7 @@ final class AppController: ObservableObject {
 
         switch result {
         case .success(let reply):
+            let replyText = reply.replyText
             let timestamp = ISO8601DateFormatter().string(from: Date())
             dialogueEntries.append(AppDialogueEntryState(
                 id: "user-\(UUID().uuidString)",
@@ -296,20 +301,26 @@ final class AppController: ObservableObject {
             dialogueEntries.append(AppDialogueEntryState(
                 id: "resident-\(UUID().uuidString)",
                 role: "resident",
-                text: reply,
+                text: replyText,
                 timestamp: timestamp
             ))
             dialogueEntries = Array(dialogueEntries.suffix(8))
             sessionState.residentID = residentIDAtStart
             sessionState.sessionID = sessionIDAtStart
             sessionState.lastUserInput = trimmedInput
-            sessionState.lastResidentOutput = reply
+            sessionState.lastResidentOutput = replyText
             sessionState.dialogueEntries = dialogueEntries
             #if DEBUG
-            appendDialogueAuditResident(reply, displayName: avatarState.displayName)
+            appendDialogueAuditResident(
+                replyText,
+                displayName: avatarState.displayName
+            )
             #endif
             residentTextInputState.errorKey = nil
-            particleSubtitleState = ParticleSubtitleState(text: reply, phase: .showing)
+            particleSubtitleState = ParticleSubtitleState(
+                text: replyText,
+                phase: .showing
+            )
             runtimeState = .idle
             presentResidentTextVisualState(.speaking)
             #if DEBUG
@@ -318,6 +329,7 @@ final class AppController: ObservableObject {
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: String(describing: particleSubtitleState.phase),
                 particleState: String(describing: residentVisualIntent),
+                lifecycleState: .speaking,
                 status: .completed
             )
             #endif
@@ -332,6 +344,7 @@ final class AppController: ObservableObject {
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: String(describing: particleSubtitleState.phase),
                 particleState: String(describing: residentVisualIntent),
+                lifecycleState: error == .cancelled ? .idle : .error,
                 status: .completed
             )
             #endif
@@ -525,6 +538,64 @@ final class AppController: ObservableObject {
                 runtimeOrchestrationLocalizedValue("presentation", interaction.particleState)
             ),
             localizedFormat(
+                "runtimeOrchestration.export.lifecycle",
+                runtimeOrchestrationLocalizedValue(
+                    "presentation",
+                    interaction.lifecycleState
+                )
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.expressionState",
+                runtimeOrchestrationLocalizedValue(
+                    "expressionState",
+                    interaction.expressionState
+                )
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.expressionIntensity",
+                String(format: "%.3f", interaction.expressionIntensity)
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.expressionFallback",
+                runtimeOrchestrationLocalizedValue(
+                    "boolean",
+                    interaction.expressionFallbackOccurred
+                        ? "enabled"
+                        : "disabled"
+                )
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.expressionMappingSource",
+                runtimeOrchestrationLocalizedValue(
+                    "mappingSource",
+                    interaction.expressionMappingSource
+                )
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.brightnessMultiplier",
+                String(format: "%.3f", interaction.brightnessMultiplier)
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.saturationMultiplier",
+                String(format: "%.3f", interaction.saturationMultiplier)
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.temperatureShift",
+                String(format: "%.3f", interaction.temperatureShift)
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.energyMultiplier",
+                String(format: "%.3f", interaction.energyMultiplier)
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.motionSpeedMultiplier",
+                String(format: "%.3f", interaction.motionSpeedMultiplier)
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.diffusionMultiplier",
+                String(format: "%.3f", interaction.diffusionMultiplier)
+            ),
+            localizedFormat(
                 "runtimeOrchestration.export.exportedAt",
                 dateFormatter.string(from: exportedAt)
             ),
@@ -693,6 +764,7 @@ final class AppController: ObservableObject {
         expectedSessionID: String,
         subtitleState: String,
         particleState: String,
+        lifecycleState: RuntimeLifecycleState,
         status: RuntimeOrchestrationStepStatus
     ) {
         orchestrationKernel.completeRuntimeOrchestrationPresentation(
@@ -700,6 +772,7 @@ final class AppController: ObservableObject {
             expectedSessionID: expectedSessionID,
             subtitleState: subtitleState,
             particleState: particleState,
+            lifecycleState: lifecycleState,
             status: status
         )
         refreshRuntimeOrchestrationState()
@@ -870,6 +943,7 @@ final class AppController: ObservableObject {
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: "skipped",
                 particleState: "skipped",
+                lifecycleState: .idle,
                 status: .skipped
             )
             return
@@ -888,23 +962,28 @@ final class AppController: ObservableObject {
                 expectedSessionID: sessionIDAtStart,
                 subtitleState: "unchanged",
                 particleState: String(describing: residentVisualIntent),
+                lifecycleState: .idle,
                 status: .skipped
             )
             return
         }
+        let lifecycleState: RuntimeLifecycleState
         switch result {
         case .success(let reply):
             providerDebugState.statusKey = "particleDebug.provider.status.replyReceived"
-            providerDebugState.replyText = reply
+            providerDebugState.replyText = reply.replyText
+            lifecycleState = .idle
         case .failure(let error):
             providerDebugState.statusKey = statusKey(for: error)
             providerDebugState.replyText = ""
+            lifecycleState = error == .cancelled ? .idle : .error
         }
         completeRuntimeOrchestrationPresentation(
             interactionID: requestID,
             expectedSessionID: sessionIDAtStart,
             subtitleState: "unchanged",
             particleState: String(describing: residentVisualIntent),
+            lifecycleState: lifecycleState,
             status: .skipped
         )
     }

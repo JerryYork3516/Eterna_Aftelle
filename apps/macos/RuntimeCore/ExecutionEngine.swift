@@ -19,8 +19,23 @@ public final class ExecutionEngine {
         providerRouter.configure(profile: profile)
     }
 
-    func testResidentReply(context: ResidentDialogueContext) async -> Result<String, ProviderRequestError> {
-        await providerRouter.routeResidentReply(context: context)
+    func testResidentReply(
+        context: ResidentDialogueContext,
+        expressionMapping: RuntimeVisualExpressionMapping
+    ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
+        let result = await providerRouter.routeResidentReply(
+            context: context,
+            expressionMapping: expressionMapping
+        )
+        return result.map { reply in
+            RuntimeResidentReply(
+                replyText: reply.replyText,
+                expression: visualStateMapper.mapExpression(
+                    reply: reply,
+                    mapping: expressionMapping
+                )
+            )
+        }
     }
 
     public func step(request: RuntimeStepRequest, cancellationState: RuntimeCancellationState = .none) -> RuntimeStepResponse {

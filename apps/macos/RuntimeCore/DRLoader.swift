@@ -206,6 +206,125 @@ struct RuntimeDialogueProjection: Equatable {
     let emotionalDialogue: RuntimeEmotionalDialogueProjection?
 }
 
+private struct RuntimeExpressionRangeWire: Decodable {
+    let minimum: Double
+    let maximum: Double
+}
+
+private struct RuntimeExpressionMultipliersWire: Decodable {
+    let brightnessMultiplier: Double
+    let saturationMultiplier: Double
+    let temperatureShift: Double
+    let energyMultiplier: Double
+    let motionSpeedMultiplier: Double
+    let diffusionMultiplier: Double
+
+    enum CodingKeys: String, CodingKey {
+        case brightnessMultiplier = "brightness_multiplier"
+        case saturationMultiplier = "saturation_multiplier"
+        case temperatureShift = "temperature_shift"
+        case energyMultiplier = "energy_multiplier"
+        case motionSpeedMultiplier = "motion_speed_multiplier"
+        case diffusionMultiplier = "diffusion_multiplier"
+    }
+}
+
+private struct RuntimeExpressionStateSelectionPolicyWire: Decodable {
+    let selectionSource: String
+    let stateField: String
+    let intensityField: String
+    let selectionRules: [String]
+    let allowedStates: [String]
+    let defaultState: String
+    let missingStateFallback: String
+    let invalidStateFallback: String
+    let singleStatePerTurn: Bool
+    let residentExpressionOnly: Bool
+    let userEmotionDiagnosis: Bool
+    let rendererParametersAllowed: Bool
+    let lifecycleStateSeparated: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case selectionSource = "selection_source"
+        case stateField = "state_field"
+        case intensityField = "intensity_field"
+        case selectionRules = "selection_rules"
+        case allowedStates = "allowed_states"
+        case defaultState = "default_state"
+        case missingStateFallback = "missing_state_fallback"
+        case invalidStateFallback = "invalid_state_fallback"
+        case singleStatePerTurn = "single_state_per_turn"
+        case residentExpressionOnly = "resident_expression_only"
+        case userEmotionDiagnosis = "user_emotion_diagnosis"
+        case rendererParametersAllowed = "renderer_parameters_allowed"
+        case lifecycleStateSeparated = "lifecycle_state_separated"
+    }
+}
+
+private struct RuntimeExpressionFallbackPolicyWire: Decodable {
+    let invalidState: String
+    let missingState: String
+    let clampIntensity: Bool
+    let clampMappingValues: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case invalidState = "invalid_state"
+        case missingState = "missing_state"
+        case clampIntensity = "clamp_intensity"
+        case clampMappingValues = "clamp_mapping_values"
+    }
+}
+
+private struct RuntimeExpressionTransitionPolicyWire: Decodable {
+    let transitionDuration: Double
+    let minimumHoldDuration: Double
+    let repeatSameStateRestartsTransition: Bool
+    let continueFromCurrentVisualValue: Bool
+    let usesAccumulatedIdleTimeAsProgress: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case transitionDuration = "transition_duration"
+        case minimumHoldDuration = "minimum_hold_duration"
+        case repeatSameStateRestartsTransition = "repeat_same_state_restarts_transition"
+        case continueFromCurrentVisualValue = "continue_from_current_visual_value"
+        case usesAccumulatedIdleTimeAsProgress = "uses_accumulated_idle_time_as_progress"
+    }
+}
+
+private struct RuntimeExpressionLifecyclePriorityWire: Decodable {
+    let overrideStates: [String]
+    let composableStates: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case overrideStates = "override_states"
+        case composableStates = "composable_states"
+    }
+}
+
+private struct RuntimeVisualExpressionMappingWire: Decodable {
+    let allowedStates: [String]
+    let defaultState: String
+    let intensityRange: RuntimeExpressionRangeWire
+    let parameterRanges: [String: RuntimeExpressionRangeWire]
+    let stateSelectionPolicy: RuntimeExpressionStateSelectionPolicyWire
+    let fallbackPolicy: RuntimeExpressionFallbackPolicyWire
+    let particleCoreMapping: [String: RuntimeExpressionMultipliersWire]
+    let transitionPolicy: RuntimeExpressionTransitionPolicyWire
+    let lifecyclePriority: RuntimeExpressionLifecyclePriorityWire
+
+    enum CodingKeys: String, CodingKey {
+        case allowedStates = "allowed_states"
+        case defaultState = "default_state"
+        case intensityRange = "intensity_range"
+        case parameterRanges = "parameter_ranges"
+        case stateSelectionPolicy = "state_selection_policy"
+        case fallbackPolicy = "fallback_policy"
+        case particleCoreMapping = "particle_core_mapping"
+        case transitionPolicy = "transition_policy"
+        case lifecyclePriority = "lifecycle_priority"
+    }
+}
+
 private struct InvalidDRFieldError: Error {
     let path: String
 }
@@ -237,6 +356,7 @@ public struct LoadedDR {
     let firstPresenceConfig: FirstPresenceConfig?
     let initialRelationshipConfig: InitialRelationshipConfig?
     let runtimeDialogueProjection: RuntimeDialogueProjection?
+    let visualExpressionMapping: RuntimeVisualExpressionMapping
 }
 
 public struct DRLoadResult {
@@ -371,6 +491,7 @@ public final class DRLoader {
         let firstPresenceConfig = try parseFirstPresenceConfig(from: payload)
         let initialRelationshipConfig = try parseInitialRelationshipConfig(from: payload)
         let runtimeDialogueProjection = try parseRuntimeDialogueProjection(from: payload)
+        let visualExpressionMapping = parseVisualExpressionMapping(from: object)
         let payloadModules = payload["modules"] as? [Any]
         let topLevelModules = object["modules"] as? [Any]
         if let payloadModules, let topLevelModules {
@@ -407,8 +528,227 @@ public final class DRLoader {
             firstGreetingConfig: firstGreetingConfig,
             firstPresenceConfig: firstPresenceConfig,
             initialRelationshipConfig: initialRelationshipConfig,
-            runtimeDialogueProjection: runtimeDialogueProjection
+            runtimeDialogueProjection: runtimeDialogueProjection,
+            visualExpressionMapping: visualExpressionMapping
         )
+    }
+
+    private func parseVisualExpressionMapping(
+        from root: [String: Any]
+    ) -> RuntimeVisualExpressionMapping {
+        guard let rawMapping = root["visual_expression_mapping"] as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: rawMapping),
+              let wire = try? JSONDecoder().decode(
+                  RuntimeVisualExpressionMappingWire.self,
+                  from: data
+              ),
+              let mapping = makeVisualExpressionMapping(from: wire) else {
+            return .compatibilityFallback
+        }
+        return mapping
+    }
+
+    private func makeVisualExpressionMapping(
+        from wire: RuntimeVisualExpressionMappingWire
+    ) -> RuntimeVisualExpressionMapping? {
+        guard let allowedStates = expressionStates(wire.allowedStates),
+              Set(allowedStates) == Set(RuntimeExpressionState.allCases),
+              allowedStates.count == RuntimeExpressionState.allCases.count,
+              let defaultState = RuntimeExpressionState(rawValue: wire.defaultState),
+              defaultState == .neutral,
+              let policyAllowedStates = expressionStates(
+                  wire.stateSelectionPolicy.allowedStates
+              ),
+              Set(policyAllowedStates) == Set(allowedStates),
+              let policyDefaultState = RuntimeExpressionState(
+                  rawValue: wire.stateSelectionPolicy.defaultState
+              ),
+              let missingStateFallback = RuntimeExpressionState(
+                  rawValue: wire.stateSelectionPolicy.missingStateFallback
+              ),
+              let invalidStateFallback = RuntimeExpressionState(
+                  rawValue: wire.stateSelectionPolicy.invalidStateFallback
+              ),
+              policyDefaultState == .neutral,
+              missingStateFallback == .neutral,
+              invalidStateFallback == .neutral,
+              wire.fallbackPolicy.invalidState == RuntimeExpressionState.neutral.rawValue,
+              wire.fallbackPolicy.missingState == RuntimeExpressionState.neutral.rawValue,
+              wire.fallbackPolicy.clampIntensity,
+              wire.fallbackPolicy.clampMappingValues,
+              wire.stateSelectionPolicy.selectionSource == "runtime_core",
+              wire.stateSelectionPolicy.stateField == "expression_state",
+              wire.stateSelectionPolicy.intensityField == "expression_intensity",
+              wire.stateSelectionPolicy.singleStatePerTurn,
+              wire.stateSelectionPolicy.residentExpressionOnly,
+              !wire.stateSelectionPolicy.userEmotionDiagnosis,
+              !wire.stateSelectionPolicy.rendererParametersAllowed,
+              wire.stateSelectionPolicy.lifecycleStateSeparated,
+              let intensityRange = expressionRange(wire.intensityRange),
+              let parameterRanges = expressionParameterRanges(
+                  wire.parameterRanges
+              ),
+              intensityRange.minimum >= 0,
+              intensityRange.maximum <= 1,
+              parameterRanges.expressionIntensity.minimum >= 0,
+              parameterRanges.expressionIntensity.maximum <= 1,
+              max(intensityRange.minimum, parameterRanges.expressionIntensity.minimum)
+                <= min(intensityRange.maximum, parameterRanges.expressionIntensity.maximum),
+              expressionParameterRangesContainNeutral(parameterRanges),
+              let particleCoreMapping = expressionParticleMapping(
+                  wire.particleCoreMapping,
+                  allowedStates: allowedStates
+              ),
+              particleCoreMapping[.neutral] == .unit,
+              wire.transitionPolicy.transitionDuration.isFinite,
+              wire.transitionPolicy.minimumHoldDuration.isFinite,
+              wire.transitionPolicy.transitionDuration >= 0,
+              wire.transitionPolicy.minimumHoldDuration >= 0 else {
+            return nil
+        }
+
+        return RuntimeVisualExpressionMapping(
+            source: .dr,
+            allowedStates: allowedStates,
+            defaultState: defaultState,
+            intensityRange: intensityRange,
+            parameterRanges: parameterRanges,
+            stateSelectionPolicy: RuntimeExpressionStateSelectionPolicy(
+                selectionSource: wire.stateSelectionPolicy.selectionSource,
+                stateField: wire.stateSelectionPolicy.stateField,
+                intensityField: wire.stateSelectionPolicy.intensityField,
+                selectionRules: wire.stateSelectionPolicy.selectionRules,
+                allowedStates: policyAllowedStates,
+                defaultState: policyDefaultState,
+                missingStateFallback: missingStateFallback,
+                invalidStateFallback: invalidStateFallback,
+                singleStatePerTurn: wire.stateSelectionPolicy.singleStatePerTurn,
+                residentExpressionOnly:
+                    wire.stateSelectionPolicy.residentExpressionOnly,
+                userEmotionDiagnosis:
+                    wire.stateSelectionPolicy.userEmotionDiagnosis,
+                rendererParametersAllowed:
+                    wire.stateSelectionPolicy.rendererParametersAllowed,
+                lifecycleStateSeparated:
+                    wire.stateSelectionPolicy.lifecycleStateSeparated
+            ),
+            fallbackPolicy: RuntimeExpressionFallbackPolicy(
+                invalidState: .neutral,
+                missingState: .neutral,
+                clampIntensity: wire.fallbackPolicy.clampIntensity,
+                clampMappingValues: wire.fallbackPolicy.clampMappingValues
+            ),
+            particleCoreMapping: particleCoreMapping,
+            transitionPolicy: RuntimeExpressionTransitionPolicy(
+                transitionDuration: wire.transitionPolicy.transitionDuration,
+                minimumHoldDuration: wire.transitionPolicy.minimumHoldDuration,
+                repeatSameStateRestartsTransition:
+                    wire.transitionPolicy.repeatSameStateRestartsTransition,
+                continueFromCurrentVisualValue:
+                    wire.transitionPolicy.continueFromCurrentVisualValue,
+                usesAccumulatedIdleTimeAsProgress:
+                    wire.transitionPolicy.usesAccumulatedIdleTimeAsProgress
+            ),
+            lifecyclePriority: RuntimeExpressionLifecyclePriority(
+                overrideStates: wire.lifecyclePriority.overrideStates,
+                composableStates: wire.lifecyclePriority.composableStates
+            )
+        )
+    }
+
+    private func expressionStates(
+        _ rawValues: [String]
+    ) -> [RuntimeExpressionState]? {
+        let states = rawValues.compactMap(RuntimeExpressionState.init(rawValue:))
+        return states.count == rawValues.count ? states : nil
+    }
+
+    private func expressionRange(
+        _ wire: RuntimeExpressionRangeWire
+    ) -> RuntimeExpressionRange? {
+        guard wire.minimum.isFinite,
+              wire.maximum.isFinite,
+              wire.minimum <= wire.maximum else {
+            return nil
+        }
+        return RuntimeExpressionRange(
+            minimum: wire.minimum,
+            maximum: wire.maximum
+        )
+    }
+
+    private func expressionParameterRanges(
+        _ wires: [String: RuntimeExpressionRangeWire]
+    ) -> RuntimeExpressionParameterRanges? {
+        guard let expressionIntensity = wires["expression_intensity"]
+            .flatMap(expressionRange),
+            let brightnessMultiplier = wires["brightness_multiplier"]
+            .flatMap(expressionRange),
+            let saturationMultiplier = wires["saturation_multiplier"]
+            .flatMap(expressionRange),
+            let temperatureShift = wires["temperature_shift"]
+            .flatMap(expressionRange),
+            let energyMultiplier = wires["energy_multiplier"]
+            .flatMap(expressionRange),
+            let motionSpeedMultiplier = wires["motion_speed_multiplier"]
+            .flatMap(expressionRange),
+            let diffusionMultiplier = wires["diffusion_multiplier"]
+            .flatMap(expressionRange) else {
+            return nil
+        }
+        return RuntimeExpressionParameterRanges(
+            expressionIntensity: expressionIntensity,
+            brightnessMultiplier: brightnessMultiplier,
+            saturationMultiplier: saturationMultiplier,
+            temperatureShift: temperatureShift,
+            energyMultiplier: energyMultiplier,
+            motionSpeedMultiplier: motionSpeedMultiplier,
+            diffusionMultiplier: diffusionMultiplier
+        )
+    }
+
+    private func expressionParticleMapping(
+        _ wires: [String: RuntimeExpressionMultipliersWire],
+        allowedStates: [RuntimeExpressionState]
+    ) -> [RuntimeExpressionState: RuntimeExpressionMultipliers]? {
+        var mapping: [RuntimeExpressionState: RuntimeExpressionMultipliers] = [:]
+        for state in allowedStates {
+            guard let wire = wires[state.rawValue],
+                  wire.brightnessMultiplier.isFinite,
+                  wire.saturationMultiplier.isFinite,
+                  wire.temperatureShift.isFinite,
+                  wire.energyMultiplier.isFinite,
+                  wire.motionSpeedMultiplier.isFinite,
+                  wire.diffusionMultiplier.isFinite else {
+                return nil
+            }
+            mapping[state] = RuntimeExpressionMultipliers(
+                brightnessMultiplier: wire.brightnessMultiplier,
+                saturationMultiplier: wire.saturationMultiplier,
+                temperatureShift: wire.temperatureShift,
+                energyMultiplier: wire.energyMultiplier,
+                motionSpeedMultiplier: wire.motionSpeedMultiplier,
+                diffusionMultiplier: wire.diffusionMultiplier
+            )
+        }
+        return mapping
+    }
+
+    private func expressionParameterRangesContainNeutral(
+        _ ranges: RuntimeExpressionParameterRanges
+    ) -> Bool {
+        ranges.brightnessMultiplier.minimum <= 1
+            && ranges.brightnessMultiplier.maximum >= 1
+            && ranges.saturationMultiplier.minimum <= 1
+            && ranges.saturationMultiplier.maximum >= 1
+            && ranges.temperatureShift.minimum <= 0
+            && ranges.temperatureShift.maximum >= 0
+            && ranges.energyMultiplier.minimum <= 1
+            && ranges.energyMultiplier.maximum >= 1
+            && ranges.motionSpeedMultiplier.minimum <= 1
+            && ranges.motionSpeedMultiplier.maximum >= 1
+            && ranges.diffusionMultiplier.minimum <= 1
+            && ranges.diffusionMultiplier.maximum >= 1
     }
 
     private func parseFirstInteractionPolicy(from payload: [String: Any]) throws -> FirstInteractionPolicy? {

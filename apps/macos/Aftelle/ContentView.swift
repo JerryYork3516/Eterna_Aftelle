@@ -1361,6 +1361,58 @@ private struct RuntimeOrchestrationDebugView: View {
                     "runtimeOrchestration.field.particle",
                     localizedValue("presentation", interaction.particleState)
                 )
+                detailRow(
+                    "runtimeOrchestration.field.lifecycle",
+                    localizedValue("presentation", interaction.lifecycleState)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.expressionState",
+                    localizedValue("expressionState", interaction.expressionState)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.expressionIntensity",
+                    String(format: "%.3f", interaction.expressionIntensity)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.expressionFallback",
+                    localizedValue(
+                        "boolean",
+                        interaction.expressionFallbackOccurred
+                            ? "enabled"
+                            : "disabled"
+                    )
+                )
+                detailRow(
+                    "runtimeOrchestration.field.expressionMappingSource",
+                    localizedValue(
+                        "mappingSource",
+                        interaction.expressionMappingSource
+                    )
+                )
+                detailRow(
+                    "runtimeOrchestration.field.brightnessMultiplier",
+                    String(format: "%.3f", interaction.brightnessMultiplier)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.saturationMultiplier",
+                    String(format: "%.3f", interaction.saturationMultiplier)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.temperatureShift",
+                    String(format: "%.3f", interaction.temperatureShift)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.energyMultiplier",
+                    String(format: "%.3f", interaction.energyMultiplier)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.motionSpeedMultiplier",
+                    String(format: "%.3f", interaction.motionSpeedMultiplier)
+                )
+                detailRow(
+                    "runtimeOrchestration.field.diffusionMultiplier",
+                    String(format: "%.3f", interaction.diffusionMultiplier)
+                )
 
                 Divider()
                 Text(String(localized: "runtimeOrchestration.timeline"))

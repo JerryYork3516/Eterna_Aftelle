@@ -758,6 +758,15 @@ enum RuntimeOrchestrationSessionWriteStatus: String {
     case skipped
 }
 
+enum RuntimeLifecycleState: String, Equatable {
+    case idle
+    case thinking
+    case speaking
+    case loading
+    case error
+    case exit
+}
+
 struct RuntimeOrchestrationProviderMetadata: Equatable {
     let providerID: String
     let modelID: String
@@ -792,6 +801,12 @@ struct RuntimeOrchestrationInteraction: Equatable, Identifiable {
     var sessionWriteStatus: RuntimeOrchestrationSessionWriteStatus
     var subtitleState: String
     var particleState: String
+    var lifecycleState: RuntimeLifecycleState
+    let expressionState: String
+    let expressionIntensity: Double
+    let expressionFallbackOccurred: Bool
+    let expressionMapping: RuntimeExpressionMultipliers
+    let expressionMappingSource: String
     var steps: [RuntimeOrchestrationStep]
 
     var durationMilliseconds: Int {
@@ -816,6 +831,13 @@ public final class RuntimeCore {
     private(set) var currentMemoryPolicy: RuntimeMemoryPolicyProjection?
     private(set) var currentFirstAppearance: RuntimeFirstAppearanceProjection?
     private(set) var currentDialogueContextSource: ResidentDialogueContextSource?
+    private(set) var currentExpressionResult = RuntimeExpressionResult.neutral(
+        source: .compatibilityFallback,
+        fallbackOccurred: true
+    )
+    private var currentVisualExpressionMapping =
+        RuntimeVisualExpressionMapping.compatibilityFallback
+    private var activeExpressionRequestID: UUID?
     private var handledFirstAppearanceResidentIDs: Set<String> = []
     private var clockState = RuntimeClockState()
     #if DEBUG
@@ -877,10 +899,18 @@ public final class RuntimeCore {
                 )
             }
             sessionContext = RuntimeSessionContext(residentID: loadedDR.residentID, sessionID: sessionID)
+            activeExpressionRequestID = nil
+            cancellationState = .none
             currentResidentIdentity = identityProjection
             currentMemoryPolicy = memoryPolicyProjection
             currentFirstAppearance = firstAppearanceProjection
             currentDialogueContextSource = dialogueContextSource
+            currentVisualExpressionMapping = loadedDR.visualExpressionMapping
+            currentExpressionResult = .neutral(
+                source: loadedDR.visualExpressionMapping.source,
+                fallbackOccurred:
+                    loadedDR.visualExpressionMapping.source == .compatibilityFallback
+            )
             memoryController.setActiveResidentID(loadedDR.residentID)
             let avatarState = AvatarState(
                 residentID: loadedDR.residentID,
@@ -979,6 +1009,13 @@ public final class RuntimeCore {
         sessionContext = RuntimeSessionContext(
             residentID: record.residentID,
             sessionID: RuntimeSessionID(rawValue: record.sessionID)
+        )
+        activeExpressionRequestID = nil
+        cancellationState = .none
+        currentExpressionResult = .neutral(
+            source: currentVisualExpressionMapping.source,
+            fallbackOccurred:
+                currentVisualExpressionMapping.source == .compatibilityFallback
         )
         handledFirstAppearanceResidentIDs.insert(record.residentID)
         memoryController.setActiveResidentID(record.residentID)
@@ -1172,6 +1209,9 @@ public final class RuntimeCore {
 
     func configureTextProvider(profile: ProviderProfile) -> ProviderRequestError? {
         let error = executionEngine.configureTextProvider(profile: profile)
+        if error == nil {
+            activeExpressionRequestID = nil
+        }
         #if DEBUG
         if error == nil {
             runtimeOrchestrationProviderMetadata = profile.enabled
@@ -1189,13 +1229,14 @@ public final class RuntimeCore {
     func testResidentReply(
         inputText: String,
         interactionID: UUID? = nil
-    ) async -> Result<String, ProviderRequestError> {
+    ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
         #if DEBUG
         let orchestrationID = interactionID ?? UUID()
         let orchestrationStartedAt = Date()
         let orchestrationProviderMetadata = runtimeOrchestrationProviderMetadata
         let orchestrationEmotionalRulesEnabled =
             currentDialogueContextSource?.projection.emotionalDialogue?.enabled == true
+        let orchestrationExpressionSnapshot = currentExpressionResult
         var orchestrationSteps = [runtimeOrchestrationStep(
             .inputReceived,
             status: .completed,
@@ -1217,6 +1258,7 @@ public final class RuntimeCore {
                 startedAt: orchestrationStartedAt,
                 context: nil,
                 result: .failure(.residentUnavailable),
+                expressionSnapshot: orchestrationExpressionSnapshot,
                 sessionWriteStatus: .skipped,
                 steps: orchestrationSteps,
                 presentationPending: true,
@@ -1248,6 +1290,7 @@ public final class RuntimeCore {
                 startedAt: orchestrationStartedAt,
                 context: nil,
                 result: .failure(.residentUnavailable),
+                expressionSnapshot: orchestrationExpressionSnapshot,
                 sessionWriteStatus: .skipped,
                 steps: orchestrationSteps,
                 presentationPending: true,
@@ -1281,7 +1324,13 @@ public final class RuntimeCore {
         ))
         let requestStartedAt = Date()
         #endif
-        let result = await executionEngine.testResidentReply(context: context)
+        let expressionRequestID = UUID()
+        activeExpressionRequestID = expressionRequestID
+        let expressionMappingAtStart = currentVisualExpressionMapping
+        let result = await executionEngine.testResidentReply(
+            context: context,
+            expressionMapping: expressionMappingAtStart
+        )
 
         #if DEBUG
         orchestrationSteps.append(runtimeOrchestrationStep(
@@ -1290,7 +1339,16 @@ public final class RuntimeCore {
             startedAt: requestStartedAt
         ))
         #endif
-        guard sessionContext == sessionAtStart else {
+        let staleSession = sessionContext != sessionAtStart
+        let staleRequest = activeExpressionRequestID != expressionRequestID
+        let requestCancelled = Task.isCancelled || cancellationState.isCancelled
+        guard !staleSession, !staleRequest, !requestCancelled else {
+            if activeExpressionRequestID == expressionRequestID {
+                activeExpressionRequestID = nil
+            }
+            if requestCancelled, sessionContext == sessionAtStart {
+                cancellationState = .none
+            }
             #if DEBUG
             orchestrationSteps.append(runtimeOrchestrationStep(
                 .sessionPersisted,
@@ -1308,7 +1366,10 @@ public final class RuntimeCore {
                 startedAt: orchestrationStartedAt,
                 context: context,
                 result: .failure(.cancelled),
-                errorCategoryOverride: "stale_session",
+                expressionSnapshot: orchestrationExpressionSnapshot,
+                errorCategoryOverride:
+                    staleSession ? "stale_session"
+                    : (staleRequest ? "stale_request" : "cancelled"),
                 sessionWriteStatus: .skipped,
                 steps: orchestrationSteps,
                 presentationPending: false,
@@ -1316,17 +1377,22 @@ public final class RuntimeCore {
                 emotionalRulesEnabled: orchestrationEmotionalRulesEnabled
             )
             #endif
-            return result
+            return .failure(.cancelled)
         }
+        activeExpressionRequestID = nil
 
         var sessionWriteSucceeded = false
         #if DEBUG
         let sessionWriteStartedAt = Date()
         #endif
         if case .success(let reply) = result {
+            _ = commitExpressionResult(
+                reply.expression,
+                expectedSession: sessionAtStart
+            )
             sessionWriteSucceeded = persistResidentDialogueExchange(
                 userInput: inputText,
-                residentReply: reply,
+                residentReply: reply.replyText,
                 session: sessionAtStart
             )
         }
@@ -1352,6 +1418,7 @@ public final class RuntimeCore {
             startedAt: orchestrationStartedAt,
             context: context,
             result: result,
+            expressionSnapshot: orchestrationExpressionSnapshot,
             sessionWriteStatus: sessionWriteStatus,
             steps: orchestrationSteps,
             presentationPending: true,
@@ -1360,6 +1427,16 @@ public final class RuntimeCore {
         )
         #endif
         return result
+    }
+
+    @discardableResult
+    func commitExpressionResult(
+        _ result: RuntimeExpressionResult,
+        expectedSession: RuntimeSessionContext
+    ) -> Bool {
+        guard sessionContext == expectedSession else { return false }
+        currentExpressionResult = result
+        return true
     }
 
     private func persistResidentDialogueExchange(
@@ -1457,6 +1534,7 @@ public final class RuntimeCore {
         expectedSessionID: String,
         subtitleState: String,
         particleState: String,
+        lifecycleState: RuntimeLifecycleState,
         status: RuntimeOrchestrationStepStatus
     ) {
         guard let index = runtimeOrchestrationRecords.firstIndex(where: { $0.id == interactionID }),
@@ -1479,6 +1557,7 @@ public final class RuntimeCore {
         runtimeOrchestrationRecords[index].particleState = runtimeOrchestrationPresentationState(
             particleState
         )
+        runtimeOrchestrationRecords[index].lifecycleState = lifecycleState
         runtimeOrchestrationRecords[index].endedAt = completedAt
     }
 
@@ -1488,6 +1567,7 @@ public final class RuntimeCore {
 
     func clearDialogueTestData() throws -> String? {
         let residentID = currentResidentIdentity?.residentID
+        activeExpressionRequestID = nil
         try sessionStore.clearDialogueTestData(
             residentID: residentID,
             currentSessionID: sessionContext?.sessionID.rawValue
@@ -1500,6 +1580,11 @@ public final class RuntimeCore {
 
         let sessionID = RuntimeSessionID.make()
         sessionContext = RuntimeSessionContext(residentID: residentID, sessionID: sessionID)
+        currentExpressionResult = .neutral(
+            source: currentVisualExpressionMapping.source,
+            fallbackOccurred:
+                currentVisualExpressionMapping.source == .compatibilityFallback
+        )
         memoryController.setActiveResidentID(residentID)
         cancellationState = .none
         return sessionID.rawValue
@@ -1510,7 +1595,8 @@ public final class RuntimeCore {
         session: RuntimeSessionContext?,
         startedAt: Date,
         context: ResidentDialogueContext?,
-        result: Result<String, ProviderRequestError>,
+        result: Result<RuntimeResidentReply, ProviderRequestError>,
+        expressionSnapshot: RuntimeExpressionResult,
         errorCategoryOverride: String? = nil,
         sessionWriteStatus: RuntimeOrchestrationSessionWriteStatus,
         steps: [RuntimeOrchestrationStep],
@@ -1518,6 +1604,13 @@ public final class RuntimeCore {
         providerMetadata: RuntimeOrchestrationProviderMetadata?,
         emotionalRulesEnabled: Bool
     ) {
+        let expressionResult: RuntimeExpressionResult
+        switch result {
+        case .success(let reply):
+            expressionResult = reply.expression
+        case .failure:
+            expressionResult = expressionSnapshot
+        }
         let normalizedSteps = RuntimeOrchestrationStepKind.allCases.map { kind in
             if let step = steps.first(where: { $0.kind == kind }) {
                 return step
@@ -1547,6 +1640,13 @@ public final class RuntimeCore {
             sessionWriteStatus: sessionWriteStatus,
             subtitleState: presentationPending ? "pending" : "skipped",
             particleState: presentationPending ? "pending" : "skipped",
+            lifecycleState: presentationPending ? .thinking : .idle,
+            expressionState: expressionResult.expressionState.rawValue,
+            expressionIntensity: expressionResult.expressionIntensity,
+            expressionFallbackOccurred:
+                expressionResult.expressionFallbackOccurred,
+            expressionMapping: expressionResult.expressionMapping,
+            expressionMappingSource: expressionResult.mappingSource.rawValue,
             steps: normalizedSteps
         )
         runtimeOrchestrationRecords.append(interaction)
@@ -1570,7 +1670,7 @@ public final class RuntimeCore {
     }
 
     private func runtimeOrchestrationStepStatus(
-        for result: Result<String, ProviderRequestError>
+        for result: Result<RuntimeResidentReply, ProviderRequestError>
     ) -> RuntimeOrchestrationStepStatus {
         switch result {
         case .success:
@@ -1583,7 +1683,7 @@ public final class RuntimeCore {
     }
 
     private func runtimeOrchestrationResultStatus(
-        for result: Result<String, ProviderRequestError>
+        for result: Result<RuntimeResidentReply, ProviderRequestError>
     ) -> RuntimeOrchestrationResultStatus {
         switch result {
         case .success:
@@ -1596,7 +1696,7 @@ public final class RuntimeCore {
     }
 
     private func runtimeOrchestrationErrorCategory(
-        for result: Result<String, ProviderRequestError>
+        for result: Result<RuntimeResidentReply, ProviderRequestError>
     ) -> String? {
         guard case .failure(let error) = result else { return nil }
         switch error {
@@ -1634,6 +1734,7 @@ public final class RuntimeCore {
         ]
         return allowed.contains(value) ? value : "unknown"
     }
+
     #endif
 
     public func readMemoryValue(for key: String, residentID: String) -> String? {
@@ -1656,10 +1757,12 @@ public final class RuntimeCore {
     }
 
     public func cancelCurrentStep() {
+        activeExpressionRequestID = nil
         cancellationState = RuntimeCancellationState(isCancelled: true, reason: .cancelled)
     }
 
     public func interrupt(request: RuntimeCancellationRequest) {
+        activeExpressionRequestID = nil
         cancellationState = RuntimeCancellationState(isCancelled: true, reason: request.reason)
     }
 

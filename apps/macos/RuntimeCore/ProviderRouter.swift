@@ -84,6 +84,221 @@ enum ProviderRequestError: Error, Equatable {
     }
 }
 
+struct ProviderResidentReply: Equatable {
+    let replyText: String
+    let expressionState: String?
+    let expressionIntensity: Double?
+    let expressionEnvelopeParsed: Bool
+}
+
+private struct ProviderResidentReplyEnvelope: Decodable {
+    let replyText: String
+    let expressionState: String?
+    let expressionIntensity: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case replyText = "reply_text"
+        case expressionState = "expression_state"
+        case expressionIntensity = "expression_intensity"
+    }
+}
+
+enum ProviderResidentReplyParser {
+    static func parse(_ content: String) -> ProviderResidentReply? {
+        let trimmed = content.trimmingCharacters(in: replyBoundaryCharacters)
+        guard !trimmed.isEmpty else { return nil }
+
+        let candidate = unwrapCodeFence(trimmed)
+        if let data = candidate.data(using: .utf8),
+           let envelope = try? JSONDecoder().decode(
+               ProviderResidentReplyEnvelope.self,
+               from: data
+           ) {
+            let replyText = envelope.replyText.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !replyText.isEmpty else { return nil }
+            return ProviderResidentReply(
+                replyText: replyText,
+                expressionState: envelope.expressionState,
+                expressionIntensity: envelope.expressionIntensity,
+                expressionEnvelopeParsed: true
+            )
+        }
+
+        if isEnvelopeLike(candidate) {
+            if let replyText = recoverReplyText(from: candidate) {
+                return ProviderResidentReply(
+                    replyText: replyText,
+                    expressionState: nil,
+                    expressionIntensity: nil,
+                    expressionEnvelopeParsed: false
+                )
+            }
+            return nil
+        }
+
+        guard !isStructuredJSON(candidate) else {
+            return nil
+        }
+
+        return ProviderResidentReply(
+            replyText: candidate,
+            expressionState: nil,
+            expressionIntensity: nil,
+            expressionEnvelopeParsed: false
+        )
+    }
+
+    private static let replyBoundaryCharacters =
+        CharacterSet.whitespacesAndNewlines.union(
+            CharacterSet(charactersIn: "\u{feff}")
+        )
+    private static let envelopeKeyExpression = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_])["']?(?:reply_text|expression_state|expression_intensity)["']?\s*:"#
+    )
+    private static let replyTextKeyExpression = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_])["']?reply_text["']?\s*:"#
+    )
+    private static let objectKeyExpression = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_])(?:"[^"\r\n]+"|'[^'\r\n]+'|[A-Za-z_][A-Za-z0-9_]*)\s*:"#
+    )
+
+    private static func unwrapCodeFence(_ content: String) -> String {
+        guard content.hasPrefix("```") else {
+            return content
+        }
+        var body = String(content.dropFirst(3))
+        if let firstLineEnd = body.firstIndex(of: "\n") {
+            body = String(body[body.index(after: firstLineEnd)...])
+        }
+        if body.hasSuffix("```") {
+            body.removeLast(3)
+        }
+        return body.trimmingCharacters(in: replyBoundaryCharacters)
+    }
+
+    private static func isEnvelopeLike(_ content: String) -> Bool {
+        guard let envelopeKeyExpression else {
+            return content.contains("{") || content.contains("[")
+        }
+        let range = NSRange(content.startIndex..., in: content)
+        let matches = envelopeKeyExpression.matches(
+            in: content,
+            range: range
+        )
+        if let firstMatch = matches.first,
+           let firstRange = Range(firstMatch.range, in: content) {
+            let prefix = content[..<firstRange.lowerBound]
+            let trimmedPrefix = prefix.trimmingCharacters(
+                in: replyBoundaryCharacters
+            )
+            if trimmedPrefix.isEmpty
+                || prefix.contains("{")
+                || prefix.contains("[")
+                || matches.count > 1 {
+                return true
+            }
+        }
+
+        guard let objectKeyExpression,
+              let objectMatch = objectKeyExpression.firstMatch(
+                  in: content,
+                  range: range
+              ),
+              let objectRange = Range(objectMatch.range, in: content) else {
+            return false
+        }
+        let objectPrefix = content[..<objectRange.lowerBound]
+        return objectPrefix.contains("{") || objectPrefix.contains("[")
+    }
+
+    private static func isStructuredJSON(_ content: String) -> Bool {
+        guard let data = content.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(
+            with: data,
+            options: [.fragmentsAllowed]
+        )) != nil
+    }
+
+    private static func recoverReplyText(from content: String) -> String? {
+        guard let replyTextKeyExpression else { return nil }
+        let fullRange = NSRange(content.startIndex..., in: content)
+        guard let match = replyTextKeyExpression.firstMatch(
+            in: content,
+            range: fullRange
+        ),
+              let keyRange = Range(match.range, in: content) else {
+            return nil
+        }
+        var openingQuote = keyRange.upperBound
+        while openingQuote < content.endIndex,
+              content[openingQuote].isWhitespace {
+            openingQuote = content.index(after: openingQuote)
+        }
+        guard openingQuote < content.endIndex,
+              content[openingQuote] == "\"" || content[openingQuote] == "'" else {
+            return nil
+        }
+        let quote = content[openingQuote]
+        var index = content.index(after: openingQuote)
+        var escaped = false
+        while index < content.endIndex {
+            let character = content[index]
+            if character == quote, !escaped {
+                let literal = String(content[openingQuote...index])
+                let decoded: String?
+                if quote == "\"" {
+                    decoded = literal.data(using: .utf8).flatMap {
+                        try? JSONDecoder().decode(String.self, from: $0)
+                    }
+                } else {
+                    decoded = decodeSingleQuotedString(literal)
+                }
+                let replyText = decoded?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ) ?? ""
+                return replyText.isEmpty ? nil : replyText
+            }
+            if character == "\\" {
+                escaped.toggle()
+            } else {
+                escaped = false
+            }
+            index = content.index(after: index)
+        }
+        return nil
+    }
+
+    private static func decodeSingleQuotedString(_ literal: String) -> String? {
+        guard literal.count >= 2 else { return nil }
+        var result = ""
+        var escaped = false
+        for character in literal.dropFirst().dropLast() {
+            if escaped {
+                switch character {
+                case "n":
+                    result.append("\n")
+                case "r":
+                    result.append("\r")
+                case "t":
+                    result.append("\t")
+                case "'", "\\", "\"":
+                    result.append(character)
+                default:
+                    return nil
+                }
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else {
+                result.append(character)
+            }
+        }
+        return escaped ? nil : result
+    }
+}
+
 protocol ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String?
 }
@@ -133,8 +348,9 @@ final class OpenAICompatibleAdapter {
 
     func reply(
         profile: ProviderProfile,
-        context: ResidentDialogueContext
-    ) async -> Result<String, ProviderRequestError> {
+        context: ResidentDialogueContext,
+        expressionMapping: RuntimeVisualExpressionMapping
+    ) async -> Result<ProviderResidentReply, ProviderRequestError> {
         let credential: String
         do {
             guard let storedCredential = try credentialReader.readCredential(for: profile.keyRef),
@@ -152,7 +368,10 @@ final class OpenAICompatibleAdapter {
 
         let body = ChatCompletionRequest(
             model: profile.modelID,
-            messages: Self.messages(for: context),
+            messages: Self.messages(
+                for: context,
+                expressionMapping: expressionMapping
+            ),
             stream: profile.stream,
             thinking: ChatCompletionThinking(type: profile.thinkingMode)
         )
@@ -193,12 +412,11 @@ final class OpenAICompatibleAdapter {
             guard let decoded = try? JSONDecoder().decode(ChatCompletionResponse.self, from: data) else {
                 return .failure(.invalidResponse)
             }
-            guard let content = decoded.choices.first?.message.content?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !content.isEmpty else {
+            guard let content = decoded.choices.first?.message.content,
+                  let reply = ProviderResidentReplyParser.parse(content) else {
                 return .failure(.emptyReply)
             }
-            return .success(content)
+            return .success(reply)
         } catch is CancellationError {
             return .failure(.cancelled)
         } catch let error as URLError {
@@ -229,8 +447,17 @@ final class OpenAICompatibleAdapter {
         return url.appendingPathComponent("chat/completions", isDirectory: false)
     }
 
-    private static func messages(for context: ResidentDialogueContext) -> [ChatCompletionMessage] {
-        var result = [ChatCompletionMessage(role: "system", content: systemMessage(for: context))]
+    private static func messages(
+        for context: ResidentDialogueContext,
+        expressionMapping: RuntimeVisualExpressionMapping
+    ) -> [ChatCompletionMessage] {
+        var result = [ChatCompletionMessage(
+            role: "system",
+            content: systemMessage(
+                for: context,
+                expressionMapping: expressionMapping
+            )
+        )]
 
         result.append(contentsOf: context.recentMessages.suffix(8).compactMap { message in
             guard let role = providerRole(for: message.role) else { return nil }
@@ -240,7 +467,10 @@ final class OpenAICompatibleAdapter {
         return result
     }
 
-    private static func systemMessage(for context: ResidentDialogueContext) -> String {
+    private static func systemMessage(
+        for context: ResidentDialogueContext,
+        expressionMapping: RuntimeVisualExpressionMapping
+    ) -> String {
         var sections = [
             context.systemInstruction,
             context.languagePolicy.instruction,
@@ -292,11 +522,28 @@ final class OpenAICompatibleAdapter {
             sections.append(fewShotSection)
         }
         sections.append("When the available context is insufficient: \(context.fallbackText)")
+        sections.append(expressionEnvelopeInstruction(for: expressionMapping))
 
         return sections
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
+    }
+
+    private static func expressionEnvelopeInstruction(
+        for mapping: RuntimeVisualExpressionMapping
+    ) -> String {
+        let states = mapping.allowedStates.map(\.rawValue).joined(separator: ", ")
+        return """
+        Return exactly one JSON object with only these keys:
+        {"reply_text":"...","expression_state":"neutral","expression_intensity":0}
+        reply_text is the complete user-visible resident reply.
+        expression_state must be one of: \(states).
+        expression_intensity must be a number from 0 to 1.
+        Select the lowest sufficient intensity. Use neutral and 0 when context is insufficient.
+        Do not output color, brightness, saturation, temperature, glow, energy, speed, diffusion, or any renderer or particle parameter.
+        Do not wrap the JSON object in Markdown or add text outside it.
+        """
     }
 
     private static func fewShotSection(for context: ResidentDialogueContext) -> String? {
@@ -368,12 +615,17 @@ public final class ProviderRouter {
     }
 
     func routeResidentReply(
-        context: ResidentDialogueContext
-    ) async -> Result<String, ProviderRequestError> {
+        context: ResidentDialogueContext,
+        expressionMapping: RuntimeVisualExpressionMapping
+    ) async -> Result<ProviderResidentReply, ProviderRequestError> {
         guard let profile, profile.enabled else {
             return .failure(.unconfigured)
         }
-        return await adapter.reply(profile: profile, context: context)
+        return await adapter.reply(
+            profile: profile,
+            context: context,
+            expressionMapping: expressionMapping
+        )
     }
 
     public func diagnostics(for config: ProviderRuntimeConfig, secretState: SecretReferenceState) -> ProviderRoutingDiagnostics {

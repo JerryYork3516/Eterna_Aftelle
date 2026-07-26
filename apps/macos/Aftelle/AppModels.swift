@@ -519,6 +519,17 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
     let sessionWriteStatus: String
     let subtitleState: String
     let particleState: String
+    let lifecycleState: String
+    let expressionState: String
+    let expressionIntensity: Double
+    let expressionFallbackOccurred: Bool
+    let expressionMappingSource: String
+    let brightnessMultiplier: Double
+    let saturationMultiplier: Double
+    let temperatureShift: Double
+    let energyMultiplier: Double
+    let motionSpeedMultiplier: Double
+    let diffusionMultiplier: Double
     let steps: [RuntimeOrchestrationStepViewState]
 
     init(_ interaction: RuntimeOrchestrationInteraction) {
@@ -543,6 +554,21 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
         sessionWriteStatus = interaction.sessionWriteStatus.rawValue
         subtitleState = interaction.subtitleState
         particleState = interaction.particleState
+        lifecycleState = interaction.lifecycleState.rawValue
+        expressionState = interaction.expressionState
+        expressionIntensity = interaction.expressionIntensity
+        expressionFallbackOccurred = interaction.expressionFallbackOccurred
+        expressionMappingSource = interaction.expressionMappingSource
+        brightnessMultiplier =
+            interaction.expressionMapping.brightnessMultiplier
+        saturationMultiplier =
+            interaction.expressionMapping.saturationMultiplier
+        temperatureShift = interaction.expressionMapping.temperatureShift
+        energyMultiplier = interaction.expressionMapping.energyMultiplier
+        motionSpeedMultiplier =
+            interaction.expressionMapping.motionSpeedMultiplier
+        diffusionMultiplier =
+            interaction.expressionMapping.diffusionMultiplier
         steps = interaction.steps.map {
             RuntimeOrchestrationStepViewState(
                 kind: $0.kind.rawValue,
@@ -868,6 +894,7 @@ public final class OrchestrationKernel {
         expectedSessionID: String,
         subtitleState: String,
         particleState: String,
+        lifecycleState: RuntimeLifecycleState,
         status: RuntimeOrchestrationStepStatus
     ) {
         runtimeCore.completeRuntimeOrchestrationPresentation(
@@ -875,6 +902,7 @@ public final class OrchestrationKernel {
             expectedSessionID: expectedSessionID,
             subtitleState: subtitleState,
             particleState: particleState,
+            lifecycleState: lifecycleState,
             status: status
         )
     }
@@ -936,14 +964,14 @@ public final class OrchestrationKernel {
     func testResidentReply(
         inputText: String,
         interactionID: UUID? = nil
-    ) async -> Result<String, ProviderRequestError> {
+    ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
         await requestResidentReply(inputText: inputText, interactionID: interactionID)
     }
 
     func requestResidentReply(
         inputText: String,
         interactionID: UUID? = nil
-    ) async -> Result<String, ProviderRequestError> {
+    ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
         await runtimeCore.testResidentReply(inputText: inputText, interactionID: interactionID)
     }
 
