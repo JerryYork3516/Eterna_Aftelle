@@ -1028,62 +1028,57 @@ struct ParticleSimulation {
 
         let normal = sphereAnchor / radius
         var shapedAnchor = sphereAnchor
-        let frequency = ParticleTuning.Engine.value(
-            tuning.shapeFeatureScale,
-            minimum: ParticleTuning.Engine.minimumSphereFormFrequency,
-            maximum: ParticleTuning.Engine.maximumSphereFormFrequency
-        )
         let shapePhase = (
             Float(tuning.shapeSeed) - 0.5
         ) * ParticleTuning.Engine.fullRotation
-        let primary =
-            cos(
-                simd_dot(
-                    normal,
-                    ParticleTuning.Engine.sphereFormPrimaryAxisA
-                ) * frequency
-                    + shapePhase
-            ) * ParticleTuning.Engine.sphereFormPrimaryWeightA
-            + cos(
-                simd_dot(
-                    normal,
-                    ParticleTuning.Engine.sphereFormPrimaryAxisB
-                ) * frequency
-                    * ParticleTuning.Engine.sphereFormPrimaryFrequencyRatioB
-                    - shapePhase * 0.72
-            ) * ParticleTuning.Engine.sphereFormPrimaryWeightB
-            + cos(
-                simd_dot(
-                    normal,
-                    ParticleTuning.Engine.sphereFormPrimaryAxisC
-                ) * frequency
-                    * ParticleTuning.Engine.sphereFormPrimaryFrequencyRatioC
-                    + shapePhase * 1.31
-            ) * ParticleTuning.Engine.sphereFormPrimaryWeightC
-        let detailFrequency = frequency
-            * ParticleTuning.Engine.sphereFormDetailFrequencyRatio
-        let detail =
-            cos(
-                simd_dot(
-                    normal,
-                    ParticleTuning.Engine.sphereFormDetailAxisA
-                ) * detailFrequency
-                    + shapePhase * 0.61
-            ) * ParticleTuning.Engine.sphereFormDetailWeightA
-            + cos(
-                simd_dot(
-                    normal,
-                    ParticleTuning.Engine.sphereFormDetailAxisB
-                ) * detailFrequency
-                    * ParticleTuning.Engine.sphereFormDetailFrequencyRatioB
-                    - shapePhase * 0.43
-            ) * ParticleTuning.Engine.sphereFormDetailWeightB
         let smoothness = Self.easedMorphProgress(
             Float(tuning.shapeSmoothness)
         )
-        let field = (
-            primary + detail * (1 - smoothness)
-        ) / ParticleTuning.Engine.sphereFormFieldNormalization
+        let featureScale = Self.easedMorphProgress(
+            Float(tuning.shapeFeatureScale)
+        )
+        let lowLobeWeight =
+            ParticleTuning.Engine.sphereFormLowLobeWeight
+            * (
+                1
+                    - featureScale
+                    * ParticleTuning.Engine.sphereFormLowLobeFeatureReduction
+            )
+        let mediumLobeWeight = (
+            ParticleTuning.Engine.sphereFormMediumLobeMinimumWeight
+                + featureScale
+                * ParticleTuning.Engine.sphereFormMediumLobeWeightRange
+        ) * (
+            1
+                - smoothness
+                * ParticleTuning.Engine.sphereFormMediumSmoothnessReduction
+        )
+        let highLobeWeight = (
+            ParticleTuning.Engine.sphereFormHighLobeMinimumWeight
+                + featureScale
+                * ParticleTuning.Engine.sphereFormHighLobeWeightRange
+        ) * (
+            1
+                - smoothness
+                * ParticleTuning.Engine.sphereFormHighSmoothnessReduction
+        )
+        let upperMediumLobeWeight = (
+            ParticleTuning.Engine.sphereFormUpperMediumLobeMinimumWeight
+                + featureScale
+                * ParticleTuning.Engine.sphereFormUpperMediumLobeWeightRange
+        ) * (
+            1
+                - smoothness
+                * ParticleTuning.Engine.sphereFormUpperMediumSmoothnessReduction
+        )
+        let field = Self.organicSphereFormField(
+            normal: normal,
+            phase: shapePhase,
+            lowLobeWeight: lowLobeWeight,
+            mediumLobeWeight: mediumLobeWeight,
+            upperMediumLobeWeight: upperMediumLobeWeight,
+            highLobeWeight: highLobeWeight
+        )
         let radiusScale = max(
             ParticleTuning.Engine.minimumSphereFormRadiusScale,
             1
@@ -1186,6 +1181,125 @@ struct ParticleSimulation {
         return shapedAnchor
             + normal * radialDistance
             + tangentDirection * tangentialDistance
+    }
+
+    private static func organicSphereFormField(
+        normal: SIMD3<Float>,
+        phase: Float,
+        lowLobeWeight: Float,
+        mediumLobeWeight: Float,
+        upperMediumLobeWeight: Float,
+        highLobeWeight: Float
+    ) -> Float {
+        let xyField = sphereFormAngularField(
+            first: normal.x,
+            second: normal.y,
+            phase: phase,
+            offset: 0,
+            lowLobeWeight: lowLobeWeight,
+            mediumLobeWeight: mediumLobeWeight,
+            upperMediumLobeWeight: upperMediumLobeWeight,
+            highLobeWeight: highLobeWeight
+        ) * ParticleTuning.Engine.sphereFormXYWeight
+        let yzField = sphereFormAngularField(
+            first: normal.y,
+            second: normal.z,
+            phase: phase,
+            offset: ParticleTuning.Engine.sphereFormYZPhaseOffset,
+            lowLobeWeight: lowLobeWeight,
+            mediumLobeWeight: mediumLobeWeight,
+            upperMediumLobeWeight: upperMediumLobeWeight,
+            highLobeWeight: highLobeWeight
+        ) * ParticleTuning.Engine.sphereFormYZWeight
+        let zxField = sphereFormAngularField(
+            first: normal.z,
+            second: normal.x,
+            phase: phase,
+            offset: ParticleTuning.Engine.sphereFormZXPhaseOffset,
+            lowLobeWeight: lowLobeWeight,
+            mediumLobeWeight: mediumLobeWeight,
+            upperMediumLobeWeight: upperMediumLobeWeight,
+            highLobeWeight: highLobeWeight
+        ) * ParticleTuning.Engine.sphereFormZXWeight
+        let broadField =
+            cos(
+                simd_dot(
+                    normal,
+                    ParticleTuning.Engine.sphereFormBroadAxisA
+                ) * ParticleTuning.Engine.sphereFormBroadFrequencyA
+                    + phase
+            ) * ParticleTuning.Engine.sphereFormBroadWeightA
+            + cos(
+                simd_dot(
+                    normal,
+                    ParticleTuning.Engine.sphereFormBroadAxisB
+                ) * ParticleTuning.Engine.sphereFormBroadFrequencyB
+                    + phase
+                    * ParticleTuning.Engine.sphereFormBroadPhaseRatioB
+            ) * ParticleTuning.Engine.sphereFormBroadWeightB
+        return tanh(
+            (
+                xyField + yzField + zxField + broadField
+            ) / ParticleTuning.Engine.sphereFormFieldNormalization
+                * ParticleTuning.Engine.sphereFormFieldGain
+        )
+    }
+
+    private static func sphereFormAngularField(
+        first: Float,
+        second: Float,
+        phase: Float,
+        offset: Float,
+        lowLobeWeight: Float,
+        mediumLobeWeight: Float,
+        upperMediumLobeWeight: Float,
+        highLobeWeight: Float
+    ) -> Float {
+        let radialWeight = pow(
+            sqrt(first * first + second * second),
+            ParticleTuning.Engine.sphereFormAngularFalloff
+        )
+        let angle = atan2(second, first)
+        let baseField = sin(
+            angle * ParticleTuning.Engine.sphereFormBaseLobeCount
+                + phase
+                * ParticleTuning.Engine.sphereFormBasePhaseRatio
+                + offset
+                * ParticleTuning.Engine.sphereFormBaseOffsetRatio
+        ) * ParticleTuning.Engine.sphereFormBaseLobeWeight
+        let lowField = sin(
+            angle * ParticleTuning.Engine.sphereFormLowLobeCount
+                + phase
+                + offset
+        ) * lowLobeWeight
+        let mediumField = sin(
+            angle * ParticleTuning.Engine.sphereFormMediumLobeCount
+                + phase
+                * ParticleTuning.Engine.sphereFormMediumPhaseRatio
+                + offset
+                * ParticleTuning.Engine.sphereFormMediumOffsetRatio
+        ) * mediumLobeWeight
+        let upperMediumField = sin(
+            angle * ParticleTuning.Engine.sphereFormUpperMediumLobeCount
+                + phase
+                * ParticleTuning.Engine.sphereFormUpperMediumPhaseRatio
+                + offset
+                * ParticleTuning.Engine.sphereFormUpperMediumOffsetRatio
+        ) * upperMediumLobeWeight
+        let highField = sin(
+            angle * ParticleTuning.Engine.sphereFormHighLobeCount
+                + phase
+                * ParticleTuning.Engine.sphereFormHighPhaseRatio
+                + offset
+                * ParticleTuning.Engine.sphereFormHighOffsetRatio
+        ) * highLobeWeight
+        return (
+            baseField
+                + lowField
+                + mediumField
+                + upperMediumField
+                + highField
+        ) * radialWeight
     }
 
     private static func easedMorphProgress(_ progress: Float) -> Float {
