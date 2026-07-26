@@ -25,6 +25,10 @@ struct ParticleCoreMetalView: NSViewRepresentable {
     var rebuildGeneration = 0
     var isManualRotationEnabled = false
     var viewOrientation: ParticleViewOrientation = .identity
+    var debugVisualIntent: ResidentVisualIntent?
+    var debugIntentGeneration = 0
+    var isDebugAutoCycleEnabled = false
+    var debugStressTestGeneration = 0
     var isTransparentBackground = false
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
     var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
@@ -57,6 +61,10 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         context.coordinator.rebuildGeneration = rebuildGeneration
         context.coordinator.isManualRotationEnabled = isManualRotationEnabled
         context.coordinator.viewOrientation = viewOrientation
+        context.coordinator.debugVisualIntent = debugVisualIntent
+        context.coordinator.debugIntentGeneration = debugIntentGeneration
+        context.coordinator.isDebugAutoCycleEnabled = isDebugAutoCycleEnabled
+        context.coordinator.debugStressTestGeneration = debugStressTestGeneration
         context.coordinator.debugMetricsHandler = debugMetricsHandler
         context.coordinator.viewOrientationHandler = viewOrientationHandler
         view.viewOrientationHandler = { orientation in
@@ -74,15 +82,53 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         renderer.setColorProfile(colorProfile)
         renderer.setViewOrientation(viewOrientation)
         renderer.setManualRotationEnabled(isManualRotationEnabled)
+        #if DEBUG
+        renderer.setDebugAutoCycleEnabled(isDebugAutoCycleEnabled)
+        if let debugVisualIntent {
+            renderer.setVisualIntent(debugVisualIntent, reason: "debugPanel.initial")
+        }
+        #endif
         return view
     }
 
     func updateNSView(_ nsView: MTKView, context: Context) {
         configureBackground(for: nsView, transparent: isTransparentBackground)
+        let debugOverrideActive = debugVisualIntent != nil || isDebugAutoCycleEnabled
         if context.coordinator.swiftUIVisualIntent != visualIntent {
-            context.coordinator.renderer?.setVisualIntent(visualIntent, reason: "appMapping")
+            if !debugOverrideActive {
+                context.coordinator.renderer?.setVisualIntent(visualIntent, reason: "appMapping")
+            }
             context.coordinator.swiftUIVisualIntent = visualIntent
         }
+        #if DEBUG
+        if context.coordinator.isDebugAutoCycleEnabled != isDebugAutoCycleEnabled {
+            context.coordinator.renderer?.setDebugAutoCycleEnabled(
+                isDebugAutoCycleEnabled
+            )
+            context.coordinator.isDebugAutoCycleEnabled = isDebugAutoCycleEnabled
+            if !isDebugAutoCycleEnabled, debugVisualIntent == nil {
+                context.coordinator.renderer?.setVisualIntent(
+                    visualIntent,
+                    reason: "debugPanel.followRuntime"
+                )
+            }
+        }
+        if context.coordinator.debugIntentGeneration != debugIntentGeneration {
+            context.coordinator.renderer?.setVisualIntent(
+                debugVisualIntent ?? visualIntent,
+                reason: debugVisualIntent == nil
+                    ? "debugPanel.followRuntime"
+                    : "debugPanel.state"
+            )
+            context.coordinator.debugVisualIntent = debugVisualIntent
+            context.coordinator.debugIntentGeneration = debugIntentGeneration
+        }
+        if context.coordinator.debugStressTestGeneration
+            != debugStressTestGeneration {
+            context.coordinator.renderer?.runDebugTransitionStressTest()
+            context.coordinator.debugStressTestGeneration = debugStressTestGeneration
+        }
+        #endif
         context.coordinator.debugMetricsHandler = debugMetricsHandler
         if context.coordinator.tuning != tuning {
             context.coordinator.renderer?.setTuning(tuning)
@@ -133,6 +179,10 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         var rebuildGeneration = 0
         var isManualRotationEnabled = false
         var viewOrientation: ParticleViewOrientation = .identity
+        var debugVisualIntent: ResidentVisualIntent?
+        var debugIntentGeneration = 0
+        var isDebugAutoCycleEnabled = false
+        var debugStressTestGeneration = 0
         var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
         var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
     }

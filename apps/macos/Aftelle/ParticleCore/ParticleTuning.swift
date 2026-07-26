@@ -93,6 +93,12 @@ struct ParticleTuning: Codable, Equatable {
         static let modelRebuildDelay = 0.12
         static let controlEffectMultiplier: Float = 2
         static let maximumSimulationStep: Float = 1.0 / 30.0
+        static let visualTransitionDuration = 0.60
+        static let minimumTransitionDuration = 0.001
+        static let debugAutoCycleInterval = 0.45
+        static let debugStressSwitchCount = 100
+        static let debugContinuityTolerance: Float = 0.000_001
+        static let debugMaximumPauseProgressStep: Float = 0.06
         static let goldenAngle: Float = 2.399_963_1
         static let angularJitterScale: Float = 0.34
         static let surfaceThickness: Float = 0.075
@@ -166,9 +172,6 @@ struct ParticleTuning: Codable, Equatable {
         static let highlightColorMix: Float = 0.18
         static let polarReferenceThreshold: Float = 0.92
         static let normalizationEpsilon: Float = 0.000_01
-        static let stateResponse: Float = 0.036
-        static let dissolutionRiseResponse: Float = 0.080
-        static let dissolutionFallResponse: Float = 0.050
         static let interactionTimeout = 0.35
         static let positionResponse: Float = 0.16
         static let velocityResponse: Float = 0.12

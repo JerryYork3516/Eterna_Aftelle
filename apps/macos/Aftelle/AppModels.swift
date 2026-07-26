@@ -217,10 +217,13 @@ public struct ParticleRenderMetrics: Equatable {
     public var drawableSize: String
     public var preferredFramesPerSecond: Int
     public var currentVisualState: String
-    public var previousVisualState: String
+    public var targetVisualState: String
     public var renderElapsedTime: Double
     public var motionElapsedTime: Double
+    public var frameDeltaTime: Double
     public var stateElapsedTime: Double
+    public var transitionDuration: Double
+    public var transitionProgress: Double
     public var lastTransitionReason: String
     public var mouseInfluenceEnabled: Bool
     public var mouseInsideParticleArea: Bool
@@ -232,10 +235,13 @@ public struct ParticleRenderMetrics: Equatable {
         drawableSize: "-",
         preferredFramesPerSecond: 0,
         currentVisualState: "idle",
-        previousVisualState: "idle",
+        targetVisualState: "idle",
         renderElapsedTime: 0,
         motionElapsedTime: 0,
+        frameDeltaTime: 0,
         stateElapsedTime: 0,
+        transitionDuration: 0,
+        transitionProgress: 1,
         lastTransitionReason: "startup",
         mouseInfluenceEnabled: true,
         mouseInsideParticleArea: false,
@@ -249,8 +255,11 @@ public struct ParticleDebugSnapshot: Equatable {
     public var drawableSize: String
     public var preferredFramesPerSecond: Int
     public var currentVisualState: String
-    public var previousVisualState: String
+    public var targetVisualState: String
+    public var frameDeltaTime: Double
     public var stateElapsedTime: Double
+    public var transitionDuration: Double
+    public var transitionProgress: Double
     public var lastTransitionReason: String
     public var sourceAvatarState: String
     public var mappedParticleState: String
@@ -293,8 +302,11 @@ public struct ParticleDebugSnapshot: Equatable {
         drawableSize: "-",
         preferredFramesPerSecond: 0,
         currentVisualState: "idle",
-        previousVisualState: "idle",
+        targetVisualState: "idle",
+        frameDeltaTime: 0,
         stateElapsedTime: 0,
+        transitionDuration: 0,
+        transitionProgress: 1,
         lastTransitionReason: "startup",
         sourceAvatarState: "mode=idle presence=unknown",
         mappedParticleState: "idle",

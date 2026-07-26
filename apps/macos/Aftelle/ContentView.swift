@@ -11,6 +11,10 @@ final class ParticlePresentationSettings: ObservableObject {
     @Published private(set) var rebuildGeneration = 0
     @Published var isManualRotationEnabled = false
     @Published var viewOrientation: ParticleViewOrientation = .identity
+    @Published private(set) var debugVisualIntent: ResidentVisualIntent?
+    @Published private(set) var debugIntentGeneration = 0
+    @Published private(set) var isDebugAutoCycleEnabled = false
+    @Published private(set) var debugStressTestGeneration = 0
     #if DEBUG
     @Published var isOrientationOverlayVisible = false
     #endif
@@ -25,6 +29,29 @@ final class ParticlePresentationSettings: ObservableObject {
 
     func resetViewOrientation() {
         viewOrientation = .identity
+    }
+
+    func selectDebugVisualIntent(_ intent: ResidentVisualIntent) {
+        isDebugAutoCycleEnabled = false
+        debugVisualIntent = intent
+        debugIntentGeneration &+= 1
+    }
+
+    func setDebugAutoCycleEnabled(_ enabled: Bool) {
+        isDebugAutoCycleEnabled = enabled
+        if enabled {
+            debugVisualIntent = nil
+        }
+    }
+
+    func followRuntimeVisualIntent() {
+        isDebugAutoCycleEnabled = false
+        debugVisualIntent = nil
+        debugIntentGeneration &+= 1
+    }
+
+    func runDebugTransitionStressTest() {
+        debugStressTestGeneration &+= 1
     }
 }
 
@@ -50,6 +77,10 @@ struct ContentView: View {
                 rebuildGeneration: presentationSettings.rebuildGeneration,
                 isManualRotationEnabled: presentationSettings.isManualRotationEnabled,
                 viewOrientation: presentationSettings.viewOrientation,
+                debugVisualIntent: presentationSettings.debugVisualIntent,
+                debugIntentGeneration: presentationSettings.debugIntentGeneration,
+                isDebugAutoCycleEnabled: presentationSettings.isDebugAutoCycleEnabled,
+                debugStressTestGeneration: presentationSettings.debugStressTestGeneration,
                 isTransparentBackground: controller.particleShellMode == .transparentShell,
                 debugMetricsHandler: { metrics in
                     controller.updateParticleRenderMetrics(metrics)
@@ -454,6 +485,12 @@ struct ParticleDebugWindow: View {
             setRenderKind: controller.setParticleRenderKind,
             rebuildFixedSeed: presentationSettings.rebuildWithFixedSeed,
             resetRotation: presentationSettings.resetViewOrientation,
+            debugVisualIntent: presentationSettings.debugVisualIntent,
+            isDebugAutoCycleEnabled: presentationSettings.isDebugAutoCycleEnabled,
+            selectDebugVisualIntent: presentationSettings.selectDebugVisualIntent,
+            setDebugAutoCycleEnabled: presentationSettings.setDebugAutoCycleEnabled,
+            followRuntimeVisualIntent: presentationSettings.followRuntimeVisualIntent,
+            runDebugTransitionStressTest: presentationSettings.runDebugTransitionStressTest,
             refreshColorProfileSnapshot: {
                 controller.updateEffectiveParticleColorProfile(
                     presentationSettings.colorProfile,
@@ -518,6 +555,12 @@ private struct ParticleDebugPanel: View {
     let setRenderKind: (ParticleRenderKind) -> Void
     let rebuildFixedSeed: () -> Void
     let resetRotation: () -> Void
+    let debugVisualIntent: ResidentVisualIntent?
+    let isDebugAutoCycleEnabled: Bool
+    let selectDebugVisualIntent: (ResidentVisualIntent) -> Void
+    let setDebugAutoCycleEnabled: (Bool) -> Void
+    let followRuntimeVisualIntent: () -> Void
+    let runDebugTransitionStressTest: () -> Void
     let refreshColorProfileSnapshot: () -> Void
     let importDR: () -> Void
     let saveProviderConfiguration: (ProviderProfile) -> Void
@@ -580,6 +623,45 @@ private struct ParticleDebugPanel: View {
                     String(localized: "particleDebug.orientation.resetRotation"),
                     action: resetRotation
                 )
+                .controlSize(.small)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(String(localized: "particleDebug.transitionTest"))
+                    .font(.system(size: 12, weight: .medium))
+
+                HStack(spacing: 5) {
+                    ForEach(ResidentVisualIntent.allCases) { intent in
+                        Button(NSLocalizedString(intent.debugLocalizedKey, comment: "")) {
+                            selectDebugVisualIntent(intent)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.bordered)
+                        .disabled(debugVisualIntent == intent)
+                    }
+                }
+
+                HStack {
+                    Toggle(
+                        String(localized: "particleDebug.transition.autoCycle"),
+                        isOn: Binding(
+                            get: { isDebugAutoCycleEnabled },
+                            set: setDebugAutoCycleEnabled
+                        )
+                    )
+                    .toggleStyle(.checkbox)
+
+                    Spacer()
+
+                    Button(
+                        String(localized: "particleDebug.transition.followRuntime"),
+                        action: followRuntimeVisualIntent
+                    )
+                    Button(
+                        String(localized: "particleDebug.transition.stress100"),
+                        action: runDebugTransitionStressTest
+                    )
+                }
                 .controlSize(.small)
             }
 
@@ -1272,8 +1354,11 @@ private struct ParticleDiagnosticsView: View {
 
             ParticleDiagnosticsSection(titleKey: "particleDebug.diagnostics.visualState") {
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.currentVisualState", value: snapshot.currentVisualState)
-                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.previousVisualState", value: snapshot.previousVisualState)
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.targetVisualState", value: snapshot.targetVisualState)
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.frameDeltaTime", value: String(format: "%.4fs", snapshot.frameDeltaTime))
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.stateElapsedTime", value: String(format: "%.2fs", snapshot.stateElapsedTime))
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.transitionDuration", value: String(format: "%.2fs", snapshot.transitionDuration))
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.transitionProgress", value: String(format: "%.3f", snapshot.transitionProgress))
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.lastTransitionReason", value: snapshot.lastTransitionReason)
             }
 

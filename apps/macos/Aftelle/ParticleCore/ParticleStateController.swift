@@ -1,101 +1,180 @@
 import Foundation
 
+struct ParticleVisualChannels: Equatable {
+    var focus: Float
+    var pulse: Float
+    var circulation: Float
+    var disruption: Float
+    var dissolution: Float
+
+    static func target(for intent: ResidentVisualIntent) -> ParticleVisualChannels {
+        ParticleVisualChannels(
+            focus: intent == .thinking ? 1 : 0,
+            pulse: intent == .speaking ? 1 : 0,
+            circulation: intent == .loading ? 1 : 0,
+            disruption: intent == .error ? 1 : 0,
+            dissolution: intent == .exit ? 1 : 0
+        )
+    }
+
+    func interpolated(
+        to target: ParticleVisualChannels,
+        progress: Float
+    ) -> ParticleVisualChannels {
+        ParticleVisualChannels(
+            focus: focus + (target.focus - focus) * progress,
+            pulse: pulse + (target.pulse - pulse) * progress,
+            circulation: circulation + (target.circulation - circulation) * progress,
+            disruption: disruption + (target.disruption - disruption) * progress,
+            dissolution: dissolution + (target.dissolution - dissolution) * progress
+        )
+    }
+}
+
+struct ParticleTransitionState {
+    var currentChannels: ParticleVisualChannels
+    var targetChannels: ParticleVisualChannels
+    var startTime: TimeInterval
+    var duration: TimeInterval
+    var progress: Float
+}
+
 struct ParticleVisualState {
     let currentIntent: ResidentVisualIntent
-    let previousIntent: ResidentVisualIntent
+    let targetIntent: ResidentVisualIntent
     let transitionReason: String
     let transitionElapsedTime: Float
+    let transitionDuration: Float
+    let transitionProgress: Float
+    let deltaTime: Float
     let focusStrength: Float
     let pulseStrength: Float
     let circulationStrength: Float
     let disruptionStrength: Float
     let dissolutionStrength: Float
     let flowSpeedMultiplier: Float
+
+    var channels: ParticleVisualChannels {
+        ParticleVisualChannels(
+            focus: focusStrength,
+            pulse: pulseStrength,
+            circulation: circulationStrength,
+            disruption: disruptionStrength,
+            dissolution: dissolutionStrength
+        )
+    }
 }
 
 final class ParticleStateController {
     private(set) var currentIntent: ResidentVisualIntent
-    private(set) var previousIntent: ResidentVisualIntent
+    private(set) var targetIntent: ResidentVisualIntent
     private(set) var transitionReason = "startup"
-    private var transitionStartTime: TimeInterval
-    private var focusStrength: Float
-    private var pulseStrength: Float
-    private var circulationStrength: Float
-    private var disruptionStrength: Float
-    private var dissolutionStrength: Float
+    private(set) var transitionState: ParticleTransitionState
+    private var previousTime: TimeInterval
+    private var deltaTime: Float = 0
 
     init(intent: ResidentVisualIntent = .idle, time: TimeInterval) {
+        let channels = ParticleVisualChannels.target(for: intent)
         currentIntent = intent
-        previousIntent = intent
-        transitionStartTime = time
-        focusStrength = Self.targetStrength(for: .thinking, current: intent)
-        pulseStrength = Self.targetStrength(for: .speaking, current: intent)
-        circulationStrength = Self.targetStrength(for: .loading, current: intent)
-        disruptionStrength = Self.targetStrength(for: .error, current: intent)
-        dissolutionStrength = Self.targetStrength(for: .exit, current: intent)
+        targetIntent = intent
+        previousTime = time
+        transitionState = ParticleTransitionState(
+            currentChannels: channels,
+            targetChannels: channels,
+            startTime: time,
+            duration: ParticleTuning.Engine.visualTransitionDuration,
+            progress: 1
+        )
     }
 
     func setIntent(_ intent: ResidentVisualIntent, reason: String, time: TimeInterval) {
-        if currentIntent == intent {
-            if intent == .exit {
-                transitionStartTime = time
-            }
+        updateClock(time: time)
+        let liveChannels = resolveChannels(time: time)
+        settleCompletedTransition()
+
+        guard targetIntent != intent else {
             transitionReason = reason
             return
         }
 
-        previousIntent = currentIntent
-        currentIntent = intent
-        transitionStartTime = time
+        currentIntent = targetIntent
+        targetIntent = intent
         transitionReason = reason
-        if intent == .idle {
-            dissolutionStrength = 0
-        }
+        transitionState = ParticleTransitionState(
+            currentChannels: liveChannels,
+            targetChannels: ParticleVisualChannels.target(for: intent),
+            startTime: time,
+            duration: ParticleTuning.Engine.visualTransitionDuration,
+            progress: 0
+        )
     }
 
     func advance(time: TimeInterval) -> ParticleVisualState {
-        let response = ParticleTuning.Engine.stateResponse
-        focusStrength += (Self.targetStrength(for: .thinking, current: currentIntent) - focusStrength) * response
-        pulseStrength += (Self.targetStrength(for: .speaking, current: currentIntent) - pulseStrength) * response
-        circulationStrength += (Self.targetStrength(for: .loading, current: currentIntent) - circulationStrength) * response
-        disruptionStrength += (Self.targetStrength(for: .error, current: currentIntent) - disruptionStrength) * response
-        let dissolutionResponse = currentIntent == .exit
-            ? ParticleTuning.Engine.dissolutionRiseResponse
-            : ParticleTuning.Engine.dissolutionFallResponse
-        dissolutionStrength += (
-            Self.targetStrength(for: .exit, current: currentIntent) - dissolutionStrength
-        ) * dissolutionResponse
+        updateClock(time: time)
+        let channels = resolveChannels(time: time)
+        settleCompletedTransition()
 
-        let focus = Self.eased(focusStrength)
-        let pulse = Self.eased(pulseStrength)
-        let instability = max(Self.eased(disruptionStrength), dissolutionStrength)
-        let flowSpeedMultiplier = (1 - ParticleTuning.Engine.focusFlowReduction * focus)
-            * (1 + ParticleTuning.Engine.pulseFlowIncrease * pulse)
-            * (1 - ParticleTuning.Engine.instabilityFlowReduction * instability)
+        let instability = max(channels.disruption, channels.dissolution)
+        let flowSpeedMultiplier = (
+            1 - ParticleTuning.Engine.focusFlowReduction * channels.focus
+        ) * (
+            1 + ParticleTuning.Engine.pulseFlowIncrease * channels.pulse
+        ) * (
+            1 - ParticleTuning.Engine.instabilityFlowReduction * instability
+        )
 
         return ParticleVisualState(
             currentIntent: currentIntent,
-            previousIntent: previousIntent,
+            targetIntent: targetIntent,
             transitionReason: transitionReason,
-            transitionElapsedTime: Float(max(0, time - transitionStartTime)),
-            focusStrength: focusStrength,
-            pulseStrength: pulseStrength,
-            circulationStrength: circulationStrength,
-            disruptionStrength: disruptionStrength,
-            dissolutionStrength: dissolutionStrength,
+            transitionElapsedTime: Float(
+                transitionState.duration * Double(transitionState.progress)
+            ),
+            transitionDuration: Float(transitionState.duration),
+            transitionProgress: transitionState.progress,
+            deltaTime: deltaTime,
+            focusStrength: channels.focus,
+            pulseStrength: channels.pulse,
+            circulationStrength: channels.circulation,
+            disruptionStrength: channels.disruption,
+            dissolutionStrength: channels.dissolution,
             flowSpeedMultiplier: flowSpeedMultiplier
         )
     }
 
-    private static func targetStrength(
-        for intent: ResidentVisualIntent,
-        current: ResidentVisualIntent
-    ) -> Float {
-        current == intent ? 1 : 0
+    private func updateClock(time: TimeInterval) {
+        let rawDelta = max(0, time - previousTime)
+        let maximumDelta = TimeInterval(ParticleTuning.Engine.maximumSimulationStep)
+        let clampedDelta = min(rawDelta, maximumDelta)
+        let discardedDelta = rawDelta - clampedDelta
+        if discardedDelta > 0, transitionState.progress < 1 {
+            transitionState.startTime += discardedDelta
+        }
+        previousTime = time
+        deltaTime = Float(clampedDelta)
     }
 
-    private static func eased(_ value: Float) -> Float {
-        let clamped = min(1, max(0, value))
-        return clamped * clamped * (3 - 2 * clamped)
+    private func resolveChannels(time: TimeInterval) -> ParticleVisualChannels {
+        let duration = max(
+            transitionState.duration,
+            ParticleTuning.Engine.minimumTransitionDuration
+        )
+        let rawProgress = (time - transitionState.startTime) / duration
+        let progress = Float(min(1, max(0, rawProgress)))
+        transitionState.progress = progress
+        return transitionState.currentChannels.interpolated(
+            to: transitionState.targetChannels,
+            progress: Self.eased(progress)
+        )
+    }
+
+    private func settleCompletedTransition() {
+        guard transitionState.progress >= 1 else { return }
+        currentIntent = targetIntent
+        transitionState.currentChannels = transitionState.targetChannels
+    }
+
+    private static func eased(_ progress: Float) -> Float {
+        progress * progress * (3 - 2 * progress)
     }
 }

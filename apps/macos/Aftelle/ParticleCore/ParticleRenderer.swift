@@ -36,6 +36,11 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     private var metricsFrameCount = 0
     private var viewOrientation: ParticleViewOrientation = .identity
     private var isManualRotationEnabled = false
+    #if DEBUG
+    private var isDebugAutoCycleEnabled = false
+    private var debugAutoCycleIndex = 0
+    private var debugAutoCycleNextTime: TimeInterval?
+    #endif
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
 
     init?(device: MTLDevice, visualIntent: ResidentVisualIntent = .idle) {
@@ -108,6 +113,9 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         metricsFrameCount += 1
         let now = CACurrentMediaTime()
+        #if DEBUG
+        advanceDebugAutoCycle(time: now)
+        #endif
         let visualState = stateController.advance(time: now)
         let frame = simulation.advance(
             time: now,
@@ -170,7 +178,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         _ visualIntent: ResidentVisualIntent,
         reason: String = "appMapping"
     ) {
-        let previousIntent = stateController.currentIntent
+        let previousIntent = stateController.targetIntent
         stateController.setIntent(
             visualIntent,
             reason: reason,
@@ -251,6 +259,100 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "particleCount=\(simulation.particleCount)"
         )
     }
+
+    #if DEBUG
+    func setDebugAutoCycleEnabled(_ enabled: Bool) {
+        guard isDebugAutoCycleEnabled != enabled else { return }
+        isDebugAutoCycleEnabled = enabled
+        debugAutoCycleNextTime = enabled ? CACurrentMediaTime() : nil
+        if let index = ResidentVisualIntent.allCases.firstIndex(
+            of: stateController.targetIntent
+        ) {
+            debugAutoCycleIndex = index
+        }
+        print("[ParticleCore] debugAutoCycle enabled=\(enabled)")
+    }
+
+    func runDebugTransitionStressTest() {
+        let rebuildCountBefore = simulation.rebuildCount
+        var finiteChannels = true
+        for index in 0..<ParticleTuning.Engine.debugStressSwitchCount {
+            let time = CACurrentMediaTime()
+            let intent = ResidentVisualIntent.allCases[
+                (index + 1) % ResidentVisualIntent.allCases.count
+            ]
+            stateController.setIntent(intent, reason: "debugStress", time: time)
+            let state = stateController.advance(time: time)
+            finiteChannels = finiteChannels && Self.channelsAreFinite(state.channels)
+        }
+        let rebuildCountAfter = simulation.rebuildCount
+
+        let startTime: TimeInterval = 1_000
+        let controller = ParticleStateController(intent: .idle, time: startTime)
+        var time = startTime
+        controller.setIntent(.thinking, reason: "debugStress.prepare", time: time)
+        time += 0.09
+        let beforeRetarget = controller.advance(time: time)
+        controller.setIntent(.error, reason: "debugStress.retarget", time: time)
+        let afterRetarget = controller.advance(time: time)
+        let continuityError = Self.maximumChannelDifference(
+            beforeRetarget.channels,
+            afterRetarget.channels
+        )
+        let progressBeforePause = afterRetarget.transitionProgress
+        let afterPause = controller.advance(time: time + 1_800)
+        let pauseProgressStep = afterPause.transitionProgress - progressBeforePause
+        let passed = finiteChannels
+            && rebuildCountBefore == rebuildCountAfter
+            && continuityError <= ParticleTuning.Engine.debugContinuityTolerance
+            && afterPause.deltaTime <= ParticleTuning.Engine.maximumSimulationStep
+            && pauseProgressStep <= ParticleTuning.Engine.debugMaximumPauseProgressStep
+
+        print(
+            "[ParticleCore][V2.3Test] passed=\(passed) "
+                + "switches=\(ParticleTuning.Engine.debugStressSwitchCount) "
+                + "continuityError=\(String(format: "%.6f", continuityError)) "
+                + "resumeDelta=\(String(format: "%.6f", afterPause.deltaTime)) "
+                + "resumeProgressStep=\(String(format: "%.6f", pauseProgressStep)) "
+                + "particleRebuildCount=\(rebuildCountBefore)->\(rebuildCountAfter)"
+        )
+    }
+
+    private func advanceDebugAutoCycle(time: TimeInterval) {
+        guard isDebugAutoCycleEnabled,
+              time >= (debugAutoCycleNextTime ?? time) else {
+            return
+        }
+        debugAutoCycleIndex = (debugAutoCycleIndex + 1)
+            % ResidentVisualIntent.allCases.count
+        setVisualIntent(
+            ResidentVisualIntent.allCases[debugAutoCycleIndex],
+            reason: "debugAutoCycle"
+        )
+        debugAutoCycleNextTime = time + ParticleTuning.Engine.debugAutoCycleInterval
+    }
+
+    private static func channelsAreFinite(_ channels: ParticleVisualChannels) -> Bool {
+        channels.focus.isFinite
+            && channels.pulse.isFinite
+            && channels.circulation.isFinite
+            && channels.disruption.isFinite
+            && channels.dissolution.isFinite
+    }
+
+    private static func maximumChannelDifference(
+        _ lhs: ParticleVisualChannels,
+        _ rhs: ParticleVisualChannels
+    ) -> Float {
+        max(
+            abs(lhs.focus - rhs.focus),
+            abs(lhs.pulse - rhs.pulse),
+            abs(lhs.circulation - rhs.circulation),
+            abs(lhs.disruption - rhs.disruption),
+            abs(lhs.dissolution - rhs.dissolution)
+        )
+    }
+    #endif
 
     private func makeUniforms(
         from frame: ParticleSimulationFrame
@@ -380,10 +482,13 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             drawableSize: drawableSize,
             preferredFramesPerSecond: view.preferredFramesPerSecond,
             currentVisualState: visualState.currentIntent.rawValue,
-            previousVisualState: visualState.previousIntent.rawValue,
+            targetVisualState: visualState.targetIntent.rawValue,
             renderElapsedTime: Double(renderElapsedTime),
             motionElapsedTime: Double(frame.motionElapsedTime),
+            frameDeltaTime: Double(visualState.deltaTime),
             stateElapsedTime: Double(visualState.transitionElapsedTime),
+            transitionDuration: Double(visualState.transitionDuration),
+            transitionProgress: Double(visualState.transitionProgress),
             lastTransitionReason: visualState.transitionReason,
             mouseInfluenceEnabled: true,
             mouseInsideParticleArea: interactionActive,
@@ -395,8 +500,10 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "fps=\(String(format: "%.1f", fps)) "
                 + "particleCount=\(simulation.particleCount) "
                 + "drawableSize=\(drawableSize) "
-                + "visualIntent=\(visualState.currentIntent.rawValue) "
-                + "previous=\(visualState.previousIntent.rawValue) "
+                + "currentIntent=\(visualState.currentIntent.rawValue) "
+                + "targetIntent=\(visualState.targetIntent.rawValue) "
+                + "deltaTime=\(String(format: "%.4f", visualState.deltaTime)) "
+                + "transitionProgress=\(String(format: "%.3f", visualState.transitionProgress)) "
                 + "transitionElapsedTime=\(String(format: "%.2f", visualState.transitionElapsedTime)) "
                 + "reason=\(visualState.transitionReason) "
                 + "interactionStrength=\(String(format: "%.2f", frame.mouseInfluence)) "

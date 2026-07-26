@@ -53,8 +53,8 @@ struct ParticleSimulationFrame {
 }
 
 struct ParticleSimulation {
-    private let startTime: TimeInterval
     private var previousTime: TimeInterval
+    private var motionElapsedTime: Float = 0
     private var particles: [SimulatedParticle] = []
     private var payloads: [SIMD4<Float>] = []
     private var anchorCenter = SIMD3<Float>(repeating: 0)
@@ -72,13 +72,13 @@ struct ParticleSimulation {
         maximumRadius: 0,
         maximumSpeed: 0
     )
+    private(set) var rebuildCount = 0
 
     init(
         time: TimeInterval,
         tuning: ParticleTuning = .systemDefault,
         colorProfile: ParticleColorProfile = .systemDefault
     ) {
-        startTime = time
         previousTime = time
         lastMouseEventTime = time
         self.tuning = tuning.clamped()
@@ -106,6 +106,7 @@ struct ParticleSimulation {
     }
 
     mutating func rebuildParticles() {
+        rebuildCount += 1
         let count = ParticleTuning.Engine.particleCount
         let baseSurfaceRatio = ParticleTuning.Engine.value(
             tuning.surfaceRatio,
@@ -183,18 +184,18 @@ struct ParticleSimulation {
         visualState: ParticleVisualState
     ) -> ParticleSimulationFrame {
         updateSmoothedInteraction(time: time)
-        let elapsed = Float(time - startTime)
         let timeStep = min(
             max(Float(time - previousTime), 0),
             ParticleTuning.Engine.maximumSimulationStep
         )
         previousTime = time
         if timeStep > 0 {
-            integrate(time: elapsed, timeStep: timeStep)
+            motionElapsedTime += timeStep
+            integrate(time: motionElapsedTime, timeStep: timeStep)
         }
 
         return ParticleSimulationFrame(
-            motionElapsedTime: elapsed,
+            motionElapsedTime: motionElapsedTime,
             resolution: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
             mousePosition: smoothMousePosition,
             mouseVelocity: smoothMouseVelocity,
