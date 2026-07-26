@@ -566,18 +566,22 @@ struct ParticleSimulation {
         let baseFlowAxis = ParticleFlowDirection.nearest(
             to: tuning.flowDirection
         ).axis
+        let flowEffect = ParticleFlowEffect.nearest(
+            to: tuning.flowEffect
+        )
+        let flowEffectMotion = flowEffect.motionStyle
         let flowReference = abs(baseFlowAxis.y)
             < ParticleTuning.Engine.polarReferenceThreshold
             ? SIMD3<Float>(0, 1, 0)
             : SIMD3<Float>(1, 0, 0)
         let flowTangent = simd_normalize(simd_cross(flowReference, baseFlowAxis))
         let flowBitangent = simd_cross(baseFlowAxis, flowTangent)
-        let flowSeedPhase = (
-            Float(tuning.flowSeed) - 0.5
-        ) * ParticleTuning.Engine.fullRotation
+        let flowEffectPhase = flowEffect.phaseOffset
+            * ParticleTuning.Engine.fullRotation
         let axisPhase = flowTime
             * ParticleTuning.Engine.flowAxisPrecession
-            + flowSeedPhase
+            * flowEffectMotion.x
+            + flowEffectPhase
         let flowAxis = simd_normalize(
             baseFlowAxis
                 + flowTangent
@@ -593,11 +597,13 @@ struct ParticleSimulation {
         let secondaryAxis = simd_normalize(ParticleTuning.Engine.secondaryFlowAxis)
         let particleFlowTime = flowTime
             * ParticleTuning.Engine.flowWaveFrequencyScale
-            + flowSeedPhase
+            * flowEffectMotion.z
+            + flowEffectPhase
         let primaryFlowSine = sin(particleFlowTime)
         let primaryFlowCosine = cos(particleFlowTime)
         let secondaryFlowTime = particleFlowTime
             * ParticleTuning.Engine.secondaryFlowFrequencyRatio
+            * flowEffectMotion.y
         let secondaryFlowSine = sin(secondaryFlowTime)
         let secondaryFlowCosine = cos(secondaryFlowTime)
         let disturbanceXTime = time
@@ -639,8 +645,10 @@ struct ParticleSimulation {
             let primaryFlow = directionalFlow
                 * flowPulse
                 * ParticleTuning.Engine.directionalFlowWeight
+                * (1 - flowEffectMotion.w * 0.40)
                 + circulationFlow
                 * ParticleTuning.Engine.circulationFlowWeight
+                * (0.60 + flowEffectMotion.w * 0.80)
             let secondaryFlow = simd_cross(secondaryAxis, radial)
                 * (
                     secondaryFlowSine * particle.flowPhaseCosine

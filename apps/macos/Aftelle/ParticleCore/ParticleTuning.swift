@@ -29,7 +29,7 @@ struct ParticleTuning: Codable, Equatable {
     var flowShapeStrength: Double
     var flowSpeed: Double
     var flowDirection: Double
-    var flowSeed: Double
+    var flowEffect: Double
     var flowBrightnessStrength: Double
     var rotationSpeed: Double
     var rotationDirection: Double
@@ -66,7 +66,7 @@ struct ParticleTuning: Codable, Equatable {
         flowShapeStrength: Double,
         flowSpeed: Double,
         flowDirection: Double,
-        flowSeed: Double,
+        flowEffect: Double,
         flowBrightnessStrength: Double,
         rotationSpeed: Double,
         rotationDirection: Double,
@@ -102,7 +102,7 @@ struct ParticleTuning: Codable, Equatable {
         self.flowShapeStrength = flowShapeStrength
         self.flowSpeed = flowSpeed
         self.flowDirection = flowDirection
-        self.flowSeed = flowSeed
+        self.flowEffect = flowEffect
         self.flowBrightnessStrength = flowBrightnessStrength
         self.rotationSpeed = rotationSpeed
         self.rotationDirection = rotationDirection
@@ -140,7 +140,7 @@ struct ParticleTuning: Codable, Equatable {
         flowShapeStrength: 0.38,
         flowSpeed: 0.32,
         flowDirection: 1,
-        flowSeed: 0.5,
+        flowEffect: 0,
         flowBrightnessStrength: 0,
         rotationSpeed: 0,
         rotationDirection: 1,
@@ -180,7 +180,7 @@ struct ParticleTuning: Codable, Equatable {
         case flowShapeStrength
         case flowSpeed
         case flowDirection
-        case flowSeed
+        case flowEffect
         case flowBrightnessStrength
         case rotationSpeed
         case rotationDirection
@@ -248,8 +248,8 @@ struct ParticleTuning: Codable, Equatable {
                 ?? defaults.flowSpeed,
             flowDirection: try container.decodeIfPresent(Double.self, forKey: .flowDirection)
                 ?? defaults.flowDirection,
-            flowSeed: try container.decodeIfPresent(Double.self, forKey: .flowSeed)
-                ?? defaults.flowSeed,
+            flowEffect: try container.decodeIfPresent(Double.self, forKey: .flowEffect)
+                ?? defaults.flowEffect,
             flowBrightnessStrength: try container.decodeIfPresent(
                 Double.self,
                 forKey: .flowBrightnessStrength
@@ -317,6 +317,9 @@ struct ParticleTuning: Codable, Equatable {
         for parameter in ParticleTuningParameter.allCases {
             value[keyPath: parameter.keyPath] = Self.clamp(value[keyPath: parameter.keyPath])
         }
+        value.flowEffect = ParticleFlowEffect.nearest(
+            to: value.flowEffect
+        ).tuningValue
         return value
     }
 
@@ -506,11 +509,11 @@ struct ParticleTuning: Codable, Equatable {
         static let flowPrimarySpatialFrequency: Float = 8.4
         static let flowSecondarySpatialFrequency: Float = 6.2
         static let flowSecondaryVisualTimeRatio: Float = 0.74
-        static let flowSeedAxisInfluence: Float = 0.48
-        static let flowSeedPrimaryPhaseRatio: Float = 1.37
-        static let flowSeedSecondaryPhaseRatio: Float = 0.83
-        static let flowSeedDepthInfluence: Float = 0.56
-        static let flowSecondarySeedPhaseRatio: Float = 0.67
+        static let flowEffectAxisInfluence: Float = 0.48
+        static let flowPrimaryAxisPhaseRatio: Float = 1.37
+        static let flowSecondaryAxisPhaseRatio: Float = 0.83
+        static let flowDepthAxisInfluence: Float = 0.56
+        static let flowSecondaryPatternPhaseRatio: Float = 0.67
         static let flowPatternStart: Float = 0.32
         static let flowPatternEnd: Float = 0.82
         static let flowPrimaryPatternWeight: Float = 0.62
@@ -630,7 +633,7 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
     case flowShapeStrength
     case flowSpeed
     case flowDirection
-    case flowSeed
+    case flowEffect
     case flowBrightnessStrength
     case rotationSpeed
     case rotationDirection
@@ -693,8 +696,8 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
             return \.flowSpeed
         case .flowDirection:
             return \.flowDirection
-        case .flowSeed:
-            return \.flowSeed
+        case .flowEffect:
+            return \.flowEffect
         case .flowBrightnessStrength:
             return \.flowBrightnessStrength
         case .rotationSpeed:
@@ -726,6 +729,96 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
         case .alphaScale:
             return \.alphaScale
         }
+    }
+}
+
+enum ParticleFlowEffect: CaseIterable, Identifiable, Hashable {
+    case cloudSurge
+    case vortex
+    case tidal
+    case crossCurrent
+    case pulse
+    case laminar
+
+    var id: String { localizedKey }
+
+    var localizedKey: String {
+        switch self {
+        case .cloudSurge:
+            return "particleDebug.flowEffect.cloudSurge"
+        case .vortex:
+            return "particleDebug.flowEffect.vortex"
+        case .tidal:
+            return "particleDebug.flowEffect.tidal"
+        case .crossCurrent:
+            return "particleDebug.flowEffect.crossCurrent"
+        case .pulse:
+            return "particleDebug.flowEffect.pulse"
+        case .laminar:
+            return "particleDebug.flowEffect.laminar"
+        }
+    }
+
+    var tuningValue: Double {
+        guard let index = Self.allCases.firstIndex(of: self) else { return 0 }
+        return Double(index) / Double(Self.allCases.count - 1)
+    }
+
+    var phaseOffset: Float {
+        switch self {
+        case .cloudSurge:
+            return 0.08
+        case .vortex:
+            return 0.24
+        case .tidal:
+            return 0.40
+        case .crossCurrent:
+            return 0.56
+        case .pulse:
+            return 0.72
+        case .laminar:
+            return 0.88
+        }
+    }
+
+    var geometryWeights: SIMD4<Float> {
+        switch self {
+        case .cloudSurge:
+            return SIMD4(0.95, 1.15, 1.00, 0.28)
+        case .vortex:
+            return SIMD4(1.25, 0.55, 0.48, 0.12)
+        case .tidal:
+            return SIMD4(0.50, 0.72, 1.35, 0.08)
+        case .crossCurrent:
+            return SIMD4(1.05, 1.00, 0.72, 0.24)
+        case .pulse:
+            return SIMD4(0.62, 0.78, 1.50, 0.15)
+        case .laminar:
+            return SIMD4(0.82, 0.28, 0.25, 0.04)
+        }
+    }
+
+    var motionStyle: SIMD4<Float> {
+        switch self {
+        case .cloudSurge:
+            return SIMD4(0.90, 0.86, 0.82, 0.35)
+        case .vortex:
+            return SIMD4(1.22, 1.30, 1.10, 1.00)
+        case .tidal:
+            return SIMD4(0.55, 0.62, 0.58, 0.12)
+        case .crossCurrent:
+            return SIMD4(1.34, 1.18, 0.92, 0.68)
+        case .pulse:
+            return SIMD4(0.96, 0.76, 1.28, 0.32)
+        case .laminar:
+            return SIMD4(0.74, 0.48, 0.68, 0.05)
+        }
+    }
+
+    static func nearest(to value: Double) -> ParticleFlowEffect {
+        allCases.min {
+            abs($0.tuningValue - value) < abs($1.tuningValue - value)
+        } ?? .cloudSurge
     }
 }
 

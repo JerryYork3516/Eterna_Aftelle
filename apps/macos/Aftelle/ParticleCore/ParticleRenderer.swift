@@ -25,7 +25,9 @@ struct ParticleFrameUniforms {
     var renderVisibility: SIMD4<Float>
     var renderFlow: SIMD4<Float>
     var renderFlowStyle: SIMD4<Float>
-    var renderFlowSeed: SIMD4<Float>
+    var renderFlowBasis: SIMD4<Float>
+    var renderFlowEffect: SIMD4<Float>
+    var renderFlowEffectMotion: SIMD4<Float>
     var renderFlowPattern: SIMD4<Float>
     var renderParticleStyle: SIMD4<Float>
     var renderFlowResponse: SIMD4<Float>
@@ -481,6 +483,9 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         let flowAxis = ParticleFlowDirection.nearest(
             to: tuning.flowDirection
         ).axis
+        let flowEffect = ParticleFlowEffect.nearest(
+            to: tuning.flowEffect
+        )
         return ParticleFrameUniforms(
             viewportAndRender: SIMD4(
                 frame.resolution.x,
@@ -568,7 +573,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             renderEdge: SIMD4(
                 Float(tuning.edgeDustAmount),
                 Float(tuning.edgeFrayAmount),
-                Float(tuning.flowSeed),
+                flowEffect.phaseOffset,
                 frame.flowElapsedTime
             ),
             renderVisibility: SIMD4(
@@ -587,14 +592,16 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 ParticleTuning.Engine.flowPrimarySpatialFrequency,
                 ParticleTuning.Engine.flowSecondarySpatialFrequency,
                 ParticleTuning.Engine.flowSecondaryVisualTimeRatio,
-                ParticleTuning.Engine.flowSeedAxisInfluence
+                ParticleTuning.Engine.flowEffectAxisInfluence
             ),
-            renderFlowSeed: SIMD4(
-                ParticleTuning.Engine.flowSeedPrimaryPhaseRatio,
-                ParticleTuning.Engine.flowSeedSecondaryPhaseRatio,
-                ParticleTuning.Engine.flowSeedDepthInfluence,
-                ParticleTuning.Engine.flowSecondarySeedPhaseRatio
+            renderFlowBasis: SIMD4(
+                ParticleTuning.Engine.flowPrimaryAxisPhaseRatio,
+                ParticleTuning.Engine.flowSecondaryAxisPhaseRatio,
+                ParticleTuning.Engine.flowDepthAxisInfluence,
+                ParticleTuning.Engine.flowSecondaryPatternPhaseRatio
             ),
+            renderFlowEffect: flowEffect.geometryWeights,
+            renderFlowEffectMotion: flowEffect.motionStyle,
             renderFlowPattern: SIMD4(
                 ParticleTuning.Engine.flowPatternStart,
                 ParticleTuning.Engine.flowPatternEnd,

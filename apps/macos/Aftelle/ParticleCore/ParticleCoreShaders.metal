@@ -22,7 +22,9 @@ struct ParticleFrameUniforms {
     float4 renderVisibility;
     float4 renderFlow;
     float4 renderFlowStyle;
-    float4 renderFlowSeed;
+    float4 renderFlowBasis;
+    float4 renderFlowEffect;
+    float4 renderFlowEffectMotion;
     float4 renderFlowPattern;
     float4 renderParticleStyle;
     float4 renderFlowResponse;
@@ -80,9 +82,7 @@ vertex ParticleVertexOut particleVertex(
     const float secondarySeed = hash11(
         float(vertexID) * 4.1414 + particleSeed * 19.17
     );
-    const float flowPhase = (
-        uniforms.renderEdge.z - 0.5
-    ) * kFullRotation;
+    const float flowPhase = uniforms.renderEdge.z * kFullRotation;
     const float3 configuredFlowAxis = length(uniforms.renderFlow.xyz)
         > kMinimumRadius
         ? normalize(uniforms.renderFlow.xyz)
@@ -99,12 +99,12 @@ vertex ParticleVertexOut particleVertex(
     const float3 seededFlowAxis = normalize(
         configuredFlowAxis
             + flowCrossAxis
-            * sin(flowPhase * uniforms.renderFlowSeed.x)
+            * sin(flowPhase * uniforms.renderFlowBasis.x)
             * uniforms.renderFlowStyle.w
             + flowDepthAxis
-            * cos(flowPhase * uniforms.renderFlowSeed.y)
+            * cos(flowPhase * uniforms.renderFlowBasis.y)
             * uniforms.renderFlowStyle.w
-            * uniforms.renderFlowSeed.z
+            * uniforms.renderFlowBasis.z
     );
     const float3 seededFlowCrossAxis = normalize(
         cross(flowDepthAxis, seededFlowAxis)
@@ -119,33 +119,49 @@ vertex ParticleVertexOut particleVertex(
     const float3 surfaceFlowSide = normalize(
         cross(bodyNormal, surfaceFlowAxis)
     );
+    float3 vortexFlowAxis = cross(configuredFlowAxis, bodyNormal);
+    if (length(vortexFlowAxis) <= kMinimumRadius) {
+        vortexFlowAxis = surfaceFlowSide;
+    }
+    vortexFlowAxis = normalize(vortexFlowAxis);
+    const float3 effectFlowAxis = normalize(
+        mix(
+            surfaceFlowAxis,
+            vortexFlowAxis,
+            saturate(uniforms.renderFlowEffectMotion.w)
+        )
+    );
+    const float3 effectFlowSide = normalize(
+        cross(bodyNormal, effectFlowAxis)
+    );
     const float flowTravel = dot(bodyNormal, configuredFlowAxis);
     const float flowCrossTravel = dot(bodyNormal, flowCrossAxis);
     const float flowDepthTravel = dot(bodyNormal, flowDepthAxis);
     const float shapeFlowTime = uniforms.renderFlow.w
         * kFullRotation
-        * uniforms.renderFlowGeometryTime.x;
+        * uniforms.renderFlowGeometryTime.x
+        * uniforms.renderFlowEffectMotion.z;
     const float particleFlowPhase = (
         particleSeed - 0.5
-    ) * uniforms.renderFlowSeed.z;
+    ) * uniforms.renderFlowEffect.w;
     const float globalFlowPrimary = sin(
-        flowTravel * 5.4
-            + flowCrossTravel * 1.2
+        flowTravel * 5.4 * uniforms.renderFlowEffectMotion.x
+            + flowCrossTravel * 1.2 * uniforms.renderFlowEffectMotion.y
             - shapeFlowTime * 0.88
             + flowDepthTravel * 1.2
             + flowPhase
     );
     const float globalFlowSecondary = sin(
-        flowTravel * 2.8
-            - flowCrossTravel * 3.2
+        flowTravel * 2.8 * uniforms.renderFlowEffectMotion.x
+            - flowCrossTravel * 3.2 * uniforms.renderFlowEffectMotion.y
             - shapeFlowTime * 0.54
             + flowDepthTravel * 2.0
             + 1.7
             + flowPhase * 0.63
     );
     const float globalFlowTertiary = sin(
-        flowTravel * 7.0
-            + flowCrossTravel * 2.4
+        flowTravel * 7.0 * uniforms.renderFlowEffectMotion.x
+            + flowCrossTravel * 2.4 * uniforms.renderFlowEffectMotion.y
             - shapeFlowTime * 1.05
             - flowDepthTravel * 1.5
             + 0.8
@@ -160,34 +176,34 @@ vertex ParticleVertexOut particleVertex(
     const float materialSeedPhase = particleFlowPhase
         + (secondarySeed - 0.5) * 0.35;
     const float materialWaveA = sin(
-        bodyNormal.y * 4.1
-            + bodyNormal.z * 5.0
+        bodyNormal.y * 4.1 * uniforms.renderFlowEffectMotion.x
+            + bodyNormal.z * 5.0 * uniforms.renderFlowEffectMotion.y
             - shapeFlowTime * uniforms.renderFlowGeometryTime.y
             + materialSharedPhase
             + materialSeedPhase
     );
     const float materialWaveB = sin(
-        bodyNormal.z * 4.6
-            - bodyNormal.x * 3.4
+        bodyNormal.z * 4.6 * uniforms.renderFlowEffectMotion.y
+            - bodyNormal.x * 3.4 * uniforms.renderFlowEffectMotion.x
             + shapeFlowTime * uniforms.renderFlowGeometryTime.z
             + materialSharedPhase * 0.62
             + 1.3
     );
     const float materialWaveC = cos(
-        bodyNormal.x * 3.7
-            + bodyNormal.y * 2.9
+        bodyNormal.x * 3.7 * uniforms.renderFlowEffectMotion.x
+            + bodyNormal.y * 2.9 * uniforms.renderFlowEffectMotion.y
             - shapeFlowTime * uniforms.renderFlowGeometryTime.w
             + materialSharedPhase * 0.38
             + 2.1
     );
-    const float3 materialSwirl = surfaceFlowAxis
+    const float3 materialSwirl = effectFlowAxis
         * (materialWaveA - materialWaveB * 0.38)
-        + surfaceFlowSide
+        + effectFlowSide
         * (materialWaveB - materialWaveC * 0.34)
         + bodyNormal
         * (materialWaveC - materialWaveA * 0.28);
     const float3 materialConveyor = (
-        surfaceFlowAxis + surfaceFlowSide * 0.42
+        effectFlowAxis + effectFlowSide * 0.42
     ) * sin(
         flowCrossTravel * 3.0
             + flowDepthTravel * 3.8
@@ -197,33 +213,43 @@ vertex ParticleVertexOut particleVertex(
     const float3 materialFlow = materialSwirl * 0.72
         + materialConveyor * 0.28;
     const float broadCloudRoll = sin(
-        flowTravel * uniforms.renderFlowGeometryFrequency.x
-            + flowDepthTravel * uniforms.renderFlowGeometryFrequency.z
+        flowTravel
+            * uniforms.renderFlowGeometryFrequency.x
+            * uniforms.renderFlowEffectMotion.x
+            + flowDepthTravel
+            * uniforms.renderFlowGeometryFrequency.z
+            * uniforms.renderFlowEffectMotion.y
             - shapeFlowTime * uniforms.renderFlowGeometryTime.y
             + globalFlowWave * 1.1
     );
     const float innerCloudCurl = cos(
-        flowCrossTravel * uniforms.renderFlowGeometryFrequency.y
-            - flowDepthTravel * uniforms.renderFlowGeometryFrequency.w
+        flowCrossTravel
+            * uniforms.renderFlowGeometryFrequency.y
+            * uniforms.renderFlowEffectMotion.y
+            - flowDepthTravel
+            * uniforms.renderFlowGeometryFrequency.w
+            * uniforms.renderFlowEffectMotion.x
             + shapeFlowTime * uniforms.renderFlowGeometryTime.z
             + particleFlowPhase
     );
     const float cloudPocketDrift = sin(
         (flowTravel - flowCrossTravel)
             * uniforms.renderFlowGeometryFrequency.x
+            * uniforms.renderFlowEffectMotion.x
             * 0.85
             + flowDepthTravel
             * uniforms.renderFlowGeometryFrequency.z
+            * uniforms.renderFlowEffectMotion.y
             * 1.17
             - shapeFlowTime * uniforms.renderFlowGeometryTime.w
             + materialSeedPhase
     );
-    const float3 cloudRoll = surfaceFlowAxis * innerCloudCurl
-        + surfaceFlowSide * broadCloudRoll
+    const float3 cloudRoll = effectFlowAxis * innerCloudCurl
+        + effectFlowSide * broadCloudRoll
         + bodyNormal
         * (cloudPocketDrift * 0.74 - broadCloudRoll * 0.22);
     const float3 cloudDrift = (
-        surfaceFlowAxis + bodyNormal * 0.24
+        effectFlowAxis + bodyNormal * 0.24
     ) * sin(
         flowCrossTravel * 2.1
             + flowDepthTravel * 3.6
@@ -237,14 +263,19 @@ vertex ParticleVertexOut particleVertex(
         uniforms.renderFlowGeometry.w
     );
     const float3 flowDisplacement = (
-        materialFlow * uniforms.renderFlowGeometry.x
-            + cloudFlow * uniforms.renderFlowGeometry.y
+        materialFlow
+            * uniforms.renderFlowGeometry.x
+            * uniforms.renderFlowEffect.x
+            + cloudFlow
+            * uniforms.renderFlowGeometry.y
+            * uniforms.renderFlowEffect.y
             + bodyNormal
             * (
                 globalFlowWave * 0.72
                     + cloudPocketDrift * 0.28
             )
             * uniforms.renderFlowGeometry.z
+            * uniforms.renderFlowEffect.z
     ) * flowShapeStrength;
     const float3 displacedBodyPosition = bodyPosition + flowDisplacement;
     float3 position = rotateByQuaternion(
@@ -329,16 +360,23 @@ vertex ParticleVertexOut particleVertex(
         * surfaceWeight
     );
     const float flowWaveA = 0.5 + 0.5 * sin(
-        dot(bodyNormal, seededFlowAxis) * uniforms.renderFlowStyle.x
-            - uniforms.renderFlow.w * kFullRotation
+        dot(bodyNormal, seededFlowAxis)
+            * uniforms.renderFlowStyle.x
+            * uniforms.renderFlowEffectMotion.x
+            - uniforms.renderFlow.w
+            * kFullRotation
+            * uniforms.renderFlowEffectMotion.z
             + flowPhase
     );
     const float flowWaveB = 0.5 + 0.5 * cos(
-        dot(bodyNormal, seededFlowCrossAxis) * uniforms.renderFlowStyle.y
+        dot(bodyNormal, seededFlowCrossAxis)
+            * uniforms.renderFlowStyle.y
+            * uniforms.renderFlowEffectMotion.y
             + uniforms.renderFlow.w
             * kFullRotation
             * uniforms.renderFlowStyle.z
-            - flowPhase * uniforms.renderFlowSeed.w
+            * uniforms.renderFlowEffectMotion.z
+            - flowPhase * uniforms.renderFlowBasis.w
     );
     const float flowPattern = smoothstep(
         uniforms.renderFlowPattern.x,

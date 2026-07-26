@@ -107,7 +107,13 @@
 "particleDebug.parameter.aggregationStrength" = "Aggregation";
 "particleDebug.parameter.damping" = "Damping";
 "particleDebug.parameter.flowDirection" = "Surface Flow Direction";
-"particleDebug.parameter.flowSeed" = "Flow Pattern Seed";
+"particleDebug.parameter.flowEffect" = "Flow Effect";
+"particleDebug.flowEffect.cloudSurge" = "Cloud";
+"particleDebug.flowEffect.vortex" = "Vortex";
+"particleDebug.flowEffect.tidal" = "Tidal";
+"particleDebug.flowEffect.crossCurrent" = "Crossflow";
+"particleDebug.flowEffect.pulse" = "Pulse";
+"particleDebug.flowEffect.laminar" = "Laminar";
 "particleDebug.parameter.flowBrightnessStrength" = "Flow Brightness";
 "particleDebug.parameter.flowStructureInfluence" = "Structure Influence";
 "particleDebug.parameter.rotationSpeed" = "Global Rotation Speed";

@@ -652,7 +652,7 @@ private enum ParticleTuningGroup: String, CaseIterable, Identifiable {
                 .flowShapeStrength,
                 .flowSpeed,
                 .flowDirection,
-                .flowSeed,
+                .flowEffect,
                 .flowBrightnessStrength,
                 .rotationSpeed,
                 .rotationDirection,
@@ -965,6 +965,8 @@ private struct ParticleDebugPanel: View {
                                     parameter: parameter,
                                     tuning: $tuning
                                 )
+                            } else if parameter == .flowEffect {
+                                ParticleFlowEffectRow(tuning: $tuning)
                             } else if parameter == .rotationDirection {
                                 ParticleSpinDirectionRow(tuning: $tuning)
                             } else {
@@ -1871,6 +1873,40 @@ private struct ParticleDirectionRow: View {
             )
         } set: { newValue in
             tuning[keyPath: parameter.keyPath] = newValue.tuningValue
+        }
+    }
+}
+
+private struct ParticleFlowEffectRow: View {
+    @Binding var tuning: ParticleTuning
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(String(localized: "particleDebug.parameter.flowEffect"))
+                .font(.system(size: 12))
+                .frame(width: 116, alignment: .leading)
+
+            Picker("", selection: effect) {
+                ForEach(ParticleFlowEffect.allCases) { effect in
+                    Text(
+                        String(
+                            localized: String.LocalizationValue(
+                                effect.localizedKey
+                            )
+                        )
+                    )
+                    .tag(effect)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var effect: Binding<ParticleFlowEffect> {
+        Binding {
+            ParticleFlowEffect.nearest(to: tuning.flowEffect)
+        } set: { newValue in
+            tuning.flowEffect = newValue.tuningValue
         }
     }
 }

@@ -107,7 +107,13 @@
 "particleDebug.parameter.aggregationStrength" = "聚合力";
 "particleDebug.parameter.damping" = "阻尼";
 "particleDebug.parameter.flowDirection" = "表面流动方向";
-"particleDebug.parameter.flowSeed" = "流动形态 Seed";
+"particleDebug.parameter.flowEffect" = "流动效果";
+"particleDebug.flowEffect.cloudSurge" = "云涌";
+"particleDebug.flowEffect.vortex" = "涡旋";
+"particleDebug.flowEffect.tidal" = "潮汐";
+"particleDebug.flowEffect.crossCurrent" = "交汇";
+"particleDebug.flowEffect.pulse" = "脉流";
+"particleDebug.flowEffect.laminar" = "层流";
 "particleDebug.parameter.flowBrightnessStrength" = "流动亮区强度";
 "particleDebug.parameter.flowStructureInfluence" = "流动结构影响";
 "particleDebug.parameter.rotationSpeed" = "整体旋转速度";
