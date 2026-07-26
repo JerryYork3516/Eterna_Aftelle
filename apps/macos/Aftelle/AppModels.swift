@@ -224,6 +224,8 @@ public struct ParticleRenderMetrics: Equatable {
     public var stateElapsedTime: Double
     public var transitionDuration: Double
     public var transitionProgress: Double
+    public var speechPhase: String
+    public var speechIntensity: Double
     public var lastTransitionReason: String
     public var mouseInfluenceEnabled: Bool
     public var mouseInsideParticleArea: Bool
@@ -242,6 +244,8 @@ public struct ParticleRenderMetrics: Equatable {
         stateElapsedTime: 0,
         transitionDuration: 0,
         transitionProgress: 1,
+        speechPhase: "inactive",
+        speechIntensity: 0,
         lastTransitionReason: "startup",
         mouseInfluenceEnabled: true,
         mouseInsideParticleArea: false,
@@ -260,6 +264,8 @@ public struct ParticleDebugSnapshot: Equatable {
     public var stateElapsedTime: Double
     public var transitionDuration: Double
     public var transitionProgress: Double
+    public var speechPhase: String
+    public var speechIntensity: Double
     public var lastTransitionReason: String
     public var sourceAvatarState: String
     public var mappedParticleState: String
@@ -307,6 +313,8 @@ public struct ParticleDebugSnapshot: Equatable {
         stateElapsedTime: 0,
         transitionDuration: 0,
         transitionProgress: 1,
+        speechPhase: "inactive",
+        speechIntensity: 0,
         lastTransitionReason: "startup",
         sourceAvatarState: "mode=idle presence=unknown",
         mappedParticleState: "idle",
@@ -376,8 +384,14 @@ struct AppResidentVisualIntentMapper {
         if runtimeState == .cancelled || runtimeState == .interrupted {
             return .idle
         }
-        if matches(tokens, ["speaking", "responding", "outputting", "active"]) {
+        if matches(tokens, ["sleeping", "asleep", "dormant"]) {
+            return .sleeping
+        }
+        if matches(tokens, ["speaking", "responding", "outputting"]) {
             return .speaking
+        }
+        if matches(tokens, ["listening", "attentive", "receiving"]) {
+            return .listening
         }
         if matches(tokens, ["loading", "connecting", "preparing", "waiting"]) {
             return .loading

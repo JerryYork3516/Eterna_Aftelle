@@ -20,6 +20,8 @@ struct ParticleViewOrientation: Equatable {
 
 struct ParticleCoreMetalView: NSViewRepresentable {
     var visualIntent: ResidentVisualIntent = .idle
+    var speechSignal: ResidentSpeechSignal = .inactive
+    var isDebugSpeechOverrideActive = false
     var tuning: ParticleTuning = .systemDefault
     var colorProfile: ParticleColorProfile = .systemDefault
     var rebuildGeneration = 0
@@ -56,6 +58,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         view.delegate = renderer
         context.coordinator.renderer = renderer
         context.coordinator.swiftUIVisualIntent = visualIntent
+        context.coordinator.speechSignal = speechSignal
         context.coordinator.tuning = tuning
         context.coordinator.colorProfile = colorProfile
         context.coordinator.rebuildGeneration = rebuildGeneration
@@ -82,6 +85,12 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         renderer.setColorProfile(colorProfile)
         renderer.setViewOrientation(viewOrientation)
         renderer.setManualRotationEnabled(isManualRotationEnabled)
+        renderer.setSpeechSignal(
+            speechSignal,
+            reason: isDebugSpeechOverrideActive
+                ? "debugPanel.speech"
+                : "appSpeech"
+        )
         #if DEBUG
         renderer.setDebugAutoCycleEnabled(isDebugAutoCycleEnabled)
         if let debugVisualIntent {
@@ -99,6 +108,15 @@ struct ParticleCoreMetalView: NSViewRepresentable {
                 context.coordinator.renderer?.setVisualIntent(visualIntent, reason: "appMapping")
             }
             context.coordinator.swiftUIVisualIntent = visualIntent
+        }
+        if context.coordinator.speechSignal != speechSignal {
+            context.coordinator.renderer?.setSpeechSignal(
+                speechSignal,
+                reason: isDebugSpeechOverrideActive
+                    ? "debugPanel.speech"
+                    : "appSpeech"
+            )
+            context.coordinator.speechSignal = speechSignal
         }
         #if DEBUG
         if context.coordinator.isDebugAutoCycleEnabled != isDebugAutoCycleEnabled {
@@ -174,6 +192,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
     final class Coordinator {
         var renderer: ParticleRenderer?
         var swiftUIVisualIntent: ResidentVisualIntent = .idle
+        var speechSignal: ResidentSpeechSignal = .inactive
         var tuning: ParticleTuning = .systemDefault
         var colorProfile: ParticleColorProfile = .systemDefault
         var rebuildGeneration = 0
@@ -278,10 +297,14 @@ private final class ParticleCoreInputView: MTKView {
         switch key {
         case "i":
             inputRenderer?.setVisualIntent(.idle, reason: "debugKey.I")
+        case "n":
+            inputRenderer?.setVisualIntent(.listening, reason: "debugKey.N")
         case "t":
             inputRenderer?.setVisualIntent(.thinking, reason: "debugKey.T")
         case "s":
             inputRenderer?.setVisualIntent(.speaking, reason: "debugKey.S")
+        case "z":
+            inputRenderer?.setVisualIntent(.sleeping, reason: "debugKey.Z")
         case "l":
             inputRenderer?.setVisualIntent(.loading, reason: "debugKey.L")
         case "e":

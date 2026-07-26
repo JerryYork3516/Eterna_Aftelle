@@ -15,6 +15,10 @@ final class ParticlePresentationSettings: ObservableObject {
     @Published private(set) var debugIntentGeneration = 0
     @Published private(set) var isDebugAutoCycleEnabled = false
     @Published private(set) var debugStressTestGeneration = 0
+    @Published private(set) var debugSpeechSignal: ResidentSpeechSignal?
+    @Published private(set) var debugSpeechIntensity = Double(
+        ParticleTuning.Engine.defaultSpeechIntensity
+    )
     #if DEBUG
     @Published var isOrientationOverlayVisible = false
     #endif
@@ -53,6 +57,33 @@ final class ParticlePresentationSettings: ObservableObject {
     func runDebugTransitionStressTest() {
         debugStressTestGeneration &+= 1
     }
+
+    func simulateDebugSpeech(_ phase: ResidentSpeechPhase) {
+        let intensity: Float
+        switch phase {
+        case .started, .sustained:
+            intensity = Float(debugSpeechIntensity)
+        case .inactive, .paused, .ended:
+            intensity = 0
+        }
+        debugSpeechSignal = ResidentSpeechSignal(
+            phase: phase,
+            intensity: intensity
+        )
+    }
+
+    func setDebugSpeechIntensity(_ intensity: Double) {
+        debugSpeechIntensity = min(1, max(0, intensity))
+        guard let signal = debugSpeechSignal,
+              signal.phase == .started || signal.phase == .sustained else {
+            return
+        }
+        simulateDebugSpeech(signal.phase)
+    }
+
+    func followRuntimeSpeech() {
+        debugSpeechSignal = nil
+    }
 }
 
 struct ContentView: View {
@@ -72,6 +103,10 @@ struct ContentView: View {
 
             ParticleCoreMetalView(
                 visualIntent: controller.residentVisualIntent,
+                speechSignal: presentationSettings.debugSpeechSignal
+                    ?? controller.residentSpeechSignal,
+                isDebugSpeechOverrideActive:
+                    presentationSettings.debugSpeechSignal != nil,
                 tuning: presentationSettings.tuning,
                 colorProfile: presentationSettings.colorProfile,
                 rebuildGeneration: presentationSettings.rebuildGeneration,
@@ -491,6 +526,11 @@ struct ParticleDebugWindow: View {
             setDebugAutoCycleEnabled: presentationSettings.setDebugAutoCycleEnabled,
             followRuntimeVisualIntent: presentationSettings.followRuntimeVisualIntent,
             runDebugTransitionStressTest: presentationSettings.runDebugTransitionStressTest,
+            debugSpeechSignal: presentationSettings.debugSpeechSignal,
+            debugSpeechIntensity: presentationSettings.debugSpeechIntensity,
+            simulateDebugSpeech: presentationSettings.simulateDebugSpeech,
+            setDebugSpeechIntensity: presentationSettings.setDebugSpeechIntensity,
+            followRuntimeSpeech: presentationSettings.followRuntimeSpeech,
             refreshColorProfileSnapshot: {
                 controller.updateEffectiveParticleColorProfile(
                     presentationSettings.colorProfile,
@@ -561,6 +601,11 @@ private struct ParticleDebugPanel: View {
     let setDebugAutoCycleEnabled: (Bool) -> Void
     let followRuntimeVisualIntent: () -> Void
     let runDebugTransitionStressTest: () -> Void
+    let debugSpeechSignal: ResidentSpeechSignal?
+    let debugSpeechIntensity: Double
+    let simulateDebugSpeech: (ResidentSpeechPhase) -> Void
+    let setDebugSpeechIntensity: (Double) -> Void
+    let followRuntimeSpeech: () -> Void
     let refreshColorProfileSnapshot: () -> Void
     let importDR: () -> Void
     let saveProviderConfiguration: (ProviderProfile) -> Void
@@ -630,7 +675,12 @@ private struct ParticleDebugPanel: View {
                 Text(String(localized: "particleDebug.transitionTest"))
                     .font(.system(size: 12, weight: .medium))
 
-                HStack(spacing: 5) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.adaptive(minimum: 70), spacing: 5)
+                    ],
+                    spacing: 5
+                ) {
                     ForEach(ResidentVisualIntent.allCases) { intent in
                         Button(NSLocalizedString(intent.debugLocalizedKey, comment: "")) {
                             selectDebugVisualIntent(intent)
@@ -663,6 +713,52 @@ private struct ParticleDebugPanel: View {
                     )
                 }
                 .controlSize(.small)
+
+                Divider()
+
+                Text(String(localized: "particleDebug.speechTest"))
+                    .font(.system(size: 12, weight: .medium))
+
+                HStack(spacing: 5) {
+                    ForEach(
+                        [
+                            ResidentSpeechPhase.started,
+                            .sustained,
+                            .paused,
+                            .ended
+                        ]
+                    ) { phase in
+                        Button(NSLocalizedString(phase.debugLocalizedKey, comment: "")) {
+                            simulateDebugSpeech(phase)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.bordered)
+                        .disabled(debugSpeechSignal?.phase == phase)
+                    }
+
+                    Spacer()
+
+                    Button(
+                        String(localized: "particleDebug.speech.followRuntime"),
+                        action: followRuntimeSpeech
+                    )
+                    .controlSize(.small)
+                }
+
+                HStack {
+                    Text(String(localized: "particleDebug.speech.intensity"))
+                        .font(.system(size: 11))
+                    Slider(
+                        value: Binding(
+                            get: { debugSpeechIntensity },
+                            set: setDebugSpeechIntensity
+                        ),
+                        in: 0...1
+                    )
+                    Text(String(format: "%.2f", debugSpeechIntensity))
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(width: 34, alignment: .trailing)
+                }
             }
 
             if section == .color {
@@ -1359,6 +1455,8 @@ private struct ParticleDiagnosticsView: View {
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.stateElapsedTime", value: String(format: "%.2fs", snapshot.stateElapsedTime))
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.transitionDuration", value: String(format: "%.2fs", snapshot.transitionDuration))
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.transitionProgress", value: String(format: "%.3f", snapshot.transitionProgress))
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.speechPhase", value: snapshot.speechPhase)
+                ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.speechIntensity", value: String(format: "%.2f", snapshot.speechIntensity))
                 ParticleDiagnosticsRow(labelKey: "particleDebug.diagnostics.lastTransitionReason", value: snapshot.lastTransitionReason)
             }
 

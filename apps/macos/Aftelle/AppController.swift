@@ -39,6 +39,7 @@ final class AppController: ObservableObject {
     @Published private(set) var debugPanelState = DebugPanelViewState()
     @Published private(set) var runtimeState: AppRuntimeState = .idle
     @Published private(set) var residentVisualIntent: ResidentVisualIntent = .idle
+    @Published private(set) var residentSpeechSignal: ResidentSpeechSignal = .inactive
     @Published private(set) var particleAvatarMode: ParticleAvatarMode = .particleCore
     @Published private(set) var particleRenderKind: ParticleRenderKind = .particleCore
     @Published private(set) var particleShellMode: ParticleShellMode = .darkShell
@@ -218,6 +219,7 @@ final class AppController: ObservableObject {
         let configurationGenerationAtStart = providerConfigurationGeneration
 
         residentTextInputState = ResidentTextInputViewState(isSubmitting: true)
+        residentSpeechSignal = .ended
         runtimeState = .running
         refreshResidentVisualIntent(visualStateMode: "thinking")
         refreshParticleDebugSnapshot()
@@ -957,10 +959,60 @@ final class AppController: ObservableObject {
     private func presentResidentTextVisualState(_ visualStateMode: String) {
         let presentationID = UUID()
         residentTextPresentationID = presentationID
+        let isSpeaking = visualStateMode == ResidentVisualIntent.speaking.rawValue
+        residentSpeechSignal = isSpeaking
+            ? ResidentSpeechSignal(
+                phase: .started,
+                intensity: ParticleTuning.Engine.defaultSpeechIntensity
+            )
+            : .ended
         refreshResidentVisualIntent(visualStateMode: visualStateMode)
         refreshParticleDebugSnapshot()
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 900_000_000)
+            if isSpeaking {
+                try? await Task.sleep(
+                    nanoseconds: Self.nanoseconds(
+                        ParticleTuning.Engine.speechStartDuration
+                    )
+                )
+                guard let self,
+                      self.residentTextPresentationID == presentationID else {
+                    return
+                }
+                self.residentSpeechSignal = ResidentSpeechSignal(
+                    phase: .sustained,
+                    intensity: ParticleTuning.Engine.defaultSpeechIntensity
+                )
+
+                try? await Task.sleep(
+                    nanoseconds: Self.nanoseconds(
+                        ParticleTuning.Engine.speechSustainDuration
+                    )
+                )
+                guard self.residentTextPresentationID == presentationID else {
+                    return
+                }
+                self.residentSpeechSignal = ResidentSpeechSignal(
+                    phase: .paused,
+                    intensity: 0
+                )
+
+                try? await Task.sleep(
+                    nanoseconds: Self.nanoseconds(
+                        ParticleTuning.Engine.speechPauseDuration
+                    )
+                )
+                guard self.residentTextPresentationID == presentationID else {
+                    return
+                }
+                self.residentSpeechSignal = .ended
+            } else {
+                try? await Task.sleep(
+                    nanoseconds: Self.nanoseconds(
+                        ParticleTuning.Engine.transientStatePresentationDuration
+                    )
+                )
+            }
             guard let self,
                   self.residentTextPresentationID == presentationID,
                   !self.residentTextInputState.isSubmitting else { return }
@@ -975,6 +1027,7 @@ final class AppController: ObservableObject {
         residentTextTask?.cancel()
         residentTextTask = nil
         residentTextPresentationID = nil
+        residentSpeechSignal = .ended
         residentTextInputState = ResidentTextInputViewState()
         runtimeState = .idle
     }
@@ -1043,6 +1096,7 @@ final class AppController: ObservableObject {
         if shouldPresentFirstGreeting {
             particleSubtitleState = .hidden
         }
+        residentSpeechSignal = .inactive
         let firstAppearance = orchestrationKernel.consumeFirstAppearance(
             for: result.residentID,
             userInitiated: shouldPresentFirstGreeting
@@ -1121,7 +1175,15 @@ final class AppController: ObservableObject {
             }
         )
         refreshDebugPanelState()
-        refreshResidentVisualIntent(visualStateMode: response.visualState.mode.rawValue)
+        if response.visualState.mode.rawValue
+            == ResidentVisualIntent.speaking.rawValue {
+            presentResidentTextVisualState(response.visualState.mode.rawValue)
+        } else {
+            residentSpeechSignal = .ended
+            refreshResidentVisualIntent(
+                visualStateMode: response.visualState.mode.rawValue
+            )
+        }
         refreshParticleDebugSnapshot()
         return response
     }
@@ -1129,6 +1191,7 @@ final class AppController: ObservableObject {
     func cancelCurrentStep() {
         orchestrationKernel.cancelCurrentStep()
         runtimeState = .cancelled
+        residentSpeechSignal = .ended
         refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
     }
@@ -1136,6 +1199,7 @@ final class AppController: ObservableObject {
     func interrupt() {
         orchestrationKernel.interrupt()
         runtimeState = .interrupted
+        residentSpeechSignal = .ended
         refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
     }
@@ -1244,6 +1308,8 @@ final class AppController: ObservableObject {
             stateElapsedTime: latestParticleRenderMetrics.stateElapsedTime,
             transitionDuration: latestParticleRenderMetrics.transitionDuration,
             transitionProgress: latestParticleRenderMetrics.transitionProgress,
+            speechPhase: latestParticleRenderMetrics.speechPhase,
+            speechIntensity: latestParticleRenderMetrics.speechIntensity,
             lastTransitionReason: latestParticleRenderMetrics.lastTransitionReason,
             sourceAvatarState: avatarStateSummary(),
             mappedParticleState: mappedState,
@@ -1301,6 +1367,10 @@ final class AppController: ObservableObject {
 
     private func colorString(red: Double, green: Double, blue: Double) -> String {
         String(format: "%.2f, %.2f, %.2f", red, green, blue)
+    }
+
+    private static func nanoseconds(_ duration: TimeInterval) -> UInt64 {
+        UInt64(max(0, duration) * 1_000_000_000)
     }
 
     private func applyFailure(runtimeMessage: String, diagnosticsMessage: String) {

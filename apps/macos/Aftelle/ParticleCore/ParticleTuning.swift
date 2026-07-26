@@ -1,6 +1,14 @@
 import Foundation
 import simd
 
+struct ParticleVisualProfile {
+    let focus: Float
+    let pulse: Float
+    let circulation: Float
+    let disruption: Float
+    let dissolution: Float
+}
+
 struct ParticleTuning: Codable, Equatable {
     var sphereRadius: Double
     var surfaceRatio: Double
@@ -99,6 +107,84 @@ struct ParticleTuning: Codable, Equatable {
         static let debugStressSwitchCount = 100
         static let debugContinuityTolerance: Float = 0.000_001
         static let debugMaximumPauseProgressStep: Float = 0.06
+        static let idleProfile = ParticleVisualProfile(
+            focus: 0,
+            pulse: 0,
+            circulation: 0,
+            disruption: 0,
+            dissolution: 0
+        )
+        static let listeningProfile = ParticleVisualProfile(
+            focus: 0.78,
+            pulse: 0,
+            circulation: 0.06,
+            disruption: 0,
+            dissolution: 0
+        )
+        static let thinkingProfile = ParticleVisualProfile(
+            focus: 0.24,
+            pulse: 0.08,
+            circulation: 0.82,
+            disruption: 0.04,
+            dissolution: 0
+        )
+        static let speakingProfile = ParticleVisualProfile(
+            focus: 0.10,
+            pulse: 0.08,
+            circulation: 0.30,
+            disruption: 0,
+            dissolution: 0
+        )
+        static let sleepingProfile = ParticleVisualProfile(
+            focus: 0.42,
+            pulse: 0,
+            circulation: 0,
+            disruption: 0,
+            dissolution: 0.32
+        )
+        static let errorProfile = ParticleVisualProfile(
+            focus: 0.08,
+            pulse: 0.04,
+            circulation: 0.12,
+            disruption: 0.18,
+            dissolution: 0
+        )
+        static let loadingProfile = ParticleVisualProfile(
+            focus: 0.18,
+            pulse: 0.05,
+            circulation: 1,
+            disruption: 0,
+            dissolution: 0
+        )
+        static let exitProfile = ParticleVisualProfile(
+            focus: 0,
+            pulse: 0,
+            circulation: 0,
+            disruption: 0,
+            dissolution: 1
+        )
+        static let speechStartPulseBase: Float = 0.42
+        static let speechStartPulseIntensityScale: Float = 0.34
+        static let speechSustainPulseBase: Float = 0.20
+        static let speechSustainPulseIntensityScale: Float = 0.48
+        static let speechCirculationBase: Float = 0.24
+        static let speechCirculationIntensityScale: Float = 0.22
+        static let defaultSpeechIntensity: Float = 0.68
+        static let speechStartDuration = 0.12
+        static let speechSustainDuration = 0.52
+        static let speechPauseDuration = 0.18
+        static let speechEndDuration = 0.18
+        static let transientStatePresentationDuration = 0.90
+        static let errorImpulseStrength: Float = 0.78
+        static let errorImpulseHoldDuration = 0.28
+        static let errorRecoveryDuration = 0.46
+        static let statePulseRadiusScale: Float = 0.025
+        static let statePulseFrequency: Float = 3.4
+        static let circulationFlowIncrease: Float = 0.48
+        static let disruptionAccelerationIncrease: Float = 1.8
+        static let dissolutionFlowReduction: Float = 0.48
+        static let minimumStateFlowScale: Float = 0.28
+        static let maximumStateFlowScale: Float = 1.55
         static let goldenAngle: Float = 2.399_963_1
         static let angularJitterScale: Float = 0.34
         static let surfaceThickness: Float = 0.075

@@ -191,6 +191,25 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         )
     }
 
+    func setSpeechSignal(
+        _ signal: ResidentSpeechSignal,
+        reason: String = "appSpeech"
+    ) {
+        let previousSignal = stateController.speechSignal
+        stateController.setSpeechSignal(
+            signal,
+            reason: reason,
+            time: CACurrentMediaTime()
+        )
+        guard previousSignal != signal.normalized() else { return }
+        print(
+            "[ParticleCore] speechSignal changed "
+                + "phase=\(signal.phase.rawValue) "
+                + "intensity=\(String(format: "%.2f", signal.intensity)) "
+                + "reason=\(reason)"
+        )
+    }
+
     func setTuning(_ tuning: ParticleTuning) {
         guard simulation.setTuning(tuning) else { return }
         pendingModelRebuild?.cancel()
@@ -282,6 +301,17 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 (index + 1) % ResidentVisualIntent.allCases.count
             ]
             stateController.setIntent(intent, reason: "debugStress", time: time)
+            let phase = ResidentSpeechPhase.allCases[
+                index % ResidentSpeechPhase.allCases.count
+            ]
+            stateController.setSpeechSignal(
+                ResidentSpeechSignal(
+                    phase: phase,
+                    intensity: Float(index % 11) / 10
+                ),
+                reason: "debugStress.speech",
+                time: time
+            )
             let state = stateController.advance(time: time)
             finiteChannels = finiteChannels && Self.channelsAreFinite(state.channels)
         }
@@ -293,11 +323,21 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         controller.setIntent(.thinking, reason: "debugStress.prepare", time: time)
         time += 0.09
         let beforeRetarget = controller.advance(time: time)
-        controller.setIntent(.error, reason: "debugStress.retarget", time: time)
+        controller.setSpeechSignal(
+            ResidentSpeechSignal(phase: .started, intensity: 0.8),
+            reason: "debugStress.retargetSpeech",
+            time: time
+        )
         let afterRetarget = controller.advance(time: time)
         let continuityError = Self.maximumChannelDifference(
             beforeRetarget.channels,
             afterRetarget.channels
+        )
+        controller.setIntent(.error, reason: "debugStress.retargetState", time: time)
+        let afterStateRetarget = controller.advance(time: time)
+        let stateContinuityError = Self.maximumChannelDifference(
+            afterRetarget.channels,
+            afterStateRetarget.channels
         )
         let progressBeforePause = afterRetarget.transitionProgress
         let afterPause = controller.advance(time: time + 1_800)
@@ -305,13 +345,16 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         let passed = finiteChannels
             && rebuildCountBefore == rebuildCountAfter
             && continuityError <= ParticleTuning.Engine.debugContinuityTolerance
+            && stateContinuityError
+            <= ParticleTuning.Engine.debugContinuityTolerance
             && afterPause.deltaTime <= ParticleTuning.Engine.maximumSimulationStep
             && pauseProgressStep <= ParticleTuning.Engine.debugMaximumPauseProgressStep
 
         print(
-            "[ParticleCore][V2.3Test] passed=\(passed) "
+            "[ParticleCore][V2.4Test] passed=\(passed) "
                 + "switches=\(ParticleTuning.Engine.debugStressSwitchCount) "
-                + "continuityError=\(String(format: "%.6f", continuityError)) "
+                + "speechContinuityError=\(String(format: "%.6f", continuityError)) "
+                + "stateContinuityError=\(String(format: "%.6f", stateContinuityError)) "
                 + "resumeDelta=\(String(format: "%.6f", afterPause.deltaTime)) "
                 + "resumeProgressStep=\(String(format: "%.6f", pauseProgressStep)) "
                 + "particleRebuildCount=\(rebuildCountBefore)->\(rebuildCountAfter)"
@@ -489,6 +532,8 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             stateElapsedTime: Double(visualState.transitionElapsedTime),
             transitionDuration: Double(visualState.transitionDuration),
             transitionProgress: Double(visualState.transitionProgress),
+            speechPhase: visualState.speechSignal.phase.rawValue,
+            speechIntensity: Double(visualState.speechSignal.intensity),
             lastTransitionReason: visualState.transitionReason,
             mouseInfluenceEnabled: true,
             mouseInsideParticleArea: interactionActive,
@@ -502,6 +547,18 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "drawableSize=\(drawableSize) "
                 + "currentIntent=\(visualState.currentIntent.rawValue) "
                 + "targetIntent=\(visualState.targetIntent.rawValue) "
+                + "speechPhase=\(visualState.speechSignal.phase.rawValue) "
+                + "speechIntensity=\(String(format: "%.2f", visualState.speechSignal.intensity)) "
+                + "channels=["
+                + String(
+                    format: "%.2f,%.2f,%.2f,%.2f,%.2f",
+                    visualState.focusStrength,
+                    visualState.pulseStrength,
+                    visualState.circulationStrength,
+                    visualState.disruptionStrength,
+                    visualState.dissolutionStrength
+                )
+                + "] "
                 + "deltaTime=\(String(format: "%.4f", visualState.deltaTime)) "
                 + "transitionProgress=\(String(format: "%.3f", visualState.transitionProgress)) "
                 + "transitionElapsedTime=\(String(format: "%.2f", visualState.transitionElapsedTime)) "

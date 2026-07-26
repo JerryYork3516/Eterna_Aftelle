@@ -191,7 +191,11 @@ struct ParticleSimulation {
         previousTime = time
         if timeStep > 0 {
             motionElapsedTime += timeStep
-            integrate(time: motionElapsedTime, timeStep: timeStep)
+            integrate(
+                time: motionElapsedTime,
+                timeStep: timeStep,
+                visualState: visualState
+            )
         }
 
         return ParticleSimulationFrame(
@@ -221,7 +225,11 @@ struct ParticleSimulation {
         )
     }
 
-    private mutating func integrate(time: Float, timeStep: Float) {
+    private mutating func integrate(
+        time: Float,
+        timeStep: Float,
+        visualState: ParticleVisualState
+    ) {
         let baseRadius = sphereRadius
         let breathingAmplitude = ParticleTuning.Engine.amplifiedStrength(
             tuning.breathingAmount
@@ -238,7 +246,14 @@ struct ParticleSimulation {
                 + ParticleTuning.Engine.secondaryBreathingPhase
         ) * ParticleTuning.Engine.secondaryBreathingAmplitude
         let breathingScale = 1 + breathingAmplitude * (primaryBreath + secondaryBreath)
-        let targetRadius = baseRadius * breathingScale
+        let pulseWave = sin(
+            time * ParticleTuning.Engine.statePulseFrequency * 2 * .pi
+        )
+        let pulseScale = 1
+            + visualState.pulseStrength
+            * ParticleTuning.Engine.statePulseRadiusScale
+            * (pulseWave * 0.5 + 0.5)
+        let targetRadius = baseRadius * breathingScale * pulseScale
         let aggregation = ParticleTuning.Engine.amplifiedValue(
             tuning.aggregationStrength,
             minimum: ParticleTuning.Engine.minimumAggregation,
@@ -254,6 +269,7 @@ struct ParticleSimulation {
             tuning.flowStrength
         )
             * ParticleTuning.Engine.maximumFlowAcceleration
+            * visualState.flowSpeedMultiplier
         let flowFrequency = ParticleTuning.Engine.amplifiedValue(
             tuning.flowSpeed,
             minimum: ParticleTuning.Engine.minimumFlowFrequency,
@@ -263,6 +279,11 @@ struct ParticleSimulation {
             tuning.disturbanceStrength
         )
             * ParticleTuning.Engine.maximumDisturbanceAcceleration
+            * (
+                1
+                    + visualState.disruptionStrength
+                    * ParticleTuning.Engine.disruptionAccelerationIncrease
+            )
         let axisPhase = time * flowFrequency * ParticleTuning.Engine.flowAxisPrecession
         let flowAxis = simd_normalize(SIMD3<Float>(
             sin(axisPhase) * ParticleTuning.Engine.flowAxisTilt,
