@@ -181,7 +181,7 @@ final class ParticleStateController {
         beginTransition(
             from: liveChannels,
             to: combinedTarget(errorImpulseActive: intent == .error),
-            duration: ParticleTuning.Engine.visualTransitionDuration,
+            duration: transitionDuration(for: intent),
             reason: reason,
             time: time
         )
@@ -310,6 +310,25 @@ final class ParticleStateController {
         }
     }
 
+    private func transitionDuration(
+        for intent: ResidentVisualIntent
+    ) -> TimeInterval {
+        switch intent {
+        case .thinking:
+            return ParticleTuning.Engine.thinkingTransitionDuration
+        case .speaking:
+            return ParticleTuning.Engine.speakingTransitionDuration
+        case .loading:
+            return ParticleTuning.Engine.loadingTransitionDuration
+        case .error:
+            return ParticleTuning.Engine.errorTransitionDuration
+        case .exit:
+            return ParticleTuning.Engine.exitTransitionDuration
+        case .idle, .listening, .sleeping:
+            return ParticleTuning.Engine.visualTransitionDuration
+        }
+    }
+
     private func updateClock(time: TimeInterval) {
         let rawDelta = max(0, time - previousTime)
         let maximumDelta = TimeInterval(ParticleTuning.Engine.maximumSimulationStep)
@@ -343,6 +362,7 @@ final class ParticleStateController {
     }
 
     private static func eased(_ progress: Float) -> Float {
-        progress * progress * (3 - 2 * progress)
+        progress * progress * progress
+            * (progress * (progress * 6 - 15) + 10)
     }
 }

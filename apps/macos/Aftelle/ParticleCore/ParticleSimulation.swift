@@ -470,7 +470,9 @@ struct ParticleSimulation {
                 minimum: ParticleTuning.Engine.minimumFlowFrequency,
                 maximum: ParticleTuning.Engine.maximumFlowFrequency
             )
-            flowElapsedTime += timeStep * flowFrequency
+            flowElapsedTime += timeStep
+                * flowFrequency
+                * visualState.flowSpeedMultiplier
             integrate(
                 time: motionElapsedTime,
                 flowTime: flowElapsedTime,
@@ -539,7 +541,15 @@ struct ParticleSimulation {
             + visualState.pulseStrength
             * ParticleTuning.Engine.statePulseRadiusScale
             * (pulseWave * 0.5 + 0.5)
-        let targetRadius = baseRadius * breathingScale * pulseScale
+        let stateRadiusScale = 1
+            - visualState.focusStrength
+            * ParticleTuning.Engine.stateFocusRadiusReduction
+            - visualState.dissolutionStrength
+            * ParticleTuning.Engine.stateDissolutionRadiusReduction
+        let targetRadius = baseRadius
+            * breathingScale
+            * pulseScale
+            * stateRadiusScale
         let aggregation = ParticleTuning.Engine.amplifiedValue(
             tuning.aggregationStrength,
             minimum: ParticleTuning.Engine.minimumAggregation,
@@ -634,7 +644,17 @@ struct ParticleSimulation {
                     for: particle,
                     easedProgress: morphProgress
                 )
-            let target = shapeAnchor * targetRadius
+            let disruptionWave = disturbanceXTimeSine
+                * particle.disturbancePhaseXCosine
+                + disturbanceXTimeCosine
+                * particle.disturbancePhaseXSine
+            let disruptionRadiusScale = 1
+                + visualState.disruptionStrength
+                * ParticleTuning.Engine.stateDisruptionRadiusScale
+                * disruptionWave
+            let target = shapeAnchor
+                * targetRadius
+                * disruptionRadiusScale
             let radial = Self.safeNormalize(
                 particle.position,
                 fallback: shapeAnchor

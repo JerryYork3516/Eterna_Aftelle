@@ -486,6 +486,20 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         let flowEffect = ParticleFlowEffect.nearest(
             to: tuning.flowEffect
         )
+        let stateFlowShapeScale = max(
+            ParticleTuning.Engine.minimumStateFlowShapeScale,
+            1
+                - visualState.focusStrength
+                * ParticleTuning.Engine.focusFlowShapeReduction
+                + visualState.pulseStrength
+                * ParticleTuning.Engine.pulseFlowShapeIncrease
+                + visualState.circulationStrength
+                * ParticleTuning.Engine.circulationFlowShapeIncrease
+                - visualState.disruptionStrength
+                * ParticleTuning.Engine.disruptionFlowShapeReduction
+                - visualState.dissolutionStrength
+                * ParticleTuning.Engine.dissolutionFlowShapeReduction
+        )
         return ParticleFrameUniforms(
             viewportAndRender: SIMD4(
                 frame.resolution.x,
@@ -623,7 +637,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                     ParticleTuning.Engine.maximumFlowShapeStrength,
                     ParticleTuning.Engine.amplifiedStrength(
                         tuning.flowShapeStrength
-                    )
+                    ) * stateFlowShapeScale
                 )
             ),
             renderFlowGeometryFrequency: SIMD4(

@@ -335,7 +335,12 @@ struct ParticleTuning: Codable, Equatable {
         static let modelRebuildDelay = 0.12
         static let controlEffectMultiplier: Float = 2
         static let maximumSimulationStep: Float = 1.0 / 30.0
-        static let visualTransitionDuration = 0.60
+        static let visualTransitionDuration = 0.68
+        static let thinkingTransitionDuration = 0.72
+        static let speakingTransitionDuration = 0.48
+        static let loadingTransitionDuration = 0.64
+        static let errorTransitionDuration = 0.30
+        static let exitTransitionDuration = 0.95
         static let shapeMorphDuration = 0.85
         static let minimumTransitionDuration = 0.001
         static let debugAutoCycleInterval = 0.45
@@ -359,17 +364,17 @@ struct ParticleTuning: Codable, Equatable {
             dissolution: 0
         )
         static let thinkingProfile = ParticleVisualProfile(
-            focus: 0.12,
-            pulse: 0.16,
-            circulation: 1,
-            disruption: 0.08,
+            focus: 0.82,
+            pulse: 0.04,
+            circulation: 0.42,
+            disruption: 0.03,
             dissolution: 0
         )
         static let speakingProfile = ParticleVisualProfile(
-            focus: 0.06,
-            pulse: 0.22,
-            circulation: 0.34,
-            disruption: 0,
+            focus: 0.02,
+            pulse: 0.90,
+            circulation: 0.38,
+            disruption: 0.01,
             dissolution: 0
         )
         static let sleepingProfile = ParticleVisualProfile(
@@ -380,24 +385,24 @@ struct ParticleTuning: Codable, Equatable {
             dissolution: 0.55
         )
         static let errorProfile = ParticleVisualProfile(
-            focus: 0.02,
-            pulse: 0.12,
-            circulation: 0.08,
-            disruption: 0.22,
-            dissolution: 0.12
+            focus: 0.04,
+            pulse: 0.05,
+            circulation: 0.06,
+            disruption: 0.36,
+            dissolution: 0.08
         )
         static let loadingProfile = ParticleVisualProfile(
-            focus: 0.18,
-            pulse: 0.05,
+            focus: 0.24,
+            pulse: 0.08,
             circulation: 1,
             disruption: 0,
             dissolution: 0
         )
         static let exitProfile = ParticleVisualProfile(
-            focus: 0,
+            focus: 0.18,
             pulse: 0,
             circulation: 0,
-            disruption: 0,
+            disruption: 0.06,
             dissolution: 1
         )
         static let speechStartPulseBase: Float = 0.42
@@ -412,16 +417,19 @@ struct ParticleTuning: Codable, Equatable {
         static let speechPauseDuration = 0.18
         static let speechEndDuration = 0.18
         static let transientStatePresentationDuration = 0.90
-        static let errorImpulseStrength: Float = 0.90
-        static let errorImpulseHoldDuration = 0.36
-        static let errorRecoveryDuration = 0.58
-        static let statePulseRadiusScale: Float = 0.05
-        static let statePulseFrequency: Float = 3.4
-        static let circulationFlowIncrease: Float = 0.70
-        static let disruptionAccelerationIncrease: Float = 3
-        static let dissolutionFlowReduction: Float = 0.78
+        static let errorImpulseStrength: Float = 1
+        static let errorImpulseHoldDuration = 0.50
+        static let errorRecoveryDuration = 0.75
+        static let stateFocusRadiusReduction: Float = 0.085
+        static let statePulseRadiusScale: Float = 0.075
+        static let statePulseFrequency: Float = 0.78
+        static let stateDisruptionRadiusScale: Float = 0.11
+        static let stateDissolutionRadiusReduction: Float = 0.14
+        static let circulationFlowIncrease: Float = 0.80
+        static let disruptionAccelerationIncrease: Float = 5
+        static let dissolutionFlowReduction: Float = 0.80
         static let minimumStateFlowScale: Float = 0.18
-        static let maximumStateFlowScale: Float = 1.80
+        static let maximumStateFlowScale: Float = 1.95
         static let goldenAngle: Float = 2.399_963_1
         static let customShapeCubeScale: Float = 0.577_350_26
         static let minimumGlobalScale: Float = 0.64
@@ -579,11 +587,11 @@ struct ParticleTuning: Codable, Equatable {
         static let depthPointSizeMaximum: Float = 1.24
         static let volumePointSizeScale: Float = 0.74
         static let surfacePointSizeScale: Float = 1.08
-        static let focusPointSizeReduction: Float = 0.16
-        static let pulsePointSizeIncrease: Float = 0.12
-        static let channelBrightnessRange: Float = 0.18
-        static let disruptionBrightnessReduction: Float = 0.16
-        static let minimumDissolutionAlpha: Float = 0.08
+        static let focusPointSizeReduction: Float = 0.24
+        static let pulsePointSizeIncrease: Float = 0.22
+        static let channelBrightnessRange: Float = 0.26
+        static let disruptionBrightnessReduction: Float = 0.34
+        static let minimumDissolutionAlpha: Float = 0.04
         static let minimumAlphaScale: Float = 0.10
         static let maximumAlphaScale: Float = 1.90
         static let pointCoreStart: Float = 0.06
@@ -612,9 +620,15 @@ struct ParticleTuning: Codable, Equatable {
         static let interactionFallResponse: Float = 0.06
         static let orientationOverlayRefreshInterval = 1.0 / 30.0
         static let metricsInterval = 1.0
-        static let focusFlowReduction: Float = 0.55
-        static let pulseFlowIncrease: Float = 0.22
-        static let instabilityFlowReduction: Float = 0.10
+        static let focusFlowReduction: Float = 0.58
+        static let pulseFlowIncrease: Float = 0.26
+        static let instabilityFlowReduction: Float = 0.42
+        static let focusFlowShapeReduction: Float = 0.30
+        static let pulseFlowShapeIncrease: Float = 0.12
+        static let circulationFlowShapeIncrease: Float = 0.85
+        static let disruptionFlowShapeReduction: Float = 0.25
+        static let dissolutionFlowShapeReduction: Float = 0.75
+        static let minimumStateFlowShapeScale: Float = 0.18
 
         static func value(_ control: Double, minimum: Float, maximum: Float) -> Float {
             minimum + Float(min(1, max(0, control))) * (maximum - minimum)
