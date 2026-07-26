@@ -236,6 +236,7 @@ public struct ParticleRenderMetrics: Equatable {
     public var mouseInfluenceEnabled: Bool
     public var mouseInsideParticleArea: Bool
     public var interactionStrength: Double
+    var expression: ParticleExpressionVisualState
 
     public static let empty = ParticleRenderMetrics(
         fps: 0,
@@ -261,7 +262,8 @@ public struct ParticleRenderMetrics: Equatable {
         lastMorphReason: "startup",
         mouseInfluenceEnabled: true,
         mouseInsideParticleArea: false,
-        interactionStrength: 0
+        interactionStrength: 0,
+        expression: .neutral
     )
 }
 
@@ -524,6 +526,14 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
     let expressionIntensity: Double
     let expressionFallbackOccurred: Bool
     let expressionMappingSource: String
+    var expressionTransitionProgress: Double
+    var expressionLifecycleOverrideActive: Bool
+    var currentBrightnessMultiplier: Double
+    var currentSaturationMultiplier: Double
+    var currentTemperatureShift: Double
+    var currentEnergyMultiplier: Double
+    var currentMotionSpeedMultiplier: Double
+    var currentDiffusionMultiplier: Double
     let brightnessMultiplier: Double
     let saturationMultiplier: Double
     let temperatureShift: Double
@@ -559,6 +569,10 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
         expressionIntensity = interaction.expressionIntensity
         expressionFallbackOccurred = interaction.expressionFallbackOccurred
         expressionMappingSource = interaction.expressionMappingSource
+        expressionTransitionProgress = 0
+        expressionLifecycleOverrideActive = [
+            "error", "loading", "exit"
+        ].contains(interaction.lifecycleState.rawValue)
         brightnessMultiplier =
             interaction.expressionMapping.brightnessMultiplier
         saturationMultiplier =
@@ -569,6 +583,12 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
             interaction.expressionMapping.motionSpeedMultiplier
         diffusionMultiplier =
             interaction.expressionMapping.diffusionMultiplier
+        currentBrightnessMultiplier = 1
+        currentSaturationMultiplier = 1
+        currentTemperatureShift = 0
+        currentEnergyMultiplier = 1
+        currentMotionSpeedMultiplier = 1
+        currentDiffusionMultiplier = 1
         steps = interaction.steps.map {
             RuntimeOrchestrationStepViewState(
                 kind: $0.kind.rawValue,
@@ -577,11 +597,137 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
             )
         }
     }
+
+    mutating func apply(
+        particleExpression: ParticleExpressionVisualState
+    ) {
+        guard particleExpression.matches(
+            interactionID: id,
+            state: expressionState,
+            intensity: expressionIntensity,
+            fallbackOccurred: expressionFallbackOccurred,
+            mappingSource: expressionMappingSource,
+            targetMultipliers: targetMultipliers
+        ) else {
+            return
+        }
+
+        applyCurrent(particleExpression)
+        expressionTransitionProgress = Double(
+            particleExpression.transitionProgress
+        )
+    }
+
+    mutating func applyPendingCurrent(
+        particleExpression: ParticleExpressionVisualState
+    ) {
+        applyCurrent(particleExpression)
+        expressionTransitionProgress = 0
+    }
+
+    mutating func preserveParticleExpressionProjection(
+        from previous: RuntimeOrchestrationInteractionViewState
+    ) {
+        guard id == previous.id,
+              sessionID == previous.sessionID else {
+            return
+        }
+        expressionTransitionProgress =
+            previous.expressionTransitionProgress
+        expressionLifecycleOverrideActive =
+            expressionLifecycleOverrideActive
+                || previous.expressionLifecycleOverrideActive
+        currentBrightnessMultiplier =
+            previous.currentBrightnessMultiplier
+        currentSaturationMultiplier =
+            previous.currentSaturationMultiplier
+        currentTemperatureShift =
+            previous.currentTemperatureShift
+        currentEnergyMultiplier =
+            previous.currentEnergyMultiplier
+        currentMotionSpeedMultiplier =
+            previous.currentMotionSpeedMultiplier
+        currentDiffusionMultiplier =
+            previous.currentDiffusionMultiplier
+    }
+
+    private var targetMultipliers: ParticleExpressionMultipliers {
+        ParticleExpressionMultipliers(
+            brightnessMultiplier: Float(brightnessMultiplier),
+            saturationMultiplier: Float(saturationMultiplier),
+            temperatureShift: Float(temperatureShift),
+            energyMultiplier: Float(energyMultiplier),
+            motionSpeedMultiplier: Float(motionSpeedMultiplier),
+            diffusionMultiplier: Float(diffusionMultiplier)
+        )
+    }
+
+    private mutating func applyCurrent(
+        _ particleExpression: ParticleExpressionVisualState
+    ) {
+        let current = particleExpression.currentMultipliers
+        expressionLifecycleOverrideActive =
+            ["error", "loading", "exit"].contains(lifecycleState)
+            || particleExpression.lifecycleOverrideActive
+        currentBrightnessMultiplier = Double(current.brightnessMultiplier)
+        currentSaturationMultiplier = Double(current.saturationMultiplier)
+        currentTemperatureShift = Double(current.temperatureShift)
+        currentEnergyMultiplier = Double(current.energyMultiplier)
+        currentMotionSpeedMultiplier = Double(current.motionSpeedMultiplier)
+        currentDiffusionMultiplier = Double(current.diffusionMultiplier)
+    }
 }
 
 struct RuntimeOrchestrationViewState: Equatable {
     var interactions: [RuntimeOrchestrationInteractionViewState] = []
     var statusKey: String?
+
+    mutating func preserveParticleExpressionProjections(
+        from previous: RuntimeOrchestrationViewState
+    ) {
+        let previousByID = Dictionary(
+            uniqueKeysWithValues: previous.interactions.map {
+                ($0.id, $0)
+            }
+        )
+        for index in interactions.indices {
+            guard let previousInteraction =
+                previousByID[interactions[index].id] else {
+                continue
+            }
+            interactions[index].preserveParticleExpressionProjection(
+                from: previousInteraction
+            )
+        }
+    }
+
+    mutating func applyParticleExpression(
+        rendered particleExpression: ParticleExpressionVisualState,
+        pendingInput: ParticleExpressionInput,
+        sessionID: String
+    ) {
+        let renderedInteractionID =
+            particleExpression.targetInput.interactionID
+        if let renderedInteractionID,
+           let index = interactions.lastIndex(where: {
+               $0.id == renderedInteractionID
+                   && $0.sessionID == sessionID
+           }) {
+            interactions[index].apply(
+                particleExpression: particleExpression
+            )
+        }
+        if let pendingInteractionID = pendingInput.interactionID,
+           pendingInteractionID != renderedInteractionID,
+           let index = interactions.lastIndex(where: {
+               $0.id == pendingInteractionID
+                   && $0.sessionID == sessionID
+           }) {
+            interactions[index].applyPendingCurrent(
+                particleExpression: particleExpression
+            )
+        }
+    }
 }
 
 enum DialogueAuditRole: Equatable {

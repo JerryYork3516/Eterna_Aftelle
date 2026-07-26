@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "$script_dir/../.." && pwd)
+build_dir=$(mktemp -d /private/tmp/aftelle-particle-expression-tests.XXXXXX)
+trap 'rm -rf "$build_dir"' EXIT
+
+xcrun --sdk macosx swiftc \
+  -D DEBUG \
+  -parse-as-library \
+  -module-cache-path "$build_dir/module-cache" \
+  -target arm64-apple-macos14.0 \
+  "$repo_root/apps/macos/RuntimeCore/DRLoader.swift" \
+  "$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift" \
+  "$repo_root/apps/macos/RuntimeCore/MemoryController.swift" \
+  "$repo_root/apps/macos/RuntimeCore/PlatformAdapter.swift" \
+  "$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift" \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeConfig.swift" \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift" \
+  "$repo_root/apps/macos/RuntimeCore/SessionStore.swift" \
+  "$repo_root/apps/macos/RuntimeCore/TraceRecorder.swift" \
+  "$repo_root/apps/macos/RuntimeCore/VisualStateMapper.swift" \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleTuning.swift" \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ResidentVisualIntent.swift" \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleStateController.swift" \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleSimulation.swift" \
+  "$repo_root/apps/macos/Aftelle/AppModels.swift" \
+  "$script_dir/ParticleExpressionTests.swift" \
+  -o "$build_dir/particle-expression-tests"
+
+"$build_dir/particle-expression-tests"
+
+required_d1_fields=(
+  expressionTransitionProgress
+  expressionLifecycleOverrideActive
+  currentBrightnessMultiplier
+  currentSaturationMultiplier
+  currentTemperatureShift
+  currentEnergyMultiplier
+  currentMotionSpeedMultiplier
+  currentDiffusionMultiplier
+)
+
+for field in "${required_d1_fields[@]}"; do
+  for source_file in \
+    "$repo_root/apps/macos/Aftelle/AppModels.swift" \
+    "$repo_root/apps/macos/Aftelle/AppController.swift" \
+    "$repo_root/apps/macos/Aftelle/ContentView.swift"; do
+    if ! rg -q "$field" "$source_file"; then
+      printf 'particle-expression-tests: missing D1 field %s in %s\n' \
+        "$field" "$source_file" >&2
+      exit 1
+    fi
+  done
+done
+
+if git -C "$repo_root" diff --name-only \
+  | rg -q 'apps/macos/Aftelle/ParticleCore/ParticleCoreShaders\\.metal$'; then
+  printf 'particle-expression-tests: Metal Shader changed without authorization\n' >&2
+  exit 1
+fi
+
+if git -C "$repo_root" diff --name-only \
+  | rg -q 'apps/macos/Aftelle/ParticleCore/(ParticleTuning|ResidentVisualIntent)\\.swift$'; then
+  printf 'particle-expression-tests: V2 lifecycle or tuning baseline changed\n' >&2
+  exit 1
+fi
+
+if git -C "$repo_root" diff --name-only \
+  | rg -q 'apps/macos/RuntimeCore/(DRLoader|ProviderRouter|ExecutionEngine|RuntimeCore|VisualStateMapper)\\.swift$'; then
+  printf 'particle-expression-tests: forbidden Runtime/A1 file changed\n' >&2
+  exit 1
+fi
+
+for method in \
+  applyingBrightness \
+  applyingColor \
+  applyingDiffusion; do
+  if ! rg -q "$method" \
+    "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleRenderer.swift"; then
+    printf 'particle-expression-tests: Renderer missing %s\n' "$method" >&2
+    exit 1
+  fi
+done
+
+if ! rg -q 'applyingMotionSpeed' \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleSimulation.swift"; then
+  printf 'particle-expression-tests: motion speed is not applied to future flow time\n' >&2
+  exit 1
+fi
+
+if ! rg -q 'applyingEnergy' \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleSimulation.swift"; then
+  printf 'particle-expression-tests: energy is not applied to flow activity\n' >&2
+  exit 1
+fi
+
+if rg -q 'flowElapsedTime\\s*\\*=' \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleSimulation.swift"; then
+  printf 'particle-expression-tests: historical flow time is being rescaled\n' >&2
+  exit 1
+fi
+
+if rg -q '(setTuning|rebuildParticles|setShapeTarget).*expression' \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleRenderer.swift" \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreMetalView.swift"; then
+  printf 'particle-expression-tests: expression entered rebuild or shape path\n' >&2
+  exit 1
+fi
+
+if sed -n '/struct RuntimeOrchestrationInteractionViewState:/,/^}/p' \
+  "$repo_root/apps/macos/Aftelle/AppModels.swift" \
+  | rg -qi '(userInput|replyText|systemPrompt|apiKey|authorization|rawHTTP|rawResponse|memoryValue|secret)'; then
+  printf 'particle-expression-tests: D1 view state contains sensitive body fields\n' >&2
+  exit 1
+fi
+
+printf 'particle-expression-tests: source boundary checks ok\n'

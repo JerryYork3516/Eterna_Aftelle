@@ -40,6 +40,8 @@ final class AppController: ObservableObject {
     @Published private(set) var runtimeState: AppRuntimeState = .idle
     @Published private(set) var residentVisualIntent: ResidentVisualIntent = .idle
     @Published private(set) var residentSpeechSignal: ResidentSpeechSignal = .inactive
+    @Published private(set) var particleExpressionInput =
+        ParticleExpressionInput.neutral
     @Published private(set) var particleAvatarMode: ParticleAvatarMode = .particleCore
     @Published private(set) var particleRenderKind: ParticleRenderKind = .particleCore
     @Published private(set) var particleShellMode: ParticleShellMode = .darkShell
@@ -183,6 +185,9 @@ final class AppController: ObservableObject {
     func updateParticleRenderMetrics(_ metrics: ParticleRenderMetrics) {
         latestParticleRenderMetrics = metrics
         refreshParticleDebugSnapshot()
+        #if DEBUG
+        refreshRuntimeOrchestrationState()
+        #endif
     }
 
     func updateEffectiveParticleColorProfile(_ profile: ParticleColorProfile, savedOverride: Bool) {
@@ -291,6 +296,10 @@ final class AppController: ObservableObject {
         switch result {
         case .success(let reply):
             let replyText = reply.replyText
+            particleExpressionInput = makeParticleExpressionInput(
+                from: reply.expression,
+                interactionID: requestID
+            )
             let timestamp = ISO8601DateFormatter().string(from: Date())
             dialogueEntries.append(AppDialogueEntryState(
                 id: "user-\(UUID().uuidString)",
@@ -556,10 +565,26 @@ final class AppController: ObservableObject {
                 String(format: "%.3f", interaction.expressionIntensity)
             ),
             localizedFormat(
+                "runtimeOrchestration.export.expressionTransitionProgress",
+                String(
+                    format: "%.3f",
+                    interaction.expressionTransitionProgress
+                )
+            ),
+            localizedFormat(
                 "runtimeOrchestration.export.expressionFallback",
                 runtimeOrchestrationLocalizedValue(
                     "boolean",
                     interaction.expressionFallbackOccurred
+                        ? "enabled"
+                        : "disabled"
+                )
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.expressionLifecycleOverride",
+                runtimeOrchestrationLocalizedValue(
+                    "boolean",
+                    interaction.expressionLifecycleOverrideActive
                         ? "enabled"
                         : "disabled"
                 )
@@ -573,27 +598,45 @@ final class AppController: ObservableObject {
             ),
             localizedFormat(
                 "runtimeOrchestration.export.brightnessMultiplier",
-                String(format: "%.3f", interaction.brightnessMultiplier)
+                expressionMultiplierTransition(
+                    interaction.currentBrightnessMultiplier,
+                    interaction.brightnessMultiplier
+                )
             ),
             localizedFormat(
                 "runtimeOrchestration.export.saturationMultiplier",
-                String(format: "%.3f", interaction.saturationMultiplier)
+                expressionMultiplierTransition(
+                    interaction.currentSaturationMultiplier,
+                    interaction.saturationMultiplier
+                )
             ),
             localizedFormat(
                 "runtimeOrchestration.export.temperatureShift",
-                String(format: "%.3f", interaction.temperatureShift)
+                expressionMultiplierTransition(
+                    interaction.currentTemperatureShift,
+                    interaction.temperatureShift
+                )
             ),
             localizedFormat(
                 "runtimeOrchestration.export.energyMultiplier",
-                String(format: "%.3f", interaction.energyMultiplier)
+                expressionMultiplierTransition(
+                    interaction.currentEnergyMultiplier,
+                    interaction.energyMultiplier
+                )
             ),
             localizedFormat(
                 "runtimeOrchestration.export.motionSpeedMultiplier",
-                String(format: "%.3f", interaction.motionSpeedMultiplier)
+                expressionMultiplierTransition(
+                    interaction.currentMotionSpeedMultiplier,
+                    interaction.motionSpeedMultiplier
+                )
             ),
             localizedFormat(
                 "runtimeOrchestration.export.diffusionMultiplier",
-                String(format: "%.3f", interaction.diffusionMultiplier)
+                expressionMultiplierTransition(
+                    interaction.currentDiffusionMultiplier,
+                    interaction.diffusionMultiplier
+                )
             ),
             localizedFormat(
                 "runtimeOrchestration.export.exportedAt",
@@ -649,6 +692,7 @@ final class AppController: ObservableObject {
                 startupState = .idle
             }
             particleSubtitleState = .hidden
+            particleExpressionInput = .neutral
             residentTextInputState = ResidentTextInputViewState()
             runtimeState = .idle
             dialogueAuditState.clear()
@@ -759,6 +803,13 @@ final class AppController: ObservableObject {
         return Bundle.main.localizedString(forKey: key, value: key, table: nil)
     }
 
+    private func expressionMultiplierTransition(
+        _ current: Double,
+        _ target: Double
+    ) -> String {
+        String(format: "%.3f → %.3f", current, target)
+    }
+
     private func completeRuntimeOrchestrationPresentation(
         interactionID: UUID,
         expectedSessionID: String,
@@ -779,7 +830,16 @@ final class AppController: ObservableObject {
     }
 
     private func refreshRuntimeOrchestrationState() {
-        runtimeOrchestrationState = orchestrationKernel.runtimeOrchestrationViewState()
+        var state = orchestrationKernel.runtimeOrchestrationViewState()
+        state.preserveParticleExpressionProjections(
+            from: runtimeOrchestrationState
+        )
+        state.applyParticleExpression(
+            rendered: latestParticleRenderMetrics.expression,
+            pendingInput: particleExpressionInput,
+            sessionID: loadedSessionID
+        )
+        runtimeOrchestrationState = state
     }
 
     func setParticleAvatarMode(_ mode: ParticleAvatarMode) {
@@ -1160,6 +1220,7 @@ final class AppController: ObservableObject {
 
         loadedResidentID = result.residentID
         loadedSessionID = result.sessionID?.rawValue ?? ""
+        particleExpressionInput = .neutral
         particleColorProfile = ParticleColorProfile.make(fromDRData: drData)
         effectiveParticleColorProfile = particleColorProfile
         effectiveColorProfileFallbackUsed = particleColorProfile == .systemDefault
@@ -1482,6 +1543,29 @@ final class AppController: ObservableObject {
         String(format: "%.2f, %.2f, %.2f", red, green, blue)
     }
 
+    private func makeParticleExpressionInput(
+        from expression: RuntimeExpressionResult,
+        interactionID: UUID
+    ) -> ParticleExpressionInput {
+        ParticleExpressionInput(
+            interactionID: interactionID,
+            state: expression.expressionState.rawValue,
+            intensity: expression.expressionIntensity,
+            fallbackOccurred: expression.expressionFallbackOccurred,
+            mappingSource: expression.mappingSource.rawValue,
+            brightnessMultiplier:
+                expression.expressionMapping.brightnessMultiplier,
+            saturationMultiplier:
+                expression.expressionMapping.saturationMultiplier,
+            temperatureShift: expression.expressionMapping.temperatureShift,
+            energyMultiplier: expression.expressionMapping.energyMultiplier,
+            motionSpeedMultiplier:
+                expression.expressionMapping.motionSpeedMultiplier,
+            diffusionMultiplier:
+                expression.expressionMapping.diffusionMultiplier
+        )
+    }
+
     private static func nanoseconds(_ duration: TimeInterval) -> UInt64 {
         UInt64(max(0, duration) * 1_000_000_000)
     }
@@ -1504,6 +1588,7 @@ final class AppController: ObservableObject {
         fixtureStatus = "DR fixture: not loaded"
         loadedResidentID = ""
         loadedSessionID = ""
+        particleExpressionInput = .neutral
         residentID = "resident_id: -"
         displayName = "display_name: -"
         sessionState = AppSessionState()

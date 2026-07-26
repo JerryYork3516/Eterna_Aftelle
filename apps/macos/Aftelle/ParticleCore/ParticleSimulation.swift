@@ -465,14 +465,17 @@ struct ParticleSimulation {
         previousTime = time
         if timeStep > 0 {
             motionElapsedTime += timeStep
+            let expression = visualState.expression.appliedMultipliers
             let flowFrequency = ParticleTuning.Engine.amplifiedValue(
                 tuning.flowSpeed,
                 minimum: ParticleTuning.Engine.minimumFlowFrequency,
                 maximum: ParticleTuning.Engine.maximumFlowFrequency
             )
-            flowElapsedTime += timeStep
-                * flowFrequency
-                * visualState.flowSpeedMultiplier
+            flowElapsedTime += expression.applyingMotionSpeed(
+                to: timeStep
+                    * flowFrequency
+                    * visualState.flowSpeedMultiplier
+            )
             integrate(
                 time: motionElapsedTime,
                 flowTime: flowElapsedTime,
@@ -561,12 +564,13 @@ struct ParticleSimulation {
             maximum: ParticleTuning.Engine.maximumDamping
         )
         let dampingFactor = exp(-damping * timeStep)
-        let flowMotionStrength = min(
-            ParticleTuning.Engine.maximumFlowMotionStrength,
-            ParticleTuning.Engine.amplifiedStrength(
-                tuning.flowStrength
-            ) * visualState.flowSpeedMultiplier
-        )
+        let flowMotionStrength = visualState.expression.appliedMultipliers
+            .applyingEnergy(
+                to: ParticleTuning.Engine.amplifiedStrength(
+                    tuning.flowStrength
+                ) * visualState.flowSpeedMultiplier,
+                maximum: ParticleTuning.Engine.maximumFlowMotionStrength
+            )
         let flowAcceleration = flowMotionStrength
             * ParticleTuning.Engine.maximumFlowAcceleration
         let disturbanceAcceleration = ParticleTuning.Engine.amplifiedStrength(

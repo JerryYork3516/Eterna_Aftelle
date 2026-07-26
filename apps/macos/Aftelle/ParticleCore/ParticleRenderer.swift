@@ -53,6 +53,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     private var viewOrientation: ParticleViewOrientation = .identity
     private var automaticRotationAngle: Float = 0
     private var isManualRotationEnabled = false
+    private var expressionInput = ParticleExpressionInput.neutral
     #if DEBUG
     private var isDebugAutoCycleEnabled = false
     private var debugAutoCycleIndex = 0
@@ -233,6 +234,21 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "phase=\(signal.phase.rawValue) "
                 + "intensity=\(String(format: "%.2f", signal.intensity)) "
                 + "reason=\(reason)"
+        )
+    }
+
+    func setExpressionInput(_ input: ParticleExpressionInput) {
+        guard expressionInput != input else { return }
+        expressionInput = input
+        stateController.setExpressionInput(
+            input,
+            time: CACurrentMediaTime()
+        )
+        print(
+            "[ParticleCore] expression changed "
+                + "state=\(input.state.rawValue) "
+                + "intensity=\(String(format: "%.2f", input.intensity)) "
+                + "source=\(input.mappingSource)"
         )
     }
 
@@ -460,15 +476,18 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         let tuning = frame.tuning
         let visualState = frame.visualState
         let colorProfile = frame.colorProfile
+        let expression = visualState.expression.appliedMultipliers
         let pointSize = ParticleTuning.Engine.amplifiedValue(
             tuning.pointSizeScale,
             minimum: ParticleTuning.Engine.minimumPointSize,
             maximum: ParticleTuning.Engine.maximumPointSize
         )
-        let brightness = ParticleTuning.Engine.amplifiedValue(
-            tuning.brightness,
-            minimum: ParticleTuning.Engine.minimumBrightness,
-            maximum: ParticleTuning.Engine.maximumBrightness
+        let brightness = expression.applyingBrightness(
+            to: ParticleTuning.Engine.amplifiedValue(
+                tuning.brightness,
+                minimum: ParticleTuning.Engine.minimumBrightness,
+                maximum: ParticleTuning.Engine.maximumBrightness
+            )
         )
         let globalScale = ParticleTuning.Engine.value(
             tuning.globalScale,
@@ -500,6 +519,27 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 - visualState.dissolutionStrength
                 * ParticleTuning.Engine.dissolutionFlowShapeReduction
         )
+        let flowShapeStrength = expression.applyingDiffusion(
+            to: min(
+                ParticleTuning.Engine.maximumFlowShapeStrength,
+                ParticleTuning.Engine.amplifiedStrength(
+                    tuning.flowShapeStrength
+                ) * stateFlowShapeScale
+            ),
+            maximum: ParticleTuning.Engine.maximumFlowShapeStrength
+        )
+        let expressionBaseColor = expression.applyingColor(
+            to: colorProfile.baseVector
+        )
+        let expressionRidgeColor = expression.applyingColor(
+            to: colorProfile.ridgeVector
+        )
+        let expressionDimColor = expression.applyingColor(
+            to: colorProfile.dimVector
+        )
+        let expressionHighlightColor = expression.applyingColor(
+            to: colorProfile.highlightVector
+        )
         return ParticleFrameUniforms(
             viewportAndRender: SIMD4(
                 frame.resolution.x,
@@ -525,13 +565,13 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 Float(simulation.particleCount),
                 Float(ParticleTuning.Engine.visualChannelsVersion)
             ),
-            baseColor: colorProfile.baseVector,
-            ridgeColor: colorProfile.ridgeVector,
-            dimColor: colorProfile.dimVector,
+            baseColor: expressionBaseColor,
+            ridgeColor: expressionRidgeColor,
+            dimColor: expressionDimColor,
             highlightColor: SIMD4(
-                colorProfile.highlightVector.x,
-                colorProfile.highlightVector.y,
-                colorProfile.highlightVector.z,
+                expressionHighlightColor.x,
+                expressionHighlightColor.y,
+                expressionHighlightColor.z,
                 Float(colorProfile.alphaScale)
             ),
             renderGeometry: SIMD4(
@@ -633,12 +673,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 ParticleTuning.Engine.flowShapeMaterialDisplacement,
                 ParticleTuning.Engine.flowShapeCloudDisplacement,
                 ParticleTuning.Engine.flowShapeReliefDisplacement,
-                min(
-                    ParticleTuning.Engine.maximumFlowShapeStrength,
-                    ParticleTuning.Engine.amplifiedStrength(
-                        tuning.flowShapeStrength
-                    ) * stateFlowShapeScale
-                )
+                flowShapeStrength
             ),
             renderFlowGeometryFrequency: SIMD4(
                 ParticleTuning.Engine.flowShapePrimarySpatialFrequency,
@@ -755,7 +790,8 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             lastMorphReason: frame.shapeState.reason,
             mouseInfluenceEnabled: true,
             mouseInsideParticleArea: interactionActive,
-            interactionStrength: Double(frame.mouseInfluence)
+            interactionStrength: Double(frame.mouseInfluence),
+            expression: visualState.expression
         )
         debugMetricsHandler?(metrics)
         print(
@@ -786,6 +822,15 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "transitionProgress=\(String(format: "%.3f", visualState.transitionProgress)) "
                 + "transitionElapsedTime=\(String(format: "%.2f", visualState.transitionElapsedTime)) "
                 + "reason=\(visualState.transitionReason) "
+                + "expressionState="
+                + "\(visualState.expression.targetInput.state.rawValue) "
+                + "expressionProgress="
+                + String(
+                    format: "%.3f",
+                    visualState.expression.transitionProgress
+                )
+                + " expressionOverride="
+                + "\(visualState.expression.lifecycleOverrideActive) "
                 + "interactionStrength=\(String(format: "%.2f", frame.mouseInfluence)) "
                 + "manualRotation=\(isManualRotationEnabled) "
                 + "orientation=\(Self.orientationDescription(viewOrientation)) "

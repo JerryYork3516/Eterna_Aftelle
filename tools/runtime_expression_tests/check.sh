@@ -34,6 +34,14 @@ required_d1_fields=(
   expressionIntensity
   expressionFallbackOccurred
   expressionMappingSource
+  expressionTransitionProgress
+  expressionLifecycleOverrideActive
+  currentBrightnessMultiplier
+  currentSaturationMultiplier
+  currentTemperatureShift
+  currentEnergyMultiplier
+  currentMotionSpeedMultiplier
+  currentDiffusionMultiplier
   brightnessMultiplier
   saturationMultiplier
   temperatureShift
@@ -82,10 +90,12 @@ if rg -q '(expressionState|expressionIntensity|expressionMapping|expression_stat
   exit 1
 fi
 
-if git -C "$repo_root" diff --name-only \
-  | rg -q '(ParticleStateController|ParticleRenderer|ParticleCoreShaders\\.metal)$'; then
-  printf 'runtime-expression-tests: forbidden Particle V2 file changed\n' >&2
-  exit 1
+if [ "${AFTELLE_ALLOW_PARTICLE_EXPRESSION_CHANGES:-0}" != "1" ]; then
+  if git -C "$repo_root" diff --name-only \
+    | rg -q '(ParticleStateController|ParticleRenderer|ParticleCoreShaders\\.metal)$'; then
+    printf 'runtime-expression-tests: forbidden Particle V2 file changed\n' >&2
+    exit 1
+  fi
 fi
 
 printf 'runtime-expression-tests: source boundary checks ok\n'

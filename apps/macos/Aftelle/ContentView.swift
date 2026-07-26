@@ -126,6 +126,7 @@ struct ContentView: View {
                 visualIntent: controller.residentVisualIntent,
                 speechSignal: presentationSettings.debugSpeechSignal
                     ?? controller.residentSpeechSignal,
+                expressionInput: controller.particleExpressionInput,
                 isDebugSpeechOverrideActive:
                     presentationSettings.debugSpeechSignal != nil,
                 shapeTarget: presentationSettings.shapeTarget,
@@ -1374,10 +1375,26 @@ private struct RuntimeOrchestrationDebugView: View {
                     String(format: "%.3f", interaction.expressionIntensity)
                 )
                 detailRow(
+                    "runtimeOrchestration.field.expressionTransitionProgress",
+                    String(
+                        format: "%.3f",
+                        interaction.expressionTransitionProgress
+                    )
+                )
+                detailRow(
                     "runtimeOrchestration.field.expressionFallback",
                     localizedValue(
                         "boolean",
                         interaction.expressionFallbackOccurred
+                            ? "enabled"
+                            : "disabled"
+                    )
+                )
+                detailRow(
+                    "runtimeOrchestration.field.expressionLifecycleOverride",
+                    localizedValue(
+                        "boolean",
+                        interaction.expressionLifecycleOverrideActive
                             ? "enabled"
                             : "disabled"
                     )
@@ -1391,27 +1408,45 @@ private struct RuntimeOrchestrationDebugView: View {
                 )
                 detailRow(
                     "runtimeOrchestration.field.brightnessMultiplier",
-                    String(format: "%.3f", interaction.brightnessMultiplier)
+                    multiplierTransition(
+                        interaction.currentBrightnessMultiplier,
+                        interaction.brightnessMultiplier
+                    )
                 )
                 detailRow(
                     "runtimeOrchestration.field.saturationMultiplier",
-                    String(format: "%.3f", interaction.saturationMultiplier)
+                    multiplierTransition(
+                        interaction.currentSaturationMultiplier,
+                        interaction.saturationMultiplier
+                    )
                 )
                 detailRow(
                     "runtimeOrchestration.field.temperatureShift",
-                    String(format: "%.3f", interaction.temperatureShift)
+                    multiplierTransition(
+                        interaction.currentTemperatureShift,
+                        interaction.temperatureShift
+                    )
                 )
                 detailRow(
                     "runtimeOrchestration.field.energyMultiplier",
-                    String(format: "%.3f", interaction.energyMultiplier)
+                    multiplierTransition(
+                        interaction.currentEnergyMultiplier,
+                        interaction.energyMultiplier
+                    )
                 )
                 detailRow(
                     "runtimeOrchestration.field.motionSpeedMultiplier",
-                    String(format: "%.3f", interaction.motionSpeedMultiplier)
+                    multiplierTransition(
+                        interaction.currentMotionSpeedMultiplier,
+                        interaction.motionSpeedMultiplier
+                    )
                 )
                 detailRow(
                     "runtimeOrchestration.field.diffusionMultiplier",
-                    String(format: "%.3f", interaction.diffusionMultiplier)
+                    multiplierTransition(
+                        interaction.currentDiffusionMultiplier,
+                        interaction.diffusionMultiplier
+                    )
                 )
 
                 Divider()
@@ -1478,6 +1513,13 @@ private struct RuntimeOrchestrationDebugView: View {
             locale: Locale.current,
             value
         )
+    }
+
+    private func multiplierTransition(
+        _ current: Double,
+        _ target: Double
+    ) -> String {
+        String(format: "%.3f → %.3f", current, target)
     }
 
     private var localizedCount: String {
