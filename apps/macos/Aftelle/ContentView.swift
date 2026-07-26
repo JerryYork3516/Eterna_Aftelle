@@ -4,6 +4,17 @@ import Combine
 import UniformTypeIdentifiers
 import simd
 
+#if DEBUG
+@MainActor
+final class ParticleOrientationOverlayState: ObservableObject {
+    @Published private(set) var orientation: ParticleViewOrientation = .identity
+
+    func update(_ orientation: ParticleViewOrientation) {
+        self.orientation = orientation
+    }
+}
+#endif
+
 @MainActor
 final class ParticlePresentationSettings: ObservableObject {
     @Published var tuning = ParticleTuning.loadSaved()
@@ -22,6 +33,7 @@ final class ParticlePresentationSettings: ObservableObject {
     )
     #if DEBUG
     @Published var isOrientationOverlayVisible = false
+    let orientationOverlayState = ParticleOrientationOverlayState()
     #endif
 
     func rebuildWithFixedSeed() {
@@ -34,6 +46,9 @@ final class ParticlePresentationSettings: ObservableObject {
 
     func resetViewOrientation() {
         viewOrientation = .identity
+        #if DEBUG
+        orientationOverlayState.update(.identity)
+        #endif
     }
 
     func selectDebugVisualIntent(_ intent: ResidentVisualIntent) {
@@ -127,7 +142,8 @@ struct ContentView: View {
                 debugMetricsHandler: { metrics in
                     controller.updateParticleRenderMetrics(metrics)
                 },
-                viewOrientationHandler: presentationSettings.updateViewOrientation
+                viewOrientationHandler: presentationSettings.updateViewOrientation,
+                effectiveViewOrientationHandler: effectiveViewOrientationHandler
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
@@ -146,7 +162,7 @@ struct ContentView: View {
             #if DEBUG
             if presentationSettings.isOrientationOverlayVisible {
                 ParticleOrientationDebugOverlay(
-                    orientation: presentationSettings.viewOrientation
+                    state: presentationSettings.orientationOverlayState
                 )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .allowsHitTesting(false)
@@ -190,6 +206,16 @@ struct ContentView: View {
                 dismissWindow(id: ParticleDebugWindow.sceneID)
             }
         }
+        #endif
+    }
+
+    private var effectiveViewOrientationHandler:
+        ((ParticleViewOrientation) -> Void)? {
+        #if DEBUG
+        guard presentationSettings.isOrientationOverlayVisible else { return nil }
+        return presentationSettings.orientationOverlayState.update
+        #else
+        return nil
         #endif
     }
 
@@ -355,7 +381,7 @@ private struct ResidentTextInputBar: View {
 
 #if DEBUG
 private struct ParticleOrientationDebugOverlay: View {
-    let orientation: ParticleViewOrientation
+    @ObservedObject var state: ParticleOrientationOverlayState
 
     var body: some View {
         Canvas { canvas, size in
@@ -449,7 +475,7 @@ private struct ParticleOrientationDebugOverlay: View {
     }
 
     private func rotate(_ vector: SIMD3<Double>) -> SIMD3<Double> {
-        let rawQuaternion = orientation.quaternion
+        let rawQuaternion = state.orientation.quaternion
         let quaternionVector = SIMD3<Double>(
             Double(rawQuaternion.x),
             Double(rawQuaternion.y),

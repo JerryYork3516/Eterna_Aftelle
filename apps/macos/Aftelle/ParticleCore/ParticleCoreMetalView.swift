@@ -35,6 +35,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
     var isTransparentBackground = false
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
     var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
+    var effectiveViewOrientationHandler: ((ParticleViewOrientation) -> Void)?
 
     func makeNSView(context: Context) -> MTKView {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -83,6 +84,9 @@ struct ParticleCoreMetalView: NSViewRepresentable {
                 context.coordinator.debugMetricsHandler?(metrics)
             }
         }
+        context.coordinator.setEffectiveViewOrientationHandler(
+            effectiveViewOrientationHandler
+        )
         renderer.setTuning(tuning)
         renderer.setColorProfile(colorProfile)
         renderer.setViewOrientation(viewOrientation)
@@ -158,6 +162,9 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         }
         #endif
         context.coordinator.debugMetricsHandler = debugMetricsHandler
+        context.coordinator.setEffectiveViewOrientationHandler(
+            effectiveViewOrientationHandler
+        )
         if context.coordinator.tuning != tuning {
             context.coordinator.renderer?.setTuning(tuning)
             context.coordinator.tuning = tuning
@@ -215,6 +222,28 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         var debugStressTestGeneration = 0
         var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
         var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
+        var effectiveViewOrientationHandler: ((ParticleViewOrientation) -> Void)?
+        private var isEffectiveViewOrientationHandlerEnabled = false
+
+        func setEffectiveViewOrientationHandler(
+            _ handler: ((ParticleViewOrientation) -> Void)?
+        ) {
+            effectiveViewOrientationHandler = handler
+            let isEnabled = handler != nil
+            guard isEffectiveViewOrientationHandlerEnabled != isEnabled else {
+                return
+            }
+            isEffectiveViewOrientationHandlerEnabled = isEnabled
+            guard isEnabled else {
+                renderer?.effectiveViewOrientationHandler = nil
+                return
+            }
+            renderer?.effectiveViewOrientationHandler = { [weak self] orientation in
+                DispatchQueue.main.async { [weak self] in
+                    self?.effectiveViewOrientationHandler?(orientation)
+                }
+            }
+        }
     }
 }
 

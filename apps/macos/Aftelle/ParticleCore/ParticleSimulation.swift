@@ -81,8 +81,14 @@ private struct ParticleSeededGenerator {
 private struct SimulatedParticle {
     let sphereAnchor: SIMD3<Float>
     let customShapeAnchor: SIMD3<Float>
-    let flowPhase: Float
-    let disturbancePhase: Float
+    let flowPhaseSine: Float
+    let flowPhaseCosine: Float
+    let disturbancePhaseXSine: Float
+    let disturbancePhaseXCosine: Float
+    let disturbancePhaseYSine: Float
+    let disturbancePhaseYCosine: Float
+    let disturbancePhaseZSine: Float
+    let disturbancePhaseZCosine: Float
     let scatterSelector: Float
     let scatterRadialSample: Float
     let scatterTangentialSample: Float
@@ -101,6 +107,7 @@ struct ParticleStabilitySnapshot {
 
 struct ParticleSimulationFrame {
     let motionElapsedTime: Float
+    let flowElapsedTime: Float
     let resolution: SIMD2<Float>
     let mousePosition: SIMD2<Float>
     let mouseVelocity: SIMD2<Float>
@@ -116,6 +123,7 @@ struct ParticleSimulation {
     private var previousTime: TimeInterval
     private var previousMorphTime: TimeInterval
     private var motionElapsedTime: Float = 0
+    private var flowElapsedTime: Float = 0
     private var particles: [SimulatedParticle] = []
     private var payloads: [SIMD4<Float>] = []
     private var morphTransition: ParticleMorphTransition
@@ -255,11 +263,23 @@ struct ParticleSimulation {
             let activeAnchor = rebuildShapeTarget == .customShape
                 ? customShapeAnchor
                 : sphereFormAnchor
+            let flowPhase = generator.nextUnit() * 2 * .pi
+            let disturbancePhase = generator.nextUnit() * 2 * .pi
+            let disturbancePhaseY = disturbancePhase
+                * ParticleTuning.Engine.disturbanceYPhaseRatio
+            let disturbancePhaseZ = disturbancePhase
+                * ParticleTuning.Engine.disturbanceZPhaseRatio
             let particle = SimulatedParticle(
                 sphereAnchor: sphereAnchor,
                 customShapeAnchor: customShapeAnchor,
-                flowPhase: generator.nextUnit() * 2 * .pi,
-                disturbancePhase: generator.nextUnit() * 2 * .pi,
+                flowPhaseSine: sin(flowPhase),
+                flowPhaseCosine: cos(flowPhase),
+                disturbancePhaseXSine: sin(disturbancePhase),
+                disturbancePhaseXCosine: cos(disturbancePhase),
+                disturbancePhaseYSine: sin(disturbancePhaseY),
+                disturbancePhaseYCosine: cos(disturbancePhaseY),
+                disturbancePhaseZSine: sin(disturbancePhaseZ),
+                disturbancePhaseZCosine: cos(disturbancePhaseZ),
                 scatterSelector: scatterSelector,
                 scatterRadialSample: scatterRadialSample,
                 scatterTangentialSample: scatterTangentialSample,
@@ -437,8 +457,15 @@ struct ParticleSimulation {
         previousTime = time
         if timeStep > 0 {
             motionElapsedTime += timeStep
+            let flowFrequency = ParticleTuning.Engine.amplifiedValue(
+                tuning.flowSpeed,
+                minimum: ParticleTuning.Engine.minimumFlowFrequency,
+                maximum: ParticleTuning.Engine.maximumFlowFrequency
+            )
+            flowElapsedTime += timeStep * flowFrequency
             integrate(
                 time: motionElapsedTime,
+                flowTime: flowElapsedTime,
                 timeStep: timeStep,
                 visualState: visualState,
                 morphProgress: Self.easedMorphProgress(shapeState.progress)
@@ -447,6 +474,7 @@ struct ParticleSimulation {
 
         return ParticleSimulationFrame(
             motionElapsedTime: motionElapsedTime,
+            flowElapsedTime: flowElapsedTime,
             resolution: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
             mousePosition: smoothMousePosition,
             mouseVelocity: smoothMouseVelocity,
@@ -475,6 +503,7 @@ struct ParticleSimulation {
 
     private mutating func integrate(
         time: Float,
+        flowTime: Float,
         timeStep: Float,
         visualState: ParticleVisualState,
         morphProgress: Float
@@ -519,11 +548,6 @@ struct ParticleSimulation {
         )
             * ParticleTuning.Engine.maximumFlowAcceleration
             * visualState.flowSpeedMultiplier
-        let flowFrequency = ParticleTuning.Engine.amplifiedValue(
-            tuning.flowSpeed,
-            minimum: ParticleTuning.Engine.minimumFlowFrequency,
-            maximum: ParticleTuning.Engine.maximumFlowFrequency
-        )
         let disturbanceAcceleration = ParticleTuning.Engine.amplifiedStrength(
             tuning.disturbanceStrength
         )
@@ -545,8 +569,7 @@ struct ParticleSimulation {
         let flowSeedPhase = (
             Float(tuning.flowSeed) - 0.5
         ) * ParticleTuning.Engine.fullRotation
-        let axisPhase = time
-            * flowFrequency
+        let axisPhase = flowTime
             * ParticleTuning.Engine.flowAxisPrecession
             + flowSeedPhase
         let flowAxis = simd_normalize(
@@ -562,6 +585,27 @@ struct ParticleSimulation {
                 * ParticleTuning.Engine.flowAxisTilt
         )
         let secondaryAxis = simd_normalize(ParticleTuning.Engine.secondaryFlowAxis)
+        let particleFlowTime = flowTime
+            * ParticleTuning.Engine.flowWaveFrequencyScale
+            + flowSeedPhase
+        let primaryFlowSine = sin(particleFlowTime)
+        let primaryFlowCosine = cos(particleFlowTime)
+        let secondaryFlowTime = particleFlowTime
+            * ParticleTuning.Engine.secondaryFlowFrequencyRatio
+        let secondaryFlowSine = sin(secondaryFlowTime)
+        let secondaryFlowCosine = cos(secondaryFlowTime)
+        let disturbanceXTime = time
+            * ParticleTuning.Engine.disturbanceFrequency
+        let disturbanceYTime = disturbanceXTime
+            * ParticleTuning.Engine.disturbanceYFrequencyRatio
+        let disturbanceZTime = disturbanceXTime
+            * ParticleTuning.Engine.disturbanceZFrequencyRatio
+        let disturbanceXTimeSine = sin(disturbanceXTime)
+        let disturbanceXTimeCosine = cos(disturbanceXTime)
+        let disturbanceYTimeSine = sin(disturbanceYTime)
+        let disturbanceYTimeCosine = cos(disturbanceYTime)
+        let disturbanceZTimeSine = sin(disturbanceZTime)
+        let disturbanceZTimeCosine = cos(disturbanceZTime)
         var positionCenter = SIMD3<Float>(repeating: 0)
         var velocityCenter = SIMD3<Float>(repeating: 0)
 
@@ -578,11 +622,23 @@ struct ParticleSimulation {
                 particle.position,
                 fallback: shapeAnchor
             )
-            let primaryFlow = simd_cross(flowAxis, radial)
+            let directionalFlow = baseFlowAxis
+                - radial * simd_dot(baseFlowAxis, radial)
+            let circulationFlow = simd_cross(flowAxis, radial)
+            let particleFlowSine = primaryFlowSine * particle.flowPhaseCosine
+                + primaryFlowCosine * particle.flowPhaseSine
+            let flowPulse = ParticleTuning.Engine.minimumFlowPulse
+                + (0.5 + 0.5 * particleFlowSine)
+                * ParticleTuning.Engine.flowPulseRange
+            let primaryFlow = directionalFlow
+                * flowPulse
+                * ParticleTuning.Engine.directionalFlowWeight
+                + circulationFlow
+                * ParticleTuning.Engine.circulationFlowWeight
             let secondaryFlow = simd_cross(secondaryAxis, radial)
-                * sin(
-                    time * flowFrequency * ParticleTuning.Engine.secondaryFlowFrequencyRatio
-                        + particle.flowPhase
+                * (
+                    secondaryFlowSine * particle.flowPhaseCosine
+                        + secondaryFlowCosine * particle.flowPhaseSine
                 )
                 * ParticleTuning.Engine.secondaryFlowStrength
             let flowWeight = ParticleTuning.Engine.minimumFlowWeight
@@ -592,19 +648,12 @@ struct ParticleSimulation {
                 * flowWeight
 
             var disturbance = SIMD3<Float>(
-                sin(time * ParticleTuning.Engine.disturbanceFrequency + particle.disturbancePhase),
-                sin(
-                    time * ParticleTuning.Engine.disturbanceFrequency
-                        * ParticleTuning.Engine.disturbanceYFrequencyRatio
-                        + particle.disturbancePhase
-                        * ParticleTuning.Engine.disturbanceYPhaseRatio
-                ),
-                cos(
-                    time * ParticleTuning.Engine.disturbanceFrequency
-                        * ParticleTuning.Engine.disturbanceZFrequencyRatio
-                        + particle.disturbancePhase
-                        * ParticleTuning.Engine.disturbanceZPhaseRatio
-                )
+                disturbanceXTimeSine * particle.disturbancePhaseXCosine
+                    + disturbanceXTimeCosine * particle.disturbancePhaseXSine,
+                disturbanceYTimeSine * particle.disturbancePhaseYCosine
+                    + disturbanceYTimeCosine * particle.disturbancePhaseYSine,
+                disturbanceZTimeCosine * particle.disturbancePhaseZCosine
+                    - disturbanceZTimeSine * particle.disturbancePhaseZSine
             )
             disturbance -= radial
                 * simd_dot(disturbance, radial)

@@ -464,9 +464,14 @@ struct ParticleTuning: Codable, Equatable {
         static let secondaryBreathingAmplitude: Float = 0.28
         static let secondaryBreathingFrequencyRatio: Float = 0.57
         static let secondaryBreathingPhase: Float = 0.84
-        static let maximumFlowAcceleration: Float = 0.095
+        static let maximumFlowAcceleration: Float = 0.16
         static let minimumFlowFrequency: Float = 0.10
         static let maximumFlowFrequency: Float = 0.42
+        static let flowWaveFrequencyScale: Float = 2 * .pi
+        static let directionalFlowWeight: Float = 0.82
+        static let circulationFlowWeight: Float = 0.34
+        static let minimumFlowPulse: Float = 0.38
+        static let flowPulseRange: Float = 0.62
         static let maximumAutomaticRotationSpeed: Float = 1.2
         static let flowAxisTilt: Float = 0.24
         static let flowAxisPrecession: Float = 0.17
@@ -522,6 +527,10 @@ struct ParticleTuning: Codable, Equatable {
         static let haloAlphaWeight: Float = 0.24
         static let keyLightDirection = SIMD3<Float>(-0.42, 0.48, 0.77)
         static let frontDepthScale: Float = 0.92
+        static let minimumVisibleBrightnessScale: Float = 1
+        static let frontBrightnessScale: Float = 1.34
+        static let frontVisibilityThreshold: Float = 0.50
+        static let frontBrightnessRampEnd: Float = 0.92
         static let surfaceColorBaseMix: Float = 0.16
         static let surfaceColorLightMix: Float = 0.34
         static let highlightColorMix: Float = 0.18
@@ -532,6 +541,7 @@ struct ParticleTuning: Codable, Equatable {
         static let velocityResponse: Float = 0.12
         static let interactionRiseResponse: Float = 0.18
         static let interactionFallResponse: Float = 0.06
+        static let orientationOverlayRefreshInterval = 1.0 / 30.0
         static let metricsInterval = 1.0
         static let focusFlowReduction: Float = 0.55
         static let pulseFlowIncrease: Float = 0.22

@@ -19,13 +19,14 @@ struct ParticleFrameUniforms {
     float4 renderSurface;
     float4 renderRidge;
     float4 renderEdge;
+    float4 renderVisibility;
+    float4 renderFlow;
     float4 viewOrientation;
 };
 
 struct ParticleVertexOut {
     float4 position [[position]];
     float pointSize [[point_size]];
-    float depth;
     float surfaceWeight;
     float surfaceLight;
     float ridge;
@@ -34,7 +35,6 @@ struct ParticleVertexOut {
     float alphaScale;
     float4 baseColor;
     float4 ridgeColor;
-    float4 dimColor;
     float4 highlightColor;
 };
 
@@ -153,14 +153,24 @@ vertex ParticleVertexOut particleVertex(
     const float flowPhase = (
         uniforms.renderEdge.z - 0.5
     ) * kFullRotation;
+    const float3 configuredFlowAxis = length(uniforms.renderFlow.xyz)
+        > kMinimumRadius
+        ? normalize(uniforms.renderFlow.xyz)
+        : float3(1.0, 0.0, 0.0);
+    const float3 flowReference = abs(configuredFlowAxis.y) < 0.92
+        ? float3(0.0, 1.0, 0.0)
+        : float3(1.0, 0.0, 0.0);
+    const float3 flowCrossAxis = normalize(
+        cross(flowReference, configuredFlowAxis)
+    );
     const float flowWaveA = 0.5 + 0.5 * sin(
-        dot(bodyNormal, normalize(float3(0.68, -0.19, 0.71))) * 8.4
-            - uniforms.renderEdge.w
+        dot(bodyNormal, configuredFlowAxis) * 8.4
+            - uniforms.renderFlow.w * kFullRotation
             + flowPhase
     );
     const float flowWaveB = 0.5 + 0.5 * cos(
-        dot(bodyNormal, normalize(float3(-0.35, 0.86, 0.37))) * 6.2
-            + uniforms.renderEdge.w * 0.74
+        dot(bodyNormal, flowCrossAxis) * 6.2
+            + uniforms.renderFlow.w * kFullRotation * 0.74
             - flowPhase * 0.67
     );
     const float flowLight = smoothstep(
@@ -168,12 +178,27 @@ vertex ParticleVertexOut particleVertex(
         0.88,
         flowWaveA * 0.62 + flowWaveB * 0.38
     ) * saturate(uniforms.renderRidge.w) * 2;
+    const float frontVisibility = step(
+        uniforms.renderVisibility.z,
+        frontness
+    );
+    const float depthBrightness = mix(
+        uniforms.renderVisibility.x,
+        uniforms.renderVisibility.y,
+        smoothstep(
+            uniforms.renderVisibility.z,
+            uniforms.renderVisibility.w,
+            frontness
+        )
+    );
 
     float2 clipPosition = position.xy * projectionScale;
     clipPosition.x /= max(aspect, kMinimumAspect);
 
     ParticleVertexOut out;
-    out.position = float4(clipPosition, 0, 1);
+    out.position = frontVisibility > 0
+        ? float4(clipPosition, 0, 1)
+        : float4(4, 4, 0, 1);
     out.pointSize = uniforms.viewportAndRender.z
         * depthScale
         * mix(uniforms.renderGeometry.z, uniforms.renderGeometry.w, surfaceWeight)
@@ -184,7 +209,6 @@ vertex ParticleVertexOut particleVertex(
                 * edgeFray
                 * mix(0.08, 0.34, particleSeed)
         );
-    out.depth = frontness;
     out.surfaceWeight = surfaceWeight;
     const float rawSurfaceLight = saturate(
         dot(normal, normalize(uniforms.renderLight.xyz)) * 0.5 + 0.5
@@ -199,10 +223,12 @@ vertex ParticleVertexOut particleVertex(
     out.flowLight = flowLight;
     out.brightness = uniforms.viewportAndRender.w
         * channelBrightness
-        * (1 + flowLight * 0.42);
+        * (1 + flowLight * 0.42)
+        * depthBrightness;
     out.alphaScale = mix(1, uniforms.renderAlpha.x, dissolution)
         * uniforms.highlightColor.a
         * uniforms.renderSurface.x
+        * frontVisibility
         * (
             1
                 - rim
@@ -211,7 +237,6 @@ vertex ParticleVertexOut particleVertex(
         );
     out.baseColor = uniforms.baseColor;
     out.ridgeColor = uniforms.ridgeColor;
-    out.dimColor = uniforms.dimColor;
     out.highlightColor = uniforms.highlightColor;
     return out;
 }
@@ -232,7 +257,6 @@ fragment half4 particleFragment(
         uniforms.renderPoint.w,
         distanceFromCenter
     );
-    const float frontness = saturate(in.depth);
     const float surfaceWeight = saturate(in.surfaceWeight);
     const float light = saturate(in.surfaceLight);
     const float ridge = saturate(in.ridge);
@@ -245,11 +269,10 @@ fragment half4 particleFragment(
         core * uniforms.renderAlpha.w + halo * uniforms.renderLight.w
     ) * layerAlpha * in.alphaScale;
 
-    const half3 backColor = half3(in.dimColor.rgb);
     const half3 bodyColor = half3(in.baseColor.rgb);
     const half3 surfaceColor = half3(in.ridgeColor.rgb);
     const half3 highlightColor = half3(in.highlightColor.rgb);
-    half3 color = mix(backColor, bodyColor, half(frontness));
+    half3 color = bodyColor;
     color = mix(
         color,
         surfaceColor,

@@ -22,6 +22,8 @@ struct ParticleFrameUniforms {
     var renderSurface: SIMD4<Float>
     var renderRidge: SIMD4<Float>
     var renderEdge: SIMD4<Float>
+    var renderVisibility: SIMD4<Float>
+    var renderFlow: SIMD4<Float>
     var viewOrientation: SIMD4<Float>
 }
 
@@ -37,7 +39,9 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     private var pendingModelRebuild: DispatchWorkItem?
     private var metricsStartTime: TimeInterval
     private var metricsFrameCount = 0
+    private var nextOrientationOverlayUpdateTime: TimeInterval = 0
     private var viewOrientation: ParticleViewOrientation = .identity
+    private var automaticRotationAngle: Float = 0
     private var isManualRotationEnabled = false
     #if DEBUG
     private var isDebugAutoCycleEnabled = false
@@ -45,6 +49,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     private var debugAutoCycleNextTime: TimeInterval?
     #endif
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
+    var effectiveViewOrientationHandler: ((ParticleViewOrientation) -> Void)?
 
     init?(device: MTLDevice, visualIntent: ResidentVisualIntent = .idle) {
         let now = CACurrentMediaTime()
@@ -134,7 +139,15 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                   descriptor: renderPassDescriptor
               ) else { return }
 
-        var uniforms = makeUniforms(from: frame)
+        let effectiveOrientation = makeEffectiveOrientation(from: frame)
+        publishEffectiveOrientationIfNeeded(
+            effectiveOrientation,
+            time: now
+        )
+        var uniforms = makeUniforms(
+            from: frame,
+            orientation: effectiveOrientation
+        )
         memcpy(
             uniformsBuffer.contents(),
             &uniforms,
@@ -431,7 +444,8 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     #endif
 
     private func makeUniforms(
-        from frame: ParticleSimulationFrame
+        from frame: ParticleSimulationFrame,
+        orientation: ParticleViewOrientation
     ) -> ParticleFrameUniforms {
         let tuning = frame.tuning
         let visualState = frame.visualState
@@ -456,29 +470,9 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             minimum: ParticleTuning.Engine.minimumAlphaScale,
             maximum: ParticleTuning.Engine.maximumAlphaScale
         )
-        let flowFrequency = ParticleTuning.Engine.amplifiedValue(
-            tuning.flowSpeed,
-            minimum: ParticleTuning.Engine.minimumFlowFrequency,
-            maximum: ParticleTuning.Engine.maximumFlowFrequency
-        )
-        let automaticRotationSpeed = ParticleTuning.Engine.value(
-            tuning.rotationSpeed,
-            minimum: 0,
-            maximum: ParticleTuning.Engine.maximumAutomaticRotationSpeed
-        )
-        let spinDirection = ParticleSpinDirection.nearest(
-            to: tuning.rotationDirection
-        ).sign
-        let automaticRotation = simd_quatf(
-            angle: frame.motionElapsedTime
-                * automaticRotationSpeed
-                * spinDirection,
-            axis: SIMD3<Float>(0, 1, 0)
-        )
-        let manualRotation = simd_quatf(vector: viewOrientation.quaternion)
-        let combinedOrientation = simd_normalize(
-            (manualRotation * automaticRotation).vector
-        )
+        let flowAxis = ParticleFlowDirection.nearest(
+            to: tuning.flowDirection
+        ).axis
         return ParticleFrameUniforms(
             viewportAndRender: SIMD4(
                 frame.resolution.x,
@@ -565,10 +559,65 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 Float(tuning.edgeDustAmount),
                 Float(tuning.edgeFrayAmount),
                 Float(tuning.flowSeed),
-                frame.motionElapsedTime * flowFrequency
+                frame.flowElapsedTime
             ),
-            viewOrientation: combinedOrientation
+            renderVisibility: SIMD4(
+                ParticleTuning.Engine.minimumVisibleBrightnessScale,
+                ParticleTuning.Engine.frontBrightnessScale,
+                ParticleTuning.Engine.frontVisibilityThreshold,
+                ParticleTuning.Engine.frontBrightnessRampEnd
+            ),
+            renderFlow: SIMD4(
+                flowAxis.x,
+                flowAxis.y,
+                flowAxis.z,
+                frame.flowElapsedTime
+            ),
+            viewOrientation: orientation.quaternion
         )
+    }
+
+    private func makeEffectiveOrientation(
+        from frame: ParticleSimulationFrame
+    ) -> ParticleViewOrientation {
+        let tuning = frame.tuning
+        let automaticRotationSpeed = ParticleTuning.Engine.value(
+            tuning.rotationSpeed,
+            minimum: 0,
+            maximum: ParticleTuning.Engine.maximumAutomaticRotationSpeed
+        )
+        let spinDirection = ParticleSpinDirection.nearest(
+            to: tuning.rotationDirection
+        ).sign
+        automaticRotationAngle += frame.visualState.deltaTime
+            * automaticRotationSpeed
+            * spinDirection
+        if abs(automaticRotationAngle) >= ParticleTuning.Engine.fullRotation {
+            automaticRotationAngle.formTruncatingRemainder(
+                dividingBy: ParticleTuning.Engine.fullRotation
+            )
+        }
+        let automaticRotation = simd_quatf(
+            angle: automaticRotationAngle,
+            axis: SIMD3<Float>(0, 1, 0)
+        )
+        let manualRotation = simd_quatf(vector: viewOrientation.quaternion)
+        return ParticleViewOrientation(
+            quaternion: (manualRotation * automaticRotation).vector
+        )
+    }
+
+    private func publishEffectiveOrientationIfNeeded(
+        _ orientation: ParticleViewOrientation,
+        time: TimeInterval
+    ) {
+        guard let handler = effectiveViewOrientationHandler,
+              time >= nextOrientationOverlayUpdateTime else {
+            return
+        }
+        nextOrientationOverlayUpdateTime =
+            time + ParticleTuning.Engine.orientationOverlayRefreshInterval
+        handler(orientation)
     }
 
     private func uploadParticles() {
