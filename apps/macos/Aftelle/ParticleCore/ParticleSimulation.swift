@@ -78,6 +78,11 @@ private struct ParticleSeededGenerator {
     }
 }
 
+private struct SphereFormSample {
+    let value: Float
+    let tangentGradient: SIMD3<Float>
+}
+
 private struct SimulatedParticle {
     let sphereAnchor: SIMD3<Float>
     let customShapeAnchor: SIMD3<Float>
@@ -1071,23 +1076,42 @@ struct ParticleSimulation {
                 - smoothness
                 * ParticleTuning.Engine.sphereFormUpperMediumSmoothnessReduction
         )
-        let field = Self.organicSphereFormField(
-            normal: normal,
-            phase: shapePhase,
-            lowLobeWeight: lowLobeWeight,
-            mediumLobeWeight: mediumLobeWeight,
-            upperMediumLobeWeight: upperMediumLobeWeight,
-            highLobeWeight: highLobeWeight
-        )
-        let radiusScale = max(
-            ParticleTuning.Engine.minimumSphereFormRadiusScale,
-            1
-                + field
-                * strength
-                * ParticleTuning.Engine.maximumSphereFormDisplacement
-        )
+        var shapedNormal = normal
         if strength > ParticleTuning.Engine.normalizationEpsilon {
-            shapedAnchor = normal * radius * radiusScale
+            let formSample = Self.organicSphereFormSample(
+                normal: normal,
+                phase: shapePhase,
+                lowLobeWeight: lowLobeWeight,
+                mediumLobeWeight: mediumLobeWeight,
+                upperMediumLobeWeight: upperMediumLobeWeight,
+                highLobeWeight: highLobeWeight
+            )
+            let densityWarp = Self.densityWarpedSphereDirection(
+                normal: normal,
+                gradient: formSample.tangentGradient,
+                strength: strength
+            )
+            shapedNormal = densityWarp.normal
+            let field = min(
+                1,
+                max(
+                    -1,
+                    formSample.value
+                        + simd_dot(
+                            densityWarp.gradient,
+                            shapedNormal - normal
+                        )
+                        * ParticleTuning.Engine.sphereFormDensityFieldFollow
+                )
+            )
+            let radiusScale = max(
+                ParticleTuning.Engine.minimumSphereFormRadiusScale,
+                1
+                    + field
+                    * strength
+                    * ParticleTuning.Engine.maximumSphereFormDisplacement
+            )
+            shapedAnchor = shapedNormal * radius * radiusScale
         }
 
         guard scatterStrength > ParticleTuning.Engine.normalizationEpsilon else {
@@ -1102,17 +1126,17 @@ struct ParticleSimulation {
             * (
                 ParticleTuning.Engine.scatterMaximumClusterFrequency
                     - ParticleTuning.Engine.scatterMinimumClusterFrequency
-            )
+        )
         let clusterA = 0.5 + 0.5 * sin(
             simd_dot(
-                normal,
+                shapedNormal,
                 ParticleTuning.Engine.scatterPrimaryAxis
             ) * clusterFrequency
                 + scatterPhase
         )
         let clusterB = 0.5 + 0.5 * cos(
             simd_dot(
-                normal,
+                shapedNormal,
                 ParticleTuning.Engine.scatterSecondaryAxis
             ) * clusterFrequency
                 * ParticleTuning.Engine.scatterSecondaryFrequencyRatio
@@ -1162,12 +1186,14 @@ struct ParticleSimulation {
             * scatterStrength
             * radialClusterScale
             * layerWeight
-        let tangentReference = abs(normal.y)
+        let tangentReference = abs(shapedNormal.y)
             < ParticleTuning.Engine.polarReferenceThreshold
             ? SIMD3<Float>(0, 1, 0)
             : SIMD3<Float>(1, 0, 0)
-        let tangent = simd_normalize(simd_cross(tangentReference, normal))
-        let bitangent = simd_cross(normal, tangent)
+        let tangent = simd_normalize(
+            simd_cross(tangentReference, shapedNormal)
+        )
+        let bitangent = simd_cross(shapedNormal, tangent)
         let tangentAngle = scatterTangentialSample
             * ParticleTuning.Engine.fullRotation
             + scatterPhase
@@ -1179,18 +1205,46 @@ struct ParticleSimulation {
             * tangentialClusterScale
             * layerWeight
         return shapedAnchor
-            + normal * radialDistance
+            + shapedNormal * radialDistance
             + tangentDirection * tangentialDistance
     }
 
-    private static func organicSphereFormField(
+    private static func densityWarpedSphereDirection(
+        normal: SIMD3<Float>,
+        gradient: SIMD3<Float>,
+        strength: Float
+    ) -> (normal: SIMD3<Float>, gradient: SIMD3<Float>) {
+        let warpStrength = min(
+            ParticleTuning.Engine.sphereFormMaximumDensityWarp,
+            strength * ParticleTuning.Engine.sphereFormDensityWarpStrength
+        )
+        guard warpStrength > ParticleTuning.Engine.normalizationEpsilon else {
+            return (normal, .zero)
+        }
+
+        var limitedGradient = gradient
+        let gradientLength = simd_length(limitedGradient)
+        if gradientLength > ParticleTuning.Engine.sphereFormDensityGradientLimit {
+            limitedGradient *= ParticleTuning.Engine.sphereFormDensityGradientLimit
+                / gradientLength
+        }
+        return (
+            safeNormalize(
+                normal + limitedGradient * warpStrength,
+                fallback: normal
+            ),
+            limitedGradient
+        )
+    }
+
+    private static func organicSphereFormSample(
         normal: SIMD3<Float>,
         phase: Float,
         lowLobeWeight: Float,
         mediumLobeWeight: Float,
         upperMediumLobeWeight: Float,
         highLobeWeight: Float
-    ) -> Float {
+    ) -> SphereFormSample {
         let xyField = sphereFormAngularField(
             first: normal.x,
             second: normal.y,
@@ -1200,7 +1254,7 @@ struct ParticleSimulation {
             mediumLobeWeight: mediumLobeWeight,
             upperMediumLobeWeight: upperMediumLobeWeight,
             highLobeWeight: highLobeWeight
-        ) * ParticleTuning.Engine.sphereFormXYWeight
+        )
         let yzField = sphereFormAngularField(
             first: normal.y,
             second: normal.z,
@@ -1210,7 +1264,7 @@ struct ParticleSimulation {
             mediumLobeWeight: mediumLobeWeight,
             upperMediumLobeWeight: upperMediumLobeWeight,
             highLobeWeight: highLobeWeight
-        ) * ParticleTuning.Engine.sphereFormYZWeight
+        )
         let zxField = sphereFormAngularField(
             first: normal.z,
             second: normal.x,
@@ -1220,28 +1274,48 @@ struct ParticleSimulation {
             mediumLobeWeight: mediumLobeWeight,
             upperMediumLobeWeight: upperMediumLobeWeight,
             highLobeWeight: highLobeWeight
-        ) * ParticleTuning.Engine.sphereFormZXWeight
-        let broadField =
-            cos(
-                simd_dot(
-                    normal,
-                    ParticleTuning.Engine.sphereFormBroadAxisA
-                ) * ParticleTuning.Engine.sphereFormBroadFrequencyA
-                    + phase
-            ) * ParticleTuning.Engine.sphereFormBroadWeightA
-            + cos(
-                simd_dot(
-                    normal,
-                    ParticleTuning.Engine.sphereFormBroadAxisB
-                ) * ParticleTuning.Engine.sphereFormBroadFrequencyB
-                    + phase
-                    * ParticleTuning.Engine.sphereFormBroadPhaseRatioB
-            ) * ParticleTuning.Engine.sphereFormBroadWeightB
-        return tanh(
-            (
-                xyField + yzField + zxField + broadField
-            ) / ParticleTuning.Engine.sphereFormFieldNormalization
-                * ParticleTuning.Engine.sphereFormFieldGain
+        )
+        let broadPhaseA = simd_dot(
+            normal,
+            ParticleTuning.Engine.sphereFormBroadAxisA
+        )
+            * ParticleTuning.Engine.sphereFormBroadFrequencyA
+            + phase
+        let broadPhaseB = simd_dot(
+            normal,
+            ParticleTuning.Engine.sphereFormBroadAxisB
+        )
+            * ParticleTuning.Engine.sphereFormBroadFrequencyB
+            + phase * ParticleTuning.Engine.sphereFormBroadPhaseRatioB
+        let combinedField =
+            xyField * ParticleTuning.Engine.sphereFormXYWeight
+            + yzField * ParticleTuning.Engine.sphereFormYZWeight
+            + zxField * ParticleTuning.Engine.sphereFormZXWeight
+            + cos(broadPhaseA) * ParticleTuning.Engine.sphereFormBroadWeightA
+            + cos(broadPhaseB) * ParticleTuning.Engine.sphereFormBroadWeightB
+        let broadGradientA = ParticleTuning.Engine.sphereFormBroadAxisA
+            * (
+                -sin(broadPhaseA)
+                    * ParticleTuning.Engine.sphereFormBroadFrequencyA
+                    * ParticleTuning.Engine.sphereFormBroadWeightA
+            )
+        let broadGradientB = ParticleTuning.Engine.sphereFormBroadAxisB
+            * (
+                -sin(broadPhaseB)
+                    * ParticleTuning.Engine.sphereFormBroadFrequencyB
+                    * ParticleTuning.Engine.sphereFormBroadWeightB
+            )
+        let combinedGradient = broadGradientA + broadGradientB
+        let fieldScale = ParticleTuning.Engine.sphereFormFieldGain
+            / ParticleTuning.Engine.sphereFormFieldNormalization
+        let value = tanh(combinedField * fieldScale)
+        let gradient = combinedGradient
+            * fieldScale
+            * (1 - value * value)
+        return SphereFormSample(
+            value: value,
+            tangentGradient: gradient
+                - normal * simd_dot(gradient, normal)
         )
     }
 

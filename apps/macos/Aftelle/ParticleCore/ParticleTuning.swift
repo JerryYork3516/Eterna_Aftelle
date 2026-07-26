@@ -426,8 +426,8 @@ struct ParticleTuning: Codable, Equatable {
         static let customShapeCubeScale: Float = 0.577_350_26
         static let minimumGlobalScale: Float = 0.64
         static let maximumGlobalScale: Float = 1.36
-        static let maximumSphereFormDisplacement: Float = 0.16
-        static let minimumSphereFormRadiusScale: Float = 0.65
+        static let maximumSphereFormDisplacement: Float = 0.22
+        static let minimumSphereFormRadiusScale: Float = 0.56
         static let fullRotation: Float = 2 * .pi
         static let sphereFormBaseLobeCount: Float = 2
         static let sphereFormLowLobeCount: Float = 3
@@ -468,7 +468,11 @@ struct ParticleTuning: Codable, Equatable {
         static let sphereFormBroadWeightA: Float = 0.20
         static let sphereFormBroadWeightB: Float = 0.15
         static let sphereFormFieldNormalization: Float = 1.25
-        static let sphereFormFieldGain: Float = 1.30
+        static let sphereFormFieldGain: Float = 1.60
+        static let sphereFormDensityWarpStrength: Float = 0.28
+        static let sphereFormMaximumDensityWarp: Float = 0.48
+        static let sphereFormDensityGradientLimit: Float = 1.15
+        static let sphereFormDensityFieldFollow: Float = 0.75
         static let scatterMinimumClusterFrequency: Float = 1.4
         static let scatterMaximumClusterFrequency: Float = 3.4
         static let scatterStrongProbability: Float = 0.46
