@@ -155,7 +155,11 @@ struct ContentView: View {
                     text: $residentInputText,
                     state: controller.residentTextInputState,
                     isResidentAvailable: controller.isResidentTextInputAvailable,
-                    submit: controller.submitResidentText
+                    submit: { inputText in
+                        presentationSettings.followRuntimeVisualIntent()
+                        presentationSettings.followRuntimeSpeech()
+                        return await controller.submitResidentText(inputText)
+                    }
                 )
             }
 

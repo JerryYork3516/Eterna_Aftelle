@@ -224,6 +224,7 @@ final class AppController: ObservableObject {
         refreshResidentVisualIntent(
             visualStateMode: ResidentVisualIntent.thinking.rawValue
         )
+        let thinkingPresentationStart = ProcessInfo.processInfo.systemUptime
         refreshParticleDebugSnapshot()
         #if DEBUG
         appendDialogueAuditUser(trimmedInput)
@@ -237,6 +238,17 @@ final class AppController: ObservableObject {
         }
         residentTextTask = requestTask
         let result = await requestTask.value
+        if case .success = result {
+            let elapsed = ProcessInfo.processInfo.systemUptime
+                - thinkingPresentationStart
+            let remaining = ParticleTuning.Engine.minimumThinkingPresentationDuration
+                - elapsed
+            if remaining > 0 {
+                try? await Task.sleep(
+                    nanoseconds: Self.nanoseconds(remaining)
+                )
+            }
+        }
         guard residentTextRequestID == requestID else {
             #if DEBUG
             completeRuntimeOrchestrationPresentation(
@@ -976,7 +988,7 @@ final class AppController: ObservableObject {
             if isSpeaking {
                 try? await Task.sleep(
                     nanoseconds: Self.nanoseconds(
-                        ParticleTuning.Engine.speechStartDuration
+                        ParticleTuning.Engine.speechStartHoldDuration
                     )
                 )
                 guard let self,
@@ -990,7 +1002,7 @@ final class AppController: ObservableObject {
 
                 try? await Task.sleep(
                     nanoseconds: Self.nanoseconds(
-                        ParticleTuning.Engine.speechSustainDuration
+                        ParticleTuning.Engine.speechSustainHoldDuration
                     )
                 )
                 guard self.residentTextPresentationID == presentationID else {
@@ -1003,13 +1015,19 @@ final class AppController: ObservableObject {
 
                 try? await Task.sleep(
                     nanoseconds: Self.nanoseconds(
-                        ParticleTuning.Engine.speechPauseDuration
+                        ParticleTuning.Engine.speechPauseHoldDuration
                     )
                 )
                 guard self.residentTextPresentationID == presentationID else {
                     return
                 }
                 self.residentSpeechSignal = .ended
+
+                try? await Task.sleep(
+                    nanoseconds: Self.nanoseconds(
+                        ParticleTuning.Engine.speechEndHoldDuration
+                    )
+                )
             } else {
                 try? await Task.sleep(
                     nanoseconds: Self.nanoseconds(
@@ -1021,7 +1039,13 @@ final class AppController: ObservableObject {
                   self.residentTextPresentationID == presentationID,
                   !self.residentTextInputState.isSubmitting else { return }
             self.residentTextPresentationID = nil
-            self.refreshResidentVisualIntent()
+            if isSpeaking {
+                self.refreshResidentVisualIntent(
+                    visualStateMode: ResidentVisualIntent.idle.rawValue
+                )
+            } else {
+                self.refreshResidentVisualIntent()
+            }
             self.refreshParticleDebugSnapshot()
         }
     }

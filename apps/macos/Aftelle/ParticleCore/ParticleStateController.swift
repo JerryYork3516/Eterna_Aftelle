@@ -300,13 +300,13 @@ final class ParticleStateController {
     ) -> TimeInterval {
         switch phase {
         case .started:
-            return ParticleTuning.Engine.speechStartDuration
+            return ParticleTuning.Engine.speechStartTransitionDuration
         case .sustained:
-            return ParticleTuning.Engine.speechStartDuration
+            return ParticleTuning.Engine.speechSustainTransitionDuration
         case .paused:
-            return ParticleTuning.Engine.speechPauseDuration
+            return ParticleTuning.Engine.speechPauseTransitionDuration
         case .inactive, .ended:
-            return ParticleTuning.Engine.speechEndDuration
+            return ParticleTuning.Engine.speechEndTransitionDuration
         }
     }
 

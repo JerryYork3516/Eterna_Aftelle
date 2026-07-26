@@ -372,8 +372,8 @@ struct ParticleTuning: Codable, Equatable {
         )
         static let speakingProfile = ParticleVisualProfile(
             focus: 0.02,
-            pulse: 0.90,
-            circulation: 0.38,
+            pulse: 0.62,
+            circulation: 0.42,
             disruption: 0.01,
             dissolution: 0
         )
@@ -405,17 +405,22 @@ struct ParticleTuning: Codable, Equatable {
             disruption: 0.06,
             dissolution: 1
         )
-        static let speechStartPulseBase: Float = 0.42
-        static let speechStartPulseIntensityScale: Float = 0.34
-        static let speechSustainPulseBase: Float = 0.20
-        static let speechSustainPulseIntensityScale: Float = 0.48
-        static let speechCirculationBase: Float = 0.24
-        static let speechCirculationIntensityScale: Float = 0.22
+        static let speechStartPulseBase: Float = 0.60
+        static let speechStartPulseIntensityScale: Float = 0.38
+        static let speechSustainPulseBase: Float = 0.46
+        static let speechSustainPulseIntensityScale: Float = 0.42
+        static let speechCirculationBase: Float = 0.48
+        static let speechCirculationIntensityScale: Float = 0.28
         static let defaultSpeechIntensity: Float = 0.68
-        static let speechStartDuration = 0.12
-        static let speechSustainDuration = 0.52
-        static let speechPauseDuration = 0.18
-        static let speechEndDuration = 0.18
+        static let speechStartTransitionDuration = 0.24
+        static let speechSustainTransitionDuration = 0.36
+        static let speechPauseTransitionDuration = 0.28
+        static let speechEndTransitionDuration = 0.38
+        static let minimumThinkingPresentationDuration = 1.10
+        static let speechStartHoldDuration = 0.28
+        static let speechSustainHoldDuration = 1.35
+        static let speechPauseHoldDuration = 0.32
+        static let speechEndHoldDuration = 0.38
         static let transientStatePresentationDuration = 0.90
         static let errorImpulseStrength: Float = 1
         static let errorImpulseHoldDuration = 0.50
