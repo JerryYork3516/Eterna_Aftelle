@@ -588,6 +588,74 @@ struct ParticleDebugWindow: View {
     }
 }
 
+private enum ParticleTuningGroup: String, CaseIterable, Identifiable {
+    case basics
+    case shape
+    case motion
+    case surface
+    case scatter
+
+    var id: String { rawValue }
+
+    var localizedKey: String {
+        "particleDebug.tuningGroup.\(rawValue)"
+    }
+
+    var parameters: [ParticleTuningParameter] {
+        switch self {
+        case .basics:
+            return [
+                .sphereRadius,
+                .globalScale,
+                .pointSizeScale,
+                .brightness,
+                .alphaScale
+            ]
+        case .shape:
+            return [
+                .shapeStrength,
+                .shapeFeatureScale,
+                .shapeSmoothness,
+                .shapeSeed
+            ]
+        case .motion:
+            return [
+                .breathingAmount,
+                .breathingSpeed,
+                .flowStrength,
+                .flowSpeed,
+                .flowDirection,
+                .flowSeed,
+                .flowBrightnessStrength,
+                .rotationSpeed,
+                .rotationDirection,
+                .disturbanceStrength,
+                .aggregationStrength,
+                .damping
+            ]
+        case .surface:
+            return [
+                .surfaceRatio,
+                .surfaceLightStrength,
+                .ridgeStrength,
+                .ridgeWidth,
+                .ridgeBreakup,
+                .ridgeSeed,
+                .ridgeFlowBinding,
+                .edgeDustAmount,
+                .edgeFrayAmount
+            ]
+        case .scatter:
+            return [
+                .scatterStrength,
+                .scatterClusterStrength,
+                .scatterClusterScale,
+                .scatterSeed
+            ]
+        }
+    }
+}
+
 private struct ParticleDebugPanel: View {
     let snapshot: ParticleDebugSnapshot
     let providerState: ProviderDebugViewState
@@ -631,6 +699,7 @@ private struct ParticleDebugPanel: View {
     let exportRuntimeOrchestration: (UUID) -> Void
     let clearRuntimeOrchestration: () -> Void
     @State private var section: ParticleDebugSection = .diagnostics
+    @State private var tuningGroup: ParticleTuningGroup = .basics
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -660,6 +729,22 @@ private struct ParticleDebugPanel: View {
                     .tag(ParticleDebugSection.color)
             }
             .pickerStyle(.segmented)
+
+            if section == .particle {
+                Picker("", selection: $tuningGroup) {
+                    ForEach(ParticleTuningGroup.allCases) { group in
+                        Text(
+                            String(
+                                localized: String.LocalizationValue(
+                                    group.localizedKey
+                                )
+                            )
+                        )
+                        .tag(group)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
 
             Toggle(String(localized: "particleDebug.orientation.overlay"), isOn: $orientationOverlayVisible)
                 .font(.system(size: 12))
@@ -847,8 +932,20 @@ private struct ParticleDebugPanel: View {
                             setRenderKind: setRenderKind
                         )
                     case .particle:
-                        ForEach(ParticleTuningParameter.allCases) { parameter in
-                            ParticleParameterRow(parameter: parameter, tuning: $tuning)
+                        ForEach(tuningGroup.parameters) { parameter in
+                            if parameter == .flowDirection {
+                                ParticleDirectionRow(
+                                    parameter: parameter,
+                                    tuning: $tuning
+                                )
+                            } else if parameter == .rotationDirection {
+                                ParticleSpinDirectionRow(tuning: $tuning)
+                            } else {
+                                ParticleParameterRow(
+                                    parameter: parameter,
+                                    tuning: $tuning
+                                )
+                            }
                         }
                     case .color:
                         ForEach(ParticleColorParameter.allCases) { parameter in
@@ -1710,6 +1807,77 @@ private struct ParticleParameterRow: View {
             tuning[keyPath: parameter.keyPath]
         } set: { newValue in
             tuning[keyPath: parameter.keyPath] = min(1, max(0, newValue))
+        }
+    }
+}
+
+private struct ParticleDirectionRow: View {
+    let parameter: ParticleTuningParameter
+    @Binding var tuning: ParticleTuning
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(String(localized: String.LocalizationValue(parameter.localizedKey)))
+                .font(.system(size: 12))
+                .frame(width: 116, alignment: .leading)
+
+            Picker("", selection: direction) {
+                ForEach(ParticleFlowDirection.allCases) { direction in
+                    Text(
+                        String(
+                            localized: String.LocalizationValue(
+                                direction.localizedKey
+                            )
+                        )
+                    )
+                    .tag(direction)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var direction: Binding<ParticleFlowDirection> {
+        Binding {
+            ParticleFlowDirection.nearest(
+                to: tuning[keyPath: parameter.keyPath]
+            )
+        } set: { newValue in
+            tuning[keyPath: parameter.keyPath] = newValue.tuningValue
+        }
+    }
+}
+
+private struct ParticleSpinDirectionRow: View {
+    @Binding var tuning: ParticleTuning
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(String(localized: "particleDebug.parameter.rotationDirection"))
+                .font(.system(size: 12))
+                .frame(width: 116, alignment: .leading)
+
+            Picker("", selection: direction) {
+                ForEach(ParticleSpinDirection.allCases) { direction in
+                    Text(
+                        String(
+                            localized: String.LocalizationValue(
+                                direction.localizedKey
+                            )
+                        )
+                    )
+                    .tag(direction)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var direction: Binding<ParticleSpinDirection> {
+        Binding {
+            ParticleSpinDirection.nearest(to: tuning.rotationDirection)
+        } set: { newValue in
+            tuning.rotationDirection = newValue.tuningValue
         }
     }
 }

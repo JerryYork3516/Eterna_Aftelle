@@ -79,6 +79,7 @@
 "particleDebug.tuningGroup.shape" = "Shape";
 "particleDebug.tuningGroup.surface" = "Surface";
 "particleDebug.tuningGroup.motion" = "Motion";
+"particleDebug.tuningGroup.scatter" = "Scatter";
 "particleDebug.tuningGroup.edge" = "Edge";
 "particleDebug.tuningGroup.ridge" = "Ridge";
 "particleDebug.colorParameters" = "Color Parameters";

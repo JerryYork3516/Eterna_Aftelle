@@ -19,6 +19,9 @@ struct ParticleFrameUniforms {
     var renderPoint: SIMD4<Float>
     var renderLight: SIMD4<Float>
     var renderColor: SIMD4<Float>
+    var renderSurface: SIMD4<Float>
+    var renderRidge: SIMD4<Float>
+    var renderEdge: SIMD4<Float>
     var viewOrientation: SIMD4<Float>
 }
 
@@ -443,6 +446,39 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             minimum: ParticleTuning.Engine.minimumBrightness,
             maximum: ParticleTuning.Engine.maximumBrightness
         )
+        let globalScale = ParticleTuning.Engine.value(
+            tuning.globalScale,
+            minimum: ParticleTuning.Engine.minimumGlobalScale,
+            maximum: ParticleTuning.Engine.maximumGlobalScale
+        )
+        let alphaScale = ParticleTuning.Engine.value(
+            tuning.alphaScale,
+            minimum: ParticleTuning.Engine.minimumAlphaScale,
+            maximum: ParticleTuning.Engine.maximumAlphaScale
+        )
+        let flowFrequency = ParticleTuning.Engine.amplifiedValue(
+            tuning.flowSpeed,
+            minimum: ParticleTuning.Engine.minimumFlowFrequency,
+            maximum: ParticleTuning.Engine.maximumFlowFrequency
+        )
+        let automaticRotationSpeed = ParticleTuning.Engine.value(
+            tuning.rotationSpeed,
+            minimum: 0,
+            maximum: ParticleTuning.Engine.maximumAutomaticRotationSpeed
+        )
+        let spinDirection = ParticleSpinDirection.nearest(
+            to: tuning.rotationDirection
+        ).sign
+        let automaticRotation = simd_quatf(
+            angle: frame.motionElapsedTime
+                * automaticRotationSpeed
+                * spinDirection,
+            axis: SIMD3<Float>(0, 1, 0)
+        )
+        let manualRotation = simd_quatf(vector: viewOrientation.quaternion)
+        let combinedOrientation = simd_normalize(
+            (manualRotation * automaticRotation).vector
+        )
         return ParticleFrameUniforms(
             viewportAndRender: SIMD4(
                 frame.resolution.x,
@@ -454,7 +490,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 frame.mousePosition.x,
                 frame.mousePosition.y,
                 frame.mouseInfluence,
-                ParticleTuning.Engine.projectionScale
+                ParticleTuning.Engine.projectionScale * globalScale
             ),
             visualChannelsA: SIMD4(
                 visualState.focusStrength,
@@ -513,7 +549,25 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 ParticleTuning.Engine.surfaceColorLightMix,
                 ParticleTuning.Engine.highlightColorMix
             ),
-            viewOrientation: viewOrientation.quaternion
+            renderSurface: SIMD4(
+                alphaScale,
+                Float(tuning.surfaceLightStrength),
+                Float(tuning.ridgeStrength),
+                Float(tuning.ridgeWidth)
+            ),
+            renderRidge: SIMD4(
+                Float(tuning.ridgeBreakup),
+                Float(tuning.ridgeSeed),
+                Float(tuning.ridgeFlowBinding),
+                Float(tuning.flowBrightnessStrength)
+            ),
+            renderEdge: SIMD4(
+                Float(tuning.edgeDustAmount),
+                Float(tuning.edgeFrayAmount),
+                Float(tuning.flowSeed),
+                frame.motionElapsedTime * flowFrequency
+            ),
+            viewOrientation: combinedOrientation
         )
     }
 

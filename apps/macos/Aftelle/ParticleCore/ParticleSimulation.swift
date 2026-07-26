@@ -83,6 +83,9 @@ private struct SimulatedParticle {
     let customShapeAnchor: SIMD3<Float>
     let flowPhase: Float
     let disturbancePhase: Float
+    let scatterSelector: Float
+    let scatterRadialSample: Float
+    let scatterTangentialSample: Float
     let surfaceWeight: Float
     var morphStartAnchor: SIMD3<Float>
     var morphTargetAnchor: SIMD3<Float>
@@ -176,6 +179,11 @@ struct ParticleSimulation {
             self.tuning.shapeStrength != value.shapeStrength
             || self.tuning.shapeFeatureScale != value.shapeFeatureScale
             || self.tuning.shapeSmoothness != value.shapeSmoothness
+            || self.tuning.shapeSeed != value.shapeSeed
+            || self.tuning.scatterStrength != value.scatterStrength
+            || self.tuning.scatterClusterStrength != value.scatterClusterStrength
+            || self.tuning.scatterClusterScale != value.scatterClusterScale
+            || self.tuning.scatterSeed != value.scatterSeed
         self.tuning = value
         if sphereFormChanged {
             updateSphereFormTargets()
@@ -233,7 +241,16 @@ struct ParticleSimulation {
             }
 
             let sphereAnchor = direction * unitRadius
-            let sphereFormAnchor = sphereFormAnchor(from: sphereAnchor)
+            let scatterSelector = generator.nextUnit()
+            let scatterRadialSample = generator.nextUnit()
+            let scatterTangentialSample = generator.nextUnit()
+            let sphereFormAnchor = sphereFormAnchor(
+                from: sphereAnchor,
+                scatterSelector: scatterSelector,
+                scatterRadialSample: scatterRadialSample,
+                scatterTangentialSample: scatterTangentialSample,
+                surfaceWeight: surfaceWeight
+            )
             let customShapeAnchor = Self.customShapeAnchor(from: sphereAnchor)
             let activeAnchor = rebuildShapeTarget == .customShape
                 ? customShapeAnchor
@@ -243,6 +260,9 @@ struct ParticleSimulation {
                 customShapeAnchor: customShapeAnchor,
                 flowPhase: generator.nextUnit() * 2 * .pi,
                 disturbancePhase: generator.nextUnit() * 2 * .pi,
+                scatterSelector: scatterSelector,
+                scatterRadialSample: scatterRadialSample,
+                scatterTangentialSample: scatterTangentialSample,
                 surfaceWeight: surfaceWeight,
                 morphStartAnchor: activeAnchor,
                 morphTargetAnchor: activeAnchor,
@@ -513,15 +533,35 @@ struct ParticleSimulation {
                     + visualState.disruptionStrength
                     * ParticleTuning.Engine.disruptionAccelerationIncrease
             )
-        let axisPhase = time * flowFrequency * ParticleTuning.Engine.flowAxisPrecession
-        let flowAxis = simd_normalize(SIMD3<Float>(
-            sin(axisPhase) * ParticleTuning.Engine.flowAxisTilt,
-            1,
-            cos(axisPhase * ParticleTuning.Engine.flowAxisSecondaryRateRatio)
+        let baseFlowAxis = ParticleFlowDirection.nearest(
+            to: tuning.flowDirection
+        ).axis
+        let flowReference = abs(baseFlowAxis.y)
+            < ParticleTuning.Engine.polarReferenceThreshold
+            ? SIMD3<Float>(0, 1, 0)
+            : SIMD3<Float>(1, 0, 0)
+        let flowTangent = simd_normalize(simd_cross(flowReference, baseFlowAxis))
+        let flowBitangent = simd_cross(baseFlowAxis, flowTangent)
+        let flowSeedPhase = (
+            Float(tuning.flowSeed) - 0.5
+        ) * ParticleTuning.Engine.fullRotation
+        let axisPhase = time
+            * flowFrequency
+            * ParticleTuning.Engine.flowAxisPrecession
+            + flowSeedPhase
+        let flowAxis = simd_normalize(
+            baseFlowAxis
+                + flowTangent
+                * sin(axisPhase)
                 * ParticleTuning.Engine.flowAxisTilt
-        ))
+                + flowBitangent
+                * cos(
+                    axisPhase
+                        * ParticleTuning.Engine.flowAxisSecondaryRateRatio
+                )
+                * ParticleTuning.Engine.flowAxisTilt
+        )
         let secondaryAxis = simd_normalize(ParticleTuning.Engine.secondaryFlowAxis)
-        let boundaryRadius = targetRadius * (1 + ParticleTuning.Engine.boundaryMargin)
         var positionCenter = SIMD3<Float>(repeating: 0)
         var velocityCenter = SIMD3<Float>(repeating: 0)
 
@@ -592,6 +632,11 @@ struct ParticleSimulation {
             }
             particle.position += particle.velocity * timeStep
 
+            let boundaryRadius = targetRadius
+                * (
+                    max(1, simd_length(shapeAnchor))
+                        + ParticleTuning.Engine.boundaryMargin
+                )
             let radius = simd_length(particle.position)
             if radius > boundaryRadius {
                 let boundaryNormal = particle.position / radius
@@ -713,11 +758,11 @@ struct ParticleSimulation {
     ) -> SIMD3<Float> {
         switch target {
         case .sphere:
-            return sphereFormAnchor(from: particle.sphereAnchor)
+            return sphereFormAnchor(for: particle)
         case .customShape:
             return particle.customShapeAnchor
         case .text, .guidePath, .abstractResident, .realisticResident:
-            return sphereFormAnchor(from: particle.sphereAnchor)
+            return sphereFormAnchor(for: particle)
         }
     }
 
@@ -743,9 +788,7 @@ struct ParticleSimulation {
         var center = SIMD3<Float>(repeating: 0)
 
         for index in particles.indices {
-            let anchor = sphereFormAnchor(
-                from: particles[index].sphereAnchor
-            )
+            let anchor = sphereFormAnchor(for: particles[index])
             center += anchor
             if updatesSphereTarget {
                 particles[index].morphTargetAnchor = anchor
@@ -886,12 +929,32 @@ struct ParticleSimulation {
     }
 
     private func sphereFormAnchor(
-        from sphereAnchor: SIMD3<Float>
+        for particle: SimulatedParticle
+    ) -> SIMD3<Float> {
+        sphereFormAnchor(
+            from: particle.sphereAnchor,
+            scatterSelector: particle.scatterSelector,
+            scatterRadialSample: particle.scatterRadialSample,
+            scatterTangentialSample: particle.scatterTangentialSample,
+            surfaceWeight: particle.surfaceWeight
+        )
+    }
+
+    private func sphereFormAnchor(
+        from sphereAnchor: SIMD3<Float>,
+        scatterSelector: Float,
+        scatterRadialSample: Float,
+        scatterTangentialSample: Float,
+        surfaceWeight: Float
     ) -> SIMD3<Float> {
         let strength = ParticleTuning.Engine.amplifiedStrength(
             tuning.shapeStrength
         )
-        guard strength > ParticleTuning.Engine.normalizationEpsilon else {
+        let scatterStrength = ParticleTuning.Engine.amplifiedStrength(
+            tuning.scatterStrength
+        )
+        guard strength > ParticleTuning.Engine.normalizationEpsilon
+                || scatterStrength > ParticleTuning.Engine.normalizationEpsilon else {
             return sphereAnchor
         }
 
@@ -901,17 +964,22 @@ struct ParticleSimulation {
         }
 
         let normal = sphereAnchor / radius
+        var shapedAnchor = sphereAnchor
         let frequency = ParticleTuning.Engine.value(
             tuning.shapeFeatureScale,
             minimum: ParticleTuning.Engine.minimumSphereFormFrequency,
             maximum: ParticleTuning.Engine.maximumSphereFormFrequency
         )
+        let shapePhase = (
+            Float(tuning.shapeSeed) - 0.5
+        ) * ParticleTuning.Engine.fullRotation
         let primary =
             cos(
                 simd_dot(
                     normal,
                     ParticleTuning.Engine.sphereFormPrimaryAxisA
                 ) * frequency
+                    + shapePhase
             ) * ParticleTuning.Engine.sphereFormPrimaryWeightA
             + cos(
                 simd_dot(
@@ -919,6 +987,7 @@ struct ParticleSimulation {
                     ParticleTuning.Engine.sphereFormPrimaryAxisB
                 ) * frequency
                     * ParticleTuning.Engine.sphereFormPrimaryFrequencyRatioB
+                    - shapePhase * 0.72
             ) * ParticleTuning.Engine.sphereFormPrimaryWeightB
             + cos(
                 simd_dot(
@@ -926,6 +995,7 @@ struct ParticleSimulation {
                     ParticleTuning.Engine.sphereFormPrimaryAxisC
                 ) * frequency
                     * ParticleTuning.Engine.sphereFormPrimaryFrequencyRatioC
+                    + shapePhase * 1.31
             ) * ParticleTuning.Engine.sphereFormPrimaryWeightC
         let detailFrequency = frequency
             * ParticleTuning.Engine.sphereFormDetailFrequencyRatio
@@ -935,6 +1005,7 @@ struct ParticleSimulation {
                     normal,
                     ParticleTuning.Engine.sphereFormDetailAxisA
                 ) * detailFrequency
+                    + shapePhase * 0.61
             ) * ParticleTuning.Engine.sphereFormDetailWeightA
             + cos(
                 simd_dot(
@@ -942,6 +1013,7 @@ struct ParticleSimulation {
                     ParticleTuning.Engine.sphereFormDetailAxisB
                 ) * detailFrequency
                     * ParticleTuning.Engine.sphereFormDetailFrequencyRatioB
+                    - shapePhase * 0.43
             ) * ParticleTuning.Engine.sphereFormDetailWeightB
         let smoothness = Self.easedMorphProgress(
             Float(tuning.shapeSmoothness)
@@ -956,7 +1028,101 @@ struct ParticleSimulation {
                 * strength
                 * ParticleTuning.Engine.maximumSphereFormDisplacement
         )
-        return normal * radius * radiusScale
+        if strength > ParticleTuning.Engine.normalizationEpsilon {
+            shapedAnchor = normal * radius * radiusScale
+        }
+
+        guard scatterStrength > ParticleTuning.Engine.normalizationEpsilon else {
+            return shapedAnchor
+        }
+
+        let scatterPhase = (
+            Float(tuning.scatterSeed) - 0.5
+        ) * ParticleTuning.Engine.fullRotation
+        let clusterFrequency = ParticleTuning.Engine.scatterMaximumClusterFrequency
+            - Float(tuning.scatterClusterScale)
+            * (
+                ParticleTuning.Engine.scatterMaximumClusterFrequency
+                    - ParticleTuning.Engine.scatterMinimumClusterFrequency
+            )
+        let clusterA = 0.5 + 0.5 * sin(
+            simd_dot(
+                normal,
+                ParticleTuning.Engine.scatterPrimaryAxis
+            ) * clusterFrequency
+                + scatterPhase
+        )
+        let clusterB = 0.5 + 0.5 * cos(
+            simd_dot(
+                normal,
+                ParticleTuning.Engine.scatterSecondaryAxis
+            ) * clusterFrequency
+                * ParticleTuning.Engine.scatterSecondaryFrequencyRatio
+                - scatterPhase * 0.71
+        )
+        let rawCluster = min(
+            1,
+            max(
+                0,
+                clusterA * ParticleTuning.Engine.scatterPrimaryWeight
+                    + clusterB * ParticleTuning.Engine.scatterSecondaryWeight
+            )
+        )
+        let cluster = Self.easedMorphProgress(rawCluster)
+        let clusterStrength = Float(tuning.scatterClusterStrength)
+        let clusteredProbability =
+            ParticleTuning.Engine.scatterClusterProbabilityMinimum
+            + cluster * ParticleTuning.Engine.scatterClusterProbabilityRange
+        let strongProbability = ParticleTuning.Engine.scatterStrongProbability
+            + (
+                clusteredProbability
+                    - ParticleTuning.Engine.scatterStrongProbability
+            ) * clusterStrength
+        let radialBase = scatterSelector < strongProbability
+            ? ParticleTuning.Engine.scatterStrongRadialDistance
+            : ParticleTuning.Engine.scatterSoftRadialDistance
+        let radialClusterScale = 1
+            + (
+                ParticleTuning.Engine.scatterRadialClusterMinimum
+                    + cluster
+                    * ParticleTuning.Engine.scatterRadialClusterRange
+                    - 1
+            ) * clusterStrength
+        let tangentialClusterScale = 1
+            + (
+                ParticleTuning.Engine.scatterTangentialClusterMinimum
+                    + cluster
+                    * ParticleTuning.Engine.scatterTangentialClusterRange
+                    - 1
+            ) * clusterStrength
+        let layerWeight = 0.35 + surfaceWeight * 0.65
+        let radialDistance = radialBase
+            * pow(
+                scatterRadialSample,
+                ParticleTuning.Engine.scatterRadialExponent
+            )
+            * scatterStrength
+            * radialClusterScale
+            * layerWeight
+        let tangentReference = abs(normal.y)
+            < ParticleTuning.Engine.polarReferenceThreshold
+            ? SIMD3<Float>(0, 1, 0)
+            : SIMD3<Float>(1, 0, 0)
+        let tangent = simd_normalize(simd_cross(tangentReference, normal))
+        let bitangent = simd_cross(normal, tangent)
+        let tangentAngle = scatterTangentialSample
+            * ParticleTuning.Engine.fullRotation
+            + scatterPhase
+        let tangentDirection = tangent * cos(tangentAngle)
+            + bitangent * sin(tangentAngle)
+        let tangentialDistance = (scatterTangentialSample - 0.5)
+            * ParticleTuning.Engine.scatterTangentialDistance
+            * scatterStrength
+            * tangentialClusterScale
+            * layerWeight
+        return shapedAnchor
+            + normal * radialDistance
+            + tangentDirection * tangentialDistance
     }
 
     private static func easedMorphProgress(_ progress: Float) -> Float {

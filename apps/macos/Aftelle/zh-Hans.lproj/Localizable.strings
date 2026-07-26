@@ -79,6 +79,7 @@
 "particleDebug.tuningGroup.shape" = "形体";
 "particleDebug.tuningGroup.surface" = "表面";
 "particleDebug.tuningGroup.motion" = "动效";
+"particleDebug.tuningGroup.scatter" = "散射";
 "particleDebug.tuningGroup.edge" = "边缘";
 "particleDebug.tuningGroup.ridge" = "背脊";
 "particleDebug.colorParameters" = "颜色参数";
