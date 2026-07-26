@@ -514,9 +514,6 @@ struct ParticleTuning: Codable, Equatable {
         static let flowSecondaryAxisPhaseRatio: Float = 0.83
         static let flowDepthAxisInfluence: Float = 0.56
         static let flowSecondaryPatternPhaseRatio: Float = 0.67
-        static let flowPatternStart: Float = 0.32
-        static let flowPatternEnd: Float = 0.82
-        static let flowPrimaryPatternWeight: Float = 0.62
         static let flowPointSizeIncrease: Float = 0.52
         static let flowBrightnessIncrease: Float = 0.82
         static let flowAlphaIncrease: Float = 0.20
@@ -812,6 +809,23 @@ enum ParticleFlowEffect: CaseIterable, Identifiable, Hashable {
             return SIMD4(0.96, 0.76, 1.28, 0.32)
         case .laminar:
             return SIMD4(0.74, 0.48, 0.68, 0.05)
+        }
+    }
+
+    var highlightStyle: SIMD4<Float> {
+        switch self {
+        case .cloudSurge:
+            return SIMD4(0.28, 0.78, 0.38, 1.05)
+        case .vortex:
+            return SIMD4(0.46, 0.84, 0.68, 1.15)
+        case .tidal:
+            return SIMD4(0.20, 0.66, 0.78, 0.88)
+        case .crossCurrent:
+            return SIMD4(0.38, 0.76, 0.50, 1.08)
+        case .pulse:
+            return SIMD4(0.52, 0.88, 0.62, 1.28)
+        case .laminar:
+            return SIMD4(0.30, 0.60, 0.86, 0.78)
         }
     }
 

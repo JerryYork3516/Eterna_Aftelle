@@ -385,7 +385,8 @@ vertex ParticleVertexOut particleVertex(
             + flowWaveB * (1 - uniforms.renderFlowPattern.z)
     );
     const float flowLight = flowPattern
-        * uniforms.renderRidge.w;
+        * uniforms.renderRidge.w
+        * uniforms.renderFlowPattern.w;
     const float particleSizeVariation = mix(
         uniforms.renderParticleStyle.x,
         uniforms.renderParticleStyle.y,

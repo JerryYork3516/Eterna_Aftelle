@@ -602,12 +602,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             ),
             renderFlowEffect: flowEffect.geometryWeights,
             renderFlowEffectMotion: flowEffect.motionStyle,
-            renderFlowPattern: SIMD4(
-                ParticleTuning.Engine.flowPatternStart,
-                ParticleTuning.Engine.flowPatternEnd,
-                ParticleTuning.Engine.flowPrimaryPatternWeight,
-                0
-            ),
+            renderFlowPattern: flowEffect.highlightStyle,
             renderParticleStyle: SIMD4(
                 ParticleTuning.Engine.minimumParticleSizeVariation,
                 ParticleTuning.Engine.maximumParticleSizeVariation,
