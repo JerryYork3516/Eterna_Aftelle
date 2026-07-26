@@ -1045,15 +1045,15 @@ struct ParticleColorProfile: Codable, Equatable {
     static func make(fromDRData data: Data) -> ParticleColorProfile {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let lattice = object["lattice_config"] as? [String: Any],
-              let palette = lattice["color_palette"] as? [String],
-              let color = dominantResidentColor(from: palette) else {
+              let palette = lattice["color_palette"] as? [String] else {
             return systemDefault
         }
 
-        let base = subtleColor(from: color, target: 0.82, chroma: 0.34)
-        let ridge = subtleColor(from: color, target: 0.92, chroma: 0.28)
-        let dim = subtleColor(from: color, target: 0.39, chroma: 0.30)
-        let highlight = subtleColor(from: color, target: 0.965, chroma: 0.14)
+        let colors = palette.compactMap(parseHexColor)
+        guard let base = colors.first else { return systemDefault }
+        let ridge = colors.count > 1 ? colors[1] : base
+        let highlight = colors.count > 2 ? colors[2] : ridge
+        let dim = base * 0.42
 
         return ParticleColorProfile(
             baseRed: Double(base.x),
@@ -1100,21 +1100,6 @@ struct ParticleColorProfile: Codable, Equatable {
         min(1, max(0, value))
     }
 
-    nonisolated private static func dominantResidentColor(from palette: [String]) -> SIMD3<Float>? {
-        let colors = palette.compactMap(parseHexColor)
-        guard !colors.isEmpty else { return nil }
-
-        var weighted = SIMD3<Float>(repeating: 0)
-        var totalWeight: Float = 0
-        let weights: [Float] = [1.0, 0.24, 0.12, 0.10]
-        for (index, color) in colors.prefix(4).enumerated() {
-            let weight = weights[index]
-            weighted += color * weight
-            totalWeight += weight
-        }
-        return weighted / max(totalWeight, 0.001)
-    }
-
     nonisolated private static func parseHexColor(_ value: String) -> SIMD3<Float>? {
         var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.hasPrefix("#") {
@@ -1125,21 +1110,6 @@ struct ParticleColorProfile: Codable, Equatable {
             Float((hex >> 16) & 0xFF) / 255,
             Float((hex >> 8) & 0xFF) / 255,
             Float(hex & 0xFF) / 255
-        )
-    }
-
-    nonisolated private static func subtleColor(from color: SIMD3<Float>, target: Float, chroma: Float) -> SIMD3<Float> {
-        let sourceLuma = max(0.001, dot(color, SIMD3<Float>(0.2126, 0.7152, 0.0722)))
-        let normalized = color * (target / sourceLuma)
-        let neutral = SIMD3<Float>(repeating: target)
-        return clampVector(neutral + (normalized - neutral) * chroma, lower: 0.24, upper: 1.0)
-    }
-
-    nonisolated private static func clampVector(_ value: SIMD3<Float>, lower: Float, upper: Float) -> SIMD3<Float> {
-        SIMD3(
-            max(lower, min(upper, value.x)),
-            max(lower, min(upper, value.y)),
-            max(lower, min(upper, value.z))
         )
     }
 }

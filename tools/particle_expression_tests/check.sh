@@ -106,20 +106,81 @@ for localization_file in \
   fi
 done
 
-if git -C "$repo_root" diff --name-only \
-  | rg -q 'apps/macos/Aftelle/ParticleCore/ParticleCoreShaders\\.metal$'; then
+allow_dr_color_changes=${AFTELLE_ALLOW_DR_COLOR_RENDERING_CHANGES:-0}
+
+if [[ "$allow_dr_color_changes" != "1" ]] \
+  && git -C "$repo_root" diff --name-only \
+  | rg -q 'apps/macos/Aftelle/ParticleCore/ParticleCoreShaders\.metal$'; then
   printf 'particle-expression-tests: Metal Shader changed without authorization\n' >&2
   exit 1
 fi
 
-if git -C "$repo_root" diff --name-only \
-  | rg -q 'apps/macos/Aftelle/ParticleCore/(ParticleTuning|ResidentVisualIntent)\\.swift$'; then
+if [[ "$allow_dr_color_changes" != "1" ]] \
+  && git -C "$repo_root" diff --name-only \
+  | rg -q 'apps/macos/Aftelle/ParticleCore/(ParticleTuning|ResidentVisualIntent)\.swift$'; then
   printf 'particle-expression-tests: V2 lifecycle or tuning baseline changed\n' >&2
   exit 1
 fi
 
+if [[ "$allow_dr_color_changes" == "1" ]]; then
+  particle_tuning_path="apps/macos/Aftelle/ParticleCore/ParticleTuning.swift"
+  if ! diff -q \
+    <(
+      git -C "$repo_root" show "HEAD:$particle_tuning_path" \
+        | sed '/^struct ParticleColorProfile:/,/^enum ParticleColorParameter:/d'
+    ) \
+    <(
+      sed '/^struct ParticleColorProfile:/,/^enum ParticleColorParameter:/d' \
+        "$repo_root/$particle_tuning_path"
+    ) >/dev/null; then
+    printf 'particle-expression-tests: non-color V2 tuning baseline changed\n' >&2
+    exit 1
+  fi
+  if rg -q 'dominantResidentColor|subtleColor' \
+    "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleTuning.swift"; then
+    printf 'particle-expression-tests: DR colors are still being whitened\n' >&2
+    exit 1
+  fi
+  if ! rg -U -q \
+    'sourceRGBBlendFactor = \.sourceAlpha[[:space:]]+pipelineDescriptor\.colorAttachments\[0\]\.sourceAlphaBlendFactor = \.one[[:space:]]+pipelineDescriptor\.colorAttachments\[0\]\.destinationRGBBlendFactor =[[:space:]]+\.oneMinusSourceAlpha[[:space:]]+pipelineDescriptor\.colorAttachments\[0\]\.destinationAlphaBlendFactor =[[:space:]]+\.oneMinusSourceAlpha' \
+    "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleRenderer.swift"; then
+    printf 'particle-expression-tests: color-preserving blend mode missing\n' >&2
+    exit 1
+  fi
+  if ! rg -q 'out\.dimColor = uniforms\.dimColor' \
+    "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal" \
+    || ! rg -q 'const half3 dimColor' \
+      "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal" \
+    || ! rg -U -q \
+      'half3 color = mix\([[:space:]]+dimColor,[[:space:]]+bodyColor,' \
+      "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal"; then
+    printf 'particle-expression-tests: dim color is not used by the Shader\n' >&2
+    exit 1
+  fi
+  if rg -q 'sqrt\(saturate\(in\.flowLight\)\)' \
+    "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal" \
+    || ! rg -U -q \
+      'const float flowTransitionPadding = 0\.12;[[:space:]]+const float flowTransitionStart = max\(' \
+      "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal" \
+    || ! rg -U -q \
+      'const float flowPattern = flowProgress[[:space:]]+\* flowProgress[[:space:]]+\* flowProgress[[:space:]]+\* \(flowProgress \* \(flowProgress \* 6 - 15\) \+ 10\);' \
+      "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal" \
+    || ! rg -U -q \
+      'const float flowColorWeight = saturate\(in\.flowLight\)[[:space:]]+\* surfaceWeight[[:space:]]+\* 0\.62;' \
+    "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal" \
+    || ! rg -U -q \
+      'const float palettePosition = saturate\([[:space:]]+max\(surfaceColorWeight, highlightColorWeight\) \* 0\.5[[:space:]]+\+ highlightColorWeight \* 0\.5[[:space:]]+\);' \
+      "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal" \
+    || ! rg -U -q \
+      'const half peakLimit = mix\(colorPeak, half\(1\), half\(0\.32\)\);[[:space:]]+color \*= min\(' \
+      "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleCoreShaders.metal"; then
+    printf 'particle-expression-tests: flow highlight color preservation missing\n' >&2
+    exit 1
+  fi
+fi
+
 if git -C "$repo_root" diff --name-only \
-  | rg -q 'apps/macos/RuntimeCore/(DRLoader|ProviderRouter|ExecutionEngine|RuntimeCore|VisualStateMapper)\\.swift$'; then
+  | rg -q 'apps/macos/RuntimeCore/(DRLoader|ProviderRouter|ExecutionEngine|RuntimeCore|VisualStateMapper)\.swift$'; then
   printf 'particle-expression-tests: forbidden Runtime/A1 file changed\n' >&2
   exit 1
 fi

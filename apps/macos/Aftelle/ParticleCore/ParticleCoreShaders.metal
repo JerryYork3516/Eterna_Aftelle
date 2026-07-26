@@ -45,6 +45,7 @@ struct ParticleVertexOut {
     float alphaScale;
     float4 baseColor;
     float4 ridgeColor;
+    float4 dimColor;
     float4 highlightColor;
 };
 
@@ -378,12 +379,25 @@ vertex ParticleVertexOut particleVertex(
             * uniforms.renderFlowEffectMotion.z
             - flowPhase * uniforms.renderFlowBasis.w
     );
-    const float flowPattern = smoothstep(
-        uniforms.renderFlowPattern.x,
-        uniforms.renderFlowPattern.y,
-        flowWaveA * uniforms.renderFlowPattern.z
-            + flowWaveB * (1 - uniforms.renderFlowPattern.z)
+    const float flowSignal = flowWaveA * uniforms.renderFlowPattern.z
+        + flowWaveB * (1 - uniforms.renderFlowPattern.z);
+    const float flowTransitionPadding = 0.12;
+    const float flowTransitionStart = max(
+        0.0,
+        uniforms.renderFlowPattern.x - flowTransitionPadding
     );
+    const float flowTransitionEnd = min(
+        1.0,
+        uniforms.renderFlowPattern.y + flowTransitionPadding
+    );
+    const float flowProgress = saturate(
+        (flowSignal - flowTransitionStart)
+            / max(flowTransitionEnd - flowTransitionStart, 0.001)
+    );
+    const float flowPattern = flowProgress
+        * flowProgress
+        * flowProgress
+        * (flowProgress * (flowProgress * 6 - 15) + 10);
     const float flowLight = flowPattern
         * uniforms.renderRidge.w
         * uniforms.renderFlowPattern.w;
@@ -458,6 +472,7 @@ vertex ParticleVertexOut particleVertex(
         );
     out.baseColor = uniforms.baseColor;
     out.ridgeColor = uniforms.ridgeColor;
+    out.dimColor = uniforms.dimColor;
     out.highlightColor = uniforms.highlightColor;
     return out;
 }
@@ -492,26 +507,45 @@ fragment half4 particleFragment(
 
     const half3 bodyColor = half3(in.baseColor.rgb);
     const half3 surfaceColor = half3(in.ridgeColor.rgb);
+    const half3 dimColor = half3(in.dimColor.rgb);
     const half3 highlightColor = half3(in.highlightColor.rgb);
-    half3 color = bodyColor;
+    const float surfaceColorWeight = saturate(
+        surfaceWeight
+            * (uniforms.renderColor.y + light * uniforms.renderColor.z)
+            + ridge * 0.68
+    );
+    const float flowColorWeight = saturate(in.flowLight)
+        * surfaceWeight
+        * 0.62;
+    const float highlightColorWeight = saturate(
+        light * surfaceWeight * uniforms.renderColor.w
+            + ridge * 0.22
+            + flowColorWeight
+    );
+    const float palettePosition = saturate(
+        max(surfaceColorWeight, highlightColorWeight) * 0.5
+            + highlightColorWeight * 0.5
+    );
+    half3 color = mix(
+        dimColor,
+        bodyColor,
+        half(saturate(0.28 + surfaceWeight * 0.72))
+    );
     color = mix(
         color,
         surfaceColor,
-        half(saturate(
-            surfaceWeight
-                * (uniforms.renderColor.y + light * uniforms.renderColor.z)
-                + ridge * 0.68
-        ))
+        half(saturate(palettePosition * 2))
     );
     color = mix(
         color,
         highlightColor,
-        half(saturate(
-            light * surfaceWeight * uniforms.renderColor.w
-                + ridge * 0.22
-                + in.flowLight * surfaceWeight * 0.12
-        ))
+        half(saturate((palettePosition - 0.5) * 2))
     );
-    color *= half(in.brightness);
+    const half colorPeak = max(max(color.r, color.g), color.b);
+    const half peakLimit = mix(colorPeak, half(1), half(0.32));
+    color *= min(
+        half(in.brightness),
+        peakLimit / max(colorPeak, half(0.001))
+    );
     return half4(color, half(alpha));
 }

@@ -22,6 +22,7 @@ struct ParticleExpressionTests {
         try testIntensityMappings()
         try testPerceptualStateSeparation()
         try testRelativeColorMapping()
+        try testDRPaletteColorMapping()
         try testSameInputDoesNotRestart()
         try testMinimumHoldDuration()
         try testPendingTargetSupersededAtHoldBoundary()
@@ -221,6 +222,64 @@ struct ParticleExpressionTests {
                     && (0...1).contains($0.z)
             },
             "relative colors must remain clamped"
+        )
+    }
+
+    private static func testDRPaletteColorMapping() throws {
+        let data = Data(
+            """
+            {
+              "lattice_config": {
+                "color_palette": ["#7aa2f7", "#5dd39e", "#f2a65a"]
+              }
+            }
+            """.utf8
+        )
+        let profile = ParticleColorProfile.make(fromDRData: data)
+        let base = SIMD4<Float>(
+            0x7A / 255.0,
+            0xA2 / 255.0,
+            0xF7 / 255.0,
+            1
+        )
+        let ridge = SIMD4<Float>(
+            0x5D / 255.0,
+            0xD3 / 255.0,
+            0x9E / 255.0,
+            1
+        )
+        let highlight = SIMD4<Float>(
+            0xF2 / 255.0,
+            0xA6 / 255.0,
+            0x5A / 255.0,
+            1
+        )
+        let dim = SIMD4<Float>(
+            base.x * 0.42,
+            base.y * 0.42,
+            base.z * 0.42,
+            1
+        )
+
+        try expectColor(profile.baseVector, base, "DR primary color")
+        try expectColor(profile.ridgeVector, ridge, "DR secondary color")
+        try expectColor(
+            profile.highlightVector,
+            highlight,
+            "DR tertiary color"
+        )
+        try expectColor(profile.dimVector, dim, "DR relative dim color")
+        try expect(
+            profile.baseVector != ParticleColorProfile.systemDefault.baseVector,
+            "DR color must not collapse to the system default"
+        )
+
+        let invalid = Data(
+            #"{"lattice_config":{"color_palette":["invalid"]}}"#.utf8
+        )
+        try expect(
+            ParticleColorProfile.make(fromDRData: invalid) == .systemDefault,
+            "invalid DR palette falls back to the system default"
         )
     }
 
@@ -1313,6 +1372,17 @@ struct ParticleExpressionTests {
             abs(actual - expected) <= tolerance,
             "\(message): expected \(expected), got \(actual)"
         )
+    }
+
+    private static func expectColor(
+        _ actual: SIMD4<Float>,
+        _ expected: SIMD4<Float>,
+        _ message: String
+    ) throws {
+        try expectNear(actual.x, expected.x, "\(message) red")
+        try expectNear(actual.y, expected.y, "\(message) green")
+        try expectNear(actual.z, expected.z, "\(message) blue")
+        try expectNear(actual.w, expected.w, "\(message) alpha")
     }
 
     private static func expectMultipliers(
