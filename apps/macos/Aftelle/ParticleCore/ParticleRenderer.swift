@@ -24,6 +24,14 @@ struct ParticleFrameUniforms {
     var renderEdge: SIMD4<Float>
     var renderVisibility: SIMD4<Float>
     var renderFlow: SIMD4<Float>
+    var renderFlowStyle: SIMD4<Float>
+    var renderFlowSeed: SIMD4<Float>
+    var renderFlowPattern: SIMD4<Float>
+    var renderParticleStyle: SIMD4<Float>
+    var renderFlowResponse: SIMD4<Float>
+    var renderFlowGeometry: SIMD4<Float>
+    var renderFlowGeometryFrequency: SIMD4<Float>
+    var renderFlowGeometryTime: SIMD4<Float>
     var viewOrientation: SIMD4<Float>
 }
 
@@ -553,7 +561,9 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 Float(tuning.ridgeBreakup),
                 Float(tuning.ridgeSeed),
                 Float(tuning.ridgeFlowBinding),
-                Float(tuning.flowBrightnessStrength)
+                ParticleTuning.Engine.amplifiedStrength(
+                    tuning.flowBrightnessStrength
+                )
             ),
             renderEdge: SIMD4(
                 Float(tuning.edgeDustAmount),
@@ -572,6 +582,59 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 flowAxis.y,
                 flowAxis.z,
                 frame.flowElapsedTime
+            ),
+            renderFlowStyle: SIMD4(
+                ParticleTuning.Engine.flowPrimarySpatialFrequency,
+                ParticleTuning.Engine.flowSecondarySpatialFrequency,
+                ParticleTuning.Engine.flowSecondaryVisualTimeRatio,
+                ParticleTuning.Engine.flowSeedAxisInfluence
+            ),
+            renderFlowSeed: SIMD4(
+                ParticleTuning.Engine.flowSeedPrimaryPhaseRatio,
+                ParticleTuning.Engine.flowSeedSecondaryPhaseRatio,
+                ParticleTuning.Engine.flowSeedDepthInfluence,
+                ParticleTuning.Engine.flowSecondarySeedPhaseRatio
+            ),
+            renderFlowPattern: SIMD4(
+                ParticleTuning.Engine.flowPatternStart,
+                ParticleTuning.Engine.flowPatternEnd,
+                ParticleTuning.Engine.flowPrimaryPatternWeight,
+                0
+            ),
+            renderParticleStyle: SIMD4(
+                ParticleTuning.Engine.minimumParticleSizeVariation,
+                ParticleTuning.Engine.maximumParticleSizeVariation,
+                ParticleTuning.Engine.particleSizeVariationExponent,
+                ParticleTuning.Engine.flowPointSizeIncrease
+            ),
+            renderFlowResponse: SIMD4(
+                ParticleTuning.Engine.flowBrightnessIncrease,
+                ParticleTuning.Engine.flowAlphaIncrease,
+                0,
+                0
+            ),
+            renderFlowGeometry: SIMD4(
+                ParticleTuning.Engine.flowShapeMaterialDisplacement,
+                ParticleTuning.Engine.flowShapeCloudDisplacement,
+                ParticleTuning.Engine.flowShapeReliefDisplacement,
+                min(
+                    ParticleTuning.Engine.maximumFlowShapeStrength,
+                    ParticleTuning.Engine.amplifiedStrength(
+                        tuning.flowShapeStrength
+                    )
+                )
+            ),
+            renderFlowGeometryFrequency: SIMD4(
+                ParticleTuning.Engine.flowShapePrimarySpatialFrequency,
+                ParticleTuning.Engine.flowShapeSecondarySpatialFrequency,
+                ParticleTuning.Engine.flowShapePrimaryDepthFrequency,
+                ParticleTuning.Engine.flowShapeSecondaryDepthFrequency
+            ),
+            renderFlowGeometryTime: SIMD4(
+                ParticleTuning.Engine.flowShapeTimeScale,
+                ParticleTuning.Engine.flowShapePrimaryTimeRatio,
+                ParticleTuning.Engine.flowShapeSecondaryTimeRatio,
+                ParticleTuning.Engine.flowShapePocketTimeRatio
             ),
             viewOrientation: orientation.quaternion
         )

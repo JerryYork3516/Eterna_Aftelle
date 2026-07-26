@@ -649,6 +649,7 @@ private enum ParticleTuningGroup: String, CaseIterable, Identifiable {
                 .breathingAmount,
                 .breathingSpeed,
                 .flowStrength,
+                .flowShapeStrength,
                 .flowSpeed,
                 .flowDirection,
                 .flowSeed,

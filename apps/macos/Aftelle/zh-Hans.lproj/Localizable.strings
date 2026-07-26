@@ -101,6 +101,7 @@
 "particleDebug.parameter.breathingAmount" = "呼吸幅度";
 "particleDebug.parameter.breathingSpeed" = "呼吸速度";
 "particleDebug.parameter.flowStrength" = "循环流动";
+"particleDebug.parameter.flowShapeStrength" = "流动形体强度";
 "particleDebug.parameter.flowSpeed" = "表面流动速度";
 "particleDebug.parameter.disturbanceStrength" = "非对称扰动";
 "particleDebug.parameter.aggregationStrength" = "聚合力";

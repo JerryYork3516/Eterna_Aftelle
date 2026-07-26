@@ -101,6 +101,7 @@
 "particleDebug.parameter.breathingAmount" = "Breathing Amount";
 "particleDebug.parameter.breathingSpeed" = "Breathing Speed";
 "particleDebug.parameter.flowStrength" = "Circulation Flow";
+"particleDebug.parameter.flowShapeStrength" = "Flow Shape Strength";
 "particleDebug.parameter.flowSpeed" = "Surface Flow Speed";
 "particleDebug.parameter.disturbanceStrength" = "Asymmetric Disturbance";
 "particleDebug.parameter.aggregationStrength" = "Aggregation";

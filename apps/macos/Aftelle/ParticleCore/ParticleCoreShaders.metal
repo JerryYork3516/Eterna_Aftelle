@@ -21,6 +21,14 @@ struct ParticleFrameUniforms {
     float4 renderEdge;
     float4 renderVisibility;
     float4 renderFlow;
+    float4 renderFlowStyle;
+    float4 renderFlowSeed;
+    float4 renderFlowPattern;
+    float4 renderParticleStyle;
+    float4 renderFlowResponse;
+    float4 renderFlowGeometry;
+    float4 renderFlowGeometryFrequency;
+    float4 renderFlowGeometryTime;
     float4 viewOrientation;
 };
 
@@ -66,11 +74,181 @@ vertex ParticleVertexOut particleVertex(
     const float particleSeed = hash11(
         float(vertexID) * 12.9898 + uniforms.renderRidge.y * 97.31
     );
+    const float particleSizeSeed = hash11(
+        float(vertexID) * 5.3983 + 17.13
+    );
     const float secondarySeed = hash11(
         float(vertexID) * 4.1414 + particleSeed * 19.17
     );
+    const float flowPhase = (
+        uniforms.renderEdge.z - 0.5
+    ) * kFullRotation;
+    const float3 configuredFlowAxis = length(uniforms.renderFlow.xyz)
+        > kMinimumRadius
+        ? normalize(uniforms.renderFlow.xyz)
+        : float3(1.0, 0.0, 0.0);
+    const float3 flowReference = abs(configuredFlowAxis.y) < 0.92
+        ? float3(0.0, 1.0, 0.0)
+        : float3(1.0, 0.0, 0.0);
+    const float3 flowCrossAxis = normalize(
+        cross(flowReference, configuredFlowAxis)
+    );
+    const float3 flowDepthAxis = normalize(
+        cross(configuredFlowAxis, flowCrossAxis)
+    );
+    const float3 seededFlowAxis = normalize(
+        configuredFlowAxis
+            + flowCrossAxis
+            * sin(flowPhase * uniforms.renderFlowSeed.x)
+            * uniforms.renderFlowStyle.w
+            + flowDepthAxis
+            * cos(flowPhase * uniforms.renderFlowSeed.y)
+            * uniforms.renderFlowStyle.w
+            * uniforms.renderFlowSeed.z
+    );
+    const float3 seededFlowCrossAxis = normalize(
+        cross(flowDepthAxis, seededFlowAxis)
+    );
+    float3 surfaceFlowAxis = configuredFlowAxis
+        - bodyNormal * dot(configuredFlowAxis, bodyNormal);
+    if (length(surfaceFlowAxis) <= kMinimumRadius) {
+        surfaceFlowAxis = flowCrossAxis
+            - bodyNormal * dot(flowCrossAxis, bodyNormal);
+    }
+    surfaceFlowAxis = normalize(surfaceFlowAxis);
+    const float3 surfaceFlowSide = normalize(
+        cross(bodyNormal, surfaceFlowAxis)
+    );
+    const float flowTravel = dot(bodyNormal, configuredFlowAxis);
+    const float flowCrossTravel = dot(bodyNormal, flowCrossAxis);
+    const float flowDepthTravel = dot(bodyNormal, flowDepthAxis);
+    const float shapeFlowTime = uniforms.renderFlow.w
+        * kFullRotation
+        * uniforms.renderFlowGeometryTime.x;
+    const float particleFlowPhase = (
+        particleSeed - 0.5
+    ) * uniforms.renderFlowSeed.z;
+    const float globalFlowPrimary = sin(
+        flowTravel * 5.4
+            + flowCrossTravel * 1.2
+            - shapeFlowTime * 0.88
+            + flowDepthTravel * 1.2
+            + flowPhase
+    );
+    const float globalFlowSecondary = sin(
+        flowTravel * 2.8
+            - flowCrossTravel * 3.2
+            - shapeFlowTime * 0.54
+            + flowDepthTravel * 2.0
+            + 1.7
+            + flowPhase * 0.63
+    );
+    const float globalFlowTertiary = sin(
+        flowTravel * 7.0
+            + flowCrossTravel * 2.4
+            - shapeFlowTime * 1.05
+            - flowDepthTravel * 1.5
+            + 0.8
+            - flowPhase * 0.37
+    );
+    const float globalFlowWave = globalFlowPrimary * 0.58
+        + globalFlowSecondary * 0.30
+        + globalFlowTertiary * 0.12;
+    const float materialSharedPhase = globalFlowWave * 1.4
+        + flowTravel * 2.2
+        - flowCrossTravel * 1.1;
+    const float materialSeedPhase = particleFlowPhase
+        + (secondarySeed - 0.5) * 0.35;
+    const float materialWaveA = sin(
+        bodyNormal.y * 4.1
+            + bodyNormal.z * 5.0
+            - shapeFlowTime * uniforms.renderFlowGeometryTime.y
+            + materialSharedPhase
+            + materialSeedPhase
+    );
+    const float materialWaveB = sin(
+        bodyNormal.z * 4.6
+            - bodyNormal.x * 3.4
+            + shapeFlowTime * uniforms.renderFlowGeometryTime.z
+            + materialSharedPhase * 0.62
+            + 1.3
+    );
+    const float materialWaveC = cos(
+        bodyNormal.x * 3.7
+            + bodyNormal.y * 2.9
+            - shapeFlowTime * uniforms.renderFlowGeometryTime.w
+            + materialSharedPhase * 0.38
+            + 2.1
+    );
+    const float3 materialSwirl = surfaceFlowAxis
+        * (materialWaveA - materialWaveB * 0.38)
+        + surfaceFlowSide
+        * (materialWaveB - materialWaveC * 0.34)
+        + bodyNormal
+        * (materialWaveC - materialWaveA * 0.28);
+    const float3 materialConveyor = (
+        surfaceFlowAxis + surfaceFlowSide * 0.42
+    ) * sin(
+        flowCrossTravel * 3.0
+            + flowDepthTravel * 3.8
+            - shapeFlowTime * 0.52
+            + globalFlowWave
+    );
+    const float3 materialFlow = materialSwirl * 0.72
+        + materialConveyor * 0.28;
+    const float broadCloudRoll = sin(
+        flowTravel * uniforms.renderFlowGeometryFrequency.x
+            + flowDepthTravel * uniforms.renderFlowGeometryFrequency.z
+            - shapeFlowTime * uniforms.renderFlowGeometryTime.y
+            + globalFlowWave * 1.1
+    );
+    const float innerCloudCurl = cos(
+        flowCrossTravel * uniforms.renderFlowGeometryFrequency.y
+            - flowDepthTravel * uniforms.renderFlowGeometryFrequency.w
+            + shapeFlowTime * uniforms.renderFlowGeometryTime.z
+            + particleFlowPhase
+    );
+    const float cloudPocketDrift = sin(
+        (flowTravel - flowCrossTravel)
+            * uniforms.renderFlowGeometryFrequency.x
+            * 0.85
+            + flowDepthTravel
+            * uniforms.renderFlowGeometryFrequency.z
+            * 1.17
+            - shapeFlowTime * uniforms.renderFlowGeometryTime.w
+            + materialSeedPhase
+    );
+    const float3 cloudRoll = surfaceFlowAxis * innerCloudCurl
+        + surfaceFlowSide * broadCloudRoll
+        + bodyNormal
+        * (cloudPocketDrift * 0.74 - broadCloudRoll * 0.22);
+    const float3 cloudDrift = (
+        surfaceFlowAxis + bodyNormal * 0.24
+    ) * sin(
+        flowCrossTravel * 2.1
+            + flowDepthTravel * 3.6
+            - shapeFlowTime * 0.44
+            + globalFlowWave
+    );
+    const float3 cloudFlow = cloudRoll * 0.74
+        + cloudDrift * 0.26;
+    const float flowShapeStrength = max(
+        0.0,
+        uniforms.renderFlowGeometry.w
+    );
+    const float3 flowDisplacement = (
+        materialFlow * uniforms.renderFlowGeometry.x
+            + cloudFlow * uniforms.renderFlowGeometry.y
+            + bodyNormal
+            * (
+                globalFlowWave * 0.72
+                    + cloudPocketDrift * 0.28
+            )
+            * uniforms.renderFlowGeometry.z
+    ) * flowShapeStrength;
+    const float3 displacedBodyPosition = bodyPosition + flowDisplacement;
     float3 position = rotateByQuaternion(
-        particle.xyz,
+        displacedBodyPosition,
         uniforms.viewOrientation
     );
     const float surfaceWeight = saturate(particle.w);
@@ -150,34 +328,34 @@ vertex ParticleVertexOut particleVertex(
         * 2
         * surfaceWeight
     );
-    const float flowPhase = (
-        uniforms.renderEdge.z - 0.5
-    ) * kFullRotation;
-    const float3 configuredFlowAxis = length(uniforms.renderFlow.xyz)
-        > kMinimumRadius
-        ? normalize(uniforms.renderFlow.xyz)
-        : float3(1.0, 0.0, 0.0);
-    const float3 flowReference = abs(configuredFlowAxis.y) < 0.92
-        ? float3(0.0, 1.0, 0.0)
-        : float3(1.0, 0.0, 0.0);
-    const float3 flowCrossAxis = normalize(
-        cross(flowReference, configuredFlowAxis)
-    );
     const float flowWaveA = 0.5 + 0.5 * sin(
-        dot(bodyNormal, configuredFlowAxis) * 8.4
+        dot(bodyNormal, seededFlowAxis) * uniforms.renderFlowStyle.x
             - uniforms.renderFlow.w * kFullRotation
             + flowPhase
     );
     const float flowWaveB = 0.5 + 0.5 * cos(
-        dot(bodyNormal, flowCrossAxis) * 6.2
-            + uniforms.renderFlow.w * kFullRotation * 0.74
-            - flowPhase * 0.67
+        dot(bodyNormal, seededFlowCrossAxis) * uniforms.renderFlowStyle.y
+            + uniforms.renderFlow.w
+            * kFullRotation
+            * uniforms.renderFlowStyle.z
+            - flowPhase * uniforms.renderFlowSeed.w
     );
-    const float flowLight = smoothstep(
-        0.38,
-        0.88,
-        flowWaveA * 0.62 + flowWaveB * 0.38
-    ) * saturate(uniforms.renderRidge.w) * 2;
+    const float flowPattern = smoothstep(
+        uniforms.renderFlowPattern.x,
+        uniforms.renderFlowPattern.y,
+        flowWaveA * uniforms.renderFlowPattern.z
+            + flowWaveB * (1 - uniforms.renderFlowPattern.z)
+    );
+    const float flowLight = flowPattern
+        * uniforms.renderRidge.w;
+    const float particleSizeVariation = mix(
+        uniforms.renderParticleStyle.x,
+        uniforms.renderParticleStyle.y,
+        pow(
+            particleSizeSeed,
+            uniforms.renderParticleStyle.z
+        )
+    );
     const float frontVisibility = smoothstep(
         uniforms.renderVisibility.z,
         uniforms.renderVisibility.w,
@@ -204,6 +382,8 @@ vertex ParticleVertexOut particleVertex(
         * depthScale
         * mix(uniforms.renderGeometry.z, uniforms.renderGeometry.w, surfaceWeight)
         * channelSizeScale
+        * particleSizeVariation
+        * (1 + flowLight * uniforms.renderParticleStyle.w)
         * (
             1
                 + rim
@@ -224,12 +404,13 @@ vertex ParticleVertexOut particleVertex(
     out.flowLight = flowLight;
     out.brightness = uniforms.viewportAndRender.w
         * channelBrightness
-        * (1 + flowLight * 0.42)
+        * (1 + flowLight * uniforms.renderFlowResponse.x)
         * depthBrightness;
     out.alphaScale = mix(1, uniforms.renderAlpha.x, dissolution)
         * uniforms.highlightColor.a
         * uniforms.renderSurface.x
         * frontVisibility
+        * (1 + flowLight * uniforms.renderFlowResponse.y)
         * (
             1
                 - rim

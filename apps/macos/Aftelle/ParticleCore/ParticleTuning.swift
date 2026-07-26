@@ -26,6 +26,7 @@ struct ParticleTuning: Codable, Equatable {
     var breathingAmount: Double
     var breathingSpeed: Double
     var flowStrength: Double
+    var flowShapeStrength: Double
     var flowSpeed: Double
     var flowDirection: Double
     var flowSeed: Double
@@ -62,6 +63,7 @@ struct ParticleTuning: Codable, Equatable {
         breathingAmount: Double,
         breathingSpeed: Double,
         flowStrength: Double,
+        flowShapeStrength: Double,
         flowSpeed: Double,
         flowDirection: Double,
         flowSeed: Double,
@@ -97,6 +99,7 @@ struct ParticleTuning: Codable, Equatable {
         self.breathingAmount = breathingAmount
         self.breathingSpeed = breathingSpeed
         self.flowStrength = flowStrength
+        self.flowShapeStrength = flowShapeStrength
         self.flowSpeed = flowSpeed
         self.flowDirection = flowDirection
         self.flowSeed = flowSeed
@@ -134,6 +137,7 @@ struct ParticleTuning: Codable, Equatable {
         breathingAmount: 0.34,
         breathingSpeed: 0.34,
         flowStrength: 0.38,
+        flowShapeStrength: 0.38,
         flowSpeed: 0.32,
         flowDirection: 1,
         flowSeed: 0.5,
@@ -173,6 +177,7 @@ struct ParticleTuning: Codable, Equatable {
         case breathingAmount
         case breathingSpeed
         case flowStrength
+        case flowShapeStrength
         case flowSpeed
         case flowDirection
         case flowSeed
@@ -235,6 +240,10 @@ struct ParticleTuning: Codable, Equatable {
                 ?? defaults.breathingSpeed,
             flowStrength: try container.decodeIfPresent(Double.self, forKey: .flowStrength)
                 ?? defaults.flowStrength,
+            flowShapeStrength: try container.decodeIfPresent(
+                Double.self,
+                forKey: .flowShapeStrength
+            ) ?? defaults.flowShapeStrength,
             flowSpeed: try container.decodeIfPresent(Double.self, forKey: .flowSpeed)
                 ?? defaults.flowSpeed,
             flowDirection: try container.decodeIfPresent(Double.self, forKey: .flowDirection)
@@ -466,10 +475,23 @@ struct ParticleTuning: Codable, Equatable {
         static let secondaryBreathingAmplitude: Float = 0.28
         static let secondaryBreathingFrequencyRatio: Float = 0.57
         static let secondaryBreathingPhase: Float = 0.84
-        static let maximumFlowAcceleration: Float = 0.16
+        static let maximumFlowAcceleration: Float = 0.22
         static let minimumFlowFrequency: Float = 0.10
         static let maximumFlowFrequency: Float = 0.42
         static let flowWaveFrequencyScale: Float = 2 * .pi
+        static let maximumFlowMotionStrength: Float = 1.6
+        static let maximumFlowShapeStrength: Float = 2
+        static let flowShapeMaterialDisplacement: Float = 0.030
+        static let flowShapeCloudDisplacement: Float = 0.040
+        static let flowShapeReliefDisplacement: Float = 0.055
+        static let flowShapeTimeScale: Float = 0.55
+        static let flowShapePrimarySpatialFrequency: Float = 2.6
+        static let flowShapeSecondarySpatialFrequency: Float = 3.8
+        static let flowShapePrimaryDepthFrequency: Float = 4.8
+        static let flowShapeSecondaryDepthFrequency: Float = 4.4
+        static let flowShapePrimaryTimeRatio: Float = 0.82
+        static let flowShapeSecondaryTimeRatio: Float = 0.68
+        static let flowShapePocketTimeRatio: Float = 0.52
         static let directionalFlowWeight: Float = 0.82
         static let circulationFlowWeight: Float = 0.34
         static let minimumFlowPulse: Float = 0.38
@@ -481,6 +503,20 @@ struct ParticleTuning: Codable, Equatable {
         static let secondaryFlowAxis = SIMD3<Float>(0.74, -0.18, 0.65)
         static let secondaryFlowStrength: Float = 0.34
         static let secondaryFlowFrequencyRatio: Float = 0.71
+        static let flowPrimarySpatialFrequency: Float = 8.4
+        static let flowSecondarySpatialFrequency: Float = 6.2
+        static let flowSecondaryVisualTimeRatio: Float = 0.74
+        static let flowSeedAxisInfluence: Float = 0.48
+        static let flowSeedPrimaryPhaseRatio: Float = 1.37
+        static let flowSeedSecondaryPhaseRatio: Float = 0.83
+        static let flowSeedDepthInfluence: Float = 0.56
+        static let flowSecondarySeedPhaseRatio: Float = 0.67
+        static let flowPatternStart: Float = 0.32
+        static let flowPatternEnd: Float = 0.82
+        static let flowPrimaryPatternWeight: Float = 0.62
+        static let flowPointSizeIncrease: Float = 0.52
+        static let flowBrightnessIncrease: Float = 0.82
+        static let flowAlphaIncrease: Float = 0.20
         static let minimumFlowWeight: Float = 0.42
         static let anchorFlowWeight: Float = 0.58
         static let maximumDisturbanceAcceleration: Float = 0.052
@@ -506,6 +542,9 @@ struct ParticleTuning: Codable, Equatable {
         static let orientationGuideLabelOpacity = 0.52
         static let minimumPointSize: Float = 2.2
         static let maximumPointSize: Float = 6.4
+        static let minimumParticleSizeVariation: Float = 0.62
+        static let maximumParticleSizeVariation: Float = 1.55
+        static let particleSizeVariationExponent: Float = 1.75
         static let minimumBrightness: Float = 0.58
         static let maximumBrightness: Float = 1.52
         static let depthPointSizeMinimum: Float = 0.72
@@ -588,6 +627,7 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
     case breathingAmount
     case breathingSpeed
     case flowStrength
+    case flowShapeStrength
     case flowSpeed
     case flowDirection
     case flowSeed
@@ -647,6 +687,8 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
             return \.breathingSpeed
         case .flowStrength:
             return \.flowStrength
+        case .flowShapeStrength:
+            return \.flowShapeStrength
         case .flowSpeed:
             return \.flowSpeed
         case .flowDirection:

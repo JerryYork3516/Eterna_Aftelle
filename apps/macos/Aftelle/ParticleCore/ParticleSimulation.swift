@@ -546,11 +546,14 @@ struct ParticleSimulation {
             maximum: ParticleTuning.Engine.maximumDamping
         )
         let dampingFactor = exp(-damping * timeStep)
-        let flowAcceleration = ParticleTuning.Engine.amplifiedStrength(
-            tuning.flowStrength
+        let flowMotionStrength = min(
+            ParticleTuning.Engine.maximumFlowMotionStrength,
+            ParticleTuning.Engine.amplifiedStrength(
+                tuning.flowStrength
+            ) * visualState.flowSpeedMultiplier
         )
+        let flowAcceleration = flowMotionStrength
             * ParticleTuning.Engine.maximumFlowAcceleration
-            * visualState.flowSpeedMultiplier
         let disturbanceAcceleration = ParticleTuning.Engine.amplifiedStrength(
             tuning.disturbanceStrength
         )
