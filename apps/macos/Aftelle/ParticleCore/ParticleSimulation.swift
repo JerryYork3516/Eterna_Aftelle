@@ -172,7 +172,14 @@ struct ParticleSimulation {
     mutating func setTuning(_ tuning: ParticleTuning) -> Bool {
         let value = tuning.clamped()
         let requiresModelRebuild = self.tuning.surfaceRatio != value.surfaceRatio
+        let sphereFormChanged =
+            self.tuning.shapeStrength != value.shapeStrength
+            || self.tuning.shapeFeatureScale != value.shapeFeatureScale
+            || self.tuning.shapeSmoothness != value.shapeSmoothness
         self.tuning = value
+        if sphereFormChanged {
+            updateSphereFormTargets()
+        }
         return requiresModelRebuild
     }
 
@@ -226,10 +233,11 @@ struct ParticleSimulation {
             }
 
             let sphereAnchor = direction * unitRadius
+            let sphereFormAnchor = sphereFormAnchor(from: sphereAnchor)
             let customShapeAnchor = Self.customShapeAnchor(from: sphereAnchor)
             let activeAnchor = rebuildShapeTarget == .customShape
                 ? customShapeAnchor
-                : sphereAnchor
+                : sphereFormAnchor
             let particle = SimulatedParticle(
                 sphereAnchor: sphereAnchor,
                 customShapeAnchor: customShapeAnchor,
@@ -242,7 +250,7 @@ struct ParticleSimulation {
                 velocity: .zero
             )
             rebuilt.append(particle)
-            sphereCenter += sphereAnchor
+            sphereCenter += sphereFormAnchor
             customShapeCenter += customShapeAnchor
         }
 
@@ -705,11 +713,11 @@ struct ParticleSimulation {
     ) -> SIMD3<Float> {
         switch target {
         case .sphere:
-            return particle.sphereAnchor
+            return sphereFormAnchor(from: particle.sphereAnchor)
         case .customShape:
             return particle.customShapeAnchor
         case .text, .guidePath, .abstractResident, .realisticResident:
-            return particle.sphereAnchor
+            return sphereFormAnchor(from: particle.sphereAnchor)
         }
     }
 
@@ -723,6 +731,36 @@ struct ParticleSimulation {
             return customShapeAnchorCenter
         case .text, .guidePath, .abstractResident, .realisticResident:
             return sphereAnchorCenter
+        }
+    }
+
+    private mutating func updateSphereFormTargets() {
+        guard !particles.isEmpty else { return }
+        let updatesSphereTarget = morphTransition.targetTarget == .sphere
+        let updatesSettledSphere = updatesSphereTarget
+            && morphTransition.currentTarget == .sphere
+            && morphTransition.progress >= 1
+        var center = SIMD3<Float>(repeating: 0)
+
+        for index in particles.indices {
+            let anchor = sphereFormAnchor(
+                from: particles[index].sphereAnchor
+            )
+            center += anchor
+            if updatesSphereTarget {
+                particles[index].morphTargetAnchor = anchor
+                if updatesSettledSphere {
+                    particles[index].morphStartAnchor = anchor
+                }
+            }
+        }
+
+        sphereAnchorCenter = center / Float(particles.count)
+        if updatesSphereTarget {
+            morphTransition.targetCenter = sphereAnchorCenter
+            if updatesSettledSphere {
+                morphTransition.startCenter = sphereAnchorCenter
+            }
         }
     }
 
@@ -845,6 +883,80 @@ struct ParticleSimulation {
             / max(maximumAxis, ParticleTuning.Engine.normalizationEpsilon)
             * radius
             * ParticleTuning.Engine.customShapeCubeScale
+    }
+
+    private func sphereFormAnchor(
+        from sphereAnchor: SIMD3<Float>
+    ) -> SIMD3<Float> {
+        let strength = ParticleTuning.Engine.amplifiedStrength(
+            tuning.shapeStrength
+        )
+        guard strength > ParticleTuning.Engine.normalizationEpsilon else {
+            return sphereAnchor
+        }
+
+        let radius = simd_length(sphereAnchor)
+        guard radius > ParticleTuning.Engine.normalizationEpsilon else {
+            return sphereAnchor
+        }
+
+        let normal = sphereAnchor / radius
+        let frequency = ParticleTuning.Engine.value(
+            tuning.shapeFeatureScale,
+            minimum: ParticleTuning.Engine.minimumSphereFormFrequency,
+            maximum: ParticleTuning.Engine.maximumSphereFormFrequency
+        )
+        let primary =
+            cos(
+                simd_dot(
+                    normal,
+                    ParticleTuning.Engine.sphereFormPrimaryAxisA
+                ) * frequency
+            ) * ParticleTuning.Engine.sphereFormPrimaryWeightA
+            + cos(
+                simd_dot(
+                    normal,
+                    ParticleTuning.Engine.sphereFormPrimaryAxisB
+                ) * frequency
+                    * ParticleTuning.Engine.sphereFormPrimaryFrequencyRatioB
+            ) * ParticleTuning.Engine.sphereFormPrimaryWeightB
+            + cos(
+                simd_dot(
+                    normal,
+                    ParticleTuning.Engine.sphereFormPrimaryAxisC
+                ) * frequency
+                    * ParticleTuning.Engine.sphereFormPrimaryFrequencyRatioC
+            ) * ParticleTuning.Engine.sphereFormPrimaryWeightC
+        let detailFrequency = frequency
+            * ParticleTuning.Engine.sphereFormDetailFrequencyRatio
+        let detail =
+            cos(
+                simd_dot(
+                    normal,
+                    ParticleTuning.Engine.sphereFormDetailAxisA
+                ) * detailFrequency
+            ) * ParticleTuning.Engine.sphereFormDetailWeightA
+            + cos(
+                simd_dot(
+                    normal,
+                    ParticleTuning.Engine.sphereFormDetailAxisB
+                ) * detailFrequency
+                    * ParticleTuning.Engine.sphereFormDetailFrequencyRatioB
+            ) * ParticleTuning.Engine.sphereFormDetailWeightB
+        let smoothness = Self.easedMorphProgress(
+            Float(tuning.shapeSmoothness)
+        )
+        let field = (
+            primary + detail * (1 - smoothness)
+        ) / ParticleTuning.Engine.sphereFormFieldNormalization
+        let radiusScale = max(
+            ParticleTuning.Engine.minimumSphereFormRadiusScale,
+            1
+                + field
+                * strength
+                * ParticleTuning.Engine.maximumSphereFormDisplacement
+        )
+        return normal * radius * radiusScale
     }
 
     private static func easedMorphProgress(_ progress: Float) -> Float {

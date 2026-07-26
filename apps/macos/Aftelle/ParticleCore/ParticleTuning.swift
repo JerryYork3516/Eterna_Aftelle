@@ -11,6 +11,9 @@ struct ParticleVisualProfile {
 
 struct ParticleTuning: Codable, Equatable {
     var sphereRadius: Double
+    var shapeStrength: Double
+    var shapeFeatureScale: Double
+    var shapeSmoothness: Double
     var surfaceRatio: Double
     var breathingAmount: Double
     var breathingSpeed: Double
@@ -24,6 +27,9 @@ struct ParticleTuning: Codable, Equatable {
 
     init(
         sphereRadius: Double,
+        shapeStrength: Double,
+        shapeFeatureScale: Double,
+        shapeSmoothness: Double,
         surfaceRatio: Double,
         breathingAmount: Double,
         breathingSpeed: Double,
@@ -36,6 +42,9 @@ struct ParticleTuning: Codable, Equatable {
         brightness: Double
     ) {
         self.sphereRadius = sphereRadius
+        self.shapeStrength = shapeStrength
+        self.shapeFeatureScale = shapeFeatureScale
+        self.shapeSmoothness = shapeSmoothness
         self.surfaceRatio = surfaceRatio
         self.breathingAmount = breathingAmount
         self.breathingSpeed = breathingSpeed
@@ -50,6 +59,9 @@ struct ParticleTuning: Codable, Equatable {
 
     static let systemDefault = ParticleTuning(
         sphereRadius: 0.5,
+        shapeStrength: 0,
+        shapeFeatureScale: 0,
+        shapeSmoothness: 0,
         surfaceRatio: 0.62,
         breathingAmount: 0.34,
         breathingSpeed: 0.34,
@@ -190,6 +202,25 @@ struct ParticleTuning: Codable, Equatable {
         static let maximumStateFlowScale: Float = 1.80
         static let goldenAngle: Float = 2.399_963_1
         static let customShapeCubeScale: Float = 0.577_350_26
+        static let maximumSphereFormDisplacement: Float = 0.18
+        static let minimumSphereFormRadiusScale: Float = 0.58
+        static let minimumSphereFormFrequency: Float = 2.1
+        static let maximumSphereFormFrequency: Float = 5.2
+        static let sphereFormDetailFrequencyRatio: Float = 1.83
+        static let sphereFormPrimaryFrequencyRatioB: Float = 0.87
+        static let sphereFormPrimaryFrequencyRatioC: Float = 1.13
+        static let sphereFormDetailFrequencyRatioB: Float = 1.09
+        static let sphereFormPrimaryAxisA = SIMD3<Float>(0.85, 0.27, -0.45)
+        static let sphereFormPrimaryAxisB = SIMD3<Float>(-0.32, 0.91, 0.26)
+        static let sphereFormPrimaryAxisC = SIMD3<Float>(0.20, -0.45, 0.87)
+        static let sphereFormDetailAxisA = SIMD3<Float>(-0.76, -0.22, 0.61)
+        static let sphereFormDetailAxisB = SIMD3<Float>(0.44, -0.81, -0.39)
+        static let sphereFormPrimaryWeightA: Float = 0.46
+        static let sphereFormPrimaryWeightB: Float = 0.34
+        static let sphereFormPrimaryWeightC: Float = 0.28
+        static let sphereFormDetailWeightA: Float = 0.22
+        static let sphereFormDetailWeightB: Float = 0.16
+        static let sphereFormFieldNormalization: Float = 1.46
         static let angularJitterScale: Float = 0.34
         static let surfaceThickness: Float = 0.075
         static let minimumSurfaceRatio: Float = 0.10
@@ -296,6 +327,9 @@ struct ParticleTuning: Codable, Equatable {
 
 enum ParticleTuningParameter: String, CaseIterable, Identifiable {
     case sphereRadius
+    case shapeStrength
+    case shapeFeatureScale
+    case shapeSmoothness
     case surfaceRatio
     case breathingAmount
     case breathingSpeed
@@ -317,6 +351,12 @@ enum ParticleTuningParameter: String, CaseIterable, Identifiable {
         switch self {
         case .sphereRadius:
             return \.sphereRadius
+        case .shapeStrength:
+            return \.shapeStrength
+        case .shapeFeatureScale:
+            return \.shapeFeatureScale
+        case .shapeSmoothness:
+            return \.shapeSmoothness
         case .surfaceRatio:
             return \.surfaceRatio
         case .breathingAmount:

@@ -115,6 +115,7 @@
 "particleDebug.parameter.surfaceLightStrength" = "表面光强";
 "particleDebug.parameter.shapeStrength" = "形体强度";
 "particleDebug.parameter.shapeFeatureScale" = "形态结构尺度";
+"particleDebug.parameter.shapeSmoothness" = "形态平滑度";
 "particleDebug.parameter.shapeSeed" = "形体 Seed";
 "particleDebug.parameter.scatterStrength" = "散射强度";
 "particleDebug.parameter.scatterClusterStrength" = "散射聚散强度";

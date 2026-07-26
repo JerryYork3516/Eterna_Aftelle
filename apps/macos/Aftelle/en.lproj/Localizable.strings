@@ -115,6 +115,7 @@
 "particleDebug.parameter.surfaceLightStrength" = "Surface Light";
 "particleDebug.parameter.shapeStrength" = "Shape Strength";
 "particleDebug.parameter.shapeFeatureScale" = "Structure Scale";
+"particleDebug.parameter.shapeSmoothness" = "Shape Smoothness";
 "particleDebug.parameter.shapeSeed" = "Shape Seed";
 "particleDebug.parameter.scatterStrength" = "Scatter Strength";
 "particleDebug.parameter.scatterClusterStrength" = "Scatter Clustering";
