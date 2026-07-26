@@ -21,6 +21,13 @@ private enum DefaultTextProviderConfiguration {
     )
 }
 
+enum ParticleColorSource: String, CaseIterable, Identifiable {
+    case digitalResident
+    case systemDefault
+
+    var id: String { rawValue }
+}
+
 @MainActor
 final class AppController: ObservableObject {
     private static let residentBookmarkKey = "aftelle.activeResidentBookmark.v1"
@@ -47,6 +54,10 @@ final class AppController: ObservableObject {
     @Published private(set) var particleShellMode: ParticleShellMode = .darkShell
     @Published var isParticleDebugPanelPresented = false
     @Published private(set) var particleColorProfile = ParticleColorProfile.systemDefault
+    @Published private(set) var particleDRColorPalette: [String] = []
+    @Published private(set) var particleColorSource: ParticleColorSource = .digitalResident
+    @Published private(set) var effectiveParticleColorProfile =
+        ParticleColorProfile.systemDefault
     @Published private(set) var particleSubtitleState = ParticleSubtitleState.hidden
     @Published private(set) var particleDebugSnapshot = ParticleDebugSnapshot.empty
     @Published private(set) var residentTextInputState = ResidentTextInputViewState()
@@ -65,7 +76,6 @@ final class AppController: ObservableObject {
     private var loadedSessionID = ""
     private var dialogueEntries: [AppDialogueEntryState] = []
     private var latestParticleRenderMetrics = ParticleRenderMetrics.empty
-    private var effectiveParticleColorProfile = ParticleColorProfile.systemDefault
     private var effectiveColorProfileSource = "systemDefault"
     private var effectiveColorProfileFallbackUsed = true
     private var residentTextRequestID: UUID?
@@ -190,15 +200,9 @@ final class AppController: ObservableObject {
         #endif
     }
 
-    func updateEffectiveParticleColorProfile(_ profile: ParticleColorProfile, savedOverride: Bool) {
-        effectiveParticleColorProfile = profile
-        if savedOverride {
-            effectiveColorProfileSource = "debugSavedOverride"
-            effectiveColorProfileFallbackUsed = false
-        } else if profile != particleColorProfile {
-            effectiveColorProfileSource = "debugUnsavedOverride"
-            effectiveColorProfileFallbackUsed = false
-        }
+    func setParticleColorSource(_ source: ParticleColorSource) {
+        particleColorSource = source
+        applyEffectiveParticleColorProfile()
         refreshParticleDebugSnapshot()
     }
 
@@ -1222,9 +1226,8 @@ final class AppController: ObservableObject {
         loadedSessionID = result.sessionID?.rawValue ?? ""
         particleExpressionInput = .neutral
         particleColorProfile = ParticleColorProfile.make(fromDRData: drData)
-        effectiveParticleColorProfile = particleColorProfile
-        effectiveColorProfileFallbackUsed = particleColorProfile == .systemDefault
-        effectiveColorProfileSource = effectiveColorProfileFallbackUsed ? "systemDefault" : "\(sourceLabel) lattice_config.color_palette"
+        particleDRColorPalette = Self.drColorPalette(from: drData)
+        applyEffectiveParticleColorProfile()
         runtimeStatus = "Runtime status: \(result.statusMessage)"
         fixtureStatus = "\(sourceLabel): loaded"
         residentID = "resident_id: \(result.residentID.isEmpty ? "-" : result.residentID)"
@@ -1595,9 +1598,8 @@ final class AppController: ObservableObject {
         dialogueEntries = []
         avatarState = AppAvatarState()
         particleColorProfile = .systemDefault
-        effectiveParticleColorProfile = .systemDefault
-        effectiveColorProfileSource = "systemDefault"
-        effectiveColorProfileFallbackUsed = true
+        particleDRColorPalette = []
+        applyEffectiveParticleColorProfile()
         traceState = RuntimeTraceViewState(summary: diagnosticsMessage, entries: [])
         runtimeState = .idle
         diagnostics = diagnosticsMessage
@@ -1605,6 +1607,44 @@ final class AppController: ObservableObject {
         startupState = .failed
         refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
+    }
+
+    private func applyEffectiveParticleColorProfile() {
+        switch particleColorSource {
+        case .digitalResident:
+            guard !particleDRColorPalette.isEmpty else {
+                effectiveParticleColorProfile = .systemDefault
+                effectiveColorProfileSource = "systemDefault (DR color unavailable)"
+                effectiveColorProfileFallbackUsed = true
+                return
+            }
+            effectiveParticleColorProfile = particleColorProfile
+            effectiveColorProfileSource = "DR lattice_config.color_palette"
+            effectiveColorProfileFallbackUsed = false
+        case .systemDefault:
+            effectiveParticleColorProfile = .systemDefault
+            effectiveColorProfileSource = "systemDefault"
+            effectiveColorProfileFallbackUsed = false
+        }
+    }
+
+    private static func drColorPalette(from data: Data) -> [String] {
+        guard let object = try? JSONSerialization.jsonObject(with: data)
+            as? [String: Any],
+            let lattice = object["lattice_config"] as? [String: Any],
+            let palette = lattice["color_palette"] as? [String] else {
+            return []
+        }
+        return palette.compactMap(normalizedHexColor)
+    }
+
+    private static func normalizedHexColor(_ value: String) -> String? {
+        var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.hasPrefix("#") {
+            raw.removeFirst()
+        }
+        guard raw.count == 6, Int(raw, radix: 16) != nil else { return nil }
+        return "#\(raw.uppercased())"
     }
 
     private func saveResidentBookmark(for url: URL) {

@@ -18,7 +18,6 @@ final class ParticleOrientationOverlayState: ObservableObject {
 @MainActor
 final class ParticlePresentationSettings: ObservableObject {
     @Published var tuning = ParticleTuning.loadSaved()
-    @Published var colorProfile = ParticleColorProfile.loadSaved() ?? .systemDefault
     @Published private(set) var rebuildGeneration = 0
     @Published var isManualRotationEnabled = false
     @Published var viewOrientation: ParticleViewOrientation = .identity
@@ -131,7 +130,7 @@ struct ContentView: View {
                     presentationSettings.debugSpeechSignal != nil,
                 shapeTarget: presentationSettings.shapeTarget,
                 tuning: presentationSettings.tuning,
-                colorProfile: presentationSettings.colorProfile,
+                colorProfile: controller.effectiveParticleColorProfile,
                 rebuildGeneration: presentationSettings.rebuildGeneration,
                 isManualRotationEnabled: presentationSettings.isManualRotationEnabled,
                 viewOrientation: presentationSettings.viewOrientation,
@@ -179,26 +178,11 @@ struct ContentView: View {
         .task {
             controller.start()
         }
-        .onChange(of: controller.particleColorProfile) { _, newValue in
-            guard !ParticleColorProfile.hasSavedProfile() else { return }
-            presentationSettings.colorProfile = newValue
-            controller.updateEffectiveParticleColorProfile(newValue, savedOverride: false)
-        }
-        .onChange(of: presentationSettings.colorProfile) { _, newValue in
-            controller.updateEffectiveParticleColorProfile(
-                newValue,
-                savedOverride: ParticleColorProfile.hasSavedProfile()
-            )
-        }
         .onChange(of: controller.sessionState.sessionID) { _, _ in
             residentInputText = ""
         }
         #if DEBUG
         .onAppear {
-            controller.updateEffectiveParticleColorProfile(
-                presentationSettings.colorProfile,
-                savedOverride: ParticleColorProfile.hasSavedProfile()
-            )
             installDebugSubtitleKeyMonitor()
         }
         .onDisappear {
@@ -550,12 +534,13 @@ struct ParticleDebugWindow: View {
             shellMode: controller.particleShellMode,
             renderKind: controller.particleRenderKind,
             tuning: $presentationSettings.tuning,
-            colorProfile: $presentationSettings.colorProfile,
+            colorSource: controller.particleColorSource,
+            drColorPalette: controller.particleDRColorPalette,
             orientationOverlayVisible: $presentationSettings.isOrientationOverlayVisible,
             manualRotationEnabled: $presentationSettings.isManualRotationEnabled,
-            defaultColorProfile: controller.particleColorProfile,
             setShellMode: controller.setParticleShellMode,
             setRenderKind: controller.setParticleRenderKind,
+            setColorSource: controller.setParticleColorSource,
             rebuildFixedSeed: presentationSettings.rebuildWithFixedSeed,
             resetRotation: presentationSettings.resetViewOrientation,
             debugVisualIntent: presentationSettings.debugVisualIntent,
@@ -571,12 +556,6 @@ struct ParticleDebugWindow: View {
             simulateDebugSpeech: presentationSettings.simulateDebugSpeech,
             setDebugSpeechIntensity: presentationSettings.setDebugSpeechIntensity,
             followRuntimeSpeech: presentationSettings.followRuntimeSpeech,
-            refreshColorProfileSnapshot: {
-                controller.updateEffectiveParticleColorProfile(
-                    presentationSettings.colorProfile,
-                    savedOverride: ParticleColorProfile.hasSavedProfile()
-                )
-            },
             importDR: openDebugDRImportPanel,
             saveProviderConfiguration: controller.saveProviderConfiguration,
             saveProviderCredential: controller.saveProviderCredential,
@@ -614,7 +593,6 @@ struct ParticleDebugWindow: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             controller.debugImportResident(from: url)
-            presentationSettings.colorProfile = controller.particleColorProfile
         }
     }
 }
@@ -696,12 +674,13 @@ private struct ParticleDebugPanel: View {
     let shellMode: ParticleShellMode
     let renderKind: ParticleRenderKind
     @Binding var tuning: ParticleTuning
-    @Binding var colorProfile: ParticleColorProfile
+    let colorSource: ParticleColorSource
+    let drColorPalette: [String]
     @Binding var orientationOverlayVisible: Bool
     @Binding var manualRotationEnabled: Bool
-    let defaultColorProfile: ParticleColorProfile
     let setShellMode: (ParticleShellMode) -> Void
     let setRenderKind: (ParticleRenderKind) -> Void
+    let setColorSource: (ParticleColorSource) -> Void
     let rebuildFixedSeed: () -> Void
     let resetRotation: () -> Void
     let debugVisualIntent: ResidentVisualIntent?
@@ -717,7 +696,6 @@ private struct ParticleDebugPanel: View {
     let simulateDebugSpeech: (ResidentSpeechPhase) -> Void
     let setDebugSpeechIntensity: (Double) -> Void
     let followRuntimeSpeech: () -> Void
-    let refreshColorProfileSnapshot: () -> Void
     let importDR: () -> Void
     let saveProviderConfiguration: (ProviderProfile) -> Void
     let saveProviderCredential: (String) -> Void
@@ -757,7 +735,7 @@ private struct ParticleDebugPanel: View {
                     .tag(ParticleDebugSection.renderAdapter)
                 Text(String(localized: "particleDebug.particleAdjustment"))
                     .tag(ParticleDebugSection.particle)
-                Text(String(localized: "particleDebug.colorAdjustment"))
+                Text(String(localized: "particleDebug.color"))
                     .tag(ParticleDebugSection.color)
             }
             .pickerStyle(.segmented)
@@ -982,15 +960,17 @@ private struct ParticleDebugPanel: View {
                             }
                         }
                     case .color:
-                        ForEach(ParticleColorParameter.allCases) { parameter in
-                            ParticleColorParameterRow(parameter: parameter, colorProfile: $colorProfile)
-                        }
+                        ParticleDRColorView(
+                            palette: drColorPalette,
+                            source: colorSource,
+                            setSource: setColorSource
+                        )
                     }
                 }
             }
             .frame(minHeight: 280, maxHeight: .infinity)
 
-            if section == .particle || section == .color {
+            if section == .particle {
                 Divider()
 
                 HStack {
@@ -1030,7 +1010,7 @@ private struct ParticleDebugPanel: View {
         case .particle:
             return String(localized: "particleDebug.particleAdjustment")
         case .color:
-            return String(localized: "particleDebug.colorAdjustment")
+            return String(localized: "particleDebug.color")
         }
     }
 
@@ -1047,7 +1027,7 @@ private struct ParticleDebugPanel: View {
         case .particle:
             return String(localized: "particleDebug.parameters")
         case .color:
-            return String(localized: "particleDebug.colorParameters")
+            return String(localized: "particleDebug.colorCaption")
         }
     }
 
@@ -1065,9 +1045,7 @@ private struct ParticleDebugPanel: View {
             tuning = .systemDefault
             ParticleTuning.clearSaved()
         case .color:
-            colorProfile = defaultColorProfile
-            ParticleColorProfile.clearSaved()
-            refreshColorProfileSnapshot()
+            break
         }
     }
 
@@ -1084,8 +1062,7 @@ private struct ParticleDebugPanel: View {
         case .particle:
             tuning.save()
         case .color:
-            colorProfile.save()
-            refreshColorProfileSnapshot()
+            break
         }
     }
 }
@@ -2043,30 +2020,70 @@ private struct ParticleSpinDirectionRow: View {
     }
 }
 
-private struct ParticleColorParameterRow: View {
-    let parameter: ParticleColorParameter
-    @Binding var colorProfile: ParticleColorProfile
+private struct ParticleDRColorView: View {
+    let palette: [String]
+    let source: ParticleColorSource
+    let setSource: (ParticleColorSource) -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(String(localized: String.LocalizationValue(parameter.localizedKey)))
-                .font(.system(size: 12))
-                .frame(width: 116, alignment: .leading)
+        VStack(alignment: .leading, spacing: 14) {
+            Text(String(localized: "particleDebug.color.source"))
+                .font(.system(size: 12, weight: .medium))
 
-            Slider(value: value, in: 0...1)
+            Picker("", selection: sourceBinding) {
+                Text(String(localized: "particleDebug.color.useDR"))
+                    .tag(ParticleColorSource.digitalResident)
+                Text(String(localized: "particleDebug.color.useDefault"))
+                    .tag(ParticleColorSource.systemDefault)
+            }
+            .pickerStyle(.segmented)
 
-            TextField("", value: value, format: .number.precision(.fractionLength(2)))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 58)
+            Divider()
+
+            Text(String(localized: "particleDebug.color.drPalette"))
+                .font(.system(size: 12, weight: .medium))
+
+            if palette.isEmpty {
+                Text(String(localized: "particleDebug.color.missing"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(palette.enumerated()), id: \.offset) { _, hexColor in
+                    HStack(spacing: 10) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(color(for: hexColor))
+                            .frame(width: 52, height: 32)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(.white.opacity(0.18), lineWidth: 1)
+                            }
+
+                        Text(hexColor)
+                            .font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var value: Binding<Double> {
-        Binding {
-            colorProfile[keyPath: parameter.keyPath]
-        } set: { newValue in
-            colorProfile[keyPath: parameter.keyPath] = min(1, max(0, newValue))
+    private var sourceBinding: Binding<ParticleColorSource> {
+        Binding(get: { source }, set: setSource)
+    }
+
+    private func color(for hexColor: String) -> Color {
+        let raw = hexColor.hasPrefix("#")
+            ? String(hexColor.dropFirst())
+            : hexColor
+        guard let value = UInt64(raw, radix: 16), raw.count == 6 else {
+            return .clear
         }
+        return Color(
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255
+        )
     }
 }
 #endif

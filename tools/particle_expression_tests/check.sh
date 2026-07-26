@@ -55,6 +55,57 @@ for field in "${required_d1_fields[@]}"; do
   done
 done
 
+for symbol in \
+  ParticleDRColorView \
+  particleDRColorPalette \
+  setParticleColorSource \
+  effectiveParticleColorProfile; do
+  if ! rg -q "$symbol" \
+    "$repo_root/apps/macos/Aftelle/ContentView.swift" \
+    "$repo_root/apps/macos/Aftelle/AppController.swift"; then
+    printf 'particle-expression-tests: missing read-only DR color symbol %s\n' \
+      "$symbol" >&2
+    exit 1
+  fi
+done
+
+if rg -q \
+  'ParticleColorParameterRow|ParticleColorProfile\.(loadSaved|hasSavedProfile|clearSaved)|colorProfile\.save\(' \
+  "$repo_root/apps/macos/Aftelle/ContentView.swift" \
+  "$repo_root/apps/macos/Aftelle/AppController.swift"; then
+  printf 'particle-expression-tests: manual color override remains connected\n' >&2
+  exit 1
+fi
+
+if sed -n '/private struct ParticleDRColorView:/,/#endif/p' \
+  "$repo_root/apps/macos/Aftelle/ContentView.swift" \
+  | rg -q 'Slider\(|TextField\('; then
+  printf 'particle-expression-tests: DR color view must remain read-only\n' >&2
+  exit 1
+fi
+
+for localization_file in \
+  "$repo_root/apps/macos/Aftelle/en.lproj/Localizable.strings" \
+  "$repo_root/apps/macos/Aftelle/zh-Hans.lproj/Localizable.strings"; do
+  for key in \
+    particleDebug.color.source \
+    particleDebug.color.useDR \
+    particleDebug.color.useDefault \
+    particleDebug.color.drPalette; do
+    if ! rg -q "\"$key\"" "$localization_file"; then
+      printf 'particle-expression-tests: missing color localization %s in %s\n' \
+        "$key" "$localization_file" >&2
+      exit 1
+    fi
+  done
+  if rg -q 'particleDebug\.color\.(base|ridge|dim|highlight|alphaScale)' \
+    "$localization_file"; then
+    printf 'particle-expression-tests: manual color parameter localization remains in %s\n' \
+      "$localization_file" >&2
+    exit 1
+  fi
+done
+
 if git -C "$repo_root" diff --name-only \
   | rg -q 'apps/macos/Aftelle/ParticleCore/ParticleCoreShaders\\.metal$'; then
   printf 'particle-expression-tests: Metal Shader changed without authorization\n' >&2
