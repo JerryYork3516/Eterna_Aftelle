@@ -320,6 +320,10 @@
 "runtimeOrchestration.field.expressionFallback" = "表达回退";
 "runtimeOrchestration.field.expressionLifecycleOverride" = "生命周期覆盖表达";
 "runtimeOrchestration.field.expressionMappingSource" = "表达映射来源";
+"runtimeOrchestration.field.relationshipStage" = "关系阶段";
+"runtimeOrchestration.field.relationshipEvidence" = "关系证据";
+"runtimeOrchestration.field.relationshipDecision" = "关系决策";
+"runtimeOrchestration.field.relationshipReason" = "关系原因";
 "runtimeOrchestration.field.brightnessMultiplier" = "亮度（当前 → 目标）";
 "runtimeOrchestration.field.saturationMultiplier" = "饱和度（当前 → 目标）";
 "runtimeOrchestration.field.temperatureShift" = "色温（当前 → 目标）";
@@ -412,6 +416,10 @@
 "runtimeOrchestration.export.expressionFallback" = "表达回退：%@";
 "runtimeOrchestration.export.expressionLifecycleOverride" = "生命周期覆盖表达：%@";
 "runtimeOrchestration.export.expressionMappingSource" = "表达映射来源：%@";
+"runtimeOrchestration.export.relationshipStage" = "关系阶段：%@";
+"runtimeOrchestration.export.relationshipEvidence" = "关系证据：%@";
+"runtimeOrchestration.export.relationshipDecision" = "关系决策：%@";
+"runtimeOrchestration.export.relationshipReason" = "关系原因：%@";
 "runtimeOrchestration.export.brightnessMultiplier" = "亮度（当前 → 目标）：%@";
 "runtimeOrchestration.export.saturationMultiplier" = "饱和度（当前 → 目标）：%@";
 "runtimeOrchestration.export.temperatureShift" = "色温（当前 → 目标）：%@";
@@ -422,3 +430,11 @@
 "runtimeOrchestration.export.timeline" = "步骤时间线";
 "runtimeOrchestration.export.step" = "%@ | %@ | %d 毫秒";
 "runtimeOrchestration.fileName" = "Aftelle_运行编排_%@_%@.txt";
+"relationshipProgression.debug.title" = "关系演进";
+"relationshipProgression.debug.stage" = "当前阶段";
+"relationshipProgression.debug.evidence" = "有效证据";
+"relationshipProgression.debug.reason" = "最后变化原因";
+"relationshipProgression.debug.enabled" = "启用状态";
+"relationshipProgression.debug.revision" = "修订号";
+"relationshipProgression.debug.reset" = "重置关系";
+"relationshipProgression.debug.unavailable" = "当前 DR 未启用关系演进。";

@@ -531,6 +531,8 @@ struct ParticleDebugWindow: View {
             providerState: controller.providerDebugState,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
+            relationshipProgressionState:
+                controller.relationshipProgressionDebugState,
             shellMode: controller.particleShellMode,
             renderKind: controller.particleRenderKind,
             tuning: $presentationSettings.tuning,
@@ -567,7 +569,9 @@ struct ParticleDebugWindow: View {
             clearDialogueTestData: controller.clearDialogueTestData,
             copyRuntimeOrchestration: controller.copyRuntimeOrchestrationInteraction,
             exportRuntimeOrchestration: controller.exportRuntimeOrchestrationInteraction,
-            clearRuntimeOrchestration: controller.clearRuntimeOrchestrationRecords
+            clearRuntimeOrchestration: controller.clearRuntimeOrchestrationRecords,
+            resetRelationshipProgression:
+                controller.resetRelationshipProgressionForDebug
         )
         .onAppear {
             controller.setParticleDebugPanelPresented(true)
@@ -671,6 +675,8 @@ private struct ParticleDebugPanel: View {
     let providerState: ProviderDebugViewState
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
+    let relationshipProgressionState:
+        RelationshipProgressionDebugViewState
     let shellMode: ParticleShellMode
     let renderKind: ParticleRenderKind
     @Binding var tuning: ParticleTuning
@@ -708,6 +714,7 @@ private struct ParticleDebugPanel: View {
     let copyRuntimeOrchestration: (UUID) -> Void
     let exportRuntimeOrchestration: (UUID) -> Void
     let clearRuntimeOrchestration: () -> Void
+    let resetRelationshipProgression: () -> Void
     @State private var section: ParticleDebugSection = .diagnostics
     @State private var tuningGroup: ParticleTuningGroup = .basics
 
@@ -914,6 +921,10 @@ private struct ParticleDebugPanel: View {
                                 saveCredential: saveProviderCredential,
                                 deleteCredential: deleteProviderCredential,
                                 testReply: testResidentReply
+                            )
+                            RelationshipProgressionDebugView(
+                                state: relationshipProgressionState,
+                                reset: resetRelationshipProgression
                             )
                             DialogueAuditDebugView(
                                 state: dialogueAuditState,
@@ -1384,6 +1395,30 @@ private struct RuntimeOrchestrationDebugView: View {
                     )
                 )
                 detailRow(
+                    "runtimeOrchestration.field.relationshipStage",
+                    interaction.relationshipStageID
+                        ?? String(
+                            localized:
+                                "runtimeOrchestration.unavailable"
+                        )
+                )
+                detailRow(
+                    "runtimeOrchestration.field.relationshipEvidence",
+                    interaction.relationshipEvidenceIDs.isEmpty
+                        ? String(localized: "runtimeOrchestration.none")
+                        : interaction.relationshipEvidenceIDs.joined(
+                            separator: ", "
+                        )
+                )
+                detailRow(
+                    "runtimeOrchestration.field.relationshipDecision",
+                    interaction.relationshipDecision
+                )
+                detailRow(
+                    "runtimeOrchestration.field.relationshipReason",
+                    interaction.relationshipReason
+                )
+                detailRow(
                     "runtimeOrchestration.field.brightnessMultiplier",
                     multiplierTransition(
                         interaction.currentBrightnessMultiplier,
@@ -1505,6 +1540,73 @@ private struct RuntimeOrchestrationDebugView: View {
             locale: Locale.current,
             state.interactions.count
         )
+    }
+}
+
+private struct RelationshipProgressionDebugView: View {
+    let state: RelationshipProgressionDebugViewState
+    let reset: () -> Void
+    @State private var isExpanded = false
+
+    var body: some View {
+        DebugCollapsibleMenu(
+            titleKey: "relationshipProgression.debug.title",
+            isExpanded: $isExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                if state.isAvailable {
+                    ParticleDiagnosticsRow(
+                        labelKey:
+                            "relationshipProgression.debug.stage",
+                        value: state.stageID ?? "-"
+                    )
+                    ParticleDiagnosticsRow(
+                        labelKey:
+                            "relationshipProgression.debug.evidence",
+                        value: state.evidenceIDs.isEmpty
+                            ? String(
+                                localized:
+                                    "runtimeOrchestration.none"
+                            )
+                            : state.evidenceIDs.joined(separator: ", ")
+                    )
+                    ParticleDiagnosticsRow(
+                        labelKey:
+                            "relationshipProgression.debug.reason",
+                        value: state.lastTransitionReason ?? "-"
+                    )
+                    ParticleDiagnosticsRow(
+                        labelKey:
+                            "relationshipProgression.debug.enabled",
+                        value: state.enabled ? "true" : "false"
+                    )
+                    ParticleDiagnosticsRow(
+                        labelKey:
+                            "relationshipProgression.debug.revision",
+                        value: state.revision.map(String.init) ?? "-"
+                    )
+                    HStack {
+                        Spacer()
+                        Button(
+                            String(
+                                localized:
+                                    "relationshipProgression.debug.reset"
+                            ),
+                            action: reset
+                        )
+                    }
+                } else {
+                    Text(
+                        String(
+                            localized:
+                                "relationshipProgression.debug.unavailable"
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 

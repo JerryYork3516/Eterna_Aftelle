@@ -320,6 +320,10 @@
 "runtimeOrchestration.field.expressionFallback" = "Expression Fallback";
 "runtimeOrchestration.field.expressionLifecycleOverride" = "Lifecycle Overrides Expression";
 "runtimeOrchestration.field.expressionMappingSource" = "Expression Mapping Source";
+"runtimeOrchestration.field.relationshipStage" = "Relationship Stage";
+"runtimeOrchestration.field.relationshipEvidence" = "Relationship Evidence";
+"runtimeOrchestration.field.relationshipDecision" = "Relationship Decision";
+"runtimeOrchestration.field.relationshipReason" = "Relationship Reason";
 "runtimeOrchestration.field.brightnessMultiplier" = "Brightness (Current → Target)";
 "runtimeOrchestration.field.saturationMultiplier" = "Saturation (Current → Target)";
 "runtimeOrchestration.field.temperatureShift" = "Temperature (Current → Target)";
@@ -412,6 +416,10 @@
 "runtimeOrchestration.export.expressionFallback" = "Expression Fallback: %@";
 "runtimeOrchestration.export.expressionLifecycleOverride" = "Lifecycle Overrides Expression: %@";
 "runtimeOrchestration.export.expressionMappingSource" = "Expression Mapping Source: %@";
+"runtimeOrchestration.export.relationshipStage" = "Relationship Stage: %@";
+"runtimeOrchestration.export.relationshipEvidence" = "Relationship Evidence: %@";
+"runtimeOrchestration.export.relationshipDecision" = "Relationship Decision: %@";
+"runtimeOrchestration.export.relationshipReason" = "Relationship Reason: %@";
 "runtimeOrchestration.export.brightnessMultiplier" = "Brightness (Current → Target): %@";
 "runtimeOrchestration.export.saturationMultiplier" = "Saturation (Current → Target): %@";
 "runtimeOrchestration.export.temperatureShift" = "Temperature (Current → Target): %@";
@@ -422,3 +430,11 @@
 "runtimeOrchestration.export.timeline" = "Step Timeline";
 "runtimeOrchestration.export.step" = "%@ | %@ | %d ms";
 "runtimeOrchestration.fileName" = "Aftelle_Runtime_Orchestration_%@_%@.txt";
+"relationshipProgression.debug.title" = "Relationship Progression";
+"relationshipProgression.debug.stage" = "Current Stage";
+"relationshipProgression.debug.evidence" = "Valid Evidence";
+"relationshipProgression.debug.reason" = "Last Change Reason";
+"relationshipProgression.debug.enabled" = "Enabled";
+"relationshipProgression.debug.revision" = "Revision";
+"relationshipProgression.debug.reset" = "Reset Relationship";
+"relationshipProgression.debug.unavailable" = "This DR does not enable relationship progression.";

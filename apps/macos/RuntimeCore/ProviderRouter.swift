@@ -89,17 +89,68 @@ struct ProviderResidentReply: Equatable {
     let expressionState: String?
     let expressionIntensity: Double?
     let expressionEnvelopeParsed: Bool
+    let relationshipEvidenceCandidates:
+        [ProviderRelationshipEvidenceCandidate]
+
+    init(
+        replyText: String,
+        expressionState: String?,
+        expressionIntensity: Double?,
+        expressionEnvelopeParsed: Bool,
+        relationshipEvidenceCandidates:
+            [ProviderRelationshipEvidenceCandidate] = []
+    ) {
+        self.replyText = replyText
+        self.expressionState = expressionState
+        self.expressionIntensity = expressionIntensity
+        self.expressionEnvelopeParsed = expressionEnvelopeParsed
+        self.relationshipEvidenceCandidates =
+            relationshipEvidenceCandidates
+    }
+}
+
+struct ProviderRelationshipEvidenceCandidate: Equatable {
+    let evidenceType: String
+    let evidenceDetected: Bool
+    let evidenceSource: String
+    let requiresUserConfirmation: Bool
+}
+
+private struct FailableDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
+    }
 }
 
 private struct ProviderResidentReplyEnvelope: Decodable {
     let replyText: String
     let expressionState: String?
     let expressionIntensity: Double?
+    let relationshipEvidenceCandidates:
+        [FailableDecodable<ProviderRelationshipEvidenceCandidateWire>]?
 
     enum CodingKeys: String, CodingKey {
         case replyText = "reply_text"
         case expressionState = "expression_state"
         case expressionIntensity = "expression_intensity"
+        case relationshipEvidenceCandidates =
+            "relationship_evidence_candidates"
+    }
+}
+
+private struct ProviderRelationshipEvidenceCandidateWire: Decodable {
+    let evidenceType: String
+    let evidenceDetected: Bool
+    let evidenceSource: String
+    let requiresUserConfirmation: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case evidenceType = "evidence_type"
+        case evidenceDetected = "evidence_detected"
+        case evidenceSource = "evidence_source"
+        case requiresUserConfirmation = "requires_user_confirmation"
     }
 }
 
@@ -122,7 +173,19 @@ enum ProviderResidentReplyParser {
                 replyText: replyText,
                 expressionState: envelope.expressionState,
                 expressionIntensity: envelope.expressionIntensity,
-                expressionEnvelopeParsed: true
+                expressionEnvelopeParsed: true,
+                relationshipEvidenceCandidates:
+                    envelope.relationshipEvidenceCandidates?
+                        .compactMap(\.value)
+                        .map {
+                            ProviderRelationshipEvidenceCandidate(
+                                evidenceType: $0.evidenceType,
+                                evidenceDetected: $0.evidenceDetected,
+                                evidenceSource: $0.evidenceSource,
+                                requiresUserConfirmation:
+                                    $0.requiresUserConfirmation
+                            )
+                        } ?? []
             )
         }
 
@@ -155,7 +218,7 @@ enum ProviderResidentReplyParser {
             CharacterSet(charactersIn: "\u{feff}")
         )
     private static let envelopeKeyExpression = try? NSRegularExpression(
-        pattern: #"(?<![A-Za-z0-9_])["']?(?:reply_text|expression_state|expression_intensity)["']?\s*:"#
+        pattern: #"(?<![A-Za-z0-9_])["']?(?:reply_text|expression_state|expression_intensity|relationship_evidence_candidates)["']?\s*:"#
     )
     private static let replyTextKeyExpression = try? NSRegularExpression(
         pattern: #"(?<![A-Za-z0-9_])["']?reply_text["']?\s*:"#
@@ -505,6 +568,9 @@ final class OpenAICompatibleAdapter {
         if let residentDisclosure = identity.residentDisclosure {
             sections.append("Resident disclosure: \(residentDisclosure)")
         }
+        if let relationshipProgression = context.relationshipProgression {
+            sections.append(relationshipProgression.instruction)
+        }
         sections.append(contentsOf: context.prohibitedPatterns.map {
             "Prohibited response pattern: \($0.reason)"
         })
@@ -522,7 +588,10 @@ final class OpenAICompatibleAdapter {
             sections.append(fewShotSection)
         }
         sections.append("When the available context is insufficient: \(context.fallbackText)")
-        sections.append(expressionEnvelopeInstruction(for: expressionMapping))
+        sections.append(expressionEnvelopeInstruction(
+            for: expressionMapping,
+            relationshipContext: context.relationshipProgression
+        ))
 
         return sections
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -531,16 +600,38 @@ final class OpenAICompatibleAdapter {
     }
 
     private static func expressionEnvelopeInstruction(
-        for mapping: RuntimeVisualExpressionMapping
+        for mapping: RuntimeVisualExpressionMapping,
+        relationshipContext: RuntimeRelationshipDialogueContext?
     ) -> String {
         let states = mapping.allowedStates.map(\.rawValue).joined(separator: ", ")
+        let envelope: String
+        let relationshipInstruction: String
+        if let relationshipContext {
+            let evidenceTypes = relationshipContext.allowedEvidenceTypes
+                .joined(separator: ", ")
+            envelope = """
+            {"reply_text":"...","expression_state":"neutral","expression_intensity":0,"relationship_evidence_candidates":[]}
+            """
+            relationshipInstruction = """
+            relationship_evidence_candidates is optional and may contain only closed evidence candidates with evidence_type, evidence_detected, evidence_source, and requires_user_confirmation.
+            evidence_type must be one of: \(evidenceTypes).
+            evidence_source must be explicit_user_expression. Omit or use an empty array when there is no explicit evidence.
+            You may propose evidence only. Never output, choose, infer, or change any relationship stage.
+            """
+        } else {
+            envelope = """
+            {"reply_text":"...","expression_state":"neutral","expression_intensity":0}
+            """
+            relationshipInstruction = ""
+        }
         return """
         Return exactly one JSON object with only these keys:
-        {"reply_text":"...","expression_state":"neutral","expression_intensity":0}
+        \(envelope)
         reply_text is the complete user-visible resident reply.
         expression_state must be one of: \(states).
         expression_intensity must be a number from 0 to 1.
         Select the lowest sufficient intensity. Use neutral and 0 when context is insufficient.
+        \(relationshipInstruction)
         Do not output color, brightness, saturation, temperature, glow, energy, speed, diffusion, or any renderer or particle parameter.
         Do not wrap the JSON object in Markdown or add text outside it.
         """

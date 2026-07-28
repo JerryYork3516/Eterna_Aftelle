@@ -199,6 +199,8 @@ struct RuntimeExpressionResult: Equatable {
 struct RuntimeResidentReply: Equatable {
     let replyText: String
     let expression: RuntimeExpressionResult
+    let relationshipEvidenceCandidates:
+        [ProviderRelationshipEvidenceCandidate]
 }
 
 public final class VisualStateMapper {

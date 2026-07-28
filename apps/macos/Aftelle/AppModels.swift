@@ -486,6 +486,26 @@ public struct AppDialogueEntryState: Equatable, Identifiable {
 }
 
 #if DEBUG
+struct RelationshipProgressionDebugViewState: Equatable {
+    var isAvailable = false
+    var stageID: String?
+    var evidenceIDs: [String] = []
+    var lastTransitionReason: String?
+    var enabled = false
+    var revision: Int?
+
+    init() {}
+
+    init(_ snapshot: RuntimeRelationshipDebugSnapshot) {
+        isAvailable = snapshot.isAvailable
+        stageID = snapshot.stageID
+        evidenceIDs = snapshot.evidenceIDs
+        lastTransitionReason = snapshot.lastTransitionReason
+        enabled = snapshot.enabled
+        revision = snapshot.revision
+    }
+}
+
 struct RuntimeOrchestrationFewShotViewState: Equatable, Identifiable {
     let exampleID: String
     let kind: String
@@ -526,6 +546,10 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
     let expressionIntensity: Double
     let expressionFallbackOccurred: Bool
     let expressionMappingSource: String
+    let relationshipStageID: String?
+    let relationshipEvidenceIDs: [String]
+    let relationshipDecision: String
+    let relationshipReason: String
     var expressionTransitionProgress: Double
     var expressionLifecycleOverrideActive: Bool
     var currentBrightnessMultiplier: Double
@@ -569,6 +593,10 @@ struct RuntimeOrchestrationInteractionViewState: Equatable, Identifiable {
         expressionIntensity = interaction.expressionIntensity
         expressionFallbackOccurred = interaction.expressionFallbackOccurred
         expressionMappingSource = interaction.expressionMappingSource
+        relationshipStageID = interaction.relationshipStageID
+        relationshipEvidenceIDs = interaction.relationshipEvidenceIDs
+        relationshipDecision = interaction.relationshipDecision
+        relationshipReason = interaction.relationshipReason
         expressionTransitionProgress = 0
         expressionLifecycleOverrideActive = [
             "error", "loading", "exit"
@@ -1025,6 +1053,20 @@ public final class OrchestrationKernel {
     #if DEBUG
     func clearDialogueTestData() throws -> String? {
         try runtimeCore.clearDialogueTestData()
+    }
+
+    func relationshipProgressionDebugViewState()
+        -> RelationshipProgressionDebugViewState {
+        RelationshipProgressionDebugViewState(
+            runtimeCore.relationshipProgressionDebugSnapshot()
+        )
+    }
+
+    func resetRelationshipProgressionForDebug()
+        -> RelationshipProgressionDebugViewState {
+        RelationshipProgressionDebugViewState(
+            runtimeCore.resetRelationshipProgressionForDebug()
+        )
     }
 
     func runtimeOrchestrationViewState() -> RuntimeOrchestrationViewState {

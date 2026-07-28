@@ -67,6 +67,8 @@ final class AppController: ObservableObject {
     #if DEBUG
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
+    @Published private(set) var relationshipProgressionDebugState =
+        RelationshipProgressionDebugViewState()
     #endif
 
     private let orchestrationKernel: OrchestrationKernel
@@ -601,6 +603,26 @@ final class AppController: ObservableObject {
                 )
             ),
             localizedFormat(
+                "runtimeOrchestration.export.relationshipStage",
+                interaction.relationshipStageID ?? "-"
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.relationshipEvidence",
+                interaction.relationshipEvidenceIDs.isEmpty
+                    ? "-"
+                    : interaction.relationshipEvidenceIDs.joined(
+                        separator: ", "
+                    )
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.relationshipDecision",
+                interaction.relationshipDecision
+            ),
+            localizedFormat(
+                "runtimeOrchestration.export.relationshipReason",
+                interaction.relationshipReason
+            ),
+            localizedFormat(
                 "runtimeOrchestration.export.brightnessMultiplier",
                 expressionMultiplierTransition(
                     interaction.currentBrightnessMultiplier,
@@ -702,6 +724,7 @@ final class AppController: ObservableObject {
             dialogueAuditState.clear()
             dialogueAuditState.statusKey = "dialogueAudit.status.testDataCleared"
             refreshDebugPanelState()
+            refreshRelationshipProgressionDebugState()
             refreshResidentVisualIntent()
             refreshParticleDebugSnapshot()
         } catch {
@@ -831,6 +854,7 @@ final class AppController: ObservableObject {
             status: status
         )
         refreshRuntimeOrchestrationState()
+        refreshRelationshipProgressionDebugState()
     }
 
     private func refreshRuntimeOrchestrationState() {
@@ -844,6 +868,16 @@ final class AppController: ObservableObject {
             sessionID: loadedSessionID
         )
         runtimeOrchestrationState = state
+    }
+
+    private func refreshRelationshipProgressionDebugState() {
+        relationshipProgressionDebugState =
+            orchestrationKernel.relationshipProgressionDebugViewState()
+    }
+
+    func resetRelationshipProgressionForDebug() {
+        relationshipProgressionDebugState =
+            orchestrationKernel.resetRelationshipProgressionForDebug()
     }
 
     func setParticleAvatarMode(_ mode: ParticleAvatarMode) {
@@ -1050,6 +1084,7 @@ final class AppController: ObservableObject {
             lifecycleState: lifecycleState,
             status: .skipped
         )
+        refreshRelationshipProgressionDebugState()
     }
 
     private func showDebugSubtitle(at index: Int) {
@@ -1262,6 +1297,9 @@ final class AppController: ObservableObject {
         } ?? AppResidentState(residentID: result.residentID, sessionID: result.sessionID?.rawValue ?? "")
         diagnostics = result.diagnostics
         traceState = RuntimeTraceViewState(summary: result.diagnostics, entries: [])
+        #if DEBUG
+        refreshRelationshipProgressionDebugState()
+        #endif
         refreshDebugPanelState()
         startupState = .loaded
         if shouldPresentFirstGreeting {

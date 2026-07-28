@@ -35,6 +35,30 @@ struct InitialRelationshipConfig: Equatable {
     let romanticAssumption: Bool?
 }
 
+struct RuntimeRelationshipStageBoundary: Equatable {
+    let stageSemantics: String
+    let initiativeLevel: String
+    let familiarityLevel: String
+    let addressStyle: String
+    let selfDisclosureLevel: String
+    let followUpBoundary: String
+    let adviceBoundary: String
+}
+
+struct RuntimeRelationshipProgressionProjection: Equatable {
+    static let reservedStageID = "romantic_relationship_reserved"
+
+    let contentRevision: String
+    let defaultStage: RuntimeRelationshipStage
+    let enabledStages: [RuntimeRelationshipStage]
+    let stageDefinitions:
+        [RuntimeRelationshipStage: RuntimeRelationshipStageBoundary]
+    let allowedEvidenceTypes: Set<String>
+    let forbiddenEvidenceTypes: Set<String>
+    let availableUserActions: Set<String>
+    let resetTarget: RuntimeRelationshipStage
+}
+
 struct RuntimeDialogueInstruction: Equatable {
     let instruction: String
     let sourceRuleRefs: [String]
@@ -325,6 +349,161 @@ private struct RuntimeVisualExpressionMappingWire: Decodable {
     }
 }
 
+private struct RuntimeRelationshipStageBoundaryWire: Decodable {
+    let stageSemantics: String
+    let initiativeLevel: String
+    let familiarityLevel: String
+    let addressStyle: String
+    let selfDisclosureLevel: String
+    let followUpBoundary: String
+    let adviceBoundary: String
+
+    enum CodingKeys: String, CodingKey {
+        case stageSemantics = "stage_semantics"
+        case initiativeLevel = "initiative_level"
+        case familiarityLevel = "familiarity_level"
+        case addressStyle = "address_style"
+        case selfDisclosureLevel = "self_disclosure_level"
+        case followUpBoundary = "follow_up_boundary"
+        case adviceBoundary = "advice_boundary"
+    }
+}
+
+private struct RuntimeRelationshipEvidenceRulesWire: Decodable {
+    let allowedEvidenceTypes: [String]
+    let progressionRequirements: [String]
+    let candidateFields: [String]
+    let requiresExplicitUserExpression: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case allowedEvidenceTypes = "allowed_evidence_types"
+        case progressionRequirements = "progression_requirements"
+        case candidateFields = "candidate_fields"
+        case requiresExplicitUserExpression =
+            "requires_explicit_user_expression"
+    }
+}
+
+private struct RuntimeRelationshipForbiddenRulesWire: Decodable {
+    let forbiddenEvidence: [String]
+    let automaticTransition: Bool
+    let vulnerabilityCannotTrigger: Bool
+    let modelOrResidentInferenceCannotTrigger: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case forbiddenEvidence = "forbidden_evidence"
+        case automaticTransition = "automatic_transition"
+        case vulnerabilityCannotTrigger = "vulnerability_cannot_trigger"
+        case modelOrResidentInferenceCannotTrigger =
+            "model_or_resident_inference_cannot_trigger"
+    }
+}
+
+private struct RuntimeRelationshipResetPolicyWire: Decodable {
+    let userControlHasHighestPriority: Bool
+    let availableUserActions: [String]
+    let resetTarget: String
+    let residentMustNotBlockOrDissuade: Bool
+    let resetDeletesMemory: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case userControlHasHighestPriority =
+            "user_control_has_highest_priority"
+        case availableUserActions = "available_user_actions"
+        case resetTarget = "reset_target"
+        case residentMustNotBlockOrDissuade =
+            "resident_must_not_block_or_dissuade"
+        case resetDeletesMemory = "reset_deletes_memory"
+    }
+}
+
+private struct RuntimeRelationshipUserConsentPolicyWire: Decodable {
+    let requiresExplicitUserConsent: Bool
+    let userControlPriority: String
+    let confirmationRequiredWhenRequested: Bool
+    let singleUtteranceUnlocksReservedStage: Bool
+    let consentCannotBypassFeatureGate: Bool
+    let userCanDisableProgression: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case requiresExplicitUserConsent =
+            "requires_explicit_user_consent"
+        case userControlPriority = "user_control_priority"
+        case confirmationRequiredWhenRequested =
+            "confirmation_required_when_requested"
+        case singleUtteranceUnlocksReservedStage =
+            "single_utterance_unlocks_reserved_stage"
+        case consentCannotBypassFeatureGate =
+            "consent_cannot_bypass_feature_gate"
+        case userCanDisableProgression = "user_can_disable_progression"
+    }
+}
+
+private struct RuntimeRelationshipRomanticGateWire: Decodable {
+    let stageID: String
+    let status: String
+    let runtimeEnabled: Bool
+    let automaticTransition: Bool
+    let requiresRuntimeFeatureGate: Bool
+    let currentVersionUnlockAllowed: Bool
+    let singleUtteranceUnlockAllowed: Bool
+    let excludedFrom: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case stageID = "stage_id"
+        case status
+        case runtimeEnabled = "runtime_enabled"
+        case automaticTransition = "automatic_transition"
+        case requiresRuntimeFeatureGate = "requires_runtime_feature_gate"
+        case currentVersionUnlockAllowed =
+            "current_version_unlock_allowed"
+        case singleUtteranceUnlockAllowed =
+            "single_utterance_unlock_allowed"
+        case excludedFrom = "excluded_from"
+    }
+}
+
+private struct RuntimeRelationshipProgressionProjectionWire: Decodable {
+    let schemaVersion: String
+    let contentRevision: String
+    let derived: Bool
+    let readOnly: Bool
+    let defaultStage: String
+    let enabledStages: [String]
+    let reservedStages: [String]
+    let stageDefinitions: [String: RuntimeRelationshipStageBoundaryWire]
+    let transitionEvidenceRules: RuntimeRelationshipEvidenceRulesWire
+    let forbiddenTransitionRules: RuntimeRelationshipForbiddenRulesWire
+    let resetAndRollbackPolicy: RuntimeRelationshipResetPolicyWire
+    let userConsentPolicy: RuntimeRelationshipUserConsentPolicyWire
+    let romanticFeatureGate: RuntimeRelationshipRomanticGateWire
+    let stageDecisionOwner: String
+    let modelCanProposeEvidenceOnly: Bool
+    let modelCanChangeStage: Bool
+    let userControlPriority: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case contentRevision = "content_revision"
+        case derived
+        case readOnly = "read_only"
+        case defaultStage = "default_stage"
+        case enabledStages = "enabled_stages"
+        case reservedStages = "reserved_stages"
+        case stageDefinitions = "stage_definitions"
+        case transitionEvidenceRules = "transition_evidence_rules"
+        case forbiddenTransitionRules = "forbidden_transition_rules"
+        case resetAndRollbackPolicy = "reset_and_rollback_policy"
+        case userConsentPolicy = "user_consent_policy"
+        case romanticFeatureGate = "romantic_feature_gate"
+        case stageDecisionOwner = "stage_decision_owner"
+        case modelCanProposeEvidenceOnly =
+            "model_can_propose_evidence_only"
+        case modelCanChangeStage = "model_can_change_stage"
+        case userControlPriority = "user_control_priority"
+    }
+}
+
 private struct InvalidDRFieldError: Error {
     let path: String
 }
@@ -355,6 +534,8 @@ public struct LoadedDR {
     let firstGreetingConfig: FirstGreetingConfig?
     let firstPresenceConfig: FirstPresenceConfig?
     let initialRelationshipConfig: InitialRelationshipConfig?
+    let relationshipProgressionProjection:
+        RuntimeRelationshipProgressionProjection?
     let runtimeDialogueProjection: RuntimeDialogueProjection?
     let visualExpressionMapping: RuntimeVisualExpressionMapping
 }
@@ -490,6 +671,8 @@ public final class DRLoader {
         let firstGreetingConfig = try parseFirstGreetingConfig(from: payload)
         let firstPresenceConfig = try parseFirstPresenceConfig(from: payload)
         let initialRelationshipConfig = try parseInitialRelationshipConfig(from: payload)
+        let relationshipProgressionProjection =
+            parseRelationshipProgressionProjection(from: payload)
         let runtimeDialogueProjection = try parseRuntimeDialogueProjection(from: payload)
         let visualExpressionMapping = parseVisualExpressionMapping(from: object)
         let payloadModules = payload["modules"] as? [Any]
@@ -528,9 +711,184 @@ public final class DRLoader {
             firstGreetingConfig: firstGreetingConfig,
             firstPresenceConfig: firstPresenceConfig,
             initialRelationshipConfig: initialRelationshipConfig,
+            relationshipProgressionProjection:
+                relationshipProgressionProjection,
             runtimeDialogueProjection: runtimeDialogueProjection,
             visualExpressionMapping: visualExpressionMapping
         )
+    }
+
+    private func parseRelationshipProgressionProjection(
+        from payload: [String: Any]
+    ) -> RuntimeRelationshipProgressionProjection? {
+        guard let rawProjection =
+                payload["relationship_progression_projection"]
+                    as? [String: Any],
+              let data = try? JSONSerialization.data(
+                withJSONObject: rawProjection
+              ),
+              let wire = try? JSONDecoder().decode(
+                RuntimeRelationshipProgressionProjectionWire.self,
+                from: data
+              ) else {
+            return nil
+        }
+
+        let enabledStages = wire.enabledStages.compactMap(
+            RuntimeRelationshipStage.init(rawValue:)
+        )
+        let expectedStages = Set(RuntimeRelationshipStage.allCases)
+        let allowedEvidenceTypes = Set(
+            wire.transitionEvidenceRules.allowedEvidenceTypes
+        )
+        let forbiddenEvidenceTypes = Set(
+            wire.forbiddenTransitionRules.forbiddenEvidence
+        )
+        let availableUserActions = Set(
+            wire.resetAndRollbackPolicy.availableUserActions
+        )
+        let requiredCandidateFields = Set([
+            "evidence_detected",
+            "evidence_source",
+            "evidence_type",
+            "requires_user_confirmation"
+        ])
+        let requiredProgressionRules = Set([
+            "controlled_evidence_is_valid",
+            "evidence_originates_from_explicit_user_expression",
+            "no_forbidden_upgrade_condition",
+            "obtain_user_confirmation_when_required"
+        ])
+        let requiredUserActions = Set([
+            "reject_upgrade",
+            "revoke_relationship_confirmation",
+            "downgrade_to_lower_stage",
+            "reset_to_initial_acquaintance",
+            "disable_relationship_progression"
+        ])
+        let requiredRomanticExclusions = Set([
+            "automatic_transition_path",
+            "enabled_stages",
+            "model_context"
+        ])
+        guard wire.schemaVersion == "0.1",
+              !wire.contentRevision.isEmpty,
+              wire.derived,
+              wire.readOnly,
+              wire.defaultStage
+                == RuntimeRelationshipStage.initialAcquaintance.rawValue,
+              enabledStages.count == RuntimeRelationshipStage.allCases.count,
+              enabledStages == RuntimeRelationshipStage.allCases,
+              Set(enabledStages) == expectedStages,
+              Set(wire.reservedStages)
+                == [RuntimeRelationshipProgressionProjection.reservedStageID],
+              wire.stageDecisionOwner == "runtime",
+              wire.modelCanProposeEvidenceOnly,
+              !wire.modelCanChangeStage,
+              wire.userControlPriority == "highest",
+              !allowedEvidenceTypes.isEmpty,
+              allowedEvidenceTypes.isDisjoint(
+                with: forbiddenEvidenceTypes
+              ),
+              allowedEvidenceTypes.allSatisfy(
+                isRelationshipIdentifier
+              ),
+              forbiddenEvidenceTypes.allSatisfy(
+                isRelationshipIdentifier
+              ),
+              Set(wire.transitionEvidenceRules.candidateFields)
+                == requiredCandidateFields,
+              Set(wire.transitionEvidenceRules.progressionRequirements)
+                .isSuperset(of: requiredProgressionRules),
+              wire.transitionEvidenceRules
+                .requiresExplicitUserExpression,
+              !wire.forbiddenTransitionRules.automaticTransition,
+              wire.forbiddenTransitionRules.vulnerabilityCannotTrigger,
+              wire.forbiddenTransitionRules
+                .modelOrResidentInferenceCannotTrigger,
+              wire.resetAndRollbackPolicy.userControlHasHighestPriority,
+              wire.resetAndRollbackPolicy.residentMustNotBlockOrDissuade,
+              !wire.resetAndRollbackPolicy.resetDeletesMemory,
+              availableUserActions.isSuperset(of: requiredUserActions),
+              wire.resetAndRollbackPolicy.resetTarget
+                == RuntimeRelationshipStage.initialAcquaintance.rawValue,
+              wire.userConsentPolicy.requiresExplicitUserConsent,
+              wire.userConsentPolicy.userControlPriority == "highest",
+              wire.userConsentPolicy.confirmationRequiredWhenRequested,
+              !wire.userConsentPolicy.singleUtteranceUnlocksReservedStage,
+              wire.userConsentPolicy.consentCannotBypassFeatureGate,
+              wire.userConsentPolicy.userCanDisableProgression,
+              wire.romanticFeatureGate.stageID
+                == RuntimeRelationshipProgressionProjection.reservedStageID,
+              wire.romanticFeatureGate.status == "reserved",
+              !wire.romanticFeatureGate.runtimeEnabled,
+              !wire.romanticFeatureGate.automaticTransition,
+              wire.romanticFeatureGate.requiresRuntimeFeatureGate,
+              !wire.romanticFeatureGate.currentVersionUnlockAllowed,
+              !wire.romanticFeatureGate.singleUtteranceUnlockAllowed,
+              Set(wire.romanticFeatureGate.excludedFrom)
+                .isSuperset(of: requiredRomanticExclusions),
+              let resetTarget = RuntimeRelationshipStage(
+                rawValue: wire.resetAndRollbackPolicy.resetTarget
+              ) else {
+            return nil
+        }
+
+        let stageDefinitions = Dictionary(
+            uniqueKeysWithValues: RuntimeRelationshipStage.allCases.compactMap {
+                stage -> (
+                    RuntimeRelationshipStage,
+                    RuntimeRelationshipStageBoundary
+                )? in
+                guard let definition =
+                        wire.stageDefinitions[stage.rawValue],
+                      !definition.stageSemantics.isEmpty,
+                      !definition.initiativeLevel.isEmpty,
+                      !definition.familiarityLevel.isEmpty,
+                      !definition.addressStyle.isEmpty,
+                      !definition.selfDisclosureLevel.isEmpty,
+                      !definition.followUpBoundary.isEmpty,
+                      !definition.adviceBoundary.isEmpty else {
+                    return nil
+                }
+                return (
+                    stage,
+                    RuntimeRelationshipStageBoundary(
+                        stageSemantics: definition.stageSemantics,
+                        initiativeLevel: definition.initiativeLevel,
+                        familiarityLevel: definition.familiarityLevel,
+                        addressStyle: definition.addressStyle,
+                        selfDisclosureLevel:
+                            definition.selfDisclosureLevel,
+                        followUpBoundary: definition.followUpBoundary,
+                        adviceBoundary: definition.adviceBoundary
+                    )
+                )
+            }
+        )
+        guard stageDefinitions.count
+                == RuntimeRelationshipStage.allCases.count else {
+            return nil
+        }
+
+        return RuntimeRelationshipProgressionProjection(
+            contentRevision: wire.contentRevision,
+            defaultStage: .initialAcquaintance,
+            enabledStages: enabledStages,
+            stageDefinitions: stageDefinitions,
+            allowedEvidenceTypes: allowedEvidenceTypes,
+            forbiddenEvidenceTypes: forbiddenEvidenceTypes,
+            availableUserActions: availableUserActions,
+            resetTarget: resetTarget
+        )
+    }
+
+    private func isRelationshipIdentifier(_ value: String) -> Bool {
+        !value.isEmpty
+            && value.range(
+                of: "^[a-z0-9_]+$",
+                options: .regularExpression
+            ) != nil
     }
 
     private func parseVisualExpressionMapping(

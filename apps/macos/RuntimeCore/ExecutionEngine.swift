@@ -33,7 +33,9 @@ public final class ExecutionEngine {
                 expression: visualStateMapper.mapExpression(
                     reply: reply,
                     mapping: expressionMapping
-                )
+                ),
+                relationshipEvidenceCandidates:
+                    reply.relationshipEvidenceCandidates
             )
         }
     }

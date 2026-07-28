@@ -315,6 +315,26 @@ struct ResidentDialogueContextSummary: Equatable {
     let estimatedCharacterCount: Int
 }
 
+struct RuntimeRelationshipDialogueContext: Equatable {
+    let stageID: String
+    let stageBoundary: RuntimeRelationshipStageBoundary
+    let allowedEvidenceTypes: [String]
+
+    var instruction: String {
+        """
+        Current relationship stage: \(stageID).
+        Stage semantics: \(stageBoundary.stageSemantics)
+        Initiative boundary: \(stageBoundary.initiativeLevel)
+        Familiarity boundary: \(stageBoundary.familiarityLevel)
+        Address style: \(stageBoundary.addressStyle)
+        Self-disclosure boundary: \(stageBoundary.selfDisclosureLevel)
+        Follow-up boundary: \(stageBoundary.followUpBoundary)
+        Advice boundary: \(stageBoundary.adviceBoundary)
+        Stay within these boundaries. Relationship stage decisions belong to RuntimeCore.
+        """
+    }
+}
+
 struct ResidentDialogueContext: Equatable {
     let identity: RuntimeResidentIdentityProjection
     let locale: String
@@ -330,6 +350,7 @@ struct ResidentDialogueContext: Equatable {
     let selfDisclosurePolicy: RuntimeDialogueInstruction
     let memoryUsagePolicy: RuntimeDialogueInstruction
     let initialRelationship: InitialRelationshipConfig?
+    let relationshipProgression: RuntimeRelationshipDialogueContext?
     let memoryPolicy: RuntimeMemoryPolicyProjection
     let scenarios: [RuntimeDialogueScenario]
     let selectedFewShots: [RuntimeDialogueFewShotExample]
@@ -355,7 +376,9 @@ struct ResidentDialogueContextSource: Equatable {
         currentUserInput: String,
         recentMessages: [ResidentDialogueMessage],
         recentMessageLimit: Int,
-        fewShotLimit: Int
+        fewShotLimit: Int,
+        relationshipProgression:
+            RuntimeRelationshipDialogueContext? = nil
     ) -> ResidentDialogueContext {
         let emotionalDialogue = projection.emotionalDialogue.flatMap { $0.enabled ? $0 : nil }
         let configuredFewShotLimit = max(
@@ -442,8 +465,10 @@ struct ResidentDialogueContextSource: Equatable {
             projection.endingPolicy.instruction,
             projection.relationshipPolicy.instruction,
             projection.selfDisclosurePolicy.instruction,
-            projection.memoryUsagePolicy.instruction
+            projection.memoryUsagePolicy.instruction,
+            relationshipProgression?.instruction
         ]
+        .compactMap { $0 }
         let estimatedCharacterCount = contextCharacterCount(
             instructionTexts: instructionTexts,
             selectedFewShots: selectedFewShots,
@@ -468,6 +493,7 @@ struct ResidentDialogueContextSource: Equatable {
             selfDisclosurePolicy: projection.selfDisclosurePolicy,
             memoryUsagePolicy: projection.memoryUsagePolicy,
             initialRelationship: initialRelationship,
+            relationshipProgression: relationshipProgression,
             memoryPolicy: memoryPolicy,
             scenarios: scenarios,
             selectedFewShots: selectedFewShots,
@@ -725,7 +751,30 @@ public struct RuntimeSessionRestoreResult {
     }
 }
 
+struct RuntimeRelationshipDecision: Equatable {
+    let stageID: String?
+    let evidenceIDs: [String]
+    let decision: String
+    let reason: String
+
+    static let unavailable = RuntimeRelationshipDecision(
+        stageID: nil,
+        evidenceIDs: [],
+        decision: "feature_unavailable",
+        reason: "projection_missing"
+    )
+}
+
 #if DEBUG
+struct RuntimeRelationshipDebugSnapshot: Equatable {
+    let isAvailable: Bool
+    let stageID: String?
+    let evidenceIDs: [String]
+    let lastTransitionReason: String?
+    let enabled: Bool
+    let revision: Int?
+}
+
 enum RuntimeOrchestrationStepKind: String, CaseIterable {
     case inputReceived = "input_received"
     case residentSessionConfirmed = "resident_session_confirmed"
@@ -807,6 +856,10 @@ struct RuntimeOrchestrationInteraction: Equatable, Identifiable {
     let expressionFallbackOccurred: Bool
     let expressionMapping: RuntimeExpressionMultipliers
     let expressionMappingSource: String
+    let relationshipStageID: String?
+    let relationshipEvidenceIDs: [String]
+    let relationshipDecision: String
+    let relationshipReason: String
     var steps: [RuntimeOrchestrationStep]
 
     var durationMilliseconds: Int {
@@ -825,6 +878,7 @@ public final class RuntimeCore {
     private let hostEnv: HostEnv
     private let sessionStore: SessionStore
     private let memoryController: MemoryController
+    private var relationshipStateStore = RelationshipStateStore()
     private var cancellationState = RuntimeCancellationState.none
     private var sessionContext: RuntimeSessionContext?
     private(set) var currentResidentIdentity: RuntimeResidentIdentityProjection?
@@ -837,6 +891,10 @@ public final class RuntimeCore {
     )
     private var currentVisualExpressionMapping =
         RuntimeVisualExpressionMapping.compatibilityFallback
+    private var currentRelationshipProgressionProjection:
+        RuntimeRelationshipProgressionProjection?
+    private(set) var currentRelationshipState:
+        RuntimeRelationshipInstanceState?
     private var activeExpressionRequestID: UUID?
     private var handledFirstAppearanceResidentIDs: Set<String> = []
     private var clockState = RuntimeClockState()
@@ -906,6 +964,12 @@ public final class RuntimeCore {
             currentFirstAppearance = firstAppearanceProjection
             currentDialogueContextSource = dialogueContextSource
             currentVisualExpressionMapping = loadedDR.visualExpressionMapping
+            currentRelationshipProgressionProjection =
+                loadedDR.relationshipProgressionProjection
+            currentRelationshipState = loadRelationshipState(
+                residentID: loadedDR.residentID,
+                projection: loadedDR.relationshipProgressionProjection
+            )
             currentExpressionResult = .neutral(
                 source: loadedDR.visualExpressionMapping.source,
                 fallbackOccurred:
@@ -1203,8 +1267,289 @@ public final class RuntimeCore {
             currentUserInput: currentUserInput,
             recentMessages: recentDialogueMessages(limit: Self.recentDialogueMessageLimit),
             recentMessageLimit: Self.recentDialogueMessageLimit,
-            fewShotLimit: Self.fewShotSelectionLimit
+            fewShotLimit: Self.fewShotSelectionLimit,
+            relationshipProgression: relationshipDialogueContext()
         )
+    }
+
+    private enum RelationshipUserControl {
+        case disable
+        case reset
+        case downgrade
+        case rejectUpgrade
+        case confirmUpgrade
+    }
+
+    private func relationshipDialogueContext()
+        -> RuntimeRelationshipDialogueContext? {
+        guard let projection = currentRelationshipProgressionProjection,
+              let state = currentRelationshipState,
+              state.enabled,
+              projection.enabledStages.contains(state.currentStage),
+              let boundary =
+                projection.stageDefinitions[state.currentStage] else {
+            return nil
+        }
+        return RuntimeRelationshipDialogueContext(
+            stageID: state.currentStage.rawValue,
+            stageBoundary: boundary,
+            allowedEvidenceTypes:
+                projection.allowedEvidenceTypes.sorted()
+        )
+    }
+
+    private func loadRelationshipState(
+        residentID: String,
+        projection: RuntimeRelationshipProgressionProjection?
+    ) -> RuntimeRelationshipInstanceState? {
+        guard let projection else { return nil }
+        if let stored = try? relationshipStateStore.load(
+            residentID: residentID
+        ),
+           projection.enabledStages.contains(stored.currentStage),
+           stored.revision > 0,
+           stored.validEvidenceIDs.count
+                == Set(stored.validEvidenceIDs).count,
+           Set(stored.validEvidenceIDs).isSubset(
+                of: projection.allowedEvidenceTypes
+           ),
+           Set(stored.validEvidenceIDs).isDisjoint(
+                with: projection.forbiddenEvidenceTypes
+           ) {
+            return stored
+        }
+
+        let state = RuntimeRelationshipInstanceState(
+            residentID: residentID,
+            currentStage: projection.defaultStage
+        )
+        do {
+            try relationshipStateStore.save(state)
+            return state
+        } catch {
+            return RuntimeRelationshipInstanceState(
+                residentID: residentID,
+                currentStage: projection.defaultStage,
+                lastTransitionReason: "persistence_failed"
+            )
+        }
+    }
+
+    private func relationshipUserControl(
+        for input: String
+    ) -> RelationshipUserControl? {
+        let normalized = input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let controls: [([String], RelationshipUserControl)] = [
+            (
+                [
+                    "关闭关系演进",
+                    "停止关系演进",
+                    "disable relationship progression"
+                ],
+                .disable
+            ),
+            (
+                [
+                    "重置关系",
+                    "恢复初识",
+                    "reset relationship"
+                ],
+                .reset
+            ),
+            (
+                [
+                    "关系回退",
+                    "退回上一个关系阶段",
+                    "downgrade relationship"
+                ],
+                .downgrade
+            ),
+            (
+                [
+                    "拒绝关系升级",
+                    "不要升级关系",
+                    "不同意关系升级",
+                    "reject relationship upgrade"
+                ],
+                .rejectUpgrade
+            ),
+            (
+                [
+                    "确认关系升级",
+                    "同意关系升级",
+                    "可以升级关系",
+                    "confirm relationship upgrade"
+                ],
+                .confirmUpgrade
+            )
+        ]
+        return controls.first {
+            phrases, _ in phrases.contains {
+                normalized.contains($0)
+            }
+        }?.1
+    }
+
+    private func currentRelationshipDecision(
+        decision: String = "no_change",
+        reason: String = "no_valid_evidence"
+    ) -> RuntimeRelationshipDecision {
+        guard currentRelationshipProgressionProjection != nil,
+              let state = currentRelationshipState else {
+            return .unavailable
+        }
+        return RuntimeRelationshipDecision(
+            stageID: state.currentStage.rawValue,
+            evidenceIDs: state.validEvidenceIDs,
+            decision: decision,
+            reason: reason
+        )
+    }
+
+    private func applyRelationshipUserControl(
+        _ control: RelationshipUserControl?
+    ) -> RuntimeRelationshipDecision {
+        guard let control else {
+            return currentRelationshipDecision(
+                reason: "no_user_control"
+            )
+        }
+        guard let projection = currentRelationshipProgressionProjection,
+              var state = currentRelationshipState else {
+            return .unavailable
+        }
+
+        let decision: String
+        let reason: String
+        switch control {
+        case .disable:
+            state.enabled = false
+            state.validEvidenceIDs = []
+            decision = "disabled"
+            reason = "user_disabled_progression"
+        case .reset:
+            state.currentStage = projection.resetTarget
+            state.enabled = true
+            state.validEvidenceIDs = []
+            decision = "reset"
+            reason = "user_reset_to_initial"
+        case .downgrade:
+            if let previous = state.currentStage.previous {
+                state.currentStage = previous
+                decision = "downgraded"
+                reason = "user_requested_downgrade"
+            } else {
+                decision = "no_change"
+                reason = "already_at_initial_stage"
+            }
+            state.validEvidenceIDs = []
+        case .rejectUpgrade:
+            state.validEvidenceIDs = []
+            decision = "upgrade_rejected"
+            reason = "user_rejected_upgrade"
+        case .confirmUpgrade:
+            guard state.enabled else {
+                return currentRelationshipDecision(
+                    decision: "no_change",
+                    reason: "relationship_progression_disabled"
+                )
+            }
+            if !state.validEvidenceIDs.isEmpty,
+               let next = state.currentStage.next,
+               projection.enabledStages.contains(next) {
+                state.currentStage = next
+                state.validEvidenceIDs = [
+                    "user_confirmed_relationship_change"
+                ]
+                decision = "upgraded"
+                reason = "user_confirmed_valid_evidence"
+            } else {
+                decision = "no_change"
+                reason = state.currentStage.next == nil
+                    ? "highest_enabled_stage_reached"
+                    : "confirmation_without_valid_evidence"
+            }
+        }
+        return persistRelationshipState(
+            state,
+            decision: decision,
+            reason: reason
+        )
+    }
+
+    private func evaluateRelationshipEvidence(
+        _ candidates: [ProviderRelationshipEvidenceCandidate]
+    ) -> RuntimeRelationshipDecision {
+        guard let projection = currentRelationshipProgressionProjection,
+              var state = currentRelationshipState else {
+            return .unavailable
+        }
+        guard state.enabled else {
+            return currentRelationshipDecision(
+                decision: "no_change",
+                reason: "relationship_progression_disabled"
+            )
+        }
+
+        let evidenceIDs = Set(candidates.compactMap { candidate -> String? in
+            let evidenceType = candidate.evidenceType
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let evidenceSource = candidate.evidenceSource
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard candidate.evidenceDetected,
+                  evidenceSource == "explicit_user_expression",
+                  projection.allowedEvidenceTypes.contains(evidenceType),
+                  !projection.forbiddenEvidenceTypes.contains(evidenceType),
+                  evidenceType
+                    != RuntimeRelationshipProgressionProjection
+                        .reservedStageID else {
+                return nil
+            }
+            return evidenceType
+        }).sorted()
+
+        guard !evidenceIDs.isEmpty else {
+            return currentRelationshipDecision(
+                decision: "evidence_ignored",
+                reason: "no_valid_evidence"
+            )
+        }
+        state.validEvidenceIDs = evidenceIDs
+        return persistRelationshipState(
+            state,
+            decision: "evidence_recorded",
+            reason: "awaiting_user_confirmation"
+        )
+    }
+
+    private func persistRelationshipState(
+        _ pendingState: RuntimeRelationshipInstanceState,
+        decision: String,
+        reason: String
+    ) -> RuntimeRelationshipDecision {
+        var state = pendingState
+        state.lastTransitionReason = reason
+        state.updatedAt = Date()
+        state.revision += 1
+        do {
+            try relationshipStateStore.save(state)
+            currentRelationshipState = state
+            return RuntimeRelationshipDecision(
+                stageID: state.currentStage.rawValue,
+                evidenceIDs: state.validEvidenceIDs,
+                decision: decision,
+                reason: reason
+            )
+        } catch {
+            return currentRelationshipDecision(
+                decision: "persistence_failed",
+                reason: "relationship_state_not_updated"
+            )
+        }
     }
 
     func configureTextProvider(profile: ProviderProfile) -> ProviderRequestError? {
@@ -1277,6 +1622,12 @@ public final class RuntimeCore {
         ))
         let contextCompilationStartedAt = Date()
         #endif
+        let relationshipControl = relationshipUserControl(
+            for: inputText
+        )
+        var relationshipDecision = applyRelationshipUserControl(
+            relationshipControl
+        )
         guard let context = compileResidentDialogueContext(currentUserInput: inputText) else {
             #if DEBUG
             orchestrationSteps.append(runtimeOrchestrationStep(
@@ -1295,7 +1646,8 @@ public final class RuntimeCore {
                 steps: orchestrationSteps,
                 presentationPending: true,
                 providerMetadata: orchestrationProviderMetadata,
-                emotionalRulesEnabled: orchestrationEmotionalRulesEnabled
+                emotionalRulesEnabled: orchestrationEmotionalRulesEnabled,
+                relationshipDecision: relationshipDecision
             )
             #endif
             return .failure(.residentUnavailable)
@@ -1374,7 +1726,8 @@ public final class RuntimeCore {
                 steps: orchestrationSteps,
                 presentationPending: false,
                 providerMetadata: orchestrationProviderMetadata,
-                emotionalRulesEnabled: orchestrationEmotionalRulesEnabled
+                emotionalRulesEnabled: orchestrationEmotionalRulesEnabled,
+                relationshipDecision: relationshipDecision
             )
             #endif
             return .failure(.cancelled)
@@ -1390,6 +1743,11 @@ public final class RuntimeCore {
                 reply.expression,
                 expectedSession: sessionAtStart
             )
+            if relationshipControl == nil {
+                relationshipDecision = evaluateRelationshipEvidence(
+                    reply.relationshipEvidenceCandidates
+                )
+            }
             sessionWriteSucceeded = persistResidentDialogueExchange(
                 userInput: inputText,
                 residentReply: reply.replyText,
@@ -1423,7 +1781,8 @@ public final class RuntimeCore {
             steps: orchestrationSteps,
             presentationPending: true,
             providerMetadata: orchestrationProviderMetadata,
-            emotionalRulesEnabled: orchestrationEmotionalRulesEnabled
+            emotionalRulesEnabled: orchestrationEmotionalRulesEnabled,
+            relationshipDecision: relationshipDecision
         )
         #endif
         return result
@@ -1525,6 +1884,58 @@ public final class RuntimeCore {
     }
 
     #if DEBUG
+    func useRelationshipStateStoreForTesting(
+        _ store: RelationshipStateStore
+    ) {
+        relationshipStateStore = store
+    }
+
+    func relationshipProgressionDebugSnapshot()
+        -> RuntimeRelationshipDebugSnapshot {
+        guard currentRelationshipProgressionProjection != nil,
+              let state = currentRelationshipState else {
+            return RuntimeRelationshipDebugSnapshot(
+                isAvailable: false,
+                stageID: nil,
+                evidenceIDs: [],
+                lastTransitionReason: nil,
+                enabled: false,
+                revision: nil
+            )
+        }
+        return RuntimeRelationshipDebugSnapshot(
+            isAvailable: true,
+            stageID: state.currentStage.rawValue,
+            evidenceIDs: state.validEvidenceIDs,
+            lastTransitionReason: state.lastTransitionReason,
+            enabled: state.enabled,
+            revision: state.revision
+        )
+    }
+
+    @discardableResult
+    func resetRelationshipProgressionForDebug()
+        -> RuntimeRelationshipDebugSnapshot {
+        guard let projection = currentRelationshipProgressionProjection,
+              let state = currentRelationshipState else {
+            return relationshipProgressionDebugSnapshot()
+        }
+        let reset = RuntimeRelationshipInstanceState(
+            residentID: state.residentID,
+            currentStage: projection.resetTarget,
+            enabled: true,
+            lastTransitionReason: "debug_reset",
+            updatedAt: Date(),
+            revision: state.revision
+        )
+        _ = persistRelationshipState(
+            reset,
+            decision: "reset",
+            reason: "debug_reset"
+        )
+        return relationshipProgressionDebugSnapshot()
+    }
+
     func runtimeOrchestrationSnapshot() -> [RuntimeOrchestrationInteraction] {
         runtimeOrchestrationRecords
     }
@@ -1602,7 +2013,9 @@ public final class RuntimeCore {
         steps: [RuntimeOrchestrationStep],
         presentationPending: Bool,
         providerMetadata: RuntimeOrchestrationProviderMetadata?,
-        emotionalRulesEnabled: Bool
+        emotionalRulesEnabled: Bool,
+        relationshipDecision:
+            RuntimeRelationshipDecision = .unavailable
     ) {
         let expressionResult: RuntimeExpressionResult
         switch result {
@@ -1647,6 +2060,10 @@ public final class RuntimeCore {
                 expressionResult.expressionFallbackOccurred,
             expressionMapping: expressionResult.expressionMapping,
             expressionMappingSource: expressionResult.mappingSource.rawValue,
+            relationshipStageID: relationshipDecision.stageID,
+            relationshipEvidenceIDs: relationshipDecision.evidenceIDs,
+            relationshipDecision: relationshipDecision.decision,
+            relationshipReason: relationshipDecision.reason,
             steps: normalizedSteps
         )
         runtimeOrchestrationRecords.append(interaction)
