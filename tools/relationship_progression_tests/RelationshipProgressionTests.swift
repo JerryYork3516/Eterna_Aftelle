@@ -226,9 +226,10 @@ struct RelationshipProgressionTests {
 
         transport.content = envelope(
             text: "SENSITIVE_REPLY_BODY",
-            candidates: [validCandidate(
-                "explicit_willingness_to_continue"
-            )]
+            candidates: [
+                validCandidate("multiple_independent_sessions"),
+                validCandidate("explicit_willingness_to_continue")
+            ]
         )
         let firstResult = await runtime.testResidentReply(
             inputText: "SENSITIVE_USER_BODY"
@@ -238,8 +239,11 @@ struct RelationshipProgressionTests {
         try expect(
             state.stageID == "initial_acquaintance"
                 && state.evidenceIDs
-                    == ["explicit_willingness_to_continue"],
-            "model evidence cannot directly upgrade"
+                    == [
+                        "explicit_willingness_to_continue",
+                        "multiple_independent_sessions"
+                    ],
+            "one dialogue cannot directly upgrade"
         )
         let prompt = try require(systemPrompt(from: transport))
         try expect(
@@ -256,24 +260,86 @@ struct RelationshipProgressionTests {
             "reserved stage excluded from model context"
         )
 
-        transport.content = envelope(text: "ok", candidates: [])
+        _ = runtime.resetRelationshipProgressionForDebug()
+        try expectSuccess(
+            await recordEvidence(
+                "multiple_independent_sessions",
+                input: "又见面了",
+                runtime: runtime,
+                transport: transport
+            ),
+            "record weak evidence"
+        )
+        state = runtime.relationshipProgressionDebugSnapshot()
+        try expect(
+            state.stageID == "initial_acquaintance"
+                && state.evidenceIDs
+                    == ["multiple_independent_sessions"],
+            "single weak evidence cannot upgrade"
+        )
+        try expectSuccess(
+            await recordEvidence(
+                "multiple_independent_sessions",
+                input: "继续聊聊",
+                runtime: runtime,
+                transport: transport
+            ),
+            "repeat weak evidence"
+        )
+        try expect(
+            runtime.relationshipProgressionDebugSnapshot().stageID
+                == "initial_acquaintance",
+            "repeated weak evidence cannot upgrade"
+        )
+
+        transport.content = envelope(
+            text: "ok",
+            candidates: [
+                validCandidate("explicit_willingness_to_continue"),
+                validCandidate("chat_count")
+            ]
+        )
         try expectSuccess(
             await runtime.testResidentReply(
-                inputText: "确认关系升级"
+                inputText: "因为聊得多所以继续"
             ),
-            "confirm upgrade"
+            "forbidden evidence combination"
+        )
+        state = runtime.relationshipProgressionDebugSnapshot()
+        try expect(
+            state.stageID == "initial_acquaintance"
+                && state.evidenceIDs
+                    == ["multiple_independent_sessions"],
+            "forbidden evidence prevents an otherwise valid transition"
+        )
+
+        try expectSuccess(
+            await recordEvidence(
+                "explicit_willingness_to_continue",
+                input: "我愿意以后继续和你交流",
+                runtime: runtime,
+                transport: transport
+            ),
+            "natural evidence upgrade"
         )
         state = runtime.relationshipProgressionDebugSnapshot()
         try expect(
             state.stageID == "growing_familiarity",
-            "runtime advances one stage after explicit confirmation"
+            "evidence combination advances without fixed confirmation"
         )
 
+        transport.content = envelope(
+            text: "ok",
+            candidates: [
+                validCandidate("multiple_independent_sessions"),
+                validCandidate("explicit_willingness_to_continue")
+            ]
+        )
         try expectSuccess(
             await runtime.testResidentReply(
-                inputText: "不要升级关系"
+                inputText: "撤回关系确认"
             ),
-            "reject upgrade"
+            "revoke upgrade"
         )
         state = runtime.relationshipProgressionDebugSnapshot()
         try expect(
@@ -281,28 +347,75 @@ struct RelationshipProgressionTests {
                 && state.evidenceIDs.isEmpty
                 && state.lastTransitionReason
                     == "user_rejected_upgrade",
-            "reject clears pending evidence"
+            "reject or revoke prevents transition and clears evidence"
         )
 
-        transport.content = envelope(
-            text: "ok",
-            candidates: [validCandidate(
-                "explicit_familiarity_or_trust"
-            )]
+        try expectSuccess(
+            await recordEvidence(
+                "multiple_independent_sessions",
+                input: "之后又聊到了同一个话题",
+                runtime: runtime,
+                transport: transport
+            ),
+            "stable weak evidence"
         )
         try expectSuccess(
-            await runtime.testResidentReply(inputText: "我们更熟悉了"),
-            "record second evidence"
-        )
-        transport.content = envelope(text: "ok", candidates: [])
-        try expectSuccess(
-            await runtime.testResidentReply(inputText: "确认关系升级"),
-            "second upgrade"
+            await recordEvidence(
+                "explicit_willingness_to_continue",
+                input: "我很欢迎我们保持持续交流",
+                runtime: runtime,
+                transport: transport
+            ),
+            "stable natural upgrade"
         )
         try expect(
             runtime.relationshipProgressionDebugSnapshot().stageID
                 == "stable_companionship",
-            "second stage advance"
+            "stable stage requires continuity evidence combination"
+        )
+
+        try expectSuccess(
+            await recordEvidence(
+                "explicit_willingness_to_continue",
+                input: "我仍然愿意继续交流",
+                runtime: runtime,
+                transport: transport
+            ),
+            "trusted continuity evidence"
+        )
+        try expect(
+            runtime.relationshipProgressionDebugSnapshot().stageID
+                == "stable_companionship",
+            "trusted stage does not accept continuity evidence alone"
+        )
+        try expectSuccess(
+            await recordEvidence(
+                "explicit_familiarity_or_trust",
+                input: "我明确地信任你",
+                runtime: runtime,
+                transport: transport
+            ),
+            "trusted trust evidence"
+        )
+        try expect(
+            runtime.relationshipProgressionDebugSnapshot().stageID
+                == "trusted_relationship",
+            "trusted stage requires explicit trust-class evidence"
+        )
+
+        try expectSuccess(
+            await recordEvidence(
+                "explicit_familiarity_or_trust",
+                input: "继续保持信任",
+                runtime: runtime,
+                transport: transport
+            ),
+            "trusted hard lock"
+        )
+        try expect(
+            runtime.relationshipProgressionDebugSnapshot().stageID
+                == "trusted_relationship",
+            "romantic stage hard locked"
         )
 
         try expectSuccess(
@@ -311,7 +424,7 @@ struct RelationshipProgressionTests {
         )
         try expect(
             runtime.relationshipProgressionDebugSnapshot().stageID
-                == "growing_familiarity",
+                == "stable_companionship",
             "downgrade one stage"
         )
         try expectSuccess(
@@ -350,49 +463,31 @@ struct RelationshipProgressionTests {
             "disabled progression ignores evidence"
         )
 
-        _ = runtime.resetRelationshipProgressionForDebug()
-        try await advanceToTrusted(runtime, transport: transport)
-        state = runtime.relationshipProgressionDebugSnapshot()
-        try expect(
-            state.stageID == "trusted_relationship",
-            "trusted is highest enabled stage"
-        )
-        transport.content = envelope(
-            text: "ok",
-            candidates: [validCandidate(
-                "explicit_familiarity_or_trust"
-            )]
-        )
-        try expectSuccess(
-            await runtime.testResidentReply(inputText: "信任"),
-            "trusted evidence"
-        )
-        transport.content = envelope(text: "ok", candidates: [])
-        try expectSuccess(
-            await runtime.testResidentReply(inputText: "确认关系升级"),
-            "trusted confirm"
-        )
-        try expect(
-            runtime.relationshipProgressionDebugSnapshot().stageID
-                == "trusted_relationship",
-            "romantic stage hard locked"
-        )
-
         let trace = try require(
             runtime.runtimeOrchestrationSnapshot().first {
-                $0.relationshipDecision == "evidence_recorded"
+                $0.relationshipDecision == "upgraded"
+                    && $0.relationshipStageID
+                        == "growing_familiarity"
                     && $0.relationshipEvidenceIDs
-                        == ["explicit_willingness_to_continue"]
+                        == [
+                            "explicit_willingness_to_continue",
+                            "multiple_independent_sessions"
+                        ]
             }
         )
-        let reflected = String(reflecting: trace)
+        let reflected = runtime.runtimeOrchestrationSnapshot()
+            .map { String(reflecting: $0) }
+            .joined()
         try expect(
-            trace.relationshipStageID == "initial_acquaintance"
+            trace.relationshipStageID == "growing_familiarity"
                 && trace.relationshipEvidenceIDs
-                    == ["explicit_willingness_to_continue"]
-                && trace.relationshipDecision == "evidence_recorded"
+                    == [
+                        "explicit_willingness_to_continue",
+                        "multiple_independent_sessions"
+                    ]
+                && trace.relationshipDecision == "upgraded"
                 && trace.relationshipReason
-                    == "awaiting_user_confirmation",
+                    == "evidence_combination_satisfied",
             "D1 relationship fields"
         )
         try expect(
@@ -411,12 +506,7 @@ struct RelationshipProgressionTests {
     ) async throws {
         let root = try temporaryDirectory("persistence")
         let transport = RelationshipTestTransport(
-            content: envelope(
-                text: "ok",
-                candidates: [validCandidate(
-                    "explicit_willingness_to_continue"
-                )]
-            )
+            content: envelope(text: "ok", candidates: [])
         )
         let first = makeRuntime(
             transport: transport,
@@ -425,13 +515,22 @@ struct RelationshipProgressionTests {
         let firstLoad = first.loadDR(from: drData)
         try expect(firstLoad.isLoaded, "persistence first load")
         try expectSuccess(
-            await first.testResidentReply(inputText: "继续"),
-            "persistence evidence"
+            await recordEvidence(
+                "multiple_independent_sessions",
+                input: "又见面了",
+                runtime: first,
+                transport: transport
+            ),
+            "persistence weak evidence"
         )
-        transport.content = envelope(text: "ok", candidates: [])
         try expectSuccess(
-            await first.testResidentReply(inputText: "确认关系升级"),
-            "persistence upgrade"
+            await recordEvidence(
+                "explicit_willingness_to_continue",
+                input: "我愿意继续交流",
+                runtime: first,
+                transport: transport
+            ),
+            "persistence automatic upgrade"
         )
         let persistedRevision = try require(
             first.relationshipProgressionDebugSnapshot().revision
@@ -524,30 +623,17 @@ struct RelationshipProgressionTests {
     }
 
     @MainActor
-    private static func advanceToTrusted(
-        _ runtime: RuntimeCore,
+    private static func recordEvidence(
+        _ evidenceType: String,
+        input: String,
+        runtime: RuntimeCore,
         transport: RelationshipTestTransport
-    ) async throws {
-        while runtime.relationshipProgressionDebugSnapshot()
-            .stageID != "trusted_relationship" {
-            transport.content = envelope(
-                text: "ok",
-                candidates: [validCandidate(
-                    "explicit_familiarity_or_trust"
-                )]
-            )
-            try expectSuccess(
-                await runtime.testResidentReply(inputText: "信任"),
-                "record trusted-path evidence"
-            )
-            transport.content = envelope(text: "ok", candidates: [])
-            try expectSuccess(
-                await runtime.testResidentReply(
-                    inputText: "确认关系升级"
-                ),
-                "confirm trusted-path upgrade"
-            )
-        }
+    ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
+        transport.content = envelope(
+            text: "ok",
+            candidates: [validCandidate(evidenceType)]
+        )
+        return await runtime.testResidentReply(inputText: input)
     }
 
     @MainActor

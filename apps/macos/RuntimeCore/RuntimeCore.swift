@@ -1277,7 +1277,6 @@ public final class RuntimeCore {
         case reset
         case downgrade
         case rejectUpgrade
-        case confirmUpgrade
     }
 
     private func relationshipDialogueContext()
@@ -1371,18 +1370,12 @@ public final class RuntimeCore {
                     "拒绝关系升级",
                     "不要升级关系",
                     "不同意关系升级",
-                    "reject relationship upgrade"
+                    "撤回关系确认",
+                    "撤回关系升级",
+                    "reject relationship upgrade",
+                    "revoke relationship confirmation"
                 ],
                 .rejectUpgrade
-            ),
-            (
-                [
-                    "确认关系升级",
-                    "同意关系升级",
-                    "可以升级关系",
-                    "confirm relationship upgrade"
-                ],
-                .confirmUpgrade
             )
         ]
         return controls.first {
@@ -1449,28 +1442,6 @@ public final class RuntimeCore {
             state.validEvidenceIDs = []
             decision = "upgrade_rejected"
             reason = "user_rejected_upgrade"
-        case .confirmUpgrade:
-            guard state.enabled else {
-                return currentRelationshipDecision(
-                    decision: "no_change",
-                    reason: "relationship_progression_disabled"
-                )
-            }
-            if !state.validEvidenceIDs.isEmpty,
-               let next = state.currentStage.next,
-               projection.enabledStages.contains(next) {
-                state.currentStage = next
-                state.validEvidenceIDs = [
-                    "user_confirmed_relationship_change"
-                ]
-                decision = "upgraded"
-                reason = "user_confirmed_valid_evidence"
-            } else {
-                decision = "no_change"
-                reason = state.currentStage.next == nil
-                    ? "highest_enabled_stage_reached"
-                    : "confirmation_without_valid_evidence"
-            }
         }
         return persistRelationshipState(
             state,
@@ -1493,6 +1464,32 @@ public final class RuntimeCore {
             )
         }
 
+        let detectedUserEvidence = Set(
+            candidates.compactMap { candidate -> String? in
+                let evidenceSource = candidate.evidenceSource
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                guard candidate.evidenceDetected,
+                      evidenceSource == "explicit_user_expression" else {
+                    return nil
+                }
+                return candidate.evidenceType
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            }
+        )
+        guard detectedUserEvidence.isDisjoint(
+            with: projection.forbiddenEvidenceTypes
+        ),
+        !detectedUserEvidence.contains(
+            "user_requested_downgrade_or_reset"
+        ) else {
+            return currentRelationshipDecision(
+                decision: "evidence_ignored",
+                reason: "forbidden_evidence_present"
+            )
+        }
+
         let evidenceIDs = Set(candidates.compactMap { candidate -> String? in
             let evidenceType = candidate.evidenceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1504,13 +1501,14 @@ public final class RuntimeCore {
                   evidenceSource == "explicit_user_expression",
                   projection.allowedEvidenceTypes.contains(evidenceType),
                   !projection.forbiddenEvidenceTypes.contains(evidenceType),
+                  evidenceType != "user_requested_downgrade_or_reset",
                   evidenceType
                     != RuntimeRelationshipProgressionProjection
                         .reservedStageID else {
                 return nil
             }
             return evidenceType
-        }).sorted()
+        })
 
         guard !evidenceIDs.isEmpty else {
             return currentRelationshipDecision(
@@ -1518,18 +1516,89 @@ public final class RuntimeCore {
                 reason: "no_valid_evidence"
             )
         }
-        state.validEvidenceIDs = evidenceIDs
+
+        guard let nextStage = state.currentStage.next,
+              projection.enabledStages.contains(nextStage) else {
+            return currentRelationshipDecision(
+                decision: "no_change",
+                reason: "highest_enabled_stage_reached"
+            )
+        }
+
+        let existingEvidence = Set(state.validEvidenceIDs)
+        let novelEvidence = evidenceIDs.subtracting(existingEvidence)
+        guard !novelEvidence.isEmpty else {
+            return currentRelationshipDecision(
+                decision: "evidence_ignored",
+                reason: "no_new_independent_evidence"
+            )
+        }
+        let combinedEvidence = existingEvidence.union(evidenceIDs)
+        let traceEvidenceIDs = combinedEvidence.sorted()
+        if relationshipEvidenceSatisfiesTransition(
+            from: state.currentStage,
+            existingEvidence: existingEvidence,
+            novelEvidence: novelEvidence,
+            combinedEvidence: combinedEvidence
+        ) {
+            state.currentStage = nextStage
+            state.validEvidenceIDs = []
+            return persistRelationshipState(
+                state,
+                decision: "upgraded",
+                reason: "evidence_combination_satisfied",
+                decisionEvidenceIDs: traceEvidenceIDs
+            )
+        }
+
+        state.validEvidenceIDs = traceEvidenceIDs
         return persistRelationshipState(
             state,
             decision: "evidence_recorded",
-            reason: "awaiting_user_confirmation"
+            reason: "evidence_combination_incomplete"
         )
+    }
+
+    private func relationshipEvidenceSatisfiesTransition(
+        from stage: RuntimeRelationshipStage,
+        existingEvidence: Set<String>,
+        novelEvidence: Set<String>,
+        combinedEvidence: Set<String>
+    ) -> Bool {
+        guard !existingEvidence.isEmpty,
+              !novelEvidence.isEmpty,
+              combinedEvidence.count >= 2 else {
+            return false
+        }
+
+        let explicitRelationshipEvidence = Set([
+            "explicit_willingness_to_continue",
+            "explicit_familiarity_or_trust",
+            "user_confirmed_relationship_change"
+        ])
+        switch stage {
+        case .initialAcquaintance:
+            return !combinedEvidence.isDisjoint(
+                with: explicitRelationshipEvidence
+            )
+        case .growingFamiliarity:
+            return combinedEvidence.contains(
+                "explicit_willingness_to_continue"
+            ) && combinedEvidence.count >= 2
+        case .stableCompanionship:
+            return combinedEvidence.contains(
+                "explicit_familiarity_or_trust"
+            ) && combinedEvidence.count >= 2
+        case .trustedRelationship:
+            return false
+        }
     }
 
     private func persistRelationshipState(
         _ pendingState: RuntimeRelationshipInstanceState,
         decision: String,
-        reason: String
+        reason: String,
+        decisionEvidenceIDs: [String]? = nil
     ) -> RuntimeRelationshipDecision {
         var state = pendingState
         state.lastTransitionReason = reason
@@ -1540,7 +1609,8 @@ public final class RuntimeCore {
             currentRelationshipState = state
             return RuntimeRelationshipDecision(
                 stageID: state.currentStage.rawValue,
-                evidenceIDs: state.validEvidenceIDs,
+                evidenceIDs:
+                    decisionEvidenceIDs ?? state.validEvidenceIDs,
                 decision: decision,
                 reason: reason
             )
