@@ -1097,6 +1097,10 @@ struct ParticleExpressionTests {
                 diffusionMultiplier: Double(mapping.diffusionMultiplier)
             ),
             expressionMappingSource: "dr",
+            relationshipStageID: nil,
+            relationshipEvidenceIDs: [],
+            relationshipDecision: "feature_unavailable",
+            relationshipReason: "projection_missing",
             steps: []
         )
     }
