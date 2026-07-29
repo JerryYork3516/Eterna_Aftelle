@@ -91,6 +91,8 @@ struct ProviderResidentReply: Equatable {
     let expressionEnvelopeParsed: Bool
     let relationshipEvidenceCandidates:
         [ProviderRelationshipEvidenceCandidate]
+    let narrativeMemoryCandidates:
+        [ProviderNarrativeMemoryCandidate]
 
     init(
         replyText: String,
@@ -98,7 +100,9 @@ struct ProviderResidentReply: Equatable {
         expressionIntensity: Double?,
         expressionEnvelopeParsed: Bool,
         relationshipEvidenceCandidates:
-            [ProviderRelationshipEvidenceCandidate] = []
+            [ProviderRelationshipEvidenceCandidate] = [],
+        narrativeMemoryCandidates:
+            [ProviderNarrativeMemoryCandidate] = []
     ) {
         self.replyText = replyText
         self.expressionState = expressionState
@@ -106,6 +110,7 @@ struct ProviderResidentReply: Equatable {
         self.expressionEnvelopeParsed = expressionEnvelopeParsed
         self.relationshipEvidenceCandidates =
             relationshipEvidenceCandidates
+        self.narrativeMemoryCandidates = narrativeMemoryCandidates
     }
 }
 
@@ -114,6 +119,17 @@ struct ProviderRelationshipEvidenceCandidate: Equatable {
     let evidenceDetected: Bool
     let evidenceSource: String
     let requiresUserConfirmation: Bool
+}
+
+struct ProviderNarrativeMemoryCandidate: Equatable {
+    let candidateID: String
+    let memoryType: String
+    let summary: String
+    let sourceTurnIDs: [String]
+    let consentSignal: String
+    let sensitivityFlags: [String]
+    let evidenceSource: String
+    let inputClassification: String
 }
 
 private struct FailableDecodable<Value: Decodable>: Decodable {
@@ -130,6 +146,8 @@ private struct ProviderResidentReplyEnvelope: Decodable {
     let expressionIntensity: Double?
     let relationshipEvidenceCandidates:
         [FailableDecodable<ProviderRelationshipEvidenceCandidateWire>]?
+    let narrativeMemoryCandidates:
+        [FailableDecodable<ProviderNarrativeMemoryCandidateWire>]?
 
     enum CodingKeys: String, CodingKey {
         case replyText = "reply_text"
@@ -137,6 +155,8 @@ private struct ProviderResidentReplyEnvelope: Decodable {
         case expressionIntensity = "expression_intensity"
         case relationshipEvidenceCandidates =
             "relationship_evidence_candidates"
+        case narrativeMemoryCandidates =
+            "narrative_memory_candidates"
     }
 }
 
@@ -151,6 +171,86 @@ private struct ProviderRelationshipEvidenceCandidateWire: Decodable {
         case evidenceDetected = "evidence_detected"
         case evidenceSource = "evidence_source"
         case requiresUserConfirmation = "requires_user_confirmation"
+    }
+}
+
+private struct ProviderNarrativeMemoryCandidateWire: Decodable {
+    let candidateID: String
+    let memoryType: String
+    let summary: String
+    let sourceTurnIDs: [String]
+    let consentSignal: String
+    let sensitivityFlags: [String]
+    let evidenceSource: String
+    let inputClassification: String
+
+    enum CodingKeys: String, CodingKey {
+        case candidateID = "candidate_id"
+        case memoryType = "memory_type"
+        case summary
+        case sourceTurnIDs = "source_turn_ids"
+        case consentSignal = "consent_signal"
+        case sensitivityFlags = "sensitivity_flags"
+        case evidenceSource = "evidence_source"
+        case inputClassification = "input_classification"
+        case memoryID = "memory_id"
+        case status
+        case decision
+        case action
+        case storeAction = "store_action"
+        case supersedesMemoryID = "supersedes_memory_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+        let forbiddenKeys: [CodingKeys] = [
+            .memoryID,
+            .status,
+            .decision,
+            .action,
+            .storeAction,
+            .supersedesMemoryID
+        ]
+        guard !forbiddenKeys.contains(where: container.contains) else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription:
+                        "Narrative memory candidates cannot mutate Store state."
+                )
+            )
+        }
+        candidateID = try container.decode(
+            String.self,
+            forKey: .candidateID
+        )
+        memoryType = try container.decode(
+            String.self,
+            forKey: .memoryType
+        )
+        summary = try container.decode(String.self, forKey: .summary)
+        sourceTurnIDs = try container.decode(
+            [String].self,
+            forKey: .sourceTurnIDs
+        )
+        consentSignal = try container.decode(
+            String.self,
+            forKey: .consentSignal
+        )
+        sensitivityFlags = try container.decode(
+            [String].self,
+            forKey: .sensitivityFlags
+        )
+        evidenceSource = try container.decode(
+            String.self,
+            forKey: .evidenceSource
+        )
+        inputClassification = try container.decode(
+            String.self,
+            forKey: .inputClassification
+        )
     }
 }
 
@@ -185,6 +285,23 @@ enum ProviderResidentReplyParser {
                                 requiresUserConfirmation:
                                     $0.requiresUserConfirmation
                             )
+                        } ?? [],
+                narrativeMemoryCandidates:
+                    envelope.narrativeMemoryCandidates?
+                        .compactMap(\.value)
+                        .map {
+                            ProviderNarrativeMemoryCandidate(
+                                candidateID: $0.candidateID,
+                                memoryType: $0.memoryType,
+                                summary: $0.summary,
+                                sourceTurnIDs: $0.sourceTurnIDs,
+                                consentSignal: $0.consentSignal,
+                                sensitivityFlags:
+                                    $0.sensitivityFlags,
+                                evidenceSource: $0.evidenceSource,
+                                inputClassification:
+                                    $0.inputClassification
+                            )
                         } ?? []
             )
         }
@@ -218,7 +335,7 @@ enum ProviderResidentReplyParser {
             CharacterSet(charactersIn: "\u{feff}")
         )
     private static let envelopeKeyExpression = try? NSRegularExpression(
-        pattern: #"(?<![A-Za-z0-9_])["']?(?:reply_text|expression_state|expression_intensity|relationship_evidence_candidates)["']?\s*:"#
+        pattern: #"(?<![A-Za-z0-9_])["']?(?:reply_text|expression_state|expression_intensity|relationship_evidence_candidates|narrative_memory_candidates)["']?\s*:"#
     )
     private static let replyTextKeyExpression = try? NSRegularExpression(
         pattern: #"(?<![A-Za-z0-9_])["']?reply_text["']?\s*:"#
@@ -412,7 +529,9 @@ final class OpenAICompatibleAdapter {
     func reply(
         profile: ProviderProfile,
         context: ResidentDialogueContext,
-        expressionMapping: RuntimeVisualExpressionMapping
+        expressionMapping: RuntimeVisualExpressionMapping,
+        narrativeMemoryProjection:
+            RuntimeNarrativeMemoryProjection?
     ) async -> Result<ProviderResidentReply, ProviderRequestError> {
         let credential: String
         do {
@@ -433,7 +552,9 @@ final class OpenAICompatibleAdapter {
             model: profile.modelID,
             messages: Self.messages(
                 for: context,
-                expressionMapping: expressionMapping
+                expressionMapping: expressionMapping,
+                narrativeMemoryProjection:
+                    narrativeMemoryProjection
             ),
             stream: profile.stream,
             thinking: ChatCompletionThinking(type: profile.thinkingMode)
@@ -512,13 +633,17 @@ final class OpenAICompatibleAdapter {
 
     private static func messages(
         for context: ResidentDialogueContext,
-        expressionMapping: RuntimeVisualExpressionMapping
+        expressionMapping: RuntimeVisualExpressionMapping,
+        narrativeMemoryProjection:
+            RuntimeNarrativeMemoryProjection?
     ) -> [ChatCompletionMessage] {
         var result = [ChatCompletionMessage(
             role: "system",
             content: systemMessage(
                 for: context,
-                expressionMapping: expressionMapping
+                expressionMapping: expressionMapping,
+                narrativeMemoryProjection:
+                    narrativeMemoryProjection
             )
         )]
 
@@ -532,7 +657,9 @@ final class OpenAICompatibleAdapter {
 
     private static func systemMessage(
         for context: ResidentDialogueContext,
-        expressionMapping: RuntimeVisualExpressionMapping
+        expressionMapping: RuntimeVisualExpressionMapping,
+        narrativeMemoryProjection:
+            RuntimeNarrativeMemoryProjection?
     ) -> String {
         var sections = [
             context.systemInstruction,
@@ -590,7 +717,8 @@ final class OpenAICompatibleAdapter {
         sections.append("When the available context is insufficient: \(context.fallbackText)")
         sections.append(expressionEnvelopeInstruction(
             for: expressionMapping,
-            relationshipContext: context.relationshipProgression
+            relationshipContext: context.relationshipProgression,
+            narrativeMemoryProjection: narrativeMemoryProjection
         ))
 
         return sections
@@ -601,17 +729,19 @@ final class OpenAICompatibleAdapter {
 
     private static func expressionEnvelopeInstruction(
         for mapping: RuntimeVisualExpressionMapping,
-        relationshipContext: RuntimeRelationshipDialogueContext?
+        relationshipContext: RuntimeRelationshipDialogueContext?,
+        narrativeMemoryProjection:
+            RuntimeNarrativeMemoryProjection?
     ) -> String {
         let states = mapping.allowedStates.map(\.rawValue).joined(separator: ", ")
-        let envelope: String
+        var optionalEnvelopeFields = [String]()
         let relationshipInstruction: String
         if let relationshipContext {
             let evidenceTypes = relationshipContext.allowedEvidenceTypes
                 .joined(separator: ", ")
-            envelope = """
-            {"reply_text":"...","expression_state":"neutral","expression_intensity":0,"relationship_evidence_candidates":[]}
-            """
+            optionalEnvelopeFields.append(
+                #""relationship_evidence_candidates":[]""#
+            )
             relationshipInstruction = """
             relationship_evidence_candidates is optional and may contain only closed evidence candidates with evidence_type, evidence_detected, evidence_source, and requires_user_confirmation.
             evidence_type must be one of: \(evidenceTypes).
@@ -619,11 +749,38 @@ final class OpenAICompatibleAdapter {
             You may propose evidence only. Never output, choose, infer, or change any relationship stage.
             """
         } else {
-            envelope = """
-            {"reply_text":"...","expression_state":"neutral","expression_intensity":0}
-            """
             relationshipInstruction = ""
         }
+        let narrativeMemoryInstruction: String
+        if let projection = narrativeMemoryProjection,
+           projection.enabled {
+            optionalEnvelopeFields.append(
+                #""narrative_memory_candidates":[]""#
+            )
+            let memoryTypes = projection.allowedMemoryTypes
+                .map(\.rawValue)
+                .joined(separator: ", ")
+            let permanentlyForbidden = projection.sensitivityPolicy
+                .permanentlyForbiddenCategories
+                .joined(separator: ", ")
+            narrativeMemoryInstruction = """
+            narrative_memory_candidates is optional. Each candidate must contain only candidate_id, memory_type, summary, source_turn_ids, consent_signal, sensitivity_flags, evidence_source, and input_classification.
+            memory_type must be one of: \(memoryTypes).
+            evidence_source must be explicit_user_statement and input_classification must be explicit_memory_worthy. Omit ordinary small talk, one-off answers, model inference, and unconfirmed emotion judgements.
+            consent_signal must be one of: not_required, explicit_remember_request, explicit_consent, consent_missing, consent_rejected, user_correction, forget_requested.
+            sensitivity_flags may contain sensitive_or_ambiguous or these permanently forbidden categories: \(permanentlyForbidden).
+            You may propose candidates only. Never output memory_id, status, decision, action, store_action, supersedes_memory_id, or claim that Store state changed.
+            Never include passwords, verification codes, API keys, payment credentials, authentication information, full dialogue, provider requests, traces, or internal reasoning in a candidate summary.
+            """
+        } else {
+            narrativeMemoryInstruction = ""
+        }
+        let optionalFields = optionalEnvelopeFields.isEmpty
+            ? ""
+            : "," + optionalEnvelopeFields.joined(separator: ",")
+        let envelope = """
+        {"reply_text":"...","expression_state":"neutral","expression_intensity":0\(optionalFields)}
+        """
         return """
         Return exactly one JSON object with only these keys:
         \(envelope)
@@ -632,6 +789,7 @@ final class OpenAICompatibleAdapter {
         expression_intensity must be a number from 0 to 1.
         Select the lowest sufficient intensity. Use neutral and 0 when context is insufficient.
         \(relationshipInstruction)
+        \(narrativeMemoryInstruction)
         Do not output color, brightness, saturation, temperature, glow, energy, speed, diffusion, or any renderer or particle parameter.
         Do not wrap the JSON object in Markdown or add text outside it.
         """
@@ -707,7 +865,9 @@ public final class ProviderRouter {
 
     func routeResidentReply(
         context: ResidentDialogueContext,
-        expressionMapping: RuntimeVisualExpressionMapping
+        expressionMapping: RuntimeVisualExpressionMapping,
+        narrativeMemoryProjection:
+            RuntimeNarrativeMemoryProjection?
     ) async -> Result<ProviderResidentReply, ProviderRequestError> {
         guard let profile, profile.enabled else {
             return .failure(.unconfigured)
@@ -715,7 +875,8 @@ public final class ProviderRouter {
         return await adapter.reply(
             profile: profile,
             context: context,
-            expressionMapping: expressionMapping
+            expressionMapping: expressionMapping,
+            narrativeMemoryProjection: narrativeMemoryProjection
         )
     }
 

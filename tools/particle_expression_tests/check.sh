@@ -14,6 +14,7 @@ xcrun --sdk macosx swiftc \
   "$repo_root/apps/macos/RuntimeCore/DRLoader.swift" \
   "$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift" \
   "$repo_root/apps/macos/RuntimeCore/MemoryController.swift" \
+  "$repo_root/apps/macos/RuntimeCore/NarrativeMemoryStore.swift" \
   "$repo_root/apps/macos/RuntimeCore/RelationshipStateStore.swift" \
   "$repo_root/apps/macos/RuntimeCore/PlatformAdapter.swift" \
   "$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift" \

@@ -21,11 +21,14 @@ public final class ExecutionEngine {
 
     func testResidentReply(
         context: ResidentDialogueContext,
-        expressionMapping: RuntimeVisualExpressionMapping
+        expressionMapping: RuntimeVisualExpressionMapping,
+        narrativeMemoryProjection:
+            RuntimeNarrativeMemoryProjection?
     ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
         let result = await providerRouter.routeResidentReply(
             context: context,
-            expressionMapping: expressionMapping
+            expressionMapping: expressionMapping,
+            narrativeMemoryProjection: narrativeMemoryProjection
         )
         return result.map { reply in
             RuntimeResidentReply(
@@ -35,7 +38,9 @@ public final class ExecutionEngine {
                     mapping: expressionMapping
                 ),
                 relationshipEvidenceCandidates:
-                    reply.relationshipEvidenceCandidates
+                    reply.relationshipEvidenceCandidates,
+                narrativeMemoryCandidates:
+                    reply.narrativeMemoryCandidates
             )
         }
     }

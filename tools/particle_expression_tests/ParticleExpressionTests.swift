@@ -1101,6 +1101,7 @@ struct ParticleExpressionTests {
             relationshipEvidenceIDs: [],
             relationshipDecision: "feature_unavailable",
             relationshipReason: "projection_missing",
+            narrativeMemoryDecisions: [],
             steps: []
         )
     }

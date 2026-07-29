@@ -103,6 +103,24 @@ struct RuntimeNarrativeMemoryConsentPolicy: Decodable, Equatable {
     }
 }
 
+struct RuntimeNarrativeMemoryCandidateEvidenceRules:
+    Decodable,
+    Equatable {
+    let requirements: [String]
+    let excludedInputs: [String]
+    let explicitUserStatementRequired: Bool
+    let sourceTurnTraceabilityRequired: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case requirements
+        case excludedInputs = "excluded_inputs"
+        case explicitUserStatementRequired =
+            "explicit_user_statement_required"
+        case sourceTurnTraceabilityRequired =
+            "source_turn_traceability_required"
+    }
+}
+
 struct RuntimeNarrativeMemorySensitivityPolicy:
     Decodable,
     Equatable {
@@ -245,6 +263,9 @@ struct RuntimeNarrativeMemoryProjection: Equatable {
     let enabled: Bool
     let allowedMemoryTypes: [RuntimeNarrativeMemoryType]
     let lifecycleStates: [RuntimeNarrativeMemoryLifecycleState]
+    let candidateEvidenceRules:
+        RuntimeNarrativeMemoryCandidateEvidenceRules
+    let forbiddenContentRules: Set<String>
     let consentPolicy: RuntimeNarrativeMemoryConsentPolicy
     let sensitivityPolicy: RuntimeNarrativeMemorySensitivityPolicy
     let deduplicationPolicy:
@@ -256,6 +277,7 @@ struct RuntimeNarrativeMemoryProjection: Equatable {
     let retrievalPolicy: RuntimeNarrativeMemoryRetrievalPolicy
     let modelAuthority: RuntimeNarrativeMemoryModelAuthority
     let runtimeAuthority: RuntimeNarrativeMemoryRuntimeAuthority
+    let relationshipStageTransitionAllowed: Bool
     let fullDialogueStorageAllowed: Bool
 }
 
@@ -713,6 +735,9 @@ private struct RuntimeNarrativeMemoryProjectionWire: Decodable {
     let enabled: Bool
     let allowedMemoryTypes: [RuntimeNarrativeMemoryType]
     let lifecycleStates: [RuntimeNarrativeMemoryLifecycleState]
+    let candidateEvidenceRules:
+        RuntimeNarrativeMemoryCandidateEvidenceRules
+    let forbiddenContentRules: [String]
     let consentPolicy: RuntimeNarrativeMemoryConsentPolicy
     let sensitivityPolicy: RuntimeNarrativeMemorySensitivityPolicy
     let deduplicationPolicy:
@@ -724,6 +749,7 @@ private struct RuntimeNarrativeMemoryProjectionWire: Decodable {
     let retrievalPolicy: RuntimeNarrativeMemoryRetrievalPolicy
     let modelAuthority: RuntimeNarrativeMemoryModelAuthority
     let runtimeAuthority: RuntimeNarrativeMemoryRuntimeAuthority
+    let relationshipStageTransitionAllowed: Bool
     let fullDialogueStorageAllowed: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -735,6 +761,8 @@ private struct RuntimeNarrativeMemoryProjectionWire: Decodable {
         case enabled
         case allowedMemoryTypes = "allowed_memory_types"
         case lifecycleStates = "memory_lifecycle_states"
+        case candidateEvidenceRules = "candidate_evidence_rules"
+        case forbiddenContentRules = "forbidden_content_rules"
         case consentPolicy = "consent_policy"
         case sensitivityPolicy = "sensitivity_policy"
         case deduplicationPolicy = "deduplication_policy"
@@ -745,6 +773,8 @@ private struct RuntimeNarrativeMemoryProjectionWire: Decodable {
         case retrievalPolicy = "retrieval_policy"
         case modelAuthority = "model_authority"
         case runtimeAuthority = "runtime_authority"
+        case relationshipStageTransitionAllowed =
+            "relationship_stage_transition_allowed"
         case fullDialogueStorageAllowed =
             "full_dialogue_storage_allowed"
     }
@@ -1175,6 +1205,22 @@ public final class DRLoader {
               !wire.modelAuthority.modelCanUpdateMemory,
               !wire.modelAuthority.modelCanDeleteMemory,
               wire.runtimeAuthority.runtimeIsFinalDecisionOwner,
+              wire.candidateEvidenceRules
+                .explicitUserStatementRequired,
+              wire.candidateEvidenceRules
+                .sourceTurnTraceabilityRequired,
+              Set(wire.candidateEvidenceRules.excludedInputs)
+                .isSuperset(of: [
+                    "ordinary_small_talk",
+                    "model_inference",
+                    "unconfirmed_emotion_judgement"
+                ]),
+              Set(wire.forbiddenContentRules)
+                .isSuperset(
+                    of: wire.sensitivityPolicy
+                        .permanentlyForbiddenCategories
+                ),
+              !wire.relationshipStageTransitionAllowed,
               !wire.fullDialogueStorageAllowed else {
             throw DRLoaderError.conflictingField(path)
         }
@@ -1188,6 +1234,8 @@ public final class DRLoader {
             enabled: wire.enabled,
             allowedMemoryTypes: wire.allowedMemoryTypes,
             lifecycleStates: wire.lifecycleStates,
+            candidateEvidenceRules: wire.candidateEvidenceRules,
+            forbiddenContentRules: Set(wire.forbiddenContentRules),
             consentPolicy: wire.consentPolicy,
             sensitivityPolicy: wire.sensitivityPolicy,
             deduplicationPolicy: wire.deduplicationPolicy,
@@ -1197,6 +1245,8 @@ public final class DRLoader {
             retrievalPolicy: wire.retrievalPolicy,
             modelAuthority: wire.modelAuthority,
             runtimeAuthority: wire.runtimeAuthority,
+            relationshipStageTransitionAllowed:
+                wire.relationshipStageTransitionAllowed,
             fullDialogueStorageAllowed:
                 wire.fullDialogueStorageAllowed
         )

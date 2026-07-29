@@ -860,6 +860,8 @@ struct RuntimeOrchestrationInteraction: Equatable, Identifiable {
     let relationshipEvidenceIDs: [String]
     let relationshipDecision: String
     let relationshipReason: String
+    let narrativeMemoryDecisions:
+        [RuntimeNarrativeMemoryDecision]
     var steps: [RuntimeOrchestrationStep]
 
     var durationMilliseconds: Int {
@@ -867,6 +869,20 @@ struct RuntimeOrchestrationInteraction: Equatable, Identifiable {
     }
 }
 #endif
+
+private struct RuntimeNormalizedNarrativeMemoryCandidate {
+    let candidateID: String
+    let memoryType: RuntimeNarrativeMemoryType
+    let summary: String
+    let sourceTurnIDs: [String]
+    let consentSignal: String
+    let sensitivityFlags: Set<String>
+}
+
+private struct RuntimeNarrativeMemoryCandidateOutcome {
+    let decision: RuntimeNarrativeMemoryDecision
+    let didMutateStore: Bool
+}
 
 public final class RuntimeCore {
     static let recentDialogueMessageLimit = 8
@@ -879,6 +895,7 @@ public final class RuntimeCore {
     private let sessionStore: SessionStore
     private let memoryController: MemoryController
     private var relationshipStateStore = RelationshipStateStore()
+    private var narrativeMemoryStore = NarrativeMemoryStore()
     private var cancellationState = RuntimeCancellationState.none
     private var sessionContext: RuntimeSessionContext?
     private(set) var currentResidentIdentity: RuntimeResidentIdentityProjection?
@@ -1626,6 +1643,599 @@ public final class RuntimeCore {
         }
     }
 
+    private func evaluateNarrativeMemoryCandidates(
+        _ candidates: [ProviderNarrativeMemoryCandidate],
+        session: RuntimeSessionContext
+    ) -> [RuntimeNarrativeMemoryDecision] {
+        guard !candidates.isEmpty,
+              let projection = currentNarrativeMemoryProjection,
+              projection.enabled else {
+            return []
+        }
+
+        let existingSnapshot: RuntimeNarrativeMemoryStoreSnapshot?
+        do {
+            existingSnapshot = try narrativeMemoryStore.load(
+                residentID: session.residentID
+            )
+        } catch {
+            return candidates.map {
+                rejectedNarrativeMemoryDecision(
+                    candidateID: safeNarrativeCandidateID(
+                        $0.candidateID
+                    ),
+                    memoryType: nil,
+                    reason: "store_unavailable"
+                )
+            }
+        }
+
+        var records = existingSnapshot?.records ?? []
+        var outcomes = [RuntimeNarrativeMemoryCandidateOutcome]()
+        for candidate in candidates {
+            outcomes.append(
+                evaluateNarrativeMemoryCandidate(
+                    candidate,
+                    projection: projection,
+                    session: session,
+                    records: &records
+                )
+            )
+        }
+
+        guard outcomes.contains(where: \.didMutateStore) else {
+            return outcomes.map(\.decision)
+        }
+        do {
+            try narrativeMemoryStore.save(
+                RuntimeNarrativeMemoryStoreSnapshot(
+                    residentID: session.residentID,
+                    records: records
+                )
+            )
+            return outcomes.map(\.decision)
+        } catch {
+            return outcomes.map { outcome in
+                guard outcome.didMutateStore else {
+                    return outcome.decision
+                }
+                return rejectedNarrativeMemoryDecision(
+                    candidateID: outcome.decision.candidateID,
+                    memoryType: outcome.decision.memoryType,
+                    reason: "persistence_failed"
+                )
+            }
+        }
+    }
+
+    private func evaluateNarrativeMemoryCandidate(
+        _ candidate: ProviderNarrativeMemoryCandidate,
+        projection: RuntimeNarrativeMemoryProjection,
+        session: RuntimeSessionContext,
+        records: inout [RuntimeNarrativeMemoryRecord]
+    ) -> RuntimeNarrativeMemoryCandidateOutcome {
+        guard let normalized = normalizedNarrativeMemoryCandidate(
+            candidate,
+            projection: projection
+        ) else {
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: rejectedNarrativeMemoryDecision(
+                    candidateID: safeNarrativeCandidateID(
+                        candidate.candidateID
+                    ),
+                    memoryType: RuntimeNarrativeMemoryType(
+                        rawValue: candidate.memoryType
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            )
+                            .lowercased()
+                    )?.rawValue,
+                    reason: narrativeMemoryCandidateRejectionReason(
+                        candidate,
+                        projection: projection
+                    )
+                ),
+                didMutateStore: false
+            )
+        }
+
+        if permanentlyForbiddenNarrativeContentCategory(
+            in: normalized.summary
+        ) != nil {
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: rejectedNarrativeMemoryDecision(
+                    candidateID: normalized.candidateID,
+                    memoryType: normalized.memoryType.rawValue,
+                    reason: "permanently_forbidden_content"
+                ),
+                didMutateStore: false
+            )
+        }
+        if !normalized.sensitivityFlags.isDisjoint(
+            with: projection.sensitivityPolicy
+                .permanentlyForbiddenCategories
+        ) {
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: rejectedNarrativeMemoryDecision(
+                    candidateID: normalized.candidateID,
+                    memoryType: normalized.memoryType.rawValue,
+                    reason: "permanently_forbidden_content"
+                ),
+                didMutateStore: false
+            )
+        }
+        if !normalized.sensitivityFlags.isDisjoint(
+            with: projection.forbiddenContentRules
+        ) {
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: rejectedNarrativeMemoryDecision(
+                    candidateID: normalized.candidateID,
+                    memoryType: normalized.memoryType.rawValue,
+                    reason: "forbidden_content"
+                ),
+                didMutateStore: false
+            )
+        }
+
+        switch normalized.consentSignal {
+        case "forget_requested":
+            return deleteNarrativeMemory(
+                normalized,
+                records: &records
+            )
+        case "user_correction":
+            return supersedeNarrativeMemory(
+                normalized,
+                session: session,
+                records: &records
+            )
+        case "consent_missing":
+            return rejectNarrativeMemoryCandidate(
+                normalized,
+                session: session,
+                reason: "consent_required",
+                records: &records
+            )
+        case "consent_rejected":
+            return rejectNarrativeMemoryCandidate(
+                normalized,
+                session: session,
+                reason: "consent_rejected",
+                records: &records
+            )
+        case "not_required",
+             "explicit_remember_request",
+             "explicit_consent":
+            break
+        default:
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: rejectedNarrativeMemoryDecision(
+                    candidateID: normalized.candidateID,
+                    memoryType: normalized.memoryType.rawValue,
+                    reason: "invalid_consent_signal"
+                ),
+                didMutateStore: false
+            )
+        }
+
+        if !normalized.sensitivityFlags.isEmpty,
+           normalized.consentSignal != "explicit_remember_request",
+           normalized.consentSignal != "explicit_consent" {
+            return rejectNarrativeMemoryCandidate(
+                normalized,
+                session: session,
+                reason: "consent_required",
+                records: &records
+            )
+        }
+        return acceptOrMergeNarrativeMemory(
+            normalized,
+            session: session,
+            records: &records
+        )
+    }
+
+    private func normalizedNarrativeMemoryCandidate(
+        _ candidate: ProviderNarrativeMemoryCandidate,
+        projection: RuntimeNarrativeMemoryProjection
+    ) -> RuntimeNormalizedNarrativeMemoryCandidate? {
+        let candidateID = safeNarrativeCandidateID(
+            candidate.candidateID
+        )
+        let rawMemoryType = candidate.memoryType
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let summary = candidate.summary.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let evidenceSource = candidate.evidenceSource
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let inputClassification = candidate.inputClassification
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let consentSignal = candidate.consentSignal
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let sourceTurnIDs = Array(Set(
+            candidate.sourceTurnIDs.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty }
+        )).sorted()
+        let sensitivityFlags = Set(
+            candidate.sensitivityFlags.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            }.filter { !$0.isEmpty }
+        )
+
+        guard candidateID != "invalid_candidate",
+              let memoryType = RuntimeNarrativeMemoryType(
+                  rawValue: rawMemoryType
+              ),
+              projection.allowedMemoryTypes.contains(memoryType),
+              !summary.isEmpty,
+              summary.count <= 500,
+              !sourceTurnIDs.isEmpty,
+              sourceTurnIDs.count <= 16,
+              evidenceSource == "explicit_user_statement",
+              inputClassification == "explicit_memory_worthy",
+              !consentSignal.isEmpty else {
+            return nil
+        }
+        return RuntimeNormalizedNarrativeMemoryCandidate(
+            candidateID: candidateID,
+            memoryType: memoryType,
+            summary: summary,
+            sourceTurnIDs: sourceTurnIDs,
+            consentSignal: consentSignal,
+            sensitivityFlags: sensitivityFlags
+        )
+    }
+
+    private func narrativeMemoryCandidateRejectionReason(
+        _ candidate: ProviderNarrativeMemoryCandidate,
+        projection: RuntimeNarrativeMemoryProjection
+    ) -> String {
+        let rawMemoryType = candidate.memoryType
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if RuntimeNarrativeMemoryType(rawValue: rawMemoryType) == nil {
+            return "memory_type_not_allowed"
+        }
+        let evidenceSource = candidate.evidenceSource
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let inputClassification = candidate.inputClassification
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if evidenceSource != "explicit_user_statement"
+            || projection.candidateEvidenceRules.excludedInputs
+                .contains(inputClassification)
+            || inputClassification != "explicit_memory_worthy" {
+            return "source_not_eligible"
+        }
+        return "invalid_candidate"
+    }
+
+    private func acceptOrMergeNarrativeMemory(
+        _ candidate: RuntimeNormalizedNarrativeMemoryCandidate,
+        session: RuntimeSessionContext,
+        records: inout [RuntimeNarrativeMemoryRecord]
+    ) -> RuntimeNarrativeMemoryCandidateOutcome {
+        if let index = records.firstIndex(where: {
+            $0.status == .active
+                && $0.type == candidate.memoryType
+                && (
+                    normalizedNarrativeSummary($0.summary)
+                        == normalizedNarrativeSummary(
+                            candidate.summary
+                        )
+                    || Set($0.sourceTurnIDs)
+                        == Set(candidate.sourceTurnIDs)
+                )
+        }) {
+            let existing = records[index]
+            records[index] = RuntimeNarrativeMemoryRecord(
+                memoryID: existing.memoryID,
+                residentID: existing.residentID,
+                type: existing.type,
+                summary: existing.summary,
+                sourceSessionID: existing.sourceSessionID,
+                sourceTurnIDs: Array(Set(
+                    existing.sourceTurnIDs
+                        + candidate.sourceTurnIDs
+                )).sorted(),
+                status: .active,
+                consentState: existing.consentState,
+                createdAt: existing.createdAt,
+                updatedAt: Date(),
+                supersedesMemoryID: existing.supersedesMemoryID
+            )
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: RuntimeNarrativeMemoryDecision(
+                    candidateID: candidate.candidateID,
+                    memoryID: existing.memoryID,
+                    memoryType: existing.type.rawValue,
+                    decision: .merge,
+                    reason: "duplicate_merged"
+                ),
+                didMutateStore: true
+            )
+        }
+
+        let record = activeNarrativeMemoryRecord(
+            candidate,
+            session: session,
+            supersedesMemoryID: nil
+        )
+        records.append(record)
+        return RuntimeNarrativeMemoryCandidateOutcome(
+            decision: RuntimeNarrativeMemoryDecision(
+                candidateID: candidate.candidateID,
+                memoryID: record.memoryID,
+                memoryType: record.type.rawValue,
+                decision: .accept,
+                reason: "candidate_accepted"
+            ),
+            didMutateStore: true
+        )
+    }
+
+    private func supersedeNarrativeMemory(
+        _ candidate: RuntimeNormalizedNarrativeMemoryCandidate,
+        session: RuntimeSessionContext,
+        records: inout [RuntimeNarrativeMemoryRecord]
+    ) -> RuntimeNarrativeMemoryCandidateOutcome {
+        guard let index = records.indices
+            .filter({
+                records[$0].status == .active
+                    && records[$0].type == candidate.memoryType
+            })
+            .max(by: {
+                records[$0].updatedAt < records[$1].updatedAt
+            }) else {
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: rejectedNarrativeMemoryDecision(
+                    candidateID: candidate.candidateID,
+                    memoryType: candidate.memoryType.rawValue,
+                    reason: "supersession_target_not_found"
+                ),
+                didMutateStore: false
+            )
+        }
+        let existing = records[index]
+        records[index] = RuntimeNarrativeMemoryRecord(
+            memoryID: existing.memoryID,
+            residentID: existing.residentID,
+            type: existing.type,
+            summary: existing.summary,
+            sourceSessionID: existing.sourceSessionID,
+            sourceTurnIDs: existing.sourceTurnIDs,
+            status: .superseded,
+            consentState: existing.consentState,
+            createdAt: existing.createdAt,
+            updatedAt: Date(),
+            supersedesMemoryID: existing.supersedesMemoryID
+        )
+        let replacement = activeNarrativeMemoryRecord(
+            candidate,
+            session: session,
+            supersedesMemoryID: existing.memoryID
+        )
+        records.append(replacement)
+        return RuntimeNarrativeMemoryCandidateOutcome(
+            decision: RuntimeNarrativeMemoryDecision(
+                candidateID: candidate.candidateID,
+                memoryID: replacement.memoryID,
+                memoryType: replacement.type.rawValue,
+                decision: .supersede,
+                reason: "latest_user_correction"
+            ),
+            didMutateStore: true
+        )
+    }
+
+    private func deleteNarrativeMemory(
+        _ candidate: RuntimeNormalizedNarrativeMemoryCandidate,
+        records: inout [RuntimeNarrativeMemoryRecord]
+    ) -> RuntimeNarrativeMemoryCandidateOutcome {
+        let exactIndex = records.firstIndex(where: {
+            $0.status == .active
+                && $0.type == candidate.memoryType
+                && normalizedNarrativeSummary($0.summary)
+                    == normalizedNarrativeSummary(candidate.summary)
+        })
+        let latestTypeIndex = records.indices
+            .filter {
+                records[$0].status == .active
+                    && records[$0].type == candidate.memoryType
+            }
+            .max {
+                records[$0].updatedAt < records[$1].updatedAt
+            }
+        guard let index = exactIndex ?? latestTypeIndex else {
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: rejectedNarrativeMemoryDecision(
+                    candidateID: candidate.candidateID,
+                    memoryType: candidate.memoryType.rawValue,
+                    reason: "deletion_target_not_found"
+                ),
+                didMutateStore: false
+            )
+        }
+        let existing = records[index]
+        records[index] = RuntimeNarrativeMemoryRecord(
+            memoryID: existing.memoryID,
+            residentID: existing.residentID,
+            type: existing.type,
+            summary: existing.summary,
+            sourceSessionID: existing.sourceSessionID,
+            sourceTurnIDs: existing.sourceTurnIDs,
+            status: .deleted,
+            consentState: .granted,
+            createdAt: existing.createdAt,
+            updatedAt: Date(),
+            supersedesMemoryID: existing.supersedesMemoryID
+        )
+        return RuntimeNarrativeMemoryCandidateOutcome(
+            decision: RuntimeNarrativeMemoryDecision(
+                candidateID: candidate.candidateID,
+                memoryID: existing.memoryID,
+                memoryType: existing.type.rawValue,
+                decision: .delete,
+                reason: "user_forget_request"
+            ),
+            didMutateStore: true
+        )
+    }
+
+    private func rejectNarrativeMemoryCandidate(
+        _ candidate: RuntimeNormalizedNarrativeMemoryCandidate,
+        session: RuntimeSessionContext,
+        reason: String,
+        records: inout [RuntimeNarrativeMemoryRecord]
+    ) -> RuntimeNarrativeMemoryCandidateOutcome {
+        if let existing = records.first(where: {
+            $0.status == .rejected
+                && $0.type == candidate.memoryType
+                && Set($0.sourceTurnIDs)
+                    == Set(candidate.sourceTurnIDs)
+        }) {
+            return RuntimeNarrativeMemoryCandidateOutcome(
+                decision: RuntimeNarrativeMemoryDecision(
+                    candidateID: candidate.candidateID,
+                    memoryID: existing.memoryID,
+                    memoryType: existing.type.rawValue,
+                    decision: .reject,
+                    reason: "duplicate_rejected"
+                ),
+                didMutateStore: false
+            )
+        }
+        let now = Date()
+        let record = RuntimeNarrativeMemoryRecord(
+            memoryID: UUID().uuidString.lowercased(),
+            residentID: session.residentID,
+            type: candidate.memoryType,
+            summary: "[redacted]",
+            sourceSessionID: session.sessionID.rawValue,
+            sourceTurnIDs: candidate.sourceTurnIDs,
+            status: .rejected,
+            consentState: .rejected,
+            createdAt: now,
+            updatedAt: now,
+            supersedesMemoryID: nil
+        )
+        records.append(record)
+        return RuntimeNarrativeMemoryCandidateOutcome(
+            decision: RuntimeNarrativeMemoryDecision(
+                candidateID: candidate.candidateID,
+                memoryID: record.memoryID,
+                memoryType: record.type.rawValue,
+                decision: .reject,
+                reason: reason
+            ),
+            didMutateStore: true
+        )
+    }
+
+    private func activeNarrativeMemoryRecord(
+        _ candidate: RuntimeNormalizedNarrativeMemoryCandidate,
+        session: RuntimeSessionContext,
+        supersedesMemoryID: String?
+    ) -> RuntimeNarrativeMemoryRecord {
+        let now = Date()
+        let consentState: RuntimeNarrativeMemoryConsentState =
+            candidate.consentSignal == "not_required"
+                ? .notRequired
+                : .granted
+        return RuntimeNarrativeMemoryRecord(
+            memoryID: UUID().uuidString.lowercased(),
+            residentID: session.residentID,
+            type: candidate.memoryType,
+            summary: candidate.summary,
+            sourceSessionID: session.sessionID.rawValue,
+            sourceTurnIDs: candidate.sourceTurnIDs,
+            status: .active,
+            consentState: consentState,
+            createdAt: now,
+            updatedAt: now,
+            supersedesMemoryID: supersedesMemoryID
+        )
+    }
+
+    private func rejectedNarrativeMemoryDecision(
+        candidateID: String,
+        memoryType: String?,
+        reason: String
+    ) -> RuntimeNarrativeMemoryDecision {
+        RuntimeNarrativeMemoryDecision(
+            candidateID: candidateID,
+            memoryID: nil,
+            memoryType: memoryType,
+            decision: .reject,
+            reason: reason
+        )
+    }
+
+    private func safeNarrativeCandidateID(_ value: String) -> String {
+        let normalized = value.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard normalized.range(
+            of: "^[A-Za-z0-9._:-]{1,128}$",
+            options: .regularExpression
+        ) != nil else {
+            return "invalid_candidate"
+        }
+        return normalized
+    }
+
+    private func normalizedNarrativeSummary(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    private func permanentlyForbiddenNarrativeContentCategory(
+        in summary: String
+    ) -> String? {
+        let patterns: [(String, String)] = [
+            ("password", #"(?i)(password|passcode|密码|口令)\s*[:：是为]?"#),
+            (
+                "verification_code",
+                #"(?i)(verification[ _-]?code|one[ _-]?time[ _-]?code|otp|验证码|校验码)\s*[:：是为]?"#
+            ),
+            (
+                "api_key",
+                #"(?i)(api[ _-]?key|access[ _-]?token|secret[ _-]?key|sk-[a-z0-9_-]{8,})\s*[:：是为]?"#
+            ),
+            (
+                "payment_credential",
+                #"(?i)(payment[ _-]?credential|card[ _-]?number|credit[ _-]?card|cvv|支付凭据|银行卡号|信用卡号)\s*[:：是为]?"#
+            ),
+            (
+                "precise_identity_credential",
+                #"(?i)(passport[ _-]?number|identity[ _-]?number|身份证号|护照号)\s*[:：是为]?"#
+            ),
+            (
+                "authentication_information",
+                #"(?i)(authentication[ _-]?information|auth[ _-]?token|login[ _-]?credential|认证信息|登录凭据)\s*[:：是为]?"#
+            )
+        ]
+        return patterns.first {
+            summary.range(
+                of: $0.1,
+                options: .regularExpression
+            ) != nil
+        }?.0
+    }
+
     func configureTextProvider(profile: ProviderProfile) -> ProviderRequestError? {
         let error = executionEngine.configureTextProvider(profile: profile)
         if error == nil {
@@ -1702,6 +2312,8 @@ public final class RuntimeCore {
         var relationshipDecision = applyRelationshipUserControl(
             relationshipControl
         )
+        var narrativeMemoryDecisions =
+            [RuntimeNarrativeMemoryDecision]()
         guard let context = compileResidentDialogueContext(currentUserInput: inputText) else {
             #if DEBUG
             orchestrationSteps.append(runtimeOrchestrationStep(
@@ -1755,7 +2367,9 @@ public final class RuntimeCore {
         let expressionMappingAtStart = currentVisualExpressionMapping
         let result = await executionEngine.testResidentReply(
             context: context,
-            expressionMapping: expressionMappingAtStart
+            expressionMapping: expressionMappingAtStart,
+            narrativeMemoryProjection:
+                currentNarrativeMemoryProjection
         )
 
         #if DEBUG
@@ -1822,6 +2436,11 @@ public final class RuntimeCore {
                     reply.relationshipEvidenceCandidates
                 )
             }
+            narrativeMemoryDecisions =
+                evaluateNarrativeMemoryCandidates(
+                    reply.narrativeMemoryCandidates,
+                    session: sessionAtStart
+                )
             sessionWriteSucceeded = persistResidentDialogueExchange(
                 userInput: inputText,
                 residentReply: reply.replyText,
@@ -1856,7 +2475,9 @@ public final class RuntimeCore {
             presentationPending: true,
             providerMetadata: orchestrationProviderMetadata,
             emotionalRulesEnabled: orchestrationEmotionalRulesEnabled,
-            relationshipDecision: relationshipDecision
+            relationshipDecision: relationshipDecision,
+            narrativeMemoryDecisions:
+                narrativeMemoryDecisions
         )
         #endif
         return result
@@ -1958,6 +2579,22 @@ public final class RuntimeCore {
     }
 
     #if DEBUG
+    func useNarrativeMemoryStoreForTesting(
+        _ store: NarrativeMemoryStore
+    ) {
+        narrativeMemoryStore = store
+    }
+
+    func narrativeMemoryDebugSnapshot()
+        -> RuntimeNarrativeMemoryStoreSnapshot? {
+        guard let residentID = currentResidentIdentity?.residentID else {
+            return nil
+        }
+        return try? narrativeMemoryStore.load(
+            residentID: residentID
+        )
+    }
+
     func useRelationshipStateStoreForTesting(
         _ store: RelationshipStateStore
     ) {
@@ -2089,7 +2726,9 @@ public final class RuntimeCore {
         providerMetadata: RuntimeOrchestrationProviderMetadata?,
         emotionalRulesEnabled: Bool,
         relationshipDecision:
-            RuntimeRelationshipDecision = .unavailable
+            RuntimeRelationshipDecision = .unavailable,
+        narrativeMemoryDecisions:
+            [RuntimeNarrativeMemoryDecision] = []
     ) {
         let expressionResult: RuntimeExpressionResult
         switch result {
@@ -2138,6 +2777,7 @@ public final class RuntimeCore {
             relationshipEvidenceIDs: relationshipDecision.evidenceIDs,
             relationshipDecision: relationshipDecision.decision,
             relationshipReason: relationshipDecision.reason,
+            narrativeMemoryDecisions: narrativeMemoryDecisions,
             steps: normalizedSteps
         )
         runtimeOrchestrationRecords.append(interaction)

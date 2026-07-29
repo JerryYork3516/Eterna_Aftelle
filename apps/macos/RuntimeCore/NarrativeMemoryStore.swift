@@ -7,6 +7,22 @@ enum RuntimeNarrativeMemoryConsentState: String, Codable {
     case rejected
 }
 
+enum RuntimeNarrativeMemoryDecisionKind: String, Equatable {
+    case accept
+    case reject
+    case merge
+    case supersede
+    case delete
+}
+
+struct RuntimeNarrativeMemoryDecision: Equatable {
+    let candidateID: String
+    let memoryID: String?
+    let memoryType: String?
+    let decision: RuntimeNarrativeMemoryDecisionKind
+    let reason: String
+}
+
 struct RuntimeNarrativeMemoryRecord: Codable, Equatable {
     let memoryID: String
     let residentID: String

@@ -26,13 +26,14 @@ if [ "$before_sha" != "$expected_sha" ]; then
 fi
 
 runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
+test_sources=("$script_dir"/*.swift)
 xcrun --sdk macosx swiftc \
   -D DEBUG \
   -parse-as-library \
   -module-cache-path "$build_dir/module-cache" \
   -target arm64-apple-macos14.0 \
   "${runtime_sources[@]}" \
-  "$script_dir/NarrativeMemoryTests.swift" \
+  "${test_sources[@]}" \
   -o "$build_dir/narrative-memory-tests"
 
 CFFIXED_USER_HOME="$runtime_home" \
@@ -60,8 +61,7 @@ if rg -q '(NarrativeMemory|narrative_memory)' \
   "$repo_root/apps/macos/RuntimeCore/SessionStore.swift" \
   "$repo_root/apps/macos/RuntimeCore/MemoryController.swift" \
   "$repo_root/apps/macos/RuntimeCore/RelationshipStateStore.swift" \
-  "$repo_root/apps/macos/RuntimeCore/TraceRecorder.swift" \
-  "$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift"; then
+  "$repo_root/apps/macos/RuntimeCore/TraceRecorder.swift"; then
   printf 'narrative-memory-tests: feature leaked into existing subsystem\n' >&2
   exit 1
 fi
@@ -75,9 +75,8 @@ if rg -q '^public .*NarrativeMemory' \
 fi
 
 if rg -q 'NarrativeMemoryStore' \
-  "$repo_root/apps/macos/RuntimeCore/DRLoader.swift" \
-  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"; then
-  printf 'narrative-memory-tests: automatic store integration found\n' >&2
+  "$repo_root/apps/macos/RuntimeCore/DRLoader.swift"; then
+  printf 'narrative-memory-tests: loader/store coupling found\n' >&2
   exit 1
 fi
 
@@ -91,9 +90,22 @@ if rg -q '(full_dialogue|provider_request|raw_response|api_key|internal_reasonin
   exit 1
 fi
 
+if rg -q '(summary|userInput|replyText|systemPrompt|apiKey|rawResponse|memoryValue)' \
+  <(
+    sed -n \
+      '/struct RuntimeNarrativeMemoryDecision:/,/^}/p' \
+      "$repo_root/apps/macos/RuntimeCore/NarrativeMemoryStore.swift"
+    sed -n \
+      '/struct RuntimeOrchestrationInteraction:/,/^}/p' \
+      "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+  ); then
+  printf 'narrative-memory-tests: D1 decision metadata contains sensitive field\n' >&2
+  exit 1
+fi
+
 if git -C "$repo_root" diff --name-only \
-  | rg -q 'apps/macos/Aftelle/(AppModels|AppController|ContentView|ParticleCore)|ProviderRouter|ExecutionEngine|SessionStore|MemoryController|RelationshipStateStore|TraceRecorder'; then
-  printf 'narrative-memory-tests: forbidden A1 file changed\n' >&2
+  | rg -q 'apps/macos/Aftelle/(AppModels|AppController|ContentView|ParticleCore)|SessionStore|MemoryController|RelationshipStateStore|TraceRecorder|project\.pbxproj'; then
+  printf 'narrative-memory-tests: forbidden A2 file changed\n' >&2
   exit 1
 fi
 

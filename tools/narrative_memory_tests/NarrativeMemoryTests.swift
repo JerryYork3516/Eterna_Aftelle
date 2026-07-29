@@ -17,7 +17,8 @@ private enum NarrativeMemoryTestError:
 struct NarrativeMemoryTests {
     private static var checkCount = 0
 
-    static func main() throws {
+    @MainActor
+    static func main() async throws {
         guard CommandLine.arguments.count == 2 else {
             throw NarrativeMemoryTestError.failed(
                 "expected one DR path argument"
@@ -32,6 +33,7 @@ struct NarrativeMemoryTests {
         try testOldDRCompatibility(drData)
         try testStorePersistenceAndIsolation()
         try testCorruptedStoreFailsSafely()
+        try await NarrativeMemoryA2Tests.run(drData)
         print(
             "narrative-memory-tests: \(checkCount) checks passed"
         )

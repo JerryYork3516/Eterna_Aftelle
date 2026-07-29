@@ -201,6 +201,8 @@ struct RuntimeResidentReply: Equatable {
     let expression: RuntimeExpressionResult
     let relationshipEvidenceCandidates:
         [ProviderRelationshipEvidenceCandidate]
+    let narrativeMemoryCandidates:
+        [ProviderNarrativeMemoryCandidate]
 }
 
 public final class VisualStateMapper {
