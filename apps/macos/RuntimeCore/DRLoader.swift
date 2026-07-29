@@ -59,6 +59,206 @@ struct RuntimeRelationshipProgressionProjection: Equatable {
     let resetTarget: RuntimeRelationshipStage
 }
 
+enum RuntimeNarrativeMemoryType: String, Codable, CaseIterable {
+    case sharedExperience = "shared_experience"
+    case confirmedPlan = "confirmed_plan"
+    case importantProgress = "important_progress"
+    case confirmedEmotionalEvent = "confirmed_emotional_event"
+    case mutualCommitment = "mutual_commitment"
+    case userMarkedImportant = "user_marked_important"
+}
+
+enum RuntimeNarrativeMemoryLifecycleState:
+    String,
+    Codable,
+    CaseIterable {
+    case candidate
+    case active
+    case superseded
+    case deleted
+    case rejected
+}
+
+struct RuntimeNarrativeMemoryConsentPolicy: Decodable, Equatable {
+    let explicitRememberRequestRaisesCandidatePriority: Bool
+    let explicitRememberRequestBypassesSafety: Bool
+    let sensitiveOrAmbiguousRequiresExplicitUserConsent: Bool
+    let userRejectionState: RuntimeNarrativeMemoryLifecycleState
+    let rejectedCandidateAutoReproposal: Bool
+    let userForgetRequestTargetState:
+        RuntimeNarrativeMemoryLifecycleState
+
+    enum CodingKeys: String, CodingKey {
+        case explicitRememberRequestRaisesCandidatePriority =
+            "explicit_remember_request_raises_candidate_priority"
+        case explicitRememberRequestBypassesSafety =
+            "explicit_remember_request_bypasses_safety"
+        case sensitiveOrAmbiguousRequiresExplicitUserConsent =
+            "sensitive_or_ambiguous_requires_explicit_user_consent"
+        case userRejectionState = "user_rejection_state"
+        case rejectedCandidateAutoReproposal =
+            "rejected_candidate_auto_reproposal"
+        case userForgetRequestTargetState =
+            "user_forget_request_target_state"
+    }
+}
+
+struct RuntimeNarrativeMemorySensitivityPolicy:
+    Decodable,
+    Equatable {
+    let sensitiveOrAmbiguousRequiresExplicitUserConsent: Bool
+    let permanentlyForbiddenCategories: [String]
+    let safetyBoundaryEnforced: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case sensitiveOrAmbiguousRequiresExplicitUserConsent =
+            "sensitive_or_ambiguous_requires_explicit_user_consent"
+        case permanentlyForbiddenCategories =
+            "permanently_forbidden_categories"
+        case safetyBoundaryEnforced = "safety_boundary_enforced"
+    }
+}
+
+struct RuntimeNarrativeMemoryDeduplicationPolicy:
+    Decodable,
+    Equatable {
+    let sameEventAction: String
+    let duplicateEventsAreMerged: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case sameEventAction = "same_event_action"
+        case duplicateEventsAreMerged = "duplicate_events_are_merged"
+    }
+}
+
+struct RuntimeNarrativeMemoryConflictResolutionPolicy:
+    Decodable,
+    Equatable {
+    let latestExplicitUserStatement: String
+    let userLatestExplicitStatementHasPriority: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case latestExplicitUserStatement =
+            "latest_explicit_user_statement"
+        case userLatestExplicitStatementHasPriority =
+            "user_latest_explicit_statement_has_priority"
+    }
+}
+
+struct RuntimeNarrativeMemorySupersessionPolicy:
+    Decodable,
+    Equatable {
+    let olderConflictingMemoryState:
+        RuntimeNarrativeMemoryLifecycleState
+    let supersededMemoryIsCurrentFact: Bool
+    let supersededMemoryRetrievable: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case olderConflictingMemoryState =
+            "older_conflicting_memory_state"
+        case supersededMemoryIsCurrentFact =
+            "superseded_memory_is_current_fact"
+        case supersededMemoryRetrievable =
+            "superseded_memory_retrievable"
+    }
+}
+
+struct RuntimeNarrativeMemoryDeletionPolicy: Decodable, Equatable {
+    let singleItemDelete: Bool
+    let clearAll: Bool
+    let deletedIsRetrievable: Bool
+    let restoreFromModelInference: Bool
+    let restoreFromHistoricalTranscript: Bool
+    let deletedMemoryRetrievable: Bool
+    let deletedMemoryEntersModelContext: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case singleItemDelete = "single_item_delete"
+        case clearAll = "clear_all"
+        case deletedIsRetrievable = "deleted_is_retrievable"
+        case restoreFromModelInference =
+            "restore_from_model_inference"
+        case restoreFromHistoricalTranscript =
+            "restore_from_historical_transcript"
+        case deletedMemoryRetrievable =
+            "deleted_memory_retrievable"
+        case deletedMemoryEntersModelContext =
+            "deleted_memory_enters_model_context"
+    }
+}
+
+struct RuntimeNarrativeMemoryRetrievalPolicy: Decodable, Equatable {
+    let allowedLifecycleStates:
+        [RuntimeNarrativeMemoryLifecycleState]
+    let excludedLifecycleStates:
+        [RuntimeNarrativeMemoryLifecycleState]
+    let rules: [String]
+    let deletedMemoryRetrievable: Bool
+    let rejectedMemoryRetrievable: Bool
+    let deletedOrRejectedEntersModelContext: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case allowedLifecycleStates = "allowed_lifecycle_states"
+        case excludedLifecycleStates = "excluded_lifecycle_states"
+        case rules
+        case deletedMemoryRetrievable =
+            "deleted_memory_retrievable"
+        case rejectedMemoryRetrievable =
+            "rejected_memory_retrievable"
+        case deletedOrRejectedEntersModelContext =
+            "deleted_or_rejected_enters_model_context"
+    }
+}
+
+struct RuntimeNarrativeMemoryModelAuthority: Decodable, Equatable {
+    let modelCanProposeCandidateOnly: Bool
+    let modelCanWriteMemory: Bool
+    let modelCanUpdateMemory: Bool
+    let modelCanDeleteMemory: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case modelCanProposeCandidateOnly =
+            "model_can_propose_candidate_only"
+        case modelCanWriteMemory = "model_can_write_memory"
+        case modelCanUpdateMemory = "model_can_update_memory"
+        case modelCanDeleteMemory = "model_can_delete_memory"
+    }
+}
+
+struct RuntimeNarrativeMemoryRuntimeAuthority:
+    Decodable,
+    Equatable {
+    let runtimeIsFinalDecisionOwner: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case runtimeIsFinalDecisionOwner =
+            "runtime_is_final_decision_owner"
+    }
+}
+
+struct RuntimeNarrativeMemoryProjection: Equatable {
+    let schemaVersion: String
+    let contentRevision: String
+    let derived: Bool
+    let readOnly: Bool
+    let sourcePaths: [String]
+    let enabled: Bool
+    let allowedMemoryTypes: [RuntimeNarrativeMemoryType]
+    let lifecycleStates: [RuntimeNarrativeMemoryLifecycleState]
+    let consentPolicy: RuntimeNarrativeMemoryConsentPolicy
+    let sensitivityPolicy: RuntimeNarrativeMemorySensitivityPolicy
+    let deduplicationPolicy:
+        RuntimeNarrativeMemoryDeduplicationPolicy
+    let conflictResolutionPolicy:
+        RuntimeNarrativeMemoryConflictResolutionPolicy
+    let supersessionPolicy: RuntimeNarrativeMemorySupersessionPolicy
+    let deletionPolicy: RuntimeNarrativeMemoryDeletionPolicy
+    let retrievalPolicy: RuntimeNarrativeMemoryRetrievalPolicy
+    let modelAuthority: RuntimeNarrativeMemoryModelAuthority
+    let runtimeAuthority: RuntimeNarrativeMemoryRuntimeAuthority
+    let fullDialogueStorageAllowed: Bool
+}
+
 struct RuntimeDialogueInstruction: Equatable {
     let instruction: String
     let sourceRuleRefs: [String]
@@ -504,6 +704,52 @@ private struct RuntimeRelationshipProgressionProjectionWire: Decodable {
     }
 }
 
+private struct RuntimeNarrativeMemoryProjectionWire: Decodable {
+    let schemaVersion: String
+    let contentRevision: String
+    let derived: Bool
+    let readOnly: Bool
+    let sourcePaths: [String]
+    let enabled: Bool
+    let allowedMemoryTypes: [RuntimeNarrativeMemoryType]
+    let lifecycleStates: [RuntimeNarrativeMemoryLifecycleState]
+    let consentPolicy: RuntimeNarrativeMemoryConsentPolicy
+    let sensitivityPolicy: RuntimeNarrativeMemorySensitivityPolicy
+    let deduplicationPolicy:
+        RuntimeNarrativeMemoryDeduplicationPolicy
+    let conflictResolutionPolicy:
+        RuntimeNarrativeMemoryConflictResolutionPolicy
+    let supersessionPolicy: RuntimeNarrativeMemorySupersessionPolicy
+    let deletionPolicy: RuntimeNarrativeMemoryDeletionPolicy
+    let retrievalPolicy: RuntimeNarrativeMemoryRetrievalPolicy
+    let modelAuthority: RuntimeNarrativeMemoryModelAuthority
+    let runtimeAuthority: RuntimeNarrativeMemoryRuntimeAuthority
+    let fullDialogueStorageAllowed: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case contentRevision = "content_revision"
+        case derived
+        case readOnly = "read_only"
+        case sourcePaths = "source_paths"
+        case enabled
+        case allowedMemoryTypes = "allowed_memory_types"
+        case lifecycleStates = "memory_lifecycle_states"
+        case consentPolicy = "consent_policy"
+        case sensitivityPolicy = "sensitivity_policy"
+        case deduplicationPolicy = "deduplication_policy"
+        case conflictResolutionPolicy =
+            "conflict_resolution_policy"
+        case supersessionPolicy = "supersession_policy"
+        case deletionPolicy = "deletion_policy"
+        case retrievalPolicy = "retrieval_policy"
+        case modelAuthority = "model_authority"
+        case runtimeAuthority = "runtime_authority"
+        case fullDialogueStorageAllowed =
+            "full_dialogue_storage_allowed"
+    }
+}
+
 private struct InvalidDRFieldError: Error {
     let path: String
 }
@@ -536,6 +782,7 @@ public struct LoadedDR {
     let initialRelationshipConfig: InitialRelationshipConfig?
     let relationshipProgressionProjection:
         RuntimeRelationshipProgressionProjection?
+    let narrativeMemoryProjection: RuntimeNarrativeMemoryProjection?
     let runtimeDialogueProjection: RuntimeDialogueProjection?
     let visualExpressionMapping: RuntimeVisualExpressionMapping
 }
@@ -673,6 +920,8 @@ public final class DRLoader {
         let initialRelationshipConfig = try parseInitialRelationshipConfig(from: payload)
         let relationshipProgressionProjection =
             parseRelationshipProgressionProjection(from: payload)
+        let narrativeMemoryProjection =
+            try parseNarrativeMemoryProjection(from: payload)
         let runtimeDialogueProjection = try parseRuntimeDialogueProjection(from: payload)
         let visualExpressionMapping = parseVisualExpressionMapping(from: object)
         let payloadModules = payload["modules"] as? [Any]
@@ -713,6 +962,7 @@ public final class DRLoader {
             initialRelationshipConfig: initialRelationshipConfig,
             relationshipProgressionProjection:
                 relationshipProgressionProjection,
+            narrativeMemoryProjection: narrativeMemoryProjection,
             runtimeDialogueProjection: runtimeDialogueProjection,
             visualExpressionMapping: visualExpressionMapping
         )
@@ -880,6 +1130,75 @@ public final class DRLoader {
             forbiddenEvidenceTypes: forbiddenEvidenceTypes,
             availableUserActions: availableUserActions,
             resetTarget: resetTarget
+        )
+    }
+
+    private func parseNarrativeMemoryProjection(
+        from payload: [String: Any]
+    ) throws -> RuntimeNarrativeMemoryProjection? {
+        let path = "payload.narrative_memory_projection"
+        guard let rawProjection = try optionalObject(
+            "narrative_memory_projection",
+            in: payload,
+            path: path
+        ) else {
+            return nil
+        }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: rawProjection
+        ),
+        let wire = try? JSONDecoder().decode(
+            RuntimeNarrativeMemoryProjectionWire.self,
+            from: data
+        ) else {
+            throw InvalidDRFieldError(path: path)
+        }
+
+        guard wire.schemaVersion == "0.1",
+              !wire.contentRevision.isEmpty,
+              wire.derived,
+              wire.readOnly,
+              Set(wire.allowedMemoryTypes)
+                == Set(RuntimeNarrativeMemoryType.allCases),
+              wire.allowedMemoryTypes.count
+                == RuntimeNarrativeMemoryType.allCases.count,
+              Set(wire.lifecycleStates)
+                == Set(RuntimeNarrativeMemoryLifecycleState.allCases),
+              wire.lifecycleStates.count
+                == RuntimeNarrativeMemoryLifecycleState.allCases.count,
+              wire.consentPolicy.userRejectionState == .rejected,
+              wire.consentPolicy.userForgetRequestTargetState
+                == .deleted,
+              wire.sensitivityPolicy.safetyBoundaryEnforced,
+              wire.modelAuthority.modelCanProposeCandidateOnly,
+              !wire.modelAuthority.modelCanWriteMemory,
+              !wire.modelAuthority.modelCanUpdateMemory,
+              !wire.modelAuthority.modelCanDeleteMemory,
+              wire.runtimeAuthority.runtimeIsFinalDecisionOwner,
+              !wire.fullDialogueStorageAllowed else {
+            throw DRLoaderError.conflictingField(path)
+        }
+
+        return RuntimeNarrativeMemoryProjection(
+            schemaVersion: wire.schemaVersion,
+            contentRevision: wire.contentRevision,
+            derived: wire.derived,
+            readOnly: wire.readOnly,
+            sourcePaths: wire.sourcePaths,
+            enabled: wire.enabled,
+            allowedMemoryTypes: wire.allowedMemoryTypes,
+            lifecycleStates: wire.lifecycleStates,
+            consentPolicy: wire.consentPolicy,
+            sensitivityPolicy: wire.sensitivityPolicy,
+            deduplicationPolicy: wire.deduplicationPolicy,
+            conflictResolutionPolicy: wire.conflictResolutionPolicy,
+            supersessionPolicy: wire.supersessionPolicy,
+            deletionPolicy: wire.deletionPolicy,
+            retrievalPolicy: wire.retrievalPolicy,
+            modelAuthority: wire.modelAuthority,
+            runtimeAuthority: wire.runtimeAuthority,
+            fullDialogueStorageAllowed:
+                wire.fullDialogueStorageAllowed
         )
     }
 

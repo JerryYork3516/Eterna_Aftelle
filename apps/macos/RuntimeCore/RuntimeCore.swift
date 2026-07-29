@@ -895,6 +895,8 @@ public final class RuntimeCore {
         RuntimeRelationshipProgressionProjection?
     private(set) var currentRelationshipState:
         RuntimeRelationshipInstanceState?
+    private(set) var currentNarrativeMemoryProjection:
+        RuntimeNarrativeMemoryProjection?
     private var activeExpressionRequestID: UUID?
     private var handledFirstAppearanceResidentIDs: Set<String> = []
     private var clockState = RuntimeClockState()
@@ -970,6 +972,8 @@ public final class RuntimeCore {
                 residentID: loadedDR.residentID,
                 projection: loadedDR.relationshipProgressionProjection
             )
+            currentNarrativeMemoryProjection =
+                loadedDR.narrativeMemoryProjection
             currentExpressionResult = .neutral(
                 source: loadedDR.visualExpressionMapping.source,
                 fallbackOccurred:
