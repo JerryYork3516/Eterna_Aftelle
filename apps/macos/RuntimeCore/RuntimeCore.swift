@@ -311,8 +311,15 @@ struct ResidentDialogueContextSummary: Equatable {
     let selectedFewShotCount: Int
     let recentMessageCount: Int
     let approvedPreferenceCount: Int
+    let narrativeMemoryCount: Int
     let prohibitedPatternCount: Int
     let estimatedCharacterCount: Int
+}
+
+struct RuntimeNarrativeMemoryContextItem: Equatable {
+    let type: RuntimeNarrativeMemoryType
+    let summary: String
+    let temporalContext: String
 }
 
 struct RuntimeRelationshipDialogueContext: Equatable {
@@ -361,6 +368,7 @@ struct ResidentDialogueContext: Equatable {
     let contextUsagePolicy: RuntimeDialogueContextUsagePolicy
     let recentMessages: [ResidentDialogueMessage]
     let approvedPreferences: [String: String]
+    let narrativeMemories: [RuntimeNarrativeMemoryContextItem]
     let currentUserInput: String
     let fallbackText: String
     let summary: ResidentDialogueContextSummary
@@ -378,7 +386,9 @@ struct ResidentDialogueContextSource: Equatable {
         recentMessageLimit: Int,
         fewShotLimit: Int,
         relationshipProgression:
-            RuntimeRelationshipDialogueContext? = nil
+            RuntimeRelationshipDialogueContext? = nil,
+        narrativeMemories:
+            [RuntimeNarrativeMemoryContextItem] = []
     ) -> ResidentDialogueContext {
         let emotionalDialogue = projection.emotionalDialogue.flatMap { $0.enabled ? $0 : nil }
         let configuredFewShotLimit = max(
@@ -475,6 +485,7 @@ struct ResidentDialogueContextSource: Equatable {
             prohibitedPatterns: prohibitedPatterns,
             scenarios: scenarios,
             recentMessages: boundedRecentMessages,
+            narrativeMemories: narrativeMemories,
             currentUserInput: currentUserInput
         )
 
@@ -506,6 +517,7 @@ struct ResidentDialogueContextSource: Equatable {
             contextUsagePolicy: projection.contextUsagePolicy,
             recentMessages: boundedRecentMessages,
             approvedPreferences: [:],
+            narrativeMemories: narrativeMemories,
             currentUserInput: currentUserInput,
             fallbackText: projection.fallbackBehavior.text,
             summary: ResidentDialogueContextSummary(
@@ -514,6 +526,7 @@ struct ResidentDialogueContextSource: Equatable {
                 selectedFewShotCount: selectedFewShots.count,
                 recentMessageCount: boundedRecentMessages.count,
                 approvedPreferenceCount: 0,
+                narrativeMemoryCount: narrativeMemories.count,
                 prohibitedPatternCount: prohibitedPatterns.count,
                 estimatedCharacterCount: estimatedCharacterCount
             )
@@ -526,6 +539,7 @@ struct ResidentDialogueContextSource: Equatable {
         prohibitedPatterns: [RuntimeDialogueProhibitedPattern],
         scenarios: [RuntimeDialogueScenario],
         recentMessages: [ResidentDialogueMessage],
+        narrativeMemories: [RuntimeNarrativeMemoryContextItem],
         currentUserInput: String
     ) -> Int {
         let identityTexts = [
@@ -565,6 +579,9 @@ struct ResidentDialogueContextSource: Equatable {
             + relationshipTexts
             + contextBoundaryTexts
             + recentMessages.flatMap { [$0.role, $0.text] }
+            + narrativeMemories.flatMap {
+                [$0.type.rawValue, $0.summary, $0.temporalContext]
+            }
             + [currentUserInput, projection.fallbackBehavior.text]
         return allTexts.reduce(0) { $0 + $1.count }
     }
@@ -833,6 +850,24 @@ struct RuntimeOrchestrationStep: Equatable {
     var durationMilliseconds: Int
 }
 
+struct RuntimeNarrativeMemoryOrchestrationMetadata: Equatable {
+    static let none = RuntimeNarrativeMemoryOrchestrationMetadata(
+        retrievalCount: 0,
+        retrievedMemoryIDs: [],
+        affectedMemoryIDs: [],
+        userOperation: "none",
+        decision: "no_change",
+        reason: "no_user_control"
+    )
+
+    let retrievalCount: Int
+    let retrievedMemoryIDs: [String]
+    let affectedMemoryIDs: [String]
+    let userOperation: String
+    let decision: String
+    let reason: String
+}
+
 struct RuntimeOrchestrationInteraction: Equatable, Identifiable {
     let id: UUID
     let residentID: String
@@ -862,6 +897,8 @@ struct RuntimeOrchestrationInteraction: Equatable, Identifiable {
     let relationshipReason: String
     let narrativeMemoryDecisions:
         [RuntimeNarrativeMemoryDecision]
+    let narrativeMemoryActivity:
+        RuntimeNarrativeMemoryOrchestrationMetadata
     var steps: [RuntimeOrchestrationStep]
 
     var durationMilliseconds: Int {
@@ -884,9 +921,35 @@ private struct RuntimeNarrativeMemoryCandidateOutcome {
     let didMutateStore: Bool
 }
 
+private enum RuntimeNarrativeMemoryUserControl: String {
+    case remember
+    case doNotRemember = "do_not_remember"
+    case correct
+    case forget
+    case clearAll = "clear_all"
+}
+
+private struct RuntimeNarrativeMemoryControlResult {
+    let control: RuntimeNarrativeMemoryUserControl?
+    let affectedMemoryIDs: [String]
+    let decision: String
+    let reason: String
+}
+
+private struct RuntimeNarrativeMemoryRetrieval {
+    let memoryID: String
+    let item: RuntimeNarrativeMemoryContextItem
+}
+
+private struct RuntimeCompiledDialogueContext {
+    let context: ResidentDialogueContext
+    let retrievedMemoryIDs: [String]
+}
+
 public final class RuntimeCore {
     static let recentDialogueMessageLimit = 8
     static let fewShotSelectionLimit = 4
+    static let narrativeMemoryRetrievalLimit = 3
 
     private let drLoader: DRLoader
     private let executionEngine: ExecutionEngine
@@ -1279,17 +1342,449 @@ public final class RuntimeCore {
         return response
     }
 
-    func compileResidentDialogueContext(currentUserInput: String) -> ResidentDialogueContext? {
+    func compileResidentDialogueContext(
+        currentUserInput: String
+    ) -> ResidentDialogueContext? {
+        compiledResidentDialogueContext(
+            currentUserInput: currentUserInput
+        )?.context
+    }
+
+    private func compiledResidentDialogueContext(
+        currentUserInput: String
+    ) -> RuntimeCompiledDialogueContext? {
         guard let source = currentDialogueContextSource,
               sessionContext?.residentID == source.identity.residentID else {
             return nil
         }
-        return source.compile(
+        let retrieved = retrieveNarrativeMemories(
+            relevantTo: currentUserInput,
+            residentID: source.identity.residentID
+        )
+        let context = source.compile(
             currentUserInput: currentUserInput,
             recentMessages: recentDialogueMessages(limit: Self.recentDialogueMessageLimit),
             recentMessageLimit: Self.recentDialogueMessageLimit,
             fewShotLimit: Self.fewShotSelectionLimit,
-            relationshipProgression: relationshipDialogueContext()
+            relationshipProgression: relationshipDialogueContext(),
+            narrativeMemories: retrieved.map(\.item)
+        )
+        return RuntimeCompiledDialogueContext(
+            context: context,
+            retrievedMemoryIDs: retrieved.map(\.memoryID)
+        )
+    }
+
+    private func retrieveNarrativeMemories(
+        relevantTo input: String,
+        residentID: String
+    ) -> [RuntimeNarrativeMemoryRetrieval] {
+        guard let projection = currentNarrativeMemoryProjection,
+              projection.enabled,
+              Set(
+                  projection.retrievalPolicy.allowedLifecycleStates
+              ) == [.active],
+              projection.retrievalPolicy.excludedLifecycleStates
+                .contains(.deleted),
+              projection.retrievalPolicy.excludedLifecycleStates
+                .contains(.superseded),
+              projection.retrievalPolicy.excludedLifecycleStates
+                .contains(.rejected),
+              let snapshot = try? narrativeMemoryStore.load(
+                  residentID: residentID
+              ) else {
+            return []
+        }
+        return snapshot.records
+            .filter {
+                $0.residentID == residentID
+                    && $0.status == .active
+                    && projection.allowedMemoryTypes
+                        .contains($0.type)
+                    && (
+                        $0.consentState == .notRequired
+                            || $0.consentState == .granted
+                    )
+                    && !$0.summary.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                    && permanentlyForbiddenNarrativeContentCategory(
+                        in: $0.summary
+                    ) == nil
+            }
+            .compactMap { record -> (
+                RuntimeNarrativeMemoryRecord,
+                Int
+            )? in
+                let score = narrativeMemoryRelevanceScore(
+                    input,
+                    record.summary
+                )
+                return score > 0 ? (record, score) : nil
+            }
+            .sorted {
+                $0.1 == $1.1
+                    ? $0.0.updatedAt > $1.0.updatedAt
+                    : $0.1 > $1.1
+            }
+            .prefix(Self.narrativeMemoryRetrievalLimit)
+            .map {
+                RuntimeNarrativeMemoryRetrieval(
+                    memoryID: $0.0.memoryID,
+                    item: RuntimeNarrativeMemoryContextItem(
+                        type: $0.0.type,
+                        summary: $0.0.summary,
+                        temporalContext: narrativeMemoryTemporalContext(
+                            for: $0.0.updatedAt
+                        )
+                    )
+                )
+            }
+    }
+
+    private func narrativeMemoryRelevanceScore(
+        _ input: String,
+        _ summary: String
+    ) -> Int {
+        let inputTerms = narrativeMemoryTopicTerms(input)
+        let summaryTerms = narrativeMemoryTopicTerms(summary)
+        return inputTerms.intersection(summaryTerms).count
+    }
+
+    private func narrativeMemoryTopicTerms(
+        _ text: String
+    ) -> Set<String> {
+        let words = text.lowercased().split {
+            !$0.isLetter && !$0.isNumber
+        }.map(String.init)
+        var terms = Set(words.filter { $0.count >= 2 })
+        for word in words where containsCJK(word) {
+            let characters = Array(word)
+            guard characters.count >= 2 else { continue }
+            for index in 0..<(characters.count - 1) {
+                terms.insert(String(characters[index...index + 1]))
+            }
+        }
+        return terms
+    }
+
+    private func containsCJK(_ value: String) -> Bool {
+        value.unicodeScalars.contains {
+            (0x3400...0x4DBF).contains($0.value)
+                || (0x4E00...0x9FFF).contains($0.value)
+                || (0xF900...0xFAFF).contains($0.value)
+        }
+    }
+
+    private func narrativeMemoryTemporalContext(
+        for date: Date
+    ) -> String {
+        let age = max(0, Date().timeIntervalSince(date))
+        if age < 86_400 {
+            return "recent"
+        }
+        if age < 604_800 {
+            return "within_last_week"
+        }
+        if age < 2_592_000 {
+            return "within_last_month"
+        }
+        return "earlier"
+    }
+
+    private func narrativeMemoryUserControl(
+        for input: String
+    ) -> RuntimeNarrativeMemoryUserControl? {
+        let normalized = input.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).lowercased()
+        let controls: [([String], RuntimeNarrativeMemoryUserControl)] = [
+            (
+                [
+                    "清空全部叙事记忆",
+                    "清空所有叙事记忆",
+                    "清空我的全部记忆",
+                    "清空当前居民全部叙事记忆",
+                    "清空叙事记忆",
+                    "clear all narrative memories"
+                ],
+                .clearAll
+            ),
+            (
+                [
+                    "不要记住",
+                    "别记住",
+                    "不要记录",
+                    "不需要记",
+                    "do not remember",
+                    "don't remember"
+                ],
+                .doNotRemember
+            ),
+            (
+                [
+                    "我之前说错了",
+                    "更正记忆",
+                    "修正记忆",
+                    "修正已有记忆",
+                    "请改成",
+                    "correct that memory"
+                ],
+                .correct
+            ),
+            (
+                [
+                    "请记住",
+                    "帮我记住",
+                    "记一下",
+                    "不要忘记",
+                    "别忘记",
+                    "remember that"
+                ],
+                .remember
+            ),
+            (
+                [
+                    "忘记",
+                    "删除这条记忆",
+                    "forget"
+                ],
+                .forget
+            )
+        ]
+        return controls.first {
+            phrases, _ in phrases.contains {
+                normalized.contains($0)
+            }
+        }?.1
+    }
+
+    private func applyNarrativeMemoryUserControl(
+        _ control: RuntimeNarrativeMemoryUserControl?,
+        input: String,
+        residentID: String
+    ) -> RuntimeNarrativeMemoryControlResult {
+        guard let control else {
+            return RuntimeNarrativeMemoryControlResult(
+                control: nil,
+                affectedMemoryIDs: [],
+                decision: "no_change",
+                reason: "no_user_control"
+            )
+        }
+        guard let projection = currentNarrativeMemoryProjection,
+              projection.enabled else {
+            return RuntimeNarrativeMemoryControlResult(
+                control: control,
+                affectedMemoryIDs: [],
+                decision: "feature_unavailable",
+                reason: "projection_missing_or_disabled"
+            )
+        }
+        switch control {
+        case .clearAll:
+            return clearNarrativeMemories(
+                residentID: residentID,
+                projection: projection
+            )
+        case .forget:
+            return forgetNarrativeMemory(
+                relevantTo: input,
+                residentID: residentID,
+                projection: projection
+            )
+        case .doNotRemember:
+            return RuntimeNarrativeMemoryControlResult(
+                control: control,
+                affectedMemoryIDs: [],
+                decision: "applied",
+                reason: "user_blocked_memory_write"
+            )
+        case .remember, .correct:
+            return RuntimeNarrativeMemoryControlResult(
+                control: control,
+                affectedMemoryIDs: [],
+                decision: "pending_candidate",
+                reason: "awaiting_valid_candidate"
+            )
+        }
+    }
+
+    private func clearNarrativeMemories(
+        residentID: String,
+        projection: RuntimeNarrativeMemoryProjection
+    ) -> RuntimeNarrativeMemoryControlResult {
+        guard projection.deletionPolicy.clearAll else {
+            return narrativeMemoryControlFailure(
+                .clearAll,
+                reason: "clear_all_not_allowed"
+            )
+        }
+        do {
+            guard let snapshot = try narrativeMemoryStore.load(
+                residentID: residentID
+            ) else {
+                return narrativeMemoryControlFailure(
+                    .clearAll,
+                    reason: "no_active_memory"
+                )
+            }
+            var records = snapshot.records
+            let indexes = records.indices.filter {
+                records[$0].status == .active
+            }
+            guard !indexes.isEmpty else {
+                return narrativeMemoryControlFailure(
+                    .clearAll,
+                    reason: "no_active_memory"
+                )
+            }
+            let now = Date()
+            for index in indexes {
+                records[index].status = .deleted
+                records[index].updatedAt = now
+            }
+            try narrativeMemoryStore.save(
+                RuntimeNarrativeMemoryStoreSnapshot(
+                    residentID: residentID,
+                    records: records
+                )
+            )
+            return RuntimeNarrativeMemoryControlResult(
+                control: .clearAll,
+                affectedMemoryIDs: indexes.map {
+                    records[$0].memoryID
+                },
+                decision: "applied",
+                reason: "user_cleared_all"
+            )
+        } catch {
+            return narrativeMemoryControlFailure(
+                .clearAll,
+                reason: "persistence_failed"
+            )
+        }
+    }
+
+    private func forgetNarrativeMemory(
+        relevantTo input: String,
+        residentID: String,
+        projection: RuntimeNarrativeMemoryProjection
+    ) -> RuntimeNarrativeMemoryControlResult {
+        guard projection.deletionPolicy.singleItemDelete else {
+            return narrativeMemoryControlFailure(
+                .forget,
+                reason: "single_delete_not_allowed"
+            )
+        }
+        do {
+            guard let snapshot = try narrativeMemoryStore.load(
+                residentID: residentID
+            ) else {
+                return narrativeMemoryControlFailure(
+                    .forget,
+                    reason: "memory_not_found"
+                )
+            }
+            var records = snapshot.records
+            let match = records.indices
+                .filter { records[$0].status == .active }
+                .map {
+                    (
+                        $0,
+                        narrativeMemoryRelevanceScore(
+                            input,
+                            records[$0].summary
+                        )
+                    )
+                }
+                .filter { $0.1 > 0 }
+                .max {
+                    $0.1 == $1.1
+                        ? records[$0.0].updatedAt
+                            < records[$1.0].updatedAt
+                        : $0.1 < $1.1
+                }
+            guard let index = match?.0 else {
+                return narrativeMemoryControlFailure(
+                    .forget,
+                    reason: "memory_not_found"
+                )
+            }
+            records[index].status = .deleted
+            records[index].updatedAt = Date()
+            try narrativeMemoryStore.save(
+                RuntimeNarrativeMemoryStoreSnapshot(
+                    residentID: residentID,
+                    records: records
+                )
+            )
+            return RuntimeNarrativeMemoryControlResult(
+                control: .forget,
+                affectedMemoryIDs: [records[index].memoryID],
+                decision: "applied",
+                reason: "user_forgot_memory"
+            )
+        } catch {
+            return narrativeMemoryControlFailure(
+                .forget,
+                reason: "persistence_failed"
+            )
+        }
+    }
+
+    private func narrativeMemoryControlFailure(
+        _ control: RuntimeNarrativeMemoryUserControl,
+        reason: String
+    ) -> RuntimeNarrativeMemoryControlResult {
+        RuntimeNarrativeMemoryControlResult(
+            control: control,
+            affectedMemoryIDs: [],
+            decision: "not_applied",
+            reason: reason
+        )
+    }
+
+    private func finalizedNarrativeMemoryControlResult(
+        _ result: RuntimeNarrativeMemoryControlResult,
+        candidateDecisions: [RuntimeNarrativeMemoryDecision],
+        providerSucceeded: Bool
+    ) -> RuntimeNarrativeMemoryControlResult {
+        guard result.decision == "pending_candidate",
+              let control = result.control else {
+            return result
+        }
+        guard providerSucceeded else {
+            return narrativeMemoryControlFailure(
+                control,
+                reason: "provider_failed"
+            )
+        }
+        let acceptedKinds: Set<RuntimeNarrativeMemoryDecisionKind>
+        switch control {
+        case .remember:
+            acceptedKinds = [.accept, .merge]
+        case .correct:
+            acceptedKinds = [.supersede]
+        case .doNotRemember, .forget, .clearAll:
+            acceptedKinds = []
+        }
+        let applied = candidateDecisions.filter {
+            acceptedKinds.contains($0.decision)
+        }
+        guard !applied.isEmpty else {
+            return narrativeMemoryControlFailure(
+                control,
+                reason: "valid_candidate_missing"
+            )
+        }
+        return RuntimeNarrativeMemoryControlResult(
+            control: control,
+            affectedMemoryIDs: applied.compactMap(\.memoryID),
+            decision: "applied",
+            reason: control == .remember
+                ? "user_remembered_memory"
+                : "user_corrected_memory"
         )
     }
 
@@ -1645,12 +2140,26 @@ public final class RuntimeCore {
 
     private func evaluateNarrativeMemoryCandidates(
         _ candidates: [ProviderNarrativeMemoryCandidate],
-        session: RuntimeSessionContext
+        session: RuntimeSessionContext,
+        userControl: RuntimeNarrativeMemoryUserControl? = nil
     ) -> [RuntimeNarrativeMemoryDecision] {
         guard !candidates.isEmpty,
               let projection = currentNarrativeMemoryProjection,
               projection.enabled else {
             return []
+        }
+        if userControl == .doNotRemember
+            || userControl == .forget
+            || userControl == .clearAll {
+            return candidates.map {
+                rejectedNarrativeMemoryDecision(
+                    candidateID: safeNarrativeCandidateID(
+                        $0.candidateID
+                    ),
+                    memoryType: $0.memoryType,
+                    reason: "user_control_preempted_candidate"
+                )
+            }
         }
 
         let existingSnapshot: RuntimeNarrativeMemoryStoreSnapshot?
@@ -1678,6 +2187,7 @@ public final class RuntimeCore {
                     candidate,
                     projection: projection,
                     session: session,
+                    userControl: userControl,
                     records: &records
                 )
             )
@@ -1712,11 +2222,13 @@ public final class RuntimeCore {
         _ candidate: ProviderNarrativeMemoryCandidate,
         projection: RuntimeNarrativeMemoryProjection,
         session: RuntimeSessionContext,
+        userControl: RuntimeNarrativeMemoryUserControl?,
         records: inout [RuntimeNarrativeMemoryRecord]
     ) -> RuntimeNarrativeMemoryCandidateOutcome {
         guard let normalized = normalizedNarrativeMemoryCandidate(
             candidate,
-            projection: projection
+            projection: projection,
+            userControl: userControl
         ) else {
             return RuntimeNarrativeMemoryCandidateOutcome(
                 decision: rejectedNarrativeMemoryDecision(
@@ -1837,7 +2349,8 @@ public final class RuntimeCore {
 
     private func normalizedNarrativeMemoryCandidate(
         _ candidate: ProviderNarrativeMemoryCandidate,
-        projection: RuntimeNarrativeMemoryProjection
+        projection: RuntimeNarrativeMemoryProjection,
+        userControl: RuntimeNarrativeMemoryUserControl?
     ) -> RuntimeNormalizedNarrativeMemoryCandidate? {
         let candidateID = safeNarrativeCandidateID(
             candidate.candidateID
@@ -1854,9 +2367,14 @@ public final class RuntimeCore {
         let inputClassification = candidate.inputClassification
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        let consentSignal = candidate.consentSignal
+        var consentSignal = candidate.consentSignal
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        if userControl == .remember {
+            consentSignal = "explicit_remember_request"
+        } else if userControl == .correct {
+            consentSignal = "user_correction"
+        }
         let sourceTurnIDs = Array(Set(
             candidate.sourceTurnIDs.map {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2312,9 +2830,20 @@ public final class RuntimeCore {
         var relationshipDecision = applyRelationshipUserControl(
             relationshipControl
         )
+        let narrativeMemoryControl = narrativeMemoryUserControl(
+            for: inputText
+        )
+        var narrativeMemoryControlResult =
+            applyNarrativeMemoryUserControl(
+                narrativeMemoryControl,
+                input: inputText,
+                residentID: sessionAtStart.residentID
+            )
         var narrativeMemoryDecisions =
             [RuntimeNarrativeMemoryDecision]()
-        guard let context = compileResidentDialogueContext(currentUserInput: inputText) else {
+        guard let compiledContext = compiledResidentDialogueContext(
+            currentUserInput: inputText
+        ) else {
             #if DEBUG
             orchestrationSteps.append(runtimeOrchestrationStep(
                 .contextCompiled,
@@ -2333,11 +2862,18 @@ public final class RuntimeCore {
                 presentationPending: true,
                 providerMetadata: orchestrationProviderMetadata,
                 emotionalRulesEnabled: orchestrationEmotionalRulesEnabled,
-                relationshipDecision: relationshipDecision
+                relationshipDecision: relationshipDecision,
+                narrativeMemoryActivity:
+                    runtimeNarrativeMemoryOrchestrationMetadata(
+                        controlResult:
+                            narrativeMemoryControlResult,
+                        retrievedMemoryIDs: []
+                    )
             )
             #endif
             return .failure(.residentUnavailable)
         }
+        let context = compiledContext.context
 
         #if DEBUG
         orchestrationSteps.append(runtimeOrchestrationStep(
@@ -2415,7 +2951,14 @@ public final class RuntimeCore {
                 presentationPending: false,
                 providerMetadata: orchestrationProviderMetadata,
                 emotionalRulesEnabled: orchestrationEmotionalRulesEnabled,
-                relationshipDecision: relationshipDecision
+                relationshipDecision: relationshipDecision,
+                narrativeMemoryActivity:
+                    runtimeNarrativeMemoryOrchestrationMetadata(
+                        controlResult:
+                            narrativeMemoryControlResult,
+                        retrievedMemoryIDs:
+                            compiledContext.retrievedMemoryIDs
+                    )
             )
             #endif
             return .failure(.cancelled)
@@ -2439,7 +2982,8 @@ public final class RuntimeCore {
             narrativeMemoryDecisions =
                 evaluateNarrativeMemoryCandidates(
                     reply.narrativeMemoryCandidates,
-                    session: sessionAtStart
+                    session: sessionAtStart,
+                    userControl: narrativeMemoryControl
                 )
             sessionWriteSucceeded = persistResidentDialogueExchange(
                 userInput: inputText,
@@ -2447,6 +2991,18 @@ public final class RuntimeCore {
                 session: sessionAtStart
             )
         }
+        let providerSucceeded: Bool
+        if case .success = result {
+            providerSucceeded = true
+        } else {
+            providerSucceeded = false
+        }
+        narrativeMemoryControlResult =
+            finalizedNarrativeMemoryControlResult(
+                narrativeMemoryControlResult,
+                candidateDecisions: narrativeMemoryDecisions,
+                providerSucceeded: providerSucceeded
+            )
         #if DEBUG
         let sessionWriteStatus: RuntimeOrchestrationSessionWriteStatus
         let sessionStepStatus: RuntimeOrchestrationStepStatus
@@ -2477,7 +3033,13 @@ public final class RuntimeCore {
             emotionalRulesEnabled: orchestrationEmotionalRulesEnabled,
             relationshipDecision: relationshipDecision,
             narrativeMemoryDecisions:
-                narrativeMemoryDecisions
+                narrativeMemoryDecisions,
+            narrativeMemoryActivity:
+                runtimeNarrativeMemoryOrchestrationMetadata(
+                    controlResult: narrativeMemoryControlResult,
+                    retrievedMemoryIDs:
+                        compiledContext.retrievedMemoryIDs
+                )
         )
         #endif
         return result
@@ -2728,7 +3290,9 @@ public final class RuntimeCore {
         relationshipDecision:
             RuntimeRelationshipDecision = .unavailable,
         narrativeMemoryDecisions:
-            [RuntimeNarrativeMemoryDecision] = []
+            [RuntimeNarrativeMemoryDecision] = [],
+        narrativeMemoryActivity:
+            RuntimeNarrativeMemoryOrchestrationMetadata = .none
     ) {
         let expressionResult: RuntimeExpressionResult
         switch result {
@@ -2778,6 +3342,7 @@ public final class RuntimeCore {
             relationshipDecision: relationshipDecision.decision,
             relationshipReason: relationshipDecision.reason,
             narrativeMemoryDecisions: narrativeMemoryDecisions,
+            narrativeMemoryActivity: narrativeMemoryActivity,
             steps: normalizedSteps
         )
         runtimeOrchestrationRecords.append(interaction)
@@ -2786,6 +3351,20 @@ public final class RuntimeCore {
                 runtimeOrchestrationRecords.count - Self.runtimeOrchestrationCapacity
             )
         }
+    }
+
+    private func runtimeNarrativeMemoryOrchestrationMetadata(
+        controlResult: RuntimeNarrativeMemoryControlResult,
+        retrievedMemoryIDs: [String]
+    ) -> RuntimeNarrativeMemoryOrchestrationMetadata {
+        RuntimeNarrativeMemoryOrchestrationMetadata(
+            retrievalCount: retrievedMemoryIDs.count,
+            retrievedMemoryIDs: retrievedMemoryIDs,
+            affectedMemoryIDs: controlResult.affectedMemoryIDs,
+            userOperation: controlResult.control?.rawValue ?? "none",
+            decision: controlResult.decision,
+            reason: controlResult.reason
+        )
     }
 
     private func runtimeOrchestrationStep(

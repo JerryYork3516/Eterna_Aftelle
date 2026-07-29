@@ -1102,6 +1102,7 @@ struct ParticleExpressionTests {
             relationshipDecision: "feature_unavailable",
             relationshipReason: "projection_missing",
             narrativeMemoryDecisions: [],
+            narrativeMemoryActivity: .none,
             steps: []
         )
     }

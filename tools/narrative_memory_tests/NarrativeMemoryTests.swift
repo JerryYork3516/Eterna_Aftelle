@@ -34,6 +34,7 @@ struct NarrativeMemoryTests {
         try testStorePersistenceAndIsolation()
         try testCorruptedStoreFailsSafely()
         try await NarrativeMemoryA2Tests.run(drData)
+        try await NarrativeMemoryA3Tests.run(drData)
         print(
             "narrative-memory-tests: \(checkCount) checks passed"
         )

@@ -98,10 +98,30 @@ if rg -q '(summary|userInput|replyText|systemPrompt|apiKey|rawResponse|memoryVal
     sed -n \
       '/struct RuntimeOrchestrationInteraction:/,/^}/p' \
       "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+    sed -n \
+      '/struct RuntimeNarrativeMemoryOrchestrationMetadata:/,/^}/p' \
+      "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
   ); then
   printf 'narrative-memory-tests: D1 decision metadata contains sensitive field\n' >&2
   exit 1
 fi
+
+for field in \
+  retrievalCount \
+  retrievedMemoryIDs \
+  affectedMemoryIDs \
+  userOperation \
+  decision \
+  reason; do
+  if ! sed -n \
+    '/struct RuntimeNarrativeMemoryOrchestrationMetadata:/,/^}/p' \
+    "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift" \
+    | rg -q "$field"; then
+    printf 'narrative-memory-tests: missing A3 D1 field %s\n' \
+      "$field" >&2
+    exit 1
+  fi
+done
 
 if git -C "$repo_root" diff --name-only \
   | rg -q 'apps/macos/Aftelle/(AppModels|AppController|ContentView|ParticleCore)|SessionStore|MemoryController|RelationshipStateStore|TraceRecorder|project\.pbxproj'; then

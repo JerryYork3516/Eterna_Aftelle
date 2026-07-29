@@ -259,7 +259,7 @@ enum NarrativeMemoryA2Tests {
             ]
         )
         try expectSuccess(
-            await runtime.testResidentReply(inputText: "忘记这件事"),
+            await runtime.testResidentReply(inputText: "处理删除候选"),
             "delete memory"
         )
         snapshot = try require(
