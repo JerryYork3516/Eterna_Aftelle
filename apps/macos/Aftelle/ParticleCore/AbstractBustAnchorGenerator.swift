@@ -14,20 +14,42 @@ struct AbstractBustTuning: Equatable {
     var frontBackThickness: Float
     var asymmetryStrength: Float
     var contourSoftening: Float
+    var neckRootWidthScale: Float
+    var chestCurvature: Float
+    var headNeckBlend: Float
+    var verticalSampleJitter: Float
+    var angularJitter: Float
+    var radialJitter: Float
+    var shoulderDistributionExponent: Float
+    var torsoDistributionExponent: Float
+    var headParticleRatio: Float
+    var neckParticleRatio: Float
+    var shoulderParticleRatio: Float
 
     static let systemDefault = AbstractBustTuning(
-        headWidth: 0.30,
-        headHeight: 0.40,
-        headPosition: SIMD3<Float>(0, 0.62, 0),
+        headWidth: 0.265,
+        headHeight: 0.34,
+        headPosition: SIMD3<Float>(0, 0.59, 0),
         neckWidth: 0.16,
-        neckLength: 0.24,
+        neckLength: 0.20,
         shoulderWidth: 0.60,
-        shoulderSlope: 0.10,
+        shoulderSlope: 0.085,
         torsoLength: 0.76,
-        torsoTaper: 0.22,
+        torsoTaper: 0.30,
         frontBackThickness: 0.28,
-        asymmetryStrength: 0.018,
-        contourSoftening: 0.82
+        asymmetryStrength: 0.009,
+        contourSoftening: 0.90,
+        neckRootWidthScale: 1.20,
+        chestCurvature: 0.075,
+        headNeckBlend: 0.22,
+        verticalSampleJitter: 0.42,
+        angularJitter: 0.075,
+        radialJitter: 0.012,
+        shoulderDistributionExponent: 0.82,
+        torsoDistributionExponent: 1.10,
+        headParticleRatio: 0.22,
+        neckParticleRatio: 0.055,
+        shoulderParticleRatio: 0.27
     )
 }
 
@@ -46,7 +68,7 @@ struct AbstractBustAnchorGenerator {
     ) -> [SIMD3<Float>] {
         guard count > 0 else { return [] }
 
-        let ranges = regionRanges(count: count)
+        let ranges = regionRanges(count: count, tuning: tuning)
         var anchors = Array(repeating: SIMD3<Float>.zero, count: count)
         for index in anchors.indices {
             let region = region(at: index, ranges: ranges)
@@ -63,11 +85,14 @@ struct AbstractBustAnchorGenerator {
     }
 
     static func regionRanges(
-        count: Int
+        count: Int,
+        tuning: AbstractBustTuning = .systemDefault
     ) -> [AbstractBustAnchorRegion: Range<Int>] {
-        let headEnd = Int(Float(count) * 0.26)
-        let neckEnd = headEnd + Int(Float(count) * 0.06)
-        let shouldersEnd = neckEnd + Int(Float(count) * 0.26)
+        let headEnd = Int(Float(count) * tuning.headParticleRatio)
+        let neckEnd = headEnd
+            + Int(Float(count) * tuning.neckParticleRatio)
+        let shouldersEnd = neckEnd
+            + Int(Float(count) * tuning.shoulderParticleRatio)
         return [
             .head: 0..<headEnd,
             .neck: headEnd..<neckEnd,
@@ -99,6 +124,7 @@ struct AbstractBustAnchorGenerator {
             return headAnchor(
                 index: localIndex,
                 count: localCount,
+                seed: seed,
                 phase: seededPhase(seed: seed, salt: 0x11),
                 tuning: tuning
             )
@@ -106,6 +132,7 @@ struct AbstractBustAnchorGenerator {
             return neckAnchor(
                 index: localIndex,
                 count: localCount,
+                seed: seed,
                 phase: seededPhase(seed: seed, salt: 0x22),
                 tuning: tuning
             )
@@ -113,6 +140,7 @@ struct AbstractBustAnchorGenerator {
             return shouldersAndChestAnchor(
                 index: localIndex,
                 count: localCount,
+                seed: seed,
                 phase: seededPhase(seed: seed, salt: 0x33),
                 tuning: tuning
             )
@@ -120,6 +148,7 @@ struct AbstractBustAnchorGenerator {
             return torsoAnchor(
                 index: localIndex,
                 count: localCount,
+                seed: seed,
                 phase: seededPhase(seed: seed, salt: 0x44),
                 tuning: tuning
             )
@@ -129,16 +158,49 @@ struct AbstractBustAnchorGenerator {
     private static func headAnchor(
         index: Int,
         count: Int,
+        seed: UInt64,
         phase: Float,
         tuning: AbstractBustTuning
     ) -> SIMD3<Float> {
-        let sample = fibonacciSphere(index: index, count: count, phase: phase)
+        let sample = fibonacciSphere(
+            index: index,
+            count: count,
+            seed: seed,
+            phase: phase,
+            tuning: tuning
+        )
         let headDepth = tuning.frontBackThickness * 0.82
         var anchor = SIMD3<Float>(
             sample.x * tuning.headWidth,
             sample.y * tuning.headHeight,
             sample.z * headDepth
         ) + tuning.headPosition
+        let lowerHead = (1 - sample.y) * 0.5
+        let neckBlend = smoothstep(
+            1 - tuning.headNeckBlend,
+            1,
+            lowerHead
+        )
+        let planarLength = max(
+            sqrt(sample.x * sample.x + sample.z * sample.z),
+            0.000_01
+        )
+        let planarDirection = SIMD2<Float>(
+            sample.x / planarLength,
+            sample.z / planarLength
+        )
+        anchor.x = mix(
+            anchor.x,
+            planarDirection.x * tuning.neckWidth * 0.90,
+            neckBlend
+        )
+        anchor.z = mix(
+            anchor.z,
+            planarDirection.y
+                * tuning.frontBackThickness
+                * 0.46,
+            neckBlend
+        )
         anchor.x += tuning.asymmetryStrength
             * (0.22 + 0.18 * sample.y)
         return anchor
@@ -147,15 +209,38 @@ struct AbstractBustAnchorGenerator {
     private static func neckAnchor(
         index: Int,
         count: Int,
+        seed: UInt64,
         phase: Float,
         tuning: AbstractBustTuning
     ) -> SIMD3<Float> {
-        let u = unitSample(index: index, count: count)
+        let u = stratifiedUnitSample(
+            index: index,
+            count: count,
+            seed: seed,
+            salt: 0x221,
+            jitter: tuning.verticalSampleJitter
+        )
         let softened = softenedUnit(u, amount: tuning.contourSoftening)
-        let angle = goldenAngle * Float(index) + phase
-        let width = tuning.neckWidth * mix(0.86, 1.08, softened)
-        let depth = tuning.frontBackThickness * mix(0.48, 0.58, softened)
-        let top = tuning.headPosition.y - tuning.headHeight + 0.025
+        let angle = jitteredAngle(
+            index: index,
+            seed: seed,
+            salt: 0x222,
+            phase: phase,
+            jitter: tuning.angularJitter
+        )
+        let radialScale = jitteredRadialScale(
+            index: index,
+            seed: seed,
+            salt: 0x223,
+            amount: tuning.radialJitter
+        )
+        let width = tuning.neckWidth
+            * mix(0.90, tuning.neckRootWidthScale, softened)
+            * radialScale
+        let depth = tuning.frontBackThickness
+            * mix(0.46, 0.65, softened)
+            * radialScale
+        let top = tuning.headPosition.y - tuning.headHeight + 0.02
         var anchor = SIMD3<Float>(
             cos(angle) * width,
             top - u * tuning.neckLength,
@@ -168,22 +253,48 @@ struct AbstractBustAnchorGenerator {
     private static func shouldersAndChestAnchor(
         index: Int,
         count: Int,
+        seed: UInt64,
         phase: Float,
         tuning: AbstractBustTuning
     ) -> SIMD3<Float> {
-        let u = unitSample(index: index, count: count)
+        let u = pow(
+            stratifiedUnitSample(
+                index: index,
+                count: count,
+                seed: seed,
+                salt: 0x331,
+                jitter: tuning.verticalSampleJitter
+            ),
+            tuning.shoulderDistributionExponent
+        )
         let softened = softenedUnit(u, amount: tuning.contourSoftening)
-        let angle = goldenAngle * Float(index) + phase
-        let shoulderRise = smoothstep(0, 0.34, softened)
-        let chestSettle = smoothstep(0.34, 1, softened)
-        let width = mix(
-            tuning.neckWidth * 1.02,
+        let angle = jitteredAngle(
+            index: index,
+            seed: seed,
+            salt: 0x332,
+            phase: phase,
+            jitter: tuning.angularJitter
+        )
+        let radialScale = jitteredRadialScale(
+            index: index,
+            seed: seed,
+            salt: 0x333,
+            amount: tuning.radialJitter
+        )
+        let shoulderRise = smoothstep(0, 0.42, softened)
+        let chestSettle = smoothstep(0.38, 1, softened)
+        let chestArc = sin(.pi * softened) * tuning.chestCurvature
+        var width = mix(
+            tuning.neckWidth * tuning.neckRootWidthScale * 0.96,
             tuning.shoulderWidth,
             shoulderRise
-        ) * mix(1, 0.88, chestSettle)
+        ) * mix(1, 0.90, chestSettle)
+        width *= (1 + chestArc * 0.35) * radialScale
         let depth = tuning.frontBackThickness
             * mix(0.62, 1.02, shoulderRise)
-            * mix(1, 0.94, chestSettle)
+            * mix(1, 0.96, chestSettle)
+            * (1 + chestArc)
+            * radialScale
         let normalizedX = cos(angle)
         let outerShoulderDrop = tuning.shoulderSlope
             * pow(abs(normalizedX), 1.7)
@@ -208,16 +319,45 @@ struct AbstractBustAnchorGenerator {
     private static func torsoAnchor(
         index: Int,
         count: Int,
+        seed: UInt64,
         phase: Float,
         tuning: AbstractBustTuning
     ) -> SIMD3<Float> {
-        let u = unitSample(index: index, count: count)
+        let u = pow(
+            stratifiedUnitSample(
+                index: index,
+                count: count,
+                seed: seed,
+                salt: 0x441,
+                jitter: tuning.verticalSampleJitter
+            ),
+            tuning.torsoDistributionExponent
+        )
         let softened = softenedUnit(u, amount: tuning.contourSoftening)
-        let angle = goldenAngle * Float(index) + phase
+        let angle = jitteredAngle(
+            index: index,
+            seed: seed,
+            salt: 0x442,
+            phase: phase,
+            jitter: tuning.angularJitter
+        )
+        let radialScale = jitteredRadialScale(
+            index: index,
+            seed: seed,
+            salt: 0x443,
+            amount: tuning.radialJitter
+        )
+        let chestArc = sin(.pi * softened)
+            * tuning.chestCurvature
         let width = tuning.shoulderWidth
-            * 0.88
+            * 0.90
             * mix(1, 1 - tuning.torsoTaper, softened)
-        let depth = tuning.frontBackThickness * mix(0.94, 0.76, softened)
+            * (1 + chestArc * 0.45)
+            * radialScale
+        let depth = tuning.frontBackThickness
+            * mix(0.96, 0.72, softened)
+            * (1 + chestArc * 0.55)
+            * radialScale
         let top = tuning.headPosition.y
             - tuning.headHeight
             - tuning.neckLength
@@ -248,12 +388,32 @@ struct AbstractBustAnchorGenerator {
     private static func fibonacciSphere(
         index: Int,
         count: Int,
-        phase: Float
+        seed: UInt64,
+        phase: Float,
+        tuning: AbstractBustTuning
     ) -> SIMD3<Float> {
-        let u = unitSample(index: index, count: count)
+        let u = stratifiedUnitSample(
+            index: index,
+            count: count,
+            seed: seed,
+            salt: 0x111,
+            jitter: tuning.verticalSampleJitter
+        )
         let y = 1 - 2 * u
         let radius = sqrt(max(0, 1 - y * y))
-        let angle = goldenAngle * Float(index) + phase
+            * jitteredRadialScale(
+                index: index,
+                seed: seed,
+                salt: 0x113,
+                amount: tuning.radialJitter
+            )
+        let angle = jitteredAngle(
+            index: index,
+            seed: seed,
+            salt: 0x112,
+            phase: phase,
+            jitter: tuning.angularJitter
+        )
         return SIMD3<Float>(
             cos(angle) * radius,
             y,
@@ -261,8 +421,69 @@ struct AbstractBustAnchorGenerator {
         )
     }
 
-    private static func unitSample(index: Int, count: Int) -> Float {
-        (Float(index) + 0.5) / Float(max(count, 1))
+    private static func stratifiedUnitSample(
+        index: Int,
+        count: Int,
+        seed: UInt64,
+        salt: UInt64,
+        jitter: Float
+    ) -> Float {
+        let offset = deterministicSignedUnit(
+            index: index,
+            seed: seed,
+            salt: salt
+        ) * clamped(jitter) * 0.5
+        return min(
+            0.999_999,
+            max(
+                0.000_001,
+                (Float(index) + 0.5 + offset)
+                    / Float(max(count, 1))
+            )
+        )
+    }
+
+    private static func jitteredAngle(
+        index: Int,
+        seed: UInt64,
+        salt: UInt64,
+        phase: Float,
+        jitter: Float
+    ) -> Float {
+        goldenAngle * Float(index)
+            + phase
+            + deterministicSignedUnit(
+                index: index,
+                seed: seed,
+                salt: salt
+            ) * max(0, jitter)
+    }
+
+    private static func jitteredRadialScale(
+        index: Int,
+        seed: UInt64,
+        salt: UInt64,
+        amount: Float
+    ) -> Float {
+        1 + deterministicSignedUnit(
+            index: index,
+            seed: seed,
+            salt: salt
+        ) * max(0, amount)
+    }
+
+    private static func deterministicSignedUnit(
+        index: Int,
+        seed: UInt64,
+        salt: UInt64
+    ) -> Float {
+        var value = seed
+            &+ UInt64(index) &* 0x9E37_79B9_7F4A_7C15
+            &+ salt
+        value = (value ^ (value >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        value = (value ^ (value >> 27)) &* 0x94D0_49BB_1331_11EB
+        value ^= value >> 31
+        return Float(Double(value) / Double(UInt64.max)) * 2 - 1
     }
 
     private static func softenedUnit(_ value: Float, amount: Float) -> Float {

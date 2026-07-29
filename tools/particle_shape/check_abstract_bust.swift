@@ -24,6 +24,38 @@ struct AbstractBustCheck {
                 && ParticleShapeMorphTuning.defaultDuration <= 1.2,
             "default morph duration range"
         )
+        require(
+            tuning.headWidth >= 0.255 && tuning.headWidth <= 0.27,
+            "frozen head width"
+        )
+        require(
+            tuning.headHeight >= 0.33 && tuning.headHeight <= 0.35,
+            "frozen head height"
+        )
+        require(
+            tuning.neckLength >= 0.19 && tuning.neckLength <= 0.216,
+            "frozen neck length"
+        )
+        require(
+            tuning.neckRootWidthScale >= 1.15
+                && tuning.neckRootWidthScale <= 1.25,
+            "frozen neck root width"
+        )
+        require(
+            tuning.asymmetryStrength >= 0.007
+                && tuning.asymmetryStrength <= 0.011,
+            "frozen asymmetry"
+        )
+        require(
+            tuning.torsoTaper >= 0.28 && tuning.torsoTaper <= 0.32,
+            "frozen torso taper"
+        )
+        require(
+            tuning.verticalSampleJitter > 0
+                && tuning.angularJitter > 0
+                && tuning.radialJitter > 0,
+            "deterministic distribution jitter enabled"
+        )
         require(first.count == 12_000, "abstract bust anchor count")
         require(first == second, "deterministic generation")
         require(first.allSatisfy(isFinite), "finite anchors")
@@ -41,14 +73,68 @@ struct AbstractBustCheck {
 
         let bounds = bounds(of: first)
         let centroid = first.reduce(SIMD3<Float>.zero, +) / Float(first.count)
+        let density = densityStats(
+            first,
+            bounds: bounds,
+            bins: SIMD3<Int>(18, 24, 12)
+        )
+        let shoulderAnchors = Array(
+            first[ranges[.shouldersAndChest] ?? (0..<0)]
+        )
+        let leftShoulderAnchors = shoulderAnchors.filter { $0.x < 0 }
+        let rightShoulderAnchors = shoulderAnchors.filter { $0.x >= 0 }
+        let leftShoulderDensity = densityStats(
+            leftShoulderAnchors,
+            bounds: bounds,
+            bins: SIMD3<Int>(18, 24, 12)
+        )
+        let rightShoulderDensity = densityStats(
+            rightShoulderAnchors,
+            bounds: bounds,
+            bins: SIMD3<Int>(18, 24, 12)
+        )
+        let shoulderSideImbalance = Float(
+            abs(leftShoulderAnchors.count - rightShoulderAnchors.count)
+        ) / Float(max(shoulderAnchors.count, 1))
+        let transitionGap = maximumTransitionGap(
+            anchors: first,
+            ranges: ranges
+        )
         require(abs(centroid.x) < 0.04, "centroid x")
         require(centroid.y > -0.30 && centroid.y < 0.12, "centroid y")
         require(abs(centroid.z) < 0.03, "centroid z")
         require(bounds.minimum.x < -0.58 && bounds.maximum.x > 0.58, "shoulder width")
-        require(bounds.minimum.y < -1.10 && bounds.maximum.y > 0.98, "vertical bounds")
+        require(bounds.minimum.y < -1.06 && bounds.maximum.y > 0.91, "vertical bounds")
         require(bounds.minimum.z < -0.25 && bounds.maximum.z > 0.25, "front/back thickness")
         require(bounds.maximum.x - bounds.minimum.x < 1.45, "maximum width")
-        require(bounds.maximum.y - bounds.minimum.y < 2.25, "maximum height")
+        require(bounds.maximum.y - bounds.minimum.y < 2.08, "maximum height")
+        require(density.occupied > 1_000, "spatial density coverage")
+        require(
+            density.maximumToPercentile95 <= 1.55,
+            "no local density spike"
+        )
+        require(
+            shoulderSideImbalance < 0.02,
+            "shoulder side density balance"
+        )
+        require(
+            max(
+                leftShoulderDensity.maximum,
+                rightShoulderDensity.maximum
+            ) <= 32,
+            "shoulder local density bound"
+        )
+        require(
+            abs(
+                leftShoulderDensity.maximum
+                    - rightShoulderDensity.maximum
+            ) <= 3,
+            "shoulder local density symmetry"
+        )
+        require(
+            transitionGap < 0.015,
+            "head neck shoulder torso transition coverage"
+        )
 
         var simulation = ParticleSimulation(time: 1_000)
         let particleCountBefore = simulation.particleCount
@@ -253,6 +339,15 @@ struct AbstractBustCheck {
                 + "\(format(morphResult.maximumAnchorRadius)) "
                 + "maxPositionRadius="
                 + "\(format(morphResult.maximumPositionRadius)) "
+                + "densityMaxToP95="
+                + "\(format(density.maximumToPercentile95)) "
+                + "densityOccupied=\(density.occupied) "
+                + "shoulderSideImbalance="
+                + "\(format(shoulderSideImbalance)) "
+                + "shoulderVoxelMax="
+                + "\(leftShoulderDensity.maximum)"
+                + "/\(rightShoulderDensity.maximum) "
+                + "transitionGap=\(format(transitionGap)) "
                 + "switches=\(morphResult.stressSwitchCount) "
                 + "rebuildCount=\(rebuildCountBefore)->\(simulation.rebuildCount)"
         )
@@ -332,6 +427,80 @@ struct AbstractBustCheck {
                 simd_max(partial.1, anchor)
             )
         }
+    }
+
+    private struct DensityStats {
+        let occupied: Int
+        let maximum: Int
+        let percentile95: Int
+
+        var maximumToPercentile95: Float {
+            Float(maximum) / Float(max(percentile95, 1))
+        }
+    }
+
+    private static func densityStats(
+        _ anchors: [SIMD3<Float>],
+        bounds: (minimum: SIMD3<Float>, maximum: SIMD3<Float>),
+        bins: SIMD3<Int>
+    ) -> DensityStats {
+        guard !anchors.isEmpty else {
+            return DensityStats(occupied: 0, maximum: 0, percentile95: 0)
+        }
+        let extent = simd_max(
+            bounds.maximum - bounds.minimum,
+            SIMD3<Float>(repeating: 0.000_01)
+        )
+        let binCount = bins.x * bins.y * bins.z
+        var occupancy = Array(repeating: 0, count: binCount)
+        for anchor in anchors {
+            let unit = simd_clamp(
+                (anchor - bounds.minimum) / extent,
+                SIMD3<Float>(repeating: 0),
+                SIMD3<Float>(repeating: 0.999_999)
+            )
+            let x = Int(unit.x * Float(bins.x))
+            let y = Int(unit.y * Float(bins.y))
+            let z = Int(unit.z * Float(bins.z))
+            occupancy[(y * bins.z + z) * bins.x + x] += 1
+        }
+        let occupiedValues = occupancy.filter { $0 > 0 }.sorted()
+        let percentileIndex = min(
+            occupiedValues.count - 1,
+            Int(Float(occupiedValues.count) * 0.95)
+        )
+        return DensityStats(
+            occupied: occupiedValues.count,
+            maximum: occupiedValues.last ?? 0,
+            percentile95: occupiedValues[percentileIndex]
+        )
+    }
+
+    private static func maximumTransitionGap(
+        anchors: [SIMD3<Float>],
+        ranges: [AbstractBustAnchorRegion: Range<Int>]
+    ) -> Float {
+        let transitions: [
+            (AbstractBustAnchorRegion, AbstractBustAnchorRegion)
+        ] = [
+            (.head, .neck),
+            (.neck, .shouldersAndChest),
+            (.shouldersAndChest, .torso)
+        ]
+        var maximumGap: Float = 0
+        for (upperRegion, lowerRegion) in transitions {
+            guard let upperRange = ranges[upperRegion],
+                  let lowerRange = ranges[lowerRegion] else {
+                return .infinity
+            }
+            let upperBounds = bounds(of: Array(anchors[upperRange]))
+            let lowerBounds = bounds(of: Array(anchors[lowerRange]))
+            maximumGap = max(
+                maximumGap,
+                max(0, upperBounds.minimum.y - lowerBounds.maximum.y)
+            )
+        }
+        return maximumGap
     }
 
     private static func isFinite(_ anchor: SIMD3<Float>) -> Bool {

@@ -5,7 +5,8 @@ enum ParticleShapeMorphTuning {
     static let defaultDuration = 1.0
     static let minimumDuration = 0.8
     static let maximumDuration = 1.2
-    static let lifeMotionScale: Float = 0.38
+    static let minimumLifeMotionScale: Float = 0.34
+    static let minimumBreathingScale: Float = 0.78
     static let completionTolerance: Float = 0.000_001
     static let retargetStartTolerance: Float = 0.000_001
     static let maximumAnchorRadius: Float = 1.9
@@ -691,10 +692,17 @@ struct ParticleSimulation {
         morphProgress: Float
     ) {
         let baseRadius = sphereRadius
+        let morphConstraint = sin(
+            .pi * min(1, max(0, morphProgress))
+        )
+        let morphBreathingScale = 1
+            - morphConstraint
+            * (1 - ParticleShapeMorphTuning.minimumBreathingScale)
         let breathingAmplitude = ParticleTuning.Engine.amplifiedStrength(
             tuning.breathingAmount
         )
             * ParticleTuning.Engine.maximumBreathingScale
+            * morphBreathingScale
         let breathingFrequency = ParticleTuning.Engine.amplifiedValue(
             tuning.breathingSpeed,
             minimum: ParticleTuning.Engine.minimumBreathingFrequency,
@@ -723,9 +731,9 @@ struct ParticleSimulation {
             * pulseScale
             * stateRadiusScale
         currentShapeRadius = targetRadius
-        let morphLifeMotionScale = morphProgress < 1
-            ? ParticleShapeMorphTuning.lifeMotionScale
-            : 1
+        let morphLifeMotionScale = 1
+            - morphConstraint
+            * (1 - ParticleShapeMorphTuning.minimumLifeMotionScale)
         let aggregation = ParticleTuning.Engine.amplifiedValue(
             tuning.aggregationStrength,
             minimum: ParticleTuning.Engine.minimumAggregation,
