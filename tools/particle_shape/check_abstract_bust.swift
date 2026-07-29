@@ -19,6 +19,11 @@ struct AbstractBustCheck {
         )
 
         require(count == 12_000, "engine particle count changed")
+        require(
+            ParticleShapeMorphTuning.defaultDuration >= 0.8
+                && ParticleShapeMorphTuning.defaultDuration <= 1.2,
+            "default morph duration range"
+        )
         require(first.count == 12_000, "abstract bust anchor count")
         require(first == second, "deterministic generation")
         require(first.allSatisfy(isFinite), "finite anchors")
@@ -48,59 +53,231 @@ struct AbstractBustCheck {
         var simulation = ParticleSimulation(time: 1_000)
         let particleCountBefore = simulation.particleCount
         let rebuildCountBefore = simulation.rebuildCount
-        require(
-            simulation.setDebugStaticShapeTarget(
-                .abstractBust,
-                reason: "abstractBustCheck",
-                time: 1_001
-            ),
-            "select abstract bust"
+        let initialSpherePayloads = simulation.vertexPayloads
+        let visualController = ParticleStateController(
+            intent: .idle,
+            time: 1_000
         )
-        let bustPayloads = simulation.vertexPayloads
-        require(bustPayloads.count == 12_000, "bust payload count")
-        require(bustPayloads.allSatisfy(isFinite), "finite bust payloads")
-        require(simulation.targetShape == .abstractBust, "bust target state")
+        var time: TimeInterval = 1_001
+        require(
+            simulation.setShapeTarget(
+                .abstractBust,
+                reason: "sphereToAbstractBustCheck",
+                time: time
+            ),
+            "start sphere to abstract bust morph"
+        )
         require(
             !simulation.setShapeTarget(
                 .abstractBust,
-                reason: "abstractBustMustNotMorph",
-                time: 1_002
+                reason: "duplicateAbstractBustCheck",
+                time: time + 0.01
             ),
-            "abstract bust morph disabled"
+            "duplicate target does not restart"
         )
+        var frame = advance(
+            simulation: &simulation,
+            controller: visualController,
+            time: &time,
+            frames: 72
+        )
+        let bustPayloads = simulation.vertexPayloads
+        require(frame.shapeState.progress == 1, "sphere to bust completes")
+        require(frame.shapeState.targetTarget == .abstractBust, "bust target state")
+        require(bustPayloads.count == 12_000, "bust payload count")
+        require(bustPayloads.allSatisfy(isFinite), "finite bust payloads")
+        require(bustPayloads != initialSpherePayloads, "sphere/bust distinction")
+        let motionTimeAfterBust = frame.motionElapsedTime
+        let flowTimeAfterBust = frame.flowElapsedTime
+
         require(
-            simulation.setDebugStaticShapeTarget(
+            simulation.setShapeTarget(
                 .sphere,
-                reason: "sphereRegression",
-                time: 1_003
+                reason: "abstractBustToSphereCheck",
+                time: time
             ),
-            "sphere regression selection"
+            "start abstract bust to sphere morph"
+        )
+        let reverseStartPayloads = simulation.vertexPayloads
+        require(
+            reverseStartPayloads == bustPayloads,
+            "reverse switch has no position jump"
+        )
+        frame = advance(
+            simulation: &simulation,
+            controller: visualController,
+            time: &time,
+            frames: 72
         )
         let spherePayloads = simulation.vertexPayloads
+        require(frame.shapeState.progress == 1, "bust to sphere completes")
         require(spherePayloads.allSatisfy(isFinite), "finite sphere payloads")
         require(
-            simulation.setDebugStaticShapeTarget(
+            frame.motionElapsedTime > motionTimeAfterBust,
+            "lifecycle motion continues during morph"
+        )
+        require(
+            frame.flowElapsedTime > flowTimeAfterBust,
+            "flow life continues during morph"
+        )
+
+        require(
+            simulation.setShapeTarget(
                 .customShape,
                 reason: "customShapeRegression",
-                time: 1_004
+                time: time
             ),
             "custom shape regression selection"
+        )
+        frame = advance(
+            simulation: &simulation,
+            controller: visualController,
+            time: &time,
+            frames: 72
         )
         let customPayloads = simulation.vertexPayloads
         require(customPayloads.allSatisfy(isFinite), "finite custom payloads")
         require(spherePayloads != customPayloads, "sphere/custom shape distinction")
+
+        require(
+            simulation.setShapeTarget(
+                .abstractBust,
+                reason: "interruptPrepare",
+                time: time
+            ),
+            "start interrupt preparation"
+        )
+        _ = advance(
+            simulation: &simulation,
+            controller: visualController,
+            time: &time,
+            frames: 24
+        )
+        let interruptPosition = simulation.vertexPayloads
+        require(
+            simulation.setShapeTarget(
+                .sphere,
+                reason: "interruptReverse",
+                time: time
+            ),
+            "reverse during transition"
+        )
+        require(
+            interruptPosition == simulation.vertexPayloads,
+            "interrupted reverse has no position jump"
+        )
+
+        let morphResult = simulation.debugMorphStressResult()
+        if !morphResult.passed {
+            fputs(
+                "morph diagnostics continuity="
+                    + "\(format(morphResult.continuityError)) "
+                    + "retarget=\(format(morphResult.retargetStartError)) "
+                    + "sphereToBust="
+                    + "\(format(morphResult.sphereToBustCompletionError)) "
+                    + "bustToSphere="
+                    + "\(format(morphResult.bustToSphereCompletionError)) "
+                    + "maxAnchor="
+                    + "\(format(morphResult.maximumAnchorRadius)) "
+                    + "maxPosition="
+                    + "\(format(morphResult.maximumPositionRadius)) "
+                    + "duplicate="
+                    + "\(morphResult.duplicateRequestIgnored) "
+                    + "monotonic="
+                    + "\(morphResult.monotonicProgressPreserved) "
+                    + "resume="
+                    + "\(format(morphResult.resumeProgressStep))\n",
+                stderr
+            )
+        }
+        require(morphResult.passed, "morph stress result")
+        require(
+            morphResult.stressSwitchCount == 100,
+            "100 shape switch stress count"
+        )
+        require(
+            morphResult.continuityError
+                <= ParticleTuning.Engine.debugContinuityTolerance,
+            "retarget position continuity"
+        )
+        require(
+            morphResult.retargetStartError
+                <= ParticleShapeMorphTuning.retargetStartTolerance,
+            "retarget starts from current positions"
+        )
+        require(
+            morphResult.sphereToBustCompletionError
+                <= ParticleShapeMorphTuning.completionTolerance,
+            "sphere to bust completion error"
+        )
+        require(
+            morphResult.bustToSphereCompletionError
+                <= ParticleShapeMorphTuning.completionTolerance,
+            "bust to sphere completion error"
+        )
+        require(
+            morphResult.maximumAnchorRadius
+                <= ParticleShapeMorphTuning.maximumAnchorRadius,
+            "rapid switching does not explode"
+        )
+        require(
+            morphResult.maximumPositionRadius
+                <= ParticleShapeMorphTuning.maximumPositionRadius,
+            "rapid switching positions remain bounded"
+        )
+        require(
+            morphResult.duplicateRequestIgnored,
+            "stress duplicate target ignored"
+        )
+        require(
+            morphResult.monotonicProgressPreserved,
+            "morph progress remains monotonic"
+        )
         require(particleCountBefore == simulation.particleCount, "particle count preserved")
         require(rebuildCountBefore == simulation.rebuildCount, "shape switch does not rebuild")
 
         print(
-            "abstract_bust_check PASS "
+            "abstract_bust_morph_check PASS "
                 + "count=\(first.count) "
                 + "centroid=(\(format(centroid.x)),\(format(centroid.y)),\(format(centroid.z))) "
                 + "boundsX=(\(format(bounds.minimum.x)),\(format(bounds.maximum.x))) "
                 + "boundsY=(\(format(bounds.minimum.y)),\(format(bounds.maximum.y))) "
                 + "boundsZ=(\(format(bounds.minimum.z)),\(format(bounds.maximum.z))) "
+                + "sphereToBustError="
+                + "\(format(morphResult.sphereToBustCompletionError)) "
+                + "bustToSphereError="
+                + "\(format(morphResult.bustToSphereCompletionError)) "
+                + "retargetError="
+                + "\(format(morphResult.retargetStartError)) "
+                + "maxAnchorRadius="
+                + "\(format(morphResult.maximumAnchorRadius)) "
+                + "maxPositionRadius="
+                + "\(format(morphResult.maximumPositionRadius)) "
+                + "switches=\(morphResult.stressSwitchCount) "
                 + "rebuildCount=\(rebuildCountBefore)->\(simulation.rebuildCount)"
         )
+    }
+
+    @discardableResult
+    private static func advance(
+        simulation: inout ParticleSimulation,
+        controller: ParticleStateController,
+        time: inout TimeInterval,
+        frames: Int
+    ) -> ParticleSimulationFrame {
+        var frame: ParticleSimulationFrame?
+        for _ in 0..<frames {
+            time += 1.0 / 60.0
+            frame = simulation.advance(
+                time: time,
+                drawableSize: CGSize(width: 800, height: 800),
+                visualState: controller.advance(time: time)
+            )
+        }
+        guard let frame else {
+            fail("advance requires at least one frame")
+        }
+        return frame
     }
 
     private static func hasHealthyAngularCoverage(

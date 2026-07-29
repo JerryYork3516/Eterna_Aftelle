@@ -33,8 +33,11 @@ struct ParticleCoreMetalView: NSViewRepresentable {
     var debugIntentGeneration = 0
     var isDebugAutoCycleEnabled = false
     var debugStressTestGeneration = 0
+    var debugShapeMorphDuration =
+        ParticleShapeMorphTuning.defaultDuration
     var isTransparentBackground = false
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
+    var debugRebuildCountHandler: ((Int) -> Void)?
     var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
     var effectiveViewOrientationHandler: ((ParticleViewOrientation) -> Void)?
 
@@ -73,7 +76,11 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         context.coordinator.debugIntentGeneration = debugIntentGeneration
         context.coordinator.isDebugAutoCycleEnabled = isDebugAutoCycleEnabled
         context.coordinator.debugStressTestGeneration = debugStressTestGeneration
+        context.coordinator.debugShapeMorphDuration =
+            debugShapeMorphDuration
         context.coordinator.debugMetricsHandler = debugMetricsHandler
+        context.coordinator.debugRebuildCountHandler =
+            debugRebuildCountHandler
         context.coordinator.viewOrientationHandler = viewOrientationHandler
         view.viewOrientationHandler = { orientation in
             context.coordinator.viewOrientation = orientation
@@ -84,6 +91,11 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         renderer.debugMetricsHandler = { metrics in
             DispatchQueue.main.async {
                 context.coordinator.debugMetricsHandler?(metrics)
+            }
+        }
+        renderer.debugRebuildCountHandler = { count in
+            DispatchQueue.main.async {
+                context.coordinator.debugRebuildCountHandler?(count)
             }
         }
         context.coordinator.setEffectiveViewOrientationHandler(
@@ -102,6 +114,7 @@ struct ParticleCoreMetalView: NSViewRepresentable {
                 : "appSpeech"
         )
         #if DEBUG
+        renderer.setDebugShapeMorphDuration(debugShapeMorphDuration)
         renderer.setDebugAutoCycleEnabled(isDebugAutoCycleEnabled)
         if let debugVisualIntent {
             renderer.setVisualIntent(debugVisualIntent, reason: "debugPanel.initial")
@@ -147,6 +160,14 @@ struct ParticleCoreMetalView: NSViewRepresentable {
             context.coordinator.shapeTarget = shapeTarget
         }
         #if DEBUG
+        if context.coordinator.debugShapeMorphDuration
+            != debugShapeMorphDuration {
+            context.coordinator.renderer?.setDebugShapeMorphDuration(
+                debugShapeMorphDuration
+            )
+            context.coordinator.debugShapeMorphDuration =
+                debugShapeMorphDuration
+        }
         if context.coordinator.isDebugAutoCycleEnabled != isDebugAutoCycleEnabled {
             context.coordinator.renderer?.setDebugAutoCycleEnabled(
                 isDebugAutoCycleEnabled
@@ -176,6 +197,8 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         }
         #endif
         context.coordinator.debugMetricsHandler = debugMetricsHandler
+        context.coordinator.debugRebuildCountHandler =
+            debugRebuildCountHandler
         context.coordinator.setEffectiveViewOrientationHandler(
             effectiveViewOrientationHandler
         )
@@ -235,7 +258,10 @@ struct ParticleCoreMetalView: NSViewRepresentable {
         var debugIntentGeneration = 0
         var isDebugAutoCycleEnabled = false
         var debugStressTestGeneration = 0
+        var debugShapeMorphDuration =
+            ParticleShapeMorphTuning.defaultDuration
         var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
+        var debugRebuildCountHandler: ((Int) -> Void)?
         var viewOrientationHandler: ((ParticleViewOrientation) -> Void)?
         var effectiveViewOrientationHandler: ((ParticleViewOrientation) -> Void)?
         private var isEffectiveViewOrientationHandlerEnabled = false

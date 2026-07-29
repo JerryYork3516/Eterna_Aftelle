@@ -1,6 +1,17 @@
 import Foundation
 import simd
 
+enum ParticleShapeMorphTuning {
+    static let defaultDuration = 1.0
+    static let minimumDuration = 0.8
+    static let maximumDuration = 1.2
+    static let lifeMotionScale: Float = 0.38
+    static let completionTolerance: Float = 0.000_001
+    static let retargetStartTolerance: Float = 0.000_001
+    static let maximumAnchorRadius: Float = 1.9
+    static let maximumPositionRadius: Float = 2.5
+}
+
 enum ParticleShapeTarget: String, CaseIterable, Equatable, Identifiable {
     case sphere
     case customShape
@@ -19,7 +30,7 @@ enum ParticleShapeTarget: String, CaseIterable, Equatable, Identifiable {
     }
 
     var supportsMorph: Bool {
-        self == .sphere || self == .customShape
+        self == .sphere || self == .customShape || self == .abstractBust
     }
 
     var debugLocalizedKey: String {
@@ -40,6 +51,14 @@ struct ParticleShapeState {
 struct ParticleMorphDebugResult {
     let passed: Bool
     let continuityError: Float
+    let retargetStartError: Float
+    let sphereToBustCompletionError: Float
+    let bustToSphereCompletionError: Float
+    let maximumAnchorRadius: Float
+    let maximumPositionRadius: Float
+    let duplicateRequestIgnored: Bool
+    let monotonicProgressPreserved: Bool
+    let stressSwitchCount: Int
     let resumeProgressStep: Float
     let particleCountBefore: Int
     let particleCountAfter: Int
@@ -141,6 +160,7 @@ struct ParticleSimulation {
     private var sphereAnchorCenter = SIMD3<Float>(repeating: 0)
     private var customShapeAnchorCenter = SIMD3<Float>(repeating: 0)
     private var abstractBustAnchorCenter = SIMD3<Float>(repeating: 0)
+    private var currentShapeRadius: Float = 1
     private(set) var tuning: ParticleTuning
     private(set) var colorProfile: ParticleColorProfile
     private var targetMousePosition = SIMD2<Float>(repeating: 0)
@@ -171,7 +191,7 @@ struct ParticleSimulation {
             startCenter: .zero,
             targetCenter: .zero,
             startTime: time,
-            duration: ParticleTuning.Engine.shapeMorphDuration,
+            duration: ParticleShapeMorphTuning.defaultDuration,
             progress: 1,
             reason: "startup"
         )
@@ -254,6 +274,7 @@ struct ParticleSimulation {
         var customShapeCenter = SIMD3<Float>(repeating: 0)
         var abstractBustCenter = SIMD3<Float>(repeating: 0)
 
+        let activeRadius = sphereRadius
         for index in 0..<count {
             let direction = Self.stratifiedDirection(
                 index: index,
@@ -316,7 +337,7 @@ struct ParticleSimulation {
                 surfaceWeight: surfaceWeight,
                 morphStartAnchor: activeAnchor,
                 morphTargetAnchor: activeAnchor,
-                position: activeAnchor * sphereRadius,
+                position: activeAnchor * activeRadius,
                 velocity: .zero
             )
             rebuilt.append(particle)
@@ -330,6 +351,7 @@ struct ParticleSimulation {
         sphereAnchorCenter = sphereCenter / divisor
         customShapeAnchorCenter = customShapeCenter / divisor
         abstractBustAnchorCenter = abstractBustCenter / divisor
+        currentShapeRadius = activeRadius
         let activeCenter = shapeCenter(for: rebuildShapeTarget)
         morphTransition = ParticleMorphTransition(
             currentTarget: rebuildShapeTarget,
@@ -337,7 +359,7 @@ struct ParticleSimulation {
             startCenter: activeCenter,
             targetCenter: activeCenter,
             startTime: previousMorphTime,
-            duration: ParticleTuning.Engine.shapeMorphDuration,
+            duration: ParticleShapeMorphTuning.defaultDuration,
             progress: 1,
             reason: "modelRebuild"
         )
@@ -351,39 +373,39 @@ struct ParticleSimulation {
     mutating func setShapeTarget(
         _ target: ParticleShapeTarget,
         reason: String,
-        time: TimeInterval
+        time: TimeInterval,
+        duration: TimeInterval = ParticleShapeMorphTuning.defaultDuration
     ) -> Bool {
         guard target.supportsMorph,
               morphTransition.targetTarget != target else {
             return false
         }
 
-        updateMorphClock(time: time)
-        let easedProgress = Self.easedMorphProgress(
-            resolveMorphProgress(time: time)
-        )
-        let currentCenter = resolvedMorphCenter(
-            easedProgress: easedProgress
-        )
+        let monotonicTime = updateMorphClock(time: time)
+        _ = resolveMorphProgress(time: monotonicTime)
         settleCompletedMorph()
+        let radius = max(
+            currentShapeRadius,
+            ParticleTuning.Engine.normalizationEpsilon
+        )
+        var currentCenter = SIMD3<Float>(repeating: 0)
         for index in particles.indices {
-            let currentAnchor = resolvedAnchor(
-                for: particles[index],
-                easedProgress: easedProgress
-            )
+            let currentAnchor = particles[index].position / radius
             particles[index].morphStartAnchor = currentAnchor
             particles[index].morphTargetAnchor = shapeAnchor(
                 for: target,
                 particle: particles[index]
             )
+            currentCenter += currentAnchor
         }
+        currentCenter /= Float(max(particles.count, 1))
         morphTransition = ParticleMorphTransition(
             currentTarget: morphTransition.targetTarget,
             targetTarget: target,
             startCenter: currentCenter,
             targetCenter: shapeCenter(for: target),
-            startTime: time,
-            duration: ParticleTuning.Engine.shapeMorphDuration,
+            startTime: monotonicTime,
+            duration: Self.clampedMorphDuration(duration),
             progress: 0,
             reason: reason
         )
@@ -391,83 +413,130 @@ struct ParticleSimulation {
     }
 
     #if DEBUG
-    @discardableResult
-    mutating func setDebugStaticShapeTarget(
-        _ target: ParticleShapeTarget,
-        reason: String,
-        time: TimeInterval
-    ) -> Bool {
-        guard target.isImplemented,
-              morphTransition.targetTarget != target else {
-            return false
-        }
-
-        previousMorphTime = time
-        let center = shapeCenter(for: target)
-        for index in particles.indices {
-            let anchor = shapeAnchor(for: target, particle: particles[index])
-            particles[index].morphStartAnchor = anchor
-            particles[index].morphTargetAnchor = anchor
-            particles[index].position = anchor * sphereRadius
-            particles[index].velocity = .zero
-        }
-        morphTransition = ParticleMorphTransition(
-            currentTarget: target,
-            targetTarget: target,
-            startCenter: center,
-            targetCenter: center,
-            startTime: time,
-            duration: 0,
-            progress: 1,
-            reason: reason
-        )
-        updatePayloads()
-        stability = measureStability(expectedCenter: center * sphereRadius)
-        return true
-    }
-
     func debugMorphStressResult() -> ParticleMorphDebugResult {
         var simulation = self
         let particleCountBefore = simulation.particleCount
         let rebuildCountBefore = simulation.rebuildCount
         var time = simulation.previousMorphTime + 1
-
-        _ = simulation.setShapeTarget(
-            .customShape,
-            reason: "debugMorph.prepare",
+        let duration = ParticleShapeMorphTuning.defaultDuration
+        let visualController = ParticleStateController(
+            intent: .idle,
             time: time
         )
-        time += ParticleTuning.Engine.shapeMorphDuration * 0.37
-        simulation.updateMorphClock(time: time)
-        let beforeRetarget = simulation.resolvedAnchors(time: time)
+
+        if simulation.targetShape != .sphere {
+            _ = simulation.setShapeTarget(
+                .sphere,
+                reason: "debugMorph.prepareSphere",
+                time: time,
+                duration: duration
+            )
+            time += duration
+            _ = simulation.resolvedAnchors(time: time)
+        }
+
+        _ = simulation.setShapeTarget(
+            .abstractBust,
+            reason: "debugMorph.sphereToBust",
+            time: time,
+            duration: duration
+        )
+        let transitionStartTime = simulation.morphTransition.startTime
+        let duplicateRequestIgnored = !simulation.setShapeTarget(
+            .abstractBust,
+            reason: "debugMorph.duplicate",
+            time: time + 0.01,
+            duration: duration
+        ) && simulation.morphTransition.startTime == transitionStartTime
+        let forwardTime = simulation.updateMorphClock(time: time + 0.02)
+        let forwardProgress = simulation.resolveMorphProgress(
+            time: forwardTime
+        )
+        let backwardTime = simulation.updateMorphClock(time: time + 0.01)
+        let backwardProgress = simulation.resolveMorphProgress(
+            time: backwardTime
+        )
+        let monotonicProgressPreserved =
+            backwardProgress >= forwardProgress
+
+        time += duration
+        let bustResolved = simulation.resolvedAnchors(time: time)
+        let bustTargets = simulation.shapeAnchors(for: .abstractBust)
+        let sphereToBustCompletionError = Self.maximumAnchorDifference(
+            bustResolved,
+            bustTargets
+        )
+
+        _ = simulation.setShapeTarget(
+            .sphere,
+            reason: "debugMorph.bustToSphere",
+            time: time,
+            duration: duration
+        )
+        time += duration
+        let sphereResolved = simulation.resolvedAnchors(time: time)
+        let sphereTargets = simulation.shapeAnchors(for: .sphere)
+        let bustToSphereCompletionError = Self.maximumAnchorDifference(
+            sphereResolved,
+            sphereTargets
+        )
+
+        _ = simulation.setShapeTarget(
+            .abstractBust,
+            reason: "debugMorph.interruptPrepare",
+            time: time,
+            duration: duration
+        )
+        for _ in 0..<24 {
+            time += 1.0 / 60.0
+            let visualState = visualController.advance(time: time)
+            _ = simulation.advance(
+                time: time,
+                drawableSize: CGSize(width: 800, height: 800),
+                visualState: visualState
+            )
+        }
+        let beforeRetarget = simulation.vertexPayloads
         _ = simulation.setShapeTarget(
             .sphere,
             reason: "debugMorph.retarget",
-            time: time
+            time: time,
+            duration: duration
         )
-        let afterRetarget = simulation.resolvedAnchors(time: time)
-        let continuityError = Self.maximumAnchorDifference(
+        let afterRetarget = simulation.vertexPayloads
+        let continuityError = Self.maximumPayloadPositionDifference(
             beforeRetarget,
             afterRetarget
+        )
+        let retargetStartError = Self.maximumAnchorDifference(
+            simulation.resolvedAnchors(time: time),
+            simulation.currentPositionAnchors()
         )
 
         for index in 0..<ParticleTuning.Engine.debugStressSwitchCount {
             time += ParticleTuning.Engine.debugMorphSwitchInterval
             let target: ParticleShapeTarget = index.isMultiple(of: 2)
-                ? .customShape
+                ? .abstractBust
                 : .sphere
             _ = simulation.setShapeTarget(
                 target,
                 reason: "debugMorph.stress",
-                time: time
+                time: time,
+                duration: duration
+            )
+            let visualState = visualController.advance(time: time)
+            _ = simulation.advance(
+                time: time,
+                drawableSize: CGSize(width: 800, height: 800),
+                visualState: visualState
             )
         }
 
         let progressBeforePause = simulation.resolveMorphProgress(time: time)
         let resumeTime = time + ParticleTuning.Engine.debugResumeInterval
-        simulation.updateMorphClock(time: resumeTime)
+        let monotonicResumeTime = simulation.updateMorphClock(time: resumeTime)
         let progressAfterPause = simulation.resolveMorphProgress(
-            time: resumeTime
+            time: monotonicResumeTime
         )
         let resumeProgressStep = progressAfterPause - progressBeforePause
         let finiteAnchors = simulation.resolvedAnchors(
@@ -475,11 +544,43 @@ struct ParticleSimulation {
         ).allSatisfy { anchor in
             anchor.x.isFinite && anchor.y.isFinite && anchor.z.isFinite
         }
+        let maximumAnchorRadius = simulation.resolvedAnchors(
+            time: resumeTime
+        ).reduce(Float.zero) {
+            max($0, simd_length($1))
+        }
+        let finitePayloads = simulation.vertexPayloads.allSatisfy {
+            $0.x.isFinite
+                && $0.y.isFinite
+                && $0.z.isFinite
+                && $0.w.isFinite
+        }
+        let maximumPositionRadius = simulation.vertexPayloads.reduce(
+            Float.zero
+        ) {
+            max(
+                $0,
+                simd_length(SIMD3<Float>($1.x, $1.y, $1.z))
+            )
+        }
         let particleCountAfter = simulation.particleCount
         let rebuildCountAfter = simulation.rebuildCount
         let passed = finiteAnchors
+            && finitePayloads
             && continuityError
                 <= ParticleTuning.Engine.debugContinuityTolerance
+            && retargetStartError
+                <= ParticleShapeMorphTuning.retargetStartTolerance
+            && sphereToBustCompletionError
+                <= ParticleShapeMorphTuning.completionTolerance
+            && bustToSphereCompletionError
+                <= ParticleShapeMorphTuning.completionTolerance
+            && maximumAnchorRadius
+                <= ParticleShapeMorphTuning.maximumAnchorRadius
+            && maximumPositionRadius
+                <= ParticleShapeMorphTuning.maximumPositionRadius
+            && duplicateRequestIgnored
+            && monotonicProgressPreserved
             && resumeProgressStep
                 <= ParticleTuning.Engine.debugMaximumPauseProgressStep
             && particleCountBefore == particleCountAfter
@@ -488,6 +589,15 @@ struct ParticleSimulation {
         return ParticleMorphDebugResult(
             passed: passed,
             continuityError: continuityError,
+            retargetStartError: retargetStartError,
+            sphereToBustCompletionError: sphereToBustCompletionError,
+            bustToSphereCompletionError: bustToSphereCompletionError,
+            maximumAnchorRadius: maximumAnchorRadius,
+            maximumPositionRadius: maximumPositionRadius,
+            duplicateRequestIgnored: duplicateRequestIgnored,
+            monotonicProgressPreserved: monotonicProgressPreserved,
+            stressSwitchCount:
+                ParticleTuning.Engine.debugStressSwitchCount,
             resumeProgressStep: resumeProgressStep,
             particleCountBefore: particleCountBefore,
             particleCountAfter: particleCountAfter,
@@ -515,8 +625,8 @@ struct ParticleSimulation {
         visualState: ParticleVisualState
     ) -> ParticleSimulationFrame {
         updateSmoothedInteraction(time: time)
-        updateMorphClock(time: time)
-        let shapeState = resolveShapeState(time: time)
+        let morphTime = updateMorphClock(time: time)
+        let shapeState = resolveShapeState(time: morphTime)
         let timeStep = min(
             max(Float(time - previousTime), 0),
             ParticleTuning.Engine.maximumSimulationStep
@@ -612,6 +722,10 @@ struct ParticleSimulation {
             * breathingScale
             * pulseScale
             * stateRadiusScale
+        currentShapeRadius = targetRadius
+        let morphLifeMotionScale = morphProgress < 1
+            ? ParticleShapeMorphTuning.lifeMotionScale
+            : 1
         let aggregation = ParticleTuning.Engine.amplifiedValue(
             tuning.aggregationStrength,
             minimum: ParticleTuning.Engine.minimumAggregation,
@@ -632,10 +746,12 @@ struct ParticleSimulation {
             )
         let flowAcceleration = flowMotionStrength
             * ParticleTuning.Engine.maximumFlowAcceleration
+            * morphLifeMotionScale
         let disturbanceAcceleration = ParticleTuning.Engine.amplifiedStrength(
             tuning.disturbanceStrength
         )
             * ParticleTuning.Engine.maximumDisturbanceAcceleration
+            * morphLifeMotionScale
             * (
                 1
                     + visualState.disruptionStrength
@@ -832,8 +948,12 @@ struct ParticleSimulation {
         )
     }
 
-    private mutating func updateMorphClock(time: TimeInterval) {
-        let rawDelta = max(0, time - previousMorphTime)
+    @discardableResult
+    private mutating func updateMorphClock(
+        time: TimeInterval
+    ) -> TimeInterval {
+        let monotonicTime = max(time, previousMorphTime)
+        let rawDelta = monotonicTime - previousMorphTime
         let maximumDelta = TimeInterval(
             ParticleTuning.Engine.maximumSimulationStep
         )
@@ -841,7 +961,8 @@ struct ParticleSimulation {
         if discardedDelta > 0, morphTransition.progress < 1 {
             morphTransition.startTime += discardedDelta
         }
-        previousMorphTime = time
+        previousMorphTime = monotonicTime
+        return monotonicTime
     }
 
     private mutating func resolveShapeState(
@@ -974,6 +1095,20 @@ struct ParticleSimulation {
         }
     }
 
+    private func currentPositionAnchors() -> [SIMD3<Float>] {
+        let radius = max(
+            currentShapeRadius,
+            ParticleTuning.Engine.normalizationEpsilon
+        )
+        return particles.map { $0.position / radius }
+    }
+
+    private func shapeAnchors(
+        for target: ParticleShapeTarget
+    ) -> [SIMD3<Float>] {
+        particles.map { shapeAnchor(for: target, particle: $0) }
+    }
+
     private static func maximumAnchorDifference(
         _ lhs: [SIMD3<Float>],
         _ rhs: [SIMD3<Float>]
@@ -984,6 +1119,26 @@ struct ParticleSimulation {
             maximumDifference = max(
                 maximumDifference,
                 simd_length(lhs[index] - rhs[index])
+            )
+        }
+        return maximumDifference
+    }
+
+    private static func maximumPayloadPositionDifference(
+        _ lhs: [SIMD4<Float>],
+        _ rhs: [SIMD4<Float>]
+    ) -> Float {
+        guard lhs.count == rhs.count else { return .infinity }
+        var maximumDifference: Float = 0
+        for index in lhs.indices {
+            let difference = SIMD3<Float>(
+                lhs[index].x - rhs[index].x,
+                lhs[index].y - rhs[index].y,
+                lhs[index].z - rhs[index].z
+            )
+            maximumDifference = max(
+                maximumDifference,
+                simd_length(difference)
             )
         }
         return maximumDifference
@@ -1544,7 +1699,20 @@ struct ParticleSimulation {
     }
 
     private static func easedMorphProgress(_ progress: Float) -> Float {
-        progress * progress * (3 - 2 * progress)
+        progress * progress * progress
+            * (progress * (progress * 6 - 15) + 10)
+    }
+
+    private static func clampedMorphDuration(
+        _ duration: TimeInterval
+    ) -> TimeInterval {
+        min(
+            ParticleShapeMorphTuning.maximumDuration,
+            max(
+                ParticleShapeMorphTuning.minimumDuration,
+                duration
+            )
+        )
     }
 
     private static func safeNormalize(

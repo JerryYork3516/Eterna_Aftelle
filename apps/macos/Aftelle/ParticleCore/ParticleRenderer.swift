@@ -58,8 +58,11 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     private var isDebugAutoCycleEnabled = false
     private var debugAutoCycleIndex = 0
     private var debugAutoCycleNextTime: TimeInterval?
+    private var debugShapeMorphDuration =
+        ParticleShapeMorphTuning.defaultDuration
     #endif
     var debugMetricsHandler: ((ParticleRenderMetrics) -> Void)?
+    var debugRebuildCountHandler: ((Int) -> Void)?
     var effectiveViewOrientationHandler: ((ParticleViewOrientation) -> Void)?
 
     init?(device: MTLDevice, visualIntent: ResidentVisualIntent = .idle) {
@@ -348,25 +351,35 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
         reason: String
     ) {
         let previousTarget = simulation.targetShape
-        guard target == .abstractBust || previousTarget == .abstractBust else {
-            setShapeTarget(target, reason: reason)
-            return
-        }
         let rebuildCountBefore = simulation.rebuildCount
-        guard simulation.setDebugStaticShapeTarget(
+        guard simulation.setShapeTarget(
             target,
             reason: reason,
-            time: CACurrentMediaTime()
+            time: CACurrentMediaTime(),
+            duration: debugShapeMorphDuration
         ) else {
             return
         }
         print(
-            "[ParticleCore][AbstractBustPreview] "
+            "[ParticleCore][ShapeMorphPreview] "
                 + "target=\(target.rawValue) "
                 + "previous=\(previousTarget.rawValue) "
+                + "duration="
+                + String(format: "%.2f", debugShapeMorphDuration)
+                + "s "
                 + "particleCount=\(simulation.particleCount) "
                 + "rebuildCount=\(rebuildCountBefore)"
                 + "->\(simulation.rebuildCount)"
+        )
+    }
+
+    func setDebugShapeMorphDuration(_ duration: TimeInterval) {
+        debugShapeMorphDuration = min(
+            ParticleShapeMorphTuning.maximumDuration,
+            max(
+                ParticleShapeMorphTuning.minimumDuration,
+                duration
+            )
         )
     }
 
@@ -449,6 +462,26 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
                 + "stateContinuityError=\(String(format: "%.6f", stateContinuityError)) "
                 + "morphContinuityError="
                 + String(format: "%.6f", morphResult.continuityError)
+                + " morphRetargetStartError="
+                + String(format: "%.6f", morphResult.retargetStartError)
+                + " sphereToBustError="
+                + String(
+                    format: "%.6f",
+                    morphResult.sphereToBustCompletionError
+                )
+                + " bustToSphereError="
+                + String(
+                    format: "%.6f",
+                    morphResult.bustToSphereCompletionError
+                )
+                + " maxMorphAnchorRadius="
+                + String(format: "%.4f", morphResult.maximumAnchorRadius)
+                + " maxMorphPositionRadius="
+                + String(format: "%.4f", morphResult.maximumPositionRadius)
+                + " duplicateIgnored="
+                + "\(morphResult.duplicateRequestIgnored)"
+                + " monotonicProgress="
+                + "\(morphResult.monotonicProgressPreserved)"
                 + " morphResumeProgressStep="
                 + String(format: "%.6f", morphResult.resumeProgressStep)
                 + " resumeDelta=\(String(format: "%.6f", afterPause.deltaTime)) "
@@ -823,6 +856,7 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
             expression: visualState.expression
         )
         debugMetricsHandler?(metrics)
+        debugRebuildCountHandler?(simulation.rebuildCount)
         print(
             "[ParticleCore] snapshot "
                 + "fps=\(String(format: "%.1f", fps)) "

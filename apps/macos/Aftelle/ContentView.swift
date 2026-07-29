@@ -27,6 +27,9 @@ final class ParticlePresentationSettings: ObservableObject {
     @Published private(set) var debugStressTestGeneration = 0
     @Published private(set) var debugSpeechSignal: ResidentSpeechSignal?
     @Published private(set) var shapeTarget: ParticleShapeTarget = .sphere
+    @Published var debugShapeMorphDuration =
+        ParticleShapeMorphTuning.defaultDuration
+    @Published private(set) var debugRebuildCount = 0
     @Published private(set) var debugSpeechIntensity = Double(
         ParticleTuning.Engine.defaultSpeechIntensity
     )
@@ -78,6 +81,10 @@ final class ParticlePresentationSettings: ObservableObject {
         guard target.isImplemented else { return }
         shapeTarget = target
         #endif
+    }
+
+    func updateDebugRebuildCount(_ count: Int) {
+        debugRebuildCount = count
     }
 
     func simulateDebugSpeech(_ phase: ResidentSpeechPhase) {
@@ -140,10 +147,14 @@ struct ContentView: View {
                 debugIntentGeneration: presentationSettings.debugIntentGeneration,
                 isDebugAutoCycleEnabled: presentationSettings.isDebugAutoCycleEnabled,
                 debugStressTestGeneration: presentationSettings.debugStressTestGeneration,
+                debugShapeMorphDuration:
+                    presentationSettings.debugShapeMorphDuration,
                 isTransparentBackground: controller.particleShellMode == .transparentShell,
                 debugMetricsHandler: { metrics in
                     controller.updateParticleRenderMetrics(metrics)
                 },
+                debugRebuildCountHandler:
+                    presentationSettings.updateDebugRebuildCount,
                 viewOrientationHandler: presentationSettings.updateViewOrientation,
                 effectiveViewOrientationHandler: effectiveViewOrientationHandler
             )
@@ -555,6 +566,9 @@ struct ParticleDebugWindow: View {
             runDebugTransitionStressTest: presentationSettings.runDebugTransitionStressTest,
             shapeTarget: presentationSettings.shapeTarget,
             selectDebugShapeTarget: presentationSettings.selectDebugShapeTarget,
+            debugShapeMorphDuration:
+                $presentationSettings.debugShapeMorphDuration,
+            debugRebuildCount: presentationSettings.debugRebuildCount,
             debugSpeechSignal: presentationSettings.debugSpeechSignal,
             debugSpeechIntensity: presentationSettings.debugSpeechIntensity,
             simulateDebugSpeech: presentationSettings.simulateDebugSpeech,
@@ -699,6 +713,8 @@ private struct ParticleDebugPanel: View {
     let runDebugTransitionStressTest: () -> Void
     let shapeTarget: ParticleShapeTarget
     let selectDebugShapeTarget: (ParticleShapeTarget) -> Void
+    @Binding var debugShapeMorphDuration: Double
+    let debugRebuildCount: Int
     let debugSpeechSignal: ResidentSpeechSignal?
     let debugSpeechIntensity: Double
     let simulateDebugSpeech: (ResidentSpeechPhase) -> Void
@@ -808,6 +824,40 @@ private struct ParticleDebugPanel: View {
                         .disabled(shapeTarget == target)
                     }
                 }
+
+                HStack {
+                    Text(
+                        String(
+                            localized:
+                                "particleDebug.shape.morphDuration"
+                        )
+                    )
+                    .font(.system(size: 11))
+                    Slider(
+                        value: $debugShapeMorphDuration,
+                        in: ParticleShapeMorphTuning.minimumDuration...ParticleShapeMorphTuning.maximumDuration
+                    )
+                    Text(
+                        String(
+                            format: "%.2fs",
+                            debugShapeMorphDuration
+                        )
+                    )
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(width: 42, alignment: .trailing)
+                }
+
+                Text(
+                    String(
+                        format: NSLocalizedString(
+                            "particleDebug.shape.rebuildCount",
+                            comment: ""
+                        ),
+                        debugRebuildCount
+                    )
+                )
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
 
                 Divider()
             }
