@@ -4,6 +4,7 @@ import simd
 enum ParticleShapeTarget: String, CaseIterable, Equatable, Identifiable {
     case sphere
     case customShape
+    case abstractBust
     case text
     case guidePath
     case abstractResident
@@ -14,6 +15,10 @@ enum ParticleShapeTarget: String, CaseIterable, Equatable, Identifiable {
     }
 
     var isImplemented: Bool {
+        self == .sphere || self == .customShape || self == .abstractBust
+    }
+
+    var supportsMorph: Bool {
         self == .sphere || self == .customShape
     }
 
@@ -86,6 +91,7 @@ private struct SphereFormSample {
 private struct SimulatedParticle {
     let sphereAnchor: SIMD3<Float>
     let customShapeAnchor: SIMD3<Float>
+    let abstractBustAnchor: SIMD3<Float>
     let flowPhaseSine: Float
     let flowPhaseCosine: Float
     let disturbancePhaseXSine: Float
@@ -134,6 +140,7 @@ struct ParticleSimulation {
     private var morphTransition: ParticleMorphTransition
     private var sphereAnchorCenter = SIMD3<Float>(repeating: 0)
     private var customShapeAnchorCenter = SIMD3<Float>(repeating: 0)
+    private var abstractBustAnchorCenter = SIMD3<Float>(repeating: 0)
     private(set) var tuning: ParticleTuning
     private(set) var colorProfile: ParticleColorProfile
     private var targetMousePosition = SIMD2<Float>(repeating: 0)
@@ -237,10 +244,15 @@ struct ParticleSimulation {
                     - ParticleTuning.Engine.minimumShellConcentration
             )
         var generator = ParticleSeededGenerator(seed: ParticleTuning.Engine.modelSeed)
+        let abstractBustAnchors = AbstractBustAnchorGenerator.generate(
+            count: count,
+            seed: ParticleTuning.Engine.modelSeed
+        )
         var rebuilt: [SimulatedParticle] = []
         rebuilt.reserveCapacity(count)
         var sphereCenter = SIMD3<Float>(repeating: 0)
         var customShapeCenter = SIMD3<Float>(repeating: 0)
+        var abstractBustCenter = SIMD3<Float>(repeating: 0)
 
         for index in 0..<count {
             let direction = Self.stratifiedDirection(
@@ -268,9 +280,18 @@ struct ParticleSimulation {
                 surfaceWeight: surfaceWeight
             )
             let customShapeAnchor = Self.customShapeAnchor(from: sphereAnchor)
-            let activeAnchor = rebuildShapeTarget == .customShape
-                ? customShapeAnchor
-                : sphereFormAnchor
+            let abstractBustAnchor = abstractBustAnchors[index]
+            let activeAnchor: SIMD3<Float>
+            switch rebuildShapeTarget {
+            case .sphere:
+                activeAnchor = sphereFormAnchor
+            case .customShape:
+                activeAnchor = customShapeAnchor
+            case .abstractBust:
+                activeAnchor = abstractBustAnchor
+            case .text, .guidePath, .abstractResident, .realisticResident:
+                activeAnchor = sphereFormAnchor
+            }
             let flowPhase = generator.nextUnit() * 2 * .pi
             let disturbancePhase = generator.nextUnit() * 2 * .pi
             let disturbancePhaseY = disturbancePhase
@@ -280,6 +301,7 @@ struct ParticleSimulation {
             let particle = SimulatedParticle(
                 sphereAnchor: sphereAnchor,
                 customShapeAnchor: customShapeAnchor,
+                abstractBustAnchor: abstractBustAnchor,
                 flowPhaseSine: sin(flowPhase),
                 flowPhaseCosine: cos(flowPhase),
                 disturbancePhaseXSine: sin(disturbancePhase),
@@ -300,12 +322,14 @@ struct ParticleSimulation {
             rebuilt.append(particle)
             sphereCenter += sphereFormAnchor
             customShapeCenter += customShapeAnchor
+            abstractBustCenter += abstractBustAnchor
         }
 
         particles = rebuilt
         let divisor = Float(max(count, 1))
         sphereAnchorCenter = sphereCenter / divisor
         customShapeAnchorCenter = customShapeCenter / divisor
+        abstractBustAnchorCenter = abstractBustCenter / divisor
         let activeCenter = shapeCenter(for: rebuildShapeTarget)
         morphTransition = ParticleMorphTransition(
             currentTarget: rebuildShapeTarget,
@@ -329,7 +353,7 @@ struct ParticleSimulation {
         reason: String,
         time: TimeInterval
     ) -> Bool {
-        guard target.isImplemented,
+        guard target.supportsMorph,
               morphTransition.targetTarget != target else {
             return false
         }
@@ -367,6 +391,41 @@ struct ParticleSimulation {
     }
 
     #if DEBUG
+    @discardableResult
+    mutating func setDebugStaticShapeTarget(
+        _ target: ParticleShapeTarget,
+        reason: String,
+        time: TimeInterval
+    ) -> Bool {
+        guard target.isImplemented,
+              morphTransition.targetTarget != target else {
+            return false
+        }
+
+        previousMorphTime = time
+        let center = shapeCenter(for: target)
+        for index in particles.indices {
+            let anchor = shapeAnchor(for: target, particle: particles[index])
+            particles[index].morphStartAnchor = anchor
+            particles[index].morphTargetAnchor = anchor
+            particles[index].position = anchor * sphereRadius
+            particles[index].velocity = .zero
+        }
+        morphTransition = ParticleMorphTransition(
+            currentTarget: target,
+            targetTarget: target,
+            startCenter: center,
+            targetCenter: center,
+            startTime: time,
+            duration: 0,
+            progress: 1,
+            reason: reason
+        )
+        updatePayloads()
+        stability = measureStability(expectedCenter: center * sphereRadius)
+        return true
+    }
+
     func debugMorphStressResult() -> ParticleMorphDebugResult {
         var simulation = self
         let particleCountBefore = simulation.particleCount
@@ -853,6 +912,8 @@ struct ParticleSimulation {
             return sphereFormAnchor(for: particle)
         case .customShape:
             return particle.customShapeAnchor
+        case .abstractBust:
+            return particle.abstractBustAnchor
         case .text, .guidePath, .abstractResident, .realisticResident:
             return sphereFormAnchor(for: particle)
         }
@@ -866,6 +927,8 @@ struct ParticleSimulation {
             return sphereAnchorCenter
         case .customShape:
             return customShapeAnchorCenter
+        case .abstractBust:
+            return abstractBustAnchorCenter
         case .text, .guidePath, .abstractResident, .realisticResident:
             return sphereAnchorCenter
         }

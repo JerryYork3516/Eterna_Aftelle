@@ -211,6 +211,7 @@
 "particleDebug.shapeTest" = "形态测试";
 "particleDebug.shape.sphere" = "球体";
 "particleDebug.shape.customShape" = "测试立方体";
+"particleDebug.shape.abstractBust" = "抽象半身（静态）";
 "particleDebug.shape.text" = "文字（预留）";
 "particleDebug.shape.guidePath" = "引导路径（预留）";
 "particleDebug.shape.abstractResident" = "抽象居民（预留）";

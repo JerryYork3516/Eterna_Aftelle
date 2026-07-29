@@ -211,6 +211,7 @@
 "particleDebug.shapeTest" = "Shape Test";
 "particleDebug.shape.sphere" = "Sphere";
 "particleDebug.shape.customShape" = "Test Cube";
+"particleDebug.shape.abstractBust" = "Abstract Bust (Static)";
 "particleDebug.shape.text" = "Text (Reserved)";
 "particleDebug.shape.guidePath" = "Guide Path (Reserved)";
 "particleDebug.shape.abstractResident" = "Abstract Resident (Reserved)";

@@ -74,8 +74,10 @@ final class ParticlePresentationSettings: ObservableObject {
     }
 
     func selectDebugShapeTarget(_ target: ParticleShapeTarget) {
+        #if DEBUG
         guard target.isImplemented else { return }
         shapeTarget = target
+        #endif
     }
 
     func simulateDebugSpeech(_ phase: ResidentSpeechPhase) {
@@ -784,6 +786,7 @@ private struct ParticleDebugPanel: View {
                 .controlSize(.small)
             }
 
+            #if DEBUG
             VStack(alignment: .leading, spacing: 6) {
                 Text(String(localized: "particleDebug.shapeTest"))
                     .font(.system(size: 12, weight: .medium))
@@ -807,7 +810,10 @@ private struct ParticleDebugPanel: View {
                 }
 
                 Divider()
+            }
+            #endif
 
+            VStack(alignment: .leading, spacing: 6) {
                 Text(String(localized: "particleDebug.transitionTest"))
                     .font(.system(size: 12, weight: .medium))
 

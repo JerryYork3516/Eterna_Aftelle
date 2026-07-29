@@ -26,6 +26,7 @@ xcrun --sdk macosx swiftc \
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleTuning.swift" \
   "$repo_root/apps/macos/Aftelle/ParticleCore/ResidentVisualIntent.swift" \
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleStateController.swift" \
+  "$repo_root/apps/macos/Aftelle/ParticleCore/AbstractBustAnchorGenerator.swift" \
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleSimulation.swift" \
   "$repo_root/apps/macos/Aftelle/AppModels.swift" \
   "$script_dir/ParticleExpressionTests.swift" \

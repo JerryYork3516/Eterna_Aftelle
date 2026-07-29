@@ -133,10 +133,17 @@ struct ParticleCoreMetalView: NSViewRepresentable {
             context.coordinator.expressionInput = expressionInput
         }
         if context.coordinator.shapeTarget != shapeTarget {
-            context.coordinator.renderer?.setShapeTarget(
+            #if DEBUG
+            context.coordinator.renderer?.setDebugShapeTarget(
                 shapeTarget,
                 reason: "debugPanel.shape"
             )
+            #else
+            context.coordinator.renderer?.setShapeTarget(
+                shapeTarget,
+                reason: "appShape"
+            )
+            #endif
             context.coordinator.shapeTarget = shapeTarget
         }
         #if DEBUG

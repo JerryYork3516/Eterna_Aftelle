@@ -343,6 +343,33 @@ final class ParticleRenderer: NSObject, MTKViewDelegate {
     }
 
     #if DEBUG
+    func setDebugShapeTarget(
+        _ target: ParticleShapeTarget,
+        reason: String
+    ) {
+        let previousTarget = simulation.targetShape
+        guard target == .abstractBust || previousTarget == .abstractBust else {
+            setShapeTarget(target, reason: reason)
+            return
+        }
+        let rebuildCountBefore = simulation.rebuildCount
+        guard simulation.setDebugStaticShapeTarget(
+            target,
+            reason: reason,
+            time: CACurrentMediaTime()
+        ) else {
+            return
+        }
+        print(
+            "[ParticleCore][AbstractBustPreview] "
+                + "target=\(target.rawValue) "
+                + "previous=\(previousTarget.rawValue) "
+                + "particleCount=\(simulation.particleCount) "
+                + "rebuildCount=\(rebuildCountBefore)"
+                + "->\(simulation.rebuildCount)"
+        )
+    }
+
     func setDebugAutoCycleEnabled(_ enabled: Bool) {
         guard isDebugAutoCycleEnabled != enabled else { return }
         isDebugAutoCycleEnabled = enabled
