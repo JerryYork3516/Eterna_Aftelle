@@ -1,0 +1,113 @@
+{
+  "schema_version": "0.1.0",
+  "status": "BLOCKED_BY_CONFIGURATION",
+  "resident": {
+    "fixture_path": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
+    "fixture_distribution": "local_filesystem_test_fixture",
+    "git_ignored": true,
+    "resident_id": "dr_eterna_hum_cn_xian_linxuan_0001",
+    "dr_schema_version": "0.3.0",
+    "schema_version": "0.4.0",
+    "protocol_version": "0.4.0",
+    "revision": "1",
+    "file_name": "resident_stage7_5_fixture_v1.digital_resident",
+    "file_size_bytes": 9058396,
+    "sha256": "f30d4b2ac33c3598918de992a8178f90b776109d54e3ac33fd88764dde7d1881",
+    "source_path": "/Users/jerryyork/Downloads/linxuan (46).digital_resident",
+    "source_stage": "7.4",
+    "source_acceptance_status": "USER_DESIGNATED_STAGE_7_4_ACCEPTED; REPOSITORY_RECORD_NOT_FOUND",
+    "drloader_validation": "PASS"
+  },
+  "primary_native_speech": {
+    "capability": "native_speech",
+    "provider_profile_id": "UNRESOLVED",
+    "adapter_id": "UNRESOLVED",
+    "provider": "UNRESOLVED",
+    "model": "UNRESOLVED",
+    "voice": "UNRESOLVED",
+    "language": "zh-CN",
+    "endpoint_source": "UNRESOLVED",
+    "key_ref": "UNRESOLVED",
+    "fallback_enabled": false,
+    "fallback_implementation_stage": "7.5.11",
+    "configuration_source": [
+      "docs/03_dev_plan.md#stage-75",
+      "docs/stage7_5/7_5_1_A2_realtime_speech_architecture_boundary.md"
+    ]
+  },
+  "test_environment": {
+    "host": "Mac mini M4",
+    "host_model_identifier": "Mac16,10",
+    "memory_gb": 16,
+    "macos_version": "26.5.2",
+    "deployment_target": "26.5",
+    "xcode_version": "26.6 (17F113)",
+    "build": "Debug",
+    "input_device": "system_default_input",
+    "output_device": "system_default_output",
+    "route_test_device": "AirPods Pro 2",
+    "automatic_device_switching": false,
+    "foreground_only": true,
+    "background_listening": false,
+    "single_user": true,
+    "single_resident": true,
+    "default_language": "zh-CN",
+    "network_requirement": "stable_outbound_internet",
+    "noise_condition": "quiet_indoor"
+  },
+  "scenarios": [
+    {
+      "scenario_id": "primary_native_sts",
+      "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
+      "provider_profile": "UNRESOLVED",
+      "input_device": "system_default_input",
+      "output_device": "system_default_output",
+      "language": "zh-CN",
+      "expected_chain": "AppController -> OrchestrationKernel -> RuntimeCore -> ExecutionEngine -> ProviderRouter -> NativeSpeechProvider -> Concrete STS Adapter -> normalized Runtime events -> Session/Memory/Trace -> subtitles/ParticleCore",
+      "implementation_stage": "7.5.2-7.5.10",
+      "currently_executable": false
+    },
+    {
+      "scenario_id": "airpods_route",
+      "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
+      "provider_profile": "UNRESOLVED",
+      "input_device": "AirPods Pro 2",
+      "output_device": "AirPods Pro 2",
+      "language": "zh-CN",
+      "expected_chain": "macOS Audio Host route change -> AppController -> OrchestrationKernel -> RuntimeCore interaction remains canonical -> audio input/output resume through the active native STS route",
+      "implementation_stage": "7.5.3, 7.5.8, 7.5.13",
+      "currently_executable": false
+    },
+    {
+      "scenario_id": "provider_unavailable",
+      "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
+      "provider_profile": "UNRESOLVED",
+      "input_device": "system_default_input",
+      "output_device": "system_default_output",
+      "language": "zh-CN",
+      "expected_chain": "NativeSpeechProvider unavailable -> ProviderRouter normalized route outcome -> RuntimeCore decides fallback -> STT + LLM + TTS route or canonical failure close",
+      "implementation_stage": "7.5.11",
+      "currently_executable": false
+    },
+    {
+      "scenario_id": "cancelled_interaction",
+      "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
+      "provider_profile": "UNRESOLVED",
+      "input_device": "system_default_input",
+      "output_device": "system_default_output",
+      "language": "zh-CN",
+      "expected_chain": "Stop/Interrupt/new request -> AppController -> OrchestrationKernel -> RuntimeCore -> ExecutionEngine -> ProviderRouter -> Provider cancel/close -> subtitle/playback stop -> ParticleCore idle -> Session/Trace canonical close; reject late events",
+      "implementation_stage": "7.5.7, 7.5.9, 7.5.12",
+      "currently_executable": false
+    }
+  ],
+  "blocking_configuration_fields": [
+    "primary_native_speech.provider_profile_id",
+    "primary_native_speech.adapter_id",
+    "primary_native_speech.provider",
+    "primary_native_speech.model",
+    "primary_native_speech.voice",
+    "primary_native_speech.endpoint_source",
+    "primary_native_speech.key_ref"
+  ]
+}
