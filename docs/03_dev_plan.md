@@ -210,35 +210,54 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 
 ---
 
-## Stage 7.5 TTS / 音效 / 字幕同步 + Voice Input MVP
+## Stage 7.5 实时语音闭环 / Studio Next 1.0 / 真实资产联调
 
-目标:让居民有声音和节奏,并提供最小语音输入入口。Voice Input MVP 只做"录音转文字",转写结果进入现有文字输入 / Runtime step 链路,不做完整语音交流系统。
+目标：先使用固定居民与固定语音资产完成 Aftelle 原生实时语音通话底座，并建立 STT + LLM + TTS 降级链路；随后暂停 Aftelle，完成 Studio Next 1.0、外观构建器、音色构建器、Layer 10 与迁移；最后恢复 Aftelle，使用 Studio 真实资产完成最终联调。
 
-7.5.1 TTS Provider 接入
-7.5.2 人文居民音色
-7.5.3 语速 / 音高 / 情绪参数
-7.5.4 语音输出
-7.5.5 字幕同步
-7.5.6 启动音效
-7.5.7 粒子状态音效
-7.5.8 导入 DR 音效
-7.5.9 退出音效
-7.5.10 打断 / 停止说话
-7.5.11 Voice Input MVP:点击 / 按住录音
-7.5.12 macOS 麦克风权限与录音状态展示
-7.5.13 record → transcribe → text input / Runtime step
-7.5.14 转写失败 fallback 到文字输入
-7.5.15 Voice Provider boundary reserve
-7.5.16 抽象嘴部粒子脉冲 / 轻量口部同步
+7.5.1 实时语音架构边界与固定测试资产
+7.5.2 NativeSpeechProvider 协议与首个 STS Adapter
+7.5.3 macOS 音频会话、麦克风权限与设备路由
+7.5.4 全双工音频长连接与流式输入输出
+7.5.5 十三层实时上下文按需投影
+7.5.6 listening / thinking / speaking 状态机与动态判停
+7.5.7 插话、Stop 与统一任务取消
+7.5.8 流式语音播放、缓冲与异常恢复
+7.5.9 实时字幕与 ParticleCore 状态同步
+7.5.10 语音会话中的记忆、工具与权限调用
+7.5.11 STT + LLM + TTS 级联降级链路
+7.5.12 延迟、Trace、自动测试与 Stage 7.5-A 预验收
+7.5.13 Aftelle 实时语音底座冻结并暂停新增功能
 
-注意:打断机制必须复用 7.1.10 的统一中断语义。
-注意:真实 TTS 必须走 `RuntimeCore ProviderRouter → ProviderAdapter → ExecutionEngine`;Aftelle 只播放 RuntimeCore 返回的音频/字幕载荷,不直连 TTS Provider。
-注意:Voice Input MVP 只负责录音、权限、状态展示和把转写结果交给现有输入链路。真实 ASR / voice model Provider 必须走 `RuntimeCore ProviderRouter → ProviderAdapter → ExecutionEngine`;Aftelle 不直连 ASR / TTS / voice model Provider。
-注意:抽象嘴部同步只做 speaking 状态下的粒子脉冲,不做精准 lip sync、viseme、牙齿、舌头或真实口腔。
+7.5.14 Studio Next 成为唯一主开发版本
+7.5.15 数字居民构建器核心能力迁移
+7.5.16 13 层、模块、节点与引用关系编辑
+7.5.17 统一资产、保存加载、版本管理、撤销重做
+7.5.18 DR 编译、校验与导出
+7.5.19 实时语音策略、Provider 意图与 Layer 10 多模态投影
+7.5.20 外观构建器 v0.1
+7.5.21 音色构建器 v0.1
+7.5.22 旧居民与旧资产迁移、Layer 10 正式接入、四项契约冻结
 
-禁止:不做实时双向语音,不做 VAD,不做唤醒词,不做 streaming ASR / TTS,不做声纹识别,不做后台监听。
+7.5.23 Aftelle 加载 Studio 真实外观、粒子锚点与 VoiceProfile
+7.5.24 真实 STS Provider 与居民音色映射联调
+7.5.25 插话、动态轮次、字幕、ParticleCore 与设备路由联调
+7.5.26 级联降级、长内容交付与异常恢复联调
+7.5.27 旧居民兼容、性能与完整回归测试
+7.5.28 Stage 7.5-B 最终验收，Studio Next 1.0 冻结
 
-验收:文字/声音/字幕/粒子节奏一致;延迟可接受;打断行为与编排层一致;语音输入能录音转文字并进入现有 Runtime step 链路,失败时可回到文字输入。
+注意：原生 STS 是主链，STT + LLM + TTS 仅作为降级链路。
+
+注意：所有 STS、STT、LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行。
+
+注意：打断机制必须复用 7.1.10 的统一中断语义，同时取消本地播放、服务端生成、字幕、状态和未完成任务。
+
+注意：Studio 负责定义 VoiceProfile、Provider 意图、轮次策略、长内容交付策略和设备输出策略；Aftelle 负责实时运行，不承担音色或外观编辑。
+
+禁止：不做唤醒词、声纹识别、无授权后台监听、多设备并行主脑、精准 viseme 和真实口腔同步。
+
+启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
+
+验收：固定资产下的实时语音主链和级联降级链稳定；Studio Next 能生成真实外观、音色和 Layer 10 配置；Stage 7.5-B 完成真实 DR 端到端联调；无 P0 / P1 阻塞后才能进入 Stage 7.6。
 
 ---
 
