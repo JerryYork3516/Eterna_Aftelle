@@ -37,6 +37,9 @@
 		A0752A100000000000000003 /* NativeSpeechAudioPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A100000000000000013 /* NativeSpeechAudioPayload.swift */; };
 		A0752A100000000000000004 /* NativeSpeechEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A100000000000000014 /* NativeSpeechEvent.swift */; };
 		A0752A100000000000000005 /* NativeSpeechProviderProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A100000000000000015 /* NativeSpeechProviderProfile.swift */; };
+		A0752A200000000000000001 /* RealtimeWebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000011 /* RealtimeWebSocketTransport.swift */; };
+		A0752A200000000000000002 /* StepFunRealtimeCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000012 /* StepFunRealtimeCodec.swift */; };
+		A0752A200000000000000003 /* StepFunRealtimeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */; };
 		A070C0000000000000000031 /* Freezev03.calibration_fixture.json in Resources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000030 /* Freezev03.calibration_fixture.json */; };
 /* End PBXBuildFile section */
 
@@ -74,6 +77,9 @@
 		A0752A100000000000000013 /* NativeSpeechAudioPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/NativeSpeechAudioPayload.swift; sourceTree = SOURCE_ROOT; };
 		A0752A100000000000000014 /* NativeSpeechEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/NativeSpeechEvent.swift; sourceTree = SOURCE_ROOT; };
 		A0752A100000000000000015 /* NativeSpeechProviderProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/NativeSpeechProviderProfile.swift; sourceTree = SOURCE_ROOT; };
+		A0752A200000000000000011 /* RealtimeWebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/RealtimeWebSocketTransport.swift; sourceTree = SOURCE_ROOT; };
+		A0752A200000000000000012 /* StepFunRealtimeCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeCodec.swift; sourceTree = SOURCE_ROOT; };
+		A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A070C0000000000000000030 /* Freezev03.calibration_fixture.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Freezev03.calibration_fixture.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -136,6 +142,9 @@
 		A070C0000000000000000017 /* RuntimeCore */ = {
 			isa = PBXGroup;
 			children = (
+				A0752A200000000000000011 /* RealtimeWebSocketTransport.swift */,
+				A0752A200000000000000012 /* StepFunRealtimeCodec.swift */,
+				A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */,
 				A0752A100000000000000011 /* NativeSpeechProvider.swift */,
 				A0752A100000000000000012 /* NativeSpeechInteraction.swift */,
 				A0752A100000000000000013 /* NativeSpeechAudioPayload.swift */,
@@ -232,6 +241,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A0752A200000000000000001 /* RealtimeWebSocketTransport.swift in Sources */,
+				A0752A200000000000000002 /* StepFunRealtimeCodec.swift in Sources */,
+				A0752A200000000000000003 /* StepFunRealtimeAdapter.swift in Sources */,
 				A0752A100000000000000001 /* NativeSpeechProvider.swift in Sources */,
 				A0752A100000000000000002 /* NativeSpeechInteraction.swift in Sources */,
 				A0752A100000000000000003 /* NativeSpeechAudioPayload.swift in Sources */,

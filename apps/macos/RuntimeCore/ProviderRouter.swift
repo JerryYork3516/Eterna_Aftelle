@@ -479,11 +479,11 @@ enum ProviderResidentReplyParser {
     }
 }
 
-protocol ProviderCredentialReading {
+nonisolated protocol ProviderCredentialReading: Sendable {
     func readCredential(for keyRef: String) throws -> String?
 }
 
-struct UnavailableProviderCredentialReader: ProviderCredentialReading {
+nonisolated struct UnavailableProviderCredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? {
         nil
     }

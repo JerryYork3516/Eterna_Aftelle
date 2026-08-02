@@ -1,0 +1,208 @@
+import Foundation
+
+nonisolated protocol ProviderCredentialReading: Sendable {
+    func readCredential(for keyRef: String) throws -> String?
+}
+
+nonisolated private struct StaticCredentialReader: ProviderCredentialReading {
+    let credential: String?
+
+    func readCredential(for keyRef: String) throws -> String? {
+        credential
+    }
+}
+
+@main
+@MainActor
+private struct StepFunRealtimeAdapterTests {
+    private static var checks = 0
+
+    static func main() async throws {
+        try await testHandshakeAudioCancelAndClose()
+        try await testMissingCredentialDoesNotConnect()
+        try testCodecMappings()
+        print("stepfun_realtime_adapter_checks=\(checks)")
+    }
+
+    private static func testHandshakeAudioCancelAndClose() async throws {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: "test-token"),
+            transport: transport
+        )
+        let request = makeRequest()
+        try await adapter.start(request: request)
+
+        let calls = await transport.calls
+        expect(calls.count == 4, "handshake has four ordered calls")
+        expect(calls[0] == .connect(request.profile.endpoint), "connect is first")
+        expect(calls[1] == .receive, "session.created receive is second")
+        guard case .send(.text(let update)) = calls[2] else {
+            fatalError("FAILED: session.update is third")
+        }
+        let updateObject = try json(update)
+        expect(updateObject["type"] as? String == "session.update", "session.update type")
+        let session = updateObject["session"] as? [String: Any]
+        expect(session?["modalities"] as? [String] == ["text", "audio"], "modalities fixed")
+        expect(session?["voice"] as? String == "linjiajiejie", "voice fixed")
+        expect(session?["input_audio_format"] as? String == "pcm16", "input format fixed")
+        expect(session?["output_audio_format"] as? String == "pcm16", "output format fixed")
+        let vad = session?["turn_detection"] as? [String: Any]
+        expect(vad?["type"] as? String == "server_vad", "server VAD fixed")
+        expect(vad?["prefix_padding_ms"] as? Int == 500, "VAD prefix fixed")
+        expect(session?["instructions"] == nil, "instructions are not sent")
+        expect(session?["tools"] == nil, "tools are not sent")
+        expect(calls[3] == .receive, "session.updated receive is fourth")
+        let capturedBearerToken = await transport.capturedBearerToken
+        expect(capturedBearerToken == "test-token", "credential stays in transport memory")
+
+        let connectedEvent = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            connectedEvent.kind == .connected,
+            "created maps to connected"
+        )
+        let updatedEvent = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            updatedEvent.kind == .sessionUpdated,
+            "updated maps to standard event"
+        )
+
+        let audio = NativeSpeechAudioPayload(
+            interactionID: request.interaction.id,
+            sequenceNumber: 7,
+            bytes: Data([0x10, 0x20]),
+            format: .pcm16
+        )
+        try await adapter.send(audio: audio)
+        let audioCalls = await transport.calls
+        guard case .send(.text(let append)) = audioCalls.last else {
+            fatalError("FAILED: audio append sent")
+        }
+        let appendObject = try json(append)
+        expect(appendObject["type"] as? String == "input_audio_buffer.append", "audio append type")
+        expect(appendObject["audio"] as? String == audio.bytes.base64EncodedString(), "audio base64")
+
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .stopped
+        )
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .stopped
+        )
+        let cancelCalls = await transport.calls
+        let cancelCount = try cancelCalls.filter { call in
+            guard case .send(.text(let text)) = call else { return false }
+            return try json(text)["type"] as? String == "response.cancel"
+        }.count
+        expect(cancelCount == 1, "cancel is idempotent")
+
+        try await adapter.close(interactionID: request.interaction.id)
+        try await adapter.close(interactionID: request.interaction.id)
+        let closeCount = await transport.calls.filter {
+            $0 == .close(.normal)
+        }.count
+        expect(closeCount == 1, "close is idempotent")
+    }
+
+    private static func testMissingCredentialDoesNotConnect() async throws {
+        let transport = FakeRealtimeWebSocketTransport()
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: nil),
+            transport: transport
+        )
+        do {
+            try await adapter.start(request: makeRequest())
+            fatalError("FAILED: missing credential must fail")
+        } catch NativeSpeechError.missingCredential {
+            checks += 1
+        }
+        let calls = await transport.calls
+        expect(calls.isEmpty, "missing credential avoids connect")
+    }
+
+    private static func testCodecMappings() throws {
+        let codec = StepFunRealtimeCodec()
+        let interactionID = NativeSpeechInteractionID()
+        let cases: [(String, NativeSpeechEventKind)] = [
+            (#"{"type":"input_audio_buffer.speech_started"}"#, .inputSpeechStarted),
+            (#"{"type":"input_audio_buffer.speech_stopped"}"#, .inputSpeechEnded),
+            (#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你"}"#, .partialTranscript("你")),
+            (#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#, .finalTranscript("你好")),
+            (#"{"type":"response.created"}"#, .thinking),
+            (#"{"type":"response.audio_transcript.delta","delta":"好"}"#, .outputText(text: "好", isFinal: false)),
+            (#"{"type":"response.audio_transcript.done","transcript":"好的"}"#, .outputText(text: "好的", isFinal: true)),
+            (#"{"type":"response.cancelled"}"#, .cancelled(reason: nil)),
+            (#"{"type":"error","error":{"code":"rate_limit_exceeded"}}"#, .failed(.rateLimited))
+        ]
+        for (frame, expected) in cases {
+            let event = try codec.decode(.text(frame), interactionID: interactionID)
+            expect(event?.kind == expected, "server event maps to standard event")
+        }
+        let audio = try codec.decode(
+            .text(#"{"type":"response.audio.delta","delta":"ECA=","sequence":9}"#),
+            interactionID: interactionID
+        )
+        expect(
+            audio?.kind == .outputAudio(
+                NativeSpeechAudioPayload(
+                    interactionID: interactionID,
+                    sequenceNumber: 9,
+                    bytes: Data([0x10, 0x20]),
+                    format: .pcm16
+                )
+            ),
+            "audio event decodes"
+        )
+        let unknown = try codec.decode(
+            .text(#"{"type":"future.event"}"#),
+            interactionID: interactionID
+        )
+        expect(unknown == nil, "unknown event is ignored")
+    }
+
+    private static func makeRequest() -> NativeSpeechStartRequest {
+        let profile = NativeSpeechProviderProfile(
+            profileID: "stage7_5_stepfun_realtime_primary",
+            providerID: "StepFun",
+            capability: "native_speech",
+            adapterID: "stepfun_realtime",
+            modelID: "stepaudio-2.5-realtime",
+            voiceID: "linjiajiejie",
+            endpoint: URL(string: "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime")!,
+            transport: "websocket",
+            inputAudioFormat: .pcm16,
+            outputAudioFormat: .pcm16,
+            turnDetection: NativeSpeechTurnDetection(
+                type: .serverVAD,
+                prefixPaddingMilliseconds: 500
+            ),
+            languageMetadata: "zh-CN",
+            keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
+        )
+        return NativeSpeechStartRequest(
+            interaction: NativeSpeechInteraction(
+                residentID: "resident",
+                sessionID: "session",
+                providerProfileID: profile.profileID
+            ),
+            profile: profile
+        )
+    }
+
+    private static func json(_ text: String) throws -> [String: Any] {
+        try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+    }
+
+    private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+        guard condition() else { fatalError("FAILED: \(message)") }
+        checks += 1
+    }
+}

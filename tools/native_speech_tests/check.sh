@@ -23,9 +23,45 @@ swiftc \
 
 "$build_dir/native_speech_contract_tests"
 
+adapter_sources=(
+  "${sources[@]}"
+  "$repo_root/apps/macos/RuntimeCore/RealtimeWebSocketTransport.swift"
+  "$repo_root/apps/macos/RuntimeCore/StepFunRealtimeCodec.swift"
+  "$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
+)
+
+swiftc \
+  -D DEBUG \
+  -parse-as-library \
+  -warn-concurrency \
+  -strict-concurrency=complete \
+  "${adapter_sources[@]}" \
+  "$repo_root/tools/native_speech_tests/FakeRealtimeWebSocketTransport.swift" \
+  "$repo_root/tools/native_speech_tests/StepFunRealtimeAdapterTests.swift" \
+  -o "$build_dir/stepfun_realtime_adapter_tests"
+
+"$build_dir/stepfun_realtime_adapter_tests"
+
 if rg -n 'StepFun|URLSessionWebSocket|AVFoundation|AVAudioEngine' "${sources[@]}"; then
   echo "native_speech_vendor_neutrality=FAIL"
   exit 1
 fi
 
+if ! rg -q '^nonisolated protocol ProviderCredentialReading: Sendable' \
+  "$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift"; then
+  echo "native_speech_credential_sendable=FAIL"
+  exit 1
+fi
+
+unexpected_stepfun=$(rg -l 'StepFun|stepfun' \
+  "$repo_root/apps/macos/RuntimeCore" \
+  -g '*.swift' \
+  | rg -v '/StepFunRealtime(Adapter|Codec)\.swift$' || true)
+if [ -n "$unexpected_stepfun" ]; then
+  echo "native_speech_provider_leakage=FAIL"
+  printf '%s\n' "$unexpected_stepfun"
+  exit 1
+fi
+
 echo "native_speech_vendor_neutrality=PASS"
+echo "native_speech_provider_leakage=PASS"

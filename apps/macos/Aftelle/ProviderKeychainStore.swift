@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-final class ProviderKeychainStore: ProviderCredentialReading {
+nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unchecked Sendable {
     static let service = "com.eterna.aftelle.provider.deepseek"
     static let account = "primary-text-llm"
     static let keyRef = "keychain://com.eterna.aftelle.provider.deepseek/primary-text-llm"
