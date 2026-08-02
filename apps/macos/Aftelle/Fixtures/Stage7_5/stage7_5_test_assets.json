@@ -1,9 +1,11 @@
 {
-  "schema_version": "0.1.0",
-  "status": "BLOCKED_BY_CONFIGURATION",
+  "schema_version": "0.2.0",
+  "status": "PASS",
   "resident": {
     "fixture_path": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-    "fixture_distribution": "local_filesystem_test_fixture",
+    "distribution_mode": "local_fixture",
+    "required_local_path": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
+    "required_sha256": "f30d4b2ac33c3598918de992a8178f90b776109d54e3ac33fd88764dde7d1881",
     "git_ignored": true,
     "resident_id": "dr_eterna_hum_cn_xian_linxuan_0001",
     "dr_schema_version": "0.3.0",
@@ -19,18 +21,36 @@
     "drloader_validation": "PASS"
   },
   "primary_native_speech": {
+    "configuration_status": "RESOLVED",
     "capability": "native_speech",
-    "provider_profile_id": "UNRESOLVED",
-    "adapter_id": "UNRESOLVED",
-    "provider": "UNRESOLVED",
-    "model": "UNRESOLVED",
-    "voice": "UNRESOLVED",
+    "provider_profile_id": "stage7_5_stepfun_realtime_primary",
+    "adapter_id": "stepfun_realtime",
+    "provider": "StepFun",
+    "model": "stepaudio-2.5-realtime",
+    "voice": "linjiajiejie",
+    "voice_source": "stepfun_official",
     "language": "zh-CN",
-    "endpoint_source": "UNRESOLVED",
-    "key_ref": "UNRESOLVED",
+    "language_metadata": "zh-CN",
+    "transport": "websocket",
+    "endpoint": "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime",
+    "endpoint_source": "master_control_stage_7_5_1_A3R",
+    "input_audio_format": "pcm16",
+    "output_audio_format": "pcm16",
+    "turn_detection": {
+      "type": "server_vad",
+      "prefix_padding_ms": 500,
+      "tuning_owner_stage": "7.5.6"
+    },
+    "authorization_scheme": "Bearer",
+    "credential_type": "StepFun platform API Key",
+    "key_ref": "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key",
+    "actual_key_written": false,
+    "connectivity_test_status": "NOT_RUN",
+    "connectivity_test_owner_stage": "7.5.2",
     "fallback_enabled": false,
     "fallback_implementation_stage": "7.5.11",
     "configuration_source": [
+      "master_control_stage_7_5_1_A3R",
       "docs/03_dev_plan.md#stage-75",
       "docs/stage7_5/7_5_1_A2_realtime_speech_architecture_boundary.md"
     ]
@@ -59,7 +79,7 @@
     {
       "scenario_id": "primary_native_sts",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "UNRESOLVED",
+      "provider_profile": "stage7_5_stepfun_realtime_primary",
       "input_device": "system_default_input",
       "output_device": "system_default_output",
       "language": "zh-CN",
@@ -70,7 +90,7 @@
     {
       "scenario_id": "airpods_route",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "UNRESOLVED",
+      "provider_profile": "stage7_5_stepfun_realtime_primary",
       "input_device": "AirPods Pro 2",
       "output_device": "AirPods Pro 2",
       "language": "zh-CN",
@@ -81,7 +101,7 @@
     {
       "scenario_id": "provider_unavailable",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "UNRESOLVED",
+      "provider_profile": "stage7_5_stepfun_realtime_primary",
       "input_device": "system_default_input",
       "output_device": "system_default_output",
       "language": "zh-CN",
@@ -92,7 +112,7 @@
     {
       "scenario_id": "cancelled_interaction",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "UNRESOLVED",
+      "provider_profile": "stage7_5_stepfun_realtime_primary",
       "input_device": "system_default_input",
       "output_device": "system_default_output",
       "language": "zh-CN",
@@ -100,14 +120,5 @@
       "implementation_stage": "7.5.7, 7.5.9, 7.5.12",
       "currently_executable": false
     }
-  ],
-  "blocking_configuration_fields": [
-    "primary_native_speech.provider_profile_id",
-    "primary_native_speech.adapter_id",
-    "primary_native_speech.provider",
-    "primary_native_speech.model",
-    "primary_native_speech.voice",
-    "primary_native_speech.endpoint_source",
-    "primary_native_speech.key_ref"
   ]
 }
