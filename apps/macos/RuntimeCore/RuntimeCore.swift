@@ -946,6 +946,11 @@ private struct RuntimeCompiledDialogueContext {
     let retrievedMemoryIDs: [String]
 }
 
+nonisolated enum NativeSpeechEventDisposition: Equatable {
+    case accepted(NativeSpeechEvent)
+    case rejectedStale
+}
+
 public final class RuntimeCore {
     static let recentDialogueMessageLimit = 8
     static let fewShotSelectionLimit = 4
@@ -978,6 +983,7 @@ public final class RuntimeCore {
     private(set) var currentNarrativeMemoryProjection:
         RuntimeNarrativeMemoryProjection?
     private var activeExpressionRequestID: UUID?
+    private var activeNativeSpeechInteraction: NativeSpeechInteraction?
     private var handledFirstAppearanceResidentIDs: Set<String> = []
     private var clockState = RuntimeClockState()
     #if DEBUG
@@ -1040,6 +1046,7 @@ public final class RuntimeCore {
             }
             sessionContext = RuntimeSessionContext(residentID: loadedDR.residentID, sessionID: sessionID)
             activeExpressionRequestID = nil
+            activeNativeSpeechInteraction = nil
             cancellationState = .none
             currentResidentIdentity = identityProjection
             currentMemoryPolicy = memoryPolicyProjection
@@ -1159,6 +1166,7 @@ public final class RuntimeCore {
             sessionID: RuntimeSessionID(rawValue: record.sessionID)
         )
         activeExpressionRequestID = nil
+        activeNativeSpeechInteraction = nil
         cancellationState = .none
         currentExpressionResult = .neutral(
             source: currentVisualExpressionMapping.source,
@@ -2771,6 +2779,176 @@ public final class RuntimeCore {
         }
         #endif
         return error
+    }
+
+    func configureNativeSpeechProvider(
+        profile: NativeSpeechProviderProfile
+    ) -> NativeSpeechError? {
+        executionEngine.configureNativeSpeechProvider(profile: profile)
+    }
+
+    func startNativeSpeechInteraction() async throws -> NativeSpeechInteraction {
+        guard activeNativeSpeechInteraction == nil else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        guard let session = sessionContext,
+              currentResidentIdentity?.residentID == session.residentID,
+              let providerProfileID =
+                executionEngine.configuredNativeSpeechProfileID() else {
+            throw NativeSpeechError.unavailable
+        }
+
+        let interaction = NativeSpeechInteraction(
+            residentID: session.residentID,
+            sessionID: session.sessionID.rawValue,
+            providerProfileID: providerProfileID
+        )
+        activeNativeSpeechInteraction = interaction
+
+        do {
+            try await executionEngine.startNativeSpeech(
+                interaction: interaction
+            )
+        } catch {
+            if activeNativeSpeechInteraction?.id == interaction.id {
+                activeNativeSpeechInteraction = nil
+            }
+            throw error
+        }
+
+        guard sessionContext == session,
+              activeNativeSpeechInteraction?.id == interaction.id else {
+            activeNativeSpeechInteraction = nil
+            try? await executionEngine.cancelNativeSpeech(
+                interactionID: interaction.id,
+                reason: .superseded
+            )
+            try? await executionEngine.closeNativeSpeech(
+                interactionID: interaction.id
+            )
+            throw NativeSpeechError.cancelled
+        }
+
+        let active = NativeSpeechInteraction(
+            id: interaction.id,
+            residentID: interaction.residentID,
+            sessionID: interaction.sessionID,
+            providerProfileID: interaction.providerProfileID,
+            lifecycleState: .active
+        )
+        activeNativeSpeechInteraction = active
+        return active
+    }
+
+    func sendNativeSpeechAudio(
+        _ payload: NativeSpeechAudioPayload
+    ) async throws {
+        guard let interaction = activeNativeSpeechInteraction,
+              interaction.id == payload.interactionID,
+              nativeSpeechSessionIsCurrent(interaction) else {
+            throw NativeSpeechError.interactionMismatch
+        }
+        try await executionEngine.sendNativeSpeechAudio(payload)
+    }
+
+    func receiveNativeSpeechEvent(
+        interactionID: NativeSpeechInteractionID
+    ) async throws -> NativeSpeechEventDisposition {
+        guard activeNativeSpeechInteraction?.id == interactionID else {
+            return .rejectedStale
+        }
+        do {
+            let event = try await executionEngine.receiveNativeSpeechEvent(
+                interactionID: interactionID
+            )
+            let disposition = nativeSpeechDisposition(
+                for: event,
+                expectedInteractionID: interactionID
+            )
+            if case .accepted = disposition,
+               nativeSpeechEventIsTerminal(event) {
+                try? await executionEngine.closeNativeSpeech(
+                    interactionID: interactionID
+                )
+            }
+            return disposition
+        } catch {
+            guard activeNativeSpeechInteraction?.id == interactionID else {
+                return .rejectedStale
+            }
+            throw error
+        }
+    }
+
+    func cancelActiveNativeSpeechInteraction(
+        reason: NativeSpeechCancellationReason
+    ) async throws {
+        guard let interaction = activeNativeSpeechInteraction else { return }
+        activeNativeSpeechInteraction = nil
+        do {
+            try await executionEngine.cancelNativeSpeech(
+                interactionID: interaction.id,
+                reason: reason
+            )
+        } catch {
+            try? await executionEngine.closeNativeSpeech(
+                interactionID: interaction.id
+            )
+            throw error
+        }
+        try await executionEngine.closeNativeSpeech(
+            interactionID: interaction.id
+        )
+    }
+
+    func closeActiveNativeSpeechInteraction() async throws {
+        guard let interaction = activeNativeSpeechInteraction else { return }
+        activeNativeSpeechInteraction = nil
+        try await executionEngine.closeNativeSpeech(
+            interactionID: interaction.id
+        )
+    }
+
+    func nativeSpeechDisposition(
+        for event: NativeSpeechEvent,
+        expectedInteractionID: NativeSpeechInteractionID
+    ) -> NativeSpeechEventDisposition {
+        guard let interaction = activeNativeSpeechInteraction,
+              interaction.id == expectedInteractionID,
+              event.interactionID == expectedInteractionID,
+              nativeSpeechSessionIsCurrent(interaction) else {
+            return .rejectedStale
+        }
+        if case .outputAudio(let payload) = event.kind,
+           payload.interactionID != expectedInteractionID {
+            return .rejectedStale
+        }
+        switch event.kind {
+        case .cancelled, .closed, .failed:
+            activeNativeSpeechInteraction = nil
+        default:
+            break
+        }
+        return .accepted(event)
+    }
+
+    private func nativeSpeechSessionIsCurrent(
+        _ interaction: NativeSpeechInteraction
+    ) -> Bool {
+        sessionContext?.residentID == interaction.residentID
+            && sessionContext?.sessionID.rawValue == interaction.sessionID
+            && currentResidentIdentity?.residentID == interaction.residentID
+    }
+
+    private func nativeSpeechEventIsTerminal(
+        _ event: NativeSpeechEvent
+    ) -> Bool {
+        switch event.kind {
+        case .cancelled, .closed, .failed:
+            return true
+        default:
+            return false
+        }
     }
 
     func testResidentReply(

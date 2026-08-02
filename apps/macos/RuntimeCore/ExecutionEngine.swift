@@ -19,6 +19,54 @@ public final class ExecutionEngine {
         providerRouter.configure(profile: profile)
     }
 
+    func configureNativeSpeechProvider(
+        profile: NativeSpeechProviderProfile
+    ) -> NativeSpeechError? {
+        providerRouter.configureNativeSpeech(profile: profile)
+    }
+
+    func configuredNativeSpeechProfileID() -> String? {
+        providerRouter.configuredNativeSpeechProfileID()
+    }
+
+    func startNativeSpeech(
+        interaction: NativeSpeechInteraction
+    ) async throws {
+        try await providerRouter.startNativeSpeech(interaction: interaction)
+    }
+
+    func sendNativeSpeechAudio(
+        _ payload: NativeSpeechAudioPayload
+    ) async throws {
+        try await providerRouter.sendNativeSpeechAudio(payload)
+    }
+
+    func receiveNativeSpeechEvent(
+        interactionID: NativeSpeechInteractionID
+    ) async throws -> NativeSpeechEvent {
+        try await providerRouter.receiveNativeSpeechEvent(
+            interactionID: interactionID
+        )
+    }
+
+    func cancelNativeSpeech(
+        interactionID: NativeSpeechInteractionID,
+        reason: NativeSpeechCancellationReason
+    ) async throws {
+        try await providerRouter.cancelNativeSpeech(
+            interactionID: interactionID,
+            reason: reason
+        )
+    }
+
+    func closeNativeSpeech(
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        try await providerRouter.closeNativeSpeech(
+            interactionID: interactionID
+        )
+    }
+
     func testResidentReply(
         context: ResidentDialogueContext,
         expressionMapping: RuntimeVisualExpressionMapping,

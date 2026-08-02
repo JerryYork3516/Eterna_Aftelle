@@ -861,23 +861,28 @@ final class OpenAICompatibleAdapter {
 
 public final class ProviderRouter {
     private let adapter: OpenAICompatibleAdapter
-    private var profile: ProviderProfile?
+    private let nativeSpeechProvider: NativeSpeechProvider?
+    private var textProfile: ProviderProfile?
+    private var nativeSpeechProfile: NativeSpeechProviderProfile?
 
     public convenience init() {
         self.init(
             credentialReader: UnavailableProviderCredentialReader(),
-            transport: URLSessionProviderHTTPTransport()
+            transport: URLSessionProviderHTTPTransport(),
+            nativeSpeechProvider: nil
         )
     }
 
     init(
         credentialReader: ProviderCredentialReading,
-        transport: ProviderHTTPTransport = URLSessionProviderHTTPTransport()
+        transport: ProviderHTTPTransport = URLSessionProviderHTTPTransport(),
+        nativeSpeechProvider: NativeSpeechProvider? = nil
     ) {
         adapter = OpenAICompatibleAdapter(
             credentialReader: credentialReader,
             transport: transport
         )
+        self.nativeSpeechProvider = nativeSpeechProvider
     }
 
     public func routeMockProvider() -> String {
@@ -888,8 +893,30 @@ public final class ProviderRouter {
         if let validationError = Self.validationError(for: profile) {
             return validationError
         }
-        self.profile = profile
+        textProfile = profile
         return nil
+    }
+
+    func configureNativeSpeech(
+        profile: NativeSpeechProviderProfile
+    ) -> NativeSpeechError? {
+        guard nativeSpeechProvider != nil,
+              profile.capability == "native_speech" else {
+            return .unavailable
+        }
+        do {
+            try profile.validate()
+            nativeSpeechProfile = profile
+            return nil
+        } catch let error as NativeSpeechError {
+            return error
+        } catch {
+            return .invalidConfiguration
+        }
+    }
+
+    func configuredNativeSpeechProfileID() -> String? {
+        nativeSpeechProfile?.profileID
     }
 
     func routeResidentReply(
@@ -898,7 +925,7 @@ public final class ProviderRouter {
         narrativeMemoryProjection:
             RuntimeNarrativeMemoryProjection?
     ) async -> Result<ProviderResidentReply, ProviderRequestError> {
-        guard let profile, profile.enabled else {
+        guard let profile = textProfile, profile.enabled else {
             return .failure(.unconfigured)
         }
         return await adapter.reply(
@@ -907,6 +934,63 @@ public final class ProviderRouter {
             expressionMapping: expressionMapping,
             narrativeMemoryProjection: narrativeMemoryProjection
         )
+    }
+
+    func startNativeSpeech(
+        interaction: NativeSpeechInteraction
+    ) async throws {
+        guard let nativeSpeechProvider,
+              let nativeSpeechProfile else {
+            throw NativeSpeechError.unavailable
+        }
+        try await nativeSpeechProvider.start(
+            request: NativeSpeechStartRequest(
+                interaction: interaction,
+                profile: nativeSpeechProfile
+            )
+        )
+    }
+
+    func sendNativeSpeechAudio(
+        _ payload: NativeSpeechAudioPayload
+    ) async throws {
+        guard let nativeSpeechProvider else {
+            throw NativeSpeechError.unavailable
+        }
+        try await nativeSpeechProvider.send(audio: payload)
+    }
+
+    func receiveNativeSpeechEvent(
+        interactionID: NativeSpeechInteractionID
+    ) async throws -> NativeSpeechEvent {
+        guard let nativeSpeechProvider else {
+            throw NativeSpeechError.unavailable
+        }
+        return try await nativeSpeechProvider.receive(
+            interactionID: interactionID
+        )
+    }
+
+    func cancelNativeSpeech(
+        interactionID: NativeSpeechInteractionID,
+        reason: NativeSpeechCancellationReason
+    ) async throws {
+        guard let nativeSpeechProvider else {
+            throw NativeSpeechError.unavailable
+        }
+        try await nativeSpeechProvider.cancel(
+            interactionID: interactionID,
+            reason: reason
+        )
+    }
+
+    func closeNativeSpeech(
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        guard let nativeSpeechProvider else {
+            throw NativeSpeechError.unavailable
+        }
+        try await nativeSpeechProvider.close(interactionID: interactionID)
     }
 
     public func diagnostics(for config: ProviderRuntimeConfig, secretState: SecretReferenceState) -> ProviderRoutingDiagnostics {
