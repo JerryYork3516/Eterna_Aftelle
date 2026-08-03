@@ -984,6 +984,7 @@ public final class RuntimeCore {
         RuntimeNarrativeMemoryProjection?
     private var activeExpressionRequestID: UUID?
     private var activeNativeSpeechInteraction: NativeSpeechInteraction?
+    private let nativeSpeechInputGate = NativeSpeechInputGate()
     private var handledFirstAppearanceResidentIDs: Set<String> = []
     private var clockState = RuntimeClockState()
     #if DEBUG
@@ -1047,6 +1048,7 @@ public final class RuntimeCore {
             sessionContext = RuntimeSessionContext(residentID: loadedDR.residentID, sessionID: sessionID)
             activeExpressionRequestID = nil
             activeNativeSpeechInteraction = nil
+            invalidateNativeSpeechInput()
             cancellationState = .none
             currentResidentIdentity = identityProjection
             currentMemoryPolicy = memoryPolicyProjection
@@ -1167,6 +1169,7 @@ public final class RuntimeCore {
         )
         activeExpressionRequestID = nil
         activeNativeSpeechInteraction = nil
+        invalidateNativeSpeechInput()
         cancellationState = .none
         currentExpressionResult = .neutral(
             source: currentVisualExpressionMapping.source,
@@ -2875,6 +2878,52 @@ public final class RuntimeCore {
         return active
     }
 
+    func startNativeSpeechInput(
+        captureGeneration: UInt64
+    ) async throws -> NativeSpeechInputBinding {
+        let interaction = try await startNativeSpeechInteraction()
+        let binding = NativeSpeechInputBinding(
+            interactionID: interaction.id,
+            residentID: interaction.residentID,
+            sessionID: interaction.sessionID,
+            captureGeneration: captureGeneration
+        )
+        nativeSpeechInputGate.activate(binding)
+        return binding
+    }
+
+    func sendNativeSpeechInput(
+        _ payload: NativeSpeechAudioPayload,
+        context: NativeSpeechInputFrameContext
+    ) async throws -> NativeSpeechInputFrameDisposition {
+        guard nativeSpeechInputGate.accepts(payload, context: context) else {
+            return .rejectedStale
+        }
+        try await executionEngine.sendNativeSpeechAudio(payload)
+        return .forwarded
+    }
+
+    func stopNativeSpeechInput(
+        binding: NativeSpeechInputBinding,
+        reason: NativeSpeechCancellationReason
+    ) async throws {
+        guard nativeSpeechInputGate.invalidate(binding: binding) else { return }
+        guard activeNativeSpeechInteraction?.id == binding.interactionID else {
+            return
+        }
+        try await cancelActiveNativeSpeechInteraction(reason: reason)
+    }
+
+    func closeNativeSpeechInput(
+        binding: NativeSpeechInputBinding
+    ) async throws {
+        guard nativeSpeechInputGate.invalidate(binding: binding) else { return }
+        guard activeNativeSpeechInteraction?.id == binding.interactionID else {
+            return
+        }
+        try await closeActiveNativeSpeechInteraction()
+    }
+
     func sendNativeSpeechAudio(
         _ payload: NativeSpeechAudioPayload
     ) async throws {
@@ -2920,6 +2969,7 @@ public final class RuntimeCore {
     ) async throws {
         guard let interaction = activeNativeSpeechInteraction else { return }
         activeNativeSpeechInteraction = nil
+        invalidateNativeSpeechInput(for: interaction.id)
         do {
             try await executionEngine.cancelNativeSpeech(
                 interactionID: interaction.id,
@@ -2939,6 +2989,7 @@ public final class RuntimeCore {
     func closeActiveNativeSpeechInteraction() async throws {
         guard let interaction = activeNativeSpeechInteraction else { return }
         activeNativeSpeechInteraction = nil
+        invalidateNativeSpeechInput(for: interaction.id)
         try await executionEngine.closeNativeSpeech(
             interactionID: interaction.id
         )
@@ -2961,6 +3012,7 @@ public final class RuntimeCore {
         switch event.kind {
         case .cancelled, .closed, .failed:
             activeNativeSpeechInteraction = nil
+            invalidateNativeSpeechInput(for: expectedInteractionID)
         default:
             break
         }
@@ -2973,6 +3025,12 @@ public final class RuntimeCore {
         sessionContext?.residentID == interaction.residentID
             && sessionContext?.sessionID.rawValue == interaction.sessionID
             && currentResidentIdentity?.residentID == interaction.residentID
+    }
+
+    private func invalidateNativeSpeechInput(
+        for interactionID: NativeSpeechInteractionID? = nil
+    ) {
+        nativeSpeechInputGate.invalidate(interactionID: interactionID)
     }
 
     private func nativeSpeechEventIsTerminal(

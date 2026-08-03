@@ -97,7 +97,7 @@ nonisolated struct SystemMicrophoneAuthorizationProvider:
     }
 }
 
-actor MacSpeechAudioHost {
+actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
     private let authorizationProvider: any MicrophoneAuthorizationProviding
     private let capture: any MacSpeechAudioCapturing
     private let deviceMonitor: any MacSpeechDeviceRouteMonitoring
@@ -242,6 +242,14 @@ actor MacSpeechAudioHost {
 
     func drainFrames(maxCount: Int) -> [MacSpeechAudioFrame] {
         frameBuffer.drain(maxCount: maxCount)
+    }
+
+    func activeCaptureGeneration() -> UInt64? {
+        isCapturing ? generation : nil
+    }
+
+    func isCaptureGenerationActive(_ generation: UInt64) -> Bool {
+        isCapturing && self.generation == generation
     }
 
     func shutdown() {

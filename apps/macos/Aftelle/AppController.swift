@@ -96,6 +96,8 @@ final class AppController: ObservableObject {
         )
     @Published private(set) var speechAudioHostSnapshot =
         MacSpeechAudioHostSnapshot.initial
+    @Published private(set) var speechInputBridgeSnapshot =
+        MacSpeechNativeInputBridgeSnapshot.initial
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
     @Published private(set) var relationshipProgressionDebugState =
@@ -118,6 +120,22 @@ final class AppController: ObservableObject {
     private var providerConfigurationGeneration = 0
     #if DEBUG
     private let speechAudioHost: MacSpeechAudioHost
+    private lazy var speechInputBridge = MacSpeechNativeInputBridge(
+        source: speechAudioHost,
+        sendFrame: { [orchestrationKernel] payload, context in
+            return await orchestrationKernel.sendNativeSpeechInput(
+                payload,
+                context: context
+            )
+        },
+        stopInput: { [weak self] binding, reason in
+            guard let self else { return .success(()) }
+            return await orchestrationKernel.stopNativeSpeechInput(
+                binding: binding,
+                reason: reason
+            )
+        }
+    )
     private let debugSubtitleKeys = [
         "particleSubtitle.test.0",
         "particleSubtitle.test.1",
@@ -161,6 +179,19 @@ final class AppController: ObservableObject {
         refreshNativeSpeechProviderDebugState()
         #endif
     }
+
+    #if DEBUG
+    init(
+        orchestrationKernel: OrchestrationKernel,
+        speechAudioHost: MacSpeechAudioHost
+    ) {
+        self.orchestrationKernel = orchestrationKernel
+        providerKeychainStore = ProviderKeychainStore()
+        self.speechAudioHost = speechAudioHost
+        restoreProviderConfiguration()
+        refreshNativeSpeechProviderDebugState()
+    }
+    #endif
 
     func start() {
         startupState = .loading
@@ -1156,6 +1187,8 @@ final class AppController: ObservableObject {
     func refreshMicrophoneAuthorization() async {
         speechAudioHostSnapshot =
             await speechAudioHost.refreshAuthorization()
+        speechInputBridgeSnapshot =
+            await speechInputBridge.currentSnapshot()
     }
 
     func requestMicrophoneAuthorization() async {
@@ -1168,12 +1201,35 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
+        speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
     }
 
     func shutdownSpeechAudioHost() async {
+        speechInputBridgeSnapshot = await speechInputBridge.stop()
         await speechAudioHost.shutdown()
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+    }
+
+    func startNativeSpeechInputBridge() async {
+        guard let captureGeneration =
+            await speechAudioHost.activeCaptureGeneration() else {
+            speechInputBridgeSnapshot =
+                await speechInputBridge.fail(.unavailable)
+            return
+        }
+        let result = await orchestrationKernel.startNativeSpeechInput(
+            profile: Stage75NativeSpeechConfiguration.profile,
+            captureGeneration: captureGeneration
+        )
+        switch result {
+        case .success(let binding):
+            speechInputBridgeSnapshot = await speechInputBridge.start(
+                binding: binding
+            )
+        case .failure(let error):
+            speechInputBridgeSnapshot = await speechInputBridge.fail(error)
+        }
     }
 
     func deleteNativeSpeechProviderCredential() {

@@ -118,6 +118,17 @@
 "particleDebug.audioHost.lastError" = "最近错误";
 "particleDebug.audioHost.startCapture" = "开始采集";
 "particleDebug.audioHost.stopCapture" = "停止采集";
+"particleDebug.audioHost.inputBridge" = "输入桥";
+"particleDebug.audioHost.inputBridge.idle" = "空闲";
+"particleDebug.audioHost.inputBridge.running" = "运行中";
+"particleDebug.audioHost.inputBridge.stopped" = "已停止";
+"particleDebug.audioHost.inputBridge.failed" = "失败";
+"particleDebug.audioHost.bridgeInteraction" = "Interaction 短标识";
+"particleDebug.audioHost.bridgeForwarded" = "已转发帧数";
+"particleDebug.audioHost.bridgeRejected" = "Runtime 拒绝帧数";
+"particleDebug.audioHost.bridgeAdapterReceived" = "Adapter 接收帧数";
+"particleDebug.audioHost.bridgeActivePump" = "Active Pump";
+"particleDebug.audioHost.bridgeLastError" = "输入桥错误";
 "particleDebug.avatarMode" = "Avatar 模式";
 "particleDebug.avatarModeCaption" = "本地渲染模式预留";
 "particleDebug.avatarMode.particleCore" = "particle_core";

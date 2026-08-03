@@ -9,11 +9,16 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     }
 
     private var frames: [RealtimeWebSocketFrame]
+    private let audioAppendError: NativeSpeechError?
     private(set) var calls: [Call] = []
     private(set) var capturedBearerToken: String?
 
-    init(frames: [RealtimeWebSocketFrame] = []) {
+    init(
+        frames: [RealtimeWebSocketFrame] = [],
+        audioAppendError: NativeSpeechError? = nil
+    ) {
         self.frames = frames
+        self.audioAppendError = audioAppendError
     }
 
     func connect(endpoint: URL, bearerToken: String) async throws {
@@ -23,6 +28,11 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func send(_ frame: RealtimeWebSocketFrame) async throws {
         calls.append(.send(frame))
+        if case .text(let text) = frame,
+           text.contains("\"type\":\"input_audio_buffer.append\""),
+           let audioAppendError {
+            throw audioAppendError
+        }
     }
 
     func receive() async throws -> RealtimeWebSocketFrame {

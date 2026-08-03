@@ -1035,7 +1035,7 @@ public struct OrchestrationKernelDiagnostics: Equatable {
 
 @MainActor
 public final class OrchestrationKernel {
-    private let runtimeCore: RuntimeCore
+    private nonisolated(unsafe) let runtimeCore: RuntimeCore
     private var isPrepared = false
     private var lastDiagnostics = OrchestrationKernelDiagnostics()
 
@@ -1177,6 +1177,79 @@ public final class OrchestrationKernel {
         await runtimeCore.testNativeSpeechConnectivity(profile: profile)
     }
     #endif
+
+    func startNativeSpeechInput(
+        profile: NativeSpeechProviderProfile,
+        captureGeneration: UInt64
+    ) async -> Result<NativeSpeechInputBinding, NativeSpeechError> {
+        if let error = runtimeCore.configureNativeSpeechProvider(
+            profile: profile
+        ) {
+            return .failure(error)
+        }
+        do {
+            return .success(
+                try await runtimeCore.startNativeSpeechInput(
+                    captureGeneration: captureGeneration
+                )
+            )
+        } catch let error as NativeSpeechError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
+    nonisolated func sendNativeSpeechInput(
+        _ payload: NativeSpeechAudioPayload,
+        context: NativeSpeechInputFrameContext
+    ) async -> Result<
+        NativeSpeechInputFrameDisposition,
+        NativeSpeechError
+    > {
+        do {
+            return .success(
+                try await runtimeCore.sendNativeSpeechInput(
+                    payload,
+                    context: context
+                )
+            )
+        } catch let error as NativeSpeechError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
+    func stopNativeSpeechInput(
+        binding: NativeSpeechInputBinding,
+        reason: NativeSpeechCancellationReason
+    ) async -> Result<Void, NativeSpeechError> {
+        do {
+            try await runtimeCore.stopNativeSpeechInput(
+                binding: binding,
+                reason: reason
+            )
+            return .success(())
+        } catch let error as NativeSpeechError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
+    nonisolated func closeNativeSpeechInput(
+        binding: NativeSpeechInputBinding
+    ) async -> Result<Void, NativeSpeechError> {
+        do {
+            try await runtimeCore.closeNativeSpeechInput(binding: binding)
+            return .success(())
+        } catch let error as NativeSpeechError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
 
     func testResidentReply(
         inputText: String,

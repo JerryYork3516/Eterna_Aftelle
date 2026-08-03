@@ -118,6 +118,17 @@
 "particleDebug.audioHost.lastError" = "Last Error";
 "particleDebug.audioHost.startCapture" = "Start Capture";
 "particleDebug.audioHost.stopCapture" = "Stop Capture";
+"particleDebug.audioHost.inputBridge" = "Input Bridge";
+"particleDebug.audioHost.inputBridge.idle" = "Idle";
+"particleDebug.audioHost.inputBridge.running" = "Running";
+"particleDebug.audioHost.inputBridge.stopped" = "Stopped";
+"particleDebug.audioHost.inputBridge.failed" = "Failed";
+"particleDebug.audioHost.bridgeInteraction" = "Interaction";
+"particleDebug.audioHost.bridgeForwarded" = "Forwarded Frames";
+"particleDebug.audioHost.bridgeRejected" = "Runtime Rejected";
+"particleDebug.audioHost.bridgeAdapterReceived" = "Adapter Received";
+"particleDebug.audioHost.bridgeActivePump" = "Active Pump";
+"particleDebug.audioHost.bridgeLastError" = "Bridge Error";
 "particleDebug.avatarMode" = "Avatar Mode";
 "particleDebug.avatarModeCaption" = "Local render mode reserve";
 "particleDebug.avatarMode.particleCore" = "particle_core";

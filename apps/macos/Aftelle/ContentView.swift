@@ -536,6 +536,8 @@ struct ParticleDebugWindow: View {
                 controller.nativeSpeechProviderDebugState,
             speechAudioHostSnapshot:
                 controller.speechAudioHostSnapshot,
+            speechInputBridgeSnapshot:
+                controller.speechInputBridgeSnapshot,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
             relationshipProgressionState:
@@ -696,6 +698,7 @@ private struct ParticleDebugPanel: View {
     let providerState: ProviderDebugViewState
     let nativeSpeechProviderState: NativeSpeechProviderDebugViewState
     let speechAudioHostSnapshot: MacSpeechAudioHostSnapshot
+    let speechInputBridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let relationshipProgressionState:
@@ -963,6 +966,7 @@ private struct ParticleDebugPanel: View {
                             )
                             SpeechAudioHostDebugView(
                                 snapshot: speechAudioHostSnapshot,
+                                bridgeSnapshot: speechInputBridgeSnapshot,
                                 refreshAuthorization:
                                     refreshMicrophoneAuthorization,
                                 requestAuthorization:
@@ -1950,6 +1954,7 @@ private struct NativeSpeechProviderDebugView: View {
 
 private struct SpeechAudioHostDebugView: View {
     let snapshot: MacSpeechAudioHostSnapshot
+    let bridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
     let startCapture: () async -> Void
@@ -2022,6 +2027,43 @@ private struct SpeechAudioHostDebugView: View {
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.lastError",
                     value: snapshot.lastError ?? "—"
+                )
+                Divider()
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.inputBridge",
+                    value: String(
+                        localized: String.LocalizationValue(
+                            "particleDebug.audioHost.inputBridge.\(bridgeSnapshot.state.rawValue)"
+                        )
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.bridgeInteraction",
+                    value: bridgeSnapshot.interactionShortID ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.bridgeForwarded",
+                    value: "\(bridgeSnapshot.forwardedFrameCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.bridgeRejected",
+                    value: "\(bridgeSnapshot.runtimeRejectedFrameCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.bridgeAdapterReceived",
+                    value: "\(bridgeSnapshot.adapterReceivedFrameCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.bridgeActivePump",
+                    value: String(
+                        localized: bridgeSnapshot.hasActivePump
+                            ? "particleDebug.audioHost.capturing.active"
+                            : "particleDebug.audioHost.capturing.inactive"
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.bridgeLastError",
+                    value: bridgeSnapshot.lastError ?? "—"
                 )
                 HStack {
                     Spacer()

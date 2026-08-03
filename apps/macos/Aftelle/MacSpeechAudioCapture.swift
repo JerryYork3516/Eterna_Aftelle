@@ -9,7 +9,14 @@ nonisolated enum MacSpeechAudioInputFormat {
     static let description = "24000 Hz / mono / signed PCM16 LE / interleaved"
 }
 
+nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
+    func activeCaptureGeneration() async -> UInt64?
+    func isCaptureGenerationActive(_ generation: UInt64) async -> Bool
+    func drainFrames(maxCount: Int) async -> [MacSpeechAudioFrame]
+}
+
 nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
+    let captureGeneration: UInt64
     let sequenceNumber: UInt64
     let monotonicTimestampNanoseconds: UInt64
     let pcm16Bytes: Data
@@ -83,6 +90,7 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
                 : 0
             frames.append(
                 MacSpeechAudioFrame(
+                    captureGeneration: generation,
                     sequenceNumber: nextSequence,
                     monotonicTimestampNanoseconds: monotonicTimestamp,
                     pcm16Bytes: pcm16Bytes,
