@@ -529,6 +529,8 @@ struct ParticleDebugWindow: View {
         ParticleDebugPanel(
             snapshot: controller.particleDebugSnapshot,
             providerState: controller.providerDebugState,
+            nativeSpeechProviderState:
+                controller.nativeSpeechProviderDebugState,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
             relationshipProgressionState:
@@ -563,6 +565,12 @@ struct ParticleDebugWindow: View {
             saveProviderCredential: controller.saveProviderCredential,
             deleteProviderCredential: controller.deleteProviderCredential,
             testResidentReply: controller.testResidentReply,
+            saveNativeSpeechProviderCredential:
+                controller.saveNativeSpeechProviderCredential,
+            deleteNativeSpeechProviderCredential:
+                controller.deleteNativeSpeechProviderCredential,
+            testNativeSpeechProviderConnectivity:
+                controller.testNativeSpeechProviderConnectivity,
             copyDialogueAudit: controller.copyDialogueAudit,
             exportDialogueAudit: controller.exportDialogueAudit,
             clearDialogueAudit: controller.clearDialogueAudit,
@@ -673,6 +681,7 @@ private enum ParticleTuningGroup: String, CaseIterable, Identifiable {
 private struct ParticleDebugPanel: View {
     let snapshot: ParticleDebugSnapshot
     let providerState: ProviderDebugViewState
+    let nativeSpeechProviderState: NativeSpeechProviderDebugViewState
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let relationshipProgressionState:
@@ -707,6 +716,9 @@ private struct ParticleDebugPanel: View {
     let saveProviderCredential: (String) -> Void
     let deleteProviderCredential: () -> Void
     let testResidentReply: (String) async -> Void
+    let saveNativeSpeechProviderCredential: (String) -> Void
+    let deleteNativeSpeechProviderCredential: () -> Void
+    let testNativeSpeechProviderConnectivity: () async -> Void
     let copyDialogueAudit: () -> Void
     let exportDialogueAudit: () -> Void
     let clearDialogueAudit: () -> Void
@@ -921,6 +933,15 @@ private struct ParticleDebugPanel: View {
                                 saveCredential: saveProviderCredential,
                                 deleteCredential: deleteProviderCredential,
                                 testReply: testResidentReply
+                            )
+                            NativeSpeechProviderDebugView(
+                                state: nativeSpeechProviderState,
+                                saveCredential:
+                                    saveNativeSpeechProviderCredential,
+                                deleteCredential:
+                                    deleteNativeSpeechProviderCredential,
+                                testConnectivity:
+                                    testNativeSpeechProviderConnectivity
                             )
                             RelationshipProgressionDebugView(
                                 state: relationshipProgressionState,
@@ -1770,6 +1791,133 @@ private struct TextProviderDebugView: View {
         String(localized: state.credentialSaved
             ? "particleDebug.provider.status.credentialPresent"
             : "particleDebug.provider.status.credentialMissing")
+    }
+}
+
+private struct NativeSpeechProviderDebugView: View {
+    let state: NativeSpeechProviderDebugViewState
+    let saveCredential: (String) -> Void
+    let deleteCredential: () -> Void
+    let testConnectivity: () async -> Void
+
+    @State private var credentialInput = ""
+    @State private var isExpanded = true
+
+    var body: some View {
+        DebugCollapsibleMenu(
+            titleKey: "particleDebug.stepfun.title",
+            isExpanded: $isExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                GroupBox(
+                    String(localized: "particleDebug.stepfun.configuration")
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ParticleDiagnosticsRow(
+                            labelKey: "particleDebug.provider.providerID",
+                            value: state.profile.providerID
+                        )
+                        ParticleDiagnosticsRow(
+                            labelKey: "particleDebug.provider.modelID",
+                            value: state.profile.modelID
+                        )
+                        ParticleDiagnosticsRow(
+                            labelKey: "particleDebug.stepfun.voice",
+                            value: state.profile.voiceID
+                        )
+                        ParticleDiagnosticsRow(
+                            labelKey: "particleDebug.stepfun.audioFormat",
+                            value: "\(state.profile.inputAudioFormat.rawValue) / \(state.profile.outputAudioFormat.rawValue)"
+                        )
+                        ParticleDiagnosticsRow(
+                            labelKey: "particleDebug.stepfun.turnDetection",
+                            value: state.profile.turnDetection.type.rawValue
+                        )
+                        ParticleDiagnosticsRow(
+                            labelKey: "particleDebug.stepfun.prefixPadding",
+                            value: "\(state.profile.turnDetection.prefixPaddingMilliseconds) ms"
+                        )
+                        ParticleDiagnosticsRow(
+                            labelKey: "particleDebug.stepfun.endpoint",
+                            value: state.profile.endpoint.absoluteString
+                        )
+                    }
+                    .padding(.top, 4)
+                }
+
+                GroupBox(String(localized: "particleDebug.provider.credential")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SecureField(
+                            String(
+                                localized:
+                                    "particleDebug.provider.credentialPlaceholder"
+                            ),
+                            text: $credentialInput
+                        )
+                        HStack {
+                            Text(
+                                String(
+                                    localized: state.credentialSaved
+                                        ? "particleDebug.stepfun.credential.present"
+                                        : "particleDebug.stepfun.credential.missing"
+                                )
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(
+                                String(
+                                    localized:
+                                        "particleDebug.provider.deleteCredential"
+                                )
+                            ) {
+                                credentialInput = ""
+                                deleteCredential()
+                            }
+                            Button(
+                                String(
+                                    localized:
+                                        "particleDebug.provider.saveCredential"
+                                )
+                            ) {
+                                let credential = credentialInput
+                                credentialInput = ""
+                                saveCredential(credential)
+                            }
+                        }
+                        .disabled(state.isTesting)
+                    }
+                    .padding(.top, 4)
+                }
+
+                GroupBox(String(localized: "particleDebug.stepfun.connectivity")) {
+                    HStack {
+                        Text(
+                            String(
+                                localized:
+                                    String.LocalizationValue(state.statusKey)
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        Spacer()
+                        if state.isTesting {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button(
+                            String(localized: "particleDebug.stepfun.testConnection")
+                        ) {
+                            Task {
+                                await testConnectivity()
+                            }
+                        }
+                        .disabled(state.isTesting)
+                    }
+                    .padding(.top, 4)
+                }
+            }
+        }
     }
 }
 

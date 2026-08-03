@@ -123,6 +123,8 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
                 frame = try await transport.receive()
             } catch is CancellationError {
                 throw NativeSpeechError.cancelled
+            } catch let error as NativeSpeechError {
+                throw error
             } catch {
                 throw NativeSpeechError.transportFailure
             }

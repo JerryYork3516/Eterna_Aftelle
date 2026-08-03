@@ -75,7 +75,7 @@ fi
 unexpected_stepfun=$(rg -l 'StepFun|stepfun' \
   "$repo_root/apps/macos/RuntimeCore" \
   -g '*.swift' \
-  | rg -v '/StepFunRealtime(Adapter|Codec)\.swift$' || true)
+  | rg -v '/StepFunRealtime(Adapter|Codec|RuntimeComposition)\.swift$' || true)
 if [ -n "$unexpected_stepfun" ]; then
   echo "native_speech_provider_leakage=FAIL"
   printf '%s\n' "$unexpected_stepfun"
@@ -94,3 +94,5 @@ for operation in start send receive cancel close; do
 done
 
 echo "native_speech_execution_gate=PASS"
+
+"$repo_root/tools/native_speech_tests/check_a4_1.sh"

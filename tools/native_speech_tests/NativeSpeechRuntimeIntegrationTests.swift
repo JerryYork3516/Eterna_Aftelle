@@ -23,9 +23,28 @@ private actor FakeNativeSpeechProvider: NativeSpeechProvider {
     private var receiveStarted = false
     private var receiveStartedContinuation: CheckedContinuation<Void, Never>?
     private(set) var operations: [Operation] = []
+    private let emitsHandshakeOnStart: Bool
+
+    init(emitsHandshakeOnStart: Bool = false) {
+        self.emitsHandshakeOnStart = emitsHandshakeOnStart
+    }
 
     func start(request: NativeSpeechStartRequest) async throws {
         operations.append(.start(request.interaction.id))
+        if emitsHandshakeOnStart {
+            events.append(
+                NativeSpeechEvent(
+                    interactionID: request.interaction.id,
+                    kind: .connected
+                )
+            )
+            events.append(
+                NativeSpeechEvent(
+                    interactionID: request.interaction.id,
+                    kind: .sessionUpdated
+                )
+            )
+        }
     }
 
     func send(audio: NativeSpeechAudioPayload) async throws {
@@ -302,7 +321,48 @@ private struct NativeSpeechRuntimeIntegrationTests {
             operations.contains(.cancel(first.id)),
             "cancel reaches Provider through Runtime chain"
         )
+        try await testConnectivityEntry(fixtureData: fixtureData)
         print("native_speech_runtime_integration_checks=\(checks)")
+    }
+
+    private static func testConnectivityEntry(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider(emitsHandshakeOnStart: true)
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixtureData).isLoaded, "connectivity resident loads")
+        let result = await runtime.testNativeSpeechConnectivity(
+            profile: nativeSpeechProfile()
+        )
+        switch result {
+        case .success:
+            checks += 1
+        case .failure(let error):
+            fatalError("FAILED: fake connectivity failed: \(error)")
+        }
+        let startCount = await provider.operationCount(.start)
+        let receiveCount = await provider.operationCount(.receive)
+        let closeCount = await provider.operationCount(.close)
+        let sendCount = await provider.operationCount(.send)
+        expect(
+            startCount == 1,
+            "connectivity starts one Provider interaction"
+        )
+        expect(
+            receiveCount == 2,
+            "connectivity consumes created and updated"
+        )
+        expect(
+            closeCount == 1,
+            "connectivity closes Provider"
+        )
+        expect(
+            sendCount == 0,
+            "connectivity sends no audio payload"
+        )
     }
 
     private static func configuredRuntime(
@@ -318,7 +378,16 @@ private struct NativeSpeechRuntimeIntegrationTests {
             providerRouter: router,
             sessionStore: sessionStore
         )
-        let profile = NativeSpeechProviderProfile(
+        let profile = nativeSpeechProfile()
+        expect(
+            runtime.configureNativeSpeechProvider(profile: profile) == nil,
+            "native speech profile configures"
+        )
+        return runtime
+    }
+
+    private static func nativeSpeechProfile() -> NativeSpeechProviderProfile {
+        NativeSpeechProviderProfile(
             profileID: "stage7_5_stepfun_realtime_primary",
             providerID: "StepFun",
             capability: "native_speech",
@@ -338,11 +407,6 @@ private struct NativeSpeechRuntimeIntegrationTests {
             languageMetadata: "zh-CN",
             keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
         )
-        expect(
-            runtime.configureNativeSpeechProvider(profile: profile) == nil,
-            "native speech profile configures"
-        )
-        return runtime
     }
 
     private static func expect(

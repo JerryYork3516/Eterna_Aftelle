@@ -21,6 +21,31 @@ private enum DefaultTextProviderConfiguration {
     )
 }
 
+#if DEBUG
+private enum Stage75NativeSpeechConfiguration {
+    static let profile = NativeSpeechProviderProfile(
+        profileID: "stage7_5_stepfun_realtime_primary",
+        providerID: "StepFun",
+        capability: "native_speech",
+        adapterID: "stepfun_realtime",
+        modelID: "stepaudio-2.5-realtime",
+        voiceID: "linjiajiejie",
+        endpoint: URL(
+            string: "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime"
+        )!,
+        transport: "websocket",
+        inputAudioFormat: .pcm16,
+        outputAudioFormat: .pcm16,
+        turnDetection: NativeSpeechTurnDetection(
+            type: .serverVAD,
+            prefixPaddingMilliseconds: 500
+        ),
+        languageMetadata: "zh-CN",
+        keyRef: ProviderKeychainStore.stepFunKeyRef
+    )
+}
+#endif
+
 enum ParticleColorSource: String, CaseIterable, Identifiable {
     case digitalResident
     case systemDefault
@@ -65,6 +90,10 @@ final class AppController: ObservableObject {
         profile: DefaultTextProviderConfiguration.profile
     )
     #if DEBUG
+    @Published private(set) var nativeSpeechProviderDebugState =
+        NativeSpeechProviderDebugViewState(
+            profile: Stage75NativeSpeechConfiguration.profile
+        )
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
     @Published private(set) var relationshipProgressionDebugState =
@@ -99,17 +128,31 @@ final class AppController: ObservableObject {
 
     init() {
         let credentialStore = ProviderKeychainStore()
+        let runtimeCore: RuntimeCore
+        #if DEBUG
+        runtimeCore = StepFunRealtimeRuntimeComposition.makeRuntimeCore(
+            credentialReader: credentialStore
+        )
+        #else
+        runtimeCore = RuntimeCore(providerCredentialReader: credentialStore)
+        #endif
         providerKeychainStore = credentialStore
         orchestrationKernel = OrchestrationKernel(
-            runtimeCore: RuntimeCore(providerCredentialReader: credentialStore)
+            runtimeCore: runtimeCore
         )
         restoreProviderConfiguration()
+        #if DEBUG
+        refreshNativeSpeechProviderDebugState()
+        #endif
     }
 
     init(orchestrationKernel: OrchestrationKernel) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         restoreProviderConfiguration()
+        #if DEBUG
+        refreshNativeSpeechProviderDebugState()
+        #endif
     }
 
     func start() {
@@ -1085,6 +1128,96 @@ final class AppController: ObservableObject {
             status: .skipped
         )
         refreshRelationshipProgressionDebugState()
+    }
+
+    func saveNativeSpeechProviderCredential(_ credential: String) {
+        do {
+            try providerKeychainStore.save(
+                credential,
+                for: ProviderKeychainStore.stepFunKeyRef
+            )
+            nativeSpeechProviderDebugState.credentialSaved = true
+            nativeSpeechProviderDebugState.statusKey =
+                "particleDebug.stepfun.status.credentialSaved"
+        } catch {
+            refreshNativeSpeechProviderDebugState(
+                statusKey: "particleDebug.stepfun.status.credentialFailed"
+            )
+        }
+    }
+
+    func deleteNativeSpeechProviderCredential() {
+        do {
+            try providerKeychainStore.delete(
+                for: ProviderKeychainStore.stepFunKeyRef
+            )
+            nativeSpeechProviderDebugState.credentialSaved = false
+            nativeSpeechProviderDebugState.statusKey =
+                "particleDebug.stepfun.status.credentialDeleted"
+        } catch {
+            refreshNativeSpeechProviderDebugState(
+                statusKey: "particleDebug.stepfun.status.credentialFailed"
+            )
+        }
+    }
+
+    func testNativeSpeechProviderConnectivity() async {
+        guard providerKeychainStore.exists(
+            for: ProviderKeychainStore.stepFunKeyRef
+        ) else {
+            refreshNativeSpeechProviderDebugState(
+                statusKey: "particleDebug.stepfun.status.credentialMissing"
+            )
+            return
+        }
+
+        nativeSpeechProviderDebugState.isTesting = true
+        nativeSpeechProviderDebugState.statusKey =
+            "particleDebug.stepfun.status.testing"
+        let result = await orchestrationKernel.testNativeSpeechConnectivity(
+            profile: nativeSpeechProviderDebugState.profile
+        )
+        nativeSpeechProviderDebugState.isTesting = false
+        switch result {
+        case .success:
+            nativeSpeechProviderDebugState.statusKey =
+                "particleDebug.stepfun.status.pass"
+        case .failure(let error):
+            nativeSpeechProviderDebugState.statusKey =
+                nativeSpeechConnectivityStatusKey(for: error)
+        }
+        nativeSpeechProviderDebugState.credentialSaved =
+            providerKeychainStore.exists(
+                for: ProviderKeychainStore.stepFunKeyRef
+            )
+    }
+
+    private func refreshNativeSpeechProviderDebugState(
+        statusKey: String? = nil
+    ) {
+        nativeSpeechProviderDebugState.credentialSaved =
+            providerKeychainStore.exists(
+                for: ProviderKeychainStore.stepFunKeyRef
+            )
+        if let statusKey {
+            nativeSpeechProviderDebugState.statusKey = statusKey
+        }
+    }
+
+    private func nativeSpeechConnectivityStatusKey(
+        for error: NativeSpeechError
+    ) -> String {
+        switch error {
+        case .unauthorized:
+            return "particleDebug.stepfun.status.failedAuthentication"
+        case .rateLimited, .unavailable, .timedOut, .transportFailure:
+            return "particleDebug.stepfun.status.failedNetwork"
+        case .cancelled:
+            return "particleDebug.stepfun.status.cancelled"
+        case .invalidConfiguration, .missingCredential, .invalidEvent,
+             .interactionMismatch:
+            return "particleDebug.stepfun.status.failedProviderConfiguration"
+        }
     }
 
     private func showDebugSubtitle(at index: Int) {

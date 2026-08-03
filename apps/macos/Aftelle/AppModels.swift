@@ -999,6 +999,27 @@ struct ProviderDebugViewState: Equatable {
     }
 }
 
+#if DEBUG
+struct NativeSpeechProviderDebugViewState: Equatable {
+    let profile: NativeSpeechProviderProfile
+    var credentialSaved: Bool
+    var isTesting: Bool
+    var statusKey: String
+
+    init(
+        profile: NativeSpeechProviderProfile,
+        credentialSaved: Bool = false,
+        isTesting: Bool = false,
+        statusKey: String = "particleDebug.stepfun.status.ready"
+    ) {
+        self.profile = profile
+        self.credentialSaved = credentialSaved
+        self.isTesting = isTesting
+        self.statusKey = statusKey
+    }
+}
+#endif
+
 struct ResidentTextInputViewState: Equatable {
     var isSubmitting = false
     var errorKey: String?
@@ -1148,6 +1169,14 @@ public final class OrchestrationKernel {
     func configureTextProvider(profile: ProviderProfile) -> ProviderRequestError? {
         runtimeCore.configureTextProvider(profile: profile)
     }
+
+    #if DEBUG
+    func testNativeSpeechConnectivity(
+        profile: NativeSpeechProviderProfile
+    ) async -> Result<Void, NativeSpeechError> {
+        await runtimeCore.testNativeSpeechConnectivity(profile: profile)
+    }
+    #endif
 
     func testResidentReply(
         inputText: String,

@@ -2787,6 +2787,41 @@ public final class RuntimeCore {
         executionEngine.configureNativeSpeechProvider(profile: profile)
     }
 
+    #if DEBUG
+    func testNativeSpeechConnectivity(
+        profile: NativeSpeechProviderProfile
+    ) async -> Result<Void, NativeSpeechError> {
+        if let error = configureNativeSpeechProvider(profile: profile) {
+            return .failure(error)
+        }
+        do {
+            let interaction = try await startNativeSpeechInteraction()
+            let created = try await receiveNativeSpeechEvent(
+                interactionID: interaction.id
+            )
+            guard case .accepted(let createdEvent) = created,
+                  createdEvent.kind == .connected else {
+                throw NativeSpeechError.invalidEvent
+            }
+            let updated = try await receiveNativeSpeechEvent(
+                interactionID: interaction.id
+            )
+            guard case .accepted(let updatedEvent) = updated,
+                  updatedEvent.kind == .sessionUpdated else {
+                throw NativeSpeechError.invalidEvent
+            }
+            try await closeActiveNativeSpeechInteraction()
+            return .success(())
+        } catch let error as NativeSpeechError {
+            try? await closeActiveNativeSpeechInteraction()
+            return .failure(error)
+        } catch {
+            try? await closeActiveNativeSpeechInteraction()
+            return .failure(.transportFailure)
+        }
+    }
+    #endif
+
     func startNativeSpeechInteraction() async throws -> NativeSpeechInteraction {
         guard activeNativeSpeechInteraction == nil else {
             throw NativeSpeechError.invalidConfiguration

@@ -5,18 +5,20 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
     static let service = "com.eterna.aftelle.provider.deepseek"
     static let account = "primary-text-llm"
     static let keyRef = "keychain://com.eterna.aftelle.provider.deepseek/primary-text-llm"
+    static let stepFunService = "com.eterna.aftelle.provider.stepfun"
+    static let stepFunAccount = "stepfun_realtime_api_key"
+    static let stepFunKeyRef =
+        "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
 
     func save(_ credential: String, for keyRef: String) throws {
-        guard keyRef == Self.keyRef else {
-            throw ProviderKeychainError.unsupportedReference
-        }
+        let query = try baseQuery(for: keyRef)
         let value = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, let data = value.data(using: .utf8) else {
             throw ProviderKeychainError.invalidCredential
         }
 
         let attributes = [kSecValueData as String: data]
-        let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess {
             return
         }
@@ -24,7 +26,7 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
             throw ProviderKeychainError.operationFailed
         }
 
-        var addQuery = baseQuery
+        var addQuery = query
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
@@ -34,10 +36,7 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
     }
 
     func readCredential(for keyRef: String) throws -> String? {
-        guard keyRef == Self.keyRef else {
-            throw ProviderKeychainError.unsupportedReference
-        }
-        var query = baseQuery
+        var query = try baseQuery(for: keyRef)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -55,28 +54,39 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
     }
 
     func exists(for keyRef: String) -> Bool {
-        guard keyRef == Self.keyRef else { return false }
-        var query = baseQuery
+        guard var query = try? baseQuery(for: keyRef) else { return false }
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     func delete(for keyRef: String) throws {
-        guard keyRef == Self.keyRef else {
-            throw ProviderKeychainError.unsupportedReference
-        }
-        let status = SecItemDelete(baseQuery as CFDictionary)
+        let query = try baseQuery(for: keyRef)
+        let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw ProviderKeychainError.operationFailed
         }
     }
 
-    private var baseQuery: [String: Any] {
-        [
+    static func location(for keyRef: String) -> (service: String, account: String)? {
+        switch keyRef {
+        case Self.keyRef:
+            return (Self.service, Self.account)
+        case Self.stepFunKeyRef:
+            return (Self.stepFunService, Self.stepFunAccount)
+        default:
+            return nil
+        }
+    }
+
+    private func baseQuery(for keyRef: String) throws -> [String: Any] {
+        guard let location = Self.location(for: keyRef) else {
+            throw ProviderKeychainError.unsupportedReference
+        }
+        return [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
+            kSecAttrService as String: location.service,
+            kSecAttrAccount as String: location.account,
             kSecAttrSynchronizable as String: kCFBooleanFalse as Any
         ]
     }
