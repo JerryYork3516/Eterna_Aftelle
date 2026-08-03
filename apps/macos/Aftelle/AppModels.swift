@@ -1221,6 +1221,22 @@ public final class OrchestrationKernel {
         }
     }
 
+    nonisolated func receiveNativeSpeechEvent(
+        interactionID: NativeSpeechInteractionID
+    ) async -> Result<NativeSpeechEventDisposition, NativeSpeechError> {
+        do {
+            return .success(
+                try await runtimeCore.receiveNativeSpeechEvent(
+                    interactionID: interactionID
+                )
+            )
+        } catch let error as NativeSpeechError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
     func stopNativeSpeechInput(
         binding: NativeSpeechInputBinding,
         reason: NativeSpeechCancellationReason

@@ -30,7 +30,8 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
 
     func decode(
         _ frame: RealtimeWebSocketFrame,
-        interactionID: NativeSpeechInteractionID
+        interactionID: NativeSpeechInteractionID,
+        outputAudioSequenceNumber: UInt64? = nil
     ) throws -> NativeSpeechEvent? {
         let data: Data
         switch frame {
@@ -62,7 +63,8 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             kind = stringEvent(object, key: "delta", make: NativeSpeechEventKind.partialTranscript)
         case "conversation.item.input_audio_transcription.completed":
             kind = stringEvent(object, key: "transcript", make: NativeSpeechEventKind.finalTranscript)
-        case "response.created":
+        case "response.created", "response.thinking.delta",
+             "response.thinking.done":
             kind = .thinking
         case "response.audio_transcript.delta":
             kind = stringEvent(object, key: "delta") {
@@ -77,7 +79,10 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                   let audio = Data(base64Encoded: encoded) else {
                 throw NativeSpeechError.invalidEvent
             }
-            let sequence = (object["sequence"] as? NSNumber)?.uint64Value ?? 0
+            guard let sequence = outputAudioSequenceNumber
+                    ?? (object["sequence"] as? NSNumber)?.uint64Value else {
+                throw NativeSpeechError.invalidEvent
+            }
             kind = .outputAudio(
                 NativeSpeechAudioPayload(
                     interactionID: interactionID,
@@ -86,6 +91,31 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                     format: .pcm16
                 )
             )
+        case "response.audio.done":
+            return nil
+        case "response.text.delta":
+            kind = stringEvent(object, key: "delta") {
+                .outputText(text: $0, isFinal: false)
+            }
+        case "response.text.done":
+            kind = stringEvent(object, key: "text") {
+                .outputText(text: $0, isFinal: true)
+            }
+        case "response.function_call_arguments.done":
+            guard let requestID = object["call_id"] as? String,
+                  let toolName = object["name"] as? String,
+                  let arguments = object["arguments"] as? String else {
+                throw NativeSpeechError.invalidEvent
+            }
+            kind = .toolRequestCandidate(
+                NativeSpeechToolRequest(
+                    requestID: requestID,
+                    toolName: toolName,
+                    arguments: Data(arguments.utf8)
+                )
+            )
+        case "response.done":
+            kind = try responseDoneKind(object)
         case "response.cancelled":
             kind = .cancelled(reason: nil)
         case "error":
@@ -98,6 +128,27 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             throw NativeSpeechError.invalidEvent
         }
         return NativeSpeechEvent(interactionID: interactionID, kind: kind)
+    }
+
+    private func responseDoneKind(
+        _ object: [String: Any]
+    ) throws -> NativeSpeechEventKind {
+        guard let response = object["response"] as? [String: Any],
+              let status = response["status"] as? String else {
+            throw NativeSpeechError.invalidEvent
+        }
+        switch status {
+        case "completed":
+            return .closed
+        case "cancelled":
+            return .cancelled(reason: "cancelled")
+        case "failed":
+            return .failed(.unavailable)
+        case "incomplete":
+            return .failed(.transportFailure)
+        default:
+            throw NativeSpeechError.invalidEvent
+        }
     }
 
     private func encode(_ object: [String: Any]) throws -> String {

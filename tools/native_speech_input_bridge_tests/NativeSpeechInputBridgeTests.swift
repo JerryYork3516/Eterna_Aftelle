@@ -386,7 +386,8 @@ private struct NativeSpeechInputBridgeTests {
                 .text(#"{"type":"session.created"}"#),
                 .text(#"{"type":"session.updated"}"#)
             ],
-            audioAppendError: audioAppendError
+            audioAppendError: audioAppendError,
+            waitsWhenEmpty: true
         )
     }
 

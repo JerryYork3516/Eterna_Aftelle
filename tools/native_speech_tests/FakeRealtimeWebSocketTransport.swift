@@ -8,22 +8,42 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         case close(RealtimeWebSocketCloseReason)
     }
 
-    private var frames: [RealtimeWebSocketFrame]
+    enum ReceiveResult: Sendable, Equatable {
+        case frame(RealtimeWebSocketFrame)
+        case failure(NativeSpeechError)
+    }
+
+    private var receiveResults: [ReceiveResult]
+    private var connectResults: [Result<Void, NativeSpeechError>]
     private let audioAppendError: NativeSpeechError?
+    private let waitsWhenEmpty: Bool
+    private var pendingReceive:
+        CheckedContinuation<RealtimeWebSocketFrame, any Error>?
+    private var activeReceiveCount = 0
     private(set) var calls: [Call] = []
     private(set) var capturedBearerToken: String?
+    private(set) var maximumConcurrentReceiveCount = 0
 
     init(
         frames: [RealtimeWebSocketFrame] = [],
-        audioAppendError: NativeSpeechError? = nil
+        audioAppendError: NativeSpeechError? = nil,
+        connectResults: [Result<Void, NativeSpeechError>] = [],
+        receiveResults: [ReceiveResult] = [],
+        waitsWhenEmpty: Bool = false
     ) {
-        self.frames = frames
+        self.receiveResults = frames.map(ReceiveResult.frame)
+            + receiveResults
+        self.connectResults = connectResults
         self.audioAppendError = audioAppendError
+        self.waitsWhenEmpty = waitsWhenEmpty
     }
 
     func connect(endpoint: URL, bearerToken: String) async throws {
         calls.append(.connect(endpoint))
         capturedBearerToken = bearerToken
+        if !connectResults.isEmpty {
+            try connectResults.removeFirst().get()
+        }
     }
 
     func send(_ frame: RealtimeWebSocketFrame) async throws {
@@ -37,17 +57,59 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func receive() async throws -> RealtimeWebSocketFrame {
         calls.append(.receive)
-        guard !frames.isEmpty else {
+        activeReceiveCount += 1
+        maximumConcurrentReceiveCount = max(
+            maximumConcurrentReceiveCount,
+            activeReceiveCount
+        )
+        defer { activeReceiveCount -= 1 }
+        if !receiveResults.isEmpty {
+            return try receiveResults.removeFirst().get()
+        }
+        guard waitsWhenEmpty, pendingReceive == nil else {
             throw NativeSpeechError.transportFailure
         }
-        return frames.removeFirst()
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingReceive = continuation
+        }
     }
 
     func close(reason: RealtimeWebSocketCloseReason) async {
         calls.append(.close(reason))
+        pendingReceive?.resume(throwing: NativeSpeechError.cancelled)
+        pendingReceive = nil
     }
 
     func enqueue(_ frame: RealtimeWebSocketFrame) {
-        frames.append(frame)
+        enqueue(.frame(frame))
+    }
+
+    func enqueueFailure(_ error: NativeSpeechError) {
+        enqueue(.failure(error))
+    }
+
+    private func enqueue(_ result: ReceiveResult) {
+        if let pendingReceive {
+            self.pendingReceive = nil
+            switch result {
+            case .frame(let frame):
+                pendingReceive.resume(returning: frame)
+            case .failure(let error):
+                pendingReceive.resume(throwing: error)
+            }
+        } else {
+            receiveResults.append(result)
+        }
+    }
+}
+
+private extension FakeRealtimeWebSocketTransport.ReceiveResult {
+    func get() throws -> RealtimeWebSocketFrame {
+        switch self {
+        case .frame(let frame):
+            return frame
+        case .failure(let error):
+            throw error
+        }
     }
 }

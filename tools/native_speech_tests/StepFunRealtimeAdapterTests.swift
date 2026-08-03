@@ -21,6 +21,9 @@ private struct StepFunRealtimeAdapterTests {
         try await testHandshakeAudioCancelAndClose()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
+        try await testContinuousOutputAndCanonicalTerminal()
+        try await testSinglePreconfigurationRetry()
+        try await testStreamingFailureDoesNotReconnect()
         print("stepfun_realtime_adapter_checks=\(checks)")
     }
 
@@ -137,8 +140,12 @@ private struct StepFunRealtimeAdapterTests {
             (#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你"}"#, .partialTranscript("你")),
             (#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#, .finalTranscript("你好")),
             (#"{"type":"response.created"}"#, .thinking),
+            (#"{"type":"response.thinking.delta","delta":"private reasoning"}"#, .thinking),
+            (#"{"type":"response.thinking.done","thinking":"private reasoning"}"#, .thinking),
             (#"{"type":"response.audio_transcript.delta","delta":"好"}"#, .outputText(text: "好", isFinal: false)),
             (#"{"type":"response.audio_transcript.done","transcript":"好的"}"#, .outputText(text: "好的", isFinal: true)),
+            (#"{"type":"response.text.delta","delta":"好"}"#, .outputText(text: "好", isFinal: false)),
+            (#"{"type":"response.text.done","text":"好的"}"#, .outputText(text: "好的", isFinal: true)),
             (#"{"type":"response.cancelled"}"#, .cancelled(reason: nil)),
             (#"{"type":"error","error":{"code":"rate_limit_exceeded"}}"#, .failed(.rateLimited))
         ]
@@ -166,6 +173,163 @@ private struct StepFunRealtimeAdapterTests {
             interactionID: interactionID
         )
         expect(unknown == nil, "unknown event is ignored")
+        let audioDone = try codec.decode(
+            .text(#"{"type":"response.audio.done"}"#),
+            interactionID: interactionID
+        )
+        expect(audioDone == nil, "audio.done is not a terminal event")
+        let tool = try codec.decode(
+            .text(#"{"type":"response.function_call_arguments.done","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
+            interactionID: interactionID
+        )
+        expect(
+            tool?.kind == .toolRequestCandidate(
+                NativeSpeechToolRequest(
+                    requestID: "call-1",
+                    toolName: "weather",
+                    arguments: Data(#"{"city":"北京"}"#.utf8)
+                )
+            ),
+            "tool request is forwarded without execution"
+        )
+        let doneCases: [(String, NativeSpeechEventKind)] = [
+            ("completed", .closed),
+            ("cancelled", .cancelled(reason: "cancelled")),
+            ("failed", .failed(.unavailable)),
+            ("incomplete", .failed(.transportFailure))
+        ]
+        for (status, expected) in doneCases {
+            let event = try codec.decode(
+                .text(#"{"type":"response.done","response":{"status":"\#(status)"}}"#),
+                interactionID: interactionID
+            )
+            expect(event?.kind == expected, "response.done maps canonical status")
+        }
+    }
+
+    private static func testContinuousOutputAndCanonicalTerminal() async throws {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#),
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#),
+            .text(#"{"type":"response.audio.done"}"#),
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: "test-token"),
+            transport: transport
+        )
+        let request = makeRequest()
+        try await adapter.start(request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let first = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        let second = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            first.kind == .outputAudio(
+                NativeSpeechAudioPayload(
+                    interactionID: request.interaction.id,
+                    sequenceNumber: 0,
+                    bytes: Data([1, 2]),
+                    format: .pcm16
+                )
+            ),
+            "first output chunk receives local sequence zero"
+        )
+        expect(
+            second.kind == .outputAudio(
+                NativeSpeechAudioPayload(
+                    interactionID: request.interaction.id,
+                    sequenceNumber: 1,
+                    bytes: Data([3, 4]),
+                    format: .pcm16
+                )
+            ),
+            "second output chunk preserves bytes and order"
+        )
+        let terminal = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(terminal.kind == .closed, "response.done completes interaction")
+        let ignoredEventCount = await adapter.ignoredEventCount
+        expect(
+            ignoredEventCount == 1,
+            "audio.done is consumed without ending the response"
+        )
+    }
+
+    private static func testSinglePreconfigurationRetry() async throws {
+        let transport = FakeRealtimeWebSocketTransport(
+            frames: [
+                .text(#"{"type":"session.created"}"#),
+                .text(#"{"type":"session.updated"}"#)
+            ],
+            connectResults: [
+                .failure(.transportFailure),
+                .success(())
+            ]
+        )
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: "test-token"),
+            transport: transport,
+            reconnectDelay: .zero
+        )
+        try await adapter.start(request: makeRequest())
+        let connectCount = await transport.calls.filter {
+            if case .connect = $0 { return true }
+            return false
+        }.count
+        expect(connectCount == 2, "preconfiguration failure retries once")
+        let connectionState = await adapter.connectionState
+        expect(
+            connectionState == .configured,
+            "retry reaches configured state"
+        )
+    }
+
+    private static func testStreamingFailureDoesNotReconnect() async throws {
+        let transport = FakeRealtimeWebSocketTransport(
+            frames: [
+                .text(#"{"type":"session.created"}"#),
+                .text(#"{"type":"session.updated"}"#)
+            ],
+            receiveResults: [.failure(.transportFailure)]
+        )
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: "test-token"),
+            transport: transport,
+            reconnectDelay: .zero
+        )
+        let request = makeRequest()
+        try await adapter.start(request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        try await adapter.send(
+            audio: NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 1,
+                bytes: Data([0, 0]),
+                format: .pcm16
+            )
+        )
+        do {
+            _ = try await adapter.receive(
+                interactionID: request.interaction.id
+            )
+            fatalError("FAILED: streaming receive failure must surface")
+        } catch NativeSpeechError.transportFailure {
+            checks += 1
+        }
+        let connectCount = await transport.calls.filter {
+            if case .connect = $0 { return true }
+            return false
+        }.count
+        expect(connectCount == 1, "streaming failure never reconnects")
     }
 
     private static func makeRequest() -> NativeSpeechStartRequest {

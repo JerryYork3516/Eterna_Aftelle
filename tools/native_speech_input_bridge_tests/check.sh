@@ -17,6 +17,7 @@ host_sources=(
   "$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioHost.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechNativeInputBridge.swift"
+  "$repo_root/apps/macos/Aftelle/MacSpeechNativeOutputBridge.swift"
   "$repo_root/apps/macos/Aftelle/AppController.swift"
 )
 
