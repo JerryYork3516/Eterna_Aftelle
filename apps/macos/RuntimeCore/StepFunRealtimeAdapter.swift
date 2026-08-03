@@ -11,11 +11,16 @@ nonisolated enum StepFunRealtimeConnectionState: String, Sendable, Equatable {
     case failed
 }
 
-actor StepFunRealtimeAdapter: NativeSpeechProvider {
+actor StepFunRealtimeAdapter:
+    NativeSpeechProvider,
+    RealtimeSpeechContextProviding {
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
     private let codec: StepFunRealtimeCodec
-    private var activeInteractionID: NativeSpeechInteractionID?
+    private var activeInteraction: NativeSpeechInteraction?
+    private var activeContextVersion: String?
+    private var preparedContextProjection:
+        RealtimeSpeechContextProjection?
     private var pendingEvents: [NativeSpeechEvent] = []
     private var isCancelling = false
     private var nextOutputAudioSequenceNumber: UInt64 = 0
@@ -36,11 +41,16 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
     }
 
     func start(request: NativeSpeechStartRequest) async throws {
-        guard activeInteractionID == nil else {
+        guard activeInteraction == nil else {
             throw NativeSpeechError.invalidConfiguration
         }
+        guard let contextProjection = preparedContextProjection else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        preparedContextProjection = nil
         try request.profile.validate()
-        guard request.interaction.providerProfileID == request.profile.profileID else {
+        guard request.interaction.providerProfileID == request.profile.profileID,
+              contextProjection.isBound(to: request.interaction) else {
             throw NativeSpeechError.interactionMismatch
         }
         let credential: String
@@ -62,6 +72,7 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
             do {
                 try await connectAndConfigure(
                     request: request,
+                    contextProjection: contextProjection,
                     credential: credential
                 )
                 return
@@ -85,6 +96,33 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
                 throw NativeSpeechError.transportFailure
             }
         }
+    }
+
+    func prepareContext(
+        _ projection: RealtimeSpeechContextProjection
+    ) async throws {
+        guard activeInteraction == nil else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        preparedContextProjection = projection
+    }
+
+    func updateContext(
+        _ projection: RealtimeSpeechContextProjection
+    ) async throws {
+        guard let interaction = activeInteraction,
+              projection.isBound(to: interaction) else {
+            throw NativeSpeechError.interactionMismatch
+        }
+        guard activeContextVersion != projection.compilationVersion else {
+            return
+        }
+        try await transport.send(
+            .text(try codec.contextUpdate(
+                instructions: projection.instructions
+            ))
+        )
+        activeContextVersion = projection.compilationVersion
     }
 
     func send(audio: NativeSpeechAudioPayload) async throws {
@@ -115,8 +153,8 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
     }
 
     func close(interactionID: NativeSpeechInteractionID) async throws {
-        guard activeInteractionID == interactionID else {
-            if activeInteractionID == nil { return }
+        guard activeInteraction?.id == interactionID else {
+            if activeInteraction == nil { return }
             throw NativeSpeechError.interactionMismatch
         }
         connectionState = .closing
@@ -127,6 +165,7 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
 
     private func connectAndConfigure(
         request: NativeSpeechStartRequest,
+        contextProjection: RealtimeSpeechContextProjection,
         credential: String
     ) async throws {
         connectionState = .connecting
@@ -134,7 +173,8 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
             endpoint: request.profile.endpoint,
             bearerToken: credential
         )
-        activeInteractionID = request.interaction.id
+        activeInteraction = request.interaction
+        activeContextVersion = contextProjection.compilationVersion
         isCancelling = false
         nextOutputAudioSequenceNumber = 0
 
@@ -146,7 +186,10 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
         }
         connectionState = .connected
         try await transport.send(
-            .text(try codec.sessionUpdate(profile: request.profile))
+            .text(try codec.sessionUpdate(
+                profile: request.profile,
+                instructions: contextProjection.instructions
+            ))
         )
         let updated = try await nextRecognizedEvent(
             interactionID: request.interaction.id
@@ -159,14 +202,15 @@ actor StepFunRealtimeAdapter: NativeSpeechProvider {
     }
 
     private func resetConnection() {
-        activeInteractionID = nil
+        activeInteraction = nil
+        activeContextVersion = nil
         pendingEvents.removeAll()
         isCancelling = false
         nextOutputAudioSequenceNumber = 0
     }
 
     private func requireActive(_ interactionID: NativeSpeechInteractionID) throws {
-        guard activeInteractionID == interactionID else {
+        guard activeInteraction?.id == interactionID else {
             throw NativeSpeechError.interactionMismatch
         }
     }

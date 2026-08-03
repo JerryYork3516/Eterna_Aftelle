@@ -37,7 +37,10 @@ private struct StepFunRealtimeAdapterTests {
             transport: transport
         )
         let request = makeRequest()
-        try await adapter.start(request: request)
+        let startProjection = try await start(
+            adapter,
+            request: request
+        )
 
         let calls = await transport.calls
         expect(calls.count == 4, "handshake has four ordered calls")
@@ -56,7 +59,11 @@ private struct StepFunRealtimeAdapterTests {
         let vad = session?["turn_detection"] as? [String: Any]
         expect(vad?["type"] as? String == "server_vad", "server VAD fixed")
         expect(vad?["prefix_padding_ms"] as? Int == 500, "VAD prefix fixed")
-        expect(session?["instructions"] == nil, "instructions are not sent")
+        expect(
+            session?["instructions"] as? String
+                == startProjection.instructions,
+            "compiled instructions are sent"
+        )
         expect(session?["tools"] == nil, "tools are not sent")
         expect(calls[3] == .receive, "session.updated receive is fourth")
         let capturedBearerToken = await transport.capturedBearerToken
@@ -76,6 +83,45 @@ private struct StepFunRealtimeAdapterTests {
             updatedEvent.kind == .sessionUpdated,
             "updated maps to standard event"
         )
+
+        let refreshed = contextProjection(
+            interaction: request.interaction,
+            instructions: "refreshed instructions",
+            version: "context-v2",
+            reason: .finalTranscript
+        )
+        try await adapter.updateContext(refreshed)
+        try await adapter.updateContext(refreshed)
+        let refreshCalls = await transport.calls.filter { call in
+            guard case .send(.text(let text)) = call,
+                  let object = try? json(text),
+                  object["type"] as? String == "session.update",
+                  let session = object["session"] as? [String: Any] else {
+                return false
+            }
+            return session["instructions"] as? String
+                == refreshed.instructions
+        }
+        expect(
+            refreshCalls.count == 1,
+            "duplicate context version is not resent"
+        )
+        let staleInteraction = NativeSpeechInteraction(
+            residentID: request.interaction.residentID,
+            sessionID: request.interaction.sessionID,
+            providerProfileID: request.profile.profileID
+        )
+        do {
+            try await adapter.updateContext(contextProjection(
+                interaction: staleInteraction,
+                instructions: "stale instructions",
+                version: "stale-v1",
+                reason: .finalTranscript
+            ))
+            fatalError("FAILED: stale context must be rejected")
+        } catch NativeSpeechError.interactionMismatch {
+            checks += 1
+        }
 
         let audio = NativeSpeechAudioPayload(
             interactionID: request.interaction.id,
@@ -122,7 +168,7 @@ private struct StepFunRealtimeAdapterTests {
             transport: transport
         )
         do {
-            try await adapter.start(request: makeRequest())
+            _ = try await start(adapter, request: makeRequest())
             fatalError("FAILED: missing credential must fail")
         } catch NativeSpeechError.missingCredential {
             checks += 1
@@ -221,7 +267,7 @@ private struct StepFunRealtimeAdapterTests {
             transport: transport
         )
         let request = makeRequest()
-        try await adapter.start(request: request)
+        _ = try await start(adapter, request: request)
         _ = try await adapter.receive(interactionID: request.interaction.id)
         _ = try await adapter.receive(interactionID: request.interaction.id)
         let first = try await adapter.receive(
@@ -279,7 +325,7 @@ private struct StepFunRealtimeAdapterTests {
             transport: transport,
             reconnectDelay: .zero
         )
-        try await adapter.start(request: makeRequest())
+        _ = try await start(adapter, request: makeRequest())
         let connectCount = await transport.calls.filter {
             if case .connect = $0 { return true }
             return false
@@ -306,7 +352,7 @@ private struct StepFunRealtimeAdapterTests {
             reconnectDelay: .zero
         )
         let request = makeRequest()
-        try await adapter.start(request: request)
+        _ = try await start(adapter, request: request)
         _ = try await adapter.receive(interactionID: request.interaction.id)
         _ = try await adapter.receive(interactionID: request.interaction.id)
         try await adapter.send(
@@ -351,13 +397,59 @@ private struct StepFunRealtimeAdapterTests {
             languageMetadata: "zh-CN",
             keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
         )
+        let interaction = makeInteraction(profile: profile)
         return NativeSpeechStartRequest(
-            interaction: NativeSpeechInteraction(
-                residentID: "resident",
-                sessionID: "session",
-                providerProfileID: profile.profileID
-            ),
+            interaction: interaction,
             profile: profile
+        )
+    }
+
+    @discardableResult
+    private static func start(
+        _ adapter: StepFunRealtimeAdapter,
+        request: NativeSpeechStartRequest
+    ) async throws -> RealtimeSpeechContextProjection {
+        let projection = contextProjection(
+            interaction: request.interaction,
+            instructions: "compiled resident instructions",
+            version: "context-v1",
+            reason: .interactionStarted
+        )
+        try await adapter.prepareContext(projection)
+        try await adapter.start(request: request)
+        return projection
+    }
+
+    private static func contextProjection(
+        interaction: NativeSpeechInteraction,
+        instructions: String,
+        version: String,
+        reason: RealtimeSpeechContextRefreshReason
+    ) -> RealtimeSpeechContextProjection {
+        RealtimeSpeechContextProjection(
+            residentID: interaction.residentID,
+            sessionID: interaction.sessionID,
+            interactionID: interaction.id,
+            sections: [],
+            instructions: instructions,
+            budget: RealtimeSpeechContextBudget(
+                maximumUTF8Bytes: 24_576,
+                untrimmedUTF8Bytes: instructions.utf8.count,
+                finalUTF8Bytes: instructions.utf8.count,
+                removedSectionIDs: []
+            ),
+            refreshReason: reason,
+            compilationVersion: version
+        )
+    }
+
+    private static func makeInteraction(
+        profile: NativeSpeechProviderProfile
+    ) -> NativeSpeechInteraction {
+        NativeSpeechInteraction(
+            residentID: "resident",
+            sessionID: "session",
+            providerProfileID: profile.profileID
         )
     }
 

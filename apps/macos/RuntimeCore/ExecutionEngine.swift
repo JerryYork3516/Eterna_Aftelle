@@ -30,9 +30,19 @@ public final class ExecutionEngine {
     }
 
     func startNativeSpeech(
-        interaction: NativeSpeechInteraction
+        interaction: NativeSpeechInteraction,
+        contextProjection: RealtimeSpeechContextProjection
     ) async throws {
-        try await providerRouter.startNativeSpeech(interaction: interaction)
+        try await providerRouter.startNativeSpeech(
+            interaction: interaction,
+            contextProjection: contextProjection
+        )
+    }
+
+    func updateNativeSpeechContext(
+        _ projection: RealtimeSpeechContextProjection
+    ) async throws {
+        try await providerRouter.updateNativeSpeechContext(projection)
     }
 
     func sendNativeSpeechAudio(

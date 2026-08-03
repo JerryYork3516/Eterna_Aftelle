@@ -1,12 +1,16 @@
 import Foundation
 
 nonisolated struct StepFunRealtimeCodec: Sendable {
-    func sessionUpdate(profile: NativeSpeechProviderProfile) throws -> String {
+    func sessionUpdate(
+        profile: NativeSpeechProviderProfile,
+        instructions: String
+    ) throws -> String {
         try encode([
             "type": "session.update",
             "session": [
                 "modalities": ["text", "audio"],
                 "voice": profile.voiceID,
+                "instructions": instructions,
                 "input_audio_format": profile.inputAudioFormat.rawValue,
                 "output_audio_format": profile.outputAudioFormat.rawValue,
                 "turn_detection": [
@@ -14,6 +18,13 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                     "prefix_padding_ms": profile.turnDetection.prefixPaddingMilliseconds
                 ]
             ]
+        ])
+    }
+
+    func contextUpdate(instructions: String) throws -> String {
+        try encode([
+            "type": "session.update",
+            "session": ["instructions": instructions]
         ])
     }
 

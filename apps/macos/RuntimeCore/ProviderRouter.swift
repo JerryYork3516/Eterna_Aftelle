@@ -937,18 +937,32 @@ public final class ProviderRouter {
     }
 
     func startNativeSpeech(
-        interaction: NativeSpeechInteraction
+        interaction: NativeSpeechInteraction,
+        contextProjection: RealtimeSpeechContextProjection
     ) async throws {
         guard let nativeSpeechProvider,
-              let nativeSpeechProfile else {
+              let nativeSpeechProfile,
+              let contextProvider = nativeSpeechProvider
+                as? RealtimeSpeechContextProviding else {
             throw NativeSpeechError.unavailable
         }
+        try await contextProvider.prepareContext(contextProjection)
         try await nativeSpeechProvider.start(
             request: NativeSpeechStartRequest(
                 interaction: interaction,
                 profile: nativeSpeechProfile
             )
         )
+    }
+
+    func updateNativeSpeechContext(
+        _ projection: RealtimeSpeechContextProjection
+    ) async throws {
+        guard let contextProvider = nativeSpeechProvider
+                as? RealtimeSpeechContextProviding else {
+            throw NativeSpeechError.unavailable
+        }
+        try await contextProvider.updateContext(projection)
     }
 
     func sendNativeSpeechAudio(

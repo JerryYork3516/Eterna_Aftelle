@@ -48,6 +48,8 @@
 		A0754A100000000000000001 /* NativeSpeechInputFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0754A100000000000000011 /* NativeSpeechInputFrame.swift */; };
 		A0754A100000000000000002 /* MacSpeechNativeInputBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0754A100000000000000012 /* MacSpeechNativeInputBridge.swift */; };
 		A0754A200000000000000001 /* MacSpeechNativeOutputBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0754A200000000000000011 /* MacSpeechNativeOutputBridge.swift */; };
+		A0755A200000000000000001 /* RealtimeSpeechContextProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0755A200000000000000011 /* RealtimeSpeechContextProjection.swift */; };
+		A0755A200000000000000002 /* RealtimeSpeechContextCompiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0755A200000000000000012 /* RealtimeSpeechContextCompiler.swift */; };
 		A070C0000000000000000031 /* Freezev03.calibration_fixture.json in Resources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000030 /* Freezev03.calibration_fixture.json */; };
 /* End PBXBuildFile section */
 
@@ -96,6 +98,8 @@
 		A0754A100000000000000011 /* NativeSpeechInputFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/NativeSpeechInputFrame.swift; sourceTree = SOURCE_ROOT; };
 		A0754A100000000000000012 /* MacSpeechNativeInputBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechNativeInputBridge.swift; sourceTree = "<group>"; };
 		A0754A200000000000000011 /* MacSpeechNativeOutputBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechNativeOutputBridge.swift; sourceTree = "<group>"; };
+		A0755A200000000000000011 /* RealtimeSpeechContextProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/RealtimeSpeechContextProjection.swift; sourceTree = SOURCE_ROOT; };
+		A0755A200000000000000012 /* RealtimeSpeechContextCompiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/RealtimeSpeechContextCompiler.swift; sourceTree = SOURCE_ROOT; };
 		A070C0000000000000000030 /* Freezev03.calibration_fixture.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Freezev03.calibration_fixture.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -163,6 +167,8 @@
 		A070C0000000000000000017 /* RuntimeCore */ = {
 			isa = PBXGroup;
 			children = (
+				A0755A200000000000000011 /* RealtimeSpeechContextProjection.swift */,
+				A0755A200000000000000012 /* RealtimeSpeechContextCompiler.swift */,
 				A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */,
 				A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */,
 				A0752A200000000000000011 /* RealtimeWebSocketTransport.swift */,
@@ -265,6 +271,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A0755A200000000000000001 /* RealtimeSpeechContextProjection.swift in Sources */,
+				A0755A200000000000000002 /* RealtimeSpeechContextCompiler.swift in Sources */,
 				A0754A100000000000000002 /* MacSpeechNativeInputBridge.swift in Sources */,
 				A0754A200000000000000001 /* MacSpeechNativeOutputBridge.swift in Sources */,
 				A0754A100000000000000001 /* NativeSpeechInputFrame.swift in Sources */,

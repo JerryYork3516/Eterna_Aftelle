@@ -25,6 +25,7 @@ swiftc \
 
 adapter_sources=(
   "${sources[@]}"
+  "$repo_root/apps/macos/RuntimeCore/RealtimeSpeechContextProjection.swift"
   "$repo_root/apps/macos/RuntimeCore/RealtimeWebSocketTransport.swift"
   "$repo_root/apps/macos/RuntimeCore/StepFunRealtimeCodec.swift"
   "$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
@@ -92,6 +93,13 @@ for operation in start send receive cancel close; do
     exit 1
   fi
 done
+
+rg -q 'executionEngine\.updateNativeSpeechContext' \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+rg -q 'providerRouter\.updateNativeSpeechContext' \
+  "$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift"
+rg -q 'contextProvider\.updateContext' \
+  "$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift"
 
 echo "native_speech_execution_gate=PASS"
 

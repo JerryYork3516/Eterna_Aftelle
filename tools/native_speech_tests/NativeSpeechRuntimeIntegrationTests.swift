@@ -1,8 +1,11 @@
 import Foundation
 
-private actor FakeNativeSpeechProvider: NativeSpeechProvider {
+private actor FakeNativeSpeechProvider:
+    NativeSpeechProvider,
+    RealtimeSpeechContextProviding {
     enum Operation: Sendable, Equatable {
         case start(NativeSpeechInteractionID)
+        case updateContext(NativeSpeechInteractionID, String)
         case send(NativeSpeechInteractionID)
         case receive(NativeSpeechInteractionID)
         case cancel(NativeSpeechInteractionID)
@@ -11,6 +14,7 @@ private actor FakeNativeSpeechProvider: NativeSpeechProvider {
 
     enum OperationKind: Sendable {
         case start
+        case updateContext
         case send
         case receive
         case cancel
@@ -23,6 +27,9 @@ private actor FakeNativeSpeechProvider: NativeSpeechProvider {
     private var receiveStarted = false
     private var receiveStartedContinuation: CheckedContinuation<Void, Never>?
     private(set) var operations: [Operation] = []
+    private(set) var startedProjections: [RealtimeSpeechContextProjection] = []
+    private(set) var updatedProjections: [RealtimeSpeechContextProjection] = []
+    private var preparedProjection: RealtimeSpeechContextProjection?
     private let emitsHandshakeOnStart: Bool
 
     init(emitsHandshakeOnStart: Bool = false) {
@@ -31,6 +38,12 @@ private actor FakeNativeSpeechProvider: NativeSpeechProvider {
 
     func start(request: NativeSpeechStartRequest) async throws {
         operations.append(.start(request.interaction.id))
+        guard let preparedProjection,
+              preparedProjection.isBound(to: request.interaction) else {
+            throw NativeSpeechError.interactionMismatch
+        }
+        self.preparedProjection = nil
+        startedProjections.append(preparedProjection)
         if emitsHandshakeOnStart {
             events.append(
                 NativeSpeechEvent(
@@ -45,6 +58,24 @@ private actor FakeNativeSpeechProvider: NativeSpeechProvider {
                 )
             )
         }
+    }
+
+    func prepareContext(
+        _ projection: RealtimeSpeechContextProjection
+    ) async throws {
+        preparedProjection = projection
+    }
+
+    func updateContext(
+        _ projection: RealtimeSpeechContextProjection
+    ) async throws {
+        operations.append(
+            .updateContext(
+                projection.interactionID,
+                projection.compilationVersion
+            )
+        )
+        updatedProjections.append(projection)
     }
 
     func send(audio: NativeSpeechAudioPayload) async throws {
@@ -98,6 +129,7 @@ private actor FakeNativeSpeechProvider: NativeSpeechProvider {
         operations.filter { operation in
             switch (kind, operation) {
             case (.start, .start),
+                 (.updateContext, .updateContext),
                  (.send, .send),
                  (.receive, .receive),
                  (.cancel, .cancel),
@@ -143,6 +175,30 @@ private struct NativeSpeechRuntimeIntegrationTests {
 
         let load = runtime.loadDR(from: fixtureData)
         expect(load.isLoaded, "fixed resident loads")
+        guard let dynamicInput = runtime
+            .compileResidentDialogueContext(currentUserInput: "")?
+            .identity.domainFocus.first else {
+            fatalError("FAILED: fixed resident needs a domain focus")
+        }
+        let probeInteraction = NativeSpeechInteraction(
+            residentID: load.residentID,
+            sessionID: load.sessionID!.rawValue,
+            providerProfileID: nativeSpeechProfile().profileID
+        )
+        let dynamicContext = runtime.compileResidentDialogueContext(
+            currentUserInput: dynamicInput
+        )!
+        let dynamicProbe = try RealtimeSpeechContextCompiler().compile(
+            context: dynamicContext,
+            interaction: probeInteraction,
+            refreshReason: .finalTranscript
+        )
+        print(
+            "native_speech_context_probe="
+                + "untrimmed:\(dynamicProbe.budget.untrimmedUTF8Bytes),"
+                + "final:\(dynamicProbe.budget.finalUTF8Bytes),"
+                + "removed:\(dynamicProbe.budget.removedSectionIDs.count)"
+        )
         let dialogueBefore =
             (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
 
@@ -150,6 +206,15 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(first.lifecycleState == .active, "start activates interaction")
         expect(first.residentID == load.residentID, "interaction owns loaded resident")
         expect(first.sessionID == load.sessionID?.rawValue, "interaction owns current session")
+        let firstStartProjection = await provider.startedProjections.last
+        expect(
+            firstStartProjection?.isBound(to: first) == true,
+            "start carries resident-session-interaction bound context"
+        )
+        expect(
+            firstStartProjection?.refreshReason == .interactionStarted,
+            "start compiles the session base snapshot"
+        )
 
         do {
             _ = try await runtime.startNativeSpeechInteraction()
@@ -183,6 +248,11 @@ private struct NativeSpeechRuntimeIntegrationTests {
                 )
             ),
             "current event is accepted"
+        )
+        let partialUpdateCount = await provider.operationCount(.updateContext)
+        expect(
+            partialUpdateCount == 0,
+            "partial transcript does not refresh context"
         )
 
         let blockedReceive = Task { @MainActor in
@@ -240,7 +310,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
         await provider.enqueue(
             NativeSpeechEvent(
                 interactionID: second.id,
-                kind: .finalTranscript("current")
+                kind: .finalTranscript(dynamicInput)
             )
         )
         let currentEvent = try await runtime.receiveNativeSpeechEvent(
@@ -250,10 +320,83 @@ private struct NativeSpeechRuntimeIntegrationTests {
             currentEvent == .accepted(
                 NativeSpeechEvent(
                     interactionID: second.id,
-                    kind: .finalTranscript("current")
+                    kind: .finalTranscript(dynamicInput)
                 )
             ),
             "new interaction event is accepted"
+        )
+        let finalUpdateCount = await provider.operationCount(.updateContext)
+        expect(
+            finalUpdateCount == 1,
+            "final transcript refreshes context once (count=\(finalUpdateCount), untrimmed=\(dynamicProbe.budget.untrimmedUTF8Bytes), final=\(dynamicProbe.budget.finalUTF8Bytes), removed=\(dynamicProbe.budget.removedSectionIDs))"
+        )
+        let finalProjection = await provider.updatedProjections.last
+        expect(
+            finalProjection?.interactionID == second.id,
+            "final projection remains bound to current interaction"
+        )
+        await provider.enqueue(
+            NativeSpeechEvent(
+                interactionID: second.id,
+                kind: .finalTranscript(dynamicInput)
+            )
+        )
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: second.id
+        )
+        let duplicateFinalUpdateCount = await provider.operationCount(
+            .updateContext
+        )
+        expect(
+            duplicateFinalUpdateCount == finalUpdateCount,
+            "same final trigger and source revision are not recompiled or resent"
+        )
+        let memoryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: memoryDirectory) }
+        let memoryStore = NarrativeMemoryStore(baseURL: memoryDirectory)
+        let relevantMemorySummary = "\(dynamicInput) 的已确认计划"
+        try memoryStore.save(RuntimeNarrativeMemoryStoreSnapshot(
+            residentID: second.residentID,
+            records: [RuntimeNarrativeMemoryRecord(
+                memoryID: "private-memory-id",
+                residentID: second.residentID,
+                type: .confirmedPlan,
+                summary: relevantMemorySummary,
+                sourceSessionID: "private-session-id",
+                sourceTurnIDs: ["private-turn-id"],
+                status: .active,
+                consentState: .granted,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                supersedesMemoryID: nil
+            )]
+        ))
+        runtime.useNarrativeMemoryStoreForTesting(memoryStore)
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: second.id,
+            kind: .finalTranscript(dynamicInput)
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: second.id
+        )
+        let memoryRefreshCount = await provider.operationCount(
+            .updateContext
+        )
+        expect(
+            memoryRefreshCount == duplicateFinalUpdateCount + 1,
+            "effective memory change invalidates the cached projection"
+        )
+        let memoryProjection = await provider.updatedProjections.last
+        expect(
+            memoryProjection?.instructions.contains(relevantMemorySummary)
+                == true,
+            "memory refresh sends only the relevant compiled summary"
+        )
+        expect(
+            memoryProjection?.instructions.contains("private-memory-id")
+                == false,
+            "memory refresh omits Store identifiers"
         )
 
         let closeCountBeforeTerminal = await provider.operationCount(.close)
@@ -295,7 +438,16 @@ private struct NativeSpeechRuntimeIntegrationTests {
             "old session event is rejected"
         )
 
-        _ = try await runtime.startNativeSpeechInteraction()
+        let reloadedInteraction = try await runtime.startNativeSpeechInteraction()
+        let reloadedProjection = await provider.startedProjections.last
+        expect(
+            reloadedProjection?.isBound(to: reloadedInteraction) == true,
+            "new Runtime session rebuilds a bound snapshot"
+        )
+        expect(
+            reloadedProjection?.sessionID != firstStartProjection?.sessionID,
+            "old session projection is not reused"
+        )
         let closeCountBeforeThird = await provider.operationCount(.close)
         try await runtime.closeActiveNativeSpeechInteraction()
         try await runtime.closeActiveNativeSpeechInteraction()

@@ -134,6 +134,7 @@ private struct NativeSpeechDuplexTests {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechOutputBridgeSnapshot.terminalStatus
                 == "completed"
+                && !stack.controller.speechInputBridgeSnapshot.hasActivePump
         }
 
         let inputObjects = try await audioAppendObjects(transport)

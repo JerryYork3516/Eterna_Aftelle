@@ -327,7 +327,7 @@ struct RuntimeRelationshipDialogueContext: Equatable {
     let stageBoundary: RuntimeRelationshipStageBoundary
     let allowedEvidenceTypes: [String]
 
-    var instruction: String {
+    nonisolated var instruction: String {
         """
         Current relationship stage: \(stageID).
         Stage semantics: \(stageBoundary.stageSemantics)
@@ -955,15 +955,23 @@ nonisolated final class RuntimeNativeSpeechInteractionGate:
     @unchecked Sendable {
     private let lock = NSLock()
     private var interaction: NativeSpeechInteraction?
+    private var contextProjection: RealtimeSpeechContextProjection?
+    private var compilationKey: RealtimeSpeechContextCompilationKey?
 
     func current() -> NativeSpeechInteraction? {
         lock.withLock { interaction }
     }
 
-    func reserve(_ interaction: NativeSpeechInteraction) -> Bool {
+    func reserve(
+        _ interaction: NativeSpeechInteraction,
+        contextProjection: RealtimeSpeechContextProjection,
+        compilationKey: RealtimeSpeechContextCompilationKey
+    ) -> Bool {
         lock.withLock {
             guard self.interaction == nil else { return false }
             self.interaction = interaction
+            self.contextProjection = contextProjection
+            self.compilationKey = compilationKey
             return true
         }
     }
@@ -974,6 +982,52 @@ nonisolated final class RuntimeNativeSpeechInteractionGate:
                 return false
             }
             self.interaction = interaction
+            return true
+        }
+    }
+
+    func currentContextProjection(
+        matching interactionID: NativeSpeechInteractionID
+    ) -> RealtimeSpeechContextProjection? {
+        lock.withLock {
+            guard interaction?.id == interactionID else { return nil }
+            return contextProjection
+        }
+    }
+
+    func hasCompilationKey(
+        _ key: RealtimeSpeechContextCompilationKey
+    ) -> Bool {
+        lock.withLock {
+            interaction?.id == key.interactionID
+                && compilationKey == key
+        }
+    }
+
+    @discardableResult
+    func updateContextProjection(
+        _ projection: RealtimeSpeechContextProjection,
+        compilationKey: RealtimeSpeechContextCompilationKey
+    ) -> Bool {
+        lock.withLock {
+            guard interaction?.id == projection.interactionID else {
+                return false
+            }
+            contextProjection = projection
+            self.compilationKey = compilationKey
+            return true
+        }
+    }
+
+    @discardableResult
+    func updateCompilationKey(
+        _ key: RealtimeSpeechContextCompilationKey
+    ) -> Bool {
+        lock.withLock {
+            guard interaction?.id == key.interactionID else {
+                return false
+            }
+            compilationKey = key
             return true
         }
     }
@@ -989,6 +1043,8 @@ nonisolated final class RuntimeNativeSpeechInteractionGate:
             }
             let cleared = interaction
             interaction = nil
+            contextProjection = nil
+            compilationKey = nil
             return cleared
         }
     }
@@ -1005,6 +1061,8 @@ public final class RuntimeCore {
     private let hostEnv: HostEnv
     private let sessionStore: SessionStore
     private let memoryController: MemoryController
+    private let realtimeSpeechContextCompiler =
+        RealtimeSpeechContextCompiler()
     private var relationshipStateStore = RelationshipStateStore()
     private var narrativeMemoryStore = NarrativeMemoryStore()
     private var cancellationState = RuntimeCancellationState.none
@@ -1029,6 +1087,7 @@ public final class RuntimeCore {
     private let nativeSpeechInteractionGate =
         RuntimeNativeSpeechInteractionGate()
     private let nativeSpeechInputGate = NativeSpeechInputGate()
+    private var realtimeSpeechContextSourceRevision: UInt64 = 0
     private var handledFirstAppearanceResidentIDs: Set<String> = []
     private var clockState = RuntimeClockState()
     #if DEBUG
@@ -1090,6 +1149,7 @@ public final class RuntimeCore {
                 )
             }
             nativeSpeechInteractionGate.clear()
+            realtimeSpeechContextSourceRevision &+= 1
             sessionContext = RuntimeSessionContext(residentID: loadedDR.residentID, sessionID: sessionID)
             activeExpressionRequestID = nil
             invalidateNativeSpeechInput()
@@ -1705,6 +1765,7 @@ public final class RuntimeCore {
                     records: records
                 )
             )
+            realtimeSpeechContextSourceRevision &+= 1
             return RuntimeNarrativeMemoryControlResult(
                 control: .clearAll,
                 affectedMemoryIDs: indexes.map {
@@ -1774,6 +1835,7 @@ public final class RuntimeCore {
                     records: records
                 )
             )
+            realtimeSpeechContextSourceRevision &+= 1
             return RuntimeNarrativeMemoryControlResult(
                 control: .forget,
                 affectedMemoryIDs: [records[index].memoryID],
@@ -2178,6 +2240,7 @@ public final class RuntimeCore {
         do {
             try relationshipStateStore.save(state)
             currentRelationshipState = state
+            realtimeSpeechContextSourceRevision &+= 1
             return RuntimeRelationshipDecision(
                 stageID: state.currentStage.rawValue,
                 evidenceIDs:
@@ -2258,6 +2321,7 @@ public final class RuntimeCore {
                     records: records
                 )
             )
+            realtimeSpeechContextSourceRevision &+= 1
             return outcomes.map(\.decision)
         } catch {
             return outcomes.map { outcome in
@@ -2882,13 +2946,35 @@ public final class RuntimeCore {
             sessionID: session.sessionID.rawValue,
             providerProfileID: providerProfileID
         )
-        guard nativeSpeechInteractionGate.reserve(interaction) else {
+        guard let compiledContext = compiledResidentDialogueContext(
+            currentUserInput: ""
+        ) else {
+            throw NativeSpeechError.unavailable
+        }
+        let refreshReason = RealtimeSpeechContextRefreshReason.interactionStarted
+        let compilationKey = RealtimeSpeechContextCompilationKey(
+            interactionID: interaction.id,
+            refreshReason: refreshReason,
+            sourceRevision: realtimeSpeechContextSourceRevision,
+            currentUserInput: ""
+        )
+        let contextProjection = try realtimeSpeechContextCompiler.compile(
+            context: compiledContext.context,
+            interaction: interaction,
+            refreshReason: refreshReason
+        )
+        guard nativeSpeechInteractionGate.reserve(
+            interaction,
+            contextProjection: contextProjection,
+            compilationKey: compilationKey
+        ) else {
             throw NativeSpeechError.invalidConfiguration
         }
 
         do {
             try await executionEngine.startNativeSpeech(
-                interaction: interaction
+                interaction: interaction,
+                contextProjection: contextProjection
             )
         } catch {
             nativeSpeechInteractionGate.clear(matching: interaction.id)
@@ -3009,6 +3095,14 @@ public final class RuntimeCore {
                 for: event,
                 expectedInteractionID: interactionID
             )
+            if case .accepted(let acceptedEvent) = disposition,
+               case .finalTranscript(let transcript) = acceptedEvent.kind {
+                try await refreshNativeSpeechContext(
+                    interactionID: interactionID,
+                    currentUserInput: transcript,
+                    reason: .finalTranscript
+                )
+            }
             if case .accepted = disposition,
                nativeSpeechEventIsTerminal(event) {
                 try? await executionEngine.closeNativeSpeech(
@@ -3022,6 +3116,57 @@ public final class RuntimeCore {
                 return .rejectedStale
             }
             throw error
+        }
+    }
+
+    private func refreshNativeSpeechContext(
+        interactionID: NativeSpeechInteractionID,
+        currentUserInput: String,
+        reason: RealtimeSpeechContextRefreshReason
+    ) async throws {
+        guard let interaction = nativeSpeechInteractionGate.current(),
+              interaction.id == interactionID,
+              sessionContext?.residentID == interaction.residentID,
+              sessionContext?.sessionID.rawValue == interaction.sessionID else {
+            throw NativeSpeechError.interactionMismatch
+        }
+        let compilationKey = RealtimeSpeechContextCompilationKey(
+            interactionID: interactionID,
+            refreshReason: reason,
+            sourceRevision: realtimeSpeechContextSourceRevision,
+            currentUserInput: currentUserInput
+        )
+        guard !nativeSpeechInteractionGate.hasCompilationKey(
+            compilationKey
+        ) else {
+            return
+        }
+        guard let compiledContext = compiledResidentDialogueContext(
+            currentUserInput: currentUserInput
+        ) else {
+            throw NativeSpeechError.unavailable
+        }
+        let projection = try realtimeSpeechContextCompiler.compile(
+            context: compiledContext.context,
+            interaction: interaction,
+            refreshReason: reason
+        )
+        if nativeSpeechInteractionGate.currentContextProjection(
+            matching: interactionID
+        )?.compilationVersion == projection.compilationVersion {
+            guard nativeSpeechInteractionGate.updateCompilationKey(
+                compilationKey
+            ) else {
+                throw NativeSpeechError.interactionMismatch
+            }
+            return
+        }
+        try await executionEngine.updateNativeSpeechContext(projection)
+        guard nativeSpeechInteractionGate.updateContextProjection(
+            projection,
+            compilationKey: compilationKey
+        ) else {
+            throw NativeSpeechError.interactionMismatch
         }
     }
 
@@ -3472,6 +3617,7 @@ public final class RuntimeCore {
         _ store: NarrativeMemoryStore
     ) {
         narrativeMemoryStore = store
+        realtimeSpeechContextSourceRevision &+= 1
     }
 
     func narrativeMemoryDebugSnapshot()
@@ -3488,6 +3634,7 @@ public final class RuntimeCore {
         _ store: RelationshipStateStore
     ) {
         relationshipStateStore = store
+        realtimeSpeechContextSourceRevision &+= 1
     }
 
     func relationshipProgressionDebugSnapshot()
