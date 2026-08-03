@@ -47,6 +47,9 @@ CFFIXED_USER_HOME="$runtime_home" \
 bridge="$repo_root/apps/macos/Aftelle/MacSpeechNativeInputBridge.swift"
 host="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
 controller="$repo_root/apps/macos/Aftelle/AppController.swift"
+content_view="$repo_root/apps/macos/Aftelle/ContentView.swift"
+localization_en="$repo_root/apps/macos/Aftelle/en.lproj/Localizable.strings"
+localization_zh="$repo_root/apps/macos/Aftelle/zh-Hans.lproj/Localizable.strings"
 orchestration="$repo_root/apps/macos/Aftelle/AppModels.swift"
 runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
 engine="$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift"
@@ -74,6 +77,12 @@ rg -q 'providerRouter.sendNativeSpeechAudio' "$engine"
 rg -q 'nativeSpeechProvider.send' "$router"
 rg -q 'codec.audioAppend' "$adapter"
 echo "native_speech_input_bridge_execution_chain=PASS"
+
+rg -q 'controller.startNativeSpeechInputBridge' "$content_view"
+rg -q 'startNativeSpeechBridge:' "$content_view"
+rg -q 'await startNativeSpeechBridge()' "$content_view"
+rg -q 'particleDebug.audioHost.startBridge' "$localization_en" "$localization_zh"
+echo "native_speech_input_bridge_debug_entry=PASS"
 
 if rg -q 'StepFun|ProviderRouter|ExecutionEngine|RuntimeCore' "$bridge"; then
   echo "native_speech_input_bridge_host_ownership=FAIL"

@@ -117,6 +117,7 @@
 "particleDebug.audioHost.activity" = "Latest Activity";
 "particleDebug.audioHost.lastError" = "Last Error";
 "particleDebug.audioHost.startCapture" = "Start Capture";
+"particleDebug.audioHost.startBridge" = "Start STS Bridge";
 "particleDebug.audioHost.stopCapture" = "Stop Capture";
 "particleDebug.audioHost.inputBridge" = "Input Bridge";
 "particleDebug.audioHost.inputBridge.idle" = "Idle";
@@ -141,6 +142,7 @@
 "particleDebug.audioHost.outputBridge.failed" = "Failed";
 "particleDebug.audioHost.outputChunks" = "Output Audio Chunks";
 "particleDebug.audioHost.outputBytes" = "Output Audio Bytes";
+"particleDebug.audioHost.completedResponses" = "Completed Responses";
 "particleDebug.audioHost.firstOutputChunk" = "First Chunk Latency";
 "particleDebug.audioHost.outputRejected" = "Runtime Rejected Events";
 "particleDebug.audioHost.outputTerminal" = "Terminal Status";

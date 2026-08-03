@@ -132,33 +132,69 @@ private struct NativeSpeechDuplexTests {
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
-            return stack.controller.speechOutputBridgeSnapshot.terminalStatus
-                == "completed"
-                && !stack.controller.speechInputBridgeSnapshot.hasActivePump
+            return stack.controller.speechOutputBridgeSnapshot
+                .completedResponseCount == 1
+        }
+
+        let firstOutput = stack.controller.speechOutputBridgeSnapshot
+        expect(
+            firstOutput.state == .configured,
+            "first response returns to configured state"
+        )
+        expect(
+            firstOutput.hasActiveReceiveLoop,
+            "first response keeps receive loop active"
+        )
+        expect(
+            stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "first response keeps input pump active"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.isEmpty,
+            "first response keeps transport open"
+        )
+
+        for marker in UInt8(4) ... UInt8(6) {
+            expect(stack.capture.emit(marker), "second turn emits input frame")
+        }
+        await waitUntil {
+            try await audioAppendObjects(transport).count == 6
+        }
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"BgcI"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                .completedResponseCount == 2
         }
 
         let inputObjects = try await audioAppendObjects(transport)
-        expect(inputObjects.count == 3, "three ordered input appends arrive")
+        expect(inputObjects.count == 6, "two turns send six input appends")
         let inputMarkers = inputObjects.compactMap { object -> UInt8? in
             guard let encoded = object["audio"] as? String,
                   let data = Data(base64Encoded: encoded) else { return nil }
             return data.first
         }
-        expect(inputMarkers == [1, 2, 3], "input bytes preserve order")
+        expect(inputMarkers == [1, 2, 3, 4, 5, 6], "two-turn input preserves order")
 
         let output = stack.controller.speechOutputBridgeSnapshot
-        expect(output.state == .closed, "canonical completion closes receive loop")
-        expect(output.outputAudioChunkCount == 2, "two output chunks reach AppController")
-        expect(output.outputAudioByteCount == 5, "output byte count reaches AppController")
+        expect(output.state == .configured, "second response keeps bridge configured")
+        expect(output.completedResponseCount == 2, "two response boundaries arrive")
+        expect(output.outputAudioChunkCount == 3, "two responses reach AppController")
+        expect(output.outputAudioByteCount == 8, "two-response byte count reaches AppController")
         expect(output.firstChunkLatencyMilliseconds != nil, "first chunk latency is recorded")
-        expect(!output.hasActiveReceiveLoop, "terminal event releases receive loop")
+        expect(output.hasActiveReceiveLoop, "second response keeps receive loop active")
         expect(
-            !stack.controller.speechInputBridgeSnapshot.hasActivePump,
-            "terminal event stops input pump"
+            stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "second response keeps input pump active"
         )
         expect(
             await transport.maximumConcurrentReceiveCount == 1,
-            "one receive loop is active"
+            "both responses share one receive loop"
         )
         expect(
             await stack.adapter.ignoredEventCount == 2,
@@ -167,11 +203,28 @@ private struct NativeSpeechDuplexTests {
         let eventTypes = try await sentEventTypes(transport)
         expect(!eventTypes.contains("input_audio_buffer.commit"), "no input commit is sent")
         expect(!eventTypes.contains("response.create"), "no response.create is sent")
+        let connectCount = await transport.calls.filter {
+            if case .connect = $0 { return true }
+            return false
+        }.count
+        expect(connectCount == 1, "two responses reuse one WebSocket")
+
+        await stack.controller.stopSpeechAudioCapture()
+        let stoppedOutput = stack.controller.speechOutputBridgeSnapshot
+        expect(stoppedOutput.state == .closed, "Stop closes output bridge")
+        expect(!stoppedOutput.hasActiveReceiveLoop, "Stop releases receive loop")
+        expect(
+            !stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "Stop releases input pump"
+        )
+        expect(
+            !stack.controller.speechAudioHostSnapshot.isCapturing,
+            "Stop releases microphone capture"
+        )
         let closeCount = await transport.calls.filter {
             $0 == .close(.normal)
         }.count
-        expect(closeCount == 1, "canonical terminal closes transport once")
-        await stack.controller.stopSpeechAudioCapture()
+        expect(closeCount == 1, "Stop closes transport once")
     }
 
     private static func testOutputBackpressureStopsInteraction() async throws {

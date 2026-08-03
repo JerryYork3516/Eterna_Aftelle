@@ -586,6 +586,8 @@ struct ParticleDebugWindow: View {
                 controller.requestMicrophoneAuthorization,
             startSpeechAudioCapture:
                 controller.startSpeechAudioCapture,
+            startNativeSpeechInputBridge:
+                controller.startNativeSpeechInputBridge,
             stopSpeechAudioCapture:
                 controller.stopSpeechAudioCapture,
             copyDialogueAudit: controller.copyDialogueAudit,
@@ -742,6 +744,7 @@ private struct ParticleDebugPanel: View {
     let refreshMicrophoneAuthorization: () async -> Void
     let requestMicrophoneAuthorization: () async -> Void
     let startSpeechAudioCapture: () async -> Void
+    let startNativeSpeechInputBridge: () async -> Void
     let stopSpeechAudioCapture: () async -> Void
     let copyDialogueAudit: () -> Void
     let exportDialogueAudit: () -> Void
@@ -977,6 +980,8 @@ private struct ParticleDebugPanel: View {
                                 requestAuthorization:
                                     requestMicrophoneAuthorization,
                                 startCapture: startSpeechAudioCapture,
+                                startNativeSpeechBridge:
+                                    startNativeSpeechInputBridge,
                                 stopCapture: stopSpeechAudioCapture
                             )
                             RelationshipProgressionDebugView(
@@ -1964,6 +1969,7 @@ private struct SpeechAudioHostDebugView: View {
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
     let startCapture: () async -> Void
+    let startNativeSpeechBridge: () async -> Void
     let stopCapture: () async -> Void
 
     @State private var isExpanded = true
@@ -2037,10 +2043,8 @@ private struct SpeechAudioHostDebugView: View {
                 Divider()
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.inputBridge",
-                    value: String(
-                        localized: String.LocalizationValue(
-                            "particleDebug.audioHost.inputBridge.\(bridgeSnapshot.state.rawValue)"
-                        )
+                    value: localizedAudioHostValue(
+                        "particleDebug.audioHost.inputBridge.\(bridgeSnapshot.state.rawValue)"
                     )
                 )
                 ParticleDiagnosticsRow(
@@ -2074,10 +2078,8 @@ private struct SpeechAudioHostDebugView: View {
                 Divider()
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.outputBridge",
-                    value: String(
-                        localized: String.LocalizationValue(
-                            "particleDebug.audioHost.outputBridge.\(outputBridgeSnapshot.state.rawValue)"
-                        )
+                    value: localizedAudioHostValue(
+                        "particleDebug.audioHost.outputBridge.\(outputBridgeSnapshot.state.rawValue)"
                     )
                 )
                 ParticleDiagnosticsRow(
@@ -2087,6 +2089,10 @@ private struct SpeechAudioHostDebugView: View {
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.outputBytes",
                     value: "\(outputBridgeSnapshot.outputAudioByteCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.completedResponses",
+                    value: "\(outputBridgeSnapshot.completedResponseCount)"
                 )
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.firstOutputChunk",
@@ -2140,6 +2146,21 @@ private struct SpeechAudioHostDebugView: View {
                             || !snapshot.inputDevice.isAvailable
                     )
                     Button(
+                        String(
+                            localized:
+                                "particleDebug.audioHost.startBridge"
+                        )
+                    ) {
+                        Task {
+                            await startNativeSpeechBridge()
+                        }
+                    }
+                    .disabled(
+                        !snapshot.isCapturing
+                            || bridgeSnapshot.hasActivePump
+                            || outputBridgeSnapshot.hasActiveReceiveLoop
+                    )
+                    Button(
                         String(localized: "particleDebug.audioHost.stopCapture")
                     ) {
                         Task {
@@ -2159,19 +2180,19 @@ private struct SpeechAudioHostDebugView: View {
     }
 
     private var localizedAuthorization: String {
-        String(
-            localized: String.LocalizationValue(
-                "particleDebug.audioHost.authorization.\(snapshot.authorization.rawValue)"
-            )
+        localizedAudioHostValue(
+            "particleDebug.audioHost.authorization.\(snapshot.authorization.rawValue)"
         )
     }
 
     private var localizedHostState: String {
-        String(
-            localized: String.LocalizationValue(
-                "particleDebug.audioHost.state.\(snapshot.state.rawValue)"
-            )
+        localizedAudioHostValue(
+            "particleDebug.audioHost.state.\(snapshot.state.rawValue)"
         )
+    }
+
+    private func localizedAudioHostValue(_ key: String) -> String {
+        NSLocalizedString(key, comment: "")
     }
 }
 

@@ -117,6 +117,7 @@
 "particleDebug.audioHost.activity" = "最近音量活动";
 "particleDebug.audioHost.lastError" = "最近错误";
 "particleDebug.audioHost.startCapture" = "开始采集";
+"particleDebug.audioHost.startBridge" = "启动 STS Bridge";
 "particleDebug.audioHost.stopCapture" = "停止采集";
 "particleDebug.audioHost.inputBridge" = "输入桥";
 "particleDebug.audioHost.inputBridge.idle" = "空闲";
@@ -141,6 +142,7 @@
 "particleDebug.audioHost.outputBridge.failed" = "失败";
 "particleDebug.audioHost.outputChunks" = "输出音频块数";
 "particleDebug.audioHost.outputBytes" = "输出音频字节数";
+"particleDebug.audioHost.completedResponses" = "已完成轮次";
 "particleDebug.audioHost.firstOutputChunk" = "首块延迟";
 "particleDebug.audioHost.outputRejected" = "Runtime 拒绝事件数";
 "particleDebug.audioHost.outputTerminal" = "终态";

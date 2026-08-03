@@ -150,7 +150,7 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         }
         switch status {
         case "completed":
-            return .closed
+            return .responseCompleted
         case "cancelled":
             return .cancelled(reason: "cancelled")
         case "failed":

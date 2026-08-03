@@ -1233,14 +1233,14 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
-        speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
+        speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
     }
 
     func shutdownSpeechAudioHost() async {
-        speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
+        speechInputBridgeSnapshot = await speechInputBridge.stop()
         await speechAudioHost.shutdown()
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
     }

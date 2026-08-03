@@ -88,6 +88,14 @@ private struct NativeSpeechContractTests {
             kind: .partialTranscript("hello")
         )
         expect(event.interactionID == interactionID, "event carries interaction identity")
+        let responseCompletedEvent = NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .responseCompleted
+        )
+        expect(
+            responseCompletedEvent.kind == .responseCompleted,
+            "response completion is distinct from interaction close"
+        )
 
         let provider = ContractProvider()
         try await provider.start(

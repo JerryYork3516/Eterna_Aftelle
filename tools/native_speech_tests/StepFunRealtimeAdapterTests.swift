@@ -21,7 +21,7 @@ private struct StepFunRealtimeAdapterTests {
         try await testHandshakeAudioCancelAndClose()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
-        try await testContinuousOutputAndCanonicalTerminal()
+        try await testContinuousOutputAndResponseBoundary()
         try await testSinglePreconfigurationRetry()
         try await testStreamingFailureDoesNotReconnect()
         print("stepfun_realtime_adapter_checks=\(checks)")
@@ -239,7 +239,7 @@ private struct StepFunRealtimeAdapterTests {
             "tool request is forwarded without execution"
         )
         let doneCases: [(String, NativeSpeechEventKind)] = [
-            ("completed", .closed),
+            ("completed", .responseCompleted),
             ("cancelled", .cancelled(reason: "cancelled")),
             ("failed", .failed(.unavailable)),
             ("incomplete", .failed(.transportFailure))
@@ -253,7 +253,7 @@ private struct StepFunRealtimeAdapterTests {
         }
     }
 
-    private static func testContinuousOutputAndCanonicalTerminal() async throws {
+    private static func testContinuousOutputAndResponseBoundary() async throws {
         let transport = FakeRealtimeWebSocketTransport(frames: [
             .text(#"{"type":"session.created"}"#),
             .text(#"{"type":"session.updated"}"#),
@@ -298,10 +298,66 @@ private struct StepFunRealtimeAdapterTests {
             ),
             "second output chunk preserves bytes and order"
         )
-        let terminal = try await adapter.receive(
+        let firstBoundary = try await adapter.receive(
             interactionID: request.interaction.id
         )
-        expect(terminal.kind == .closed, "response.done completes interaction")
+        expect(
+            firstBoundary.kind == .responseCompleted,
+            "response.done completes one response"
+        )
+        try await adapter.send(
+            audio: NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 2,
+                bytes: Data([5, 6]),
+                format: .pcm16
+            )
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"Bwg="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+        )
+        let third = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            third.kind == .outputAudio(
+                NativeSpeechAudioPayload(
+                    interactionID: request.interaction.id,
+                    sequenceNumber: 2,
+                    bytes: Data([7, 8]),
+                    format: .pcm16
+                )
+            ),
+            "second response reuses the interaction"
+        )
+        let secondBoundary = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            secondBoundary.kind == .responseCompleted,
+            "second response completes without closing"
+        )
+        let callsBeforeClose = await transport.calls
+        expect(
+            callsBeforeClose.filter {
+                if case .connect = $0 { return true }
+                return false
+            }.count == 1,
+            "two responses reuse one connection"
+        )
+        expect(
+            !callsBeforeClose.contains(.close(.normal)),
+            "response completion keeps transport open"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+        let callsAfterClose = await transport.calls
+        expect(
+            callsAfterClose.filter { $0 == .close(.normal) }.count == 1,
+            "explicit close releases transport once"
+        )
         let ignoredEventCount = await adapter.ignoredEventCount
         expect(
             ignoredEventCount == 1,

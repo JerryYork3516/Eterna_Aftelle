@@ -17,6 +17,7 @@ nonisolated struct MacSpeechNativeOutputBridgeSnapshot: Sendable, Equatable {
     let interactionShortID: String?
     let outputAudioChunkCount: UInt64
     let outputAudioByteCount: UInt64
+    let completedResponseCount: UInt64
     let firstChunkLatencyMilliseconds: UInt64?
     let runtimeRejectedEventCount: UInt64
     let terminalStatus: String?
@@ -28,6 +29,7 @@ nonisolated struct MacSpeechNativeOutputBridgeSnapshot: Sendable, Equatable {
         interactionShortID: nil,
         outputAudioChunkCount: 0,
         outputAudioByteCount: 0,
+        completedResponseCount: 0,
         firstChunkLatencyMilliseconds: nil,
         runtimeRejectedEventCount: 0,
         terminalStatus: nil,
@@ -75,6 +77,7 @@ actor MacSpeechNativeOutputBridge {
     private var state = MacSpeechNativeOutputBridgeState.idle
     private var outputAudioChunkCount: UInt64 = 0
     private var outputAudioByteCount: UInt64 = 0
+    private var completedResponseCount: UInt64 = 0
     private var firstChunkLatencyMilliseconds: UInt64?
     private var runtimeRejectedEventCount: UInt64 = 0
     private var terminalStatus: String?
@@ -106,6 +109,7 @@ actor MacSpeechNativeOutputBridge {
         state = .connecting
         outputAudioChunkCount = 0
         outputAudioByteCount = 0
+        completedResponseCount = 0
         firstChunkLatencyMilliseconds = nil
         runtimeRejectedEventCount = 0
         terminalStatus = nil
@@ -131,9 +135,9 @@ actor MacSpeechNativeOutputBridge {
         activeBinding = nil
         state = .cancelling
         terminalStatus = "cancelled"
-        await task?.value
         await endInputPump()
         _ = await stopInput(binding, reason)
+        await task?.value
         state = .closed
         return makeSnapshot()
     }
@@ -205,6 +209,9 @@ actor MacSpeechNativeOutputBridge {
              .partialTranscript, .finalTranscript, .thinking,
              .outputText, .toolRequestCandidate:
             state = .streaming
+        case .responseCompleted:
+            completedResponseCount &+= 1
+            state = .configured
         case .cancelled, .closed, .failed:
             state = .closing
         }
@@ -298,6 +305,7 @@ actor MacSpeechNativeOutputBridge {
             },
             outputAudioChunkCount: outputAudioChunkCount,
             outputAudioByteCount: outputAudioByteCount,
+            completedResponseCount: completedResponseCount,
             firstChunkLatencyMilliseconds: firstChunkLatencyMilliseconds,
             runtimeRejectedEventCount: runtimeRejectedEventCount,
             terminalStatus: terminalStatus,
