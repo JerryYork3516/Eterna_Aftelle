@@ -42,6 +42,7 @@
 		A0752A200000000000000003 /* StepFunRealtimeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */; };
 		A0752A400000000000000001 /* URLSessionRealtimeWebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */; };
 		A0752A400000000000000002 /* StepFunRealtimeRuntimeComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */; };
+		A0753A100000000000000001 /* MacSpeechAudioHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0753A100000000000000011 /* MacSpeechAudioHost.swift */; };
 		A070C0000000000000000031 /* Freezev03.calibration_fixture.json in Resources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000030 /* Freezev03.calibration_fixture.json */; };
 /* End PBXBuildFile section */
 
@@ -84,6 +85,7 @@
 		A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/URLSessionRealtimeWebSocketTransport.swift; sourceTree = SOURCE_ROOT; };
 		A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeRuntimeComposition.swift; sourceTree = SOURCE_ROOT; };
+		A0753A100000000000000011 /* MacSpeechAudioHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioHost.swift; sourceTree = "<group>"; };
 		A070C0000000000000000030 /* Freezev03.calibration_fixture.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Freezev03.calibration_fixture.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -103,6 +105,7 @@
 			children = (
 				A070C0000000000000000002 /* AftelleApp.swift */,
 				A070C0000000000000000005 /* ContentView.swift */,
+				A0753A100000000000000011 /* MacSpeechAudioHost.swift */,
 				A070C0000000000000000121 /* ProviderKeychainStore.swift */,
 				A070C0000000000000000116 /* Aftelle.entitlements */,
 				A070C0000000000000000107 /* ParticleCore */,
@@ -247,6 +250,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A0753A100000000000000001 /* MacSpeechAudioHost.swift in Sources */,
 				A0752A400000000000000002 /* StepFunRealtimeRuntimeComposition.swift in Sources */,
 				A0752A400000000000000001 /* URLSessionRealtimeWebSocketTransport.swift in Sources */,
 				A0752A200000000000000001 /* RealtimeWebSocketTransport.swift in Sources */,
@@ -395,6 +399,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Aftelle uses the microphone only when you explicitly request voice access.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -422,6 +427,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Aftelle uses the microphone only when you explicitly request voice access.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

@@ -531,6 +531,8 @@ struct ParticleDebugWindow: View {
             providerState: controller.providerDebugState,
             nativeSpeechProviderState:
                 controller.nativeSpeechProviderDebugState,
+            speechAudioHostSnapshot:
+                controller.speechAudioHostSnapshot,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
             relationshipProgressionState:
@@ -571,6 +573,10 @@ struct ParticleDebugWindow: View {
                 controller.deleteNativeSpeechProviderCredential,
             testNativeSpeechProviderConnectivity:
                 controller.testNativeSpeechProviderConnectivity,
+            refreshMicrophoneAuthorization:
+                controller.refreshMicrophoneAuthorization,
+            requestMicrophoneAuthorization:
+                controller.requestMicrophoneAuthorization,
             copyDialogueAudit: controller.copyDialogueAudit,
             exportDialogueAudit: controller.exportDialogueAudit,
             clearDialogueAudit: controller.clearDialogueAudit,
@@ -682,6 +688,7 @@ private struct ParticleDebugPanel: View {
     let snapshot: ParticleDebugSnapshot
     let providerState: ProviderDebugViewState
     let nativeSpeechProviderState: NativeSpeechProviderDebugViewState
+    let speechAudioHostSnapshot: MacSpeechAudioHostSnapshot
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let relationshipProgressionState:
@@ -719,6 +726,8 @@ private struct ParticleDebugPanel: View {
     let saveNativeSpeechProviderCredential: (String) -> Void
     let deleteNativeSpeechProviderCredential: () -> Void
     let testNativeSpeechProviderConnectivity: () async -> Void
+    let refreshMicrophoneAuthorization: () async -> Void
+    let requestMicrophoneAuthorization: () async -> Void
     let copyDialogueAudit: () -> Void
     let exportDialogueAudit: () -> Void
     let clearDialogueAudit: () -> Void
@@ -942,6 +951,13 @@ private struct ParticleDebugPanel: View {
                                     deleteNativeSpeechProviderCredential,
                                 testConnectivity:
                                     testNativeSpeechProviderConnectivity
+                            )
+                            SpeechAudioHostDebugView(
+                                snapshot: speechAudioHostSnapshot,
+                                refreshAuthorization:
+                                    refreshMicrophoneAuthorization,
+                                requestAuthorization:
+                                    requestMicrophoneAuthorization
                             )
                             RelationshipProgressionDebugView(
                                 state: relationshipProgressionState,
@@ -1918,6 +1934,65 @@ private struct NativeSpeechProviderDebugView: View {
                 }
             }
         }
+    }
+}
+
+private struct SpeechAudioHostDebugView: View {
+    let snapshot: MacSpeechAudioHostSnapshot
+    let refreshAuthorization: () async -> Void
+    let requestAuthorization: () async -> Void
+
+    @State private var isExpanded = true
+
+    var body: some View {
+        DebugCollapsibleMenu(
+            titleKey: "particleDebug.audioHost.title",
+            isExpanded: $isExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.authorization",
+                    value: localizedAuthorization
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.state",
+                    value: localizedHostState
+                )
+                HStack {
+                    Spacer()
+                    Button(
+                        String(
+                            localized:
+                                "particleDebug.audioHost.requestPermission"
+                        )
+                    ) {
+                        Task {
+                            await requestAuthorization()
+                        }
+                    }
+                    .disabled(snapshot.authorization != .notDetermined)
+                }
+            }
+            .task {
+                await refreshAuthorization()
+            }
+        }
+    }
+
+    private var localizedAuthorization: String {
+        String(
+            localized: String.LocalizationValue(
+                "particleDebug.audioHost.authorization.\(snapshot.authorization.rawValue)"
+            )
+        )
+    }
+
+    private var localizedHostState: String {
+        String(
+            localized: String.LocalizationValue(
+                "particleDebug.audioHost.state.\(snapshot.state.rawValue)"
+            )
+        )
     }
 }
 

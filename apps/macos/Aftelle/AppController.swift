@@ -94,6 +94,8 @@ final class AppController: ObservableObject {
         NativeSpeechProviderDebugViewState(
             profile: Stage75NativeSpeechConfiguration.profile
         )
+    @Published private(set) var speechAudioHostSnapshot =
+        MacSpeechAudioHostSnapshot.initial
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
     @Published private(set) var relationshipProgressionDebugState =
@@ -115,6 +117,7 @@ final class AppController: ObservableObject {
     private var residentTextPresentationID: UUID?
     private var providerConfigurationGeneration = 0
     #if DEBUG
+    private let speechAudioHost: MacSpeechAudioHost
     private let debugSubtitleKeys = [
         "particleSubtitle.test.0",
         "particleSubtitle.test.1",
@@ -130,6 +133,7 @@ final class AppController: ObservableObject {
         let credentialStore = ProviderKeychainStore()
         let runtimeCore: RuntimeCore
         #if DEBUG
+        speechAudioHost = MacSpeechAudioHost()
         runtimeCore = StepFunRealtimeRuntimeComposition.makeRuntimeCore(
             credentialReader: credentialStore
         )
@@ -149,6 +153,9 @@ final class AppController: ObservableObject {
     init(orchestrationKernel: OrchestrationKernel) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
+        #if DEBUG
+        speechAudioHost = MacSpeechAudioHost()
+        #endif
         restoreProviderConfiguration()
         #if DEBUG
         refreshNativeSpeechProviderDebugState()
@@ -1144,6 +1151,16 @@ final class AppController: ObservableObject {
                 statusKey: "particleDebug.stepfun.status.credentialFailed"
             )
         }
+    }
+
+    func refreshMicrophoneAuthorization() async {
+        speechAudioHostSnapshot =
+            await speechAudioHost.refreshAuthorization()
+    }
+
+    func requestMicrophoneAuthorization() async {
+        speechAudioHostSnapshot =
+            await speechAudioHost.requestMicrophoneAuthorization()
     }
 
     func deleteNativeSpeechProviderCredential() {
