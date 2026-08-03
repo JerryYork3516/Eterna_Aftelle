@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 
 private enum FakeAuthorizationError: Error {
@@ -40,10 +41,128 @@ private actor FakeMicrophoneAuthorizationProvider:
     }
 }
 
+private final class FakeMacSpeechAudioCapture:
+    MacSpeechAudioCapturing, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var frameBuffer: MacSpeechAudioFrameBuffer?
+    private var generation: UInt64?
+    private var started = false
+    private var starts = 0
+    private var stops = 0
+
+    func start(
+        generation: UInt64,
+        frameBuffer: MacSpeechAudioFrameBuffer
+    ) throws -> MacSpeechNativeInputFormat {
+        lock.withLock {
+            guard !started else {
+                return MacSpeechNativeInputFormat(
+                    sampleRate: 48_000,
+                    channelCount: 2
+                )
+            }
+            started = true
+            starts += 1
+            self.generation = generation
+            self.frameBuffer = frameBuffer
+            return MacSpeechNativeInputFormat(
+                sampleRate: 48_000,
+                channelCount: 2
+            )
+        }
+    }
+
+    func stop() {
+        lock.withLock {
+            guard started else { return }
+            started = false
+            stops += 1
+        }
+    }
+
+    @discardableResult
+    func emit(
+        bytes: Data = Data([0, 0]),
+        activity: Float = 0.25,
+        timestamp: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> Bool {
+        let target = lock.withLock { (frameBuffer, generation) }
+        guard let frameBuffer = target.0, let generation = target.1 else {
+            return false
+        }
+        return frameBuffer.append(
+            pcm16Bytes: bytes,
+            activity: activity,
+            generation: generation,
+            timestamp: timestamp
+        )
+    }
+
+    var startCount: Int { lock.withLock { starts } }
+    var stopCount: Int { lock.withLock { stops } }
+}
+
+private final class FakeMacSpeechDeviceMonitor:
+    MacSpeechDeviceRouteMonitoring, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var route: MacSpeechDeviceRoute
+    private var onChange: (@Sendable () -> Void)?
+    private var starts = 0
+
+    init(route: MacSpeechDeviceRoute) {
+        self.route = route
+    }
+
+    func currentRoute() -> MacSpeechDeviceRoute {
+        lock.withLock { route }
+    }
+
+    func start(onChange: @escaping @Sendable () -> Void) {
+        lock.withLock {
+            guard self.onChange == nil else { return }
+            self.onChange = onChange
+            starts += 1
+        }
+    }
+
+    func stop() {
+        lock.withLock { onChange = nil }
+    }
+
+    func setRoute(_ route: MacSpeechDeviceRoute) {
+        lock.withLock { self.route = route }
+    }
+
+    var startCount: Int { lock.withLock { starts } }
+}
+
 @MainActor
 @main
 private struct MacSpeechAudioHostTests {
     private static var checks = 0
+
+    private static let inputA = MacSpeechAudioDevice(
+        identifier: "input-a",
+        name: "Built-in Microphone",
+        isAvailable: true
+    )
+    private static let inputB = MacSpeechAudioDevice(
+        identifier: "input-b",
+        name: "AirPods Pro Microphone",
+        isAvailable: true
+    )
+    private static let outputA = MacSpeechAudioDevice(
+        identifier: "output-a",
+        name: "Built-in Output",
+        isAvailable: true
+    )
+    private static let outputB = MacSpeechAudioDevice(
+        identifier: "output-b",
+        name: "AirPods Pro",
+        isAvailable: true
+    )
 
     static func main() async {
         await testInitialStateDoesNotQueryOrRequest()
@@ -51,31 +170,65 @@ private struct MacSpeechAudioHostTests {
         await testExplicitRequestAndRepeatSafety()
         await testRequestFailure()
         await testQueryFailure()
+        await testUnauthorizedCaptureIsRejected()
+        await testStartStopRestartAreIdempotent()
+        testPCM16Encoding()
+        do {
+            try testStereoConversionToFrozenMonoFormat()
+        } catch {
+            fatalError("FAILED: 48 kHz stereo conversion: \(error)")
+        }
+        testBoundedFrameBuffer()
+        await testHostFrameDiagnosticsAndStaleRejection()
+        await testDeviceChangesStopSafelyWithoutAutomaticRestart()
         print("speech_audio_host_checks=\(checks)")
     }
 
-    private static func testInitialStateDoesNotQueryOrRequest() async {
+    private static func makeHost(
+        authorization: MicrophoneAuthorizationState,
+        route: MacSpeechDeviceRoute = availableRoute,
+        frameCapacity: Int = MacSpeechAudioInputFormat.frameCapacity
+    ) -> (
+        MacSpeechAudioHost,
+        FakeMicrophoneAuthorizationProvider,
+        FakeMacSpeechAudioCapture,
+        FakeMacSpeechDeviceMonitor
+    ) {
         let provider = FakeMicrophoneAuthorizationProvider(
-            authorization: .notDetermined
+            authorization: authorization
         )
-        let host = MacSpeechAudioHost(authorizationProvider: provider)
+        let capture = FakeMacSpeechAudioCapture()
+        let monitor = FakeMacSpeechDeviceMonitor(route: route)
+        return (
+            MacSpeechAudioHost(
+                authorizationProvider: provider,
+                capture: capture,
+                deviceMonitor: monitor,
+                frameCapacity: frameCapacity
+            ),
+            provider,
+            capture,
+            monitor
+        )
+    }
+
+    private static var availableRoute: MacSpeechDeviceRoute {
+        MacSpeechDeviceRoute(input: inputA, output: outputA)
+    }
+
+    private static func testInitialStateDoesNotQueryOrRequest() async {
+        let (host, provider, _, _) = makeHost(authorization: .notDetermined)
         let initial = await host.currentSnapshot()
-        let initialQueryCount = await provider.queryCount
-        let initialRequestCount = await provider.requestCount
-        expect(
-            initial == .initial,
-            "host starts idle"
-        )
-        expect(initialQueryCount == 0, "init does not query permission")
-        expect(initialRequestCount == 0, "init does not request permission")
+        expect(initial == .initial, "host starts idle")
+        expect(await provider.queryCount == 0, "init does not query permission")
+        expect(await provider.requestCount == 0, "init does not request permission")
 
         let snapshot = await host.refreshAuthorization()
         expect(
             snapshot.state == .permissionRequired,
             "query maps notDetermined to permissionRequired"
         )
-        let requestCount = await provider.requestCount
-        expect(requestCount == 0, "query never requests permission")
+        expect(await provider.requestCount == 0, "query never requests permission")
     }
 
     private static func testAuthorizationMappings() async {
@@ -86,40 +239,32 @@ private struct MacSpeechAudioHostTests {
             (.restricted, .restricted)
         ]
         for (authorization, expectedState) in cases {
-            let provider = FakeMicrophoneAuthorizationProvider(
+            let (host, provider, _, monitor) = makeHost(
                 authorization: authorization
             )
-            let host = MacSpeechAudioHost(authorizationProvider: provider)
             let snapshot = await host.refreshAuthorization()
             expect(
                 snapshot.authorization == authorization,
                 "authorization value is preserved"
             )
             expect(snapshot.state == expectedState, "authorization maps to host state")
-            let requestCount = await provider.requestCount
-            expect(
-                requestCount == 0,
-                "status mapping does not request permission"
-            )
+            expect(await provider.requestCount == 0, "status mapping does not request")
+            expect(monitor.startCount == 1, "route listener installs once")
+            _ = await host.refreshAuthorization()
+            expect(monitor.startCount == 1, "route listener is idempotent")
         }
     }
 
     private static func testExplicitRequestAndRepeatSafety() async {
-        let provider = FakeMicrophoneAuthorizationProvider(
-            authorization: .notDetermined
-        )
-        let host = MacSpeechAudioHost(authorizationProvider: provider)
-
+        let (host, provider, _, _) = makeHost(authorization: .notDetermined)
         let first = await host.requestMicrophoneAuthorization()
         expect(first.authorization == .authorized, "request returns authorized")
         expect(first.state == .ready, "authorized request enters ready")
-        let firstRequestCount = await provider.requestCount
-        expect(firstRequestCount == 1, "explicit request runs once")
+        expect(await provider.requestCount == 1, "explicit request runs once")
 
         let second = await host.requestMicrophoneAuthorization()
         expect(second.state == .ready, "repeated request remains ready")
-        let secondRequestCount = await provider.requestCount
-        expect(secondRequestCount == 1, "repeated request is safe")
+        expect(await provider.requestCount == 1, "repeated request is safe")
     }
 
     private static func testRequestFailure() async {
@@ -127,7 +272,11 @@ private struct MacSpeechAudioHostTests {
             authorization: .notDetermined,
             requestFails: true
         )
-        let host = MacSpeechAudioHost(authorizationProvider: provider)
+        let host = MacSpeechAudioHost(
+            authorizationProvider: provider,
+            capture: FakeMacSpeechAudioCapture(),
+            deviceMonitor: FakeMacSpeechDeviceMonitor(route: availableRoute)
+        )
         let snapshot = await host.requestMicrophoneAuthorization()
         expect(snapshot.authorization == .failed, "request failure is standardized")
         expect(snapshot.state == .failed, "request failure enters failed")
@@ -138,19 +287,171 @@ private struct MacSpeechAudioHostTests {
             authorization: .notDetermined,
             queryFails: true
         )
-        let host = MacSpeechAudioHost(authorizationProvider: provider)
+        let host = MacSpeechAudioHost(
+            authorizationProvider: provider,
+            capture: FakeMacSpeechAudioCapture(),
+            deviceMonitor: FakeMacSpeechDeviceMonitor(route: availableRoute)
+        )
         let snapshot = await host.refreshAuthorization()
         expect(snapshot.authorization == .failed, "query failure is standardized")
         expect(snapshot.state == .failed, "query failure enters failed")
-        let requestCount = await provider.requestCount
-        expect(requestCount == 0, "query failure does not request")
+        expect(await provider.requestCount == 0, "query failure does not request")
     }
 
-    private static func expect(
-        _ condition: @autoclosure () -> Bool,
-        _ message: String
-    ) {
-        guard condition() else { fatalError("FAILED: \(message)") }
+    private static func testUnauthorizedCaptureIsRejected() async {
+        let (host, _, capture, _) = makeHost(authorization: .denied)
+        let snapshot = await host.startCapture()
+        expect(!snapshot.isCapturing, "unauthorized capture does not start")
+        expect(capture.startCount == 0, "unauthorized capture never reaches engine")
+        expect(snapshot.lastError == "microphone_not_authorized", "authorization failure is diagnostic")
+    }
+
+    private static func testStartStopRestartAreIdempotent() async {
+        let (host, _, capture, _) = makeHost(authorization: .authorized)
+        let first = await host.startCapture()
+        expect(first.isCapturing, "authorized start captures")
+        expect(first.state == .capturing, "capture enters capturing state")
+        expect(first.actualSampleRate == 48_000, "native sample rate is diagnostic")
+        expect(first.actualChannelCount == 2, "native channel count is diagnostic")
+
+        _ = await host.startCapture()
+        expect(capture.startCount == 1, "repeated start does not install another tap")
+        _ = await host.stopCapture()
+        _ = await host.stopCapture()
+        expect(capture.stopCount == 1, "repeated stop is idempotent")
+
+        let restarted = await host.startCapture()
+        expect(restarted.isCapturing, "capture can restart manually")
+        expect(capture.startCount == 2, "restart creates one new capture generation")
+        _ = await host.stopCapture()
+    }
+
+    private static func testPCM16Encoding() {
+        let values: [Float] = [
+            -2, -1, -0.5, 0, 0.5, 1, 2,
+            .nan, .infinity, -.infinity
+        ]
+        let encoded = MacSpeechPCM16Encoder.encode(samples: values)
+        expect(
+            decodePCM16(encoded) == [
+                -32_768, -32_768, -16_384, 0, 16_384,
+                32_767, 32_767, 0, 0, 0
+            ],
+            "Float32 values clamp and encode as little-endian PCM16"
+        )
+    }
+
+    private static func testStereoConversionToFrozenMonoFormat() throws {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 2,
+            interleaved: false
+        ), let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_024),
+        let channels = buffer.floatChannelData else {
+            fatalError("FAILED: test audio buffer creation")
+        }
+        buffer.frameLength = 1_024
+        for channel in 0 ..< 2 {
+            for index in 0 ..< 1_024 {
+                channels[channel][index] = index < 512 ? -1 : 1
+            }
+        }
+        let converted = try MacSpeechAudioConverter(inputFormat: format)
+            .convert(buffer)
+        let decoded = decodePCM16(converted.0)
+        expect(
+            (500 ... 512).contains(decoded.count),
+            "converter resamples 48 kHz input to 24 kHz (count=\(decoded.count))"
+        )
+        expect(decoded.prefix(128).contains { $0 < -20_000 }, "stereo negative peak converts to mono")
+        expect(decoded.suffix(128).contains { $0 > 20_000 }, "stereo positive peak converts to mono")
+        expect(converted.1 > 0, "converter reports bounded activity")
+    }
+
+    private static func testBoundedFrameBuffer() {
+        let buffer = MacSpeechAudioFrameBuffer(capacity: 2)
+        buffer.begin(generation: 7)
+        expect(buffer.append(pcm16Bytes: Data([1, 0]), activity: 0.1, generation: 7, timestamp: 5), "first frame accepted")
+        expect(buffer.append(pcm16Bytes: Data([2, 0]), activity: 0.2, generation: 7, timestamp: 4), "second frame accepted")
+        expect(buffer.append(pcm16Bytes: Data([3, 0]), activity: 0.3, generation: 7, timestamp: 4), "third frame accepted")
+        let stats = buffer.stats()
+        expect(stats.generatedCount == 3, "generated frames are counted")
+        expect(stats.droppedCount == 1, "full queue drops oldest frame")
+        expect(stats.queuedCount == 2, "queue never exceeds capacity")
+        let frames = buffer.drain(maxCount: 8)
+        expect(frames.map(\.sequenceNumber) == [2, 3], "drop-oldest policy is deterministic")
+        expect(frames[1].monotonicTimestampNanoseconds > frames[0].monotonicTimestampNanoseconds, "timestamps remain monotonic")
+        buffer.end(generation: 7)
+        expect(!buffer.append(pcm16Bytes: Data([4, 0]), activity: 1, generation: 7), "ended generation rejects late frame")
+    }
+
+    private static func testHostFrameDiagnosticsAndStaleRejection() async {
+        let (host, _, capture, _) = makeHost(
+            authorization: .authorized,
+            frameCapacity: 2
+        )
+        _ = await host.startCapture()
+        expect(capture.emit(timestamp: 1), "active capture accepts first frame")
+        expect(capture.emit(timestamp: 2), "active capture accepts second frame")
+        expect(capture.emit(timestamp: 3), "active capture accepts third frame")
+        let active = await host.currentSnapshot()
+        expect(active.generatedFrameCount == 3, "host reports generated frames")
+        expect(active.droppedFrameCount == 1, "host reports dropped frames")
+        expect(active.queuedFrameCount == 2, "host reports bounded queue depth")
+        let drained = await host.drainFrames(maxCount: 8)
+        expect(drained.map(\.sequenceNumber) == [2, 3], "host drains newest bounded frames")
+
+        _ = await host.stopCapture()
+        expect(!capture.emit(timestamp: 4), "stop rejects late capture callback")
+        let stopped = await host.currentSnapshot()
+        expect(stopped.generatedFrameCount == 3, "late frame does not increment generated count")
+        expect(stopped.rejectedStaleFrameCount == 1, "late frame rejection is counted")
+    }
+
+    private static func testDeviceChangesStopSafelyWithoutAutomaticRestart() async {
+        let (host, _, capture, monitor) = makeHost(authorization: .authorized)
+        _ = await host.startCapture()
+        monitor.setRoute(
+            MacSpeechDeviceRoute(input: .unavailable, output: outputB)
+        )
+        await host.refreshDeviceRoute()
+        let disconnected = await host.currentSnapshot()
+        expect(!disconnected.isCapturing, "input disconnect stops capture")
+        expect(disconnected.state == .deviceUnavailable, "input disconnect marks device unavailable")
+        expect(disconnected.lastError == "input_device_unavailable", "input disconnect is diagnostic")
+        expect(capture.stopCount == 1, "input disconnect releases capture once")
+
+        monitor.setRoute(MacSpeechDeviceRoute(input: inputB, output: outputB))
+        await host.refreshDeviceRoute()
+        let recovered = await host.currentSnapshot()
+        expect(recovered.state == .ready, "available route becomes restartable")
+        expect(!recovered.isCapturing, "route recovery does not auto-capture")
+        expect(capture.startCount == 1, "route recovery does not restart engine")
+
+        _ = await host.startCapture()
+        monitor.setRoute(MacSpeechDeviceRoute(input: inputB, output: outputA))
+        await host.refreshDeviceRoute()
+        expect(await host.currentSnapshot().isCapturing, "output-only route change keeps input capture")
+
+        monitor.setRoute(MacSpeechDeviceRoute(input: inputA, output: outputA))
+        await host.refreshDeviceRoute()
+        let switched = await host.currentSnapshot()
+        expect(!switched.isCapturing, "default input switch stops old capture")
+        expect(switched.lastError == "input_route_changed", "input switch is diagnostic")
+        expect(capture.stopCount == 2, "input switch releases active capture")
+    }
+
+    private static func decodePCM16(_ data: Data) -> [Int16] {
+        let bytes = [UInt8](data)
+        return stride(from: 0, to: bytes.count - 1, by: 2).map { index in
+            let bits = UInt16(bytes[index]) | UInt16(bytes[index + 1]) << 8
+            return Int16(bitPattern: bits)
+        }
+    }
+
+    private static func expect(_ condition: Bool, _ message: String) {
+        guard condition else { fatalError("FAILED: \(message)") }
         checks += 1
     }
 }

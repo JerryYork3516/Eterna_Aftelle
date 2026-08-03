@@ -1,0 +1,303 @@
+@preconcurrency import AVFoundation
+import Foundation
+
+nonisolated enum MacSpeechAudioInputFormat {
+    static let sampleRate: Double = 24_000
+    static let channelCount: AVAudioChannelCount = 1
+    static let frameCapacity = 8
+    static let tapBufferSize: AVAudioFrameCount = 1_024
+    static let description = "24000 Hz / mono / signed PCM16 LE / interleaved"
+}
+
+nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
+    let sequenceNumber: UInt64
+    let monotonicTimestampNanoseconds: UInt64
+    let pcm16Bytes: Data
+    let activity: Float
+}
+
+nonisolated struct MacSpeechAudioFrameBufferStats: Sendable, Equatable {
+    let generatedCount: UInt64
+    let droppedCount: UInt64
+    let rejectedStaleCount: UInt64
+    let queuedCount: Int
+    let latestActivity: Float
+}
+
+nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity: Int
+    private var activeGeneration: UInt64?
+    private var frames: [MacSpeechAudioFrame] = []
+    private var nextSequence: UInt64 = 0
+    private var lastTimestamp: UInt64 = 0
+    private var generatedCount: UInt64 = 0
+    private var droppedCount: UInt64 = 0
+    private var rejectedStaleCount: UInt64 = 0
+    private var latestActivity: Float = 0
+
+    init(capacity: Int = MacSpeechAudioInputFormat.frameCapacity) {
+        precondition(capacity > 0)
+        self.capacity = capacity
+        frames.reserveCapacity(capacity)
+    }
+
+    func begin(generation: UInt64) {
+        lock.withLock {
+            activeGeneration = generation
+            frames.removeAll(keepingCapacity: true)
+        }
+    }
+
+    func end(generation: UInt64) {
+        lock.withLock {
+            guard activeGeneration == generation else { return }
+            activeGeneration = nil
+            frames.removeAll(keepingCapacity: true)
+        }
+    }
+
+    @discardableResult
+    func append(
+        pcm16Bytes: Data,
+        activity: Float,
+        generation: UInt64,
+        timestamp: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> Bool {
+        lock.withLock {
+            guard activeGeneration == generation, !pcm16Bytes.isEmpty else {
+                rejectedStaleCount &+= 1
+                return false
+            }
+            if frames.count == capacity {
+                frames.removeFirst()
+                droppedCount &+= 1
+            }
+            nextSequence &+= 1
+            let monotonicTimestamp = timestamp > lastTimestamp
+                ? timestamp
+                : lastTimestamp &+ 1
+            lastTimestamp = monotonicTimestamp
+            latestActivity = activity.isFinite
+                ? min(max(activity, 0), 1)
+                : 0
+            frames.append(
+                MacSpeechAudioFrame(
+                    sequenceNumber: nextSequence,
+                    monotonicTimestampNanoseconds: monotonicTimestamp,
+                    pcm16Bytes: pcm16Bytes,
+                    activity: latestActivity
+                )
+            )
+            generatedCount &+= 1
+            return true
+        }
+    }
+
+    func drain(maxCount: Int) -> [MacSpeechAudioFrame] {
+        lock.withLock {
+            guard maxCount > 0, !frames.isEmpty else { return [] }
+            let count = min(maxCount, frames.count)
+            let drained = Array(frames.prefix(count))
+            frames.removeFirst(count)
+            return drained
+        }
+    }
+
+    func stats() -> MacSpeechAudioFrameBufferStats {
+        lock.withLock {
+            MacSpeechAudioFrameBufferStats(
+                generatedCount: generatedCount,
+                droppedCount: droppedCount,
+                rejectedStaleCount: rejectedStaleCount,
+                queuedCount: frames.count,
+                latestActivity: latestActivity
+            )
+        }
+    }
+}
+
+nonisolated enum MacSpeechPCM16Encoder {
+    static func encode(samples: [Float]) -> Data {
+        var bytes = [UInt8](repeating: 0, count: samples.count * 2)
+        for (index, sample) in samples.enumerated() {
+            let value = pcm16Value(for: sample)
+            let bits = UInt16(bitPattern: value)
+            bytes[index * 2] = UInt8(truncatingIfNeeded: bits)
+            bytes[index * 2 + 1] = UInt8(truncatingIfNeeded: bits >> 8)
+        }
+        return Data(bytes)
+    }
+
+    private static func pcm16Value(for sample: Float) -> Int16 {
+        guard sample.isFinite else { return 0 }
+        let clamped = min(max(sample, -1), 1)
+        let scaled = clamped < 0
+            ? clamped * 32_768
+            : clamped * 32_767
+        return Int16(scaled.rounded(.toNearestOrAwayFromZero))
+    }
+}
+
+nonisolated struct MacSpeechNativeInputFormat: Sendable, Equatable {
+    let sampleRate: Double
+    let channelCount: UInt32
+}
+
+nonisolated enum MacSpeechAudioCaptureError: String, Error, Sendable {
+    case invalidInputFormat = "invalid_input_format"
+    case converterUnavailable = "audio_converter_unavailable"
+    case conversionFailed = "audio_conversion_failed"
+    case engineStartFailed = "audio_engine_start_failed"
+}
+
+nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
+    func start(
+        generation: UInt64,
+        frameBuffer: MacSpeechAudioFrameBuffer
+    ) throws -> MacSpeechNativeInputFormat
+    func stop()
+}
+
+nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
+    private final class InputState: @unchecked Sendable {
+        var supplied = false
+    }
+
+    private let lock = NSLock()
+    private let converter: AVAudioConverter
+    private let outputFormat: AVAudioFormat
+    private let inputSampleRate: Double
+
+    init(inputFormat: AVAudioFormat) throws {
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw MacSpeechAudioCaptureError.invalidInputFormat
+        }
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: MacSpeechAudioInputFormat.sampleRate,
+            channels: MacSpeechAudioInputFormat.channelCount,
+            interleaved: false
+        ), let converter = AVAudioConverter(
+            from: inputFormat,
+            to: outputFormat
+        ) else {
+            throw MacSpeechAudioCaptureError.converterUnavailable
+        }
+        self.converter = converter
+        self.outputFormat = outputFormat
+        inputSampleRate = inputFormat.sampleRate
+    }
+
+    func convert(_ inputBuffer: AVAudioPCMBuffer) throws -> (Data, Float) {
+        try lock.withLock {
+            let ratio = MacSpeechAudioInputFormat.sampleRate / inputSampleRate
+            let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio) + 8
+            let capacity = AVAudioFrameCount(max(1, min(estimatedFrames, 8_192)))
+            guard let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: capacity
+            ) else {
+                throw MacSpeechAudioCaptureError.conversionFailed
+            }
+
+            let inputState = InputState()
+            var conversionError: NSError?
+            let status = converter.convert(
+                to: outputBuffer,
+                error: &conversionError
+            ) { _, inputStatus in
+                guard !inputState.supplied else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                inputState.supplied = true
+                inputStatus.pointee = .haveData
+                return inputBuffer
+            }
+            guard conversionError == nil,
+                  status != .error,
+                  outputBuffer.frameLength > 0,
+                  let samples = outputBuffer.floatChannelData?[0]
+            else {
+                throw MacSpeechAudioCaptureError.conversionFailed
+            }
+
+            let count = Int(outputBuffer.frameLength)
+            let values = Array(UnsafeBufferPointer(start: samples, count: count))
+            let finiteSquares = values.reduce(Float.zero) { partial, value in
+                guard value.isFinite else { return partial }
+                let clamped = min(max(value, -1), 1)
+                return partial + clamped * clamped
+            }
+            let activity = count > 0
+                ? min(sqrt(finiteSquares / Float(count)), 1)
+                : 0
+            return (MacSpeechPCM16Encoder.encode(samples: values), activity)
+        }
+    }
+}
+
+nonisolated final class SystemMacSpeechAudioCapture:
+    MacSpeechAudioCapturing, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var engine: AVAudioEngine?
+
+    func start(
+        generation: UInt64,
+        frameBuffer: MacSpeechAudioFrameBuffer
+    ) throws -> MacSpeechNativeInputFormat {
+        try lock.withLock {
+            if let engine {
+                let format = engine.inputNode.outputFormat(forBus: 0)
+                return MacSpeechNativeInputFormat(
+                    sampleRate: format.sampleRate,
+                    channelCount: format.channelCount
+                )
+            }
+
+            let engine = AVAudioEngine()
+            let inputNode = engine.inputNode
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                throw MacSpeechAudioCaptureError.invalidInputFormat
+            }
+            let converter = try MacSpeechAudioConverter(inputFormat: inputFormat)
+            inputNode.installTap(
+                onBus: 0,
+                bufferSize: MacSpeechAudioInputFormat.tapBufferSize,
+                format: inputFormat
+            ) { buffer, _ in
+                guard let converted = try? converter.convert(buffer) else { return }
+                frameBuffer.append(
+                    pcm16Bytes: converted.0,
+                    activity: converted.1,
+                    generation: generation
+                )
+            }
+            engine.prepare()
+            do {
+                try engine.start()
+            } catch {
+                inputNode.removeTap(onBus: 0)
+                throw MacSpeechAudioCaptureError.engineStartFailed
+            }
+            self.engine = engine
+            return MacSpeechNativeInputFormat(
+                sampleRate: inputFormat.sampleRate,
+                channelCount: inputFormat.channelCount
+            )
+        }
+    }
+
+    func stop() {
+        lock.withLock {
+            guard let engine else { return }
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engine.reset()
+            self.engine = nil
+        }
+    }
+}

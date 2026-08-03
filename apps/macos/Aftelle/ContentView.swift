@@ -187,6 +187,9 @@ struct ContentView: View {
         }
         .onDisappear {
             removeDebugSubtitleKeyMonitor()
+            Task {
+                await controller.shutdownSpeechAudioHost()
+            }
         }
         .onChange(of: controller.isParticleDebugPanelPresented) { _, isPresented in
             if isPresented {
@@ -577,6 +580,10 @@ struct ParticleDebugWindow: View {
                 controller.refreshMicrophoneAuthorization,
             requestMicrophoneAuthorization:
                 controller.requestMicrophoneAuthorization,
+            startSpeechAudioCapture:
+                controller.startSpeechAudioCapture,
+            stopSpeechAudioCapture:
+                controller.stopSpeechAudioCapture,
             copyDialogueAudit: controller.copyDialogueAudit,
             exportDialogueAudit: controller.exportDialogueAudit,
             clearDialogueAudit: controller.clearDialogueAudit,
@@ -728,6 +735,8 @@ private struct ParticleDebugPanel: View {
     let testNativeSpeechProviderConnectivity: () async -> Void
     let refreshMicrophoneAuthorization: () async -> Void
     let requestMicrophoneAuthorization: () async -> Void
+    let startSpeechAudioCapture: () async -> Void
+    let stopSpeechAudioCapture: () async -> Void
     let copyDialogueAudit: () -> Void
     let exportDialogueAudit: () -> Void
     let clearDialogueAudit: () -> Void
@@ -957,7 +966,9 @@ private struct ParticleDebugPanel: View {
                                 refreshAuthorization:
                                     refreshMicrophoneAuthorization,
                                 requestAuthorization:
-                                    requestMicrophoneAuthorization
+                                    requestMicrophoneAuthorization,
+                                startCapture: startSpeechAudioCapture,
+                                stopCapture: stopSpeechAudioCapture
                             )
                             RelationshipProgressionDebugView(
                                 state: relationshipProgressionState,
@@ -1941,6 +1952,8 @@ private struct SpeechAudioHostDebugView: View {
     let snapshot: MacSpeechAudioHostSnapshot
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
+    let startCapture: () async -> Void
+    let stopCapture: () async -> Void
 
     @State private var isExpanded = true
 
@@ -1958,6 +1971,58 @@ private struct SpeechAudioHostDebugView: View {
                     labelKey: "particleDebug.audioHost.state",
                     value: localizedHostState
                 )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.capturing",
+                    value: String(
+                        localized: snapshot.isCapturing
+                            ? "particleDebug.audioHost.capturing.active"
+                            : "particleDebug.audioHost.capturing.inactive"
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.inputDevice",
+                    value: snapshot.inputDevice.name
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.outputDevice",
+                    value: snapshot.outputDevice.name
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.nativeSampleRate",
+                    value: snapshot.actualSampleRate > 0
+                        ? String(format: "%.0f Hz", snapshot.actualSampleRate)
+                        : "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.nativeChannels",
+                    value: snapshot.actualChannelCount > 0
+                        ? "\(snapshot.actualChannelCount)"
+                        : "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.outputFormat",
+                    value: snapshot.normalizedOutputFormat
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.generatedFrames",
+                    value: "\(snapshot.generatedFrameCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.droppedFrames",
+                    value: "\(snapshot.droppedFrameCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.queuedFrames",
+                    value: "\(snapshot.queuedFrameCount) / \(MacSpeechAudioInputFormat.frameCapacity)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.activity",
+                    value: String(format: "%.3f", snapshot.latestActivity)
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.lastError",
+                    value: snapshot.lastError ?? "—"
+                )
                 HStack {
                     Spacer()
                     Button(
@@ -1971,10 +2036,33 @@ private struct SpeechAudioHostDebugView: View {
                         }
                     }
                     .disabled(snapshot.authorization != .notDetermined)
+                    Button(
+                        String(localized: "particleDebug.audioHost.startCapture")
+                    ) {
+                        Task {
+                            await startCapture()
+                        }
+                    }
+                    .disabled(
+                        snapshot.authorization != .authorized
+                            || snapshot.isCapturing
+                            || !snapshot.inputDevice.isAvailable
+                    )
+                    Button(
+                        String(localized: "particleDebug.audioHost.stopCapture")
+                    ) {
+                        Task {
+                            await stopCapture()
+                        }
+                    }
+                    .disabled(!snapshot.isCapturing)
                 }
             }
             .task {
-                await refreshAuthorization()
+                while !Task.isCancelled {
+                    await refreshAuthorization()
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
             }
         }
     }

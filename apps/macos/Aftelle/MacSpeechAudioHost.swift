@@ -13,6 +13,8 @@ nonisolated enum MacSpeechAudioHostState: String, Sendable, Equatable {
     case idle
     case permissionRequired
     case ready
+    case capturing
+    case deviceUnavailable
     case denied
     case restricted
     case failed
@@ -21,10 +23,34 @@ nonisolated enum MacSpeechAudioHostState: String, Sendable, Equatable {
 nonisolated struct MacSpeechAudioHostSnapshot: Sendable, Equatable {
     let authorization: MicrophoneAuthorizationState
     let state: MacSpeechAudioHostState
+    let isCapturing: Bool
+    let inputDevice: MacSpeechAudioDevice
+    let outputDevice: MacSpeechAudioDevice
+    let actualSampleRate: Double
+    let actualChannelCount: UInt32
+    let normalizedOutputFormat: String
+    let generatedFrameCount: UInt64
+    let droppedFrameCount: UInt64
+    let rejectedStaleFrameCount: UInt64
+    let queuedFrameCount: Int
+    let latestActivity: Float
+    let lastError: String?
 
     static let initial = MacSpeechAudioHostSnapshot(
         authorization: .notDetermined,
-        state: .idle
+        state: .idle,
+        isCapturing: false,
+        inputDevice: .unavailable,
+        outputDevice: .unavailable,
+        actualSampleRate: 0,
+        actualChannelCount: 0,
+        normalizedOutputFormat: MacSpeechAudioInputFormat.description,
+        generatedFrameCount: 0,
+        droppedFrameCount: 0,
+        rejectedStaleFrameCount: 0,
+        queuedFrameCount: 0,
+        latestActivity: 0,
+        lastError: nil
     )
 }
 
@@ -73,66 +99,180 @@ nonisolated struct SystemMicrophoneAuthorizationProvider:
 
 actor MacSpeechAudioHost {
     private let authorizationProvider: any MicrophoneAuthorizationProviding
+    private let capture: any MacSpeechAudioCapturing
+    private let deviceMonitor: any MacSpeechDeviceRouteMonitoring
+    private let frameBuffer: MacSpeechAudioFrameBuffer
     private var permissionRequestInFlight = false
-    private var snapshot = MacSpeechAudioHostSnapshot.initial
+    private var authorization = MicrophoneAuthorizationState.notDetermined
+    private var state = MacSpeechAudioHostState.idle
+    private var route = MacSpeechDeviceRoute.unavailable
+    private var isCapturing = false
+    private var isMonitoringRoute = false
+    private var generation: UInt64 = 0
+    private var actualInputFormat = MacSpeechNativeInputFormat(
+        sampleRate: 0,
+        channelCount: 0
+    )
+    private var lastError: String?
 
     init(
         authorizationProvider: any MicrophoneAuthorizationProviding =
-            SystemMicrophoneAuthorizationProvider()
+            SystemMicrophoneAuthorizationProvider(),
+        capture: any MacSpeechAudioCapturing =
+            SystemMacSpeechAudioCapture(),
+        deviceMonitor: any MacSpeechDeviceRouteMonitoring =
+            SystemMacSpeechDeviceMonitor(),
+        frameCapacity: Int = MacSpeechAudioInputFormat.frameCapacity
     ) {
         self.authorizationProvider = authorizationProvider
+        self.capture = capture
+        self.deviceMonitor = deviceMonitor
+        frameBuffer = MacSpeechAudioFrameBuffer(capacity: frameCapacity)
     }
 
     func currentSnapshot() -> MacSpeechAudioHostSnapshot {
-        snapshot
+        makeSnapshot()
     }
 
     func refreshAuthorization() async -> MacSpeechAudioHostSnapshot {
         do {
-            return update(
+            update(
                 authorization: try await authorizationProvider
                     .currentAuthorization()
             )
+            refreshDeviceRoute()
+            ensureRouteMonitoring()
+            return makeSnapshot()
         } catch {
             return fail()
         }
     }
 
     func requestMicrophoneAuthorization() async -> MacSpeechAudioHostSnapshot {
-        guard !permissionRequestInFlight else { return snapshot }
+        guard !permissionRequestInFlight else { return makeSnapshot() }
         permissionRequestInFlight = true
         defer { permissionRequestInFlight = false }
 
         do {
             let current = try await authorizationProvider.currentAuthorization()
             guard current == .notDetermined else {
-                return update(authorization: current)
+                update(authorization: current)
+                refreshDeviceRoute()
+                ensureRouteMonitoring()
+                return makeSnapshot()
             }
-            return update(
+            update(
                 authorization: try await authorizationProvider
                     .requestAuthorization()
             )
+            refreshDeviceRoute()
+            ensureRouteMonitoring()
+            return makeSnapshot()
         } catch {
             return fail()
         }
     }
 
+    func startCapture() async -> MacSpeechAudioHostSnapshot {
+        guard !isCapturing else { return makeSnapshot() }
+        do {
+            update(
+                authorization: try await authorizationProvider
+                    .currentAuthorization()
+            )
+        } catch {
+            return fail()
+        }
+        refreshDeviceRoute()
+        ensureRouteMonitoring()
+        guard authorization == .authorized else {
+            lastError = "microphone_not_authorized"
+            return makeSnapshot()
+        }
+        guard route.input.isAvailable else {
+            state = .deviceUnavailable
+            lastError = "input_device_unavailable"
+            return makeSnapshot()
+        }
+
+        generation &+= 1
+        let captureGeneration = generation
+        frameBuffer.begin(generation: captureGeneration)
+        do {
+            actualInputFormat = try capture.start(
+                generation: captureGeneration,
+                frameBuffer: frameBuffer
+            )
+            isCapturing = true
+            state = .capturing
+            lastError = nil
+        } catch let error as MacSpeechAudioCaptureError {
+            frameBuffer.end(generation: captureGeneration)
+            capture.stop()
+            state = .failed
+            lastError = error.rawValue
+        } catch {
+            frameBuffer.end(generation: captureGeneration)
+            capture.stop()
+            state = .failed
+            lastError = "audio_engine_start_failed"
+        }
+        return makeSnapshot()
+    }
+
+    func stopCapture() -> MacSpeechAudioHostSnapshot {
+        stopCapture(lastError: nil)
+        return makeSnapshot()
+    }
+
+    func refreshDeviceRoute() {
+        let previousRoute = route
+        route = deviceMonitor.currentRoute()
+        let inputChanged = previousRoute.input.identifier != route.input.identifier
+        if isCapturing, inputChanged || !route.input.isAvailable {
+            stopCapture(
+                lastError: route.input.isAvailable
+                    ? "input_route_changed"
+                    : "input_device_unavailable"
+            )
+        } else if !isCapturing {
+            state = hostState(for: authorization)
+        }
+    }
+
+    func drainFrames(maxCount: Int) -> [MacSpeechAudioFrame] {
+        frameBuffer.drain(maxCount: maxCount)
+    }
+
+    func shutdown() {
+        stopCapture(lastError: nil)
+        deviceMonitor.stop()
+        isMonitoringRoute = false
+    }
+
     private func update(
         authorization: MicrophoneAuthorizationState
-    ) -> MacSpeechAudioHostSnapshot {
-        snapshot = MacSpeechAudioHostSnapshot(
-            authorization: authorization,
-            state: hostState(for: authorization)
-        )
-        return snapshot
+    ) {
+        if isCapturing, authorization != .authorized {
+            stopCapture(lastError: "microphone_authorization_lost")
+        }
+        self.authorization = authorization
+        state = isCapturing && authorization == .authorized
+            ? .capturing
+            : hostState(for: authorization)
+        if authorization != .failed {
+            lastError = nil
+        }
     }
 
     private func fail() -> MacSpeechAudioHostSnapshot {
-        snapshot = MacSpeechAudioHostSnapshot(
-            authorization: .failed,
-            state: .failed
-        )
-        return snapshot
+        if isCapturing {
+            stopCapture(lastError: "microphone_authorization_failed")
+        }
+        authorization = .failed
+        state = .failed
+        lastError = "microphone_authorization_failed"
+        return makeSnapshot()
     }
 
     private func hostState(
@@ -142,7 +282,7 @@ actor MacSpeechAudioHost {
         case .notDetermined:
             return .permissionRequired
         case .authorized:
-            return .ready
+            return route.input.isAvailable ? .ready : .deviceUnavailable
         case .denied:
             return .denied
         case .restricted:
@@ -150,5 +290,45 @@ actor MacSpeechAudioHost {
         case .failed:
             return .failed
         }
+    }
+
+    private func stopCapture(lastError: String?) {
+        if isCapturing {
+            capture.stop()
+            frameBuffer.end(generation: generation)
+            isCapturing = false
+        }
+        self.lastError = lastError
+        state = hostState(for: authorization)
+    }
+
+    private func ensureRouteMonitoring() {
+        guard !isMonitoringRoute else { return }
+        deviceMonitor.start { [weak self] in
+            Task {
+                await self?.refreshDeviceRoute()
+            }
+        }
+        isMonitoringRoute = true
+    }
+
+    private func makeSnapshot() -> MacSpeechAudioHostSnapshot {
+        let stats = frameBuffer.stats()
+        return MacSpeechAudioHostSnapshot(
+            authorization: authorization,
+            state: state,
+            isCapturing: isCapturing,
+            inputDevice: route.input,
+            outputDevice: route.output,
+            actualSampleRate: actualInputFormat.sampleRate,
+            actualChannelCount: actualInputFormat.channelCount,
+            normalizedOutputFormat: MacSpeechAudioInputFormat.description,
+            generatedFrameCount: stats.generatedCount,
+            droppedFrameCount: stats.droppedCount,
+            rejectedStaleFrameCount: stats.rejectedStaleCount,
+            queuedFrameCount: stats.queuedCount,
+            latestActivity: stats.latestActivity,
+            lastError: lastError
+        )
     }
 }

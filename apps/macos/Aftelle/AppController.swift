@@ -1163,6 +1163,19 @@ final class AppController: ObservableObject {
             await speechAudioHost.requestMicrophoneAuthorization()
     }
 
+    func startSpeechAudioCapture() async {
+        speechAudioHostSnapshot = await speechAudioHost.startCapture()
+    }
+
+    func stopSpeechAudioCapture() async {
+        speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+    }
+
+    func shutdownSpeechAudioHost() async {
+        await speechAudioHost.shutdown()
+        speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+    }
+
     func deleteNativeSpeechProviderCredential() {
         do {
             try providerKeychainStore.delete(
