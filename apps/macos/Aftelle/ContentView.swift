@@ -540,6 +540,8 @@ struct ParticleDebugWindow: View {
                 controller.speechInputBridgeSnapshot,
             speechOutputBridgeSnapshot:
                 controller.speechOutputBridgeSnapshot,
+            realtimeSpeechStateSnapshot:
+                controller.realtimeSpeechStateSnapshot,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
             relationshipProgressionState:
@@ -704,6 +706,7 @@ private struct ParticleDebugPanel: View {
     let speechAudioHostSnapshot: MacSpeechAudioHostSnapshot
     let speechInputBridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let speechOutputBridgeSnapshot: MacSpeechNativeOutputBridgeSnapshot
+    let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let relationshipProgressionState:
@@ -975,6 +978,8 @@ private struct ParticleDebugPanel: View {
                                 bridgeSnapshot: speechInputBridgeSnapshot,
                                 outputBridgeSnapshot:
                                     speechOutputBridgeSnapshot,
+                                realtimeSpeechStateSnapshot:
+                                    realtimeSpeechStateSnapshot,
                                 refreshAuthorization:
                                     refreshMicrophoneAuthorization,
                                 requestAuthorization:
@@ -1966,6 +1971,7 @@ private struct SpeechAudioHostDebugView: View {
     let snapshot: MacSpeechAudioHostSnapshot
     let bridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let outputBridgeSnapshot: MacSpeechNativeOutputBridgeSnapshot
+    let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
     let startCapture: () async -> Void
@@ -2119,6 +2125,44 @@ private struct SpeechAudioHostDebugView: View {
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.outputLastError",
                     value: outputBridgeSnapshot.lastError ?? "—"
+                )
+                Divider()
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.state",
+                    value: realtimeSpeechStateSnapshot.state.rawValue
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.turn",
+                    value: "\(realtimeSpeechStateSnapshot.currentTurnNumber)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.reason",
+                    value: realtimeSpeechStateSnapshot
+                        .lastTransitionReason?.rawValue ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.completedTurns",
+                    value: "\(realtimeSpeechStateSnapshot.completedTurnCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.turnDetection",
+                    value: realtimeSpeechStateSnapshot
+                        .lastTurnDetectionSource.rawValue
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.guardTimeout",
+                    value: realtimeSpeechStateSnapshot.guardTimeoutTriggered
+                        ? "YES" : "NO"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.lastError",
+                    value: realtimeSpeechStateSnapshot.lastStandardError ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.path",
+                    value: realtimeSpeechStateSnapshot.recentTransitions
+                        .map { "\($0.turnNumber):\($0.state.rawValue)" }
+                        .joined(separator: " → ")
                 )
                 HStack {
                     Spacer()

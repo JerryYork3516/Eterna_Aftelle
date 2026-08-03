@@ -473,8 +473,245 @@ private struct NativeSpeechRuntimeIntegrationTests {
             operations.contains(.cancel(first.id)),
             "cancel reaches Provider through Runtime chain"
         )
+        try await testRuntimeMultiTurnState(fixtureData: fixtureData)
+        try await testRuntimeTimeouts(fixtureData: fixtureData)
         try await testConnectivityEntry(fixtureData: fixtureData)
         print("native_speech_runtime_integration_checks=\(checks)")
+    }
+
+    private static func testRuntimeMultiTurnState(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixtureData).isLoaded, "multi-turn resident loads")
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 1
+        )
+        expect(
+            runtime.realtimeSpeechStateSnapshot().state == .listening,
+            "Runtime starts multi-turn input in listening"
+        )
+
+        for turn in 1...2 {
+            try await acceptStateEvent(
+                .inputSpeechStarted,
+                expectedState: .listening,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            try await acceptStateEvent(
+                .inputSpeechEnded,
+                expectedState: .thinking,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            try await acceptStateEvent(
+                .outputAudio(
+                    NativeSpeechAudioPayload(
+                        interactionID: binding.interactionID,
+                        sequenceNumber: UInt64(turn),
+                        bytes: Data([0, 1]),
+                        format: .pcm16
+                    )
+                ),
+                expectedState: .speaking,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            try await acceptStateEvent(
+                .responseCompleted,
+                expectedState: .listening,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            expect(
+                runtime.realtimeSpeechStateSnapshot().completedTurnCount
+                    == UInt64(turn),
+                "Runtime completes turn \(turn) without closing interaction"
+            )
+        }
+
+        let closeCountBeforeStop = await provider.operationCount(.close)
+        expect(
+            closeCountBeforeStop == 0,
+            "responseCompleted does not close Provider"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+        expect(
+            runtime.realtimeSpeechStateSnapshot().state == .idle,
+            "explicit Stop returns Runtime to idle"
+        )
+        let cancelCount = await provider.operationCount(.cancel)
+        let closeCount = await provider.operationCount(.close)
+        expect(cancelCount == 1, "multi-turn Stop cancels Provider once")
+        expect(closeCount == 1, "multi-turn Stop closes Provider once")
+    }
+
+    private static func acceptStateEvent(
+        _ kind: NativeSpeechEventKind,
+        expectedState: RealtimeSpeechState,
+        binding: NativeSpeechInputBinding,
+        runtime: RuntimeCore,
+        provider: FakeNativeSpeechProvider
+    ) async throws {
+        await provider.enqueue(
+            NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: kind
+            )
+        )
+        let disposition = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        guard case .accepted = disposition else {
+            fatalError("FAILED: Runtime state event was rejected")
+        }
+        checks += 1
+        expect(
+            runtime.realtimeSpeechStateSnapshot().state == expectedState,
+            "Runtime owns \(expectedState.rawValue) transition"
+        )
+    }
+
+    private static func testRuntimeTimeouts(
+        fixtureData: Data
+    ) async throws {
+        try await testRuntimeTimeout(
+            fixtureData: fixtureData,
+            events: [.inputSpeechStarted],
+            expectedReason: .speechStopTimedOut,
+            expectedError: "speech_stop_timed_out"
+        )
+        try await testRuntimeTimeout(
+            fixtureData: fixtureData,
+            events: [.finalTranscript("timeout")],
+            expectedReason: .thinkingTimedOut,
+            expectedError: "thinking_output_timed_out"
+        )
+        try await testRuntimeTimeout(
+            fixtureData: fixtureData,
+            events: [
+                .finalTranscript("timeout"),
+                .outputAudio(
+                    NativeSpeechAudioPayload(
+                        interactionID: NativeSpeechInteractionID(),
+                        sequenceNumber: 1,
+                        bytes: Data([0, 1]),
+                        format: .pcm16
+                    )
+                )
+            ],
+            expectedReason: .speakingTimedOut,
+            expectedError: "speaking_completion_timed_out"
+        )
+    }
+
+    private static func testRuntimeTimeout(
+        fixtureData: Data,
+        events: [NativeSpeechEventKind],
+        expectedReason: RealtimeSpeechTransitionReason,
+        expectedError: String
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        runtime.useRealtimeSpeechTimeoutConfigurationForTesting(
+            RealtimeSpeechTimeoutConfiguration(
+                speechStopNanoseconds: 5_000_000,
+                thinkingOutputNanoseconds: 5_000_000,
+                speakingCompletionNanoseconds: 5_000_000
+            )
+        )
+        expect(runtime.loadDR(from: fixtureData).isLoaded, "timeout resident loads")
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 1
+        )
+        expect(
+            runtime.realtimeSpeechStateSnapshot().state == .listening,
+            "Runtime input start owns listening state"
+        )
+
+        for kind in events {
+            let resolvedKind: NativeSpeechEventKind
+            if case .outputAudio(let payload) = kind {
+                resolvedKind = .outputAudio(
+                    NativeSpeechAudioPayload(
+                        interactionID: binding.interactionID,
+                        sequenceNumber: payload.sequenceNumber,
+                        bytes: payload.bytes,
+                        format: payload.format
+                    )
+                )
+            } else {
+                resolvedKind = kind
+            }
+            await provider.enqueue(
+                NativeSpeechEvent(
+                    interactionID: binding.interactionID,
+                    kind: resolvedKind
+                )
+            )
+            let disposition = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            guard case .accepted = disposition else {
+                fatalError("FAILED: timeout setup event was rejected")
+            }
+            checks += 1
+        }
+
+        try await Task.sleep(for: .milliseconds(30))
+        let snapshot = runtime.realtimeSpeechStateSnapshot()
+        expect(snapshot.state == .idle, "Runtime guard timeout returns idle")
+        expect(snapshot.guardTimeoutTriggered, "Runtime records guard timeout")
+        expect(snapshot.lastTransitionReason == expectedReason, "Runtime retains timeout reason")
+        expect(snapshot.lastStandardError == expectedError, "Runtime retains standard timeout error")
+        let cancelCount = await provider.operationCount(.cancel)
+        let closeCount = await provider.operationCount(.close)
+        expect(
+            cancelCount == 1,
+            "Runtime timeout actively cancels Provider once"
+        )
+        expect(
+            closeCount == 1,
+            "Runtime timeout closes Provider once"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+        let stoppedSnapshot = runtime.realtimeSpeechStateSnapshot()
+        expect(
+            stoppedSnapshot.lastTransitionReason == .userStopped,
+            "explicit Runtime Stop wins a timeout race"
+        )
+        expect(
+            stoppedSnapshot.guardTimeoutTriggered,
+            "Runtime Stop preserves timeout diagnosis"
+        )
+        let cancelCountAfterStop = await provider.operationCount(.cancel)
+        let closeCountAfterStop = await provider.operationCount(.close)
+        expect(
+            cancelCountAfterStop == cancelCount,
+            "post-timeout Stop does not cancel Provider twice"
+        )
+        expect(
+            closeCountAfterStop == closeCount,
+            "post-timeout Stop does not close Provider twice"
+        )
     }
 
     private static func testConnectivityEntry(

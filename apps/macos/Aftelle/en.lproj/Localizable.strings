@@ -522,3 +522,11 @@
 "relationshipProgression.debug.revision" = "Revision";
 "relationshipProgression.debug.reset" = "Reset Relationship";
 "relationshipProgression.debug.unavailable" = "This DR does not enable relationship progression.";
+"particleDebug.realtimeSpeech.state" = "Realtime speech state";
+"particleDebug.realtimeSpeech.turn" = "Current turn";
+"particleDebug.realtimeSpeech.reason" = "Last transition";
+"particleDebug.realtimeSpeech.completedTurns" = "Completed turns";
+"particleDebug.realtimeSpeech.turnDetection" = "Turn detection source";
+"particleDebug.realtimeSpeech.guardTimeout" = "Guard timeout";
+"particleDebug.realtimeSpeech.lastError" = "Standard error";
+"particleDebug.realtimeSpeech.path" = "Recent state path";

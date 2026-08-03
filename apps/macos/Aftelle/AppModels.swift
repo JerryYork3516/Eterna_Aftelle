@@ -1171,6 +1171,10 @@ public final class OrchestrationKernel {
     }
 
     #if DEBUG
+    func realtimeSpeechStateSnapshot() -> RealtimeSpeechStateSnapshot {
+        runtimeCore.realtimeSpeechStateSnapshot()
+    }
+
     func testNativeSpeechConnectivity(
         profile: NativeSpeechProviderProfile
     ) async -> Result<Void, NativeSpeechError> {

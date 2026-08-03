@@ -522,3 +522,11 @@
 "relationshipProgression.debug.revision" = "修订号";
 "relationshipProgression.debug.reset" = "重置关系";
 "relationshipProgression.debug.unavailable" = "当前 DR 未启用关系演进。";
+"particleDebug.realtimeSpeech.state" = "当前语音状态";
+"particleDebug.realtimeSpeech.turn" = "当前轮次";
+"particleDebug.realtimeSpeech.reason" = "最近状态转换";
+"particleDebug.realtimeSpeech.completedTurns" = "已完成轮次";
+"particleDebug.realtimeSpeech.turnDetection" = "最近判停来源";
+"particleDebug.realtimeSpeech.guardTimeout" = "保护超时";
+"particleDebug.realtimeSpeech.lastError" = "最近标准错误";
+"particleDebug.realtimeSpeech.path" = "最近状态路径";

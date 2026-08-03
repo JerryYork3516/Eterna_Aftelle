@@ -100,6 +100,8 @@ final class AppController: ObservableObject {
         MacSpeechNativeInputBridgeSnapshot.initial
     @Published private(set) var speechOutputBridgeSnapshot =
         MacSpeechNativeOutputBridgeSnapshot.initial
+    @Published private(set) var realtimeSpeechStateSnapshot =
+        RealtimeSpeechStateSnapshot.initial
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
     @Published private(set) var relationshipProgressionDebugState =
@@ -1221,6 +1223,8 @@ final class AppController: ObservableObject {
             await speechInputBridge.currentSnapshot()
         speechOutputBridgeSnapshot =
             await speechOutputBridge.currentSnapshot()
+        realtimeSpeechStateSnapshot =
+            orchestrationKernel.realtimeSpeechStateSnapshot()
     }
 
     func requestMicrophoneAuthorization() async {
@@ -1236,6 +1240,8 @@ final class AppController: ObservableObject {
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+        realtimeSpeechStateSnapshot =
+            orchestrationKernel.realtimeSpeechStateSnapshot()
     }
 
     func shutdownSpeechAudioHost() async {
@@ -1243,6 +1249,8 @@ final class AppController: ObservableObject {
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         await speechAudioHost.shutdown()
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+        realtimeSpeechStateSnapshot =
+            orchestrationKernel.realtimeSpeechStateSnapshot()
     }
 
     func startNativeSpeechInputBridge() async {
@@ -1268,6 +1276,8 @@ final class AppController: ObservableObject {
         case .failure(let error):
             speechInputBridgeSnapshot = await speechInputBridge.fail(error)
         }
+        realtimeSpeechStateSnapshot =
+            orchestrationKernel.realtimeSpeechStateSnapshot()
     }
 
     func deleteNativeSpeechProviderCredential() {

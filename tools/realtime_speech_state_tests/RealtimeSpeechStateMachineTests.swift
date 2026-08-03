@@ -1,0 +1,435 @@
+import Foundation
+
+@main
+@MainActor
+private struct RealtimeSpeechStateMachineTests {
+    private static var checks = 0
+
+    static func main() async throws {
+        let interaction = makeInteraction()
+        let machine = RealtimeSpeechStateMachine()
+
+        expect(machine.snapshot() == .initial, "initial state is idle")
+        let started = machine.start(interaction: interaction)
+        expect(started.previousState == .idle, "start leaves idle")
+        expect(started.snapshot.state == .listening, "start enters listening")
+        expect(started.snapshot.currentTurnNumber == 1, "first turn is one")
+
+        expect(
+            transition(machine, interaction, .inputSpeechStarted, 1)
+                .snapshot.state == .listening,
+            "speech started remains listening"
+        )
+        expect(
+            transition(machine, interaction, .inputSpeechStarted, 2)
+                .disposition == .ignoredDuplicate,
+            "duplicate speech started is ignored"
+        )
+        let stopped = transition(
+            machine,
+            interaction,
+            .inputSpeechEnded,
+            3
+        )
+        expect(stopped.snapshot.state == .thinking, "speech stopped enters thinking")
+        expect(
+            stopped.snapshot.lastTurnDetectionSource == .serverVAD,
+            "server VAD is the primary turn detector"
+        )
+        expect(
+            transition(machine, interaction, .inputSpeechEnded, 4)
+                .disposition == .ignoredDuplicate,
+            "duplicate speech stopped is ignored"
+        )
+        expect(
+            transition(machine, interaction, .outputAudio(audio(interaction, 1)), 5)
+                .snapshot.state == .speaking,
+            "first output audio enters speaking"
+        )
+        expect(
+            transition(machine, interaction, .outputAudio(audio(interaction, 2)), 6)
+                .disposition == .ignoredDuplicate,
+            "later output audio has no state side effect"
+        )
+        let completed = transition(
+            machine,
+            interaction,
+            .responseCompleted,
+            7
+        )
+        expect(completed.snapshot.state == .listening, "completion returns listening")
+        expect(completed.snapshot.completedTurnCount == 1, "one turn completes")
+        expect(completed.snapshot.currentTurnNumber == 2, "second turn begins")
+        expect(machine.tracks(interaction), "completion keeps interaction active")
+        expect(
+            transition(machine, interaction, .responseCompleted, 8)
+                .disposition == .ignoredDuplicate,
+            "duplicate completion is ignored"
+        )
+
+        _ = transition(machine, interaction, .inputSpeechStarted, 9)
+        _ = transition(machine, interaction, .inputSpeechEnded, 10)
+        _ = transition(machine, interaction, .outputAudio(audio(interaction, 3)), 11)
+        let secondCompletion = transition(
+            machine,
+            interaction,
+            .responseCompleted,
+            12
+        )
+        expect(secondCompletion.snapshot.state == .listening, "second turn returns listening")
+        expect(secondCompletion.snapshot.completedTurnCount == 2, "two turns complete")
+        expect(secondCompletion.snapshot.currentTurnNumber == 3, "third turn is ready")
+        expect(
+            secondCompletion.snapshot.recentTransitions.map(\.state) == [
+                .listening, .thinking, .speaking, .listening,
+                .thinking, .speaking, .listening
+            ],
+            "recent path retains short-lived thinking and speaking states"
+        )
+
+        let illegal = transition(
+            machine,
+            interaction,
+            .outputAudio(audio(interaction, 4)),
+            13
+        )
+        expect(illegal.disposition == .rejectedOutOfOrder, "early output is rejected")
+        expect(illegal.snapshot.state == .listening, "illegal event does not change state")
+        expect(
+            illegal.snapshot.lastStandardError == "invalid_state_transition",
+            "illegal event records a standard error"
+        )
+
+        let oldInteraction = interaction
+        let newInteraction = makeInteraction()
+        machine.start(interaction: newInteraction)
+        expect(
+            transition(machine, oldInteraction, .finalTranscript("old"), 14)
+                .disposition == .rejectedStale,
+            "old interaction event is rejected"
+        )
+        expect(machine.snapshot().state == .listening, "stale event has no state effect")
+        let staleSession = NativeSpeechInteraction(
+            id: newInteraction.id,
+            residentID: newInteraction.residentID,
+            sessionID: "old-session",
+            providerProfileID: newInteraction.providerProfileID,
+            lifecycleState: .active
+        )
+        expect(
+            transition(machine, staleSession, .finalTranscript("old session"), 15)
+                .disposition == .rejectedStale,
+            "same interaction ID from an old session is rejected"
+        )
+        expect(
+            machine.stop(
+                interactionID: oldInteraction.id,
+                reason: .stopped
+            ).disposition == .rejectedStale,
+            "old interaction Stop cannot stop the new interaction"
+        )
+
+        let finalMachine = RealtimeSpeechStateMachine()
+        let finalInteraction = makeInteraction()
+        finalMachine.start(interaction: finalInteraction)
+        let final = transition(
+            finalMachine,
+            finalInteraction,
+            .finalTranscript("done"),
+            1
+        )
+        expect(final.snapshot.state == .thinking, "final transcript enters thinking")
+        expect(
+            final.snapshot.lastTurnDetectionSource == .finalTranscript,
+            "final transcript is the fallback detector"
+        )
+
+        let thinkingMachine = RealtimeSpeechStateMachine()
+        let thinkingInteraction = makeInteraction()
+        thinkingMachine.start(interaction: thinkingInteraction)
+        let thinking = transition(
+            thinkingMachine,
+            thinkingInteraction,
+            .thinking,
+            1
+        )
+        expect(thinking.snapshot.state == .thinking, "provider thinking enters thinking")
+        expect(
+            thinking.snapshot.lastTurnDetectionSource == .providerThinking,
+            "provider thinking source is recorded"
+        )
+        let finalUpgrade = transition(
+            thinkingMachine,
+            thinkingInteraction,
+            .finalTranscript("final"),
+            2
+        )
+        expect(
+            finalUpgrade.snapshot.lastTurnDetectionSource == .finalTranscript,
+            "final transcript supersedes provider thinking fallback"
+        )
+        let vadUpgrade = transition(
+            thinkingMachine,
+            thinkingInteraction,
+            .inputSpeechEnded,
+            3
+        )
+        expect(
+            vadUpgrade.snapshot.lastTurnDetectionSource == .serverVAD,
+            "late Server VAD remains the primary detector"
+        )
+        expect(
+            transition(
+                thinkingMachine,
+                thinkingInteraction,
+                .finalTranscript("duplicate"),
+                4
+            ).disposition == .ignoredDuplicate,
+            "final transcript cannot displace Server VAD"
+        )
+
+        testTerminalStates()
+        testStops()
+        testTimeouts()
+        testTransitionHistoryBound()
+        try await testScheduler()
+        print("realtime_speech_state_checks=\(checks)")
+    }
+
+    private static func testTerminalStates() {
+        let failedMachine = RealtimeSpeechStateMachine()
+        let failedInteraction = makeInteraction()
+        failedMachine.start(interaction: failedInteraction)
+        let failed = transition(
+            failedMachine,
+            failedInteraction,
+            .failed(.transportFailure),
+            1
+        )
+        expect(failed.snapshot.state == .idle, "failure returns idle")
+        expect(failed.snapshot.lastStandardError == "transport_failure", "failure is standardized")
+
+        let closedMachine = RealtimeSpeechStateMachine()
+        let closedInteraction = makeInteraction()
+        closedMachine.start(interaction: closedInteraction)
+        expect(
+            transition(closedMachine, closedInteraction, .closed, 1)
+                .snapshot.state == .idle,
+            "close returns idle"
+        )
+
+        let cancelledMachine = RealtimeSpeechStateMachine()
+        let cancelledInteraction = makeInteraction()
+        cancelledMachine.start(interaction: cancelledInteraction)
+        expect(
+            transition(cancelledMachine, cancelledInteraction, .cancelled(reason: nil), 1)
+                .snapshot.state == .idle,
+            "provider cancel returns idle"
+        )
+    }
+
+    private static func testStops() {
+        for target in [RealtimeSpeechState.listening, .thinking, .speaking] {
+            let machine = RealtimeSpeechStateMachine()
+            let interaction = makeInteraction()
+            machine.start(interaction: interaction)
+            if target == .thinking || target == .speaking {
+                _ = transition(machine, interaction, .finalTranscript("turn"), 1)
+            }
+            if target == .speaking {
+                _ = transition(machine, interaction, .outputAudio(audio(interaction, 1)), 2)
+            }
+            let stopped = machine.stop(reason: .stopped)
+            expect(stopped.snapshot.state == .idle, "Stop returns \(target.rawValue) to idle")
+            expect(stopped.snapshot.lastTransitionReason == .userStopped, "Stop has highest-priority reason")
+        }
+    }
+
+    private static func testTimeouts() {
+        let configuration = RealtimeSpeechTimeoutConfiguration(
+            speechStopNanoseconds: 10,
+            thinkingOutputNanoseconds: 20,
+            speakingCompletionNanoseconds: 30
+        )
+
+        let speechMachine = RealtimeSpeechStateMachine(timeoutConfiguration: configuration)
+        let speechInteraction = makeInteraction()
+        speechMachine.start(interaction: speechInteraction)
+        _ = transition(speechMachine, speechInteraction, .inputSpeechStarted, 100)
+        applyExpectedTimeout(
+            speechMachine,
+            speechInteraction,
+            kind: .speechStop,
+            reason: .speechStopTimedOut,
+            error: "speech_stop_timed_out",
+            now: 100
+        )
+
+        let thinkingMachine = RealtimeSpeechStateMachine(timeoutConfiguration: configuration)
+        let thinkingInteraction = makeInteraction()
+        thinkingMachine.start(interaction: thinkingInteraction)
+        _ = transition(thinkingMachine, thinkingInteraction, .finalTranscript("done"), 200)
+        applyExpectedTimeout(
+            thinkingMachine,
+            thinkingInteraction,
+            kind: .thinkingOutput,
+            reason: .thinkingTimedOut,
+            error: "thinking_output_timed_out",
+            now: 200
+        )
+
+        let speakingMachine = RealtimeSpeechStateMachine(timeoutConfiguration: configuration)
+        let speakingInteraction = makeInteraction()
+        speakingMachine.start(interaction: speakingInteraction)
+        _ = transition(speakingMachine, speakingInteraction, .finalTranscript("done"), 300)
+        _ = transition(speakingMachine, speakingInteraction, .outputAudio(audio(speakingInteraction, 1)), 301)
+        applyExpectedTimeout(
+            speakingMachine,
+            speakingInteraction,
+            kind: .speakingCompletion,
+            reason: .speakingTimedOut,
+            error: "speaking_completion_timed_out",
+            now: 301
+        )
+    }
+
+    private static func testTransitionHistoryBound() {
+        let machine = RealtimeSpeechStateMachine()
+        let interaction = makeInteraction()
+        machine.start(interaction: interaction)
+        for turn in 1...6 {
+            _ = transition(
+                machine,
+                interaction,
+                .finalTranscript("turn \(turn)"),
+                UInt64(turn * 3)
+            )
+            _ = transition(
+                machine,
+                interaction,
+                .outputAudio(audio(interaction, UInt64(turn))),
+                UInt64(turn * 3 + 1)
+            )
+            _ = transition(
+                machine,
+                interaction,
+                .responseCompleted,
+                UInt64(turn * 3 + 2)
+            )
+        }
+        let history = machine.snapshot().recentTransitions
+        expect(history.count == 16, "recent state path has a fixed bound")
+        expect(history.last?.state == .listening, "recent path retains latest state")
+        expect(
+            history.last?.turnNumber == 7,
+            "recent path retains the latest turn number"
+        )
+    }
+
+    private static func applyExpectedTimeout(
+        _ machine: RealtimeSpeechStateMachine,
+        _ interaction: NativeSpeechInteraction,
+        kind: RealtimeSpeechGuardKind,
+        reason: RealtimeSpeechTransitionReason,
+        error: String,
+        now: UInt64
+    ) {
+        guard let request = machine.guardRequest(
+            interaction: interaction,
+            nowNanoseconds: now
+        ) else {
+            fatalError("FAILED: expected \(kind.rawValue) guard")
+        }
+        expect(request.kind == kind, "\(kind.rawValue) guard is centralized")
+        let result = machine.applyTimeout(request)
+        expect(result.snapshot.state == .idle, "\(kind.rawValue) timeout safely recovers")
+        expect(result.snapshot.guardTimeoutTriggered, "\(kind.rawValue) timeout is diagnosed")
+        expect(result.snapshot.lastTransitionReason == reason, "\(kind.rawValue) timeout reason is retained")
+        expect(result.snapshot.lastStandardError == error, "\(kind.rawValue) timeout error is standardized")
+        let stopped = machine.stop(
+            interactionID: interaction.id,
+            reason: .stopped
+        )
+        expect(
+            stopped.snapshot.lastTransitionReason == .userStopped,
+            "explicit Stop overrides \(kind.rawValue) timeout reason"
+        )
+        expect(
+            stopped.snapshot.guardTimeoutTriggered,
+            "explicit Stop preserves \(kind.rawValue) timeout diagnosis"
+        )
+    }
+
+    private static func testScheduler() async throws {
+        let machine = RealtimeSpeechStateMachine(
+            timeoutConfiguration: RealtimeSpeechTimeoutConfiguration(
+                speechStopNanoseconds: 1_000_000,
+                thinkingOutputNanoseconds: 1_000_000,
+                speakingCompletionNanoseconds: 1_000_000
+            )
+        )
+        let interaction = makeInteraction()
+        machine.start(interaction: interaction)
+        _ = transition(
+            machine,
+            interaction,
+            .inputSpeechStarted,
+            DispatchTime.now().uptimeNanoseconds
+        )
+        let request = machine.guardRequest(
+            interaction: interaction,
+            nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
+        let scheduler = RealtimeSpeechGuardScheduler()
+        scheduler.schedule(request) { request in
+            _ = machine.applyTimeout(request)
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        expect(machine.snapshot().state == .idle, "scheduled timeout cannot remain stuck")
+        scheduler.cancel()
+    }
+
+    private static func transition(
+        _ machine: RealtimeSpeechStateMachine,
+        _ interaction: NativeSpeechInteraction,
+        _ kind: NativeSpeechEventKind,
+        _ now: UInt64
+    ) -> RealtimeSpeechTransitionResult {
+        machine.transition(
+            event: NativeSpeechEvent(
+                interactionID: interaction.id,
+                kind: kind
+            ),
+            interaction: interaction,
+            nowNanoseconds: now
+        )
+    }
+
+    private static func makeInteraction() -> NativeSpeechInteraction {
+        NativeSpeechInteraction(
+            residentID: "resident",
+            sessionID: UUID().uuidString,
+            providerProfileID: "native-speech"
+        )
+    }
+
+    private static func audio(
+        _ interaction: NativeSpeechInteraction,
+        _ sequence: UInt64
+    ) -> NativeSpeechAudioPayload {
+        NativeSpeechAudioPayload(
+            interactionID: interaction.id,
+            sequenceNumber: sequence,
+            bytes: Data([0, 1]),
+            format: .pcm16
+        )
+    }
+
+    private static func expect(
+        _ condition: @autoclosure () -> Bool,
+        _ message: String
+    ) {
+        guard condition() else { fatalError("FAILED: \(message)") }
+        checks += 1
+    }
+}

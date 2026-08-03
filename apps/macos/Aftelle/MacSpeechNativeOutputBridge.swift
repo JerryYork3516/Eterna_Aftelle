@@ -158,6 +158,9 @@ actor MacSpeechNativeOutputBridge {
                     status: "rejected_stale"
                 )
                 return
+            case .success(.rejectedOutOfOrder):
+                runtimeRejectedEventCount &+= 1
+                continue
             case .success(.accepted(let event)):
                 guard accept(event) else {
                     await failAndStop(

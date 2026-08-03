@@ -121,6 +121,12 @@ private struct NativeSpeechDuplexTests {
 
         await transport.enqueue(.text(#"{"type":"future.event"}"#))
         await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
         await transport.enqueue(
@@ -160,6 +166,12 @@ private struct NativeSpeechDuplexTests {
         await waitUntil {
             try await audioAppendObjects(transport).count == 6
         }
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"BgcI"}"#)
         )
@@ -249,6 +261,9 @@ private struct NativeSpeechDuplexTests {
         await waitUntil {
             await transport.calls.contains(.receive)
         }
+        await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )

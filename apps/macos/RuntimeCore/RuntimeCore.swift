@@ -949,6 +949,7 @@ private struct RuntimeCompiledDialogueContext {
 nonisolated enum NativeSpeechEventDisposition: Equatable {
     case accepted(NativeSpeechEvent)
     case rejectedStale
+    case rejectedOutOfOrder
 }
 
 nonisolated final class RuntimeNativeSpeechInteractionGate:
@@ -1050,6 +1051,44 @@ nonisolated final class RuntimeNativeSpeechInteractionGate:
     }
 }
 
+nonisolated final class RuntimeNativeSpeechTimeoutHandler:
+    @unchecked Sendable {
+    private let stateMachine: RealtimeSpeechStateMachine
+    private let interactionGate: RuntimeNativeSpeechInteractionGate
+    private let inputGate: NativeSpeechInputGate
+    private let executionEngine: ExecutionEngine
+
+    init(
+        stateMachine: RealtimeSpeechStateMachine,
+        interactionGate: RuntimeNativeSpeechInteractionGate,
+        inputGate: NativeSpeechInputGate,
+        executionEngine: ExecutionEngine
+    ) {
+        self.stateMachine = stateMachine
+        self.interactionGate = interactionGate
+        self.inputGate = inputGate
+        self.executionEngine = executionEngine
+    }
+
+    func handle(_ request: RealtimeSpeechGuardRequest) async {
+        let result = stateMachine.applyTimeout(request)
+        guard result.disposition == .applied,
+              let interaction = interactionGate.clear(
+                matching: request.identity.interactionID
+              ) else {
+            return
+        }
+        inputGate.invalidate(interactionID: interaction.id)
+        try? await executionEngine.cancelNativeSpeech(
+            interactionID: interaction.id,
+            reason: .interrupted
+        )
+        try? await executionEngine.closeNativeSpeech(
+            interactionID: interaction.id
+        )
+    }
+}
+
 public final class RuntimeCore {
     static let recentDialogueMessageLimit = 8
     static let fewShotSelectionLimit = 4
@@ -1087,6 +1126,16 @@ public final class RuntimeCore {
     private let nativeSpeechInteractionGate =
         RuntimeNativeSpeechInteractionGate()
     private let nativeSpeechInputGate = NativeSpeechInputGate()
+    private let realtimeSpeechStateMachine = RealtimeSpeechStateMachine()
+    private let realtimeSpeechGuardScheduler =
+        RealtimeSpeechGuardScheduler()
+    private lazy var realtimeSpeechTimeoutHandler =
+        RuntimeNativeSpeechTimeoutHandler(
+            stateMachine: realtimeSpeechStateMachine,
+            interactionGate: nativeSpeechInteractionGate,
+            inputGate: nativeSpeechInputGate,
+            executionEngine: executionEngine
+        )
     private var realtimeSpeechContextSourceRevision: UInt64 = 0
     private var handledFirstAppearanceResidentIDs: Set<String> = []
     private var clockState = RuntimeClockState()
@@ -1149,6 +1198,7 @@ public final class RuntimeCore {
                 )
             }
             nativeSpeechInteractionGate.clear()
+            resetRealtimeSpeechState()
             realtimeSpeechContextSourceRevision &+= 1
             sessionContext = RuntimeSessionContext(residentID: loadedDR.residentID, sessionID: sessionID)
             activeExpressionRequestID = nil
@@ -1268,6 +1318,7 @@ public final class RuntimeCore {
         let avatarActivityHint = displayCache?.avatarActivityHint ?? ""
         let avatarParticleHint = displayCache?.avatarParticleHint ?? ""
         nativeSpeechInteractionGate.clear()
+        resetRealtimeSpeechState()
         sessionContext = RuntimeSessionContext(
             residentID: record.residentID,
             sessionID: RuntimeSessionID(rawValue: record.sessionID)
@@ -3025,6 +3076,8 @@ public final class RuntimeCore {
             captureGeneration: captureGeneration
         )
         nativeSpeechInputGate.activate(binding)
+        realtimeSpeechStateMachine.start(interaction: interaction)
+        scheduleRealtimeSpeechGuard(for: interaction)
         return binding
     }
 
@@ -3043,12 +3096,23 @@ public final class RuntimeCore {
         binding: NativeSpeechInputBinding,
         reason: NativeSpeechCancellationReason
     ) async throws {
-        guard nativeSpeechInputGate.invalidate(binding: binding) else { return }
-        guard nativeSpeechInteractionGate.current()?.id
-                == binding.interactionID else {
+        let wasCurrentInput = nativeSpeechInputGate.invalidate(
+            binding: binding
+        )
+        if nativeSpeechInteractionGate.current()?.id
+            == binding.interactionID {
+            try await cancelActiveNativeSpeechInteraction(reason: reason)
             return
         }
-        try await cancelActiveNativeSpeechInteraction(reason: reason)
+        guard !wasCurrentInput,
+              nativeSpeechInteractionGate.current() == nil else {
+            return
+        }
+        realtimeSpeechGuardScheduler.cancel()
+        realtimeSpeechStateMachine.stop(
+            interactionID: binding.interactionID,
+            reason: reason
+        )
     }
 
     func closeNativeSpeechInput(
@@ -3091,6 +3155,25 @@ public final class RuntimeCore {
             let event = try await executionEngine.receiveNativeSpeechEvent(
                 interactionID: interactionID
             )
+            guard let interaction = nativeSpeechInteractionGate.current(),
+                  interaction.id == interactionID else {
+                return .rejectedStale
+            }
+            if realtimeSpeechStateMachine.tracks(interaction) {
+                let transition = realtimeSpeechStateMachine.transition(
+                    event: event,
+                    interaction: interaction,
+                    nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+                )
+                switch transition.disposition {
+                case .rejectedStale:
+                    return .rejectedStale
+                case .rejectedOutOfOrder:
+                    return .rejectedOutOfOrder
+                case .applied, .ignoredDuplicate:
+                    scheduleRealtimeSpeechGuard(for: interaction)
+                }
+            }
             let disposition = nativeSpeechDisposition(
                 for: event,
                 expectedInteractionID: interactionID
@@ -3176,6 +3259,11 @@ public final class RuntimeCore {
         guard let interaction = nativeSpeechInteractionGate.clear() else {
             return
         }
+        realtimeSpeechGuardScheduler.cancel()
+        realtimeSpeechStateMachine.stop(
+            interactionID: interaction.id,
+            reason: reason
+        )
         invalidateNativeSpeechInput(for: interaction.id)
         do {
             try await executionEngine.cancelNativeSpeech(
@@ -3197,6 +3285,11 @@ public final class RuntimeCore {
         guard let interaction = nativeSpeechInteractionGate.clear() else {
             return
         }
+        realtimeSpeechGuardScheduler.cancel()
+        realtimeSpeechStateMachine.stop(
+            interactionID: interaction.id,
+            reason: .interrupted
+        )
         invalidateNativeSpeechInput(for: interaction.id)
         try await executionEngine.closeNativeSpeech(
             interactionID: interaction.id
@@ -3218,6 +3311,7 @@ public final class RuntimeCore {
         }
         switch event.kind {
         case .cancelled, .closed, .failed:
+            realtimeSpeechGuardScheduler.cancel()
             nativeSpeechInteractionGate.clear(
                 matching: expectedInteractionID
             )
@@ -3232,6 +3326,36 @@ public final class RuntimeCore {
         for interactionID: NativeSpeechInteractionID? = nil
     ) {
         nativeSpeechInputGate.invalidate(interactionID: interactionID)
+    }
+
+    func realtimeSpeechStateSnapshot() -> RealtimeSpeechStateSnapshot {
+        realtimeSpeechStateMachine.snapshot()
+    }
+
+    func useRealtimeSpeechTimeoutConfigurationForTesting(
+        _ configuration: RealtimeSpeechTimeoutConfiguration
+    ) {
+        realtimeSpeechStateMachine.useTimeoutConfigurationForTesting(
+            configuration
+        )
+    }
+
+    private func scheduleRealtimeSpeechGuard(
+        for interaction: NativeSpeechInteraction
+    ) {
+        let request = realtimeSpeechStateMachine.guardRequest(
+            interaction: interaction,
+            nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
+        realtimeSpeechGuardScheduler.schedule(request) {
+            [realtimeSpeechTimeoutHandler] request in
+            await realtimeSpeechTimeoutHandler.handle(request)
+        }
+    }
+
+    private func resetRealtimeSpeechState() {
+        realtimeSpeechGuardScheduler.cancel()
+        realtimeSpeechStateMachine.reset()
     }
 
     private func nativeSpeechEventIsTerminal(
