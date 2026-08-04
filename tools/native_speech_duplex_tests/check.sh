@@ -10,7 +10,6 @@ host_sources=(
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleTuning.swift"
   "$repo_root/apps/macos/Aftelle/ParticleCore/ResidentVisualIntent.swift"
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleStateController.swift"
-  "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleSimulation.swift"
   "$repo_root/apps/macos/Aftelle/AppModels.swift"
   "$repo_root/apps/macos/Aftelle/ProviderKeychainStore.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"

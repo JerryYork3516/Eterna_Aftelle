@@ -97,6 +97,8 @@ private struct NativeSpeechDuplexTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         try await testFullDuplexThroughController()
+        try await testInterruptThroughController()
+        await testDebugSinkClearsInterruptedOutput()
         try await testOutputBackpressureStopsInteraction()
         try await testReceiveFailureAndDuplicateStart()
         try await testStaleCancelledAndClosedOutput()
@@ -291,6 +293,174 @@ private struct NativeSpeechDuplexTests {
         expect(
             await transport.calls.filter { $0 == .receive }.count == receiveCount,
             "overflow does not continue receiving"
+        )
+    }
+
+    private static func testInterruptThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "interrupt fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        expect(stack.capture.emit(1), "interrupt test emits initial input")
+        await stack.controller.startNativeSpeechInputBridge()
+        await waitUntil {
+            try await audioAppendObjects(transport).count == 1
+        }
+
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .speaking
+        }
+
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let types = try await sentEventTypes(transport)
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+                && types.filter { $0 == "response.cancel" }.count == 1
+        }
+        expect(
+            stack.controller.speechAudioHostSnapshot.isCapturing,
+            "Interrupt preserves microphone capture"
+        )
+        expect(
+            stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "Interrupt preserves input pump"
+        )
+        expect(
+            stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop,
+            "Interrupt preserves receive loop"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.isEmpty,
+            "Interrupt preserves WebSocket"
+        )
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot
+                .interruptedTurnCount == 1,
+            "Runtime owns interrupted turn count"
+        )
+
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.cancelled"}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                .runtimeRejectedEventCount == 2
+        }
+        expect(
+            stack.controller.speechOutputBridgeSnapshot.outputAudioChunkCount
+                == 1,
+            "late interrupted outputAudio never reaches Debug output sink"
+        )
+        expect(
+            stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop,
+            "late-event rejection keeps receive loop alive"
+        )
+
+        expect(stack.capture.emit(2), "next turn input continues immediately")
+        await waitUntil {
+            try await audioAppendObjects(transport).count == 2
+        }
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"BQY="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                    .completedResponseCount == 1
+                && stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+        }
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot.currentTurnNumber
+                == 3,
+            "next turn completes without rebuilding interaction"
+        )
+        let connectCount = await transport.calls.filter {
+            if case .connect = $0 { return true }
+            return false
+        }.count
+        expect(connectCount == 1, "Interrupt flow reuses one WebSocket")
+
+        await stack.controller.stopSpeechAudioCapture()
+        await stack.controller.stopSpeechAudioCapture()
+        expect(
+            !stack.controller.speechAudioHostSnapshot.isCapturing,
+            "duplicate Stop releases microphone"
+        )
+        expect(
+            !stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "duplicate Stop releases input pump"
+        )
+        expect(
+            !stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop,
+            "duplicate Stop releases receive loop"
+        )
+        let eventTypes = try await sentEventTypes(transport)
+        expect(
+            eventTypes.filter { $0 == "response.cancel" }.count == 2,
+            "Interrupt and Stop each send one Provider cancel"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.count == 1,
+            "duplicate Stop closes WebSocket once"
+        )
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot.state == .idle,
+            "Stop canonical state is idle"
+        )
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot
+                .interactionTerminalOutcome == .stopped,
+            "Stop owns one interaction terminal outcome"
+        )
+    }
+
+    private static func testDebugSinkClearsInterruptedOutput() async {
+        let sink = MacSpeechNativeDebugOutputSink()
+        let interactionID = NativeSpeechInteractionID()
+        await sink.consume(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .outputText(text: "debug", isFinal: false)
+        ))
+        expect(
+            await sink.currentTurnOutputEventCount == 1,
+            "Debug sink tracks current output turn"
+        )
+        await sink.consume(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .inputSpeechStarted
+        ))
+        expect(
+            await sink.currentTurnOutputEventCount == 0,
+            "speech_started clears Debug output sink"
         )
     }
 

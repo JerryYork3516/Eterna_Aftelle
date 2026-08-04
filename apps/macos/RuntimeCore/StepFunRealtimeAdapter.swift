@@ -234,9 +234,15 @@ actor StepFunRealtimeAdapter:
                 interactionID: interactionID,
                 outputAudioSequenceNumber: nextOutputAudioSequenceNumber
             ) {
-                if case .outputAudio = event.kind {
+                switch event.kind {
+                case .outputAudio:
                     nextOutputAudioSequenceNumber &+= 1
                     connectionState = .streaming
+                case .cancelled, .responseCompleted, .failed:
+                    isCancelling = false
+                    connectionState = .configured
+                default:
+                    break
                 }
                 return event
             }

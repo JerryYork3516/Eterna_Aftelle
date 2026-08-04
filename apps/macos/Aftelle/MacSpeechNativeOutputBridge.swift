@@ -40,13 +40,23 @@ nonisolated struct MacSpeechNativeOutputBridgeSnapshot: Sendable, Equatable {
 
 actor MacSpeechNativeDebugOutputSink {
     private(set) var deliveredEventCount: UInt64 = 0
+    private(set) var currentTurnOutputEventCount: UInt64 = 0
 
     func reset() {
         deliveredEventCount = 0
+        currentTurnOutputEventCount = 0
     }
 
     func consume(_ event: NativeSpeechEvent) {
         deliveredEventCount &+= 1
+        switch event.kind {
+        case .inputSpeechStarted:
+            currentTurnOutputEventCount = 0
+        case .outputText, .outputAudio:
+            currentTurnOutputEventCount &+= 1
+        default:
+            break
+        }
     }
 }
 
@@ -158,6 +168,9 @@ actor MacSpeechNativeOutputBridge {
                     status: "rejected_stale"
                 )
                 return
+            case .success(.rejectedLate):
+                runtimeRejectedEventCount &+= 1
+                continue
             case .success(.rejectedOutOfOrder):
                 runtimeRejectedEventCount &+= 1
                 continue

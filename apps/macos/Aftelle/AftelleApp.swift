@@ -14,8 +14,16 @@ struct AftelleApp: App {
         .commands {
             CommandGroup(replacing: .appTermination) {
                 Button(String(localized: "app.menu.quit")) {
+                    #if DEBUG
+                    Task { @MainActor in
+                        await controller.shutdownSpeechAudioHost()
+                        controller.persistForNormalTerminationIfPossible()
+                        NSApplication.shared.terminate(nil)
+                    }
+                    #else
                     controller.persistForNormalTerminationIfPossible()
                     NSApplication.shared.terminate(nil)
+                    #endif
                 }
             }
             #if DEBUG

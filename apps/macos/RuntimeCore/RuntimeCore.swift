@@ -949,6 +949,7 @@ private struct RuntimeCompiledDialogueContext {
 nonisolated enum NativeSpeechEventDisposition: Equatable {
     case accepted(NativeSpeechEvent)
     case rejectedStale
+    case rejectedLate
     case rejectedOutOfOrder
 }
 
@@ -3168,10 +3169,32 @@ public final class RuntimeCore {
                 switch transition.disposition {
                 case .rejectedStale:
                     return .rejectedStale
+                case .rejectedLate:
+                    return .rejectedLate
                 case .rejectedOutOfOrder:
                     return .rejectedOutOfOrder
                 case .applied, .ignoredDuplicate:
                     scheduleRealtimeSpeechGuard(for: interaction)
+                }
+                if transition.effect == .interruptProvider {
+                    do {
+                        try await executionEngine.cancelNativeSpeech(
+                            interactionID: interactionID,
+                            reason: .interrupted
+                        )
+                    } catch let error as NativeSpeechError {
+                        await failActiveNativeSpeechInteraction(
+                            interactionID: interactionID,
+                            error: error
+                        )
+                        throw error
+                    } catch {
+                        await failActiveNativeSpeechInteraction(
+                            interactionID: interactionID,
+                            error: .transportFailure
+                        )
+                        throw NativeSpeechError.transportFailure
+                    }
                 }
             }
             let disposition = nativeSpeechDisposition(
@@ -3193,13 +3216,51 @@ public final class RuntimeCore {
                 )
             }
             return disposition
+        } catch let error as NativeSpeechError {
+            guard nativeSpeechInteractionGate.current()?.id
+                    == interactionID else {
+                return .rejectedStale
+            }
+            await failActiveNativeSpeechInteraction(
+                interactionID: interactionID,
+                error: error
+            )
+            throw error
         } catch {
             guard nativeSpeechInteractionGate.current()?.id
                     == interactionID else {
                 return .rejectedStale
             }
-            throw error
+            await failActiveNativeSpeechInteraction(
+                interactionID: interactionID,
+                error: .transportFailure
+            )
+            throw NativeSpeechError.transportFailure
         }
+    }
+
+    private func failActiveNativeSpeechInteraction(
+        interactionID: NativeSpeechInteractionID,
+        error: NativeSpeechError
+    ) async {
+        guard let interaction = nativeSpeechInteractionGate.clear(
+            matching: interactionID
+        ) else {
+            return
+        }
+        realtimeSpeechGuardScheduler.cancel()
+        _ = realtimeSpeechStateMachine.fail(
+            interactionID: interaction.id,
+            error: error
+        )
+        invalidateNativeSpeechInput(for: interaction.id)
+        try? await executionEngine.cancelNativeSpeech(
+            interactionID: interaction.id,
+            reason: .interrupted
+        )
+        try? await executionEngine.closeNativeSpeech(
+            interactionID: interaction.id
+        )
     }
 
     private func refreshNativeSpeechContext(

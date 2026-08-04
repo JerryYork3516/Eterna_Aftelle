@@ -19,6 +19,7 @@ private struct StepFunRealtimeAdapterTests {
 
     static func main() async throws {
         try await testHandshakeAudioCancelAndClose()
+        try await testCancelRearmsSameConnection()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
         try await testContinuousOutputAndResponseBoundary()
@@ -175,6 +176,63 @@ private struct StepFunRealtimeAdapterTests {
         }
         let calls = await transport.calls
         expect(calls.isEmpty, "missing credential avoids connect")
+    }
+
+    private static func testCancelRearmsSameConnection() async throws {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: "test-token"),
+            transport: transport
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        _ = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.cancelled"}"#)
+        )
+        let acknowledgement = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            acknowledgement.kind == .cancelled(reason: nil),
+            "cancel acknowledgement remains a standard event"
+        )
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+
+        let calls = await transport.calls
+        let cancelCount = try calls.filter { call in
+            guard case .send(.text(let text)) = call else { return false }
+            return try json(text)["type"] as? String == "response.cancel"
+        }.count
+        expect(cancelCount == 2, "cancel acknowledgement rearms next turn")
+        expect(
+            calls.filter {
+                if case .connect = $0 { return true }
+                return false
+            }.count == 1,
+            "turn interrupts preserve one WebSocket"
+        )
+        expect(
+            calls.filter { $0 == .close(.normal) }.isEmpty,
+            "turn interrupt does not close transport"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
     }
 
     private static func testCodecMappings() throws {

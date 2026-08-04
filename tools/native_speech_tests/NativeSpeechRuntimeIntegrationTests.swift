@@ -474,6 +474,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
             "cancel reaches Provider through Runtime chain"
         )
         try await testRuntimeMultiTurnState(fixtureData: fixtureData)
+        try await testRuntimeInterrupts(fixtureData: fixtureData)
         try await testRuntimeTimeouts(fixtureData: fixtureData)
         try await testConnectivityEntry(fixtureData: fixtureData)
         print("native_speech_runtime_integration_checks=\(checks)")
@@ -556,6 +557,224 @@ private struct NativeSpeechRuntimeIntegrationTests {
         let closeCount = await provider.operationCount(.close)
         expect(cancelCount == 1, "multi-turn Stop cancels Provider once")
         expect(closeCount == 1, "multi-turn Stop closes Provider once")
+    }
+
+    private static func testRuntimeInterrupts(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixtureData).isLoaded, "interrupt resident loads")
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 1
+        )
+        let startCount = await provider.operationCount(.start)
+
+        try await acceptStateEvent(
+            .finalTranscript("turn one"),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 1,
+                bytes: Data([0, 1]),
+                format: .pcm16
+            )),
+            expectedState: .speaking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .inputSpeechStarted,
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        var cancelCount = await provider.operationCount(.cancel)
+        expect(cancelCount == 1, "first Interrupt sends one Provider cancel")
+        expect(
+            runtime.realtimeSpeechStateSnapshot().currentTurnNumber == 2,
+            "first Interrupt advances Runtime turn generation"
+        )
+        expect(
+            runtime.realtimeSpeechStateSnapshot().interactionTerminalOutcome
+                == nil,
+            "Interrupt preserves the Runtime interaction"
+        )
+
+        try await acceptStateEvent(
+            .inputSpeechStarted,
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        let duplicateCancelCount = await provider.operationCount(.cancel)
+        expect(
+            duplicateCancelCount == cancelCount,
+            "duplicate speech_started sends no second cancel"
+        )
+
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 2,
+                bytes: Data([2, 3]),
+                format: .pcm16
+            ))
+        ))
+        let lateAudio = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            lateAudio == .rejectedLate,
+            "Runtime rejects old turn outputAudio"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .cancelled(reason: "interrupted")
+        ))
+        let lateCancellation = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            lateCancellation == .rejectedLate,
+            "Runtime rejects old turn cancelled acknowledgement"
+        )
+
+        try await acceptStateEvent(
+            .inputSpeechEnded,
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 3,
+                bytes: Data([4, 5]),
+                format: .pcm16
+            )),
+            expectedState: .speaking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .inputSpeechStarted,
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        cancelCount = await provider.operationCount(.cancel)
+        expect(cancelCount == 2, "second Interrupt sends one additional cancel")
+        let startCountAfterInterrupts = await provider.operationCount(.start)
+        expect(
+            startCountAfterInterrupts == startCount,
+            "consecutive Interrupts do not create a new interaction"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        let lateCompletion = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            lateCompletion == .rejectedLate,
+            "old responseCompleted cannot complete the new turn"
+        )
+
+        try await acceptStateEvent(
+            .inputSpeechEnded,
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 4,
+                bytes: Data([6, 7]),
+                format: .pcm16
+            )),
+            expectedState: .speaking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .responseCompleted,
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        let completedSnapshot = runtime.realtimeSpeechStateSnapshot()
+        expect(
+            completedSnapshot.lastCanonicalOutcome == .completed,
+            "new turn completes with one canonical outcome"
+        )
+        expect(
+            completedSnapshot.interruptedTurnCount == 2,
+            "Runtime counts both interrupted turns"
+        )
+        expect(
+            completedSnapshot.rejectedLateEventCount == 3,
+            "Runtime counts rejected old-turn events"
+        )
+
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+        let stoppedSnapshot = runtime.realtimeSpeechStateSnapshot()
+        expect(stoppedSnapshot.state == .idle, "Stop after Interrupt returns idle")
+        expect(
+            stoppedSnapshot.interactionTerminalOutcome == .stopped,
+            "Stop commits the only interaction terminal outcome"
+        )
+        let cancelCountAfterStop = await provider.operationCount(.cancel)
+        let closeCountAfterStop = await provider.operationCount(.close)
+        expect(
+            cancelCountAfterStop == cancelCount + 1,
+            "Stop sends one final Provider cancel"
+        )
+        expect(
+            closeCountAfterStop == 1,
+            "Stop closes Provider once"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+        let cancelCountAfterDuplicateStop = await provider.operationCount(
+            .cancel
+        )
+        let closeCountAfterDuplicateStop = await provider.operationCount(
+            .close
+        )
+        expect(
+            cancelCountAfterDuplicateStop == cancelCount + 1,
+            "duplicate Stop is idempotent"
+        )
+        expect(
+            closeCountAfterDuplicateStop == 1,
+            "duplicate Stop cannot close Provider twice"
+        )
     }
 
     private static func acceptStateEvent(

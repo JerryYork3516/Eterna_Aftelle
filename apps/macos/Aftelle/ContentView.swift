@@ -2136,9 +2136,40 @@ private struct SpeechAudioHostDebugView: View {
                     value: "\(realtimeSpeechStateSnapshot.currentTurnNumber)"
                 )
                 ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.interaction",
+                    value: realtimeSpeechStateSnapshot.interactionShortID ?? "—"
+                )
+                ParticleDiagnosticsRow(
                     labelKey: "particleDebug.realtimeSpeech.reason",
                     value: realtimeSpeechStateSnapshot
                         .lastTransitionReason?.rawValue ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.cancelReason",
+                    value: realtimeSpeechStateSnapshot
+                        .lastCancellationReason?.rawValue ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.interruptedTurns",
+                    value: "\(realtimeSpeechStateSnapshot.interruptedTurnCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.rejectedLate",
+                    value: "\(realtimeSpeechStateSnapshot.rejectedLateEventCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.canonicalOutcome",
+                    value: realtimeSpeechStateSnapshot
+                        .interactionTerminalOutcome?.rawValue
+                        ?? realtimeSpeechStateSnapshot
+                            .lastCanonicalOutcome?.rawValue
+                        ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.webSocket",
+                    value: localizedAudioHostValue(
+                        "particleDebug.audioHost.outputBridge.\(outputBridgeSnapshot.state.rawValue)"
+                    )
                 )
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.realtimeSpeech.completedTurns",

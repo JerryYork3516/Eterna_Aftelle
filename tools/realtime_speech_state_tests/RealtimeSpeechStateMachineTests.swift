@@ -190,6 +190,7 @@ private struct RealtimeSpeechStateMachineTests {
 
         testTerminalStates()
         testStops()
+        testInterrupts()
         testTimeouts()
         testTransitionHistoryBound()
         try await testScheduler()
@@ -208,6 +209,14 @@ private struct RealtimeSpeechStateMachineTests {
         )
         expect(failed.snapshot.state == .idle, "failure returns idle")
         expect(failed.snapshot.lastStandardError == "transport_failure", "failure is standardized")
+        expect(
+            failedMachine.canonicalOutcome(for: 1) == .failed,
+            "failure commits one failed turn outcome"
+        )
+        expect(
+            failedMachine.terminalOutcome() == .failed,
+            "failure commits one interaction terminal outcome"
+        )
 
         let closedMachine = RealtimeSpeechStateMachine()
         let closedInteraction = makeInteraction()
@@ -226,9 +235,21 @@ private struct RealtimeSpeechStateMachineTests {
                 .snapshot.state == .idle,
             "provider cancel returns idle"
         )
+        expect(
+            cancelledMachine.canonicalOutcome(for: 1) == .cancelled,
+            "provider cancel commits a cancelled turn"
+        )
     }
 
     private static func testStops() {
+        let idleMachine = RealtimeSpeechStateMachine()
+        let idleStop = idleMachine.stop(reason: .stopped)
+        expect(idleStop.snapshot.state == .idle, "Stop from idle is safe")
+        expect(
+            idleStop.snapshot.lastTransitionReason == .userStopped,
+            "Stop from idle keeps the user reason"
+        )
+
         for target in [RealtimeSpeechState.listening, .thinking, .speaking] {
             let machine = RealtimeSpeechStateMachine()
             let interaction = makeInteraction()
@@ -242,7 +263,222 @@ private struct RealtimeSpeechStateMachineTests {
             let stopped = machine.stop(reason: .stopped)
             expect(stopped.snapshot.state == .idle, "Stop returns \(target.rawValue) to idle")
             expect(stopped.snapshot.lastTransitionReason == .userStopped, "Stop has highest-priority reason")
+            expect(
+                machine.canonicalOutcome(for: 1) == .cancelled,
+                "Stop commits one cancelled turn from \(target.rawValue)"
+            )
+            expect(
+                machine.terminalOutcome() == .stopped,
+                "Stop commits one interaction terminal outcome"
+            )
+            _ = machine.stop(reason: .stopped)
+            expect(
+                machine.terminalOutcome() == .stopped,
+                "duplicate Stop cannot replace the terminal outcome"
+            )
+            let lateCompletion = transition(
+                machine,
+                interaction,
+                .responseCompleted,
+                3
+            )
+            expect(
+                lateCompletion.disposition == .rejectedStale,
+                "Stop rejects a racing responseCompleted"
+            )
+            expect(
+                machine.terminalOutcome() == .stopped,
+                "responseCompleted cannot override Stop"
+            )
         }
+    }
+
+    private static func testInterrupts() {
+        let machine = RealtimeSpeechStateMachine()
+        let interaction = makeInteraction()
+        machine.start(interaction: interaction)
+        _ = transition(machine, interaction, .finalTranscript("turn one"), 1)
+        _ = transition(
+            machine,
+            interaction,
+            .outputAudio(audio(interaction, 1)),
+            2
+        )
+
+        let interrupted = transition(
+            machine,
+            interaction,
+            .inputSpeechStarted,
+            3
+        )
+        expect(
+            interrupted.effect == .interruptProvider,
+            "speech_started while speaking requests one Provider interrupt"
+        )
+        expect(
+            interrupted.snapshot.state == .listening,
+            "Interrupt immediately returns to listening"
+        )
+        expect(
+            interrupted.snapshot.currentTurnNumber == 2,
+            "Interrupt advances the internal turn generation"
+        )
+        expect(
+            machine.canonicalOutcome(for: 1) == .interrupted,
+            "interrupted turn has one canonical outcome"
+        )
+        expect(
+            interrupted.snapshot.interruptedTurnCount == 1,
+            "Interrupt count increments once"
+        )
+        expect(
+            interrupted.snapshot.lastCancellationReason == .interrupted,
+            "Interrupt reason is diagnosed"
+        )
+        expect(machine.tracks(interaction), "Interrupt preserves interaction")
+
+        let duplicate = transition(
+            machine,
+            interaction,
+            .inputSpeechStarted,
+            4
+        )
+        expect(
+            duplicate.disposition == .ignoredDuplicate,
+            "duplicate speech_started is idempotent"
+        )
+        expect(
+            duplicate.effect == .none,
+            "duplicate speech_started sends no second interrupt"
+        )
+
+        let lateAudio = transition(
+            machine,
+            interaction,
+            .outputAudio(audio(interaction, 2)),
+            5
+        )
+        expect(
+            lateAudio.disposition == .rejectedLate,
+            "old turn outputAudio is rejected after Interrupt"
+        )
+        let cancellationBoundary = transition(
+            machine,
+            interaction,
+            .cancelled(reason: "interrupted"),
+            6
+        )
+        expect(
+            cancellationBoundary.disposition == .rejectedLate,
+            "old turn cancellation acknowledgement is rejected"
+        )
+        expect(
+            cancellationBoundary.snapshot.state == .listening,
+            "old cancellation cannot terminate the interaction"
+        )
+        expect(
+            cancellationBoundary.snapshot.rejectedLateEventCount == 2,
+            "late rejection diagnostics are counted"
+        )
+
+        _ = transition(machine, interaction, .inputSpeechEnded, 7)
+        _ = transition(
+            machine,
+            interaction,
+            .outputAudio(audio(interaction, 3)),
+            8
+        )
+        let completed = transition(
+            machine,
+            interaction,
+            .responseCompleted,
+            9
+        )
+        expect(
+            completed.snapshot.state == .listening,
+            "new turn completes on the same interaction"
+        )
+        expect(
+            machine.canonicalOutcome(for: 2) == .completed,
+            "new turn completion cannot be overwritten by old terminal events"
+        )
+        expect(
+            machine.terminalOutcome() == nil,
+            "Interrupt does not create an interaction terminal outcome"
+        )
+
+        let responseBoundaryMachine = RealtimeSpeechStateMachine()
+        let responseBoundaryInteraction = makeInteraction()
+        responseBoundaryMachine.start(interaction: responseBoundaryInteraction)
+        _ = transition(
+            responseBoundaryMachine,
+            responseBoundaryInteraction,
+            .finalTranscript("old"),
+            1
+        )
+        _ = transition(
+            responseBoundaryMachine,
+            responseBoundaryInteraction,
+            .outputAudio(audio(responseBoundaryInteraction, 1)),
+            2
+        )
+        _ = transition(
+            responseBoundaryMachine,
+            responseBoundaryInteraction,
+            .inputSpeechStarted,
+            3
+        )
+        let oldCompletion = transition(
+            responseBoundaryMachine,
+            responseBoundaryInteraction,
+            .responseCompleted,
+            4
+        )
+        expect(
+            oldCompletion.disposition == .rejectedLate,
+            "old responseCompleted is rejected after Interrupt"
+        )
+        expect(
+            responseBoundaryMachine.canonicalOutcome(for: 1)
+                == .interrupted,
+            "old responseCompleted cannot overwrite interrupted outcome"
+        )
+
+        let failedBoundaryMachine = RealtimeSpeechStateMachine()
+        let failedBoundaryInteraction = makeInteraction()
+        failedBoundaryMachine.start(interaction: failedBoundaryInteraction)
+        _ = transition(
+            failedBoundaryMachine,
+            failedBoundaryInteraction,
+            .finalTranscript("old"),
+            1
+        )
+        _ = transition(
+            failedBoundaryMachine,
+            failedBoundaryInteraction,
+            .outputAudio(audio(failedBoundaryInteraction, 1)),
+            2
+        )
+        _ = transition(
+            failedBoundaryMachine,
+            failedBoundaryInteraction,
+            .inputSpeechStarted,
+            3
+        )
+        let oldFailure = transition(
+            failedBoundaryMachine,
+            failedBoundaryInteraction,
+            .failed(.unavailable),
+            4
+        )
+        expect(
+            oldFailure.disposition == .rejectedLate,
+            "old failed event is rejected after Interrupt"
+        )
+        expect(
+            failedBoundaryMachine.terminalOutcome() == nil,
+            "old failed event cannot terminate the interaction"
+        )
     }
 
     private static func testTimeouts() {

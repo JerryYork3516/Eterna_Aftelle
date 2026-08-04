@@ -524,7 +524,13 @@
 "relationshipProgression.debug.unavailable" = "当前 DR 未启用关系演进。";
 "particleDebug.realtimeSpeech.state" = "当前语音状态";
 "particleDebug.realtimeSpeech.turn" = "当前轮次";
+"particleDebug.realtimeSpeech.interaction" = "当前 Interaction";
 "particleDebug.realtimeSpeech.reason" = "最近状态转换";
+"particleDebug.realtimeSpeech.cancelReason" = "最近取消原因";
+"particleDebug.realtimeSpeech.interruptedTurns" = "已插话轮次";
+"particleDebug.realtimeSpeech.rejectedLate" = "Runtime 拒绝迟到事件";
+"particleDebug.realtimeSpeech.canonicalOutcome" = "当前规范结果";
+"particleDebug.realtimeSpeech.webSocket" = "WebSocket 状态";
 "particleDebug.realtimeSpeech.completedTurns" = "已完成轮次";
 "particleDebug.realtimeSpeech.turnDetection" = "最近判停来源";
 "particleDebug.realtimeSpeech.guardTimeout" = "保护超时";

@@ -52,7 +52,10 @@ if [ "$(rg -c 'RealtimeSpeechStateMachine.swift in Sources' \
   exit 1
 fi
 
-for field in state turn reason completedTurns turnDetection guardTimeout lastError path; do
+for field in \
+  state turn interaction reason cancelReason interruptedTurns rejectedLate \
+  canonicalOutcome webSocket completedTurns turnDetection guardTimeout \
+  lastError path; do
   rg -q "particleDebug.realtimeSpeech.${field}" \
     "$repo_root/apps/macos/Aftelle/ContentView.swift"
   rg -q "particleDebug.realtimeSpeech.${field}" \

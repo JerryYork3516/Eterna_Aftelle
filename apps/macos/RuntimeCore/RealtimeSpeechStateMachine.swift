@@ -37,7 +37,28 @@ nonisolated enum RealtimeSpeechTransitionDisposition: String, Sendable, Equatabl
     case applied
     case ignoredDuplicate = "ignored_duplicate"
     case rejectedStale = "rejected_stale"
+    case rejectedLate = "rejected_late"
     case rejectedOutOfOrder = "rejected_out_of_order"
+}
+
+nonisolated enum RealtimeSpeechTurnOutcome: String, Sendable, Equatable {
+    case completed
+    case interrupted
+    case cancelled
+    case failed
+}
+
+nonisolated enum RealtimeSpeechInteractionOutcome: String, Sendable, Equatable {
+    case stopped
+    case superseded
+    case cancelled
+    case failed
+    case closed
+}
+
+nonisolated enum RealtimeSpeechTransitionEffect: Sendable, Equatable {
+    case none
+    case interruptProvider
 }
 
 nonisolated enum RealtimeSpeechGuardKind: String, Sendable, Equatable {
@@ -85,6 +106,45 @@ nonisolated struct RealtimeSpeechStateSnapshot: Sendable, Equatable {
     let guardTimeoutTriggered: Bool
     let lastStandardError: String?
     let recentTransitions: [RealtimeSpeechTransitionRecord]
+    let interactionShortID: String?
+    let lastCancellationReason: NativeSpeechCancellationReason?
+    let interruptedTurnCount: UInt64
+    let rejectedLateEventCount: UInt64
+    let lastCanonicalOutcome: RealtimeSpeechTurnOutcome?
+    let interactionTerminalOutcome: RealtimeSpeechInteractionOutcome?
+
+    init(
+        state: RealtimeSpeechState,
+        currentTurnNumber: UInt64,
+        completedTurnCount: UInt64,
+        lastTransitionReason: RealtimeSpeechTransitionReason?,
+        lastTurnDetectionSource: RealtimeSpeechTurnDetectionSource,
+        guardTimeoutTriggered: Bool,
+        lastStandardError: String?,
+        recentTransitions: [RealtimeSpeechTransitionRecord],
+        interactionShortID: String? = nil,
+        lastCancellationReason: NativeSpeechCancellationReason? = nil,
+        interruptedTurnCount: UInt64 = 0,
+        rejectedLateEventCount: UInt64 = 0,
+        lastCanonicalOutcome: RealtimeSpeechTurnOutcome? = nil,
+        interactionTerminalOutcome:
+            RealtimeSpeechInteractionOutcome? = nil
+    ) {
+        self.state = state
+        self.currentTurnNumber = currentTurnNumber
+        self.completedTurnCount = completedTurnCount
+        self.lastTransitionReason = lastTransitionReason
+        self.lastTurnDetectionSource = lastTurnDetectionSource
+        self.guardTimeoutTriggered = guardTimeoutTriggered
+        self.lastStandardError = lastStandardError
+        self.recentTransitions = recentTransitions
+        self.interactionShortID = interactionShortID
+        self.lastCancellationReason = lastCancellationReason
+        self.interruptedTurnCount = interruptedTurnCount
+        self.rejectedLateEventCount = rejectedLateEventCount
+        self.lastCanonicalOutcome = lastCanonicalOutcome
+        self.interactionTerminalOutcome = interactionTerminalOutcome
+    }
 
     static let initial = RealtimeSpeechStateSnapshot(
         state: .idle,
@@ -102,6 +162,19 @@ nonisolated struct RealtimeSpeechTransitionResult: Sendable, Equatable {
     let disposition: RealtimeSpeechTransitionDisposition
     let previousState: RealtimeSpeechState
     let snapshot: RealtimeSpeechStateSnapshot
+    let effect: RealtimeSpeechTransitionEffect
+
+    init(
+        disposition: RealtimeSpeechTransitionDisposition,
+        previousState: RealtimeSpeechState,
+        snapshot: RealtimeSpeechStateSnapshot,
+        effect: RealtimeSpeechTransitionEffect = .none
+    ) {
+        self.disposition = disposition
+        self.previousState = previousState
+        self.snapshot = snapshot
+        self.effect = effect
+    }
 }
 
 nonisolated struct RealtimeSpeechGuardRequest: Sendable, Equatable {
@@ -122,6 +195,13 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
     private var guardKind: RealtimeSpeechGuardKind?
     private var guardDeadlineNanoseconds: UInt64?
     private var guardGeneration: UInt64 = 0
+    private var turnOutcomes: [UInt64: RealtimeSpeechTurnOutcome] = [:]
+    private var interactionTerminalOutcome:
+        RealtimeSpeechInteractionOutcome?
+    private var lastCancellationReason: NativeSpeechCancellationReason?
+    private var interruptedTurnCount: UInt64 = 0
+    private var rejectedLateEventCount: UInt64 = 0
+    private var awaitingInterruptCancellation = false
 
     init(
         timeoutConfiguration: RealtimeSpeechTimeoutConfiguration = .standard
@@ -143,6 +223,12 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             speechIsActive = false
             clearGuardLocked()
             transitionHistory.removeAll(keepingCapacity: true)
+            turnOutcomes.removeAll(keepingCapacity: true)
+            interactionTerminalOutcome = nil
+            lastCancellationReason = nil
+            interruptedTurnCount = 0
+            rejectedLateEventCount = 0
+            awaitingInterruptCancellation = false
             currentSnapshot = RealtimeSpeechStateSnapshot(
                 state: .listening,
                 currentTurnNumber: 1,
@@ -174,7 +260,21 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             )
             guard identity == eventIdentity,
                   event.interactionID == eventIdentity.interactionID else {
+                rejectedLateEventCount &+= 1
                 return resultLocked(.rejectedStale, previous: previous)
+            }
+
+            if awaitingInterruptCancellation {
+                switch event.kind {
+                case .cancelled, .responseCompleted, .failed:
+                    awaitingInterruptCancellation = false
+                    return rejectLateLocked(previous: previous)
+                case .thinking, .outputText, .outputAudio,
+                     .toolRequestCandidate:
+                    return rejectLateLocked(previous: previous)
+                default:
+                    break
+                }
             }
 
             switch event.kind {
@@ -182,6 +282,12 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                  .outputText, .toolRequestCandidate:
                 return resultLocked(.ignoredDuplicate, previous: previous)
             case .inputSpeechStarted:
+                if currentSnapshot.state == .speaking {
+                    return interruptLocked(
+                        previous: previous,
+                        nowNanoseconds: nowNanoseconds
+                    )
+                }
                 guard currentSnapshot.state == .listening else {
                     return rejectOutOfOrderLocked(previous: previous)
                 }
@@ -297,6 +403,9 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                         || currentSnapshot.state == .thinking else {
                     return rejectOutOfOrderLocked(previous: previous)
                 }
+                guard recordTurnOutcomeLocked(.completed) else {
+                    return resultLocked(.ignoredDuplicate, previous: previous)
+                }
                 speechIsActive = false
                 clearGuardLocked()
                 currentSnapshot = RealtimeSpeechStateSnapshot(
@@ -315,18 +424,24 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 recordTransitionLocked()
                 return resultLocked(.applied, previous: previous)
             case .cancelled:
+                _ = recordTurnOutcomeLocked(.cancelled)
+                commitInteractionOutcomeLocked(.cancelled)
                 return finishLocked(
                     reason: .providerCancelled,
                     error: nil,
                     previous: previous
                 )
             case .closed:
+                _ = recordTurnOutcomeLocked(.cancelled)
+                commitInteractionOutcomeLocked(.closed)
                 return finishLocked(
                     reason: .providerClosed,
                     error: nil,
                     previous: previous
                 )
             case .failed(let error):
+                _ = recordTurnOutcomeLocked(.failed)
+                commitInteractionOutcomeLocked(.failed)
                 return finishLocked(
                     reason: .providerFailed,
                     error: Self.standardErrorName(error),
@@ -370,6 +485,12 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 )
                 return resultLocked(.applied, previous: previous)
             }
+            _ = recordTurnOutcomeLocked(.cancelled)
+            commitInteractionOutcomeLocked(
+                Self.interactionOutcome(reason)
+            )
+            lastCancellationReason = reason
+            awaitingInterruptCancellation = false
             identity = nil
             speechIsActive = false
             clearGuardLocked()
@@ -400,6 +521,12 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             clearGuardLocked()
             currentSnapshot = .initial
             transitionHistory.removeAll(keepingCapacity: true)
+            turnOutcomes.removeAll(keepingCapacity: true)
+            interactionTerminalOutcome = nil
+            lastCancellationReason = nil
+            interruptedTurnCount = 0
+            rejectedLateEventCount = 0
+            awaitingInterruptCancellation = false
         }
     }
 
@@ -410,6 +537,38 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
     func tracks(_ interaction: NativeSpeechInteraction) -> Bool {
         lock.withLock {
             identity == RealtimeSpeechStateIdentity(interaction: interaction)
+        }
+    }
+
+    func canonicalOutcome(
+        for turnNumber: UInt64
+    ) -> RealtimeSpeechTurnOutcome? {
+        lock.withLock { turnOutcomes[turnNumber] }
+    }
+
+    func terminalOutcome() -> RealtimeSpeechInteractionOutcome? {
+        lock.withLock { interactionTerminalOutcome }
+    }
+
+    @discardableResult
+    func fail(
+        interactionID: NativeSpeechInteractionID,
+        error: NativeSpeechError
+    ) -> RealtimeSpeechTransitionResult {
+        lock.withLock {
+            let previous = currentSnapshot.state
+            guard identity?.interactionID == interactionID else {
+                rejectedLateEventCount &+= 1
+                return resultLocked(.rejectedStale, previous: previous)
+            }
+            _ = recordTurnOutcomeLocked(.failed)
+            commitInteractionOutcomeLocked(.failed)
+            awaitingInterruptCancellation = false
+            return finishLocked(
+                reason: .providerFailed,
+                error: Self.standardErrorName(error),
+                previous: previous
+            )
         }
     }
 
@@ -461,6 +620,9 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 reason = .speakingTimedOut
                 error = "speaking_completion_timed_out"
             }
+            _ = recordTurnOutcomeLocked(.failed)
+            commitInteractionOutcomeLocked(.failed)
+            awaitingInterruptCancellation = false
             identity = nil
             speechIsActive = false
             clearGuardLocked()
@@ -507,6 +669,43 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             state: .thinking,
             reason: reason,
             turnDetectionSource: source
+        )
+    }
+
+    private func interruptLocked(
+        previous: RealtimeSpeechState,
+        nowNanoseconds: UInt64
+    ) -> RealtimeSpeechTransitionResult {
+        guard recordTurnOutcomeLocked(.interrupted) else {
+            return resultLocked(.ignoredDuplicate, previous: previous)
+        }
+        interruptedTurnCount &+= 1
+        lastCancellationReason = .interrupted
+        awaitingInterruptCancellation = true
+        speechIsActive = true
+        clearGuardLocked()
+        setGuardLocked(
+            .speechStop,
+            timeoutNanoseconds:
+                timeoutConfiguration.speechStopNanoseconds,
+            nowNanoseconds: nowNanoseconds
+        )
+        currentSnapshot = RealtimeSpeechStateSnapshot(
+            state: .listening,
+            currentTurnNumber: currentSnapshot.currentTurnNumber &+ 1,
+            completedTurnCount: currentSnapshot.completedTurnCount,
+            lastTransitionReason: .interrupted,
+            lastTurnDetectionSource:
+                currentSnapshot.lastTurnDetectionSource,
+            guardTimeoutTriggered: false,
+            lastStandardError: nil,
+            recentTransitions: []
+        )
+        recordTransitionLocked()
+        return resultLocked(
+            .applied,
+            previous: previous,
+            effect: .interruptProvider
         )
     }
 
@@ -573,14 +772,23 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
         return resultLocked(.rejectedOutOfOrder, previous: previous)
     }
 
+    private func rejectLateLocked(
+        previous: RealtimeSpeechState
+    ) -> RealtimeSpeechTransitionResult {
+        rejectedLateEventCount &+= 1
+        return resultLocked(.rejectedLate, previous: previous)
+    }
+
     private func resultLocked(
         _ disposition: RealtimeSpeechTransitionDisposition,
-        previous: RealtimeSpeechState
+        previous: RealtimeSpeechState,
+        effect: RealtimeSpeechTransitionEffect = .none
     ) -> RealtimeSpeechTransitionResult {
         RealtimeSpeechTransitionResult(
             disposition: disposition,
             previousState: previous,
-            snapshot: snapshotWithHistoryLocked()
+            snapshot: snapshotWithHistoryLocked(),
+            effect: effect
         )
     }
 
@@ -607,8 +815,36 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             lastTurnDetectionSource: currentSnapshot.lastTurnDetectionSource,
             guardTimeoutTriggered: currentSnapshot.guardTimeoutTriggered,
             lastStandardError: currentSnapshot.lastStandardError,
-            recentTransitions: transitionHistory
+            recentTransitions: transitionHistory,
+            interactionShortID: (identity ?? lastIdentity).map {
+                String($0.interactionID.rawValue.uuidString.prefix(8))
+            },
+            lastCancellationReason: lastCancellationReason,
+            interruptedTurnCount: interruptedTurnCount,
+            rejectedLateEventCount: rejectedLateEventCount,
+            lastCanonicalOutcome: turnOutcomes
+                .max(by: { $0.key < $1.key })?.value,
+            interactionTerminalOutcome: interactionTerminalOutcome
         )
+    }
+
+    @discardableResult
+    private func recordTurnOutcomeLocked(
+        _ outcome: RealtimeSpeechTurnOutcome
+    ) -> Bool {
+        let turnNumber = currentSnapshot.currentTurnNumber
+        guard turnNumber > 0, turnOutcomes[turnNumber] == nil else {
+            return false
+        }
+        turnOutcomes[turnNumber] = outcome
+        return true
+    }
+
+    private func commitInteractionOutcomeLocked(
+        _ outcome: RealtimeSpeechInteractionOutcome
+    ) {
+        guard interactionTerminalOutcome == nil else { return }
+        interactionTerminalOutcome = outcome
     }
 
     private func setGuardLocked(
@@ -633,6 +869,16 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
         switch reason {
         case .stopped: .userStopped
         case .interrupted: .interrupted
+        case .superseded: .superseded
+        }
+    }
+
+    private static func interactionOutcome(
+        _ reason: NativeSpeechCancellationReason
+    ) -> RealtimeSpeechInteractionOutcome {
+        switch reason {
+        case .stopped: .stopped
+        case .interrupted: .cancelled
         case .superseded: .superseded
         }
     }
