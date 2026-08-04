@@ -568,3 +568,11 @@
 "particleDebug.realtimeSpeech.guardTimeout" = "Guard timeout";
 "particleDebug.realtimeSpeech.lastError" = "Standard error";
 "particleDebug.realtimeSpeech.path" = "Recent state path";
+"particleDebug.realtimeDiagnostics.title" = "Redacted realtime diagnostics";
+"particleDebug.realtimeDiagnostics.empty" = "No diagnostic events.";
+"particleDebug.realtimeDiagnostics.dropped" = "Dropped: %llu";
+"particleDebug.realtimeDiagnostics.export" = "Export diagnostics";
+"particleDebug.realtimeDiagnostics.clear" = "Clear log";
+"particleDebug.realtimeDiagnostics.chooseLocation" = "Export redacted realtime diagnostics";
+"particleDebug.realtimeDiagnostics.status.exported" = "Diagnostics exported.";
+"particleDebug.realtimeDiagnostics.status.exportFailed" = "Diagnostics export failed.";

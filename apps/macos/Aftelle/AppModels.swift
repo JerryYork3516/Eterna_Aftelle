@@ -804,6 +804,129 @@ struct DialogueAuditViewState: Equatable {
         statusKey = nil
     }
 }
+
+enum RealtimeSpeechDiagnosticSource: String, Codable, Sendable {
+    case lifecycle
+    case providerEvent = "provider_event"
+    case runtime
+    case inputBridge = "input_bridge"
+    case outputBridge = "output_bridge"
+    case playback
+    case subtitle
+}
+
+struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
+    Sendable
+{
+    let id: UInt64
+    let timestamp: Date
+    let elapsedMilliseconds: UInt64
+    let source: RealtimeSpeechDiagnosticSource
+    let category: String
+    let interactionShortID: String?
+    let turnNumber: UInt64?
+    let turnGeneration: UInt64?
+    let stateBefore: String?
+    let stateAfter: String?
+    let disposition: String?
+    let audioSequence: UInt64?
+    let byteCount: Int?
+    let queueDepth: Int?
+    let playbackGeneration: UInt64?
+    let durationMilliseconds: UInt64?
+    let errorCode: String?
+}
+
+struct RealtimeSpeechDiagnosticTimeline: Equatable, Sendable {
+    static let capacity = 1_000
+    static let visibleCapacity = 80
+
+    private(set) var events: [RealtimeSpeechDiagnosticEvent] = []
+    private(set) var droppedEventCount: UInt64 = 0
+    private var startedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
+    private var nextSequence: UInt64 = 0
+
+    var visibleEvents: ArraySlice<RealtimeSpeechDiagnosticEvent> {
+        events.suffix(Self.visibleCapacity)
+    }
+
+    mutating func append(
+        source: RealtimeSpeechDiagnosticSource,
+        category: String,
+        interactionShortID: String? = nil,
+        turnNumber: UInt64? = nil,
+        turnGeneration: UInt64? = nil,
+        stateBefore: String? = nil,
+        stateAfter: String? = nil,
+        disposition: String? = nil,
+        audioSequence: UInt64? = nil,
+        byteCount: Int? = nil,
+        queueDepth: Int? = nil,
+        playbackGeneration: UInt64? = nil,
+        durationMilliseconds: UInt64? = nil,
+        errorCode: String? = nil,
+        timestamp: Date = Date(),
+        nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
+        nextSequence &+= 1
+        events.append(RealtimeSpeechDiagnosticEvent(
+            id: nextSequence,
+            timestamp: timestamp,
+            elapsedMilliseconds:
+                (nowNanoseconds &- startedAtNanoseconds) / 1_000_000,
+            source: source,
+            category: category,
+            interactionShortID: interactionShortID,
+            turnNumber: turnNumber,
+            turnGeneration: turnGeneration,
+            stateBefore: stateBefore,
+            stateAfter: stateAfter,
+            disposition: disposition,
+            audioSequence: audioSequence,
+            byteCount: byteCount,
+            queueDepth: queueDepth,
+            playbackGeneration: playbackGeneration,
+            durationMilliseconds: durationMilliseconds,
+            errorCode: errorCode
+        ))
+        if events.count > Self.capacity {
+            let overflow = events.count - Self.capacity
+            events.removeFirst(overflow)
+            droppedEventCount &+= UInt64(overflow)
+        }
+    }
+
+    mutating func clear() {
+        events.removeAll(keepingCapacity: true)
+        droppedEventCount = 0
+        startedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
+        nextSequence = 0
+    }
+}
+
+struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
+    let schemaVersion: Int
+    let exportedAt: Date
+    let appVersion: String
+    let appBuild: String
+    let providerProfileID: String
+    let providerID: String
+    let modelID: String
+    let voiceID: String
+    let finalState: String
+    let interactionShortID: String?
+    let turnNumber: UInt64
+    let turnGeneration: UInt64
+    let inputForwardedFrameCount: UInt64
+    let inputRejectedFrameCount: UInt64
+    let outputAudioChunkCount: UInt64
+    let outputAudioByteCount: UInt64
+    let playbackStartedCount: Int
+    let playbackCompletedCount: Int
+    let playbackRejectedCount: UInt64
+    let droppedEventCount: UInt64
+    let events: [RealtimeSpeechDiagnosticEvent]
+}
 #endif
 
 public struct AppSessionState: Equatable {

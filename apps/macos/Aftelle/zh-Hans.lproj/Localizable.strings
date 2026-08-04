@@ -568,3 +568,11 @@
 "particleDebug.realtimeSpeech.guardTimeout" = "保护超时";
 "particleDebug.realtimeSpeech.lastError" = "最近标准错误";
 "particleDebug.realtimeSpeech.path" = "最近状态路径";
+"particleDebug.realtimeDiagnostics.title" = "实时语音脱敏诊断";
+"particleDebug.realtimeDiagnostics.empty" = "暂无诊断事件。";
+"particleDebug.realtimeDiagnostics.dropped" = "已丢弃：%llu";
+"particleDebug.realtimeDiagnostics.export" = "导出诊断";
+"particleDebug.realtimeDiagnostics.clear" = "清除日志";
+"particleDebug.realtimeDiagnostics.chooseLocation" = "导出实时语音脱敏诊断";
+"particleDebug.realtimeDiagnostics.status.exported" = "诊断已导出。";
+"particleDebug.realtimeDiagnostics.status.exportFailed" = "诊断导出失败。";

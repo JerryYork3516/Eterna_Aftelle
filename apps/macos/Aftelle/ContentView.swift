@@ -550,6 +550,10 @@ struct ParticleDebugWindow: View {
                 controller.realtimeSpeechSubtitleSnapshot,
             realtimeSpeechVisualIntent: controller.residentVisualIntent,
             realtimeSpeechSignal: controller.residentSpeechSignal,
+            realtimeSpeechDiagnosticTimeline:
+                controller.realtimeSpeechDiagnosticTimeline,
+            realtimeSpeechDiagnosticStatusKey:
+                controller.realtimeSpeechDiagnosticStatusKey,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
             relationshipProgressionState:
@@ -600,6 +604,10 @@ struct ParticleDebugWindow: View {
                 controller.startNativeSpeechInputBridge,
             stopSpeechAudioCapture:
                 controller.stopSpeechAudioCapture,
+            exportRealtimeSpeechDiagnostics:
+                controller.exportRealtimeSpeechDiagnostics,
+            clearRealtimeSpeechDiagnostics:
+                controller.clearRealtimeSpeechDiagnostics,
             copyDialogueAudit: controller.copyDialogueAudit,
             exportDialogueAudit: controller.exportDialogueAudit,
             clearDialogueAudit: controller.clearDialogueAudit,
@@ -721,6 +729,8 @@ private struct ParticleDebugPanel: View {
     let realtimeSpeechSubtitleSnapshot: RealtimeSpeechSubtitleSnapshot
     let realtimeSpeechVisualIntent: ResidentVisualIntent
     let realtimeSpeechSignal: ResidentSpeechSignal
+    let realtimeSpeechDiagnosticTimeline: RealtimeSpeechDiagnosticTimeline
+    let realtimeSpeechDiagnosticStatusKey: String?
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let relationshipProgressionState:
@@ -763,6 +773,8 @@ private struct ParticleDebugPanel: View {
     let startSpeechAudioCapture: () async -> Void
     let startNativeSpeechInputBridge: () async -> Void
     let stopSpeechAudioCapture: () async -> Void
+    let exportRealtimeSpeechDiagnostics: () -> Void
+    let clearRealtimeSpeechDiagnostics: () -> Void
     let copyDialogueAudit: () -> Void
     let exportDialogueAudit: () -> Void
     let clearDialogueAudit: () -> Void
@@ -1004,6 +1016,10 @@ private struct ParticleDebugPanel: View {
                                     realtimeSpeechVisualIntent,
                                 realtimeSpeechSignal:
                                     realtimeSpeechSignal,
+                                diagnosticTimeline:
+                                    realtimeSpeechDiagnosticTimeline,
+                                diagnosticStatusKey:
+                                    realtimeSpeechDiagnosticStatusKey,
                                 refreshAuthorization:
                                     refreshMicrophoneAuthorization,
                                 requestAuthorization:
@@ -1011,7 +1027,11 @@ private struct ParticleDebugPanel: View {
                                 startCapture: startSpeechAudioCapture,
                                 startNativeSpeechBridge:
                                     startNativeSpeechInputBridge,
-                                stopCapture: stopSpeechAudioCapture
+                                stopCapture: stopSpeechAudioCapture,
+                                exportDiagnostics:
+                                    exportRealtimeSpeechDiagnostics,
+                                clearDiagnostics:
+                                    clearRealtimeSpeechDiagnostics
                             )
                             RelationshipProgressionDebugView(
                                 state: relationshipProgressionState,
@@ -2001,11 +2021,15 @@ private struct SpeechAudioHostDebugView: View {
     let realtimeSpeechSubtitleSnapshot: RealtimeSpeechSubtitleSnapshot
     let realtimeSpeechVisualIntent: ResidentVisualIntent
     let realtimeSpeechSignal: ResidentSpeechSignal
+    let diagnosticTimeline: RealtimeSpeechDiagnosticTimeline
+    let diagnosticStatusKey: String?
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
     let startCapture: () async -> Void
     let startNativeSpeechBridge: () async -> Void
     let stopCapture: () async -> Void
+    let exportDiagnostics: () -> Void
+    let clearDiagnostics: () -> Void
 
     @State private var isExpanded = true
 
@@ -2397,6 +2421,89 @@ private struct SpeechAudioHostDebugView: View {
                     }
                     .disabled(!snapshot.isCapturing)
                 }
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(
+                            String(
+                                localized:
+                                    "particleDebug.realtimeDiagnostics.title"
+                            )
+                        )
+                        .font(.system(size: 12, weight: .semibold))
+                        Spacer()
+                        Text(
+                            "\(diagnosticTimeline.events.count) / \(RealtimeSpeechDiagnosticTimeline.capacity)"
+                        )
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    }
+                    if diagnosticTimeline.visibleEvents.isEmpty {
+                        Text(
+                            String(
+                                localized:
+                                    "particleDebug.realtimeDiagnostics.empty"
+                            )
+                        )
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    } else {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 3) {
+                                ForEach(
+                                    Array(diagnosticTimeline.visibleEvents)
+                                ) { event in
+                                    Text(diagnosticLine(event))
+                                        .font(
+                                            .system(
+                                                size: 10,
+                                                design: .monospaced
+                                            )
+                                        )
+                                        .textSelection(.enabled)
+                                        .frame(
+                                            maxWidth: .infinity,
+                                            alignment: .leading
+                                        )
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 180)
+                    }
+                    HStack {
+                        Text(
+                            String(
+                                format: String(
+                                    localized:
+                                        "particleDebug.realtimeDiagnostics.dropped"
+                                ),
+                                diagnosticTimeline.droppedEventCount
+                            )
+                        )
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(
+                            String(
+                                localized:
+                                    "particleDebug.realtimeDiagnostics.clear"
+                            ),
+                            action: clearDiagnostics
+                        )
+                        Button(
+                            String(
+                                localized:
+                                    "particleDebug.realtimeDiagnostics.export"
+                            ),
+                            action: exportDiagnostics
+                        )
+                    }
+                    if let diagnosticStatusKey {
+                        Text(NSLocalizedString(diagnosticStatusKey, comment: ""))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .task {
                 while !Task.isCancelled {
@@ -2415,6 +2522,41 @@ private struct SpeechAudioHostDebugView: View {
         guard text != nil else { return "empty" }
         let revisionValue = revision.map { "r\($0)" } ?? "r—"
         return locked ? "locked \(revisionValue)" : "present \(revisionValue)"
+    }
+
+    private func diagnosticLine(
+        _ event: RealtimeSpeechDiagnosticEvent
+    ) -> String {
+        var fields = [
+            "+\(event.elapsedMilliseconds)ms",
+            event.source.rawValue,
+            event.category
+        ]
+        if let interaction = event.interactionShortID {
+            fields.append("i:\(interaction)")
+        }
+        if let turn = event.turnNumber {
+            fields.append("t:\(turn)")
+        }
+        if let generation = event.turnGeneration {
+            fields.append("g:\(generation)")
+        }
+        if let disposition = event.disposition {
+            fields.append(disposition)
+        }
+        if let sequence = event.audioSequence {
+            fields.append("seq:\(sequence)")
+        }
+        if let byteCount = event.byteCount {
+            fields.append("bytes:\(byteCount)")
+        }
+        if let duration = event.durationMilliseconds {
+            fields.append("duration:\(duration)ms")
+        }
+        if let error = event.errorCode {
+            fields.append("error:\(error)")
+        }
+        return fields.joined(separator: " ")
     }
 
     private var localizedAuthorization: String {

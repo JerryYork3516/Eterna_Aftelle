@@ -106,7 +106,72 @@ private struct NativeSpeechDuplexTests {
         try await testOutputBackpressureStopsInteraction()
         try await testReceiveFailureAndDuplicateStart()
         try await testStaleCancelledAndClosedOutput()
+        try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
+    }
+
+    private static func testRedactedDiagnosticsAndExport() async throws {
+        var timeline = RealtimeSpeechDiagnosticTimeline()
+        for index in 0 ... RealtimeSpeechDiagnosticTimeline.capacity {
+            timeline.append(
+                source: .providerEvent,
+                category: "output_audio",
+                audioSequence: UInt64(index),
+                byteCount: 320
+            )
+        }
+        expect(
+            timeline.events.count
+                == RealtimeSpeechDiagnosticTimeline.capacity,
+            "diagnostic timeline is bounded"
+        )
+        expect(
+            timeline.visibleEvents.count
+                == RealtimeSpeechDiagnosticTimeline.visibleCapacity,
+            "debug panel timeline is limited to recent events"
+        )
+        expect(
+            timeline.droppedEventCount == 1,
+            "diagnostic timeline reports dropped events"
+        )
+        timeline.clear()
+        expect(
+            timeline.events.isEmpty && timeline.droppedEventCount == 0,
+            "diagnostic timeline clears events and dropped count"
+        )
+
+        let stack = makeControllerStack(transport: handshakeTransport())
+        await stack.controller.startSpeechAudioCapture()
+        let data = try stack.controller.realtimeSpeechDiagnosticExportData(
+            exportedAt: Date(timeIntervalSince1970: 0)
+        )
+        let object = try JSONSerialization.jsonObject(with: data)
+            as! [String: Any]
+        expect(object["schema_version"] as? Int == 1,
+               "diagnostic export freezes schema version 1")
+        expect(object["events"] is [[String: Any]],
+               "diagnostic export contains structured events")
+        let exported = String(decoding: data, as: UTF8.self).lowercased()
+        for forbidden in [
+            "fake-token",
+            "authorization",
+            "instructions",
+            "base64",
+            "transcript",
+            "resident_identity",
+            "session_memory"
+        ] {
+            expect(
+                !exported.contains(forbidden),
+                "diagnostic export omits \(forbidden)"
+            )
+        }
+        stack.controller.clearRealtimeSpeechDiagnostics()
+        expect(
+            stack.controller.realtimeSpeechDiagnosticTimeline.events.isEmpty,
+            "controller clears diagnostic timeline"
+        )
+        await stack.controller.stopSpeechAudioCapture()
     }
 
     private static func testFullDuplexThroughController() async throws {
