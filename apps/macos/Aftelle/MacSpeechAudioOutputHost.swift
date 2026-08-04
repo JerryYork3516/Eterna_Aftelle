@@ -97,6 +97,7 @@ actor MacSpeechAudioOutputHost {
     private var eventOrdinal: UInt64 = 0
     private var eventSink: EventSink?
     private var isMonitoringDeviceRoute = false
+    private var providerResponseFinished = false
 
     init(
         player: MacSpeechAudioOutputPlaying =
@@ -136,6 +137,7 @@ actor MacSpeechAudioOutputHost {
             generation &+= 1
             queue.reset(generation: generation)
             inFlightSequence = nil
+            providerResponseFinished = false
             timeoutTask?.cancel()
             timeoutTask = nil
             localFormat = preparedFormat.description
@@ -205,6 +207,10 @@ actor MacSpeechAudioOutputHost {
             appendEvent(.bufferUnderrun)
             return snapshot()
         }
+        guard providerResponseFinished
+                || queue.count >= configuration.startupBufferCount else {
+            return snapshot()
+        }
         do {
             state = .playing
             lastError = nil
@@ -219,6 +225,24 @@ actor MacSpeechAudioOutputHost {
         } catch {
             return fail(.playbackFailed)
         }
+    }
+
+    func finishProviderResponse() -> MacSpeechAudioOutputHostSnapshot {
+        guard state == .prepared || state == .playing
+                || state == .draining || state == .completed else {
+            return snapshot()
+        }
+        guard !providerResponseFinished else { return snapshot() }
+        providerResponseFinished = true
+        if state == .prepared, !queue.isEmpty {
+            return start()
+        }
+        if inFlightSequence == nil, queue.isEmpty {
+            completePlaybackIfNeeded()
+        } else if queue.isEmpty {
+            state = .draining
+        }
+        return snapshot()
     }
 
     func stop() -> MacSpeechAudioOutputHostSnapshot {
@@ -261,12 +285,16 @@ actor MacSpeechAudioOutputHost {
               inFlightSequence == nil
         else { return }
         guard let chunk = queue.dequeue() else {
-            state = .completed
-            appendEvent(.playbackCompleted)
+            if providerResponseFinished {
+                completePlaybackIfNeeded()
+            } else {
+                state = .playing
+            }
             return
         }
         inFlightSequence = chunk.sequence
-        state = queue.isEmpty ? .draining : .playing
+        state = providerResponseFinished && queue.isEmpty
+            ? .draining : .playing
         if queue.count <= configuration.lowWatermark {
             appendEvent(.bufferLow, sequence: chunk.sequence)
         }
@@ -300,6 +328,12 @@ actor MacSpeechAudioOutputHost {
         } catch {
             _ = fail(.playbackFailed)
         }
+    }
+
+    private func completePlaybackIfNeeded() {
+        guard state != .completed else { return }
+        state = .completed
+        appendEvent(.playbackCompleted)
     }
 
     private func handlePlaybackCompletion(
@@ -350,6 +384,7 @@ actor MacSpeechAudioOutputHost {
         player.stop()
         inFlightSequence = nil
         queue.reset(generation: generation)
+        providerResponseFinished = false
         state = .failed
         lastError = error
         appendEvent(.failed, error: error)
@@ -363,6 +398,7 @@ actor MacSpeechAudioOutputHost {
         generation &+= 1
         inFlightSequence = nil
         queue.reset(generation: generation)
+        providerResponseFinished = false
     }
 
     private func startDeviceMonitoringIfNeeded() {
@@ -392,6 +428,7 @@ actor MacSpeechAudioOutputHost {
         player.close()
         inFlightSequence = nil
         queue.reset(generation: generation)
+        providerResponseFinished = false
         localFormat = "current default output / not prepared"
         state = .failed
         lastError = .outputDeviceChanged

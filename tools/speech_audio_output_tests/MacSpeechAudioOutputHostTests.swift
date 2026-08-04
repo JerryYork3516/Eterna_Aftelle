@@ -12,6 +12,8 @@ private struct MacSpeechAudioOutputHostTests {
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
         await testOrderedPlaybackAndCompletion()
+        await testTemporaryQueueGapKeepsOnePlaybackCycle()
+        await testShortResponseFlushesPrebuffer()
         await testUnderrunDoesNotStartPlayer()
         await testQueueFullStopsAndClears()
         await testConversionFailureStopsAndClears()
@@ -123,6 +125,7 @@ private struct MacSpeechAudioOutputHostTests {
         expect(started.state == .playing, "playing with queued successor")
         expect(player.startCount == 1, "player started")
         expect(player.scheduledCount == 1, "first chunk scheduled")
+        _ = await host.finishProviderResponse()
         player.completeScheduledChunk()
         await waitUntil { player.scheduledCount == 2 }
         expect(player.payloads == [Data([1, 0]), Data([2, 0])], "ordered scheduling")
@@ -138,6 +141,65 @@ private struct MacSpeechAudioOutputHostTests {
             completed.recentEvents.map(\.kind).contains(.playbackCompleted),
             "local completion event"
         )
+    }
+
+    private static func testTemporaryQueueGapKeepsOnePlaybackCycle() async {
+        let (host, player) = makeHost()
+        let generation = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        )
+        _ = await host.enqueue(
+            pcm16Bytes: Data([2, 0]), sequence: 2, generation: generation
+        )
+        _ = await host.start()
+        player.completeScheduledChunk()
+        await waitUntil { player.scheduledCount == 2 }
+        player.completeScheduledChunk()
+        await waitUntil {
+            let snapshot = await host.currentSnapshot()
+            return snapshot.queueDepth == 0 && snapshot.state == .playing
+        }
+        let gap = await host.currentSnapshot()
+        expect(gap.playbackCompletedCount == 0,
+               "temporary queue gap is not response completion")
+        _ = await host.enqueue(
+            pcm16Bytes: Data([3, 0]), sequence: 3, generation: generation
+        )
+        await waitUntil { player.scheduledCount == 3 }
+        expect(player.startCount == 1,
+               "new audio continues the same player cycle")
+        _ = await host.finishProviderResponse()
+        player.completeScheduledChunk()
+        await waitUntil { await host.currentSnapshot().state == .completed }
+        let completed = await host.currentSnapshot()
+        expect(completed.playbackStartedCount == 1,
+               "response emits one playbackStarted")
+        expect(completed.playbackCompletedCount == 1,
+               "response emits one playbackCompleted")
+    }
+
+    private static func testShortResponseFlushesPrebuffer() async {
+        let (host, player) = makeHost()
+        let generation = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        )
+        let waiting = await host.start()
+        expect(waiting.state == .prepared,
+               "single chunk waits for startup prebuffer")
+        expect(player.startCount == 0,
+               "single chunk does not start before Provider completion")
+        let flushed = await host.finishProviderResponse()
+        expect(flushed.state == .draining,
+               "Provider completion flushes short response")
+        expect(player.startCount == 1,
+               "short response starts one playback cycle")
+        player.completeScheduledChunk()
+        await waitUntil { await host.currentSnapshot().state == .completed }
+        let completed = await host.currentSnapshot()
+        expect(completed.playbackCompletedCount == 1,
+               "short response completes once")
     }
 
     private static func testUnderrunDoesNotStartPlayer() async {
@@ -184,7 +246,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.start()
+        _ = await host.finishProviderResponse()
         await waitUntil { await host.currentSnapshot().state == .failed }
         let failed = await host.currentSnapshot()
         expect(failed.lastError == "consumer_timed_out", "timeout error")
@@ -199,7 +261,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        let failed = await host.start()
+        let failed = await host.finishProviderResponse()
         expect(failed.state == .failed, "conversion failure stops host")
         expect(failed.lastError == "conversion_failed", "conversion error standardized")
         expect(failed.queueDepth == 0, "conversion failure clears queue")
@@ -214,7 +276,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.start()
+        _ = await host.finishProviderResponse()
         let stopped = await host.stop()
         let stoppedAgain = await host.stop()
         expect(stopped.state == .stopped, "stopped state")
@@ -233,7 +295,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.start()
+        _ = await host.finishProviderResponse()
         let stopped = await host.stop()
         player.completeScheduledChunk()
         try? await Task.sleep(nanoseconds: 5_000_000)
@@ -268,7 +330,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.start()
+        _ = await host.finishProviderResponse()
         monitor.changeOutput(
             identifier: "output-next",
             name: "Next Output",

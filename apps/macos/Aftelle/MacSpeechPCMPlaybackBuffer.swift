@@ -12,11 +12,27 @@ nonisolated struct MacSpeechPCMPlaybackConfiguration: Sendable, Equatable {
     let capacity: Int
     let lowWatermark: Int
     let consumerTimeoutNanoseconds: UInt64
+    let startupBufferCount: Int
+
+    init(
+        capacity: Int,
+        lowWatermark: Int,
+        consumerTimeoutNanoseconds: UInt64,
+        startupBufferCount: Int = 2
+    ) {
+        precondition(capacity > 0)
+        precondition(startupBufferCount > 0 && startupBufferCount <= capacity)
+        self.capacity = capacity
+        self.lowWatermark = lowWatermark
+        self.consumerTimeoutNanoseconds = consumerTimeoutNanoseconds
+        self.startupBufferCount = startupBufferCount
+    }
 
     static let standard = MacSpeechPCMPlaybackConfiguration(
         capacity: 8,
         lowWatermark: 1,
-        consumerTimeoutNanoseconds: 2_000_000_000
+        consumerTimeoutNanoseconds: 2_000_000_000,
+        startupBufferCount: 2
     )
 }
 

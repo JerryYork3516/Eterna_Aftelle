@@ -62,3 +62,8 @@ if rg -q 'outputAudio|receiveNativeSpeechEvent|StepFunRealtimeAdapter' \
   exit 1
 fi
 echo "speech_audio_output_a2_boundary=PASS"
+
+rg -q 'startupBufferCount: 2' "$buffer"
+rg -q 'func finishProviderResponse' "$host"
+rg -q 'providerResponseFinished' "$host"
+echo "speech_audio_output_continuous_playback=PASS"

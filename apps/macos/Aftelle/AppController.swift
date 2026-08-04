@@ -1562,8 +1562,12 @@ final class AppController: ObservableObject {
                 }
             }
         case .responseCompleted:
-            if realtimeSpeechStateSnapshot.state == .listening {
-                nativeSpeechPlaybackBinding = nil
+            if nativeSpeechPlaybackBinding != nil {
+                speechAudioOutputHostSnapshot =
+                    await speechAudioOutputHost.finishProviderResponse()
+                await consumePlaybackEvents(
+                    in: speechAudioOutputHostSnapshot
+                )
             }
         default:
             break

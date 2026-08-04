@@ -345,6 +345,16 @@ private struct NativeSpeechDuplexTests {
             return false
         }.count
         expect(connectCount == 1, "five responses reuse one WebSocket")
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot
+                .playbackStartedCount == 5,
+            "five responses emit one playbackStarted each"
+        )
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot
+                .playbackCompletedCount == 5,
+            "five responses emit one playbackCompleted each"
+        )
 
         await stack.controller.stopSpeechAudioCapture()
         let stoppedOutput = stack.controller.speechOutputBridgeSnapshot
@@ -442,6 +452,9 @@ private struct NativeSpeechDuplexTests {
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+        )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.realtimeSpeechStateSnapshot.state
@@ -532,7 +545,7 @@ private struct NativeSpeechDuplexTests {
         }
         expect(
             stack.controller.speechOutputBridgeSnapshot.outputAudioChunkCount
-                == 1,
+                == 2,
             "late interrupted outputAudio never reaches Debug output sink"
         )
         expect(
@@ -655,6 +668,9 @@ private struct NativeSpeechDuplexTests {
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+        )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.realtimeSpeechStateSnapshot.state
@@ -707,6 +723,9 @@ private struct NativeSpeechDuplexTests {
         )
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
@@ -768,6 +787,9 @@ private struct NativeSpeechDuplexTests {
         )
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
@@ -1060,6 +1082,7 @@ private struct NativeSpeechDuplexTests {
     }
 
     private static func waitUntil(
+        line: UInt = #line,
         _ condition: @escaping @MainActor () async throws -> Bool
     ) async {
         waitIndex += 1
@@ -1068,7 +1091,9 @@ private struct NativeSpeechDuplexTests {
             if (try? await condition()) == true { return }
             try? await Task.sleep(for: .milliseconds(5))
         }
-        fatalError("FAILED: timed out waiting for duplex state #\(currentWait)")
+        fatalError(
+            "FAILED: timed out waiting for duplex state #\(currentWait) at line \(line)"
+        )
     }
 
     private static func expect(_ condition: Bool, _ message: String) {
