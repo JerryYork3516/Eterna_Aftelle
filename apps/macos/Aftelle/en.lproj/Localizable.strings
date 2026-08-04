@@ -548,6 +548,15 @@
 "particleDebug.realtimeSpeech.state" = "Realtime speech state";
 "particleDebug.realtimeSpeech.turn" = "Current turn";
 "particleDebug.realtimeSpeech.interaction" = "Current interaction";
+"particleDebug.realtimeSubtitle.generation" = "Subtitle generation";
+"particleDebug.realtimeSubtitle.userPartial" = "User partial";
+"particleDebug.realtimeSubtitle.userFinal" = "User final";
+"particleDebug.realtimeSubtitle.residentPartial" = "Resident partial";
+"particleDebug.realtimeSubtitle.residentFinal" = "Resident final";
+"particleDebug.realtimeSubtitle.particleIntent" = "Particle intent";
+"particleDebug.realtimeSubtitle.speechSignal" = "Speech signal";
+"particleDebug.realtimeSubtitle.rejected" = "Rejected subtitle events";
+"particleDebug.realtimeSubtitle.closure" = "Last subtitle closure";
 "particleDebug.realtimeSpeech.reason" = "Last transition";
 "particleDebug.realtimeSpeech.cancelReason" = "Last cancellation reason";
 "particleDebug.realtimeSpeech.interruptedTurns" = "Interrupted turns";

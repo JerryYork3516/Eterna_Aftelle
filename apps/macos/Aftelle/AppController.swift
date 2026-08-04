@@ -128,6 +128,8 @@ final class AppController: ObservableObject {
         NativeSpeechPlaybackDebugSnapshot.initial
     @Published private(set) var realtimeSpeechStateSnapshot =
         RealtimeSpeechStateSnapshot.initial
+    @Published private(set) var realtimeSpeechSubtitleSnapshot =
+        RealtimeSpeechSubtitleSnapshot.initial
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
     @Published private(set) var relationshipProgressionDebugState =
@@ -1262,8 +1264,7 @@ final class AppController: ObservableObject {
             await speechOutputBridge.currentSnapshot()
         speechAudioOutputHostSnapshot =
             await speechAudioOutputHost.refreshDiagnostics()
-        realtimeSpeechStateSnapshot =
-            orchestrationKernel.realtimeSpeechStateSnapshot()
+        syncRealtimeSpeechPresentation()
     }
 
     func requestMicrophoneAuthorization() async {
@@ -1284,8 +1285,7 @@ final class AppController: ObservableObject {
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
-        realtimeSpeechStateSnapshot =
-            orchestrationKernel.realtimeSpeechStateSnapshot()
+        syncRealtimeSpeechPresentation()
         refreshNativeSpeechPlaybackDebugSnapshot()
     }
 
@@ -1299,8 +1299,7 @@ final class AppController: ObservableObject {
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         await speechAudioHost.shutdown()
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
-        realtimeSpeechStateSnapshot =
-            orchestrationKernel.realtimeSpeechStateSnapshot()
+        syncRealtimeSpeechPresentation()
         refreshNativeSpeechPlaybackDebugSnapshot()
     }
 
@@ -1317,6 +1316,7 @@ final class AppController: ObservableObject {
         )
         switch result {
         case .success(let binding):
+            residentTextPresentationID = nil
             await speechOutputDebugSink.reset()
             nativeSpeechPlaybackBinding = nil
             lastPlaybackEventOrdinal = 0
@@ -1332,8 +1332,7 @@ final class AppController: ObservableObject {
         case .failure(let error):
             speechInputBridgeSnapshot = await speechInputBridge.fail(error)
         }
-        realtimeSpeechStateSnapshot =
-            orchestrationKernel.realtimeSpeechStateSnapshot()
+        syncRealtimeSpeechPresentation()
         refreshNativeSpeechPlaybackDebugSnapshot()
     }
 
@@ -1341,8 +1340,7 @@ final class AppController: ObservableObject {
         _ event: NativeSpeechEvent
     ) async {
         await speechOutputDebugSink.consume(event)
-        realtimeSpeechStateSnapshot =
-            orchestrationKernel.realtimeSpeechStateSnapshot()
+        syncRealtimeSpeechPresentation()
         switch event.kind {
         case .outputAudio(let payload):
             await enqueueNativeSpeechOutput(payload)
@@ -1453,8 +1451,7 @@ final class AppController: ObservableObject {
             || disposition == .rejectedOutOfOrder {
             rejectedPlaybackEventCount &+= 1
         }
-        realtimeSpeechStateSnapshot =
-            orchestrationKernel.realtimeSpeechStateSnapshot()
+        syncRealtimeSpeechPresentation()
         if event.kind == .playbackCompleted,
            realtimeSpeechStateSnapshot.state == .listening {
             nativeSpeechPlaybackBinding = nil
@@ -1464,6 +1461,32 @@ final class AppController: ObservableObject {
         speechAudioOutputHostSnapshot =
             await speechAudioOutputHost.currentSnapshot()
         refreshNativeSpeechPlaybackDebugSnapshot()
+    }
+
+    private func syncRealtimeSpeechPresentation() {
+        let previousState = realtimeSpeechStateSnapshot.state
+        let stateSnapshot = orchestrationKernel
+            .realtimeSpeechStateSnapshot()
+        let subtitleSnapshot = orchestrationKernel
+            .realtimeSpeechSubtitleSnapshot()
+        realtimeSpeechStateSnapshot = stateSnapshot
+        realtimeSpeechSubtitleSnapshot = subtitleSnapshot
+
+        let presentation = RealtimeSpeechPresentationMapper.map(
+            state: stateSnapshot.state,
+            previousState: previousState,
+            currentSpeechSignal: residentSpeechSignal
+        )
+        residentVisualIntent = presentation.visualIntent
+        residentSpeechSignal = presentation.speechSignal
+
+        let subtitleState = subtitleSnapshot.displayText.map {
+            ParticleSubtitleState(text: $0, phase: .showing)
+        } ?? .hidden
+        if particleSubtitleState != subtitleState {
+            particleSubtitleState = subtitleState
+        }
+        refreshParticleDebugSnapshot()
     }
 
     private func refreshNativeSpeechPlaybackDebugSnapshot() {

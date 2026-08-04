@@ -546,6 +546,10 @@ struct ParticleDebugWindow: View {
                 controller.nativeSpeechPlaybackDebugSnapshot,
             realtimeSpeechStateSnapshot:
                 controller.realtimeSpeechStateSnapshot,
+            realtimeSpeechSubtitleSnapshot:
+                controller.realtimeSpeechSubtitleSnapshot,
+            realtimeSpeechVisualIntent: controller.residentVisualIntent,
+            realtimeSpeechSignal: controller.residentSpeechSignal,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
             relationshipProgressionState:
@@ -714,6 +718,9 @@ private struct ParticleDebugPanel: View {
     let nativeSpeechPlaybackDebugSnapshot:
         NativeSpeechPlaybackDebugSnapshot
     let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
+    let realtimeSpeechSubtitleSnapshot: RealtimeSpeechSubtitleSnapshot
+    let realtimeSpeechVisualIntent: ResidentVisualIntent
+    let realtimeSpeechSignal: ResidentSpeechSignal
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let relationshipProgressionState:
@@ -991,6 +998,12 @@ private struct ParticleDebugPanel: View {
                                     nativeSpeechPlaybackDebugSnapshot,
                                 realtimeSpeechStateSnapshot:
                                     realtimeSpeechStateSnapshot,
+                                realtimeSpeechSubtitleSnapshot:
+                                    realtimeSpeechSubtitleSnapshot,
+                                realtimeSpeechVisualIntent:
+                                    realtimeSpeechVisualIntent,
+                                realtimeSpeechSignal:
+                                    realtimeSpeechSignal,
                                 refreshAuthorization:
                                     refreshMicrophoneAuthorization,
                                 requestAuthorization:
@@ -1985,6 +1998,9 @@ private struct SpeechAudioHostDebugView: View {
     let playbackSnapshot: MacSpeechAudioOutputHostSnapshot
     let playbackDebugSnapshot: NativeSpeechPlaybackDebugSnapshot
     let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
+    let realtimeSpeechSubtitleSnapshot: RealtimeSpeechSubtitleSnapshot
+    let realtimeSpeechVisualIntent: ResidentVisualIntent
+    let realtimeSpeechSignal: ResidentSpeechSignal
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
     let startCapture: () async -> Void
@@ -2214,8 +2230,67 @@ private struct SpeechAudioHostDebugView: View {
                     value: "\(realtimeSpeechStateSnapshot.currentTurnNumber)"
                 )
                 ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.generation",
+                    value: "\(realtimeSpeechSubtitleSnapshot.turnGeneration)"
+                )
+                ParticleDiagnosticsRow(
                     labelKey: "particleDebug.realtimeSpeech.interaction",
                     value: realtimeSpeechStateSnapshot.interactionShortID ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.userPartial",
+                    value: subtitleStatus(
+                        text: realtimeSpeechSubtitleSnapshot.userPartial,
+                        revision: realtimeSpeechSubtitleSnapshot
+                            .userPartialRevision,
+                        locked: false
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.userFinal",
+                    value: subtitleStatus(
+                        text: realtimeSpeechSubtitleSnapshot.userFinal,
+                        revision: realtimeSpeechSubtitleSnapshot
+                            .userFinalRevision,
+                        locked: realtimeSpeechSubtitleSnapshot
+                            .userFinalLocked
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.residentPartial",
+                    value: subtitleStatus(
+                        text: realtimeSpeechSubtitleSnapshot.residentPartial,
+                        revision: realtimeSpeechSubtitleSnapshot
+                            .residentPartialRevision,
+                        locked: false
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.residentFinal",
+                    value: subtitleStatus(
+                        text: realtimeSpeechSubtitleSnapshot.residentFinal,
+                        revision: realtimeSpeechSubtitleSnapshot
+                            .residentFinalRevision,
+                        locked: realtimeSpeechSubtitleSnapshot
+                            .residentFinalLocked
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.particleIntent",
+                    value: realtimeSpeechVisualIntent.rawValue
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.speechSignal",
+                    value: realtimeSpeechSignal.phase.rawValue
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.rejected",
+                    value: "\(realtimeSpeechSubtitleSnapshot.rejectedEventCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSubtitle.closure",
+                    value: realtimeSpeechSubtitleSnapshot
+                        .lastClosureReason.rawValue
                 )
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.realtimeSpeech.reason",
@@ -2330,6 +2405,16 @@ private struct SpeechAudioHostDebugView: View {
                 }
             }
         }
+    }
+
+    private func subtitleStatus(
+        text: String?,
+        revision: UInt64?,
+        locked: Bool
+    ) -> String {
+        guard text != nil else { return "empty" }
+        let revisionValue = revision.map { "r\($0)" } ?? "r—"
+        return locked ? "locked \(revisionValue)" : "present \(revisionValue)"
     }
 
     private var localizedAuthorization: String {

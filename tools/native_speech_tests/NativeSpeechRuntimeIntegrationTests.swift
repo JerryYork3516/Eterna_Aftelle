@@ -474,11 +474,177 @@ private struct NativeSpeechRuntimeIntegrationTests {
             "cancel reaches Provider through Runtime chain"
         )
         try await testRuntimeMultiTurnState(fixtureData: fixtureData)
+        try await testRuntimeSubtitleGate(fixtureData: fixtureData)
         try await testRuntimeInterrupts(fixtureData: fixtureData)
         try await testRuntimePlaybackFailure(fixtureData: fixtureData)
         try await testRuntimeTimeouts(fixtureData: fixtureData)
         try await testConnectivityEntry(fixtureData: fixtureData)
         print("native_speech_runtime_integration_checks=\(checks)")
+    }
+
+    private static func testRuntimeSubtitleGate(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let sessionStore = SessionStore()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: sessionStore
+        )
+        expect(runtime.loadDR(from: fixtureData).isLoaded, "subtitle resident loads")
+        let dialogueBefore =
+            (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 1
+        )
+        var subtitle = runtime.realtimeSpeechSubtitleSnapshot()
+        expect(
+            subtitle.turnNumber == 1 && subtitle.turnGeneration == 1,
+            "Runtime starts a bound subtitle generation"
+        )
+
+        try await acceptStateEvent(
+            .partialTranscript("你"),
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .partialTranscript("你好"),
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        subtitle = runtime.realtimeSpeechSubtitleSnapshot()
+        expect(subtitle.userPartial == "你好", "Runtime replaces user partial")
+        expect(subtitle.userPartialRevision == 2, "Runtime advances user revision")
+        let dialogueAfterPartial =
+            (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
+        expect(
+            dialogueAfterPartial == dialogueBefore,
+            "partial transcript never enters Session"
+        )
+
+        try await acceptStateEvent(
+            .finalTranscript("你好"),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        subtitle = runtime.realtimeSpeechSubtitleSnapshot()
+        expect(subtitle.userFinal == "你好", "Runtime accepts gated user final")
+        expect(subtitle.userFinalLocked, "Runtime locks user final")
+
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .partialTranscript("迟到用户 partial")
+        ))
+        let lateUserPartial = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            lateUserPartial == .rejectedOutOfOrder,
+            "Runtime rejects user partial after final"
+        )
+        expect(
+            runtime.realtimeSpeechSubtitleSnapshot().userFinal == "你好",
+            "rejected partial cannot alter final subtitle"
+        )
+
+        try await acceptStateEvent(
+            .outputText(text: "答", isFinal: false),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        expect(
+            runtime.realtimeSpeechSubtitleSnapshot().residentPartial == "答",
+            "Runtime accepts resident partial independently"
+        )
+        try await acceptStateEvent(
+            .outputText(text: "答案", isFinal: true),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        subtitle = runtime.realtimeSpeechSubtitleSnapshot()
+        expect(subtitle.residentPartial == nil, "resident final clears partial")
+        expect(subtitle.residentFinal == "答案", "Runtime locks resident final")
+        expect(
+            runtime.realtimeSpeechStateSnapshot().state == .thinking,
+            "text output cannot enter speaking"
+        )
+
+        try await acceptStateEvent(
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 1,
+                bytes: Data([0, 1]),
+                format: .pcm16
+            )),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        expect(
+            runtime.realtimeSpeechStateSnapshot().state == .thinking,
+            "received outputAudio cannot enter speaking"
+        )
+        await acceptPlaybackEvent(
+            .started,
+            generation: 1,
+            binding: binding,
+            runtime: runtime
+        )
+        expect(
+            runtime.realtimeSpeechStateSnapshot().state == .speaking,
+            "local playback start is the speaking trigger"
+        )
+
+        try await acceptStateEvent(
+            .inputSpeechStarted,
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        subtitle = runtime.realtimeSpeechSubtitleSnapshot()
+        expect(
+            subtitle.turnNumber == 2 && subtitle.turnGeneration == 2,
+            "Interrupt advances subtitle turn generation"
+        )
+        expect(
+            subtitle.residentPartial == nil && subtitle.residentFinal == nil,
+            "Interrupt clears resident subtitle display"
+        )
+        expect(
+            subtitle.interactionShortID != nil,
+            "Interrupt preserves subtitle interaction"
+        )
+
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputText(text: "旧轮迟到", isFinal: true)
+        ))
+        let lateResident = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(lateResident == .rejectedLate, "old turn resident subtitle is rejected")
+
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+        subtitle = runtime.realtimeSpeechSubtitleSnapshot()
+        expect(subtitle.interactionShortID == nil, "Stop invalidates subtitle interaction")
+        expect(subtitle.displayText == nil, "Stop clears active subtitle display")
+        expect(subtitle.lastClosureReason == .stopped, "Stop records subtitle closure")
     }
 
     private static func testRuntimeMultiTurnState(

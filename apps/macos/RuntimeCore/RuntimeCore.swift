@@ -1055,17 +1055,20 @@ nonisolated final class RuntimeNativeSpeechInteractionGate:
 nonisolated final class RuntimeNativeSpeechTimeoutHandler:
     @unchecked Sendable {
     private let stateMachine: RealtimeSpeechStateMachine
+    private let subtitleStateMachine: RealtimeSpeechSubtitleStateMachine
     private let interactionGate: RuntimeNativeSpeechInteractionGate
     private let inputGate: NativeSpeechInputGate
     private let executionEngine: ExecutionEngine
 
     init(
         stateMachine: RealtimeSpeechStateMachine,
+        subtitleStateMachine: RealtimeSpeechSubtitleStateMachine,
         interactionGate: RuntimeNativeSpeechInteractionGate,
         inputGate: NativeSpeechInputGate,
         executionEngine: ExecutionEngine
     ) {
         self.stateMachine = stateMachine
+        self.subtitleStateMachine = subtitleStateMachine
         self.interactionGate = interactionGate
         self.inputGate = inputGate
         self.executionEngine = executionEngine
@@ -1079,6 +1082,10 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
               ) else {
             return
         }
+        _ = subtitleStateMachine.terminate(
+            interactionID: interaction.id,
+            reason: .failed
+        )
         inputGate.invalidate(interactionID: interaction.id)
         try? await executionEngine.cancelNativeSpeech(
             interactionID: interaction.id,
@@ -1128,11 +1135,14 @@ public final class RuntimeCore {
         RuntimeNativeSpeechInteractionGate()
     private let nativeSpeechInputGate = NativeSpeechInputGate()
     private let realtimeSpeechStateMachine = RealtimeSpeechStateMachine()
+    private let realtimeSpeechSubtitleStateMachine =
+        RealtimeSpeechSubtitleStateMachine()
     private let realtimeSpeechGuardScheduler =
         RealtimeSpeechGuardScheduler()
     private lazy var realtimeSpeechTimeoutHandler =
         RuntimeNativeSpeechTimeoutHandler(
             stateMachine: realtimeSpeechStateMachine,
+            subtitleStateMachine: realtimeSpeechSubtitleStateMachine,
             interactionGate: nativeSpeechInteractionGate,
             inputGate: nativeSpeechInputGate,
             executionEngine: executionEngine
@@ -3077,7 +3087,13 @@ public final class RuntimeCore {
             captureGeneration: captureGeneration
         )
         nativeSpeechInputGate.activate(binding)
-        realtimeSpeechStateMachine.start(interaction: interaction)
+        let stateTransition = realtimeSpeechStateMachine.start(
+            interaction: interaction
+        )
+        realtimeSpeechSubtitleStateMachine.start(
+            interactionID: interaction.id,
+            turnNumber: stateTransition.snapshot.currentTurnNumber
+        )
         scheduleRealtimeSpeechGuard(for: interaction)
         return binding
     }
@@ -3160,18 +3176,33 @@ public final class RuntimeCore {
                   interaction.id == interactionID else {
                 return .rejectedStale
             }
+            let stateBefore = realtimeSpeechStateMachine.snapshot()
+            var stateTransition: RealtimeSpeechTransitionResult?
             if realtimeSpeechStateMachine.tracks(interaction) {
                 let transition = realtimeSpeechStateMachine.transition(
                     event: event,
                     interaction: interaction,
                     nowNanoseconds: DispatchTime.now().uptimeNanoseconds
                 )
+                stateTransition = transition
                 switch transition.disposition {
                 case .rejectedStale:
+                    recordRejectedSubtitleEventIfNeeded(
+                        event.kind,
+                        disposition: .rejectedStale
+                    )
                     return .rejectedStale
                 case .rejectedLate:
+                    recordRejectedSubtitleEventIfNeeded(
+                        event.kind,
+                        disposition: .rejectedLate
+                    )
                     return .rejectedLate
                 case .rejectedOutOfOrder:
+                    recordRejectedSubtitleEventIfNeeded(
+                        event.kind,
+                        disposition: .rejectedOutOfOrder
+                    )
                     return .rejectedOutOfOrder
                 case .applied, .ignoredDuplicate:
                     scheduleRealtimeSpeechGuard(for: interaction)
@@ -3201,6 +3232,24 @@ public final class RuntimeCore {
                 for: event,
                 expectedInteractionID: interactionID
             )
+            if case .accepted = disposition,
+               let subtitleDisposition = applyRealtimeSpeechSubtitleEvent(
+                    event,
+                    stateBefore: stateBefore,
+                    transition: stateTransition
+               ), subtitleDisposition != .accepted {
+                switch subtitleDisposition {
+                case .rejectedStale:
+                    return .rejectedStale
+                case .rejectedLate:
+                    return .rejectedLate
+                case .rejectedRevision, .rejectedFinalLocked,
+                     .rejectedDuplicate, .rejectedOutOfOrder:
+                    return .rejectedOutOfOrder
+                case .accepted:
+                    break
+                }
+            }
             if case .accepted(let acceptedEvent) = disposition,
                case .finalTranscript(let transcript) = acceptedEvent.kind {
                 try await refreshNativeSpeechContext(
@@ -3246,6 +3295,7 @@ public final class RuntimeCore {
               interaction.id == event.interactionID else {
             return .rejectedStale
         }
+        let stateBefore = realtimeSpeechStateMachine.snapshot()
         let transition = realtimeSpeechStateMachine.transition(
             playbackEvent: event,
             interaction: interaction,
@@ -3256,6 +3306,24 @@ public final class RuntimeCore {
             scheduleRealtimeSpeechGuard(for: interaction)
         case .rejectedStale, .rejectedLate, .rejectedOutOfOrder:
             break
+        }
+        if transition.disposition == .applied {
+            if transition.snapshot.lastTransitionReason
+                    == .responseCompleted,
+               transition.snapshot.currentTurnNumber
+                    > stateBefore.currentTurnNumber {
+                _ = realtimeSpeechSubtitleStateMachine.completeTurn(
+                    interactionID: interaction.id,
+                    completedTurnNumber: stateBefore.currentTurnNumber,
+                    nextTurnNumber:
+                        transition.snapshot.currentTurnNumber
+                )
+            } else if case .failed = event.kind {
+                _ = realtimeSpeechSubtitleStateMachine.terminate(
+                    interactionID: interaction.id,
+                    reason: .failed
+                )
+            }
         }
         guard transition.effect == .terminateProvider else {
             return transition.disposition
@@ -3273,6 +3341,105 @@ public final class RuntimeCore {
         return transition.disposition
     }
 
+    private func applyRealtimeSpeechSubtitleEvent(
+        _ event: NativeSpeechEvent,
+        stateBefore: RealtimeSpeechStateSnapshot,
+        transition: RealtimeSpeechTransitionResult?
+    ) -> RealtimeSpeechSubtitleDisposition? {
+        guard realtimeSpeechSubtitleStateMachine.tracks(
+            event.interactionID
+        ) else {
+            return nil
+        }
+        let stateAfter = transition?.snapshot
+            ?? realtimeSpeechStateMachine.snapshot()
+        switch event.kind {
+        case .partialTranscript(let text):
+            return realtimeSpeechSubtitleStateMachine
+                .applyProviderTranscript(
+                    interactionID: event.interactionID,
+                    turnNumber: stateAfter.currentTurnNumber,
+                    direction: .user,
+                    contentState: .partial,
+                    text: text
+                ).disposition
+        case .finalTranscript(let text):
+            return realtimeSpeechSubtitleStateMachine
+                .applyProviderTranscript(
+                    interactionID: event.interactionID,
+                    turnNumber: stateAfter.currentTurnNumber,
+                    direction: .user,
+                    contentState: .final,
+                    text: text
+                ).disposition
+        case .outputText(let text, let isFinal):
+            return realtimeSpeechSubtitleStateMachine
+                .applyProviderTranscript(
+                    interactionID: event.interactionID,
+                    turnNumber: stateAfter.currentTurnNumber,
+                    direction: .resident,
+                    contentState: isFinal ? .final : .partial,
+                    text: text
+                ).disposition
+        case .inputSpeechStarted
+            where transition?.effect == .interruptProvider:
+            return realtimeSpeechSubtitleStateMachine.interrupt(
+                interactionID: event.interactionID,
+                interruptedTurnNumber: stateBefore.currentTurnNumber,
+                nextTurnNumber: stateAfter.currentTurnNumber
+            )
+        case .responseCompleted:
+            if stateAfter.lastTransitionReason == .responseCompleted,
+               stateAfter.currentTurnNumber > stateBefore.currentTurnNumber {
+                return realtimeSpeechSubtitleStateMachine.completeTurn(
+                    interactionID: event.interactionID,
+                    completedTurnNumber: stateBefore.currentTurnNumber,
+                    nextTurnNumber: stateAfter.currentTurnNumber
+                )
+            } else if transition?.disposition == .ignoredDuplicate {
+                realtimeSpeechSubtitleStateMachine.recordRejectedEvent(
+                    .rejectedDuplicate
+                )
+                return .rejectedDuplicate
+            }
+            return .accepted
+        case .cancelled:
+            return realtimeSpeechSubtitleStateMachine.terminate(
+                interactionID: event.interactionID,
+                reason: .cancelled
+            )
+        case .failed:
+            return realtimeSpeechSubtitleStateMachine.terminate(
+                interactionID: event.interactionID,
+                reason: .failed
+            )
+        case .closed:
+            return realtimeSpeechSubtitleStateMachine.terminate(
+                interactionID: event.interactionID,
+                reason: .closed
+            )
+        case .connected, .sessionUpdated, .inputSpeechStarted,
+             .inputSpeechEnded, .thinking, .outputAudio,
+             .toolRequestCandidate:
+            return nil
+        }
+    }
+
+    private func recordRejectedSubtitleEventIfNeeded(
+        _ eventKind: NativeSpeechEventKind,
+        disposition: RealtimeSpeechSubtitleDisposition
+    ) {
+        switch eventKind {
+        case .partialTranscript, .finalTranscript, .outputText,
+             .responseCompleted, .cancelled, .closed, .failed:
+            realtimeSpeechSubtitleStateMachine.recordRejectedEvent(
+                disposition
+            )
+        default:
+            break
+        }
+    }
+
     private func failActiveNativeSpeechInteraction(
         interactionID: NativeSpeechInteractionID,
         error: NativeSpeechError
@@ -3287,6 +3454,12 @@ public final class RuntimeCore {
             interactionID: interaction.id,
             error: error
         )
+        if realtimeSpeechSubtitleStateMachine.tracks(interaction.id) {
+            _ = realtimeSpeechSubtitleStateMachine.terminate(
+                interactionID: interaction.id,
+                reason: .failed
+            )
+        }
         invalidateNativeSpeechInput(for: interaction.id)
         try? await executionEngine.cancelNativeSpeech(
             interactionID: interaction.id,
@@ -3359,6 +3532,12 @@ public final class RuntimeCore {
             interactionID: interaction.id,
             reason: reason
         )
+        if realtimeSpeechSubtitleStateMachine.tracks(interaction.id) {
+            _ = realtimeSpeechSubtitleStateMachine.terminate(
+                interactionID: interaction.id,
+                reason: Self.subtitleClosureReason(reason)
+            )
+        }
         invalidateNativeSpeechInput(for: interaction.id)
         do {
             try await executionEngine.cancelNativeSpeech(
@@ -3385,6 +3564,12 @@ public final class RuntimeCore {
             interactionID: interaction.id,
             reason: .interrupted
         )
+        if realtimeSpeechSubtitleStateMachine.tracks(interaction.id) {
+            _ = realtimeSpeechSubtitleStateMachine.terminate(
+                interactionID: interaction.id,
+                reason: .closed
+            )
+        }
         invalidateNativeSpeechInput(for: interaction.id)
         try await executionEngine.closeNativeSpeech(
             interactionID: interaction.id
@@ -3427,6 +3612,11 @@ public final class RuntimeCore {
         realtimeSpeechStateMachine.snapshot()
     }
 
+    func realtimeSpeechSubtitleSnapshot()
+        -> RealtimeSpeechSubtitleSnapshot {
+        realtimeSpeechSubtitleStateMachine.snapshot()
+    }
+
     func useRealtimeSpeechTimeoutConfigurationForTesting(
         _ configuration: RealtimeSpeechTimeoutConfiguration
     ) {
@@ -3451,6 +3641,7 @@ public final class RuntimeCore {
     private func resetRealtimeSpeechState() {
         realtimeSpeechGuardScheduler.cancel()
         realtimeSpeechStateMachine.reset()
+        realtimeSpeechSubtitleStateMachine.reset()
     }
 
     private func nativeSpeechEventIsTerminal(
@@ -3461,6 +3652,16 @@ public final class RuntimeCore {
             return true
         default:
             return false
+        }
+    }
+
+    private static func subtitleClosureReason(
+        _ reason: NativeSpeechCancellationReason
+    ) -> RealtimeSpeechSubtitleClosureReason {
+        switch reason {
+        case .stopped: .stopped
+        case .interrupted: .cancelled
+        case .superseded: .superseded
         }
     }
 
