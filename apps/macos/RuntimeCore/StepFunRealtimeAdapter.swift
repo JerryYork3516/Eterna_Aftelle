@@ -24,6 +24,10 @@ actor StepFunRealtimeAdapter:
     private var pendingEvents: [NativeSpeechEvent] = []
     private var isCancelling = false
     private var didEmitCancellationAcknowledgement = false
+    private var userTranscriptAccumulator = ""
+    private var residentTranscriptAccumulator = ""
+    private var userTranscriptFinalized = false
+    private var residentTranscriptFinalized = false
     private var nextOutputAudioSequenceNumber: UInt64 = 0
     private let reconnectDelay: Duration
     private(set) var connectionState = StepFunRealtimeConnectionState.closed
@@ -149,6 +153,8 @@ actor StepFunRealtimeAdapter:
         try requireActive(interactionID)
         guard !isCancelling else { return }
         isCancelling = true
+        residentTranscriptAccumulator = ""
+        residentTranscriptFinalized = false
         connectionState = .cancelling
         try await transport.send(.text(try codec.responseCancel()))
     }
@@ -179,6 +185,10 @@ actor StepFunRealtimeAdapter:
         isCancelling = false
         didEmitCancellationAcknowledgement = false
         nextOutputAudioSequenceNumber = 0
+        userTranscriptAccumulator = ""
+        residentTranscriptAccumulator = ""
+        userTranscriptFinalized = false
+        residentTranscriptFinalized = false
 
         let created = try await nextRecognizedEvent(
             interactionID: request.interaction.id
@@ -210,6 +220,10 @@ actor StepFunRealtimeAdapter:
         isCancelling = false
         didEmitCancellationAcknowledgement = false
         nextOutputAudioSequenceNumber = 0
+        userTranscriptAccumulator = ""
+        residentTranscriptAccumulator = ""
+        userTranscriptFinalized = false
+        residentTranscriptFinalized = false
     }
 
     private func requireActive(_ interactionID: NativeSpeechInteractionID) throws {
@@ -240,6 +254,8 @@ actor StepFunRealtimeAdapter:
             if envelope.wireKind == .responseCreated {
                 isCancelling = false
                 didEmitCancellationAcknowledgement = false
+                residentTranscriptAccumulator = ""
+                residentTranscriptFinalized = false
             }
             if isCancelling,
                (envelope.wireKind == .cancellationAcknowledgement
@@ -249,13 +265,18 @@ actor StepFunRealtimeAdapter:
                     continue
                 }
                 didEmitCancellationAcknowledgement = true
+                residentTranscriptAccumulator = ""
+                residentTranscriptFinalized = false
                 connectionState = .configured
                 return NativeSpeechEvent(
                     interactionID: interactionID,
                     kind: .cancelled(reason: "interrupted")
                 )
             }
-            if let event = envelope.event {
+            if let event = normalizedEvent(
+                from: envelope,
+                interactionID: interactionID
+            ) {
                 switch event.kind {
                 case .outputAudio:
                     nextOutputAudioSequenceNumber &+= 1
@@ -269,6 +290,90 @@ actor StepFunRealtimeAdapter:
             }
             ignoredEventCount &+= 1
         }
+    }
+
+    private func normalizedEvent(
+        from envelope: StepFunRealtimeDecodedEnvelope,
+        interactionID: NativeSpeechInteractionID
+    ) -> NativeSpeechEvent? {
+        guard let event = envelope.event else { return nil }
+        switch envelope.wireKind {
+        case .userTranscriptDelta:
+            guard !userTranscriptFinalized,
+                  case .partialTranscript(let fragment) = event.kind,
+                  let cumulative = Self.accumulate(
+                    fragment,
+                    into: &userTranscriptAccumulator
+                  ) else {
+                return nil
+            }
+            return NativeSpeechEvent(
+                interactionID: interactionID,
+                kind: .partialTranscript(cumulative)
+            )
+        case .userTranscriptDone:
+            guard !userTranscriptFinalized,
+                  case .finalTranscript(let text) = event.kind else {
+                return nil
+            }
+            userTranscriptFinalized = true
+            userTranscriptAccumulator = text
+            return event
+        case .residentTranscriptDelta:
+            guard !residentTranscriptFinalized,
+                  case .outputText(let fragment, false) = event.kind,
+                  let cumulative = Self.accumulate(
+                    fragment,
+                    into: &residentTranscriptAccumulator
+                  ) else {
+                return nil
+            }
+            return NativeSpeechEvent(
+                interactionID: interactionID,
+                kind: .outputText(text: cumulative, isFinal: false)
+            )
+        case .residentTranscriptDone:
+            guard !residentTranscriptFinalized,
+                  case .outputText(let text, true) = event.kind else {
+                return nil
+            }
+            residentTranscriptFinalized = true
+            residentTranscriptAccumulator = text
+            return event
+        case .responseCreated, .responseCompleted,
+             .cancellationAcknowledgement:
+            return event
+        case .other:
+            if case .inputSpeechStarted = event.kind {
+                userTranscriptAccumulator = ""
+                userTranscriptFinalized = false
+            }
+            return event
+        }
+    }
+
+    private static func accumulate(
+        _ fragment: String,
+        into accumulator: inout String
+    ) -> String? {
+        guard !fragment.isEmpty else { return nil }
+        if fragment == accumulator || accumulator.hasSuffix(fragment) {
+            return nil
+        }
+        if fragment.hasPrefix(accumulator) {
+            accumulator = fragment
+            return accumulator
+        }
+        let maximumOverlap = min(accumulator.count, fragment.count)
+        var overlap = maximumOverlap
+        while overlap > 0 {
+            let suffix = accumulator.suffix(overlap)
+            let prefix = fragment.prefix(overlap)
+            if suffix == prefix { break }
+            overlap -= 1
+        }
+        accumulator.append(contentsOf: fragment.dropFirst(overlap))
+        return accumulator
     }
 
     private static func isRetryableBeforeStreaming(

@@ -165,6 +165,7 @@ final class AppController: ObservableObject {
     private var lastDiagnosticAggregateNanoseconds: UInt64 = 0
     private var lastDiagnosticInputForwardedCount: UInt64 = 0
     private var lastDiagnosticInputRejectedCount: UInt64 = 0
+    private var realtimeSpeechPartialRefreshTask: Task<Void, Never>?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
         sendFrame: { [orchestrationKernel] payload, context in
@@ -1391,6 +1392,8 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
+        realtimeSpeechPartialRefreshTask?.cancel()
+        realtimeSpeechPartialRefreshTask = nil
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "manual_stop_started"
@@ -1413,6 +1416,8 @@ final class AppController: ObservableObject {
     }
 
     func shutdownSpeechAudioHost() async {
+        realtimeSpeechPartialRefreshTask?.cancel()
+        realtimeSpeechPartialRefreshTask = nil
         if nativeSpeechPlaybackBinding != nil {
             playbackStopClearCount &+= 1
         }
@@ -1427,6 +1432,8 @@ final class AppController: ObservableObject {
     }
 
     func startNativeSpeechInputBridge() async {
+        realtimeSpeechPartialRefreshTask?.cancel()
+        realtimeSpeechPartialRefreshTask = nil
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "bridge_start_requested"
@@ -1486,14 +1493,23 @@ final class AppController: ObservableObject {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let stateBefore = realtimeSpeechStateSnapshot.state.rawValue
         await speechOutputDebugSink.consume(event)
-        syncRealtimeSpeechPresentation()
+        switch event.kind {
+        case .partialTranscript, .outputText(_, false):
+            scheduleRealtimeSpeechPartialRefresh()
+        case .outputAudio:
+            break
+        default:
+            refreshRealtimeSpeechPresentationImmediately()
+        }
+        let stateAfter = orchestrationKernel.realtimeSpeechStateSnapshot()
+            .state.rawValue
         let duration = (
             DispatchTime.now().uptimeNanoseconds &- startedAt
         ) / 1_000_000
         recordRealtimeSpeechProviderEvent(
             event,
             stateBefore: stateBefore,
-            stateAfter: realtimeSpeechStateSnapshot.state.rawValue,
+            stateAfter: stateAfter,
             durationMilliseconds: duration
         )
         switch event.kind {
@@ -1721,6 +1737,22 @@ final class AppController: ObservableObject {
             particleSubtitleState = subtitleState
         }
         refreshParticleDebugSnapshot()
+    }
+
+    private func scheduleRealtimeSpeechPartialRefresh() {
+        guard realtimeSpeechPartialRefreshTask == nil else { return }
+        realtimeSpeechPartialRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled, let self else { return }
+            realtimeSpeechPartialRefreshTask = nil
+            syncRealtimeSpeechPresentation()
+        }
+    }
+
+    private func refreshRealtimeSpeechPresentationImmediately() {
+        realtimeSpeechPartialRefreshTask?.cancel()
+        realtimeSpeechPartialRefreshTask = nil
+        syncRealtimeSpeechPresentation()
     }
 
     private func refreshNativeSpeechPlaybackDebugSnapshot() {

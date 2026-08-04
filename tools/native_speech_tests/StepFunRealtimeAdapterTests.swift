@@ -20,6 +20,7 @@ private struct StepFunRealtimeAdapterTests {
     static func main() async throws {
         try await testHandshakeAudioCancelAndClose()
         try await testCancelRearmsSameConnection()
+        try await testCumulativeTranscriptNormalization()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
         try await testContinuousOutputAndResponseBoundary()
@@ -249,6 +250,70 @@ private struct StepFunRealtimeAdapterTests {
         expect(
             calls.filter { $0 == .close(.normal) }.isEmpty,
             "turn interrupt does not close transport"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testCumulativeTranscriptNormalization() async throws {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你"}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"好"}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你好"}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#),
+            .text(#"{"type":"response.created"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","delta":"我"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","delta":"是"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","delta":"我是"}"#),
+            .text(#"{"type":"response.audio_transcript.done","transcript":"我是林轩"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","delta":"迟到"}"#),
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#),
+            .text(#"{"type":"response.created"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","delta":"新"}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        _ = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+
+        let expected: [NativeSpeechEventKind] = [
+            .inputSpeechStarted,
+            .partialTranscript("你"),
+            .partialTranscript("你好"),
+            .finalTranscript("你好"),
+            .thinking,
+            .outputText(text: "我", isFinal: false),
+            .outputText(text: "我是", isFinal: false),
+            .outputText(text: "我是林轩", isFinal: true),
+            .responseCompleted,
+            .thinking,
+            .outputText(text: "新", isFinal: false)
+        ]
+        for expectedKind in expected {
+            let event = try await adapter.receive(
+                interactionID: request.interaction.id
+            )
+            expect(
+                event.kind == expectedKind,
+                "delta and snapshot forms produce cumulative standard text"
+            )
+        }
+        let ignoredCount = await adapter.ignoredEventCount
+        expect(
+            ignoredCount == 3,
+            "duplicate and post-final transcript events are absorbed"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }

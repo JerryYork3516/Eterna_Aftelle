@@ -106,6 +106,7 @@ private struct NativeSpeechDuplexTests {
         try await testSlowConsumerPreservesInteraction()
         try await testReceiveFailureAndDuplicateStart()
         try await testStaleCancelledAndClosedOutput()
+        try await testCumulativeSubtitleThroughController()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
     }
@@ -170,6 +171,60 @@ private struct NativeSpeechDuplexTests {
         expect(
             stack.controller.realtimeSpeechDiagnosticTimeline.events.isEmpty,
             "controller clears diagnostic timeline"
+        )
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testCumulativeSubtitleThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "subtitle fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"好"}"#)
+        )
+        await waitUntil {
+            stack.controller.realtimeSpeechSubtitleSnapshot.userPartial
+                == "你好"
+        }
+        await transport.enqueue(
+            .text(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#)
+        )
+        await waitUntil {
+            stack.controller.realtimeSpeechSubtitleSnapshot.userFinal
+                == "你好"
+        }
+        await transport.enqueue(.text(#"{"type":"response.created"}"#))
+        await transport.enqueue(
+            .text(#"{"type":"response.audio_transcript.delta","delta":"我"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio_transcript.delta","delta":"是"}"#)
+        )
+        await waitUntil {
+            stack.controller.realtimeSpeechSubtitleSnapshot.residentPartial
+                == "我是"
+        }
+        await transport.enqueue(
+            .text(#"{"type":"response.audio_transcript.done","transcript":"我是林轩"}"#)
+        )
+        await waitUntil {
+            stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
+                == "我是林轩"
+        }
+        expect(
+            stack.controller.particleSubtitleState.text == "我是林轩",
+            "final subtitle bypasses partial throttle"
         )
         await stack.controller.stopSpeechAudioCapture()
     }
