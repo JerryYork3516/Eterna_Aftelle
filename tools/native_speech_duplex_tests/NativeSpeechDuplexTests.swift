@@ -103,7 +103,7 @@ private struct NativeSpeechDuplexTests {
         try await testStopClearsActivePlaybackThroughController()
         try await testConversionFailureThroughController()
         await testDebugSinkClearsInterruptedOutput()
-        try await testOutputBackpressureStopsInteraction()
+        try await testSlowConsumerPreservesInteraction()
         try await testReceiveFailureAndDuplicateStart()
         try await testStaleCancelledAndClosedOutput()
         try await testRedactedDiagnosticsAndExport()
@@ -273,29 +273,65 @@ private struct NativeSpeechDuplexTests {
                 == .listening
         }
 
+        for turn in 3 ... 5 {
+            expect(
+                stack.capture.emit(UInt8(turn + 4)),
+                "turn \(turn) emits input frame"
+            )
+            await waitUntil {
+                try await audioAppendObjects(transport).count == turn + 4
+            }
+            await transport.enqueue(
+                .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+            )
+            await transport.enqueue(
+                .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+            )
+            await transport.enqueue(
+                .text(#"{"type":"response.audio.delta","delta":"CAk="}"#)
+            )
+            await transport.enqueue(
+                .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+            )
+            await waitUntil {
+                await stack.controller.refreshMicrophoneAuthorization()
+                return stack.controller.speechOutputBridgeSnapshot
+                    .completedResponseCount == UInt64(turn)
+            }
+            stack.outputPlayer.completeScheduledChunk()
+            await waitUntil {
+                await stack.controller.refreshMicrophoneAuthorization()
+                return stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+            }
+        }
+
         let inputObjects = try await audioAppendObjects(transport)
-        expect(inputObjects.count == 6, "two turns send six input appends")
+        expect(inputObjects.count == 9, "five turns keep sending input")
         let inputMarkers = inputObjects.compactMap { object -> UInt8? in
             guard let encoded = object["audio"] as? String,
                   let data = Data(base64Encoded: encoded) else { return nil }
             return data.first
         }
-        expect(inputMarkers == [1, 2, 3, 4, 5, 6], "two-turn input preserves order")
+        expect(
+            inputMarkers == [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            "five-turn input preserves order"
+        )
 
         let output = stack.controller.speechOutputBridgeSnapshot
-        expect(output.state == .configured, "second response keeps bridge configured")
-        expect(output.completedResponseCount == 2, "two response boundaries arrive")
-        expect(output.outputAudioChunkCount == 3, "two responses reach AppController")
-        expect(output.outputAudioByteCount == 6, "two-response byte count reaches AppController")
+        expect(output.state == .configured, "fifth response keeps bridge configured")
+        expect(output.completedResponseCount == 5, "five response boundaries arrive")
+        expect(output.outputAudioChunkCount == 6, "five responses reach AppController")
+        expect(output.outputAudioByteCount == 12, "five-response byte count reaches AppController")
         expect(output.firstChunkLatencyMilliseconds != nil, "first chunk latency is recorded")
-        expect(output.hasActiveReceiveLoop, "second response keeps receive loop active")
+        expect(output.hasActiveReceiveLoop, "fifth response keeps receive loop active")
         expect(
             stack.controller.speechInputBridgeSnapshot.hasActivePump,
-            "second response keeps input pump active"
+            "fifth response keeps input pump active"
         )
         expect(
             await transport.maximumConcurrentReceiveCount == 1,
-            "both responses share one receive loop"
+            "all responses share one receive loop"
         )
         expect(
             await stack.adapter.ignoredEventCount == 2,
@@ -308,7 +344,7 @@ private struct NativeSpeechDuplexTests {
             if case .connect = $0 { return true }
             return false
         }.count
-        expect(connectCount == 1, "two responses reuse one WebSocket")
+        expect(connectCount == 1, "five responses reuse one WebSocket")
 
         await stack.controller.stopSpeechAudioCapture()
         let stoppedOutput = stack.controller.speechOutputBridgeSnapshot
@@ -328,7 +364,7 @@ private struct NativeSpeechDuplexTests {
         expect(closeCount == 1, "Stop closes transport once")
     }
 
-    private static func testOutputBackpressureStopsInteraction() async throws {
+    private static func testSlowConsumerPreservesInteraction() async throws {
         let transport = handshakeTransport()
         let stack = makeRuntimeStack(transport: transport)
         _ = stack.orchestration.loadResident(fixtureData: fixtureData)
@@ -339,11 +375,10 @@ private struct NativeSpeechDuplexTests {
             )
         )
         let bridge = outputBridge(
-            orchestration: stack.orchestration,
-            consumeTimeout: .milliseconds(5)
+            orchestration: stack.orchestration
         ) { event in
             if case .outputAudio = event.kind {
-                try? await Task.sleep(for: .milliseconds(100))
+                try? await Task.sleep(for: .milliseconds(300))
             }
         }
         _ = await bridge.start(binding: binding)
@@ -356,31 +391,30 @@ private struct NativeSpeechDuplexTests {
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
+        try? await Task.sleep(for: .milliseconds(350))
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+        )
         await waitUntil {
-            await bridge.currentSnapshot().state == .failed
+            await bridge.currentSnapshot().completedResponseCount == 1
         }
-        let failed = await bridge.currentSnapshot()
-        expect(failed.lastError == "transport_failure", "slow sink returns standard error")
-        expect(!failed.hasActiveReceiveLoop, "slow sink stops receive loop")
+        let active = await bridge.currentSnapshot()
+        expect(active.lastError == nil, "slow sink is not a transport error")
+        expect(active.hasActiveReceiveLoop, "slow sink preserves receive loop")
+        expect(active.completedResponseCount == 1,
+               "slow sink still completes the current turn")
         expect(
             MacSpeechNativeOutputBridge.outputEventCapacity == 1,
             "output flow is one bounded in-flight event"
         )
         let types = try await sentEventTypes(transport)
-        expect(types.filter { $0 == "response.cancel" }.count == 1, "overflow cancels Provider once")
-        let closeCount = await transport.calls.filter {
-            $0 == .close(.normal)
-        }.count
-        expect(closeCount == 1, "overflow closes Provider once")
-        let receiveCount = await transport.calls.filter { $0 == .receive }.count
-        await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
-        )
-        try? await Task.sleep(for: .milliseconds(20))
+        expect(types.filter { $0 == "response.cancel" }.isEmpty,
+               "slow sink does not cancel Provider")
         expect(
-            await transport.calls.filter { $0 == .receive }.count == receiveCount,
-            "overflow does not continue receiving"
+            await transport.calls.filter { $0 == .close(.normal) }.isEmpty,
+            "slow sink does not close Provider"
         )
+        _ = await bridge.stop()
     }
 
     private static func testInterruptThroughController() async throws {
@@ -827,7 +861,6 @@ private struct NativeSpeechDuplexTests {
 
     private static func outputBridge(
         orchestration: OrchestrationKernel,
-        consumeTimeout: Duration = .milliseconds(250),
         consume: @escaping @Sendable (NativeSpeechEvent) async -> Void = { _ in }
     ) -> MacSpeechNativeOutputBridge {
         MacSpeechNativeOutputBridge(
@@ -848,8 +881,7 @@ private struct NativeSpeechDuplexTests {
                 await orchestration.closeNativeSpeechInput(
                     binding: binding
                 )
-            },
-            consumeTimeout: consumeTimeout
+            }
         )
     }
 

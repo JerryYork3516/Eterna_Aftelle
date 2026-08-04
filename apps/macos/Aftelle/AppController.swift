@@ -205,8 +205,7 @@ final class AppController: ObservableObject {
             await orchestrationKernel.closeNativeSpeechInput(
                 binding: binding
             )
-        },
-        consumeTimeout: .milliseconds(250)
+        }
     )
     private let debugSubtitleKeys = [
         "particleSubtitle.test.0",
@@ -1484,13 +1483,18 @@ final class AppController: ObservableObject {
     private func consumeNativeSpeechOutputEvent(
         _ event: NativeSpeechEvent
     ) async {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         let stateBefore = realtimeSpeechStateSnapshot.state.rawValue
         await speechOutputDebugSink.consume(event)
         syncRealtimeSpeechPresentation()
+        let duration = (
+            DispatchTime.now().uptimeNanoseconds &- startedAt
+        ) / 1_000_000
         recordRealtimeSpeechProviderEvent(
             event,
             stateBefore: stateBefore,
-            stateAfter: realtimeSpeechStateSnapshot.state.rawValue
+            stateAfter: realtimeSpeechStateSnapshot.state.rawValue,
+            durationMilliseconds: duration
         )
         switch event.kind {
         case .outputAudio(let payload):
@@ -1668,7 +1672,8 @@ final class AppController: ObservableObject {
     private func recordRealtimeSpeechProviderEvent(
         _ event: NativeSpeechEvent,
         stateBefore: String,
-        stateAfter: String
+        stateAfter: String,
+        durationMilliseconds: UInt64
     ) {
         let metadata = Self.nativeSpeechEventMetadata(event.kind)
         recordRealtimeSpeechDiagnostic(
@@ -1687,6 +1692,7 @@ final class AppController: ObservableObject {
             queueDepth: speechAudioOutputHostSnapshot.queueDepth,
             playbackGeneration:
                 nativeSpeechPlaybackDebugSnapshot.playbackGeneration,
+            durationMilliseconds: durationMilliseconds,
             errorCode: metadata.errorCode
         )
     }

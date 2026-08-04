@@ -81,7 +81,6 @@ actor MacSpeechNativeOutputBridge {
     private let endInputPump: EndInputPump
     private let stopInput: StopInput
     private let closeInput: CloseInput
-    private let consumeTimeout: Duration
     private var receiveTask: Task<Void, Never>?
     private var activeBinding: NativeSpeechInputBinding?
     private var state = MacSpeechNativeOutputBridgeState.idle
@@ -100,15 +99,13 @@ actor MacSpeechNativeOutputBridge {
         consumeEvent: @escaping ConsumeEvent,
         endInputPump: @escaping EndInputPump,
         stopInput: @escaping StopInput,
-        closeInput: @escaping CloseInput,
-        consumeTimeout: Duration
+        closeInput: @escaping CloseInput
     ) {
         self.receiveEvent = receiveEvent
         self.consumeEvent = consumeEvent
         self.endInputPump = endInputPump
         self.stopInput = stopInput
         self.closeInput = closeInput
-        self.consumeTimeout = consumeTimeout
     }
 
     func start(
@@ -182,13 +179,7 @@ actor MacSpeechNativeOutputBridge {
                     )
                     return
                 }
-                guard await consumeWithinLimit(event) else {
-                    await failAndStop(
-                        binding: binding,
-                        error: .transportFailure
-                    )
-                    return
-                }
+                await consumeEvent(event)
                 if isTerminal(event) {
                     await finishTerminal(event)
                     return
@@ -232,28 +223,6 @@ actor MacSpeechNativeOutputBridge {
             state = .closing
         }
         return true
-    }
-
-    private func consumeWithinLimit(
-        _ event: NativeSpeechEvent
-    ) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { [consumeEvent] in
-                await consumeEvent(event)
-                return true
-            }
-            group.addTask { [consumeTimeout] in
-                do {
-                    try await Task.sleep(for: consumeTimeout)
-                    return false
-                } catch {
-                    return true
-                }
-            }
-            let consumed = await group.next() ?? false
-            group.cancelAll()
-            return consumed
-        }
     }
 
     private func failAndStop(

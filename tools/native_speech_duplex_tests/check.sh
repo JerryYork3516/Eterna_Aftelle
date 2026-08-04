@@ -146,3 +146,12 @@ if rg -qi 'Authorization|instructions|transcript|base64|resident_identity' \
 fi
 echo "native_speech_duplex_debug_localization=PASS"
 echo "native_speech_diagnostic_redaction=PASS"
+
+transport="$repo_root/apps/macos/RuntimeCore/URLSessionRealtimeWebSocketTransport.swift"
+rg -q 'timeoutIntervalForRequest = 15' "$transport"
+if rg -q 'timeoutIntervalForResource|consumeTimeout|consumeWithinLimit' \
+  "$transport" "$output_bridge" "$controller"; then
+  echo "native_speech_persistent_session=FAIL"
+  exit 1
+fi
+echo "native_speech_persistent_session=PASS"

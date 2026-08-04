@@ -16,7 +16,6 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 20
 
         let session = URLSession(configuration: configuration)
         let task = session.webSocketTask(with: request)
