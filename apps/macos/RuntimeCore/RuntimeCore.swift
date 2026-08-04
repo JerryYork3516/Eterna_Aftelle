@@ -953,12 +953,19 @@ nonisolated enum NativeSpeechEventDisposition: Equatable {
     case rejectedOutOfOrder
 }
 
+private struct RuntimeNativeSpeechPendingInterrupt: Equatable {
+    let interactionID: NativeSpeechInteractionID
+    let turnNumber: UInt64
+    let turnGeneration: UInt64
+}
+
 nonisolated final class RuntimeNativeSpeechInteractionGate:
     @unchecked Sendable {
     private let lock = NSLock()
     private var interaction: NativeSpeechInteraction?
     private var contextProjection: RealtimeSpeechContextProjection?
     private var compilationKey: RealtimeSpeechContextCompilationKey?
+    private var pendingInterrupt: RuntimeNativeSpeechPendingInterrupt?
 
     func current() -> NativeSpeechInteraction? {
         lock.withLock { interaction }
@@ -984,6 +991,42 @@ nonisolated final class RuntimeNativeSpeechInteractionGate:
                 return false
             }
             self.interaction = interaction
+            return true
+        }
+    }
+
+    func setPendingInterrupt(
+        interactionID: NativeSpeechInteractionID,
+        turnNumber: UInt64,
+        turnGeneration: UInt64
+    ) -> Bool {
+        lock.withLock {
+            guard interaction?.id == interactionID else { return false }
+            pendingInterrupt = RuntimeNativeSpeechPendingInterrupt(
+                interactionID: interactionID,
+                turnNumber: turnNumber,
+                turnGeneration: turnGeneration
+            )
+            return true
+        }
+    }
+
+    func claimPendingInterrupt(
+        interactionID: NativeSpeechInteractionID,
+        turnNumber: UInt64,
+        turnGeneration: UInt64
+    ) -> Bool {
+        lock.withLock {
+            let expected = RuntimeNativeSpeechPendingInterrupt(
+                interactionID: interactionID,
+                turnNumber: turnNumber,
+                turnGeneration: turnGeneration
+            )
+            guard pendingInterrupt == expected,
+                  interaction?.id == interactionID else {
+                return false
+            }
+            pendingInterrupt = nil
             return true
         }
     }
@@ -1047,6 +1090,7 @@ nonisolated final class RuntimeNativeSpeechInteractionGate:
             interaction = nil
             contextProjection = nil
             compilationKey = nil
+            pendingInterrupt = nil
             return cleared
         }
     }
@@ -3178,6 +3222,7 @@ public final class RuntimeCore {
             }
             let stateBefore = realtimeSpeechStateMachine.snapshot()
             var stateTransition: RealtimeSpeechTransitionResult?
+            var requiresInterruptCommit = false
             if realtimeSpeechStateMachine.tracks(interaction) {
                 let transition = realtimeSpeechStateMachine.transition(
                     event: event,
@@ -3207,26 +3252,8 @@ public final class RuntimeCore {
                 case .applied, .ignoredDuplicate:
                     scheduleRealtimeSpeechGuard(for: interaction)
                 }
-                if transition.effect == .interruptProvider {
-                    do {
-                        try await executionEngine.cancelNativeSpeech(
-                            interactionID: interactionID,
-                            reason: .interrupted
-                        )
-                    } catch let error as NativeSpeechError {
-                        await failActiveNativeSpeechInteraction(
-                            interactionID: interactionID,
-                            error: error
-                        )
-                        throw error
-                    } catch {
-                        await failActiveNativeSpeechInteraction(
-                            interactionID: interactionID,
-                            error: .transportFailure
-                        )
-                        throw NativeSpeechError.transportFailure
-                    }
-                }
+                requiresInterruptCommit =
+                    transition.effect == .interruptProvider
             }
             let disposition = nativeSpeechDisposition(
                 for: event,
@@ -3258,6 +3285,18 @@ public final class RuntimeCore {
                     reason: .finalTranscript
                 )
             }
+            if requiresInterruptCommit {
+                let subtitleSnapshot =
+                    realtimeSpeechSubtitleStateMachine.snapshot()
+                guard nativeSpeechInteractionGate.setPendingInterrupt(
+                    interactionID: interactionID,
+                    turnNumber: realtimeSpeechStateMachine.snapshot()
+                        .currentTurnNumber,
+                    turnGeneration: subtitleSnapshot.turnGeneration
+                ) else {
+                    return .rejectedStale
+                }
+            }
             if case .accepted = disposition,
                nativeSpeechEventIsTerminal(event) {
                 try? await executionEngine.closeNativeSpeech(
@@ -3280,6 +3319,39 @@ public final class RuntimeCore {
                     == interactionID else {
                 return .rejectedStale
             }
+            await failActiveNativeSpeechInteraction(
+                interactionID: interactionID,
+                error: .transportFailure
+            )
+            throw NativeSpeechError.transportFailure
+        }
+    }
+
+    func commitNativeSpeechInterrupt(
+        interactionID: NativeSpeechInteractionID,
+        turnNumber: UInt64,
+        turnGeneration: UInt64
+    ) async throws -> Bool {
+        guard nativeSpeechInteractionGate.claimPendingInterrupt(
+            interactionID: interactionID,
+            turnNumber: turnNumber,
+            turnGeneration: turnGeneration
+        ) else {
+            return false
+        }
+        do {
+            try await executionEngine.cancelNativeSpeech(
+                interactionID: interactionID,
+                reason: .interrupted
+            )
+            return true
+        } catch let error as NativeSpeechError {
+            await failActiveNativeSpeechInteraction(
+                interactionID: interactionID,
+                error: error
+            )
+            throw error
+        } catch {
             await failActiveNativeSpeechInteraction(
                 interactionID: interactionID,
                 error: .transportFailure

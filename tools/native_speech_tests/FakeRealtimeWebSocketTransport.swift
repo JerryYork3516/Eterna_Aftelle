@@ -16,6 +16,7 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var receiveResults: [ReceiveResult]
     private var connectResults: [Result<Void, NativeSpeechError>]
     private let audioAppendError: NativeSpeechError?
+    private let responseCancelDelay: Duration
     private let waitsWhenEmpty: Bool
     private var pendingReceive:
         CheckedContinuation<RealtimeWebSocketFrame, any Error>?
@@ -27,6 +28,7 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     init(
         frames: [RealtimeWebSocketFrame] = [],
         audioAppendError: NativeSpeechError? = nil,
+        responseCancelDelay: Duration = .zero,
         connectResults: [Result<Void, NativeSpeechError>] = [],
         receiveResults: [ReceiveResult] = [],
         waitsWhenEmpty: Bool = false
@@ -35,6 +37,7 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
             + receiveResults
         self.connectResults = connectResults
         self.audioAppendError = audioAppendError
+        self.responseCancelDelay = responseCancelDelay
         self.waitsWhenEmpty = waitsWhenEmpty
     }
 
@@ -48,6 +51,10 @@ actor FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func send(_ frame: RealtimeWebSocketFrame) async throws {
         calls.append(.send(frame))
+        if case .text(let text) = frame,
+           text.contains("\"type\":\"response.cancel\"") {
+            try await Task.sleep(for: responseCancelDelay)
+        }
         if case .text(let text) = frame,
            text.contains("\"type\":\"input_audio_buffer.append\""),
            let audioAppendError {

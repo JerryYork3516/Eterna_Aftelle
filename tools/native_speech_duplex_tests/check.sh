@@ -155,3 +155,14 @@ if rg -q 'timeoutIntervalForResource|consumeTimeout|consumeWithinLimit' \
   exit 1
 fi
 echo "native_speech_persistent_session=PASS"
+
+rg -q 'commitNativeSpeechInterrupt' "$controller" "$orchestration" "$runtime"
+rg -q 'claimPendingInterrupt' "$runtime"
+rg -q 'executionEngine.cancelNativeSpeech' "$runtime"
+rg -q 'decodeEnvelope' "$codec" "$adapter"
+rg -q 'didEmitCancellationAcknowledgement' "$adapter"
+if rg -q 'public func commitNativeSpeechInterrupt' "$runtime" "$orchestration"; then
+  echo "native_speech_interrupt_boundary=FAIL"
+  exit 1
+fi
+echo "native_speech_interrupt_boundary=PASS"

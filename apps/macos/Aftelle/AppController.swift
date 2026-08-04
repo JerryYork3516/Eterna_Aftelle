@@ -1500,7 +1500,67 @@ final class AppController: ObservableObject {
         case .outputAudio(let payload):
             await enqueueNativeSpeechOutput(payload)
         case .inputSpeechStarted:
-            await clearInterruptedPlaybackIfNeeded()
+            let isInterrupt = realtimeSpeechStateSnapshot
+                .lastTransitionReason == .interrupted
+            let turnNumber = realtimeSpeechStateSnapshot.currentTurnNumber
+            let turnGeneration = realtimeSpeechSubtitleSnapshot
+                .turnGeneration
+            let cleared = await clearInterruptedPlaybackIfNeeded()
+            if isInterrupt {
+                let clearDuration = (
+                    DispatchTime.now().uptimeNanoseconds &- startedAt
+                ) / 1_000_000
+                recordRealtimeSpeechDiagnostic(
+                    source: .playback,
+                    category: "interrupt_local_clear",
+                    interactionShortID: String(
+                        event.interactionID.rawValue.uuidString.prefix(8)
+                    ),
+                    turnNumber: turnNumber,
+                    turnGeneration: turnGeneration,
+                    disposition: cleared ? "cleared" : "already_clear",
+                    durationMilliseconds: clearDuration
+                )
+                recordRealtimeSpeechDiagnostic(
+                    source: .runtime,
+                    category: "provider_cancel_requested",
+                    interactionShortID: String(
+                        event.interactionID.rawValue.uuidString.prefix(8)
+                    ),
+                    turnNumber: turnNumber,
+                    turnGeneration: turnGeneration
+                )
+                let result = await orchestrationKernel
+                    .commitNativeSpeechInterrupt(
+                        interactionID: event.interactionID,
+                        turnNumber: turnNumber,
+                        turnGeneration: turnGeneration
+                    )
+                switch result {
+                case .success(let committed):
+                    recordRealtimeSpeechDiagnostic(
+                        source: .runtime,
+                        category: "provider_cancel_committed",
+                        interactionShortID: String(
+                            event.interactionID.rawValue.uuidString.prefix(8)
+                        ),
+                        turnNumber: turnNumber,
+                        turnGeneration: turnGeneration,
+                        disposition: committed ? "sent" : "duplicate"
+                    )
+                case .failure(let error):
+                    recordRealtimeSpeechDiagnostic(
+                        source: .runtime,
+                        category: "provider_cancel_failed",
+                        interactionShortID: String(
+                            event.interactionID.rawValue.uuidString.prefix(8)
+                        ),
+                        turnNumber: turnNumber,
+                        turnGeneration: turnGeneration,
+                        errorCode: Self.nativeSpeechErrorName(error)
+                    )
+                }
+            }
         case .responseCompleted:
             if realtimeSpeechStateSnapshot.state == .listening {
                 nativeSpeechPlaybackBinding = nil
@@ -1545,16 +1605,17 @@ final class AppController: ObservableObject {
         await consumePlaybackEvents(in: snapshot)
     }
 
-    private func clearInterruptedPlaybackIfNeeded() async {
+    private func clearInterruptedPlaybackIfNeeded() async -> Bool {
         guard let binding = nativeSpeechPlaybackBinding,
               realtimeSpeechStateSnapshot.lastTransitionReason == .interrupted,
               realtimeSpeechStateSnapshot.currentTurnNumber
                 > binding.turnNumber else {
-            return
+            return false
         }
         playbackInterruptClearCount &+= 1
         nativeSpeechPlaybackBinding = nil
         speechAudioOutputHostSnapshot = await speechAudioOutputHost.clear()
+        return true
     }
 
     private func consumePlaybackEvents(

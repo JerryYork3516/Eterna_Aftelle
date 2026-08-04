@@ -207,8 +207,21 @@ private struct StepFunRealtimeAdapterTests {
             interactionID: request.interaction.id
         )
         expect(
-            acknowledgement.kind == .cancelled(reason: nil),
+            acknowledgement.kind == .cancelled(reason: "interrupted"),
             "cancel acknowledgement remains a standard event"
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"status":"cancelled"}}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
+        let nextResponse = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            nextResponse.kind == .thinking,
+            "duplicate cancel acknowledgement is absorbed"
         )
         try await adapter.cancel(
             interactionID: request.interaction.id,
@@ -221,6 +234,11 @@ private struct StepFunRealtimeAdapterTests {
             return try json(text)["type"] as? String == "response.cancel"
         }.count
         expect(cancelCount == 2, "cancel acknowledgement rearms next turn")
+        let ignoredEventCount = await adapter.ignoredEventCount
+        expect(
+            ignoredEventCount == 1,
+            "duplicate cancel acknowledgement is counted once"
+        )
         expect(
             calls.filter {
                 if case .connect = $0 { return true }

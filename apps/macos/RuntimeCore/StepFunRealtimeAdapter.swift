@@ -23,6 +23,7 @@ actor StepFunRealtimeAdapter:
         RealtimeSpeechContextProjection?
     private var pendingEvents: [NativeSpeechEvent] = []
     private var isCancelling = false
+    private var didEmitCancellationAcknowledgement = false
     private var nextOutputAudioSequenceNumber: UInt64 = 0
     private let reconnectDelay: Duration
     private(set) var connectionState = StepFunRealtimeConnectionState.closed
@@ -176,6 +177,7 @@ actor StepFunRealtimeAdapter:
         activeInteraction = request.interaction
         activeContextVersion = contextProjection.compilationVersion
         isCancelling = false
+        didEmitCancellationAcknowledgement = false
         nextOutputAudioSequenceNumber = 0
 
         let created = try await nextRecognizedEvent(
@@ -206,6 +208,7 @@ actor StepFunRealtimeAdapter:
         activeContextVersion = nil
         pendingEvents.removeAll()
         isCancelling = false
+        didEmitCancellationAcknowledgement = false
         nextOutputAudioSequenceNumber = 0
     }
 
@@ -229,17 +232,35 @@ actor StepFunRealtimeAdapter:
             } catch {
                 throw NativeSpeechError.transportFailure
             }
-            if let event = try codec.decode(
+            let envelope = try codec.decodeEnvelope(
                 frame,
                 interactionID: interactionID,
                 outputAudioSequenceNumber: nextOutputAudioSequenceNumber
-            ) {
+            )
+            if envelope.wireKind == .responseCreated {
+                isCancelling = false
+                didEmitCancellationAcknowledgement = false
+            }
+            if isCancelling,
+               (envelope.wireKind == .cancellationAcknowledgement
+                    || envelope.wireKind == .responseCompleted) {
+                guard !didEmitCancellationAcknowledgement else {
+                    ignoredEventCount &+= 1
+                    continue
+                }
+                didEmitCancellationAcknowledgement = true
+                connectionState = .configured
+                return NativeSpeechEvent(
+                    interactionID: interactionID,
+                    kind: .cancelled(reason: "interrupted")
+                )
+            }
+            if let event = envelope.event {
                 switch event.kind {
                 case .outputAudio:
                     nextOutputAudioSequenceNumber &+= 1
                     connectionState = .streaming
                 case .cancelled, .responseCompleted, .failed:
-                    isCancelling = false
                     connectionState = .configured
                 default:
                     break

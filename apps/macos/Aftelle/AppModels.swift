@@ -1375,6 +1375,26 @@ public final class OrchestrationKernel {
         await runtimeCore.handleNativeSpeechPlaybackEvent(event)
     }
 
+    nonisolated func commitNativeSpeechInterrupt(
+        interactionID: NativeSpeechInteractionID,
+        turnNumber: UInt64,
+        turnGeneration: UInt64
+    ) async -> Result<Bool, NativeSpeechError> {
+        do {
+            return .success(
+                try await runtimeCore.commitNativeSpeechInterrupt(
+                    interactionID: interactionID,
+                    turnNumber: turnNumber,
+                    turnGeneration: turnGeneration
+                )
+            )
+        } catch let error as NativeSpeechError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
     func stopNativeSpeechInput(
         binding: NativeSpeechInputBinding,
         reason: NativeSpeechCancellationReason

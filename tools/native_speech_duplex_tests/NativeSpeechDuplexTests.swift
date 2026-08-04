@@ -418,7 +418,9 @@ private struct NativeSpeechDuplexTests {
     }
 
     private static func testInterruptThroughController() async throws {
-        let transport = handshakeTransport()
+        let transport = handshakeTransport(
+            responseCancelDelay: .milliseconds(300)
+        )
         let stack = makeControllerStack(transport: transport)
         expect(
             stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
@@ -448,6 +450,32 @@ private struct NativeSpeechDuplexTests {
 
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.nativeSpeechPlaybackDebugSnapshot
+                .interruptClearCount == 1
+        }
+        let clearEvent = stack.controller
+            .realtimeSpeechDiagnosticTimeline.events.last {
+                $0.category == "interrupt_local_clear"
+            }
+        expect(
+            clearEvent?.durationMilliseconds.map { $0 <= 100 } == true,
+            "accepted speech_started clears local playback within 100ms"
+        )
+        let diagnosticCategories = stack.controller
+            .realtimeSpeechDiagnosticTimeline.events.map(\.category)
+        let clearIndex = diagnosticCategories.firstIndex(
+            of: "interrupt_local_clear"
+        )
+        let cancelIndex = diagnosticCategories.firstIndex(
+            of: "provider_cancel_committed"
+        )
+        expect(
+            clearIndex != nil
+                && (cancelIndex == nil || clearIndex! < cancelIndex!),
+            "local clear is recorded before delayed Provider cancel"
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
@@ -518,6 +546,9 @@ private struct NativeSpeechDuplexTests {
         }
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
         )
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"BQY="}"#)
@@ -639,6 +670,14 @@ private struct NativeSpeechDuplexTests {
             return stack.controller.realtimeSpeechStateSnapshot.state == .idle
                 && stack.controller.realtimeSpeechStateSnapshot
                     .lastStandardError == "unavailable"
+        }
+        await waitUntil {
+            let eventTypes = try await sentEventTypes(transport)
+            let closeCount = await transport.calls.filter {
+                $0 == .close(.normal)
+            }.count
+            return eventTypes.filter { $0 == "response.cancel" }.count == 1
+                && closeCount == 1
         }
         let eventTypes = try await sentEventTypes(transport)
         expect(
@@ -945,12 +984,15 @@ private struct NativeSpeechDuplexTests {
         return (OrchestrationKernel(runtimeCore: runtime), adapter)
     }
 
-    private static func handshakeTransport() -> FakeRealtimeWebSocketTransport {
+    private static func handshakeTransport(
+        responseCancelDelay: Duration = .zero
+    ) -> FakeRealtimeWebSocketTransport {
         FakeRealtimeWebSocketTransport(
             frames: [
                 .text(#"{"type":"session.created"}"#),
                 .text(#"{"type":"session.updated"}"#)
             ],
+            responseCancelDelay: responseCancelDelay,
             waitsWhenEmpty: true
         )
     }

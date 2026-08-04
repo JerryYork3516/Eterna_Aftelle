@@ -784,6 +784,19 @@ private struct NativeSpeechRuntimeIntegrationTests {
             runtime: runtime,
             provider: provider
         )
+        let firstInterruptCommitted = try await commitPendingInterrupt(
+            runtime: runtime,
+            binding: binding
+        )
+        expect(
+            firstInterruptCommitted,
+            "first pending Interrupt commits once"
+        )
+        let duplicateCommit = try await commitPendingInterrupt(
+            runtime: runtime,
+            binding: binding
+        )
+        expect(!duplicateCommit, "pending Interrupt is consumed once")
         var cancelCount = await provider.operationCount(.cancel)
         expect(cancelCount == 1, "first Interrupt sends one Provider cancel")
         expect(
@@ -868,6 +881,14 @@ private struct NativeSpeechRuntimeIntegrationTests {
             binding: binding,
             runtime: runtime,
             provider: provider
+        )
+        let secondInterruptCommitted = try await commitPendingInterrupt(
+            runtime: runtime,
+            binding: binding
+        )
+        expect(
+            secondInterruptCommitted,
+            "second pending Interrupt commits once"
         )
         cancelCount = await provider.operationCount(.cancel)
         expect(cancelCount == 2, "second Interrupt sends one additional cancel")
@@ -1003,6 +1024,19 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(
             runtime.realtimeSpeechStateSnapshot().state == expectedState,
             "Runtime owns \(expectedState.rawValue) transition"
+        )
+    }
+
+    private static func commitPendingInterrupt(
+        runtime: RuntimeCore,
+        binding: NativeSpeechInputBinding
+    ) async throws -> Bool {
+        let state = runtime.realtimeSpeechStateSnapshot()
+        let subtitle = runtime.realtimeSpeechSubtitleSnapshot()
+        return try await runtime.commitNativeSpeechInterrupt(
+            interactionID: binding.interactionID,
+            turnNumber: state.currentTurnNumber,
+            turnGeneration: subtitle.turnGeneration
         )
     }
 

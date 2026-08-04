@@ -1,5 +1,21 @@
 import Foundation
 
+nonisolated enum StepFunRealtimeWireEventKind: Sendable, Equatable {
+    case responseCreated
+    case responseCompleted
+    case cancellationAcknowledgement
+    case userTranscriptDelta
+    case userTranscriptDone
+    case residentTranscriptDelta
+    case residentTranscriptDone
+    case other
+}
+
+nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
+    let wireKind: StepFunRealtimeWireEventKind
+    let event: NativeSpeechEvent?
+}
+
 nonisolated struct StepFunRealtimeCodec: Sendable {
     func sessionUpdate(
         profile: NativeSpeechProviderProfile,
@@ -44,6 +60,18 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         interactionID: NativeSpeechInteractionID,
         outputAudioSequenceNumber: UInt64? = nil
     ) throws -> NativeSpeechEvent? {
+        try decodeEnvelope(
+            frame,
+            interactionID: interactionID,
+            outputAudioSequenceNumber: outputAudioSequenceNumber
+        ).event
+    }
+
+    func decodeEnvelope(
+        _ frame: RealtimeWebSocketFrame,
+        interactionID: NativeSpeechInteractionID,
+        outputAudioSequenceNumber: UInt64? = nil
+    ) throws -> StepFunRealtimeDecodedEnvelope {
         let data: Data
         switch frame {
         case .text(let text):
@@ -61,30 +89,42 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         }
 
         let kind: NativeSpeechEventKind?
+        let wireKind: StepFunRealtimeWireEventKind
         switch type {
         case "session.created":
             kind = .connected
+            wireKind = .other
         case "session.updated":
             kind = .sessionUpdated
+            wireKind = .other
         case "input_audio_buffer.speech_started":
             kind = .inputSpeechStarted
+            wireKind = .other
         case "input_audio_buffer.speech_stopped":
             kind = .inputSpeechEnded
+            wireKind = .other
         case "conversation.item.input_audio_transcription.delta":
             kind = stringEvent(object, key: "delta", make: NativeSpeechEventKind.partialTranscript)
+            wireKind = .userTranscriptDelta
         case "conversation.item.input_audio_transcription.completed":
             kind = stringEvent(object, key: "transcript", make: NativeSpeechEventKind.finalTranscript)
-        case "response.created", "response.thinking.delta",
-             "response.thinking.done":
+            wireKind = .userTranscriptDone
+        case "response.created":
             kind = .thinking
+            wireKind = .responseCreated
+        case "response.thinking.delta", "response.thinking.done":
+            kind = .thinking
+            wireKind = .other
         case "response.audio_transcript.delta":
             kind = stringEvent(object, key: "delta") {
                 .outputText(text: $0, isFinal: false)
             }
+            wireKind = .residentTranscriptDelta
         case "response.audio_transcript.done":
             kind = stringEvent(object, key: "transcript") {
                 .outputText(text: $0, isFinal: true)
             }
+            wireKind = .residentTranscriptDone
         case "response.audio.delta":
             guard let encoded = object["delta"] as? String,
                   let audio = Data(base64Encoded: encoded) else {
@@ -102,16 +142,22 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                     format: .pcm16
                 )
             )
+            wireKind = .other
         case "response.audio.done":
-            return nil
+            return StepFunRealtimeDecodedEnvelope(
+                wireKind: .other,
+                event: nil
+            )
         case "response.text.delta":
             kind = stringEvent(object, key: "delta") {
                 .outputText(text: $0, isFinal: false)
             }
+            wireKind = .residentTranscriptDelta
         case "response.text.done":
             kind = stringEvent(object, key: "text") {
                 .outputText(text: $0, isFinal: true)
             }
+            wireKind = .residentTranscriptDone
         case "response.function_call_arguments.done":
             guard let requestID = object["call_id"] as? String,
                   let toolName = object["name"] as? String,
@@ -125,20 +171,37 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                     arguments: Data(arguments.utf8)
                 )
             )
+            wireKind = .other
         case "response.done":
             kind = try responseDoneKind(object)
+            if case .cancelled = kind {
+                wireKind = .cancellationAcknowledgement
+            } else {
+                wireKind = .responseCompleted
+            }
         case "response.cancelled":
             kind = .cancelled(reason: nil)
+            wireKind = .cancellationAcknowledgement
         case "error":
             kind = .failed(error(from: object))
+            wireKind = .other
         default:
-            return nil
+            return StepFunRealtimeDecodedEnvelope(
+                wireKind: .other,
+                event: nil
+            )
         }
 
         guard let kind else {
             throw NativeSpeechError.invalidEvent
         }
-        return NativeSpeechEvent(interactionID: interactionID, kind: kind)
+        return StepFunRealtimeDecodedEnvelope(
+            wireKind: wireKind,
+            event: NativeSpeechEvent(
+                interactionID: interactionID,
+                kind: kind
+            )
+        )
     }
 
     private func responseDoneKind(
