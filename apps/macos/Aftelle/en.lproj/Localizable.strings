@@ -163,6 +163,12 @@
 "particleDebug.audioHost.playbackQueue" = "Playback Queue";
 "particleDebug.audioHost.playbackEnqueued" = "Enqueued Chunks / Bytes";
 "particleDebug.audioHost.playbackPlayed" = "Played Chunks / Bytes";
+"particleDebug.audioHost.playbackStarted" = "Playback Starts";
+"particleDebug.audioHost.playbackCompleted" = "Playback Completions";
+"particleDebug.audioHost.playbackGeneration" = "Playback Generation";
+"particleDebug.audioHost.playbackTurn" = "Playback Turn";
+"particleDebug.audioHost.playbackClears" = "Playback Clears";
+"particleDebug.audioHost.playbackRejected" = "Rejected Playback";
 "particleDebug.audioHost.playbackUnderruns" = "Playback Underruns";
 "particleDebug.audioHost.playbackLastError" = "Playback Error";
 "particleDebug.avatarMode" = "Avatar Mode";

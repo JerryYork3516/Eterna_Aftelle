@@ -17,6 +17,8 @@ private struct MacSpeechAudioOutputHostTests {
         await testConsumerTimeoutStopsAndClears()
         await testStopAndCloseAreIdempotent()
         await testGenerationRejectsLateInputAndCompletion()
+        await testCloseCanReprepare()
+        await testDefaultOutputChangeFailsAndCanRecover()
         await testUnavailableOutputFailsBeforePrepare()
         print("speech_audio_output_checks=\(checks)")
     }
@@ -129,6 +131,8 @@ private struct MacSpeechAudioOutputHostTests {
         expect(completed.playedChunkCount == 2, "played chunk count")
         expect(completed.playedByteCount == 4, "played byte count")
         expect(completed.queueDepth == 0, "queue exhausted")
+        expect(completed.playbackStartedCount == 1, "playback start counted")
+        expect(completed.playbackCompletedCount == 1, "playback completion counted")
         expect(
             completed.recentEvents.map(\.kind).contains(.playbackCompleted),
             "local completion event"
@@ -218,11 +222,50 @@ private struct MacSpeechAudioOutputHostTests {
         try? await Task.sleep(nanoseconds: 5_000_000)
         let afterLateCompletion = await host.currentSnapshot()
         expect(afterLateCompletion.playedChunkCount == 0, "late completion rejected")
+        expect(afterLateCompletion.rejectedCallbackCount == 1, "late callback counted")
         let stale = await host.enqueue(
             pcm16Bytes: Data([2, 0]), sequence: 2, generation: generation
         )
         expect(stale.lastError == "stale_generation", "stale generation rejected")
         expect(stale.generation == stopped.generation, "new generation preserved")
+    }
+
+    private static func testCloseCanReprepare() async {
+        let (host, player) = makeHost()
+        let firstGeneration = await host.prepare().generation
+        _ = await host.close()
+        let reopened = await host.prepare()
+        expect(reopened.state == .prepared, "closed host can reprepare")
+        expect(reopened.generation > firstGeneration, "reprepare advances generation")
+        expect(player.prepareCount == 2, "player prepares again after close")
+    }
+
+    private static func testDefaultOutputChangeFailsAndCanRecover() async {
+        let player = FakeMacSpeechAudioOutputPlayer()
+        let monitor = FakeMacSpeechOutputDeviceMonitor()
+        let host = MacSpeechAudioOutputHost(
+            player: player,
+            deviceMonitor: monitor
+        )
+        let generation = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        )
+        _ = await host.start()
+        monitor.changeOutput(
+            identifier: "output-next",
+            name: "Next Output",
+            available: true
+        )
+        await waitUntil { await host.currentSnapshot().state == .failed }
+        let failed = await host.currentSnapshot()
+        expect(failed.lastError == "output_device_changed", "device change error")
+        expect(failed.queueDepth == 0, "device change clears playback")
+        expect(player.stopCount == 1, "device change stops player")
+        expect(player.closeCount == 1, "device change closes player")
+        let recovered = await host.prepare()
+        expect(recovered.state == .prepared, "later playback can reprepare")
+        expect(recovered.outputDevice.name == "Next Output", "new default output used")
     }
 
     private static func testUnavailableOutputFailsBeforePrepare() async {

@@ -43,8 +43,13 @@ private struct RealtimeSpeechStateMachineTests {
         )
         expect(
             transition(machine, interaction, .outputAudio(audio(interaction, 1)), 5)
+                .snapshot.state == .thinking,
+            "output audio alone does not claim local playback"
+        )
+        expect(
+            playback(machine, interaction, .started, 1, 5)
                 .snapshot.state == .speaking,
-            "first output audio enters speaking"
+            "local playback start enters speaking"
         )
         expect(
             transition(machine, interaction, .outputAudio(audio(interaction, 2)), 6)
@@ -57,9 +62,11 @@ private struct RealtimeSpeechStateMachineTests {
             .responseCompleted,
             7
         )
-        expect(completed.snapshot.state == .listening, "completion returns listening")
-        expect(completed.snapshot.completedTurnCount == 1, "one turn completes")
-        expect(completed.snapshot.currentTurnNumber == 2, "second turn begins")
+        expect(completed.snapshot.state == .speaking, "Provider completion waits for local drain")
+        let drained = playback(machine, interaction, .completed, 1, 8)
+        expect(drained.snapshot.state == .listening, "local drain returns listening")
+        expect(drained.snapshot.completedTurnCount == 1, "one turn completes")
+        expect(drained.snapshot.currentTurnNumber == 2, "second turn begins")
         expect(machine.tracks(interaction), "completion keeps interaction active")
         expect(
             transition(machine, interaction, .responseCompleted, 8)
@@ -70,17 +77,20 @@ private struct RealtimeSpeechStateMachineTests {
         _ = transition(machine, interaction, .inputSpeechStarted, 9)
         _ = transition(machine, interaction, .inputSpeechEnded, 10)
         _ = transition(machine, interaction, .outputAudio(audio(interaction, 3)), 11)
+        _ = playback(machine, interaction, .started, 2, 11)
         let secondCompletion = transition(
             machine,
             interaction,
             .responseCompleted,
             12
         )
-        expect(secondCompletion.snapshot.state == .listening, "second turn returns listening")
-        expect(secondCompletion.snapshot.completedTurnCount == 2, "two turns complete")
-        expect(secondCompletion.snapshot.currentTurnNumber == 3, "third turn is ready")
+        expect(secondCompletion.snapshot.state == .speaking, "second Provider completion waits")
+        let secondDrain = playback(machine, interaction, .completed, 2, 13)
+        expect(secondDrain.snapshot.state == .listening, "second turn returns listening")
+        expect(secondDrain.snapshot.completedTurnCount == 2, "two turns complete")
+        expect(secondDrain.snapshot.currentTurnNumber == 3, "third turn is ready")
         expect(
-            secondCompletion.snapshot.recentTransitions.map(\.state) == [
+            secondDrain.snapshot.recentTransitions.map(\.state) == [
                 .listening, .thinking, .speaking, .listening,
                 .thinking, .speaking, .listening
             ],
@@ -189,6 +199,7 @@ private struct RealtimeSpeechStateMachineTests {
         )
 
         testTerminalStates()
+        testPlaybackLifecycleGate()
         testStops()
         testInterrupts()
         testTimeouts()
@@ -241,6 +252,66 @@ private struct RealtimeSpeechStateMachineTests {
         )
     }
 
+    private static func testPlaybackLifecycleGate() {
+        let machine = RealtimeSpeechStateMachine()
+        let interaction = makeInteraction()
+        machine.start(interaction: interaction)
+        _ = transition(machine, interaction, .finalTranscript("play"), 1)
+        _ = transition(
+            machine,
+            interaction,
+            .outputAudio(audio(interaction, 1)),
+            2
+        )
+        let started = playback(machine, interaction, .started, 8, 3)
+        expect(started.snapshot.state == .speaking, "Host start owns speaking")
+        let providerDone = transition(
+            machine,
+            interaction,
+            .responseCompleted,
+            4
+        )
+        expect(providerDone.snapshot.state == .speaking, "Provider done does not skip local drain")
+        let wrongGeneration = playback(
+            machine,
+            interaction,
+            .completed,
+            7,
+            5
+        )
+        expect(wrongGeneration.disposition == .rejectedLate, "old playback generation is rejected")
+        let completed = playback(
+            machine,
+            interaction,
+            .completed,
+            8,
+            6
+        )
+        expect(completed.snapshot.state == .listening, "matching local drain completes turn")
+
+        let failedMachine = RealtimeSpeechStateMachine()
+        let failedInteraction = makeInteraction()
+        failedMachine.start(interaction: failedInteraction)
+        _ = transition(failedMachine, failedInteraction, .thinking, 1)
+        _ = transition(
+            failedMachine,
+            failedInteraction,
+            .outputAudio(audio(failedInteraction, 1)),
+            2
+        )
+        _ = playback(failedMachine, failedInteraction, .started, 9, 3)
+        let failed = playback(
+            failedMachine,
+            failedInteraction,
+            .failed(.unavailable),
+            9,
+            4
+        )
+        expect(failed.snapshot.state == .idle, "playback failure returns idle")
+        expect(failed.effect == .terminateProvider, "playback failure terminates Provider")
+        expect(failed.snapshot.lastStandardError == "unavailable", "playback failure is standardized")
+    }
+
     private static func testStops() {
         let idleMachine = RealtimeSpeechStateMachine()
         let idleStop = idleMachine.stop(reason: .stopped)
@@ -259,6 +330,7 @@ private struct RealtimeSpeechStateMachineTests {
             }
             if target == .speaking {
                 _ = transition(machine, interaction, .outputAudio(audio(interaction, 1)), 2)
+                _ = playback(machine, interaction, .started, 1, 2)
             }
             let stopped = machine.stop(reason: .stopped)
             expect(stopped.snapshot.state == .idle, "Stop returns \(target.rawValue) to idle")
@@ -304,6 +376,7 @@ private struct RealtimeSpeechStateMachineTests {
             .outputAudio(audio(interaction, 1)),
             2
         )
+        _ = playback(machine, interaction, .started, 1, 2)
 
         let interrupted = transition(
             machine,
@@ -388,14 +461,17 @@ private struct RealtimeSpeechStateMachineTests {
             .outputAudio(audio(interaction, 3)),
             8
         )
+        _ = playback(machine, interaction, .started, 2, 8)
         let completed = transition(
             machine,
             interaction,
             .responseCompleted,
             9
         )
+        let completedDrain = playback(machine, interaction, .completed, 2, 10)
         expect(
-            completed.snapshot.state == .listening,
+            completed.snapshot.state == .speaking
+                && completedDrain.snapshot.state == .listening,
             "new turn completes on the same interaction"
         )
         expect(
@@ -420,6 +496,13 @@ private struct RealtimeSpeechStateMachineTests {
             responseBoundaryMachine,
             responseBoundaryInteraction,
             .outputAudio(audio(responseBoundaryInteraction, 1)),
+            2
+        )
+        _ = playback(
+            responseBoundaryMachine,
+            responseBoundaryInteraction,
+            .started,
+            1,
             2
         )
         _ = transition(
@@ -457,6 +540,13 @@ private struct RealtimeSpeechStateMachineTests {
             failedBoundaryMachine,
             failedBoundaryInteraction,
             .outputAudio(audio(failedBoundaryInteraction, 1)),
+            2
+        )
+        _ = playback(
+            failedBoundaryMachine,
+            failedBoundaryInteraction,
+            .started,
+            1,
             2
         )
         _ = transition(
@@ -519,6 +609,7 @@ private struct RealtimeSpeechStateMachineTests {
         speakingMachine.start(interaction: speakingInteraction)
         _ = transition(speakingMachine, speakingInteraction, .finalTranscript("done"), 300)
         _ = transition(speakingMachine, speakingInteraction, .outputAudio(audio(speakingInteraction, 1)), 301)
+        _ = playback(speakingMachine, speakingInteraction, .started, 1, 301)
         applyExpectedTimeout(
             speakingMachine,
             speakingInteraction,
@@ -534,23 +625,38 @@ private struct RealtimeSpeechStateMachineTests {
         let interaction = makeInteraction()
         machine.start(interaction: interaction)
         for turn in 1...6 {
+            let base = UInt64(turn * 4)
             _ = transition(
                 machine,
                 interaction,
                 .finalTranscript("turn \(turn)"),
-                UInt64(turn * 3)
+                base
             )
             _ = transition(
                 machine,
                 interaction,
                 .outputAudio(audio(interaction, UInt64(turn))),
-                UInt64(turn * 3 + 1)
+                base + 1
+            )
+            _ = playback(
+                machine,
+                interaction,
+                .started,
+                UInt64(turn),
+                base + 1
             )
             _ = transition(
                 machine,
                 interaction,
                 .responseCompleted,
-                UInt64(turn * 3 + 2)
+                base + 2
+            )
+            _ = playback(
+                machine,
+                interaction,
+                .completed,
+                UInt64(turn),
+                base + 3
             )
         }
         let history = machine.snapshot().recentTransitions
@@ -634,6 +740,25 @@ private struct RealtimeSpeechStateMachineTests {
         machine.transition(
             event: NativeSpeechEvent(
                 interactionID: interaction.id,
+                kind: kind
+            ),
+            interaction: interaction,
+            nowNanoseconds: now
+        )
+    }
+
+    private static func playback(
+        _ machine: RealtimeSpeechStateMachine,
+        _ interaction: NativeSpeechInteraction,
+        _ kind: RealtimeSpeechPlaybackEventKind,
+        _ generation: UInt64,
+        _ now: UInt64
+    ) -> RealtimeSpeechTransitionResult {
+        machine.transition(
+            playbackEvent: RealtimeSpeechPlaybackEvent(
+                interactionID: interaction.id,
+                turnNumber: machine.snapshot().currentTurnNumber,
+                playbackGeneration: generation,
                 kind: kind
             ),
             interaction: interaction,

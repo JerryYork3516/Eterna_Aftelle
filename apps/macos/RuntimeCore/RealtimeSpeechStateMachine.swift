@@ -14,6 +14,9 @@ nonisolated enum RealtimeSpeechTransitionReason: String, Sendable, Equatable {
     case finalTranscript = "final_transcript"
     case providerThinking = "provider_thinking"
     case firstOutputAudio = "first_output_audio"
+    case playbackStarted = "playback_started"
+    case playbackCompleted = "playback_completed"
+    case playbackFailed = "playback_failed"
     case responseCompleted = "response_completed"
     case userStopped = "user_stopped"
     case interrupted
@@ -59,6 +62,20 @@ nonisolated enum RealtimeSpeechInteractionOutcome: String, Sendable, Equatable {
 nonisolated enum RealtimeSpeechTransitionEffect: Sendable, Equatable {
     case none
     case interruptProvider
+    case terminateProvider
+}
+
+nonisolated enum RealtimeSpeechPlaybackEventKind: Sendable, Equatable {
+    case started
+    case completed
+    case failed(NativeSpeechError)
+}
+
+nonisolated struct RealtimeSpeechPlaybackEvent: Sendable, Equatable {
+    let interactionID: NativeSpeechInteractionID
+    let turnNumber: UInt64
+    let playbackGeneration: UInt64
+    let kind: RealtimeSpeechPlaybackEventKind
 }
 
 nonisolated enum RealtimeSpeechGuardKind: String, Sendable, Equatable {
@@ -202,6 +219,10 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
     private var interruptedTurnCount: UInt64 = 0
     private var rejectedLateEventCount: UInt64 = 0
     private var awaitingInterruptCancellation = false
+    private var turnHasOutputAudio = false
+    private var providerResponseCompleted = false
+    private var playbackDrained = false
+    private var activePlaybackGeneration: UInt64?
 
     init(
         timeoutConfiguration: RealtimeSpeechTimeoutConfiguration = .standard
@@ -229,6 +250,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             interruptedTurnCount = 0
             rejectedLateEventCount = 0
             awaitingInterruptCancellation = false
+            resetPlaybackLocked()
             currentSnapshot = RealtimeSpeechStateSnapshot(
                 state: .listening,
                 currentTurnNumber: 1,
@@ -374,55 +396,32 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 )
                 return resultLocked(.applied, previous: previous)
             case .outputAudio:
-                if currentSnapshot.state == .speaking {
-                    return resultLocked(.ignoredDuplicate, previous: previous)
-                }
-                guard currentSnapshot.state == .thinking else {
+                guard currentSnapshot.state == .thinking
+                        || currentSnapshot.state == .speaking else {
                     return rejectOutOfOrderLocked(previous: previous)
                 }
-                speechIsActive = false
-                setGuardLocked(
-                    .speakingCompletion,
-                    timeoutNanoseconds:
-                        timeoutConfiguration.speakingCompletionNanoseconds,
-                    nowNanoseconds: nowNanoseconds
-                )
-                applyLocked(
-                    state: .speaking,
-                    reason: .firstOutputAudio,
-                    turnDetectionSource: currentSnapshot
-                        .lastTurnDetectionSource
-                )
-                return resultLocked(.applied, previous: previous)
+                let disposition: RealtimeSpeechTransitionDisposition =
+                    turnHasOutputAudio ? .ignoredDuplicate : .applied
+                turnHasOutputAudio = true
+                playbackDrained = false
+                return resultLocked(disposition, previous: previous)
             case .responseCompleted:
                 if currentSnapshot.state == .listening,
                    currentSnapshot.lastTransitionReason == .responseCompleted {
+                    return resultLocked(.ignoredDuplicate, previous: previous)
+                }
+                if providerResponseCompleted {
                     return resultLocked(.ignoredDuplicate, previous: previous)
                 }
                 guard currentSnapshot.state == .speaking
                         || currentSnapshot.state == .thinking else {
                     return rejectOutOfOrderLocked(previous: previous)
                 }
-                guard recordTurnOutcomeLocked(.completed) else {
-                    return resultLocked(.ignoredDuplicate, previous: previous)
+                providerResponseCompleted = true
+                guard !turnHasOutputAudio || playbackDrained else {
+                    return resultLocked(.applied, previous: previous)
                 }
-                speechIsActive = false
-                clearGuardLocked()
-                currentSnapshot = RealtimeSpeechStateSnapshot(
-                    state: .listening,
-                    currentTurnNumber:
-                        currentSnapshot.currentTurnNumber &+ 1,
-                    completedTurnCount:
-                        currentSnapshot.completedTurnCount &+ 1,
-                    lastTransitionReason: .responseCompleted,
-                    lastTurnDetectionSource:
-                        currentSnapshot.lastTurnDetectionSource,
-                    guardTimeoutTriggered: false,
-                    lastStandardError: nil,
-                    recentTransitions: []
-                )
-                recordTransitionLocked()
-                return resultLocked(.applied, previous: previous)
+                return completeTurnLocked(previous: previous)
             case .cancelled:
                 _ = recordTurnOutcomeLocked(.cancelled)
                 commitInteractionOutcomeLocked(.cancelled)
@@ -446,6 +445,93 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                     reason: .providerFailed,
                     error: Self.standardErrorName(error),
                     previous: previous
+                )
+            }
+        }
+    }
+
+    func transition(
+        playbackEvent: RealtimeSpeechPlaybackEvent,
+        interaction: NativeSpeechInteraction,
+        nowNanoseconds: UInt64
+    ) -> RealtimeSpeechTransitionResult {
+        lock.withLock {
+            let previous = currentSnapshot.state
+            let eventIdentity = RealtimeSpeechStateIdentity(
+                interaction: interaction
+            )
+            guard identity == eventIdentity,
+                  playbackEvent.interactionID == eventIdentity.interactionID else {
+                rejectedLateEventCount &+= 1
+                return resultLocked(.rejectedStale, previous: previous)
+            }
+            guard playbackEvent.turnNumber
+                    == currentSnapshot.currentTurnNumber else {
+                return rejectLateLocked(previous: previous)
+            }
+            guard turnOutcomes[currentSnapshot.currentTurnNumber] == nil else {
+                return rejectLateLocked(previous: previous)
+            }
+
+            switch playbackEvent.kind {
+            case .started:
+                guard turnHasOutputAudio,
+                      currentSnapshot.state == .thinking
+                        || currentSnapshot.state == .speaking else {
+                    return rejectOutOfOrderLocked(previous: previous)
+                }
+                if activePlaybackGeneration
+                    == playbackEvent.playbackGeneration,
+                   currentSnapshot.state == .speaking {
+                    return resultLocked(.ignoredDuplicate, previous: previous)
+                }
+                activePlaybackGeneration = playbackEvent.playbackGeneration
+                playbackDrained = false
+                speechIsActive = false
+                setGuardLocked(
+                    .speakingCompletion,
+                    timeoutNanoseconds:
+                        timeoutConfiguration.speakingCompletionNanoseconds,
+                    nowNanoseconds: nowNanoseconds
+                )
+                applyLocked(
+                    state: .speaking,
+                    reason: .playbackStarted,
+                    turnDetectionSource:
+                        currentSnapshot.lastTurnDetectionSource
+                )
+                return resultLocked(.applied, previous: previous)
+            case .completed:
+                guard activePlaybackGeneration
+                        == playbackEvent.playbackGeneration else {
+                    return rejectLateLocked(previous: previous)
+                }
+                activePlaybackGeneration = nil
+                playbackDrained = true
+                guard providerResponseCompleted else {
+                    return resultLocked(.applied, previous: previous)
+                }
+                return completeTurnLocked(previous: previous)
+            case .failed(let error):
+                guard turnHasOutputAudio,
+                      activePlaybackGeneration == nil
+                        || activePlaybackGeneration
+                            == playbackEvent.playbackGeneration else {
+                    return rejectLateLocked(previous: previous)
+                }
+                _ = recordTurnOutcomeLocked(.failed)
+                commitInteractionOutcomeLocked(.failed)
+                resetPlaybackLocked()
+                let finished = finishLocked(
+                    reason: .playbackFailed,
+                    error: Self.standardErrorName(error),
+                    previous: previous
+                )
+                return RealtimeSpeechTransitionResult(
+                    disposition: finished.disposition,
+                    previousState: finished.previousState,
+                    snapshot: finished.snapshot,
+                    effect: .terminateProvider
                 )
             }
         }
@@ -493,6 +579,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             awaitingInterruptCancellation = false
             identity = nil
             speechIsActive = false
+            resetPlaybackLocked()
             clearGuardLocked()
             currentSnapshot = RealtimeSpeechStateSnapshot(
                 state: .idle,
@@ -527,6 +614,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             interruptedTurnCount = 0
             rejectedLateEventCount = 0
             awaitingInterruptCancellation = false
+            resetPlaybackLocked()
         }
     }
 
@@ -625,6 +713,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             awaitingInterruptCancellation = false
             identity = nil
             speechIsActive = false
+            resetPlaybackLocked()
             clearGuardLocked()
             currentSnapshot = RealtimeSpeechStateSnapshot(
                 state: .idle,
@@ -683,6 +772,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
         lastCancellationReason = .interrupted
         awaitingInterruptCancellation = true
         speechIsActive = true
+        resetPlaybackLocked()
         clearGuardLocked()
         setGuardLocked(
             .speechStop,
@@ -737,6 +827,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
     ) -> RealtimeSpeechTransitionResult {
         identity = nil
         speechIsActive = false
+        resetPlaybackLocked()
         clearGuardLocked()
         currentSnapshot = RealtimeSpeechStateSnapshot(
             state: .idle,
@@ -770,6 +861,37 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             recentTransitions: []
         )
         return resultLocked(.rejectedOutOfOrder, previous: previous)
+    }
+
+    private func completeTurnLocked(
+        previous: RealtimeSpeechState
+    ) -> RealtimeSpeechTransitionResult {
+        guard recordTurnOutcomeLocked(.completed) else {
+            return resultLocked(.ignoredDuplicate, previous: previous)
+        }
+        speechIsActive = false
+        clearGuardLocked()
+        resetPlaybackLocked()
+        currentSnapshot = RealtimeSpeechStateSnapshot(
+            state: .listening,
+            currentTurnNumber: currentSnapshot.currentTurnNumber &+ 1,
+            completedTurnCount: currentSnapshot.completedTurnCount &+ 1,
+            lastTransitionReason: .responseCompleted,
+            lastTurnDetectionSource:
+                currentSnapshot.lastTurnDetectionSource,
+            guardTimeoutTriggered: false,
+            lastStandardError: nil,
+            recentTransitions: []
+        )
+        recordTransitionLocked()
+        return resultLocked(.applied, previous: previous)
+    }
+
+    private func resetPlaybackLocked() {
+        turnHasOutputAudio = false
+        providerResponseCompleted = false
+        playbackDrained = false
+        activePlaybackGeneration = nil
     }
 
     private func rejectLateLocked(

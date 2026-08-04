@@ -163,6 +163,12 @@
 "particleDebug.audioHost.playbackQueue" = "播放队列";
 "particleDebug.audioHost.playbackEnqueued" = "入队块数 / 字节";
 "particleDebug.audioHost.playbackPlayed" = "已播放块数 / 字节";
+"particleDebug.audioHost.playbackStarted" = "播放启动次数";
+"particleDebug.audioHost.playbackCompleted" = "播放完成次数";
+"particleDebug.audioHost.playbackGeneration" = "播放代次";
+"particleDebug.audioHost.playbackTurn" = "播放轮次";
+"particleDebug.audioHost.playbackClears" = "播放清理次数";
+"particleDebug.audioHost.playbackRejected" = "拒绝的播放事件";
 "particleDebug.audioHost.playbackUnderruns" = "播放欠载次数";
 "particleDebug.audioHost.playbackLastError" = "播放错误";
 "particleDebug.avatarMode" = "Avatar 模式";

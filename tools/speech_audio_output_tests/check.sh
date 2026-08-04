@@ -48,7 +48,7 @@ if rg -q 'AVFoundation|AVAudioEngine|AVAudioPlayerNode|AVAudioConverter' \
 fi
 echo "speech_audio_output_runtime_boundary=PASS"
 
-if rg -q 'pcm16Bytes|base64EncodedString|Bearer ' \
+if rg -q 'base64EncodedString|Bearer |print\(.*payload|String\(data:.*bytes' \
   "$repo_root/apps/macos/Aftelle/AppController.swift" \
   "$repo_root/apps/macos/Aftelle/ContentView.swift"; then
   echo "speech_audio_output_debug_privacy=FAIL"

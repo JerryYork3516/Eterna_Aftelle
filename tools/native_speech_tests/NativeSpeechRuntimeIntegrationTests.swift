@@ -475,6 +475,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         try await testRuntimeMultiTurnState(fixtureData: fixtureData)
         try await testRuntimeInterrupts(fixtureData: fixtureData)
+        try await testRuntimePlaybackFailure(fixtureData: fixtureData)
         try await testRuntimeTimeouts(fixtureData: fixtureData)
         try await testConnectivityEntry(fixtureData: fixtureData)
         print("native_speech_runtime_integration_checks=\(checks)")
@@ -521,17 +522,29 @@ private struct NativeSpeechRuntimeIntegrationTests {
                         format: .pcm16
                     )
                 ),
+                expectedState: .thinking,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            await acceptPlaybackEvent(
+                .started,
+                generation: UInt64(turn),
+                binding: binding,
+                runtime: runtime
+            )
+            try await acceptStateEvent(
+                .responseCompleted,
                 expectedState: .speaking,
                 binding: binding,
                 runtime: runtime,
                 provider: provider
             )
-            try await acceptStateEvent(
-                .responseCompleted,
-                expectedState: .listening,
+            await acceptPlaybackEvent(
+                .completed,
+                generation: UInt64(turn),
                 binding: binding,
-                runtime: runtime,
-                provider: provider
+                runtime: runtime
             )
             expect(
                 runtime.realtimeSpeechStateSnapshot().completedTurnCount
@@ -587,10 +600,16 @@ private struct NativeSpeechRuntimeIntegrationTests {
                 bytes: Data([0, 1]),
                 format: .pcm16
             )),
-            expectedState: .speaking,
+            expectedState: .thinking,
             binding: binding,
             runtime: runtime,
             provider: provider
+        )
+        await acceptPlaybackEvent(
+            .started,
+            generation: 1,
+            binding: binding,
+            runtime: runtime
         )
         try await acceptStateEvent(
             .inputSpeechStarted,
@@ -666,10 +685,16 @@ private struct NativeSpeechRuntimeIntegrationTests {
                 bytes: Data([4, 5]),
                 format: .pcm16
             )),
-            expectedState: .speaking,
+            expectedState: .thinking,
             binding: binding,
             runtime: runtime,
             provider: provider
+        )
+        await acceptPlaybackEvent(
+            .started,
+            generation: 2,
+            binding: binding,
+            runtime: runtime
         )
         try await acceptStateEvent(
             .inputSpeechStarted,
@@ -711,17 +736,29 @@ private struct NativeSpeechRuntimeIntegrationTests {
                 bytes: Data([6, 7]),
                 format: .pcm16
             )),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        await acceptPlaybackEvent(
+            .started,
+            generation: 3,
+            binding: binding,
+            runtime: runtime
+        )
+        try await acceptStateEvent(
+            .responseCompleted,
             expectedState: .speaking,
             binding: binding,
             runtime: runtime,
             provider: provider
         )
-        try await acceptStateEvent(
-            .responseCompleted,
-            expectedState: .listening,
+        await acceptPlaybackEvent(
+            .completed,
+            generation: 3,
             binding: binding,
-            runtime: runtime,
-            provider: provider
+            runtime: runtime
         )
         let completedSnapshot = runtime.realtimeSpeechStateSnapshot()
         expect(
@@ -801,6 +838,81 @@ private struct NativeSpeechRuntimeIntegrationTests {
             runtime.realtimeSpeechStateSnapshot().state == expectedState,
             "Runtime owns \(expectedState.rawValue) transition"
         )
+    }
+
+    private static func testRuntimePlaybackFailure(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixtureData).isLoaded, "playback failure resident loads")
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 1
+        )
+        try await acceptStateEvent(
+            .thinking,
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .outputAudio(
+                NativeSpeechAudioPayload(
+                    interactionID: binding.interactionID,
+                    sequenceNumber: 1,
+                    bytes: Data([0, 1]),
+                    format: .pcm16
+                )
+            ),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        await acceptPlaybackEvent(
+            .started,
+            generation: 1,
+            binding: binding,
+            runtime: runtime
+        )
+        let disposition = await runtime.handleNativeSpeechPlaybackEvent(
+            RealtimeSpeechPlaybackEvent(
+                interactionID: binding.interactionID,
+                turnNumber: 1,
+                playbackGeneration: 1,
+                kind: .failed(.unavailable)
+            )
+        )
+        expect(disposition == .applied, "Runtime accepts playback failure")
+        let snapshot = runtime.realtimeSpeechStateSnapshot()
+        expect(snapshot.state == .idle, "playback failure returns Runtime idle")
+        expect(snapshot.lastStandardError == "unavailable", "playback failure keeps standard error")
+        let cancelCount = await provider.operationCount(.cancel)
+        let closeCount = await provider.operationCount(.close)
+        expect(cancelCount == 1, "playback failure cancels Provider once")
+        expect(closeCount == 1, "playback failure closes Provider once")
+    }
+
+    private static func acceptPlaybackEvent(
+        _ kind: RealtimeSpeechPlaybackEventKind,
+        generation: UInt64,
+        binding: NativeSpeechInputBinding,
+        runtime: RuntimeCore
+    ) async {
+        let snapshot = runtime.realtimeSpeechStateSnapshot()
+        let disposition = await runtime.handleNativeSpeechPlaybackEvent(
+            RealtimeSpeechPlaybackEvent(
+                interactionID: binding.interactionID,
+                turnNumber: snapshot.currentTurnNumber,
+                playbackGeneration: generation,
+                kind: kind
+            )
+        )
+        expect(disposition == .applied, "Runtime accepts local playback lifecycle")
     }
 
     private static func testRuntimeTimeouts(
@@ -890,6 +1002,14 @@ private struct NativeSpeechRuntimeIntegrationTests {
                 fatalError("FAILED: timeout setup event was rejected")
             }
             checks += 1
+        }
+        if expectedReason == .speakingTimedOut {
+            await acceptPlaybackEvent(
+                .started,
+                generation: 1,
+                binding: binding,
+                runtime: runtime
+            )
         }
 
         try await Task.sleep(for: .milliseconds(30))

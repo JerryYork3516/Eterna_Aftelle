@@ -5,9 +5,9 @@ final class FakeMacSpeechAudioOutputPlayer:
 {
     private let lock = NSLock()
     private let preparedFormat: MacSpeechLocalPlaybackFormat
-    private var pendingCompletion: (@Sendable (
+    private var pendingCompletions: [(@Sendable (
         Result<Int, MacSpeechAudioOutputHostError>
-    ) -> Void)?
+    ) -> Void)] = []
     private var scheduledPayloads: [Data] = []
     private var prepareCalls = 0
     private var startCalls = 0
@@ -45,9 +45,8 @@ final class FakeMacSpeechAudioOutputPlayer:
     ) throws {
         try lock.withLock {
             if let scheduleError { throw scheduleError }
-            precondition(pendingCompletion == nil)
             scheduledPayloads.append(pcm16Bytes)
-            pendingCompletion = completion
+            pendingCompletions.append(completion)
         }
     }
 
@@ -61,14 +60,12 @@ final class FakeMacSpeechAudioOutputPlayer:
     func stop() {
         lock.withLock {
             stopCalls += 1
-            pendingCompletion = nil
         }
     }
 
     func close() {
         lock.withLock {
             closeCalls += 1
-            pendingCompletion = nil
         }
     }
 
@@ -79,9 +76,9 @@ final class FakeMacSpeechAudioOutputPlayer:
             (@Sendable (Result<Int, MacSpeechAudioOutputHostError>) -> Void)?,
             Int
         ) in
-            let completion = pendingCompletion
-            pendingCompletion = nil
-            return (completion, scheduledPayloads.last?.count ?? 0)
+            let completion = pendingCompletions.isEmpty
+                ? nil : pendingCompletions.removeFirst()
+            return (completion, scheduledPayloads.first?.count ?? 0)
         }
         target.0?(result ?? .success(target.1))
     }
@@ -99,6 +96,7 @@ final class FakeMacSpeechOutputDeviceMonitor:
 {
     private let lock = NSLock()
     private var route: MacSpeechDeviceRoute
+    private var onChange: (@Sendable () -> Void)?
 
     init(outputAvailable: Bool = true) {
         route = MacSpeechDeviceRoute(
@@ -115,6 +113,26 @@ final class FakeMacSpeechOutputDeviceMonitor:
         lock.withLock { route }
     }
 
-    func start(onChange: @escaping @Sendable () -> Void) {}
-    func stop() {}
+    func start(onChange: @escaping @Sendable () -> Void) {
+        lock.withLock { self.onChange = onChange }
+    }
+
+    func stop() {
+        lock.withLock { onChange = nil }
+    }
+
+    func changeOutput(identifier: String, name: String, available: Bool) {
+        let callback = lock.withLock { () -> (@Sendable () -> Void)? in
+            route = MacSpeechDeviceRoute(
+                input: .unavailable,
+                output: MacSpeechAudioDevice(
+                    identifier: identifier,
+                    name: name,
+                    isAvailable: available
+                )
+            )
+            return onChange
+        }
+        callback?()
+    }
 }

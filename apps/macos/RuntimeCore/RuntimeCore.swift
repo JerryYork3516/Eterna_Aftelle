@@ -3239,6 +3239,40 @@ public final class RuntimeCore {
         }
     }
 
+    func handleNativeSpeechPlaybackEvent(
+        _ event: RealtimeSpeechPlaybackEvent
+    ) async -> RealtimeSpeechTransitionDisposition {
+        guard let interaction = nativeSpeechInteractionGate.current(),
+              interaction.id == event.interactionID else {
+            return .rejectedStale
+        }
+        let transition = realtimeSpeechStateMachine.transition(
+            playbackEvent: event,
+            interaction: interaction,
+            nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
+        switch transition.disposition {
+        case .applied, .ignoredDuplicate:
+            scheduleRealtimeSpeechGuard(for: interaction)
+        case .rejectedStale, .rejectedLate, .rejectedOutOfOrder:
+            break
+        }
+        guard transition.effect == .terminateProvider else {
+            return transition.disposition
+        }
+        realtimeSpeechGuardScheduler.cancel()
+        nativeSpeechInteractionGate.clear(matching: interaction.id)
+        invalidateNativeSpeechInput(for: interaction.id)
+        try? await executionEngine.cancelNativeSpeech(
+            interactionID: interaction.id,
+            reason: .interrupted
+        )
+        try? await executionEngine.closeNativeSpeech(
+            interactionID: interaction.id
+        )
+        return transition.disposition
+    }
+
     private func failActiveNativeSpeechInteraction(
         interactionID: NativeSpeechInteractionID,
         error: NativeSpeechError

@@ -44,6 +44,28 @@ private enum Stage75NativeSpeechConfiguration {
         keyRef: ProviderKeychainStore.stepFunKeyRef
     )
 }
+
+private struct NativeSpeechPlaybackBinding: Sendable, Equatable {
+    let interactionID: NativeSpeechInteractionID
+    let turnNumber: UInt64
+    let playbackGeneration: UInt64
+}
+
+nonisolated struct NativeSpeechPlaybackDebugSnapshot: Sendable, Equatable {
+    let turnNumber: UInt64?
+    let playbackGeneration: UInt64?
+    let interruptClearCount: UInt64
+    let stopClearCount: UInt64
+    let rejectedEventCount: UInt64
+
+    static let initial = NativeSpeechPlaybackDebugSnapshot(
+        turnNumber: nil,
+        playbackGeneration: nil,
+        interruptClearCount: 0,
+        stopClearCount: 0,
+        rejectedEventCount: 0
+    )
+}
 #endif
 
 enum ParticleColorSource: String, CaseIterable, Identifiable {
@@ -102,6 +124,8 @@ final class AppController: ObservableObject {
         MacSpeechNativeOutputBridgeSnapshot.initial
     @Published private(set) var speechAudioOutputHostSnapshot =
         MacSpeechAudioOutputHostSnapshot.initial
+    @Published private(set) var nativeSpeechPlaybackDebugSnapshot =
+        NativeSpeechPlaybackDebugSnapshot.initial
     @Published private(set) var realtimeSpeechStateSnapshot =
         RealtimeSpeechStateSnapshot.initial
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
@@ -128,6 +152,11 @@ final class AppController: ObservableObject {
     private let speechAudioHost: MacSpeechAudioHost
     private let speechAudioOutputHost: MacSpeechAudioOutputHost
     private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
+    private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
+    private var lastPlaybackEventOrdinal: UInt64 = 0
+    private var playbackInterruptClearCount: UInt64 = 0
+    private var playbackStopClearCount: UInt64 = 0
+    private var rejectedPlaybackEventCount: UInt64 = 0
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
         sendFrame: { [orchestrationKernel] payload, context in
@@ -150,8 +179,8 @@ final class AppController: ObservableObject {
                 interactionID: interactionID
             )
         },
-        consumeEvent: { [speechOutputDebugSink] event in
-            await speechOutputDebugSink.consume(event)
+        consumeEvent: { [weak self] event in
+            await self?.consumeNativeSpeechOutputEvent(event)
         },
         endInputPump: { [weak self] in
             guard let self else { return }
@@ -220,12 +249,14 @@ final class AppController: ObservableObject {
     #if DEBUG
     init(
         orchestrationKernel: OrchestrationKernel,
-        speechAudioHost: MacSpeechAudioHost
+        speechAudioHost: MacSpeechAudioHost,
+        speechAudioOutputHost: MacSpeechAudioOutputHost =
+            MacSpeechAudioOutputHost()
     ) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         self.speechAudioHost = speechAudioHost
-        speechAudioOutputHost = MacSpeechAudioOutputHost()
+        self.speechAudioOutputHost = speechAudioOutputHost
         restoreProviderConfiguration()
         refreshNativeSpeechProviderDebugState()
     }
@@ -1245,21 +1276,32 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
+        if nativeSpeechPlaybackBinding != nil {
+            playbackStopClearCount &+= 1
+        }
+        nativeSpeechPlaybackBinding = nil
+        speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
         realtimeSpeechStateSnapshot =
             orchestrationKernel.realtimeSpeechStateSnapshot()
+        refreshNativeSpeechPlaybackDebugSnapshot()
     }
 
     func shutdownSpeechAudioHost() async {
+        if nativeSpeechPlaybackBinding != nil {
+            playbackStopClearCount &+= 1
+        }
+        nativeSpeechPlaybackBinding = nil
+        speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         await speechAudioHost.shutdown()
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
-        speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
         realtimeSpeechStateSnapshot =
             orchestrationKernel.realtimeSpeechStateSnapshot()
+        refreshNativeSpeechPlaybackDebugSnapshot()
     }
 
     func startNativeSpeechInputBridge() async {
@@ -1276,6 +1318,11 @@ final class AppController: ObservableObject {
         switch result {
         case .success(let binding):
             await speechOutputDebugSink.reset()
+            nativeSpeechPlaybackBinding = nil
+            lastPlaybackEventOrdinal = 0
+            await speechAudioOutputHost.setEventSink { [weak self] event in
+                await self?.consumePlaybackHostEvent(event)
+            }
             speechOutputBridgeSnapshot = await speechOutputBridge.start(
                 binding: binding
             )
@@ -1287,6 +1334,160 @@ final class AppController: ObservableObject {
         }
         realtimeSpeechStateSnapshot =
             orchestrationKernel.realtimeSpeechStateSnapshot()
+        refreshNativeSpeechPlaybackDebugSnapshot()
+    }
+
+    private func consumeNativeSpeechOutputEvent(
+        _ event: NativeSpeechEvent
+    ) async {
+        await speechOutputDebugSink.consume(event)
+        realtimeSpeechStateSnapshot =
+            orchestrationKernel.realtimeSpeechStateSnapshot()
+        switch event.kind {
+        case .outputAudio(let payload):
+            await enqueueNativeSpeechOutput(payload)
+        case .inputSpeechStarted:
+            await clearInterruptedPlaybackIfNeeded()
+        case .responseCompleted:
+            if realtimeSpeechStateSnapshot.state == .listening {
+                nativeSpeechPlaybackBinding = nil
+            }
+        default:
+            break
+        }
+        speechAudioOutputHostSnapshot =
+            await speechAudioOutputHost.currentSnapshot()
+        refreshNativeSpeechPlaybackDebugSnapshot()
+    }
+
+    private func enqueueNativeSpeechOutput(
+        _ payload: NativeSpeechAudioPayload
+    ) async {
+        let turnNumber = realtimeSpeechStateSnapshot.currentTurnNumber
+        if nativeSpeechPlaybackBinding?.interactionID
+                != payload.interactionID
+            || nativeSpeechPlaybackBinding?.turnNumber != turnNumber {
+            let prepared = await speechAudioOutputHost.prepare()
+            speechAudioOutputHostSnapshot = prepared
+            nativeSpeechPlaybackBinding = NativeSpeechPlaybackBinding(
+                interactionID: payload.interactionID,
+                turnNumber: turnNumber,
+                playbackGeneration: prepared.generation
+            )
+            guard prepared.state == .prepared else {
+                await consumePlaybackEvents(in: prepared)
+                return
+            }
+        }
+        guard let binding = nativeSpeechPlaybackBinding else { return }
+        var snapshot = await speechAudioOutputHost.enqueue(
+            pcm16Bytes: payload.bytes,
+            sequence: payload.sequenceNumber,
+            generation: binding.playbackGeneration
+        )
+        if snapshot.state == .prepared || snapshot.state == .completed {
+            snapshot = await speechAudioOutputHost.start()
+        }
+        speechAudioOutputHostSnapshot = snapshot
+        await consumePlaybackEvents(in: snapshot)
+    }
+
+    private func clearInterruptedPlaybackIfNeeded() async {
+        guard let binding = nativeSpeechPlaybackBinding,
+              realtimeSpeechStateSnapshot.lastTransitionReason == .interrupted,
+              realtimeSpeechStateSnapshot.currentTurnNumber
+                > binding.turnNumber else {
+            return
+        }
+        playbackInterruptClearCount &+= 1
+        nativeSpeechPlaybackBinding = nil
+        speechAudioOutputHostSnapshot = await speechAudioOutputHost.clear()
+    }
+
+    private func consumePlaybackEvents(
+        in snapshot: MacSpeechAudioOutputHostSnapshot
+    ) async {
+        for event in snapshot.recentEvents
+            where event.ordinal > lastPlaybackEventOrdinal {
+            await consumePlaybackHostEvent(event)
+        }
+    }
+
+    private func consumePlaybackHostEvent(
+        _ event: MacSpeechAudioOutputEvent
+    ) async {
+        guard event.ordinal > lastPlaybackEventOrdinal else { return }
+        lastPlaybackEventOrdinal = event.ordinal
+        guard let binding = nativeSpeechPlaybackBinding,
+              event.generation == binding.playbackGeneration else {
+            if event.kind == .playbackStarted
+                || event.kind == .playbackCompleted
+                || event.kind == .failed {
+                rejectedPlaybackEventCount &+= 1
+            }
+            refreshNativeSpeechPlaybackDebugSnapshot()
+            return
+        }
+        let kind: RealtimeSpeechPlaybackEventKind
+        switch event.kind {
+        case .playbackStarted:
+            kind = .started
+        case .playbackCompleted:
+            kind = .completed
+        case .failed:
+            kind = .failed(Self.nativeSpeechError(for: event.error))
+        default:
+            return
+        }
+        let disposition = await orchestrationKernel
+            .handleNativeSpeechPlaybackEvent(
+                RealtimeSpeechPlaybackEvent(
+                    interactionID: binding.interactionID,
+                    turnNumber: binding.turnNumber,
+                    playbackGeneration: binding.playbackGeneration,
+                    kind: kind
+                )
+            )
+        if disposition == .rejectedLate
+            || disposition == .rejectedStale
+            || disposition == .rejectedOutOfOrder {
+            rejectedPlaybackEventCount &+= 1
+        }
+        realtimeSpeechStateSnapshot =
+            orchestrationKernel.realtimeSpeechStateSnapshot()
+        if event.kind == .playbackCompleted,
+           realtimeSpeechStateSnapshot.state == .listening {
+            nativeSpeechPlaybackBinding = nil
+        } else if event.kind == .failed {
+            nativeSpeechPlaybackBinding = nil
+        }
+        speechAudioOutputHostSnapshot =
+            await speechAudioOutputHost.currentSnapshot()
+        refreshNativeSpeechPlaybackDebugSnapshot()
+    }
+
+    private func refreshNativeSpeechPlaybackDebugSnapshot() {
+        nativeSpeechPlaybackDebugSnapshot = NativeSpeechPlaybackDebugSnapshot(
+            turnNumber: nativeSpeechPlaybackBinding?.turnNumber,
+            playbackGeneration:
+                nativeSpeechPlaybackBinding?.playbackGeneration,
+            interruptClearCount: playbackInterruptClearCount,
+            stopClearCount: playbackStopClearCount,
+            rejectedEventCount: rejectedPlaybackEventCount
+        )
+    }
+
+    private static func nativeSpeechError(
+        for error: MacSpeechAudioOutputHostError?
+    ) -> NativeSpeechError {
+        switch error {
+        case .outputUnavailable, .outputDeviceChanged:
+            return .unavailable
+        case .consumerTimedOut:
+            return .timedOut
+        default:
+            return .transportFailure
+        }
     }
 
     func deleteNativeSpeechProviderCredential() {

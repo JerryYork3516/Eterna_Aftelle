@@ -1241,6 +1241,12 @@ public final class OrchestrationKernel {
         }
     }
 
+    nonisolated func handleNativeSpeechPlaybackEvent(
+        _ event: RealtimeSpeechPlaybackEvent
+    ) async -> RealtimeSpeechTransitionDisposition {
+        await runtimeCore.handleNativeSpeechPlaybackEvent(event)
+    }
+
     func stopNativeSpeechInput(
         binding: NativeSpeechInputBinding,
         reason: NativeSpeechCancellationReason

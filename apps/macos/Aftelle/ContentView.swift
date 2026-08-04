@@ -542,6 +542,8 @@ struct ParticleDebugWindow: View {
                 controller.speechOutputBridgeSnapshot,
             speechAudioOutputHostSnapshot:
                 controller.speechAudioOutputHostSnapshot,
+            nativeSpeechPlaybackDebugSnapshot:
+                controller.nativeSpeechPlaybackDebugSnapshot,
             realtimeSpeechStateSnapshot:
                 controller.realtimeSpeechStateSnapshot,
             dialogueAuditState: controller.dialogueAuditState,
@@ -709,6 +711,8 @@ private struct ParticleDebugPanel: View {
     let speechInputBridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let speechOutputBridgeSnapshot: MacSpeechNativeOutputBridgeSnapshot
     let speechAudioOutputHostSnapshot: MacSpeechAudioOutputHostSnapshot
+    let nativeSpeechPlaybackDebugSnapshot:
+        NativeSpeechPlaybackDebugSnapshot
     let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
@@ -983,6 +987,8 @@ private struct ParticleDebugPanel: View {
                                     speechOutputBridgeSnapshot,
                                 playbackSnapshot:
                                     speechAudioOutputHostSnapshot,
+                                playbackDebugSnapshot:
+                                    nativeSpeechPlaybackDebugSnapshot,
                                 realtimeSpeechStateSnapshot:
                                     realtimeSpeechStateSnapshot,
                                 refreshAuthorization:
@@ -1977,6 +1983,7 @@ private struct SpeechAudioHostDebugView: View {
     let bridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let outputBridgeSnapshot: MacSpeechNativeOutputBridgeSnapshot
     let playbackSnapshot: MacSpeechAudioOutputHostSnapshot
+    let playbackDebugSnapshot: NativeSpeechPlaybackDebugSnapshot
     let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
@@ -2162,6 +2169,32 @@ private struct SpeechAudioHostDebugView: View {
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.playbackPlayed",
                     value: "\(playbackSnapshot.playedChunkCount) / \(playbackSnapshot.playedByteCount) bytes"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackStarted",
+                    value: "\(playbackSnapshot.playbackStartedCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackCompleted",
+                    value: "\(playbackSnapshot.playbackCompletedCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackGeneration",
+                    value: playbackDebugSnapshot.playbackGeneration
+                        .map(String.init) ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackTurn",
+                    value: playbackDebugSnapshot.turnNumber
+                        .map(String.init) ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackClears",
+                    value: "interrupt \(playbackDebugSnapshot.interruptClearCount) / stop \(playbackDebugSnapshot.stopClearCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackRejected",
+                    value: "host \(playbackSnapshot.rejectedCallbackCount) / runtime \(playbackDebugSnapshot.rejectedEventCount)"
                 )
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.playbackUnderruns",

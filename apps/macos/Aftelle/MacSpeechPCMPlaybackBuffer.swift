@@ -29,6 +29,7 @@ nonisolated enum MacSpeechAudioOutputHostError:
     case staleGeneration = "stale_generation"
     case invalidState = "invalid_state"
     case outputUnavailable = "output_unavailable"
+    case outputDeviceChanged = "output_device_changed"
     case conversionFailed = "conversion_failed"
     case playbackFailed = "playback_failed"
     case consumerTimedOut = "consumer_timed_out"

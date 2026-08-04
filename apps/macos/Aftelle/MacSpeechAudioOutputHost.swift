@@ -24,6 +24,7 @@ nonisolated enum MacSpeechAudioOutputEventKind: String, Sendable {
 }
 
 nonisolated struct MacSpeechAudioOutputEvent: Sendable, Equatable {
+    let ordinal: UInt64
     let kind: MacSpeechAudioOutputEventKind
     let generation: UInt64
     let sequence: UInt64?
@@ -42,7 +43,10 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
     let enqueuedByteCount: Int
     let playedChunkCount: Int
     let playedByteCount: Int
+    let playbackStartedCount: Int
+    let playbackCompletedCount: Int
     let underrunCount: Int
+    let rejectedCallbackCount: Int
     let lastError: String?
     let recentEvents: [MacSpeechAudioOutputEvent]
 
@@ -58,13 +62,18 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
         enqueuedByteCount: 0,
         playedChunkCount: 0,
         playedByteCount: 0,
+        playbackStartedCount: 0,
+        playbackCompletedCount: 0,
         underrunCount: 0,
+        rejectedCallbackCount: 0,
         lastError: nil,
         recentEvents: []
     )
 }
 
 actor MacSpeechAudioOutputHost {
+    typealias EventSink = @Sendable (MacSpeechAudioOutputEvent) async -> Void
+
     private let player: MacSpeechAudioOutputPlaying
     private let deviceMonitor: MacSpeechDeviceRouteMonitoring
     private let configuration: MacSpeechPCMPlaybackConfiguration
@@ -79,9 +88,15 @@ actor MacSpeechAudioOutputHost {
     private var enqueuedByteCount = 0
     private var playedChunkCount = 0
     private var playedByteCount = 0
+    private var playbackStartedCount = 0
+    private var playbackCompletedCount = 0
     private var underrunCount = 0
+    private var rejectedCallbackCount = 0
     private var lastError: MacSpeechAudioOutputHostError?
     private var recentEvents: [MacSpeechAudioOutputEvent] = []
+    private var eventOrdinal: UInt64 = 0
+    private var eventSink: EventSink?
+    private var isMonitoringDeviceRoute = false
 
     init(
         player: MacSpeechAudioOutputPlaying =
@@ -99,17 +114,17 @@ actor MacSpeechAudioOutputHost {
         )
     }
 
+    func setEventSink(_ sink: @escaping EventSink) {
+        eventSink = sink
+    }
+
     func refreshDiagnostics() -> MacSpeechAudioOutputHostSnapshot {
-        outputDevice = deviceMonitor.currentRoute().output
         return snapshot()
     }
 
     func prepare() -> MacSpeechAudioOutputHostSnapshot {
         if state == .prepared || state == .playing || state == .draining {
             return snapshot()
-        }
-        guard state != .closed else {
-            return fail(.invalidState)
         }
         let route = deviceMonitor.currentRoute()
         outputDevice = route.output
@@ -126,6 +141,7 @@ actor MacSpeechAudioOutputHost {
             localFormat = preparedFormat.description
             state = .prepared
             lastError = nil
+            startDeviceMonitoringIfNeeded()
             appendEvent(.prepared)
             return snapshot()
         } catch let error as MacSpeechAudioOutputHostError {
@@ -170,11 +186,7 @@ actor MacSpeechAudioOutputHost {
             }
             return snapshot()
         } catch let error as MacSpeechAudioOutputHostError {
-            if error == .queueFull {
-                return fail(error)
-            }
-            lastError = error
-            return snapshot()
+            return fail(error)
         } catch {
             return fail(.playbackFailed)
         }
@@ -194,11 +206,13 @@ actor MacSpeechAudioOutputHost {
             return snapshot()
         }
         do {
-            try player.start()
             state = .playing
             lastError = nil
-            appendEvent(.playbackStarted)
             scheduleNext()
+            guard state != .failed else { return snapshot() }
+            try player.start()
+            playbackStartedCount += 1
+            appendEvent(.playbackStarted)
             return snapshot()
         } catch let error as MacSpeechAudioOutputHostError {
             return fail(error)
@@ -230,6 +244,8 @@ actor MacSpeechAudioOutputHost {
         if state == .closed { return snapshot() }
         invalidatePlayback()
         player.close()
+        deviceMonitor.stop()
+        isMonitoringDeviceRoute = false
         state = .closed
         lastError = nil
         appendEvent(.closed)
@@ -294,7 +310,10 @@ actor MacSpeechAudioOutputHost {
         guard completedGeneration == generation,
               inFlightSequence == sequence,
               state == .playing || state == .draining
-        else { return }
+        else {
+            rejectedCallbackCount += 1
+            return
+        }
         timeoutTask?.cancel()
         timeoutTask = nil
         inFlightSequence = nil
@@ -315,7 +334,10 @@ actor MacSpeechAudioOutputHost {
         guard timedOutGeneration == generation,
               inFlightSequence == sequence,
               state == .playing || state == .draining
-        else { return }
+        else {
+            rejectedCallbackCount += 1
+            return
+        }
         _ = fail(.consumerTimedOut)
     }
 
@@ -343,22 +365,68 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
     }
 
+    private func startDeviceMonitoringIfNeeded() {
+        guard !isMonitoringDeviceRoute else { return }
+        isMonitoringDeviceRoute = true
+        deviceMonitor.start { [weak self] in
+            Task {
+                await self?.handleDeviceRouteChange()
+            }
+        }
+    }
+
+    private func handleDeviceRouteChange() {
+        let nextOutput = deviceMonitor.currentRoute().output
+        guard nextOutput.identifier != outputDevice.identifier
+                || !nextOutput.isAvailable else {
+            return
+        }
+        outputDevice = nextOutput
+        guard state == .prepared || state == .playing
+                || state == .draining || state == .completed else {
+            return
+        }
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        player.stop()
+        player.close()
+        inFlightSequence = nil
+        queue.reset(generation: generation)
+        localFormat = "current default output / not prepared"
+        state = .failed
+        lastError = .outputDeviceChanged
+        appendEvent(.failed, error: .outputDeviceChanged)
+        generation &+= 1
+        queue.reset(generation: generation)
+    }
+
     private func appendEvent(
         _ kind: MacSpeechAudioOutputEventKind,
         sequence: UInt64? = nil,
         error: MacSpeechAudioOutputHostError? = nil
     ) {
+        eventOrdinal &+= 1
+        if kind == .playbackCompleted {
+            playbackCompletedCount += 1
+        }
         if recentEvents.count == 16 {
             recentEvents.removeFirst()
         }
         recentEvents.append(
             MacSpeechAudioOutputEvent(
+                ordinal: eventOrdinal,
                 kind: kind,
                 generation: generation,
                 sequence: sequence,
                 error: error
             )
         )
+        if let eventSink,
+           let event = recentEvents.last {
+            Task {
+                await eventSink(event)
+            }
+        }
     }
 
     private func snapshot() -> MacSpeechAudioOutputHostSnapshot {
@@ -374,7 +442,10 @@ actor MacSpeechAudioOutputHost {
             enqueuedByteCount: enqueuedByteCount,
             playedChunkCount: playedChunkCount,
             playedByteCount: playedByteCount,
+            playbackStartedCount: playbackStartedCount,
+            playbackCompletedCount: playbackCompletedCount,
             underrunCount: underrunCount,
+            rejectedCallbackCount: rejectedCallbackCount,
             lastError: lastError?.rawValue,
             recentEvents: recentEvents
         )

@@ -21,6 +21,7 @@ host_sources=(
   "$repo_root/apps/macos/Aftelle/MacSpeechNativeInputBridge.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechNativeOutputBridge.swift"
   "$repo_root/apps/macos/Aftelle/AppController.swift"
+  "$repo_root/tools/speech_audio_output_tests/FakeMacSpeechAudioOutputPlayer.swift"
 )
 
 swiftc \
@@ -79,6 +80,15 @@ rg -q 'providerRouter.receiveNativeSpeechEvent' "$engine"
 rg -q 'nativeSpeechProvider.receive' "$router"
 rg -q 'nextRecognizedEvent' "$adapter"
 echo "native_speech_duplex_return_chain=PASS"
+
+rg -q 'speechAudioOutputHost.enqueue' "$controller"
+rg -q 'speechAudioOutputHost.start' "$controller"
+rg -q 'handleNativeSpeechPlaybackEvent' "$controller"
+rg -q 'runtimeCore.handleNativeSpeechPlaybackEvent' "$orchestration"
+rg -q 'func handleNativeSpeechPlaybackEvent' "$runtime"
+rg -q 'case playbackStarted' "$repo_root/apps/macos/RuntimeCore/RealtimeSpeechStateMachine.swift"
+echo "native_speech_playback_forward_chain=PASS"
+echo "native_speech_playback_lifecycle_return_chain=PASS"
 
 rg -q 'case "response.audio.done"' "$codec"
 rg -q 'case "response.done"' "$codec"

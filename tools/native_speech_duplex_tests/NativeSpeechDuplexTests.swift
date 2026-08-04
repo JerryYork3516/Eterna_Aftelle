@@ -88,6 +88,7 @@ private final class DuplexDeviceMonitor:
 private struct NativeSpeechDuplexTests {
     private static var checks = 0
     private static var fixtureData = Data()
+    private static var waitIndex = 0
 
     static func main() async throws {
         guard CommandLine.arguments.count == 2 else {
@@ -98,6 +99,7 @@ private struct NativeSpeechDuplexTests {
         )
         try await testFullDuplexThroughController()
         try await testInterruptThroughController()
+        try await testOutputDeviceChangeThroughController()
         await testDebugSinkClearsInterruptedOutput()
         try await testOutputBackpressureStopsInteraction()
         try await testReceiveFailureAndDuplicateStart()
@@ -132,7 +134,7 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AwQF"}"#)
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
         )
         await transport.enqueue(.text(#"{"type":"response.audio.done"}"#))
         await transport.enqueue(
@@ -142,6 +144,18 @@ private struct NativeSpeechDuplexTests {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechOutputBridgeSnapshot
                 .completedResponseCount == 1
+        }
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot.state == .speaking,
+            "Provider completion waits for local playback"
+        )
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil { stack.outputPlayer.scheduledCount == 2 }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .listening
         }
 
         let firstOutput = stack.controller.speechOutputBridgeSnapshot
@@ -175,7 +189,7 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"BgcI"}"#)
+            .text(#"{"type":"response.audio.delta","delta":"Bgc="}"#)
         )
         await transport.enqueue(
             .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
@@ -184,6 +198,12 @@ private struct NativeSpeechDuplexTests {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechOutputBridgeSnapshot
                 .completedResponseCount == 2
+        }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .listening
         }
 
         let inputObjects = try await audioAppendObjects(transport)
@@ -199,7 +219,7 @@ private struct NativeSpeechDuplexTests {
         expect(output.state == .configured, "second response keeps bridge configured")
         expect(output.completedResponseCount == 2, "two response boundaries arrive")
         expect(output.outputAudioChunkCount == 3, "two responses reach AppController")
-        expect(output.outputAudioByteCount == 8, "two-response byte count reaches AppController")
+        expect(output.outputAudioByteCount == 6, "two-response byte count reaches AppController")
         expect(output.firstChunkLatencyMilliseconds != nil, "first chunk latency is recorded")
         expect(output.hasActiveReceiveLoop, "second response keeps receive loop active")
         expect(
@@ -356,6 +376,17 @@ private struct NativeSpeechDuplexTests {
                 .interruptedTurnCount == 1,
             "Runtime owns interrupted turn count"
         )
+        expect(
+            stack.controller.nativeSpeechPlaybackDebugSnapshot
+                .interruptClearCount == 1,
+            "Interrupt clears local playback once"
+        )
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechAudioOutputHostSnapshot
+                .rejectedCallbackCount == 1
+        }
 
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
@@ -395,8 +426,12 @@ private struct NativeSpeechDuplexTests {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechOutputBridgeSnapshot
                     .completedResponseCount == 1
-                && stack.controller.realtimeSpeechStateSnapshot.state
-                    == .listening
+        }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .listening
         }
         expect(
             stack.controller.realtimeSpeechStateSnapshot.currentTurnNumber
@@ -422,6 +457,10 @@ private struct NativeSpeechDuplexTests {
         expect(
             !stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop,
             "duplicate Stop releases receive loop"
+        )
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot.state == .closed,
+            "Stop closes local playback"
         )
         let eventTypes = try await sentEventTypes(transport)
         expect(
@@ -461,6 +500,51 @@ private struct NativeSpeechDuplexTests {
         expect(
             await sink.currentTurnOutputEventCount == 0,
             "speech_started clears Debug output sink"
+        )
+    }
+
+    private static func testOutputDeviceChangeThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "device-change fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .speaking
+        }
+        stack.outputMonitor.changeOutput(
+            identifier: "replacement-output",
+            name: "Replacement Output",
+            available: true
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state == .idle
+                && stack.controller.realtimeSpeechStateSnapshot
+                    .lastStandardError == "unavailable"
+        }
+        let eventTypes = try await sentEventTypes(transport)
+        expect(
+            eventTypes.filter { $0 == "response.cancel" }.count == 1,
+            "output device change cancels Provider once"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.count == 1,
+            "output device change closes Provider once"
         )
     }
 
@@ -605,7 +689,9 @@ private struct NativeSpeechDuplexTests {
         controller: AppController,
         orchestration: OrchestrationKernel,
         capture: DuplexAudioCapture,
-        adapter: StepFunRealtimeAdapter
+        adapter: StepFunRealtimeAdapter,
+        outputPlayer: FakeMacSpeechAudioOutputPlayer,
+        outputMonitor: FakeMacSpeechOutputDeviceMonitor
     ) {
         let runtimeStack = makeRuntimeStack(transport: transport)
         let capture = DuplexAudioCapture()
@@ -614,14 +700,23 @@ private struct NativeSpeechDuplexTests {
             capture: capture,
             deviceMonitor: DuplexDeviceMonitor()
         )
+        let outputPlayer = FakeMacSpeechAudioOutputPlayer()
+        let outputMonitor = FakeMacSpeechOutputDeviceMonitor()
+        let outputHost = MacSpeechAudioOutputHost(
+            player: outputPlayer,
+            deviceMonitor: outputMonitor
+        )
         return (
             AppController(
                 orchestrationKernel: runtimeStack.orchestration,
-                speechAudioHost: host
+                speechAudioHost: host,
+                speechAudioOutputHost: outputHost
             ),
             runtimeStack.orchestration,
             capture,
-            runtimeStack.adapter
+            runtimeStack.adapter,
+            outputPlayer,
+            outputMonitor
         )
     }
 
@@ -723,11 +818,13 @@ private struct NativeSpeechDuplexTests {
     private static func waitUntil(
         _ condition: @escaping @MainActor () async throws -> Bool
     ) async {
+        waitIndex += 1
+        let currentWait = waitIndex
         for _ in 0 ..< 400 {
             if (try? await condition()) == true { return }
             try? await Task.sleep(for: .milliseconds(5))
         }
-        fatalError("FAILED: timed out waiting for duplex state")
+        fatalError("FAILED: timed out waiting for duplex state #\(currentWait)")
     }
 
     private static func expect(_ condition: Bool, _ message: String) {
