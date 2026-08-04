@@ -14,6 +14,7 @@ private struct MacSpeechAudioOutputHostTests {
         await testOrderedPlaybackAndCompletion()
         await testUnderrunDoesNotStartPlayer()
         await testQueueFullStopsAndClears()
+        await testConversionFailureStopsAndClears()
         await testConsumerTimeoutStopsAndClears()
         await testStopAndCloseAreIdempotent()
         await testGenerationRejectsLateInputAndCompletion()
@@ -189,6 +190,22 @@ private struct MacSpeechAudioOutputHostTests {
         expect(failed.lastError == "consumer_timed_out", "timeout error")
         expect(failed.queueDepth == 0, "timeout clears queue")
         expect(player.stopCount == 1, "timeout stops player")
+    }
+
+    private static func testConversionFailureStopsAndClears() async {
+        let (host, player) = makeHost()
+        player.scheduleError = .conversionFailed
+        let generation = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        )
+        let failed = await host.start()
+        expect(failed.state == .failed, "conversion failure stops host")
+        expect(failed.lastError == "conversion_failed", "conversion error standardized")
+        expect(failed.queueDepth == 0, "conversion failure clears queue")
+        expect(player.startCount == 0, "conversion failure never starts player")
+        expect(player.stopCount == 1, "conversion failure stops player")
+        expect(failed.recentEvents.last?.kind == .failed, "conversion failure emits event")
     }
 
     private static func testStopAndCloseAreIdempotent() async {

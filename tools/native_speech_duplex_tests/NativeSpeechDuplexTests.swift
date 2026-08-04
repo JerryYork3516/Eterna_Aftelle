@@ -100,6 +100,8 @@ private struct NativeSpeechDuplexTests {
         try await testFullDuplexThroughController()
         try await testInterruptThroughController()
         try await testOutputDeviceChangeThroughController()
+        try await testStopClearsActivePlaybackThroughController()
+        try await testConversionFailureThroughController()
         await testDebugSinkClearsInterruptedOutput()
         try await testOutputBackpressureStopsInteraction()
         try await testReceiveFailureAndDuplicateStart()
@@ -353,6 +355,8 @@ private struct NativeSpeechDuplexTests {
             let types = try await sentEventTypes(transport)
             return stack.controller.realtimeSpeechStateSnapshot.state
                     == .listening
+                && stack.controller.nativeSpeechPlaybackDebugSnapshot
+                    .interruptClearCount == 1
                 && types.filter { $0 == "response.cancel" }.count == 1
         }
         expect(
@@ -545,6 +549,107 @@ private struct NativeSpeechDuplexTests {
         expect(
             await transport.calls.filter { $0 == .close(.normal) }.count == 1,
             "output device change closes Provider once"
+        )
+    }
+
+    private static func testStopClearsActivePlaybackThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "active Stop fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .speaking
+        }
+        await stack.controller.stopSpeechAudioCapture()
+        await stack.controller.stopSpeechAudioCapture()
+        expect(
+            stack.controller.nativeSpeechPlaybackDebugSnapshot.stopClearCount
+                == 1,
+            "duplicate Stop clears active playback once"
+        )
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot.state == .closed,
+            "Stop closes active output host"
+        )
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot.state == .idle,
+            "Stop returns active playback to idle"
+        )
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechAudioOutputHostSnapshot
+                .rejectedCallbackCount == 1
+        }
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot.playedChunkCount
+                == 0,
+            "Stop rejects late playback completion"
+        )
+        let eventTypes = try await sentEventTypes(transport)
+        expect(
+            eventTypes.filter { $0 == "response.cancel" }.count == 1,
+            "duplicate Stop cancels Provider once"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.count == 1,
+            "duplicate Stop closes Provider once"
+        )
+    }
+
+    private static func testConversionFailureThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        stack.outputPlayer.scheduleError = .conversionFailed
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "conversion failure fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state == .idle
+                && stack.controller.realtimeSpeechStateSnapshot
+                    .lastStandardError == "transport_failure"
+        }
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot.lastError
+                == "conversion_failed",
+            "conversion failure retains Host diagnosis"
+        )
+        let eventTypes = try await sentEventTypes(transport)
+        expect(
+            eventTypes.filter { $0 == "response.cancel" }.count == 1,
+            "conversion failure cancels Provider once"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.count == 1,
+            "conversion failure closes Provider once"
         )
     }
 

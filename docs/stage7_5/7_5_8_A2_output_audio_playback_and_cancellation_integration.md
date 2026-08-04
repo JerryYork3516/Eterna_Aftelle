@@ -81,10 +81,10 @@ Stop 先关闭并清空本地播放，再执行既有 output bridge、input brid
 
 ## 7. 自动测试与回归
 
-- `speech_audio_output_tests`: 71 checks，PASS。
+- `speech_audio_output_tests`: 77 checks，PASS；包含转换失败停止与清队列。
 - `realtime_speech_state_tests`: 119 checks，PASS。
 - `native_speech_runtime_integration_tests`: 170 checks，PASS。
-- `native_speech_duplex_tests`: 70 checks，PASS。
+- `native_speech_duplex_tests`: 81 checks，PASS；包含活动播放 Stop、迟到回调拒绝和转换失败的 Runtime/Provider 收口。
 - `native_speech_input_bridge_tests`: 53 checks，PASS。
 - `speech_audio_host_tests`: 81 checks，PASS。
 - `runtime_expression_tests`: 220 checks，PASS。
