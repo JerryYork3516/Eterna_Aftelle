@@ -1,0 +1,272 @@
+@preconcurrency import AVFoundation
+import Foundation
+
+private final class MacSpeechConverterInputState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var supplied = false
+
+    func takeInput() -> Bool {
+        lock.withLock {
+            guard !supplied else { return false }
+            supplied = true
+            return true
+        }
+    }
+}
+
+nonisolated struct MacSpeechLocalPlaybackFormat: Sendable, Equatable {
+    let sampleRate: Double
+    let channelCount: UInt32
+    let sampleFormat: String
+    let isInterleaved: Bool
+
+    var description: String {
+        let layout = channelCount == 1 ? "mono" : "\(channelCount) channels"
+        let interleaving = isInterleaved ? "interleaved" : "non-interleaved"
+        return String(
+            format: "%.0f Hz / %@ / %@ / %@",
+            sampleRate,
+            layout,
+            sampleFormat,
+            interleaving
+        )
+    }
+}
+
+nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let providerFormat: AVAudioFormat
+    private let localFormat: AVAudioFormat
+    private let converter: AVAudioConverter
+
+    init(localFormat: AVAudioFormat) throws {
+        guard let providerFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: MacSpeechPCMOutputFormat.sampleRate,
+            channels: MacSpeechPCMOutputFormat.channelCount,
+            interleaved: true
+        ),
+        let converter = AVAudioConverter(
+            from: providerFormat,
+            to: localFormat
+        ) else {
+            throw MacSpeechAudioOutputHostError.conversionFailed
+        }
+        self.providerFormat = providerFormat
+        self.localFormat = localFormat
+        self.converter = converter
+    }
+
+    func convert(pcm16Bytes: Data) throws -> AVAudioPCMBuffer {
+        try lock.withLock {
+            try convertedBuffer(pcm16Bytes: pcm16Bytes)
+        }
+    }
+
+    private func convertedBuffer(
+        pcm16Bytes: Data
+    ) throws -> AVAudioPCMBuffer {
+        guard !pcm16Bytes.isEmpty,
+              pcm16Bytes.count.isMultiple(of: MacSpeechPCMOutputFormat.bytesPerSample)
+        else {
+            throw MacSpeechAudioOutputHostError.invalidPCMByteCount
+        }
+        let sourceFrames = AVAudioFrameCount(
+            pcm16Bytes.count / MacSpeechPCMOutputFormat.bytesPerSample
+        )
+        guard let sourceBuffer = AVAudioPCMBuffer(
+            pcmFormat: providerFormat,
+            frameCapacity: sourceFrames
+        ) else {
+            throw MacSpeechAudioOutputHostError.conversionFailed
+        }
+        sourceBuffer.frameLength = sourceFrames
+        let audioBuffer = sourceBuffer.mutableAudioBufferList.pointee.mBuffers
+        guard let destination = audioBuffer.mData,
+              Int(audioBuffer.mDataByteSize) >= pcm16Bytes.count
+        else {
+            throw MacSpeechAudioOutputHostError.conversionFailed
+        }
+        pcm16Bytes.copyBytes(
+            to: destination.assumingMemoryBound(to: UInt8.self),
+            count: pcm16Bytes.count
+        )
+
+        let ratio = localFormat.sampleRate / providerFormat.sampleRate
+        let targetCapacity = AVAudioFrameCount(
+            ceil(Double(sourceFrames) * ratio) + 64
+        )
+        guard let targetBuffer = AVAudioPCMBuffer(
+            pcmFormat: localFormat,
+            frameCapacity: targetCapacity
+        ) else {
+            throw MacSpeechAudioOutputHostError.conversionFailed
+        }
+
+        let inputState = MacSpeechConverterInputState()
+        var conversionError: NSError?
+        let status = converter.convert(
+            to: targetBuffer,
+            error: &conversionError
+        ) { _, inputStatus in
+            guard inputState.takeInput() else {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            inputStatus.pointee = .haveData
+            return sourceBuffer
+        }
+        guard conversionError == nil,
+              status != .error,
+              targetBuffer.frameLength > 0
+        else {
+            throw MacSpeechAudioOutputHostError.conversionFailed
+        }
+        return targetBuffer
+    }
+}
+
+nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
+    func prepare() throws -> MacSpeechLocalPlaybackFormat
+    func schedule(
+        pcm16Bytes: Data,
+        completion: @escaping @Sendable (
+            Result<Int, MacSpeechAudioOutputHostError>
+        ) -> Void
+    ) throws
+    func start() throws
+    func stop()
+    func close()
+}
+
+nonisolated final class SystemMacSpeechAudioOutputPlayer:
+    MacSpeechAudioOutputPlaying, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var engine: AVAudioEngine?
+    private var playerNode: AVAudioPlayerNode?
+    private var converter: MacSpeechPCMOutputConverter?
+    private var localFormat: AVAudioFormat?
+
+    func prepare() throws -> MacSpeechLocalPlaybackFormat {
+        try lock.withLock {
+            if let localFormat {
+                return describe(localFormat)
+            }
+
+            let engine = AVAudioEngine()
+            let playerNode = AVAudioPlayerNode()
+            engine.attach(playerNode)
+            let localFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+            guard localFormat.sampleRate > 0,
+                  localFormat.channelCount > 0,
+                  let converter = try? MacSpeechPCMOutputConverter(
+                    localFormat: localFormat
+                  )
+            else {
+                throw MacSpeechAudioOutputHostError.outputUnavailable
+            }
+            engine.connect(
+                playerNode,
+                to: engine.mainMixerNode,
+                format: localFormat
+            )
+            engine.prepare()
+
+            self.engine = engine
+            self.playerNode = playerNode
+            self.converter = converter
+            self.localFormat = localFormat
+            return describe(localFormat)
+        }
+    }
+
+    func schedule(
+        pcm16Bytes: Data,
+        completion: @escaping @Sendable (
+            Result<Int, MacSpeechAudioOutputHostError>
+        ) -> Void
+    ) throws {
+        let prepared = try lock.withLock {
+            guard let playerNode,
+                  let converter
+            else {
+                throw MacSpeechAudioOutputHostError.invalidState
+            }
+            let buffer = try converter.convert(pcm16Bytes: pcm16Bytes)
+            return (playerNode, buffer)
+        }
+        prepared.0.scheduleBuffer(
+            prepared.1,
+            completionCallbackType: .dataPlayedBack
+        ) { _ in
+            completion(.success(pcm16Bytes.count))
+        }
+    }
+
+    func start() throws {
+        try lock.withLock {
+            guard let engine, let playerNode else {
+                throw MacSpeechAudioOutputHostError.invalidState
+            }
+            if !engine.isRunning {
+                try engine.start()
+            }
+            if !playerNode.isPlaying {
+                playerNode.play()
+            }
+        }
+    }
+
+    func stop() {
+        lock.withLock {
+            playerNode?.stop()
+            engine?.stop()
+        }
+    }
+
+    func close() {
+        lock.withLock {
+            playerNode?.stop()
+            engine?.stop()
+            if let engine, let playerNode {
+                engine.disconnectNodeOutput(playerNode)
+                engine.detach(playerNode)
+            }
+            converter = nil
+            localFormat = nil
+            playerNode = nil
+            engine = nil
+        }
+    }
+
+    private func describe(
+        _ format: AVAudioFormat
+    ) -> MacSpeechLocalPlaybackFormat {
+        MacSpeechLocalPlaybackFormat(
+            sampleRate: format.sampleRate,
+            channelCount: format.channelCount,
+            sampleFormat: sampleFormatDescription(format.commonFormat),
+            isInterleaved: format.isInterleaved
+        )
+    }
+
+    private func sampleFormatDescription(
+        _ format: AVAudioCommonFormat
+    ) -> String {
+        switch format {
+        case .pcmFormatFloat32:
+            return "Float32"
+        case .pcmFormatFloat64:
+            return "Float64"
+        case .pcmFormatInt16:
+            return "signed PCM16"
+        case .pcmFormatInt32:
+            return "signed PCM32"
+        case .otherFormat:
+            return "other"
+        @unknown default:
+            return "unknown"
+        }
+    }
+}

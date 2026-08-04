@@ -100,6 +100,8 @@ final class AppController: ObservableObject {
         MacSpeechNativeInputBridgeSnapshot.initial
     @Published private(set) var speechOutputBridgeSnapshot =
         MacSpeechNativeOutputBridgeSnapshot.initial
+    @Published private(set) var speechAudioOutputHostSnapshot =
+        MacSpeechAudioOutputHostSnapshot.initial
     @Published private(set) var realtimeSpeechStateSnapshot =
         RealtimeSpeechStateSnapshot.initial
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
@@ -124,6 +126,7 @@ final class AppController: ObservableObject {
     private var providerConfigurationGeneration = 0
     #if DEBUG
     private let speechAudioHost: MacSpeechAudioHost
+    private let speechAudioOutputHost: MacSpeechAudioOutputHost
     private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
@@ -184,6 +187,7 @@ final class AppController: ObservableObject {
         let runtimeCore: RuntimeCore
         #if DEBUG
         speechAudioHost = MacSpeechAudioHost()
+        speechAudioOutputHost = MacSpeechAudioOutputHost()
         runtimeCore = StepFunRealtimeRuntimeComposition.makeRuntimeCore(
             credentialReader: credentialStore
         )
@@ -205,6 +209,7 @@ final class AppController: ObservableObject {
         providerKeychainStore = ProviderKeychainStore()
         #if DEBUG
         speechAudioHost = MacSpeechAudioHost()
+        speechAudioOutputHost = MacSpeechAudioOutputHost()
         #endif
         restoreProviderConfiguration()
         #if DEBUG
@@ -220,6 +225,7 @@ final class AppController: ObservableObject {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         self.speechAudioHost = speechAudioHost
+        speechAudioOutputHost = MacSpeechAudioOutputHost()
         restoreProviderConfiguration()
         refreshNativeSpeechProviderDebugState()
     }
@@ -1223,6 +1229,8 @@ final class AppController: ObservableObject {
             await speechInputBridge.currentSnapshot()
         speechOutputBridgeSnapshot =
             await speechOutputBridge.currentSnapshot()
+        speechAudioOutputHostSnapshot =
+            await speechAudioOutputHost.refreshDiagnostics()
         realtimeSpeechStateSnapshot =
             orchestrationKernel.realtimeSpeechStateSnapshot()
     }
@@ -1249,6 +1257,7 @@ final class AppController: ObservableObject {
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         await speechAudioHost.shutdown()
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+        speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
         realtimeSpeechStateSnapshot =
             orchestrationKernel.realtimeSpeechStateSnapshot()
     }

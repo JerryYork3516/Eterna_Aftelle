@@ -540,6 +540,8 @@ struct ParticleDebugWindow: View {
                 controller.speechInputBridgeSnapshot,
             speechOutputBridgeSnapshot:
                 controller.speechOutputBridgeSnapshot,
+            speechAudioOutputHostSnapshot:
+                controller.speechAudioOutputHostSnapshot,
             realtimeSpeechStateSnapshot:
                 controller.realtimeSpeechStateSnapshot,
             dialogueAuditState: controller.dialogueAuditState,
@@ -706,6 +708,7 @@ private struct ParticleDebugPanel: View {
     let speechAudioHostSnapshot: MacSpeechAudioHostSnapshot
     let speechInputBridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let speechOutputBridgeSnapshot: MacSpeechNativeOutputBridgeSnapshot
+    let speechAudioOutputHostSnapshot: MacSpeechAudioOutputHostSnapshot
     let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
@@ -978,6 +981,8 @@ private struct ParticleDebugPanel: View {
                                 bridgeSnapshot: speechInputBridgeSnapshot,
                                 outputBridgeSnapshot:
                                     speechOutputBridgeSnapshot,
+                                playbackSnapshot:
+                                    speechAudioOutputHostSnapshot,
                                 realtimeSpeechStateSnapshot:
                                     realtimeSpeechStateSnapshot,
                                 refreshAuthorization:
@@ -1971,6 +1976,7 @@ private struct SpeechAudioHostDebugView: View {
     let snapshot: MacSpeechAudioHostSnapshot
     let bridgeSnapshot: MacSpeechNativeInputBridgeSnapshot
     let outputBridgeSnapshot: MacSpeechNativeOutputBridgeSnapshot
+    let playbackSnapshot: MacSpeechAudioOutputHostSnapshot
     let realtimeSpeechStateSnapshot: RealtimeSpeechStateSnapshot
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
@@ -2125,6 +2131,45 @@ private struct SpeechAudioHostDebugView: View {
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.audioHost.outputLastError",
                     value: outputBridgeSnapshot.lastError ?? "—"
+                )
+                Divider()
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackHost",
+                    value: localizedAudioHostValue(
+                        "particleDebug.audioHost.playbackHost.\(playbackSnapshot.state.rawValue)"
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackDevice",
+                    value: playbackSnapshot.outputDevice.name
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackProviderFormat",
+                    value: playbackSnapshot.providerFormat
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackLocalFormat",
+                    value: playbackSnapshot.localFormat
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackQueue",
+                    value: "\(playbackSnapshot.queueDepth) / \(playbackSnapshot.queueCapacity)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackEnqueued",
+                    value: "\(playbackSnapshot.enqueuedChunkCount) / \(playbackSnapshot.enqueuedByteCount) bytes"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackPlayed",
+                    value: "\(playbackSnapshot.playedChunkCount) / \(playbackSnapshot.playedByteCount) bytes"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackUnderruns",
+                    value: "\(playbackSnapshot.underrunCount)"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.audioHost.playbackLastError",
+                    value: playbackSnapshot.lastError ?? "—"
                 )
                 Divider()
                 ParticleDiagnosticsRow(

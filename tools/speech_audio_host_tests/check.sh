@@ -37,6 +37,7 @@ echo "speech_audio_host_runtime_boundary=PASS"
 unexpected_audio_api="$(rg -l 'AVCaptureDevice|AVAuthorizationStatus|AVAudioEngine|AVAudioConverter|import AVFoundation|import CoreAudio|AudioObjectGetPropertyData' \
   "$repo_root/apps/macos/Aftelle" -g '*.swift' \
   | rg -v '/MacSpeechAudio(Host|Capture)\.swift$' \
+  | rg -v '/MacSpeechAudioOutputPlayer\.swift$' \
   | rg -v '/MacSpeechDeviceMonitor\.swift$' || true)"
 if [ -n "$unexpected_audio_api" ]; then
   echo "speech_audio_host_avfoundation_boundary=FAIL"
