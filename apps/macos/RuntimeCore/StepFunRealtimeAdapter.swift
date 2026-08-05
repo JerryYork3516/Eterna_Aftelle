@@ -1,5 +1,11 @@
 import Foundation
 
+private struct StepFunPendingResidentPartial: Sendable, Equatable {
+    let text: String
+    let responseCorrelationHash: String?
+    let itemCorrelationHash: String?
+}
+
 nonisolated enum StepFunRealtimeConnectionState: String, Sendable, Equatable {
     case connecting
     case connected
@@ -33,6 +39,7 @@ actor StepFunRealtimeAdapter:
     private var residentTranscriptAccumulator = ""
     private var userTranscriptFinalized = false
     private var residentTranscriptFinalized = false
+    private var pendingResidentPartial: StepFunPendingResidentPartial?
     private var nextOutputAudioSequenceNumber: UInt64 = 0
     private var wireReceiveOrdinal: UInt64 = 0
     private var lastOutputAudioArrivalNanoseconds: UInt64?
@@ -163,6 +170,7 @@ actor StepFunRealtimeAdapter:
         guard isProviderResponseActive else {
             residentTranscriptAccumulator = ""
             residentTranscriptFinalized = false
+            pendingResidentPartial = nil
             return
         }
         guard !isCancelling else { return }
@@ -171,6 +179,11 @@ actor StepFunRealtimeAdapter:
         pendingCancellationEventID = eventID
         residentTranscriptAccumulator = ""
         residentTranscriptFinalized = false
+        pendingResidentPartial = nil
+        pendingEvents.removeAll {
+            if case .outputText = $0.kind { return true }
+            return false
+        }
         connectionState = .cancelling
         do {
             try await transport.send(
@@ -220,6 +233,7 @@ actor StepFunRealtimeAdapter:
         residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
         residentTranscriptFinalized = false
+        pendingResidentPartial = nil
 
         let created = try await nextRecognizedEvent(
             interactionID: request.interaction.id
@@ -261,6 +275,7 @@ actor StepFunRealtimeAdapter:
         residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
         residentTranscriptFinalized = false
+        pendingResidentPartial = nil
     }
 
     private func requireActive(_ interactionID: NativeSpeechInteractionID) throws {
@@ -337,6 +352,7 @@ actor StepFunRealtimeAdapter:
                 pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
+                pendingResidentPartial = nil
             }
             if isCancelling,
                case .failed(let cancellationError) = envelope.event?.kind,
@@ -348,6 +364,7 @@ actor StepFunRealtimeAdapter:
                 pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
+                pendingResidentPartial = nil
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -371,6 +388,7 @@ actor StepFunRealtimeAdapter:
                 pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
+                pendingResidentPartial = nil
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -433,6 +451,7 @@ actor StepFunRealtimeAdapter:
                 activeResponseCorrelationHash = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
+                pendingResidentPartial = nil
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -453,6 +472,7 @@ actor StepFunRealtimeAdapter:
                 activeResponseCorrelationHash = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
+                pendingResidentPartial = nil
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -482,15 +502,42 @@ actor StepFunRealtimeAdapter:
                 case .cancelled, .responseCompleted, .turnFailed, .failed:
                     isProviderResponseActive = false
                     activeResponseCorrelationHash = nil
+                    pendingResidentPartial = nil
                     connectionState = .configured
                 default:
                     break
                 }
-                return emitStandardEvent(
+                let standardEvent = emitStandardEvent(
                     event,
                     envelope: envelope,
                     receivedAtNanoseconds: receivedAt
                 )
+                if case .outputAudio = event.kind,
+                   let partial = takeResidentPartial(
+                        matching: envelope,
+                        interactionID: interactionID
+                   ) {
+                    pendingEvents.append(emitStandardEvent(
+                        partial,
+                        envelope: envelope,
+                        receivedAtNanoseconds: receivedAt
+                    ))
+                }
+                return standardEvent
+            }
+            if envelope.wireKind == .residentAudioTranscriptDelta,
+               pendingResidentPartial != nil {
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "resident_partial_buffered",
+                    interactionID: interactionID,
+                    disposition: "awaiting_correlated_audio",
+                    wireSequence: wireReceiveOrdinal,
+                    responseCorrelationHash:
+                        envelope.responseCorrelationHash,
+                    itemCorrelationHash: envelope.itemCorrelationHash
+                )
+                continue
             }
             ignoredEventCount &+= 1
             recordDiagnostic(
@@ -545,10 +592,13 @@ actor StepFunRealtimeAdapter:
                   ) else {
                 return nil
             }
-            return NativeSpeechEvent(
-                interactionID: interactionID,
-                kind: .outputText(text: cumulative, isFinal: false)
+            pendingResidentPartial = StepFunPendingResidentPartial(
+                text: cumulative,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash
             )
+            return nil
         case .residentAudioTranscriptDone:
             guard !residentTranscriptFinalized,
                   case .outputText(let text, true) = event.kind else {
@@ -556,6 +606,7 @@ actor StepFunRealtimeAdapter:
             }
             residentTranscriptFinalized = true
             residentTranscriptAccumulator = text
+            pendingResidentPartial = nil
             return event
         case .residentTextDelta, .residentTextDone:
             return nil
@@ -568,11 +619,81 @@ actor StepFunRealtimeAdapter:
             if case .inputSpeechStarted = event.kind {
                 userTranscriptAccumulator = ""
                 userTranscriptFinalized = false
+                residentTranscriptAccumulator = ""
+                residentTranscriptFinalized = false
+                pendingResidentPartial = nil
             }
             return event
-        case .outputAudioDone, .conversationItemCreated:
+        case .conversationItemCreated:
+            guard !userTranscriptFinalized,
+                  case .finalTranscript(let text) = event.kind else {
+                return nil
+            }
+            if userTranscriptAccumulator.isEmpty {
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "provider_user_partial_unavailable",
+                    interactionID: interactionID,
+                    disposition: "conversation_item_final_only",
+                    wireSequence: wireReceiveOrdinal,
+                    itemCorrelationHash: envelope.itemCorrelationHash
+                )
+            }
+            userTranscriptFinalized = true
+            userTranscriptAccumulator = text
+            return event
+        case .outputAudioDone:
             return nil
         }
+    }
+
+    private func takeResidentPartial(
+        matching envelope: StepFunRealtimeDecodedEnvelope,
+        interactionID: NativeSpeechInteractionID
+    ) -> NativeSpeechEvent? {
+        guard let pendingResidentPartial else { return nil }
+        let responseMatches = Self.correlationMatches(
+            pendingResidentPartial.responseCorrelationHash,
+            envelope.responseCorrelationHash
+        )
+        let itemMatches = Self.correlationMatches(
+            pendingResidentPartial.itemCorrelationHash,
+            envelope.itemCorrelationHash
+        )
+        let hasMismatch = responseMatches == false || itemMatches == false
+        let hasMatch = responseMatches == true || itemMatches == true
+        guard hasMatch, !hasMismatch else {
+            self.pendingResidentPartial = nil
+            recordDiagnostic(
+                source: .adapter,
+                category: hasMismatch
+                    ? "provider_subtitle_correlation_mismatch"
+                    : "provider_subtitle_correlation_unavailable",
+                interactionID: interactionID,
+                disposition: "partial_not_released",
+                wireSequence: wireReceiveOrdinal,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash
+            )
+            return nil
+        }
+        self.pendingResidentPartial = nil
+        return NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .outputText(
+                text: pendingResidentPartial.text,
+                isFinal: false
+            )
+        )
+    }
+
+    private static func correlationMatches(
+        _ first: String?,
+        _ second: String?
+    ) -> Bool? {
+        guard let first, let second else { return nil }
+        return first == second
     }
 
     private static func accumulate(

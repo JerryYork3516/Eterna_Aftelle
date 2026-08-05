@@ -22,6 +22,9 @@ private struct StepFunRealtimeAdapterTests {
         try await testCancelRearmsSameConnection()
         try await testCancelAfterCompletedResponseIsSafe()
         try await testCumulativeTranscriptNormalization()
+        try await testSubtitleCorrelationGate()
+        try await testCancelDropsQueuedSubtitle()
+        try await testConversationItemUserFinal()
         try await testRecoverableTurnFailureKeepsConnection()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
@@ -455,17 +458,20 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"好"}"#),
             .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你好"}"#),
             .text(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#),
-            .text(#"{"type":"response.created"}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
             .text(#"{"type":"response.text.delta","delta":"提前文本"}"#),
             .text(#"{"type":"response.text.done","text":"提前文本完成"}"#),
-            .text(#"{"type":"response.audio_transcript.delta","delta":"我"}"#),
-            .text(#"{"type":"response.audio_transcript.delta","delta":"是"}"#),
-            .text(#"{"type":"response.audio_transcript.delta","delta":"我是"}"#),
-            .text(#"{"type":"response.audio_transcript.done","transcript":"我是林轩"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"我"}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AQI="}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"是"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"我是"}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AwQ="}"#),
+            .text(#"{"type":"response.audio_transcript.done","response_id":"response-one","item_id":"item-one","transcript":"我是林轩"}"#),
             .text(#"{"type":"response.audio_transcript.delta","delta":"迟到"}"#),
-            .text(#"{"type":"response.done","response":{"status":"completed"}}"#),
-            .text(#"{"type":"response.created"}"#),
-            .text(#"{"type":"response.audio_transcript.delta","delta":"新"}"#)
+            .text(#"{"type":"response.done","response":{"id":"response-one","status":"completed"}}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-two"}}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-two","item_id":"item-two","delta":"新"}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-two","item_id":"item-two","delta":"BQY="}"#)
         ])
         let adapter = StepFunRealtimeAdapter(
             credentialReader: StaticCredentialReader(
@@ -488,11 +494,29 @@ private struct StepFunRealtimeAdapterTests {
             .partialTranscript("你好"),
             .finalTranscript("你好"),
             .thinking,
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 0,
+                bytes: Data([1, 2]),
+                format: .pcm16
+            )),
             .outputText(text: "我", isFinal: false),
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 1,
+                bytes: Data([3, 4]),
+                format: .pcm16
+            )),
             .outputText(text: "我是", isFinal: false),
             .outputText(text: "我是林轩", isFinal: true),
             .responseCompleted,
             .thinking,
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 2,
+                bytes: Data([5, 6]),
+                format: .pcm16
+            )),
             .outputText(text: "新", isFinal: false)
         ]
         for expectedKind in expected {
@@ -506,8 +530,154 @@ private struct StepFunRealtimeAdapterTests {
         }
         let ignoredCount = await adapter.ignoredEventCount
         expect(
-            ignoredCount == 5,
+            ignoredCount == 4,
             "text modality, duplicate and post-final events are absorbed"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testConversationItemUserFinal() async throws {
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"conversation.item.created","item":{"id":"user-item","type":"message","role":"user","status":"completed","content":[{"type":"input_audio","transcript":"你好"}]}}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#),
+            .text(#"{"type":"response.created"}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport,
+            diagnosticBuffer: diagnostics
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let userFinal = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            userFinal.kind == .finalTranscript("你好"),
+            "conversation.item.created provides the user final"
+        )
+        let next = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            next.kind == .thinking,
+            "dedicated duplicate final is absorbed"
+        )
+        expect(
+            diagnostics.drain().events.contains {
+                $0.category == "provider_user_partial_unavailable"
+            },
+            "missing Provider user partial is diagnosed without fabrication"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testSubtitleCorrelationGate() async throws {
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"旧"}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-other","item_id":"item-other","delta":"AQI="}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-two"}}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-two","item_id":"item-two","delta":"新"}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-two","item_id":"item-two","delta":"AwQ="}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport,
+            diagnosticBuffer: diagnostics
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+
+        let expected: [NativeSpeechEventKind] = [
+            .thinking,
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 0,
+                bytes: Data([1, 2]),
+                format: .pcm16
+            )),
+            .thinking,
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 1,
+                bytes: Data([3, 4]),
+                format: .pcm16
+            )),
+            .outputText(text: "新", isFinal: false)
+        ]
+        for expectedKind in expected {
+            let event = try await adapter.receive(
+                interactionID: request.interaction.id
+            )
+            expect(
+                event.kind == expectedKind,
+                "only a correlated response/item releases its latest partial"
+            )
+        }
+        expect(
+            diagnostics.drain().events.contains {
+                $0.category == "provider_subtitle_correlation_mismatch"
+            },
+            "mismatched subtitle correlation is diagnosed"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testCancelDropsQueuedSubtitle() async throws {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"旧字幕"}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AQI="}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let audio = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        if case .outputAudio = audio.kind {
+            expect(true, "correlated audio is emitted before its partial")
+        } else {
+            expect(false, "correlated audio is emitted before its partial")
+        }
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.cancelled"}"#)
+        )
+        let cancelled = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            cancelled.kind == .cancelled(reason: "interrupted"),
+            "Interrupt drops a queued old-turn partial before acknowledgement"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }
@@ -525,6 +695,7 @@ private struct StepFunRealtimeAdapterTests {
             (#"{"type":"input_audio_buffer.speech_stopped"}"#, .inputSpeechEnded),
             (#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你"}"#, .partialTranscript("你")),
             (#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#, .finalTranscript("你好")),
+            (#"{"type":"conversation.item.created","item":{"id":"user-item","type":"message","role":"user","status":"completed","content":[{"type":"input_audio","transcript":"你好"}]}}"#, .finalTranscript("你好")),
             (#"{"type":"response.created"}"#, .thinking),
             (#"{"type":"response.thinking.delta","delta":"private reasoning"}"#, .thinking),
             (#"{"type":"response.thinking.done","thinking":"private reasoning"}"#, .thinking),
@@ -559,6 +730,11 @@ private struct StepFunRealtimeAdapterTests {
             interactionID: interactionID
         )
         expect(unknown == nil, "unknown event is ignored")
+        let assistantItem = try codec.decode(
+            .text(#"{"type":"conversation.item.created","item":{"type":"message","role":"assistant","content":[{"transcript":"private"}]}}"#),
+            interactionID: interactionID
+        )
+        expect(assistantItem == nil, "assistant conversation items are ignored")
         let audioDone = try codec.decode(
             .text(#"{"type":"response.audio.done"}"#),
             interactionID: interactionID

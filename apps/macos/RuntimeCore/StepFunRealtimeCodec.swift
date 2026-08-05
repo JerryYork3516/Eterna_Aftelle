@@ -195,12 +195,18 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 itemCorrelationHash: itemCorrelationHash
             )
         case "conversation.item.created":
-            return StepFunRealtimeDecodedEnvelope(
-                wireKind: .conversationItemCreated,
-                event: nil,
-                responseCorrelationHash: responseCorrelationHash,
-                itemCorrelationHash: itemCorrelationHash
-            )
+            guard let transcript = userTranscriptFromConversationItem(
+                object
+            ) else {
+                return StepFunRealtimeDecodedEnvelope(
+                    wireKind: .conversationItemCreated,
+                    event: nil,
+                    responseCorrelationHash: responseCorrelationHash,
+                    itemCorrelationHash: itemCorrelationHash
+                )
+            }
+            kind = .finalTranscript(transcript)
+            wireKind = .conversationItemCreated
         case "response.text.delta":
             kind = stringEvent(object, key: "delta") {
                 .outputText(text: $0, isFinal: false)
@@ -324,6 +330,29 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         guard object["type"] as? String == "error" else { return nil }
         let error = object["error"] as? [String: Any]
         return error?["event_id"] as? String
+    }
+
+    private func userTranscriptFromConversationItem(
+        _ object: [String: Any]
+    ) -> String? {
+        guard let item = object["item"] as? [String: Any],
+              item["type"] as? String == "message",
+              item["role"] as? String == "user",
+              (item["status"] as? String).map({ $0 == "completed" })
+                ?? true,
+              let contents = item["content"] as? [[String: Any]] else {
+            return nil
+        }
+        for content in contents {
+            for key in ["transcript", "text"] {
+                guard let value = content[key] as? String else { continue }
+                let normalized = value.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if !normalized.isEmpty { return normalized }
+            }
+        }
+        return nil
     }
 
     private static func correlationID(

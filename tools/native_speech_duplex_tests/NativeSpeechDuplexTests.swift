@@ -97,6 +97,7 @@ private struct NativeSpeechDuplexTests {
         fixtureData = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+        testRealSequenceSubtitleSynchronizer()
         try await testFullDuplexThroughController()
         try await testPlaybackStallThroughController()
         try await testInterruptThroughController()
@@ -111,6 +112,29 @@ private struct NativeSpeechDuplexTests {
         try await testCumulativeSubtitleThroughController()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
+    }
+
+    private static func testRealSequenceSubtitleSynchronizer() {
+        var synchronizer = RealtimeSpeechPlaybackSubtitleSynchronizer()
+        synchronizer.observeEnqueuedAudio(sequence: 10)
+        expect(synchronizer.enqueuePartial(text: "我"),
+               "partial binds to the latest real audio sequence")
+        synchronizer.observeEnqueuedAudio(sequence: 20)
+        expect(synchronizer.enqueuePartial(text: "我是"),
+               "later partial binds to a later real sequence")
+        synchronizer.enqueueFinal(text: "我是林轩")
+        synchronizer.advance(playedSequence: 10)
+        expect(synchronizer.displayText == "我",
+               "first played sequence releases only its partial")
+        synchronizer.advance(playedSequence: 19)
+        expect(synchronizer.displayText == "我",
+               "an unplayed sequence cannot advance subtitles")
+        synchronizer.advance(playedSequence: 20)
+        expect(synchronizer.displayText == "我是",
+               "matching played sequence advances the partial")
+        synchronizer.completePlayback()
+        expect(synchronizer.displayText == "我是林轩",
+               "final locks only after playback completion")
     }
 
     private static func testRecoverableTurnFailurePreservesBridge()
@@ -297,18 +321,20 @@ private struct NativeSpeechDuplexTests {
             stack.controller.realtimeSpeechSubtitleSnapshot.userFinal
                 == "你好"
         }
-        await transport.enqueue(.text(#"{"type":"response.created"}"#))
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+            .text(#"{"type":"response.created","response":{"id":"response-one"}}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.delta","delta":"我"}"#)
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"我"}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AQI="}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.delta","delta":"是"}"#)
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"是"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AwQ="}"#)
         )
         await waitUntil {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentPartial
@@ -319,7 +345,7 @@ private struct NativeSpeechDuplexTests {
             "resident partial waits for matching local playback"
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.done","transcript":"我是林轩"}"#)
+            .text(#"{"type":"response.audio_transcript.done","response_id":"response-one","item_id":"item-one","transcript":"我是林轩"}"#)
         )
         await waitUntil {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
@@ -330,7 +356,7 @@ private struct NativeSpeechDuplexTests {
             "resident final remains gated before playback"
         )
         await transport.enqueue(
-            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+            .text(#"{"type":"response.done","response":{"id":"response-one","status":"completed"}}"#)
         )
         await waitUntil { stack.outputPlayer.scheduledCount == 2 }
         stack.outputPlayer.completeScheduledChunk()

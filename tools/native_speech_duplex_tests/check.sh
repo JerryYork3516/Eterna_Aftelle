@@ -182,6 +182,18 @@ rg -q 'case \.residentTextDelta, \.residentTextDone:' "$adapter"
 rg -q 'case chunkPlayed' \
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputHost.swift"
 rg -q 'RealtimeSpeechPlaybackSubtitleSynchronizer' "$controller"
+rg -q 'requiredAudioSequence' "$controller"
+rg -Fq 'advance(playedSequence:' "$controller"
+rg -Fq 'observeEnqueuedAudio(sequence:' "$controller"
+rg -Fq 'completePlayback()' "$controller"
+if rg -q 'requiredPlayedChunkCount|lastAssignedPlayedChunkCount|forceLatest' \
+  "$controller"; then
+  echo "native_speech_subtitle_audio_watermark=FAIL"
+  exit 1
+fi
+rg -q 'conversation.item.created' "$codec"
+rg -q 'provider_user_partial_unavailable' "$adapter"
+echo "native_speech_subtitle_audio_watermark=PASS"
 rg -q 'scheduleRealtimeSpeechPartialRefresh' "$controller"
 rg -Fq 'Task.sleep(for: .milliseconds(50))' "$controller"
 echo "native_speech_streaming_subtitle=PASS"
