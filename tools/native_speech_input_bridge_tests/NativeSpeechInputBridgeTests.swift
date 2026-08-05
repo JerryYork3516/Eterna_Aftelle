@@ -126,25 +126,25 @@ private struct NativeSpeechInputBridgeTests {
             stack.controller.speechAudioHostSnapshot.isCapturing,
             "AppController starts Fake Audio Host capture"
         )
-        for marker in UInt8(1) ... UInt8(12) {
+        for marker in UInt8(1) ... UInt8(30) {
             expect(stack.capture.emit(marker), "Fake Audio Source emits PCM16 frame")
         }
         let bounded = await stack.host.currentSnapshot()
-        expect(bounded.queuedFrameCount == 8, "Host queue remains at capacity eight")
-        expect(bounded.droppedFrameCount == 4, "Host deterministically drops four oldest frames")
+        expect(bounded.queuedFrameCount == 25, "Host buffers at most 500 ms")
+        expect(bounded.droppedFrameCount == 5, "Host deterministically drops five oldest frames")
 
         await stack.controller.startNativeSpeechInputBridge()
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechInputBridgeSnapshot
-                .adapterReceivedFrameCount == 8
+                .adapterReceivedFrameCount == 25
         }
         let running = stack.controller.speechInputBridgeSnapshot
         expect(running.state == .running, "input bridge is running")
         expect(running.hasActivePump, "one active input pump is visible")
-        expect(running.forwardedFrameCount == 8, "eight bounded frames are forwarded")
+        expect(running.forwardedFrameCount == 25, "twenty-five bounded frames are forwarded")
         expect(running.runtimeRejectedFrameCount == 0, "current frames pass Runtime gate")
-        expect(running.sendOperationCount == 8, "eight sends are measured")
+        expect(running.sendOperationCount == 25, "twenty-five sends are measured")
         expect(
             running.maximumSendDurationMilliseconds
                 >= running.averageSendDurationMilliseconds,
@@ -153,13 +153,13 @@ private struct NativeSpeechInputBridgeTests {
         expect(running.interactionShortID?.count == 8, "interaction ID is redacted")
 
         let appendObjects = try await audioAppendObjects(transport)
-        expect(appendObjects.count == 8, "Fake Transport receives eight audio appends")
+        expect(appendObjects.count == 25, "Fake Transport receives bounded audio appends")
         let markers = appendObjects.compactMap { object -> UInt8? in
             guard let encoded = object["audio"] as? String,
                   let data = Data(base64Encoded: encoded) else { return nil }
             return data.first
         }
-        expect(markers == Array(UInt8(5) ... UInt8(12)), "audio order preserves newest bounded frames")
+        expect(markers == Array(UInt8(6) ... UInt8(30)), "audio order preserves newest bounded frames")
 
         await stack.controller.startNativeSpeechInputBridge()
         await stack.controller.refreshMicrophoneAuthorization()
@@ -168,7 +168,7 @@ private struct NativeSpeechInputBridgeTests {
             "duplicate start keeps the existing pump"
         )
         expect(
-            try await audioAppendObjects(transport).count == 8,
+            try await audioAppendObjects(transport).count == 25,
             "duplicate start creates no second sender"
         )
 
@@ -179,7 +179,7 @@ private struct NativeSpeechInputBridgeTests {
         await stack.controller.stopSpeechAudioCapture()
         expect(stack.capture.stopCount == 1, "repeated stop is idempotent")
         expect(
-            try await audioAppendObjects(transport).count == 8,
+            try await audioAppendObjects(transport).count == 25,
             "stop sends no late audio append"
         )
         let eventTypes = try await sentEventTypes(transport)

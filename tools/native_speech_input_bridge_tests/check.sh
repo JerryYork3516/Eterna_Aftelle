@@ -67,7 +67,9 @@ if rg -q 'typealias SendFrame = @MainActor' "$bridge"; then
   exit 1
 fi
 rg -q 'maxCount: MacSpeechAudioInputFormat.frameCapacity' "$bridge"
-rg -q 'static let frameCapacity = 8' "$host"
+rg -q 'static let frameCapacity = 25' "$host"
+rg -q 'static let packetSampleCount = 480' "$host"
+rg -q 'static let packetByteCount = 960' "$host"
 rg -q 'frames.removeFirst\(\)' "$host"
 echo "native_speech_input_bridge_bounded_task=PASS"
 echo "native_speech_input_bridge_main_actor_path=PASS"

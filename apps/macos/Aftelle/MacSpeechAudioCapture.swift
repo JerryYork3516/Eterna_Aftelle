@@ -4,7 +4,10 @@ import Foundation
 nonisolated enum MacSpeechAudioInputFormat {
     static let sampleRate: Double = 24_000
     static let channelCount: AVAudioChannelCount = 1
-    static let frameCapacity = 8
+    static let packetDurationMilliseconds = 20
+    static let packetSampleCount = 480
+    static let packetByteCount = 960
+    static let frameCapacity = 25
     static let tapBufferSize: AVAudioFrameCount = 1_024
     static let description = "24000 Hz / mono / signed PCM16 LE / interleaved"
 }
@@ -147,6 +150,45 @@ nonisolated enum MacSpeechPCM16Encoder {
     }
 }
 
+nonisolated struct MacSpeechPCM16Packet: Sendable, Equatable {
+    let bytes: Data
+    let activity: Float
+}
+
+nonisolated struct MacSpeechPCM16Packetizer: Sendable {
+    private var pendingSamples: [Float] = []
+
+    mutating func append(samples: [Float]) -> [MacSpeechPCM16Packet] {
+        pendingSamples.append(contentsOf: samples)
+        var packets: [MacSpeechPCM16Packet] = []
+        while pendingSamples.count >= MacSpeechAudioInputFormat.packetSampleCount {
+            let packetSamples = Array(
+                pendingSamples.prefix(
+                    MacSpeechAudioInputFormat.packetSampleCount
+                )
+            )
+            pendingSamples.removeFirst(
+                MacSpeechAudioInputFormat.packetSampleCount
+            )
+            packets.append(MacSpeechPCM16Packet(
+                bytes: MacSpeechPCM16Encoder.encode(samples: packetSamples),
+                activity: Self.activity(samples: packetSamples)
+            ))
+        }
+        return packets
+    }
+
+    private static func activity(samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        let finiteSquares = samples.reduce(Float.zero) { partial, value in
+            guard value.isFinite else { return partial }
+            let clamped = min(max(value, -1), 1)
+            return partial + clamped * clamped
+        }
+        return min(sqrt(finiteSquares / Float(samples.count)), 1)
+    }
+}
+
 nonisolated struct MacSpeechNativeInputFormat: Sendable, Equatable {
     let sampleRate: Double
     let channelCount: UInt32
@@ -176,6 +218,7 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let inputSampleRate: Double
+    private var packetizer = MacSpeechPCM16Packetizer()
 
     init(inputFormat: AVAudioFormat) throws {
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
@@ -197,7 +240,9 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
         inputSampleRate = inputFormat.sampleRate
     }
 
-    func convert(_ inputBuffer: AVAudioPCMBuffer) throws -> (Data, Float) {
+    func convert(
+        _ inputBuffer: AVAudioPCMBuffer
+    ) throws -> [MacSpeechPCM16Packet] {
         try lock.withLock {
             let ratio = MacSpeechAudioInputFormat.sampleRate / inputSampleRate
             let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio) + 8
@@ -233,15 +278,7 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
 
             let count = Int(outputBuffer.frameLength)
             let values = Array(UnsafeBufferPointer(start: samples, count: count))
-            let finiteSquares = values.reduce(Float.zero) { partial, value in
-                guard value.isFinite else { return partial }
-                let clamped = min(max(value, -1), 1)
-                return partial + clamped * clamped
-            }
-            let activity = count > 0
-                ? min(sqrt(finiteSquares / Float(count)), 1)
-                : 0
-            return (MacSpeechPCM16Encoder.encode(samples: values), activity)
+            return packetizer.append(samples: values)
         }
     }
 }
@@ -277,12 +314,14 @@ nonisolated final class SystemMacSpeechAudioCapture:
                 bufferSize: MacSpeechAudioInputFormat.tapBufferSize,
                 format: inputFormat
             ) { buffer, _ in
-                guard let converted = try? converter.convert(buffer) else { return }
-                frameBuffer.append(
-                    pcm16Bytes: converted.0,
-                    activity: converted.1,
-                    generation: generation
-                )
+                guard let packets = try? converter.convert(buffer) else { return }
+                for packet in packets {
+                    frameBuffer.append(
+                        pcm16Bytes: packet.bytes,
+                        activity: packet.activity,
+                        generation: generation
+                    )
+                }
             }
             engine.prepare()
             do {

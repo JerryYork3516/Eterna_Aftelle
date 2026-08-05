@@ -173,6 +173,7 @@ private struct MacSpeechAudioHostTests {
         await testUnauthorizedCaptureIsRejected()
         await testStartStopRestartAreIdempotent()
         testPCM16Encoding()
+        testExactTwentyMillisecondPacketization()
         do {
             try testStereoConversionToFrozenMonoFormat()
         } catch {
@@ -357,16 +358,48 @@ private struct MacSpeechAudioHostTests {
                 channels[channel][index] = index < 512 ? -1 : 1
             }
         }
-        let converted = try MacSpeechAudioConverter(inputFormat: format)
+        let packets = try MacSpeechAudioConverter(inputFormat: format)
             .convert(buffer)
-        let decoded = decodePCM16(converted.0)
+        expect(packets.count == 1, "converter emits one complete 20 ms packet")
+        guard let converted = packets.first else {
+            fatalError("FAILED: converted packet unavailable")
+        }
+        let decoded = decodePCM16(converted.bytes)
         expect(
-            (500 ... 512).contains(decoded.count),
-            "converter resamples 48 kHz input to 24 kHz (count=\(decoded.count))"
+            decoded.count == MacSpeechAudioInputFormat.packetSampleCount,
+            "converter emits exactly 480 samples"
         )
+        expect(converted.bytes.count == 960, "converter emits exactly 960 bytes")
         expect(decoded.prefix(128).contains { $0 < -20_000 }, "stereo negative peak converts to mono")
         expect(decoded.suffix(128).contains { $0 > 20_000 }, "stereo positive peak converts to mono")
-        expect(converted.1 > 0, "converter reports bounded activity")
+        expect(converted.activity > 0, "converter reports bounded activity")
+    }
+
+    private static func testExactTwentyMillisecondPacketization() {
+        var packetizer = MacSpeechPCM16Packetizer()
+        expect(
+            packetizer.append(samples: Array(repeating: 0.25, count: 127))
+                .isEmpty,
+            "partial device callback is retained"
+        )
+        let first = packetizer.append(
+            samples: Array(repeating: 0.25, count: 353)
+        )
+        expect(first.count == 1, "irregular callbacks form one exact packet")
+        expect(first[0].bytes.count == 960, "packet is 20 ms PCM16")
+
+        let next = packetizer.append(
+            samples: Array(repeating: -0.5, count: 1_123)
+        )
+        expect(next.count == 2, "large callback emits all complete packets")
+        expect(
+            next.allSatisfy { $0.bytes.count == 960 },
+            "every emitted packet has an exact byte count"
+        )
+        let final = packetizer.append(
+            samples: Array(repeating: 0, count: 317)
+        )
+        expect(final.count == 1, "remainder is preserved across callbacks")
     }
 
     private static func testBoundedFrameBuffer() {

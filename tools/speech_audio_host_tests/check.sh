@@ -55,6 +55,13 @@ if ! rg -q 'AVAudioEngine' "$capture" \
 fi
 echo "speech_audio_host_scope=PASS"
 
+rg -q 'packetDurationMilliseconds = 20' "$capture"
+rg -q 'packetSampleCount = 480' "$capture"
+rg -q 'packetByteCount = 960' "$capture"
+rg -q 'frameCapacity = 25' "$capture"
+rg -q 'MacSpeechPCM16Packetizer' "$capture" "$tests"
+echo "speech_audio_host_packetization=PASS"
+
 if rg -q 'RuntimeCore|ExecutionEngine|ProviderRouter|NativeSpeechProvider|StepFun|Keychain|DRLoader|MemoryController|SessionStore' \
   "$host" "$capture" "$device_monitor"; then
   echo "speech_audio_host_ownership=FAIL"
