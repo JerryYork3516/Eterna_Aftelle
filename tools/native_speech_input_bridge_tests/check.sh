@@ -59,6 +59,7 @@ runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
 engine="$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift"
 router="$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift"
 adapter="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
+transport="$repo_root/apps/macos/RuntimeCore/URLSessionRealtimeWebSocketTransport.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 
 test "$(rg -c 'Task \{' "$bridge")" -eq 1
@@ -114,3 +115,12 @@ echo "native_speech_input_bridge_scope=PASS"
 test "$(rg -c '/\* NativeSpeechInputFrame\.swift( in Sources)? \*/' "$project")" -eq 4
 test "$(rg -c '/\* MacSpeechNativeInputBridge\.swift( in Sources)? \*/' "$project")" -eq 4
 echo "native_speech_input_bridge_target_membership=PASS"
+
+rg -q 'maximumPendingWrites = 8' "$transport"
+rg -q 'BoundedRealtimeWebSocketWriteWindow' "$transport"
+rg -Fq 'task.send(message) {' "$transport"
+if rg -q 'try await task.send' "$transport"; then
+  echo "native_speech_input_bridge_write_window=FAIL"
+  exit 1
+fi
+echo "native_speech_input_bridge_write_window=PASS"

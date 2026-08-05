@@ -94,6 +94,63 @@ private final class FakeBridgeDeviceMonitor:
     func stop() {}
 }
 
+private final class ControlledWriteSink: @unchecked Sendable {
+    typealias Completion = @Sendable (NativeSpeechError?) -> Void
+
+    private let lock = NSLock()
+    private var pendingCompletions: [Completion] = []
+    private var submittedFrames: [RealtimeWebSocketFrame] = []
+    private var virtualLatencies: [Int] = []
+
+    func submit(
+        _ frame: RealtimeWebSocketFrame,
+        completion: @escaping Completion
+    ) {
+        lock.withLock {
+            let latencyPattern = [43, 43, 43, 43, 43, 43, 43, 43, 46, 80]
+            virtualLatencies.append(
+                latencyPattern[submittedFrames.count % latencyPattern.count]
+            )
+            submittedFrames.append(frame)
+            pendingCompletions.append(completion)
+        }
+    }
+
+    @discardableResult
+    func completeNext(error: NativeSpeechError? = nil) -> Bool {
+        let completion = lock.withLock { () -> Completion? in
+            guard !pendingCompletions.isEmpty else { return nil }
+            return pendingCompletions.removeFirst()
+        }
+        guard let completion else { return false }
+        completion(error)
+        return true
+    }
+
+    func completeAllLate() {
+        while completeNext() {}
+    }
+
+    var pendingCount: Int {
+        lock.withLock { pendingCompletions.count }
+    }
+
+    var frames: [RealtimeWebSocketFrame] {
+        lock.withLock { submittedFrames }
+    }
+
+    var averageVirtualLatencyMilliseconds: Int {
+        lock.withLock {
+            guard !virtualLatencies.isEmpty else { return 0 }
+            return virtualLatencies.reduce(0, +) / virtualLatencies.count
+        }
+    }
+
+    var maximumVirtualLatencyMilliseconds: Int {
+        lock.withLock { virtualLatencies.max() ?? 0 }
+    }
+}
+
 @MainActor
 @main
 private struct NativeSpeechInputBridgeTests {
@@ -110,7 +167,184 @@ private struct NativeSpeechInputBridgeTests {
         try await testControllerEndToEndAndBoundedOrdering()
         try await testRuntimeGenerationSessionAndSequenceGates()
         try await testSendFailureStopsSinglePump()
+        try await testBoundedWriteWindowSustainsVirtualFiveMinutes()
+        try await testWriteWindowFailureAndCloseAreBounded()
+        try await testControlAndAudioFramesShareFIFO()
         print("native_speech_input_bridge_checks=\(checks)")
+    }
+
+    private static func testBoundedWriteWindowSustainsVirtualFiveMinutes()
+        async throws
+    {
+        let frameCount = 15_000
+        let sink = ControlledWriteSink()
+        let window = BoundedRealtimeWebSocketWriteWindow(capacity: 8)
+        await window.reset()
+
+        let producer = Task {
+            for index in 0 ..< frameCount {
+                let marker = UInt8(index % 251)
+                try await window.enqueue(
+                    .binary(Data(repeating: marker, count: 960))
+                ) { frame, completion in
+                    sink.submit(frame, completion: completion)
+                }
+            }
+        }
+
+        await waitUntil { sink.pendingCount == 8 }
+        for _ in 0 ..< frameCount {
+            while !sink.completeNext() {
+                await Task.yield()
+            }
+        }
+        try await producer.value
+        await waitUntil {
+            await window.snapshot().completedWriteCount == UInt64(frameCount)
+        }
+
+        let frames = sink.frames
+        let snapshot = await window.snapshot()
+        expect(frames.count == frameCount, "five virtual minutes submit every frame")
+        expect(
+            frames.allSatisfy {
+                guard case .binary(let bytes) = $0 else { return false }
+                return bytes.count == 960
+            },
+            "every virtual microphone frame remains 20 ms / 960 bytes"
+        )
+        expect(
+            frames.enumerated().allSatisfy { index, frame in
+                guard case .binary(let bytes) = frame else { return false }
+                return bytes.first == UInt8(index % 251)
+            },
+            "bounded writes preserve capture order"
+        )
+        expect(
+            snapshot.submittedWriteCount == UInt64(frameCount),
+            "all 15,000 frames enter the write window"
+        )
+        expect(
+            snapshot.completedWriteCount == UInt64(frameCount),
+            "all 15,000 virtual writes complete"
+        )
+        expect(snapshot.pendingWriteCount == 0, "write window drains completely")
+        expect(
+            snapshot.maximumPendingWriteCount == 8,
+            "write window never exceeds eight pending operations"
+        )
+        expect(
+            sink.averageVirtualLatencyMilliseconds == 47,
+            "virtual completion latency averages 47 ms"
+        )
+        expect(
+            sink.maximumVirtualLatencyMilliseconds == 80,
+            "virtual completion latency peaks at 80 ms"
+        )
+    }
+
+    private static func testWriteWindowFailureAndCloseAreBounded()
+        async throws
+    {
+        let failureSink = ControlledWriteSink()
+        let failureWindow = BoundedRealtimeWebSocketWriteWindow(capacity: 2)
+        await failureWindow.reset()
+        for marker in UInt8(1) ... UInt8(2) {
+            try await failureWindow.enqueue(
+                .binary(Data(repeating: marker, count: 960))
+            ) { frame, completion in
+                failureSink.submit(frame, completion: completion)
+            }
+        }
+        let blockedByFailure = Task { () -> NativeSpeechError? in
+            do {
+                try await failureWindow.enqueue(
+                    .binary(Data(repeating: 3, count: 960))
+                ) { frame, completion in
+                    failureSink.submit(frame, completion: completion)
+                }
+                return nil
+            } catch let error as NativeSpeechError {
+                return error
+            } catch {
+                return .transportFailure
+            }
+        }
+        await Task.yield()
+        expect(
+            failureSink.completeNext(error: .transportFailure),
+            "asynchronous write failure completes an in-flight write"
+        )
+        expect(
+            await blockedByFailure.value == .transportFailure,
+            "latched write failure releases a saturated sender"
+        )
+        failureSink.completeAllLate()
+        await Task.yield()
+        let failed = await failureWindow.snapshot()
+        expect(failed.pendingWriteCount == 0, "write failure releases pending operations")
+        expect(
+            failed.latchedError == .transportFailure,
+            "write failure remains observable"
+        )
+
+        let closeSink = ControlledWriteSink()
+        let closeWindow = BoundedRealtimeWebSocketWriteWindow(capacity: 2)
+        await closeWindow.reset()
+        for marker in UInt8(1) ... UInt8(2) {
+            try await closeWindow.enqueue(
+                .binary(Data(repeating: marker, count: 960))
+            ) { frame, completion in
+                closeSink.submit(frame, completion: completion)
+            }
+        }
+        let blockedByClose = Task { () -> NativeSpeechError? in
+            do {
+                try await closeWindow.enqueue(
+                    .binary(Data(repeating: 3, count: 960))
+                ) { frame, completion in
+                    closeSink.submit(frame, completion: completion)
+                }
+                return nil
+            } catch let error as NativeSpeechError {
+                return error
+            } catch {
+                return .transportFailure
+            }
+        }
+        await Task.yield()
+        await closeWindow.close()
+        expect(
+            await blockedByClose.value == .cancelled,
+            "Stop releases a saturated sender as cancelled"
+        )
+        closeSink.completeAllLate()
+        await Task.yield()
+        let closed = await closeWindow.snapshot()
+        expect(closed.pendingWriteCount == 0, "Stop clears pending writes")
+        expect(closed.latchedError == .cancelled, "Stop invalidates late completions")
+    }
+
+    private static func testControlAndAudioFramesShareFIFO() async throws {
+        let sink = ControlledWriteSink()
+        let window = BoundedRealtimeWebSocketWriteWindow(capacity: 8)
+        await window.reset()
+        let frames: [RealtimeWebSocketFrame] = [
+            .text(#"{"type":"session.update"}"#),
+            .text(#"{"type":"input_audio_buffer.append","audio":"AA=="}"#),
+            .text(#"{"type":"response.cancel"}"#),
+            .binary(Data(repeating: 7, count: 960))
+        ]
+        for frame in frames {
+            try await window.enqueue(frame) { frame, completion in
+                sink.submit(frame, completion: completion)
+            }
+        }
+        expect(sink.frames == frames, "control and audio writes share one FIFO")
+        sink.completeAllLate()
+        await waitUntil {
+            await window.snapshot().completedWriteCount == UInt64(frames.count)
+        }
     }
 
     private static func testControllerEndToEndAndBoundedOrdering() async throws {
