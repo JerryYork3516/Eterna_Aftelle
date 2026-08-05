@@ -6,23 +6,13 @@ repo_root=$(cd "$script_dir/../.." && pwd)
 build_dir=$(mktemp -d /private/tmp/aftelle-particle-expression-tests.XXXXXX)
 trap 'rm -rf "$build_dir"' EXIT
 
+runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
 xcrun --sdk macosx swiftc \
   -D DEBUG \
   -parse-as-library \
   -module-cache-path "$build_dir/module-cache" \
   -target arm64-apple-macos14.0 \
-  "$repo_root/apps/macos/RuntimeCore/DRLoader.swift" \
-  "$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift" \
-  "$repo_root/apps/macos/RuntimeCore/MemoryController.swift" \
-  "$repo_root/apps/macos/RuntimeCore/NarrativeMemoryStore.swift" \
-  "$repo_root/apps/macos/RuntimeCore/RelationshipStateStore.swift" \
-  "$repo_root/apps/macos/RuntimeCore/PlatformAdapter.swift" \
-  "$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift" \
-  "$repo_root/apps/macos/RuntimeCore/RuntimeConfig.swift" \
-  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift" \
-  "$repo_root/apps/macos/RuntimeCore/SessionStore.swift" \
-  "$repo_root/apps/macos/RuntimeCore/TraceRecorder.swift" \
-  "$repo_root/apps/macos/RuntimeCore/VisualStateMapper.swift" \
+  "${runtime_sources[@]}" \
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleTuning.swift" \
   "$repo_root/apps/macos/Aftelle/ParticleCore/ResidentVisualIntent.swift" \
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleStateController.swift" \
