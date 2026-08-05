@@ -22,6 +22,7 @@ private struct StepFunRealtimeAdapterTests {
         try await testCancelRearmsSameConnection()
         try await testCancelAfterCompletedResponseIsSafe()
         try await testCumulativeTranscriptNormalization()
+        try await testRecoverableTurnFailureKeepsConnection()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
         try await testRedactedWireDiagnostics()
@@ -29,6 +30,64 @@ private struct StepFunRealtimeAdapterTests {
         try await testSinglePreconfigurationRetry()
         try await testStreamingFailureDoesNotReconnect()
         print("stepfun_realtime_adapter_checks=\(checks)")
+    }
+
+    private static func testRecoverableTurnFailureKeepsConnection()
+        async throws
+    {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
+            .text(#"{"type":"response.done","response":{"id":"response-one","status":"failed"}}"#),
+            .text(#"{"type":"error","response_id":"response-one","error":{"code":"server_error"}}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-two"}}"#),
+            .text(#"{"type":"response.done","response":{"id":"response-two","status":"completed"}}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: "test-token"),
+            transport: transport
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let firstResponse = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(firstResponse.kind == .thinking, "first response starts")
+        let turnFailure = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            turnFailure.kind == .turnFailed(.unavailable),
+            "failed response becomes one recoverable turn failure"
+        )
+        let stateAfterFailure = await adapter.connectionState
+        expect(
+            stateAfterFailure == .configured,
+            "turn failure keeps the configured WebSocket"
+        )
+        let secondResponse = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            secondResponse.kind == .thinking,
+            "duplicate old response error is absorbed before the next response"
+        )
+        let secondCompletion = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            secondCompletion.kind == .responseCompleted,
+            "same connection completes the next response"
+        )
+        let connectCount = await transport.calls.filter {
+            if case .connect = $0 { return true }
+            return false
+        }.count
+        expect(connectCount == 1, "recoverable turn failure does not reconnect")
+        try await adapter.close(interactionID: request.interaction.id)
     }
 
     private static func testHandshakeAudioCancelAndClose() async throws {
@@ -377,12 +436,12 @@ private struct StepFunRealtimeAdapterTests {
         await transport.enqueue(.text(
             #"{"type":"error","error":{"code":"rate_limit_exceeded","event_id":"\#(secondCancellationEventID)"}}"#
         ))
-        let fatalError = try await adapter.receive(
+        let correlatedRateLimit = try await adapter.receive(
             interactionID: request.interaction.id
         )
         expect(
-            fatalError.kind == .failed(.rateLimited),
-            "correlated fatal Provider error is not absorbed"
+            correlatedRateLimit.kind == .cancelled(reason: "interrupted"),
+            "cancel-correlated Provider error is one cancellation acknowledgement"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }
@@ -522,8 +581,8 @@ private struct StepFunRealtimeAdapterTests {
         let doneCases: [(String, NativeSpeechEventKind)] = [
             ("completed", .responseCompleted),
             ("cancelled", .cancelled(reason: "cancelled")),
-            ("failed", .failed(.unavailable)),
-            ("incomplete", .failed(.transportFailure))
+            ("failed", .turnFailed(.unavailable)),
+            ("incomplete", .turnFailed(.transportFailure))
         ]
         for (status, expected) in doneCases {
             let event = try codec.decode(

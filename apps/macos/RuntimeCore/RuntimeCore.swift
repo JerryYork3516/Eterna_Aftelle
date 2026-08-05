@@ -3562,6 +3562,12 @@ public final class RuntimeCore {
                 return .rejectedDuplicate
             }
             return .accepted
+        case .turnFailed:
+            return realtimeSpeechSubtitleStateMachine.failTurn(
+                interactionID: event.interactionID,
+                failedTurnNumber: stateBefore.currentTurnNumber,
+                nextTurnNumber: stateAfter.currentTurnNumber
+            )
         case .cancelled:
             return realtimeSpeechSubtitleStateMachine.terminate(
                 interactionID: event.interactionID,
@@ -3590,7 +3596,8 @@ public final class RuntimeCore {
     ) {
         switch eventKind {
         case .partialTranscript, .finalTranscript, .outputText,
-             .responseCompleted, .cancelled, .closed, .failed:
+             .responseCompleted, .turnFailed, .cancelled, .closed,
+             .failed:
             realtimeSpeechSubtitleStateMachine.recordRejectedEvent(
                 disposition
             )
@@ -3644,6 +3651,7 @@ public final class RuntimeCore {
         case .outputAudio: "output_audio"
         case .toolRequestCandidate: "tool_request_candidate"
         case .responseCompleted: "response_completed"
+        case .turnFailed: "turn_failed"
         case .cancelled: "cancelled"
         case .closed: "closed"
         case .failed: "failed"

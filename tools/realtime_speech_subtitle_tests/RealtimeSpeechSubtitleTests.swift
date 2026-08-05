@@ -9,8 +9,70 @@ private struct RealtimeSpeechSubtitleTests {
         testPartialReplacementAndFinalLock()
         testDirectionIsolationAndIdentityGate()
         testInterruptAndStopCleanup()
+        testTurnFailureCleanup()
         testCompletedSubtitleRetention()
         print("realtime_speech_subtitle_checks=\(checks)")
+    }
+
+    private static func testTurnFailureCleanup() {
+        let machine = RealtimeSpeechSubtitleStateMachine()
+        let interactionID = NativeSpeechInteractionID()
+        machine.start(interactionID: interactionID, turnNumber: 1)
+        _ = machine.applyProviderTranscript(
+            interactionID: interactionID,
+            turnNumber: 1,
+            direction: .user,
+            contentState: .final,
+            text: "失败问题"
+        )
+        _ = machine.applyProviderTranscript(
+            interactionID: interactionID,
+            turnNumber: 1,
+            direction: .resident,
+            contentState: .partial,
+            text: "失败临时回答"
+        )
+        expect(
+            machine.failTurn(
+                interactionID: interactionID,
+                failedTurnNumber: 1,
+                nextTurnNumber: 2
+            ) == .accepted,
+            "turn failure advances without terminating subtitles"
+        )
+        let failed = machine.snapshot()
+        expect(failed.interactionShortID != nil, "turn failure preserves interaction identity")
+        expect(
+            failed.turnNumber == 2 && failed.turnGeneration == 2,
+            "turn failure advances turn and generation once"
+        )
+        expect(
+            failed.userPartial == nil && failed.userFinal == nil
+                && failed.residentPartial == nil && failed.residentFinal == nil,
+            "turn failure clears current turn subtitles"
+        )
+        expect(failed.lastCompleted == nil, "failed turn is not retained as completed")
+        expect(failed.lastClosureReason == .failed, "turn failure records failed closure")
+        expect(
+            machine.applyProviderTranscript(
+                interactionID: interactionID,
+                turnNumber: 2,
+                direction: .user,
+                contentState: .partial,
+                text: "下一轮"
+            ).disposition == .accepted,
+            "same interaction accepts the next turn"
+        )
+        expect(
+            machine.applyProviderTranscript(
+                interactionID: interactionID,
+                turnNumber: 1,
+                direction: .resident,
+                contentState: .final,
+                text: "迟到"
+            ).disposition == .rejectedLate,
+            "failed turn late subtitle is rejected"
+        )
     }
 
     private static func testPartialReplacementAndFinalLock() {

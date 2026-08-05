@@ -198,6 +198,7 @@ private struct RealtimeSpeechStateMachineTests {
             "final transcript cannot displace Server VAD"
         )
 
+        testRecoverableTurnFailure()
         testTerminalStates()
         testPlaybackLifecycleGate()
         testStops()
@@ -206,6 +207,52 @@ private struct RealtimeSpeechStateMachineTests {
         testTransitionHistoryBound()
         try await testScheduler()
         print("realtime_speech_state_checks=\(checks)")
+    }
+
+    private static func testRecoverableTurnFailure() {
+        let machine = RealtimeSpeechStateMachine()
+        let interaction = makeInteraction()
+        machine.start(interaction: interaction)
+        _ = transition(
+            machine,
+            interaction,
+            .finalTranscript("first turn"),
+            1
+        )
+        let failedTurn = transition(
+            machine,
+            interaction,
+            .turnFailed(.unavailable),
+            2
+        )
+        expect(failedTurn.snapshot.state == .listening, "turn failure returns listening")
+        expect(failedTurn.snapshot.currentTurnNumber == 2, "turn failure advances once")
+        expect(failedTurn.snapshot.completedTurnCount == 0, "failed turn is not completed")
+        expect(
+            failedTurn.snapshot.lastTransitionReason == .providerTurnFailed,
+            "turn failure records a recoverable reason"
+        )
+        expect(
+            failedTurn.snapshot.lastStandardError == "unavailable",
+            "turn failure keeps its standard error"
+        )
+        expect(machine.canonicalOutcome(for: 1) == .failed, "failed turn has one outcome")
+        expect(machine.terminalOutcome() == nil, "turn failure is not interaction terminal")
+        expect(machine.tracks(interaction), "turn failure preserves the interaction")
+
+        _ = transition(machine, interaction, .inputSpeechStarted, 3)
+        _ = transition(machine, interaction, .inputSpeechEnded, 4)
+        let nextTurn = transition(
+            machine,
+            interaction,
+            .responseCompleted,
+            5
+        )
+        expect(nextTurn.snapshot.state == .listening, "next turn succeeds on same interaction")
+        expect(nextTurn.snapshot.currentTurnNumber == 3, "next success advances again")
+        expect(nextTurn.snapshot.completedTurnCount == 1, "next success is counted")
+        expect(machine.canonicalOutcome(for: 2) == .completed, "next turn outcome is completed")
+        expect(machine.terminalOutcome() == nil, "successful recovery remains nonterminal")
     }
 
     private static func testTerminalStates() {

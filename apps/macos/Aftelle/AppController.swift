@@ -1666,7 +1666,7 @@ final class AppController: ObservableObject {
             syncRealtimeSpeechPresentation()
         case .outputAudio:
             break
-        case .cancelled, .closed, .failed:
+        case .turnFailed, .cancelled, .closed, .failed:
             realtimeSpeechPlaybackSubtitleSynchronizer.reset(
                 playedChunkCount:
                     speechAudioOutputHostSnapshot.playedChunkCount
@@ -1751,6 +1751,18 @@ final class AppController: ObservableObject {
                     )
                 }
             }
+        case .turnFailed:
+            nativeSpeechPlaybackBinding = nil
+            speechAudioOutputHostSnapshot =
+                await speechAudioOutputHost.clear()
+            recordRealtimeSpeechDiagnostic(
+                source: .playback,
+                category: "turn_failed_local_clear",
+                interactionShortID: String(
+                    event.interactionID.rawValue.uuidString.prefix(8)
+                ),
+                stateAfter: realtimeSpeechStateSnapshot.state.rawValue
+            )
         case .responseCompleted:
             if nativeSpeechPlaybackBinding != nil {
                 speechAudioOutputHostSnapshot =
@@ -2318,6 +2330,8 @@ final class AppController: ObservableObject {
             ("tool_request_candidate", nil, nil, nil)
         case .responseCompleted:
             ("response_completed", nil, nil, nil)
+        case .turnFailed(let error):
+            ("turn_failed", nil, nil, nativeSpeechErrorName(error))
         case .cancelled:
             ("cancelled", nil, nil, nil)
         case .closed:

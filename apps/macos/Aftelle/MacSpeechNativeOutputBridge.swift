@@ -219,6 +219,9 @@ actor MacSpeechNativeOutputBridge {
         case .responseCompleted:
             completedResponseCount &+= 1
             state = .configured
+        case .turnFailed(let error):
+            state = .configured
+            lastError = Self.standardErrorName(error)
         case .cancelled, .closed, .failed:
             state = .closing
         }

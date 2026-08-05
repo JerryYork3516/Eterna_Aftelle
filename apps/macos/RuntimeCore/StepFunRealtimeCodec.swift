@@ -275,9 +275,9 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         case "cancelled":
             return .cancelled(reason: "cancelled")
         case "failed":
-            return .failed(.unavailable)
+            return .turnFailed(.unavailable)
         case "incomplete":
-            return .failed(.transportFailure)
+            return .turnFailed(.transportFailure)
         default:
             throw NativeSpeechError.invalidEvent
         }

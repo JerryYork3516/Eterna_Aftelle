@@ -104,11 +104,83 @@ private struct NativeSpeechDuplexTests {
         try await testConversionFailureThroughController()
         await testDebugSinkClearsInterruptedOutput()
         try await testSlowConsumerPreservesInteraction()
+        try await testRecoverableTurnFailurePreservesBridge()
         try await testReceiveFailureAndDuplicateStart()
         try await testStaleCancelledAndClosedOutput()
         try await testCumulativeSubtitleThroughController()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
+    }
+
+    private static func testRecoverableTurnFailurePreservesBridge()
+        async throws
+    {
+        let transport = handshakeTransport()
+        let stack = makeRuntimeStack(transport: transport)
+        _ = stack.orchestration.loadResident(fixtureData: fixtureData)
+        let binding = try success(
+            await stack.orchestration.startNativeSpeechInput(
+                profile: profile(),
+                captureGeneration: 19
+            )
+        )
+        let bridge = outputBridge(orchestration: stack.orchestration)
+        _ = await bridge.start(binding: binding)
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.created","response":{"id":"failed-turn"}}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"id":"failed-turn","status":"failed"}}"#)
+        )
+        await waitUntil {
+            let state = stack.orchestration.realtimeSpeechStateSnapshot()
+            return state.state == .listening
+                && state.currentTurnNumber == 2
+        }
+        let afterFailure = await bridge.currentSnapshot()
+        expect(afterFailure.state == .configured, "turn failure keeps output bridge configured")
+        expect(afterFailure.hasActiveReceiveLoop, "turn failure keeps receive loop active")
+        expect(afterFailure.terminalStatus == nil, "turn failure is not bridge terminal")
+        expect(afterFailure.lastError == "unavailable", "bridge exposes recoverable turn error")
+        expect(
+            stack.orchestration.realtimeSpeechStateSnapshot()
+                .interactionTerminalOutcome == nil,
+            "turn failure keeps Runtime interaction nonterminal"
+        )
+
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.created","response":{"id":"recovered-turn"}}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"id":"recovered-turn","status":"completed"}}"#)
+        )
+        await waitUntil {
+            let state = stack.orchestration.realtimeSpeechStateSnapshot()
+            return state.state == .listening
+                && state.currentTurnNumber == 3
+                && state.completedTurnCount == 1
+        }
+        expect(
+            await bridge.currentSnapshot().completedResponseCount == 1,
+            "same receive loop completes the next turn"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.isEmpty,
+            "recoverable turn failure does not close WebSocket"
+        )
+        _ = await bridge.stop()
     }
 
     private static func testRedactedDiagnosticsAndExport() async throws {

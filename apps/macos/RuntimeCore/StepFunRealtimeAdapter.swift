@@ -25,7 +25,9 @@ actor StepFunRealtimeAdapter:
     private var pendingEvents: [NativeSpeechEvent] = []
     private var isCancelling = false
     private var didEmitCancellationAcknowledgement = false
+    private var didEmitTurnFailureOutcome = false
     private var isProviderResponseActive = false
+    private var activeResponseCorrelationHash: String?
     private var pendingCancellationEventID: String?
     private var userTranscriptAccumulator = ""
     private var residentTranscriptAccumulator = ""
@@ -207,7 +209,9 @@ actor StepFunRealtimeAdapter:
         activeContextVersion = contextProjection.compilationVersion
         isCancelling = false
         didEmitCancellationAcknowledgement = false
+        didEmitTurnFailureOutcome = false
         isProviderResponseActive = false
+        activeResponseCorrelationHash = nil
         pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
         wireReceiveOrdinal = 0
@@ -246,7 +250,9 @@ actor StepFunRealtimeAdapter:
         pendingEvents.removeAll()
         isCancelling = false
         didEmitCancellationAcknowledgement = false
+        didEmitTurnFailureOutcome = false
         isProviderResponseActive = false
+        activeResponseCorrelationHash = nil
         pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
         wireReceiveOrdinal = 0
@@ -324,16 +330,21 @@ actor StepFunRealtimeAdapter:
             if envelope.wireKind == .responseCreated {
                 isCancelling = false
                 didEmitCancellationAcknowledgement = false
+                didEmitTurnFailureOutcome = false
                 isProviderResponseActive = true
+                activeResponseCorrelationHash =
+                    envelope.responseCorrelationHash
                 pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
             }
             if isCancelling,
-               case .failed(.invalidEvent) = envelope.event?.kind,
+               case .failed(let cancellationError) = envelope.event?.kind,
+               cancellationError != .unauthorized,
                envelope.causedByEventID == pendingCancellationEventID {
                 didEmitCancellationAcknowledgement = true
                 isProviderResponseActive = false
+                activeResponseCorrelationHash = nil
                 pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
@@ -356,6 +367,7 @@ actor StepFunRealtimeAdapter:
                 }
                 didEmitCancellationAcknowledgement = true
                 isProviderResponseActive = false
+                activeResponseCorrelationHash = nil
                 pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
@@ -369,6 +381,93 @@ actor StepFunRealtimeAdapter:
                     receivedAtNanoseconds: receivedAt
                 )
             }
+            if envelope.wireKind == .providerError,
+               case .failed(let error) = envelope.event?.kind {
+                if error == .unauthorized {
+                    return emitStandardEvent(
+                        NativeSpeechEvent(
+                            interactionID: interactionID,
+                            kind: .failed(error)
+                        ),
+                        envelope: envelope,
+                        receivedAtNanoseconds: receivedAt
+                    )
+                }
+                guard isProviderResponseActive else {
+                    ignoredEventCount &+= 1
+                    recordDiagnostic(
+                        source: .adapter,
+                        category: "recoverable_provider_error_ignored",
+                        interactionID: interactionID,
+                        disposition: "no_active_response",
+                        wireSequence: wireReceiveOrdinal,
+                        responseCorrelationHash:
+                            envelope.responseCorrelationHash,
+                        itemCorrelationHash:
+                            envelope.itemCorrelationHash,
+                        errorCode: Self.standardErrorName(error)
+                    )
+                    continue
+                }
+                if let eventResponse = envelope.responseCorrelationHash,
+                   let activeResponse = activeResponseCorrelationHash,
+                   eventResponse != activeResponse {
+                    ignoredEventCount &+= 1
+                    recordDiagnostic(
+                        source: .adapter,
+                        category: "recoverable_provider_error_ignored",
+                        interactionID: interactionID,
+                        disposition: "stale_response",
+                        wireSequence: wireReceiveOrdinal,
+                        responseCorrelationHash: eventResponse,
+                        errorCode: Self.standardErrorName(error)
+                    )
+                    continue
+                }
+                guard !didEmitTurnFailureOutcome else {
+                    ignoredEventCount &+= 1
+                    continue
+                }
+                didEmitTurnFailureOutcome = true
+                isProviderResponseActive = false
+                activeResponseCorrelationHash = nil
+                residentTranscriptAccumulator = ""
+                residentTranscriptFinalized = false
+                connectionState = .configured
+                return emitStandardEvent(
+                    NativeSpeechEvent(
+                        interactionID: interactionID,
+                        kind: .turnFailed(error)
+                    ),
+                    envelope: envelope,
+                    receivedAtNanoseconds: receivedAt
+                )
+            }
+            if case .turnFailed(let error) = envelope.event?.kind {
+                guard !didEmitTurnFailureOutcome else {
+                    ignoredEventCount &+= 1
+                    continue
+                }
+                didEmitTurnFailureOutcome = true
+                isProviderResponseActive = false
+                activeResponseCorrelationHash = nil
+                residentTranscriptAccumulator = ""
+                residentTranscriptFinalized = false
+                connectionState = .configured
+                return emitStandardEvent(
+                    NativeSpeechEvent(
+                        interactionID: interactionID,
+                        kind: .turnFailed(error)
+                    ),
+                    envelope: envelope,
+                    receivedAtNanoseconds: receivedAt
+                )
+            }
+            if didEmitTurnFailureOutcome,
+               Self.isResponseScoped(envelope.wireKind) {
+                ignoredEventCount &+= 1
+                continue
+            }
             if let event = normalizedEvent(
                 from: envelope,
                 interactionID: interactionID
@@ -380,8 +479,9 @@ actor StepFunRealtimeAdapter:
                     isProviderResponseActive = true
                     nextOutputAudioSequenceNumber &+= 1
                     connectionState = .streaming
-                case .cancelled, .responseCompleted, .failed:
+                case .cancelled, .responseCompleted, .turnFailed, .failed:
                     isProviderResponseActive = false
+                    activeResponseCorrelationHash = nil
                     connectionState = .configured
                 default:
                     break
@@ -510,6 +610,23 @@ actor StepFunRealtimeAdapter:
         }
     }
 
+    private static func isResponseScoped(
+        _ wireKind: StepFunRealtimeWireEventKind
+    ) -> Bool {
+        switch wireKind {
+        case .responseCreated, .sessionCreated, .sessionUpdated,
+             .inputSpeechStarted, .inputSpeechEnded,
+             .conversationItemCreated:
+            return false
+        case .userTranscriptDelta, .userTranscriptDone,
+             .residentAudioTranscriptDelta, .residentAudioTranscriptDone,
+             .residentTextDelta, .residentTextDone, .outputAudioDelta,
+             .outputAudioDone, .responseCompleted,
+             .cancellationAcknowledgement, .providerError, .other:
+            return true
+        }
+    }
+
     private func emitStandardEvent(
         _ event: NativeSpeechEvent,
         envelope: StepFunRealtimeDecodedEnvelope,
@@ -599,6 +716,8 @@ actor StepFunRealtimeAdapter:
             ("tool_request_candidate", nil, nil, nil)
         case .responseCompleted:
             ("response_completed", nil, nil, nil)
+        case .turnFailed(let error):
+            ("turn_failed", nil, nil, standardErrorName(error))
         case .cancelled:
             ("cancelled", nil, nil, nil)
         case .closed:

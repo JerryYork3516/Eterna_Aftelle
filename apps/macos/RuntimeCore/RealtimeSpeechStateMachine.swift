@@ -18,6 +18,7 @@ nonisolated enum RealtimeSpeechTransitionReason: String, Sendable, Equatable {
     case playbackCompleted = "playback_completed"
     case playbackFailed = "playback_failed"
     case responseCompleted = "response_completed"
+    case providerTurnFailed = "provider_turn_failed"
     case userStopped = "user_stopped"
     case interrupted
     case superseded
@@ -288,7 +289,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
 
             if awaitingInterruptCancellation {
                 switch event.kind {
-                case .cancelled, .responseCompleted, .failed:
+                case .cancelled, .responseCompleted, .turnFailed, .failed:
                     awaitingInterruptCancellation = false
                     return rejectLateLocked(previous: previous)
                 case .thinking, .outputText, .outputAudio,
@@ -422,6 +423,12 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                     return resultLocked(.applied, previous: previous)
                 }
                 return completeTurnLocked(previous: previous)
+            case .turnFailed(let error):
+                guard currentSnapshot.state == .thinking
+                        || currentSnapshot.state == .speaking else {
+                    return rejectOutOfOrderLocked(previous: previous)
+                }
+                return failTurnLocked(error: error, previous: previous)
             case .cancelled:
                 _ = recordTurnOutcomeLocked(.cancelled)
                 commitInteractionOutcomeLocked(.cancelled)
@@ -881,6 +888,32 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 currentSnapshot.lastTurnDetectionSource,
             guardTimeoutTriggered: false,
             lastStandardError: nil,
+            recentTransitions: []
+        )
+        recordTransitionLocked()
+        return resultLocked(.applied, previous: previous)
+    }
+
+    private func failTurnLocked(
+        error: NativeSpeechError,
+        previous: RealtimeSpeechState
+    ) -> RealtimeSpeechTransitionResult {
+        guard recordTurnOutcomeLocked(.failed) else {
+            return resultLocked(.ignoredDuplicate, previous: previous)
+        }
+        speechIsActive = false
+        awaitingInterruptCancellation = false
+        clearGuardLocked()
+        resetPlaybackLocked()
+        currentSnapshot = RealtimeSpeechStateSnapshot(
+            state: .listening,
+            currentTurnNumber: currentSnapshot.currentTurnNumber &+ 1,
+            completedTurnCount: currentSnapshot.completedTurnCount,
+            lastTransitionReason: .providerTurnFailed,
+            lastTurnDetectionSource:
+                currentSnapshot.lastTurnDetectionSource,
+            guardTimeoutTriggered: false,
+            lastStandardError: Self.standardErrorName(error),
             recentTransitions: []
         )
         recordTransitionLocked()

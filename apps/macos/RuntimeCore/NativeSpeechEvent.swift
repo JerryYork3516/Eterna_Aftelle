@@ -18,6 +18,7 @@ nonisolated enum NativeSpeechEventKind: Sendable, Equatable {
     case outputAudio(NativeSpeechAudioPayload)
     case toolRequestCandidate(NativeSpeechToolRequest)
     case responseCompleted
+    case turnFailed(NativeSpeechError)
     case cancelled(reason: String?)
     case closed
     case failed(NativeSpeechError)

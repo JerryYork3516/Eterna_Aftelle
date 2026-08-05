@@ -268,6 +268,29 @@ nonisolated final class RealtimeSpeechSubtitleStateMachine:
         }
     }
 
+    func failTurn(
+        interactionID: NativeSpeechInteractionID,
+        failedTurnNumber: UInt64,
+        nextTurnNumber: UInt64
+    ) -> RealtimeSpeechSubtitleDisposition {
+        lock.withLock {
+            guard self.interactionID == interactionID else {
+                return rejectDispositionLocked(.rejectedStale)
+            }
+            guard turnNumber == failedTurnNumber,
+                  nextTurnNumber > failedTurnNumber else {
+                return rejectDispositionLocked(.rejectedLate)
+            }
+            user = DirectionState()
+            resident = DirectionState()
+            carriedUserFinal = nil
+            turnNumber = nextTurnNumber
+            turnGeneration &+= 1
+            lastClosureReason = .failed
+            return .accepted
+        }
+    }
+
     func terminate(
         interactionID: NativeSpeechInteractionID,
         reason: RealtimeSpeechSubtitleClosureReason
