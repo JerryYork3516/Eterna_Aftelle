@@ -396,6 +396,8 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你好"}"#),
             .text(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#),
             .text(#"{"type":"response.created"}"#),
+            .text(#"{"type":"response.text.delta","delta":"提前文本"}"#),
+            .text(#"{"type":"response.text.done","text":"提前文本完成"}"#),
             .text(#"{"type":"response.audio_transcript.delta","delta":"我"}"#),
             .text(#"{"type":"response.audio_transcript.delta","delta":"是"}"#),
             .text(#"{"type":"response.audio_transcript.delta","delta":"我是"}"#),
@@ -444,8 +446,8 @@ private struct StepFunRealtimeAdapterTests {
         }
         let ignoredCount = await adapter.ignoredEventCount
         expect(
-            ignoredCount == 3,
-            "duplicate and post-final transcript events are absorbed"
+            ignoredCount == 5,
+            "text modality, duplicate and post-final events are absorbed"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }
@@ -536,6 +538,22 @@ private struct StepFunRealtimeAdapterTests {
         expect(
             correlatedError.causedByEventID == "cancel-test",
             "error retains only the originating client event ID"
+        )
+        let audioTranscript = try codec.decodeEnvelope(
+            .text(#"{"type":"response.audio_transcript.delta","delta":"语音"}"#),
+            interactionID: interactionID
+        )
+        let textTranscript = try codec.decodeEnvelope(
+            .text(#"{"type":"response.text.delta","delta":"文本"}"#),
+            interactionID: interactionID
+        )
+        expect(
+            audioTranscript.wireKind == .residentAudioTranscriptDelta,
+            "audio transcript keeps a distinct wire kind"
+        )
+        expect(
+            textTranscript.wireKind == .residentTextDelta,
+            "text modality cannot masquerade as voice subtitle"
         )
     }
 

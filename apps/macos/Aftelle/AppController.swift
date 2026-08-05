@@ -51,6 +51,71 @@ private struct NativeSpeechPlaybackBinding: Sendable, Equatable {
     let playbackGeneration: UInt64
 }
 
+nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
+    private struct PendingFrame: Sendable {
+        let text: String
+        let requiredPlayedChunkCount: Int
+    }
+
+    private(set) var displayText: String?
+    private var pendingFrames: [PendingFrame] = []
+    private var lastAssignedPlayedChunkCount = 0
+
+    var hasPendingText: Bool { !pendingFrames.isEmpty }
+
+    mutating func reset(playedChunkCount: Int) {
+        displayText = nil
+        pendingFrames.removeAll(keepingCapacity: true)
+        lastAssignedPlayedChunkCount = playedChunkCount
+    }
+
+    mutating func enqueue(
+        text: String,
+        enqueuedChunkCount: Int,
+        playedChunkCount: Int
+    ) {
+        let normalized = text.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalized.isEmpty,
+              pendingFrames.last?.text != normalized,
+              displayText != normalized else {
+            return
+        }
+        let requiredPlayedChunkCount = max(
+            enqueuedChunkCount,
+            max(
+                playedChunkCount + 1,
+                lastAssignedPlayedChunkCount + 1
+            )
+        )
+        pendingFrames.append(PendingFrame(
+            text: normalized,
+            requiredPlayedChunkCount: requiredPlayedChunkCount
+        ))
+        lastAssignedPlayedChunkCount = requiredPlayedChunkCount
+    }
+
+    mutating func advance(
+        playedChunkCount: Int,
+        forceLatest: Bool = false
+    ) {
+        guard !pendingFrames.isEmpty else { return }
+        let releaseIndex: Int?
+        if forceLatest {
+            releaseIndex = pendingFrames.indices.last
+        } else {
+            releaseIndex = pendingFrames.lastIndex {
+                $0.requiredPlayedChunkCount <= playedChunkCount
+            }
+        }
+        guard let releaseIndex else { return }
+        let frame = pendingFrames[releaseIndex]
+        displayText = frame.text
+        pendingFrames.removeFirst(releaseIndex + 1)
+    }
+}
+
 nonisolated struct NativeSpeechPlaybackDebugSnapshot: Sendable, Equatable {
     let turnNumber: UInt64?
     let playbackGeneration: UInt64?
@@ -160,6 +225,8 @@ final class AppController: ObservableObject {
     private let speechAudioOutputHost: MacSpeechAudioOutputHost
     private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
     private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
+    private var realtimeSpeechPlaybackSubtitleSynchronizer =
+        RealtimeSpeechPlaybackSubtitleSynchronizer()
     private var lastPlaybackEventOrdinal: UInt64 = 0
     private var playbackInterruptClearCount: UInt64 = 0
     private var playbackStopClearCount: UInt64 = 0
@@ -1421,6 +1488,9 @@ final class AppController: ObservableObject {
         }
         nativeSpeechPlaybackBinding = nil
         speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+        realtimeSpeechPlaybackSubtitleSynchronizer.reset(
+            playedChunkCount: speechAudioOutputHostSnapshot.playedChunkCount
+        )
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
@@ -1441,6 +1511,9 @@ final class AppController: ObservableObject {
         }
         nativeSpeechPlaybackBinding = nil
         speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+        realtimeSpeechPlaybackSubtitleSynchronizer.reset(
+            playedChunkCount: speechAudioOutputHostSnapshot.playedChunkCount
+        )
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
         speechInputBridgeSnapshot = await speechInputBridge.stop()
         await speechAudioHost.shutdown()
@@ -1452,6 +1525,9 @@ final class AppController: ObservableObject {
     func startNativeSpeechInputBridge() async {
         realtimeSpeechPartialRefreshTask?.cancel()
         realtimeSpeechPartialRefreshTask = nil
+        realtimeSpeechPlaybackSubtitleSynchronizer.reset(
+            playedChunkCount: speechAudioOutputHostSnapshot.playedChunkCount
+        )
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "bridge_start_requested"
@@ -1511,11 +1587,39 @@ final class AppController: ObservableObject {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let stateBefore = realtimeSpeechStateSnapshot.state.rawValue
         await speechOutputDebugSink.consume(event)
+        if case .inputSpeechStarted = event.kind {
+            realtimeSpeechPlaybackSubtitleSynchronizer.reset(
+                playedChunkCount:
+                    speechAudioOutputHostSnapshot.playedChunkCount
+            )
+        }
         switch event.kind {
-        case .partialTranscript, .outputText(_, false):
+        case .partialTranscript:
             scheduleRealtimeSpeechPartialRefresh()
+        case .outputText(let text, _):
+            realtimeSpeechPlaybackSubtitleSynchronizer.enqueue(
+                text: text,
+                enqueuedChunkCount:
+                    speechAudioOutputHostSnapshot.enqueuedChunkCount,
+                playedChunkCount:
+                    speechAudioOutputHostSnapshot.playedChunkCount
+            )
+            if speechAudioOutputHostSnapshot.state == .completed {
+                realtimeSpeechPlaybackSubtitleSynchronizer.advance(
+                    playedChunkCount:
+                        speechAudioOutputHostSnapshot.playedChunkCount,
+                    forceLatest: true
+                )
+            }
+            syncRealtimeSpeechPresentation()
         case .outputAudio:
             break
+        case .cancelled, .closed, .failed:
+            realtimeSpeechPlaybackSubtitleSynchronizer.reset(
+                playedChunkCount:
+                    speechAudioOutputHostSnapshot.playedChunkCount
+            )
+            refreshRealtimeSpeechPresentationImmediately()
         default:
             refreshRealtimeSpeechPresentationImmediately()
         }
@@ -1602,6 +1706,13 @@ final class AppController: ObservableObject {
                 await consumePlaybackEvents(
                     in: speechAudioOutputHostSnapshot
                 )
+            } else {
+                realtimeSpeechPlaybackSubtitleSynchronizer.advance(
+                    playedChunkCount:
+                        speechAudioOutputHostSnapshot.playedChunkCount,
+                    forceLatest: true
+                )
+                syncRealtimeSpeechPresentation()
             }
         default:
             break
@@ -1680,6 +1791,45 @@ final class AppController: ObservableObject {
             refreshNativeSpeechPlaybackDebugSnapshot()
             return
         }
+        if event.kind == .chunkPlayed {
+            speechAudioOutputHostSnapshot =
+                await speechAudioOutputHost.currentSnapshot()
+            realtimeSpeechPlaybackSubtitleSynchronizer.advance(
+                playedChunkCount:
+                    speechAudioOutputHostSnapshot.playedChunkCount
+            )
+            syncRealtimeSpeechPresentation()
+            recordRealtimeSpeechDiagnostic(
+                source: .playback,
+                category: event.kind.rawValue,
+                interactionShortID:
+                    realtimeSpeechStateSnapshot.interactionShortID,
+                turnNumber: binding.turnNumber,
+                turnGeneration:
+                    realtimeSpeechSubtitleSnapshot.turnGeneration,
+                stateAfter: realtimeSpeechStateSnapshot.state.rawValue,
+                disposition: "accepted_host",
+                audioSequence: event.sequence,
+                queueDepth: speechAudioOutputHostSnapshot.queueDepth,
+                playbackGeneration: event.generation
+            )
+            refreshNativeSpeechPlaybackDebugSnapshot()
+            return
+        }
+        if event.kind == .playbackCompleted {
+            speechAudioOutputHostSnapshot =
+                await speechAudioOutputHost.currentSnapshot()
+            realtimeSpeechPlaybackSubtitleSynchronizer.advance(
+                playedChunkCount:
+                    speechAudioOutputHostSnapshot.playedChunkCount,
+                forceLatest: true
+            )
+        } else if event.kind == .failed {
+            realtimeSpeechPlaybackSubtitleSynchronizer.reset(
+                playedChunkCount:
+                    speechAudioOutputHostSnapshot.playedChunkCount
+            )
+        }
         let kind: RealtimeSpeechPlaybackEventKind
         switch event.kind {
         case .playbackStarted:
@@ -1748,7 +1898,16 @@ final class AppController: ObservableObject {
         residentVisualIntent = presentation.visualIntent
         residentSpeechSignal = presentation.speechSignal
 
-        let subtitleState = subtitleSnapshot.displayText.map {
+        let subtitleText = realtimeSpeechPlaybackSubtitleSynchronizer
+            .displayText
+            ?? subtitleSnapshot.userPartial
+            ?? subtitleSnapshot.userFinal
+            ?? ((!realtimeSpeechPlaybackSubtitleSynchronizer.hasPendingText
+                    && nativeSpeechPlaybackBinding == nil)
+                ? (subtitleSnapshot.lastCompleted?.residentFinal
+                    ?? subtitleSnapshot.lastCompleted?.userFinal)
+                : nil)
+        let subtitleState = subtitleText.map {
             ParticleSubtitleState(text: $0, phase: .showing)
         } ?? .hidden
         if particleSubtitleState != subtitleState {

@@ -140,6 +140,11 @@ private struct MacSpeechAudioOutputHostTests {
         expect(completed.playbackStartedCount == 1, "playback start counted")
         expect(completed.playbackCompletedCount == 1, "playback completion counted")
         expect(
+            completed.recentEvents.filter { $0.kind == .chunkPlayed }
+                .compactMap(\.sequence) == [1, 2],
+            "played chunk events expose ordered subtitle watermarks"
+        )
+        expect(
             completed.recentEvents.map(\.kind).contains(.playbackCompleted),
             "local completion event"
         )

@@ -176,6 +176,12 @@ echo "native_speech_interrupt_boundary=PASS"
 
 rg -q 'residentTranscriptAccumulator' "$adapter"
 rg -q 'userTranscriptAccumulator' "$adapter"
+rg -q 'residentAudioTranscriptDelta' "$codec" "$adapter"
+rg -q 'residentTextDelta' "$codec" "$adapter"
+rg -q 'case \.residentTextDelta, \.residentTextDone:' "$adapter"
+rg -q 'case chunkPlayed' \
+  "$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputHost.swift"
+rg -q 'RealtimeSpeechPlaybackSubtitleSynchronizer' "$controller"
 rg -q 'scheduleRealtimeSpeechPartialRefresh' "$controller"
 rg -Fq 'Task.sleep(for: .milliseconds(50))' "$controller"
 echo "native_speech_streaming_subtitle=PASS"

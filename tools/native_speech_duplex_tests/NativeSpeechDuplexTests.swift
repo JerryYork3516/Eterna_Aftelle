@@ -225,7 +225,13 @@ private struct NativeSpeechDuplexTests {
         }
         await transport.enqueue(.text(#"{"type":"response.created"}"#))
         await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await transport.enqueue(
             .text(#"{"type":"response.audio_transcript.delta","delta":"我"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
         )
         await transport.enqueue(
             .text(#"{"type":"response.audio_transcript.delta","delta":"是"}"#)
@@ -234,6 +240,10 @@ private struct NativeSpeechDuplexTests {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentPartial
                 == "我是"
         }
+        expect(
+            stack.controller.particleSubtitleState.text != "我是",
+            "resident partial waits for matching local playback"
+        )
         await transport.enqueue(
             .text(#"{"type":"response.audio_transcript.done","transcript":"我是林轩"}"#)
         )
@@ -242,8 +252,24 @@ private struct NativeSpeechDuplexTests {
                 == "我是林轩"
         }
         expect(
+            stack.controller.particleSubtitleState.text != "我是林轩",
+            "resident final remains gated before playback"
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+        )
+        await waitUntil { stack.outputPlayer.scheduledCount == 2 }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            stack.controller.particleSubtitleState.text == "我"
+        }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            stack.controller.particleSubtitleState.text == "我是林轩"
+        }
+        expect(
             stack.controller.particleSubtitleState.text == "我是林轩",
-            "final subtitle bypasses partial throttle"
+            "playback completion releases the final voice subtitle"
         )
         await stack.controller.stopSpeechAudioCapture()
     }

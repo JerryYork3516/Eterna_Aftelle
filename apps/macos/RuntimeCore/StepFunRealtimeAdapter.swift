@@ -363,7 +363,7 @@ actor StepFunRealtimeAdapter:
             userTranscriptFinalized = true
             userTranscriptAccumulator = text
             return event
-        case .residentTranscriptDelta:
+        case .residentAudioTranscriptDelta:
             guard !residentTranscriptFinalized,
                   case .outputText(let fragment, false) = event.kind,
                   let cumulative = Self.accumulate(
@@ -376,7 +376,7 @@ actor StepFunRealtimeAdapter:
                 interactionID: interactionID,
                 kind: .outputText(text: cumulative, isFinal: false)
             )
-        case .residentTranscriptDone:
+        case .residentAudioTranscriptDone:
             guard !residentTranscriptFinalized,
                   case .outputText(let text, true) = event.kind else {
                 return nil
@@ -384,6 +384,8 @@ actor StepFunRealtimeAdapter:
             residentTranscriptFinalized = true
             residentTranscriptAccumulator = text
             return event
+        case .residentTextDelta, .residentTextDone:
+            return nil
         case .responseCreated, .responseCompleted,
              .cancellationAcknowledgement:
             return event

@@ -6,8 +6,10 @@ nonisolated enum StepFunRealtimeWireEventKind: Sendable, Equatable {
     case cancellationAcknowledgement
     case userTranscriptDelta
     case userTranscriptDone
-    case residentTranscriptDelta
-    case residentTranscriptDone
+    case residentAudioTranscriptDelta
+    case residentAudioTranscriptDone
+    case residentTextDelta
+    case residentTextDone
     case other
 }
 
@@ -133,12 +135,12 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             kind = stringEvent(object, key: "delta") {
                 .outputText(text: $0, isFinal: false)
             }
-            wireKind = .residentTranscriptDelta
+            wireKind = .residentAudioTranscriptDelta
         case "response.audio_transcript.done":
             kind = stringEvent(object, key: "transcript") {
                 .outputText(text: $0, isFinal: true)
             }
-            wireKind = .residentTranscriptDone
+            wireKind = .residentAudioTranscriptDone
         case "response.audio.delta":
             guard let encoded = object["delta"] as? String,
                   let audio = Data(base64Encoded: encoded) else {
@@ -166,12 +168,12 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             kind = stringEvent(object, key: "delta") {
                 .outputText(text: $0, isFinal: false)
             }
-            wireKind = .residentTranscriptDelta
+            wireKind = .residentTextDelta
         case "response.text.done":
             kind = stringEvent(object, key: "text") {
                 .outputText(text: $0, isFinal: true)
             }
-            wireKind = .residentTranscriptDone
+            wireKind = .residentTextDone
         case "response.function_call_arguments.done":
             guard let requestID = object["call_id"] as? String,
                   let toolName = object["name"] as? String,

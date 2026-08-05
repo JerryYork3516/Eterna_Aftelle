@@ -18,6 +18,7 @@ nonisolated enum MacSpeechAudioOutputEventKind: String, Sendable {
     case bufferPressure
     case bufferLow
     case bufferUnderrun
+    case chunkPlayed
     case playbackCompleted
     case stopped
     case failed
@@ -377,6 +378,7 @@ actor MacSpeechAudioOutputHost {
         case .success(let byteCount):
             playedChunkCount += 1
             playedByteCount += byteCount
+            appendEvent(.chunkPlayed, sequence: sequence)
             scheduleAvailableChunks()
         case .failure(let error):
             _ = fail(error)
