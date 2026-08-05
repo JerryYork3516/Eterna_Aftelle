@@ -14,6 +14,17 @@ nonisolated enum StepFunRealtimeWireEventKind: Sendable, Equatable {
 nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
     let wireKind: StepFunRealtimeWireEventKind
     let event: NativeSpeechEvent?
+    let causedByEventID: String?
+
+    init(
+        wireKind: StepFunRealtimeWireEventKind,
+        event: NativeSpeechEvent?,
+        causedByEventID: String? = nil
+    ) {
+        self.wireKind = wireKind
+        self.event = event
+        self.causedByEventID = causedByEventID
+    }
 }
 
 nonisolated struct StepFunRealtimeCodec: Sendable {
@@ -51,8 +62,11 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         ])
     }
 
-    func responseCancel() throws -> String {
-        try encode(["type": "response.cancel"])
+    func responseCancel(eventID: String) throws -> String {
+        try encode([
+            "event_id": eventID,
+            "type": "response.cancel"
+        ])
     }
 
     func decode(
@@ -200,7 +214,8 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             event: NativeSpeechEvent(
                 interactionID: interactionID,
                 kind: kind
-            )
+            ),
+            causedByEventID: errorEventID(from: object)
         )
     }
 
@@ -260,5 +275,11 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         default:
             return .invalidEvent
         }
+    }
+
+    private func errorEventID(from object: [String: Any]) -> String? {
+        guard object["type"] as? String == "error" else { return nil }
+        let error = object["error"] as? [String: Any]
+        return error?["event_id"] as? String
     }
 }

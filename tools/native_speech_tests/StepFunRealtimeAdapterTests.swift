@@ -20,6 +20,7 @@ private struct StepFunRealtimeAdapterTests {
     static func main() async throws {
         try await testHandshakeAudioCancelAndClose()
         try await testCancelRearmsSameConnection()
+        try await testCancelAfterCompletedResponseIsSafe()
         try await testCumulativeTranscriptNormalization()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
@@ -140,6 +141,13 @@ private struct StepFunRealtimeAdapterTests {
         expect(appendObject["type"] as? String == "input_audio_buffer.append", "audio append type")
         expect(appendObject["audio"] as? String == audio.bytes.base64EncodedString(), "audio base64")
 
+        await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
+        let responseCreated = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(responseCreated.kind == .thinking, "response is active before cancel")
         try await adapter.cancel(
             interactionID: request.interaction.id,
             reason: .stopped
@@ -197,6 +205,13 @@ private struct StepFunRealtimeAdapterTests {
             interactionID: request.interaction.id
         )
 
+        await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
+        let firstResponse = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(firstResponse.kind == .thinking, "first response is active")
         try await adapter.cancel(
             interactionID: request.interaction.id,
             reason: .interrupted
@@ -250,6 +265,123 @@ private struct StepFunRealtimeAdapterTests {
         expect(
             calls.filter { $0 == .close(.normal) }.isEmpty,
             "turn interrupt does not close transport"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testCancelAfterCompletedResponseIsSafe() async throws {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.created"}"#),
+            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(credential: "test-token"),
+            transport: transport
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let created = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(created.kind == .thinking, "response.created marks response active")
+        let completed = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            completed.kind == .responseCompleted,
+            "response.done marks provider response inactive"
+        )
+
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+        let callsAfterCompletedCancel = await transport.calls
+        let completedCancelCount = try callsAfterCompletedCancel.filter { call in
+            guard case .send(.text(let text)) = call else { return false }
+            return try json(text)["type"] as? String == "response.cancel"
+        }.count
+        expect(
+            completedCancelCount == 0,
+            "cancel after response completion is a safe wire no-op"
+        )
+
+        await transport.enqueue(.text(#"{"type":"response.created"}"#))
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+        let activeCancelCalls = await transport.calls.compactMap { call -> String? in
+            guard case .send(.text(let text)) = call,
+                  let object = try? json(text),
+                  object["type"] as? String == "response.cancel" else {
+                return nil
+            }
+            return object["event_id"] as? String
+        }
+        expect(activeCancelCalls.count == 1, "active response sends one cancel")
+        guard let cancellationEventID = activeCancelCalls.first else {
+            fatalError("FAILED: response.cancel must carry event_id")
+        }
+        expect(
+            cancellationEventID.hasPrefix("cancel-"),
+            "cancel event ID is namespaced"
+        )
+
+        await transport.enqueue(.text(
+            #"{"type":"error","error":{"code":"invalid_value","event_id":"\#(cancellationEventID)"}}"#
+        ))
+        let correlatedError = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            correlatedError.kind == .cancelled(reason: "interrupted"),
+            "error correlated to response.cancel is absorbed as acknowledgement"
+        )
+        let state = await adapter.connectionState
+        expect(state == .configured, "correlated cancel error keeps session alive")
+        let callsBeforeClose = await transport.calls
+        expect(
+            callsBeforeClose.filter { $0 == .close(.normal) }.isEmpty,
+            "correlated cancel error does not close transport"
+        )
+
+        await transport.enqueue(.text(#"{"type":"response.created"}"#))
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+        let allCancellationEventIDs = await transport.calls.compactMap {
+            call -> String? in
+            guard case .send(.text(let text)) = call,
+                  let object = try? json(text),
+                  object["type"] as? String == "response.cancel" else {
+                return nil
+            }
+            return object["event_id"] as? String
+        }
+        guard let secondCancellationEventID = allCancellationEventIDs.last else {
+            fatalError("FAILED: second response.cancel must carry event_id")
+        }
+        await transport.enqueue(.text(
+            #"{"type":"error","error":{"code":"rate_limit_exceeded","event_id":"\#(secondCancellationEventID)"}}"#
+        ))
+        let fatalError = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            fatalError.kind == .failed(.rateLimited),
+            "correlated fatal Provider error is not absorbed"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }
@@ -321,6 +453,11 @@ private struct StepFunRealtimeAdapterTests {
     private static func testCodecMappings() throws {
         let codec = StepFunRealtimeCodec()
         let interactionID = NativeSpeechInteractionID()
+        let cancelObject = try json(
+            codec.responseCancel(eventID: "cancel-test")
+        )
+        expect(cancelObject["type"] as? String == "response.cancel", "cancel type")
+        expect(cancelObject["event_id"] as? String == "cancel-test", "cancel event ID")
         let cases: [(String, NativeSpeechEventKind)] = [
             (#"{"type":"input_audio_buffer.speech_started"}"#, .inputSpeechStarted),
             (#"{"type":"input_audio_buffer.speech_stopped"}"#, .inputSpeechEnded),
@@ -392,6 +529,14 @@ private struct StepFunRealtimeAdapterTests {
             )
             expect(event?.kind == expected, "response.done maps canonical status")
         }
+        let correlatedError = try codec.decodeEnvelope(
+            .text(#"{"type":"error","event_id":"server-error","error":{"code":"invalid_value","event_id":"cancel-test"}}"#),
+            interactionID: interactionID
+        )
+        expect(
+            correlatedError.causedByEventID == "cancel-test",
+            "error retains only the originating client event ID"
+        )
     }
 
     private static func testContinuousOutputAndResponseBoundary() async throws {

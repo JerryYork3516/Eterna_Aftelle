@@ -685,8 +685,8 @@ private struct NativeSpeechDuplexTests {
         )
         let eventTypes = try await sentEventTypes(transport)
         expect(
-            eventTypes.filter { $0 == "response.cancel" }.count == 2,
-            "Interrupt and Stop each send one Provider cancel"
+            eventTypes.filter { $0 == "response.cancel" }.count == 1,
+            "Stop after response completion does not send a stale Provider cancel"
         )
         expect(
             await transport.calls.filter { $0 == .close(.normal) }.count == 1,

@@ -24,6 +24,8 @@ actor StepFunRealtimeAdapter:
     private var pendingEvents: [NativeSpeechEvent] = []
     private var isCancelling = false
     private var didEmitCancellationAcknowledgement = false
+    private var isProviderResponseActive = false
+    private var pendingCancellationEventID: String?
     private var userTranscriptAccumulator = ""
     private var residentTranscriptAccumulator = ""
     private var userTranscriptFinalized = false
@@ -151,12 +153,28 @@ actor StepFunRealtimeAdapter:
         reason: NativeSpeechCancellationReason
     ) async throws {
         try requireActive(interactionID)
+        guard isProviderResponseActive else {
+            residentTranscriptAccumulator = ""
+            residentTranscriptFinalized = false
+            return
+        }
         guard !isCancelling else { return }
+        let eventID = "cancel-\(UUID().uuidString)"
         isCancelling = true
+        pendingCancellationEventID = eventID
         residentTranscriptAccumulator = ""
         residentTranscriptFinalized = false
         connectionState = .cancelling
-        try await transport.send(.text(try codec.responseCancel()))
+        do {
+            try await transport.send(
+                .text(try codec.responseCancel(eventID: eventID))
+            )
+        } catch {
+            isCancelling = false
+            pendingCancellationEventID = nil
+            connectionState = .configured
+            throw error
+        }
     }
 
     func close(interactionID: NativeSpeechInteractionID) async throws {
@@ -184,6 +202,8 @@ actor StepFunRealtimeAdapter:
         activeContextVersion = contextProjection.compilationVersion
         isCancelling = false
         didEmitCancellationAcknowledgement = false
+        isProviderResponseActive = false
+        pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
         userTranscriptAccumulator = ""
         residentTranscriptAccumulator = ""
@@ -219,6 +239,8 @@ actor StepFunRealtimeAdapter:
         pendingEvents.removeAll()
         isCancelling = false
         didEmitCancellationAcknowledgement = false
+        isProviderResponseActive = false
+        pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
         userTranscriptAccumulator = ""
         residentTranscriptAccumulator = ""
@@ -254,8 +276,24 @@ actor StepFunRealtimeAdapter:
             if envelope.wireKind == .responseCreated {
                 isCancelling = false
                 didEmitCancellationAcknowledgement = false
+                isProviderResponseActive = true
+                pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
+            }
+            if isCancelling,
+               case .failed(.invalidEvent) = envelope.event?.kind,
+               envelope.causedByEventID == pendingCancellationEventID {
+                didEmitCancellationAcknowledgement = true
+                isProviderResponseActive = false
+                pendingCancellationEventID = nil
+                residentTranscriptAccumulator = ""
+                residentTranscriptFinalized = false
+                connectionState = .configured
+                return NativeSpeechEvent(
+                    interactionID: interactionID,
+                    kind: .cancelled(reason: "interrupted")
+                )
             }
             if isCancelling,
                (envelope.wireKind == .cancellationAcknowledgement
@@ -265,6 +303,8 @@ actor StepFunRealtimeAdapter:
                     continue
                 }
                 didEmitCancellationAcknowledgement = true
+                isProviderResponseActive = false
+                pendingCancellationEventID = nil
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
                 connectionState = .configured
@@ -278,10 +318,14 @@ actor StepFunRealtimeAdapter:
                 interactionID: interactionID
             ) {
                 switch event.kind {
+                case .thinking, .outputText:
+                    isProviderResponseActive = true
                 case .outputAudio:
+                    isProviderResponseActive = true
                     nextOutputAudioSequenceNumber &+= 1
                     connectionState = .streaming
                 case .cancelled, .responseCompleted, .failed:
+                    isProviderResponseActive = false
                     connectionState = .configured
                 default:
                     break
