@@ -13,6 +13,9 @@ nonisolated struct MacSpeechNativeInputBridgeSnapshot: Sendable, Equatable {
     let forwardedFrameCount: UInt64
     let runtimeRejectedFrameCount: UInt64
     let adapterReceivedFrameCount: UInt64
+    let sendOperationCount: UInt64
+    let averageSendDurationMilliseconds: UInt64
+    let maximumSendDurationMilliseconds: UInt64
     let lastError: String?
     let hasActivePump: Bool
 
@@ -22,6 +25,9 @@ nonisolated struct MacSpeechNativeInputBridgeSnapshot: Sendable, Equatable {
         forwardedFrameCount: 0,
         runtimeRejectedFrameCount: 0,
         adapterReceivedFrameCount: 0,
+        sendOperationCount: 0,
+        averageSendDurationMilliseconds: 0,
+        maximumSendDurationMilliseconds: 0,
         lastError: nil,
         hasActivePump: false
     )
@@ -49,6 +55,9 @@ actor MacSpeechNativeInputBridge {
     private var forwardedFrameCount: UInt64 = 0
     private var runtimeRejectedFrameCount: UInt64 = 0
     private var adapterReceivedFrameCount: UInt64 = 0
+    private var sendOperationCount: UInt64 = 0
+    private var totalSendDurationMilliseconds: UInt64 = 0
+    private var maximumSendDurationMilliseconds: UInt64 = 0
     private var lastError: String?
 
     init(
@@ -135,6 +144,7 @@ actor MacSpeechNativeInputBridge {
                     bytes: frame.pcm16Bytes,
                     format: .pcm16
                 )
+                let sendStartedAt = DispatchTime.now().uptimeNanoseconds
                 let result = await sendFrame(
                     payload,
                     NativeSpeechInputFrameContext(
@@ -143,6 +153,15 @@ actor MacSpeechNativeInputBridge {
                         monotonicTimestampNanoseconds:
                             frame.monotonicTimestampNanoseconds
                     )
+                )
+                let sendDuration = (
+                    DispatchTime.now().uptimeNanoseconds &- sendStartedAt
+                ) / 1_000_000
+                sendOperationCount &+= 1
+                totalSendDurationMilliseconds &+= sendDuration
+                maximumSendDurationMilliseconds = max(
+                    maximumSendDurationMilliseconds,
+                    sendDuration
                 )
                 guard activeBinding == binding else { return }
                 switch result {
@@ -191,6 +210,11 @@ actor MacSpeechNativeInputBridge {
             forwardedFrameCount: forwardedFrameCount,
             runtimeRejectedFrameCount: runtimeRejectedFrameCount,
             adapterReceivedFrameCount: adapterReceivedFrameCount,
+            sendOperationCount: sendOperationCount,
+            averageSendDurationMilliseconds: sendOperationCount == 0
+                ? 0 : totalSendDurationMilliseconds / sendOperationCount,
+            maximumSendDurationMilliseconds:
+                maximumSendDurationMilliseconds,
             lastError: lastError,
             hasActivePump: activeBinding != nil && pumpTask != nil
         )

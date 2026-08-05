@@ -550,8 +550,8 @@ struct ParticleDebugWindow: View {
                 controller.realtimeSpeechSubtitleSnapshot,
             realtimeSpeechVisualIntent: controller.residentVisualIntent,
             realtimeSpeechSignal: controller.residentSpeechSignal,
-            realtimeSpeechDiagnosticTimeline:
-                controller.realtimeSpeechDiagnosticTimeline,
+            realtimeSpeechDiagnosticViewState:
+                controller.realtimeSpeechDiagnosticViewState,
             realtimeSpeechDiagnosticStatusKey:
                 controller.realtimeSpeechDiagnosticStatusKey,
             dialogueAuditState: controller.dialogueAuditState,
@@ -729,7 +729,8 @@ private struct ParticleDebugPanel: View {
     let realtimeSpeechSubtitleSnapshot: RealtimeSpeechSubtitleSnapshot
     let realtimeSpeechVisualIntent: ResidentVisualIntent
     let realtimeSpeechSignal: ResidentSpeechSignal
-    let realtimeSpeechDiagnosticTimeline: RealtimeSpeechDiagnosticTimeline
+    let realtimeSpeechDiagnosticViewState:
+        RealtimeSpeechDiagnosticViewState
     let realtimeSpeechDiagnosticStatusKey: String?
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
@@ -1016,8 +1017,8 @@ private struct ParticleDebugPanel: View {
                                     realtimeSpeechVisualIntent,
                                 realtimeSpeechSignal:
                                     realtimeSpeechSignal,
-                                diagnosticTimeline:
-                                    realtimeSpeechDiagnosticTimeline,
+                                diagnosticViewState:
+                                    realtimeSpeechDiagnosticViewState,
                                 diagnosticStatusKey:
                                     realtimeSpeechDiagnosticStatusKey,
                                 refreshAuthorization:
@@ -2021,7 +2022,7 @@ private struct SpeechAudioHostDebugView: View {
     let realtimeSpeechSubtitleSnapshot: RealtimeSpeechSubtitleSnapshot
     let realtimeSpeechVisualIntent: ResidentVisualIntent
     let realtimeSpeechSignal: ResidentSpeechSignal
-    let diagnosticTimeline: RealtimeSpeechDiagnosticTimeline
+    let diagnosticViewState: RealtimeSpeechDiagnosticViewState
     let diagnosticStatusKey: String?
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
@@ -2433,12 +2434,12 @@ private struct SpeechAudioHostDebugView: View {
                         .font(.system(size: 12, weight: .semibold))
                         Spacer()
                         Text(
-                            "\(diagnosticTimeline.events.count) / \(RealtimeSpeechDiagnosticTimeline.capacity)"
+                            "\(diagnosticViewState.eventCount) / \(RealtimeSpeechDiagnosticTimeline.capacity)"
                         )
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                     }
-                    if diagnosticTimeline.visibleEvents.isEmpty {
+                    if diagnosticViewState.visibleEvents.isEmpty {
                         Text(
                             String(
                                 localized:
@@ -2451,7 +2452,7 @@ private struct SpeechAudioHostDebugView: View {
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 3) {
                                 ForEach(
-                                    Array(diagnosticTimeline.visibleEvents)
+                                    diagnosticViewState.visibleEvents
                                 ) { event in
                                     Text(diagnosticLine(event))
                                         .font(
@@ -2477,7 +2478,7 @@ private struct SpeechAudioHostDebugView: View {
                                     localized:
                                         "particleDebug.realtimeDiagnostics.dropped"
                                 ),
-                                diagnosticTimeline.droppedEventCount
+                                diagnosticViewState.droppedEventCount
                             )
                         )
                         .font(.system(size: 10, design: .monospaced))

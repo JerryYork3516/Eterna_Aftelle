@@ -130,8 +130,10 @@ final class AppController: ObservableObject {
         RealtimeSpeechStateSnapshot.initial
     @Published private(set) var realtimeSpeechSubtitleSnapshot =
         RealtimeSpeechSubtitleSnapshot.initial
-    @Published private(set) var realtimeSpeechDiagnosticTimeline =
+    private(set) var realtimeSpeechDiagnosticTimeline =
         RealtimeSpeechDiagnosticTimeline()
+    @Published private(set) var realtimeSpeechDiagnosticViewState =
+        RealtimeSpeechDiagnosticViewState.initial
     @Published private(set) var realtimeSpeechDiagnosticStatusKey: String?
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
@@ -166,6 +168,7 @@ final class AppController: ObservableObject {
     private var lastDiagnosticInputForwardedCount: UInt64 = 0
     private var lastDiagnosticInputRejectedCount: UInt64 = 0
     private var realtimeSpeechPartialRefreshTask: Task<Void, Never>?
+    private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
         sendFrame: { [orchestrationKernel] payload, context in
@@ -594,7 +597,10 @@ final class AppController: ObservableObject {
     }
 
     func clearRealtimeSpeechDiagnostics() {
+        realtimeSpeechDiagnosticViewRefreshTask?.cancel()
+        realtimeSpeechDiagnosticViewRefreshTask = nil
         realtimeSpeechDiagnosticTimeline.clear()
+        publishRealtimeSpeechDiagnosticViewState()
         realtimeSpeechDiagnosticStatusKey = nil
         lastDiagnosticAggregateNanoseconds = 0
         lastDiagnosticInputForwardedCount = 0
@@ -606,7 +612,7 @@ final class AppController: ObservableObject {
     ) throws -> Data {
         let bundle = Bundle.main
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 1,
+            schemaVersion: 2,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -629,6 +635,18 @@ final class AppController: ObservableObject {
                 speechInputBridgeSnapshot.forwardedFrameCount,
             inputRejectedFrameCount:
                 speechInputBridgeSnapshot.runtimeRejectedFrameCount,
+            inputSendOperationCount:
+                speechInputBridgeSnapshot.sendOperationCount,
+            inputAverageSendDurationMilliseconds:
+                speechInputBridgeSnapshot.averageSendDurationMilliseconds,
+            inputMaximumSendDurationMilliseconds:
+                speechInputBridgeSnapshot.maximumSendDurationMilliseconds,
+            captureGeneratedFrameCount:
+                speechAudioHostSnapshot.generatedFrameCount,
+            captureDroppedFrameCount:
+                speechAudioHostSnapshot.droppedFrameCount,
+            captureQueuedFrameCount:
+                speechAudioHostSnapshot.queuedFrameCount,
             outputAudioChunkCount:
                 speechOutputBridgeSnapshot.outputAudioChunkCount,
             outputAudioByteCount:
@@ -1841,8 +1859,7 @@ final class AppController: ObservableObject {
         errorCode: String? = nil,
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
-        var timeline = realtimeSpeechDiagnosticTimeline
-        timeline.append(
+        realtimeSpeechDiagnosticTimeline.append(
             source: source,
             category: category,
             interactionShortID: interactionShortID,
@@ -1859,7 +1876,42 @@ final class AppController: ObservableObject {
             errorCode: errorCode,
             nowNanoseconds: nowNanoseconds
         )
-        realtimeSpeechDiagnosticTimeline = timeline
+        if Self.realtimeSpeechDiagnosticNeedsImmediateRefresh(category) {
+            realtimeSpeechDiagnosticViewRefreshTask?.cancel()
+            realtimeSpeechDiagnosticViewRefreshTask = nil
+            publishRealtimeSpeechDiagnosticViewState()
+        } else {
+            scheduleRealtimeSpeechDiagnosticViewRefresh()
+        }
+    }
+
+    private func scheduleRealtimeSpeechDiagnosticViewRefresh() {
+        guard realtimeSpeechDiagnosticViewRefreshTask == nil else { return }
+        realtimeSpeechDiagnosticViewRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let self else { return }
+            realtimeSpeechDiagnosticViewRefreshTask = nil
+            publishRealtimeSpeechDiagnosticViewState()
+        }
+    }
+
+    private func publishRealtimeSpeechDiagnosticViewState() {
+        realtimeSpeechDiagnosticViewState = RealtimeSpeechDiagnosticViewState(
+            timeline: realtimeSpeechDiagnosticTimeline
+        )
+    }
+
+    private static func realtimeSpeechDiagnosticNeedsImmediateRefresh(
+        _ category: String
+    ) -> Bool {
+        switch category {
+        case "failed", "closed", "cancelled",
+             "manual_stop_completed", "interrupt_local_clear",
+             "provider_cancel_failed":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func nativeSpeechEventMetadata(

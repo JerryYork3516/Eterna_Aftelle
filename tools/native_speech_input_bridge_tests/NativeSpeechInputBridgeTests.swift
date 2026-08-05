@@ -144,6 +144,12 @@ private struct NativeSpeechInputBridgeTests {
         expect(running.hasActivePump, "one active input pump is visible")
         expect(running.forwardedFrameCount == 8, "eight bounded frames are forwarded")
         expect(running.runtimeRejectedFrameCount == 0, "current frames pass Runtime gate")
+        expect(running.sendOperationCount == 8, "eight sends are measured")
+        expect(
+            running.maximumSendDurationMilliseconds
+                >= running.averageSendDurationMilliseconds,
+            "send timing exposes bounded aggregate metrics"
+        )
         expect(running.interactionShortID?.count == 8, "interaction ID is redacted")
 
         let appendObjects = try await audioAppendObjects(transport)

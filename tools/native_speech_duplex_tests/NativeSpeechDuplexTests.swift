@@ -122,9 +122,15 @@ private struct NativeSpeechDuplexTests {
             )
         }
         expect(
-            timeline.events.count
+            timeline.eventCount
                 == RealtimeSpeechDiagnosticTimeline.capacity,
             "diagnostic timeline is bounded"
+        )
+        expect(
+            timeline.events.first?.audioSequence == 1
+                && timeline.events.last?.audioSequence
+                    == UInt64(RealtimeSpeechDiagnosticTimeline.capacity),
+            "diagnostic ring preserves retained event order"
         )
         expect(
             timeline.visibleEvents.count
@@ -137,7 +143,7 @@ private struct NativeSpeechDuplexTests {
         )
         timeline.clear()
         expect(
-            timeline.events.isEmpty && timeline.droppedEventCount == 0,
+            timeline.eventCount == 0 && timeline.droppedEventCount == 0,
             "diagnostic timeline clears events and dropped count"
         )
 
@@ -148,10 +154,23 @@ private struct NativeSpeechDuplexTests {
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 1,
-               "diagnostic export freezes schema version 1")
+        expect(object["schema_version"] as? Int == 2,
+               "diagnostic export freezes schema version 2")
         expect(object["events"] is [[String: Any]],
                "diagnostic export contains structured events")
+        for metric in [
+            "input_send_operation_count",
+            "input_average_send_duration_milliseconds",
+            "input_maximum_send_duration_milliseconds",
+            "capture_generated_frame_count",
+            "capture_dropped_frame_count",
+            "capture_queued_frame_count"
+        ] {
+            expect(
+                object[metric] != nil,
+                "diagnostic export includes \(metric)"
+            )
+        }
         let exported = String(decoding: data, as: UTF8.self).lowercased()
         for forbidden in [
             "fake-token",

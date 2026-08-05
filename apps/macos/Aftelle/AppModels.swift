@@ -837,17 +837,28 @@ struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
     let errorCode: String?
 }
 
-struct RealtimeSpeechDiagnosticTimeline: Equatable, Sendable {
-    static let capacity = 1_000
+struct RealtimeSpeechDiagnosticTimeline: Sendable {
+    static let capacity = 30_000
     static let visibleCapacity = 80
 
-    private(set) var events: [RealtimeSpeechDiagnosticEvent] = []
+    private var storage = [RealtimeSpeechDiagnosticEvent?](
+        repeating: nil,
+        count: capacity
+    )
+    private var startIndex = 0
+    private(set) var eventCount = 0
     private(set) var droppedEventCount: UInt64 = 0
     private var startedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
     private var nextSequence: UInt64 = 0
 
-    var visibleEvents: ArraySlice<RealtimeSpeechDiagnosticEvent> {
-        events.suffix(Self.visibleCapacity)
+    var events: [RealtimeSpeechDiagnosticEvent] {
+        orderedEvents(startingAt: 0)
+    }
+
+    var visibleEvents: [RealtimeSpeechDiagnosticEvent] {
+        orderedEvents(
+            startingAt: max(0, eventCount - Self.visibleCapacity)
+        )
     }
 
     mutating func append(
@@ -869,7 +880,7 @@ struct RealtimeSpeechDiagnosticTimeline: Equatable, Sendable {
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
         nextSequence &+= 1
-        events.append(RealtimeSpeechDiagnosticEvent(
+        let event = RealtimeSpeechDiagnosticEvent(
             id: nextSequence,
             timestamp: timestamp,
             elapsedMilliseconds:
@@ -888,19 +899,71 @@ struct RealtimeSpeechDiagnosticTimeline: Equatable, Sendable {
             playbackGeneration: playbackGeneration,
             durationMilliseconds: durationMilliseconds,
             errorCode: errorCode
-        ))
-        if events.count > Self.capacity {
-            let overflow = events.count - Self.capacity
-            events.removeFirst(overflow)
-            droppedEventCount &+= UInt64(overflow)
+        )
+        if eventCount < Self.capacity {
+            let index = (startIndex + eventCount) % Self.capacity
+            storage[index] = event
+            eventCount += 1
+        } else {
+            storage[startIndex] = event
+            startIndex = (startIndex + 1) % Self.capacity
+            droppedEventCount &+= 1
         }
     }
 
     mutating func clear() {
-        events.removeAll(keepingCapacity: true)
+        storage = [RealtimeSpeechDiagnosticEvent?](
+            repeating: nil,
+            count: Self.capacity
+        )
+        startIndex = 0
+        eventCount = 0
         droppedEventCount = 0
         startedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
         nextSequence = 0
+    }
+
+    private func orderedEvents(
+        startingAt offset: Int
+    ) -> [RealtimeSpeechDiagnosticEvent] {
+        guard offset < eventCount else { return [] }
+        var result: [RealtimeSpeechDiagnosticEvent] = []
+        result.reserveCapacity(eventCount - offset)
+        for position in offset ..< eventCount {
+            let index = (startIndex + position) % Self.capacity
+            if let event = storage[index] {
+                result.append(event)
+            }
+        }
+        return result
+    }
+}
+
+struct RealtimeSpeechDiagnosticViewState: Equatable, Sendable {
+    let eventCount: Int
+    let droppedEventCount: UInt64
+    let visibleEvents: [RealtimeSpeechDiagnosticEvent]
+
+    static let initial = RealtimeSpeechDiagnosticViewState(
+        eventCount: 0,
+        droppedEventCount: 0,
+        visibleEvents: []
+    )
+
+    init(timeline: RealtimeSpeechDiagnosticTimeline) {
+        eventCount = timeline.eventCount
+        droppedEventCount = timeline.droppedEventCount
+        visibleEvents = timeline.visibleEvents
+    }
+
+    private init(
+        eventCount: Int,
+        droppedEventCount: UInt64,
+        visibleEvents: [RealtimeSpeechDiagnosticEvent]
+    ) {
+        self.eventCount = eventCount
+        self.droppedEventCount = droppedEventCount
+        self.visibleEvents = visibleEvents
     }
 }
 
@@ -919,6 +982,12 @@ struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let turnGeneration: UInt64
     let inputForwardedFrameCount: UInt64
     let inputRejectedFrameCount: UInt64
+    let inputSendOperationCount: UInt64
+    let inputAverageSendDurationMilliseconds: UInt64
+    let inputMaximumSendDurationMilliseconds: UInt64
+    let captureGeneratedFrameCount: UInt64
+    let captureDroppedFrameCount: UInt64
+    let captureQueuedFrameCount: Int
     let outputAudioChunkCount: UInt64
     let outputAudioByteCount: UInt64
     let playbackStartedCount: Int
