@@ -143,6 +143,14 @@ if sed -n '/struct RealtimeSpeechDiagnosticTimeline/,/struct RealtimeSpeechDiagn
   exit 1
 fi
 echo "native_speech_diagnostic_ring=PASS"
+runtime_diagnostic="$repo_root/apps/macos/RuntimeCore/RealtimeWebSocketTransport.swift"
+rg -q 'defaultCapacity = 30_000' "$runtime_diagnostic"
+if sed -n '/final class NativeSpeechDiagnosticBuffer/,/^}/p' \
+  "$runtime_diagnostic" | rg -q 'removeFirst'; then
+  echo "native_speech_runtime_diagnostic_ring=FAIL"
+  exit 1
+fi
+echo "native_speech_runtime_diagnostic_ring=PASS"
 diagnostic_model="$build_dir/realtime-speech-diagnostic-model.txt"
 sed -n '/enum RealtimeSpeechDiagnosticSource/,/^#endif/p' \
   "$repo_root/apps/macos/Aftelle/AppModels.swift" > "$diagnostic_model"

@@ -28,11 +28,38 @@ private struct StepFunRealtimeAdapterTests {
         try await testRecoverableTurnFailureKeepsConnection()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
+        testDiagnosticBufferRingOrdering()
         try await testRedactedWireDiagnostics()
         try await testContinuousOutputAndResponseBoundary()
         try await testSinglePreconfigurationRetry()
         try await testStreamingFailureDoesNotReconnect()
         print("stepfun_realtime_adapter_checks=\(checks)")
+    }
+
+    private static func testDiagnosticBufferRingOrdering() {
+        let diagnostics = NativeSpeechDiagnosticBuffer(capacity: 3)
+        for category in ["one", "two", "three", "four", "five"] {
+            diagnostics.append(
+                NativeSpeechInternalDiagnosticEvent(
+                    source: .runtime,
+                    category: category
+                )
+            )
+        }
+        let drained = diagnostics.drain()
+        expect(
+            drained.events.map(\.category) == ["three", "four", "five"],
+            "diagnostic ring retains the newest events in order"
+        )
+        expect(
+            drained.droppedEventCount == 2,
+            "diagnostic ring reports overwritten events"
+        )
+        let empty = diagnostics.drain()
+        expect(
+            empty.events.isEmpty && empty.droppedEventCount == 0,
+            "draining the diagnostic ring resets its counters"
+        )
     }
 
     private static func testRecoverableTurnFailureKeepsConnection()

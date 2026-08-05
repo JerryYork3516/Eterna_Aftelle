@@ -118,6 +118,7 @@ echo "native_speech_input_bridge_target_membership=PASS"
 
 rg -q 'maximumPendingWrites = 8' "$transport"
 rg -q 'BoundedRealtimeWebSocketWriteWindow' "$transport"
+rg -q 'beginCloseAndDrain' "$transport"
 rg -Fq 'task.send(message) {' "$transport"
 if rg -q 'try await task.send' "$transport"; then
   echo "native_speech_input_bridge_write_window=FAIL"

@@ -287,6 +287,12 @@ private struct NativeSpeechInputBridgeTests {
             failed.latchedError == .transportFailure,
             "write failure remains observable"
         )
+        expect(
+            await failureWindow.beginCloseAndDrain(
+                timeoutNanoseconds: 50_000_000
+            ) == .transportFailure,
+            "close drain surfaces a previously latched write failure"
+        )
 
         let closeSink = ControlledWriteSink()
         let closeWindow = BoundedRealtimeWebSocketWriteWindow(capacity: 2)
@@ -323,6 +329,71 @@ private struct NativeSpeechInputBridgeTests {
         let closed = await closeWindow.snapshot()
         expect(closed.pendingWriteCount == 0, "Stop clears pending writes")
         expect(closed.latchedError == .cancelled, "Stop invalidates late completions")
+
+        let drainSink = ControlledWriteSink()
+        let drainWindow = BoundedRealtimeWebSocketWriteWindow(capacity: 2)
+        await drainWindow.reset()
+        let drainFrames: [RealtimeWebSocketFrame] = [
+            .text(#"{"type":"input_audio_buffer.append","audio":"AA=="}"#),
+            .text(#"{"type":"response.cancel"}"#)
+        ]
+        for frame in drainFrames {
+            try await drainWindow.enqueue(frame) { frame, completion in
+                drainSink.submit(frame, completion: completion)
+            }
+        }
+        let drain = Task {
+            await drainWindow.beginCloseAndDrain(
+                timeoutNanoseconds: 500_000_000
+            )
+        }
+        await Task.yield()
+        expect(
+            drainSink.completeNext(),
+            "close drain waits for the earlier audio write"
+        )
+        await Task.yield()
+        expect(
+            await drainWindow.snapshot().pendingWriteCount == 1,
+            "response.cancel remains pending behind the earlier write"
+        )
+        expect(
+            drainSink.completeNext(),
+            "response.cancel completes before close proceeds"
+        )
+        expect(
+            await drain.value == nil,
+            "close barrier drains all submitted FIFO writes"
+        )
+        expect(
+            drainSink.frames == drainFrames,
+            "close barrier preserves audio then cancel submission order"
+        )
+        await drainWindow.close()
+
+        let timeoutSink = ControlledWriteSink()
+        let timeoutWindow = BoundedRealtimeWebSocketWriteWindow(capacity: 1)
+        await timeoutWindow.reset()
+        try await timeoutWindow.enqueue(
+            .text(#"{"type":"response.cancel"}"#)
+        ) { frame, completion in
+            timeoutSink.submit(frame, completion: completion)
+        }
+        expect(
+            await timeoutWindow.beginCloseAndDrain(
+                timeoutNanoseconds: 5_000_000
+            ) == .timedOut,
+            "close drain times out instead of waiting forever"
+        )
+        await timeoutWindow.close()
+        timeoutSink.completeAllLate()
+        await Task.yield()
+        let timedOut = await timeoutWindow.snapshot()
+        expect(
+            timedOut.pendingWriteCount == 0
+                && timedOut.latchedError == .cancelled,
+            "close invalidates late completion after a drain timeout"
+        )
     }
 
     private static func testControlAndAudioFramesShareFIFO() async throws {

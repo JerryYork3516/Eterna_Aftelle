@@ -25,6 +25,11 @@ actor BoundedRealtimeWebSocketWriteWindow {
         let continuation: CheckedContinuation<Void, Error>
     }
 
+    private struct DrainWaiter {
+        let generation: UInt64
+        let continuation: CheckedContinuation<NativeSpeechError?, Never>
+    }
+
     private let capacity: Int
     private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
     private var generation: UInt64 = 0
@@ -33,7 +38,9 @@ actor BoundedRealtimeWebSocketWriteWindow {
     private var maximumPendingWriteCount = 0
     private var pendingWrites: [UInt64: PendingWrite] = [:]
     private var capacityWaiters: [CapacityWaiter] = []
+    private var drainWaiters: [DrainWaiter] = []
     private var isAdmittingWaiter = false
+    private var isClosing = false
     private var latchedError: NativeSpeechError?
 
     init(
@@ -48,8 +55,10 @@ actor BoundedRealtimeWebSocketWriteWindow {
     func reset() {
         generation &+= 1
         resumeAllWaiters(throwing: NativeSpeechError.cancelled)
+        resumeAllDrainWaiters(with: .cancelled)
         pendingWrites.removeAll(keepingCapacity: true)
         isAdmittingWaiter = false
+        isClosing = false
         latchedError = nil
         writeOrdinal = 0
         completedWriteCount = 0
@@ -62,6 +71,9 @@ actor BoundedRealtimeWebSocketWriteWindow {
     ) async throws {
         let acceptedGeneration = generation
         try throwIfFailed()
+        guard !isClosing else {
+            throw NativeSpeechError.cancelled
+        }
 
         if pendingWrites.count >= capacity
             || !capacityWaiters.isEmpty
@@ -81,6 +93,9 @@ actor BoundedRealtimeWebSocketWriteWindow {
             throw NativeSpeechError.cancelled
         }
         try throwIfFailed()
+        guard !isClosing else {
+            throw NativeSpeechError.cancelled
+        }
         isAdmittingWaiter = false
 
         writeOrdinal &+= 1
@@ -117,11 +132,47 @@ actor BoundedRealtimeWebSocketWriteWindow {
         admitNextWaiterIfPossible()
     }
 
+    func beginCloseAndDrain(
+        timeoutNanoseconds: UInt64
+    ) async -> NativeSpeechError? {
+        precondition(timeoutNanoseconds > 0)
+        if let latchedError {
+            return latchedError
+        }
+        isClosing = true
+        resumeAllWaiters(throwing: NativeSpeechError.cancelled)
+        isAdmittingWaiter = false
+        guard !pendingWrites.isEmpty else {
+            record(category: "write_drain_completed", pendingWriteCount: 0)
+            return nil
+        }
+
+        let drainGeneration = generation
+        record(
+            category: "write_drain_started",
+            pendingWriteCount: pendingWrites.count
+        )
+        return await withCheckedContinuation { continuation in
+            drainWaiters.append(
+                DrainWaiter(
+                    generation: drainGeneration,
+                    continuation: continuation
+                )
+            )
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                await self?.timeOutDrain(generation: drainGeneration)
+            }
+        }
+    }
+
     func close() {
         generation &+= 1
         resumeAllWaiters(throwing: NativeSpeechError.cancelled)
+        resumeAllDrainWaiters(with: .cancelled)
         pendingWrites.removeAll(keepingCapacity: true)
         isAdmittingWaiter = false
+        isClosing = true
         latchedError = .cancelled
     }
 
@@ -164,6 +215,7 @@ actor BoundedRealtimeWebSocketWriteWindow {
             )
             pendingWrites.removeAll(keepingCapacity: true)
             resumeAllWaiters(throwing: error)
+            resumeAllDrainWaiters(with: error)
             isAdmittingWaiter = false
             return
         }
@@ -176,11 +228,16 @@ actor BoundedRealtimeWebSocketWriteWindow {
             pendingWriteCount: pendingWrites.count,
             durationMilliseconds: duration
         )
+        if isClosing && pendingWrites.isEmpty {
+            record(category: "write_drain_completed", pendingWriteCount: 0)
+            resumeAllDrainWaiters(with: nil)
+        }
         admitNextWaiterIfPossible()
     }
 
     private func admitNextWaiterIfPossible() {
         guard !isAdmittingWaiter,
+              !isClosing,
               pendingWrites.count < capacity,
               !capacityWaiters.isEmpty,
               latchedError == nil else {
@@ -201,6 +258,37 @@ actor BoundedRealtimeWebSocketWriteWindow {
         capacityWaiters.removeAll(keepingCapacity: true)
         for waiter in waiters {
             waiter.continuation.resume(throwing: error)
+        }
+    }
+
+    private func resumeAllDrainWaiters(with error: NativeSpeechError?) {
+        let waiters = drainWaiters
+        drainWaiters.removeAll(keepingCapacity: true)
+        for waiter in waiters {
+            waiter.continuation.resume(returning: error)
+        }
+    }
+
+    private func timeOutDrain(generation timedOutGeneration: UInt64) {
+        guard timedOutGeneration == generation,
+              isClosing,
+              !pendingWrites.isEmpty else {
+            return
+        }
+        let matchingWaiters = drainWaiters.filter {
+            $0.generation == timedOutGeneration
+        }
+        guard !matchingWaiters.isEmpty else { return }
+        drainWaiters.removeAll {
+            $0.generation == timedOutGeneration
+        }
+        record(
+            category: "write_drain_timed_out",
+            pendingWriteCount: pendingWrites.count,
+            errorCode: "timed_out"
+        )
+        for waiter in matchingWaiters {
+            waiter.continuation.resume(returning: .timedOut)
         }
     }
 
@@ -280,6 +368,7 @@ actor BoundedRealtimeWebSocketWriteWindow {
 
 actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private static let maximumPendingWrites = 8
+    private static let closeDrainTimeoutNanoseconds: UInt64 = 1_000_000_000
     private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
     private let writeWindow: BoundedRealtimeWebSocketWriteWindow
     private var session: URLSession?
@@ -367,12 +456,30 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     func close(reason: RealtimeWebSocketCloseReason) async {
         guard let task else { return }
         self.task = nil
+        let closingSession = session
+        session = nil
+        let drainError = await writeWindow.beginCloseAndDrain(
+            timeoutNanoseconds: Self.closeDrainTimeoutNanoseconds
+        )
+        if let drainError {
+            let category: String
+            switch drainError {
+            case .timedOut:
+                category = "websocket_close_write_drain_timed_out"
+            default:
+                category = "websocket_close_write_drain_failed"
+            }
+            record(category: category)
+        }
         let closeCode: URLSessionWebSocketTask.CloseCode =
             reason == .normal ? .normalClosure : .goingAway
         task.cancel(with: closeCode, reason: nil)
-        session?.invalidateAndCancel()
-        session = nil
         await writeWindow.close()
+        if reason == .normal {
+            closingSession?.finishTasksAndInvalidate()
+        } else {
+            closingSession?.invalidateAndCancel()
+        }
         record(category: "websocket_closed")
     }
 

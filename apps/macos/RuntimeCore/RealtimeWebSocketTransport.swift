@@ -94,18 +94,29 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
 }
 
 nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
-    private static let capacity = 30_000
+    private static let defaultCapacity = 30_000
     private let lock = NSLock()
-    private var events: [NativeSpeechInternalDiagnosticEvent] = []
+    private let capacity: Int
+    private var storage: [NativeSpeechInternalDiagnosticEvent?]
+    private var nextWriteIndex = 0
+    private var eventCount = 0
     private var droppedEventCount: UInt64 = 0
+
+    init(capacity: Int = NativeSpeechDiagnosticBuffer.defaultCapacity) {
+        precondition(capacity > 0)
+        self.capacity = capacity
+        storage = Array(repeating: nil, count: capacity)
+    }
 
     func append(_ event: NativeSpeechInternalDiagnosticEvent) {
         lock.withLock {
-            if events.count == Self.capacity {
-                events.removeFirst()
+            if eventCount == capacity {
                 droppedEventCount &+= 1
+            } else {
+                eventCount += 1
             }
-            events.append(event)
+            storage[nextWriteIndex] = event
+            nextWriteIndex = (nextWriteIndex + 1) % capacity
         }
     }
 
@@ -114,9 +125,20 @@ nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
         droppedEventCount: UInt64
     ) {
         lock.withLock {
-            let drained = events
+            var drained: [NativeSpeechInternalDiagnosticEvent] = []
+            drained.reserveCapacity(eventCount)
+            let firstIndex =
+                (nextWriteIndex + capacity - eventCount) % capacity
+            for offset in 0 ..< eventCount {
+                let index = (firstIndex + offset) % capacity
+                if let event = storage[index] {
+                    drained.append(event)
+                    storage[index] = nil
+                }
+            }
             let dropped = droppedEventCount
-            events.removeAll(keepingCapacity: true)
+            nextWriteIndex = 0
+            eventCount = 0
             droppedEventCount = 0
             return (drained, dropped)
         }
@@ -124,7 +146,11 @@ nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
 
     func clear() {
         lock.withLock {
-            events.removeAll(keepingCapacity: true)
+            for index in storage.indices {
+                storage[index] = nil
+            }
+            nextWriteIndex = 0
+            eventCount = 0
             droppedEventCount = 0
         }
     }
