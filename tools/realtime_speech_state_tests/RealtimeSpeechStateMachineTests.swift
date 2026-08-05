@@ -312,11 +312,21 @@ private struct RealtimeSpeechStateMachineTests {
         )
         let started = playback(machine, interaction, .started, 8, 3)
         expect(started.snapshot.state == .speaking, "Host start owns speaking")
+        let stalled = playback(machine, interaction, .stalled, 8, 4)
+        expect(stalled.snapshot.state == .thinking,
+               "playback starvation leaves speaking")
+        expect(stalled.snapshot.lastTransitionReason == .playbackStalled,
+               "playback starvation is explicit")
+        let resumed = playback(machine, interaction, .resumed, 8, 5)
+        expect(resumed.snapshot.state == .speaking,
+               "scheduled PCM resumes speaking")
+        expect(resumed.snapshot.lastTransitionReason == .playbackResumed,
+               "playback resume is explicit")
         let providerDone = transition(
             machine,
             interaction,
             .responseCompleted,
-            4
+            6
         )
         expect(providerDone.snapshot.state == .speaking, "Provider done does not skip local drain")
         let wrongGeneration = playback(
@@ -324,7 +334,7 @@ private struct RealtimeSpeechStateMachineTests {
             interaction,
             .completed,
             7,
-            5
+            7
         )
         expect(wrongGeneration.disposition == .rejectedLate, "old playback generation is rejected")
         let completed = playback(
@@ -332,9 +342,49 @@ private struct RealtimeSpeechStateMachineTests {
             interaction,
             .completed,
             8,
-            6
+            8
         )
         expect(completed.snapshot.state == .listening, "matching local drain completes turn")
+
+        let stalledInterruptMachine = RealtimeSpeechStateMachine()
+        let stalledInterruptInteraction = makeInteraction()
+        stalledInterruptMachine.start(interaction: stalledInterruptInteraction)
+        _ = transition(
+            stalledInterruptMachine,
+            stalledInterruptInteraction,
+            .thinking,
+            1
+        )
+        _ = transition(
+            stalledInterruptMachine,
+            stalledInterruptInteraction,
+            .outputAudio(audio(stalledInterruptInteraction, 1)),
+            2
+        )
+        _ = playback(
+            stalledInterruptMachine,
+            stalledInterruptInteraction,
+            .started,
+            10,
+            3
+        )
+        _ = playback(
+            stalledInterruptMachine,
+            stalledInterruptInteraction,
+            .stalled,
+            10,
+            4
+        )
+        let interruptedWhileStalled = transition(
+            stalledInterruptMachine,
+            stalledInterruptInteraction,
+            .inputSpeechStarted,
+            5
+        )
+        expect(interruptedWhileStalled.effect == .interruptProvider,
+               "stalled output remains interruptible")
+        expect(interruptedWhileStalled.snapshot.state == .listening,
+               "stalled interrupt begins the next turn")
 
         let failedMachine = RealtimeSpeechStateMachine()
         let failedInteraction = makeInteraction()

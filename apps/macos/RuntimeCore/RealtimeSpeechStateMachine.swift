@@ -15,6 +15,8 @@ nonisolated enum RealtimeSpeechTransitionReason: String, Sendable, Equatable {
     case providerThinking = "provider_thinking"
     case firstOutputAudio = "first_output_audio"
     case playbackStarted = "playback_started"
+    case playbackStalled = "playback_stalled"
+    case playbackResumed = "playback_resumed"
     case playbackCompleted = "playback_completed"
     case playbackFailed = "playback_failed"
     case responseCompleted = "response_completed"
@@ -68,6 +70,8 @@ nonisolated enum RealtimeSpeechTransitionEffect: Sendable, Equatable {
 
 nonisolated enum RealtimeSpeechPlaybackEventKind: Sendable, Equatable {
     case started
+    case stalled
+    case resumed
     case completed
     case failed(NativeSpeechError)
 }
@@ -305,7 +309,10 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                  .outputText, .toolRequestCandidate:
                 return resultLocked(.ignoredDuplicate, previous: previous)
             case .inputSpeechStarted:
-                if currentSnapshot.state == .speaking {
+                if currentSnapshot.state == .speaking
+                    || (currentSnapshot.state == .thinking
+                        && turnHasOutputAudio
+                        && activePlaybackGeneration != nil) {
                     return interruptLocked(
                         previous: previous,
                         nowNanoseconds: nowNanoseconds
@@ -504,6 +511,56 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 applyLocked(
                     state: .speaking,
                     reason: .playbackStarted,
+                    turnDetectionSource:
+                        currentSnapshot.lastTurnDetectionSource
+                )
+                return resultLocked(.applied, previous: previous)
+            case .stalled:
+                guard turnHasOutputAudio,
+                      activePlaybackGeneration
+                        == playbackEvent.playbackGeneration else {
+                    return rejectLateLocked(previous: previous)
+                }
+                if currentSnapshot.state == .thinking {
+                    return resultLocked(.ignoredDuplicate, previous: previous)
+                }
+                guard currentSnapshot.state == .speaking else {
+                    return rejectOutOfOrderLocked(previous: previous)
+                }
+                setGuardLocked(
+                    .thinkingOutput,
+                    timeoutNanoseconds:
+                        timeoutConfiguration.thinkingOutputNanoseconds,
+                    nowNanoseconds: nowNanoseconds
+                )
+                applyLocked(
+                    state: .thinking,
+                    reason: .playbackStalled,
+                    turnDetectionSource:
+                        currentSnapshot.lastTurnDetectionSource
+                )
+                return resultLocked(.applied, previous: previous)
+            case .resumed:
+                guard turnHasOutputAudio,
+                      activePlaybackGeneration
+                        == playbackEvent.playbackGeneration else {
+                    return rejectLateLocked(previous: previous)
+                }
+                if currentSnapshot.state == .speaking {
+                    return resultLocked(.ignoredDuplicate, previous: previous)
+                }
+                guard currentSnapshot.state == .thinking else {
+                    return rejectOutOfOrderLocked(previous: previous)
+                }
+                setGuardLocked(
+                    .speakingCompletion,
+                    timeoutNanoseconds:
+                        timeoutConfiguration.speakingCompletionNanoseconds,
+                    nowNanoseconds: nowNanoseconds
+                )
+                applyLocked(
+                    state: .speaking,
+                    reason: .playbackResumed,
                     turnDetectionSource:
                         currentSnapshot.lastTurnDetectionSource
                 )

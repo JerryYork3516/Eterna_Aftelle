@@ -98,6 +98,7 @@ private struct NativeSpeechDuplexTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         try await testFullDuplexThroughController()
+        try await testPlaybackStallThroughController()
         try await testInterruptThroughController()
         try await testOutputDeviceChangeThroughController()
         try await testStopClearsActivePlaybackThroughController()
@@ -545,6 +546,93 @@ private struct NativeSpeechDuplexTests {
             $0 == .close(.normal)
         }.count
         expect(closeCount == 1, "Stop closes transport once")
+    }
+
+    private static func testPlaybackStallThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "playback stall fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+        )
+        await waitUntil {
+            stack.controller.realtimeSpeechStateSnapshot.state == .speaking
+        }
+        stack.outputPlayer.completeScheduledChunk()
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            stack.controller.speechAudioOutputHostSnapshot.state == .stalled
+                && stack.controller.realtimeSpeechStateSnapshot.state
+                    == .thinking
+        }
+        expect(
+            stack.controller.residentVisualIntent == .thinking,
+            "playback starvation maps ParticleCore to thinking"
+        )
+        expect(
+            stack.controller.residentSpeechSignal.phase == .ended,
+            "playback starvation ends the speech signal"
+        )
+
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"BQY="}"#)
+        )
+        expect(
+            stack.outputPlayer.scheduledCount == 2,
+            "one resumed chunk waits for prebuffer"
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"Bwg="}"#)
+        )
+        await waitUntil {
+            stack.controller.speechAudioOutputHostSnapshot.state == .playing
+                && stack.controller.realtimeSpeechStateSnapshot.state
+                    == .speaking
+        }
+        expect(
+            stack.controller.residentVisualIntent == .speaking,
+            "resumed PCM restores ParticleCore speaking"
+        )
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot
+                .playbackStartedCount == 1,
+            "stall resume does not create a second formal playback start"
+        )
+
+        stack.outputPlayer.completeScheduledChunk()
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            stack.controller.speechAudioOutputHostSnapshot.state == .stalled
+        }
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await waitUntil {
+            let eventTypes = try await sentEventTypes(transport)
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+                && eventTypes.filter { $0 == "response.cancel" }.count == 1
+        }
+        expect(
+            stack.controller.nativeSpeechPlaybackDebugSnapshot
+                .interruptClearCount == 1,
+            "stalled output remains immediately interruptible"
+        )
+        await stack.controller.stopSpeechAudioCapture()
     }
 
     private static func testSlowConsumerPreservesInteraction() async throws {

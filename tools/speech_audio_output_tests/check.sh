@@ -73,5 +73,8 @@ if rg -q 'return fail\(\.queueFull\)' "$host"; then
 fi
 rg -q 'func finishProviderResponse' "$host"
 rg -q 'providerResponseFinished' "$host"
+rg -q 'case playbackStalled' "$host"
+rg -q 'case playbackResumed' "$host"
+rg -q 'consumerWatchdogNanoseconds' "$host"
 echo "speech_audio_output_continuous_playback=PASS"
 echo "speech_audio_output_pressure=PASS"

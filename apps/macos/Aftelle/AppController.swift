@@ -1848,6 +1848,8 @@ final class AppController: ObservableObject {
         guard let binding = nativeSpeechPlaybackBinding,
               event.generation == binding.playbackGeneration else {
             if event.kind == .playbackStarted
+                || event.kind == .playbackStalled
+                || event.kind == .playbackResumed
                 || event.kind == .playbackCompleted
                 || event.kind == .failed {
                 rejectedPlaybackEventCount &+= 1
@@ -1912,6 +1914,10 @@ final class AppController: ObservableObject {
         switch event.kind {
         case .playbackStarted:
             kind = .started
+        case .playbackStalled:
+            kind = .stalled
+        case .playbackResumed:
+            kind = .resumed
         case .playbackCompleted:
             kind = .completed
         case .failed:

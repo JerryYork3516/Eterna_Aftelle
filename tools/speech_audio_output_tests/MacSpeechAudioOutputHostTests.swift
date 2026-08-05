@@ -12,12 +12,13 @@ private struct MacSpeechAudioOutputHostTests {
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
         await testOrderedPlaybackAndCompletion()
-        await testTemporaryQueueGapKeepsOnePlaybackCycle()
+        await testTemporaryQueueGapReportsStallAndResume()
         await testShortResponseFlushesPrebuffer()
         await testUnderrunDoesNotStartPlayer()
         await testQueuePressureWaitsWithoutStopping()
         await testConversionFailureStopsAndClears()
         await testConsumerTimeoutStopsAndClears()
+        testConsumerWatchdogIncludesScheduledPCMDuration()
         await testStopAndCloseAreIdempotent()
         await testGenerationRejectsLateInputAndCompletion()
         await testCloseCanReprepare()
@@ -150,7 +151,7 @@ private struct MacSpeechAudioOutputHostTests {
         )
     }
 
-    private static func testTemporaryQueueGapKeepsOnePlaybackCycle() async {
+    private static func testTemporaryQueueGapReportsStallAndResume() async {
         let (host, player) = makeHost()
         let generation = await host.prepare().generation
         _ = await host.enqueue(
@@ -167,18 +168,30 @@ private struct MacSpeechAudioOutputHostTests {
         player.completeScheduledChunk()
         await waitUntil {
             let snapshot = await host.currentSnapshot()
-            return snapshot.queueDepth == 0 && snapshot.state == .playing
+            return snapshot.queueDepth == 0 && snapshot.state == .stalled
         }
         let gap = await host.currentSnapshot()
         expect(gap.playbackCompletedCount == 0,
                "temporary queue gap is not response completion")
+        expect(gap.recentEvents.map(\.kind).contains(.playbackStalled),
+               "temporary queue gap reports stalled")
         _ = await host.enqueue(
             pcm16Bytes: Data([3, 0]), sequence: 3, generation: generation
         )
-        await waitUntil { player.scheduledCount == 3 }
+        expect(player.scheduledCount == 2,
+               "stalled playback waits for the frozen prebuffer")
+        _ = await host.enqueue(
+            pcm16Bytes: Data([4, 0]), sequence: 4, generation: generation
+        )
+        await waitUntil { player.scheduledCount == 4 }
+        let resumed = await host.currentSnapshot()
+        expect(resumed.state == .playing, "stalled playback resumes")
+        expect(resumed.recentEvents.map(\.kind).contains(.playbackResumed),
+               "resumed playback is observable")
         expect(player.startCount == 1,
                "new audio continues the same player cycle")
         _ = await host.finishProviderResponse()
+        player.completeScheduledChunk()
         player.completeScheduledChunk()
         await waitUntil { await host.currentSnapshot().state == .completed }
         let completed = await host.currentSnapshot()
@@ -186,6 +199,17 @@ private struct MacSpeechAudioOutputHostTests {
                "response emits one playbackStarted")
         expect(completed.playbackCompletedCount == 1,
                "response emits one playbackCompleted")
+    }
+
+    private static func testConsumerWatchdogIncludesScheduledPCMDuration() {
+        let safetyMargin: UInt64 = 25_000_000
+        expect(
+            MacSpeechAudioOutputHost.consumerWatchdogNanoseconds(
+                inFlightByteCount: 48_000,
+                safetyMarginNanoseconds: safetyMargin
+            ) == 1_025_000_000,
+            "watchdog includes scheduled PCM duration and safety margin"
+        )
     }
 
     private static func testShortResponseFlushesPrebuffer() async {

@@ -4,6 +4,7 @@ nonisolated enum MacSpeechAudioOutputHostState: String, Sendable {
     case idle
     case prepared
     case playing
+    case stalled
     case draining
     case completed
     case stopped
@@ -15,6 +16,8 @@ nonisolated enum MacSpeechAudioOutputEventKind: String, Sendable {
     case prepared
     case firstChunkQueued
     case playbackStarted
+    case playbackStalled
+    case playbackResumed
     case bufferPressure
     case bufferLow
     case bufferUnderrun
@@ -104,6 +107,8 @@ actor MacSpeechAudioOutputHost {
     private var recentEvents: [MacSpeechAudioOutputEvent] = []
     private var eventOrdinal: UInt64 = 0
     private var eventSink: EventSink?
+    private var pendingSinkEvents: [MacSpeechAudioOutputEvent] = []
+    private var eventDeliveryTask: Task<Void, Never>?
     private var isMonitoringDeviceRoute = false
     private var providerResponseFinished = false
 
@@ -132,7 +137,8 @@ actor MacSpeechAudioOutputHost {
     }
 
     func prepare() -> MacSpeechAudioOutputHostSnapshot {
-        if state == .prepared || state == .playing || state == .draining {
+        if state == .prepared || state == .playing || state == .stalled
+            || state == .draining {
             return snapshot()
         }
         let route = deviceMonitor.currentRoute()
@@ -171,14 +177,15 @@ actor MacSpeechAudioOutputHost {
             lastError = .staleGeneration
             return snapshot()
         }
-        guard state == .prepared || state == .playing
+        guard state == .prepared || state == .playing || state == .stalled
                 || state == .draining || state == .completed
         else {
             lastError = .invalidState
             return snapshot()
         }
         while queue.count >= configuration.capacity {
-            guard state == .playing || state == .draining else {
+            guard state == .playing || state == .stalled
+                    || state == .draining else {
                 lastError = .queueFull
                 return snapshot()
             }
@@ -191,7 +198,8 @@ actor MacSpeechAudioOutputHost {
                 lastError = .staleGeneration
                 return snapshot()
             }
-            guard state == .playing || state == .draining else {
+            guard state == .playing || state == .stalled
+                    || state == .draining else {
                 lastError = .invalidState
                 return snapshot()
             }
@@ -213,6 +221,9 @@ actor MacSpeechAudioOutputHost {
             }
             if state == .playing || state == .draining {
                 scheduleAvailableChunks()
+            } else if state == .stalled,
+                      queue.count >= configuration.startupBufferCount {
+                resumeStalledPlayback()
             }
             return snapshot()
         } catch let error as MacSpeechAudioOutputHostError {
@@ -224,7 +235,7 @@ actor MacSpeechAudioOutputHost {
 
     func start() -> MacSpeechAudioOutputHostSnapshot {
         guard state == .prepared || state == .completed else {
-            if state == .playing || state == .draining {
+            if state == .playing || state == .stalled || state == .draining {
                 return snapshot()
             }
             lastError = .invalidState
@@ -256,7 +267,7 @@ actor MacSpeechAudioOutputHost {
     }
 
     func finishProviderResponse() -> MacSpeechAudioOutputHostSnapshot {
-        guard state == .prepared || state == .playing
+        guard state == .prepared || state == .playing || state == .stalled
                 || state == .draining || state == .completed else {
             return snapshot()
         }
@@ -264,6 +275,10 @@ actor MacSpeechAudioOutputHost {
         providerResponseFinished = true
         if state == .prepared, !queue.isEmpty {
             return start()
+        }
+        if state == .stalled, !queue.isEmpty {
+            resumeStalledPlayback()
+            return snapshot()
         }
         if inFlightByteCounts.isEmpty, queue.isEmpty {
             completePlaybackIfNeeded()
@@ -344,9 +359,36 @@ actor MacSpeechAudioOutputHost {
            queue.isEmpty,
            inFlightByteCounts.isEmpty {
             completePlaybackIfNeeded()
+        } else if !providerResponseFinished,
+                  queue.isEmpty,
+                  inFlightByteCounts.isEmpty {
+            enterStalledPlayback()
         } else {
             restartConsumerWatchdog()
         }
+    }
+
+    private func enterStalledPlayback() {
+        guard state != .stalled else { return }
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        state = .stalled
+        underrunCount += 1
+        appendEvent(.playbackStalled)
+    }
+
+    private func resumeStalledPlayback() {
+        guard state == .stalled,
+              !queue.isEmpty,
+              providerResponseFinished
+                || queue.count >= configuration.startupBufferCount else {
+            return
+        }
+        state = providerResponseFinished ? .draining : .playing
+        scheduleAvailableChunks()
+        guard state != .failed,
+              !inFlightByteCounts.isEmpty else { return }
+        appendEvent(.playbackResumed)
     }
 
     private func completePlaybackIfNeeded() {
@@ -405,7 +447,11 @@ actor MacSpeechAudioOutputHost {
             return
         }
         let watchedGeneration = generation
-        let timeoutNanoseconds = configuration.consumerTimeoutNanoseconds
+        let timeoutNanoseconds = Self.consumerWatchdogNanoseconds(
+            inFlightByteCount: inFlightByteCounts.values.reduce(0, +),
+            safetyMarginNanoseconds:
+                configuration.consumerTimeoutNanoseconds
+        )
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: timeoutNanoseconds)
             guard !Task.isCancelled else { return }
@@ -413,6 +459,26 @@ actor MacSpeechAudioOutputHost {
                 generation: watchedGeneration
             )
         }
+    }
+
+    nonisolated static func consumerWatchdogNanoseconds(
+        inFlightByteCount: Int,
+        safetyMarginNanoseconds: UInt64
+    ) -> UInt64 {
+        let bytesPerSecond = UInt64(MacSpeechPCMOutputFormat.sampleRate)
+            * UInt64(MacSpeechPCMOutputFormat.channelCount)
+            * UInt64(MacSpeechPCMOutputFormat.bytesPerSample)
+        let byteCount = UInt64(max(0, inFlightByteCount))
+        let duration = byteCount.multipliedReportingOverflow(
+            by: 1_000_000_000
+        )
+        let durationNanoseconds = duration.overflow
+            ? UInt64.max
+            : duration.partialValue / bytesPerSecond
+        let total = durationNanoseconds.addingReportingOverflow(
+            safetyMarginNanoseconds
+        )
+        return total.overflow ? UInt64.max : total.partialValue
     }
 
     private func resumeOneWaitingEnqueue() {
@@ -471,7 +537,7 @@ actor MacSpeechAudioOutputHost {
             return
         }
         outputDevice = nextOutput
-        guard state == .prepared || state == .playing
+        guard state == .prepared || state == .playing || state == .stalled
                 || state == .draining || state == .completed else {
             return
         }
@@ -512,12 +578,31 @@ actor MacSpeechAudioOutputHost {
                 error: error
             )
         )
-        if let eventSink,
+        if eventSink != nil,
            let event = recentEvents.last {
-            Task {
-                await eventSink(event)
-            }
+            pendingSinkEvents.append(event)
+            startEventDeliveryIfNeeded()
         }
+    }
+
+    private func startEventDeliveryIfNeeded() {
+        guard eventDeliveryTask == nil else { return }
+        eventDeliveryTask = Task { [weak self] in
+            await self?.deliverPendingEvents()
+        }
+    }
+
+    private func deliverPendingEvents() async {
+        while !pendingSinkEvents.isEmpty {
+            let event = pendingSinkEvents.removeFirst()
+            guard let eventSink else {
+                pendingSinkEvents.removeAll(keepingCapacity: true)
+                eventDeliveryTask = nil
+                return
+            }
+            await eventSink(event)
+        }
+        eventDeliveryTask = nil
     }
 
     private func snapshot() -> MacSpeechAudioOutputHostSnapshot {

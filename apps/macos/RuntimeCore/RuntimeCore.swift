@@ -3663,6 +3663,8 @@ public final class RuntimeCore {
     ) -> String {
         return switch kind {
         case .started: "started"
+        case .stalled: "stalled"
+        case .resumed: "resumed"
         case .completed: "completed"
         case .failed: "failed"
         }
