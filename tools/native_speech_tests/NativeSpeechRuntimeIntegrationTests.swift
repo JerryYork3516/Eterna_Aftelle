@@ -477,6 +477,9 @@ private struct NativeSpeechRuntimeIntegrationTests {
         try await testRuntimeSubtitleGate(fixtureData: fixtureData)
         try await testRuntimeInterrupts(fixtureData: fixtureData)
         try await testRuntimePlaybackFailure(fixtureData: fixtureData)
+        try await testRuntimeRejectionDiagnostics(
+            fixtureData: fixtureData
+        )
         try await testRuntimeTimeouts(fixtureData: fixtureData)
         try await testConnectivityEntry(fixtureData: fixtureData)
         print("native_speech_runtime_integration_checks=\(checks)")
@@ -736,6 +739,51 @@ private struct NativeSpeechRuntimeIntegrationTests {
         let closeCount = await provider.operationCount(.close)
         expect(cancelCount == 1, "multi-turn Stop cancels Provider once")
         expect(closeCount == 1, "multi-turn Stop closes Provider once")
+    }
+
+    private static func testRuntimeRejectionDiagnostics(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "diagnostic resident loads"
+        )
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 1
+        )
+        await provider.enqueue(
+            NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .inputSpeechEnded
+            )
+        )
+        let disposition = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            disposition == .rejectedOutOfOrder,
+            "out-of-order event is rejected"
+        )
+        let rejected = diagnostics.drain().events.last
+        expect(
+            rejected?.source == .runtime
+                && rejected?.category == "input_speech_ended"
+                && rejected?.stateBefore == "listening"
+                && rejected?.disposition == "rejected_out_of_order"
+                && rejected?.errorCode == "invalid_state_transition",
+            "Runtime rejection diagnostic preserves safe cause"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
     }
 
     private static func testRuntimeInterrupts(

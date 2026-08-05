@@ -135,7 +135,7 @@ done
 rg -q 'completedResponseCount' "$output_bridge" "$content_view"
 rg -q 'RealtimeSpeechDiagnosticTimeline' "$controller" "$orchestration"
 rg -q 'NSSavePanel' "$controller"
-rg -q 'schemaVersion: 2' "$controller"
+rg -q 'schemaVersion: 3' "$controller"
 rg -q 'static let capacity = 30_000' "$repo_root/apps/macos/Aftelle/AppModels.swift"
 if sed -n '/struct RealtimeSpeechDiagnosticTimeline/,/struct RealtimeSpeechDiagnosticViewState/p' \
   "$repo_root/apps/macos/Aftelle/AppModels.swift" | rg -q 'removeFirst'; then

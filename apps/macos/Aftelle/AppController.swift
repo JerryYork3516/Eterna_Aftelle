@@ -223,6 +223,7 @@ final class AppController: ObservableObject {
     #if DEBUG
     private let speechAudioHost: MacSpeechAudioHost
     private let speechAudioOutputHost: MacSpeechAudioOutputHost
+    private let nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer
     private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
     private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
     private var realtimeSpeechPlaybackSubtitleSynchronizer =
@@ -234,6 +235,9 @@ final class AppController: ObservableObject {
     private var lastDiagnosticAggregateNanoseconds: UInt64 = 0
     private var lastDiagnosticInputForwardedCount: UInt64 = 0
     private var lastDiagnosticInputRejectedCount: UInt64 = 0
+    private var lastDiagnosticCaptureGeneratedCount: UInt64 = 0
+    private var lastDiagnosticCaptureDroppedCount: UInt64 = 0
+    private var lastDiagnosticPCMEndSample: Int16?
     private var realtimeSpeechPartialRefreshTask: Task<Void, Never>?
     private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
@@ -293,10 +297,13 @@ final class AppController: ObservableObject {
         let credentialStore = ProviderKeychainStore()
         let runtimeCore: RuntimeCore
         #if DEBUG
+        let speechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         speechAudioHost = MacSpeechAudioHost()
         speechAudioOutputHost = MacSpeechAudioOutputHost()
+        nativeSpeechDiagnosticBuffer = speechDiagnosticBuffer
         runtimeCore = StepFunRealtimeRuntimeComposition.makeRuntimeCore(
-            credentialReader: credentialStore
+            credentialReader: credentialStore,
+            diagnosticBuffer: speechDiagnosticBuffer
         )
         #else
         runtimeCore = RuntimeCore(providerCredentialReader: credentialStore)
@@ -317,6 +324,7 @@ final class AppController: ObservableObject {
         #if DEBUG
         speechAudioHost = MacSpeechAudioHost()
         speechAudioOutputHost = MacSpeechAudioOutputHost()
+        nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         #endif
         restoreProviderConfiguration()
         #if DEBUG
@@ -335,6 +343,7 @@ final class AppController: ObservableObject {
         providerKeychainStore = ProviderKeychainStore()
         self.speechAudioHost = speechAudioHost
         self.speechAudioOutputHost = speechAudioOutputHost
+        nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         restoreProviderConfiguration()
         refreshNativeSpeechProviderDebugState()
     }
@@ -667,19 +676,24 @@ final class AppController: ObservableObject {
         realtimeSpeechDiagnosticViewRefreshTask?.cancel()
         realtimeSpeechDiagnosticViewRefreshTask = nil
         realtimeSpeechDiagnosticTimeline.clear()
+        nativeSpeechDiagnosticBuffer.clear()
         publishRealtimeSpeechDiagnosticViewState()
         realtimeSpeechDiagnosticStatusKey = nil
         lastDiagnosticAggregateNanoseconds = 0
         lastDiagnosticInputForwardedCount = 0
         lastDiagnosticInputRejectedCount = 0
+        lastDiagnosticCaptureGeneratedCount = 0
+        lastDiagnosticCaptureDroppedCount = 0
+        lastDiagnosticPCMEndSample = nil
     }
 
     func realtimeSpeechDiagnosticExportData(
         exportedAt: Date = Date()
     ) throws -> Data {
+        drainNativeSpeechInternalDiagnostics()
         let bundle = Bundle.main
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 2,
+            schemaVersion: 3,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -724,6 +738,8 @@ final class AppController: ObservableObject {
                 speechAudioOutputHostSnapshot.playbackCompletedCount,
             playbackRejectedCount:
                 nativeSpeechPlaybackDebugSnapshot.rejectedEventCount,
+            outputRuntimeRejectedEventCount:
+                speechOutputBridgeSnapshot.runtimeRejectedEventCount,
             droppedEventCount:
                 realtimeSpeechDiagnosticTimeline.droppedEventCount,
             events: realtimeSpeechDiagnosticTimeline.events
@@ -1488,12 +1504,32 @@ final class AppController: ObservableObject {
         }
         nativeSpeechPlaybackBinding = nil
         speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "player_released",
+            stateAfter: speechAudioOutputHostSnapshot.state.rawValue
+        )
         realtimeSpeechPlaybackSubtitleSynchronizer.reset(
             playedChunkCount: speechAudioOutputHostSnapshot.playedChunkCount
         )
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "receive_loop_released",
+            stateAfter: speechOutputBridgeSnapshot.state.rawValue
+        )
         speechInputBridgeSnapshot = await speechInputBridge.stop()
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "input_pump_released",
+            stateAfter: speechInputBridgeSnapshot.state.rawValue
+        )
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "capture_released",
+            stateAfter: speechAudioHostSnapshot.state.rawValue
+        )
         syncRealtimeSpeechPresentation()
         refreshNativeSpeechPlaybackDebugSnapshot()
         recordRealtimeSpeechDiagnostic(
@@ -1561,6 +1597,22 @@ final class AppController: ObservableObject {
             )
             speechInputBridgeSnapshot = await speechInputBridge.start(
                 binding: binding
+            )
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "receive_loop_started",
+                interactionShortID: String(
+                    binding.interactionID.rawValue.uuidString.prefix(8)
+                ),
+                stateAfter: speechOutputBridgeSnapshot.state.rawValue
+            )
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "input_pump_started",
+                interactionShortID: String(
+                    binding.interactionID.rawValue.uuidString.prefix(8)
+                ),
+                stateAfter: speechInputBridgeSnapshot.state.rawValue
             )
             recordRealtimeSpeechDiagnostic(
                 source: .lifecycle,
@@ -1788,6 +1840,20 @@ final class AppController: ObservableObject {
                 || event.kind == .failed {
                 rejectedPlaybackEventCount &+= 1
             }
+            recordRealtimeSpeechDiagnostic(
+                source: .playback,
+                category: event.kind.rawValue,
+                interactionShortID:
+                    realtimeSpeechStateSnapshot.interactionShortID,
+                turnNumber: realtimeSpeechStateSnapshot.currentTurnNumber,
+                turnGeneration:
+                    realtimeSpeechSubtitleSnapshot.turnGeneration,
+                stateAfter: realtimeSpeechStateSnapshot.state.rawValue,
+                disposition: "rejected_binding_or_generation",
+                audioSequence: event.sequence,
+                playbackGeneration: event.generation,
+                errorCode: event.error?.rawValue
+            )
             refreshNativeSpeechPlaybackDebugSnapshot()
             return
         }
@@ -1950,6 +2016,26 @@ final class AppController: ObservableObject {
         durationMilliseconds: UInt64
     ) {
         let metadata = Self.nativeSpeechEventMetadata(event.kind)
+        let pcmMetrics: (
+            peak: Double,
+            rms: Double,
+            clipCount: Int,
+            boundaryJump: Double?,
+            finalSample: Int16
+        )?
+        if case .outputAudio(let payload) = event.kind {
+            pcmMetrics = Self.pcmMetrics(
+                payload.bytes,
+                previousFinalSample: lastDiagnosticPCMEndSample
+            )
+            lastDiagnosticPCMEndSample = pcmMetrics?.finalSample
+        } else {
+            pcmMetrics = nil
+            if case .thinking = event.kind,
+               stateBefore == RealtimeSpeechState.listening.rawValue {
+                lastDiagnosticPCMEndSample = nil
+            }
+        }
         recordRealtimeSpeechDiagnostic(
             source: .providerEvent,
             category: metadata.category,
@@ -1967,7 +2053,57 @@ final class AppController: ObservableObject {
             playbackGeneration:
                 nativeSpeechPlaybackDebugSnapshot.playbackGeneration,
             durationMilliseconds: durationMilliseconds,
+            pcmPeak: pcmMetrics?.peak,
+            pcmRMS: pcmMetrics?.rms,
+            pcmClipCount: pcmMetrics?.clipCount,
+            pcmBoundaryJump: pcmMetrics?.boundaryJump,
             errorCode: metadata.errorCode
+        )
+    }
+
+    private static func pcmMetrics(
+        _ data: Data,
+        previousFinalSample: Int16?
+    ) -> (
+        peak: Double,
+        rms: Double,
+        clipCount: Int,
+        boundaryJump: Double?,
+        finalSample: Int16
+    )? {
+        guard data.count >= 2, data.count.isMultiple(of: 2) else {
+            return nil
+        }
+        let bytes = [UInt8](data)
+        var peak = 0
+        var squaredSum = 0.0
+        var clipCount = 0
+        var firstSample: Int16?
+        var finalSample: Int16 = 0
+        var sampleCount = 0
+        for index in stride(from: 0, to: bytes.count, by: 2) {
+            let raw = UInt16(bytes[index])
+                | (UInt16(bytes[index + 1]) << 8)
+            let sample = Int16(bitPattern: raw)
+            let amplitude = abs(Int(sample))
+            peak = max(peak, amplitude)
+            squaredSum += Double(sample) * Double(sample)
+            if amplitude >= 32_760 { clipCount += 1 }
+            if firstSample == nil { firstSample = sample }
+            finalSample = sample
+            sampleCount += 1
+        }
+        let boundaryJump = previousFinalSample.flatMap { previous in
+            firstSample.map {
+                Double(abs(Int($0) - Int(previous))) / 65_535.0
+            }
+        }
+        return (
+            peak: Double(peak) / 32_768.0,
+            rms: sqrt(squaredSum / Double(sampleCount)) / 32_768.0,
+            clipCount: clipCount,
+            boundaryJump: boundaryJump,
+            finalSample: finalSample
         )
     }
 
@@ -1980,6 +2116,8 @@ final class AppController: ObservableObject {
         }
         let forwarded = speechInputBridgeSnapshot.forwardedFrameCount
         let rejected = speechInputBridgeSnapshot.runtimeRejectedFrameCount
+        let generated = speechAudioHostSnapshot.generatedFrameCount
+        let dropped = speechAudioHostSnapshot.droppedFrameCount
         recordRealtimeSpeechDiagnostic(
             source: .inputBridge,
             category: "one_second_aggregate",
@@ -1987,18 +2125,23 @@ final class AppController: ObservableObject {
                 speechInputBridgeSnapshot.interactionShortID,
             turnNumber: realtimeSpeechStateSnapshot.currentTurnNumber,
             turnGeneration: realtimeSpeechSubtitleSnapshot.turnGeneration,
-            byteCount: Int(
-                forwarded &- lastDiagnosticInputForwardedCount
-            ),
-            queueDepth: Int(
-                rejected &- lastDiagnosticInputRejectedCount
-            ),
+            queueDepth: speechAudioHostSnapshot.queuedFrameCount,
+            inputForwardedFrameDelta:
+                forwarded &- lastDiagnosticInputForwardedCount,
+            inputRejectedFrameDelta:
+                rejected &- lastDiagnosticInputRejectedCount,
+            captureGeneratedFrameDelta:
+                generated &- lastDiagnosticCaptureGeneratedCount,
+            captureDroppedFrameDelta:
+                dropped &- lastDiagnosticCaptureDroppedCount,
             errorCode: speechInputBridgeSnapshot.lastError,
             nowNanoseconds: now
         )
         lastDiagnosticAggregateNanoseconds = now
         lastDiagnosticInputForwardedCount = forwarded
         lastDiagnosticInputRejectedCount = rejected
+        lastDiagnosticCaptureGeneratedCount = generated
+        lastDiagnosticCaptureDroppedCount = dropped
     }
 
     private func recordRealtimeSpeechDiagnostic(
@@ -2010,14 +2153,29 @@ final class AppController: ObservableObject {
         stateBefore: String? = nil,
         stateAfter: String? = nil,
         disposition: String? = nil,
+        wireSequence: UInt64? = nil,
+        responseCorrelationHash: String? = nil,
+        itemCorrelationHash: String? = nil,
         audioSequence: UInt64? = nil,
         byteCount: Int? = nil,
         queueDepth: Int? = nil,
+        pendingWriteCount: Int? = nil,
         playbackGeneration: UInt64? = nil,
+        arrivalIntervalMilliseconds: UInt64? = nil,
+        wireToStandardDurationMilliseconds: UInt64? = nil,
         durationMilliseconds: UInt64? = nil,
+        inputForwardedFrameDelta: UInt64? = nil,
+        inputRejectedFrameDelta: UInt64? = nil,
+        captureGeneratedFrameDelta: UInt64? = nil,
+        captureDroppedFrameDelta: UInt64? = nil,
+        pcmPeak: Double? = nil,
+        pcmRMS: Double? = nil,
+        pcmClipCount: Int? = nil,
+        pcmBoundaryJump: Double? = nil,
         errorCode: String? = nil,
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
+        drainNativeSpeechInternalDiagnostics()
         realtimeSpeechDiagnosticTimeline.append(
             source: source,
             category: category,
@@ -2027,11 +2185,26 @@ final class AppController: ObservableObject {
             stateBefore: stateBefore,
             stateAfter: stateAfter,
             disposition: disposition,
+            wireSequence: wireSequence,
+            responseCorrelationHash: responseCorrelationHash,
+            itemCorrelationHash: itemCorrelationHash,
             audioSequence: audioSequence,
             byteCount: byteCount,
             queueDepth: queueDepth,
+            pendingWriteCount: pendingWriteCount,
             playbackGeneration: playbackGeneration,
+            arrivalIntervalMilliseconds: arrivalIntervalMilliseconds,
+            wireToStandardDurationMilliseconds:
+                wireToStandardDurationMilliseconds,
             durationMilliseconds: durationMilliseconds,
+            inputForwardedFrameDelta: inputForwardedFrameDelta,
+            inputRejectedFrameDelta: inputRejectedFrameDelta,
+            captureGeneratedFrameDelta: captureGeneratedFrameDelta,
+            captureDroppedFrameDelta: captureDroppedFrameDelta,
+            pcmPeak: pcmPeak,
+            pcmRMS: pcmRMS,
+            pcmClipCount: pcmClipCount,
+            pcmBoundaryJump: pcmBoundaryJump,
             errorCode: errorCode,
             nowNanoseconds: nowNanoseconds
         )
@@ -2041,6 +2214,50 @@ final class AppController: ObservableObject {
             publishRealtimeSpeechDiagnosticViewState()
         } else {
             scheduleRealtimeSpeechDiagnosticViewRefresh()
+        }
+    }
+
+    private func drainNativeSpeechInternalDiagnostics() {
+        let drained = nativeSpeechDiagnosticBuffer.drain()
+        for event in drained.events {
+            let source: RealtimeSpeechDiagnosticSource = switch event.source {
+            case .transport: .transport
+            case .wire: .wire
+            case .adapter: .adapter
+            case .runtime: .runtime
+            }
+            realtimeSpeechDiagnosticTimeline.append(
+                source: source,
+                category: event.category,
+                interactionShortID: event.interactionShortID,
+                turnNumber: event.turnNumber,
+                turnGeneration: event.turnGeneration,
+                stateBefore: event.stateBefore,
+                stateAfter: event.stateAfter,
+                disposition: event.disposition,
+                wireSequence: event.wireSequence,
+                responseCorrelationHash:
+                    event.responseCorrelationHash,
+                itemCorrelationHash: event.itemCorrelationHash,
+                audioSequence: event.audioSequence,
+                byteCount: event.byteCount,
+                pendingWriteCount: event.pendingWriteCount,
+                arrivalIntervalMilliseconds:
+                    event.arrivalIntervalMilliseconds,
+                wireToStandardDurationMilliseconds:
+                    event.wireToStandardDurationMilliseconds,
+                durationMilliseconds: event.durationMilliseconds,
+                errorCode: event.errorCode,
+                timestamp: event.timestamp,
+                nowNanoseconds: event.monotonicTimestampNanoseconds
+            )
+        }
+        if drained.droppedEventCount > 0 {
+            realtimeSpeechDiagnosticTimeline.append(
+                source: .lifecycle,
+                category: "internal_diagnostic_overflow",
+                disposition: "dropped_\(drained.droppedEventCount)"
+            )
         }
     }
 

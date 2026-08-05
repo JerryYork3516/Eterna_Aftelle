@@ -807,6 +807,9 @@ struct DialogueAuditViewState: Equatable {
 
 enum RealtimeSpeechDiagnosticSource: String, Codable, Sendable {
     case lifecycle
+    case transport
+    case wire
+    case adapter
     case providerEvent = "provider_event"
     case runtime
     case inputBridge = "input_bridge"
@@ -829,11 +832,25 @@ struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
     let stateBefore: String?
     let stateAfter: String?
     let disposition: String?
+    let wireSequence: UInt64?
+    let responseCorrelationHash: String?
+    let itemCorrelationHash: String?
     let audioSequence: UInt64?
     let byteCount: Int?
     let queueDepth: Int?
+    let pendingWriteCount: Int?
     let playbackGeneration: UInt64?
+    let arrivalIntervalMilliseconds: UInt64?
+    let wireToStandardDurationMilliseconds: UInt64?
     let durationMilliseconds: UInt64?
+    let inputForwardedFrameDelta: UInt64?
+    let inputRejectedFrameDelta: UInt64?
+    let captureGeneratedFrameDelta: UInt64?
+    let captureDroppedFrameDelta: UInt64?
+    let pcmPeak: Double?
+    let pcmRMS: Double?
+    let pcmClipCount: Int?
+    let pcmBoundaryJump: Double?
     let errorCode: String?
 }
 
@@ -870,11 +887,25 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
         stateBefore: String? = nil,
         stateAfter: String? = nil,
         disposition: String? = nil,
+        wireSequence: UInt64? = nil,
+        responseCorrelationHash: String? = nil,
+        itemCorrelationHash: String? = nil,
         audioSequence: UInt64? = nil,
         byteCount: Int? = nil,
         queueDepth: Int? = nil,
+        pendingWriteCount: Int? = nil,
         playbackGeneration: UInt64? = nil,
+        arrivalIntervalMilliseconds: UInt64? = nil,
+        wireToStandardDurationMilliseconds: UInt64? = nil,
         durationMilliseconds: UInt64? = nil,
+        inputForwardedFrameDelta: UInt64? = nil,
+        inputRejectedFrameDelta: UInt64? = nil,
+        captureGeneratedFrameDelta: UInt64? = nil,
+        captureDroppedFrameDelta: UInt64? = nil,
+        pcmPeak: Double? = nil,
+        pcmRMS: Double? = nil,
+        pcmClipCount: Int? = nil,
+        pcmBoundaryJump: Double? = nil,
         errorCode: String? = nil,
         timestamp: Date = Date(),
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
@@ -893,11 +924,26 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
             stateBefore: stateBefore,
             stateAfter: stateAfter,
             disposition: disposition,
+            wireSequence: wireSequence,
+            responseCorrelationHash: responseCorrelationHash,
+            itemCorrelationHash: itemCorrelationHash,
             audioSequence: audioSequence,
             byteCount: byteCount,
             queueDepth: queueDepth,
+            pendingWriteCount: pendingWriteCount,
             playbackGeneration: playbackGeneration,
+            arrivalIntervalMilliseconds: arrivalIntervalMilliseconds,
+            wireToStandardDurationMilliseconds:
+                wireToStandardDurationMilliseconds,
             durationMilliseconds: durationMilliseconds,
+            inputForwardedFrameDelta: inputForwardedFrameDelta,
+            inputRejectedFrameDelta: inputRejectedFrameDelta,
+            captureGeneratedFrameDelta: captureGeneratedFrameDelta,
+            captureDroppedFrameDelta: captureDroppedFrameDelta,
+            pcmPeak: pcmPeak,
+            pcmRMS: pcmRMS,
+            pcmClipCount: pcmClipCount,
+            pcmBoundaryJump: pcmBoundaryJump,
             errorCode: errorCode
         )
         if eventCount < Self.capacity {
@@ -993,6 +1039,7 @@ struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let playbackStartedCount: Int
     let playbackCompletedCount: Int
     let playbackRejectedCount: UInt64
+    let outputRuntimeRejectedEventCount: UInt64
     let droppedEventCount: UInt64
     let events: [RealtimeSpeechDiagnosticEvent]
 }

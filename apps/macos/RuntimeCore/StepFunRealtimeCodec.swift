@@ -1,6 +1,10 @@
 import Foundation
 
-nonisolated enum StepFunRealtimeWireEventKind: Sendable, Equatable {
+nonisolated enum StepFunRealtimeWireEventKind: String, Sendable, Equatable {
+    case sessionCreated = "session_created"
+    case sessionUpdated = "session_updated"
+    case inputSpeechStarted = "input_speech_started"
+    case inputSpeechEnded = "input_speech_ended"
     case responseCreated
     case responseCompleted
     case cancellationAcknowledgement
@@ -10,6 +14,10 @@ nonisolated enum StepFunRealtimeWireEventKind: Sendable, Equatable {
     case residentAudioTranscriptDone
     case residentTextDelta
     case residentTextDone
+    case outputAudioDelta = "output_audio_delta"
+    case outputAudioDone = "output_audio_done"
+    case conversationItemCreated = "conversation_item_created"
+    case providerError = "provider_error"
     case other
 }
 
@@ -17,15 +25,21 @@ nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
     let wireKind: StepFunRealtimeWireEventKind
     let event: NativeSpeechEvent?
     let causedByEventID: String?
+    let responseCorrelationHash: String?
+    let itemCorrelationHash: String?
 
     init(
         wireKind: StepFunRealtimeWireEventKind,
         event: NativeSpeechEvent?,
-        causedByEventID: String? = nil
+        causedByEventID: String? = nil,
+        responseCorrelationHash: String? = nil,
+        itemCorrelationHash: String? = nil
     ) {
         self.wireKind = wireKind
         self.event = event
         self.causedByEventID = causedByEventID
+        self.responseCorrelationHash = responseCorrelationHash
+        self.itemCorrelationHash = itemCorrelationHash
     }
 }
 
@@ -103,22 +117,36 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
               let type = object["type"] as? String else {
             throw NativeSpeechError.invalidEvent
         }
+        let responseCorrelationHash = Self.correlationHash(
+            Self.correlationID(
+                in: object,
+                directKey: "response_id",
+                objectKey: "response"
+            )
+        )
+        let itemCorrelationHash = Self.correlationHash(
+            Self.correlationID(
+                in: object,
+                directKey: "item_id",
+                objectKey: "item"
+            )
+        )
 
         let kind: NativeSpeechEventKind?
         let wireKind: StepFunRealtimeWireEventKind
         switch type {
         case "session.created":
             kind = .connected
-            wireKind = .other
+            wireKind = .sessionCreated
         case "session.updated":
             kind = .sessionUpdated
-            wireKind = .other
+            wireKind = .sessionUpdated
         case "input_audio_buffer.speech_started":
             kind = .inputSpeechStarted
-            wireKind = .other
+            wireKind = .inputSpeechStarted
         case "input_audio_buffer.speech_stopped":
             kind = .inputSpeechEnded
-            wireKind = .other
+            wireKind = .inputSpeechEnded
         case "conversation.item.input_audio_transcription.delta":
             kind = stringEvent(object, key: "delta", make: NativeSpeechEventKind.partialTranscript)
             wireKind = .userTranscriptDelta
@@ -158,11 +186,20 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                     format: .pcm16
                 )
             )
-            wireKind = .other
+            wireKind = .outputAudioDelta
         case "response.audio.done":
             return StepFunRealtimeDecodedEnvelope(
-                wireKind: .other,
-                event: nil
+                wireKind: .outputAudioDone,
+                event: nil,
+                responseCorrelationHash: responseCorrelationHash,
+                itemCorrelationHash: itemCorrelationHash
+            )
+        case "conversation.item.created":
+            return StepFunRealtimeDecodedEnvelope(
+                wireKind: .conversationItemCreated,
+                event: nil,
+                responseCorrelationHash: responseCorrelationHash,
+                itemCorrelationHash: itemCorrelationHash
             )
         case "response.text.delta":
             kind = stringEvent(object, key: "delta") {
@@ -200,11 +237,13 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             wireKind = .cancellationAcknowledgement
         case "error":
             kind = .failed(error(from: object))
-            wireKind = .other
+            wireKind = .providerError
         default:
             return StepFunRealtimeDecodedEnvelope(
                 wireKind: .other,
-                event: nil
+                event: nil,
+                responseCorrelationHash: responseCorrelationHash,
+                itemCorrelationHash: itemCorrelationHash
             )
         }
 
@@ -217,7 +256,9 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 interactionID: interactionID,
                 kind: kind
             ),
-            causedByEventID: errorEventID(from: object)
+            causedByEventID: errorEventID(from: object),
+            responseCorrelationHash: responseCorrelationHash,
+            itemCorrelationHash: itemCorrelationHash
         )
     }
 
@@ -283,5 +324,26 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         guard object["type"] as? String == "error" else { return nil }
         let error = object["error"] as? [String: Any]
         return error?["event_id"] as? String
+    }
+
+    private static func correlationID(
+        in object: [String: Any],
+        directKey: String,
+        objectKey: String
+    ) -> String? {
+        if let direct = object[directKey] as? String {
+            return direct
+        }
+        return (object[objectKey] as? [String: Any])?["id"] as? String
+    }
+
+    private static func correlationHash(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(format: "%016llx", hash)
     }
 }

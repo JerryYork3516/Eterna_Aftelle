@@ -1181,6 +1181,8 @@ public final class RuntimeCore {
     private let realtimeSpeechStateMachine = RealtimeSpeechStateMachine()
     private let realtimeSpeechSubtitleStateMachine =
         RealtimeSpeechSubtitleStateMachine()
+    private var nativeSpeechDiagnosticBuffer:
+        NativeSpeechDiagnosticBuffer?
     private let realtimeSpeechGuardScheduler =
         RealtimeSpeechGuardScheduler()
     private lazy var realtimeSpeechTimeoutHandler =
@@ -1222,6 +1224,12 @@ public final class RuntimeCore {
             executionEngine: ExecutionEngine(providerRouter: router),
             providerRouter: router
         )
+    }
+
+    func attachNativeSpeechDiagnosticBuffer(
+        _ buffer: NativeSpeechDiagnosticBuffer
+    ) {
+        nativeSpeechDiagnosticBuffer = buffer
     }
 
     public func loadDR(from data: Data) -> RuntimeLoadResult {
@@ -3210,6 +3218,13 @@ public final class RuntimeCore {
         interactionID: NativeSpeechInteractionID
     ) async throws -> NativeSpeechEventDisposition {
         guard nativeSpeechInteractionGate.current()?.id == interactionID else {
+            recordNativeSpeechRuntimeRejection(
+                eventKind: nil,
+                interactionID: interactionID,
+                stateBefore: realtimeSpeechStateMachine.snapshot(),
+                stateAfter: realtimeSpeechStateMachine.snapshot(),
+                disposition: .rejectedStale
+            )
             return .rejectedStale
         }
         do {
@@ -3218,6 +3233,13 @@ public final class RuntimeCore {
             )
             guard let interaction = nativeSpeechInteractionGate.current(),
                   interaction.id == interactionID else {
+                recordNativeSpeechRuntimeRejection(
+                    eventKind: event.kind,
+                    interactionID: interactionID,
+                    stateBefore: realtimeSpeechStateMachine.snapshot(),
+                    stateAfter: realtimeSpeechStateMachine.snapshot(),
+                    disposition: .rejectedStale
+                )
                 return .rejectedStale
             }
             let stateBefore = realtimeSpeechStateMachine.snapshot()
@@ -3236,16 +3258,37 @@ public final class RuntimeCore {
                         event.kind,
                         disposition: .rejectedStale
                     )
+                    recordNativeSpeechRuntimeRejection(
+                        eventKind: event.kind,
+                        interactionID: interactionID,
+                        stateBefore: stateBefore,
+                        stateAfter: transition.snapshot,
+                        disposition: .rejectedStale
+                    )
                     return .rejectedStale
                 case .rejectedLate:
                     recordRejectedSubtitleEventIfNeeded(
                         event.kind,
                         disposition: .rejectedLate
                     )
+                    recordNativeSpeechRuntimeRejection(
+                        eventKind: event.kind,
+                        interactionID: interactionID,
+                        stateBefore: stateBefore,
+                        stateAfter: transition.snapshot,
+                        disposition: .rejectedLate
+                    )
                     return .rejectedLate
                 case .rejectedOutOfOrder:
                     recordRejectedSubtitleEventIfNeeded(
                         event.kind,
+                        disposition: .rejectedOutOfOrder
+                    )
+                    recordNativeSpeechRuntimeRejection(
+                        eventKind: event.kind,
+                        interactionID: interactionID,
+                        stateBefore: stateBefore,
+                        stateAfter: transition.snapshot,
                         disposition: .rejectedOutOfOrder
                     )
                     return .rejectedOutOfOrder
@@ -3267,11 +3310,32 @@ public final class RuntimeCore {
                ), subtitleDisposition != .accepted {
                 switch subtitleDisposition {
                 case .rejectedStale:
+                    recordNativeSpeechRuntimeRejection(
+                        eventKind: event.kind,
+                        interactionID: interactionID,
+                        stateBefore: stateBefore,
+                        stateAfter: realtimeSpeechStateMachine.snapshot(),
+                        disposition: .rejectedStale
+                    )
                     return .rejectedStale
                 case .rejectedLate:
+                    recordNativeSpeechRuntimeRejection(
+                        eventKind: event.kind,
+                        interactionID: interactionID,
+                        stateBefore: stateBefore,
+                        stateAfter: realtimeSpeechStateMachine.snapshot(),
+                        disposition: .rejectedLate
+                    )
                     return .rejectedLate
                 case .rejectedRevision, .rejectedFinalLocked,
                      .rejectedDuplicate, .rejectedOutOfOrder:
+                    recordNativeSpeechRuntimeRejection(
+                        eventKind: event.kind,
+                        interactionID: interactionID,
+                        stateBefore: stateBefore,
+                        stateAfter: realtimeSpeechStateMachine.snapshot(),
+                        disposition: .rejectedOutOfOrder
+                    )
                     return .rejectedOutOfOrder
                 case .accepted:
                     break
@@ -3294,6 +3358,13 @@ public final class RuntimeCore {
                         .currentTurnNumber,
                     turnGeneration: subtitleSnapshot.turnGeneration
                 ) else {
+                    recordNativeSpeechRuntimeRejection(
+                        eventKind: event.kind,
+                        interactionID: interactionID,
+                        stateBefore: stateBefore,
+                        stateAfter: realtimeSpeechStateMachine.snapshot(),
+                        disposition: .rejectedStale
+                    )
                     return .rejectedStale
                 }
             }
@@ -3365,6 +3436,14 @@ public final class RuntimeCore {
     ) async -> RealtimeSpeechTransitionDisposition {
         guard let interaction = nativeSpeechInteractionGate.current(),
               interaction.id == event.interactionID else {
+            recordNativeSpeechRuntimeRejection(
+                eventKind: nil,
+                interactionID: event.interactionID,
+                stateBefore: realtimeSpeechStateMachine.snapshot(),
+                stateAfter: realtimeSpeechStateMachine.snapshot(),
+                disposition: .rejectedStale,
+                category: "playback_\(Self.playbackEventCategory(event.kind))"
+            )
             return .rejectedStale
         }
         let stateBefore = realtimeSpeechStateMachine.snapshot()
@@ -3377,6 +3456,14 @@ public final class RuntimeCore {
         case .applied, .ignoredDuplicate:
             scheduleRealtimeSpeechGuard(for: interaction)
         case .rejectedStale, .rejectedLate, .rejectedOutOfOrder:
+            recordNativeSpeechRuntimeRejection(
+                eventKind: nil,
+                interactionID: event.interactionID,
+                stateBefore: stateBefore,
+                stateAfter: transition.snapshot,
+                disposition: transition.disposition,
+                category: "playback_\(Self.playbackEventCategory(event.kind))"
+            )
             break
         }
         if transition.disposition == .applied {
@@ -3509,6 +3596,67 @@ public final class RuntimeCore {
             )
         default:
             break
+        }
+    }
+
+    private func recordNativeSpeechRuntimeRejection(
+        eventKind: NativeSpeechEventKind?,
+        interactionID: NativeSpeechInteractionID,
+        stateBefore: RealtimeSpeechStateSnapshot,
+        stateAfter: RealtimeSpeechStateSnapshot,
+        disposition: RealtimeSpeechTransitionDisposition,
+        category: String? = nil
+    ) {
+        nativeSpeechDiagnosticBuffer?.append(
+            NativeSpeechInternalDiagnosticEvent(
+                source: .runtime,
+                category: category
+                    ?? Self.nativeSpeechEventCategory(eventKind),
+                interactionShortID: String(
+                    interactionID.rawValue.uuidString.prefix(8)
+                ),
+                turnNumber: stateAfter.currentTurnNumber,
+                turnGeneration:
+                    realtimeSpeechSubtitleStateMachine.snapshot()
+                        .turnGeneration,
+                stateBefore: stateBefore.state.rawValue,
+                stateAfter: stateAfter.state.rawValue,
+                disposition: disposition.rawValue,
+                errorCode: stateAfter.lastStandardError
+            )
+        )
+    }
+
+    private static func nativeSpeechEventCategory(
+        _ kind: NativeSpeechEventKind?
+    ) -> String {
+        guard let kind else { return "receive_request" }
+        return switch kind {
+        case .connected: "connected"
+        case .sessionUpdated: "session_updated"
+        case .inputSpeechStarted: "input_speech_started"
+        case .inputSpeechEnded: "input_speech_ended"
+        case .partialTranscript: "user_partial"
+        case .finalTranscript: "user_final"
+        case .thinking: "thinking"
+        case .outputText(_, let isFinal):
+            isFinal ? "resident_final" : "resident_partial"
+        case .outputAudio: "output_audio"
+        case .toolRequestCandidate: "tool_request_candidate"
+        case .responseCompleted: "response_completed"
+        case .cancelled: "cancelled"
+        case .closed: "closed"
+        case .failed: "failed"
+        }
+    }
+
+    private static func playbackEventCategory(
+        _ kind: RealtimeSpeechPlaybackEventKind
+    ) -> String {
+        return switch kind {
+        case .started: "started"
+        case .completed: "completed"
+        case .failed: "failed"
         }
     }
 

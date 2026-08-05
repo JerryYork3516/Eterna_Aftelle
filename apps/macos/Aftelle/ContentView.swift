@@ -2545,6 +2545,15 @@ private struct SpeechAudioHostDebugView: View {
         if let disposition = event.disposition {
             fields.append(disposition)
         }
+        if let wireSequence = event.wireSequence {
+            fields.append("wire:\(wireSequence)")
+        }
+        if let responseHash = event.responseCorrelationHash {
+            fields.append("response:\(responseHash)")
+        }
+        if let itemHash = event.itemCorrelationHash {
+            fields.append("item:\(itemHash)")
+        }
         if let sequence = event.audioSequence {
             fields.append("seq:\(sequence)")
         }
@@ -2553,6 +2562,39 @@ private struct SpeechAudioHostDebugView: View {
         }
         if let duration = event.durationMilliseconds {
             fields.append("duration:\(duration)ms")
+        }
+        if let pending = event.pendingWriteCount {
+            fields.append("pending:\(pending)")
+        }
+        if let interval = event.arrivalIntervalMilliseconds {
+            fields.append("gap:\(interval)ms")
+        }
+        if let duration = event.wireToStandardDurationMilliseconds {
+            fields.append("wire→standard:\(duration)ms")
+        }
+        if let forwarded = event.inputForwardedFrameDelta {
+            fields.append("forwarded:\(forwarded)")
+        }
+        if let rejected = event.inputRejectedFrameDelta {
+            fields.append("rejected:\(rejected)")
+        }
+        if let generated = event.captureGeneratedFrameDelta {
+            fields.append("captured:\(generated)")
+        }
+        if let dropped = event.captureDroppedFrameDelta {
+            fields.append("capture-dropped:\(dropped)")
+        }
+        if let peak = event.pcmPeak {
+            fields.append(String(format: "peak:%.3f", peak))
+        }
+        if let rms = event.pcmRMS {
+            fields.append(String(format: "rms:%.3f", rms))
+        }
+        if let clips = event.pcmClipCount {
+            fields.append("clips:\(clips)")
+        }
+        if let jump = event.pcmBoundaryJump {
+            fields.append(String(format: "jump:%.3f", jump))
         }
         if let error = event.errorCode {
             fields.append("error:\(error)")

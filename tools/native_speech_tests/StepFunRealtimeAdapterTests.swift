@@ -24,6 +24,7 @@ private struct StepFunRealtimeAdapterTests {
         try await testCumulativeTranscriptNormalization()
         try await testMissingCredentialDoesNotConnect()
         try testCodecMappings()
+        try await testRedactedWireDiagnostics()
         try await testContinuousOutputAndResponseBoundary()
         try await testSinglePreconfigurationRetry()
         try await testStreamingFailureDoesNotReconnect()
@@ -666,6 +667,71 @@ private struct StepFunRealtimeAdapterTests {
         expect(
             ignoredEventCount == 1,
             "audio.done is consumed without ending the response"
+        )
+    }
+
+    private static func testRedactedWireDiagnostics() async throws {
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-secret-id","item_id":"item-secret-id","delta":"AQI="}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport,
+            diagnosticBuffer: diagnostics
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        _ = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        _ = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+
+        let events = diagnostics.drain().events
+        let wireEvents = events.filter { $0.source == .wire }
+        expect(
+            wireEvents.map(\.wireSequence) == [1, 2, 3],
+            "wire diagnostics preserve receive order"
+        )
+        expect(
+            wireEvents.map(\.category) == [
+                "session_created",
+                "session_updated",
+                "output_audio_delta"
+            ],
+            "wire diagnostics expose only whitelisted categories"
+        )
+        let audio = wireEvents.last
+        expect(
+            audio?.responseCorrelationHash != nil
+                && audio?.responseCorrelationHash != "response-secret-id",
+            "wire diagnostics hash response identity"
+        )
+        expect(
+            audio?.itemCorrelationHash != nil
+                && audio?.itemCorrelationHash != "item-secret-id",
+            "wire diagnostics hash item identity"
+        )
+        expect(
+            audio?.audioSequence == 0 && audio?.byteCount == 2,
+            "wire diagnostics retain safe audio metadata"
+        )
+        expect(
+            events.contains {
+                $0.source == .adapter
+                    && $0.category == "standard_output_audio"
+                    && $0.wireSequence == 3
+            },
+            "standard event can be correlated to wire arrival"
         )
     }
 

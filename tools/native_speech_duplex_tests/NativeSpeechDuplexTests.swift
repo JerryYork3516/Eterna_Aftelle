@@ -154,8 +154,8 @@ private struct NativeSpeechDuplexTests {
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 2,
-               "diagnostic export freezes schema version 2")
+        expect(object["schema_version"] as? Int == 3,
+               "diagnostic export freezes schema version 3")
         expect(object["events"] is [[String: Any]],
                "diagnostic export contains structured events")
         for metric in [
@@ -164,7 +164,8 @@ private struct NativeSpeechDuplexTests {
             "input_maximum_send_duration_milliseconds",
             "capture_generated_frame_count",
             "capture_dropped_frame_count",
-            "capture_queued_frame_count"
+            "capture_queued_frame_count",
+            "output_runtime_rejected_event_count"
         ] {
             expect(
                 object[metric] != nil,

@@ -17,6 +17,7 @@ actor StepFunRealtimeAdapter:
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
     private let codec: StepFunRealtimeCodec
+    private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
     private var activeInteraction: NativeSpeechInteraction?
     private var activeContextVersion: String?
     private var preparedContextProjection:
@@ -31,6 +32,8 @@ actor StepFunRealtimeAdapter:
     private var userTranscriptFinalized = false
     private var residentTranscriptFinalized = false
     private var nextOutputAudioSequenceNumber: UInt64 = 0
+    private var wireReceiveOrdinal: UInt64 = 0
+    private var lastOutputAudioArrivalNanoseconds: UInt64?
     private let reconnectDelay: Duration
     private(set) var connectionState = StepFunRealtimeConnectionState.closed
     private(set) var ignoredEventCount: UInt64 = 0
@@ -39,12 +42,14 @@ actor StepFunRealtimeAdapter:
         credentialReader: ProviderCredentialReading,
         transport: RealtimeWebSocketTransport,
         codec: StepFunRealtimeCodec = StepFunRealtimeCodec(),
-        reconnectDelay: Duration = .milliseconds(100)
+        reconnectDelay: Duration = .milliseconds(100),
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil
     ) {
         self.credentialReader = credentialReader
         self.transport = transport
         self.codec = codec
         self.reconnectDelay = reconnectDelay
+        self.diagnosticBuffer = diagnosticBuffer
     }
 
     func start(request: NativeSpeechStartRequest) async throws {
@@ -205,6 +210,8 @@ actor StepFunRealtimeAdapter:
         isProviderResponseActive = false
         pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
+        wireReceiveOrdinal = 0
+        lastOutputAudioArrivalNanoseconds = nil
         userTranscriptAccumulator = ""
         residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
@@ -242,6 +249,8 @@ actor StepFunRealtimeAdapter:
         isProviderResponseActive = false
         pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
+        wireReceiveOrdinal = 0
+        lastOutputAudioArrivalNanoseconds = nil
         userTranscriptAccumulator = ""
         residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
@@ -258,20 +267,59 @@ actor StepFunRealtimeAdapter:
         interactionID: NativeSpeechInteractionID
     ) async throws -> NativeSpeechEvent {
         while true {
+            let receivedAt: UInt64
             let frame: RealtimeWebSocketFrame
             do {
                 frame = try await transport.receive()
+                receivedAt = DispatchTime.now().uptimeNanoseconds
             } catch is CancellationError {
                 throw NativeSpeechError.cancelled
             } catch let error as NativeSpeechError {
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "receive_failed",
+                    interactionID: interactionID,
+                    errorCode: Self.standardErrorName(error)
+                )
                 throw error
             } catch {
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "receive_failed",
+                    interactionID: interactionID,
+                    errorCode: "transport_failure"
+                )
                 throw NativeSpeechError.transportFailure
             }
             let envelope = try codec.decodeEnvelope(
                 frame,
                 interactionID: interactionID,
                 outputAudioSequenceNumber: nextOutputAudioSequenceNumber
+            )
+            wireReceiveOrdinal &+= 1
+            let audioInterval: UInt64?
+            if envelope.wireKind == .outputAudioDelta {
+                audioInterval = lastOutputAudioArrivalNanoseconds.map {
+                    (receivedAt &- $0) / 1_000_000
+                }
+                lastOutputAudioArrivalNanoseconds = receivedAt
+            } else {
+                audioInterval = nil
+            }
+            let wireMetadata = Self.eventMetadata(envelope.event?.kind)
+            recordDiagnostic(
+                source: .wire,
+                category: envelope.wireKind.rawValue,
+                interactionID: interactionID,
+                wireSequence: wireReceiveOrdinal,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash,
+                audioSequence: wireMetadata.audioSequence,
+                byteCount: wireMetadata.byteCount,
+                arrivalIntervalMilliseconds: audioInterval,
+                errorCode: wireMetadata.errorCode,
+                nowNanoseconds: receivedAt
             )
             if envelope.wireKind == .responseCreated {
                 isCancelling = false
@@ -290,9 +338,13 @@ actor StepFunRealtimeAdapter:
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
                 connectionState = .configured
-                return NativeSpeechEvent(
-                    interactionID: interactionID,
-                    kind: .cancelled(reason: "interrupted")
+                return emitStandardEvent(
+                    NativeSpeechEvent(
+                        interactionID: interactionID,
+                        kind: .cancelled(reason: "interrupted")
+                    ),
+                    envelope: envelope,
+                    receivedAtNanoseconds: receivedAt
                 )
             }
             if isCancelling,
@@ -308,9 +360,13 @@ actor StepFunRealtimeAdapter:
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
                 connectionState = .configured
-                return NativeSpeechEvent(
-                    interactionID: interactionID,
-                    kind: .cancelled(reason: "interrupted")
+                return emitStandardEvent(
+                    NativeSpeechEvent(
+                        interactionID: interactionID,
+                        kind: .cancelled(reason: "interrupted")
+                    ),
+                    envelope: envelope,
+                    receivedAtNanoseconds: receivedAt
                 )
             }
             if let event = normalizedEvent(
@@ -330,9 +386,26 @@ actor StepFunRealtimeAdapter:
                 default:
                     break
                 }
-                return event
+                return emitStandardEvent(
+                    event,
+                    envelope: envelope,
+                    receivedAtNanoseconds: receivedAt
+                )
             }
             ignoredEventCount &+= 1
+            recordDiagnostic(
+                source: .adapter,
+                category: "wire_event_ignored",
+                interactionID: interactionID,
+                disposition: envelope.wireKind.rawValue,
+                wireSequence: wireReceiveOrdinal,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash,
+                wireToStandardDurationMilliseconds:
+                    (DispatchTime.now().uptimeNanoseconds &- receivedAt)
+                        / 1_000_000
+            )
         }
     }
 
@@ -389,12 +462,16 @@ actor StepFunRealtimeAdapter:
         case .responseCreated, .responseCompleted,
              .cancellationAcknowledgement:
             return event
-        case .other:
+        case .sessionCreated, .sessionUpdated, .inputSpeechStarted,
+             .inputSpeechEnded, .outputAudioDelta, .providerError,
+             .other:
             if case .inputSpeechStarted = event.kind {
                 userTranscriptAccumulator = ""
                 userTranscriptFinalized = false
             }
             return event
+        case .outputAudioDone, .conversationItemCreated:
+            return nil
         }
     }
 
@@ -430,6 +507,121 @@ actor StepFunRealtimeAdapter:
             return true
         default:
             return false
+        }
+    }
+
+    private func emitStandardEvent(
+        _ event: NativeSpeechEvent,
+        envelope: StepFunRealtimeDecodedEnvelope,
+        receivedAtNanoseconds: UInt64
+    ) -> NativeSpeechEvent {
+        let metadata = Self.eventMetadata(event.kind)
+        recordDiagnostic(
+            source: .adapter,
+            category: "standard_\(metadata.category)",
+            interactionID: event.interactionID,
+            disposition: "emitted",
+            wireSequence: wireReceiveOrdinal,
+            responseCorrelationHash: envelope.responseCorrelationHash,
+            itemCorrelationHash: envelope.itemCorrelationHash,
+            audioSequence: metadata.audioSequence,
+            byteCount: metadata.byteCount,
+            wireToStandardDurationMilliseconds:
+                (DispatchTime.now().uptimeNanoseconds
+                    &- receivedAtNanoseconds) / 1_000_000,
+            errorCode: metadata.errorCode
+        )
+        return event
+    }
+
+    private func recordDiagnostic(
+        source: NativeSpeechInternalDiagnosticSource,
+        category: String,
+        interactionID: NativeSpeechInteractionID? = nil,
+        disposition: String? = nil,
+        wireSequence: UInt64? = nil,
+        responseCorrelationHash: String? = nil,
+        itemCorrelationHash: String? = nil,
+        audioSequence: UInt64? = nil,
+        byteCount: Int? = nil,
+        arrivalIntervalMilliseconds: UInt64? = nil,
+        wireToStandardDurationMilliseconds: UInt64? = nil,
+        errorCode: String? = nil,
+        nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
+        diagnosticBuffer?.append(
+            NativeSpeechInternalDiagnosticEvent(
+                source: source,
+                category: category,
+                interactionShortID: interactionID.map {
+                    String($0.rawValue.uuidString.prefix(8))
+                },
+                disposition: disposition,
+                wireSequence: wireSequence,
+                responseCorrelationHash: responseCorrelationHash,
+                itemCorrelationHash: itemCorrelationHash,
+                audioSequence: audioSequence,
+                byteCount: byteCount,
+                arrivalIntervalMilliseconds:
+                    arrivalIntervalMilliseconds,
+                wireToStandardDurationMilliseconds:
+                    wireToStandardDurationMilliseconds,
+                errorCode: errorCode,
+                monotonicTimestampNanoseconds: nowNanoseconds
+            )
+        )
+    }
+
+    private static func eventMetadata(
+        _ kind: NativeSpeechEventKind?
+    ) -> (
+        category: String,
+        audioSequence: UInt64?,
+        byteCount: Int?,
+        errorCode: String?
+    ) {
+        guard let kind else { return ("none", nil, nil, nil) }
+        return switch kind {
+        case .connected: ("connected", nil, nil, nil)
+        case .sessionUpdated: ("session_updated", nil, nil, nil)
+        case .inputSpeechStarted: ("input_speech_started", nil, nil, nil)
+        case .inputSpeechEnded: ("input_speech_ended", nil, nil, nil)
+        case .partialTranscript: ("user_partial", nil, nil, nil)
+        case .finalTranscript: ("user_final", nil, nil, nil)
+        case .thinking: ("thinking", nil, nil, nil)
+        case .outputText(_, let isFinal):
+            (isFinal ? "resident_final" : "resident_partial",
+             nil, nil, nil)
+        case .outputAudio(let payload):
+            ("output_audio", payload.sequenceNumber,
+             payload.bytes.count, nil)
+        case .toolRequestCandidate:
+            ("tool_request_candidate", nil, nil, nil)
+        case .responseCompleted:
+            ("response_completed", nil, nil, nil)
+        case .cancelled:
+            ("cancelled", nil, nil, nil)
+        case .closed:
+            ("closed", nil, nil, nil)
+        case .failed(let error):
+            ("failed", nil, nil, standardErrorName(error))
+        }
+    }
+
+    private static func standardErrorName(
+        _ error: NativeSpeechError
+    ) -> String {
+        switch error {
+        case .invalidConfiguration: "invalid_configuration"
+        case .missingCredential: "missing_credential"
+        case .unauthorized: "unauthorized"
+        case .rateLimited: "rate_limited"
+        case .unavailable: "unavailable"
+        case .timedOut: "timed_out"
+        case .cancelled: "cancelled"
+        case .transportFailure: "transport_failure"
+        case .invalidEvent: "invalid_event"
+        case .interactionMismatch: "interaction_mismatch"
         }
     }
 }
