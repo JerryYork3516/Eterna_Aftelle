@@ -599,7 +599,7 @@ private struct NativeSpeechDuplexTests {
                 .interruptClearCount == 1,
             "Interrupt clears local playback once"
         )
-        stack.outputPlayer.completeScheduledChunk()
+        stack.outputPlayer.completeStoppedChunk()
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechAudioOutputHostSnapshot
@@ -821,7 +821,7 @@ private struct NativeSpeechDuplexTests {
             stack.controller.realtimeSpeechStateSnapshot.state == .idle,
             "Stop returns active playback to idle"
         )
-        stack.outputPlayer.completeScheduledChunk()
+        stack.outputPlayer.completeStoppedChunk()
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechAudioOutputHostSnapshot

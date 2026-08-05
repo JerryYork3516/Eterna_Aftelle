@@ -15,7 +15,7 @@ private struct MacSpeechAudioOutputHostTests {
         await testTemporaryQueueGapKeepsOnePlaybackCycle()
         await testShortResponseFlushesPrebuffer()
         await testUnderrunDoesNotStartPlayer()
-        await testQueueFullStopsAndClears()
+        await testQueuePressureWaitsWithoutStopping()
         await testConversionFailureStopsAndClears()
         await testConsumerTimeoutStopsAndClears()
         await testStopAndCloseAreIdempotent()
@@ -124,10 +124,12 @@ private struct MacSpeechAudioOutputHostTests {
         let started = await host.start()
         expect(started.state == .playing, "playing with queued successor")
         expect(player.startCount == 1, "player started")
-        expect(player.scheduledCount == 1, "first chunk scheduled")
+        expect(player.scheduledCount == 2, "successor is scheduled ahead")
         _ = await host.finishProviderResponse()
         player.completeScheduledChunk()
-        await waitUntil { player.scheduledCount == 2 }
+        await waitUntil {
+            await host.currentSnapshot().playedChunkCount == 1
+        }
         expect(player.payloads == [Data([1, 0]), Data([2, 0])], "ordered scheduling")
         player.completeScheduledChunk()
         await waitUntil { await host.currentSnapshot().state == .completed }
@@ -154,7 +156,9 @@ private struct MacSpeechAudioOutputHostTests {
         )
         _ = await host.start()
         player.completeScheduledChunk()
-        await waitUntil { player.scheduledCount == 2 }
+        await waitUntil {
+            await host.currentSnapshot().playedChunkCount == 1
+        }
         player.completeScheduledChunk()
         await waitUntil {
             let snapshot = await host.currentSnapshot()
@@ -212,11 +216,12 @@ private struct MacSpeechAudioOutputHostTests {
         expect(snapshot.recentEvents.last?.kind == .bufferUnderrun, "underrun event")
     }
 
-    private static func testQueueFullStopsAndClears() async {
+    private static func testQueuePressureWaitsWithoutStopping() async {
         let configuration = MacSpeechPCMPlaybackConfiguration(
             capacity: 2,
             lowWatermark: 0,
-            consumerTimeoutNanoseconds: 1_000_000_000
+            consumerTimeoutNanoseconds: 1_000_000_000,
+            scheduleAheadCount: 1
         )
         let (host, player) = makeHost(configuration: configuration)
         let generation = await host.prepare().generation
@@ -226,13 +231,46 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([2, 0]), sequence: 2, generation: generation
         )
-        let failed = await host.enqueue(
+        _ = await host.start()
+        _ = await host.enqueue(
             pcm16Bytes: Data([3, 0]), sequence: 3, generation: generation
         )
-        expect(failed.state == .failed, "queue full fails host")
-        expect(failed.lastError == "playback_queue_full", "queue full error")
-        expect(failed.queueDepth == 0, "queue full clears queue")
-        expect(player.stopCount == 1, "queue full stops player")
+        let waitingEnqueue = Task {
+            await host.enqueue(
+                pcm16Bytes: Data([4, 0]),
+                sequence: 4,
+                generation: generation
+            )
+        }
+        await waitUntil {
+            await host.currentSnapshot().pressureWaitCount == 1
+        }
+        let pressured = await host.currentSnapshot()
+        expect(pressured.state == .playing,
+               "queue pressure keeps playback active")
+        expect(pressured.lastError == nil,
+               "queue pressure is not a fatal error")
+        expect(player.stopCount == 0,
+               "queue pressure does not stop player")
+
+        player.completeScheduledChunk()
+        let resumed = await waitingEnqueue.value
+        expect(resumed.enqueuedChunkCount == 4,
+               "producer resumes after scheduled capacity frees")
+        _ = await host.finishProviderResponse()
+        for expectedPlayedCount in 2 ... 4 {
+            player.completeScheduledChunk()
+            await waitUntil {
+                await host.currentSnapshot().playedChunkCount
+                    == expectedPlayedCount
+            }
+        }
+        let completed = await host.currentSnapshot()
+        expect(completed.state == .completed,
+               "pressured response completes normally")
+        expect(player.payloads == [
+            Data([1, 0]), Data([2, 0]), Data([3, 0]), Data([4, 0])
+        ], "pressure preserves PCM ordering")
     }
 
     private static func testConsumerTimeoutStopsAndClears() async {
@@ -297,7 +335,7 @@ private struct MacSpeechAudioOutputHostTests {
         )
         _ = await host.finishProviderResponse()
         let stopped = await host.stop()
-        player.completeScheduledChunk()
+        player.completeStoppedChunk()
         try? await Task.sleep(nanoseconds: 5_000_000)
         let afterLateCompletion = await host.currentSnapshot()
         expect(afterLateCompletion.playedChunkCount == 0, "late completion rejected")

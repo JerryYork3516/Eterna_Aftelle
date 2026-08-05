@@ -15,6 +15,7 @@ nonisolated enum MacSpeechAudioOutputEventKind: String, Sendable {
     case prepared
     case firstChunkQueued
     case playbackStarted
+    case bufferPressure
     case bufferLow
     case bufferUnderrun
     case playbackCompleted
@@ -39,6 +40,7 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
     let localFormat: String
     let queueCapacity: Int
     let queueDepth: Int
+    let scheduledChunkCount: Int
     let enqueuedChunkCount: Int
     let enqueuedByteCount: Int
     let playedChunkCount: Int
@@ -46,6 +48,7 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
     let playbackStartedCount: Int
     let playbackCompletedCount: Int
     let underrunCount: Int
+    let pressureWaitCount: Int
     let rejectedCallbackCount: Int
     let lastError: String?
     let recentEvents: [MacSpeechAudioOutputEvent]
@@ -58,6 +61,7 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
         localFormat: "current default output / not prepared",
         queueCapacity: MacSpeechPCMPlaybackConfiguration.standard.capacity,
         queueDepth: 0,
+        scheduledChunkCount: 0,
         enqueuedChunkCount: 0,
         enqueuedByteCount: 0,
         playedChunkCount: 0,
@@ -65,6 +69,7 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
         playbackStartedCount: 0,
         playbackCompletedCount: 0,
         underrunCount: 0,
+        pressureWaitCount: 0,
         rejectedCallbackCount: 0,
         lastError: nil,
         recentEvents: []
@@ -82,7 +87,8 @@ actor MacSpeechAudioOutputHost {
     private var outputDevice = MacSpeechAudioDevice.unavailable
     private var localFormat = "current default output / not prepared"
     private var queue: MacSpeechPCMPlaybackBuffer
-    private var inFlightSequence: UInt64?
+    private var inFlightByteCounts: [UInt64: Int] = [:]
+    private var waitingEnqueueContinuations: [CheckedContinuation<Void, Never>] = []
     private var timeoutTask: Task<Void, Never>?
     private var enqueuedChunkCount = 0
     private var enqueuedByteCount = 0
@@ -91,6 +97,7 @@ actor MacSpeechAudioOutputHost {
     private var playbackStartedCount = 0
     private var playbackCompletedCount = 0
     private var underrunCount = 0
+    private var pressureWaitCount = 0
     private var rejectedCallbackCount = 0
     private var lastError: MacSpeechAudioOutputHostError?
     private var recentEvents: [MacSpeechAudioOutputEvent] = []
@@ -136,7 +143,8 @@ actor MacSpeechAudioOutputHost {
             let preparedFormat = try player.prepare()
             generation &+= 1
             queue.reset(generation: generation)
-            inFlightSequence = nil
+            inFlightByteCounts.removeAll(keepingCapacity: true)
+            resumeWaitingEnqueues()
             providerResponseFinished = false
             timeoutTask?.cancel()
             timeoutTask = nil
@@ -157,7 +165,7 @@ actor MacSpeechAudioOutputHost {
         pcm16Bytes: Data,
         sequence: UInt64,
         generation expectedGeneration: UInt64
-    ) -> MacSpeechAudioOutputHostSnapshot {
+    ) async -> MacSpeechAudioOutputHostSnapshot {
         guard expectedGeneration == generation else {
             lastError = .staleGeneration
             return snapshot()
@@ -168,8 +176,27 @@ actor MacSpeechAudioOutputHost {
             lastError = .invalidState
             return snapshot()
         }
+        while queue.count >= configuration.capacity {
+            guard state == .playing || state == .draining else {
+                lastError = .queueFull
+                return snapshot()
+            }
+            pressureWaitCount += 1
+            appendEvent(.bufferPressure, sequence: sequence)
+            await withCheckedContinuation { continuation in
+                waitingEnqueueContinuations.append(continuation)
+            }
+            guard expectedGeneration == generation else {
+                lastError = .staleGeneration
+                return snapshot()
+            }
+            guard state == .playing || state == .draining else {
+                lastError = .invalidState
+                return snapshot()
+            }
+        }
         do {
-            let wasEmpty = queue.isEmpty && inFlightSequence == nil
+            let wasEmpty = queue.isEmpty && inFlightByteCounts.isEmpty
             try queue.enqueue(
                 MacSpeechPCMPlaybackChunk(
                     generation: expectedGeneration,
@@ -183,8 +210,8 @@ actor MacSpeechAudioOutputHost {
             if wasEmpty {
                 appendEvent(.firstChunkQueued, sequence: sequence)
             }
-            if state == .playing, inFlightSequence == nil {
-                scheduleNext()
+            if state == .playing || state == .draining {
+                scheduleAvailableChunks()
             }
             return snapshot()
         } catch let error as MacSpeechAudioOutputHostError {
@@ -214,7 +241,7 @@ actor MacSpeechAudioOutputHost {
         do {
             state = .playing
             lastError = nil
-            scheduleNext()
+            scheduleAvailableChunks()
             guard state != .failed else { return snapshot() }
             try player.start()
             playbackStartedCount += 1
@@ -237,7 +264,7 @@ actor MacSpeechAudioOutputHost {
         if state == .prepared, !queue.isEmpty {
             return start()
         }
-        if inFlightSequence == nil, queue.isEmpty {
+        if inFlightByteCounts.isEmpty, queue.isEmpty {
             completePlaybackIfNeeded()
         } else if queue.isEmpty {
             state = .draining
@@ -280,58 +307,54 @@ actor MacSpeechAudioOutputHost {
         snapshot()
     }
 
-    private func scheduleNext() {
-        guard state == .playing || state == .draining,
-              inFlightSequence == nil
-        else { return }
-        guard let chunk = queue.dequeue() else {
-            if providerResponseFinished {
-                completePlaybackIfNeeded()
-            } else {
-                state = .playing
+    private func scheduleAvailableChunks() {
+        guard state == .playing || state == .draining else { return }
+        while inFlightByteCounts.count < configuration.scheduleAheadCount,
+              let chunk = queue.dequeue() {
+            resumeOneWaitingEnqueue()
+            inFlightByteCounts[chunk.sequence] = chunk.pcm16Bytes.count
+            if queue.count <= configuration.lowWatermark {
+                appendEvent(.bufferLow, sequence: chunk.sequence)
             }
-            return
+            let scheduledGeneration = generation
+            let scheduledSequence = chunk.sequence
+            do {
+                try player.schedule(pcm16Bytes: chunk.pcm16Bytes) {
+                    [weak self] result in
+                    Task {
+                        await self?.handlePlaybackCompletion(
+                            result,
+                            generation: scheduledGeneration,
+                            sequence: scheduledSequence
+                        )
+                    }
+                }
+            } catch let error as MacSpeechAudioOutputHostError {
+                _ = fail(error)
+                return
+            } catch {
+                _ = fail(.playbackFailed)
+                return
+            }
         }
-        inFlightSequence = chunk.sequence
         state = providerResponseFinished && queue.isEmpty
             ? .draining : .playing
-        if queue.count <= configuration.lowWatermark {
-            appendEvent(.bufferLow, sequence: chunk.sequence)
-        }
-        let scheduledGeneration = generation
-        let scheduledSequence = chunk.sequence
-        do {
-            try player.schedule(pcm16Bytes: chunk.pcm16Bytes) {
-                [weak self] result in
-                Task {
-                    await self?.handlePlaybackCompletion(
-                        result,
-                        generation: scheduledGeneration,
-                        sequence: scheduledSequence
-                    )
-                }
-            }
-            timeoutTask?.cancel()
-            timeoutTask = Task { [weak self] in
-                try? await Task.sleep(
-                    nanoseconds: self?.configuration
-                        .consumerTimeoutNanoseconds ?? 0
-                )
-                guard !Task.isCancelled else { return }
-                await self?.handleConsumerTimeout(
-                    generation: scheduledGeneration,
-                    sequence: scheduledSequence
-                )
-            }
-        } catch let error as MacSpeechAudioOutputHostError {
-            _ = fail(error)
-        } catch {
-            _ = fail(.playbackFailed)
+        if providerResponseFinished,
+           queue.isEmpty,
+           inFlightByteCounts.isEmpty {
+            completePlaybackIfNeeded()
+        } else {
+            restartConsumerWatchdog()
         }
     }
 
     private func completePlaybackIfNeeded() {
         guard state != .completed else { return }
+        guard providerResponseFinished,
+              queue.isEmpty,
+              inFlightByteCounts.isEmpty else { return }
+        timeoutTask?.cancel()
+        timeoutTask = nil
         state = .completed
         appendEvent(.playbackCompleted)
     }
@@ -342,7 +365,7 @@ actor MacSpeechAudioOutputHost {
         sequence: UInt64
     ) {
         guard completedGeneration == generation,
-              inFlightSequence == sequence,
+              inFlightByteCounts.removeValue(forKey: sequence) != nil,
               state == .playing || state == .draining
         else {
             rejectedCallbackCount += 1
@@ -350,29 +373,55 @@ actor MacSpeechAudioOutputHost {
         }
         timeoutTask?.cancel()
         timeoutTask = nil
-        inFlightSequence = nil
         switch result {
         case .success(let byteCount):
             playedChunkCount += 1
             playedByteCount += byteCount
-            scheduleNext()
+            scheduleAvailableChunks()
         case .failure(let error):
             _ = fail(error)
         }
     }
 
     private func handleConsumerTimeout(
-        generation timedOutGeneration: UInt64,
-        sequence: UInt64
+        generation timedOutGeneration: UInt64
     ) {
         guard timedOutGeneration == generation,
-              inFlightSequence == sequence,
+              !inFlightByteCounts.isEmpty,
               state == .playing || state == .draining
         else {
             rejectedCallbackCount += 1
             return
         }
         _ = fail(.consumerTimedOut)
+    }
+
+    private func restartConsumerWatchdog() {
+        timeoutTask?.cancel()
+        guard !inFlightByteCounts.isEmpty else {
+            timeoutTask = nil
+            return
+        }
+        let watchedGeneration = generation
+        let timeoutNanoseconds = configuration.consumerTimeoutNanoseconds
+        timeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+            guard !Task.isCancelled else { return }
+            await self?.handleConsumerTimeout(
+                generation: watchedGeneration
+            )
+        }
+    }
+
+    private func resumeOneWaitingEnqueue() {
+        guard !waitingEnqueueContinuations.isEmpty else { return }
+        waitingEnqueueContinuations.removeFirst().resume()
+    }
+
+    private func resumeWaitingEnqueues() {
+        let continuations = waitingEnqueueContinuations
+        waitingEnqueueContinuations.removeAll(keepingCapacity: true)
+        continuations.forEach { $0.resume() }
     }
 
     @discardableResult
@@ -382,8 +431,9 @@ actor MacSpeechAudioOutputHost {
         timeoutTask?.cancel()
         timeoutTask = nil
         player.stop()
-        inFlightSequence = nil
+        inFlightByteCounts.removeAll(keepingCapacity: true)
         queue.reset(generation: generation)
+        resumeWaitingEnqueues()
         providerResponseFinished = false
         state = .failed
         lastError = error
@@ -396,8 +446,9 @@ actor MacSpeechAudioOutputHost {
         timeoutTask = nil
         player.stop()
         generation &+= 1
-        inFlightSequence = nil
+        inFlightByteCounts.removeAll(keepingCapacity: true)
         queue.reset(generation: generation)
+        resumeWaitingEnqueues()
         providerResponseFinished = false
     }
 
@@ -426,8 +477,9 @@ actor MacSpeechAudioOutputHost {
         timeoutTask = nil
         player.stop()
         player.close()
-        inFlightSequence = nil
+        inFlightByteCounts.removeAll(keepingCapacity: true)
         queue.reset(generation: generation)
+        resumeWaitingEnqueues()
         providerResponseFinished = false
         localFormat = "current default output / not prepared"
         state = .failed
@@ -475,6 +527,7 @@ actor MacSpeechAudioOutputHost {
             localFormat: localFormat,
             queueCapacity: configuration.capacity,
             queueDepth: queue.count,
+            scheduledChunkCount: inFlightByteCounts.count,
             enqueuedChunkCount: enqueuedChunkCount,
             enqueuedByteCount: enqueuedByteCount,
             playedChunkCount: playedChunkCount,
@@ -482,6 +535,7 @@ actor MacSpeechAudioOutputHost {
             playbackStartedCount: playbackStartedCount,
             playbackCompletedCount: playbackCompletedCount,
             underrunCount: underrunCount,
+            pressureWaitCount: pressureWaitCount,
             rejectedCallbackCount: rejectedCallbackCount,
             lastError: lastError?.rawValue,
             recentEvents: recentEvents

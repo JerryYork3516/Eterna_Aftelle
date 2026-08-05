@@ -1,13 +1,19 @@
 import Foundation
 
+private struct FakeMacSpeechPendingPlayback: Sendable {
+    let completion: @Sendable (
+        Result<Int, MacSpeechAudioOutputHostError>
+    ) -> Void
+    let byteCount: Int
+}
+
 final class FakeMacSpeechAudioOutputPlayer:
     MacSpeechAudioOutputPlaying, @unchecked Sendable
 {
     private let lock = NSLock()
     private let preparedFormat: MacSpeechLocalPlaybackFormat
-    private var pendingCompletions: [(@Sendable (
-        Result<Int, MacSpeechAudioOutputHostError>
-    ) -> Void)] = []
+    private var pendingPlaybacks: [FakeMacSpeechPendingPlayback] = []
+    private var stoppedPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var scheduledPayloads: [Data] = []
     private var prepareCalls = 0
     private var startCalls = 0
@@ -46,7 +52,10 @@ final class FakeMacSpeechAudioOutputPlayer:
         try lock.withLock {
             if let scheduleError { throw scheduleError }
             scheduledPayloads.append(pcm16Bytes)
-            pendingCompletions.append(completion)
+            pendingPlaybacks.append(FakeMacSpeechPendingPlayback(
+                completion: completion,
+                byteCount: pcm16Bytes.count
+            ))
         }
     }
 
@@ -60,6 +69,8 @@ final class FakeMacSpeechAudioOutputPlayer:
     func stop() {
         lock.withLock {
             stopCalls += 1
+            stoppedPlaybacks.append(contentsOf: pendingPlaybacks)
+            pendingPlaybacks.removeAll(keepingCapacity: true)
         }
     }
 
@@ -72,15 +83,23 @@ final class FakeMacSpeechAudioOutputPlayer:
     func completeScheduledChunk(
         result: Result<Int, MacSpeechAudioOutputHostError>? = nil
     ) {
-        let target = lock.withLock { () -> (
-            (@Sendable (Result<Int, MacSpeechAudioOutputHostError>) -> Void)?,
-            Int
-        ) in
-            let completion = pendingCompletions.isEmpty
-                ? nil : pendingCompletions.removeFirst()
-            return (completion, scheduledPayloads.first?.count ?? 0)
+        let target = lock.withLock {
+            pendingPlaybacks.isEmpty
+                ? nil : pendingPlaybacks.removeFirst()
         }
-        target.0?(result ?? .success(target.1))
+        guard let target else { return }
+        target.completion(result ?? .success(target.byteCount))
+    }
+
+    func completeStoppedChunk(
+        result: Result<Int, MacSpeechAudioOutputHostError>? = nil
+    ) {
+        let target = lock.withLock {
+            stoppedPlaybacks.isEmpty
+                ? nil : stoppedPlaybacks.removeFirst()
+        }
+        guard let target else { return }
+        target.completion(result ?? .success(target.byteCount))
     }
 
     var prepareCount: Int { lock.withLock { prepareCalls } }
@@ -88,6 +107,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     var stopCount: Int { lock.withLock { stopCalls } }
     var closeCount: Int { lock.withLock { closeCalls } }
     var scheduledCount: Int { lock.withLock { scheduledPayloads.count } }
+    var pendingCount: Int { lock.withLock { pendingPlaybacks.count } }
     var payloads: [Data] { lock.withLock { scheduledPayloads } }
 }
 

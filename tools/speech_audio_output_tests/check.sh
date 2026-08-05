@@ -64,6 +64,14 @@ fi
 echo "speech_audio_output_a2_boundary=PASS"
 
 rg -q 'startupBufferCount: 2' "$buffer"
+rg -q 'scheduleAheadCount: 4' "$buffer"
+rg -q 'scheduleAvailableChunks' "$host"
+rg -q 'withCheckedContinuation' "$host"
+if rg -q 'return fail\(\.queueFull\)' "$host"; then
+  echo "speech_audio_output_pressure=FAIL"
+  exit 1
+fi
 rg -q 'func finishProviderResponse' "$host"
 rg -q 'providerResponseFinished' "$host"
 echo "speech_audio_output_continuous_playback=PASS"
+echo "speech_audio_output_pressure=PASS"
