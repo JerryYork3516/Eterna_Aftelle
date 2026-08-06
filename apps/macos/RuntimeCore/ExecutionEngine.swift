@@ -1,7 +1,7 @@
 import Foundation
 
 public final class ExecutionEngine {
-    private let providerRouter: ProviderRouter
+    private nonisolated let providerRouter: ProviderRouter
     private let traceRecorder: TraceRecorder
     private let visualStateMapper: VisualStateMapper
 
@@ -45,7 +45,7 @@ public final class ExecutionEngine {
         try await providerRouter.updateNativeSpeechContext(projection)
     }
 
-    func sendNativeSpeechAudio(
+    nonisolated func sendNativeSpeechAudio(
         _ payload: NativeSpeechAudioPayload
     ) async throws {
         try await providerRouter.sendNativeSpeechAudio(payload)

@@ -94,7 +94,7 @@ private final class FakeBridgeDeviceMonitor:
     func stop() {}
 }
 
-private final class ControlledWriteSink: @unchecked Sendable {
+private nonisolated final class ControlledWriteSink: @unchecked Sendable {
     typealias Completion = @Sendable (NativeSpeechError?) -> Void
 
     private let lock = NSLock()
@@ -151,6 +151,24 @@ private final class ControlledWriteSink: @unchecked Sendable {
     }
 }
 
+private nonisolated final class InputSendProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didStart = false
+    private var forwardedCount = 0
+
+    func markStarted() {
+        lock.withLock { didStart = true }
+    }
+
+    func markForwarded() {
+        lock.withLock { forwardedCount += 1 }
+    }
+
+    var snapshot: (didStart: Bool, forwardedCount: Int) {
+        lock.withLock { (didStart, forwardedCount) }
+    }
+}
+
 @MainActor
 @main
 private struct NativeSpeechInputBridgeTests {
@@ -165,6 +183,7 @@ private struct NativeSpeechInputBridgeTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         try await testControllerEndToEndAndBoundedOrdering()
+        try await testInputSendContinuesWhileMainActorIsBusy()
         try await testRuntimeGenerationSessionAndSequenceGates()
         try await testSendFailureStopsSinglePump()
         try await testBoundedWriteWindowSustainsVirtualFiveMinutes()
@@ -491,6 +510,66 @@ private struct NativeSpeechInputBridgeTests {
         expect(eventTypes.contains("input_audio_buffer.append"), "Adapter emits audio append events")
         expect(!eventTypes.contains("input_audio_buffer.commit"), "bridge sends no audio commit")
         expect(!eventTypes.contains("response.create"), "bridge sends no response.create")
+    }
+
+    private static func testInputSendContinuesWhileMainActorIsBusy() async throws {
+        let transport = handshakeTransport()
+        let stack = makeRuntimeStack(transport: transport)
+        _ = stack.orchestration.loadResident(fixtureData: fixtureData)
+        let binding = try success(
+            await stack.orchestration.startNativeSpeechInput(
+                profile: profile(),
+                captureGeneration: 42
+            )
+        )
+        let sendFrame: MacSpeechNativeInputBridge.SendFrame = {
+            [orchestration = stack.orchestration] payload, context in
+            await orchestration.sendNativeSpeechInput(
+                payload,
+                context: context
+            )
+        }
+        let frames = (UInt64(1) ... UInt64(25)).map { sequence in
+            (
+                payload(
+                    binding: binding,
+                    sequence: sequence,
+                    marker: UInt8(sequence)
+                ),
+                context(binding: binding, generation: 42)
+            )
+        }
+        let progress = InputSendProgress()
+        let producer = Task.detached {
+            progress.markStarted()
+            for frame in frames {
+                let result = await sendFrame(frame.0, frame.1)
+                if result == .success(.forwarded) {
+                    progress.markForwarded()
+                }
+            }
+        }
+
+        while !progress.snapshot.didStart {
+            _ = DispatchTime.now().uptimeNanoseconds
+        }
+        let blockedUntil = DispatchTime.now().uptimeNanoseconds
+            + 250_000_000
+        while DispatchTime.now().uptimeNanoseconds < blockedUntil {
+            _ = progress.snapshot.didStart
+        }
+
+        expect(
+            progress.snapshot.forwardedCount == 25,
+            "twenty-millisecond input hot path does not wait for MainActor"
+        )
+        await producer.value
+        _ = try success(
+            await stack.orchestration.stopNativeSpeechInput(
+                binding: binding,
+                reason: .stopped
+            )
+        )
     }
 
     private static func testRuntimeGenerationSessionAndSequenceGates() async throws {

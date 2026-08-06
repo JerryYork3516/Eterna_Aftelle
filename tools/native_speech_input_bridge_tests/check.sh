@@ -28,6 +28,7 @@ host_sources=(
 swiftc \
   -D DEBUG \
   -parse-as-library \
+  -default-isolation MainActor \
   -warn-concurrency \
   -strict-concurrency=complete \
   -framework AVFoundation \
@@ -41,7 +42,7 @@ swiftc \
   "$repo_root/tools/native_speech_input_bridge_tests/NativeSpeechInputBridgeTests.swift" \
   -o "$build_dir/native_speech_input_bridge_tests"
 
-fixture="$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident"
+fixture="${1:-$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident}"
 test -f "$fixture"
 runtime_home="$build_dir/runtime-home"
 mkdir -p "$runtime_home"
@@ -79,8 +80,11 @@ rg -q 'orchestrationKernel.startNativeSpeechInput' "$controller"
 rg -q 'orchestrationKernel.sendNativeSpeechInput' "$controller"
 rg -q 'runtimeCore.startNativeSpeechInput' "$orchestration"
 rg -q 'runtimeCore.sendNativeSpeechInput' "$orchestration"
+rg -q 'nonisolated func sendNativeSpeechInput' "$runtime"
 rg -q 'executionEngine.sendNativeSpeechAudio' "$runtime"
+rg -q 'nonisolated func sendNativeSpeechAudio' "$engine"
 rg -q 'providerRouter.sendNativeSpeechAudio' "$engine"
+rg -q 'nonisolated func sendNativeSpeechAudio' "$router"
 rg -q 'nativeSpeechProvider.send' "$router"
 rg -q 'codec.audioAppend' "$adapter"
 echo "native_speech_input_bridge_execution_chain=PASS"

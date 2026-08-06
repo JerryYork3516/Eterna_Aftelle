@@ -861,7 +861,7 @@ final class OpenAICompatibleAdapter {
 
 public final class ProviderRouter {
     private let adapter: OpenAICompatibleAdapter
-    private let nativeSpeechProvider: NativeSpeechProvider?
+    private nonisolated let nativeSpeechProvider: NativeSpeechProvider?
     private var textProfile: ProviderProfile?
     private var nativeSpeechProfile: NativeSpeechProviderProfile?
 
@@ -965,7 +965,7 @@ public final class ProviderRouter {
         try await contextProvider.updateContext(projection)
     }
 
-    func sendNativeSpeechAudio(
+    nonisolated func sendNativeSpeechAudio(
         _ payload: NativeSpeechAudioPayload
     ) async throws {
         guard let nativeSpeechProvider else {

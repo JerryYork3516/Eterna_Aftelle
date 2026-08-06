@@ -1147,7 +1147,7 @@ public final class RuntimeCore {
     static let narrativeMemoryRetrievalLimit = 3
 
     private let drLoader: DRLoader
-    private let executionEngine: ExecutionEngine
+    private nonisolated let executionEngine: ExecutionEngine
     private let providerRouter: ProviderRouter
     private let hostEnv: HostEnv
     private let sessionStore: SessionStore
@@ -1177,7 +1177,7 @@ public final class RuntimeCore {
     private var activeExpressionRequestID: UUID?
     private let nativeSpeechInteractionGate =
         RuntimeNativeSpeechInteractionGate()
-    private let nativeSpeechInputGate = NativeSpeechInputGate()
+    private nonisolated let nativeSpeechInputGate = NativeSpeechInputGate()
     private let realtimeSpeechStateMachine = RealtimeSpeechStateMachine()
     private let realtimeSpeechSubtitleStateMachine =
         RealtimeSpeechSubtitleStateMachine()
@@ -3150,7 +3150,7 @@ public final class RuntimeCore {
         return binding
     }
 
-    func sendNativeSpeechInput(
+    nonisolated func sendNativeSpeechInput(
         _ payload: NativeSpeechAudioPayload,
         context: NativeSpeechInputFrameContext
     ) async throws -> NativeSpeechInputFrameDisposition {
