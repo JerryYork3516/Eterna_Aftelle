@@ -126,10 +126,38 @@ nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
     }
 }
 
+nonisolated enum MacSpeechPCMOutputEnvelope {
+    static let resumeFadeInSampleCount = 120
+
+    static func applyingResumeFadeIn(to data: Data) -> Data {
+        let sampleCount = min(
+            resumeFadeInSampleCount,
+            data.count / MacSpeechPCMOutputFormat.bytesPerSample
+        )
+        guard sampleCount > 0 else { return data }
+        var bytes = [UInt8](data)
+        for sampleIndex in 0 ..< sampleCount {
+            let byteIndex = sampleIndex * 2
+            let raw = UInt16(bytes[byteIndex])
+                | (UInt16(bytes[byteIndex + 1]) << 8)
+            let sample = Int16(bitPattern: raw)
+            let scaled = Int16(
+                Double(sample) * Double(sampleIndex + 1)
+                    / Double(sampleCount)
+            )
+            let scaledRaw = UInt16(bitPattern: scaled)
+            bytes[byteIndex] = UInt8(truncatingIfNeeded: scaledRaw)
+            bytes[byteIndex + 1] = UInt8(truncatingIfNeeded: scaledRaw >> 8)
+        }
+        return Data(bytes)
+    }
+}
+
 nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
     func prepare() throws -> MacSpeechLocalPlaybackFormat
     func schedule(
         pcm16Bytes: Data,
+        applyFadeIn: Bool,
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
@@ -183,17 +211,21 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
 
     func schedule(
         pcm16Bytes: Data,
+        applyFadeIn: Bool,
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
     ) throws {
+        let playbackBytes = applyFadeIn
+            ? MacSpeechPCMOutputEnvelope.applyingResumeFadeIn(to: pcm16Bytes)
+            : pcm16Bytes
         let prepared = try lock.withLock {
             guard let playerNode,
                   let converter
             else {
                 throw MacSpeechAudioOutputHostError.invalidState
             }
-            let buffer = try converter.convert(pcm16Bytes: pcm16Bytes)
+            let buffer = try converter.convert(pcm16Bytes: playbackBytes)
             return (playerNode, buffer)
         }
         prepared.0.scheduleBuffer(

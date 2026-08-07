@@ -1254,7 +1254,15 @@ private struct NativeSpeechDuplexTests {
         let outputMonitor = FakeMacSpeechOutputDeviceMonitor()
         let outputHost = MacSpeechAudioOutputHost(
             player: outputPlayer,
-            deviceMonitor: outputMonitor
+            deviceMonitor: outputMonitor,
+            configuration: MacSpeechPCMPlaybackConfiguration(
+                capacity: 8,
+                lowWatermark: 1,
+                consumerTimeoutNanoseconds: 2_000_000_000,
+                startupBufferCount: 2,
+                startupBufferDurationNanoseconds: 0,
+                scheduleAheadCount: 4
+            )
         )
         return (
             AppController(

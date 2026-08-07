@@ -64,7 +64,9 @@ fi
 echo "speech_audio_output_a2_boundary=PASS"
 
 rg -q 'startupBufferCount: 2' "$buffer"
+rg -q 'startupBufferDurationNanoseconds: 500_000_000' "$buffer"
 rg -q 'scheduleAheadCount: 4' "$buffer"
+rg -q 'applyingResumeFadeIn' "$player"
 rg -q 'scheduleAvailableChunks' "$host"
 rg -q 'withCheckedContinuation' "$host"
 if rg -q 'return fail\(\.queueFull\)' "$host"; then

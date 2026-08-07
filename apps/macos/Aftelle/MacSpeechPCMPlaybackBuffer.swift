@@ -13,6 +13,7 @@ nonisolated struct MacSpeechPCMPlaybackConfiguration: Sendable, Equatable {
     let lowWatermark: Int
     let consumerTimeoutNanoseconds: UInt64
     let startupBufferCount: Int
+    let startupBufferDurationNanoseconds: UInt64
     let scheduleAheadCount: Int
 
     init(
@@ -20,6 +21,7 @@ nonisolated struct MacSpeechPCMPlaybackConfiguration: Sendable, Equatable {
         lowWatermark: Int,
         consumerTimeoutNanoseconds: UInt64,
         startupBufferCount: Int = 2,
+        startupBufferDurationNanoseconds: UInt64 = 0,
         scheduleAheadCount: Int = 4
     ) {
         precondition(capacity > 0)
@@ -29,6 +31,8 @@ nonisolated struct MacSpeechPCMPlaybackConfiguration: Sendable, Equatable {
         self.lowWatermark = lowWatermark
         self.consumerTimeoutNanoseconds = consumerTimeoutNanoseconds
         self.startupBufferCount = startupBufferCount
+        self.startupBufferDurationNanoseconds =
+            startupBufferDurationNanoseconds
         self.scheduleAheadCount = scheduleAheadCount
     }
 
@@ -37,6 +41,7 @@ nonisolated struct MacSpeechPCMPlaybackConfiguration: Sendable, Equatable {
         lowWatermark: 1,
         consumerTimeoutNanoseconds: 2_000_000_000,
         startupBufferCount: 2,
+        startupBufferDurationNanoseconds: 500_000_000,
         scheduleAheadCount: 4
     )
 }
@@ -76,6 +81,15 @@ nonisolated struct MacSpeechPCMPlaybackBuffer: Sendable {
 
     var count: Int { chunks.count }
     var isEmpty: Bool { chunks.isEmpty }
+    var bufferedDurationNanoseconds: UInt64 {
+        let bytesPerSecond = UInt64(MacSpeechPCMOutputFormat.sampleRate)
+            * UInt64(MacSpeechPCMOutputFormat.channelCount)
+            * UInt64(MacSpeechPCMOutputFormat.bytesPerSample)
+        let byteCount = chunks.reduce(UInt64(0)) {
+            $0 + UInt64($1.pcm16Bytes.count)
+        }
+        return byteCount * 1_000_000_000 / bytesPerSecond
+    }
 
     mutating func enqueue(
         _ chunk: MacSpeechPCMPlaybackChunk

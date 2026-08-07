@@ -1671,6 +1671,9 @@ final class AppController: ObservableObject {
     ) async {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let stateBefore = realtimeSpeechStateSnapshot.state.rawValue
+        if case .outputAudio(let payload) = event.kind {
+            await enqueueNativeSpeechOutput(payload)
+        }
         await speechOutputDebugSink.consume(event)
         if case .inputSpeechStarted = event.kind {
             realtimeSpeechPlaybackSubtitleSynchronizer.reset()
@@ -1719,8 +1722,6 @@ final class AppController: ObservableObject {
             durationMilliseconds: duration
         )
         switch event.kind {
-        case .outputAudio(let payload):
-            await enqueueNativeSpeechOutput(payload)
         case .inputSpeechStarted:
             let isInterrupt = realtimeSpeechStateSnapshot
                 .lastTransitionReason == .interrupted
@@ -1819,6 +1820,8 @@ final class AppController: ObservableObject {
                 )
                 syncRealtimeSpeechPresentation()
             }
+        case .outputAudio:
+            break
         default:
             break
         }

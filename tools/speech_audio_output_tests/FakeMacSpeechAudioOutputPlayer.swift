@@ -15,6 +15,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var pendingPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var stoppedPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var scheduledPayloads: [Data] = []
+    private var scheduledFadeIns: [Bool] = []
     private var prepareCalls = 0
     private var startCalls = 0
     private var stopCalls = 0
@@ -45,6 +46,7 @@ final class FakeMacSpeechAudioOutputPlayer:
 
     func schedule(
         pcm16Bytes: Data,
+        applyFadeIn: Bool,
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
@@ -52,6 +54,7 @@ final class FakeMacSpeechAudioOutputPlayer:
         try lock.withLock {
             if let scheduleError { throw scheduleError }
             scheduledPayloads.append(pcm16Bytes)
+            scheduledFadeIns.append(applyFadeIn)
             pendingPlaybacks.append(FakeMacSpeechPendingPlayback(
                 completion: completion,
                 byteCount: pcm16Bytes.count
@@ -109,6 +112,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     var scheduledCount: Int { lock.withLock { scheduledPayloads.count } }
     var pendingCount: Int { lock.withLock { pendingPlaybacks.count } }
     var payloads: [Data] { lock.withLock { scheduledPayloads } }
+    var fadeIns: [Bool] { lock.withLock { scheduledFadeIns } }
 }
 
 final class FakeMacSpeechOutputDeviceMonitor:

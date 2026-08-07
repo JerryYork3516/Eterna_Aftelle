@@ -9,8 +9,10 @@ private struct MacSpeechAudioOutputHostTests {
     static func main() async {
         testFrozenProviderFormat()
         testPCMConversionToLocalFormat()
+        testResumeFadeInEnvelope()
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
+        await testDurationBasedStartupWatermark()
         await testOrderedPlaybackAndCompletion()
         await testTemporaryQueueGapReportsStallAndResume()
         await testShortResponseFlushesPrebuffer()
@@ -35,6 +37,37 @@ private struct MacSpeechAudioOutputHostTests {
             MacSpeechPCMOutputFormat.description.contains("PCM16 LE"),
             "little-endian declaration"
         )
+        expect(
+            MacSpeechPCMPlaybackConfiguration.standard
+                .startupBufferDurationNanoseconds == 500_000_000,
+            "standard startup buffer is 500 milliseconds"
+        )
+    }
+
+    private static func testResumeFadeInEnvelope() {
+        let sample = Int16(16_384)
+        let raw = UInt16(bitPattern: sample)
+        var bytes: [UInt8] = []
+        for _ in 0 ..< 240 {
+            bytes.append(UInt8(truncatingIfNeeded: raw))
+            bytes.append(UInt8(truncatingIfNeeded: raw >> 8))
+        }
+        let faded = [UInt8](
+            MacSpeechPCMOutputEnvelope.applyingResumeFadeIn(to: Data(bytes))
+        )
+        func decodedSample(_ index: Int) -> Int16 {
+            let byteIndex = index * 2
+            return Int16(bitPattern:
+                UInt16(faded[byteIndex])
+                    | (UInt16(faded[byteIndex + 1]) << 8)
+            )
+        }
+        expect(abs(Int(decodedSample(0))) < 200,
+               "resume fade begins near silence")
+        expect(decodedSample(119) == sample,
+               "resume fade reaches original level")
+        expect(decodedSample(120) == sample,
+               "resume fade preserves later samples")
     }
 
     private static func testPCMConversionToLocalFormat() {
@@ -110,6 +143,36 @@ private struct MacSpeechAudioOutputHostTests {
         expect(repeated.generation == prepared.generation, "prepare idempotent")
         expect(player.prepareCount == 1, "no duplicate prepare")
         expect(repeated.recentEvents.map(\.kind) == [.prepared], "prepared event")
+    }
+
+    private static func testDurationBasedStartupWatermark() async {
+        let (host, player) = makeHost(configuration: .standard)
+        let generation = await host.prepare().generation
+        for sequence in UInt64(1) ... UInt64(2) {
+            _ = await host.enqueue(
+                pcm16Bytes: Data(repeating: 0, count: 8_192),
+                sequence: sequence,
+                generation: generation
+            )
+        }
+        let waiting = await host.start()
+        expect(waiting.state == .prepared,
+               "341 milliseconds does not satisfy startup watermark")
+        expect(waiting.bufferedDurationMilliseconds == 341,
+               "buffer reports PCM duration")
+        _ = await host.enqueue(
+            pcm16Bytes: Data(repeating: 0, count: 8_192),
+            sequence: 3,
+            generation: generation
+        )
+        let started = await host.start()
+        expect(started.state == .playing,
+               "512 milliseconds starts playback")
+        expect(player.scheduledCount == 3,
+               "duration watermark preserves ordered scheduling")
+        _ = await host.finishProviderResponse()
+        for _ in 0 ..< 3 { player.completeScheduledChunk() }
+        await waitUntil { await host.currentSnapshot().state == .completed }
     }
 
     private static func testOrderedPlaybackAndCompletion() async {
@@ -190,6 +253,8 @@ private struct MacSpeechAudioOutputHostTests {
                "resumed playback is observable")
         expect(player.startCount == 1,
                "new audio continues the same player cycle")
+        expect(player.fadeIns == [false, false, true, false],
+               "only the first resumed chunk receives fade-in")
         _ = await host.finishProviderResponse()
         player.completeScheduledChunk()
         player.completeScheduledChunk()
@@ -429,7 +494,15 @@ private struct MacSpeechAudioOutputHostTests {
     }
 
     private static func makeHost(
-        configuration: MacSpeechPCMPlaybackConfiguration = .standard
+        configuration: MacSpeechPCMPlaybackConfiguration =
+            MacSpeechPCMPlaybackConfiguration(
+                capacity: 8,
+                lowWatermark: 1,
+                consumerTimeoutNanoseconds: 2_000_000_000,
+                startupBufferCount: 2,
+                startupBufferDurationNanoseconds: 0,
+                scheduleAheadCount: 4
+            )
     ) -> (MacSpeechAudioOutputHost, FakeMacSpeechAudioOutputPlayer) {
         let player = FakeMacSpeechAudioOutputPlayer()
         return (

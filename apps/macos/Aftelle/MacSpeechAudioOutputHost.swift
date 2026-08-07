@@ -44,6 +44,7 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
     let localFormat: String
     let queueCapacity: Int
     let queueDepth: Int
+    let bufferedDurationMilliseconds: UInt64
     let scheduledChunkCount: Int
     let enqueuedChunkCount: Int
     let enqueuedByteCount: Int
@@ -65,6 +66,7 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
         localFormat: "current default output / not prepared",
         queueCapacity: MacSpeechPCMPlaybackConfiguration.standard.capacity,
         queueDepth: 0,
+        bufferedDurationMilliseconds: 0,
         scheduledChunkCount: 0,
         enqueuedChunkCount: 0,
         enqueuedByteCount: 0,
@@ -111,6 +113,7 @@ actor MacSpeechAudioOutputHost {
     private var eventDeliveryTask: Task<Void, Never>?
     private var isMonitoringDeviceRoute = false
     private var providerResponseFinished = false
+    private var shouldFadeInNextChunk = false
 
     init(
         player: MacSpeechAudioOutputPlaying =
@@ -153,6 +156,7 @@ actor MacSpeechAudioOutputHost {
             inFlightByteCounts.removeAll(keepingCapacity: true)
             resumeWaitingEnqueues()
             providerResponseFinished = false
+            shouldFadeInNextChunk = false
             timeoutTask?.cancel()
             timeoutTask = nil
             localFormat = preparedFormat.description
@@ -222,7 +226,7 @@ actor MacSpeechAudioOutputHost {
             if state == .playing || state == .draining {
                 scheduleAvailableChunks()
             } else if state == .stalled,
-                      queue.count >= configuration.startupBufferCount {
+                      hasStartupBuffer {
                 resumeStalledPlayback()
             }
             return snapshot()
@@ -247,7 +251,7 @@ actor MacSpeechAudioOutputHost {
             return snapshot()
         }
         guard providerResponseFinished
-                || queue.count >= configuration.startupBufferCount else {
+                || hasStartupBuffer else {
             return snapshot()
         }
         do {
@@ -334,8 +338,13 @@ actor MacSpeechAudioOutputHost {
             }
             let scheduledGeneration = generation
             let scheduledSequence = chunk.sequence
+            let applyFadeIn = shouldFadeInNextChunk
+            shouldFadeInNextChunk = false
             do {
-                try player.schedule(pcm16Bytes: chunk.pcm16Bytes) {
+                try player.schedule(
+                    pcm16Bytes: chunk.pcm16Bytes,
+                    applyFadeIn: applyFadeIn
+                ) {
                     [weak self] result in
                     Task {
                         await self?.handlePlaybackCompletion(
@@ -373,6 +382,7 @@ actor MacSpeechAudioOutputHost {
         timeoutTask?.cancel()
         timeoutTask = nil
         state = .stalled
+        shouldFadeInNextChunk = true
         underrunCount += 1
         appendEvent(.playbackStalled)
     }
@@ -381,7 +391,7 @@ actor MacSpeechAudioOutputHost {
         guard state == .stalled,
               !queue.isEmpty,
               providerResponseFinished
-                || queue.count >= configuration.startupBufferCount else {
+                || hasStartupBuffer else {
             return
         }
         state = providerResponseFinished ? .draining : .playing
@@ -461,6 +471,12 @@ actor MacSpeechAudioOutputHost {
         }
     }
 
+    private var hasStartupBuffer: Bool {
+        queue.count >= configuration.startupBufferCount
+            && queue.bufferedDurationNanoseconds
+                >= configuration.startupBufferDurationNanoseconds
+    }
+
     nonisolated static func consumerWatchdogNanoseconds(
         inFlightByteCount: Int,
         safetyMarginNanoseconds: UInt64
@@ -503,6 +519,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
+        shouldFadeInNextChunk = false
         state = .failed
         lastError = error
         appendEvent(.failed, error: error)
@@ -518,6 +535,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
+        shouldFadeInNextChunk = false
     }
 
     private func startDeviceMonitoringIfNeeded() {
@@ -549,6 +567,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
+        shouldFadeInNextChunk = false
         localFormat = "current default output / not prepared"
         state = .failed
         lastError = .outputDeviceChanged
@@ -614,6 +633,8 @@ actor MacSpeechAudioOutputHost {
             localFormat: localFormat,
             queueCapacity: configuration.capacity,
             queueDepth: queue.count,
+            bufferedDurationMilliseconds:
+                queue.bufferedDurationNanoseconds / 1_000_000,
             scheduledChunkCount: inFlightByteCounts.count,
             enqueuedChunkCount: enqueuedChunkCount,
             enqueuedByteCount: enqueuedByteCount,
