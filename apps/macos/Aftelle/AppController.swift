@@ -1671,6 +1671,12 @@ final class AppController: ObservableObject {
     ) async {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let stateBefore = realtimeSpeechStateSnapshot.state.rawValue
+        if case .inputSpeechStarted = event.kind {
+            await commitAcceptedInterruptIfNeeded(
+                event,
+                startedAtNanoseconds: startedAt
+            )
+        }
         if case .outputAudio(let payload) = event.kind {
             await enqueueNativeSpeechOutput(payload)
         }
@@ -1722,68 +1728,6 @@ final class AppController: ObservableObject {
             durationMilliseconds: duration
         )
         switch event.kind {
-        case .inputSpeechStarted:
-            let isInterrupt = realtimeSpeechStateSnapshot
-                .lastTransitionReason == .interrupted
-            let turnNumber = realtimeSpeechStateSnapshot.currentTurnNumber
-            let turnGeneration = realtimeSpeechSubtitleSnapshot
-                .turnGeneration
-            let cleared = await clearInterruptedPlaybackIfNeeded()
-            if isInterrupt {
-                let clearDuration = (
-                    DispatchTime.now().uptimeNanoseconds &- startedAt
-                ) / 1_000_000
-                recordRealtimeSpeechDiagnostic(
-                    source: .playback,
-                    category: "interrupt_local_clear",
-                    interactionShortID: String(
-                        event.interactionID.rawValue.uuidString.prefix(8)
-                    ),
-                    turnNumber: turnNumber,
-                    turnGeneration: turnGeneration,
-                    disposition: cleared ? "cleared" : "already_clear",
-                    durationMilliseconds: clearDuration
-                )
-                recordRealtimeSpeechDiagnostic(
-                    source: .runtime,
-                    category: "provider_cancel_requested",
-                    interactionShortID: String(
-                        event.interactionID.rawValue.uuidString.prefix(8)
-                    ),
-                    turnNumber: turnNumber,
-                    turnGeneration: turnGeneration
-                )
-                let result = await orchestrationKernel
-                    .commitNativeSpeechInterrupt(
-                        interactionID: event.interactionID,
-                        turnNumber: turnNumber,
-                        turnGeneration: turnGeneration
-                    )
-                switch result {
-                case .success(let committed):
-                    recordRealtimeSpeechDiagnostic(
-                        source: .runtime,
-                        category: "provider_cancel_committed",
-                        interactionShortID: String(
-                            event.interactionID.rawValue.uuidString.prefix(8)
-                        ),
-                        turnNumber: turnNumber,
-                        turnGeneration: turnGeneration,
-                        disposition: committed ? "sent" : "duplicate"
-                    )
-                case .failure(let error):
-                    recordRealtimeSpeechDiagnostic(
-                        source: .runtime,
-                        category: "provider_cancel_failed",
-                        interactionShortID: String(
-                            event.interactionID.rawValue.uuidString.prefix(8)
-                        ),
-                        turnNumber: turnNumber,
-                        turnGeneration: turnGeneration,
-                        errorCode: Self.nativeSpeechErrorName(error)
-                    )
-                }
-            }
         case .turnFailed:
             nativeSpeechPlaybackBinding = nil
             speechAudioOutputHostSnapshot =
@@ -1830,6 +1774,70 @@ final class AppController: ObservableObject {
         refreshNativeSpeechPlaybackDebugSnapshot()
     }
 
+    private func commitAcceptedInterruptIfNeeded(
+        _ event: NativeSpeechEvent,
+        startedAtNanoseconds: UInt64
+    ) async {
+        let stateSnapshot = orchestrationKernel.realtimeSpeechStateSnapshot()
+        guard stateSnapshot.lastTransitionReason == .interrupted else {
+            return
+        }
+        let subtitleSnapshot = orchestrationKernel
+            .realtimeSpeechSubtitleSnapshot()
+        let turnNumber = stateSnapshot.currentTurnNumber
+        let turnGeneration = subtitleSnapshot.turnGeneration
+        let cleared = await clearInterruptedPlaybackIfNeeded(
+            stateSnapshot: stateSnapshot
+        )
+        let clearDuration = (
+            DispatchTime.now().uptimeNanoseconds &- startedAtNanoseconds
+        ) / 1_000_000
+        let interactionShortID = String(
+            event.interactionID.rawValue.uuidString.prefix(8)
+        )
+        recordRealtimeSpeechDiagnostic(
+            source: .playback,
+            category: "interrupt_local_clear",
+            interactionShortID: interactionShortID,
+            turnNumber: turnNumber,
+            turnGeneration: turnGeneration,
+            disposition: cleared ? "cleared" : "already_clear",
+            durationMilliseconds: clearDuration
+        )
+        recordRealtimeSpeechDiagnostic(
+            source: .runtime,
+            category: "provider_cancel_requested",
+            interactionShortID: interactionShortID,
+            turnNumber: turnNumber,
+            turnGeneration: turnGeneration
+        )
+        let result = await orchestrationKernel.commitNativeSpeechInterrupt(
+            interactionID: event.interactionID,
+            turnNumber: turnNumber,
+            turnGeneration: turnGeneration
+        )
+        switch result {
+        case .success(let committed):
+            recordRealtimeSpeechDiagnostic(
+                source: .runtime,
+                category: "provider_cancel_committed",
+                interactionShortID: interactionShortID,
+                turnNumber: turnNumber,
+                turnGeneration: turnGeneration,
+                disposition: committed ? "committed" : "duplicate"
+            )
+        case .failure(let error):
+            recordRealtimeSpeechDiagnostic(
+                source: .runtime,
+                category: "provider_cancel_failed",
+                interactionShortID: interactionShortID,
+                turnNumber: turnNumber,
+                turnGeneration: turnGeneration,
+                errorCode: Self.nativeSpeechErrorName(error)
+            )
+        }
+    }
+
     private func enqueueNativeSpeechOutput(
         _ payload: NativeSpeechAudioPayload
     ) async {
@@ -1867,11 +1875,12 @@ final class AppController: ObservableObject {
         await consumePlaybackEvents(in: snapshot)
     }
 
-    private func clearInterruptedPlaybackIfNeeded() async -> Bool {
+    private func clearInterruptedPlaybackIfNeeded(
+        stateSnapshot: RealtimeSpeechStateSnapshot
+    ) async -> Bool {
         guard let binding = nativeSpeechPlaybackBinding,
-              realtimeSpeechStateSnapshot.lastTransitionReason == .interrupted,
-              realtimeSpeechStateSnapshot.currentTurnNumber
-                > binding.turnNumber else {
+              stateSnapshot.lastTransitionReason == .interrupted,
+              stateSnapshot.currentTurnNumber > binding.turnNumber else {
             return false
         }
         playbackInterruptClearCount &+= 1

@@ -21,6 +21,7 @@ private struct StepFunRealtimeAdapterTests {
         try await testHandshakeAudioCancelAndClose()
         try await testCancelRearmsSameConnection()
         try await testCancelAfterCompletedResponseIsSafe()
+        try await testNextResponseWinsCancellationRace()
         try await testCumulativeTranscriptNormalization()
         try await testSubtitleCorrelationGate()
         try await testCancelDropsQueuedSubtitle()
@@ -403,9 +404,23 @@ private struct StepFunRealtimeAdapterTests {
             completedCancelCount == 0,
             "cancel after response completion is a safe wire no-op"
         )
+        let inactiveAcknowledgement = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            inactiveAcknowledgement.kind
+                == .cancelled(reason: "interrupted"),
+            "inactive response still acknowledges Runtime Interrupt"
+        )
 
         await transport.enqueue(.text(#"{"type":"response.created"}"#))
-        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let nextResponse = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            nextResponse.kind == .thinking,
+            "cancel no-op does not suppress the next response"
+        )
         try await adapter.cancel(
             interactionID: request.interaction.id,
             reason: .interrupted
@@ -472,6 +487,69 @@ private struct StepFunRealtimeAdapterTests {
         expect(
             correlatedRateLimit.kind == .cancelled(reason: "interrupted"),
             "cancel-correlated Provider error is one cancellation acknowledgement"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testNextResponseWinsCancellationRace() async throws {
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"old"}}"#
+        ))
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        try await adapter.cancel(
+            interactionID: request.interaction.id,
+            reason: .interrupted
+        )
+
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"new"}}"#
+        ))
+        let cancellationBoundary = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            cancellationBoundary.kind == .cancelled(reason: "interrupted"),
+            "next response closes the pending cancellation boundary first"
+        )
+        let nextResponse = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            nextResponse.kind == .thinking,
+            "next response remains available after cancellation boundary"
+        )
+
+        await transport.enqueue(.text(#"{"type":"response.cancelled"}"#))
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"old","status":"cancelled"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.delta","response_id":"new","delta":"AQI="}"#
+        ))
+        let output = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        guard case .outputAudio = output.kind else {
+            fatalError("FAILED: late cancellation ACK must not hide new audio")
+        }
+        let state = await adapter.connectionState
+        expect(
+            state == .streaming,
+            "late cancellation ACK cannot terminate the new response"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }

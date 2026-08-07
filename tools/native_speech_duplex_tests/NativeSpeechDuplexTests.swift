@@ -101,6 +101,7 @@ private struct NativeSpeechDuplexTests {
         try await testFullDuplexThroughController()
         try await testPlaybackStallThroughController()
         try await testInterruptThroughController()
+        try await testInterruptAfterProviderCompletionThroughController()
         try await testOutputDeviceChangeThroughController()
         try await testStopClearsActivePlaybackThroughController()
         try await testConversionFailureThroughController()
@@ -914,6 +915,97 @@ private struct NativeSpeechDuplexTests {
                 .interactionTerminalOutcome == .stopped,
             "Stop owns one interaction terminal outcome"
         )
+    }
+
+    private static func testInterruptAfterProviderCompletionThroughController()
+        async throws
+    {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "completed-response Interrupt fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"old"}}"#
+        ))
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .speaking
+        }
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"old","status":"completed"}}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                    .completedResponseCount == 1
+                && stack.controller.realtimeSpeechStateSnapshot.state
+                    == .speaking
+        }
+
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.nativeSpeechPlaybackDebugSnapshot
+                .interruptClearCount == 1
+        }
+        let sentAfterLocalInterrupt = try await sentEventTypes(transport)
+        expect(
+            sentAfterLocalInterrupt.filter { $0 == "response.cancel" }
+                .isEmpty,
+            "completed Provider response needs no wire cancel"
+        )
+
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"new"}}"#
+        ))
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","response_id":"new","delta":"BQY="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","response_id":"new","delta":"Bwg="}"#)
+        )
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                    == .speaking
+                && stack.controller.speechOutputBridgeSnapshot
+                    .outputAudioChunkCount == 4
+        }
+        expect(
+            stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop,
+            "cancel no-op keeps receive loop available for the next response"
+        )
+        expect(
+            stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "cancel no-op keeps input pump active"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.isEmpty,
+            "cancel no-op preserves the WebSocket"
+        )
+        await stack.controller.stopSpeechAudioCapture()
     }
 
     private static func testDebugSinkClearsInterruptedOutput() async {

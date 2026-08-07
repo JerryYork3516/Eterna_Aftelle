@@ -171,11 +171,26 @@ actor StepFunRealtimeAdapter:
             residentTranscriptAccumulator = ""
             residentTranscriptFinalized = false
             pendingResidentPartial = nil
+            if reason == .interrupted,
+               !didEmitCancellationAcknowledgement {
+                didEmitCancellationAcknowledgement = true
+                pendingEvents.append(NativeSpeechEvent(
+                    interactionID: interactionID,
+                    kind: .cancelled(reason: reason.rawValue)
+                ))
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "response_cancel_not_required",
+                    interactionID: interactionID,
+                    disposition: "provider_response_inactive"
+                )
+            }
             return
         }
         guard !isCancelling else { return }
         let eventID = "cancel-\(UUID().uuidString)"
         isCancelling = true
+        didEmitCancellationAcknowledgement = false
         pendingCancellationEventID = eventID
         residentTranscriptAccumulator = ""
         residentTranscriptFinalized = false
@@ -343,6 +358,8 @@ actor StepFunRealtimeAdapter:
                 nowNanoseconds: receivedAt
             )
             if envelope.wireKind == .responseCreated {
+                let bridgesPendingCancellation = isCancelling
+                    && !didEmitCancellationAcknowledgement
                 isCancelling = false
                 didEmitCancellationAcknowledgement = false
                 didEmitTurnFailureOutcome = false
@@ -353,6 +370,35 @@ actor StepFunRealtimeAdapter:
                 residentTranscriptAccumulator = ""
                 residentTranscriptFinalized = false
                 pendingResidentPartial = nil
+                if bridgesPendingCancellation {
+                    if let responseCreated = normalizedEvent(
+                        from: envelope,
+                        interactionID: interactionID
+                    ) {
+                        pendingEvents.append(emitStandardEvent(
+                            responseCreated,
+                            envelope: envelope,
+                            receivedAtNanoseconds: receivedAt
+                        ))
+                    }
+                    recordDiagnostic(
+                        source: .adapter,
+                        category: "response_cancel_superseded",
+                        interactionID: interactionID,
+                        disposition: "next_response_created",
+                        wireSequence: wireReceiveOrdinal,
+                        responseCorrelationHash:
+                            envelope.responseCorrelationHash
+                    )
+                    return emitStandardEvent(
+                        NativeSpeechEvent(
+                            interactionID: interactionID,
+                            kind: .cancelled(reason: "interrupted")
+                        ),
+                        envelope: envelope,
+                        receivedAtNanoseconds: receivedAt
+                    )
+                }
             }
             if isCancelling,
                case .failed(let cancellationError) = envelope.event?.kind,
@@ -398,6 +444,19 @@ actor StepFunRealtimeAdapter:
                     envelope: envelope,
                     receivedAtNanoseconds: receivedAt
                 )
+            }
+            if envelope.wireKind == .cancellationAcknowledgement {
+                ignoredEventCount &+= 1
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "late_cancellation_ack_ignored",
+                    interactionID: interactionID,
+                    disposition: "no_pending_cancel",
+                    wireSequence: wireReceiveOrdinal,
+                    responseCorrelationHash:
+                        envelope.responseCorrelationHash
+                )
+                continue
             }
             if envelope.wireKind == .providerError,
                case .failed(let error) = envelope.event?.kind {

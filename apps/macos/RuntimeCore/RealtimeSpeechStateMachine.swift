@@ -311,8 +311,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             case .inputSpeechStarted:
                 if currentSnapshot.state == .speaking
                     || (currentSnapshot.state == .thinking
-                        && turnHasOutputAudio
-                        && activePlaybackGeneration != nil) {
+                        && turnHasOutputAudio) {
                     return interruptLocked(
                         previous: previous,
                         nowNanoseconds: nowNanoseconds

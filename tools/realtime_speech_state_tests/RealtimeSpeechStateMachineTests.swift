@@ -463,6 +463,36 @@ private struct RealtimeSpeechStateMachineTests {
     }
 
     private static func testInterrupts() {
+        let prebufferMachine = RealtimeSpeechStateMachine()
+        let prebufferInteraction = makeInteraction()
+        prebufferMachine.start(interaction: prebufferInteraction)
+        _ = transition(
+            prebufferMachine,
+            prebufferInteraction,
+            .finalTranscript("prebuffer turn"),
+            1
+        )
+        _ = transition(
+            prebufferMachine,
+            prebufferInteraction,
+            .outputAudio(audio(prebufferInteraction, 1)),
+            2
+        )
+        let prebufferInterrupt = transition(
+            prebufferMachine,
+            prebufferInteraction,
+            .inputSpeechStarted,
+            3
+        )
+        expect(
+            prebufferInterrupt.effect == .interruptProvider,
+            "speech_started interrupts queued output before playback starts"
+        )
+        expect(
+            prebufferInterrupt.snapshot.state == .listening,
+            "prebuffer Interrupt returns to listening"
+        )
+
         let machine = RealtimeSpeechStateMachine()
         let interaction = makeInteraction()
         machine.start(interaction: interaction)
