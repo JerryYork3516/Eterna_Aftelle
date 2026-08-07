@@ -111,6 +111,7 @@ private struct NativeSpeechDuplexTests {
         try await testReceiveFailureAndDuplicateStart()
         try await testStaleCancelledAndClosedOutput()
         try await testCumulativeSubtitleThroughController()
+        try await testLateUserFinalThroughController()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
     }
@@ -371,6 +372,56 @@ private struct NativeSpeechDuplexTests {
         expect(
             stack.controller.particleSubtitleState.text == "我是林轩",
             "playback completion releases the final voice subtitle"
+        )
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testLateUserFinalThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "late user final fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"late-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"late-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"late-response"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.delta","response_id":"late-response","delta":"AQI="}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.delta","response_id":"late-response","delta":"AwQ="}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .speaking
+        }
+        let rejectedBefore = stack.controller
+            .realtimeSpeechSubtitleSnapshot.rejectedEventCount
+        await transport.enqueue(.text(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"late-user","transcript":"播放开始后到达的完整输入"}"#
+        ))
+        await waitUntil {
+            stack.controller.realtimeSpeechSubtitleSnapshot.userFinal
+                == "播放开始后到达的完整输入"
+        }
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot.state == .speaking,
+            "late user final keeps the controller in speaking"
+        )
+        expect(
+            stack.controller.realtimeSpeechSubtitleSnapshot
+                .rejectedEventCount == rejectedBefore,
+            "late current-turn final is not rejected by Runtime"
         )
         await stack.controller.stopSpeechAudioCapture()
     }

@@ -365,6 +365,9 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 )
                 return resultLocked(.applied, previous: previous)
             case .finalTranscript:
+                if currentSnapshot.state == .speaking {
+                    return resultLocked(.applied, previous: previous)
+                }
                 if currentSnapshot.state == .thinking {
                     guard currentSnapshot.lastTurnDetectionSource
                             == .providerThinking else {

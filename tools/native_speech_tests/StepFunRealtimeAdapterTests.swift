@@ -23,6 +23,7 @@ private struct StepFunRealtimeAdapterTests {
         try await testCancelAfterCompletedResponseIsSafe()
         try await testNextResponseWinsCancellationRace()
         try await testCumulativeTranscriptNormalization()
+        try await testLateUserFinalCorrelation()
         try await testSubtitleCorrelationGate()
         try await testCancelDropsQueuedSubtitle()
         try await testConversationItemUserFinal()
@@ -680,6 +681,73 @@ private struct StepFunRealtimeAdapterTests {
                 $0.category == "provider_user_partial_unavailable"
             },
             "missing Provider user partial is diagnosed without fabrication"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testLateUserFinalCorrelation() async throws {
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"input_audio_buffer.speech_started","item_id":"user-one"}"#),
+            .text(#"{"type":"input_audio_buffer.speech_stopped","item_id":"user-one"}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","delta":"AQI="}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"user-one","transcript":"第一轮完整输入"}"#),
+            .text(#"{"type":"input_audio_buffer.speech_started","item_id":"user-two"}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"user-one","transcript":"第一轮迟到重复"}"#),
+            .text(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"user-two","transcript":"第二轮完整输入"}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport,
+            diagnosticBuffer: diagnostics
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+
+        let expected: [NativeSpeechEventKind] = [
+            .inputSpeechStarted,
+            .inputSpeechEnded,
+            .thinking,
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: request.interaction.id,
+                sequenceNumber: 0,
+                bytes: Data([1, 2]),
+                format: .pcm16
+            )),
+            .finalTranscript("第一轮完整输入"),
+            .inputSpeechStarted,
+            .finalTranscript("第二轮完整输入")
+        ]
+        for expectedKind in expected {
+            let event = try await adapter.receive(
+                interactionID: request.interaction.id
+            )
+            expect(
+                event.kind == expectedKind,
+                "late user final keeps current item correlation"
+            )
+        }
+        let events = diagnostics.drain().events
+        expect(
+            events.contains {
+                $0.category == "stale_user_transcript_ignored"
+                    && $0.disposition == "item_mismatch"
+            },
+            "old item final is absorbed before the current user final"
+        )
+        expect(
+            events.contains {
+                $0.category == "standard_user_final"
+                    && $0.byteCount != nil
+            },
+            "user final diagnostics retain only a redacted byte count"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }

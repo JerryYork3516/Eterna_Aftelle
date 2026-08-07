@@ -36,6 +36,7 @@ actor StepFunRealtimeAdapter:
     private var activeResponseCorrelationHash: String?
     private var pendingCancellationEventID: String?
     private var userTranscriptAccumulator = ""
+    private var activeUserItemCorrelationHash: String?
     private var residentTranscriptAccumulator = ""
     private var userTranscriptFinalized = false
     private var residentTranscriptFinalized = false
@@ -245,6 +246,7 @@ actor StepFunRealtimeAdapter:
         wireReceiveOrdinal = 0
         lastOutputAudioArrivalNanoseconds = nil
         userTranscriptAccumulator = ""
+        activeUserItemCorrelationHash = nil
         residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
         residentTranscriptFinalized = false
@@ -287,6 +289,7 @@ actor StepFunRealtimeAdapter:
         wireReceiveOrdinal = 0
         lastOutputAudioArrivalNanoseconds = nil
         userTranscriptAccumulator = ""
+        activeUserItemCorrelationHash = nil
         residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
         residentTranscriptFinalized = false
@@ -622,7 +625,8 @@ actor StepFunRealtimeAdapter:
         guard let event = envelope.event else { return nil }
         switch envelope.wireKind {
         case .userTranscriptDelta:
-            guard !userTranscriptFinalized,
+            guard userTranscriptMatchesActiveItem(envelope),
+                  !userTranscriptFinalized,
                   case .partialTranscript(let fragment) = event.kind,
                   let cumulative = Self.accumulate(
                     fragment,
@@ -635,7 +639,8 @@ actor StepFunRealtimeAdapter:
                 kind: .partialTranscript(cumulative)
             )
         case .userTranscriptDone:
-            guard !userTranscriptFinalized,
+            guard userTranscriptMatchesActiveItem(envelope),
+                  !userTranscriptFinalized,
                   case .finalTranscript(let text) = event.kind else {
                 return nil
             }
@@ -676,6 +681,8 @@ actor StepFunRealtimeAdapter:
              .inputSpeechEnded, .outputAudioDelta, .providerError,
              .other:
             if case .inputSpeechStarted = event.kind {
+                activeUserItemCorrelationHash =
+                    envelope.itemCorrelationHash
                 userTranscriptAccumulator = ""
                 userTranscriptFinalized = false
                 residentTranscriptAccumulator = ""
@@ -684,7 +691,8 @@ actor StepFunRealtimeAdapter:
             }
             return event
         case .conversationItemCreated:
-            guard !userTranscriptFinalized,
+            guard userTranscriptMatchesActiveItem(envelope),
+                  !userTranscriptFinalized,
                   case .finalTranscript(let text) = event.kind else {
                 return nil
             }
@@ -704,6 +712,31 @@ actor StepFunRealtimeAdapter:
         case .outputAudioDone:
             return nil
         }
+    }
+
+    private func userTranscriptMatchesActiveItem(
+        _ envelope: StepFunRealtimeDecodedEnvelope
+    ) -> Bool {
+        guard let incoming = envelope.itemCorrelationHash else {
+            return true
+        }
+        guard let active = activeUserItemCorrelationHash else {
+            activeUserItemCorrelationHash = incoming
+            return true
+        }
+        guard incoming == active else {
+            ignoredEventCount &+= 1
+            recordDiagnostic(
+                source: .adapter,
+                category: "stale_user_transcript_ignored",
+                interactionID: activeInteraction?.id,
+                disposition: "item_mismatch",
+                wireSequence: wireReceiveOrdinal,
+                itemCorrelationHash: incoming
+            )
+            return false
+        }
+        return true
     }
 
     private func takeResidentPartial(
@@ -883,8 +916,10 @@ actor StepFunRealtimeAdapter:
         case .sessionUpdated: ("session_updated", nil, nil, nil)
         case .inputSpeechStarted: ("input_speech_started", nil, nil, nil)
         case .inputSpeechEnded: ("input_speech_ended", nil, nil, nil)
-        case .partialTranscript: ("user_partial", nil, nil, nil)
-        case .finalTranscript: ("user_final", nil, nil, nil)
+        case .partialTranscript(let text):
+            ("user_partial", nil, text.utf8.count, nil)
+        case .finalTranscript(let text):
+            ("user_final", nil, text.utf8.count, nil)
         case .thinking: ("thinking", nil, nil, nil)
         case .outputText(_, let isFinal):
             (isFinal ? "resident_final" : "resident_partial",

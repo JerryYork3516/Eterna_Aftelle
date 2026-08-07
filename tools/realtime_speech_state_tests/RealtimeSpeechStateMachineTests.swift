@@ -198,6 +198,53 @@ private struct RealtimeSpeechStateMachineTests {
             "final transcript cannot displace Server VAD"
         )
 
+        let lateFinalMachine = RealtimeSpeechStateMachine()
+        let lateFinalInteraction = makeInteraction()
+        lateFinalMachine.start(interaction: lateFinalInteraction)
+        _ = transition(
+            lateFinalMachine,
+            lateFinalInteraction,
+            .inputSpeechStarted,
+            10
+        )
+        _ = transition(
+            lateFinalMachine,
+            lateFinalInteraction,
+            .inputSpeechEnded,
+            11
+        )
+        _ = transition(
+            lateFinalMachine,
+            lateFinalInteraction,
+            .outputAudio(audio(lateFinalInteraction, 1)),
+            12
+        )
+        _ = playback(
+            lateFinalMachine,
+            lateFinalInteraction,
+            .started,
+            1,
+            13
+        )
+        let lateFinal = transition(
+            lateFinalMachine,
+            lateFinalInteraction,
+            .finalTranscript("late current-turn final"),
+            14
+        )
+        expect(
+            lateFinal.disposition == .applied,
+            "current-turn final remains valid after playback starts"
+        )
+        expect(
+            lateFinal.snapshot.state == .speaking,
+            "late current-turn final does not change playback state"
+        )
+        expect(
+            lateFinal.snapshot.currentTurnNumber == 1,
+            "late current-turn final does not advance the turn"
+        )
+
         testRecoverableTurnFailure()
         testTerminalStates()
         testPlaybackLifecycleGate()
