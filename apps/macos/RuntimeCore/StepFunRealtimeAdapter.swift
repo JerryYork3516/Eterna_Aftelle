@@ -1,6 +1,16 @@
 import Foundation
 
-private struct StepFunPendingResidentPartial: Sendable, Equatable {
+nonisolated private struct StepFunResidentPartialCheckpoint:
+    Sendable,
+    Equatable {
+    let text: String
+    let responseCorrelationHash: String?
+    let itemCorrelationHash: String?
+}
+
+nonisolated private struct StepFunDeferredResidentFinal:
+    Sendable,
+    Equatable {
     let text: String
     let responseCorrelationHash: String?
     let itemCorrelationHash: String?
@@ -20,6 +30,8 @@ nonisolated enum StepFunRealtimeConnectionState: String, Sendable, Equatable {
 actor StepFunRealtimeAdapter:
     NativeSpeechProvider,
     RealtimeSpeechContextProviding {
+    private static let transcriptEventIdentityCapacity = 2_048
+    private static let suppressedResponseCapacity = 256
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
     private let codec: StepFunRealtimeCodec
@@ -34,13 +46,23 @@ actor StepFunRealtimeAdapter:
     private var didEmitTurnFailureOutcome = false
     private var isProviderResponseActive = false
     private var activeResponseCorrelationHash: String?
+    private var pendingCancellationResponseCorrelationHash: String?
     private var pendingCancellationEventID: String?
     private var userTranscriptAccumulator = ""
     private var activeUserItemCorrelationHash: String?
     private var residentTranscriptAccumulator = ""
     private var userTranscriptFinalized = false
     private var residentTranscriptFinalized = false
-    private var pendingResidentPartial: StepFunPendingResidentPartial?
+    private var pendingResidentPartialCheckpoint:
+        StepFunResidentPartialCheckpoint?
+    private var residentPartialReplacementCount = 0
+    private var deferredResidentFinal: StepFunDeferredResidentFinal?
+    private var residentAudioFinished = false
+    private var seenUserTranscriptEventHashes: Set<String> = []
+    private var seenResidentTranscriptEventHashes: Set<String> = []
+    private var userSpeechIsActive = false
+    private var suppressedResponseCorrelationHashes: Set<String> = []
+    private var suppressedResponseCorrelationOrder: [String] = []
     private var nextOutputAudioSequenceNumber: UInt64 = 0
     private var wireReceiveOrdinal: UInt64 = 0
     private var lastOutputAudioArrivalNanoseconds: UInt64?
@@ -169,9 +191,7 @@ actor StepFunRealtimeAdapter:
     ) async throws {
         try requireActive(interactionID)
         guard isProviderResponseActive else {
-            residentTranscriptAccumulator = ""
-            residentTranscriptFinalized = false
-            pendingResidentPartial = nil
+            resetResidentResponseState()
             if reason == .interrupted,
                !didEmitCancellationAcknowledgement {
                 didEmitCancellationAcknowledgement = true
@@ -193,9 +213,9 @@ actor StepFunRealtimeAdapter:
         isCancelling = true
         didEmitCancellationAcknowledgement = false
         pendingCancellationEventID = eventID
-        residentTranscriptAccumulator = ""
-        residentTranscriptFinalized = false
-        pendingResidentPartial = nil
+        pendingCancellationResponseCorrelationHash =
+            activeResponseCorrelationHash
+        resetResidentResponseState()
         pendingEvents.removeAll {
             if case .outputText = $0.kind { return true }
             return false
@@ -208,6 +228,7 @@ actor StepFunRealtimeAdapter:
         } catch {
             isCancelling = false
             pendingCancellationEventID = nil
+            pendingCancellationResponseCorrelationHash = nil
             connectionState = .configured
             throw error
         }
@@ -241,16 +262,19 @@ actor StepFunRealtimeAdapter:
         didEmitTurnFailureOutcome = false
         isProviderResponseActive = false
         activeResponseCorrelationHash = nil
+        pendingCancellationResponseCorrelationHash = nil
         pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
         wireReceiveOrdinal = 0
         lastOutputAudioArrivalNanoseconds = nil
         userTranscriptAccumulator = ""
         activeUserItemCorrelationHash = nil
-        residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
-        residentTranscriptFinalized = false
-        pendingResidentPartial = nil
+        seenUserTranscriptEventHashes.removeAll(keepingCapacity: true)
+        userSpeechIsActive = false
+        suppressedResponseCorrelationHashes.removeAll(keepingCapacity: true)
+        suppressedResponseCorrelationOrder.removeAll(keepingCapacity: true)
+        resetResidentResponseState()
 
         let created = try await nextRecognizedEvent(
             interactionID: request.interaction.id
@@ -284,16 +308,29 @@ actor StepFunRealtimeAdapter:
         didEmitTurnFailureOutcome = false
         isProviderResponseActive = false
         activeResponseCorrelationHash = nil
+        pendingCancellationResponseCorrelationHash = nil
         pendingCancellationEventID = nil
         nextOutputAudioSequenceNumber = 0
         wireReceiveOrdinal = 0
         lastOutputAudioArrivalNanoseconds = nil
         userTranscriptAccumulator = ""
         activeUserItemCorrelationHash = nil
-        residentTranscriptAccumulator = ""
         userTranscriptFinalized = false
+        seenUserTranscriptEventHashes.removeAll(keepingCapacity: true)
+        userSpeechIsActive = false
+        suppressedResponseCorrelationHashes.removeAll(keepingCapacity: true)
+        suppressedResponseCorrelationOrder.removeAll(keepingCapacity: true)
+        resetResidentResponseState()
+    }
+
+    private func resetResidentResponseState() {
+        residentTranscriptAccumulator = ""
         residentTranscriptFinalized = false
-        pendingResidentPartial = nil
+        pendingResidentPartialCheckpoint = nil
+        residentPartialReplacementCount = 0
+        deferredResidentFinal = nil
+        residentAudioFinished = false
+        seenResidentTranscriptEventHashes.removeAll(keepingCapacity: true)
     }
 
     private func requireActive(_ interactionID: NativeSpeechInteractionID) throws {
@@ -350,6 +387,7 @@ actor StepFunRealtimeAdapter:
                 source: .wire,
                 category: envelope.wireKind.rawValue,
                 interactionID: interactionID,
+                disposition: Self.responseDisposition(envelope),
                 wireSequence: wireReceiveOrdinal,
                 responseCorrelationHash:
                     envelope.responseCorrelationHash,
@@ -360,9 +398,49 @@ actor StepFunRealtimeAdapter:
                 errorCode: wireMetadata.errorCode,
                 nowNanoseconds: receivedAt
             )
+            if envelope.wireKind == .responseCreated,
+               userSpeechIsActive {
+                if let responseHash = envelope.responseCorrelationHash {
+                    suppressResponse(responseHash)
+                }
+                ignoredEventCount &+= 1
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "response_created_ignored_during_user_speech",
+                    interactionID: interactionID,
+                    disposition: "stale_response_start",
+                    wireSequence: wireReceiveOrdinal,
+                    responseCorrelationHash:
+                        envelope.responseCorrelationHash
+                )
+                continue
+            }
+            if isSuppressedResponseEvent(envelope) {
+                ignoredEventCount &+= 1
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "stale_response_event_ignored",
+                    interactionID: interactionID,
+                    disposition: envelope.wireKind.rawValue,
+                    wireSequence: wireReceiveOrdinal,
+                    responseCorrelationHash:
+                        envelope.responseCorrelationHash,
+                    itemCorrelationHash: envelope.itemCorrelationHash
+                )
+                continue
+            }
             if envelope.wireKind == .responseCreated {
                 let bridgesPendingCancellation = isCancelling
                     && !didEmitCancellationAcknowledgement
+                if let previousResponse = activeResponseCorrelationHash,
+                   previousResponse != envelope.responseCorrelationHash {
+                    suppressResponse(previousResponse)
+                }
+                if bridgesPendingCancellation,
+                   let cancellingResponse =
+                    pendingCancellationResponseCorrelationHash {
+                    suppressResponse(cancellingResponse)
+                }
                 isCancelling = false
                 didEmitCancellationAcknowledgement = false
                 didEmitTurnFailureOutcome = false
@@ -370,9 +448,8 @@ actor StepFunRealtimeAdapter:
                 activeResponseCorrelationHash =
                     envelope.responseCorrelationHash
                 pendingCancellationEventID = nil
-                residentTranscriptAccumulator = ""
-                residentTranscriptFinalized = false
-                pendingResidentPartial = nil
+                pendingCancellationResponseCorrelationHash = nil
+                resetResidentResponseState()
                 if bridgesPendingCancellation {
                     if let responseCreated = normalizedEvent(
                         from: envelope,
@@ -408,12 +485,15 @@ actor StepFunRealtimeAdapter:
                cancellationError != .unauthorized,
                envelope.causedByEventID == pendingCancellationEventID {
                 didEmitCancellationAcknowledgement = true
+                if let cancellingResponse =
+                    pendingCancellationResponseCorrelationHash {
+                    suppressResponse(cancellingResponse)
+                }
                 isProviderResponseActive = false
                 activeResponseCorrelationHash = nil
                 pendingCancellationEventID = nil
-                residentTranscriptAccumulator = ""
-                residentTranscriptFinalized = false
-                pendingResidentPartial = nil
+                pendingCancellationResponseCorrelationHash = nil
+                resetResidentResponseState()
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -432,12 +512,15 @@ actor StepFunRealtimeAdapter:
                     continue
                 }
                 didEmitCancellationAcknowledgement = true
+                if let cancellingResponse =
+                    pendingCancellationResponseCorrelationHash {
+                    suppressResponse(cancellingResponse)
+                }
                 isProviderResponseActive = false
                 activeResponseCorrelationHash = nil
                 pendingCancellationEventID = nil
-                residentTranscriptAccumulator = ""
-                residentTranscriptFinalized = false
-                pendingResidentPartial = nil
+                pendingCancellationResponseCorrelationHash = nil
+                resetResidentResponseState()
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -458,6 +541,38 @@ actor StepFunRealtimeAdapter:
                     wireSequence: wireReceiveOrdinal,
                     responseCorrelationHash:
                         envelope.responseCorrelationHash
+                )
+                continue
+            }
+            if Self.requiresActiveResponseCorrelation(
+                envelope.wireKind
+            ), !responseEventMatchesActive(envelope) {
+                ignoredEventCount &+= 1
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "stale_response_event_ignored",
+                    interactionID: interactionID,
+                    disposition: envelope.wireKind.rawValue,
+                    wireSequence: wireReceiveOrdinal,
+                    responseCorrelationHash:
+                        envelope.responseCorrelationHash,
+                    errorCode: Self.eventMetadata(
+                        envelope.event?.kind
+                    ).errorCode
+                )
+                continue
+            }
+            if isDuplicateTranscriptEvent(envelope) {
+                ignoredEventCount &+= 1
+                recordDiagnostic(
+                    source: .adapter,
+                    category: "duplicate_transcript_event_ignored",
+                    interactionID: interactionID,
+                    disposition: envelope.wireKind.rawValue,
+                    wireSequence: wireReceiveOrdinal,
+                    responseCorrelationHash:
+                        envelope.responseCorrelationHash,
+                    itemCorrelationHash: envelope.itemCorrelationHash
                 )
                 continue
             }
@@ -509,11 +624,10 @@ actor StepFunRealtimeAdapter:
                     continue
                 }
                 didEmitTurnFailureOutcome = true
+                suppressCurrentResponse(envelope)
                 isProviderResponseActive = false
                 activeResponseCorrelationHash = nil
-                residentTranscriptAccumulator = ""
-                residentTranscriptFinalized = false
-                pendingResidentPartial = nil
+                resetResidentResponseState()
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -530,11 +644,10 @@ actor StepFunRealtimeAdapter:
                     continue
                 }
                 didEmitTurnFailureOutcome = true
+                suppressCurrentResponse(envelope)
                 isProviderResponseActive = false
                 activeResponseCorrelationHash = nil
-                residentTranscriptAccumulator = ""
-                residentTranscriptFinalized = false
-                pendingResidentPartial = nil
+                resetResidentResponseState()
                 connectionState = .configured
                 return emitStandardEvent(
                     NativeSpeechEvent(
@@ -550,21 +663,74 @@ actor StepFunRealtimeAdapter:
                 ignoredEventCount &+= 1
                 continue
             }
+            if envelope.wireKind == .outputAudioDone {
+                residentAudioFinished = true
+                if let final = takeDeferredResidentFinal(
+                    matching: envelope,
+                    interactionID: interactionID,
+                    boundary: "output_audio_done"
+                ) {
+                    return emitStandardEvent(
+                        final,
+                        envelope: envelope,
+                        receivedAtNanoseconds: receivedAt
+                    )
+                }
+                discardResidentPartialCheckpoints(
+                    interactionID: interactionID,
+                    boundary: "output_audio_done"
+                )
+                continue
+            }
             if let event = normalizedEvent(
                 from: envelope,
                 interactionID: interactionID
             ) {
+                if case .responseCompleted = event.kind,
+                   let final = takeDeferredResidentFinal(
+                    matching: envelope,
+                    interactionID: interactionID,
+                    boundary: "response_completed"
+                   ) {
+                    suppressCurrentResponse(envelope)
+                    isProviderResponseActive = false
+                    activeResponseCorrelationHash = nil
+                    connectionState = .configured
+                    pendingEvents.append(emitStandardEvent(
+                        event,
+                        envelope: envelope,
+                        receivedAtNanoseconds: receivedAt
+                    ))
+                    return emitStandardEvent(
+                        final,
+                        envelope: envelope,
+                        receivedAtNanoseconds: receivedAt
+                    )
+                }
                 switch event.kind {
                 case .thinking, .outputText:
                     isProviderResponseActive = true
                 case .outputAudio:
                     isProviderResponseActive = true
+                    if activeResponseCorrelationHash == nil {
+                        activeResponseCorrelationHash =
+                            envelope.responseCorrelationHash
+                    }
                     nextOutputAudioSequenceNumber &+= 1
                     connectionState = .streaming
-                case .cancelled, .responseCompleted, .turnFailed, .failed:
+                case .responseCompleted:
+                    suppressCurrentResponse(envelope)
                     isProviderResponseActive = false
                     activeResponseCorrelationHash = nil
-                    pendingResidentPartial = nil
+                    discardResidentPartialCheckpoints(
+                        interactionID: interactionID,
+                        boundary: "response_completed"
+                    )
+                    connectionState = .configured
+                case .cancelled, .turnFailed, .failed:
+                    isProviderResponseActive = false
+                    activeResponseCorrelationHash = nil
+                    resetResidentResponseState()
                     connectionState = .configured
                 default:
                     break
@@ -575,7 +741,7 @@ actor StepFunRealtimeAdapter:
                     receivedAtNanoseconds: receivedAt
                 )
                 if case .outputAudio = event.kind,
-                   let partial = takeResidentPartial(
+                   let partial = takeResidentPartialCheckpoint(
                         matching: envelope,
                         interactionID: interactionID
                    ) {
@@ -587,13 +753,19 @@ actor StepFunRealtimeAdapter:
                 }
                 return standardEvent
             }
-            if envelope.wireKind == .residentAudioTranscriptDelta,
-               pendingResidentPartial != nil {
+            if envelope.wireKind == .residentAudioTranscriptDelta
+                || envelope.wireKind == .residentAudioTranscriptDone {
                 recordDiagnostic(
                     source: .adapter,
-                    category: "resident_partial_buffered",
+                    category: envelope.wireKind
+                        == .residentAudioTranscriptDelta
+                        ? "resident_partial_buffered"
+                        : "resident_final_deferred",
                     interactionID: interactionID,
-                    disposition: "awaiting_correlated_audio",
+                    disposition: envelope.wireKind
+                        == .residentAudioTranscriptDelta
+                        ? "awaiting_correlated_audio"
+                        : "awaiting_audio_boundary",
                     wireSequence: wireReceiveOrdinal,
                     responseCorrelationHash:
                         envelope.responseCorrelationHash,
@@ -628,7 +800,7 @@ actor StepFunRealtimeAdapter:
             guard userTranscriptMatchesActiveItem(envelope),
                   !userTranscriptFinalized,
                   case .partialTranscript(let fragment) = event.kind,
-                  let cumulative = Self.accumulate(
+                  let cumulative = Self.appendTranscriptFragment(
                     fragment,
                     into: &userTranscriptAccumulator
                   ) else {
@@ -649,18 +821,17 @@ actor StepFunRealtimeAdapter:
             return event
         case .residentAudioTranscriptDelta:
             guard !residentTranscriptFinalized,
+                  !residentAudioFinished,
                   case .outputText(let fragment, false) = event.kind,
-                  let cumulative = Self.accumulate(
+                  let cumulative = Self.appendTranscriptFragment(
                     fragment,
                     into: &residentTranscriptAccumulator
                   ) else {
                 return nil
             }
-            pendingResidentPartial = StepFunPendingResidentPartial(
+            appendResidentPartialCheckpoint(
                 text: cumulative,
-                responseCorrelationHash:
-                    envelope.responseCorrelationHash,
-                itemCorrelationHash: envelope.itemCorrelationHash
+                envelope: envelope
             )
             return nil
         case .residentAudioTranscriptDone:
@@ -670,8 +841,13 @@ actor StepFunRealtimeAdapter:
             }
             residentTranscriptFinalized = true
             residentTranscriptAccumulator = text
-            pendingResidentPartial = nil
-            return event
+            deferredResidentFinal = StepFunDeferredResidentFinal(
+                text: text,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash
+            )
+            return nil
         case .residentTextDelta, .residentTextDone:
             return nil
         case .responseCreated, .responseCompleted,
@@ -681,13 +857,17 @@ actor StepFunRealtimeAdapter:
              .inputSpeechEnded, .outputAudioDelta, .providerError,
              .other:
             if case .inputSpeechStarted = event.kind {
+                userSpeechIsActive = true
                 activeUserItemCorrelationHash =
                     envelope.itemCorrelationHash
                 userTranscriptAccumulator = ""
                 userTranscriptFinalized = false
-                residentTranscriptAccumulator = ""
-                residentTranscriptFinalized = false
-                pendingResidentPartial = nil
+                seenUserTranscriptEventHashes.removeAll(
+                    keepingCapacity: true
+                )
+                resetResidentResponseState()
+            } else if case .inputSpeechEnded = event.kind {
+                userSpeechIsActive = false
             }
             return event
         case .conversationItemCreated:
@@ -739,23 +919,37 @@ actor StepFunRealtimeAdapter:
         return true
     }
 
-    private func takeResidentPartial(
+    private func takeResidentPartialCheckpoint(
         matching envelope: StepFunRealtimeDecodedEnvelope,
         interactionID: NativeSpeechInteractionID
     ) -> NativeSpeechEvent? {
-        guard let pendingResidentPartial else { return nil }
+        guard let checkpoint = pendingResidentPartialCheckpoint else {
+            return nil
+        }
         let responseMatches = Self.correlationMatches(
-            pendingResidentPartial.responseCorrelationHash,
+            checkpoint.responseCorrelationHash,
             envelope.responseCorrelationHash
         )
         let itemMatches = Self.correlationMatches(
-            pendingResidentPartial.itemCorrelationHash,
+            checkpoint.itemCorrelationHash,
             envelope.itemCorrelationHash
         )
-        let hasMismatch = responseMatches == false || itemMatches == false
-        let hasMatch = responseMatches == true || itemMatches == true
+        let activeResponseMatches = Self.correlationMatches(
+            checkpoint.responseCorrelationHash,
+            activeResponseCorrelationHash
+        )
+        let hasMismatch = responseMatches == false
+            || itemMatches == false
+            || activeResponseMatches == false
+        let hasMatch = responseMatches == true
+            || itemMatches == true
+            || activeResponseMatches == true
+            || (checkpoint.responseCorrelationHash == nil
+                && checkpoint.itemCorrelationHash == nil
+                && envelope.responseCorrelationHash == nil
+                && envelope.itemCorrelationHash == nil
+                && isProviderResponseActive)
         guard hasMatch, !hasMismatch else {
-            self.pendingResidentPartial = nil
             recordDiagnostic(
                 source: .adapter,
                 category: hasMismatch
@@ -768,16 +962,208 @@ actor StepFunRealtimeAdapter:
                     envelope.responseCorrelationHash,
                 itemCorrelationHash: envelope.itemCorrelationHash
             )
+            if hasMismatch {
+                pendingResidentPartialCheckpoint = nil
+                residentPartialReplacementCount = 0
+            }
             return nil
         }
-        self.pendingResidentPartial = nil
+        pendingResidentPartialCheckpoint = nil
+        if residentPartialReplacementCount > 0 {
+            recordDiagnostic(
+                source: .adapter,
+                category: "resident_partial_checkpoints_collapsed",
+                interactionID: interactionID,
+                disposition:
+                    "audio_boundary:\(residentPartialReplacementCount)",
+                wireSequence: wireReceiveOrdinal,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash
+            )
+        }
+        residentPartialReplacementCount = 0
         return NativeSpeechEvent(
             interactionID: interactionID,
             kind: .outputText(
-                text: pendingResidentPartial.text,
+                text: checkpoint.text,
                 isFinal: false
             )
         )
+    }
+
+    private func takeDeferredResidentFinal(
+        matching envelope: StepFunRealtimeDecodedEnvelope,
+        interactionID: NativeSpeechInteractionID,
+        boundary: String
+    ) -> NativeSpeechEvent? {
+        guard let final = deferredResidentFinal else { return nil }
+        let responseMatches = Self.correlationMatches(
+            final.responseCorrelationHash,
+            envelope.responseCorrelationHash
+        )
+        let itemMatches = Self.correlationMatches(
+            final.itemCorrelationHash,
+            envelope.itemCorrelationHash
+        )
+        let activeResponseMatches = Self.correlationMatches(
+            final.responseCorrelationHash,
+            activeResponseCorrelationHash
+        )
+        let hasMismatch = responseMatches == false
+            || itemMatches == false
+            || activeResponseMatches == false
+        let hasMatch = responseMatches == true
+            || itemMatches == true
+            || activeResponseMatches == true
+            || (final.responseCorrelationHash == nil
+                && final.itemCorrelationHash == nil
+                && envelope.responseCorrelationHash == nil
+                && envelope.itemCorrelationHash == nil
+                && isProviderResponseActive)
+        guard hasMatch, !hasMismatch else {
+            recordDiagnostic(
+                source: .adapter,
+                category: "provider_subtitle_correlation_mismatch",
+                interactionID: interactionID,
+                disposition: "final_not_released_\(boundary)",
+                wireSequence: wireReceiveOrdinal,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash
+            )
+            resetResidentResponseState()
+            return nil
+        }
+        deferredResidentFinal = nil
+        discardResidentPartialCheckpoints(
+            interactionID: interactionID,
+            boundary: boundary
+        )
+        return NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .outputText(text: final.text, isFinal: true)
+        )
+    }
+
+    private func discardResidentPartialCheckpoints(
+        interactionID: NativeSpeechInteractionID,
+        boundary: String
+    ) {
+        let remaining = pendingResidentPartialCheckpoint == nil
+            ? 0 : residentPartialReplacementCount + 1
+        guard remaining > 0 else { return }
+        pendingResidentPartialCheckpoint = nil
+        residentPartialReplacementCount = 0
+        recordDiagnostic(
+            source: .adapter,
+            category: "resident_partial_checkpoints_discarded",
+            interactionID: interactionID,
+            disposition: "\(boundary):\(remaining)"
+        )
+    }
+
+    private func isDuplicateTranscriptEvent(
+        _ envelope: StepFunRealtimeDecodedEnvelope
+    ) -> Bool {
+        guard let eventHash = envelope.wireEventCorrelationHash else {
+            return false
+        }
+        switch envelope.wireKind {
+        case .userTranscriptDelta, .userTranscriptDone:
+            if seenUserTranscriptEventHashes.count
+                >= Self.transcriptEventIdentityCapacity {
+                seenUserTranscriptEventHashes.removeAll(
+                    keepingCapacity: true
+                )
+            }
+            return !seenUserTranscriptEventHashes
+                .insert(eventHash).inserted
+        case .residentAudioTranscriptDelta,
+             .residentAudioTranscriptDone:
+            if seenResidentTranscriptEventHashes.count
+                >= Self.transcriptEventIdentityCapacity {
+                seenResidentTranscriptEventHashes.removeAll(
+                    keepingCapacity: true
+                )
+            }
+            return !seenResidentTranscriptEventHashes
+                .insert(eventHash).inserted
+        default:
+            return false
+        }
+    }
+
+    private func appendResidentPartialCheckpoint(
+        text: String,
+        envelope: StepFunRealtimeDecodedEnvelope
+    ) {
+        let checkpoint = StepFunResidentPartialCheckpoint(
+            text: text,
+            responseCorrelationHash: envelope.responseCorrelationHash,
+            itemCorrelationHash: envelope.itemCorrelationHash
+        )
+        if pendingResidentPartialCheckpoint != nil {
+            residentPartialReplacementCount += 1
+        }
+        pendingResidentPartialCheckpoint = checkpoint
+    }
+
+    private func isSuppressedResponseEvent(
+        _ envelope: StepFunRealtimeDecodedEnvelope
+    ) -> Bool {
+        guard (envelope.wireKind == .responseCreated
+                || Self.isResponseScoped(envelope.wireKind)),
+              let responseHash = envelope.responseCorrelationHash else {
+            return false
+        }
+        return suppressedResponseCorrelationHashes.contains(responseHash)
+    }
+
+    private func suppressResponse(_ responseHash: String) {
+        guard suppressedResponseCorrelationHashes.insert(responseHash)
+            .inserted else {
+            return
+        }
+        suppressedResponseCorrelationOrder.append(responseHash)
+        if suppressedResponseCorrelationOrder.count
+            > Self.suppressedResponseCapacity {
+            let evicted = suppressedResponseCorrelationOrder.removeFirst()
+            suppressedResponseCorrelationHashes.remove(evicted)
+        }
+    }
+
+    private func suppressCurrentResponse(
+        _ envelope: StepFunRealtimeDecodedEnvelope
+    ) {
+        guard let responseHash = envelope.responseCorrelationHash
+                ?? activeResponseCorrelationHash else {
+            return
+        }
+        suppressResponse(responseHash)
+    }
+
+    private func responseEventMatchesActive(
+        _ envelope: StepFunRealtimeDecodedEnvelope
+    ) -> Bool {
+        switch (
+            envelope.responseCorrelationHash,
+            activeResponseCorrelationHash
+        ) {
+        case let (incoming?, active?):
+            return incoming == active
+        case (nil, nil):
+            if !isProviderResponseActive {
+                isProviderResponseActive = true
+            }
+            return true
+        case let (incoming?, nil):
+            activeResponseCorrelationHash = incoming
+            isProviderResponseActive = true
+            return true
+        case (nil, _?):
+            return false
+        }
     }
 
     private static func correlationMatches(
@@ -788,28 +1174,23 @@ actor StepFunRealtimeAdapter:
         return first == second
     }
 
-    private static func accumulate(
+    private static func appendTranscriptFragment(
         _ fragment: String,
         into accumulator: inout String
     ) -> String? {
         guard !fragment.isEmpty else { return nil }
-        if fragment == accumulator || accumulator.hasSuffix(fragment) {
-            return nil
-        }
-        if fragment.hasPrefix(accumulator) {
-            accumulator = fragment
-            return accumulator
-        }
-        let maximumOverlap = min(accumulator.count, fragment.count)
-        var overlap = maximumOverlap
-        while overlap > 0 {
-            let suffix = accumulator.suffix(overlap)
-            let prefix = fragment.prefix(overlap)
-            if suffix == prefix { break }
-            overlap -= 1
-        }
-        accumulator.append(contentsOf: fragment.dropFirst(overlap))
+        accumulator.append(fragment)
         return accumulator
+    }
+
+    private static func responseDisposition(
+        _ envelope: StepFunRealtimeDecodedEnvelope
+    ) -> String? {
+        guard let status = envelope.responseStatus else { return nil }
+        guard let detailReason = envelope.responseStatusDetailReason else {
+            return status.rawValue
+        }
+        return "\(status.rawValue):\(detailReason.rawValue)"
     }
 
     private static func isRetryableBeforeStreaming(
@@ -837,6 +1218,23 @@ actor StepFunRealtimeAdapter:
              .outputAudioDone, .responseCompleted,
              .cancellationAcknowledgement, .providerError, .other:
             return true
+        }
+    }
+
+    private static func requiresActiveResponseCorrelation(
+        _ wireKind: StepFunRealtimeWireEventKind
+    ) -> Bool {
+        switch wireKind {
+        case .residentAudioTranscriptDelta,
+             .residentAudioTranscriptDone,
+             .residentTextDelta,
+             .residentTextDone,
+             .outputAudioDelta,
+             .outputAudioDone,
+             .responseCompleted:
+            return true
+        default:
+            return false
         }
     }
 

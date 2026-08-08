@@ -207,9 +207,11 @@ private struct NativeSpeechDuplexTests {
         await testSpeechStartPreclearsBeforeConsumer()
         try await testSlowConsumerPreservesInteraction()
         try await testRecoverableTurnFailurePreservesBridge()
+        try await testThinkingInterruptPreservesInteraction()
         try await testReceiveFailureAndDuplicateStart()
         try await testStaleCancelledAndClosedOutput()
         try await testCumulativeSubtitleThroughController()
+        try await testStopDoesNotExposeUnplayedFinalThroughController()
         try await testLateUserFinalThroughController()
         try await testTextSubtitleSurvivesRealtimeRefresh()
         try await testRedactedDiagnosticsAndExport()
@@ -218,6 +220,9 @@ private struct NativeSpeechDuplexTests {
 
     private static func testRealSequenceSubtitleSynchronizer() {
         var synchronizer = RealtimeSpeechPlaybackSubtitleSynchronizer()
+        let interactionID = NativeSpeechInteractionID(rawValue: UUID(
+            uuidString: "00000000-0000-0000-0000-000000000091"
+        )!)
         synchronizer.observeEnqueuedAudio(sequence: 10)
         expect(synchronizer.enqueuePartial(text: "我"),
                "partial binds to the latest real audio sequence")
@@ -234,25 +239,77 @@ private struct NativeSpeechDuplexTests {
         synchronizer.advance(playedSequence: 20)
         expect(synchronizer.displayText == "我是",
                "matching played sequence advances the partial")
-        synchronizer.completePlayback()
+        synchronizer.completePlayback(
+            interactionID: interactionID,
+            turnNumber: 1,
+            turnGeneration: 1
+        )
         expect(synchronizer.displayText == "我是林轩",
                "final locks only after playback completion")
+
+        synchronizer.reset()
+        synchronizer.observeEnqueuedAudio(sequence: 30)
+        synchronizer.advance(playedSequence: 30)
+        expect(
+            synchronizer.enqueuePartial(text: "已播放水位"),
+            "partial can bind after its chunkPlayed callback"
+        )
+        expect(
+            synchronizer.displayText == "已播放水位",
+            "late-bound partial releases immediately at played waterline"
+        )
+
+        synchronizer.reset()
+        expect(
+            synchronizer.displayText == nil
+                && !synchronizer.hasPendingText,
+            "Interrupt reset clears displayed and pending resident subtitles"
+        )
+        synchronizer.noteUnplayedResponse()
+        expect(
+            synchronizer.displayText == nil,
+            "unplayed response cannot bypass playback completion"
+        )
+        synchronizer.resetForTerminal(
+            canonicalCompleted: RealtimeSpeechCompletedSubtitle(
+                interactionShortID: "00000000",
+                turnNumber: 1,
+                turnGeneration: 1,
+                userFinal: nil,
+                residentFinal: "我是林轩"
+            )
+        )
+        expect(
+            synchronizer.displayText == "我是林轩",
+            "terminal cleanup retains a played canonical subtitle"
+        )
+        synchronizer.resetForTerminal(
+            canonicalCompleted: RealtimeSpeechCompletedSubtitle(
+                interactionShortID: "00000000",
+                turnNumber: 2,
+                turnGeneration: 2,
+                userFinal: nil,
+                residentFinal: "我是林轩"
+            )
+        )
+        expect(
+            synchronizer.displayText == nil,
+            "same text from another Runtime turn cannot pass terminal identity"
+        )
     }
 
     private static func testRecoverableTurnFailurePreservesBridge()
         async throws
     {
         let transport = handshakeTransport()
-        let stack = makeRuntimeStack(transport: transport)
-        _ = stack.orchestration.loadResident(fixtureData: fixtureData)
-        let binding = try success(
-            await stack.orchestration.startNativeSpeechInput(
-                profile: profile(),
-                captureGeneration: 19
-            )
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData)
+                .isLoaded,
+            "recoverable turn failure fixture loads"
         )
-        let bridge = outputBridge(orchestration: stack.orchestration)
-        _ = await bridge.start(binding: binding)
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_started"}"#)
         )
@@ -262,23 +319,61 @@ private struct NativeSpeechDuplexTests {
         await transport.enqueue(
             .text(#"{"type":"response.created","response":{"id":"failed-turn"}}"#)
         )
+        await transport.enqueue(.text(
+            #"{"event_id":"failed-partial","type":"response.audio_transcript.delta","response_id":"failed-turn","item_id":"failed-item","delta":"旧字幕"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"event_id":"failed-final","type":"response.audio_transcript.done","response_id":"failed-turn","item_id":"failed-item","transcript":"旧字幕终稿"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.delta","response_id":"failed-turn","item_id":"failed-item","delta":"AQI="}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechAudioOutputHostSnapshot
+                .enqueuedChunkCount == 1
+        }
         await transport.enqueue(
             .text(#"{"type":"response.done","response":{"id":"failed-turn","status":"failed"}}"#)
         )
         await waitUntil {
-            let state = stack.orchestration.realtimeSpeechStateSnapshot()
+            await stack.controller.refreshMicrophoneAuthorization()
+            let state = stack.controller.realtimeSpeechStateSnapshot
             return state.state == .listening
                 && state.currentTurnNumber == 2
+                && stack.controller.speechAudioOutputHostSnapshot
+                    .queueDepth == 0
+                && stack.controller.nativeSpeechPlaybackDebugSnapshot
+                    .turnNumber == nil
         }
-        let afterFailure = await bridge.currentSnapshot()
+        let afterFailure = stack.controller.speechOutputBridgeSnapshot
         expect(afterFailure.state == .configured, "turn failure keeps output bridge configured")
         expect(afterFailure.hasActiveReceiveLoop, "turn failure keeps receive loop active")
         expect(afterFailure.terminalStatus == nil, "turn failure is not bridge terminal")
         expect(afterFailure.lastError == "unavailable", "bridge exposes recoverable turn error")
         expect(
-            stack.orchestration.realtimeSpeechStateSnapshot()
+            stack.controller.realtimeSpeechStateSnapshot
                 .interactionTerminalOutcome == nil,
             "turn failure keeps Runtime interaction nonterminal"
+        )
+        expect(
+            stack.controller.speechAudioHostSnapshot.isCapturing,
+            "turn failure keeps microphone capture active"
+        )
+        expect(
+            stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "turn failure keeps the input pump active"
+        )
+        expect(
+            stack.controller.nativeSpeechPlaybackDebugSnapshot
+                .turnNumber == nil,
+            "turn failure clears the old playback binding"
+        )
+        expect(
+            stack.controller.particleSubtitleState.text != "旧字幕"
+                && stack.controller.particleSubtitleState.text
+                    != "旧字幕终稿",
+            "turn failure clears pending and final old-turn subtitles"
         )
 
         await transport.enqueue(
@@ -294,20 +389,104 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"response.done","response":{"id":"recovered-turn","status":"completed"}}"#)
         )
         await waitUntil {
-            let state = stack.orchestration.realtimeSpeechStateSnapshot()
+            await stack.controller.refreshMicrophoneAuthorization()
+            let state = stack.controller.realtimeSpeechStateSnapshot
             return state.state == .listening
                 && state.currentTurnNumber == 3
                 && state.completedTurnCount == 1
         }
         expect(
-            await bridge.currentSnapshot().completedResponseCount == 1,
+            stack.controller.speechOutputBridgeSnapshot
+                .completedResponseCount == 1,
             "same receive loop completes the next turn"
         )
         expect(
             await transport.calls.filter { $0 == .close(.normal) }.isEmpty,
             "recoverable turn failure does not close WebSocket"
         )
-        _ = await bridge.stop()
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testThinkingInterruptPreservesInteraction()
+        async throws
+    {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData)
+                .isLoaded,
+            "thinking Interrupt fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"first-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"first-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"old-response"}}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .thinking
+        }
+
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"second-user"}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let types = try await sentEventTypes(transport)
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+                && stack.controller.realtimeSpeechStateSnapshot
+                    .interruptedTurnCount == 1
+                && types.filter { $0 == "response.cancel" }.count == 1
+        }
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"old-response","status":"incomplete"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"second-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"new-response"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"new-response","status":"completed"}}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                    .completedResponseCount == 1
+                && stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+        }
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot
+                .interactionTerminalOutcome == nil,
+            "thinking Interrupt keeps the interaction nonterminal"
+        )
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot
+                .currentTurnNumber == 3,
+            "same WebSocket completes the turn after thinking Interrupt"
+        )
+        expect(
+            stack.controller.realtimeSpeechDiagnosticTimeline.events
+                .filter { $0.category == "standard_turn_failed" }
+                .isEmpty,
+            "late incomplete response cannot override Interrupt"
+        )
+        let connectCount = await transport.calls.filter {
+            if case .connect = $0 { return true }
+            return false
+        }.count
+        expect(connectCount == 1, "thinking Interrupt reuses one WebSocket")
+        await stack.controller.stopSpeechAudioCapture()
     }
 
     private static func testRedactedDiagnosticsAndExport() async throws {
@@ -424,6 +603,9 @@ private struct NativeSpeechDuplexTests {
                 == "你好"
         }
         await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
             .text(#"{"type":"response.created","response":{"id":"response-one"}}"#)
         )
         await transport.enqueue(
@@ -449,17 +631,17 @@ private struct NativeSpeechDuplexTests {
         await transport.enqueue(
             .text(#"{"type":"response.audio_transcript.done","response_id":"response-one","item_id":"item-one","transcript":"我是林轩"}"#)
         )
-        await waitUntil {
-            stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
-                == "我是林轩"
-        }
         expect(
             stack.controller.particleSubtitleState.text != "我是林轩",
-            "resident final remains gated before playback"
+            "resident final remains deferred before response boundary"
         )
         await transport.enqueue(
             .text(#"{"type":"response.done","response":{"id":"response-one","status":"completed"}}"#)
         )
+        await waitUntil {
+            stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
+                == "我是林轩"
+        }
         await waitUntil { stack.outputPlayer.scheduledCount == 2 }
         stack.outputPlayer.completeScheduledChunk()
         await waitUntil {
@@ -474,6 +656,75 @@ private struct NativeSpeechDuplexTests {
             "playback completion releases the final voice subtitle"
         )
         await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testStopDoesNotExposeUnplayedFinalThroughController()
+        async throws
+    {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData)
+                .isLoaded,
+            "unplayed terminal subtitle fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"stop-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"stop-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"stop-response"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"event_id":"stop-partial","type":"response.audio_transcript.delta","response_id":"stop-response","item_id":"stop-item","delta":"未播放"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"event_id":"stop-final","type":"response.audio_transcript.done","response_id":"stop-response","item_id":"stop-item","transcript":"未播放终稿"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.delta","response_id":"stop-response","item_id":"stop-item","delta":"AQI="}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.delta","response_id":"stop-response","item_id":"stop-item","delta":"AwQ="}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.done","response_id":"stop-response","item_id":"stop-item"}"#
+        ))
+        await waitUntil {
+            stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
+                == "未播放终稿"
+        }
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"stop-response","status":"completed"}}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                .completedResponseCount == 1
+        }
+        expect(
+            stack.controller.realtimeSpeechSubtitleSnapshot
+                .residentFinal == "未播放终稿"
+                && stack.controller.realtimeSpeechSubtitleSnapshot
+                    .lastCompleted == nil,
+            "unplayed final is not a Runtime canonical completion"
+        )
+        await waitUntil {
+            stack.outputPlayer.scheduledCount > 0
+        }
+        expect(
+            stack.controller.particleSubtitleState.text != "未播放终稿",
+            "resident final waits for real playback completion"
+        )
+        await stack.controller.stopSpeechAudioCapture()
+        expect(
+            stack.controller.particleSubtitleState.text != "未播放终稿",
+            "Stop cannot expose a Runtime-completed but unplayed final"
+        )
     }
 
     private static func testLateUserFinalThroughController() async throws {
@@ -730,8 +981,8 @@ private struct NativeSpeechDuplexTests {
             "all responses share one receive loop"
         )
         expect(
-            await stack.adapter.ignoredEventCount == 2,
-            "unknown and audio.done events are safely ignored"
+            await stack.adapter.ignoredEventCount == 1,
+            "unknown events are ignored while audio.done closes subtitles"
         )
         let eventTypes = try await sentEventTypes(transport)
         expect(!eventTypes.contains("input_audio_buffer.commit"), "no input commit is sent")
@@ -1353,10 +1604,10 @@ private struct NativeSpeechDuplexTests {
             #"{"type":"response.created","response":{"id":"old"}}"#
         ))
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+            .text(#"{"type":"response.audio.delta","response_id":"old","delta":"AQI="}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+            .text(#"{"type":"response.audio.delta","response_id":"old","delta":"AwQ="}"#)
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
@@ -1662,6 +1913,11 @@ private struct NativeSpeechDuplexTests {
             await staleBridge.currentSnapshot().runtimeRejectedEventCount == 1,
             "old session output is rejected"
         )
+        await waitUntil {
+            await staleTransport.calls.filter {
+                $0 == .close(.normal)
+            }.count == 1
+        }
         let staleCloseCount = await staleTransport.calls.filter {
             $0 == .close(.normal)
         }.count

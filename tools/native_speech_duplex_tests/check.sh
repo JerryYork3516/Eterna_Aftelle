@@ -201,7 +201,7 @@ rg -q 'RealtimeSpeechPlaybackSubtitleSynchronizer' "$controller"
 rg -q 'requiredAudioSequence' "$controller"
 rg -Fq 'advance(playedSequence:' "$controller"
 rg -Fq 'observeEnqueuedAudio(sequence:' "$controller"
-rg -Fq 'completePlayback()' "$controller"
+rg -Fq 'completePlayback(' "$controller"
 if rg -q 'requiredPlayedChunkCount|lastAssignedPlayedChunkCount|forceLatest' \
   "$controller"; then
   echo "native_speech_subtitle_audio_watermark=FAIL"

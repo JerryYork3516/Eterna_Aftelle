@@ -510,6 +510,83 @@ private struct RealtimeSpeechStateMachineTests {
     }
 
     private static func testInterrupts() {
+        let resumedSpeechMachine = RealtimeSpeechStateMachine()
+        let resumedSpeechInteraction = makeInteraction()
+        resumedSpeechMachine.start(interaction: resumedSpeechInteraction)
+        _ = transition(
+            resumedSpeechMachine,
+            resumedSpeechInteraction,
+            .finalTranscript("paused turn"),
+            1
+        )
+        let resumedSpeech = transition(
+            resumedSpeechMachine,
+            resumedSpeechInteraction,
+            .inputSpeechStarted,
+            2
+        )
+        expect(
+            resumedSpeech.disposition == .applied
+                && resumedSpeech.effect == .none,
+            "speech resumed before response.created stays in the same turn"
+        )
+        expect(
+            resumedSpeech.snapshot.state == .listening
+                && resumedSpeech.snapshot.currentTurnNumber == 1,
+            "resumed speech does not create a false Interrupt"
+        )
+        let staleResponseStart = transition(
+            resumedSpeechMachine,
+            resumedSpeechInteraction,
+            .thinking,
+            3
+        )
+        expect(
+            staleResponseStart.disposition == .rejectedLate,
+            "late response.created cannot override resumed user speech"
+        )
+
+        let thinkingMachine = RealtimeSpeechStateMachine()
+        let thinkingInteraction = makeInteraction()
+        thinkingMachine.start(interaction: thinkingInteraction)
+        _ = transition(
+            thinkingMachine,
+            thinkingInteraction,
+            .finalTranscript("thinking turn"),
+            1
+        )
+        _ = transition(
+            thinkingMachine,
+            thinkingInteraction,
+            .thinking,
+            2
+        )
+        let thinkingInterrupt = transition(
+            thinkingMachine,
+            thinkingInteraction,
+            .inputSpeechStarted,
+            3
+        )
+        expect(
+            thinkingInterrupt.effect == .interruptProvider,
+            "speech_started interrupts thinking before outputAudio"
+        )
+        expect(
+            thinkingInterrupt.snapshot.state == .listening
+                && thinkingInterrupt.snapshot.currentTurnNumber == 2,
+            "thinking Interrupt advances the turn and keeps interaction"
+        )
+        let lateThinkingFailure = transition(
+            thinkingMachine,
+            thinkingInteraction,
+            .turnFailed(.unavailable),
+            4
+        )
+        expect(
+            lateThinkingFailure.disposition == .rejectedLate,
+            "late old-response failure cannot override thinking Interrupt"
+        )
+
         let prebufferMachine = RealtimeSpeechStateMachine()
         let prebufferInteraction = makeInteraction()
         prebufferMachine.start(interaction: prebufferInteraction)

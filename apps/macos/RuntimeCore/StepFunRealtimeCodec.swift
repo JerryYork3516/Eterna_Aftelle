@@ -21,25 +21,50 @@ nonisolated enum StepFunRealtimeWireEventKind: String, Sendable, Equatable {
     case other
 }
 
+nonisolated enum StepFunRealtimeResponseStatus: String, Sendable, Equatable {
+    case completed
+    case cancelled
+    case failed
+    case incomplete
+}
+
+nonisolated enum StepFunRealtimeResponseStatusDetailReason:
+    String,
+    Sendable,
+    Equatable {
+    case turnDetected = "turn_detected"
+}
+
 nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
     let wireKind: StepFunRealtimeWireEventKind
     let event: NativeSpeechEvent?
     let causedByEventID: String?
+    let wireEventCorrelationHash: String?
     let responseCorrelationHash: String?
     let itemCorrelationHash: String?
+    let responseStatus: StepFunRealtimeResponseStatus?
+    let responseStatusDetailReason:
+        StepFunRealtimeResponseStatusDetailReason?
 
     init(
         wireKind: StepFunRealtimeWireEventKind,
         event: NativeSpeechEvent?,
         causedByEventID: String? = nil,
+        wireEventCorrelationHash: String? = nil,
         responseCorrelationHash: String? = nil,
-        itemCorrelationHash: String? = nil
+        itemCorrelationHash: String? = nil,
+        responseStatus: StepFunRealtimeResponseStatus? = nil,
+        responseStatusDetailReason:
+            StepFunRealtimeResponseStatusDetailReason? = nil
     ) {
         self.wireKind = wireKind
         self.event = event
         self.causedByEventID = causedByEventID
+        self.wireEventCorrelationHash = wireEventCorrelationHash
         self.responseCorrelationHash = responseCorrelationHash
         self.itemCorrelationHash = itemCorrelationHash
+        self.responseStatus = responseStatus
+        self.responseStatusDetailReason = responseStatusDetailReason
     }
 }
 
@@ -131,9 +156,15 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 objectKey: "item"
             )
         )
+        let wireEventCorrelationHash = Self.correlationHash(
+            object["event_id"] as? String
+        )
 
         let kind: NativeSpeechEventKind?
         let wireKind: StepFunRealtimeWireEventKind
+        var responseStatus: StepFunRealtimeResponseStatus?
+        var responseStatusDetailReason:
+            StepFunRealtimeResponseStatusDetailReason?
         switch type {
         case "session.created":
             kind = .connected
@@ -191,6 +222,7 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             return StepFunRealtimeDecodedEnvelope(
                 wireKind: .outputAudioDone,
                 event: nil,
+                wireEventCorrelationHash: wireEventCorrelationHash,
                 responseCorrelationHash: responseCorrelationHash,
                 itemCorrelationHash: itemCorrelationHash
             )
@@ -201,6 +233,7 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 return StepFunRealtimeDecodedEnvelope(
                     wireKind: .conversationItemCreated,
                     event: nil,
+                    wireEventCorrelationHash: wireEventCorrelationHash,
                     responseCorrelationHash: responseCorrelationHash,
                     itemCorrelationHash: itemCorrelationHash
                 )
@@ -232,7 +265,14 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             )
             wireKind = .other
         case "response.done":
-            kind = try responseDoneKind(object)
+            let decodedStatus = try responseDoneStatus(object)
+            responseStatus = decodedStatus
+            let decodedDetailReason = responseDoneStatusDetailReason(object)
+            responseStatusDetailReason = decodedDetailReason
+            kind = responseDoneKind(
+                decodedStatus,
+                detailReason: decodedDetailReason
+            )
             if case .cancelled = kind {
                 wireKind = .cancellationAcknowledgement
             } else {
@@ -248,6 +288,7 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             return StepFunRealtimeDecodedEnvelope(
                 wireKind: .other,
                 event: nil,
+                wireEventCorrelationHash: wireEventCorrelationHash,
                 responseCorrelationHash: responseCorrelationHash,
                 itemCorrelationHash: itemCorrelationHash
             )
@@ -263,30 +304,58 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 kind: kind
             ),
             causedByEventID: errorEventID(from: object),
+            wireEventCorrelationHash: wireEventCorrelationHash,
             responseCorrelationHash: responseCorrelationHash,
-            itemCorrelationHash: itemCorrelationHash
+            itemCorrelationHash: itemCorrelationHash,
+            responseStatus: responseStatus,
+            responseStatusDetailReason: responseStatusDetailReason
         )
     }
 
-    private func responseDoneKind(
+    private func responseDoneStatus(
         _ object: [String: Any]
-    ) throws -> NativeSpeechEventKind {
+    ) throws -> StepFunRealtimeResponseStatus {
         guard let response = object["response"] as? [String: Any],
-              let status = response["status"] as? String else {
+              let rawStatus = response["status"] as? String,
+              let status = StepFunRealtimeResponseStatus(
+                rawValue: rawStatus
+              ) else {
             throw NativeSpeechError.invalidEvent
         }
+        return status
+    }
+
+    private func responseDoneKind(
+        _ status: StepFunRealtimeResponseStatus,
+        detailReason: StepFunRealtimeResponseStatusDetailReason?
+    ) -> NativeSpeechEventKind {
         switch status {
-        case "completed":
+        case .completed:
             return .responseCompleted
-        case "cancelled":
+        case .cancelled:
             return .cancelled(reason: "cancelled")
-        case "failed":
+        case .failed:
             return .turnFailed(.unavailable)
-        case "incomplete":
-            return .turnFailed(.transportFailure)
-        default:
-            throw NativeSpeechError.invalidEvent
+        case .incomplete:
+            if detailReason == .turnDetected {
+                return .turnFailed(.cancelled)
+            }
+            return .turnFailed(.unavailable)
         }
+    }
+
+    private func responseDoneStatusDetailReason(
+        _ object: [String: Any]
+    ) -> StepFunRealtimeResponseStatusDetailReason? {
+        guard let response = object["response"] as? [String: Any],
+              let statusDetails = response["status_details"]
+                as? [String: Any],
+              let rawReason = statusDetails["reason"] as? String else {
+            return nil
+        }
+        return StepFunRealtimeResponseStatusDetailReason(
+            rawValue: rawReason
+        )
     }
 
     private func encode(_ object: [String: Any]) throws -> String {

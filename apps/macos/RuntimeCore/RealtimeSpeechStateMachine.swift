@@ -225,6 +225,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
     private var rejectedLateEventCount: UInt64 = 0
     private var awaitingInterruptCancellation = false
     private var turnHasOutputAudio = false
+    private var providerResponseStarted = false
     private var providerResponseCompleted = false
     private var playbackDrained = false
     private var activePlaybackGeneration: UInt64?
@@ -311,11 +312,29 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
             case .inputSpeechStarted:
                 if currentSnapshot.state == .speaking
                     || (currentSnapshot.state == .thinking
-                        && turnHasOutputAudio) {
+                        && (providerResponseStarted
+                            || turnHasOutputAudio)) {
                     return interruptLocked(
                         previous: previous,
                         nowNanoseconds: nowNanoseconds
                     )
+                }
+                if currentSnapshot.state == .thinking {
+                    speechIsActive = true
+                    clearGuardLocked()
+                    setGuardLocked(
+                        .speechStop,
+                        timeoutNanoseconds:
+                            timeoutConfiguration.speechStopNanoseconds,
+                        nowNanoseconds: nowNanoseconds
+                    )
+                    applyLocked(
+                        state: .listening,
+                        reason: .speechStarted,
+                        turnDetectionSource: currentSnapshot
+                            .lastTurnDetectionSource
+                    )
+                    return resultLocked(.applied, previous: previous)
                 }
                 guard currentSnapshot.state == .listening else {
                     return rejectOutOfOrderLocked(previous: previous)
@@ -393,6 +412,11 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 )
                 return resultLocked(.applied, previous: previous)
             case .thinking:
+                if currentSnapshot.state == .listening,
+                   speechIsActive {
+                    return rejectLateLocked(previous: previous)
+                }
+                providerResponseStarted = true
                 if currentSnapshot.state == .thinking {
                     return resultLocked(.ignoredDuplicate, previous: previous)
                 }
@@ -412,6 +436,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                 }
                 let disposition: RealtimeSpeechTransitionDisposition =
                     turnHasOutputAudio ? .ignoredDuplicate : .applied
+                providerResponseStarted = true
                 turnHasOutputAudio = true
                 playbackDrained = false
                 return resultLocked(disposition, previous: previous)
@@ -981,6 +1006,7 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
 
     private func resetPlaybackLocked() {
         turnHasOutputAudio = false
+        providerResponseStarted = false
         providerResponseCompleted = false
         playbackDrained = false
         activePlaybackGeneration = nil
