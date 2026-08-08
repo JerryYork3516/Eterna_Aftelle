@@ -85,6 +85,85 @@ private final class DuplexDeviceMonitor:
     func stop() {}
 }
 
+private actor DirectOutputEventSource {
+    private var events: [NativeSpeechEventDisposition] = []
+    private var pendingReceive: CheckedContinuation<
+        Result<NativeSpeechEventDisposition, NativeSpeechError>, Never
+    >?
+
+    func enqueue(_ event: NativeSpeechEventDisposition) {
+        if let pendingReceive {
+            self.pendingReceive = nil
+            pendingReceive.resume(returning: .success(event))
+        } else {
+            events.append(event)
+        }
+    }
+
+    func receive() async -> Result<
+        NativeSpeechEventDisposition, NativeSpeechError
+    > {
+        if !events.isEmpty {
+            return .success(events.removeFirst())
+        }
+        return await withCheckedContinuation { continuation in
+            pendingReceive = continuation
+        }
+    }
+}
+
+private actor BlockingOutputConsumer {
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var shouldBlockMedia = true
+    private(set) var mediaStarted = false
+    private(set) var mediaConsumedCount = 0
+    private(set) var cancelledMediaCompletion = false
+    private(set) var controlConsumed = false
+
+    func consume(_ event: NativeSpeechEvent) async {
+        switch event.kind {
+        case .outputAudio:
+            mediaStarted = true
+            if shouldBlockMedia {
+                shouldBlockMedia = false
+                await withCheckedContinuation { continuation in
+                    releaseContinuation = continuation
+                }
+                cancelledMediaCompletion = Task.isCancelled
+            }
+            mediaConsumedCount += 1
+        case .inputSpeechStarted:
+            controlConsumed = true
+        default:
+            break
+        }
+    }
+
+    func releaseMedia() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor SlowOrderedOutputConsumer {
+    private(set) var mediaCompleted = false
+    private(set) var responseCompleted = false
+    private(set) var responseFollowedMedia = false
+
+    func consume(_ event: NativeSpeechEvent) async {
+        switch event.kind {
+        case .outputAudio:
+            try? await Task.sleep(for: .milliseconds(300))
+            mediaCompleted = true
+        case .responseCompleted:
+            responseCompleted = true
+            responseFollowedMedia = mediaCompleted
+        default:
+            break
+        }
+    }
+}
+
 @MainActor
 @main
 private struct NativeSpeechDuplexTests {
@@ -109,6 +188,8 @@ private struct NativeSpeechDuplexTests {
         try await testStopClearsActivePlaybackThroughController()
         try await testConversionFailureThroughController()
         await testDebugSinkClearsInterruptedOutput()
+        await testMediaCapacityBackpressurePreservesInteraction()
+        await testControlBypassesBlockedMedia()
         try await testSlowConsumerPreservesInteraction()
         try await testRecoverableTurnFailurePreservesBridge()
         try await testReceiveFailureAndDuplicateStart()
@@ -763,6 +844,7 @@ private struct NativeSpeechDuplexTests {
     private static func testSlowConsumerPreservesInteraction() async throws {
         let transport = handshakeTransport()
         let stack = makeRuntimeStack(transport: transport)
+        let consumer = SlowOrderedOutputConsumer()
         _ = stack.orchestration.loadResident(fixtureData: fixtureData)
         let binding = try success(
             await stack.orchestration.startNativeSpeechInput(
@@ -773,9 +855,7 @@ private struct NativeSpeechDuplexTests {
         let bridge = outputBridge(
             orchestration: stack.orchestration
         ) { event in
-            if case .outputAudio = event.kind {
-                try? await Task.sleep(for: .milliseconds(300))
-            }
+            await consumer.consume(event)
         }
         _ = await bridge.start(binding: binding)
         await waitUntil {
@@ -787,12 +867,11 @@ private struct NativeSpeechDuplexTests {
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
-        try? await Task.sleep(for: .milliseconds(350))
         await transport.enqueue(
             .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
         )
         await waitUntil {
-            await bridge.currentSnapshot().completedResponseCount == 1
+            await consumer.responseCompleted
         }
         let active = await bridge.currentSnapshot()
         expect(active.lastError == nil, "slow sink is not a transport error")
@@ -800,8 +879,12 @@ private struct NativeSpeechDuplexTests {
         expect(active.completedResponseCount == 1,
                "slow sink still completes the current turn")
         expect(
-            MacSpeechNativeOutputBridge.outputEventCapacity == 1,
-            "output flow is one bounded in-flight event"
+            await consumer.responseFollowedMedia,
+            "response completion follows queued audio consumption"
+        )
+        expect(
+            MacSpeechNativeOutputBridge.mediaEventCapacity == 64,
+            "media lane has a fixed bounded capacity"
         )
         let types = try await sentEventTypes(transport)
         expect(types.filter { $0 == "response.cancel" }.isEmpty,
@@ -811,6 +894,124 @@ private struct NativeSpeechDuplexTests {
             "slow sink does not close Provider"
         )
         _ = await bridge.stop()
+    }
+
+    private static func testControlBypassesBlockedMedia() async {
+        let source = DirectOutputEventSource()
+        let consumer = BlockingOutputConsumer()
+        let interactionID = NativeSpeechInteractionID()
+        let binding = NativeSpeechInputBinding(
+            interactionID: interactionID,
+            residentID: "resident",
+            sessionID: "session",
+            captureGeneration: 1
+        )
+        let bridge = MacSpeechNativeOutputBridge(
+            receiveEvent: { _ in await source.receive() },
+            consumeEvent: { event in await consumer.consume(event) },
+            endInputPump: {},
+            stopInput: { _, _ in .success(()) },
+            closeInput: { _ in .success(()) }
+        )
+        _ = await bridge.start(binding: binding)
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: interactionID,
+                sequenceNumber: 1,
+                bytes: Data([1, 0]),
+                format: .pcm16
+            ))
+        )))
+        await waitUntil { await consumer.mediaStarted }
+        for sequence in UInt64(2) ... UInt64(65) {
+            await source.enqueue(.accepted(NativeSpeechEvent(
+                interactionID: interactionID,
+                kind: .outputAudio(NativeSpeechAudioPayload(
+                    interactionID: interactionID,
+                    sequenceNumber: sequence,
+                    bytes: Data([UInt8(sequence), 0]),
+                    format: .pcm16
+                ))
+            )))
+        }
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .inputSpeechStarted
+        )))
+        await waitUntil { await consumer.controlConsumed }
+        expect(
+            await consumer.controlConsumed,
+            "speech_started bypasses a full blocked media lane"
+        )
+        expect(
+            await bridge.currentSnapshot().lastError == nil,
+            "bounded media pressure does not fail the interaction"
+        )
+        await consumer.releaseMedia()
+        await waitUntil { await consumer.cancelledMediaCompletion }
+        expect(
+            await consumer.cancelledMediaCompletion,
+            "invalidated media delivery observes task cancellation"
+        )
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .closed
+        )))
+        await waitUntil {
+            !(await bridge.currentSnapshot().hasActiveReceiveLoop)
+        }
+    }
+
+    private static func testMediaCapacityBackpressurePreservesInteraction() async {
+        let source = DirectOutputEventSource()
+        let consumer = BlockingOutputConsumer()
+        let interactionID = NativeSpeechInteractionID()
+        let binding = NativeSpeechInputBinding(
+            interactionID: interactionID,
+            residentID: "resident",
+            sessionID: "session",
+            captureGeneration: 1
+        )
+        let bridge = MacSpeechNativeOutputBridge(
+            receiveEvent: { _ in await source.receive() },
+            consumeEvent: { event in await consumer.consume(event) },
+            endInputPump: {},
+            stopInput: { _, _ in .success(()) },
+            closeInput: { _ in .success(()) }
+        )
+        _ = await bridge.start(binding: binding)
+        for sequence in UInt64(1) ... UInt64(66) {
+            await source.enqueue(.accepted(NativeSpeechEvent(
+                interactionID: interactionID,
+                kind: .outputAudio(NativeSpeechAudioPayload(
+                    interactionID: interactionID,
+                    sequenceNumber: sequence,
+                    bytes: Data([UInt8(sequence), 0]),
+                    format: .pcm16
+                ))
+            )))
+        }
+        await waitUntil { await consumer.mediaStarted }
+        try? await Task.sleep(for: .milliseconds(50))
+        let pressured = await bridge.currentSnapshot()
+        expect(
+            pressured.lastError == nil && pressured.hasActiveReceiveLoop,
+            "full media lane applies backpressure without stopping STS"
+        )
+        await consumer.releaseMedia()
+        await waitUntil { await consumer.mediaConsumedCount == 66 }
+        expect(
+            await consumer.mediaConsumedCount == 66,
+            "bounded media backpressure resumes without dropping events"
+        )
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .closed
+        )))
+        await waitUntil {
+            !(await bridge.currentSnapshot().hasActiveReceiveLoop)
+        }
     }
 
     private static func testInterruptThroughController() async throws {
@@ -845,6 +1046,17 @@ private struct NativeSpeechDuplexTests {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.realtimeSpeechStateSnapshot.state
                 == .speaking
+        }
+
+        for _ in 0 ..< 12 {
+            await transport.enqueue(
+                .text(#"{"type":"response.audio.delta","delta":"BQY="}"#)
+            )
+        }
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechAudioOutputHostSnapshot
+                .pressureWaitCount > 0
         }
 
         await transport.enqueue(
@@ -917,6 +1129,8 @@ private struct NativeSpeechDuplexTests {
             return stack.controller.speechAudioOutputHostSnapshot
                 .rejectedCallbackCount == 1
         }
+        let acceptedOutputCount = stack.controller
+            .speechOutputBridgeSnapshot.outputAudioChunkCount
 
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
@@ -931,8 +1145,8 @@ private struct NativeSpeechDuplexTests {
         }
         expect(
             stack.controller.speechOutputBridgeSnapshot.outputAudioChunkCount
-                == 2,
-            "late interrupted outputAudio never reaches Debug output sink"
+                == acceptedOutputCount,
+            "late interrupted outputAudio is not accepted"
         )
         expect(
             stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop,

@@ -1715,6 +1715,7 @@ final class AppController: ObservableObject {
     private func consumeNativeSpeechOutputEvent(
         _ event: NativeSpeechEvent
     ) async {
+        guard !Task.isCancelled else { return }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let stateBefore = realtimeSpeechStateSnapshot.state.rawValue
         if case .inputSpeechStarted = event.kind {
@@ -1722,11 +1723,14 @@ final class AppController: ObservableObject {
                 event,
                 startedAtNanoseconds: startedAt
             )
+            guard !Task.isCancelled else { return }
         }
         if case .outputAudio(let payload) = event.kind {
             await enqueueNativeSpeechOutput(payload)
+            guard !Task.isCancelled else { return }
         }
         await speechOutputDebugSink.consume(event)
+        guard !Task.isCancelled else { return }
         if case .inputSpeechStarted = event.kind {
             realtimeSpeechPlaybackSubtitleSynchronizer.reset()
         }
@@ -1776,8 +1780,9 @@ final class AppController: ObservableObject {
         switch event.kind {
         case .turnFailed:
             nativeSpeechPlaybackBinding = nil
-            speechAudioOutputHostSnapshot =
-                await speechAudioOutputHost.clear()
+            let cleared = await speechAudioOutputHost.clear()
+            guard !Task.isCancelled else { return }
+            speechAudioOutputHostSnapshot = cleared
             recordRealtimeSpeechDiagnostic(
                 source: .playback,
                 category: "turn_failed_local_clear",
@@ -1787,12 +1792,17 @@ final class AppController: ObservableObject {
                 stateAfter: realtimeSpeechStateSnapshot.state.rawValue
             )
         case .responseCompleted:
-            if nativeSpeechPlaybackBinding != nil {
-                speechAudioOutputHostSnapshot =
-                    await speechAudioOutputHost.finishProviderResponse()
+            if let playbackBinding = nativeSpeechPlaybackBinding {
+                let finished =
+                    await speechAudioOutputHost.finishProviderResponse(
+                        generation: playbackBinding.playbackGeneration
+                    )
+                guard !Task.isCancelled else { return }
+                speechAudioOutputHostSnapshot = finished
                 await consumePlaybackEvents(
                     in: speechAudioOutputHostSnapshot
                 )
+                guard !Task.isCancelled else { return }
             } else {
                 realtimeSpeechPlaybackSubtitleSynchronizer
                     .noteUnplayedResponse()
@@ -1815,8 +1825,10 @@ final class AppController: ObservableObject {
         default:
             break
         }
-        speechAudioOutputHostSnapshot =
+        let currentOutputSnapshot =
             await speechAudioOutputHost.currentSnapshot()
+        guard !Task.isCancelled else { return }
+        speechAudioOutputHostSnapshot = currentOutputSnapshot
         refreshNativeSpeechPlaybackDebugSnapshot()
     }
 
@@ -1887,11 +1899,13 @@ final class AppController: ObservableObject {
     private func enqueueNativeSpeechOutput(
         _ payload: NativeSpeechAudioPayload
     ) async {
+        guard !Task.isCancelled else { return }
         let turnNumber = realtimeSpeechStateSnapshot.currentTurnNumber
         if nativeSpeechPlaybackBinding?.interactionID
                 != payload.interactionID
             || nativeSpeechPlaybackBinding?.turnNumber != turnNumber {
             let prepared = await speechAudioOutputHost.prepare()
+            guard !Task.isCancelled else { return }
             speechAudioOutputHostSnapshot = prepared
             nativeSpeechPlaybackBinding = NativeSpeechPlaybackBinding(
                 interactionID: payload.interactionID,
@@ -1910,12 +1924,14 @@ final class AppController: ObservableObject {
             sequence: payload.sequenceNumber,
             generation: binding.playbackGeneration
         )
+        guard !Task.isCancelled else { return }
         if snapshot.enqueuedChunkCount > enqueuedBefore {
             realtimeSpeechPlaybackSubtitleSynchronizer
                 .observeEnqueuedAudio(sequence: payload.sequenceNumber)
         }
         if snapshot.state == .prepared || snapshot.state == .completed {
             snapshot = await speechAudioOutputHost.start()
+            guard !Task.isCancelled else { return }
         }
         speechAudioOutputHostSnapshot = snapshot
         await consumePlaybackEvents(in: snapshot)
@@ -1940,6 +1956,7 @@ final class AppController: ObservableObject {
     ) async {
         for event in snapshot.recentEvents
             where event.ordinal > lastPlaybackEventOrdinal {
+            guard !Task.isCancelled else { return }
             await consumePlaybackHostEvent(event)
         }
     }

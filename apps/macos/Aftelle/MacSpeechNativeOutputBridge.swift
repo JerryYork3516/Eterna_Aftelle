@@ -61,7 +61,7 @@ actor MacSpeechNativeDebugOutputSink {
 }
 
 actor MacSpeechNativeOutputBridge {
-    static let outputEventCapacity = 1
+    static let mediaEventCapacity = 64
 
     typealias ReceiveEvent = @Sendable (
         NativeSpeechInteractionID
@@ -82,6 +82,10 @@ actor MacSpeechNativeOutputBridge {
     private let stopInput: StopInput
     private let closeInput: CloseInput
     private var receiveTask: Task<Void, Never>?
+    private var mediaDeliveryTask: Task<Void, Never>?
+    private var pendingMediaEvents: [NativeSpeechEvent] = []
+    private var mediaCapacityWaiter: CheckedContinuation<Void, Never>?
+    private var mediaDeliveryGeneration: UInt64 = 0
     private var activeBinding: NativeSpeechInputBinding?
     private var state = MacSpeechNativeOutputBridgeState.idle
     private var outputAudioChunkCount: UInt64 = 0
@@ -112,6 +116,7 @@ actor MacSpeechNativeOutputBridge {
         binding: NativeSpeechInputBinding
     ) -> MacSpeechNativeOutputBridgeSnapshot {
         guard activeBinding == nil else { return makeSnapshot() }
+        _ = invalidateMediaDelivery()
         activeBinding = binding
         state = .connecting
         outputAudioChunkCount = 0
@@ -133,9 +138,11 @@ actor MacSpeechNativeOutputBridge {
         reason: NativeSpeechCancellationReason = .stopped
     ) async -> MacSpeechNativeOutputBridgeSnapshot {
         let task = receiveTask
+        let mediaTask = invalidateMediaDelivery()
         receiveTask = nil
         task?.cancel()
         guard let binding = activeBinding else {
+            await mediaTask?.value
             if state != .failed { state = .closed }
             return makeSnapshot()
         }
@@ -145,6 +152,7 @@ actor MacSpeechNativeOutputBridge {
         await endInputPump()
         _ = await stopInput(binding, reason)
         await task?.value
+        await mediaTask?.value
         state = .closed
         return makeSnapshot()
     }
@@ -179,7 +187,17 @@ actor MacSpeechNativeOutputBridge {
                     )
                     return
                 }
-                await consumeEvent(event)
+                if invalidatesPendingMedia(event) {
+                    _ = invalidateMediaDelivery()
+                    await consumeEvent(event)
+                } else if requiresOrderedMediaDelivery(event) {
+                    guard await enqueueMediaEvent(
+                        event,
+                        binding: binding
+                    ) else { return }
+                } else {
+                    await consumeEvent(event)
+                }
                 if isTerminal(event) {
                     await finishTerminal(event)
                     return
@@ -188,6 +206,102 @@ actor MacSpeechNativeOutputBridge {
                 await failAndStop(binding: binding, error: error)
                 return
             }
+        }
+    }
+
+    private func enqueueMediaEvent(
+        _ event: NativeSpeechEvent,
+        binding: NativeSpeechInputBinding
+    ) async -> Bool {
+        while pendingMediaEvents.count >= Self.mediaEventCapacity {
+            guard activeBinding == binding,
+                  !Task.isCancelled else { return false }
+            await withCheckedContinuation { continuation in
+                if pendingMediaEvents.count < Self.mediaEventCapacity {
+                    continuation.resume()
+                } else {
+                    precondition(mediaCapacityWaiter == nil)
+                    mediaCapacityWaiter = continuation
+                }
+            }
+        }
+        guard activeBinding == binding,
+              !Task.isCancelled else { return false }
+        pendingMediaEvents.append(event)
+        startMediaDeliveryIfNeeded(binding: binding)
+        return true
+    }
+
+    private func startMediaDeliveryIfNeeded(
+        binding: NativeSpeechInputBinding
+    ) {
+        guard mediaDeliveryTask == nil else { return }
+        let deliveryGeneration = mediaDeliveryGeneration
+        mediaDeliveryTask = Task { [weak self] in
+            await self?.deliverPendingMediaEvents(
+                binding: binding,
+                deliveryGeneration: deliveryGeneration
+            )
+        }
+    }
+
+    private func deliverPendingMediaEvents(
+        binding: NativeSpeechInputBinding,
+        deliveryGeneration: UInt64
+    ) async {
+        while !Task.isCancelled {
+            guard activeBinding == binding,
+                  self.mediaDeliveryGeneration == deliveryGeneration else {
+                return
+            }
+            guard !pendingMediaEvents.isEmpty else {
+                mediaDeliveryTask = nil
+                return
+            }
+            let event = pendingMediaEvents.removeFirst()
+            resumeMediaCapacityWaiterIfNeeded()
+            await consumeEvent(event)
+        }
+    }
+
+    private func resumeMediaCapacityWaiterIfNeeded() {
+        guard pendingMediaEvents.count < Self.mediaEventCapacity,
+              let waiter = mediaCapacityWaiter else { return }
+        mediaCapacityWaiter = nil
+        waiter.resume()
+    }
+
+    @discardableResult
+    private func invalidateMediaDelivery() -> Task<Void, Never>? {
+        mediaDeliveryGeneration &+= 1
+        pendingMediaEvents.removeAll(keepingCapacity: true)
+        resumeMediaCapacityWaiterIfNeeded()
+        let task = mediaDeliveryTask
+        mediaDeliveryTask = nil
+        task?.cancel()
+        return task
+    }
+
+    private func requiresOrderedMediaDelivery(
+        _ event: NativeSpeechEvent
+    ) -> Bool {
+        switch event.kind {
+        case .outputAudio, .outputText, .responseCompleted:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func invalidatesPendingMedia(
+        _ event: NativeSpeechEvent
+    ) -> Bool {
+        switch event.kind {
+        case .inputSpeechStarted, .turnFailed,
+             .cancelled, .closed, .failed:
+            return true
+        default:
+            return false
         }
     }
 
@@ -233,6 +347,7 @@ actor MacSpeechNativeOutputBridge {
         error: NativeSpeechError
     ) async {
         guard activeBinding == binding else { return }
+        _ = invalidateMediaDelivery()
         activeBinding = nil
         receiveTask = nil
         state = .cancelling
@@ -247,6 +362,7 @@ actor MacSpeechNativeOutputBridge {
         binding: NativeSpeechInputBinding,
         status: String
     ) async {
+        _ = invalidateMediaDelivery()
         activeBinding = nil
         receiveTask = nil
         state = .closing
@@ -257,6 +373,7 @@ actor MacSpeechNativeOutputBridge {
     }
 
     private func finishTerminal(_ event: NativeSpeechEvent) async {
+        _ = invalidateMediaDelivery()
         activeBinding = nil
         receiveTask = nil
         switch event.kind {

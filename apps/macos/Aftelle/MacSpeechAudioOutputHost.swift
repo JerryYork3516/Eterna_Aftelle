@@ -270,7 +270,10 @@ actor MacSpeechAudioOutputHost {
         }
     }
 
-    func finishProviderResponse() -> MacSpeechAudioOutputHostSnapshot {
+    func finishProviderResponse(
+        generation expectedGeneration: UInt64
+    ) -> MacSpeechAudioOutputHostSnapshot {
+        guard expectedGeneration == generation else { return snapshot() }
         guard state == .prepared || state == .playing || state == .stalled
                 || state == .draining || state == .completed else {
             return snapshot()

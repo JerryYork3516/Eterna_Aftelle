@@ -23,6 +23,7 @@ private struct MacSpeechAudioOutputHostTests {
         testConsumerWatchdogIncludesScheduledPCMDuration()
         await testStopAndCloseAreIdempotent()
         await testGenerationRejectsLateInputAndCompletion()
+        await testStaleResponseCompletionCannotFinishNewGeneration()
         await testCloseCanReprepare()
         await testDefaultOutputChangeFailsAndCanRecover()
         await testUnavailableOutputFailsBeforePrepare()
@@ -170,7 +171,7 @@ private struct MacSpeechAudioOutputHostTests {
                "512 milliseconds starts playback")
         expect(player.scheduledCount == 3,
                "duration watermark preserves ordered scheduling")
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         for _ in 0 ..< 3 { player.completeScheduledChunk() }
         await waitUntil { await host.currentSnapshot().state == .completed }
     }
@@ -189,7 +190,7 @@ private struct MacSpeechAudioOutputHostTests {
         expect(started.state == .playing, "playing with queued successor")
         expect(player.startCount == 1, "player started")
         expect(player.scheduledCount == 2, "successor is scheduled ahead")
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         player.completeScheduledChunk()
         await waitUntil {
             await host.currentSnapshot().playedChunkCount == 1
@@ -255,7 +256,7 @@ private struct MacSpeechAudioOutputHostTests {
                "new audio continues the same player cycle")
         expect(player.fadeIns == [false, false, true, false],
                "only the first resumed chunk receives fade-in")
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         player.completeScheduledChunk()
         player.completeScheduledChunk()
         await waitUntil { await host.currentSnapshot().state == .completed }
@@ -288,7 +289,9 @@ private struct MacSpeechAudioOutputHostTests {
                "single chunk waits for startup prebuffer")
         expect(player.startCount == 0,
                "single chunk does not start before Provider completion")
-        let flushed = await host.finishProviderResponse()
+        let flushed = await host.finishProviderResponse(
+            generation: generation
+        )
         expect(flushed.state == .draining,
                "Provider completion flushes short response")
         expect(player.startCount == 1,
@@ -351,7 +354,7 @@ private struct MacSpeechAudioOutputHostTests {
         let resumed = await waitingEnqueue.value
         expect(resumed.enqueuedChunkCount == 4,
                "producer resumes after scheduled capacity frees")
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         for expectedPlayedCount in 2 ... 4 {
             player.completeScheduledChunk()
             await waitUntil {
@@ -378,7 +381,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         await waitUntil { await host.currentSnapshot().state == .failed }
         let failed = await host.currentSnapshot()
         expect(failed.lastError == "consumer_timed_out", "timeout error")
@@ -393,7 +396,9 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        let failed = await host.finishProviderResponse()
+        let failed = await host.finishProviderResponse(
+            generation: generation
+        )
         expect(failed.state == .failed, "conversion failure stops host")
         expect(failed.lastError == "conversion_failed", "conversion error standardized")
         expect(failed.queueDepth == 0, "conversion failure clears queue")
@@ -408,7 +413,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         let stopped = await host.stop()
         let stoppedAgain = await host.stop()
         expect(stopped.state == .stopped, "stopped state")
@@ -427,7 +432,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         let stopped = await host.stop()
         player.completeStoppedChunk()
         try? await Task.sleep(nanoseconds: 5_000_000)
@@ -439,6 +444,40 @@ private struct MacSpeechAudioOutputHostTests {
         )
         expect(stale.lastError == "stale_generation", "stale generation rejected")
         expect(stale.generation == stopped.generation, "new generation preserved")
+    }
+
+    private static func testStaleResponseCompletionCannotFinishNewGeneration()
+        async {
+        let (host, player) = makeHost()
+        let staleGeneration = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]),
+            sequence: 1,
+            generation: staleGeneration
+        )
+        let cleared = await host.clear()
+        let currentGeneration = cleared.generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([2, 0]),
+            sequence: 2,
+            generation: currentGeneration
+        )
+        let rejected = await host.finishProviderResponse(
+            generation: staleGeneration
+        )
+        expect(
+            rejected.state == .prepared && player.startCount == 0,
+            "stale response completion cannot finish a new generation"
+        )
+        let accepted = await host.finishProviderResponse(
+            generation: currentGeneration
+        )
+        expect(
+            accepted.state == .draining && player.startCount == 1,
+            "current response completion still flushes playback"
+        )
+        player.completeScheduledChunk()
+        await waitUntil { await host.currentSnapshot().state == .completed }
     }
 
     private static func testCloseCanReprepare() async {
@@ -462,7 +501,7 @@ private struct MacSpeechAudioOutputHostTests {
         _ = await host.enqueue(
             pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
         )
-        _ = await host.finishProviderResponse()
+        _ = await host.finishProviderResponse(generation: generation)
         monitor.changeOutput(
             identifier: "output-next",
             name: "Next Output",

@@ -73,7 +73,8 @@ if rg -q 'return fail\(\.queueFull\)' "$host"; then
   echo "speech_audio_output_pressure=FAIL"
   exit 1
 fi
-rg -q 'func finishProviderResponse' "$host"
+rg -q 'func finishProviderResponse\(' "$host"
+rg -q 'generation expectedGeneration: UInt64' "$host"
 rg -q 'providerResponseFinished' "$host"
 rg -q 'case playbackStalled' "$host"
 rg -q 'case playbackResumed' "$host"

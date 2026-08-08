@@ -66,13 +66,20 @@ localizations=(
 
 test "$(rg -c 'receiveTask = Task \{' "$output_bridge")" -eq 1
 test "$(rg -c 'pumpTask = Task \{' "$input_bridge")" -eq 1
-rg -q 'static let outputEventCapacity = 1' "$output_bridge"
-if rg -q 'AsyncStream|CheckedContinuation|\[NativeSpeechEvent\]' "$output_bridge"; then
+test "$(rg -c 'mediaDeliveryTask = Task \{' "$output_bridge")" -eq 1
+rg -q 'static let mediaEventCapacity = 64' "$output_bridge"
+rg -q 'pendingMediaEvents.count >= Self.mediaEventCapacity' "$output_bridge"
+rg -q 'mediaCapacityWaiter = continuation' "$output_bridge"
+test "$(rg -c 'withCheckedContinuation' "$output_bridge")" -eq 1
+rg -q 'case \.outputAudio, \.outputText, \.responseCompleted:' "$output_bridge"
+rg -q 'case \.inputSpeechStarted, \.turnFailed,' "$output_bridge"
+if rg -q 'AsyncStream' "$output_bridge"; then
   echo "native_speech_duplex_bounded_output=FAIL"
   exit 1
 fi
 echo "native_speech_duplex_single_loops=PASS"
 echo "native_speech_duplex_bounded_output=PASS"
+echo "native_speech_control_media_lanes=PASS"
 
 rg -q 'orchestrationKernel.receiveNativeSpeechEvent' "$controller"
 rg -q 'runtimeCore.receiveNativeSpeechEvent' "$orchestration"
