@@ -68,15 +68,7 @@ rg -q 'startupBufferDurationNanoseconds: 500_000_000' "$buffer"
 rg -q 'scheduleAheadCount: 4' "$buffer"
 rg -q 'applyingResumeFadeIn' "$player"
 rg -q 'resetForPlaybackGeneration' "$player" "$host"
-rg -q 'MacSpeechContinuousOutputProtector' "$player"
-rg -q 'thresholdDecibels = -12\.0' "$player"
-rg -q 'ratio = 3\.0' "$player"
-rg -q 'kneeWidthDecibels = 6\.0' "$player"
-rg -q 'ceilingDecibels = -3\.0' "$player"
-rg -q 'holdSampleCount = 960' "$player"
-rg -q 'releaseSampleCount = 7_200' "$player"
-rg -q 'didStartAttenuation' "$player" "$host"
-if rg -q 'applyingPlaybackSafety|maximumPlaybackPeak|maximumPlaybackRMS|hardClamp|makeupGain' "$player"; then
+if rg -q 'applyingPlaybackSafety|maximumPlaybackPeak|maximumPlaybackRMS' "$player"; then
   echo "speech_audio_output_bit_exact=FAIL"
   exit 1
 fi
@@ -95,6 +87,5 @@ rg -q 'case playbackStalled' "$host"
 rg -q 'case playbackResumed' "$host"
 rg -q 'consumerWatchdogNanoseconds' "$host"
 echo "speech_audio_output_continuous_playback=PASS"
-echo "speech_audio_output_continuous_protection=PASS"
 echo "speech_audio_output_pressure=PASS"
 echo "speech_audio_output_bit_exact=PASS"

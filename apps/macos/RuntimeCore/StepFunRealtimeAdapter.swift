@@ -32,8 +32,6 @@ actor StepFunRealtimeAdapter:
     RealtimeSpeechContextProviding {
     private static let transcriptEventIdentityCapacity = 2_048
     private static let suppressedResponseCapacity = 256
-    private static let residentPartialCheckpointCapacity = 128
-    private static let residentPartialCadenceByteCount = 14_400
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
     private let codec: StepFunRealtimeCodec
@@ -55,10 +53,9 @@ actor StepFunRealtimeAdapter:
     private var residentTranscriptAccumulator = ""
     private var userTranscriptFinalized = false
     private var residentTranscriptFinalized = false
-    private var pendingResidentPartialCheckpoints:
-        [StepFunResidentPartialCheckpoint] = []
-    private var residentPartialAudioByteCount = 0
-    private var residentPartialOverflowCount = 0
+    private var pendingResidentPartialCheckpoint:
+        StepFunResidentPartialCheckpoint?
+    private var residentPartialReplacementCount = 0
     private var deferredResidentFinal: StepFunDeferredResidentFinal?
     private var residentAudioFinished = false
     private var seenUserTranscriptEventHashes: Set<String> = []
@@ -329,9 +326,8 @@ actor StepFunRealtimeAdapter:
     private func resetResidentResponseState() {
         residentTranscriptAccumulator = ""
         residentTranscriptFinalized = false
-        pendingResidentPartialCheckpoints.removeAll(keepingCapacity: true)
-        residentPartialAudioByteCount = 0
-        residentPartialOverflowCount = 0
+        pendingResidentPartialCheckpoint = nil
+        residentPartialReplacementCount = 0
         deferredResidentFinal = nil
         residentAudioFinished = false
         seenResidentTranscriptEventHashes.removeAll(keepingCapacity: true)
@@ -744,9 +740,8 @@ actor StepFunRealtimeAdapter:
                     envelope: envelope,
                     receivedAtNanoseconds: receivedAt
                 )
-                if case .outputAudio(let payload) = event.kind,
-                   let partial = advanceResidentPartialCadence(
-                        audioByteCount: payload.bytes.count,
+                if case .outputAudio = event.kind,
+                   let partial = takeResidentPartialCheckpoint(
                         matching: envelope,
                         interactionID: interactionID
                    ) {
@@ -924,100 +919,77 @@ actor StepFunRealtimeAdapter:
         return true
     }
 
-    private func advanceResidentPartialCadence(
-        audioByteCount: Int,
+    private func takeResidentPartialCheckpoint(
         matching envelope: StepFunRealtimeDecodedEnvelope,
         interactionID: NativeSpeechInteractionID
     ) -> NativeSpeechEvent? {
-        guard !pendingResidentPartialCheckpoints.isEmpty else {
-            residentPartialAudioByteCount = min(
-                Self.residentPartialCadenceByteCount,
-                residentPartialAudioByteCount + audioByteCount
-            )
+        guard let checkpoint = pendingResidentPartialCheckpoint else {
             return nil
         }
-        while let checkpoint = pendingResidentPartialCheckpoints.first {
-            let responseMatches = Self.correlationMatches(
-                checkpoint.responseCorrelationHash,
-                envelope.responseCorrelationHash
-            )
-            let itemMatches = Self.correlationMatches(
-                checkpoint.itemCorrelationHash,
-                envelope.itemCorrelationHash
-            )
-            let activeResponseMatches = Self.correlationMatches(
-                checkpoint.responseCorrelationHash,
-                activeResponseCorrelationHash
-            )
-            let hasMismatch = responseMatches == false
-                || itemMatches == false
-                || activeResponseMatches == false
-            let hasMatch = responseMatches == true
-                || itemMatches == true
-                || activeResponseMatches == true
-                || (checkpoint.responseCorrelationHash == nil
-                    && checkpoint.itemCorrelationHash == nil
-                    && envelope.responseCorrelationHash == nil
-                    && envelope.itemCorrelationHash == nil
-                    && isProviderResponseActive)
-            if hasMismatch {
-                pendingResidentPartialCheckpoints.removeFirst()
-                recordDiagnostic(
-                    source: .adapter,
-                    category: "provider_subtitle_correlation_mismatch",
-                    interactionID: interactionID,
-                    disposition: "partial_discarded",
-                    wireSequence: wireReceiveOrdinal,
-                    responseCorrelationHash:
-                        envelope.responseCorrelationHash,
-                    itemCorrelationHash: envelope.itemCorrelationHash
-                )
-                continue
-            }
-            guard hasMatch else {
-                recordDiagnostic(
-                    source: .adapter,
-                    category: "provider_subtitle_correlation_unavailable",
-                    interactionID: interactionID,
-                    disposition: "partial_not_released",
-                    wireSequence: wireReceiveOrdinal,
-                    responseCorrelationHash:
-                        envelope.responseCorrelationHash,
-                    itemCorrelationHash: envelope.itemCorrelationHash
-                )
-                return nil
-            }
-            residentPartialAudioByteCount += audioByteCount
-            guard residentPartialAudioByteCount
-                    >= Self.residentPartialCadenceByteCount else {
-                return nil
-            }
-            residentPartialAudioByteCount = 0
-            pendingResidentPartialCheckpoints.removeFirst()
+        let responseMatches = Self.correlationMatches(
+            checkpoint.responseCorrelationHash,
+            envelope.responseCorrelationHash
+        )
+        let itemMatches = Self.correlationMatches(
+            checkpoint.itemCorrelationHash,
+            envelope.itemCorrelationHash
+        )
+        let activeResponseMatches = Self.correlationMatches(
+            checkpoint.responseCorrelationHash,
+            activeResponseCorrelationHash
+        )
+        let hasMismatch = responseMatches == false
+            || itemMatches == false
+            || activeResponseMatches == false
+        let hasMatch = responseMatches == true
+            || itemMatches == true
+            || activeResponseMatches == true
+            || (checkpoint.responseCorrelationHash == nil
+                && checkpoint.itemCorrelationHash == nil
+                && envelope.responseCorrelationHash == nil
+                && envelope.itemCorrelationHash == nil
+                && isProviderResponseActive)
+        guard hasMatch, !hasMismatch else {
             recordDiagnostic(
                 source: .adapter,
-                category: "resident_partial_checkpoint_released",
+                category: hasMismatch
+                    ? "provider_subtitle_correlation_mismatch"
+                    : "provider_subtitle_correlation_unavailable",
                 interactionID: interactionID,
-                disposition:
-                    "remaining:\(pendingResidentPartialCheckpoints.count)",
+                disposition: "partial_not_released",
                 wireSequence: wireReceiveOrdinal,
                 responseCorrelationHash:
                     envelope.responseCorrelationHash,
                 itemCorrelationHash: envelope.itemCorrelationHash
             )
-            return NativeSpeechEvent(
+            if hasMismatch {
+                pendingResidentPartialCheckpoint = nil
+                residentPartialReplacementCount = 0
+            }
+            return nil
+        }
+        pendingResidentPartialCheckpoint = nil
+        if residentPartialReplacementCount > 0 {
+            recordDiagnostic(
+                source: .adapter,
+                category: "resident_partial_checkpoints_collapsed",
                 interactionID: interactionID,
-                kind: .outputText(
-                    text: checkpoint.text,
-                    isFinal: false
-                )
+                disposition:
+                    "audio_boundary:\(residentPartialReplacementCount)",
+                wireSequence: wireReceiveOrdinal,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash
             )
         }
-        residentPartialAudioByteCount = min(
-            Self.residentPartialCadenceByteCount,
-            residentPartialAudioByteCount + audioByteCount
+        residentPartialReplacementCount = 0
+        return NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .outputText(
+                text: checkpoint.text,
+                isFinal: false
+            )
         )
-        return nil
     }
 
     private func takeDeferredResidentFinal(
@@ -1078,18 +1050,16 @@ actor StepFunRealtimeAdapter:
         interactionID: NativeSpeechInteractionID,
         boundary: String
     ) {
-        let remaining = pendingResidentPartialCheckpoints.count
-        let overflow = residentPartialOverflowCount
-        pendingResidentPartialCheckpoints.removeAll(keepingCapacity: true)
-        residentPartialAudioByteCount = 0
-        residentPartialOverflowCount = 0
-        guard remaining > 0 || overflow > 0 else { return }
+        let remaining = pendingResidentPartialCheckpoint == nil
+            ? 0 : residentPartialReplacementCount + 1
+        guard remaining > 0 else { return }
+        pendingResidentPartialCheckpoint = nil
+        residentPartialReplacementCount = 0
         recordDiagnostic(
             source: .adapter,
             category: "resident_partial_checkpoints_discarded",
             interactionID: interactionID,
-            disposition:
-                "\(boundary):remaining=\(remaining),overflow=\(overflow)"
+            disposition: "\(boundary):\(remaining)"
         )
     }
 
@@ -1133,15 +1103,10 @@ actor StepFunRealtimeAdapter:
             responseCorrelationHash: envelope.responseCorrelationHash,
             itemCorrelationHash: envelope.itemCorrelationHash
         )
-        if pendingResidentPartialCheckpoints.count
-            < Self.residentPartialCheckpointCapacity {
-            pendingResidentPartialCheckpoints.append(checkpoint)
-        } else {
-            pendingResidentPartialCheckpoints[
-                Self.residentPartialCheckpointCapacity - 1
-            ] = checkpoint
-            residentPartialOverflowCount += 1
+        if pendingResidentPartialCheckpoint != nil {
+            residentPartialReplacementCount += 1
         }
+        pendingResidentPartialCheckpoint = checkpoint
     }
 
     private func isSuppressedResponseEvent(

@@ -12,15 +12,11 @@ private struct MacSpeechAudioOutputHostTests {
         testPCMConversionResetMatchesFreshStream()
         testResumeFadeInEnvelope()
         testPlaybackFadeTracksAudibleOnset()
-        testContinuousProtectorPreservesLowLevelPCM()
-        testContinuousProtectorSoftKneeCurve()
-        testContinuousProtectorContainsFullScalePCM()
-        testContinuousProtectorIsChunkInvariant()
-        testContinuousProtectorHoldAndRelease()
-        testContinuousProtectorDiagnosticPatterns()
+        testPlaybackProcessingPreservesPCMWithoutFade()
+        testPlaybackProcessingAvoidsCrossChunkGainPumping()
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
-        await testPlaybackProtectionEmitsDiagnosticEvent()
+        await testPlaybackProcessingDoesNotEmitLimiterEvent()
         await testPlaybackStartWaitsForAudibleChunk()
         await testDurationBasedStartupWatermark()
         await testOrderedPlaybackAndCompletion()
@@ -99,159 +95,38 @@ private struct MacSpeechAudioOutputHostTests {
                "samples after audible fade stay bit-exact")
     }
 
-    private static func testContinuousProtectorPreservesLowLevelPCM() {
+    private static func testPlaybackProcessingPreservesPCMWithoutFade() {
         let fixtures: [[Int16]] = [
             [Int16](repeating: 0, count: 240),
             [Int16](repeating: 3_000, count: 240),
-            [Int16](repeating: -3_000, count: 240),
-            [0, 5_000, -5_000, 1_000, -1_000]
+            [Int16](repeating: 30_000, count: 240),
+            [Int16.max, Int16.min, 24_000, -24_000]
         ]
         for samples in fixtures {
             let source = pcm16Data(samples: samples)
-            var protector = MacSpeechContinuousOutputProtector()
-            let processed = protector.process(source)
+            let processed = MacSpeechPCMOutputEnvelope.processing(
+                to: source,
+                applyFadeIn: false
+            )
             expect(processed.bytes == source,
-                   "PCM below the soft-knee region stays bit-exact")
-            expect(!processed.didStartAttenuation,
-                   "safe PCM does not start attenuation")
+                   "PCM stays bit-exact without fade")
         }
     }
 
-    private static func testContinuousProtectorSoftKneeCurve() {
-        func appliedGain(at decibels: Double) -> Double {
-            let magnitude = pow(10.0, decibels / 20.0)
-            let sample = Int16(
-                (Double(Int16.max) * magnitude).rounded()
-            )
-            var protector = MacSpeechContinuousOutputProtector()
-            _ = protector.process(pcm16Data(samples: [sample]))
-            return protector.currentGain
-        }
-
-        expect(
-            abs(appliedGain(at: -16.0) - 1.0) < 0.000_001,
-            "PCM below the soft knee remains at unity gain"
-        )
-        expect(
-            abs(appliedGain(at: -12.0) - 0.944) < 0.005,
-            "soft-knee midpoint applies the frozen compression curve"
-        )
-        expect(
-            abs(appliedGain(at: -9.0) - 0.794) < 0.005,
-            "soft-knee upper edge reaches the frozen 3:1 ratio"
-        )
-        expect(
-            abs(appliedGain(at: 0.0) - 0.398) < 0.005,
-            "full-scale PCM follows the frozen ratio without makeup gain"
-        )
-    }
-
-    private static func testContinuousProtectorContainsFullScalePCM() {
-        let samples: [Int16] = [
-            Int16.max, Int16.min, 24_000, -24_000, 12_000, -12_000
+    private static func testPlaybackProcessingAvoidsCrossChunkGainPumping() {
+        let chunks = [
+            pcm16Data(samples: [Int16](repeating: 3_000, count: 240)),
+            pcm16Data(samples: [Int16](repeating: 30_000, count: 240)),
+            pcm16Data(samples: [Int16](repeating: 3_000, count: 240))
         ]
-        var protector = MacSpeechContinuousOutputProtector()
-        let processed = protector.process(pcm16Data(samples: samples))
-        let output = pcmSamples(processed.bytes)
-        expect(processed.didStartAttenuation,
-               "dangerous full-scale PCM starts attenuation")
-        expect(
-            output.allSatisfy { abs(Int32($0)) <= 23_197 },
-            "protected PCM stays below the -3 dBFS safety ceiling"
-        )
-        expect(
-            zip(samples, output).allSatisfy {
-                abs(Int32($0.1)) <= abs(Int32($0.0))
-            },
-            "continuous protection never amplifies an input sample"
-        )
-    }
-
-    private static func testContinuousProtectorIsChunkInvariant() {
-        let samples = (0 ..< 2_400).map { index -> Int16 in
-            switch index % 4 {
-            case 0: return 3_000
-            case 1: return 30_000
-            case 2: return -30_000
-            default: return -3_000
-            }
+        let processed = chunks.map {
+            MacSpeechPCMOutputEnvelope.processing(
+                to: $0,
+                applyFadeIn: false
+            ).bytes
         }
-        let source = pcm16Data(samples: samples)
-        var wholeProtector = MacSpeechContinuousOutputProtector()
-        let whole = wholeProtector.process(source).bytes
-
-        var chunkedProtector = MacSpeechContinuousOutputProtector()
-        var chunked = Data()
-        for range in [0 ..< 1, 1 ..< 317, 317 ..< 1_023, 1_023 ..< 2_400] {
-            chunked.append(chunkedProtector.process(
-                pcm16Data(samples: Array(samples[range]))
-            ).bytes)
-        }
-        expect(
-            chunked == whole,
-            "continuous protection is invariant to Provider chunk boundaries"
-        )
-    }
-
-    private static func testContinuousProtectorHoldAndRelease() {
-        var protector = MacSpeechContinuousOutputProtector()
-        _ = protector.process(pcm16Data(samples: [Int16.max]))
-        let attackGain = protector.currentGain
-        _ = protector.process(pcm16Data(
-            samples: [Int16](repeating: 1_000, count: 960)
-        ))
-        expect(
-            abs(protector.currentGain - attackGain) < 0.000_000_1,
-            "gain holds for exactly 40 milliseconds"
-        )
-        _ = protector.process(pcm16Data(
-            samples: [Int16](repeating: 1_000, count: 7_200)
-        ))
-        let oneTimeConstantGain = 1.0
-            - (1.0 - attackGain) * exp(-1.0)
-        expect(
-            abs(protector.currentGain - oneTimeConstantGain) < 0.000_1,
-            "gain releases by one 300 millisecond time constant"
-        )
-        _ = protector.process(pcm16Data(
-            samples: [Int16](repeating: 1_000, count: 28_800)
-        ))
-        expect(
-            protector.currentGain > 0.99,
-            "release returns monotonically toward unity without makeup gain"
-        )
-    }
-
-    private static func testContinuousProtectorDiagnosticPatterns() {
-        let patterns: [[Int16]] = [
-            [1_000, 2_000, 12_000, 27_480, 26_220, 15],
-            [500, 1_000, 18_000, 28_000, 2_000]
-        ]
-        for samples in patterns {
-            var protector = MacSpeechContinuousOutputProtector()
-            let processed = protector.process(pcm16Data(samples: samples))
-            let output = pcmSamples(processed.bytes)
-            expect(
-                output.allSatisfy { abs(Int32($0)) <= 23_197 },
-                "diagnostic amplitude surges remain under the safety ceiling"
-            )
-            expect(
-                zip(samples, output).allSatisfy {
-                    abs(Int32($0.1)) <= abs(Int32($0.0))
-                },
-                "diagnostic boundary patterns are attenuated, never amplified"
-            )
-            let rawBoundaryJump = abs(
-                Int32(samples[3]) - Int32(samples[2])
-            )
-            let protectedBoundaryJump = abs(
-                Int32(output[3]) - Int32(output[2])
-            )
-            expect(
-                protectedBoundaryJump < rawBoundaryJump,
-                "diagnostic surge boundary is reduced without hard clipping"
-            )
-        }
+        expect(processed == chunks,
+               "quiet loud quiet chunks do not pump gain")
     }
 
     private static func pcm16Data(samples: [Int16]) -> Data {
@@ -272,16 +147,6 @@ private struct MacSpeechAudioOutputHostTests {
             UInt16(bytes[byteIndex])
                 | (UInt16(bytes[byteIndex + 1]) << 8)
         )
-    }
-
-    private static func pcmSamples(_ data: Data) -> [Int16] {
-        let bytes = [UInt8](data)
-        return stride(from: 0, to: bytes.count, by: 2).map { byteIndex in
-            Int16(bitPattern:
-                UInt16(bytes[byteIndex])
-                    | (UInt16(bytes[byteIndex + 1]) << 8)
-            )
-        }
     }
 
     private static func testPCMConversionToLocalFormat() {
@@ -414,7 +279,7 @@ private struct MacSpeechAudioOutputHostTests {
         expect(repeated.recentEvents.map(\.kind) == [.prepared], "prepared event")
     }
 
-    private static func testPlaybackProtectionEmitsDiagnosticEvent() async {
+    private static func testPlaybackProcessingDoesNotEmitLimiterEvent() async {
         let (host, player) = makeHost()
         let generation = await host.prepare().generation
         let source = pcm16Data(
@@ -428,25 +293,12 @@ private struct MacSpeechAudioOutputHostTests {
         let snapshot = await host.finishProviderResponse(
             generation: generation
         )
-        let protectionEvents = snapshot.recentEvents.filter {
-            $0.kind == .outputSafetyLimited
-        }
-        expect(protectionEvents.count == 1,
-               "an attenuation attack emits one diagnostic for its chunk")
-        expect(protectionEvents[0].sequence == 42,
-               "protection diagnostic retains the audio sequence")
-        expect((protectionEvents[0].inputPeak ?? 0) > 0.8,
-               "protection diagnostic records the processed input peak")
-        expect((protectionEvents[0].outputPeak ?? 1) <= 0.707_946,
-               "protection diagnostic records a safe output peak")
-        expect((protectionEvents[0].minimumGain ?? 1) < 1,
-               "protection diagnostic records the minimum applied gain")
-        expect(
-            pcmSamples(player.processed[0]).allSatisfy {
-                abs(Int32($0)) <= 23_197
-            },
-            "scheduled protected PCM stays below the safety ceiling"
-        )
+        expect(!snapshot.recentEvents.map(\.kind).contains(.outputSafetyLimited),
+               "playback does not emit dynamic limiter events")
+        expect(pcmSample(player.processed[0], at: 119) == 30_000,
+               "fade reaches the original near-full-scale PCM")
+        expect(pcmSample(player.processed[0], at: 120) == 30_000,
+               "playback preserves PCM after the first fade")
     }
 
     private static func testPlaybackStartWaitsForAudibleChunk() async {
@@ -556,11 +408,8 @@ private struct MacSpeechAudioOutputHostTests {
         let audible = pcm16Data(
             samples: [Int16](repeating: 3_000, count: 240)
         )
-        let loud = pcm16Data(
-            samples: [Int16](repeating: 30_000, count: 240)
-        )
         _ = await host.enqueue(
-            pcm16Bytes: loud, sequence: 1, generation: generation
+            pcm16Bytes: audible, sequence: 1, generation: generation
         )
         _ = await host.enqueue(
             pcm16Bytes: audible, sequence: 2, generation: generation
@@ -599,10 +448,6 @@ private struct MacSpeechAudioOutputHostTests {
                "stall and resume retain converter stream state")
         expect(player.fadeIns == [true, false, true, false],
                "first audible chunks fade in at start and resume")
-        expect(
-            abs(Int32(pcmSample(player.processed[3], at: 0))) < 3_000,
-            "stall and resume preserve the active protection envelope"
-        )
         _ = await host.finishProviderResponse(generation: generation)
         player.completeScheduledChunk()
         player.completeScheduledChunk()
@@ -779,11 +624,8 @@ private struct MacSpeechAudioOutputHostTests {
         let audible = pcm16Data(
             samples: [Int16](repeating: 3_000, count: 240)
         )
-        let loud = pcm16Data(
-            samples: [Int16](repeating: 30_000, count: 240)
-        )
         _ = await host.enqueue(
-            pcm16Bytes: loud, sequence: 1, generation: generation
+            pcm16Bytes: audible, sequence: 1, generation: generation
         )
         _ = await host.finishProviderResponse(generation: generation)
         let cleared = await host.clearForAcceptedSpeechStart()
@@ -820,7 +662,7 @@ private struct MacSpeechAudioOutputHostTests {
         expect(pcmSample(player.processed[1], at: 119) == 3_000,
                "new generation fade returns to source PCM")
         expect(player.processed[2] == audible,
-               "new generation resets protection before its safe second chunk")
+               "new generation second chunk remains bit-exact")
         _ = await host.stop()
     }
 

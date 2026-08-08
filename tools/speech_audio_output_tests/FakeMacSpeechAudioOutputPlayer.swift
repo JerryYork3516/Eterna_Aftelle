@@ -23,7 +23,6 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var stopCalls = 0
     private var closeCalls = 0
     private var resetForPlaybackGenerationCalls = 0
-    private var outputProtector = MacSpeechContinuousOutputProtector()
     var prepareError: MacSpeechAudioOutputHostError?
     var scheduleError: MacSpeechAudioOutputHostError?
     var startError: MacSpeechAudioOutputHostError?
@@ -61,29 +60,20 @@ final class FakeMacSpeechAudioOutputPlayer:
                 to: pcm16Bytes,
                 applyFadeIn: applyFadeIn
             )
-            let protected = outputProtector.process(processing.bytes)
             scheduledPayloads.append(pcm16Bytes)
-            processedPayloads.append(protected.bytes)
+            processedPayloads.append(processing.bytes)
             scheduledFadeIns.append(applyFadeIn)
             pendingPlaybacks.append(FakeMacSpeechPendingPlayback(
                 completion: completion,
                 byteCount: pcm16Bytes.count
             ))
-            return MacSpeechPCMOutputEnvelope.ProcessingResult(
-                bytes: protected.bytes,
-                isAudible: processing.isAudible,
-                didStartAttenuation: protected.didStartAttenuation,
-                inputPeak: protected.inputPeak,
-                outputPeak: protected.outputPeak,
-                minimumGain: protected.minimumGain
-            )
+            return processing
         }
     }
 
     func resetForPlaybackGeneration() {
         lock.withLock {
             resetForPlaybackGenerationCalls += 1
-            outputProtector.reset()
         }
     }
 
@@ -111,7 +101,6 @@ final class FakeMacSpeechAudioOutputPlayer:
     func close() {
         lock.withLock {
             closeCalls += 1
-            outputProtector.reset()
         }
     }
 

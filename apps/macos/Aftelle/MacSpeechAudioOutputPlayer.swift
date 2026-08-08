@@ -140,26 +140,6 @@ nonisolated enum MacSpeechPCMOutputEnvelope {
     struct ProcessingResult: Sendable, Equatable {
         let bytes: Data
         let isAudible: Bool
-        let didStartAttenuation: Bool
-        let inputPeak: Double
-        let outputPeak: Double
-        let minimumGain: Double
-
-        init(
-            bytes: Data,
-            isAudible: Bool,
-            didStartAttenuation: Bool = false,
-            inputPeak: Double = 0,
-            outputPeak: Double = 0,
-            minimumGain: Double = 1
-        ) {
-            self.bytes = bytes
-            self.isAudible = isAudible
-            self.didStartAttenuation = didStartAttenuation
-            self.inputPeak = inputPeak
-            self.outputPeak = outputPeak
-            self.minimumGain = minimumGain
-        }
     }
 
     static func processing(
@@ -248,123 +228,6 @@ nonisolated enum MacSpeechPCMOutputEnvelope {
     }
 }
 
-nonisolated struct MacSpeechContinuousOutputProtector: Sendable {
-    static let thresholdDecibels = -12.0
-    static let ratio = 3.0
-    static let kneeWidthDecibels = 6.0
-    static let ceilingDecibels = -3.0
-    static let holdSampleCount = 960
-    static let releaseSampleCount = 7_200
-
-    private static let ceilingLinear = pow(
-        10.0,
-        ceilingDecibels / 20.0
-    )
-    private static let releaseFactor = exp(
-        -1.0 / Double(releaseSampleCount)
-    )
-
-    private(set) var currentGain = 1.0
-    private(set) var holdSamplesRemaining = 0
-
-    struct ProcessingResult: Sendable, Equatable {
-        let bytes: Data
-        let didStartAttenuation: Bool
-        let inputPeak: Double
-        let outputPeak: Double
-        let minimumGain: Double
-    }
-
-    mutating func process(_ data: Data) -> ProcessingResult {
-        guard !data.isEmpty,
-              data.count.isMultiple(
-                of: MacSpeechPCMOutputFormat.bytesPerSample
-              ) else {
-            return ProcessingResult(
-                bytes: data,
-                didStartAttenuation: false,
-                inputPeak: 0,
-                outputPeak: 0,
-                minimumGain: currentGain
-            )
-        }
-        let source = [UInt8](data)
-        var output = source
-        var didStartAttenuation = false
-        var inputPeak = 0.0
-        var outputPeak = 0.0
-        var minimumGain = currentGain
-
-        for byteIndex in stride(from: 0, to: source.count, by: 2) {
-            let raw = UInt16(source[byteIndex])
-                | (UInt16(source[byteIndex + 1]) << 8)
-            let sample = Int16(bitPattern: raw)
-            let magnitude = Double(abs(Int32(sample))) / 32_768.0
-            inputPeak = max(inputPeak, magnitude)
-            let targetGain = Self.targetGain(for: magnitude)
-            if targetGain < currentGain {
-                currentGain = targetGain
-                holdSamplesRemaining = Self.holdSampleCount
-                didStartAttenuation = true
-            } else if holdSamplesRemaining > 0 {
-                holdSamplesRemaining -= 1
-            } else {
-                let releasedGain = 1.0
-                    - (1.0 - currentGain) * Self.releaseFactor
-                currentGain = min(targetGain, releasedGain)
-            }
-            minimumGain = min(minimumGain, currentGain)
-            let scaled = Int16(
-                (Double(sample) * currentGain).rounded(.towardZero)
-            )
-            let scaledMagnitude = Double(abs(Int32(scaled))) / 32_768.0
-            outputPeak = max(outputPeak, scaledMagnitude)
-            let scaledRaw = UInt16(bitPattern: scaled)
-            output[byteIndex] = UInt8(truncatingIfNeeded: scaledRaw)
-            output[byteIndex + 1] = UInt8(
-                truncatingIfNeeded: scaledRaw >> 8
-            )
-        }
-        return ProcessingResult(
-            bytes: Data(output),
-            didStartAttenuation: didStartAttenuation,
-            inputPeak: inputPeak,
-            outputPeak: outputPeak,
-            minimumGain: minimumGain
-        )
-    }
-
-    mutating func reset() {
-        currentGain = 1
-        holdSamplesRemaining = 0
-    }
-
-    private static func targetGain(for magnitude: Double) -> Double {
-        guard magnitude > 0 else { return 1 }
-        let level = 20.0 * log10(magnitude)
-        let kneeLower = thresholdDecibels - kneeWidthDecibels / 2.0
-        let kneeUpper = thresholdDecibels + kneeWidthDecibels / 2.0
-        let compressionGainDecibels: Double
-        if level <= kneeLower {
-            compressionGainDecibels = 0
-        } else if level >= kneeUpper {
-            compressionGainDecibels = (1.0 / ratio - 1.0)
-                * (level - thresholdDecibels)
-        } else {
-            let offset = level - thresholdDecibels
-                + kneeWidthDecibels / 2.0
-            compressionGainDecibels = (1.0 / ratio - 1.0)
-                * offset * offset / (2.0 * kneeWidthDecibels)
-        }
-        let compressionGain = pow(
-            10.0,
-            compressionGainDecibels / 20.0
-        )
-        let ceilingGain = min(1.0, ceilingLinear / magnitude)
-        return min(1.0, compressionGain, ceilingGain)
-    }
-}
-
 nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
     func prepare() throws -> MacSpeechLocalPlaybackFormat
     func schedule(
@@ -389,7 +252,6 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     private var playerNode: AVAudioPlayerNode?
     private var converter: MacSpeechPCMOutputConverter?
     private var localFormat: AVAudioFormat?
-    private var outputProtector = MacSpeechContinuousOutputProtector()
 
     func prepare() throws -> MacSpeechLocalPlaybackFormat {
         try lock.withLock {
@@ -441,19 +303,10 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
                 to: pcm16Bytes,
                 applyFadeIn: applyFadeIn
             )
-            let protected = outputProtector.process(processing.bytes)
             let buffer = try converter.convert(
-                pcm16Bytes: protected.bytes
+                pcm16Bytes: processing.bytes
             )
-            let result = MacSpeechPCMOutputEnvelope.ProcessingResult(
-                bytes: protected.bytes,
-                isAudible: processing.isAudible,
-                didStartAttenuation: protected.didStartAttenuation,
-                inputPeak: protected.inputPeak,
-                outputPeak: protected.outputPeak,
-                minimumGain: protected.minimumGain
-            )
-            return (playerNode, buffer, result)
+            return (playerNode, buffer, processing)
         }
         prepared.0.scheduleBuffer(
             prepared.1,
@@ -467,7 +320,6 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     func resetForPlaybackGeneration() {
         lock.withLock {
             converter?.reset()
-            outputProtector.reset()
         }
     }
 
@@ -507,7 +359,6 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
                 engine.detach(playerNode)
             }
             converter = nil
-            outputProtector.reset()
             localFormat = nil
             playerNode = nil
             engine = nil

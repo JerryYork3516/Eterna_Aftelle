@@ -223,102 +223,40 @@ private struct NativeSpeechDuplexTests {
         let interactionID = NativeSpeechInteractionID(rawValue: UUID(
             uuidString: "00000000-0000-0000-0000-000000000091"
         )!)
-        let identity = RealtimeSpeechPlaybackSubtitleIdentity(
-            interactionID: interactionID,
-            turnNumber: 1,
-            turnGeneration: 1,
-            playbackGeneration: 7
-        )
-        synchronizer.observeEnqueuedAudio(sequence: 10, identity: identity)
-        expect(synchronizer.enqueuePartial(text: "我", identity: identity),
+        synchronizer.observeEnqueuedAudio(sequence: 10)
+        expect(synchronizer.enqueuePartial(text: "我"),
                "partial binds to the latest real audio sequence")
-        synchronizer.observeEnqueuedAudio(sequence: 20, identity: identity)
-        expect(synchronizer.enqueuePartial(text: "我是", identity: identity),
+        synchronizer.observeEnqueuedAudio(sequence: 20)
+        expect(synchronizer.enqueuePartial(text: "我是"),
                "later partial binds to a later real sequence")
-        synchronizer.enqueueFinal(text: "我是林轩", identity: identity)
-        synchronizer.advance(playedSequence: 10, identity: identity)
+        synchronizer.enqueueFinal(text: "我是林轩")
+        synchronizer.advance(playedSequence: 10)
         expect(synchronizer.displayText == "我",
                "first played sequence releases only its partial")
-        synchronizer.advance(playedSequence: 19, identity: identity)
+        synchronizer.advance(playedSequence: 19)
         expect(synchronizer.displayText == "我",
                "an unplayed sequence cannot advance subtitles")
-        synchronizer.advance(playedSequence: 20, identity: identity)
+        synchronizer.advance(playedSequence: 20)
         expect(synchronizer.displayText == "我是",
                "matching played sequence advances the partial")
-        synchronizer.completePlayback(identity: identity)
+        synchronizer.completePlayback(
+            interactionID: interactionID,
+            turnNumber: 1,
+            turnGeneration: 1
+        )
         expect(synchronizer.displayText == "我是林轩",
                "final locks only after playback completion")
 
         synchronizer.reset()
-        synchronizer.observeEnqueuedAudio(sequence: 30, identity: identity)
-        synchronizer.advance(playedSequence: 30, identity: identity)
+        synchronizer.observeEnqueuedAudio(sequence: 30)
+        synchronizer.advance(playedSequence: 30)
         expect(
-            synchronizer.enqueuePartial(
-                text: "已播放水位",
-                identity: identity
-            ),
+            synchronizer.enqueuePartial(text: "已播放水位"),
             "partial can bind after its chunkPlayed callback"
         )
         expect(
             synchronizer.displayText == "已播放水位",
             "late-bound partial releases immediately at played waterline"
-        )
-
-        synchronizer.reset()
-        for sequence in 0 ... 128 {
-            synchronizer.observeEnqueuedAudio(
-                sequence: UInt64(sequence),
-                identity: identity
-            )
-            expect(
-                synchronizer.enqueuePartial(
-                    text: "字幕\(sequence)",
-                    identity: identity
-                ),
-                "bounded pending subtitle accepts its real audio watermark"
-            )
-        }
-        expect(
-            synchronizer.pendingFrameCount == 128
-                && synchronizer.pendingFrameOverflowCount == 1,
-            "pending subtitle frames retain a bounded 128-item queue"
-        )
-        synchronizer.advance(playedSequence: 0, identity: identity)
-        expect(
-            synchronizer.displayText == "字幕0",
-            "pending overflow keeps the first unplayed checkpoint"
-        )
-        synchronizer.advance(playedSequence: 127, identity: identity)
-        expect(
-            synchronizer.displayText == "字幕126",
-            "pending overflow preserves ordered early checkpoints"
-        )
-        synchronizer.advance(playedSequence: 128, identity: identity)
-        expect(
-            synchronizer.displayText == "字幕128",
-            "pending overflow retains the latest checkpoint at the tail"
-        )
-
-        synchronizer.reset()
-        let staleIdentity = RealtimeSpeechPlaybackSubtitleIdentity(
-            interactionID: interactionID,
-            turnNumber: 2,
-            turnGeneration: 2,
-            playbackGeneration: 8
-        )
-        synchronizer.observeEnqueuedAudio(sequence: 200, identity: identity)
-        expect(
-            !synchronizer.enqueuePartial(
-                text: "旧轮字幕",
-                identity: staleIdentity
-            ),
-            "old turn and playback generation cannot bind a subtitle"
-        )
-        synchronizer.enqueueFinal(text: "旧轮终稿", identity: staleIdentity)
-        synchronizer.completePlayback(identity: identity)
-        expect(
-            synchronizer.displayText == nil,
-            "old turn final cannot cross the playback identity gate"
         )
 
         synchronizer.reset()
@@ -581,25 +519,6 @@ private struct NativeSpeechDuplexTests {
             timeline.droppedEventCount == 1,
             "diagnostic timeline reports dropped events"
         )
-        timeline.append(
-            source: .playback,
-            category: "output_safety_limited",
-            pcmInputPeak: 0.91,
-            pcmOutputPeak: 0.70,
-            pcmMinimumGain: 0.42
-        )
-        let protectionData = try JSONEncoder().encode(
-            timeline.events.last!
-        )
-        let protectionObject = try JSONSerialization.jsonObject(
-            with: protectionData
-        ) as! [String: Any]
-        expect(
-            protectionObject["pcmInputPeak"] as? Double == 0.91
-                && protectionObject["pcmOutputPeak"] as? Double == 0.70
-                && protectionObject["pcmMinimumGain"] as? Double == 0.42,
-            "diagnostic export preserves continuous protection metrics"
-        )
         timeline.clear()
         expect(
             timeline.eventCount == 0 && timeline.droppedEventCount == 0,
@@ -676,10 +595,6 @@ private struct NativeSpeechDuplexTests {
             stack.controller.realtimeSpeechSubtitleSnapshot.userPartial
                 == "你好"
         }
-        expect(
-            stack.controller.particleSubtitleState.text != "你好",
-            "Provider user partial never drives the visible subtitle"
-        )
         await transport.enqueue(
             .text(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#)
         )
@@ -697,25 +612,13 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"我"}"#)
         )
         await transport.enqueue(
-            audioDeltaFrame(responseID: "response-one", itemID: "item-one")
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AQI="}"#)
         )
         await transport.enqueue(
             .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"是"}"#)
         )
         await transport.enqueue(
-            audioDeltaFrame(responseID: "response-one", itemID: "item-one")
-        )
-        await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"林"}"#)
-        )
-        await transport.enqueue(
-            audioDeltaFrame(responseID: "response-one", itemID: "item-one")
-        )
-        await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"轩"}"#)
-        )
-        await transport.enqueue(
-            audioDeltaFrame(responseID: "response-one", itemID: "item-one")
+            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AwQ="}"#)
         )
         await waitUntil {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentPartial
@@ -739,15 +642,7 @@ private struct NativeSpeechDuplexTests {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
                 == "我是林轩"
         }
-        await waitUntil { stack.outputPlayer.scheduledCount == 4 }
-        stack.outputPlayer.completeScheduledChunk()
-        await waitUntil {
-            stack.controller.particleSubtitleState.text != "我"
-        }
-        stack.outputPlayer.completeScheduledChunk()
-        await waitUntil {
-            stack.controller.particleSubtitleState.text == "我"
-        }
+        await waitUntil { stack.outputPlayer.scheduledCount == 2 }
         stack.outputPlayer.completeScheduledChunk()
         await waitUntil {
             stack.controller.particleSubtitleState.text == "我"
@@ -2179,18 +2074,6 @@ private struct NativeSpeechDuplexTests {
             ],
             responseCancelDelay: responseCancelDelay,
             waitsWhenEmpty: true
-        )
-    }
-
-    private static func audioDeltaFrame(
-        responseID: String,
-        itemID: String,
-        byteCount: Int = 8_192
-    ) -> RealtimeWebSocketFrame {
-        let encoded = Data(repeating: 1, count: byteCount)
-            .base64EncodedString()
-        return .text(
-            #"{"type":"response.audio.delta","response_id":"\#(responseID)","item_id":"\#(itemID)","delta":"\#(encoded)"}"#
         )
     }
 

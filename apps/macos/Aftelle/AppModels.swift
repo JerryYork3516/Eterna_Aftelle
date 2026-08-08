@@ -851,9 +851,6 @@ struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
     let pcmRMS: Double?
     let pcmClipCount: Int?
     let pcmBoundaryJump: Double?
-    let pcmInputPeak: Double?
-    let pcmOutputPeak: Double?
-    let pcmMinimumGain: Double?
     let errorCode: String?
 }
 
@@ -909,9 +906,6 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
         pcmRMS: Double? = nil,
         pcmClipCount: Int? = nil,
         pcmBoundaryJump: Double? = nil,
-        pcmInputPeak: Double? = nil,
-        pcmOutputPeak: Double? = nil,
-        pcmMinimumGain: Double? = nil,
         errorCode: String? = nil,
         timestamp: Date = Date(),
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
@@ -950,9 +944,6 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
             pcmRMS: pcmRMS,
             pcmClipCount: pcmClipCount,
             pcmBoundaryJump: pcmBoundaryJump,
-            pcmInputPeak: pcmInputPeak,
-            pcmOutputPeak: pcmOutputPeak,
-            pcmMinimumGain: pcmMinimumGain,
             errorCode: errorCode
         )
         if eventCount < Self.capacity {

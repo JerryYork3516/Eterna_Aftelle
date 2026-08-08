@@ -198,11 +198,9 @@ rg -q 'case \.residentTextDelta, \.residentTextDone:' "$adapter"
 rg -q 'case chunkPlayed' \
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputHost.swift"
 rg -q 'RealtimeSpeechPlaybackSubtitleSynchronizer' "$controller"
-rg -q 'RealtimeSpeechPlaybackSubtitleIdentity' "$controller"
-rg -q 'pendingFrameCapacity = 128' "$controller"
 rg -q 'requiredAudioSequence' "$controller"
-rg -Fq 'mutating func advance(' "$controller"
-rg -Fq 'observeEnqueuedAudio(' "$controller"
+rg -Fq 'advance(playedSequence:' "$controller"
+rg -Fq 'observeEnqueuedAudio(sequence:' "$controller"
 rg -Fq 'completePlayback(' "$controller"
 if rg -q 'requiredPlayedChunkCount|lastAssignedPlayedChunkCount|forceLatest' \
   "$controller"; then
@@ -212,10 +210,6 @@ fi
 rg -q 'conversation.item.created' "$codec"
 rg -q 'provider_user_partial_unavailable' "$adapter"
 echo "native_speech_subtitle_audio_watermark=PASS"
-if rg -q 'scheduleRealtimeSpeechPartialRefresh|subtitleSnapshot\.userPartial' \
-  "$controller"; then
-  echo "native_speech_user_partial_ui=FAIL"
-  exit 1
-fi
-echo "native_speech_user_partial_ui=PASS"
+rg -q 'scheduleRealtimeSpeechPartialRefresh' "$controller"
+rg -Fq 'Task.sleep(for: .milliseconds(50))' "$controller"
 echo "native_speech_streaming_subtitle=PASS"
