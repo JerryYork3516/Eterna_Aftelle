@@ -304,6 +304,10 @@ final class AppController: ObservableObject {
         consumeEvent: { [weak self] event in
             await self?.consumeNativeSpeechOutputEvent(event)
         },
+        clearOutputForSpeechStart: { [speechAudioOutputHost] in
+            _ = await speechAudioOutputHost
+                .clearForAcceptedSpeechStart()
+        },
         endInputPump: { [weak self] in
             guard let self else { return }
             _ = await speechInputBridge.stop()
@@ -1844,12 +1848,15 @@ final class AppController: ObservableObject {
             .realtimeSpeechSubtitleSnapshot()
         let turnNumber = stateSnapshot.currentTurnNumber
         let turnGeneration = subtitleSnapshot.turnGeneration
-        let cleared = await clearInterruptedPlaybackIfNeeded(
+        let cleared = finalizeInterruptedPlaybackClearIfNeeded(
             stateSnapshot: stateSnapshot
         )
-        let clearDuration = (
-            DispatchTime.now().uptimeNanoseconds &- startedAtNanoseconds
-        ) / 1_000_000
+        speechOutputBridgeSnapshot =
+            await speechOutputBridge.currentSnapshot()
+        let clearDuration = speechOutputBridgeSnapshot
+            .lastSpeechStartPreclearDurationMilliseconds
+            ?? ((DispatchTime.now().uptimeNanoseconds &- startedAtNanoseconds)
+                / 1_000_000)
         let interactionShortID = String(
             event.interactionID.rawValue.uuidString.prefix(8)
         )
@@ -1937,9 +1944,9 @@ final class AppController: ObservableObject {
         await consumePlaybackEvents(in: snapshot)
     }
 
-    private func clearInterruptedPlaybackIfNeeded(
+    private func finalizeInterruptedPlaybackClearIfNeeded(
         stateSnapshot: RealtimeSpeechStateSnapshot
-    ) async -> Bool {
+    ) -> Bool {
         guard let binding = nativeSpeechPlaybackBinding,
               stateSnapshot.lastTransitionReason == .interrupted,
               stateSnapshot.currentTurnNumber > binding.turnNumber else {
@@ -1947,7 +1954,6 @@ final class AppController: ObservableObject {
         }
         playbackInterruptClearCount &+= 1
         nativeSpeechPlaybackBinding = nil
-        speechAudioOutputHostSnapshot = await speechAudioOutputHost.clear()
         return true
     }
 

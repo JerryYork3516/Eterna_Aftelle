@@ -73,6 +73,7 @@ rg -q 'mediaCapacityWaiter = continuation' "$output_bridge"
 test "$(rg -c 'withCheckedContinuation' "$output_bridge")" -eq 1
 rg -q 'case \.outputAudio, \.outputText, \.responseCompleted:' "$output_bridge"
 rg -q 'case \.inputSpeechStarted, \.turnFailed,' "$output_bridge"
+rg -q 'clearOutputForSpeechStart' "$output_bridge" "$controller"
 if rg -q 'AsyncStream' "$output_bridge"; then
   echo "native_speech_duplex_bounded_output=FAIL"
   exit 1

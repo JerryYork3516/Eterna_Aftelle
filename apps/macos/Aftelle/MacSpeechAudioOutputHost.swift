@@ -307,9 +307,18 @@ actor MacSpeechAudioOutputHost {
         return snapshot()
     }
 
+    func clearForAcceptedSpeechStart()
+        -> MacSpeechAudioOutputHostSnapshot {
+        guard hasPendingPlayback else { return snapshot() }
+        invalidatePlayback(keepsEngineRunning: true)
+        state = .prepared
+        lastError = nil
+        return snapshot()
+    }
+
     func clear() -> MacSpeechAudioOutputHostSnapshot {
         guard state != .closed else { return snapshot() }
-        invalidatePlayback()
+        invalidatePlayback(keepsEngineRunning: true)
         state = .prepared
         lastError = nil
         return snapshot()
@@ -536,16 +545,27 @@ actor MacSpeechAudioOutputHost {
         return snapshot()
     }
 
-    private func invalidatePlayback() {
+    private func invalidatePlayback(
+        keepsEngineRunning: Bool = false
+    ) {
         timeoutTask?.cancel()
         timeoutTask = nil
-        player.stop()
+        if keepsEngineRunning {
+            player.clearScheduledPlayback()
+        } else {
+            player.stop()
+        }
         generation &+= 1
         inFlightByteCounts.removeAll(keepingCapacity: true)
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
         shouldFadeInNextChunk = false
+    }
+
+    private var hasPendingPlayback: Bool {
+        state == .playing || state == .stalled || state == .draining
+            || !queue.isEmpty || !inFlightByteCounts.isEmpty
     }
 
     private func startDeviceMonitoringIfNeeded() {

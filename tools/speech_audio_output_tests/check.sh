@@ -69,6 +69,8 @@ rg -q 'scheduleAheadCount: 4' "$buffer"
 rg -q 'applyingResumeFadeIn' "$player"
 rg -q 'applyingPlaybackSafety' "$player"
 rg -q 'outputSafetyLimited' "$host"
+rg -q 'clearForAcceptedSpeechStart' "$host"
+rg -q 'clearScheduledPlayback' "$player"
 rg -q 'scheduleAvailableChunks' "$host"
 rg -q 'withCheckedContinuation' "$host"
 if rg -q 'return fail\(\.queueFull\)' "$host"; then

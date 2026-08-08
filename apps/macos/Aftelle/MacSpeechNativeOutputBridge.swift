@@ -19,6 +19,7 @@ nonisolated struct MacSpeechNativeOutputBridgeSnapshot: Sendable, Equatable {
     let outputAudioByteCount: UInt64
     let completedResponseCount: UInt64
     let firstChunkLatencyMilliseconds: UInt64?
+    let lastSpeechStartPreclearDurationMilliseconds: UInt64?
     let runtimeRejectedEventCount: UInt64
     let terminalStatus: String?
     let lastError: String?
@@ -31,6 +32,7 @@ nonisolated struct MacSpeechNativeOutputBridgeSnapshot: Sendable, Equatable {
         outputAudioByteCount: 0,
         completedResponseCount: 0,
         firstChunkLatencyMilliseconds: nil,
+        lastSpeechStartPreclearDurationMilliseconds: nil,
         runtimeRejectedEventCount: 0,
         terminalStatus: nil,
         lastError: nil,
@@ -67,6 +69,7 @@ actor MacSpeechNativeOutputBridge {
         NativeSpeechInteractionID
     ) async -> Result<NativeSpeechEventDisposition, NativeSpeechError>
     typealias ConsumeEvent = @Sendable (NativeSpeechEvent) async -> Void
+    typealias ClearOutputForSpeechStart = @Sendable () async -> Void
     typealias EndInputPump = @MainActor @Sendable () async -> Void
     typealias StopInput = @MainActor @Sendable (
         NativeSpeechInputBinding,
@@ -78,6 +81,7 @@ actor MacSpeechNativeOutputBridge {
 
     private let receiveEvent: ReceiveEvent
     private let consumeEvent: ConsumeEvent
+    private let clearOutputForSpeechStart: ClearOutputForSpeechStart
     private let endInputPump: EndInputPump
     private let stopInput: StopInput
     private let closeInput: CloseInput
@@ -92,6 +96,7 @@ actor MacSpeechNativeOutputBridge {
     private var outputAudioByteCount: UInt64 = 0
     private var completedResponseCount: UInt64 = 0
     private var firstChunkLatencyMilliseconds: UInt64?
+    private var lastSpeechStartPreclearDurationMilliseconds: UInt64?
     private var runtimeRejectedEventCount: UInt64 = 0
     private var terminalStatus: String?
     private var lastError: String?
@@ -101,12 +106,14 @@ actor MacSpeechNativeOutputBridge {
     init(
         receiveEvent: @escaping ReceiveEvent,
         consumeEvent: @escaping ConsumeEvent,
+        clearOutputForSpeechStart: @escaping ClearOutputForSpeechStart = {},
         endInputPump: @escaping EndInputPump,
         stopInput: @escaping StopInput,
         closeInput: @escaping CloseInput
     ) {
         self.receiveEvent = receiveEvent
         self.consumeEvent = consumeEvent
+        self.clearOutputForSpeechStart = clearOutputForSpeechStart
         self.endInputPump = endInputPump
         self.stopInput = stopInput
         self.closeInput = closeInput
@@ -123,6 +130,7 @@ actor MacSpeechNativeOutputBridge {
         outputAudioByteCount = 0
         completedResponseCount = 0
         firstChunkLatencyMilliseconds = nil
+        lastSpeechStartPreclearDurationMilliseconds = nil
         runtimeRejectedEventCount = 0
         terminalStatus = nil
         lastError = nil
@@ -189,6 +197,15 @@ actor MacSpeechNativeOutputBridge {
                 }
                 if invalidatesPendingMedia(event) {
                     _ = invalidateMediaDelivery()
+                    if case .inputSpeechStarted = event.kind {
+                        let preclearStartedAt = DispatchTime.now()
+                            .uptimeNanoseconds
+                        await clearOutputForSpeechStart()
+                        lastSpeechStartPreclearDurationMilliseconds = (
+                            DispatchTime.now().uptimeNanoseconds
+                                &- preclearStartedAt
+                        ) / 1_000_000
+                    }
                     await consumeEvent(event)
                 } else if requiresOrderedMediaDelivery(event) {
                     guard await enqueueMediaEvent(
@@ -412,6 +429,8 @@ actor MacSpeechNativeOutputBridge {
             outputAudioByteCount: outputAudioByteCount,
             completedResponseCount: completedResponseCount,
             firstChunkLatencyMilliseconds: firstChunkLatencyMilliseconds,
+            lastSpeechStartPreclearDurationMilliseconds:
+                lastSpeechStartPreclearDurationMilliseconds,
             runtimeRejectedEventCount: runtimeRejectedEventCount,
             terminalStatus: terminalStatus,
             lastError: lastError,

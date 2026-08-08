@@ -18,6 +18,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var scheduledFadeIns: [Bool] = []
     private var prepareCalls = 0
     private var startCalls = 0
+    private var clearScheduledPlaybackCalls = 0
     private var stopCalls = 0
     private var closeCalls = 0
     var prepareError: MacSpeechAudioOutputHostError?
@@ -73,11 +74,17 @@ final class FakeMacSpeechAudioOutputPlayer:
         }
     }
 
+    func clearScheduledPlayback() {
+        lock.withLock {
+            clearScheduledPlaybackCalls += 1
+            movePendingPlaybacksToStopped()
+        }
+    }
+
     func stop() {
         lock.withLock {
             stopCalls += 1
-            stoppedPlaybacks.append(contentsOf: pendingPlaybacks)
-            pendingPlaybacks.removeAll(keepingCapacity: true)
+            movePendingPlaybacksToStopped()
         }
     }
 
@@ -111,12 +118,20 @@ final class FakeMacSpeechAudioOutputPlayer:
 
     var prepareCount: Int { lock.withLock { prepareCalls } }
     var startCount: Int { lock.withLock { startCalls } }
+    var clearScheduledPlaybackCount: Int {
+        lock.withLock { clearScheduledPlaybackCalls }
+    }
     var stopCount: Int { lock.withLock { stopCalls } }
     var closeCount: Int { lock.withLock { closeCalls } }
     var scheduledCount: Int { lock.withLock { scheduledPayloads.count } }
     var pendingCount: Int { lock.withLock { pendingPlaybacks.count } }
     var payloads: [Data] { lock.withLock { scheduledPayloads } }
     var fadeIns: [Bool] { lock.withLock { scheduledFadeIns } }
+
+    private func movePendingPlaybacksToStopped() {
+        stoppedPlaybacks.append(contentsOf: pendingPlaybacks)
+        pendingPlaybacks.removeAll(keepingCapacity: true)
+    }
 }
 
 final class FakeMacSpeechOutputDeviceMonitor:

@@ -227,6 +227,7 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
         ) -> Void
     ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult
     func start() throws
+    func clearScheduledPlayback()
     func stop()
     func close()
 }
@@ -315,6 +316,12 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
             if !playerNode.isPlaying {
                 playerNode.play()
             }
+        }
+    }
+
+    func clearScheduledPlayback() {
+        lock.withLock {
+            playerNode?.stop()
         }
     }
 

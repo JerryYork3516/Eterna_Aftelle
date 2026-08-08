@@ -24,6 +24,7 @@ private struct MacSpeechAudioOutputHostTests {
         await testConsumerTimeoutStopsAndClears()
         testConsumerWatchdogIncludesScheduledPCMDuration()
         await testStopAndCloseAreIdempotent()
+        await testSpeechStartClearKeepsEngineAvailable()
         await testGenerationRejectsLateInputAndCompletion()
         await testStaleResponseCompletionCannotFinishNewGeneration()
         await testCloseCanReprepare()
@@ -514,6 +515,29 @@ private struct MacSpeechAudioOutputHostTests {
         expect(closed.state == .closed, "closed state")
         expect(closedAgain.generation == closed.generation, "close idempotent")
         expect(player.closeCount == 1, "single close side effect")
+    }
+
+    private static func testSpeechStartClearKeepsEngineAvailable() async {
+        let (host, player) = makeHost()
+        let generation = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        )
+        _ = await host.finishProviderResponse(generation: generation)
+        let cleared = await host.clearForAcceptedSpeechStart()
+        expect(cleared.state == .prepared,
+               "speech start returns output Host to prepared")
+        expect(cleared.generation > generation,
+               "speech start invalidates the old playback generation")
+        expect(player.clearScheduledPlaybackCount == 1,
+               "speech start clears scheduled PlayerNode audio once")
+        expect(player.stopCount == 0,
+               "speech start keeps the audio engine available")
+        let repeated = await host.clearForAcceptedSpeechStart()
+        expect(repeated.generation == cleared.generation,
+               "duplicate speech start does not clear an empty Host")
+        expect(player.clearScheduledPlaybackCount == 1,
+               "duplicate speech start has no Player side effect")
     }
 
     private static func testGenerationRejectsLateInputAndCompletion() async {

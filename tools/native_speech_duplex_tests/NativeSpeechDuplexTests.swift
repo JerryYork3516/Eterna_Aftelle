@@ -164,6 +164,20 @@ private actor SlowOrderedOutputConsumer {
     }
 }
 
+private actor InterruptPreclearProbe {
+    private(set) var preclearCount = 0
+    private(set) var controlObservedPreclear = false
+
+    func preclear() {
+        preclearCount += 1
+    }
+
+    func consume(_ event: NativeSpeechEvent) {
+        guard case .inputSpeechStarted = event.kind else { return }
+        controlObservedPreclear = preclearCount == 1
+    }
+}
+
 @MainActor
 @main
 private struct NativeSpeechDuplexTests {
@@ -190,6 +204,7 @@ private struct NativeSpeechDuplexTests {
         await testDebugSinkClearsInterruptedOutput()
         await testMediaCapacityBackpressurePreservesInteraction()
         await testControlBypassesBlockedMedia()
+        await testSpeechStartPreclearsBeforeConsumer()
         try await testSlowConsumerPreservesInteraction()
         try await testRecoverableTurnFailurePreservesBridge()
         try await testReceiveFailureAndDuplicateStart()
@@ -1014,6 +1029,48 @@ private struct NativeSpeechDuplexTests {
         }
     }
 
+    private static func testSpeechStartPreclearsBeforeConsumer() async {
+        let source = DirectOutputEventSource()
+        let probe = InterruptPreclearProbe()
+        let interactionID = NativeSpeechInteractionID()
+        let binding = NativeSpeechInputBinding(
+            interactionID: interactionID,
+            residentID: "resident",
+            sessionID: "session",
+            captureGeneration: 1
+        )
+        let bridge = MacSpeechNativeOutputBridge(
+            receiveEvent: { _ in await source.receive() },
+            consumeEvent: { event in await probe.consume(event) },
+            clearOutputForSpeechStart: { await probe.preclear() },
+            endInputPump: {},
+            stopInput: { _, _ in .success(()) },
+            closeInput: { _ in .success(()) }
+        )
+        _ = await bridge.start(binding: binding)
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .inputSpeechStarted
+        )))
+        await waitUntil { await probe.controlObservedPreclear }
+        expect(await probe.preclearCount == 1,
+               "speech_started preclears local output once")
+        expect(await probe.controlObservedPreclear,
+               "local preclear precedes MainActor event consumption")
+        expect(
+            await bridge.currentSnapshot()
+                .lastSpeechStartPreclearDurationMilliseconds != nil,
+            "speech start exposes truthful Host preclear duration"
+        )
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .closed
+        )))
+        await waitUntil {
+            !(await bridge.currentSnapshot().hasActiveReceiveLoop)
+        }
+    }
+
     private static func testInterruptThroughController() async throws {
         let transport = handshakeTransport(
             responseCancelDelay: .milliseconds(300)
@@ -1061,6 +1118,13 @@ private struct NativeSpeechDuplexTests {
 
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await waitUntil {
+            stack.outputPlayer.clearScheduledPlaybackCount == 1
+        }
+        expect(
+            stack.outputPlayer.stopCount == 0,
+            "Interrupt clears PlayerNode before stopping the audio engine"
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
