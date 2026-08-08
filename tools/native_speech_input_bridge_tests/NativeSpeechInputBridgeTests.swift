@@ -61,8 +61,10 @@ private final class FakeBridgeAudioCapture:
 
     @discardableResult
     func emit(_ marker: UInt8) -> Bool {
-        let target = lock.withLock { (frameBuffer, generation) }
-        guard let frameBuffer = target.0, let generation = target.1 else {
+        let target = lock.withLock { (started, frameBuffer, generation) }
+        guard target.0,
+              let frameBuffer = target.1,
+              let generation = target.2 else {
             return false
         }
         return frameBuffer.append(
@@ -450,14 +452,25 @@ private struct NativeSpeechInputBridgeTests {
             stack.controller.speechAudioHostSnapshot.isCapturing,
             "AppController starts Fake Audio Host capture"
         )
-        for marker in UInt8(1) ... UInt8(30) {
-            expect(stack.capture.emit(marker), "Fake Audio Source emits PCM16 frame")
+        for marker in UInt8(201) ... UInt8(205) {
+            expect(
+                stack.capture.emit(marker),
+                "standalone capture can produce before bridge startup"
+            )
         }
-        let bounded = await stack.host.currentSnapshot()
-        expect(bounded.queuedFrameCount == 25, "Host buffers at most 500 ms")
-        expect(bounded.droppedFrameCount == 5, "Host deterministically drops five oldest frames")
 
         await stack.controller.startNativeSpeechInputBridge()
+        let started = await stack.host.currentSnapshot()
+        expect(started.isCapturing, "capture starts after Provider handshake")
+        expect(
+            started.generatedFrameCount == 0
+                && started.droppedFrameCount == 0
+                && started.queuedFrameCount == 0,
+            "bridge generation excludes standalone pre-handshake frames"
+        )
+        for marker in UInt8(1) ... UInt8(25) {
+            expect(stack.capture.emit(marker), "Fake Audio Source emits PCM16 frame")
+        }
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechInputBridgeSnapshot
@@ -483,7 +496,7 @@ private struct NativeSpeechInputBridgeTests {
                   let data = Data(base64Encoded: encoded) else { return nil }
             return data.first
         }
-        expect(markers == Array(UInt8(6) ... UInt8(30)), "audio order preserves newest bounded frames")
+        expect(markers == Array(UInt8(1) ... UInt8(25)), "audio order preserves post-handshake frames")
 
         await stack.controller.startNativeSpeechInputBridge()
         await stack.controller.refreshMicrophoneAuthorization()
@@ -500,8 +513,12 @@ private struct NativeSpeechInputBridgeTests {
         expect(!stack.controller.speechAudioHostSnapshot.isCapturing, "Host stop ends capture")
         expect(!stack.controller.speechInputBridgeSnapshot.hasActivePump, "Host stop ends input pump")
         expect(!stack.capture.emit(13), "stopped generation rejects late Host frame")
+        let stopCount = stack.capture.stopCount
         await stack.controller.stopSpeechAudioCapture()
-        expect(stack.capture.stopCount == 1, "repeated stop is idempotent")
+        expect(
+            stack.capture.stopCount == stopCount,
+            "repeated stop is idempotent"
+        )
         expect(
             try await audioAppendObjects(transport).count == 25,
             "stop sends no late audio append"
@@ -702,8 +719,8 @@ private struct NativeSpeechInputBridgeTests {
         let stack = makeControllerStack(transport: transport)
         _ = stack.orchestration.loadResident(fixtureData: fixtureData)
         await stack.controller.startSpeechAudioCapture()
-        expect(stack.capture.emit(42), "failure source emits one frame")
         await stack.controller.startNativeSpeechInputBridge()
+        expect(stack.capture.emit(42), "failure source emits one frame")
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
             return stack.controller.speechInputBridgeSnapshot.state == .failed

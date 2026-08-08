@@ -1523,6 +1523,11 @@ final class AppController: ObservableObject {
 
     func startSpeechAudioCapture() async {
         speechAudioHostSnapshot = await speechAudioHost.startCapture()
+        if speechAudioHostSnapshot.isCapturing {
+            lastDiagnosticAggregateNanoseconds = 0
+            lastDiagnosticCaptureGeneratedCount = 0
+            lastDiagnosticCaptureDroppedCount = 0
+        }
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: speechAudioHostSnapshot.isCapturing
@@ -1601,8 +1606,16 @@ final class AppController: ObservableObject {
             source: .lifecycle,
             category: "bridge_start_requested"
         )
+        guard !speechInputBridgeSnapshot.hasActivePump else {
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "bridge_start_ignored_active"
+            )
+            return
+        }
         guard let captureGeneration =
-            await speechAudioHost.activeCaptureGeneration() else {
+            await speechAudioHost.prepareCaptureGeneration() else {
+            speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
             speechInputBridgeSnapshot =
                 await speechInputBridge.fail(.unavailable)
             recordRealtimeSpeechDiagnostic(
@@ -1612,6 +1625,14 @@ final class AppController: ObservableObject {
             )
             return
         }
+        speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+        lastDiagnosticAggregateNanoseconds = 0
+        lastDiagnosticCaptureGeneratedCount = 0
+        lastDiagnosticCaptureDroppedCount = 0
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "capture_prepared"
+        )
         let result = await orchestrationKernel.startNativeSpeechInput(
             profile: Stage75NativeSpeechConfiguration.profile,
             captureGeneration: captureGeneration
@@ -1627,6 +1648,29 @@ final class AppController: ObservableObject {
             }
             speechOutputBridgeSnapshot = await speechOutputBridge.start(
                 binding: binding
+            )
+            speechAudioHostSnapshot = await speechAudioHost
+                .startPreparedCapture(generation: captureGeneration)
+            guard speechAudioHostSnapshot.isCapturing else {
+                speechOutputBridgeSnapshot = await speechOutputBridge.stop()
+                speechInputBridgeSnapshot =
+                    await speechInputBridge.fail(.unavailable)
+                recordRealtimeSpeechDiagnostic(
+                    source: .lifecycle,
+                    category: "bridge_start_failed",
+                    errorCode: speechAudioHostSnapshot.lastError
+                        ?? "capture_unavailable"
+                )
+                syncRealtimeSpeechPresentation()
+                refreshNativeSpeechPlaybackDebugSnapshot()
+                return
+            }
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "capture_started",
+                interactionShortID: String(
+                    binding.interactionID.rawValue.uuidString.prefix(8)
+                )
             )
             speechInputBridgeSnapshot = await speechInputBridge.start(
                 binding: binding
@@ -1655,6 +1699,8 @@ final class AppController: ObservableObject {
                 )
             )
         case .failure(let error):
+            speechAudioHostSnapshot = await speechAudioHost
+                .cancelPreparedCapture(generation: captureGeneration)
             speechInputBridgeSnapshot = await speechInputBridge.fail(error)
             recordRealtimeSpeechDiagnostic(
                 source: .lifecycle,

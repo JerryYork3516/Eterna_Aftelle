@@ -101,6 +101,7 @@ private final class FakeMacSpeechAudioCapture:
 
     var startCount: Int { lock.withLock { starts } }
     var stopCount: Int { lock.withLock { stops } }
+    var isStarted: Bool { lock.withLock { started } }
 }
 
 private final class FakeMacSpeechDeviceMonitor:
@@ -172,6 +173,7 @@ private struct MacSpeechAudioHostTests {
         await testQueryFailure()
         await testUnauthorizedCaptureIsRejected()
         await testStartStopRestartAreIdempotent()
+        await testPreparedCaptureDefersProducerAndResetsGenerationStats()
         testPCM16Encoding()
         testExactTwentyMillisecondPacketization()
         do {
@@ -324,6 +326,49 @@ private struct MacSpeechAudioHostTests {
         let restarted = await host.startCapture()
         expect(restarted.isCapturing, "capture can restart manually")
         expect(capture.startCount == 2, "restart creates one new capture generation")
+        _ = await host.stopCapture()
+    }
+
+    private static func testPreparedCaptureDefersProducerAndResetsGenerationStats()
+        async
+    {
+        let (host, _, capture, _) = makeHost(
+            authorization: .authorized,
+            frameCapacity: 2
+        )
+        _ = await host.startCapture()
+        expect(capture.emit(timestamp: 1), "first generation accepts frame one")
+        expect(capture.emit(timestamp: 2), "first generation accepts frame two")
+        expect(capture.emit(timestamp: 3), "first generation accepts frame three")
+        expect(
+            await host.currentSnapshot().droppedFrameCount == 1,
+            "first generation records its overflow"
+        )
+
+        guard let generation = await host.prepareCaptureGeneration() else {
+            fatalError("FAILED: capture generation is prepared")
+        }
+        let prepared = await host.currentSnapshot()
+        expect(!capture.isStarted, "preparation keeps the producer stopped")
+        expect(!prepared.isCapturing, "prepared host is not yet capturing")
+        expect(
+            prepared.generatedFrameCount == 0
+                && prepared.droppedFrameCount == 0
+                && prepared.queuedFrameCount == 0,
+            "new generation starts with isolated frame diagnostics"
+        )
+        expect(
+            await host.activeCaptureGeneration() == nil,
+            "prepared generation is not reported as active"
+        )
+
+        let active = await host.startPreparedCapture(generation: generation)
+        expect(active.isCapturing, "prepared generation can activate capture")
+        expect(capture.isStarted, "producer starts only after activation")
+        expect(
+            await host.activeCaptureGeneration() == generation,
+            "active capture keeps the prepared generation"
+        )
         _ = await host.stopCapture()
     }
 

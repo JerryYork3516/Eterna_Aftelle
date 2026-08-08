@@ -46,6 +46,8 @@ private final class DuplexAudioCapture:
         lock.withLock { started = false }
     }
 
+    var isStarted: Bool { lock.withLock { started } }
+
     @discardableResult
     func emit(_ marker: UInt8) -> Bool {
         let target = lock.withLock { (started, frameBuffer, generation) }
@@ -98,6 +100,7 @@ private struct NativeSpeechDuplexTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         testRealSequenceSubtitleSynchronizer()
+        try await testHandshakeDoesNotRunCaptureProducer()
         try await testFullDuplexThroughController()
         try await testPlaybackStallThroughController()
         try await testInterruptThroughController()
@@ -426,6 +429,50 @@ private struct NativeSpeechDuplexTests {
         await stack.controller.stopSpeechAudioCapture()
     }
 
+    private static func testHandshakeDoesNotRunCaptureProducer() async throws {
+        let transport = FakeRealtimeWebSocketTransport(waitsWhenEmpty: true)
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "startup fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        expect(stack.capture.isStarted, "standalone capture starts normally")
+
+        let startTask = Task { @MainActor in
+            await stack.controller.startNativeSpeechInputBridge()
+        }
+        await waitUntil {
+            await transport.calls.contains(.receive)
+                && !stack.capture.isStarted
+        }
+        for marker in UInt8(1) ... UInt8(60) {
+            expect(
+                !stack.capture.emit(marker),
+                "handshake does not run the capture producer"
+            )
+        }
+
+        await transport.enqueue(.text(#"{"type":"session.created"}"#))
+        await transport.enqueue(.text(#"{"type":"session.updated"}"#))
+        await startTask.value
+        expect(stack.capture.isStarted, "capture starts after handshake")
+        expect(
+            stack.controller.speechInputBridgeSnapshot.hasActivePump,
+            "input pump starts beside the capture producer"
+        )
+        expect(stack.capture.emit(61), "post-handshake frame is accepted")
+        await waitUntil {
+            try await audioAppendObjects(transport).count == 1
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        expect(
+            stack.controller.speechAudioHostSnapshot.droppedFrameCount == 0,
+            "interaction generation starts without buffered frame loss"
+        )
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
     private static func testFullDuplexThroughController() async throws {
         let transport = handshakeTransport()
         let stack = makeControllerStack(transport: transport)
@@ -434,10 +481,10 @@ private struct NativeSpeechDuplexTests {
             "fixed resident loads"
         )
         await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
         for marker in UInt8(1) ... UInt8(3) {
             expect(stack.capture.emit(marker), "Fake source emits input frame")
         }
-        await stack.controller.startNativeSpeechInputBridge()
         await waitUntil {
             try await audioAppendObjects(transport).count == 3
         }
@@ -776,8 +823,8 @@ private struct NativeSpeechDuplexTests {
             "interrupt fixture loads"
         )
         await stack.controller.startSpeechAudioCapture()
-        expect(stack.capture.emit(1), "interrupt test emits initial input")
         await stack.controller.startNativeSpeechInputBridge()
+        expect(stack.capture.emit(1), "interrupt test emits initial input")
         await waitUntil {
             try await audioAppendObjects(transport).count == 1
         }

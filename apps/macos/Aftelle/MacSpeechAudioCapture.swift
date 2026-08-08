@@ -56,6 +56,12 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
         lock.withLock {
             activeGeneration = generation
             frames.removeAll(keepingCapacity: true)
+            nextSequence = 0
+            lastTimestamp = 0
+            generatedCount = 0
+            droppedCount = 0
+            rejectedStaleCount = 0
+            latestActivity = 0
         }
     }
 

@@ -109,6 +109,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
     private var isCapturing = false
     private var isMonitoringRoute = false
     private var generation: UInt64 = 0
+    private var preparedGeneration: UInt64?
     private var actualInputFormat = MacSpeechNativeInputFormat(
         sampleRate: 0,
         channelCount: 0
@@ -175,48 +176,104 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
 
     func startCapture() async -> MacSpeechAudioHostSnapshot {
         guard !isCapturing else { return makeSnapshot() }
+        guard let captureGeneration = await prepareCaptureGeneration() else {
+            return makeSnapshot()
+        }
+        return startPreparedCapture(generation: captureGeneration)
+    }
+
+    func prepareCaptureGeneration() async -> UInt64? {
+        if isCapturing || preparedGeneration != nil {
+            stopCapture(lastError: nil)
+        }
         do {
             update(
                 authorization: try await authorizationProvider
                     .currentAuthorization()
             )
         } catch {
-            return fail()
+            _ = fail()
+            return nil
         }
         refreshDeviceRoute()
         ensureRouteMonitoring()
         guard authorization == .authorized else {
             lastError = "microphone_not_authorized"
-            return makeSnapshot()
+            return nil
         }
         guard route.input.isAvailable else {
             state = .deviceUnavailable
             lastError = "input_device_unavailable"
-            return makeSnapshot()
+            return nil
         }
 
         generation &+= 1
         let captureGeneration = generation
+        preparedGeneration = captureGeneration
         frameBuffer.begin(generation: captureGeneration)
+        state = hostState(for: authorization)
+        lastError = nil
+        return captureGeneration
+    }
+
+    func startPreparedCapture(
+        generation captureGeneration: UInt64
+    ) -> MacSpeechAudioHostSnapshot {
+        guard !isCapturing,
+              preparedGeneration == captureGeneration,
+              generation == captureGeneration else {
+            lastError = "capture_generation_unavailable"
+            return makeSnapshot()
+        }
+        guard authorization == .authorized else {
+            frameBuffer.end(generation: captureGeneration)
+            preparedGeneration = nil
+            lastError = "microphone_not_authorized"
+            state = hostState(for: authorization)
+            return makeSnapshot()
+        }
+        guard route.input.isAvailable else {
+            frameBuffer.end(generation: captureGeneration)
+            preparedGeneration = nil
+            state = .deviceUnavailable
+            lastError = "input_device_unavailable"
+            return makeSnapshot()
+        }
         do {
             actualInputFormat = try capture.start(
                 generation: captureGeneration,
                 frameBuffer: frameBuffer
             )
+            preparedGeneration = nil
             isCapturing = true
             state = .capturing
             lastError = nil
         } catch let error as MacSpeechAudioCaptureError {
             frameBuffer.end(generation: captureGeneration)
+            preparedGeneration = nil
             capture.stop()
             state = .failed
             lastError = error.rawValue
         } catch {
             frameBuffer.end(generation: captureGeneration)
+            preparedGeneration = nil
             capture.stop()
             state = .failed
             lastError = "audio_engine_start_failed"
         }
+        return makeSnapshot()
+    }
+
+    func cancelPreparedCapture(
+        generation captureGeneration: UInt64
+    ) -> MacSpeechAudioHostSnapshot {
+        guard preparedGeneration == captureGeneration else {
+            return makeSnapshot()
+        }
+        frameBuffer.end(generation: captureGeneration)
+        preparedGeneration = nil
+        state = hostState(for: authorization)
+        lastError = nil
         return makeSnapshot()
     }
 
@@ -305,6 +362,10 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
             capture.stop()
             frameBuffer.end(generation: generation)
             isCapturing = false
+        }
+        if let preparedGeneration {
+            frameBuffer.end(generation: preparedGeneration)
+            self.preparedGeneration = nil
         }
         self.lastError = lastError
         state = hostState(for: authorization)
