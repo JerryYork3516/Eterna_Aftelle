@@ -35,6 +35,9 @@ nonisolated struct MacSpeechAudioOutputEvent: Sendable, Equatable {
     let generation: UInt64
     let sequence: UInt64?
     let error: MacSpeechAudioOutputHostError?
+    let inputPeak: Double?
+    let outputPeak: Double?
+    let minimumGain: Double?
 }
 
 nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
@@ -369,6 +372,15 @@ actor MacSpeechAudioOutputHost {
                 if applyFadeIn, processing.isAudible {
                     shouldFadeInNextChunk = false
                 }
+                if processing.didStartAttenuation {
+                    appendEvent(
+                        .outputSafetyLimited,
+                        sequence: chunk.sequence,
+                        inputPeak: processing.inputPeak,
+                        outputPeak: processing.outputPeak,
+                        minimumGain: processing.minimumGain
+                    )
+                }
             } catch let error as MacSpeechAudioOutputHostError {
                 _ = fail(error)
                 return
@@ -610,7 +622,10 @@ actor MacSpeechAudioOutputHost {
     private func appendEvent(
         _ kind: MacSpeechAudioOutputEventKind,
         sequence: UInt64? = nil,
-        error: MacSpeechAudioOutputHostError? = nil
+        error: MacSpeechAudioOutputHostError? = nil,
+        inputPeak: Double? = nil,
+        outputPeak: Double? = nil,
+        minimumGain: Double? = nil
     ) {
         eventOrdinal &+= 1
         if kind == .playbackCompleted {
@@ -625,7 +640,10 @@ actor MacSpeechAudioOutputHost {
                 kind: kind,
                 generation: generation,
                 sequence: sequence,
-                error: error
+                error: error,
+                inputPeak: inputPeak,
+                outputPeak: outputPeak,
+                minimumGain: minimumGain
             )
         )
         if eventSink != nil,
