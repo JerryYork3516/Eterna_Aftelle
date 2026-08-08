@@ -2018,6 +2018,23 @@ final class AppController: ObservableObject {
             refreshNativeSpeechPlaybackDebugSnapshot()
             return
         }
+        if event.kind == .outputSafetyLimited {
+            recordRealtimeSpeechDiagnostic(
+                source: .playback,
+                category: event.kind.rawValue,
+                interactionShortID:
+                    realtimeSpeechStateSnapshot.interactionShortID,
+                turnNumber: binding.turnNumber,
+                turnGeneration:
+                    realtimeSpeechSubtitleSnapshot.turnGeneration,
+                stateAfter: realtimeSpeechStateSnapshot.state.rawValue,
+                disposition: "accepted_host",
+                audioSequence: event.sequence,
+                queueDepth: speechAudioOutputHostSnapshot.queueDepth,
+                playbackGeneration: event.generation
+            )
+            return
+        }
         if event.kind == .playbackCompleted {
             speechAudioOutputHostSnapshot =
                 await speechAudioOutputHost.currentSnapshot()

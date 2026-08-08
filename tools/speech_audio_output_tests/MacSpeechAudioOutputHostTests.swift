@@ -10,8 +10,10 @@ private struct MacSpeechAudioOutputHostTests {
         testFrozenProviderFormat()
         testPCMConversionToLocalFormat()
         testResumeFadeInEnvelope()
+        testPlaybackSafetyEnvelope()
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
+        await testPlaybackSafetyEventCarriesSequence()
         await testDurationBasedStartupWatermark()
         await testOrderedPlaybackAndCompletion()
         await testTemporaryQueueGapReportsStallAndResume()
@@ -69,6 +71,74 @@ private struct MacSpeechAudioOutputHostTests {
                "resume fade reaches original level")
         expect(decodedSample(120) == sample,
                "resume fade preserves later samples")
+    }
+
+    private static func testPlaybackSafetyEnvelope() {
+        let quiet = pcm16Data(samples: [Int16](repeating: 3_000, count: 240))
+        let unchanged = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            to: quiet
+        )
+        expect(!unchanged.didLimit, "normal PCM is not limited")
+        expect(unchanged.bytes == quiet, "normal PCM bytes stay unchanged")
+
+        let loud = pcm16Data(samples: [Int16](repeating: 30_000, count: 240))
+        let limitedRMS = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            to: loud
+        )
+        expect(limitedRMS.didLimit, "high RMS PCM is limited")
+        expect(limitedRMS.bytes.count == loud.count,
+               "safety limiter preserves byte count")
+        let limitedRMSMetrics = pcmMetrics(limitedRMS.bytes)
+        expect(
+            limitedRMSMetrics.rms
+                <= MacSpeechPCMOutputEnvelope.maximumPlaybackRMS + 0.000_1,
+            "safety limiter caps RMS"
+        )
+
+        var impulseSamples = [Int16](repeating: 0, count: 240)
+        impulseSamples[0] = Int16.max
+        let limitedPeak = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            to: pcm16Data(samples: impulseSamples)
+        )
+        expect(limitedPeak.didLimit, "near-full-scale peak is limited")
+        expect(
+            pcmMetrics(limitedPeak.bytes).peak
+                <= MacSpeechPCMOutputEnvelope.maximumPlaybackPeak + 0.000_1,
+            "safety limiter caps peak"
+        )
+        expect(limitedRMS.appliedGain < 1 && limitedPeak.appliedGain < 1,
+               "safety limiter never boosts exceptional PCM")
+    }
+
+    private static func pcm16Data(samples: [Int16]) -> Data {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(samples.count * 2)
+        for sample in samples {
+            let raw = UInt16(bitPattern: sample)
+            bytes.append(UInt8(truncatingIfNeeded: raw))
+            bytes.append(UInt8(truncatingIfNeeded: raw >> 8))
+        }
+        return Data(bytes)
+    }
+
+    private static func pcmMetrics(_ data: Data) -> (peak: Double, rms: Double) {
+        let bytes = [UInt8](data)
+        var peak = 0
+        var squaredSum = 0.0
+        var sampleCount = 0
+        for byteIndex in stride(from: 0, to: bytes.count, by: 2) {
+            let sample = Int16(bitPattern:
+                UInt16(bytes[byteIndex])
+                    | (UInt16(bytes[byteIndex + 1]) << 8)
+            )
+            peak = max(peak, abs(Int(sample)))
+            squaredSum += Double(sample) * Double(sample)
+            sampleCount += 1
+        }
+        return (
+            peak: Double(peak) / 32_768.0,
+            rms: sqrt(squaredSum / Double(sampleCount)) / 32_768.0
+        )
     }
 
     private static func testPCMConversionToLocalFormat() {
@@ -144,6 +214,26 @@ private struct MacSpeechAudioOutputHostTests {
         expect(repeated.generation == prepared.generation, "prepare idempotent")
         expect(player.prepareCount == 1, "no duplicate prepare")
         expect(repeated.recentEvents.map(\.kind) == [.prepared], "prepared event")
+    }
+
+    private static func testPlaybackSafetyEventCarriesSequence() async {
+        let (host, _) = makeHost()
+        let generation = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: pcm16Data(
+                samples: [Int16](repeating: 30_000, count: 240)
+            ),
+            sequence: 42,
+            generation: generation
+        )
+        let snapshot = await host.finishProviderResponse(
+            generation: generation
+        )
+        let event = snapshot.recentEvents.first {
+            $0.kind == .outputSafetyLimited
+        }
+        expect(event?.sequence == 42,
+               "safety event identifies limited audio sequence")
     }
 
     private static func testDurationBasedStartupWatermark() async {

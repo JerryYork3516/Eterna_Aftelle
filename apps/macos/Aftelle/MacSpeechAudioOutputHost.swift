@@ -21,6 +21,7 @@ nonisolated enum MacSpeechAudioOutputEventKind: String, Sendable {
     case bufferPressure
     case bufferLow
     case bufferUnderrun
+    case outputSafetyLimited
     case chunkPlayed
     case playbackCompleted
     case stopped
@@ -344,7 +345,7 @@ actor MacSpeechAudioOutputHost {
             let applyFadeIn = shouldFadeInNextChunk
             shouldFadeInNextChunk = false
             do {
-                try player.schedule(
+                let safety = try player.schedule(
                     pcm16Bytes: chunk.pcm16Bytes,
                     applyFadeIn: applyFadeIn
                 ) {
@@ -356,6 +357,12 @@ actor MacSpeechAudioOutputHost {
                             sequence: scheduledSequence
                         )
                     }
+                }
+                if safety.didLimit {
+                    appendEvent(
+                        .outputSafetyLimited,
+                        sequence: scheduledSequence
+                    )
                 }
             } catch let error as MacSpeechAudioOutputHostError {
                 _ = fail(error)

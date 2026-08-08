@@ -128,6 +128,60 @@ nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
 
 nonisolated enum MacSpeechPCMOutputEnvelope {
     static let resumeFadeInSampleCount = 120
+    static let maximumPlaybackPeak = 0.85
+    static let maximumPlaybackRMS = 0.16
+
+    struct SafetyResult: Sendable, Equatable {
+        let bytes: Data
+        let appliedGain: Double
+
+        var didLimit: Bool { appliedGain < 1 }
+    }
+
+    static func applyingPlaybackSafety(to data: Data) -> SafetyResult {
+        guard !data.isEmpty,
+              data.count.isMultiple(of: MacSpeechPCMOutputFormat.bytesPerSample)
+        else {
+            return SafetyResult(bytes: data, appliedGain: 1)
+        }
+        let source = [UInt8](data)
+        var peak = 0
+        var squaredSum = 0.0
+        let sampleCount = source.count / MacSpeechPCMOutputFormat.bytesPerSample
+        for byteIndex in stride(from: 0, to: source.count, by: 2) {
+            let sample = decodedSample(source, at: byteIndex)
+            peak = max(peak, abs(Int(sample)))
+            squaredSum += Double(sample) * Double(sample)
+        }
+        let normalizedPeak = Double(peak) / 32_768.0
+        let normalizedRMS = sqrt(squaredSum / Double(sampleCount)) / 32_768.0
+        let peakGain = normalizedPeak > maximumPlaybackPeak
+            ? maximumPlaybackPeak / normalizedPeak : 1
+        let rmsGain = normalizedRMS > maximumPlaybackRMS
+            ? maximumPlaybackRMS / normalizedRMS : 1
+        let appliedGain = min(peakGain, rmsGain)
+        guard appliedGain < 1 else {
+            return SafetyResult(bytes: data, appliedGain: 1)
+        }
+
+        var output = source
+        for byteIndex in stride(from: 0, to: output.count, by: 2) {
+            let sample = decodedSample(source, at: byteIndex)
+            let scaled = Int16(
+                max(
+                    Double(Int16.min),
+                    min(
+                        Double(Int16.max),
+                        (Double(sample) * appliedGain).rounded()
+                    )
+                )
+            )
+            let raw = UInt16(bitPattern: scaled)
+            output[byteIndex] = UInt8(truncatingIfNeeded: raw)
+            output[byteIndex + 1] = UInt8(truncatingIfNeeded: raw >> 8)
+        }
+        return SafetyResult(bytes: Data(output), appliedGain: appliedGain)
+    }
 
     static func applyingResumeFadeIn(to data: Data) -> Data {
         let sampleCount = min(
@@ -151,6 +205,16 @@ nonisolated enum MacSpeechPCMOutputEnvelope {
         }
         return Data(bytes)
     }
+
+    private static func decodedSample(
+        _ bytes: [UInt8],
+        at byteIndex: Int
+    ) -> Int16 {
+        Int16(bitPattern:
+            UInt16(bytes[byteIndex])
+                | (UInt16(bytes[byteIndex + 1]) << 8)
+        )
+    }
 }
 
 nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
@@ -161,7 +225,7 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
-    ) throws
+    ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult
     func start() throws
     func stop()
     func close()
@@ -215,10 +279,13 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
-    ) throws {
+    ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult {
+        let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            to: pcm16Bytes
+        )
         let playbackBytes = applyFadeIn
-            ? MacSpeechPCMOutputEnvelope.applyingResumeFadeIn(to: pcm16Bytes)
-            : pcm16Bytes
+            ? MacSpeechPCMOutputEnvelope.applyingResumeFadeIn(to: safety.bytes)
+            : safety.bytes
         let prepared = try lock.withLock {
             guard let playerNode,
                   let converter
@@ -234,6 +301,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         ) { _ in
             completion(.success(pcm16Bytes.count))
         }
+        return safety
     }
 
     func start() throws {

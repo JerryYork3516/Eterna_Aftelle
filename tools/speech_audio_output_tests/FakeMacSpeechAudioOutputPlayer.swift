@@ -50,7 +50,10 @@ final class FakeMacSpeechAudioOutputPlayer:
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
-    ) throws {
+    ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult {
+        let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            to: pcm16Bytes
+        )
         try lock.withLock {
             if let scheduleError { throw scheduleError }
             scheduledPayloads.append(pcm16Bytes)
@@ -60,6 +63,7 @@ final class FakeMacSpeechAudioOutputPlayer:
                 byteCount: pcm16Bytes.count
             ))
         }
+        return safety
     }
 
     func start() throws {
