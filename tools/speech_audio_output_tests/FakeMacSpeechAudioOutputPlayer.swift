@@ -21,6 +21,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var clearScheduledPlaybackCalls = 0
     private var stopCalls = 0
     private var closeCalls = 0
+    private var playbackSafetyGain = 1.0
     var prepareError: MacSpeechAudioOutputHostError?
     var scheduleError: MacSpeechAudioOutputHostError?
     var startError: MacSpeechAudioOutputHostError?
@@ -40,6 +41,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     func prepare() throws -> MacSpeechLocalPlaybackFormat {
         try lock.withLock {
             prepareCalls += 1
+            playbackSafetyGain = 1
             if let prepareError { throw prepareError }
             return preparedFormat
         }
@@ -52,19 +54,21 @@ final class FakeMacSpeechAudioOutputPlayer:
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
     ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult {
-        let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
-            to: pcm16Bytes
-        )
         try lock.withLock {
             if let scheduleError { throw scheduleError }
+            let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+                to: pcm16Bytes,
+                startingGain: playbackSafetyGain
+            )
+            playbackSafetyGain = safety.endingGain
             scheduledPayloads.append(pcm16Bytes)
             scheduledFadeIns.append(applyFadeIn)
             pendingPlaybacks.append(FakeMacSpeechPendingPlayback(
                 completion: completion,
                 byteCount: pcm16Bytes.count
             ))
+            return safety
         }
-        return safety
     }
 
     func start() throws {
@@ -77,6 +81,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     func clearScheduledPlayback() {
         lock.withLock {
             clearScheduledPlaybackCalls += 1
+            playbackSafetyGain = 1
             movePendingPlaybacksToStopped()
         }
     }
@@ -84,6 +89,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     func stop() {
         lock.withLock {
             stopCalls += 1
+            playbackSafetyGain = 1
             movePendingPlaybacksToStopped()
         }
     }
@@ -91,6 +97,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     func close() {
         lock.withLock {
             closeCalls += 1
+            playbackSafetyGain = 1
         }
     }
 

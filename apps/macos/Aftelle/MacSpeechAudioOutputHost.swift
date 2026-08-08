@@ -157,7 +157,7 @@ actor MacSpeechAudioOutputHost {
             inFlightByteCounts.removeAll(keepingCapacity: true)
             resumeWaitingEnqueues()
             providerResponseFinished = false
-            shouldFadeInNextChunk = false
+            shouldFadeInNextChunk = true
             timeoutTask?.cancel()
             timeoutTask = nil
             localFormat = preparedFormat.description
@@ -352,7 +352,6 @@ actor MacSpeechAudioOutputHost {
             let scheduledGeneration = generation
             let scheduledSequence = chunk.sequence
             let applyFadeIn = shouldFadeInNextChunk
-            shouldFadeInNextChunk = false
             do {
                 let safety = try player.schedule(
                     pcm16Bytes: chunk.pcm16Bytes,
@@ -366,6 +365,9 @@ actor MacSpeechAudioOutputHost {
                             sequence: scheduledSequence
                         )
                     }
+                }
+                if applyFadeIn, safety.isAudible {
+                    shouldFadeInNextChunk = false
                 }
                 if safety.didLimit {
                     appendEvent(
@@ -560,7 +562,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
-        shouldFadeInNextChunk = false
+        shouldFadeInNextChunk = keepsEngineRunning
     }
 
     private var hasPendingPlayback: Bool {

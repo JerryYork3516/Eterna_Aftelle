@@ -1723,6 +1723,7 @@ final class AppController: ObservableObject {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let stateBefore = realtimeSpeechStateSnapshot.state.rawValue
         if case .inputSpeechStarted = event.kind {
+            residentTextPresentationID = nil
             await commitAcceptedInterruptIfNeeded(
                 event,
                 startedAtNanoseconds: startedAt
@@ -2134,7 +2135,8 @@ final class AppController: ObservableObject {
         let subtitleState = subtitleText.map {
             ParticleSubtitleState(text: $0, phase: .showing)
         } ?? .hidden
-        if particleSubtitleState != subtitleState {
+        if residentTextPresentationID == nil,
+           particleSubtitleState != subtitleState {
             particleSubtitleState = subtitleState
         }
         refreshParticleDebugSnapshot()

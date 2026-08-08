@@ -211,6 +211,7 @@ private struct NativeSpeechDuplexTests {
         try await testStaleCancelledAndClosedOutput()
         try await testCumulativeSubtitleThroughController()
         try await testLateUserFinalThroughController()
+        try await testTextSubtitleSurvivesRealtimeRefresh()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
     }
@@ -853,6 +854,44 @@ private struct NativeSpeechDuplexTests {
                 .interruptClearCount == 1,
             "stalled output remains immediately interruptible"
         )
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testTextSubtitleSurvivesRealtimeRefresh() async throws {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "text subtitle fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+
+        let response = stack.controller.step(inputText: "文字字幕测试")
+        let text = response.outputText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        expect(!text.isEmpty, "text dialogue produces a subtitle")
+        expect(stack.controller.particleSubtitleState.text == text,
+               "text dialogue owns its active subtitle")
+
+        let refreshCount = stack.controller
+            .realtimeSpeechDiagnosticViewState.eventCount
+        await transport.enqueue(.text(#"{"type":"session.updated"}"#))
+        await waitUntil {
+            stack.controller.realtimeSpeechDiagnosticViewState.eventCount
+                > refreshCount
+        }
+        expect(stack.controller.particleSubtitleState.text == text,
+               "realtime refresh does not erase active text subtitle")
+
+        await transport.enqueue(
+            .text(#"{"type":"input_audio_buffer.speech_started"}"#)
+        )
+        await waitUntil {
+            stack.controller.particleSubtitleState.text != text
+        }
+        expect(stack.controller.particleSubtitleState.text != text,
+               "new voice input takes subtitle ownership")
         await stack.controller.stopSpeechAudioCapture()
     }
 

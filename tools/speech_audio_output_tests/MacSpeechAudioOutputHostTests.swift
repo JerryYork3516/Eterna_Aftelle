@@ -11,9 +11,11 @@ private struct MacSpeechAudioOutputHostTests {
         testPCMConversionToLocalFormat()
         testResumeFadeInEnvelope()
         testPlaybackSafetyEnvelope()
+        testPlaybackSafetySmoothsGainTransitions()
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
         await testPlaybackSafetyEventCarriesSequence()
+        await testPlaybackStartWaitsForAudibleChunk()
         await testDurationBasedStartupWatermark()
         await testOrderedPlaybackAndCompletion()
         await testTemporaryQueueGapReportsStallAndResume()
@@ -111,6 +113,35 @@ private struct MacSpeechAudioOutputHostTests {
                "safety limiter never boosts exceptional PCM")
     }
 
+    private static func testPlaybackSafetySmoothsGainTransitions() {
+        let loud = pcm16Data(samples: [Int16](repeating: 30_000, count: 240))
+        let limited = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            to: loud,
+            startingGain: 1
+        )
+        expect(limited.didLimit, "stateful safety detects loud PCM")
+        expect(
+            abs(Int(pcmSample(limited.bytes, at: 0)))
+                <= Int(Double(Int16.max)
+                    * MacSpeechPCMOutputEnvelope.maximumPlaybackPeak) + 1,
+            "stateful safety hard-caps the transition attack"
+        )
+        expect(limited.endingGain < 1,
+               "stateful safety retains the limited gain")
+
+        let normal = pcm16Data(samples: [Int16](repeating: 3_000, count: 240))
+        let recovered = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            to: normal,
+            startingGain: limited.endingGain
+        )
+        expect(abs(Int(pcmSample(recovered.bytes, at: 0))) < 3_000,
+               "normal PCM releases from the prior limited gain")
+        expect(pcmSample(recovered.bytes, at: 239) == 3_000,
+               "gain release reaches the unmodified level smoothly")
+        expect(recovered.endingGain == 1,
+               "normal PCM restores unity gain")
+    }
+
     private static func pcm16Data(samples: [Int16]) -> Data {
         var bytes: [UInt8] = []
         bytes.reserveCapacity(samples.count * 2)
@@ -139,6 +170,15 @@ private struct MacSpeechAudioOutputHostTests {
         return (
             peak: Double(peak) / 32_768.0,
             rms: sqrt(squaredSum / Double(sampleCount)) / 32_768.0
+        )
+    }
+
+    private static func pcmSample(_ data: Data, at index: Int) -> Int16 {
+        let bytes = [UInt8](data)
+        let byteIndex = index * 2
+        return Int16(bitPattern:
+            UInt16(bytes[byteIndex])
+                | (UInt16(bytes[byteIndex + 1]) << 8)
         )
     }
 
@@ -237,6 +277,30 @@ private struct MacSpeechAudioOutputHostTests {
                "safety event identifies limited audio sequence")
     }
 
+    private static func testPlaybackStartWaitsForAudibleChunk() async {
+        let (host, player) = makeHost()
+        let generation = await host.prepare().generation
+        let silent = pcm16Data(samples: [Int16](repeating: 0, count: 240))
+        let audible = pcm16Data(
+            samples: [Int16](repeating: 3_000, count: 240)
+        )
+        _ = await host.enqueue(
+            pcm16Bytes: silent, sequence: 1, generation: generation
+        )
+        _ = await host.enqueue(
+            pcm16Bytes: audible, sequence: 2, generation: generation
+        )
+        _ = await host.start()
+        expect(player.fadeIns == [true, true],
+               "fade-in remains armed through leading silence")
+        _ = await host.enqueue(
+            pcm16Bytes: audible, sequence: 3, generation: generation
+        )
+        expect(player.fadeIns == [true, true, false],
+               "only the first audible playback chunk consumes fade-in")
+        _ = await host.stop()
+    }
+
     private static func testDurationBasedStartupWatermark() async {
         let (host, player) = makeHost(configuration: .standard)
         let generation = await host.prepare().generation
@@ -309,11 +373,14 @@ private struct MacSpeechAudioOutputHostTests {
     private static func testTemporaryQueueGapReportsStallAndResume() async {
         let (host, player) = makeHost()
         let generation = await host.prepare().generation
-        _ = await host.enqueue(
-            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        let audible = pcm16Data(
+            samples: [Int16](repeating: 3_000, count: 240)
         )
         _ = await host.enqueue(
-            pcm16Bytes: Data([2, 0]), sequence: 2, generation: generation
+            pcm16Bytes: audible, sequence: 1, generation: generation
+        )
+        _ = await host.enqueue(
+            pcm16Bytes: audible, sequence: 2, generation: generation
         )
         _ = await host.start()
         player.completeScheduledChunk()
@@ -331,12 +398,12 @@ private struct MacSpeechAudioOutputHostTests {
         expect(gap.recentEvents.map(\.kind).contains(.playbackStalled),
                "temporary queue gap reports stalled")
         _ = await host.enqueue(
-            pcm16Bytes: Data([3, 0]), sequence: 3, generation: generation
+            pcm16Bytes: audible, sequence: 3, generation: generation
         )
         expect(player.scheduledCount == 2,
                "stalled playback waits for the frozen prebuffer")
         _ = await host.enqueue(
-            pcm16Bytes: Data([4, 0]), sequence: 4, generation: generation
+            pcm16Bytes: audible, sequence: 4, generation: generation
         )
         await waitUntil { player.scheduledCount == 4 }
         let resumed = await host.currentSnapshot()
@@ -345,8 +412,8 @@ private struct MacSpeechAudioOutputHostTests {
                "resumed playback is observable")
         expect(player.startCount == 1,
                "new audio continues the same player cycle")
-        expect(player.fadeIns == [false, false, true, false],
-               "only the first resumed chunk receives fade-in")
+        expect(player.fadeIns == [true, false, true, false],
+               "first audible chunks fade in at start and resume")
         _ = await host.finishProviderResponse(generation: generation)
         player.completeScheduledChunk()
         player.completeScheduledChunk()

@@ -128,21 +128,35 @@ nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
 
 nonisolated enum MacSpeechPCMOutputEnvelope {
     static let resumeFadeInSampleCount = 120
-    static let maximumPlaybackPeak = 0.85
-    static let maximumPlaybackRMS = 0.16
+    static let gainTransitionSampleCount = 120
+    static let maximumPlaybackPeak = 0.65
+    static let maximumPlaybackRMS = 0.11
+    private static let audiblePeak = 0.01
+    private static let audibleRMS = 0.002
 
     struct SafetyResult: Sendable, Equatable {
         let bytes: Data
         let appliedGain: Double
+        let endingGain: Double
+        let isAudible: Bool
 
         var didLimit: Bool { appliedGain < 1 }
     }
 
-    static func applyingPlaybackSafety(to data: Data) -> SafetyResult {
+    static func applyingPlaybackSafety(
+        to data: Data,
+        startingGain: Double? = nil
+    ) -> SafetyResult {
         guard !data.isEmpty,
               data.count.isMultiple(of: MacSpeechPCMOutputFormat.bytesPerSample)
         else {
-            return SafetyResult(bytes: data, appliedGain: 1)
+            let gain = startingGain ?? 1
+            return SafetyResult(
+                bytes: data,
+                appliedGain: 1,
+                endingGain: gain,
+                isAudible: false
+            )
         }
         let source = [UInt8](data)
         var peak = 0
@@ -160,27 +174,45 @@ nonisolated enum MacSpeechPCMOutputEnvelope {
         let rmsGain = normalizedRMS > maximumPlaybackRMS
             ? maximumPlaybackRMS / normalizedRMS : 1
         let appliedGain = min(peakGain, rmsGain)
-        guard appliedGain < 1 else {
-            return SafetyResult(bytes: data, appliedGain: 1)
-        }
+        let isAudible = normalizedPeak >= audiblePeak
+            || normalizedRMS >= audibleRMS
+        let initialGain = max(0, min(1, startingGain ?? appliedGain))
+        let transitionSampleCount = min(
+            gainTransitionSampleCount,
+            sampleCount
+        )
+        let maximumSample = Double(Int16.max) * maximumPlaybackPeak
 
         var output = source
-        for byteIndex in stride(from: 0, to: output.count, by: 2) {
+        var endingGain = initialGain
+        for sampleIndex in 0 ..< sampleCount {
+            let byteIndex = sampleIndex * 2
             let sample = decodedSample(source, at: byteIndex)
-            let scaled = Int16(
-                max(
-                    Double(Int16.min),
-                    min(
-                        Double(Int16.max),
-                        (Double(sample) * appliedGain).rounded()
-                    )
+            let progress = transitionSampleCount > 0
+                ? min(
+                    1,
+                    Double(sampleIndex + 1)
+                        / Double(transitionSampleCount)
                 )
+                : 1
+            let gain = initialGain + (appliedGain - initialGain) * progress
+            endingGain = gain
+            let scaled = Int16(
+                max(-maximumSample, min(
+                    maximumSample,
+                    (Double(sample) * gain).rounded()
+                ))
             )
             let raw = UInt16(bitPattern: scaled)
             output[byteIndex] = UInt8(truncatingIfNeeded: raw)
             output[byteIndex + 1] = UInt8(truncatingIfNeeded: raw >> 8)
         }
-        return SafetyResult(bytes: Data(output), appliedGain: appliedGain)
+        return SafetyResult(
+            bytes: Data(output),
+            appliedGain: appliedGain,
+            endingGain: endingGain,
+            isAudible: isAudible
+        )
     }
 
     static func applyingResumeFadeIn(to data: Data) -> Data {
@@ -240,9 +272,11 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     private var playerNode: AVAudioPlayerNode?
     private var converter: MacSpeechPCMOutputConverter?
     private var localFormat: AVAudioFormat?
+    private var playbackSafetyGain = 1.0
 
     func prepare() throws -> MacSpeechLocalPlaybackFormat {
         try lock.withLock {
+            playbackSafetyGain = 1
             if let localFormat {
                 return describe(localFormat)
             }
@@ -281,20 +315,24 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
     ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult {
-        let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
-            to: pcm16Bytes
-        )
-        let playbackBytes = applyFadeIn
-            ? MacSpeechPCMOutputEnvelope.applyingResumeFadeIn(to: safety.bytes)
-            : safety.bytes
         let prepared = try lock.withLock {
             guard let playerNode,
                   let converter
             else {
                 throw MacSpeechAudioOutputHostError.invalidState
             }
+            let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+                to: pcm16Bytes,
+                startingGain: playbackSafetyGain
+            )
+            playbackSafetyGain = safety.endingGain
+            let playbackBytes = applyFadeIn
+                ? MacSpeechPCMOutputEnvelope.applyingResumeFadeIn(
+                    to: safety.bytes
+                )
+                : safety.bytes
             let buffer = try converter.convert(pcm16Bytes: playbackBytes)
-            return (playerNode, buffer)
+            return (playerNode, buffer, safety)
         }
         prepared.0.scheduleBuffer(
             prepared.1,
@@ -302,7 +340,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         ) { _ in
             completion(.success(pcm16Bytes.count))
         }
-        return safety
+        return prepared.2
     }
 
     func start() throws {
@@ -322,6 +360,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     func clearScheduledPlayback() {
         lock.withLock {
             playerNode?.stop()
+            playbackSafetyGain = 1
         }
     }
 
@@ -329,6 +368,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         lock.withLock {
             playerNode?.stop()
             engine?.stop()
+            playbackSafetyGain = 1
         }
     }
 
@@ -344,6 +384,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
             localFormat = nil
             playerNode = nil
             engine = nil
+            playbackSafetyGain = 1
         }
     }
 
