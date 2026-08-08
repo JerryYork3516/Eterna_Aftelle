@@ -9,12 +9,14 @@ private struct MacSpeechAudioOutputHostTests {
     static func main() async {
         testFrozenProviderFormat()
         testPCMConversionToLocalFormat()
+        testPCMConversionResetMatchesFreshStream()
         testResumeFadeInEnvelope()
-        testPlaybackSafetyEnvelope()
-        testPlaybackSafetySmoothsGainTransitions()
+        testPlaybackFadeTracksAudibleOnset()
+        testPlaybackProcessingPreservesPCMWithoutFade()
+        testPlaybackProcessingAvoidsCrossChunkGainPumping()
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
-        await testPlaybackSafetyEventCarriesSequence()
+        await testPlaybackProcessingDoesNotEmitLimiterEvent()
         await testPlaybackStartWaitsForAudibleChunk()
         await testDurationBasedStartupWatermark()
         await testOrderedPlaybackAndCompletion()
@@ -76,70 +78,55 @@ private struct MacSpeechAudioOutputHostTests {
                "resume fade preserves later samples")
     }
 
-    private static func testPlaybackSafetyEnvelope() {
-        let quiet = pcm16Data(samples: [Int16](repeating: 3_000, count: 240))
-        let unchanged = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
-            to: quiet
+    private static func testPlaybackFadeTracksAudibleOnset() {
+        let silence = [Int16](repeating: 0, count: 240)
+        let speech = [Int16](repeating: 3_000, count: 240)
+        let processed = MacSpeechPCMOutputEnvelope.processing(
+            to: pcm16Data(samples: silence + speech),
+            applyFadeIn: true
         )
-        expect(!unchanged.didLimit, "normal PCM is not limited")
-        expect(unchanged.bytes == quiet, "normal PCM bytes stay unchanged")
-
-        let loud = pcm16Data(samples: [Int16](repeating: 30_000, count: 240))
-        let limitedRMS = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
-            to: loud
-        )
-        expect(limitedRMS.didLimit, "high RMS PCM is limited")
-        expect(limitedRMS.bytes.count == loud.count,
-               "safety limiter preserves byte count")
-        let limitedRMSMetrics = pcmMetrics(limitedRMS.bytes)
-        expect(
-            limitedRMSMetrics.rms
-                <= MacSpeechPCMOutputEnvelope.maximumPlaybackRMS + 0.000_1,
-            "safety limiter caps RMS"
-        )
-
-        var impulseSamples = [Int16](repeating: 0, count: 240)
-        impulseSamples[0] = Int16.max
-        let limitedPeak = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
-            to: pcm16Data(samples: impulseSamples)
-        )
-        expect(limitedPeak.didLimit, "near-full-scale peak is limited")
-        expect(
-            pcmMetrics(limitedPeak.bytes).peak
-                <= MacSpeechPCMOutputEnvelope.maximumPlaybackPeak + 0.000_1,
-            "safety limiter caps peak"
-        )
-        expect(limitedRMS.appliedGain < 1 && limitedPeak.appliedGain < 1,
-               "safety limiter never boosts exceptional PCM")
+        expect(pcmSample(processed.bytes, at: 239) == 0,
+               "leading silence stays unchanged")
+        expect(pcmSample(processed.bytes, at: 240) < 200,
+               "fade begins at the first audible sample")
+        expect(pcmSample(processed.bytes, at: 359) == 3_000,
+               "audible fade reaches the source level")
+        expect(pcmSample(processed.bytes, at: 360) == 3_000,
+               "samples after audible fade stay bit-exact")
     }
 
-    private static func testPlaybackSafetySmoothsGainTransitions() {
-        let loud = pcm16Data(samples: [Int16](repeating: 30_000, count: 240))
-        let limited = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
-            to: loud,
-            startingGain: 1
-        )
-        expect(limited.didLimit, "stateful safety detects loud PCM")
-        expect(
-            abs(Int(pcmSample(limited.bytes, at: 0)))
-                <= Int(Double(Int16.max)
-                    * MacSpeechPCMOutputEnvelope.maximumPlaybackPeak) + 1,
-            "stateful safety hard-caps the transition attack"
-        )
-        expect(limited.endingGain < 1,
-               "stateful safety retains the limited gain")
+    private static func testPlaybackProcessingPreservesPCMWithoutFade() {
+        let fixtures: [[Int16]] = [
+            [Int16](repeating: 0, count: 240),
+            [Int16](repeating: 3_000, count: 240),
+            [Int16](repeating: 30_000, count: 240),
+            [Int16.max, Int16.min, 24_000, -24_000]
+        ]
+        for samples in fixtures {
+            let source = pcm16Data(samples: samples)
+            let processed = MacSpeechPCMOutputEnvelope.processing(
+                to: source,
+                applyFadeIn: false
+            )
+            expect(processed.bytes == source,
+                   "PCM stays bit-exact without fade")
+        }
+    }
 
-        let normal = pcm16Data(samples: [Int16](repeating: 3_000, count: 240))
-        let recovered = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
-            to: normal,
-            startingGain: limited.endingGain
-        )
-        expect(abs(Int(pcmSample(recovered.bytes, at: 0))) < 3_000,
-               "normal PCM releases from the prior limited gain")
-        expect(pcmSample(recovered.bytes, at: 239) == 3_000,
-               "gain release reaches the unmodified level smoothly")
-        expect(recovered.endingGain == 1,
-               "normal PCM restores unity gain")
+    private static func testPlaybackProcessingAvoidsCrossChunkGainPumping() {
+        let chunks = [
+            pcm16Data(samples: [Int16](repeating: 3_000, count: 240)),
+            pcm16Data(samples: [Int16](repeating: 30_000, count: 240)),
+            pcm16Data(samples: [Int16](repeating: 3_000, count: 240))
+        ]
+        let processed = chunks.map {
+            MacSpeechPCMOutputEnvelope.processing(
+                to: $0,
+                applyFadeIn: false
+            ).bytes
+        }
+        expect(processed == chunks,
+               "quiet loud quiet chunks do not pump gain")
     }
 
     private static func pcm16Data(samples: [Int16]) -> Data {
@@ -151,26 +138,6 @@ private struct MacSpeechAudioOutputHostTests {
             bytes.append(UInt8(truncatingIfNeeded: raw >> 8))
         }
         return Data(bytes)
-    }
-
-    private static func pcmMetrics(_ data: Data) -> (peak: Double, rms: Double) {
-        let bytes = [UInt8](data)
-        var peak = 0
-        var squaredSum = 0.0
-        var sampleCount = 0
-        for byteIndex in stride(from: 0, to: bytes.count, by: 2) {
-            let sample = Int16(bitPattern:
-                UInt16(bytes[byteIndex])
-                    | (UInt16(bytes[byteIndex + 1]) << 8)
-            )
-            peak = max(peak, abs(Int(sample)))
-            squaredSum += Double(sample) * Double(sample)
-            sampleCount += 1
-        }
-        return (
-            peak: Double(peak) / 32_768.0,
-            rms: sqrt(squaredSum / Double(sampleCount)) / 32_768.0
-        )
     }
 
     private static func pcmSample(_ data: Data, at index: Int) -> Int16 {
@@ -213,6 +180,57 @@ private struct MacSpeechAudioOutputHostTests {
         }
     }
 
+    private static func testPCMConversionResetMatchesFreshStream() {
+        guard let localFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 2,
+            interleaved: false
+        ) else {
+            fatalError("FAILED: construct converter reset format")
+        }
+        let polluted = pcm16Data(
+            samples: [Int16](repeating: 12_000, count: 480)
+        )
+        let probe = pcm16Data(
+            samples: (0 ..< 480).map { index in
+                index.isMultiple(of: 2) ? Int16(4_000) : Int16(-4_000)
+            }
+        )
+        do {
+            let resetConverter = try MacSpeechPCMOutputConverter(
+                localFormat: localFormat
+            )
+            _ = try resetConverter.convert(pcm16Bytes: polluted)
+            resetConverter.reset()
+            let resetOutput = try resetConverter.convert(pcm16Bytes: probe)
+            let freshOutput = try MacSpeechPCMOutputConverter(
+                localFormat: localFormat
+            ).convert(pcm16Bytes: probe)
+            expect(resetOutput.frameLength == freshOutput.frameLength,
+                   "converter reset restores fresh frame count")
+            let resetSamples = floatSamples(resetOutput)
+            let freshSamples = floatSamples(freshOutput)
+            expect(resetSamples.count == freshSamples.count,
+                   "converter reset restores fresh sample count")
+            let maximumDelta = zip(resetSamples, freshSamples).reduce(0.0) {
+                max($0, abs(Double($1.0 - $1.1)))
+            }
+            expect(maximumDelta < 0.000_001,
+                   "converter reset removes prior stream history")
+        } catch {
+            fatalError("FAILED: PCM converter reset \(error)")
+        }
+    }
+
+    private static func floatSamples(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        guard let channels = buffer.floatChannelData else { return [] }
+        return Array(UnsafeBufferPointer(
+            start: channels[0],
+            count: Int(buffer.frameLength)
+        ))
+    }
+
     private static func testBoundedQueueOrderingAndValidation() {
         var buffer = MacSpeechPCMPlaybackBuffer(capacity: 2, generation: 4)
         try? buffer.enqueue(chunk(generation: 4, sequence: 1, byte: 1))
@@ -251,30 +269,36 @@ private struct MacSpeechAudioOutputHostTests {
         expect(prepared.providerFormat.contains("24000 Hz"), "provider format")
         expect(prepared.localFormat.contains("48000 Hz"), "local format")
         expect(player.prepareCount == 1, "player prepared once")
+        expect(player.resetForPlaybackGenerationCount == 1,
+               "prepare resets converter for the first generation")
         let repeated = await host.prepare()
         expect(repeated.generation == prepared.generation, "prepare idempotent")
         expect(player.prepareCount == 1, "no duplicate prepare")
+        expect(player.resetForPlaybackGenerationCount == 1,
+               "idempotent prepare does not reset the active stream")
         expect(repeated.recentEvents.map(\.kind) == [.prepared], "prepared event")
     }
 
-    private static func testPlaybackSafetyEventCarriesSequence() async {
-        let (host, _) = makeHost()
+    private static func testPlaybackProcessingDoesNotEmitLimiterEvent() async {
+        let (host, player) = makeHost()
         let generation = await host.prepare().generation
+        let source = pcm16Data(
+            samples: [Int16](repeating: 30_000, count: 240)
+        )
         _ = await host.enqueue(
-            pcm16Bytes: pcm16Data(
-                samples: [Int16](repeating: 30_000, count: 240)
-            ),
+            pcm16Bytes: source,
             sequence: 42,
             generation: generation
         )
         let snapshot = await host.finishProviderResponse(
             generation: generation
         )
-        let event = snapshot.recentEvents.first {
-            $0.kind == .outputSafetyLimited
-        }
-        expect(event?.sequence == 42,
-               "safety event identifies limited audio sequence")
+        expect(!snapshot.recentEvents.map(\.kind).contains(.outputSafetyLimited),
+               "playback does not emit dynamic limiter events")
+        expect(pcmSample(player.processed[0], at: 119) == 30_000,
+               "fade reaches the original near-full-scale PCM")
+        expect(pcmSample(player.processed[0], at: 120) == 30_000,
+               "playback preserves PCM after the first fade")
     }
 
     private static func testPlaybackStartWaitsForAudibleChunk() async {
@@ -298,6 +322,14 @@ private struct MacSpeechAudioOutputHostTests {
         )
         expect(player.fadeIns == [true, true, false],
                "only the first audible playback chunk consumes fade-in")
+        expect(player.processed[0] == silent,
+               "leading silence remains bit-exact")
+        expect(pcmSample(player.processed[1], at: 0) < 200,
+               "first audible chunk begins with a fade")
+        expect(pcmSample(player.processed[1], at: 119) == 3_000,
+               "first audible chunk returns to source PCM")
+        expect(player.processed[2] == audible,
+               "later audible chunks remain bit-exact")
         _ = await host.stop()
     }
 
@@ -412,6 +444,8 @@ private struct MacSpeechAudioOutputHostTests {
                "resumed playback is observable")
         expect(player.startCount == 1,
                "new audio continues the same player cycle")
+        expect(player.resetForPlaybackGenerationCount == 1,
+               "stall and resume retain converter stream state")
         expect(player.fadeIns == [true, false, true, false],
                "first audible chunks fade in at start and resume")
         _ = await host.finishProviderResponse(generation: generation)
@@ -587,8 +621,11 @@ private struct MacSpeechAudioOutputHostTests {
     private static func testSpeechStartClearKeepsEngineAvailable() async {
         let (host, player) = makeHost()
         let generation = await host.prepare().generation
+        let audible = pcm16Data(
+            samples: [Int16](repeating: 3_000, count: 240)
+        )
         _ = await host.enqueue(
-            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+            pcm16Bytes: audible, sequence: 1, generation: generation
         )
         _ = await host.finishProviderResponse(generation: generation)
         let cleared = await host.clearForAcceptedSpeechStart()
@@ -598,6 +635,8 @@ private struct MacSpeechAudioOutputHostTests {
                "speech start invalidates the old playback generation")
         expect(player.clearScheduledPlaybackCount == 1,
                "speech start clears scheduled PlayerNode audio once")
+        expect(player.resetForPlaybackGenerationCount == 2,
+               "speech start resets converter for the new generation")
         expect(player.stopCount == 0,
                "speech start keeps the audio engine available")
         let repeated = await host.clearForAcceptedSpeechStart()
@@ -605,6 +644,26 @@ private struct MacSpeechAudioOutputHostTests {
                "duplicate speech start does not clear an empty Host")
         expect(player.clearScheduledPlaybackCount == 1,
                "duplicate speech start has no Player side effect")
+        expect(player.resetForPlaybackGenerationCount == 2,
+               "duplicate speech start does not reset converter again")
+        _ = await host.enqueue(
+            pcm16Bytes: audible,
+            sequence: 2,
+            generation: cleared.generation
+        )
+        _ = await host.enqueue(
+            pcm16Bytes: audible,
+            sequence: 3,
+            generation: cleared.generation
+        )
+        _ = await host.start()
+        expect(pcmSample(player.processed[1], at: 0) < 200,
+               "new generation rearms the first audible fade")
+        expect(pcmSample(player.processed[1], at: 119) == 3_000,
+               "new generation fade returns to source PCM")
+        expect(player.processed[2] == audible,
+               "new generation second chunk remains bit-exact")
+        _ = await host.stop()
     }
 
     private static func testGenerationRejectsLateInputAndCompletion() async {

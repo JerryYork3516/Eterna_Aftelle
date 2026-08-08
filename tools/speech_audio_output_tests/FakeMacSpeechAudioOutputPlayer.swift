@@ -15,13 +15,14 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var pendingPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var stoppedPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var scheduledPayloads: [Data] = []
+    private var processedPayloads: [Data] = []
     private var scheduledFadeIns: [Bool] = []
     private var prepareCalls = 0
     private var startCalls = 0
     private var clearScheduledPlaybackCalls = 0
     private var stopCalls = 0
     private var closeCalls = 0
-    private var playbackSafetyGain = 1.0
+    private var resetForPlaybackGenerationCalls = 0
     var prepareError: MacSpeechAudioOutputHostError?
     var scheduleError: MacSpeechAudioOutputHostError?
     var startError: MacSpeechAudioOutputHostError?
@@ -41,7 +42,6 @@ final class FakeMacSpeechAudioOutputPlayer:
     func prepare() throws -> MacSpeechLocalPlaybackFormat {
         try lock.withLock {
             prepareCalls += 1
-            playbackSafetyGain = 1
             if let prepareError { throw prepareError }
             return preparedFormat
         }
@@ -53,21 +53,27 @@ final class FakeMacSpeechAudioOutputPlayer:
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
-    ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult {
+    ) throws -> MacSpeechPCMOutputEnvelope.ProcessingResult {
         try lock.withLock {
             if let scheduleError { throw scheduleError }
-            let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            let processing = MacSpeechPCMOutputEnvelope.processing(
                 to: pcm16Bytes,
-                startingGain: playbackSafetyGain
+                applyFadeIn: applyFadeIn
             )
-            playbackSafetyGain = safety.endingGain
             scheduledPayloads.append(pcm16Bytes)
+            processedPayloads.append(processing.bytes)
             scheduledFadeIns.append(applyFadeIn)
             pendingPlaybacks.append(FakeMacSpeechPendingPlayback(
                 completion: completion,
                 byteCount: pcm16Bytes.count
             ))
-            return safety
+            return processing
+        }
+    }
+
+    func resetForPlaybackGeneration() {
+        lock.withLock {
+            resetForPlaybackGenerationCalls += 1
         }
     }
 
@@ -81,7 +87,6 @@ final class FakeMacSpeechAudioOutputPlayer:
     func clearScheduledPlayback() {
         lock.withLock {
             clearScheduledPlaybackCalls += 1
-            playbackSafetyGain = 1
             movePendingPlaybacksToStopped()
         }
     }
@@ -89,7 +94,6 @@ final class FakeMacSpeechAudioOutputPlayer:
     func stop() {
         lock.withLock {
             stopCalls += 1
-            playbackSafetyGain = 1
             movePendingPlaybacksToStopped()
         }
     }
@@ -97,7 +101,6 @@ final class FakeMacSpeechAudioOutputPlayer:
     func close() {
         lock.withLock {
             closeCalls += 1
-            playbackSafetyGain = 1
         }
     }
 
@@ -133,7 +136,11 @@ final class FakeMacSpeechAudioOutputPlayer:
     var scheduledCount: Int { lock.withLock { scheduledPayloads.count } }
     var pendingCount: Int { lock.withLock { pendingPlaybacks.count } }
     var payloads: [Data] { lock.withLock { scheduledPayloads } }
+    var processed: [Data] { lock.withLock { processedPayloads } }
     var fadeIns: [Bool] { lock.withLock { scheduledFadeIns } }
+    var resetForPlaybackGenerationCount: Int {
+        lock.withLock { resetForPlaybackGenerationCalls }
+    }
 
     private func movePendingPlaybacksToStopped() {
         stoppedPlaybacks.append(contentsOf: pendingPlaybacks)

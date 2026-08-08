@@ -152,7 +152,7 @@ actor MacSpeechAudioOutputHost {
         }
         do {
             let preparedFormat = try player.prepare()
-            generation &+= 1
+            advancePlaybackGeneration()
             queue.reset(generation: generation)
             inFlightByteCounts.removeAll(keepingCapacity: true)
             resumeWaitingEnqueues()
@@ -353,7 +353,7 @@ actor MacSpeechAudioOutputHost {
             let scheduledSequence = chunk.sequence
             let applyFadeIn = shouldFadeInNextChunk
             do {
-                let safety = try player.schedule(
+                let processing = try player.schedule(
                     pcm16Bytes: chunk.pcm16Bytes,
                     applyFadeIn: applyFadeIn
                 ) {
@@ -366,14 +366,8 @@ actor MacSpeechAudioOutputHost {
                         )
                     }
                 }
-                if applyFadeIn, safety.isAudible {
+                if applyFadeIn, processing.isAudible {
                     shouldFadeInNextChunk = false
-                }
-                if safety.didLimit {
-                    appendEvent(
-                        .outputSafetyLimited,
-                        sequence: scheduledSequence
-                    )
                 }
             } catch let error as MacSpeechAudioOutputHostError {
                 _ = fail(error)
@@ -557,7 +551,7 @@ actor MacSpeechAudioOutputHost {
         } else {
             player.stop()
         }
-        generation &+= 1
+        advancePlaybackGeneration()
         inFlightByteCounts.removeAll(keepingCapacity: true)
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
@@ -568,6 +562,11 @@ actor MacSpeechAudioOutputHost {
     private var hasPendingPlayback: Bool {
         state == .playing || state == .stalled || state == .draining
             || !queue.isEmpty || !inFlightByteCounts.isEmpty
+    }
+
+    private func advancePlaybackGeneration() {
+        generation &+= 1
+        player.resetForPlaybackGeneration()
     }
 
     private func startDeviceMonitoringIfNeeded() {
@@ -604,7 +603,7 @@ actor MacSpeechAudioOutputHost {
         state = .failed
         lastError = .outputDeviceChanged
         appendEvent(.failed, error: .outputDeviceChanged)
-        generation &+= 1
+        advancePlaybackGeneration()
         queue.reset(generation: generation)
     }
 

@@ -1,7 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-private final class MacSpeechConverterInputState: @unchecked Sendable {
+private nonisolated final class MacSpeechConverterInputState: @unchecked Sendable {
     private let lock = NSLock()
     private var supplied = false
 
@@ -60,6 +60,12 @@ nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
     func convert(pcm16Bytes: Data) throws -> AVAudioPCMBuffer {
         try lock.withLock {
             try convertedBuffer(pcm16Bytes: pcm16Bytes)
+        }
+    }
+
+    func reset() {
+        lock.withLock {
+            converter.reset()
         }
     }
 
@@ -128,107 +134,80 @@ nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
 
 nonisolated enum MacSpeechPCMOutputEnvelope {
     static let resumeFadeInSampleCount = 120
-    static let gainTransitionSampleCount = 120
-    static let maximumPlaybackPeak = 0.65
-    static let maximumPlaybackRMS = 0.11
     private static let audiblePeak = 0.01
     private static let audibleRMS = 0.002
 
-    struct SafetyResult: Sendable, Equatable {
+    struct ProcessingResult: Sendable, Equatable {
         let bytes: Data
-        let appliedGain: Double
-        let endingGain: Double
         let isAudible: Bool
-
-        var didLimit: Bool { appliedGain < 1 }
     }
 
-    static func applyingPlaybackSafety(
+    static func processing(
         to data: Data,
-        startingGain: Double? = nil
-    ) -> SafetyResult {
+        applyFadeIn: Bool
+    ) -> ProcessingResult {
         guard !data.isEmpty,
               data.count.isMultiple(of: MacSpeechPCMOutputFormat.bytesPerSample)
         else {
-            let gain = startingGain ?? 1
-            return SafetyResult(
+            return ProcessingResult(
                 bytes: data,
-                appliedGain: 1,
-                endingGain: gain,
                 isAudible: false
             )
         }
         let source = [UInt8](data)
         var peak = 0
         var squaredSum = 0.0
+        var firstAudibleSampleIndex: Int?
         let sampleCount = source.count / MacSpeechPCMOutputFormat.bytesPerSample
-        for byteIndex in stride(from: 0, to: source.count, by: 2) {
+        for sampleIndex in 0 ..< sampleCount {
+            let byteIndex = sampleIndex * MacSpeechPCMOutputFormat.bytesPerSample
             let sample = decodedSample(source, at: byteIndex)
             peak = max(peak, abs(Int(sample)))
             squaredSum += Double(sample) * Double(sample)
+            if firstAudibleSampleIndex == nil,
+               abs(Int(sample)) >= Int(audibleRMS * 32_768) {
+                firstAudibleSampleIndex = sampleIndex
+            }
         }
         let normalizedPeak = Double(peak) / 32_768.0
         let normalizedRMS = sqrt(squaredSum / Double(sampleCount)) / 32_768.0
-        let peakGain = normalizedPeak > maximumPlaybackPeak
-            ? maximumPlaybackPeak / normalizedPeak : 1
-        let rmsGain = normalizedRMS > maximumPlaybackRMS
-            ? maximumPlaybackRMS / normalizedRMS : 1
-        let appliedGain = min(peakGain, rmsGain)
         let isAudible = normalizedPeak >= audiblePeak
             || normalizedRMS >= audibleRMS
-        let initialGain = max(0, min(1, startingGain ?? appliedGain))
-        let transitionSampleCount = min(
-            gainTransitionSampleCount,
-            sampleCount
-        )
-        let maximumSample = Double(Int16.max) * maximumPlaybackPeak
-
-        var output = source
-        var endingGain = initialGain
-        for sampleIndex in 0 ..< sampleCount {
-            let byteIndex = sampleIndex * 2
-            let sample = decodedSample(source, at: byteIndex)
-            let progress = transitionSampleCount > 0
-                ? min(
-                    1,
-                    Double(sampleIndex + 1)
-                        / Double(transitionSampleCount)
-                )
-                : 1
-            let gain = initialGain + (appliedGain - initialGain) * progress
-            endingGain = gain
-            let scaled = Int16(
-                max(-maximumSample, min(
-                    maximumSample,
-                    (Double(sample) * gain).rounded()
-                ))
+        let processed = applyFadeIn && isAudible
+            ? applyingResumeFadeIn(
+                to: data,
+                startingAtSample: firstAudibleSampleIndex ?? 0
             )
-            let raw = UInt16(bitPattern: scaled)
-            output[byteIndex] = UInt8(truncatingIfNeeded: raw)
-            output[byteIndex + 1] = UInt8(truncatingIfNeeded: raw >> 8)
-        }
-        return SafetyResult(
-            bytes: Data(output),
-            appliedGain: appliedGain,
-            endingGain: endingGain,
+            : data
+        return ProcessingResult(
+            bytes: processed,
             isAudible: isAudible
         )
     }
 
-    static func applyingResumeFadeIn(to data: Data) -> Data {
+    static func applyingResumeFadeIn(
+        to data: Data,
+        startingAtSample startIndex: Int = 0
+    ) -> Data {
+        let totalSampleCount = data.count
+            / MacSpeechPCMOutputFormat.bytesPerSample
+        guard startIndex >= 0, startIndex < totalSampleCount else {
+            return data
+        }
         let sampleCount = min(
             resumeFadeInSampleCount,
-            data.count / MacSpeechPCMOutputFormat.bytesPerSample
+            totalSampleCount - startIndex
         )
         guard sampleCount > 0 else { return data }
         var bytes = [UInt8](data)
-        for sampleIndex in 0 ..< sampleCount {
+        for fadeIndex in 0 ..< sampleCount {
+            let sampleIndex = startIndex + fadeIndex
             let byteIndex = sampleIndex * 2
             let raw = UInt16(bytes[byteIndex])
                 | (UInt16(bytes[byteIndex + 1]) << 8)
             let sample = Int16(bitPattern: raw)
             let scaled = Int16(
-                Double(sample) * Double(sampleIndex + 1)
+                Double(sample) * Double(fadeIndex + 1)
                     / Double(sampleCount)
             )
             let scaledRaw = UInt16(bitPattern: scaled)
@@ -257,7 +236,8 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
-    ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult
+    ) throws -> MacSpeechPCMOutputEnvelope.ProcessingResult
+    func resetForPlaybackGeneration()
     func start() throws
     func clearScheduledPlayback()
     func stop()
@@ -272,11 +252,9 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     private var playerNode: AVAudioPlayerNode?
     private var converter: MacSpeechPCMOutputConverter?
     private var localFormat: AVAudioFormat?
-    private var playbackSafetyGain = 1.0
 
     func prepare() throws -> MacSpeechLocalPlaybackFormat {
         try lock.withLock {
-            playbackSafetyGain = 1
             if let localFormat {
                 return describe(localFormat)
             }
@@ -314,25 +292,21 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
-    ) throws -> MacSpeechPCMOutputEnvelope.SafetyResult {
+    ) throws -> MacSpeechPCMOutputEnvelope.ProcessingResult {
         let prepared = try lock.withLock {
             guard let playerNode,
                   let converter
             else {
                 throw MacSpeechAudioOutputHostError.invalidState
             }
-            let safety = MacSpeechPCMOutputEnvelope.applyingPlaybackSafety(
+            let processing = MacSpeechPCMOutputEnvelope.processing(
                 to: pcm16Bytes,
-                startingGain: playbackSafetyGain
+                applyFadeIn: applyFadeIn
             )
-            playbackSafetyGain = safety.endingGain
-            let playbackBytes = applyFadeIn
-                ? MacSpeechPCMOutputEnvelope.applyingResumeFadeIn(
-                    to: safety.bytes
-                )
-                : safety.bytes
-            let buffer = try converter.convert(pcm16Bytes: playbackBytes)
-            return (playerNode, buffer, safety)
+            let buffer = try converter.convert(
+                pcm16Bytes: processing.bytes
+            )
+            return (playerNode, buffer, processing)
         }
         prepared.0.scheduleBuffer(
             prepared.1,
@@ -341,6 +315,12 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
             completion(.success(pcm16Bytes.count))
         }
         return prepared.2
+    }
+
+    func resetForPlaybackGeneration() {
+        lock.withLock {
+            converter?.reset()
+        }
     }
 
     func start() throws {
@@ -360,7 +340,6 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     func clearScheduledPlayback() {
         lock.withLock {
             playerNode?.stop()
-            playbackSafetyGain = 1
         }
     }
 
@@ -368,7 +347,6 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         lock.withLock {
             playerNode?.stop()
             engine?.stop()
-            playbackSafetyGain = 1
         }
     }
 
@@ -384,7 +362,6 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
             localFormat = nil
             playerNode = nil
             engine = nil
-            playbackSafetyGain = 1
         }
     }
 

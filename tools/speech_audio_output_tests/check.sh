@@ -67,8 +67,11 @@ rg -q 'startupBufferCount: 2' "$buffer"
 rg -q 'startupBufferDurationNanoseconds: 500_000_000' "$buffer"
 rg -q 'scheduleAheadCount: 4' "$buffer"
 rg -q 'applyingResumeFadeIn' "$player"
-rg -q 'applyingPlaybackSafety' "$player"
-rg -q 'outputSafetyLimited' "$host"
+rg -q 'resetForPlaybackGeneration' "$player" "$host"
+if rg -q 'applyingPlaybackSafety|maximumPlaybackPeak|maximumPlaybackRMS' "$player"; then
+  echo "speech_audio_output_bit_exact=FAIL"
+  exit 1
+fi
 rg -q 'clearForAcceptedSpeechStart' "$host"
 rg -q 'clearScheduledPlayback' "$player"
 rg -q 'scheduleAvailableChunks' "$host"
@@ -85,3 +88,4 @@ rg -q 'case playbackResumed' "$host"
 rg -q 'consumerWatchdogNanoseconds' "$host"
 echo "speech_audio_output_continuous_playback=PASS"
 echo "speech_audio_output_pressure=PASS"
+echo "speech_audio_output_bit_exact=PASS"
