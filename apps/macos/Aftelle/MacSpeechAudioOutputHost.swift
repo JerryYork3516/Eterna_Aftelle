@@ -114,7 +114,7 @@ actor MacSpeechAudioOutputHost {
     private var eventDeliveryTask: Task<Void, Never>?
     private var isMonitoringDeviceRoute = false
     private var providerResponseFinished = false
-    private var shouldFadeInNextChunk = false
+    private var pendingFadeIn: MacSpeechPCMOutputFadeIn?
 
     init(
         player: MacSpeechAudioOutputPlaying =
@@ -157,7 +157,7 @@ actor MacSpeechAudioOutputHost {
             inFlightByteCounts.removeAll(keepingCapacity: true)
             resumeWaitingEnqueues()
             providerResponseFinished = false
-            shouldFadeInNextChunk = true
+            pendingFadeIn = .initial
             timeoutTask?.cancel()
             timeoutTask = nil
             localFormat = preparedFormat.description
@@ -351,11 +351,11 @@ actor MacSpeechAudioOutputHost {
             }
             let scheduledGeneration = generation
             let scheduledSequence = chunk.sequence
-            let applyFadeIn = shouldFadeInNextChunk
+            let fadeIn = pendingFadeIn
             do {
                 let processing = try player.schedule(
                     pcm16Bytes: chunk.pcm16Bytes,
-                    applyFadeIn: applyFadeIn
+                    fadeIn: fadeIn
                 ) {
                     [weak self] result in
                     Task {
@@ -366,8 +366,11 @@ actor MacSpeechAudioOutputHost {
                         )
                     }
                 }
-                if applyFadeIn, processing.isAudible {
-                    shouldFadeInNextChunk = false
+                if let fadeIn,
+                   processing.appliedFadeInSampleCount > 0 {
+                    pendingFadeIn = fadeIn.advancing(
+                        by: processing.appliedFadeInSampleCount
+                    )
                 }
             } catch let error as MacSpeechAudioOutputHostError {
                 _ = fail(error)
@@ -397,7 +400,7 @@ actor MacSpeechAudioOutputHost {
         timeoutTask?.cancel()
         timeoutTask = nil
         state = .stalled
-        shouldFadeInNextChunk = true
+        pendingFadeIn = .stalledResume
         underrunCount += 1
         appendEvent(.playbackStalled)
     }
@@ -534,7 +537,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
-        shouldFadeInNextChunk = false
+        pendingFadeIn = nil
         state = .failed
         lastError = error
         appendEvent(.failed, error: error)
@@ -556,7 +559,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
-        shouldFadeInNextChunk = keepsEngineRunning
+        pendingFadeIn = keepsEngineRunning ? .initial : nil
     }
 
     private var hasPendingPlayback: Bool {
@@ -598,7 +601,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
         resumeWaitingEnqueues()
         providerResponseFinished = false
-        shouldFadeInNextChunk = false
+        pendingFadeIn = nil
         localFormat = "current default output / not prepared"
         state = .failed
         lastError = .outputDeviceChanged

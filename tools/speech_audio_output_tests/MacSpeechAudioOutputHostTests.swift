@@ -11,6 +11,8 @@ private struct MacSpeechAudioOutputHostTests {
         testPCMConversionToLocalFormat()
         testPCMConversionResetMatchesFreshStream()
         testResumeFadeInEnvelope()
+        testStalledResumeFadeSpansChunks()
+        testStalledResumeFadeTracksLateAudibleOnsetAcrossSplits()
         testPlaybackFadeTracksAudibleOnset()
         testPlaybackProcessingPreservesPCMWithoutFade()
         testPlaybackProcessingAvoidsCrossChunkGainPumping()
@@ -95,6 +97,39 @@ private struct MacSpeechAudioOutputHostTests {
                "samples after audible fade stay bit-exact")
     }
 
+    private static func testStalledResumeFadeSpansChunks() {
+        let chunk = pcm16Data(
+            samples: [Int16](repeating: 10_000, count: 240)
+        )
+        let first = MacSpeechPCMOutputEnvelope.processing(
+            to: chunk,
+            fadeIn: .stalledResume
+        )
+        let continuation = MacSpeechPCMOutputFadeIn.stalledResume
+            .advancing(by: first.appliedFadeInSampleCount)
+        let second = MacSpeechPCMOutputEnvelope.processing(
+            to: chunk,
+            fadeIn: continuation
+        )
+        let whole = MacSpeechPCMOutputEnvelope.processing(
+            to: chunk + chunk,
+            fadeIn: .stalledResume
+        )
+
+        expect(first.appliedFadeInSampleCount == 240,
+               "stall fade consumes the first chunk")
+        expect(second.appliedFadeInSampleCount == 240,
+               "stall fade continues across the next chunk")
+        expect(first.bytes + second.bytes == whole.bytes,
+               "stall fade is invariant to PCM chunk boundaries")
+        expect(pcmSample(first.bytes, at: 239) == 5_000,
+               "stall fade remains below unity at the chunk boundary")
+        expect(pcmSample(second.bytes, at: 0) > 5_000,
+               "stall fade continues instead of restarting")
+        expect(pcmSample(second.bytes, at: 239) == 10_000,
+               "stall fade reaches the original PCM after 20 milliseconds")
+    }
+
     private static func testPlaybackProcessingPreservesPCMWithoutFade() {
         let fixtures: [[Int16]] = [
             [Int16](repeating: 0, count: 240),
@@ -111,6 +146,49 @@ private struct MacSpeechAudioOutputHostTests {
             expect(processed.bytes == source,
                    "PCM stays bit-exact without fade")
         }
+    }
+
+    private static func testStalledResumeFadeTracksLateAudibleOnsetAcrossSplits() {
+        let silence = [Int16](repeating: 0, count: 230)
+        let speech = [Int16](repeating: 10_000, count: 480)
+        let trailing = [Int16](repeating: 10_000, count: 37)
+        let samples = silence + speech + trailing
+        let chunks = [
+            Array(samples[0 ..< 240]),
+            Array(samples[240 ..< 377]),
+            Array(samples[377 ..< samples.count])
+        ].map { pcm16Data(samples: $0) }
+        var fadeIn: MacSpeechPCMOutputFadeIn? = .stalledResume
+        var splitOutput = Data()
+        var appliedCounts: [Int] = []
+        for chunk in chunks {
+            let processed = MacSpeechPCMOutputEnvelope.processing(
+                to: chunk,
+                fadeIn: fadeIn
+            )
+            splitOutput.append(processed.bytes)
+            appliedCounts.append(processed.appliedFadeInSampleCount)
+            fadeIn = fadeIn?.advancing(
+                by: processed.appliedFadeInSampleCount
+            )
+        }
+        let whole = MacSpeechPCMOutputEnvelope.processing(
+            to: pcm16Data(samples: samples),
+            fadeIn: .stalledResume
+        )
+
+        expect(appliedCounts == [10, 137, 333],
+               "late audible onset consumes only audible fade samples")
+        expect(splitOutput == whole.bytes,
+               "uneven PCM splits preserve one continuous resume ramp")
+        expect(pcmSample(splitOutput, at: 229) == 0,
+               "leading silence remains bit-exact before recovery speech")
+        expect(pcmSample(splitOutput, at: 230) < 100,
+               "resume ramp begins at the late audible onset")
+        expect(pcmSample(splitOutput, at: 709) == 10_000,
+               "resume ramp reaches unity after 480 audible samples")
+        expect(pcmSample(splitOutput, at: 710) == 10_000,
+               "post-ramp PCM remains bit-exact")
     }
 
     private static func testPlaybackProcessingAvoidsCrossChunkGainPumping() {
@@ -446,8 +524,17 @@ private struct MacSpeechAudioOutputHostTests {
                "new audio continues the same player cycle")
         expect(player.resetForPlaybackGenerationCount == 1,
                "stall and resume retain converter stream state")
-        expect(player.fadeIns == [true, false, true, false],
-               "first audible chunks fade in at start and resume")
+        expect(player.fadeIns == [true, false, true, true],
+               "stall recovery fade remains armed across PCM chunks")
+        expect(
+            player.fadeInStates.compactMap { $0?.appliedSampleCount }
+                == [0, 0, 240],
+            "stall recovery fade advances without restarting"
+        )
+        expect(pcmSample(player.processed[2], at: 239) == 1_500,
+               "first resumed chunk stays inside the 20 millisecond ramp")
+        expect(pcmSample(player.processed[3], at: 239) == 3_000,
+               "second resumed chunk returns to source PCM")
         _ = await host.finishProviderResponse(generation: generation)
         player.completeScheduledChunk()
         player.completeScheduledChunk()

@@ -16,7 +16,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var stoppedPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var scheduledPayloads: [Data] = []
     private var processedPayloads: [Data] = []
-    private var scheduledFadeIns: [Bool] = []
+    private var scheduledFadeIns: [MacSpeechPCMOutputFadeIn?] = []
     private var prepareCalls = 0
     private var startCalls = 0
     private var clearScheduledPlaybackCalls = 0
@@ -49,7 +49,7 @@ final class FakeMacSpeechAudioOutputPlayer:
 
     func schedule(
         pcm16Bytes: Data,
-        applyFadeIn: Bool,
+        fadeIn: MacSpeechPCMOutputFadeIn?,
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
@@ -58,11 +58,11 @@ final class FakeMacSpeechAudioOutputPlayer:
             if let scheduleError { throw scheduleError }
             let processing = MacSpeechPCMOutputEnvelope.processing(
                 to: pcm16Bytes,
-                applyFadeIn: applyFadeIn
+                fadeIn: fadeIn
             )
             scheduledPayloads.append(pcm16Bytes)
             processedPayloads.append(processing.bytes)
-            scheduledFadeIns.append(applyFadeIn)
+            scheduledFadeIns.append(fadeIn)
             pendingPlaybacks.append(FakeMacSpeechPendingPlayback(
                 completion: completion,
                 byteCount: pcm16Bytes.count
@@ -137,7 +137,12 @@ final class FakeMacSpeechAudioOutputPlayer:
     var pendingCount: Int { lock.withLock { pendingPlaybacks.count } }
     var payloads: [Data] { lock.withLock { scheduledPayloads } }
     var processed: [Data] { lock.withLock { processedPayloads } }
-    var fadeIns: [Bool] { lock.withLock { scheduledFadeIns } }
+    var fadeIns: [Bool] {
+        lock.withLock { scheduledFadeIns.map { $0 != nil } }
+    }
+    var fadeInStates: [MacSpeechPCMOutputFadeIn?] {
+        lock.withLock { scheduledFadeIns }
+    }
     var resetForPlaybackGenerationCount: Int {
         lock.withLock { resetForPlaybackGenerationCalls }
     }

@@ -686,34 +686,28 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"response.created","response":{"id":"response-one"}}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"我"}"#)
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"我是林轩，"}"#)
         )
-        await transport.enqueue(subtitleAudioFrame(
-            responseID: "response-one",
-            itemID: "item-one",
-            seed: 1
-        ))
-        await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"是"}"#)
-        )
-        await transport.enqueue(subtitleAudioFrame(
-            responseID: "response-one",
-            itemID: "item-one",
-            seed: 2
-        ))
+        for seed in UInt8(1) ... UInt8(5) {
+            await transport.enqueue(subtitleAudioFrame(
+                responseID: "response-one",
+                itemID: "item-one",
+                seed: seed
+            ))
+        }
         await waitUntil {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentPartial
-                == "我是"
+                == "我是林轩，"
         }
         expect(
-            stack.controller.particleSubtitleState.text != "我是",
-            "resident partial waits for matching local playback"
+            stack.controller.particleSubtitleState.text != "我是林轩，",
+            "resident phrase waits for matching local playback"
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio_transcript.done","response_id":"response-one","item_id":"item-one","transcript":"我是林轩"}"#)
+            .text(#"{"type":"response.audio_transcript.done","response_id":"response-one","item_id":"item-one","transcript":"我是林轩。"}"#)
         )
         expect(
-            stack.controller.particleSubtitleState.text != "我是林轩",
+            stack.controller.particleSubtitleState.text != "我是林轩。",
             "resident final remains deferred before response boundary"
         )
         await transport.enqueue(
@@ -721,19 +715,27 @@ private struct NativeSpeechDuplexTests {
         )
         await waitUntil {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
-                == "我是林轩"
+                == "我是林轩。"
         }
-        await waitUntil { stack.outputPlayer.scheduledCount == 2 }
+        await waitUntil { stack.outputPlayer.scheduledCount == 4 }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil { stack.outputPlayer.scheduledCount == 5 }
+        stack.outputPlayer.completeScheduledChunk()
+        stack.outputPlayer.completeScheduledChunk()
+        expect(
+            stack.controller.particleSubtitleState.text != "我是林轩，",
+            "resident phrase cannot lead its assigned PCM chunk"
+        )
         stack.outputPlayer.completeScheduledChunk()
         await waitUntil {
-            stack.controller.particleSubtitleState.text == "我"
+            stack.controller.particleSubtitleState.text == "我是林轩，"
         }
         stack.outputPlayer.completeScheduledChunk()
         await waitUntil {
-            stack.controller.particleSubtitleState.text == "我是林轩"
+            stack.controller.particleSubtitleState.text == "我是林轩。"
         }
         expect(
-            stack.controller.particleSubtitleState.text == "我是林轩",
+            stack.controller.particleSubtitleState.text == "我是林轩。",
             "playback completion releases the final voice subtitle"
         )
         await stack.controller.stopSpeechAudioCapture()

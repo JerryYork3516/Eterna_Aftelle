@@ -26,11 +26,14 @@ private struct StepFunRealtimeAdapterTests {
         try await testCompletedResponseTombstonesStayBounded()
         try await testResumedSpeechSuppressesLateResponse()
         try await testCumulativeTranscriptNormalization()
+        try await testResidentPhraseBoundariesTrackAudioWaterline()
+        try await testLargeUnpunctuatedDeltaCreatesPhraseCheckpoints()
         try await testResidentSubtitleCadenceTracksAudioDuration()
         try await testResidentCheckpointBurstIsBounded()
         try await testResidentFinalFallsBackAtResponseBoundary()
         try await testLateUserFinalCorrelation()
         try await testSubtitleCorrelationGate()
+        try await testResidentItemSwitchResetsSubtitleState()
         try await testCancelDropsQueuedSubtitle()
         try await testConversationItemUserFinal()
         try await testRecoverableTurnFailureKeepsConnection()
@@ -559,15 +562,16 @@ private struct StepFunRealtimeAdapterTests {
             #"{"type":"response.done","response":{"id":"old","status":"incomplete"}}"#
         ))
         await transport.enqueue(.text(
-            #"{"event_id":"new-text","type":"response.audio_transcript.delta","response_id":"new","item_id":"new-item","delta":"新"}"#
+            #"{"event_id":"new-text","type":"response.audio_transcript.delta","response_id":"new","item_id":"new-item","delta":"新的回答已经开始。"}"#
         ))
         await transport.enqueue(.text(
-            #"{"event_id":"new-final","type":"response.audio_transcript.done","response_id":"new","item_id":"new-item","transcript":"新字幕"}"#
+            #"{"event_id":"new-final","type":"response.audio_transcript.done","response_id":"new","item_id":"new-item","transcript":"新的回答已经开始。"}"#
         ))
         await transport.enqueue(subtitleAudioFrame(
             responseID: "new",
             itemID: "new-item",
-            seed: 1
+            seed: 1,
+            byteCount: 96_000
         ))
         let output = try await adapter.receive(
             interactionID: request.interaction.id
@@ -579,7 +583,10 @@ private struct StepFunRealtimeAdapterTests {
             interactionID: request.interaction.id
         )
         expect(
-            partial.kind == .outputText(text: "新", isFinal: false),
+            partial.kind == .outputText(
+                text: "新的回答已经开始。",
+                isFinal: false
+            ),
             "old transcript checkpoints cannot block the new response"
         )
         let state = await adapter.connectionState
@@ -607,7 +614,7 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"event_id":"resident-2","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"海"}"#),
             .text(#"{"event_id":"resident-2","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"海"}"#),
             .text(#"{"event_id":"resident-3","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"海"}"#),
-            .text(#"{"event_id":"resident-4","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"洋"}"#),
+            .text(#"{"event_id":"resident-4","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"洋，"}"#),
             .text(#"{"event_id":"resident-5","type":"response.audio_transcript.done","response_id":"response-one","item_id":"item-one","transcript":"上海海洋"}"#),
             subtitleAudioFrame(
                 responseID: "response-one",
@@ -662,28 +669,25 @@ private struct StepFunRealtimeAdapterTests {
                 bytes: subtitleAudioBytes(seed: 1),
                 format: .pcm16
             )),
-            .outputText(text: "上", isFinal: false),
             .outputAudio(NativeSpeechAudioPayload(
                 interactionID: request.interaction.id,
                 sequenceNumber: 1,
                 bytes: subtitleAudioBytes(seed: 2),
                 format: .pcm16
             )),
-            .outputText(text: "上海", isFinal: false),
             .outputAudio(NativeSpeechAudioPayload(
                 interactionID: request.interaction.id,
                 sequenceNumber: 2,
                 bytes: subtitleAudioBytes(seed: 3),
                 format: .pcm16
             )),
-            .outputText(text: "上海海", isFinal: false),
             .outputAudio(NativeSpeechAudioPayload(
                 interactionID: request.interaction.id,
                 sequenceNumber: 3,
                 bytes: subtitleAudioBytes(seed: 4),
                 format: .pcm16
             )),
-            .outputText(text: "上海海洋", isFinal: false),
+            .outputText(text: "上海海洋，", isFinal: false),
             .outputText(text: "上海海洋", isFinal: true),
             .responseCompleted
         ]
@@ -916,20 +920,20 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"type":"session.updated"}"#),
             .text(#"{"type":"response.created","response":{"id":"burst-response"}}"#)
         ]
-        for index in 0 ..< 515 {
+        for index in 0 ..< 1_560 {
             frames.append(.text(
                 #"{"event_id":"burst-\#(index)","type":"response.audio_transcript.delta","response_id":"burst-response","item_id":"burst-item","delta":"哈"}"#
             ))
         }
-        let finalText = String(repeating: "哈", count: 515)
+        let finalText = String(repeating: "哈", count: 1_560)
         frames.append(.text(
             #"{"event_id":"burst-final","type":"response.audio_transcript.done","response_id":"burst-response","item_id":"burst-item","transcript":"\#(finalText)"}"#
         ))
-        for seed in UInt8(1) ... UInt8(3) {
+        for index in 1 ... 30 {
             frames.append(subtitleAudioFrame(
                 responseID: "burst-response",
                 itemID: "burst-item",
-                seed: seed
+                seed: UInt8(index)
             ))
         }
         frames.append(.text(
@@ -960,21 +964,26 @@ private struct StepFunRealtimeAdapterTests {
         )
 
         var progressivePartials: [String] = []
-        for _ in 0 ..< 3 {
-            let audio = try await adapter.receive(
+        var audioSeen = 0
+        var finalTextSeen: String?
+        responseLoop: while true {
+            let event = try await adapter.receive(
                 interactionID: request.interaction.id
             )
-            guard case .outputAudio = audio.kind else {
-                fatalError("FAILED: burst audio remains ordered")
+            switch event.kind {
+            case .outputAudio:
+                audioSeen += 1
+            case .outputText(let text, false):
+                progressivePartials.append(text)
+            case .outputText(let text, true):
+                finalTextSeen = text
+            case .responseCompleted:
+                break responseLoop
+            default:
+                break
             }
-            let partial = try await adapter.receive(
-                interactionID: request.interaction.id
-            )
-            guard case .outputText(let text, false) = partial.kind else {
-                fatalError("FAILED: each audio releases one real checkpoint")
-            }
-            progressivePartials.append(text)
         }
+        expect(audioSeen == 30, "burst fixture preserves every audio block")
         expect(
             progressivePartials.map(\.count)
                 == progressivePartials.map(\.count).sorted()
@@ -982,32 +991,104 @@ private struct StepFunRealtimeAdapterTests {
             "bounded checkpoints advance monotonically across audio"
         )
         expect(
-            progressivePartials.map(\.count) == [1, 2, 3],
-            "checkpoint compaction preserves the earliest visible progress"
+            progressivePartials.map(\.count) == [12, 24, 36],
+            "checkpoint compaction preserves phrase-level progress"
         )
         expect(
             progressivePartials.allSatisfy { $0.count < finalText.count },
             "early audio never releases the complete final transcript"
         )
-        let final = try await adapter.receive(
-            interactionID: request.interaction.id
-        )
         expect(
-            final.kind == .outputText(text: finalText, isFinal: true),
+            finalTextSeen == finalText,
             "burst final is emitted once at the audio boundary"
-        )
-        let completion = try await adapter.receive(
-            interactionID: request.interaction.id
-        )
-        expect(
-            completion.kind == .responseCompleted,
-            "burst response completes after its final"
         )
         expect(
             diagnostics.drain().events.contains {
                 $0.category == "resident_partial_checkpoints_compacted"
             },
-            "515 early deltas stay bounded through deterministic compaction"
+            "early delta bursts stay bounded through deterministic compaction"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testResidentPhraseBoundariesTrackAudioWaterline()
+        async throws
+    {
+        let responseID = "phrase-response"
+        let itemID = "phrase-item"
+        var frames: [RealtimeWebSocketFrame] = [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(
+                #"{"type":"response.created","response":{"id":"phrase-response"}}"#
+            ),
+            .text(
+                #"{"event_id":"phrase-1","type":"response.audio_transcript.delta","response_id":"phrase-response","item_id":"phrase-item","delta":"今天想吃顿好的，然后去逛逛。"}"#
+            ),
+            .text(
+                #"{"event_id":"phrase-final","type":"response.audio_transcript.done","response_id":"phrase-response","item_id":"phrase-item","transcript":"今天想吃顿好的，然后去逛逛。"}"#
+            )
+        ]
+        for seed in UInt8(1) ... UInt8(11) {
+            frames.append(subtitleAudioFrame(
+                responseID: responseID,
+                itemID: itemID,
+                seed: seed
+            ))
+        }
+        frames.append(.text(
+            #"{"type":"response.audio.done","response_id":"phrase-response","item_id":"phrase-item"}"#
+        ))
+        frames.append(.text(
+            #"{"type":"response.done","response":{"id":"phrase-response","status":"completed"}}"#
+        ))
+
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: FakeRealtimeWebSocketTransport(frames: frames)
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+
+        var audioSeen = 0
+        var partials: [(audioCount: Int, text: String)] = []
+        var final: String?
+        responseLoop: while true {
+            let event = try await adapter.receive(
+                interactionID: request.interaction.id
+            )
+            switch event.kind {
+            case .outputAudio:
+                audioSeen += 1
+            case .outputText(let text, false):
+                partials.append((audioSeen, text))
+            case .outputText(let text, true):
+                final = text
+            case .responseCompleted:
+                break responseLoop
+            default:
+                break
+            }
+        }
+        expect(
+            partials.map { $0.text } == [
+                "今天想吃顿好的，",
+                "今天想吃顿好的，然后去逛逛。"
+            ],
+            "resident subtitles advance by Provider phrase boundaries"
+        )
+        expect(
+            partials.map { $0.audioCount } == [6, 10],
+            "phrases wait for their conservative PCM waterline"
+        )
+        expect(
+            final == "今天想吃顿好的，然后去逛逛。",
+            "phrase pacing preserves the Provider final"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }
@@ -1099,23 +1180,27 @@ private struct StepFunRealtimeAdapterTests {
                 audioSeen == scenario.audioCount,
                 "subtitle cadence preserves every Provider audio block"
             )
+            let expectedCharacterCounts = stride(
+                from: 12,
+                through: scenario.deltaCount,
+                by: 12
+            ).filter {
+                $0 * 12_000 <= scenario.audioCount * 8_192
+            }
+            let expectedAudioCounts = expectedCharacterCounts.map {
+                ($0 * 12_000 + 8_191) / 8_192
+            }
             expect(
-                partials.count >= 5,
-                "real transcript/audio ratios retain progressive updates"
+                partials.map { $0.text.count } == expectedCharacterCounts,
+                "character deltas collapse into bounded phrase checkpoints"
             )
             expect(
-                partials.first?.audioCount ?? 0 >= 2,
-                "the first audio block never releases an entire transcript burst"
+                partials.map { $0.audioCount } == expectedAudioCounts,
+                "each phrase waits for its conservative PCM waterline"
             )
             expect(
-                Double(partials.last?.audioCount ?? 0)
-                    / Double(scenario.audioCount) >= 0.9,
-                "the last progressive checkpoint stays near playback completion"
-            )
-            expect(
-                partials.map { $0.text.count }
-                    == partials.map { $0.text.count }.sorted(),
-                "resident partials remain cumulative and monotonic"
+                partials.allSatisfy { $0.text.count >= 12 },
+                "single-character deltas never become visible checkpoints"
             )
             expect(
                 final == finalText,
@@ -1127,6 +1212,80 @@ private struct StepFunRealtimeAdapterTests {
         }
     }
 
+    private static func testLargeUnpunctuatedDeltaCreatesPhraseCheckpoints()
+        async throws
+    {
+        let text = String(repeating: "字", count: 30)
+        let responseID = "large-delta-response"
+        let itemID = "large-delta-item"
+        var frames: [RealtimeWebSocketFrame] = [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(
+                #"{"type":"response.created","response":{"id":"large-delta-response"}}"#
+            ),
+            .text(
+                "{\"event_id\":\"large-delta\",\"type\":\"response.audio_transcript.delta\",\"response_id\":\"large-delta-response\",\"item_id\":\"large-delta-item\",\"delta\":\"\(text)\"}"
+            ),
+            .text(
+                "{\"event_id\":\"large-delta-final\",\"type\":\"response.audio_transcript.done\",\"response_id\":\"large-delta-response\",\"item_id\":\"large-delta-item\",\"transcript\":\"\(text)\"}"
+            )
+        ]
+        for seed in UInt8(1) ... UInt8(3) {
+            frames.append(subtitleAudioFrame(
+                responseID: responseID,
+                itemID: itemID,
+                seed: seed,
+                byteCount: 96_000
+            ))
+        }
+        frames.append(.text(
+            #"{"type":"response.audio.done","response_id":"large-delta-response","item_id":"large-delta-item"}"#
+        ))
+        frames.append(.text(
+            #"{"type":"response.done","response":{"id":"large-delta-response","status":"completed"}}"#
+        ))
+
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: FakeRealtimeWebSocketTransport(frames: frames)
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+
+        var audioSeen = 0
+        var partials: [(Int, String)] = []
+        responseLoop: while true {
+            let event = try await adapter.receive(
+                interactionID: request.interaction.id
+            )
+            switch event.kind {
+            case .outputAudio:
+                audioSeen += 1
+            case .outputText(let partial, false):
+                partials.append((audioSeen, partial))
+            case .responseCompleted:
+                break responseLoop
+            default:
+                break
+            }
+        }
+        expect(
+            partials.map { $0.1.count } == [12, 24],
+            "one large Provider delta still advances by phrase checkpoints"
+        )
+        expect(
+            partials.map { $0.0 } == [2, 3],
+            "large-delta checkpoints wait for conservative PCM watermarks"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
     private static func testResidentFinalFallsBackAtResponseBoundary()
         async throws
     {
@@ -1135,9 +1294,8 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"type":"session.created"}"#),
             .text(#"{"type":"session.updated"}"#),
             .text(#"{"type":"response.created","response":{"id":"fallback-response"}}"#),
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"fallback-response","item_id":"fallback-item","delta":"一"}"#),
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"fallback-response","item_id":"fallback-item","delta":"二"}"#),
-            .text(#"{"type":"response.audio_transcript.done","response_id":"fallback-response","item_id":"fallback-item","transcript":"一二"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"fallback-response","item_id":"fallback-item","delta":"一二三四五六七八九十十一十二"}"#),
+            .text(#"{"type":"response.audio_transcript.done","response_id":"fallback-response","item_id":"fallback-item","transcript":"一二三四五六七八九十十一十二"}"#),
             subtitleAudioFrame(
                 responseID: "fallback-response",
                 itemID: "fallback-item",
@@ -1164,8 +1322,7 @@ private struct StepFunRealtimeAdapterTests {
                 bytes: subtitleAudioBytes(seed: 1),
                 format: .pcm16
             )),
-            .outputText(text: "一", isFinal: false),
-            .outputText(text: "一二", isFinal: true),
+            .outputText(text: "一二三四五六七八九十十一十二", isFinal: true),
             .responseCompleted
         ]
         for expectedKind in expected {
@@ -1303,18 +1460,19 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"type":"session.created"}"#),
             .text(#"{"type":"session.updated"}"#),
             .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"旧"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"旧的回答不应出现。"}"#),
             subtitleAudioFrame(
                 responseID: "response-other",
                 itemID: "item-other",
                 seed: 1
             ),
             .text(#"{"type":"response.created","response":{"id":"response-two"}}"#),
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-two","item_id":"item-two","delta":"新"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-two","item_id":"item-two","delta":"新的回答已经开始。"}"#),
             subtitleAudioFrame(
                 responseID: "response-two",
                 itemID: "item-two",
-                seed: 2
+                seed: 2,
+                byteCount: 96_000
             )
         ])
         let adapter = StepFunRealtimeAdapter(
@@ -1335,10 +1493,10 @@ private struct StepFunRealtimeAdapterTests {
             .outputAudio(NativeSpeechAudioPayload(
                 interactionID: request.interaction.id,
                 sequenceNumber: 0,
-                bytes: subtitleAudioBytes(seed: 2),
+                bytes: subtitleAudioBytes(seed: 2, byteCount: 96_000),
                 format: .pcm16
             )),
-            .outputText(text: "新", isFinal: false)
+            .outputText(text: "新的回答已经开始。", isFinal: false)
         ]
         for expectedKind in expected {
             let event = try await adapter.receive(
@@ -1364,7 +1522,7 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"type":"session.created"}"#),
             .text(#"{"type":"session.updated"}"#),
             .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
-            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"旧字幕"}"#),
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"旧字幕仍在等待，"}"#),
             subtitleAudioFrame(
                 responseID: "response-one",
                 itemID: "item-one",
@@ -1403,6 +1561,92 @@ private struct StepFunRealtimeAdapterTests {
         expect(
             cancelled.kind == .cancelled(reason: "interrupted"),
             "Interrupt drops a queued old-turn partial before acknowledgement"
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.created","response":{"id":"response-two"}}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio_transcript.delta","response_id":"response-two","item_id":"item-two","delta":"新字幕已经开始，"}"#)
+        )
+        await transport.enqueue(subtitleAudioFrame(
+            responseID: "response-two",
+            itemID: "item-two",
+            seed: 2,
+            byteCount: 96_000
+        ))
+        let nextStart = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(nextStart.kind == .thinking, "next response starts after cancel")
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let nextPartial = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            nextPartial.kind == .outputText(
+                text: "新字幕已经开始，",
+                isFinal: false
+            ),
+            "cancelled response cannot leak its queued subtitle"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
+    }
+
+    private static func testResidentItemSwitchResetsSubtitleState()
+        async throws
+    {
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.created","response":{"id":"response-one"}}"#),
+            .text(#"{"event_id":"item-a-1","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-a","delta":"旧的回答，"}"#),
+            .text(#"{"event_id":"item-b-1","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-b","delta":"新的回答，"}"#),
+            .text(#"{"event_id":"item-a-late","type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-a","delta":"旧内容又来了。"}"#),
+            subtitleAudioFrame(
+                responseID: "response-one",
+                itemID: "item-b",
+                seed: 1,
+                byteCount: 96_000
+            )
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport,
+            diagnosticBuffer: diagnostics
+        )
+        let request = makeRequest()
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let start = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(start.kind == .thinking, "resident item fixture starts")
+        let audio = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        guard case .outputAudio = audio.kind else {
+            fatalError("FAILED: current resident item emits audio")
+        }
+        let partial = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            partial.kind == .outputText(
+                text: "新的回答，",
+                isFinal: false
+            ),
+            "resident item switch cannot mix the previous item transcript"
+        )
+        expect(
+            diagnostics.drain().events.contains {
+                $0.category == "stale_resident_transcript_ignored"
+                    && $0.disposition == "item_mismatch"
+            },
+            "late transcript from the previous resident item is rejected"
         )
         try await adapter.close(interactionID: request.interaction.id)
     }

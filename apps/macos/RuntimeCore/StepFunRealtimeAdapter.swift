@@ -6,6 +6,7 @@ nonisolated private struct StepFunResidentPartialCheckpoint:
     let text: String
     let responseCorrelationHash: String?
     let itemCorrelationHash: String?
+    let requiredCumulativeAudioByteCount: Int
 }
 
 nonisolated private struct StepFunDeferredResidentFinal:
@@ -32,7 +33,13 @@ actor StepFunRealtimeAdapter:
     RealtimeSpeechContextProviding {
     private static let transcriptEventIdentityCapacity = 2_048
     private static let residentPartialCheckpointCapacity = 128
-    private static let residentSubtitleCadenceByteCount = 14_400
+    private static let residentSubtitleMinimumPhraseByteCount = 48_000
+    private static let residentSubtitleAudioBytesPerVisibleCharacter = 12_000
+    private static let residentSubtitleMaximumPhraseCharacterCount = 12
+    private static let residentSubtitleMinimumBoundaryCharacterCount = 3
+    private static let residentSubtitlePhraseBoundaries = Set<Character>(
+        "，。！？；：、,.!?;:\n\r…”’」』】）》）]}"
+    )
     private static let suppressedResponseCapacity = 256
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
@@ -53,11 +60,15 @@ actor StepFunRealtimeAdapter:
     private var userTranscriptAccumulator = ""
     private var activeUserItemCorrelationHash: String?
     private var residentTranscriptAccumulator = ""
+    private var activeResidentItemCorrelationHash: String?
+    private var suppressedResidentItemCorrelationHashes: Set<String> = []
     private var userTranscriptFinalized = false
     private var residentTranscriptFinalized = false
     private var pendingResidentPartialCheckpoints:
         [StepFunResidentPartialCheckpoint] = []
-    private var residentAudioBytesSincePartialRelease = 0
+    private var residentAudioByteCount = 0
+    private var residentCheckpointedVisibleCharacterCount = 0
+    private var residentLastCheckpointAudioByteCount = 0
     private var deferredResidentFinal: StepFunDeferredResidentFinal?
     private var residentAudioFinished = false
     private var seenUserTranscriptEventHashes: Set<String> = []
@@ -327,9 +338,15 @@ actor StepFunRealtimeAdapter:
 
     private func resetResidentResponseState() {
         residentTranscriptAccumulator = ""
+        activeResidentItemCorrelationHash = nil
+        suppressedResidentItemCorrelationHashes.removeAll(
+            keepingCapacity: true
+        )
         residentTranscriptFinalized = false
         pendingResidentPartialCheckpoints.removeAll(keepingCapacity: true)
-        residentAudioBytesSincePartialRelease = 0
+        residentAudioByteCount = 0
+        residentCheckpointedVisibleCharacterCount = 0
+        residentLastCheckpointAudioByteCount = 0
         deferredResidentFinal = nil
         residentAudioFinished = false
         seenResidentTranscriptEventHashes.removeAll(keepingCapacity: true)
@@ -744,9 +761,9 @@ actor StepFunRealtimeAdapter:
                 )
                 if case .outputAudio(let payload) = event.kind {
                     let (byteCount, overflow) =
-                        residentAudioBytesSincePartialRelease
+                        residentAudioByteCount
                             .addingReportingOverflow(payload.bytes.count)
-                    residentAudioBytesSincePartialRelease = overflow
+                    residentAudioByteCount = overflow
                         ? Int.max
                         : byteCount
                 }
@@ -830,7 +847,8 @@ actor StepFunRealtimeAdapter:
             userTranscriptAccumulator = text
             return event
         case .residentAudioTranscriptDelta:
-            guard !residentTranscriptFinalized,
+            guard residentTranscriptMatchesActiveItem(envelope),
+                  !residentTranscriptFinalized,
                   !residentAudioFinished,
                   case .outputText(let fragment, false) = event.kind,
                   let cumulative = Self.appendTranscriptFragment(
@@ -839,13 +857,14 @@ actor StepFunRealtimeAdapter:
                   ) else {
                 return nil
             }
-            appendResidentPartialCheckpoint(
+            appendResidentPartialCheckpoints(
                 text: cumulative,
                 envelope: envelope
             )
             return nil
         case .residentAudioTranscriptDone:
-            guard !residentTranscriptFinalized,
+            guard residentTranscriptMatchesActiveItem(envelope),
+                  !residentTranscriptFinalized,
                   case .outputText(let text, true) = event.kind else {
                 return nil
             }
@@ -929,17 +948,57 @@ actor StepFunRealtimeAdapter:
         return true
     }
 
+    private func residentTranscriptMatchesActiveItem(
+        _ envelope: StepFunRealtimeDecodedEnvelope
+    ) -> Bool {
+        guard let incoming = envelope.itemCorrelationHash else {
+            return true
+        }
+        if suppressedResidentItemCorrelationHashes.contains(incoming) {
+            ignoredEventCount &+= 1
+            recordDiagnostic(
+                source: .adapter,
+                category: "stale_resident_transcript_ignored",
+                interactionID: activeInteraction?.id,
+                disposition: "item_mismatch",
+                wireSequence: wireReceiveOrdinal,
+                responseCorrelationHash:
+                    envelope.responseCorrelationHash,
+                itemCorrelationHash: incoming
+            )
+            return false
+        }
+        guard let active = activeResidentItemCorrelationHash else {
+            activeResidentItemCorrelationHash = incoming
+            return true
+        }
+        guard incoming != active else { return true }
+        suppressedResidentItemCorrelationHashes.insert(active)
+        resetResidentTranscriptProjectionForItemChange()
+        activeResidentItemCorrelationHash = incoming
+        return true
+    }
+
+    private func resetResidentTranscriptProjectionForItemChange() {
+        residentTranscriptAccumulator = ""
+        residentTranscriptFinalized = false
+        pendingResidentPartialCheckpoints.removeAll(keepingCapacity: true)
+        residentAudioByteCount = 0
+        residentCheckpointedVisibleCharacterCount = 0
+        residentLastCheckpointAudioByteCount = 0
+        deferredResidentFinal = nil
+        residentAudioFinished = false
+    }
+
     private func takeResidentPartialCheckpoint(
         matching envelope: StepFunRealtimeDecodedEnvelope,
         interactionID: NativeSpeechInteractionID
     ) -> NativeSpeechEvent? {
-        guard residentAudioBytesSincePartialRelease
-                >= Self.residentSubtitleCadenceByteCount else {
+        guard let checkpoint = pendingResidentPartialCheckpoints.first else {
             return nil
         }
-        guard let checkpoint = pendingResidentPartialCheckpoints.first else {
-            residentAudioBytesSincePartialRelease =
-                Self.residentSubtitleCadenceByteCount
+        guard residentAudioByteCount
+                >= checkpoint.requiredCumulativeAudioByteCount else {
             return nil
         }
         let responseMatches = Self.correlationMatches(
@@ -982,13 +1041,13 @@ actor StepFunRealtimeAdapter:
                 pendingResidentPartialCheckpoints.removeAll(
                     keepingCapacity: true
                 )
-                residentAudioBytesSincePartialRelease = 0
+                residentAudioByteCount = 0
+                residentCheckpointedVisibleCharacterCount = 0
+                residentLastCheckpointAudioByteCount = 0
             }
             return nil
         }
         pendingResidentPartialCheckpoints.removeFirst()
-        residentAudioBytesSincePartialRelease -=
-            Self.residentSubtitleCadenceByteCount
         return NativeSpeechEvent(
             interactionID: interactionID,
             kind: .outputText(
@@ -1057,7 +1116,9 @@ actor StepFunRealtimeAdapter:
         boundary: String
     ) {
         let remaining = pendingResidentPartialCheckpoints.count
-        residentAudioBytesSincePartialRelease = 0
+        residentAudioByteCount = 0
+        residentCheckpointedVisibleCharacterCount = 0
+        residentLastCheckpointAudioByteCount = 0
         guard remaining > 0 else { return }
         pendingResidentPartialCheckpoints.removeAll(keepingCapacity: true)
         recordDiagnostic(
@@ -1099,14 +1160,60 @@ actor StepFunRealtimeAdapter:
         }
     }
 
-    private func appendResidentPartialCheckpoint(
+    private func appendResidentPartialCheckpoints(
         text: String,
         envelope: StepFunRealtimeDecodedEnvelope
     ) {
+        var visibleCharacterCount = 0
+        for index in text.indices {
+            let character = text[index]
+            let isBoundary = Self.residentSubtitlePhraseBoundaries
+                .contains(character)
+            if !character.isWhitespace, !isBoundary {
+                visibleCharacterCount += 1
+            }
+            let addedCharacterCount = visibleCharacterCount
+                - residentCheckpointedVisibleCharacterCount
+            guard addedCharacterCount
+                    >= Self.residentSubtitleMaximumPhraseCharacterCount
+                    || (isBoundary
+                        && addedCharacterCount
+                            >= Self.residentSubtitleMinimumBoundaryCharacterCount)
+            else {
+                continue
+            }
+            appendResidentPartialCheckpoint(
+                text: String(text[...index]),
+                visibleCharacterCount: visibleCharacterCount,
+                envelope: envelope
+            )
+        }
+    }
+
+    private func appendResidentPartialCheckpoint(
+        text: String,
+        visibleCharacterCount: Int,
+        envelope: StepFunRealtimeDecodedEnvelope
+    ) {
+        let characterWatermark = visibleCharacterCount
+            .multipliedReportingOverflow(
+                by: Self.residentSubtitleAudioBytesPerVisibleCharacter
+            )
+        let minimumPhraseWatermark = residentLastCheckpointAudioByteCount
+            .addingReportingOverflow(
+                Self.residentSubtitleMinimumPhraseByteCount
+            )
+        let requiredAudioByteCount = max(
+            characterWatermark.overflow
+                ? Int.max : characterWatermark.partialValue,
+            minimumPhraseWatermark.overflow
+                ? Int.max : minimumPhraseWatermark.partialValue
+        )
         let checkpoint = StepFunResidentPartialCheckpoint(
             text: text,
             responseCorrelationHash: envelope.responseCorrelationHash,
-            itemCorrelationHash: envelope.itemCorrelationHash
+            itemCorrelationHash: envelope.itemCorrelationHash,
+            requiredCumulativeAudioByteCount: requiredAudioByteCount
         )
         if pendingResidentPartialCheckpoints.last == checkpoint {
             return
@@ -1144,6 +1251,19 @@ actor StepFunRealtimeAdapter:
             )
         }
         pendingResidentPartialCheckpoints.append(checkpoint)
+        residentCheckpointedVisibleCharacterCount = visibleCharacterCount
+        residentLastCheckpointAudioByteCount = requiredAudioByteCount
+    }
+
+    private static func visibleSubtitleCharacterCount(
+        in text: String
+    ) -> Int {
+        text.reduce(into: 0) { count, character in
+            if !character.isWhitespace,
+               !residentSubtitlePhraseBoundaries.contains(character) {
+                count += 1
+            }
+        }
     }
 
     private func isSuppressedResponseEvent(

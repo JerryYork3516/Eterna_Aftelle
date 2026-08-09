@@ -132,26 +132,66 @@ nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
     }
 }
 
+nonisolated struct MacSpeechPCMOutputFadeIn: Sendable, Equatable {
+    let totalSampleCount: Int
+    let appliedSampleCount: Int
+
+    static let initial = MacSpeechPCMOutputFadeIn(
+        totalSampleCount: MacSpeechPCMOutputEnvelope.resumeFadeInSampleCount,
+        appliedSampleCount: 0
+    )
+    static let stalledResume = MacSpeechPCMOutputFadeIn(
+        totalSampleCount:
+            MacSpeechPCMOutputEnvelope.stalledResumeFadeInSampleCount,
+        appliedSampleCount: 0
+    )
+
+    func advancing(by sampleCount: Int) -> MacSpeechPCMOutputFadeIn? {
+        let next = min(
+            totalSampleCount,
+            appliedSampleCount + max(0, sampleCount)
+        )
+        guard next < totalSampleCount else { return nil }
+        return MacSpeechPCMOutputFadeIn(
+            totalSampleCount: totalSampleCount,
+            appliedSampleCount: next
+        )
+    }
+}
+
 nonisolated enum MacSpeechPCMOutputEnvelope {
     static let resumeFadeInSampleCount = 120
+    static let stalledResumeFadeInSampleCount = 480
     private static let audiblePeak = 0.01
     private static let audibleRMS = 0.002
 
     struct ProcessingResult: Sendable, Equatable {
         let bytes: Data
         let isAudible: Bool
+        let appliedFadeInSampleCount: Int
     }
 
     static func processing(
         to data: Data,
         applyFadeIn: Bool
     ) -> ProcessingResult {
+        processing(
+            to: data,
+            fadeIn: applyFadeIn ? .initial : nil
+        )
+    }
+
+    static func processing(
+        to data: Data,
+        fadeIn: MacSpeechPCMOutputFadeIn?
+    ) -> ProcessingResult {
         guard !data.isEmpty,
               data.count.isMultiple(of: MacSpeechPCMOutputFormat.bytesPerSample)
         else {
             return ProcessingResult(
                 bytes: data,
-                isAudible: false
+                isAudible: false,
+                appliedFadeInSampleCount: 0
             )
         }
         let source = [UInt8](data)
@@ -173,15 +213,20 @@ nonisolated enum MacSpeechPCMOutputEnvelope {
         let normalizedRMS = sqrt(squaredSum / Double(sampleCount)) / 32_768.0
         let isAudible = normalizedPeak >= audiblePeak
             || normalizedRMS >= audibleRMS
-        let processed = applyFadeIn && isAudible
-            ? applyingResumeFadeIn(
+        let faded: (bytes: Data, appliedSampleCount: Int)
+        if let fadeIn, isAudible {
+            faded = applyingFadeIn(
                 to: data,
-                startingAtSample: firstAudibleSampleIndex ?? 0
+                startingAtSample: firstAudibleSampleIndex ?? 0,
+                fadeIn: fadeIn
             )
-            : data
+        } else {
+            faded = (data, 0)
+        }
         return ProcessingResult(
-            bytes: processed,
-            isAudible: isAudible
+            bytes: faded.bytes,
+            isAudible: isAudible,
+            appliedFadeInSampleCount: faded.appliedSampleCount
         )
     }
 
@@ -189,16 +234,34 @@ nonisolated enum MacSpeechPCMOutputEnvelope {
         to data: Data,
         startingAtSample startIndex: Int = 0
     ) -> Data {
+        applyingFadeIn(
+            to: data,
+            startingAtSample: startIndex,
+            fadeIn: .initial
+        ).bytes
+    }
+
+    private static func applyingFadeIn(
+        to data: Data,
+        startingAtSample startIndex: Int,
+        fadeIn: MacSpeechPCMOutputFadeIn
+    ) -> (bytes: Data, appliedSampleCount: Int) {
         let totalSampleCount = data.count
             / MacSpeechPCMOutputFormat.bytesPerSample
-        guard startIndex >= 0, startIndex < totalSampleCount else {
-            return data
+        let remainingFadeSampleCount = max(
+            0,
+            fadeIn.totalSampleCount - fadeIn.appliedSampleCount
+        )
+        guard startIndex >= 0,
+              startIndex < totalSampleCount,
+              remainingFadeSampleCount > 0 else {
+            return (data, 0)
         }
         let sampleCount = min(
-            resumeFadeInSampleCount,
+            remainingFadeSampleCount,
             totalSampleCount - startIndex
         )
-        guard sampleCount > 0 else { return data }
+        guard sampleCount > 0 else { return (data, 0) }
         var bytes = [UInt8](data)
         for fadeIndex in 0 ..< sampleCount {
             let sampleIndex = startIndex + fadeIndex
@@ -207,14 +270,15 @@ nonisolated enum MacSpeechPCMOutputEnvelope {
                 | (UInt16(bytes[byteIndex + 1]) << 8)
             let sample = Int16(bitPattern: raw)
             let scaled = Int16(
-                Double(sample) * Double(fadeIndex + 1)
-                    / Double(sampleCount)
+                Double(sample)
+                    * Double(fadeIn.appliedSampleCount + fadeIndex + 1)
+                    / Double(fadeIn.totalSampleCount)
             )
             let scaledRaw = UInt16(bitPattern: scaled)
             bytes[byteIndex] = UInt8(truncatingIfNeeded: scaledRaw)
             bytes[byteIndex + 1] = UInt8(truncatingIfNeeded: scaledRaw >> 8)
         }
-        return Data(bytes)
+        return (Data(bytes), sampleCount)
     }
 
     private static func decodedSample(
@@ -232,7 +296,7 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
     func prepare() throws -> MacSpeechLocalPlaybackFormat
     func schedule(
         pcm16Bytes: Data,
-        applyFadeIn: Bool,
+        fadeIn: MacSpeechPCMOutputFadeIn?,
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
@@ -288,7 +352,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
 
     func schedule(
         pcm16Bytes: Data,
-        applyFadeIn: Bool,
+        fadeIn: MacSpeechPCMOutputFadeIn?,
         completion: @escaping @Sendable (
             Result<Int, MacSpeechAudioOutputHostError>
         ) -> Void
@@ -301,7 +365,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
             }
             let processing = MacSpeechPCMOutputEnvelope.processing(
                 to: pcm16Bytes,
-                applyFadeIn: applyFadeIn
+                fadeIn: fadeIn
             )
             let buffer = try converter.convert(
                 pcm16Bytes: processing.bytes
