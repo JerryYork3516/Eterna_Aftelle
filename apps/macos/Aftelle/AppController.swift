@@ -45,19 +45,32 @@ private enum Stage75NativeSpeechConfiguration {
     )
 }
 
-private struct NativeSpeechPlaybackBinding: Sendable, Equatable {
+nonisolated struct RealtimeSpeechPlaybackSubtitleIdentity:
+    Sendable,
+    Equatable {
     let interactionID: NativeSpeechInteractionID
     let turnNumber: UInt64
     let turnGeneration: UInt64
     let playbackGeneration: UInt64
 }
 
-nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
-    private struct PendingFrame: Sendable {
-        let text: String
-        let requiredAudioSequence: UInt64
-    }
+private struct NativeSpeechPlaybackBinding: Sendable, Equatable {
+    let interactionID: NativeSpeechInteractionID
+    let turnNumber: UInt64
+    let turnGeneration: UInt64
+    let playbackGeneration: UInt64
 
+    var subtitleIdentity: RealtimeSpeechPlaybackSubtitleIdentity {
+        RealtimeSpeechPlaybackSubtitleIdentity(
+            interactionID: interactionID,
+            turnNumber: turnNumber,
+            turnGeneration: turnGeneration,
+            playbackGeneration: playbackGeneration
+        )
+    }
+}
+
+nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
     private struct CompletedPlayback: Sendable {
         let interactionShortID: String
         let turnNumber: UInt64
@@ -76,29 +89,25 @@ nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
     }
 
     private(set) var displayText: String?
-    private var pendingFrames: [PendingFrame] = []
+    private var activeIdentity: RealtimeSpeechPlaybackSubtitleIdentity?
     private var pendingFinalText: String?
-    private var latestEnqueuedAudioSequence: UInt64?
-    private var lastBoundAudioSequence: UInt64?
     private var lastPlayedAudioSequence: UInt64?
-    private var playbackCompletedIdentity:
-        (interactionShortID: String, turnNumber: UInt64,
-         turnGeneration: UInt64)?
     private var lastCompletedPlayback: CompletedPlayback?
     private var playbackCompleted = false
 
     var hasPendingText: Bool {
-        !pendingFrames.isEmpty || pendingFinalText != nil
+        pendingFinalText != nil
+    }
+
+    var playedAudioSequence: UInt64? {
+        lastPlayedAudioSequence
     }
 
     mutating func reset() {
         displayText = nil
-        pendingFrames.removeAll(keepingCapacity: true)
+        activeIdentity = nil
         pendingFinalText = nil
-        latestEnqueuedAudioSequence = nil
-        lastBoundAudioSequence = nil
         lastPlayedAudioSequence = nil
-        playbackCompletedIdentity = nil
         playbackCompleted = false
     }
 
@@ -117,65 +126,69 @@ nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
         }
     }
 
-    mutating func observeEnqueuedAudio(sequence: UInt64) {
-        latestEnqueuedAudioSequence = sequence
+    mutating func prepare(
+        identity: RealtimeSpeechPlaybackSubtitleIdentity
+    ) {
+        guard activeIdentity != identity else { return }
+        displayText = nil
+        pendingFinalText = nil
+        lastPlayedAudioSequence = nil
+        playbackCompleted = false
+        activeIdentity = identity
     }
 
     @discardableResult
-    mutating func enqueuePartial(text: String) -> Bool {
+    mutating func applyPartial(
+        text: String,
+        requiredAudioSequence: UInt64,
+        identity: RealtimeSpeechPlaybackSubtitleIdentity
+    ) -> Bool {
         let normalized = text.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
         guard !normalized.isEmpty,
-              let sequence = latestEnqueuedAudioSequence else {
+              activeIdentity == identity,
+              !playbackCompleted,
+              let lastPlayedAudioSequence,
+              requiredAudioSequence <= lastPlayedAudioSequence else {
             return false
         }
-        if let lastPlayedAudioSequence,
-           sequence <= lastPlayedAudioSequence {
-            displayText = normalized
-            lastBoundAudioSequence = sequence
-            return true
-        }
-        if pendingFrames.last?.requiredAudioSequence == sequence {
-            pendingFrames[pendingFrames.count - 1] = PendingFrame(
-                text: normalized,
-                requiredAudioSequence: sequence
-            )
-            return true
-        }
-        guard sequence != lastBoundAudioSequence else { return false }
-        pendingFrames.append(PendingFrame(
-            text: normalized,
-            requiredAudioSequence: sequence
-        ))
-        lastBoundAudioSequence = sequence
+        displayText = normalized
         return true
     }
 
-    mutating func enqueueFinal(text: String) {
+    @discardableResult
+    mutating func enqueueFinal(
+        text: String,
+        identity: RealtimeSpeechPlaybackSubtitleIdentity
+    ) -> Bool {
         let normalized = text.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        guard !normalized.isEmpty else { return }
+        guard !normalized.isEmpty,
+              activeIdentity == identity else { return false }
         if playbackCompleted {
             displayText = normalized
-            if let playbackCompletedIdentity {
-                lastCompletedPlayback = CompletedPlayback(
-                    interactionShortID:
-                        playbackCompletedIdentity.interactionShortID,
-                    turnNumber: playbackCompletedIdentity.turnNumber,
-                    turnGeneration:
-                        playbackCompletedIdentity.turnGeneration,
-                    text: normalized
-                )
-            }
+            lastCompletedPlayback = CompletedPlayback(
+                interactionShortID: String(
+                    identity.interactionID.rawValue.uuidString.prefix(8)
+                ),
+                turnNumber: identity.turnNumber,
+                turnGeneration: identity.turnGeneration,
+                text: normalized
+            )
             pendingFinalText = nil
         } else {
             pendingFinalText = normalized
         }
+        return true
     }
 
-    mutating func advance(playedSequence: UInt64) {
+    mutating func advance(
+        playedSequence: UInt64,
+        identity: RealtimeSpeechPlaybackSubtitleIdentity
+    ) {
+        guard activeIdentity == identity else { return }
         if let lastPlayedAudioSequence {
             self.lastPlayedAudioSequence = max(
                 lastPlayedAudioSequence,
@@ -184,47 +197,33 @@ nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
         } else {
             lastPlayedAudioSequence = playedSequence
         }
-        guard !pendingFrames.isEmpty else { return }
-        let releaseIndex = pendingFrames.lastIndex {
-            $0.requiredAudioSequence <= playedSequence
-        }
-        guard let releaseIndex else { return }
-        let frame = pendingFrames[releaseIndex]
-        displayText = frame.text
-        pendingFrames.removeFirst(releaseIndex + 1)
     }
 
     mutating func completePlayback(
-        interactionID: NativeSpeechInteractionID,
-        turnNumber: UInt64,
-        turnGeneration: UInt64
+        identity: RealtimeSpeechPlaybackSubtitleIdentity
     ) {
+        guard activeIdentity == identity else { return }
         playbackCompleted = true
-        let identity = (
-            interactionShortID: String(
-                interactionID.rawValue.uuidString.prefix(8)
-            ),
-            turnNumber: turnNumber,
-            turnGeneration: turnGeneration
-        )
-        playbackCompletedIdentity = identity
         if let pendingFinalText {
             displayText = pendingFinalText
             lastCompletedPlayback = CompletedPlayback(
-                interactionShortID: identity.interactionShortID,
+                interactionShortID: String(
+                    identity.interactionID.rawValue.uuidString.prefix(8)
+                ),
                 turnNumber: identity.turnNumber,
                 turnGeneration: identity.turnGeneration,
                 text: pendingFinalText
             )
             self.pendingFinalText = nil
         }
-        pendingFrames.removeAll(keepingCapacity: true)
     }
 
     mutating func noteUnplayedResponse() {
-        pendingFrames.removeAll(keepingCapacity: true)
         pendingFinalText = nil
         displayText = nil
+        activeIdentity = nil
+        lastPlayedAudioSequence = nil
+        playbackCompleted = false
     }
 }
 
@@ -350,7 +349,6 @@ final class AppController: ObservableObject {
     private var lastDiagnosticCaptureGeneratedCount: UInt64 = 0
     private var lastDiagnosticCaptureDroppedCount: UInt64 = 0
     private var lastDiagnosticPCMEndSample: Int16?
-    private var realtimeSpeechPartialRefreshTask: Task<Void, Never>?
     private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
@@ -376,6 +374,9 @@ final class AppController: ObservableObject {
         },
         consumeEvent: { [weak self] event in
             await self?.consumeNativeSpeechOutputEvent(event)
+        },
+        residentSubtitleCheckpointReady: { [weak self] in
+            await self?.consumeResidentSubtitleCheckpointReady()
         },
         clearOutputForSpeechStart: { [speechAudioOutputHost] in
             _ = await speechAudioOutputHost
@@ -1614,8 +1615,6 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
-        realtimeSpeechPartialRefreshTask?.cancel()
-        realtimeSpeechPartialRefreshTask = nil
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "manual_stop_started"
@@ -1662,8 +1661,6 @@ final class AppController: ObservableObject {
     }
 
     func shutdownSpeechAudioHost() async {
-        realtimeSpeechPartialRefreshTask?.cancel()
-        realtimeSpeechPartialRefreshTask = nil
         if nativeSpeechPlaybackBinding != nil {
             playbackStopClearCount &+= 1
         }
@@ -1682,8 +1679,6 @@ final class AppController: ObservableObject {
     }
 
     func startNativeSpeechInputBridge() async {
-        realtimeSpeechPartialRefreshTask?.cancel()
-        realtimeSpeechPartialRefreshTask = nil
         realtimeSpeechPlaybackSubtitleSynchronizer.resetForInteraction()
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
@@ -1819,17 +1814,34 @@ final class AppController: ObservableObject {
         guard !Task.isCancelled else { return }
         switch event.kind {
         case .partialTranscript:
-            scheduleRealtimeSpeechPartialRefresh()
+            break
         case .outputText(let text, let isFinal):
             if isFinal {
-                realtimeSpeechPlaybackSubtitleSynchronizer.enqueueFinal(
-                    text: text
-                )
-            } else if !realtimeSpeechPlaybackSubtitleSynchronizer
-                .enqueuePartial(text: text) {
+                guard let binding = nativeSpeechPlaybackBinding,
+                      binding.interactionID == event.interactionID,
+                      realtimeSpeechPlaybackSubtitleSynchronizer
+                        .enqueueFinal(
+                            text: text,
+                            identity: binding.subtitleIdentity
+                        ) else {
+                    recordRealtimeSpeechDiagnostic(
+                        source: .subtitle,
+                        category: "subtitle_playback_identity_unavailable",
+                        interactionShortID: String(
+                            event.interactionID.rawValue.uuidString.prefix(8)
+                        ),
+                        turnNumber:
+                            realtimeSpeechStateSnapshot.currentTurnNumber,
+                        turnGeneration:
+                            realtimeSpeechSubtitleSnapshot.turnGeneration,
+                        disposition: "final_not_displayed"
+                    )
+                    break
+                }
+            } else {
                 recordRealtimeSpeechDiagnostic(
                     source: .subtitle,
-                    category: "subtitle_audio_sequence_unavailable",
+                    category: "subtitle_partial_unexpected_consumer_path",
                     interactionShortID: String(
                         event.interactionID.rawValue.uuidString.prefix(8)
                     ),
@@ -1837,7 +1849,7 @@ final class AppController: ObservableObject {
                         realtimeSpeechStateSnapshot.currentTurnNumber,
                     turnGeneration:
                         realtimeSpeechSubtitleSnapshot.turnGeneration,
-                    disposition: "partial_not_displayed"
+                    disposition: "bridge_mailbox_bypassed"
                 )
             }
             syncRealtimeSpeechPresentation()
@@ -2010,12 +2022,16 @@ final class AppController: ObservableObject {
             let prepared = await speechAudioOutputHost.prepare()
             guard !Task.isCancelled else { return }
             speechAudioOutputHostSnapshot = prepared
-            nativeSpeechPlaybackBinding = NativeSpeechPlaybackBinding(
+            let binding = NativeSpeechPlaybackBinding(
                 interactionID: payload.interactionID,
                 turnNumber: turnNumber,
                 turnGeneration:
                     realtimeSpeechSubtitleSnapshot.turnGeneration,
                 playbackGeneration: prepared.generation
+            )
+            nativeSpeechPlaybackBinding = binding
+            realtimeSpeechPlaybackSubtitleSynchronizer.prepare(
+                identity: binding.subtitleIdentity
             )
             guard prepared.state == .prepared else {
                 await consumePlaybackEvents(in: prepared)
@@ -2023,17 +2039,12 @@ final class AppController: ObservableObject {
             }
         }
         guard let binding = nativeSpeechPlaybackBinding else { return }
-        let enqueuedBefore = speechAudioOutputHostSnapshot.enqueuedChunkCount
         var snapshot = await speechAudioOutputHost.enqueue(
             pcm16Bytes: payload.bytes,
             sequence: payload.sequenceNumber,
             generation: binding.playbackGeneration
         )
         guard !Task.isCancelled else { return }
-        if snapshot.enqueuedChunkCount > enqueuedBefore {
-            realtimeSpeechPlaybackSubtitleSynchronizer
-                .observeEnqueuedAudio(sequence: payload.sequenceNumber)
-        }
         if snapshot.state == .prepared || snapshot.state == .completed {
             snapshot = await speechAudioOutputHost.start()
             guard !Task.isCancelled else { return }
@@ -2063,6 +2074,34 @@ final class AppController: ObservableObject {
             guard !Task.isCancelled else { return }
             await consumePlaybackHostEvent(event)
         }
+    }
+
+    private func consumeResidentSubtitleCheckpointReady() async {
+        guard let binding = nativeSpeechPlaybackBinding else { return }
+        await releaseResidentSubtitleCheckpointIfReady(binding: binding)
+        syncRealtimeSpeechPresentation()
+    }
+
+    private func releaseResidentSubtitleCheckpointIfReady(
+        binding: NativeSpeechPlaybackBinding
+    ) async {
+        guard nativeSpeechPlaybackBinding == binding,
+              let playedSequence =
+                realtimeSpeechPlaybackSubtitleSynchronizer
+                    .playedAudioSequence,
+              let checkpoint = await speechOutputBridge
+                .takeResidentSubtitleCheckpoint(
+                    interactionID: binding.interactionID,
+                    throughAudioSequence: playedSequence
+                ),
+              nativeSpeechPlaybackBinding == binding else {
+            return
+        }
+        _ = realtimeSpeechPlaybackSubtitleSynchronizer.applyPartial(
+            text: checkpoint.text,
+            requiredAudioSequence: checkpoint.requiredAudioSequence,
+            identity: binding.subtitleIdentity
+        )
     }
 
     private func consumePlaybackHostEvent(
@@ -2101,7 +2140,11 @@ final class AppController: ObservableObject {
                 await speechAudioOutputHost.currentSnapshot()
             if let sequence = event.sequence {
                 realtimeSpeechPlaybackSubtitleSynchronizer.advance(
-                    playedSequence: sequence
+                    playedSequence: sequence,
+                    identity: binding.subtitleIdentity
+                )
+                await releaseResidentSubtitleCheckpointIfReady(
+                    binding: binding
                 )
             }
             syncRealtimeSpeechPresentation()
@@ -2142,11 +2185,6 @@ final class AppController: ObservableObject {
         if event.kind == .playbackCompleted {
             speechAudioOutputHostSnapshot =
                 await speechAudioOutputHost.currentSnapshot()
-            realtimeSpeechPlaybackSubtitleSynchronizer.completePlayback(
-                interactionID: binding.interactionID,
-                turnNumber: binding.turnNumber,
-                turnGeneration: binding.turnGeneration
-            )
         } else if event.kind == .failed {
             realtimeSpeechPlaybackSubtitleSynchronizer.resetForTerminal(
                 canonicalCompleted:
@@ -2181,6 +2219,12 @@ final class AppController: ObservableObject {
             || disposition == .rejectedStale
             || disposition == .rejectedOutOfOrder {
             rejectedPlaybackEventCount &+= 1
+        }
+        if event.kind == .playbackCompleted,
+           disposition == .applied {
+            realtimeSpeechPlaybackSubtitleSynchronizer.completePlayback(
+                identity: binding.subtitleIdentity
+            )
         }
         syncRealtimeSpeechPresentation()
         recordRealtimeSpeechDiagnostic(
@@ -2227,7 +2271,6 @@ final class AppController: ObservableObject {
 
         let subtitleText = realtimeSpeechPlaybackSubtitleSynchronizer
             .displayText
-            ?? subtitleSnapshot.userPartial
             ?? subtitleSnapshot.userFinal
         let subtitleState = subtitleText.map {
             ParticleSubtitleState(text: $0, phase: .showing)
@@ -2239,19 +2282,7 @@ final class AppController: ObservableObject {
         refreshParticleDebugSnapshot()
     }
 
-    private func scheduleRealtimeSpeechPartialRefresh() {
-        guard realtimeSpeechPartialRefreshTask == nil else { return }
-        realtimeSpeechPartialRefreshTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(50))
-            guard !Task.isCancelled, let self else { return }
-            realtimeSpeechPartialRefreshTask = nil
-            syncRealtimeSpeechPresentation()
-        }
-    }
-
     private func refreshRealtimeSpeechPresentationImmediately() {
-        realtimeSpeechPartialRefreshTask?.cancel()
-        realtimeSpeechPartialRefreshTask = nil
         syncRealtimeSpeechPresentation()
     }
 

@@ -68,10 +68,13 @@ test "$(rg -c 'receiveTask = Task \{' "$output_bridge")" -eq 1
 test "$(rg -c 'pumpTask = Task \{' "$input_bridge")" -eq 1
 test "$(rg -c 'mediaDeliveryTask = Task \{' "$output_bridge")" -eq 1
 rg -q 'static let mediaEventCapacity = 64' "$output_bridge"
+rg -q 'static let residentSubtitleCheckpointCapacity = 128' "$output_bridge"
 rg -q 'pendingMediaEvents.count >= Self.mediaEventCapacity' "$output_bridge"
 rg -q 'mediaCapacityWaiter = continuation' "$output_bridge"
 test "$(rg -c 'withCheckedContinuation' "$output_bridge")" -eq 1
-rg -q 'case \.outputAudio, \.outputText, \.responseCompleted:' "$output_bridge"
+rg -q 'case \.outputAudio, \.responseCompleted:' "$output_bridge"
+rg -Fq 'case .outputText(_, let isFinal):' "$output_bridge"
+rg -q 'takeResidentSubtitleCheckpoint' "$output_bridge" "$controller"
 rg -q 'case \.inputSpeechStarted, \.turnFailed,' "$output_bridge"
 rg -q 'clearOutputForSpeechStart' "$output_bridge" "$controller"
 if rg -q 'AsyncStream' "$output_bridge"; then
@@ -199,9 +202,9 @@ rg -q 'case chunkPlayed' \
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputHost.swift"
 rg -q 'RealtimeSpeechPlaybackSubtitleSynchronizer' "$controller"
 rg -q 'requiredAudioSequence' "$controller"
-rg -Fq 'advance(playedSequence:' "$controller"
-rg -Fq 'observeEnqueuedAudio(sequence:' "$controller"
-rg -Fq 'completePlayback(' "$controller"
+rg -q 'mutating func advance' "$controller"
+rg -q 'mutating func applyPartial' "$controller"
+rg -q 'mutating func completePlayback' "$controller"
 if rg -q 'requiredPlayedChunkCount|lastAssignedPlayedChunkCount|forceLatest' \
   "$controller"; then
   echo "native_speech_subtitle_audio_watermark=FAIL"
@@ -210,6 +213,12 @@ fi
 rg -q 'conversation.item.created' "$codec"
 rg -q 'provider_user_partial_unavailable' "$adapter"
 echo "native_speech_subtitle_audio_watermark=PASS"
-rg -q 'scheduleRealtimeSpeechPartialRefresh' "$controller"
-rg -Fq 'Task.sleep(for: .milliseconds(50))' "$controller"
+if sed -n '/private func syncRealtimeSpeechPresentation()/,/^    }/p' \
+  "$controller" | rg -q 'userPartial'; then
+  echo "native_speech_user_partial_hidden=FAIL"
+  exit 1
+fi
+rg -q 'residentPartialCheckpointCapacity = 128' "$adapter"
+rg -q 'resident_partial_checkpoints_compacted' "$adapter"
 echo "native_speech_streaming_subtitle=PASS"
+echo "native_speech_user_partial_hidden=PASS"

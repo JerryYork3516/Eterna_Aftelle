@@ -117,6 +117,7 @@ private actor BlockingOutputConsumer {
     private var shouldBlockMedia = true
     private(set) var mediaStarted = false
     private(set) var mediaConsumedCount = 0
+    private(set) var outputTextConsumedCount = 0
     private(set) var cancelledMediaCompletion = false
     private(set) var controlConsumed = false
 
@@ -134,12 +135,31 @@ private actor BlockingOutputConsumer {
             mediaConsumedCount += 1
         case .inputSpeechStarted:
             controlConsumed = true
+        case .outputText:
+            outputTextConsumedCount += 1
         default:
             break
         }
     }
 
     func releaseMedia() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor BlockingSubtitleNotification {
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private(set) var started = false
+
+    func notify() async {
+        started = true
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func release() {
         releaseContinuation?.resume()
         releaseContinuation = nil
     }
@@ -204,6 +224,7 @@ private struct NativeSpeechDuplexTests {
         await testDebugSinkClearsInterruptedOutput()
         await testMediaCapacityBackpressurePreservesInteraction()
         await testControlBypassesBlockedMedia()
+        await testSubtitleMailboxBypassesBlockedMedia()
         await testSpeechStartPreclearsBeforeConsumer()
         try await testSlowConsumerPreservesInteraction()
         try await testRecoverableTurnFailurePreservesBridge()
@@ -223,40 +244,86 @@ private struct NativeSpeechDuplexTests {
         let interactionID = NativeSpeechInteractionID(rawValue: UUID(
             uuidString: "00000000-0000-0000-0000-000000000091"
         )!)
-        synchronizer.observeEnqueuedAudio(sequence: 10)
-        expect(synchronizer.enqueuePartial(text: "我"),
-               "partial binds to the latest real audio sequence")
-        synchronizer.observeEnqueuedAudio(sequence: 20)
-        expect(synchronizer.enqueuePartial(text: "我是"),
-               "later partial binds to a later real sequence")
-        synchronizer.enqueueFinal(text: "我是林轩")
-        synchronizer.advance(playedSequence: 10)
-        expect(synchronizer.displayText == "我",
-               "first played sequence releases only its partial")
-        synchronizer.advance(playedSequence: 19)
-        expect(synchronizer.displayText == "我",
-               "an unplayed sequence cannot advance subtitles")
-        synchronizer.advance(playedSequence: 20)
-        expect(synchronizer.displayText == "我是",
-               "matching played sequence advances the partial")
-        synchronizer.completePlayback(
+        let identity = RealtimeSpeechPlaybackSubtitleIdentity(
             interactionID: interactionID,
             turnNumber: 1,
-            turnGeneration: 1
+            turnGeneration: 1,
+            playbackGeneration: 10
         )
+        synchronizer.prepare(identity: identity)
+        synchronizer.advance(playedSequence: 10, identity: identity)
+        expect(
+            synchronizer.applyPartial(
+                text: "我",
+                requiredAudioSequence: 10,
+                identity: identity
+            ),
+            "partial releases only after its real audio sequence"
+        )
+        expect(
+            !synchronizer.applyPartial(
+                text: "我是",
+                requiredAudioSequence: 20,
+                identity: identity
+            ),
+            "future audio cannot release a resident partial"
+        )
+        synchronizer.advance(playedSequence: 19, identity: identity)
+        expect(synchronizer.displayText == "我",
+               "an unplayed sequence cannot advance subtitles")
+        synchronizer.advance(playedSequence: 20, identity: identity)
+        expect(
+            synchronizer.applyPartial(
+                text: "我是",
+                requiredAudioSequence: 20,
+                identity: identity
+            ),
+            "matching playback waterline advances the partial"
+        )
+        expect(synchronizer.displayText == "我是",
+               "matching played sequence advances the partial")
+        expect(
+            synchronizer.enqueueFinal(
+                text: "我是林轩",
+                identity: identity
+            ),
+            "current playback identity accepts its final"
+        )
+        synchronizer.completePlayback(identity: identity)
         expect(synchronizer.displayText == "我是林轩",
                "final locks only after playback completion")
 
         synchronizer.reset()
-        synchronizer.observeEnqueuedAudio(sequence: 30)
-        synchronizer.advance(playedSequence: 30)
+        let nextIdentity = RealtimeSpeechPlaybackSubtitleIdentity(
+            interactionID: interactionID,
+            turnNumber: 2,
+            turnGeneration: 2,
+            playbackGeneration: 11
+        )
+        synchronizer.prepare(identity: nextIdentity)
+        synchronizer.advance(
+            playedSequence: 30,
+            identity: nextIdentity
+        )
         expect(
-            synchronizer.enqueuePartial(text: "已播放水位"),
+            synchronizer.applyPartial(
+                text: "已播放水位",
+                requiredAudioSequence: 30,
+                identity: nextIdentity
+            ),
             "partial can bind after its chunkPlayed callback"
         )
         expect(
             synchronizer.displayText == "已播放水位",
             "late-bound partial releases immediately at played waterline"
+        )
+        expect(
+            !synchronizer.applyPartial(
+                text: "旧轮次",
+                requiredAudioSequence: 30,
+                identity: identity
+            ),
+            "old turn and playback generation cannot restore a subtitle"
         )
 
         synchronizer.reset()
@@ -582,6 +649,8 @@ private struct NativeSpeechDuplexTests {
         )
         await stack.controller.startSpeechAudioCapture()
         await stack.controller.startNativeSpeechInputBridge()
+        let visibleTextBeforeUserPartials =
+            stack.controller.particleSubtitleState.text
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_started"}"#)
         )
@@ -592,15 +661,23 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"好"}"#)
         )
         await waitUntil {
-            stack.controller.realtimeSpeechSubtitleSnapshot.userPartial
+            stack.orchestration.realtimeSpeechSubtitleSnapshot().userPartial
                 == "你好"
         }
+        expect(
+            stack.controller.particleSubtitleState.text
+                == visibleTextBeforeUserPartials,
+            "user partials never change the visible subtitle"
+        )
         await transport.enqueue(
             .text(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好"}"#)
         )
         await waitUntil {
             stack.controller.realtimeSpeechSubtitleSnapshot.userFinal
                 == "你好"
+        }
+        await waitUntil {
+            stack.controller.particleSubtitleState.text == "你好"
         }
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
@@ -611,15 +688,19 @@ private struct NativeSpeechDuplexTests {
         await transport.enqueue(
             .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"我"}"#)
         )
-        await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AQI="}"#)
-        )
+        await transport.enqueue(subtitleAudioFrame(
+            responseID: "response-one",
+            itemID: "item-one",
+            seed: 1
+        ))
         await transport.enqueue(
             .text(#"{"type":"response.audio_transcript.delta","response_id":"response-one","item_id":"item-one","delta":"是"}"#)
         )
-        await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","response_id":"response-one","item_id":"item-one","delta":"AwQ="}"#)
-        )
+        await transport.enqueue(subtitleAudioFrame(
+            responseID: "response-one",
+            itemID: "item-one",
+            seed: 2
+        ))
         await waitUntil {
             stack.controller.realtimeSpeechSubtitleSnapshot.residentPartial
                 == "我是"
@@ -1259,6 +1340,104 @@ private struct NativeSpeechDuplexTests {
             await consumer.cancelledMediaCompletion,
             "invalidated media delivery observes task cancellation"
         )
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .closed
+        )))
+        await waitUntil {
+            !(await bridge.currentSnapshot().hasActiveReceiveLoop)
+        }
+    }
+
+    private static func testSubtitleMailboxBypassesBlockedMedia() async {
+        let source = DirectOutputEventSource()
+        let consumer = BlockingOutputConsumer()
+        let subtitleNotification = BlockingSubtitleNotification()
+        let interactionID = NativeSpeechInteractionID()
+        let binding = NativeSpeechInputBinding(
+            interactionID: interactionID,
+            residentID: "resident",
+            sessionID: "session",
+            captureGeneration: 1
+        )
+        let bridge = MacSpeechNativeOutputBridge(
+            receiveEvent: { _ in await source.receive() },
+            consumeEvent: { event in await consumer.consume(event) },
+            residentSubtitleCheckpointReady: {
+                await subtitleNotification.notify()
+            },
+            endInputPump: {},
+            stopInput: { _, _ in .success(()) },
+            closeInput: { _ in .success(()) }
+        )
+        _ = await bridge.start(binding: binding)
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: interactionID,
+                sequenceNumber: 1,
+                bytes: Data([1, 0]),
+                format: .pcm16
+            ))
+        )))
+        await waitUntil { await consumer.mediaStarted }
+        for index in 0 ..< 500 {
+            await source.enqueue(.accepted(NativeSpeechEvent(
+                interactionID: interactionID,
+                kind: .outputText(
+                    text: "字幕\(index)",
+                    isFinal: false
+                )
+            )))
+        }
+        await waitUntil { await subtitleNotification.started }
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: interactionID,
+                sequenceNumber: 2,
+                bytes: Data([2, 0]),
+                format: .pcm16
+            ))
+        )))
+        await waitUntil {
+            await bridge.currentSnapshot().outputAudioChunkCount == 2
+        }
+        expect(
+            await bridge.currentSnapshot().hasActiveReceiveLoop,
+            "subtitle flood cannot fill or stop the ordered media lane"
+        )
+        expect(
+            await consumer.outputTextConsumedCount == 0,
+            "resident partials never enter the ordered MainActor consumer"
+        )
+        let checkpoint = await bridge.takeResidentSubtitleCheckpoint(
+            interactionID: interactionID,
+            throughAudioSequence: 1
+        )
+        expect(
+            checkpoint?.text == "字幕499"
+                && checkpoint?.requiredAudioSequence == 1,
+            "subtitle mailbox coalesces backlog at the played waterline"
+        )
+        await source.enqueue(.accepted(NativeSpeechEvent(
+            interactionID: interactionID,
+            kind: .inputSpeechStarted
+        )))
+        await waitUntil { await consumer.controlConsumed }
+        expect(
+            await subtitleNotification.started,
+            "blocked subtitle notification cannot block speech_started"
+        )
+        expect(
+            await bridge.takeResidentSubtitleCheckpoint(
+                interactionID: interactionID,
+                throughAudioSequence: 2
+            ) == nil,
+            "speech_started atomically clears old subtitle checkpoints"
+        )
+        await subtitleNotification.release()
+        await consumer.releaseMedia()
         await source.enqueue(.accepted(NativeSpeechEvent(
             interactionID: interactionID,
             kind: .closed
@@ -2074,6 +2253,21 @@ private struct NativeSpeechDuplexTests {
             ],
             responseCancelDelay: responseCancelDelay,
             waitsWhenEmpty: true
+        )
+    }
+
+    private static func subtitleAudioFrame(
+        responseID: String,
+        itemID: String,
+        seed: UInt8,
+        byteCount: Int = 14_400
+    ) -> RealtimeWebSocketFrame {
+        let encoded = Data(
+            repeating: seed,
+            count: byteCount
+        ).base64EncodedString()
+        return .text(
+            #"{"type":"response.audio.delta","response_id":"\#(responseID)","item_id":"\#(itemID)","delta":"\#(encoded)"}"#
         )
     }
 

@@ -40,6 +40,14 @@ nonisolated struct MacSpeechNativeOutputBridgeSnapshot: Sendable, Equatable {
     )
 }
 
+nonisolated struct MacSpeechResidentSubtitleCheckpoint:
+    Sendable,
+    Equatable {
+    let interactionID: NativeSpeechInteractionID
+    let requiredAudioSequence: UInt64
+    let text: String
+}
+
 actor MacSpeechNativeDebugOutputSink {
     private(set) var deliveredEventCount: UInt64 = 0
     private(set) var currentTurnOutputEventCount: UInt64 = 0
@@ -64,11 +72,13 @@ actor MacSpeechNativeDebugOutputSink {
 
 actor MacSpeechNativeOutputBridge {
     static let mediaEventCapacity = 64
+    static let residentSubtitleCheckpointCapacity = 128
 
     typealias ReceiveEvent = @Sendable (
         NativeSpeechInteractionID
     ) async -> Result<NativeSpeechEventDisposition, NativeSpeechError>
     typealias ConsumeEvent = @Sendable (NativeSpeechEvent) async -> Void
+    typealias ResidentSubtitleCheckpointReady = @Sendable () async -> Void
     typealias ClearOutputForSpeechStart = @Sendable () async -> Void
     typealias EndInputPump = @MainActor @Sendable () async -> Void
     typealias StopInput = @MainActor @Sendable (
@@ -81,15 +91,21 @@ actor MacSpeechNativeOutputBridge {
 
     private let receiveEvent: ReceiveEvent
     private let consumeEvent: ConsumeEvent
+    private let residentSubtitleCheckpointReady:
+        ResidentSubtitleCheckpointReady
     private let clearOutputForSpeechStart: ClearOutputForSpeechStart
     private let endInputPump: EndInputPump
     private let stopInput: StopInput
     private let closeInput: CloseInput
     private var receiveTask: Task<Void, Never>?
     private var mediaDeliveryTask: Task<Void, Never>?
+    private var residentSubtitleNotificationTask: Task<Void, Never>?
     private var pendingMediaEvents: [NativeSpeechEvent] = []
+    private var pendingResidentSubtitleCheckpoints:
+        [MacSpeechResidentSubtitleCheckpoint] = []
     private var mediaCapacityWaiter: CheckedContinuation<Void, Never>?
     private var mediaDeliveryGeneration: UInt64 = 0
+    private var residentSubtitleNotificationRevision: UInt64 = 0
     private var activeBinding: NativeSpeechInputBinding?
     private var state = MacSpeechNativeOutputBridgeState.idle
     private var outputAudioChunkCount: UInt64 = 0
@@ -106,6 +122,8 @@ actor MacSpeechNativeOutputBridge {
     init(
         receiveEvent: @escaping ReceiveEvent,
         consumeEvent: @escaping ConsumeEvent,
+        residentSubtitleCheckpointReady:
+            @escaping ResidentSubtitleCheckpointReady = {},
         clearOutputForSpeechStart: @escaping ClearOutputForSpeechStart = {},
         endInputPump: @escaping EndInputPump,
         stopInput: @escaping StopInput,
@@ -113,6 +131,8 @@ actor MacSpeechNativeOutputBridge {
     ) {
         self.receiveEvent = receiveEvent
         self.consumeEvent = consumeEvent
+        self.residentSubtitleCheckpointReady =
+            residentSubtitleCheckpointReady
         self.clearOutputForSpeechStart = clearOutputForSpeechStart
         self.endInputPump = endInputPump
         self.stopInput = stopInput
@@ -169,6 +189,24 @@ actor MacSpeechNativeOutputBridge {
         makeSnapshot()
     }
 
+    func takeResidentSubtitleCheckpoint(
+        interactionID: NativeSpeechInteractionID,
+        throughAudioSequence playedSequence: UInt64
+    ) -> MacSpeechResidentSubtitleCheckpoint? {
+        guard activeBinding?.interactionID == interactionID,
+              let releaseIndex = pendingResidentSubtitleCheckpoints.lastIndex(
+                where: {
+                    $0.interactionID == interactionID
+                        && $0.requiredAudioSequence <= playedSequence
+                }
+              ) else {
+            return nil
+        }
+        let checkpoint = pendingResidentSubtitleCheckpoints[releaseIndex]
+        pendingResidentSubtitleCheckpoints.removeFirst(releaseIndex + 1)
+        return checkpoint
+    }
+
     private func run(binding: NativeSpeechInputBinding) async {
         while !Task.isCancelled {
             let result = await receiveEvent(binding.interactionID)
@@ -207,6 +245,8 @@ actor MacSpeechNativeOutputBridge {
                         ) / 1_000_000
                     }
                     await consumeEvent(event)
+                } else if storeResidentSubtitleCheckpoint(event) {
+                    continue
                 } else if requiresOrderedMediaDelivery(event) {
                     guard await enqueueMediaEvent(
                         event,
@@ -291,7 +331,11 @@ actor MacSpeechNativeOutputBridge {
     @discardableResult
     private func invalidateMediaDelivery() -> Task<Void, Never>? {
         mediaDeliveryGeneration &+= 1
+        residentSubtitleNotificationRevision &+= 1
         pendingMediaEvents.removeAll(keepingCapacity: true)
+        pendingResidentSubtitleCheckpoints.removeAll(keepingCapacity: true)
+        residentSubtitleNotificationTask?.cancel()
+        residentSubtitleNotificationTask = nil
         resumeMediaCapacityWaiterIfNeeded()
         let task = mediaDeliveryTask
         mediaDeliveryTask = nil
@@ -303,10 +347,75 @@ actor MacSpeechNativeOutputBridge {
         _ event: NativeSpeechEvent
     ) -> Bool {
         switch event.kind {
-        case .outputAudio, .outputText, .responseCompleted:
+        case .outputAudio, .responseCompleted:
             return true
+        case .outputText(_, let isFinal):
+            return isFinal
         default:
             return false
+        }
+    }
+
+    private func storeResidentSubtitleCheckpoint(
+        _ event: NativeSpeechEvent
+    ) -> Bool {
+        guard case .outputText(let text, false) = event.kind else {
+            return false
+        }
+        let normalized = text.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalized.isEmpty,
+              event.interactionID == activeBinding?.interactionID,
+              let sequence = lastOutputAudioSequenceNumber else {
+            return true
+        }
+        let checkpoint = MacSpeechResidentSubtitleCheckpoint(
+            interactionID: event.interactionID,
+            requiredAudioSequence: sequence,
+            text: normalized
+        )
+        if pendingResidentSubtitleCheckpoints.last == checkpoint {
+            return true
+        }
+        if pendingResidentSubtitleCheckpoints.count
+            >= Self.residentSubtitleCheckpointCapacity {
+            pendingResidentSubtitleCheckpoints = stride(
+                from: 1,
+                to: pendingResidentSubtitleCheckpoints.count,
+                by: 2
+            ).map { pendingResidentSubtitleCheckpoints[$0] }
+        }
+        pendingResidentSubtitleCheckpoints.append(checkpoint)
+        residentSubtitleNotificationRevision &+= 1
+        startResidentSubtitleNotificationIfNeeded()
+        return true
+    }
+
+    private func startResidentSubtitleNotificationIfNeeded() {
+        guard residentSubtitleNotificationTask == nil else { return }
+        let notificationRevision = residentSubtitleNotificationRevision
+        let deliveryGeneration = mediaDeliveryGeneration
+        let notify = residentSubtitleCheckpointReady
+        residentSubtitleNotificationTask = Task { [weak self] in
+            await notify()
+            await self?.finishResidentSubtitleNotification(
+                revision: notificationRevision,
+                deliveryGeneration: deliveryGeneration
+            )
+        }
+    }
+
+    private func finishResidentSubtitleNotification(
+        revision: UInt64,
+        deliveryGeneration: UInt64
+    ) {
+        guard self.mediaDeliveryGeneration == deliveryGeneration else {
+            return
+        }
+        residentSubtitleNotificationTask = nil
+        if residentSubtitleNotificationRevision != revision {
+            startResidentSubtitleNotificationIfNeeded()
         }
     }
 
