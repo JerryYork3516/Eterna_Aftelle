@@ -31,11 +31,13 @@ public final class ExecutionEngine {
 
     func startNativeSpeech(
         interaction: NativeSpeechInteraction,
-        contextProjection: RealtimeSpeechContextProjection
+        contextProjection: RealtimeSpeechContextProjection,
+        tools: [NativeSpeechToolDefinition] = []
     ) async throws {
         try await providerRouter.startNativeSpeech(
             interaction: interaction,
-            contextProjection: contextProjection
+            contextProjection: contextProjection,
+            tools: tools
         )
     }
 
@@ -73,6 +75,24 @@ public final class ExecutionEngine {
         interactionID: NativeSpeechInteractionID
     ) async throws {
         try await providerRouter.closeNativeSpeech(
+            interactionID: interactionID
+        )
+    }
+
+    func submitNativeSpeechToolOutput(
+        _ output: NativeSpeechToolOutput,
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        try await providerRouter.submitNativeSpeechToolOutput(
+            output,
+            interactionID: interactionID
+        )
+    }
+
+    func requestNativeSpeechToolContinuation(
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        try await providerRouter.requestNativeSpeechToolContinuation(
             interactionID: interactionID
         )
     }

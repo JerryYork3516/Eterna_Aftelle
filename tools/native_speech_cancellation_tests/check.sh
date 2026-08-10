@@ -36,9 +36,12 @@ if rg -q 'StepFunRealtimeAdapter|ProviderRouter|"response\.cancel"' \
 fi
 echo "native_speech_cancellation_ui_boundary=PASS"
 
-test -z "$(git -C "$repo_root" diff \
+if git -C "$repo_root" diff -U0 \
   33cb8d1de9cbf68c3c0de609661b82152c128a5b -- \
-  apps/macos/RuntimeCore/NativeSpeechProvider.swift)"
+  apps/macos/RuntimeCore/NativeSpeechProvider.swift | rg -q '^\+public '; then
+  echo "native_speech_cancellation_provider_public_api=FAIL"
+  exit 1
+fi
 if git -C "$repo_root" diff -U0 \
   33cb8d1de9cbf68c3c0de609661b82152c128a5b -- \
   apps/macos/RuntimeCore/RuntimeCore.swift | rg -q '^\+public '; then
@@ -46,3 +49,4 @@ if git -C "$repo_root" diff -U0 \
   exit 1
 fi
 echo "native_speech_cancellation_public_api=PASS"
+echo "native_speech_cancellation_provider_public_api=PASS"

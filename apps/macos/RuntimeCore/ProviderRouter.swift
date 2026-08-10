@@ -938,7 +938,8 @@ public final class ProviderRouter {
 
     func startNativeSpeech(
         interaction: NativeSpeechInteraction,
-        contextProjection: RealtimeSpeechContextProjection
+        contextProjection: RealtimeSpeechContextProjection,
+        tools: [NativeSpeechToolDefinition]
     ) async throws {
         guard let nativeSpeechProvider,
               let nativeSpeechProfile,
@@ -950,7 +951,8 @@ public final class ProviderRouter {
         try await nativeSpeechProvider.start(
             request: NativeSpeechStartRequest(
                 interaction: interaction,
-                profile: nativeSpeechProfile
+                profile: nativeSpeechProfile,
+                tools: tools
             )
         )
     }
@@ -1005,6 +1007,30 @@ public final class ProviderRouter {
             throw NativeSpeechError.unavailable
         }
         try await nativeSpeechProvider.close(interactionID: interactionID)
+    }
+
+    func submitNativeSpeechToolOutput(
+        _ output: NativeSpeechToolOutput,
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        guard let nativeSpeechProvider else {
+            throw NativeSpeechError.unavailable
+        }
+        try await nativeSpeechProvider.submitToolOutput(
+            output,
+            interactionID: interactionID
+        )
+    }
+
+    func requestNativeSpeechToolContinuation(
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        guard let nativeSpeechProvider else {
+            throw NativeSpeechError.unavailable
+        }
+        try await nativeSpeechProvider.requestToolContinuation(
+            interactionID: interactionID
+        )
     }
 
     public func diagnostics(for config: ProviderRuntimeConfig, secretState: SecretReferenceState) -> ProviderRoutingDiagnostics {

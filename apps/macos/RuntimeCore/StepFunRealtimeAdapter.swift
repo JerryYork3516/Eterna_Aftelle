@@ -17,6 +17,11 @@ nonisolated private struct StepFunDeferredResidentFinal:
     let itemCorrelationHash: String?
 }
 
+nonisolated private struct StepFunPendingToolCall: Sendable, Equatable {
+    let name: String
+    var arguments: String
+}
+
 nonisolated enum StepFunRealtimeConnectionState: String, Sendable, Equatable {
     case connecting
     case connected
@@ -41,6 +46,7 @@ actor StepFunRealtimeAdapter:
         "，。！？；：、,.!?;:\n\r…”’」』】）》）]}"
     )
     private static let suppressedResponseCapacity = 256
+    private static let completedToolCallCapacity = 256
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
     private let codec: StepFunRealtimeCodec
@@ -79,6 +85,10 @@ actor StepFunRealtimeAdapter:
     private var nextOutputAudioSequenceNumber: UInt64 = 0
     private var wireReceiveOrdinal: UInt64 = 0
     private var lastOutputAudioArrivalNanoseconds: UInt64?
+    private var pendingToolCalls: [String: StepFunPendingToolCall] = [:]
+    private var completedToolCallIDs: Set<String> = []
+    private var completedToolCallOrder: [String] = []
+    private var didRequestToolContinuation = false
     private let reconnectDelay: Duration
     private(set) var connectionState = StepFunRealtimeConnectionState.closed
     private(set) var ignoredEventCount: UInt64 = 0
@@ -188,6 +198,40 @@ actor StepFunRealtimeAdapter:
         connectionState = .streaming
     }
 
+    func submitToolOutput(
+        _ output: NativeSpeechToolOutput,
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        try requireActive(interactionID)
+        try await transport.send(.text(try codec.toolOutput(output)))
+        recordDiagnostic(
+            source: .adapter,
+            category: "tool_output_submitted",
+            interactionID: interactionID,
+            disposition: "submitted",
+            itemCorrelationHash: Self.correlationHash(output.callID),
+            byteCount: output.output.utf8.count
+        )
+    }
+
+    func requestToolContinuation(
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        try requireActive(interactionID)
+        guard !didRequestToolContinuation else { return }
+        guard !isProviderResponseActive, !isCancelling else {
+            throw NativeSpeechError.invalidEvent
+        }
+        try await transport.send(.text(try codec.responseCreate()))
+        didRequestToolContinuation = true
+        recordDiagnostic(
+            source: .adapter,
+            category: "tool_continuation_requested",
+            interactionID: interactionID,
+            disposition: "response_create"
+        )
+    }
+
     func receive(
         interactionID: NativeSpeechInteractionID
     ) async throws -> NativeSpeechEvent {
@@ -280,6 +324,10 @@ actor StepFunRealtimeAdapter:
         nextOutputAudioSequenceNumber = 0
         wireReceiveOrdinal = 0
         lastOutputAudioArrivalNanoseconds = nil
+        pendingToolCalls.removeAll(keepingCapacity: true)
+        completedToolCallIDs.removeAll(keepingCapacity: true)
+        completedToolCallOrder.removeAll(keepingCapacity: true)
+        didRequestToolContinuation = false
         userTranscriptAccumulator = ""
         activeUserItemCorrelationHash = nil
         userTranscriptFinalized = false
@@ -299,7 +347,8 @@ actor StepFunRealtimeAdapter:
         try await transport.send(
             .text(try codec.sessionUpdate(
                 profile: request.profile,
-                instructions: contextProjection.instructions
+                instructions: contextProjection.instructions,
+                tools: request.tools
             ))
         )
         let updated = try await nextRecognizedEvent(
@@ -326,6 +375,10 @@ actor StepFunRealtimeAdapter:
         nextOutputAudioSequenceNumber = 0
         wireReceiveOrdinal = 0
         lastOutputAudioArrivalNanoseconds = nil
+        pendingToolCalls.removeAll(keepingCapacity: true)
+        completedToolCallIDs.removeAll(keepingCapacity: true)
+        completedToolCallOrder.removeAll(keepingCapacity: true)
+        didRequestToolContinuation = false
         userTranscriptAccumulator = ""
         activeUserItemCorrelationHash = nil
         userTranscriptFinalized = false
@@ -410,7 +463,8 @@ actor StepFunRealtimeAdapter:
                 wireSequence: wireReceiveOrdinal,
                 responseCorrelationHash:
                     envelope.responseCorrelationHash,
-                itemCorrelationHash: envelope.itemCorrelationHash,
+                itemCorrelationHash: envelope.itemCorrelationHash
+                    ?? envelope.callCorrelationHash,
                 audioSequence: wireMetadata.audioSequence,
                 byteCount: wireMetadata.byteCount,
                 arrivalIntervalMilliseconds: audioInterval,
@@ -468,6 +522,8 @@ actor StepFunRealtimeAdapter:
                     envelope.responseCorrelationHash
                 pendingCancellationEventID = nil
                 pendingCancellationResponseCorrelationHash = nil
+                pendingToolCalls.removeAll(keepingCapacity: true)
+                didRequestToolContinuation = false
                 resetResidentResponseState()
                 if bridgesPendingCancellation {
                     if let responseCreated = normalizedEvent(
@@ -682,6 +738,19 @@ actor StepFunRealtimeAdapter:
                 ignoredEventCount &+= 1
                 continue
             }
+            if let toolEvent = try standardizedToolEvent(
+                from: envelope,
+                interactionID: interactionID
+            ) {
+                return emitStandardEvent(
+                    toolEvent,
+                    envelope: envelope,
+                    receivedAtNanoseconds: receivedAt
+                )
+            }
+            if envelope.toolWireEvent != nil {
+                continue
+            }
             if envelope.wireKind == .outputAudioDone {
                 residentAudioFinished = true
                 if let final = takeDeferredResidentFinal(
@@ -878,6 +947,9 @@ actor StepFunRealtimeAdapter:
             )
             return nil
         case .residentTextDelta, .residentTextDone:
+            return nil
+        case .toolCallCreated, .toolArgumentsDelta,
+             .toolArgumentsDone:
             return nil
         case .responseCreated, .responseCompleted,
              .cancellationAcknowledgement:
@@ -1373,6 +1445,8 @@ actor StepFunRealtimeAdapter:
              .residentAudioTranscriptDelta, .residentAudioTranscriptDone,
              .residentTextDelta, .residentTextDone, .outputAudioDelta,
              .outputAudioDone, .responseCompleted,
+             .toolCallCreated, .toolArgumentsDelta,
+             .toolArgumentsDone,
              .cancellationAcknowledgement, .providerError, .other:
             return true
         }
@@ -1388,6 +1462,9 @@ actor StepFunRealtimeAdapter:
              .residentTextDone,
              .outputAudioDelta,
              .outputAudioDone,
+             .toolCallCreated,
+             .toolArgumentsDelta,
+             .toolArgumentsDone,
              .responseCompleted:
             return true
         default:
@@ -1408,7 +1485,8 @@ actor StepFunRealtimeAdapter:
             disposition: "emitted",
             wireSequence: wireReceiveOrdinal,
             responseCorrelationHash: envelope.responseCorrelationHash,
-            itemCorrelationHash: envelope.itemCorrelationHash,
+            itemCorrelationHash: envelope.itemCorrelationHash
+                ?? envelope.callCorrelationHash,
             audioSequence: metadata.audioSequence,
             byteCount: metadata.byteCount,
             wireToStandardDurationMilliseconds:
@@ -1417,6 +1495,68 @@ actor StepFunRealtimeAdapter:
             errorCode: metadata.errorCode
         )
         return event
+    }
+
+    private func standardizedToolEvent(
+        from envelope: StepFunRealtimeDecodedEnvelope,
+        interactionID: NativeSpeechInteractionID
+    ) throws -> NativeSpeechEvent? {
+        guard let toolWireEvent = envelope.toolWireEvent else { return nil }
+        switch toolWireEvent {
+        case .created(let callID, let name, let arguments):
+            guard !completedToolCallIDs.contains(callID) else { return nil }
+            pendingToolCalls[callID] = StepFunPendingToolCall(
+                name: name,
+                arguments: arguments ?? ""
+            )
+            return nil
+        case .argumentsDelta(let callID, let name, let delta):
+            guard !completedToolCallIDs.contains(callID) else { return nil }
+            if var pending = pendingToolCalls[callID] {
+                guard name == nil || name == pending.name else {
+                    throw NativeSpeechError.invalidEvent
+                }
+                pending.arguments.append(delta)
+                pendingToolCalls[callID] = pending
+            } else if let name {
+                pendingToolCalls[callID] = StepFunPendingToolCall(
+                    name: name,
+                    arguments: delta
+                )
+            } else {
+                throw NativeSpeechError.invalidEvent
+            }
+            return nil
+        case .argumentsDone(let callID, let name, let arguments):
+            guard !completedToolCallIDs.contains(callID) else { return nil }
+            if let pending = pendingToolCalls[callID],
+               pending.name != name {
+                throw NativeSpeechError.invalidEvent
+            }
+            let completeArguments = arguments.isEmpty
+                ? (pendingToolCalls[callID]?.arguments ?? "")
+                : arguments
+            pendingToolCalls[callID] = nil
+            completedToolCallIDs.insert(callID)
+            completedToolCallOrder.append(callID)
+            while completedToolCallOrder.count
+                    > Self.completedToolCallCapacity {
+                completedToolCallIDs.remove(
+                    completedToolCallOrder.removeFirst()
+                )
+            }
+            return NativeSpeechEvent(
+                interactionID: interactionID,
+                kind: .toolRequestCandidate(
+                    NativeSpeechToolRequest(
+                        callID: callID,
+                        toolName: name,
+                        arguments: Data(completeArguments.utf8),
+                        correlationHash: envelope.callCorrelationHash
+                    )
+                )
+            )
+        }
     }
 
     private func recordDiagnostic(
@@ -1512,5 +1652,14 @@ actor StepFunRealtimeAdapter:
         case .invalidEvent: "invalid_event"
         case .interactionMismatch: "interaction_mismatch"
         }
+    }
+
+    private static func correlationHash(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(format: "%016llx", hash)
     }
 }

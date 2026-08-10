@@ -123,13 +123,18 @@ if rg -q 'AVFoundation|CoreAudio|AVAudio' "$runtime" "$engine" "$router"; then
   echo "native_speech_duplex_runtime_platform_boundary=FAIL"
   exit 1
 fi
-test -z "$(git diff b0e79a56b6ab7a36b1192417b50fbafd79c6f97f -- apps/macos/RuntimeCore/NativeSpeechProvider.swift)"
+if git diff -U0 b0e79a56b6ab7a36b1192417b50fbafd79c6f97f -- \
+  apps/macos/RuntimeCore/NativeSpeechProvider.swift | rg -q '^\+public '; then
+  echo "native_speech_duplex_provider_public_api=FAIL"
+  exit 1
+fi
 if git diff -U0 b0e79a56b6ab7a36b1192417b50fbafd79c6f97f -- \
   "$runtime" | rg -q '^\+public '; then
   echo "native_speech_duplex_runtime_public_api=FAIL"
   exit 1
 fi
 echo "native_speech_duplex_scope=PASS"
+echo "native_speech_duplex_provider_public_api=PASS"
 echo "native_speech_duplex_runtime_public_api=PASS"
 
 test "$(rg -c '/\* MacSpeechNativeOutputBridge\.swift( in Sources)? \*/' "$project")" -eq 4

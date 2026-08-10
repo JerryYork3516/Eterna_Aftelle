@@ -20,6 +20,7 @@ nonisolated enum RealtimeSpeechTransitionReason: String, Sendable, Equatable {
     case playbackCompleted = "playback_completed"
     case playbackFailed = "playback_failed"
     case responseCompleted = "response_completed"
+    case toolContinuationRequested = "tool_continuation_requested"
     case providerTurnFailed = "provider_turn_failed"
     case userStopped = "user_stopped"
     case interrupted
@@ -625,6 +626,48 @@ nonisolated final class RealtimeSpeechStateMachine: @unchecked Sendable {
                     effect: .terminateProvider
                 )
             }
+        }
+    }
+
+    func prepareToolContinuation(
+        interaction: NativeSpeechInteraction,
+        turnNumber: UInt64,
+        nowNanoseconds: UInt64
+    ) -> RealtimeSpeechTransitionResult {
+        lock.withLock {
+            let previous = currentSnapshot.state
+            let eventIdentity = RealtimeSpeechStateIdentity(
+                interaction: interaction
+            )
+            guard identity == eventIdentity else {
+                return rejectLateLocked(previous: previous)
+            }
+            guard currentSnapshot.currentTurnNumber == turnNumber,
+                  turnOutcomes[turnNumber] == nil else {
+                return rejectLateLocked(previous: previous)
+            }
+            guard currentSnapshot.state == .thinking
+                    || currentSnapshot.state == .speaking else {
+                return rejectOutOfOrderLocked(previous: previous)
+            }
+            guard !turnHasOutputAudio || playbackDrained else {
+                return rejectOutOfOrderLocked(previous: previous)
+            }
+            clearGuardLocked()
+            resetPlaybackLocked()
+            setGuardLocked(
+                .thinkingOutput,
+                timeoutNanoseconds:
+                    timeoutConfiguration.thinkingOutputNanoseconds,
+                nowNanoseconds: nowNanoseconds
+            )
+            applyLocked(
+                state: .thinking,
+                reason: .toolContinuationRequested,
+                turnDetectionSource:
+                    currentSnapshot.lastTurnDetectionSource
+            )
+            return resultLocked(.applied, previous: previous)
         }
     }
 

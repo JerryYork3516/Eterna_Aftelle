@@ -22,6 +22,17 @@ nonisolated enum NativeSpeechError: Error, Sendable, Equatable {
 nonisolated struct NativeSpeechStartRequest: Sendable, Equatable {
     let interaction: NativeSpeechInteraction
     let profile: NativeSpeechProviderProfile
+    let tools: [NativeSpeechToolDefinition]
+
+    init(
+        interaction: NativeSpeechInteraction,
+        profile: NativeSpeechProviderProfile,
+        tools: [NativeSpeechToolDefinition] = []
+    ) {
+        self.interaction = interaction
+        self.profile = profile
+        self.tools = tools
+    }
 }
 
 nonisolated protocol NativeSpeechProvider: Sendable {
@@ -35,4 +46,26 @@ nonisolated protocol NativeSpeechProvider: Sendable {
         reason: NativeSpeechCancellationReason
     ) async throws
     func close(interactionID: NativeSpeechInteractionID) async throws
+    func submitToolOutput(
+        _ output: NativeSpeechToolOutput,
+        interactionID: NativeSpeechInteractionID
+    ) async throws
+    func requestToolContinuation(
+        interactionID: NativeSpeechInteractionID
+    ) async throws
+}
+
+nonisolated extension NativeSpeechProvider {
+    func submitToolOutput(
+        _ output: NativeSpeechToolOutput,
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        throw NativeSpeechError.unavailable
+    }
+
+    func requestToolContinuation(
+        interactionID: NativeSpeechInteractionID
+    ) async throws {
+        throw NativeSpeechError.unavailable
+    }
 }

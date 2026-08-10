@@ -38,6 +38,7 @@ private struct StepFunRealtimeAdapterTests {
         try await testConversationItemUserFinal()
         try await testRecoverableTurnFailureKeepsConnection()
         try await testMissingCredentialDoesNotConnect()
+        try await testToolAggregationAndContinuationWire()
         try testCodecMappings()
         testDiagnosticBufferRingOrdering()
         try await testRedactedWireDiagnostics()
@@ -170,7 +171,10 @@ private struct StepFunRealtimeAdapterTests {
                 == startProjection.instructions,
             "compiled instructions are sent"
         )
-        expect(session?["tools"] == nil, "tools are not sent")
+        expect(
+            (session?["tools"] as? [[String: Any]])?.isEmpty == true,
+            "StepFun built-in tools stay disabled"
+        )
         expect(calls[3] == .receive, "session.updated receive is fourth")
         let capturedBearerToken = await transport.capturedBearerToken
         expect(capturedBearerToken == "test-token", "credential stays in transport memory")
@@ -1709,19 +1713,17 @@ private struct StepFunRealtimeAdapterTests {
             interactionID: interactionID
         )
         expect(audioDone == nil, "audio.done is not a terminal event")
-        let tool = try codec.decode(
+        let tool = try codec.decodeEnvelope(
             .text(#"{"type":"response.function_call_arguments.done","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
             interactionID: interactionID
         )
         expect(
-            tool?.kind == .toolRequestCandidate(
-                NativeSpeechToolRequest(
-                    requestID: "call-1",
-                    toolName: "weather",
-                    arguments: Data(#"{"city":"北京"}"#.utf8)
-                )
-            ),
-            "tool request is forwarded without execution"
+            tool.toolWireEvent == .argumentsDone(
+                callID: "call-1",
+                name: "weather",
+                arguments: #"{"city":"北京"}"#
+            ) && tool.event == nil,
+            "codec preserves completed tool arguments for adapter aggregation"
         )
         let doneCases: [(String, NativeSpeechEventKind)] = [
             ("completed", .responseCompleted),
@@ -1770,6 +1772,129 @@ private struct StepFunRealtimeAdapterTests {
             textTranscript.wireKind == .residentTextDelta,
             "text modality cannot masquerade as voice subtitle"
         )
+    }
+
+    private static func testToolAggregationAndContinuationWire()
+        async throws {
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let transport = FakeRealtimeWebSocketTransport(frames: [
+            .text(#"{"type":"session.created"}"#),
+            .text(#"{"type":"session.updated"}"#),
+            .text(#"{"type":"response.created","response":{"id":"tool-response"}}"#),
+            .text(#"{"type":"conversation.item.created","response_id":"tool-response","item":{"id":"tool-item","type":"function_call","call_id":"call-1","name":"weather","arguments":""}}"#),
+            .text(#"{"type":"response.function_call_arguments.delta","response_id":"tool-response","call_id":"call-1","name":"weather","delta":"{\"city\":"}"#),
+            .text(#"{"type":"response.function_call_arguments.delta","response_id":"tool-response","call_id":"call-1","delta":"\"北京\"}"}"#),
+            .text(#"{"type":"response.function_call_arguments.done","response_id":"tool-response","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
+            .text(#"{"type":"response.function_call_arguments.done","response_id":"tool-response","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
+            .text(#"{"type":"response.done","response":{"id":"tool-response","status":"completed"}}"#)
+        ])
+        let adapter = StepFunRealtimeAdapter(
+            credentialReader: StaticCredentialReader(
+                credential: "test-token"
+            ),
+            transport: transport,
+            diagnosticBuffer: diagnostics
+        )
+        let baseRequest = makeRequest()
+        let definition = NativeSpeechToolDefinition(
+            name: "weather",
+            description: "Read deterministic test weather.",
+            parametersJSON: Data(
+                #"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#.utf8
+            ),
+            permission: .permissionFree
+        )
+        let request = NativeSpeechStartRequest(
+            interaction: baseRequest.interaction,
+            profile: baseRequest.profile,
+            tools: [definition]
+        )
+        _ = try await start(adapter, request: request)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        _ = try await adapter.receive(interactionID: request.interaction.id)
+        let thinking = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(thinking.kind == .thinking, "tool response starts normally")
+        let candidate = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        guard case .toolRequestCandidate(let toolRequest) = candidate.kind else {
+            fatalError("FAILED: completed tool arguments emit one candidate")
+        }
+        expect(
+            toolRequest.callID == "call-1"
+                && toolRequest.toolName == "weather"
+                && toolRequest.arguments == Data(#"{"city":"北京"}"#.utf8),
+            "only arguments.done emits the complete standardized request"
+        )
+        expect(
+            toolRequest.correlationHash != nil
+                && toolRequest.correlationHash != "call-1",
+            "tool call ID is represented only by a safe correlation hash"
+        )
+        let completed = try await adapter.receive(
+            interactionID: request.interaction.id
+        )
+        expect(
+            completed.kind == .responseCompleted,
+            "duplicate arguments.done is ignored before response completion"
+        )
+        try await adapter.submitToolOutput(
+            NativeSpeechToolOutput(
+                callID: "call-1",
+                output: #"{"temperature":20}"#
+            ),
+            interactionID: request.interaction.id
+        )
+        try await adapter.requestToolContinuation(
+            interactionID: request.interaction.id
+        )
+        try await adapter.requestToolContinuation(
+            interactionID: request.interaction.id
+        )
+
+        let sentTexts = await transport.calls.compactMap { call -> String? in
+            guard case .send(.text(let text)) = call else { return nil }
+            return text
+        }
+        let sessionUpdate = try json(sentTexts[0])
+        let session = sessionUpdate["session"] as? [String: Any]
+        let tools = session?["tools"] as? [[String: Any]]
+        let function = tools?.first?["function"] as? [String: Any]
+        expect(
+            function?["name"] as? String == "weather",
+            "Runtime-provided function schema is sent in session.update"
+        )
+        expect(
+            sentTexts.filter {
+                $0.contains("function_call_output")
+            }.count == 1,
+            "tool output is returned exactly once"
+        )
+        expect(
+            sentTexts.filter {
+                $0.contains("\"type\":\"response.create\"")
+            }.count == 1,
+            "tool continuation response.create is idempotent"
+        )
+        let diagnosticEvents = diagnostics.drain().events
+        expect(
+            diagnosticEvents.contains {
+                $0.category == "standard_tool_request_candidate"
+                    && $0.itemCorrelationHash != nil
+                    && $0.itemCorrelationHash != "call-1"
+            },
+            "tool diagnostics expose only a safe call correlation hash"
+        )
+        expect(
+            !diagnosticEvents.contains {
+                $0.category.contains("北京")
+                    || $0.disposition?.contains("temperature") == true
+            },
+            "tool arguments and results are absent from diagnostics"
+        )
+        try await adapter.close(interactionID: request.interaction.id)
     }
 
     private static func testContinuousOutputAndResponseBoundary() async throws {

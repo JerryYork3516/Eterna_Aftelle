@@ -17,8 +17,17 @@ nonisolated enum StepFunRealtimeWireEventKind: String, Sendable, Equatable {
     case outputAudioDelta = "output_audio_delta"
     case outputAudioDone = "output_audio_done"
     case conversationItemCreated = "conversation_item_created"
+    case toolCallCreated = "tool_call_created"
+    case toolArgumentsDelta = "tool_arguments_delta"
+    case toolArgumentsDone = "tool_arguments_done"
     case providerError = "provider_error"
     case other
+}
+
+nonisolated enum StepFunRealtimeToolWireEvent: Sendable, Equatable {
+    case created(callID: String, name: String, arguments: String?)
+    case argumentsDelta(callID: String, name: String?, delta: String)
+    case argumentsDone(callID: String, name: String, arguments: String)
 }
 
 nonisolated enum StepFunRealtimeResponseStatus: String, Sendable, Equatable {
@@ -42,6 +51,8 @@ nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
     let wireEventCorrelationHash: String?
     let responseCorrelationHash: String?
     let itemCorrelationHash: String?
+    let callCorrelationHash: String?
+    let toolWireEvent: StepFunRealtimeToolWireEvent?
     let responseStatus: StepFunRealtimeResponseStatus?
     let responseStatusDetailReason:
         StepFunRealtimeResponseStatusDetailReason?
@@ -53,6 +64,8 @@ nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
         wireEventCorrelationHash: String? = nil,
         responseCorrelationHash: String? = nil,
         itemCorrelationHash: String? = nil,
+        callCorrelationHash: String? = nil,
+        toolWireEvent: StepFunRealtimeToolWireEvent? = nil,
         responseStatus: StepFunRealtimeResponseStatus? = nil,
         responseStatusDetailReason:
             StepFunRealtimeResponseStatusDetailReason? = nil
@@ -63,6 +76,8 @@ nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
         self.wireEventCorrelationHash = wireEventCorrelationHash
         self.responseCorrelationHash = responseCorrelationHash
         self.itemCorrelationHash = itemCorrelationHash
+        self.callCorrelationHash = callCorrelationHash
+        self.toolWireEvent = toolWireEvent
         self.responseStatus = responseStatus
         self.responseStatusDetailReason = responseStatusDetailReason
     }
@@ -71,9 +86,25 @@ nonisolated struct StepFunRealtimeDecodedEnvelope: Sendable, Equatable {
 nonisolated struct StepFunRealtimeCodec: Sendable {
     func sessionUpdate(
         profile: NativeSpeechProviderProfile,
-        instructions: String
+        instructions: String,
+        tools: [NativeSpeechToolDefinition] = []
     ) throws -> String {
-        try encode([
+        let toolObjects: [[String: Any]] = try tools.map { tool in
+            guard let parameters = try JSONSerialization.jsonObject(
+                with: tool.parametersJSON
+            ) as? [String: Any] else {
+                throw NativeSpeechError.invalidConfiguration
+            }
+            return [
+                "type": "function",
+                "function": [
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": parameters
+                ]
+            ]
+        }
+        return try encode([
             "type": "session.update",
             "session": [
                 "modalities": ["text", "audio"],
@@ -81,6 +112,7 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 "instructions": instructions,
                 "input_audio_format": profile.inputAudioFormat.rawValue,
                 "output_audio_format": profile.outputAudioFormat.rawValue,
+                "tools": toolObjects,
                 "turn_detection": [
                     "type": profile.turnDetection.type.rawValue,
                     "prefix_padding_ms": profile.turnDetection.prefixPaddingMilliseconds
@@ -108,6 +140,21 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             "event_id": eventID,
             "type": "response.cancel"
         ])
+    }
+
+    func toolOutput(_ output: NativeSpeechToolOutput) throws -> String {
+        try encode([
+            "type": "conversation.item.create",
+            "item": [
+                "type": "function_call_output",
+                "call_id": output.callID,
+                "output": output.output
+            ]
+        ])
+    }
+
+    func responseCreate() throws -> String {
+        try encode(["type": "response.create"])
     }
 
     func decode(
@@ -159,9 +206,15 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         let wireEventCorrelationHash = Self.correlationHash(
             object["event_id"] as? String
         )
+        let callCorrelationHash = Self.correlationHash(
+            object["call_id"] as? String
+                ?? ((object["item"] as? [String: Any])?["call_id"]
+                    as? String)
+        )
 
         let kind: NativeSpeechEventKind?
         let wireKind: StepFunRealtimeWireEventKind
+        var toolWireEvent: StepFunRealtimeToolWireEvent?
         var responseStatus: StepFunRealtimeResponseStatus?
         var responseStatusDetailReason:
             StepFunRealtimeResponseStatusDetailReason?
@@ -227,6 +280,24 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 itemCorrelationHash: itemCorrelationHash
             )
         case "conversation.item.created":
+            if let item = object["item"] as? [String: Any],
+               item["type"] as? String == "function_call",
+               let callID = item["call_id"] as? String,
+               let name = item["name"] as? String {
+                return StepFunRealtimeDecodedEnvelope(
+                    wireKind: .toolCallCreated,
+                    event: nil,
+                    wireEventCorrelationHash: wireEventCorrelationHash,
+                    responseCorrelationHash: responseCorrelationHash,
+                    itemCorrelationHash: itemCorrelationHash,
+                    callCorrelationHash: Self.correlationHash(callID),
+                    toolWireEvent: .created(
+                        callID: callID,
+                        name: name,
+                        arguments: item["arguments"] as? String
+                    )
+                )
+            }
             guard let transcript = userTranscriptFromConversationItem(
                 object
             ) else {
@@ -250,20 +321,31 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
                 .outputText(text: $0, isFinal: true)
             }
             wireKind = .residentTextDone
+        case "response.function_call_arguments.delta":
+            guard let callID = object["call_id"] as? String,
+                  let delta = object["delta"] as? String else {
+                throw NativeSpeechError.invalidEvent
+            }
+            kind = nil
+            wireKind = .toolArgumentsDelta
+            toolWireEvent = .argumentsDelta(
+                callID: callID,
+                name: object["name"] as? String,
+                delta: delta
+            )
         case "response.function_call_arguments.done":
-            guard let requestID = object["call_id"] as? String,
+            guard let callID = object["call_id"] as? String,
                   let toolName = object["name"] as? String,
                   let arguments = object["arguments"] as? String else {
                 throw NativeSpeechError.invalidEvent
             }
-            kind = .toolRequestCandidate(
-                NativeSpeechToolRequest(
-                    requestID: requestID,
-                    toolName: toolName,
-                    arguments: Data(arguments.utf8)
-                )
+            kind = nil
+            wireKind = .toolArgumentsDone
+            toolWireEvent = .argumentsDone(
+                callID: callID,
+                name: toolName,
+                arguments: arguments
             )
-            wireKind = .other
         case "response.done":
             let decodedStatus = try responseDoneStatus(object)
             responseStatus = decodedStatus
@@ -295,7 +377,17 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
         }
 
         guard let kind else {
-            throw NativeSpeechError.invalidEvent
+            return StepFunRealtimeDecodedEnvelope(
+                wireKind: wireKind,
+                event: nil,
+                wireEventCorrelationHash: wireEventCorrelationHash,
+                responseCorrelationHash: responseCorrelationHash,
+                itemCorrelationHash: itemCorrelationHash,
+                callCorrelationHash: callCorrelationHash,
+                toolWireEvent: toolWireEvent,
+                responseStatus: responseStatus,
+                responseStatusDetailReason: responseStatusDetailReason
+            )
         }
         return StepFunRealtimeDecodedEnvelope(
             wireKind: wireKind,
@@ -307,6 +399,8 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             wireEventCorrelationHash: wireEventCorrelationHash,
             responseCorrelationHash: responseCorrelationHash,
             itemCorrelationHash: itemCorrelationHash,
+            callCorrelationHash: callCorrelationHash,
+            toolWireEvent: toolWireEvent,
             responseStatus: responseStatus,
             responseStatusDetailReason: responseStatusDetailReason
         )
