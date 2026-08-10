@@ -461,7 +461,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
             (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
         expect(
             dialogueAfter == dialogueBefore,
-            "native speech events do not write dialogue session data"
+            "incomplete native speech events do not write dialogue session data"
         )
 
         let operations = await provider.operations
@@ -494,7 +494,31 @@ private struct NativeSpeechRuntimeIntegrationTests {
             provider: provider,
             sessionStore: sessionStore
         )
-        expect(runtime.loadDR(from: fixtureData).isLoaded, "subtitle resident loads")
+        let load = runtime.loadDR(from: fixtureData)
+        expect(load.isLoaded, "subtitle resident loads")
+        _ = try runtime.clearDialogueTestData()
+        let memoryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: memoryDirectory) }
+        let memoryStore = NarrativeMemoryStore(baseURL: memoryDirectory)
+        try memoryStore.save(RuntimeNarrativeMemoryStoreSnapshot(
+            residentID: load.residentID,
+            records: [RuntimeNarrativeMemoryRecord(
+                memoryID: "partial-safety-memory",
+                residentID: load.residentID,
+                type: .confirmedPlan,
+                summary: "已经确认的安全边界",
+                sourceSessionID: load.sessionID!.rawValue,
+                sourceTurnIDs: ["seed-turn"],
+                status: .active,
+                consentState: .granted,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                supersedesMemoryID: nil
+            )]
+        ))
+        runtime.useNarrativeMemoryStoreForTesting(memoryStore)
+        let memoryBefore = runtime.narrativeMemoryDebugSnapshot()
         let dialogueBefore =
             (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
         let binding = try await runtime.startNativeSpeechInput(
@@ -507,7 +531,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
 
         try await acceptStateEvent(
-            .partialTranscript("你"),
+            .partialTranscript("清空全部叙事记忆"),
             expectedState: .listening,
             binding: binding,
             runtime: runtime,
@@ -528,6 +552,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(
             dialogueAfterPartial == dialogueBefore,
             "partial transcript never enters Session"
+        )
+        expect(
+            runtime.narrativeMemoryDebugSnapshot() == memoryBefore,
+            "user partial cannot mutate narrative memory"
         )
 
         try await acceptStateEvent(
@@ -567,6 +595,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(
             runtime.realtimeSpeechSubtitleSnapshot().residentPartial == "答",
             "Runtime accepts resident partial independently"
+        )
+        expect(
+            runtime.narrativeMemoryDebugSnapshot() == memoryBefore,
+            "resident partial cannot mutate narrative memory"
         )
         try await acceptStateEvent(
             .outputText(text: "答案", isFinal: true),
@@ -630,6 +662,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
             subtitle.interactionShortID != nil,
             "Interrupt preserves subtitle interaction"
         )
+        expect(
+            (try? sessionStore.loadMostRecentDialogueEntries()) == dialogueBefore,
+            "Interrupt does not commit an incomplete resident turn"
+        )
 
         await provider.enqueue(NativeSpeechEvent(
             interactionID: binding.interactionID,
@@ -639,6 +675,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
             interactionID: binding.interactionID
         )
         expect(lateResident == .rejectedLate, "old turn resident subtitle is rejected")
+        expect(
+            (try? sessionStore.loadMostRecentDialogueEntries()) == dialogueBefore,
+            "stale generation cannot write unfinished resident content"
+        )
 
         try await runtime.stopNativeSpeechInput(
             binding: binding,
@@ -648,17 +688,27 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(subtitle.interactionShortID == nil, "Stop invalidates subtitle interaction")
         expect(subtitle.displayText == nil, "Stop clears active subtitle display")
         expect(subtitle.lastClosureReason == .stopped, "Stop records subtitle closure")
+        expect(
+            (try? sessionStore.loadMostRecentDialogueEntries()) == dialogueBefore,
+            "Stop does not commit an incomplete resident turn"
+        )
+        expect(
+            runtime.narrativeMemoryDebugSnapshot() == memoryBefore,
+            "Interrupt and Stop preserve narrative memory"
+        )
     }
 
     private static func testRuntimeMultiTurnState(
         fixtureData: Data
     ) async throws {
         let provider = FakeNativeSpeechProvider()
+        let sessionStore = SessionStore()
         let runtime = configuredRuntime(
             provider: provider,
-            sessionStore: SessionStore()
+            sessionStore: sessionStore
         )
         expect(runtime.loadDR(from: fixtureData).isLoaded, "multi-turn resident loads")
+        _ = try runtime.clearDialogueTestData()
         let binding = try await runtime.startNativeSpeechInput(
             captureGeneration: 1
         )
@@ -667,7 +717,11 @@ private struct NativeSpeechRuntimeIntegrationTests {
             "Runtime starts multi-turn input in listening"
         )
 
+        let userFinals = ["第一轮用户 final", "第二轮用户 final"]
+        let residentFinals = ["第一轮居民 final", "第二轮居民 final"]
         for turn in 1...2 {
+            let userFinal = userFinals[turn - 1]
+            let residentFinal = residentFinals[turn - 1]
             try await acceptStateEvent(
                 .inputSpeechStarted,
                 expectedState: .listening,
@@ -677,6 +731,46 @@ private struct NativeSpeechRuntimeIntegrationTests {
             )
             try await acceptStateEvent(
                 .inputSpeechEnded,
+                expectedState: .thinking,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            try await acceptStateEvent(
+                .finalTranscript(userFinal),
+                expectedState: .thinking,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            if turn == 2 {
+                let secondTurnProjection = await provider.updatedProjections.last
+                expect(
+                    secondTurnProjection?.instructions.contains(userFinals[0])
+                        == true,
+                    "second voice turn reads the first user final from Session"
+                )
+                expect(
+                    secondTurnProjection?.instructions.contains(residentFinals[0])
+                        == true,
+                    "second voice turn reads the first resident final from Session"
+                )
+            }
+            try await acceptStateEvent(
+                .outputText(text: "居民 partial \(turn)", isFinal: false),
+                expectedState: .thinking,
+                binding: binding,
+                runtime: runtime,
+                provider: provider
+            )
+            let entriesBeforeResidentFinal =
+                (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
+            expect(
+                entriesBeforeResidentFinal.count == (turn - 1) * 2,
+                "resident partial does not enter the formal dialogue chain"
+            )
+            try await acceptStateEvent(
+                .outputText(text: residentFinal, isFinal: true),
                 expectedState: .thinking,
                 binding: binding,
                 runtime: runtime,
@@ -709,6 +803,12 @@ private struct NativeSpeechRuntimeIntegrationTests {
                 runtime: runtime,
                 provider: provider
             )
+            let entriesBeforePlaybackCompletion =
+                (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
+            expect(
+                entriesBeforePlaybackCompletion.count == (turn - 1) * 2,
+                "response completion waits for the completed playback turn"
+            )
             await acceptPlaybackEvent(
                 .completed,
                 generation: UInt64(turn),
@@ -723,6 +823,32 @@ private struct NativeSpeechRuntimeIntegrationTests {
             expect(
                 runtime.realtimeSpeechStateSnapshot().state == .listening,
                 "Runtime returns to listening after turn \(turn)"
+            )
+            let committed =
+                (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
+            expect(
+                committed.count == turn * 2,
+                "completed voice turn is committed exactly once"
+            )
+            expect(
+                committed.suffix(2).map(\.text) == [userFinal, residentFinal],
+                "formal voice exchange uses only user and resident finals"
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .responseCompleted
+            ))
+            let duplicateCompletion = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            expect(
+                duplicateCompletion == .rejectedOutOfOrder,
+                "duplicate response completion is rejected"
+            )
+            expect(
+                (try? sessionStore.loadMostRecentDialogueEntries())?.count
+                    == turn * 2,
+                "duplicate completion cannot submit memory twice"
             )
         }
 

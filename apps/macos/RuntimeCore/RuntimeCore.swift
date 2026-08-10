@@ -1142,6 +1142,12 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
 }
 
 public final class RuntimeCore {
+    private struct NativeSpeechTurnCommitIdentity: Equatable {
+        let interactionID: NativeSpeechInteractionID
+        let turnNumber: UInt64
+        let turnGeneration: UInt64
+    }
+
     static let recentDialogueMessageLimit = 8
     static let fewShotSelectionLimit = 4
     static let narrativeMemoryRetrievalLimit = 3
@@ -1181,6 +1187,8 @@ public final class RuntimeCore {
     private let realtimeSpeechStateMachine = RealtimeSpeechStateMachine()
     private let realtimeSpeechSubtitleStateMachine =
         RealtimeSpeechSubtitleStateMachine()
+    private var lastCommittedNativeSpeechTurn:
+        NativeSpeechTurnCommitIdentity?
     private var nativeSpeechDiagnosticBuffer:
         NativeSpeechDiagnosticBuffer?
     private let realtimeSpeechGuardScheduler =
@@ -3142,6 +3150,7 @@ public final class RuntimeCore {
         let stateTransition = realtimeSpeechStateMachine.start(
             interaction: interaction
         )
+        lastCommittedNativeSpeechTurn = nil
         realtimeSpeechSubtitleStateMachine.start(
             interactionID: interaction.id,
             turnNumber: stateTransition.snapshot.currentTurnNumber
@@ -3471,12 +3480,19 @@ public final class RuntimeCore {
                     == .responseCompleted,
                transition.snapshot.currentTurnNumber
                     > stateBefore.currentTurnNumber {
-                _ = realtimeSpeechSubtitleStateMachine.completeTurn(
-                    interactionID: interaction.id,
-                    completedTurnNumber: stateBefore.currentTurnNumber,
-                    nextTurnNumber:
-                        transition.snapshot.currentTurnNumber
-                )
+                let subtitleDisposition =
+                    realtimeSpeechSubtitleStateMachine.completeTurn(
+                        interactionID: interaction.id,
+                        completedTurnNumber: stateBefore.currentTurnNumber,
+                        nextTurnNumber:
+                            transition.snapshot.currentTurnNumber
+                    )
+                if subtitleDisposition == .accepted {
+                    commitCompletedNativeSpeechTurn(
+                        interaction: interaction,
+                        completedTurnNumber: stateBefore.currentTurnNumber
+                    )
+                }
             } else if case .failed = event.kind {
                 _ = realtimeSpeechSubtitleStateMachine.terminate(
                     interactionID: interaction.id,
@@ -3550,11 +3566,20 @@ public final class RuntimeCore {
         case .responseCompleted:
             if stateAfter.lastTransitionReason == .responseCompleted,
                stateAfter.currentTurnNumber > stateBefore.currentTurnNumber {
-                return realtimeSpeechSubtitleStateMachine.completeTurn(
-                    interactionID: event.interactionID,
-                    completedTurnNumber: stateBefore.currentTurnNumber,
-                    nextTurnNumber: stateAfter.currentTurnNumber
-                )
+                let disposition =
+                    realtimeSpeechSubtitleStateMachine.completeTurn(
+                        interactionID: event.interactionID,
+                        completedTurnNumber: stateBefore.currentTurnNumber,
+                        nextTurnNumber: stateAfter.currentTurnNumber
+                    )
+                if disposition == .accepted,
+                   let interaction = nativeSpeechInteractionGate.current() {
+                    commitCompletedNativeSpeechTurn(
+                        interaction: interaction,
+                        completedTurnNumber: stateBefore.currentTurnNumber
+                    )
+                }
+                return disposition
             } else if transition?.disposition == .ignoredDuplicate {
                 realtimeSpeechSubtitleStateMachine.recordRejectedEvent(
                     .rejectedDuplicate
@@ -3588,6 +3613,51 @@ public final class RuntimeCore {
              .toolRequestCandidate:
             return nil
         }
+    }
+
+    private func commitCompletedNativeSpeechTurn(
+        interaction: NativeSpeechInteraction,
+        completedTurnNumber: UInt64
+    ) {
+        let subtitle = realtimeSpeechSubtitleStateMachine.snapshot()
+        guard subtitle.lastClosureReason == .completed,
+              let completed = subtitle.lastCompleted,
+              completed.turnNumber == completedTurnNumber,
+              let userFinal = completed.userFinal?.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ),
+              !userFinal.isEmpty,
+              let residentFinal = completed.residentFinal?.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ),
+              !residentFinal.isEmpty,
+              let session = sessionContext,
+              session.residentID == interaction.residentID,
+              session.sessionID.rawValue == interaction.sessionID else {
+            return
+        }
+        let identity = NativeSpeechTurnCommitIdentity(
+            interactionID: interaction.id,
+            turnNumber: completed.turnNumber,
+            turnGeneration: completed.turnGeneration
+        )
+        guard lastCommittedNativeSpeechTurn != identity else { return }
+        lastCommittedNativeSpeechTurn = identity
+
+        _ = applyRelationshipUserControl(
+            relationshipUserControl(for: userFinal)
+        )
+        _ = applyNarrativeMemoryUserControl(
+            narrativeMemoryUserControl(for: userFinal),
+            input: userFinal,
+            residentID: session.residentID
+        )
+        _ = persistResidentDialogueExchange(
+            userInput: userFinal,
+            residentReply: residentFinal,
+            session: session
+        )
+        realtimeSpeechContextSourceRevision &+= 1
     }
 
     private func recordRejectedSubtitleEventIfNeeded(
