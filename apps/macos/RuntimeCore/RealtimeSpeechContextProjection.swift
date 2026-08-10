@@ -61,6 +61,15 @@ nonisolated enum RealtimeSpeechContextSectionScope: String, Sendable {
     case recentDialogue = "recent_dialogue"
 }
 
+nonisolated enum RealtimeSpeechConversationPacingPolicy {
+    static let instruction = """
+    For realtime voice replies, give the direct conclusion or answer first.
+    By default, reply in one to three concise spoken sentences, then stop naturally so the user can respond.
+    Expand beyond three sentences only when the user explicitly asks for detail.
+    Avoid long monologues, repeated summaries, written-answer recitation, and generic assistant filler.
+    """
+}
+
 nonisolated enum RealtimeSpeechContextSource: Sendable, Equatable {
     case residentLayer(RealtimeSpeechContextLayer)
     case recentDialogue

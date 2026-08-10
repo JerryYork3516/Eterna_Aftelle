@@ -196,6 +196,7 @@ nonisolated struct RealtimeSpeechContextCompiler {
             context.relationshipPolicy.instruction,
             context.selfDisclosurePolicy.instruction,
             context.memoryUsagePolicy.instruction,
+            RealtimeSpeechConversationPacingPolicy.instruction,
             "When the available context is insufficient: \(context.fallbackText)"
         ]
         return optionalSection(

@@ -37,6 +37,7 @@ private struct RealtimeSpeechContextProjectionTests {
             refreshReason: .interactionStarted
         )
         testBaseSnapshot(base, interaction: interaction)
+        testConversationPacingPolicy(base)
 
         let repeated = try compiler.compile(
             context: baseContext,
@@ -44,6 +45,17 @@ private struct RealtimeSpeechContextProjectionTests {
             refreshReason: .interactionStarted
         )
         expect(repeated == base, "same input produces deterministic projection")
+
+        let emptyFinal = try compiler.compile(
+            context: baseContext,
+            interaction: interaction,
+            refreshReason: .finalTranscript
+        )
+        expect(
+            emptyFinal.compilationVersion == base.compilationVersion,
+            "refresh reason alone does not resend the session-base policy"
+        )
+        testConversationPacingPolicy(emptyFinal)
 
         try testOnDemandProjection(
             runtime: runtime,
@@ -171,6 +183,44 @@ private struct RealtimeSpeechContextProjectionTests {
         )
     }
 
+    private static func testConversationPacingPolicy(
+        _ projection: RealtimeSpeechContextProjection
+    ) {
+        let instruction = RealtimeSpeechConversationPacingPolicy.instruction
+        guard let behavior = projection.sections.first(where: {
+            $0.id == "behavior.core"
+        }) else {
+            fatalError("FAILED: realtime behavior section unavailable")
+        }
+        expect(
+            behavior.scope == .sessionBase,
+            "conversation pacing is session-base behavior"
+        )
+        expect(
+            behavior.text.contains(instruction),
+            "conversation pacing is included in behavior"
+        )
+        expect(
+            projection.instructions.components(
+                separatedBy: instruction
+            ).count == 2,
+            "conversation pacing appears exactly once"
+        )
+        for phrase in [
+            "direct conclusion or answer first",
+            "one to three concise spoken sentences",
+            "stop naturally so the user can respond",
+            "explicitly asks for detail",
+            "Avoid long monologues",
+            "generic assistant filler"
+        ] {
+            expect(
+                instruction.contains(phrase),
+                "conversation pacing freezes required behavior"
+            )
+        }
+    }
+
     private static func testOnDemandProjection(
         runtime: RuntimeCore,
         source: ResidentDialogueContextSource,
@@ -201,6 +251,7 @@ private struct RealtimeSpeechContextProjectionTests {
             containsLayer(.knowledge, in: knowledge),
             "relevant domain knowledge is projected on demand"
         )
+        testConversationPacingPolicy(knowledge)
 
         let irrelevantContext = source.compile(
             currentUserInput: "量子泡沫潮汐",
@@ -374,6 +425,12 @@ private struct RealtimeSpeechContextProjectionTests {
                 "fixed section survives trimming"
             )
         }
+        expect(
+            first.instructions.contains(
+                RealtimeSpeechConversationPacingPolicy.instruction
+            ),
+            "conversation pacing survives fixed-resident trimming"
+        )
         let keptLargeMessages = first.sections.filter {
             $0.id.hasPrefix("recent.")
         }
