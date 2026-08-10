@@ -201,6 +201,29 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         let dialogueBefore =
             (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
+        let staleMemoryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: staleMemoryDirectory) }
+        let staleMemoryStore = NarrativeMemoryStore(
+            baseURL: staleMemoryDirectory
+        )
+        try staleMemoryStore.save(RuntimeNarrativeMemoryStoreSnapshot(
+            residentID: load.residentID,
+            records: [RuntimeNarrativeMemoryRecord(
+                memoryID: "stale-final-memory",
+                residentID: load.residentID,
+                type: .confirmedPlan,
+                summary: "迟到 final 不得清除的既有记忆",
+                sourceSessionID: load.sessionID!.rawValue,
+                sourceTurnIDs: ["stale-seed-turn"],
+                status: .active,
+                consentState: .granted,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                supersedesMemoryID: nil
+            )]
+        ))
+        runtime.useNarrativeMemoryStoreForTesting(staleMemoryStore)
 
         let first = try await runtime.startNativeSpeechInteraction()
         expect(first.lifecycleState == .active, "start activates interaction")
@@ -261,19 +284,50 @@ private struct NativeSpeechRuntimeIntegrationTests {
             )
         }
         await provider.waitUntilReceiveStarts()
+        let relationshipBeforeLateFinal =
+            runtime.relationshipProgressionDebugSnapshot()
+        let memoryBeforeLateFinal = runtime.narrativeMemoryDebugSnapshot()
+        let revisionBeforeLateFinal =
+            runtime.realtimeSpeechContextSourceRevisionForTesting()
+        let contextUpdatesBeforeLateFinal = await provider.operationCount(
+            .updateContext
+        )
         try await runtime.cancelActiveNativeSpeechInteraction(
             reason: .interrupted
         )
         await provider.enqueue(
             NativeSpeechEvent(
                 interactionID: first.id,
-                kind: .finalTranscript("late")
+                kind: .finalTranscript(
+                    "关闭关系演进，清空全部叙事记忆"
+                )
             )
         )
         let lateDisposition = try await blockedReceive.value
         expect(
             lateDisposition == .rejectedStale,
             "event arriving after cancel is rejected"
+        )
+        expect(
+            runtime.relationshipProgressionDebugSnapshot()
+                == relationshipBeforeLateFinal,
+            "stale user final cannot apply relationship controls"
+        )
+        expect(
+            runtime.narrativeMemoryDebugSnapshot() == memoryBeforeLateFinal,
+            "stale user final cannot apply narrative memory controls"
+        )
+        expect(
+            runtime.realtimeSpeechContextSourceRevisionForTesting()
+                == revisionBeforeLateFinal,
+            "stale user final cannot invalidate speech context"
+        )
+        let contextUpdatesAfterLateFinal = await provider.operationCount(
+            .updateContext
+        )
+        expect(
+            contextUpdatesAfterLateFinal == contextUpdatesBeforeLateFinal,
+            "stale user final cannot refresh Provider context"
         )
 
         let cancelCountAfterFirst = await provider.operationCount(.cancel)
@@ -475,6 +529,9 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         try await testRuntimeMultiTurnState(fixtureData: fixtureData)
         try await testRuntimeSubtitleGate(fixtureData: fixtureData)
+        try await testRuntimeUserFinalControlOrdering(
+            fixtureData: fixtureData
+        )
         try await testRuntimeInterrupts(fixtureData: fixtureData)
         try await testRuntimePlaybackFailure(fixtureData: fixtureData)
         try await testRuntimeRejectionDiagnostics(
@@ -695,6 +752,240 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(
             runtime.narrativeMemoryDebugSnapshot() == memoryBefore,
             "Interrupt and Stop preserve narrative memory"
+        )
+    }
+
+    private static func testRuntimeUserFinalControlOrdering(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let sessionStore = SessionStore()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: sessionStore
+        )
+        let load = runtime.loadDR(from: fixtureData)
+        expect(load.isLoaded, "memory-control resident loads")
+        _ = try runtime.clearDialogueTestData()
+
+        let memoryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: memoryDirectory) }
+        let memoryStore = NarrativeMemoryStore(baseURL: memoryDirectory)
+        let controlText = "关闭关系演进，清空全部叙事记忆"
+        let memorySummary = "清空全部叙事记忆前，已经确认的安全边界"
+        try memoryStore.save(RuntimeNarrativeMemoryStoreSnapshot(
+            residentID: load.residentID,
+            records: [RuntimeNarrativeMemoryRecord(
+                memoryID: "voice-control-memory",
+                residentID: load.residentID,
+                type: .confirmedPlan,
+                summary: memorySummary,
+                sourceSessionID: load.sessionID!.rawValue,
+                sourceTurnIDs: ["seed-control-turn"],
+                status: .active,
+                consentState: .granted,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                supersedesMemoryID: nil
+            )]
+        ))
+        runtime.useNarrativeMemoryStoreForTesting(memoryStore)
+        let relationshipBefore =
+            runtime.relationshipProgressionDebugSnapshot()
+        expect(
+            relationshipBefore.isAvailable && relationshipBefore.enabled,
+            "memory-control fixture exposes enabled relationship progression"
+        )
+        let projectionBeforeControl = try RealtimeSpeechContextCompiler()
+            .compile(
+                context: runtime.compileResidentDialogueContext(
+                    currentUserInput: controlText
+                )!,
+                interaction: NativeSpeechInteraction(
+                    residentID: load.residentID,
+                    sessionID: load.sessionID!.rawValue,
+                    providerProfileID: nativeSpeechProfile().profileID
+                ),
+                refreshReason: .finalTranscript
+            )
+        expect(
+            projectionBeforeControl.instructions.contains(memorySummary),
+            "control input would retrieve the existing memory before deletion"
+        )
+
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 1
+        )
+        let revisionBeforePartial =
+            runtime.realtimeSpeechContextSourceRevisionForTesting()
+        try await acceptStateEvent(
+            .partialTranscript(controlText),
+            expectedState: .listening,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        expect(
+            runtime.narrativeMemoryDebugSnapshot()?.records.first?.status
+                == .active,
+            "user partial cannot apply narrative memory controls"
+        )
+        expect(
+            runtime.relationshipProgressionDebugSnapshot()
+                == relationshipBefore,
+            "user partial cannot apply relationship controls"
+        )
+        expect(
+            runtime.realtimeSpeechContextSourceRevisionForTesting()
+                == revisionBeforePartial,
+            "user partial cannot invalidate speech context"
+        )
+        let partialContextUpdateCount = await provider.operationCount(
+            .updateContext
+        )
+        expect(
+            partialContextUpdateCount == 0,
+            "user partial cannot update Provider context"
+        )
+
+        try await acceptStateEvent(
+            .finalTranscript(controlText),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        expect(
+            runtime.narrativeMemoryDebugSnapshot()?.records.first?.status
+                == .deleted,
+            "accepted user final applies narrative memory control"
+        )
+        let relationshipAfterFinal =
+            runtime.relationshipProgressionDebugSnapshot()
+        expect(
+            !relationshipAfterFinal.enabled,
+            "accepted user final applies relationship control"
+        )
+        let revisionAfterFinal =
+            runtime.realtimeSpeechContextSourceRevisionForTesting()
+        expect(
+            revisionAfterFinal == revisionBeforePartial + 2,
+            "only the two effective final controls advance source revision"
+        )
+        let finalContextUpdateCount = await provider.operationCount(
+            .updateContext
+        )
+        expect(
+            finalContextUpdateCount == 1,
+            "accepted user final refreshes Provider context once"
+        )
+        let projectionAfterFinal = await provider.updatedProjections.last
+        expect(
+            projectionAfterFinal?.instructions.contains(memorySummary)
+                == false,
+            "memory control is applied before Provider context refresh"
+        )
+
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript(controlText)
+        ))
+        let duplicateFinal = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            duplicateFinal == .rejectedOutOfOrder,
+            "duplicate user final is rejected after the final lock"
+        )
+        expect(
+            runtime.realtimeSpeechContextSourceRevisionForTesting()
+                == revisionAfterFinal,
+            "duplicate user final cannot repeat controls or source revision"
+        )
+        let duplicateContextUpdateCount = await provider.operationCount(
+            .updateContext
+        )
+        expect(
+            duplicateContextUpdateCount == 1,
+            "duplicate user final cannot resend Provider context"
+        )
+
+        try await acceptStateEvent(
+            .outputText(text: "居民未完成", isFinal: false),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        expect(
+            (try? sessionStore.loadMostRecentDialogueEntries())?.isEmpty
+                == true,
+            "resident partial cannot enter Session"
+        )
+        try await acceptStateEvent(
+            .outputText(text: "居民完成回复", isFinal: true),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        try await acceptStateEvent(
+            .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 1,
+                bytes: Data([0, 1]),
+                format: .pcm16
+            )),
+            expectedState: .thinking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        await acceptPlaybackEvent(
+            .started,
+            generation: 1,
+            binding: binding,
+            runtime: runtime
+        )
+        try await acceptStateEvent(
+            .responseCompleted,
+            expectedState: .speaking,
+            binding: binding,
+            runtime: runtime,
+            provider: provider
+        )
+        expect(
+            (try? sessionStore.loadMostRecentDialogueEntries())?.isEmpty
+                == true,
+            "response completion waits for playback before Session commit"
+        )
+        await acceptPlaybackEvent(
+            .completed,
+            generation: 1,
+            binding: binding,
+            runtime: runtime
+        )
+        let committed =
+            (try? sessionStore.loadMostRecentDialogueEntries()) ?? []
+        expect(
+            committed.map(\.text) == [controlText, "居民完成回复"],
+            "completed voice turn persists only the locked finals"
+        )
+        expect(
+            runtime.realtimeSpeechContextSourceRevisionForTesting()
+                == revisionAfterFinal + 1,
+            "completed turn invalidates Session context without repeating controls"
+        )
+        expect(
+            runtime.relationshipProgressionDebugSnapshot().revision
+                == relationshipAfterFinal.revision,
+            "completed turn does not apply relationship control twice"
+        )
+
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
         )
     }
 

@@ -1189,6 +1189,8 @@ public final class RuntimeCore {
         RealtimeSpeechSubtitleStateMachine()
     private var lastCommittedNativeSpeechTurn:
         NativeSpeechTurnCommitIdentity?
+    private var lastAppliedNativeSpeechUserControls:
+        NativeSpeechTurnCommitIdentity?
     private var nativeSpeechDiagnosticBuffer:
         NativeSpeechDiagnosticBuffer?
     private let realtimeSpeechGuardScheduler =
@@ -3151,6 +3153,7 @@ public final class RuntimeCore {
             interaction: interaction
         )
         lastCommittedNativeSpeechTurn = nil
+        lastAppliedNativeSpeechUserControls = nil
         realtimeSpeechSubtitleStateMachine.start(
             interactionID: interaction.id,
             turnNumber: stateTransition.snapshot.currentTurnNumber
@@ -3352,6 +3355,10 @@ public final class RuntimeCore {
             }
             if case .accepted(let acceptedEvent) = disposition,
                case .finalTranscript(let transcript) = acceptedEvent.kind {
+                applyNativeSpeechUserFinalControls(
+                    interaction: interaction,
+                    userFinal: transcript
+                )
                 try await refreshNativeSpeechContext(
                     interactionID: interactionID,
                     currentUserInput: transcript,
@@ -3644,6 +3651,33 @@ public final class RuntimeCore {
         guard lastCommittedNativeSpeechTurn != identity else { return }
         lastCommittedNativeSpeechTurn = identity
 
+        _ = persistResidentDialogueExchange(
+            userInput: userFinal,
+            residentReply: residentFinal,
+            session: session
+        )
+        realtimeSpeechContextSourceRevision &+= 1
+    }
+
+    private func applyNativeSpeechUserFinalControls(
+        interaction: NativeSpeechInteraction,
+        userFinal: String
+    ) {
+        guard let session = sessionContext,
+              session.residentID == interaction.residentID,
+              session.sessionID.rawValue == interaction.sessionID else {
+            return
+        }
+        let identity = NativeSpeechTurnCommitIdentity(
+            interactionID: interaction.id,
+            turnNumber: realtimeSpeechStateMachine.snapshot()
+                .currentTurnNumber,
+            turnGeneration: realtimeSpeechSubtitleStateMachine.snapshot()
+                .turnGeneration
+        )
+        guard lastAppliedNativeSpeechUserControls != identity else { return }
+        lastAppliedNativeSpeechUserControls = identity
+
         _ = applyRelationshipUserControl(
             relationshipUserControl(for: userFinal)
         )
@@ -3652,12 +3686,6 @@ public final class RuntimeCore {
             input: userFinal,
             residentID: session.residentID
         )
-        _ = persistResidentDialogueExchange(
-            userInput: userFinal,
-            residentReply: residentFinal,
-            session: session
-        )
-        realtimeSpeechContextSourceRevision &+= 1
     }
 
     private func recordRejectedSubtitleEventIfNeeded(
@@ -4348,6 +4376,10 @@ public final class RuntimeCore {
         return try? narrativeMemoryStore.load(
             residentID: residentID
         )
+    }
+
+    func realtimeSpeechContextSourceRevisionForTesting() -> UInt64 {
+        realtimeSpeechContextSourceRevision
     }
 
     func useRelationshipStateStoreForTesting(
