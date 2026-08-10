@@ -913,6 +913,12 @@ private struct NativeSpeechDuplexTests {
         )
         await stack.controller.startSpeechAudioCapture()
         await stack.controller.startNativeSpeechInputBridge()
+        let initialInteractionShortID = stack.controller
+            .realtimeSpeechStateSnapshot.interactionShortID
+        expect(
+            initialInteractionShortID != nil,
+            "ten-turn interaction has an identity"
+        )
         for marker in UInt8(1) ... UInt8(3) {
             expect(stack.capture.emit(marker), "Fake source emits input frame")
         }
@@ -1003,7 +1009,7 @@ private struct NativeSpeechDuplexTests {
                 == .listening
         }
 
-        for turn in 3 ... 5 {
+        for turn in 3 ... 10 {
             expect(
                 stack.capture.emit(UInt8(turn + 4)),
                 "turn \(turn) emits input frame"
@@ -1037,27 +1043,32 @@ private struct NativeSpeechDuplexTests {
         }
 
         let inputObjects = try await audioAppendObjects(transport)
-        expect(inputObjects.count == 9, "five turns keep sending input")
+        expect(inputObjects.count == 14, "ten turns keep sending input")
         let inputMarkers = inputObjects.compactMap { object -> UInt8? in
             guard let encoded = object["audio"] as? String,
                   let data = Data(base64Encoded: encoded) else { return nil }
             return data.first
         }
         expect(
-            inputMarkers == [1, 2, 3, 4, 5, 6, 7, 8, 9],
-            "five-turn input preserves order"
+            inputMarkers == Array(UInt8(1) ... UInt8(14)),
+            "ten-turn input preserves order"
         )
 
         let output = stack.controller.speechOutputBridgeSnapshot
-        expect(output.state == .configured, "fifth response keeps bridge configured")
-        expect(output.completedResponseCount == 5, "five response boundaries arrive")
-        expect(output.outputAudioChunkCount == 6, "five responses reach AppController")
-        expect(output.outputAudioByteCount == 12, "five-response byte count reaches AppController")
+        expect(output.state == .configured, "tenth response keeps bridge configured")
+        expect(output.completedResponseCount == 10, "ten response boundaries arrive")
+        expect(output.outputAudioChunkCount == 11, "ten responses reach AppController")
+        expect(output.outputAudioByteCount == 22, "ten-response byte count reaches AppController")
         expect(output.firstChunkLatencyMilliseconds != nil, "first chunk latency is recorded")
-        expect(output.hasActiveReceiveLoop, "fifth response keeps receive loop active")
+        expect(output.hasActiveReceiveLoop, "tenth response keeps receive loop active")
         expect(
             stack.controller.speechInputBridgeSnapshot.hasActivePump,
-            "fifth response keeps input pump active"
+            "tenth response keeps input pump active"
+        )
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot.interactionShortID
+                == initialInteractionShortID,
+            "ten turns preserve one interaction"
         )
         expect(
             await transport.maximumConcurrentReceiveCount == 1,
@@ -1074,17 +1085,21 @@ private struct NativeSpeechDuplexTests {
             if case .connect = $0 { return true }
             return false
         }.count
-        expect(connectCount == 1, "five responses reuse one WebSocket")
+        expect(connectCount == 1, "ten responses reuse one WebSocket")
         expect(
             stack.controller.speechAudioOutputHostSnapshot
-                .playbackStartedCount == 5,
-            "five responses emit one playbackStarted each"
+                .playbackStartedCount == 10,
+            "ten responses emit one playbackStarted each"
         )
         expect(
             stack.controller.speechAudioOutputHostSnapshot
-                .playbackCompletedCount == 5,
-            "five responses emit one playbackCompleted each"
+                .playbackCompletedCount == 10,
+            "ten responses emit one playbackCompleted each"
         )
+        let closeCountBeforeStop = await transport.calls.filter {
+            $0 == .close(.normal)
+        }.count
+        expect(closeCountBeforeStop == 0, "ten responses keep transport open")
 
         await stack.controller.stopSpeechAudioCapture()
         let stoppedOutput = stack.controller.speechOutputBridgeSnapshot

@@ -720,9 +720,18 @@ private struct NativeSpeechRuntimeIntegrationTests {
                     == UInt64(turn),
                 "Runtime completes turn \(turn) without closing interaction"
             )
+            expect(
+                runtime.realtimeSpeechStateSnapshot().state == .listening,
+                "Runtime returns to listening after turn \(turn)"
+            )
         }
 
+        let startCountBeforeStop = await provider.operationCount(.start)
         let closeCountBeforeStop = await provider.operationCount(.close)
+        expect(
+            startCountBeforeStop == 1,
+            "multi-turn interaction starts Provider once"
+        )
         expect(
             closeCountBeforeStop == 0,
             "responseCompleted does not close Provider"
