@@ -81,10 +81,10 @@ FAIL:把活态、记忆或 trace 写回 DR,或让 Aftelle 变成 Memory / LiveSt
 - [ ] Stage 7.1 只允许 no-op tick / `system.tick` trace。
 - [ ] 未实现真实 scheduler loop / timer / 后台循环。
 - [ ] 未实现多居民复杂调度。
-- [ ] 未实现 planner / tool selection。
+- [ ] Stage 7.5.10 仅允许 RuntimeCore-owned Tool 编排与权限门禁,未引入无界 planner 或自主工具系统。
 - [ ] 未实现社交媒体自主操控或跨 App 操作。
 
-FAIL:后台主动运行、复杂调度、工具选择、跨 App 行动或无界多居民循环进入 Stage 7.1。
+FAIL:后台主动运行、复杂调度、无界 planner / 自主工具系统、未经权限的跨 App 行动或无界多居民循环进入 Stage 7。
 
 ## H. UI / 渲染
 
@@ -96,16 +96,18 @@ FAIL:后台主动运行、复杂调度、工具选择、跨 App 行动或无界�
 - [ ] 文档级 `avatar_mode: particle_core / abstract_bust` 只作为本地 UI / 渲染层预留。
 - [ ] Stage 7.3 未实现完整半身 Avatar、写实 Avatar、AR / 3D 数字人、骨骼、Blendshape、精准 lip sync、viseme 或 Avatar 编辑器。
 - [ ] Aftelle 未为 Avatar 推理人格 / 情绪,只渲染 RuntimeCore 返回的 `visual_state` / `resident_state`。
-- [ ] Voice Input MVP 仅录音转文字并进入现有 Runtime step 链路。
-- [ ] 未实现后台监听。
+- [ ] 实时语音仅在用户主动启动的前台会话中运行。
+- [ ] 实时会话、Provider 路由、Memory、Tool / Permission 编排和取消语义均由 RuntimeCore 拥有。
+- [ ] UI / Host / Adapter 未直连 STS / STT / LLM / TTS Provider,未直接写 Memory 或执行 Tool。
+- [ ] 未实现 always-on 麦克风或未授权后台监听。
 - [ ] 未实现唤醒词。
-- [ ] 未实现实时双向语音。
-- [ ] 未实现 streaming ASR / TTS。
 - [ ] 未实现声纹识别。
+- [ ] 未绕过权限门禁做跨 App / 系统操作。
+- [ ] 未实现多设备并行主脑、精准 viseme 或真实口腔同步。
 
-PASS:仅做文档级 `avatar_mode` 预留,或 Voice Input MVP 仅录音转文字并进入现有 Runtime step 链路;且不改代码 / DR schema / Runtime API / Provider Profile。
+PASS:文档级 `avatar_mode` 预留不扩展为 Stage 8 身体系统;Stage 7.5 前台实时语音按 `03_dev_plan.md` 执行,且 Runtime ownership、Provider / Memory / Tool / Permission 边界与隐私限制全部保持。
 REWORK:开始实现 `avatar_mode` 代码、渲染接口或 Debug Panel 展示,但未说明 7.3 范围与边界。
-FAIL:UI 绕过 Controller / Orchestration / RuntimeCore 公共入口,把渲染层逻辑写进 RuntimeCore,把写实 Avatar / AR / 3D 数字人 / 精准 lip sync / Avatar 编辑器推进 Stage 7.3,或把 Stage 7 做成完整语音模型系统。
+FAIL:UI / Host / Adapter 绕过 Controller / Orchestration / RuntimeCore 拥有 Provider、Memory、Tool / Permission 或取消语义;引入 always-on / 未授权后台监听 / 唤醒词 / 声纹识别;或把写实 Avatar / AR / 3D 数字人 / 精准 lip sync / Avatar 编辑器推进 Stage 7.3。
 
 ## I. 验收输出
 

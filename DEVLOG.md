@@ -4,17 +4,17 @@
 > 三个作用:① 提醒我做到哪、为什么这么定;② 每次开 GPT/Dify/新对话时,把"当前状态"那段粘过去当背景;③ 防止我忘了当初的决定又推翻重来。
 > **规则:每次做完一件事、或讨论出一个结论、或改完一个 bug,就来记一笔。不用长,几行即可。**
 > 
-> **boundary 基线 SHA-256(改动即报警)**：`275b95889f55646e3ae99ceb2a12cc0e974fd5338aa23c7311cccff0d2d041a6`（v7 更新:G0 改 A,仅 clock/tick 归属改为 RuntimeCore,4 条 Invariants 不变;旧 v6 基线 f043f4b5…）
+> **boundary 基线 SHA-256(改动即报警)**：`f6dcc191c5f2ee0e5fc6f96a6986b865141887188ac8754394a5197aff3f116c`（Stage 7.5 文档权威对齐:前台 Runtime-owned 实时语音合法,4 条 Invariants 不变;旧 v7 基线 `275b9588…`）
 
 ---
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:Stage 7 v8 文档规划调整(Voice Input MVP / 7.11 Polish / 7.12 Demo Lock)
-- **上一步刚完成**:Stage 7.2 Final Review PASS
+- **现在在做**:Stage 7.5 文档权威口径对齐;7.5.1–7.5.28 为当前正式执行计划
+- **上一步刚完成**:Stage 7.5.10 A2 基线提交 `c1d109a4d98c988bca543cbcab21c846c8f0f889`
 - **当前卡在**:无
-- **下一步**:继续按 Stage 7 小阶段推进;7.5 才实现 Voice Input MVP,7.11 做展示版体验打磨,7.12 做 Demo Lock + 录屏冻结
-- **额度情况**:只做文档规划调整,不改 Swift / Runtime API / DR schema / Provider Profile / 平台 target
+- **下一步**:本文档任务提交后停止;仅在新的明确授权下继续 Stage 7.5.10,不自动进入 A2 修复或 A3
+- **本轮范围**:只对齐文档;不改 Swift / Runtime API / DR schema / Store schema / Provider Profile / 平台 target
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
 > - **上一步刚完成**:Stage 7.1.5 DR Loader 读取 / 浅校验 / 加载边界已正规化
@@ -100,7 +100,7 @@
 - 2026-07-03 — 下一阶段入口 — Stage 7.3 主题为“粒子生命体视觉底座 + 字幕基础”；第一步建议执行 7.3.0 Product Design Calibration，先锁定灰白 Shell 视觉方向、粒子状态语言、字幕策略、输入区弱化、Debug / Trace 默认隐藏与跨 Apple 平台视觉抽象预留。
 - 2026-07-03 — Abstract Bust Avatar 文档级规划调整 — 抽象半身粒子 Avatar 纳入 Stage 7 设计路线,但不扩大 7.3 范围:7.3 只保留 `particle_core` 默认形态、`avatar_mode` 本地渲染预留、渲染切换接口和字幕基础;7.4 承接抽象半身人格轮廓;7.5 承接口部粒子脉冲。未改 Swift / Xcode / DR schema / Runtime API / Provider Profile,未进入 Stage 8。
 - 2026-07-03 — Stage 7.3 particle_core v1 视觉拟合 — 新增 `docs/Stage7_3_VISION_v1.png` 作为 7.3 粒子参考,将默认粒子从均匀圆盘改为灰白折叠薄壳点云:中央不规则横向体积、细颗粒、亮脊线和 additive 发光混合。仅改 Metal 粒子外观,未改 RuntimeCore / Runtime API / DR schema / Provider / TTS / 平台 target。
-- 2026-07-04 — Stage 7 v8 文档规划调整 — 7.5 新增 Voice Input MVP(录音转文字,进入现有 text input / Runtime step 链路);7.11 从 Demo Lock 改为 Demo Readiness Polish / 展示版体验打磨;7.12 承接 Demo Lock + 录屏冻结。完整语音交流系统后移,不进入 Stage 7;未改代码、Runtime API、DR schema 或 Provider Profile。
+- 2026-07-04 — Stage 7 v8 文档规划调整(历史,已失效) — 7.5 当时新增 Voice Input MVP(录音转文字,进入现有 text input / Runtime step 链路);7.11 从 Demo Lock 改为 Demo Readiness Polish / 展示版体验打磨;7.12 承接 Demo Lock + 录屏冻结。该 Voice Input MVP 范围已被 `03_dev_plan.md` 当前 7.5.1–7.5.28 计划取代,不再作为执行依据;未改代码、Runtime API、DR schema 或 Provider Profile。
 - 2026-07-05 — Stage 7.3 粒子旋转前表面扰动增强 — 参考 `/Users/jerryyork/Downloads/视频节点 2-2.mp4` 抽帧后,将 turn surface wake 从高频噪声改为低频宽面片 flow,让前表面中段出现连续滑动的亮带/密度带;检查后确认中间被 centerMotionGate / anchor clamp / centerPostClamp / centerDetailGate 多层稳定逻辑压住,边缘由 edge fray / edge dust 抢占视觉,因此新增 frontSheetGate + wakeDetailGate,放开前表面中区并降低边缘扰动和点大小跳跃。整体旋转改为分段随机目标角,用 direction-change pulse 作为方向变化起点;内部表面流动改用独立 surfaceFlowAxis,不跟随整体转向。仅改粒子画法与 DEVLOG,未改 RuntimeCore / Runtime API / DR schema / Provider / 平台 target。`xcrun metal` shader 直编通过;项目级 xcodebuild 因 `.xcodeproj` 缺 `project.pbxproj` 无法执行。
 - 2026-07-05 — Stage 7.3 鼠标外部扰动场恢复 — `ParticleCoreMetalView` 只传鼠标归一化位置 / 速度,`ParticleCoreRenderer` 做 low-pass 平滑,`ParticleCoreShaders` 实现 radial push + small tangential swirl;中心几乎不动,中层轻微,边缘最明显。鼠标不作为 UI hover / click / follow / attract 状态,也不改变整体旋转方向。未改 RuntimeCore / Runtime API / DR schema / Provider / 平台 target。
 - 2026-07-05 — Stage 7.3.9 DR 粒子颜色导入检查 PASS — Debug DR 导入入口、沙盒文件读取 entitlement、`lattice_config.color_palette` 读取、ParticleCore color profile 映射与 Metal uniform 传递链路已检查;`docs/Freezev03.digital_resident` 与内置 `Freezev03.calibration_fixture.json` 同为 `schema_canvas` 且颜色板均为 `["#7aa2f7","#5dd39e","#f2a65a"]`,因此导入该 docs DR 不会产生明显切换感。7.3.9 未改 DR schema / Runtime API / RuntimeCore / Provider / TTS / 平台 target,允许进入 Stage 7.3.10。
@@ -113,6 +113,7 @@
 - 2026-07-05 — Stage 7.3.16 Immersive Shell + App Menu Bar Debug 完成 — 新增 macOS app layer 本地 `ParticleShellMode` / `ParticleShellResolution`,默认 `dark_shell`;Debug / Shell Mode / Render Adapter 控制迁移到 macOS App Menu Bar 的 Debug 菜单,不替换默认菜单结构,不做 NSStatusItem / Menu Bar Extra。内容层右上角 Debug 按钮移除,Debug 面板由菜单打开/关闭;`immersive_shell` 是视觉沉浸模式,仅弱化深色背景与标题栏显示,主内容仍为 `particle_core` + subtitle overlay;`transparent_shell` 仅 Debug 菜单可开启,只让窗口 / MTKView / Metal clear 背景透明,不做点击穿透 / 置顶 / 桌面宠物 / 多屏窗口管理。未改 ParticleCore shader / pipeline / buffer / RuntimeCore / Runtime API / DR schema / Provider / TTS / 平台 target。
 - 2026-07-05 — Stage 7.3 Final Review PASS — 完成 7.3.1–7.3.16 最终代码审查与验证,确认默认启动为 `dark_shell` + `particle_core` + `idle` + no subtitle + Debug closed;I/T/S/L/E/X 与 C/V/B Debug-only 快捷键、DR color profile、Avatar State binding、Debug snapshot、Render Adapter reserved、Shell Mode 均保持可用。Final Review 仅做 1 个小修:将 App 退出菜单项改为本地化 key。验收通过:`xcodebuild` BUILD SUCCEEDED、`git diff --check` 通过、`architecture_guard` ok、`secret_guard` ok。未改 RuntimeCore / Runtime API / DR schema,未接 Provider / TTS,未新增 Apple 平台 target。Stage 7.3 允许归档并进入 Stage 7.4。
 - 2026-07-19 — Stage 7.4.9-A3 真实文本 Provider 接入待审核 — 复用现有 `ProviderRouter` 与 A2 `ResidentDialogueContext`,新增 internal OpenAI-compatible Chat Completions adapter、可替换本地 Provider Profile、macOS Keychain 凭据适配和 Debug-only 居民回复测试入口；当前固定为非流式且关闭思考模式。真实 Key 不进入 UserDefaults / 文件 / DR / Store / Trace / Git,现有 public Runtime API 与同步 mock step 不变。
+- 2026-08-11 — Stage 7.5 文档权威对齐 — 以 `03_dev_plan.md` 7.5.1–7.5.28 为当前唯一执行口径;同步规划、架构、Runtime Boundary、Forbidden Checklist、产品、入场 Gate、执行与文档控制说明。前台用户主动实时语音合法;always-on、未授权后台监听、唤醒词、声纹、Provider / Memory / Tool / Permission ownership 越界仍禁止。本轮不改源码、Runtime API、DR schema 或 Store schema。
 
 ---
 

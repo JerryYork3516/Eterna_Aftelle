@@ -3,6 +3,7 @@
 > 作用:判定 Stage 6 是否做到了"能开 Stage 7 正式开发"的程度。不满足硬 Gate,只能做原型验证(7.1.0 标定),不进正式 Stage 7。
 > 关系:本文件是03_dev_plan.md **G0 闸门**的展开 + 前置条件的细化。与03_dev_plan.md、02_architecture.md、token_control.md配套。
 > v7 变更:G0 由 B 改 A(Swift RuntimeCore)。Gate 口径:**RuntimeCore 能支撑单居民 App 闭环即可**,不要求 RuntimeCore 完美。校验/tick/secret 归属随之更新。
+> **当前阶段说明:**本文件只是 Stage 7 入场前置 Gate,不定义当前 Stage 7.5 功能范围。Stage 7.5 以 `03_dev_plan.md` 的 7.5.1–7.5.28 为唯一权威。
 
 ---
 
@@ -11,7 +12,7 @@
 - RuntimeCore 可以不完美,但 **Runtime 契约必须稳定,且能支撑单居民 App 闭环**。
 - Studio 可以是早期版,但**必须能稳定产出可加载的 `.digital_resident`**。
 - Aftelle 是**数字居民体验 App**;RuntimeCore 是其内置运行内核。Studio(Python)只是产出 `.digital_resident` 的上游,不做第二个 Studio。
-- Stage 7 MVP 只锁 **7.1–7.5 单居民闭环**;7.6–7.11 是 Extended Demo,每段单独 Gate。
+- 本 Gate 锁定的单居民闭环是 Stage 7 入场基础;它不将 Stage 7.5 限制为早期 MVP 子集。7.6–7.12 仍每段单独 Gate。
 
 ---
 

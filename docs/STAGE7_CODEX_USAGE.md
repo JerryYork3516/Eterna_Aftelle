@@ -17,7 +17,19 @@ Use this file to record each Codex task before closing the loop.
 
 When a task touches SwiftUI, Metal, FileManager, Keychain, HIG, or Accessibility, read only the current-node minimum Apple official reference listed in `docs/apple_official_reference_stage7.md`. Do not system-learn iOS / visionOS / ARKit / RealityKit, do not add platform targets, and do not treat Apple docs as a new Aftelle architecture source.
 
-## 7.5-voice-input-v8-doc-plan
+## 7.5-realtime-speech-documentation-reconciliation
+
+- Stage: 7.5 documentation authority reconciliation
+- Date: 2026-08-11
+- Task: Align Stage 7 documentation with the authoritative `03_dev_plan.md` Stage 7.5.1–7.5.28 realtime speech / Studio Next / real-asset plan.
+- Read scope: Stage 7 planning, architecture, boundary, forbidden checklist, product, entry gate, execution and documentation-control files containing the superseded Voice Input MVP wording.
+- Changed files: documentation only; no Swift, Xcode, Runtime API, DR schema or Store schema changes.
+- Verification: keyword rescan; `git diff --check`; docs-only diff review; Stage 7 forbidden checklist.
+- Follow-up: resume the separately authorized Stage 7.5 node only after this documentation commit; do not implement A2/A3 in this task.
+
+## 7.5-voice-input-v8-doc-plan (historical, superseded)
+
+> This 2026-07-04 record is retained as history. Its Voice Input MVP scope and follow-up were superseded by the authoritative `03_dev_plan.md` Stage 7.5.1–7.5.28 plan and must not be used as current execution guidance.
 
 - Stage: 7.5 / 7.11 / 7.12 documentation plan
 - Date: 2026-07-04
@@ -26,7 +38,7 @@ When a task touches SwiftUI, Metal, FileManager, Keychain, HIG, or Accessibility
 - Changed files: `docs/03_dev_plan.md`, `docs/06_product_design.md`, `docs/02_architecture.md`, `docs/aftelle_runtime_boundary.md`, `docs/stage7_forbidden_checklist.md`, `DEVLOG.md`, this usage log.
 - Verification: `git diff --check`; `tools/architecture_guard/check.sh`; `tools/secret_guard/check.sh`.
 - Token note: documentation-only change; do not modify Swift, Xcode, `runtime_api_contract.md`, `dr_contract_v0_3.md`, `provider_profile_contract.md`, `feature_livestate.md`, `07_dr_blueprint.md`, or `09_skills_plugins.md`.
-- Follow-up: implement Voice Input MVP only when Stage 7.5 starts; keep it as record-to-text entering the existing Runtime step path.
+- Historical follow-up (superseded): implement Voice Input MVP only when Stage 7.5 starts; keep it as record-to-text entering the existing Runtime step path.
 
 ## 7.3-apple-official-reference-doc
 

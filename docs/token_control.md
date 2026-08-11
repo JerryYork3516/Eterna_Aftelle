@@ -2,13 +2,14 @@
 
 > 目的:防止 Stage 7 重蹈 Studio 的高消耗。覆盖各子系统的烧钱点 + 总控制规则。
 > 配套:bug_contract.md(改 bug 专用)、03_dev_plan.md(G0/阶段)、AGENTS.md(防烧钱铁律)。
-> v5 变更:统一 Stage 7 MVP = 7.1–7.5 单居民闭环,Stage 7 Extended Demo = 7.6–7.11;补 provider secret 归 Apple Keychain。
+> v5 变更:统一当时的 Stage 7 MVP / Extended Demo 口径;补 provider secret 归 Apple Keychain。
+> **当前权威:**Stage 7.5 已重排,以 `03_dev_plan.md` 7.5.1–7.5.28 为准。本文件只继续约束任务边界、冻结、验收与熔断,不定义阶段功能范围。
 
 ---
 
 ## 0. 三条总纲(贯穿全程)
 
-1. **MVP 优先,不做完整版**:Stage 7 MVP 只锁 7.1–7.5 单居民闭环(加载 DR→Runtime 对话→会话/展示状态→粒子→TTS/字幕→Trace),双居民/屏幕指导/星图等进入 Stage 7 Extended Demo(7.6–7.11)后逐段 Gate。 一上来做完整桌面展示版,本身就是最大的 token 黑洞。
+1. **当前节点优先,不做无界完整版**:严格按 `03_dev_plan.md` 当前小节点执行;不提前实现后续 7.5.x、7.6–7.12 或 Stage 8 能力。一上来做完整桌面展示版,本身就是最大的 token 黑洞。
 2. **先冻结,再打磨**:Runtime API / DR 契约 / Avatar State 协议**必须先冻结**,再在其上打磨体验。契约没冻就打磨 = 每次打磨都可能动契约 = 连锁返工。
 3. **每个任务必须有边界**:无边界任务一律拒绝(见 §三)。
 
@@ -93,7 +94,7 @@ provider secret 由 Apple Keychain 持有;Aftelle 只提交/更新 `key_ref` 和
 **Stage 7 MVP 不做。** 若做:只识别 Aftelle 自己 / 只截图 / 只标注 / 只视觉指引 / 必须用户确认 / 不自动点击 / 不跨 App。
 
 ### 13. Demo Lock(每阶段小 Lock,别攒到最后)
-不要等 7.11 才 Lock。每阶段做完小 Lock:7.1 主链路 / 7.2 记忆恢复 / 7.3 粒子状态 / 7.4 人文居民 / 7.5 TTS …
+不要等 7.11 才 Lock。每阶段做完小 Lock:7.1 主链路 / 7.2 记忆恢复 / 7.3 粒子状态 / 7.4 人文居民 / 7.5 按 7.5.1–7.5.28 逐节点冻结。
 7.11 只收口,不新增核心能力。
 
 ### 14. 多 AI 互相推翻(按你的真实分工,不照搬)
@@ -158,11 +159,11 @@ provider secret 由 Apple Keychain 持有;Aftelle 只提交/更新 `key_ref` 和
 G0(DR契约+Runtime策略+真实LLM,已锁定)
 → 7.1.0 最小闭环标定
 → 冻结 Runtime API
-→ 7.1 主链路 → 7.2 记忆 → 7.3 最小粒子 → 7.4 一个人文居民 → 7.5 最小 TTS
-→ 【Stage 7 MVP 成立,先验收/录屏】
-→ Stage 7 Extended Demo:7.6–7.8 双居民 → 7.9 屏幕指导 → 7.10 隔离验证 → 7.11 收口
+→ 7.1 主链路 → 7.2 记忆 → 7.3 最小粒子 → 7.4 一个人文居民
+→ 7.5.1–7.5.28 当前正式计划
+→ 7.6–7.12 逐段 Gate
 ```
-**MVP 那条线(7.1–7.5)没通,不许碰双居民/屏幕指导。**
+**当前 `03_dev_plan.md` 节点未冻结,不许提前进入后续节点。**
 
 ---
 
@@ -179,4 +180,4 @@ G0(DR契约+Runtime策略+真实LLM,已锁定)
 
 ## 一句话
 
-Stage 7 不按"完整产品开发"执行,按"可控闭环"执行:**先 7.1–7.5 MVP 单居民命脉链路,再进入 7.6–7.11 Extended Demo;每个任务有边界、有验收、有轮次熔断;先冻结契约再打磨;Aftelle 只运行、不重做 Studio。**
+Stage 7 按“可控闭环”执行:**范围以 `03_dev_plan.md` 为准;每个任务有边界、有验收、有轮次熔断;先冻结契约再打磨;Aftelle 只运行居民,不在 Host 中重做 Studio 或 RuntimeCore。**

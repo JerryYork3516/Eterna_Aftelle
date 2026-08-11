@@ -2,6 +2,7 @@
 
 > 本文档记录 Stage 7 live-state 相关功能卡的准入结论。
 > 它是功能评估事实源,不是 Runtime API 或 DR schema 契约。
+> 本文档的 7.5 标注只表示 live-state 功能卡的原有落点,不定义当前 Stage 7.5 全部范围;当前范围以 `03_dev_plan.md` 7.5.1–7.5.28 为准。
 
 ## 结论
 
@@ -53,7 +54,7 @@ Stage 7 MVP 只锁最小单居民闭环:
 
 每个新功能评估必须回答:
 
-- 是否加入 Stage 7 MVP? 如果是,对应 7.1-7.5 哪个最小节点?
+- 是否加入当前 Stage 7? 如果是,对应 `03_dev_plan.md` 哪个已授权小节点?
 - 是否改 Runtime API? 如果改,是否 additive、有默认值、有版本策略?
 - 是否改 DR schema? 默认答案应为否;若为是,必须单独评审。
 - 是否让 Aftelle 拥有 Provider、Scheduler、Memory Kernel 或长期 live state?

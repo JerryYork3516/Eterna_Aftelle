@@ -37,7 +37,7 @@
 - 2026-06-30 — v4 边界对齐记录 — 对齐 4 条 Invariants、Policy≠Layer、content-agnostic 映射、冻6/留缝5、Private/SharedSession/PublicTranscript 三种记忆边界、自我披露策略;新增 App 文字与语言统一格式规范。
 - 2026-06-30 — 文档套件 v5 升级 — 按 GPT 审查意见消除文档间硬冲突:AGENTS 流式/`schema_version`/Runtime 对话口径、09_skills_plugins 工具安装时机、Aftelle 浅校验 vs sidecar `load-dr` 完整校验、provider secret 归 sidecar credential store。
 - 2026-06-30 — v5 boundary 对齐补强 — 明确 sidecar 拥有 runtime clock/state/tick,Aftelle 只注入外部事件;`runtime_api_contract.md` 保留 HTTP `input_text` 兼容字段并补 `EnvironmentEvent`;新增 `ResidentLiveState` 最小结构、三种记忆命名空间、no-op `system.tick` 存在性要求。
-- 2026-06-30 — v5 Stage 7 范围收敛 — 统一 Stage 7 MVP = 7.1–7.5 单居民闭环,Stage 7 Extended Demo = 7.6–7.11;双居民、屏幕指导、隔离验证移出 MVP 基线;7.10 仅检查坐标抽象不阻碍未来 AR,不新增 AR/移动端字段或接口。
+- 2026-06-30 — v5 Stage 7 范围收敛(历史,已失效) — 当时统一 Stage 7 MVP = 7.1–7.5 单居民闭环,Stage 7 Extended Demo = 7.6–7.11;双居民、屏幕指导、隔离验证移出 MVP 基线;7.10 仅检查坐标抽象不阻碍未来 AR,不新增 AR/移动端字段或接口。当前 Stage 7.5 范围已由 `03_dev_plan.md` 7.5.1–7.5.28 取代。
 - 2026-06-30 — v5 蓝本与存储命名校准 — `07_dr_blueprint.md` 强化"长期愿景、非契约、非 schema、不得用于 Stage 7 coding"警示;Aftelle 侧记忆命名统一为 SessionStore / HostStateStore,居民长期记忆只经 sidecar Execution Engine。
 - 2026-07-01 — 文档套件 v6 收口 — 合并 `09_DEVLOG.md` 与 `DEVLOG.md` 为单一 `DEVLOG.md`;核对全套文档与 GPT v4 审查 25 项一致(流式/schema_version/浅校验/secret 归属/environment_event/ResidentLiveState/三种记忆命名空间/no-op tick/MVP=7.1–7.5 收敛/命名去 visual_profile 全部落实,无残留矛盾);boundary 已由本人改为 FROZEN(G0 已锁定),记录新 SHA-256 见下。
 - 2026-07-01 — **G0 技术选型从 B 改为 A(重大决策)** — 底层运行方案由 B(本地 Python sidecar)改为 **A(Swift RuntimeCore,App 内置运行内核)**。**理由**:Apple 生态优先(LiDAR + Metal 极致渲染,iPhone/iPad Pro 亿级装机);调度/Agent/未来扩展的核心应在 Aftelle 原生 RuntimeCore;纯本地零延迟。**旧 B 标记为 superseded,不删除**,转为非 Apple 端/云端参考实现。Vision Pro 降级为加分项(Apple 已收缩其硬件路线)。**产品主线不变**:Stage 7 仍是 Aftelle 数字居民体验版,7.1–7.11 顺序不变,只替换运行底座。

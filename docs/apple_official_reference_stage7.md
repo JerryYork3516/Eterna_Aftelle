@@ -69,7 +69,7 @@ Stage 7 不因 Apple 官方文档参考而进入以下范围:
 | 7.2 会话与展示缓存 | FileManager / Application Support | 本地 session/display cache 文件位置与目录语义 | 不做 iCloud / CloudKit sync;不写回 DR |
 | 7.3 粒子生命体视觉底座 + 字幕 | Metal; HIG Motion; Accessibility / Reduce Motion | 粒子渲染、降频动效、可访问性动效边界 | 不做 ARKit / RealityKit;不做 3D 数字人;不进入 Stage 8 |
 | 7.4 人文共情居民打磨 | HIG macOS / Motion / Materials | 视觉克制、材料感、动效节奏参考 | 不改变居民人格来源;不让 Aftelle 推理人格或情绪 |
-| 7.5 TTS / 音效 / 字幕同步 | Keychain; Accessibility / Reduce Motion | Provider secret 引用边界、字幕与动效可访问性 | TTS Provider 仍走 RuntimeCore;Aftelle 不直连 Provider |
+| 7.5 前台原生实时语音 / 级联降级 / 字幕 | AVFoundation; Keychain; Accessibility / Reduce Motion | 麦克风与播放平台资源、Provider secret 引用边界、字幕与动效可访问性 | RuntimeCore 拥有会话与 Provider 路由;Host / UI / Adapter 不直连 Provider,不引入 always-on 或后台监听 |
 | 7.9 屏幕捕获指导原型 | Accessibility | Aftelle 内部指导原型的可访问性语义参考 | 不做通用电脑控制;不跨 App 操作 |
 | 7.10 Windows / AR 适配隔离验证 | Accessibility; HIG Motion | 只做隔离验证和未来 Host 预留 | 不引入 ARKit / RealityKit 正式功能;不新增多平台 target |
 
