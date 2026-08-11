@@ -3433,6 +3433,26 @@ public final class RuntimeCore {
                     break
                 }
             }
+            let currentToolTurnIdentity = NativeSpeechToolTurnIdentity(
+                interactionID: interaction.id,
+                turnNumber: realtimeSpeechStateMachine.snapshot()
+                    .currentTurnNumber,
+                turnGeneration: realtimeSpeechSubtitleStateMachine.snapshot()
+                    .turnGeneration
+            )
+            if currentToolTurnIdentity != turnIdentity,
+               realtimeSpeechSubtitleStateMachine.snapshot()
+                    .lastClosureReason != .completed {
+                pruneStaleNativeSpeechToolCallHistory(
+                    retaining: currentToolTurnIdentity
+                )
+            }
+            if case .accepted(let acceptedEvent) = disposition,
+               case .finalTranscript = acceptedEvent.kind {
+                pruneStaleNativeSpeechToolCallHistory(
+                    retaining: currentToolTurnIdentity
+                )
+            }
             if case .accepted(let acceptedEvent) = disposition,
                case .toolRequestCandidate(let request) =
                     acceptedEvent.kind {
@@ -3790,7 +3810,52 @@ public final class RuntimeCore {
                 disposition: "committed"
             )
         }
+        pruneCompletedNativeSpeechToolCallHistory(toolIdentity)
         realtimeSpeechContextSourceRevision &+= 1
+    }
+
+    private func pruneCompletedNativeSpeechToolCallHistory(
+        _ identity: NativeSpeechToolTurnIdentity
+    ) {
+        guard !nativeSpeechToolExecutionTasks.keys.contains(where: {
+            $0.turn == identity
+        }) else {
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_call_history_prune_deferred",
+                identity: identity,
+                disposition: "pending_execution"
+            )
+            return
+        }
+        let retained = handledNativeSpeechToolCalls.filter {
+            $0.turn != identity
+        }
+        let removedCount = handledNativeSpeechToolCalls.count
+            - retained.count
+        guard removedCount > 0 else { return }
+        handledNativeSpeechToolCalls = Set(retained)
+        recordNativeSpeechToolDiagnostic(
+            category: "tool_call_history_pruned",
+            identity: identity,
+            disposition: "completed_turn_removed:\(removedCount)"
+        )
+    }
+
+    private func pruneStaleNativeSpeechToolCallHistory(
+        retaining identity: NativeSpeechToolTurnIdentity
+    ) {
+        let retained = handledNativeSpeechToolCalls.filter {
+            $0.turn == identity
+        }
+        let removedCount = handledNativeSpeechToolCalls.count
+            - retained.count
+        guard removedCount > 0 else { return }
+        handledNativeSpeechToolCalls = Set(retained)
+        recordNativeSpeechToolDiagnostic(
+            category: "tool_call_history_pruned",
+            identity: identity,
+            disposition: "stale_turn_removed:\(removedCount)"
+        )
     }
 
     private func applyNativeSpeechUserFinalControls(
@@ -4542,6 +4607,12 @@ public final class RuntimeCore {
         -> RealtimeSpeechSubtitleSnapshot {
         realtimeSpeechSubtitleStateMachine.snapshot()
     }
+
+    #if DEBUG
+    func handledNativeSpeechToolCallCountForTesting() -> Int {
+        handledNativeSpeechToolCalls.count
+    }
+    #endif
 
     func useRealtimeSpeechTimeoutConfigurationForTesting(
         _ configuration: RealtimeSpeechTimeoutConfiguration

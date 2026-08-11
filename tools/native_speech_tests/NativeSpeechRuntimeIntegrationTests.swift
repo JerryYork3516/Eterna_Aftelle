@@ -35,6 +35,8 @@ private actor FakeNativeSpeechProvider:
     private(set) var updatedProjections: [RealtimeSpeechContextProjection] = []
     private(set) var startedToolDefinitions: [[NativeSpeechToolDefinition]] = []
     private(set) var submittedToolOutputs: [NativeSpeechToolOutput] = []
+    private var toolContinuationWaiters:
+        [Int: [CheckedContinuation<Void, Never>]] = [:]
     private var preparedProjection: RealtimeSpeechContextProjection?
     private let emitsHandshakeOnStart: Bool
 
@@ -127,6 +129,10 @@ private actor FakeNativeSpeechProvider:
         interactionID: NativeSpeechInteractionID
     ) async throws {
         operations.append(.toolContinuation(interactionID))
+        let count = operationCount(.toolContinuation)
+        toolContinuationWaiters.removeValue(forKey: count)?.forEach {
+            $0.resume()
+        }
     }
 
     func enqueue(_ event: NativeSpeechEvent) {
@@ -163,6 +169,13 @@ private actor FakeNativeSpeechProvider:
             }
         }.count
     }
+
+    func waitUntilToolContinuationCount(_ count: Int) async {
+        guard operationCount(.toolContinuation) < count else { return }
+        await withCheckedContinuation { continuation in
+            toolContinuationWaiters[count, default: []].append(continuation)
+        }
+    }
 }
 
 private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
@@ -172,7 +185,8 @@ private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
     private var completedRequestCount = 0
     private var continuation: CheckedContinuation<Void, Never>?
     private var startedContinuation: CheckedContinuation<Void, Never>?
-    private var completedContinuation: CheckedContinuation<Void, Never>?
+    private var completedContinuations:
+        [Int: [CheckedContinuation<Void, Never>]] = [:]
 
     init(output: String, suspends: Bool = false) {
         self.output = output
@@ -191,8 +205,9 @@ private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
             }
         }
         completedRequestCount += 1
-        completedContinuation?.resume()
-        completedContinuation = nil
+        completedContinuations.removeValue(
+            forKey: completedRequestCount
+        )?.forEach { $0.resume() }
         return output
     }
 
@@ -209,9 +224,13 @@ private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
     }
 
     func waitUntilCompleted() async {
-        guard completedRequestCount == 0 else { return }
+        await waitUntilCompleted(count: 1)
+    }
+
+    func waitUntilCompleted(count: Int) async {
+        guard completedRequestCount < count else { return }
         await withCheckedContinuation { continuation in
-            completedContinuation = continuation
+            completedContinuations[count, default: []].append(continuation)
         }
     }
 
@@ -617,6 +636,8 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         try await testRuntimeInterrupts(fixtureData: fixtureData)
         try await testRuntimeToolRouting(fixtureData: fixtureData)
+        try await testRuntimeToolCallHistoryBounded(fixtureData: fixtureData)
+        try await testRuntimePendingToolCallRetention(fixtureData: fixtureData)
         try await testRuntimeToolPlaybackGate(fixtureData: fixtureData)
         try await testRuntimeStaleToolResult(fixtureData: fixtureData)
         try await testRuntimePlaybackFailure(fixtureData: fixtureData)
@@ -720,6 +741,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
             executedAfterDuplicate == 1,
             "duplicate call ID executes exactly once"
         )
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 1,
+            "active speech-before-tool turn retains duplicate protection"
+        )
         let outputCountBeforeBoundary = await provider.operationCount(
             .toolOutput
         )
@@ -761,6 +786,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(
             normalContinuationCount == 1,
             "Runtime requests one continuation response"
+        )
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 1,
+            "interim Tool segment does not trigger history cleanup"
         )
         expect(
             runtime.realtimeSpeechStateSnapshot().lastTransitionReason
@@ -827,6 +856,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(
             continuationPlaybackCompleted == .applied,
             "continuation playback completes the formal turn"
+        )
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 0,
+            "speech-before-tool history prunes after formal playback completion"
         )
         let dialogue = try sessionStore.loadMostRecentDialogueEntries()
         expect(
@@ -944,6 +977,242 @@ private struct NativeSpeechRuntimeIntegrationTests {
                     || $0.disposition?.contains("PRIVATE_TOOL") == true
             },
             "Runtime diagnostics contain no tool arguments or result payload"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+    }
+
+    private static func testRuntimeToolCallHistoryBounded(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let sessionStore = SessionStore()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: sessionStore
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "bounded tool resident loads"
+        )
+        _ = try runtime.clearDialogueTestData()
+        let executor = FakeNativeSpeechToolExecutor(output: #"{"ok":true}"#)
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 504
+        )
+        let turnCount = 24
+        for turn in 1...turnCount {
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .finalTranscript("长期工具轮次 \(turn)")
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            let request = NativeSpeechToolRequest(
+                callID: "call-repeat",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"bounded"}"#.utf8)
+            )
+            for _ in 0..<2 {
+                await provider.enqueue(NativeSpeechEvent(
+                    interactionID: binding.interactionID,
+                    kind: .toolRequestCandidate(request)
+                ))
+                _ = try await runtime.receiveNativeSpeechEvent(
+                    interactionID: binding.interactionID
+                )
+            }
+            await executor.waitUntilCompleted(count: turn)
+            expect(
+                runtime.handledNativeSpeechToolCallCountForTesting() == 1,
+                "active turn retains one deduplicated Tool identity"
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .responseCompleted
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await provider.waitUntilToolContinuationCount(turn)
+            expect(
+                runtime.handledNativeSpeechToolCallCountForTesting() == 1,
+                "Tool segment boundary does not prune the formal turn"
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .thinking
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .outputText(
+                    text: "长期工具回答 \(turn)",
+                    isFinal: true
+                )
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .responseCompleted
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            expect(
+                runtime.handledNativeSpeechToolCallCountForTesting() == 0,
+                "formal completion prunes completed Tool identities"
+            )
+        }
+        let executedCount = await executor.requestCount()
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            executedCount == turnCount,
+            "same callID executes once per formal turn"
+        )
+        expect(
+            outputCount == turnCount,
+            "each long-interaction Tool turn submits one output"
+        )
+        expect(
+            continuationCount == turnCount,
+            "each long-interaction Tool turn continues once"
+        )
+        expect(
+            runtime.realtimeSpeechStateSnapshot().completedTurnCount
+                == UInt64(turnCount),
+            "long Tool interaction completes every formal turn"
+        )
+        let dialogue = try sessionStore.loadMostRecentDialogueEntries()
+        expect(
+            dialogue.count == RuntimeCore.recentDialogueMessageLimit,
+            "long Tool interaction preserves the bounded Session window"
+        )
+        expect(
+            dialogue.suffix(2).map(\.text) == [
+                "长期工具轮次 \(turnCount)",
+                "长期工具回答 \(turnCount)"
+            ],
+            "long Tool interaction retains the final formal exchange"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+    }
+
+    private static func testRuntimePendingToolCallRetention(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let sessionStore = SessionStore()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: sessionStore
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "pending tool resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(
+            output: #"{"ok":true}"#,
+            suspends: true
+        )
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 505
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("等待工具完成")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-pending",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"pending"}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await executor.waitUntilStarted()
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 1,
+            "pending current task retains its Tool identity"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 1,
+            "response segment boundary cannot prune a pending Tool identity"
+        )
+        await executor.resume()
+        await executor.waitUntilCompleted()
+        await provider.waitUntilToolContinuationCount(1)
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 1,
+            "continuation keeps Tool identity until formal completion"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .thinking
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputText(text: "工具已完成", isFinal: true)
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 0,
+            "pending Tool identity is pruned only after formal completion"
+        )
+        let executedCount = await executor.requestCount()
+        expect(
+            executedCount == 1,
+            "retained pending Tool executes exactly once"
+        )
+        expect(
+            (try? sessionStore.loadMostRecentDialogueEntries())?.count == 2,
+            "pending Tool turn commits one formal Session exchange"
         )
         try await runtime.stopNativeSpeechInput(
             binding: binding,
@@ -1132,6 +1401,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
             runtime.realtimeSpeechSubtitleSnapshot().turnGeneration
                 > generationBeforeInterrupt,
             "Interrupt advances generation while executor remains suspended"
+        )
+        expect(
+            runtime.handledNativeSpeechToolCallCountForTesting() == 0,
+            "Interrupt prunes the stale Tool identity"
         )
         _ = try await commitPendingInterrupt(runtime: runtime, binding: binding)
         await executor.resume()
@@ -1757,6 +2030,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
             expect(
                 committed.suffix(2).map(\.text) == [userFinal, residentFinal],
                 "formal voice exchange uses only user and resident finals"
+            )
+            expect(
+                runtime.handledNativeSpeechToolCallCountForTesting() == 0,
+                "ordinary no-Tool turn retains no Tool history"
             )
             await provider.enqueue(NativeSpeechEvent(
                 interactionID: binding.interactionID,
