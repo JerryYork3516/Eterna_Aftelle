@@ -1725,6 +1725,18 @@ private struct StepFunRealtimeAdapterTests {
             ) && tool.event == nil,
             "codec preserves completed tool arguments for adapter aggregation"
         )
+        let toolDelta = try codec.decodeEnvelope(
+            .text(#"{"type":"response.function_call_arguments.delta","call_id":"call-1","name":"weather","arguments":"{\"city\":"}"#),
+            interactionID: interactionID
+        )
+        expect(
+            toolDelta.toolWireEvent == .argumentsDelta(
+                callID: "call-1",
+                name: "weather",
+                delta: #"{"city":"#
+            ),
+            "codec reads the official tool delta arguments field"
+        )
         let doneCases: [(String, NativeSpeechEventKind)] = [
             ("completed", .responseCompleted),
             ("cancelled", .cancelled(reason: "cancelled")),
@@ -1781,11 +1793,11 @@ private struct StepFunRealtimeAdapterTests {
             .text(#"{"type":"session.created"}"#),
             .text(#"{"type":"session.updated"}"#),
             .text(#"{"type":"response.created","response":{"id":"tool-response"}}"#),
-            .text(#"{"type":"conversation.item.created","response_id":"tool-response","item":{"id":"tool-item","type":"function_call","call_id":"call-1","name":"weather","arguments":""}}"#),
-            .text(#"{"type":"response.function_call_arguments.delta","response_id":"tool-response","call_id":"call-1","name":"weather","delta":"{\"city\":"}"#),
-            .text(#"{"type":"response.function_call_arguments.delta","response_id":"tool-response","call_id":"call-1","delta":"\"北京\"}"}"#),
-            .text(#"{"type":"response.function_call_arguments.done","response_id":"tool-response","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
-            .text(#"{"type":"response.function_call_arguments.done","response_id":"tool-response","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
+            .text(#"{"type":"conversation.item.created","item":{"id":"tool-item","type":"function_call","call_id":"call-1","name":"weather","arguments":""}}"#),
+            .text(#"{"type":"response.function_call_arguments.delta","call_id":"call-1","name":"weather","arguments":"{\"city\":"}"#),
+            .text(#"{"type":"response.function_call_arguments.delta","call_id":"call-1","arguments":"\"北京\"}"}"#),
+            .text(#"{"type":"response.function_call_arguments.done","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
+            .text(#"{"type":"response.function_call_arguments.done","call_id":"call-1","name":"weather","arguments":"{\"city\":\"北京\"}"}"#),
             .text(#"{"type":"response.done","response":{"id":"tool-response","status":"completed"}}"#)
         ])
         let adapter = StepFunRealtimeAdapter(

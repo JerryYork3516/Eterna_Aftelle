@@ -212,6 +212,24 @@ nonisolated final class RealtimeSpeechSubtitleStateMachine:
         lock.withLock { applyLocked(event) }
     }
 
+    func prepareResidentContinuation(
+        interactionID: NativeSpeechInteractionID,
+        turnNumber: UInt64,
+        turnGeneration: UInt64
+    ) -> RealtimeSpeechSubtitleDisposition {
+        lock.withLock {
+            guard self.interactionID == interactionID else {
+                return rejectDispositionLocked(.rejectedStale)
+            }
+            guard self.turnNumber == turnNumber,
+                  self.turnGeneration == turnGeneration else {
+                return rejectDispositionLocked(.rejectedLate)
+            }
+            resident = DirectionState()
+            return .accepted
+        }
+    }
+
     func interrupt(
         interactionID: NativeSpeechInteractionID,
         interruptedTurnNumber: UInt64,

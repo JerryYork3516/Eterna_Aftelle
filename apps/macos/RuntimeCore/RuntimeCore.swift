@@ -1142,6 +1142,8 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
 }
 
 public final class RuntimeCore {
+    private static let nativeSpeechToolExecutionCapacity = 8
+
     private struct NativeSpeechTurnCommitIdentity: Equatable {
         let interactionID: NativeSpeechInteractionID
         let turnNumber: UInt64
@@ -1162,6 +1164,7 @@ public final class RuntimeCore {
     private struct NativeSpeechToolTurnState {
         let identity: NativeSpeechToolTurnIdentity
         var outputs: [NativeSpeechToolOutput]
+        var pendingCallIDs: Set<String>
         var responseBoundaryReceived: Bool
         var waitsForPlaybackDrain: Bool
         var playbackDrained: Bool
@@ -1219,6 +1222,8 @@ public final class RuntimeCore {
     private var handledNativeSpeechToolCalls:
         Set<NativeSpeechToolCallIdentity> = []
     private var nativeSpeechToolTurnState: NativeSpeechToolTurnState?
+    private var nativeSpeechToolExecutionTasks:
+        [NativeSpeechToolCallIdentity: Task<Void, Never>] = [:]
     private var nativeSpeechTurnsWithOutputAudio:
         Set<NativeSpeechToolTurnIdentity> = []
     private let realtimeSpeechGuardScheduler =
@@ -3306,12 +3311,11 @@ public final class RuntimeCore {
             )
             if case .responseCompleted = event.kind,
                var toolState = nativeSpeechToolTurnState,
-               toolState.identity == turnIdentity,
-               !toolState.outputs.isEmpty {
+               toolState.identity == turnIdentity {
                 toolState.responseBoundaryReceived = true
                 nativeSpeechToolTurnState = toolState
                 recordNativeSpeechToolDiagnostic(
-                    category: "tool_response_boundary_held",
+                    category: "tool_response_segment_boundary",
                     identity: turnIdentity,
                     disposition: "awaiting_safe_continuation"
                 )
@@ -3772,6 +3776,20 @@ public final class RuntimeCore {
             residentReply: residentFinal,
             session: session
         )
+        let toolIdentity = NativeSpeechToolTurnIdentity(
+            interactionID: identity.interactionID,
+            turnNumber: identity.turnNumber,
+            turnGeneration: identity.turnGeneration
+        )
+        if handledNativeSpeechToolCalls.contains(where: {
+            $0.turn == toolIdentity
+        }) {
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_formal_turn_completed",
+                identity: toolIdentity,
+                disposition: "committed"
+            )
+        }
         realtimeSpeechContextSourceRevision &+= 1
     }
 
@@ -3867,6 +3885,11 @@ public final class RuntimeCore {
             return
         }
 
+        stageNativeSpeechToolCall(
+            callID: request.callID,
+            identity: identity
+        )
+
         let output: String
         guard let argumentsObject =
                 Self.nativeSpeechToolArgumentsObject(request.arguments) else {
@@ -3948,44 +3971,160 @@ public final class RuntimeCore {
             )
             return
         }
-
-        do {
-            output = try await nativeSpeechToolExecutor.execute(
-                NativeSpeechToolExecutionRequest(
-                    interactionID: identity.interactionID,
-                    turnNumber: identity.turnNumber,
-                    turnGeneration: identity.turnGeneration,
-                    callID: request.callID,
-                    toolName: request.toolName,
-                    arguments: request.arguments,
-                    correlationHash: request.correlationHash
-                )
+        guard nativeSpeechToolExecutionTasks.count
+                < Self.nativeSpeechToolExecutionCapacity else {
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_request_rejected",
+                identity: identity,
+                disposition: "executor_busy",
+                correlationHash: request.correlationHash,
+                toolName: definition.name
             )
+            await stageNativeSpeechToolOutput(
+                NativeSpeechToolOutput(
+                    callID: request.callID,
+                    output: Self.nativeSpeechToolErrorOutput("executor_busy")
+                ),
+                interaction: interaction,
+                identity: identity
+            )
+            return
+        }
+
+        let executor = nativeSpeechToolExecutor
+        let executionRequest = NativeSpeechToolExecutionRequest(
+            interactionID: identity.interactionID,
+            turnNumber: identity.turnNumber,
+            turnGeneration: identity.turnGeneration,
+            callID: request.callID,
+            toolName: request.toolName,
+            arguments: request.arguments,
+            correlationHash: request.correlationHash
+        )
+        nativeSpeechToolExecutionTasks[callIdentity] = Task { [weak self] in
+            let result: Result<String, any Error>
+            do {
+                result = .success(try await executor.execute(executionRequest))
+            } catch {
+                result = .failure(error)
+            }
+            await self?.completeNativeSpeechToolExecution(
+                result,
+                request: request,
+                definition: definition,
+                interaction: interaction,
+                callIdentity: callIdentity
+            )
+        }
+        recordNativeSpeechToolDiagnostic(
+            category: "tool_execution_scheduled",
+            identity: identity,
+            disposition: "scheduled",
+            correlationHash: request.correlationHash,
+            toolName: definition.name
+        )
+    }
+
+    private func stageNativeSpeechToolCall(
+        callID: String,
+        identity: NativeSpeechToolTurnIdentity
+    ) {
+        var state = nativeSpeechToolTurnState
+        if state?.identity != identity {
+            state = NativeSpeechToolTurnState(
+                identity: identity,
+                outputs: [],
+                pendingCallIDs: [],
+                responseBoundaryReceived: false,
+                waitsForPlaybackDrain:
+                    nativeSpeechTurnsWithOutputAudio.contains(identity),
+                playbackDrained: false,
+                continuationRequested: false
+            )
+        }
+        state?.pendingCallIDs.insert(callID)
+        nativeSpeechToolTurnState = state
+    }
+
+    private func completeNativeSpeechToolExecution(
+        _ result: Result<String, any Error>,
+        request: NativeSpeechToolRequest,
+        definition: NativeSpeechToolDefinition,
+        interaction: NativeSpeechInteraction,
+        callIdentity: NativeSpeechToolCallIdentity
+    ) async {
+        nativeSpeechToolExecutionTasks[callIdentity] = nil
+        guard nativeSpeechToolTurnIsCurrent(
+            callIdentity.turn,
+            interaction: interaction
+        ), handledNativeSpeechToolCalls.contains(callIdentity),
+           nativeSpeechToolTurnState?.identity == callIdentity.turn,
+           nativeSpeechToolTurnState?.pendingCallIDs.contains(request.callID)
+                == true else {
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_execution_stale",
+                identity: callIdentity.turn,
+                disposition: "discarded",
+                correlationHash: request.correlationHash,
+                toolName: definition.name
+            )
+            return
+        }
+        let output: String
+        switch result {
+        case .success(let value):
+            output = value
             recordNativeSpeechToolDiagnostic(
                 category: "tool_request_executed",
-                identity: identity,
+                identity: callIdentity.turn,
                 disposition: "completed",
                 correlationHash: request.correlationHash,
                 toolName: definition.name
             )
-        } catch {
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_execution_completed",
+                identity: callIdentity.turn,
+                disposition: "completed",
+                correlationHash: request.correlationHash,
+                toolName: definition.name
+            )
+        case .failure:
             output = Self.nativeSpeechToolErrorOutput("execution_failed")
             recordNativeSpeechToolDiagnostic(
                 category: "tool_request_failed",
-                identity: identity,
+                identity: callIdentity.turn,
+                disposition: "execution_failed",
+                correlationHash: request.correlationHash,
+                toolName: definition.name
+            )
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_execution_completed",
+                identity: callIdentity.turn,
                 disposition: "execution_failed",
                 correlationHash: request.correlationHash,
                 toolName: definition.name
             )
         }
         await stageNativeSpeechToolOutput(
-            NativeSpeechToolOutput(
-                callID: request.callID,
-                output: output
-            ),
+            NativeSpeechToolOutput(callID: request.callID, output: output),
             interaction: interaction,
-            identity: identity
+            identity: callIdentity.turn
         )
+        do {
+            try await continueNativeSpeechToolTurnIfReady(
+                interaction: interaction
+            )
+        } catch let error as NativeSpeechError {
+            await failActiveNativeSpeechInteraction(
+                interactionID: interaction.id,
+                error: error
+            )
+        } catch {
+            await failActiveNativeSpeechInteraction(
+                interactionID: interaction.id,
+                error: .transportFailure
+            )
+        }
     }
 
     private func stageNativeSpeechToolOutput(
@@ -3998,7 +4137,7 @@ public final class RuntimeCore {
             interaction: interaction
         ) else {
             recordNativeSpeechToolDiagnostic(
-                category: "tool_result_stale",
+                category: "tool_execution_stale",
                 identity: identity,
                 disposition: "discarded"
             )
@@ -4009,6 +4148,7 @@ public final class RuntimeCore {
             state = NativeSpeechToolTurnState(
                 identity: identity,
                 outputs: [],
+                pendingCallIDs: [],
                 responseBoundaryReceived: false,
                 waitsForPlaybackDrain:
                     nativeSpeechTurnsWithOutputAudio.contains(identity),
@@ -4016,6 +4156,7 @@ public final class RuntimeCore {
                 continuationRequested: false
             )
         }
+        state?.pendingCallIDs.remove(output.callID)
         state?.outputs.append(output)
         nativeSpeechToolTurnState = state
     }
@@ -4025,6 +4166,7 @@ public final class RuntimeCore {
     ) async throws {
         guard var state = nativeSpeechToolTurnState,
               state.responseBoundaryReceived,
+              state.pendingCallIDs.isEmpty,
               !state.outputs.isEmpty,
               !state.continuationRequested,
               !state.waitsForPlaybackDrain || state.playbackDrained else {
@@ -4050,6 +4192,20 @@ public final class RuntimeCore {
             )
             return
         }
+        let subtitleDisposition = realtimeSpeechSubtitleStateMachine
+            .prepareResidentContinuation(
+                interactionID: interaction.id,
+                turnNumber: state.identity.turnNumber,
+                turnGeneration: state.identity.turnGeneration
+            )
+        guard subtitleDisposition == .accepted else {
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_continuation_rejected",
+                identity: state.identity,
+                disposition: subtitleDisposition.rawValue
+            )
+            return
+        }
         state.continuationRequested = true
         nativeSpeechToolTurnState = state
         for output in state.outputs {
@@ -4062,7 +4218,7 @@ public final class RuntimeCore {
             interactionID: interaction.id
         )
         recordNativeSpeechToolDiagnostic(
-            category: "tool_continuation_requested",
+            category: "tool_continuation_started",
             identity: state.identity,
             disposition: "continuation_requested"
         )
@@ -4416,6 +4572,10 @@ public final class RuntimeCore {
     }
 
     private func resetNativeSpeechToolState() {
+        for task in nativeSpeechToolExecutionTasks.values {
+            task.cancel()
+        }
+        nativeSpeechToolExecutionTasks.removeAll(keepingCapacity: true)
         handledNativeSpeechToolCalls.removeAll(keepingCapacity: true)
         nativeSpeechToolTurnState = nil
         nativeSpeechTurnsWithOutputAudio.removeAll(keepingCapacity: true)

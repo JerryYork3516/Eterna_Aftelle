@@ -323,7 +323,7 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             wireKind = .residentTextDone
         case "response.function_call_arguments.delta":
             guard let callID = object["call_id"] as? String,
-                  let delta = object["delta"] as? String else {
+                  let arguments = object["arguments"] as? String else {
                 throw NativeSpeechError.invalidEvent
             }
             kind = nil
@@ -331,7 +331,7 @@ nonisolated struct StepFunRealtimeCodec: Sendable {
             toolWireEvent = .argumentsDelta(
                 callID: callID,
                 name: object["name"] as? String,
-                delta: delta
+                delta: arguments
             )
         case "response.function_call_arguments.done":
             guard let callID = object["call_id"] as? String,

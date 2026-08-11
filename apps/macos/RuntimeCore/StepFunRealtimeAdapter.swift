@@ -1462,9 +1462,6 @@ actor StepFunRealtimeAdapter:
              .residentTextDone,
              .outputAudioDelta,
              .outputAudioDone,
-             .toolCallCreated,
-             .toolArgumentsDelta,
-             .toolArgumentsDone,
              .responseCompleted:
             return true
         default:
