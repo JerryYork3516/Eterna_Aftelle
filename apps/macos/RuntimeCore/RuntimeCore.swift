@@ -1103,19 +1103,22 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
     private let interactionGate: RuntimeNativeSpeechInteractionGate
     private let inputGate: NativeSpeechInputGate
     private let executionEngine: ExecutionEngine
+    private let onTerminal: () -> Void
 
     init(
         stateMachine: RealtimeSpeechStateMachine,
         subtitleStateMachine: RealtimeSpeechSubtitleStateMachine,
         interactionGate: RuntimeNativeSpeechInteractionGate,
         inputGate: NativeSpeechInputGate,
-        executionEngine: ExecutionEngine
+        executionEngine: ExecutionEngine,
+        onTerminal: @escaping () -> Void
     ) {
         self.stateMachine = stateMachine
         self.subtitleStateMachine = subtitleStateMachine
         self.interactionGate = interactionGate
         self.inputGate = inputGate
         self.executionEngine = executionEngine
+        self.onTerminal = onTerminal
     }
 
     func handle(_ request: RealtimeSpeechGuardRequest) async {
@@ -1131,6 +1134,7 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
             reason: .failed
         )
         inputGate.invalidate(interactionID: interaction.id)
+        onTerminal()
         try? await executionEngine.cancelNativeSpeech(
             interactionID: interaction.id,
             reason: .interrupted
@@ -1140,6 +1144,18 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
         )
     }
 }
+
+#if DEBUG
+nonisolated struct NativeSpeechToolLifecycleDebugSnapshot: Equatable {
+    let executionTaskCount: Int
+    let permissionTaskCount: Int
+    let pendingPermissionCount: Int
+    let handledCallCount: Int
+    let hasTurnState: Bool
+    let playbackIdentityCount: Int
+    let continuationClaimed: Bool
+}
+#endif
 
 public final class RuntimeCore {
     private static let nativeSpeechToolExecutionCapacity = 8
@@ -1258,7 +1274,10 @@ public final class RuntimeCore {
             subtitleStateMachine: realtimeSpeechSubtitleStateMachine,
             interactionGate: nativeSpeechInteractionGate,
             inputGate: nativeSpeechInputGate,
-            executionEngine: executionEngine
+            executionEngine: executionEngine,
+            onTerminal: { [weak self] in
+                self?.resetNativeSpeechToolState()
+            }
         )
     private var realtimeSpeechContextSourceRevision: UInt64 = 0
     private var handledFirstAppearanceResidentIDs: Set<String> = []
@@ -3182,6 +3201,7 @@ public final class RuntimeCore {
         guard sessionContext == session,
               nativeSpeechInteractionGate.current()?.id == interaction.id else {
             nativeSpeechInteractionGate.clear(matching: interaction.id)
+            resetNativeSpeechToolState()
             try? await executionEngine.cancelNativeSpeech(
                 interactionID: interaction.id,
                 reason: .superseded
@@ -3200,6 +3220,7 @@ public final class RuntimeCore {
             lifecycleState: .active
         )
         guard nativeSpeechInteractionGate.activate(active) else {
+            resetNativeSpeechToolState()
             try? await executionEngine.cancelNativeSpeech(
                 interactionID: interaction.id,
                 reason: .superseded
@@ -3679,6 +3700,7 @@ public final class RuntimeCore {
             return transition.disposition
         }
         realtimeSpeechGuardScheduler.cancel()
+        resetNativeSpeechToolState()
         nativeSpeechInteractionGate.clear(matching: interaction.id)
         invalidateNativeSpeechInput(for: interaction.id)
         try? await executionEngine.cancelNativeSpeech(
@@ -3872,7 +3894,12 @@ public final class RuntimeCore {
     private func pruneStaleNativeSpeechToolCallHistory(
         retaining identity: NativeSpeechToolTurnIdentity
     ) {
+        invalidateStaleNativeSpeechToolExecutions(retaining: identity)
         invalidateStaleNativeSpeechToolPermissions(retaining: identity)
+        discardStaleNativeSpeechToolTurnState(retaining: identity)
+        nativeSpeechTurnsWithOutputAudio = Set(
+            nativeSpeechTurnsWithOutputAudio.filter { $0 == identity }
+        )
         let retained = handledNativeSpeechToolCalls.filter {
             $0.turn == identity
         }
@@ -3887,21 +3914,42 @@ public final class RuntimeCore {
         )
     }
 
-    private func invalidateStaleNativeSpeechToolPermissions(
+    private func invalidateStaleNativeSpeechToolExecutions(
         retaining identity: NativeSpeechToolTurnIdentity
     ) {
-        let staleIdentities = pendingNativeSpeechToolPermissions.keys.filter {
+        let staleIdentities = nativeSpeechToolExecutionTasks.keys.filter {
             $0.turn != identity
         }
         for callIdentity in staleIdentities {
-            guard let context = pendingNativeSpeechToolPermissions.removeValue(
+            nativeSpeechToolExecutionTasks.removeValue(
                 forKey: callIdentity
-            ) else {
-                continue
+            )?.cancel()
+            recordNativeSpeechToolDiagnostic(
+                category: "tool_execution_stale",
+                identity: callIdentity.turn,
+                disposition: "turn_invalidated"
+            )
+        }
+    }
+
+    private func invalidateStaleNativeSpeechToolPermissions(
+        retaining identity: NativeSpeechToolTurnIdentity
+    ) {
+        let staleIdentities = Set(
+            pendingNativeSpeechToolPermissions.keys.filter {
+                $0.turn != identity
+            } + nativeSpeechToolPermissionTasks.keys.filter {
+                $0.turn != identity
             }
+        )
+        for callIdentity in staleIdentities {
+            let context = pendingNativeSpeechToolPermissions.removeValue(
+                forKey: callIdentity
+            )
             nativeSpeechToolPermissionTasks.removeValue(
                 forKey: callIdentity
             )?.cancel()
+            guard let context else { continue }
             recordNativeSpeechToolDiagnostic(
                 category: "tool_permission_stale",
                 identity: callIdentity.turn,
@@ -3910,6 +3958,15 @@ public final class RuntimeCore {
                 toolName: context.permissionRequest.toolName
             )
         }
+    }
+
+    private func discardStaleNativeSpeechToolTurnState(
+        retaining identity: NativeSpeechToolTurnIdentity
+    ) {
+        nativeSpeechToolContinuationClaimLock.lock()
+        defer { nativeSpeechToolContinuationClaimLock.unlock() }
+        guard nativeSpeechToolTurnState?.identity != identity else { return }
+        nativeSpeechToolTurnState = nil
     }
 
     private func applyNativeSpeechUserFinalControls(
@@ -4171,13 +4228,17 @@ public final class RuntimeCore {
             arguments: request.arguments,
             correlationHash: request.correlationHash
         )
-        nativeSpeechToolExecutionTasks[callIdentity] = Task { [weak self] in
+        let taskStartGate = NativeSpeechToolTaskStartGate()
+        let executionTask = Task { [weak self] in
+            await taskStartGate.wait()
+            guard !Task.isCancelled else { return }
             let result: Result<String, any Error>
             do {
                 result = .success(try await executor.execute(executionRequest))
             } catch {
                 result = .failure(error)
             }
+            guard !Task.isCancelled else { return }
             await self?.completeNativeSpeechToolExecution(
                 result,
                 request: request,
@@ -4186,6 +4247,8 @@ public final class RuntimeCore {
                 callIdentity: callIdentity
             )
         }
+        nativeSpeechToolExecutionTasks[callIdentity] = executionTask
+        await taskStartGate.open()
         recordNativeSpeechToolDiagnostic(
             category: "tool_execution_scheduled",
             identity: callIdentity.turn,
@@ -4222,6 +4285,7 @@ public final class RuntimeCore {
             await taskStartGate.wait()
             guard !Task.isCancelled else { return }
             let decision = await resolver.resolve(permissionRequest)
+            guard !Task.isCancelled else { return }
             await self?.completeNativeSpeechToolPermission(
                 decision,
                 request: permissionRequest
@@ -4551,10 +4615,32 @@ public final class RuntimeCore {
                 output,
                 interactionID: interaction.id
             )
+            guard nativeSpeechToolContinuationIsCurrent(
+                state,
+                interaction: interaction
+            ) else {
+                recordNativeSpeechToolDiagnostic(
+                    category: "tool_continuation_stale",
+                    identity: state.identity,
+                    disposition: "terminated_after_output"
+                )
+                return
+            }
         }
         try await executionEngine.requestNativeSpeechToolContinuation(
             interactionID: interaction.id
         )
+        guard nativeSpeechToolContinuationIsCurrent(
+            state,
+            interaction: interaction
+        ) else {
+                recordNativeSpeechToolDiagnostic(
+                    category: "tool_continuation_stale",
+                    identity: state.identity,
+                    disposition: "terminated_after_continuation_request"
+                )
+            return
+        }
         recordNativeSpeechToolDiagnostic(
             category: "tool_continuation_started",
             identity: state.identity,
@@ -4563,6 +4649,22 @@ public final class RuntimeCore {
         nativeSpeechTurnsWithOutputAudio.remove(state.identity)
         discardNativeSpeechToolContinuationClaim(identity: state.identity)
         scheduleRealtimeSpeechGuard(for: interaction)
+    }
+
+    private func nativeSpeechToolContinuationIsCurrent(
+        _ state: NativeSpeechToolTurnState,
+        interaction: NativeSpeechInteraction
+    ) -> Bool {
+        guard nativeSpeechToolTurnIsCurrent(
+            state.identity,
+            interaction: interaction
+        ) else {
+            return false
+        }
+        nativeSpeechToolContinuationClaimLock.lock()
+        defer { nativeSpeechToolContinuationClaimLock.unlock() }
+        return nativeSpeechToolTurnState?.identity == state.identity
+            && nativeSpeechToolTurnState?.continuationRequested == true
     }
 
     private func claimNativeSpeechToolContinuationIfReady()
@@ -4895,6 +4997,7 @@ public final class RuntimeCore {
         switch event.kind {
         case .cancelled, .closed, .failed:
             realtimeSpeechGuardScheduler.cancel()
+            resetNativeSpeechToolState()
             nativeSpeechInteractionGate.clear(
                 matching: expectedInteractionID
             )
@@ -4931,6 +5034,22 @@ public final class RuntimeCore {
 
     func nativeSpeechToolPermissionTaskCountForTesting() -> Int {
         nativeSpeechToolPermissionTasks.count
+    }
+
+    func nativeSpeechToolLifecycleDebugSnapshot()
+        -> NativeSpeechToolLifecycleDebugSnapshot {
+        nativeSpeechToolContinuationClaimLock.lock()
+        let turnState = nativeSpeechToolTurnState
+        nativeSpeechToolContinuationClaimLock.unlock()
+        return NativeSpeechToolLifecycleDebugSnapshot(
+            executionTaskCount: nativeSpeechToolExecutionTasks.count,
+            permissionTaskCount: nativeSpeechToolPermissionTasks.count,
+            pendingPermissionCount: pendingNativeSpeechToolPermissions.count,
+            handledCallCount: handledNativeSpeechToolCalls.count,
+            hasTurnState: turnState != nil,
+            playbackIdentityCount: nativeSpeechTurnsWithOutputAudio.count,
+            continuationClaimed: turnState?.continuationRequested == true
+        )
     }
 
     func applyNativeSpeechToolPermissionDecisionForTesting(
@@ -4990,7 +5109,9 @@ public final class RuntimeCore {
         nativeSpeechToolPermissionTasks.removeAll(keepingCapacity: true)
         pendingNativeSpeechToolPermissions.removeAll(keepingCapacity: true)
         handledNativeSpeechToolCalls.removeAll(keepingCapacity: true)
+        nativeSpeechToolContinuationClaimLock.lock()
         nativeSpeechToolTurnState = nil
+        nativeSpeechToolContinuationClaimLock.unlock()
         nativeSpeechTurnsWithOutputAudio.removeAll(keepingCapacity: true)
     }
 

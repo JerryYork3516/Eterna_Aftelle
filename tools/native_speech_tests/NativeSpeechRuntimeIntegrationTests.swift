@@ -37,11 +37,21 @@ private actor FakeNativeSpeechProvider:
     private(set) var submittedToolOutputs: [NativeSpeechToolOutput] = []
     private var toolContinuationWaiters:
         [Int: [CheckedContinuation<Void, Never>]] = [:]
+    private let suspendsToolOutputSubmission: Bool
+    private var toolOutputSubmissionContinuation:
+        CheckedContinuation<Void, Never>?
+    private var toolOutputSubmissionStarted = false
+    private var toolOutputSubmissionStartedContinuation:
+        CheckedContinuation<Void, Never>?
     private var preparedProjection: RealtimeSpeechContextProjection?
     private let emitsHandshakeOnStart: Bool
 
-    init(emitsHandshakeOnStart: Bool = false) {
+    init(
+        emitsHandshakeOnStart: Bool = false,
+        suspendsToolOutputSubmission: Bool = false
+    ) {
         self.emitsHandshakeOnStart = emitsHandshakeOnStart
+        self.suspendsToolOutputSubmission = suspendsToolOutputSubmission
     }
 
     func start(request: NativeSpeechStartRequest) async throws {
@@ -123,6 +133,14 @@ private actor FakeNativeSpeechProvider:
     ) async throws {
         operations.append(.toolOutput(interactionID, output.callID))
         submittedToolOutputs.append(output)
+        if suspendsToolOutputSubmission {
+            toolOutputSubmissionStarted = true
+            toolOutputSubmissionStartedContinuation?.resume()
+            toolOutputSubmissionStartedContinuation = nil
+            await withCheckedContinuation { continuation in
+                toolOutputSubmissionContinuation = continuation
+            }
+        }
     }
 
     func requestToolContinuation(
@@ -175,6 +193,18 @@ private actor FakeNativeSpeechProvider:
         await withCheckedContinuation { continuation in
             toolContinuationWaiters[count, default: []].append(continuation)
         }
+    }
+
+    func waitUntilToolOutputSubmissionStarts() async {
+        guard !toolOutputSubmissionStarted else { return }
+        await withCheckedContinuation { continuation in
+            toolOutputSubmissionStartedContinuation = continuation
+        }
+    }
+
+    func resumeToolOutputSubmission() {
+        toolOutputSubmissionContinuation?.resume()
+        toolOutputSubmissionContinuation = nil
     }
 }
 
@@ -730,6 +760,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
         try await testRuntimePendingToolCallRetention(fixtureData: fixtureData)
         try await testRuntimeToolPlaybackGate(fixtureData: fixtureData)
         try await testRuntimeStaleToolResult(fixtureData: fixtureData)
+        try await testRuntimeToolStopLifecycle(fixtureData: fixtureData)
+        try await testRuntimeToolPlaybackStop(fixtureData: fixtureData)
+        try await testRuntimeToolContinuationClose(fixtureData: fixtureData)
+        try await testRuntimeToolProviderFailure(fixtureData: fixtureData)
         try await testRuntimePlaybackFailure(fixtureData: fixtureData)
         try await testRuntimeRejectionDiagnostics(
             fixtureData: fixtureData
@@ -1463,6 +1497,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
     ) async throws {
         for decision in [
             NativeSpeechToolPermissionDecision.approved,
+            .denied,
             .cancelled,
             .stale
         ] {
@@ -1894,6 +1929,10 @@ private struct NativeSpeechRuntimeIntegrationTests {
             ],
             "long Tool interaction retains the final formal exchange"
         )
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "completed long Tool interaction releases all lifecycle state"
+        )
         try await runtime.stopNativeSpeechInput(
             binding: binding,
             reason: .stopped
@@ -2206,10 +2245,568 @@ private struct NativeSpeechRuntimeIntegrationTests {
             staleContinuationCount == 0,
             "stale generation cannot create a new response"
         )
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "Interrupt clears the stale Tool lifecycle"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .cancelled(reason: "interrupt_ack")
+        ))
+        let interruptAcknowledgement = try await runtime
+            .receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+        expect(
+            interruptAcknowledgement == .rejectedLate,
+            "old generation cancellation acknowledgement stays late"
+        )
+
+        let nextExecutor = FakeNativeSpeechToolExecutor(
+            output: #"{"fresh":true}"#
+        )
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: nextExecutor
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("中断后的新工具轮次")
+        ))
+        let freshFinalDisposition = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        guard case .accepted = freshFinalDisposition else {
+            fatalError("FAILED: new generation user final was rejected")
+        }
+        checks += 1
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-stale",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"fresh"}"#.utf8)
+            ))
+        ))
+        let freshToolDisposition = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        guard case .accepted = freshToolDisposition else {
+            fatalError(
+                "FAILED: new generation Tool candidate was rejected: "
+                    + "\(freshToolDisposition)"
+            )
+        }
+        checks += 1
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        let freshBoundaryDisposition = try await runtime
+            .receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        guard case .accepted = freshBoundaryDisposition else {
+            fatalError("FAILED: new generation response boundary was rejected")
+        }
+        checks += 1
+        await nextExecutor.waitUntilCompleted()
+        await provider.waitUntilToolContinuationCount(1)
+        let freshExecutionCount = await nextExecutor.requestCount()
+        expect(
+            freshExecutionCount == 1,
+            "new generation executes a fresh Tool call"
+        )
+        let freshOutputCount = await provider.operationCount(.toolOutput)
+        let freshContinuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            freshOutputCount == 1 && freshContinuationCount == 1,
+            "new generation continues normally after stale cleanup"
+        )
         try await runtime.stopNativeSpeechInput(
             binding: binding,
             reason: .stopped
         )
+    }
+
+    private static func testRuntimeToolStopLifecycle(
+        fixtureData: Data
+    ) async throws {
+        try await assertRuntimeToolExecutionTermination(
+            fixtureData: fixtureData,
+            reason: .stopped
+        )
+        try await assertRuntimeToolExecutionTermination(
+            fixtureData: fixtureData,
+            reason: .superseded
+        )
+        try await assertRuntimeToolPermissionStop(fixtureData: fixtureData)
+    }
+
+    private static func assertRuntimeToolExecutionTermination(
+        fixtureData: Data,
+        reason: NativeSpeechCancellationReason
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let sessionStore = SessionStore()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: sessionStore
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "Tool termination resident loads"
+        )
+        let dialogueBefore = try sessionStore.loadMostRecentDialogueEntries()
+        let executor = FakeNativeSpeechToolExecutor(
+            output: #"{"late":true}"#,
+            suspends: true
+        )
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: reason == .superseded ? 521 : 520
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("终止挂起的工具任务")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-stop-\(reason.rawValue)",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"stop"}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await executor.waitUntilStarted()
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: reason
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: reason
+        )
+        try await runtime.closeActiveNativeSpeechInteraction()
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "\(reason.rawValue) clears suspended execution state"
+        )
+
+        await executor.resume()
+        await executor.waitUntilCompleted()
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            outputCount == 0 && continuationCount == 0,
+            "late execution result cannot continue after \(reason.rawValue)"
+        )
+        let cancelCount = await provider.operationCount(.cancel)
+        let closeCount = await provider.operationCount(.close)
+        expect(
+            cancelCount == 1 && closeCount == 1,
+            "repeated termination is idempotent for \(reason.rawValue)"
+        )
+        let dialogueAfter = try sessionStore.loadMostRecentDialogueEntries()
+        expect(
+            dialogueAfter == dialogueBefore,
+            "terminated Tool turn does not commit Session dialogue"
+        )
+
+        guard reason == .stopped else { return }
+        let nextExecutor = FakeNativeSpeechToolExecutor(
+            output: #"{"fresh":true}"#
+        )
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: nextExecutor
+        )
+        let nextBinding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 522
+        )
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "new interaction starts without old Tool state"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: nextBinding.interactionID,
+            kind: .finalTranscript("新会话执行工具")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: nextBinding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: nextBinding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-stop-stopped",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"fresh"}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: nextBinding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: nextBinding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: nextBinding.interactionID
+        )
+        await provider.waitUntilToolContinuationCount(1)
+        let freshExecutionCount = await nextExecutor.requestCount()
+        expect(
+            freshExecutionCount == 1,
+            "new interaction executes a same-callID Tool normally"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: nextBinding,
+            reason: .stopped
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: nextBinding.interactionID,
+            kind: .thinking
+        ))
+        let lateContinuationEvent = try await runtime
+            .receiveNativeSpeechEvent(
+                interactionID: nextBinding.interactionID
+            )
+        expect(
+            lateContinuationEvent == .rejectedStale,
+            "late Provider event cannot revive a stopped response.create"
+        )
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "Stop clears state after response.create"
+        )
+    }
+
+    private static func assertRuntimeToolPermissionStop(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "permission Stop resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(output: #"{"bad":true}"#)
+        let resolver = FakeNativeSpeechToolPermissionResolver()
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        runtime.configureNativeSpeechToolPermissionResolver(resolver)
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 523
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("终止挂起的授权")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-permission-stop",
+                toolName: "permission_test_action",
+                arguments: Data(#"{}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await resolver.waitUntilRequested(count: 1)
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "Stop clears suspended permission state"
+        )
+        await resolver.decide(.approved, requestAt: 0)
+        await resolver.waitUntilCompleted(count: 1)
+        let executionCount = await executor.requestCount()
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            executionCount == 0 && outputCount == 0
+                && continuationCount == 0,
+            "late approval cannot restore a stopped permission lifecycle"
+        )
+    }
+
+    private static func testRuntimeToolPlaybackStop(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "playback Stop resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(output: #"{"ok":true}"#)
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 524
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("播放完成前停止")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 0,
+                bytes: Data([0, 1]),
+                format: .pcm16
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await acceptPlaybackEvent(
+            .started,
+            generation: 524,
+            binding: binding,
+            runtime: runtime
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-playback-stop",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"playback"}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await executor.waitUntilCompleted()
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "Stop clears output staged behind playback"
+        )
+        let latePlayback = await runtime.handleNativeSpeechPlaybackEvent(
+            RealtimeSpeechPlaybackEvent(
+                interactionID: binding.interactionID,
+                turnNumber: 1,
+                playbackGeneration: 524,
+                kind: .completed
+            )
+        )
+        expect(
+            latePlayback == .rejectedStale,
+            "late playback completion is rejected after Stop"
+        )
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            outputCount == 0 && continuationCount == 0,
+            "late playback cannot release a stopped continuation"
+        )
+    }
+
+    private static func testRuntimeToolContinuationClose(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider(
+            suspendsToolOutputSubmission: true
+        )
+        let sessionStore = SessionStore()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: sessionStore
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "continuation Close resident loads"
+        )
+        let dialogueBefore = try sessionStore.loadMostRecentDialogueEntries()
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: FakeNativeSpeechToolExecutor(output: #"{"ok":true}"#)
+        )
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 525
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("输出提交期间关闭")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-continuation-close",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"close"}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        let responseTask = Task { @MainActor in
+            try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+        }
+        await provider.waitUntilToolOutputSubmissionStarts()
+        try await runtime.closeActiveNativeSpeechInteraction()
+        try await runtime.closeActiveNativeSpeechInteraction()
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "Close clears a claimed continuation"
+        )
+        await provider.resumeToolOutputSubmission()
+        _ = try await responseTask.value
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            outputCount == 1 && continuationCount == 0,
+            "Close between function_call_output and response.create blocks continuation"
+        )
+        let dialogueAfter = try sessionStore.loadMostRecentDialogueEntries()
+        expect(
+            dialogueAfter == dialogueBefore,
+            "closed continuation does not commit Session dialogue"
+        )
+    }
+
+    private static func testRuntimeToolProviderFailure(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "Provider failure resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(
+            output: #"{"late":true}"#,
+            suspends: true
+        )
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 526
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("Provider 失败前的工具")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-provider-failed",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"failed"}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await executor.waitUntilStarted()
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .failed(.transportFailure)
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expectNativeSpeechToolLifecycleCleared(
+            runtime,
+            "Provider failure clears suspended Tool state"
+        )
+        await executor.resume()
+        await executor.waitUntilCompleted()
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            outputCount == 0 && continuationCount == 0,
+            "late Tool result cannot restore a failed interaction"
+        )
+        try await runtime.closeActiveNativeSpeechInteraction()
+        let closeCount = await provider.operationCount(.close)
+        expect(closeCount == 1, "Provider terminal close is idempotent")
     }
 
     private static func nativeSpeechToolDefinitions()
@@ -3503,6 +4100,30 @@ private struct NativeSpeechRuntimeIntegrationTests {
             ),
             languageMetadata: "zh-CN",
             keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
+        )
+    }
+
+    private static func expectNativeSpeechToolLifecycleCleared(
+        _ runtime: RuntimeCore,
+        _ message: String
+    ) {
+        let snapshot = runtime.nativeSpeechToolLifecycleDebugSnapshot()
+        expect(
+            snapshot.executionTaskCount == 0
+                && snapshot.permissionTaskCount == 0
+                && snapshot.pendingPermissionCount == 0
+                && snapshot.handledCallCount == 0
+                && !snapshot.hasTurnState
+                && snapshot.playbackIdentityCount == 0
+                && !snapshot.continuationClaimed,
+            message
+                + " (execution=\(snapshot.executionTaskCount), "
+                + "permission=\(snapshot.permissionTaskCount), "
+                + "pending=\(snapshot.pendingPermissionCount), "
+                + "handled=\(snapshot.handledCallCount), "
+                + "turn=\(snapshot.hasTurnState), "
+                + "playback=\(snapshot.playbackIdentityCount), "
+                + "claim=\(snapshot.continuationClaimed))"
         )
     }
 
