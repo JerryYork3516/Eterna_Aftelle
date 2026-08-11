@@ -4309,13 +4309,17 @@ public final class RuntimeCore {
                 category: "tool_permission_unavailable",
                 context: context
             )
-        case .cancelled, .stale:
-            recordNativeSpeechToolDiagnostic(
+        case .cancelled:
+            await completeNativeSpeechToolPermissionRejection(
+                code: "permission_cancelled",
+                category: "tool_permission_cancelled",
+                context: context
+            )
+        case .stale:
+            await completeNativeSpeechToolPermissionRejection(
+                code: "permission_stale",
                 category: "tool_permission_stale",
-                identity: callIdentity.turn,
-                disposition: decision.rawValue,
-                correlationHash: request.correlationHash,
-                toolName: request.toolName
+                context: context
             )
         }
     }

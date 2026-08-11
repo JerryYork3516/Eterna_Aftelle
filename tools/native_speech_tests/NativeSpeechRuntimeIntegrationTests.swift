@@ -1342,6 +1342,18 @@ private struct NativeSpeechRuntimeIntegrationTests {
             expectedCode: "permission_unavailable",
             expectedDiagnostic: "tool_permission_unavailable"
         )
+        try await assertRuntimeToolPermissionRejection(
+            fixtureData: fixtureData,
+            decision: .cancelled,
+            expectedCode: "permission_cancelled",
+            expectedDiagnostic: "tool_permission_cancelled"
+        )
+        try await assertRuntimeToolPermissionRejection(
+            fixtureData: fixtureData,
+            decision: .stale,
+            expectedCode: "permission_stale",
+            expectedDiagnostic: "tool_permission_stale"
+        )
     }
 
     private static func assertRuntimeToolPermissionRejection(
@@ -1416,7 +1428,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         expect(
             executedCount == 0,
-            "denied or unavailable permission never executes Tool"
+            "terminal permission rejection never executes Tool"
         )
         expect(
             outputCount == 1 && continuationCount == 1,
@@ -1449,6 +1461,22 @@ private struct NativeSpeechRuntimeIntegrationTests {
     private static func testRuntimeToolPermissionInterrupt(
         fixtureData: Data
     ) async throws {
+        for decision in [
+            NativeSpeechToolPermissionDecision.approved,
+            .cancelled,
+            .stale
+        ] {
+            try await assertRuntimeToolPermissionInterrupt(
+                fixtureData: fixtureData,
+                lateDecision: decision
+            )
+        }
+    }
+
+    private static func assertRuntimeToolPermissionInterrupt(
+        fixtureData: Data,
+        lateDecision: NativeSpeechToolPermissionDecision
+    ) async throws {
         let provider = FakeNativeSpeechProvider()
         let runtime = configuredRuntime(
             provider: provider,
@@ -1478,7 +1506,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
         await provider.enqueue(NativeSpeechEvent(
             interactionID: binding.interactionID,
             kind: .toolRequestCandidate(NativeSpeechToolRequest(
-                callID: "call-permission-stale",
+                callID: "call-permission-interrupt-\(lateDecision.rawValue)",
                 toolName: "permission_test_action",
                 arguments: Data(#"{}"#.utf8)
             ))
@@ -1525,7 +1553,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
             "Interrupt marks the pending permission stale"
         )
         _ = try await commitPendingInterrupt(runtime: runtime, binding: binding)
-        await resolver.decide(.approved, requestAt: 0)
+        await resolver.decide(lateDecision, requestAt: 0)
         await resolver.waitUntilCompleted(count: 1)
         await runtime.waitForNativeSpeechToolPermissionTasksForTesting()
         let executedCount = await executor.requestCount()
@@ -1535,11 +1563,11 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         expect(
             executedCount == 0,
-            "late approval cannot execute a stale generation"
+            "late permission decision cannot execute a stale generation"
         )
         expect(
             outputCount == 0 && continuationCount == 0,
-            "late approval cannot restore output or continuation"
+            "late permission decision cannot restore output or continuation"
         )
         try await runtime.stopNativeSpeechInput(
             binding: binding,
