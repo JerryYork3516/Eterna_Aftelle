@@ -5,6 +5,64 @@ nonisolated enum NativeSpeechToolPermission: String, Sendable, Equatable {
     case requiresPermission = "requires_permission"
 }
 
+nonisolated struct NativeSpeechToolTurnIdentity: Hashable, Sendable {
+    let interactionID: NativeSpeechInteractionID
+    let turnNumber: UInt64
+    let turnGeneration: UInt64
+}
+
+nonisolated struct NativeSpeechToolCallIdentity: Hashable, Sendable {
+    let turn: NativeSpeechToolTurnIdentity
+    let callID: String
+}
+
+nonisolated enum NativeSpeechToolPermissionRequestState:
+    String,
+    Sendable,
+    Equatable {
+    case pending
+    case approved
+    case denied
+    case cancelled
+    case unavailable
+    case stale
+}
+
+nonisolated enum NativeSpeechToolPermissionDecision:
+    String,
+    Sendable,
+    Equatable {
+    case approved
+    case denied
+    case cancelled
+    case unavailable
+    case stale
+}
+
+nonisolated struct NativeSpeechToolPermissionRequest: Sendable, Equatable {
+    let identity: NativeSpeechToolCallIdentity
+    let toolName: String
+    let permission: NativeSpeechToolPermission
+    let displaySummary: String
+    let state: NativeSpeechToolPermissionRequestState
+    let correlationHash: String?
+}
+
+nonisolated protocol NativeSpeechToolPermissionResolving: Sendable {
+    func resolve(
+        _ request: NativeSpeechToolPermissionRequest
+    ) async -> NativeSpeechToolPermissionDecision
+}
+
+nonisolated struct UnavailableNativeSpeechToolPermissionResolver:
+    NativeSpeechToolPermissionResolving {
+    func resolve(
+        _ request: NativeSpeechToolPermissionRequest
+    ) async -> NativeSpeechToolPermissionDecision {
+        .unavailable
+    }
+}
+
 nonisolated struct NativeSpeechToolDefinition: Sendable, Equatable {
     let name: String
     let description: String

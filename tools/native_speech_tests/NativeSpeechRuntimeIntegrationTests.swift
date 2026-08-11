@@ -239,6 +239,81 @@ private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
     }
 }
 
+private actor FakeNativeSpeechToolPermissionResolver:
+    NativeSpeechToolPermissionResolving {
+    private let automaticDecision: NativeSpeechToolPermissionDecision?
+    private(set) var requests: [NativeSpeechToolPermissionRequest] = []
+    private var continuations: [
+        NativeSpeechToolCallIdentity:
+            CheckedContinuation<NativeSpeechToolPermissionDecision, Never>
+    ] = [:]
+    private var requestWaiters:
+        [Int: [CheckedContinuation<Void, Never>]] = [:]
+    private var completedCount = 0
+    private var completionWaiters:
+        [Int: [CheckedContinuation<Void, Never>]] = [:]
+
+    init(
+        automaticDecision: NativeSpeechToolPermissionDecision? = nil
+    ) {
+        self.automaticDecision = automaticDecision
+    }
+
+    func resolve(
+        _ request: NativeSpeechToolPermissionRequest
+    ) async -> NativeSpeechToolPermissionDecision {
+        requests.append(request)
+        requestWaiters.removeValue(forKey: requests.count)?.forEach {
+            $0.resume()
+        }
+        let decision: NativeSpeechToolPermissionDecision
+        if let automaticDecision {
+            decision = automaticDecision
+        } else {
+            decision = await withCheckedContinuation { continuation in
+                continuations[request.identity] = continuation
+            }
+        }
+        completedCount += 1
+        completionWaiters.removeValue(forKey: completedCount)?.forEach {
+            $0.resume()
+        }
+        return decision
+    }
+
+    func decide(
+        _ decision: NativeSpeechToolPermissionDecision,
+        requestAt index: Int
+    ) {
+        let identity = requests[index].identity
+        continuations.removeValue(forKey: identity)?.resume(
+            returning: decision
+        )
+    }
+
+    func waitUntilRequested(count: Int) async {
+        guard requests.count < count else { return }
+        await withCheckedContinuation { continuation in
+            requestWaiters[count, default: []].append(continuation)
+        }
+    }
+
+    func waitUntilCompleted(count: Int) async {
+        guard completedCount < count else { return }
+        await withCheckedContinuation { continuation in
+            completionWaiters[count, default: []].append(continuation)
+        }
+    }
+
+    func request(at index: Int) -> NativeSpeechToolPermissionRequest {
+        requests[index]
+    }
+
+    func requestCount() -> Int {
+        requests.count
+    }
+}
+
 @main
 @MainActor
 private struct NativeSpeechRuntimeIntegrationTests {
@@ -636,6 +711,21 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         try await testRuntimeInterrupts(fixtureData: fixtureData)
         try await testRuntimeToolRouting(fixtureData: fixtureData)
+        try await testRuntimeToolPermissionApproveAndPlayback(
+            fixtureData: fixtureData
+        )
+        try await testRuntimeToolPermissionRejections(
+            fixtureData: fixtureData
+        )
+        try await testRuntimeToolPermissionInterrupt(
+            fixtureData: fixtureData
+        )
+        try await testRuntimeToolPermissionAcrossTurns(
+            fixtureData: fixtureData
+        )
+        try await testRuntimeMultipleToolPermissions(
+            fixtureData: fixtureData
+        )
         try await testRuntimeToolCallHistoryBounded(fixtureData: fixtureData)
         try await testRuntimePendingToolCallRetention(fixtureData: fixtureData)
         try await testRuntimeToolPlaybackGate(fixtureData: fixtureData)
@@ -663,9 +753,15 @@ private struct NativeSpeechRuntimeIntegrationTests {
         let executor = FakeNativeSpeechToolExecutor(
             output: #"{"value":"PRIVATE_TOOL_RESULT_DO_NOT_STORE"}"#
         )
+        let permissionResolver = FakeNativeSpeechToolPermissionResolver(
+            automaticDecision: .approved
+        )
         runtime.configureNativeSpeechToolsForTesting(
             definitions: nativeSpeechToolDefinitions(),
             executor: executor
+        )
+        runtime.configureNativeSpeechToolPermissionResolver(
+            permissionResolver
         )
         let diagnostics = NativeSpeechDiagnosticBuffer()
         runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
@@ -674,8 +770,11 @@ private struct NativeSpeechRuntimeIntegrationTests {
         )
         let advertised = await provider.startedToolDefinitions.last ?? []
         expect(
-            advertised.map(\.name) == ["lookup_test_value"],
-            "only permission-free Runtime definitions reach Provider"
+            advertised.map(\.name) == [
+                "lookup_test_value",
+                "permission_test_action"
+            ],
+            "all Runtime-available Tool definitions reach Provider"
         )
 
         await provider.enqueue(NativeSpeechEvent(
@@ -740,6 +839,11 @@ private struct NativeSpeechRuntimeIntegrationTests {
         expect(
             executedAfterDuplicate == 1,
             "duplicate call ID executes exactly once"
+        )
+        let permissionRequestCount = await permissionResolver.requestCount()
+        expect(
+            permissionRequestCount == 0,
+            "permission-free Tool bypasses the permission resolver"
         )
         expect(
             runtime.handledNativeSpeechToolCallCountForTesting() == 1,
@@ -902,11 +1006,6 @@ private struct NativeSpeechRuntimeIntegrationTests {
                 callID: "call-unknown",
                 toolName: "unknown_tool",
                 arguments: Data(#"{}"#.utf8)
-            ),
-            NativeSpeechToolRequest(
-                callID: "call-permission",
-                toolName: "permission_test_action",
-                arguments: Data(#"{}"#.utf8)
             )
         ]
         for rejected in rejectedRequests {
@@ -921,7 +1020,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
         let executedAfterRejected = await executor.requestCount()
         expect(
             executedAfterRejected == 1,
-            "malformed, unknown, and permission-required calls never execute"
+            "malformed and unknown calls never execute"
         )
         await provider.enqueue(NativeSpeechEvent(
             interactionID: binding.interactionID,
@@ -936,14 +1035,8 @@ private struct NativeSpeechRuntimeIntegrationTests {
             )
         )
         expect(
-            rejectedOutputs.count == 4,
+            rejectedOutputs.count == 3,
             "each rejected call returns one bounded error result"
-        )
-        expect(
-            rejectedOutputs.map(\.output).contains {
-                $0.contains("permission_required")
-            },
-            "permission-required call is denied without executing"
         )
         let diagnosticEvents = diagnostics.drain().events
         expect(
@@ -977,6 +1070,670 @@ private struct NativeSpeechRuntimeIntegrationTests {
                     || $0.disposition?.contains("PRIVATE_TOOL") == true
             },
             "Runtime diagnostics contain no tool arguments or result payload"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+    }
+
+    private static func testRuntimeToolPermissionApproveAndPlayback(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let sessionStore = SessionStore()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: sessionStore
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "permission approve resident loads"
+        )
+        _ = try runtime.clearDialogueTestData()
+        let memoryBefore = runtime.narrativeMemoryDebugSnapshot()
+        let executor = FakeNativeSpeechToolExecutor(
+            output: #"{"approved":true}"#
+        )
+        let resolver = FakeNativeSpeechToolPermissionResolver()
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        runtime.configureNativeSpeechToolPermissionResolver(resolver)
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 506
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("请执行受控测试操作")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputText(text: "这个操作需要授权", isFinal: true)
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 0,
+                bytes: Data([0, 1]),
+                format: .pcm16
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        let playbackStarted = await runtime.handleNativeSpeechPlaybackEvent(
+            RealtimeSpeechPlaybackEvent(
+                interactionID: binding.interactionID,
+                turnNumber: 1,
+                playbackGeneration: 81,
+                kind: .started
+            )
+        )
+        expect(playbackStarted == .applied, "permission interim playback starts")
+        let toolRequest = NativeSpeechToolRequest(
+            callID: "call-permission-approve",
+            toolName: "permission_test_action",
+            arguments: Data(#"{}"#.utf8),
+            correlationHash: "safe-permission-hash"
+        )
+        for _ in 0..<2 {
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .toolRequestCandidate(toolRequest)
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+        }
+        await resolver.waitUntilRequested(count: 1)
+        let permissionRequest = await resolver.request(at: 0)
+        expect(
+            permissionRequest.identity.turn.interactionID
+                == binding.interactionID
+                && permissionRequest.identity.turn.turnNumber == 1
+                && permissionRequest.identity.callID
+                    == "call-permission-approve"
+                && permissionRequest.toolName == "permission_test_action",
+            "permission request preserves the full Tool call identity"
+        )
+        expect(
+            permissionRequest.permission == .requiresPermission
+                && permissionRequest.state == .pending
+                && !permissionRequest.displaySummary.contains("{}"),
+            "permission request exposes only safe Runtime metadata"
+        )
+        let resolverCount = await resolver.requestCount()
+        let executorBeforeApproval = await executor.requestCount()
+        expect(
+            resolverCount == 1 && executorBeforeApproval == 0,
+            "duplicate candidate creates one prompt and no execution"
+        )
+        expect(
+            runtime.pendingNativeSpeechToolPermissionCountForTesting() == 1,
+            "Runtime owns one pending permission request"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 1,
+                bytes: Data([2, 3]),
+                format: .pcm16
+            ))
+        ))
+        let audioWhilePending = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        guard case .accepted = audioWhilePending else {
+            fatalError("FAILED: permission wait blocked realtime audio")
+        }
+        checks += 1
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        let boundaryWhilePending = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        guard case .accepted = boundaryWhilePending else {
+            fatalError("FAILED: permission wait blocked response boundary")
+        }
+        checks += 1
+        await resolver.decide(.approved, requestAt: 0)
+        await resolver.waitUntilCompleted(count: 1)
+        await runtime.waitForNativeSpeechToolPermissionTasksForTesting()
+        await executor.waitUntilCompleted()
+        let outputBeforePlayback = await provider.operationCount(.toolOutput)
+        let continuationBeforePlayback = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            outputBeforePlayback == 0 && continuationBeforePlayback == 0,
+            "approval cannot bypass the active playback gate"
+        )
+        let playbackCompleted = await runtime.handleNativeSpeechPlaybackEvent(
+            RealtimeSpeechPlaybackEvent(
+                interactionID: binding.interactionID,
+                turnNumber: 1,
+                playbackGeneration: 81,
+                kind: .completed
+            )
+        )
+        expect(
+            playbackCompleted == .applied,
+            "permission interim playback drains"
+        )
+        await provider.waitUntilToolContinuationCount(1)
+        let executedAfterApproval = await executor.requestCount()
+        let outputAfterPlayback = await provider.operationCount(.toolOutput)
+        let continuationAfterPlayback = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            executedAfterApproval == 1
+                && outputAfterPlayback == 1
+                && continuationAfterPlayback == 1,
+            "approved permission executes and continues exactly once"
+        )
+        await runtime.applyNativeSpeechToolPermissionDecisionForTesting(
+            .approved,
+            request: permissionRequest
+        )
+        let executedAfterDuplicateDecision = await executor.requestCount()
+        let outputAfterDuplicateDecision = await provider.operationCount(
+            .toolOutput
+        )
+        expect(
+            executedAfterDuplicateDecision == 1
+                && outputAfterDuplicateDecision == 1,
+            "duplicate approval is ignored by Runtime"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .thinking
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputText(text: "操作已获授权并完成", isFinal: true)
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        let dialogue = try sessionStore.loadMostRecentDialogueEntries()
+        expect(
+            dialogue.map(\.text) == [
+                "请执行受控测试操作",
+                "操作已获授权并完成"
+            ],
+            "permission state stays outside the formal Session exchange"
+        )
+        expect(
+            !dialogue.contains {
+                $0.text.contains("call-permission-approve")
+                    || $0.text.contains("safe-permission-hash")
+                    || $0.text.contains("approved")
+            },
+            "permission identity and decision never enter Session dialogue"
+        )
+        expect(
+            runtime.narrativeMemoryDebugSnapshot() == memoryBefore,
+            "permission request and decision never enter narrative memory"
+        )
+        let permissionDiagnostics = diagnostics.drain().events
+        let diagnosticCategories = Set(permissionDiagnostics.map(\.category))
+        expect(
+            diagnosticCategories.contains(
+                "tool_permission_requested:permission_test_action"
+            )
+                && diagnosticCategories.contains(
+                    "tool_permission_approved:permission_test_action"
+                )
+                && diagnosticCategories.contains(
+                    "tool_permission_duplicate:permission_test_action"
+                ),
+            "permission lifecycle emits redacted Runtime diagnostics"
+        )
+        expect(
+            !permissionDiagnostics.contains {
+                $0.category.contains("call-permission-approve")
+                    || $0.disposition?.contains("{}") == true
+            },
+            "permission diagnostics contain no call ID or arguments"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+    }
+
+    private static func testRuntimeToolPermissionRejections(
+        fixtureData: Data
+    ) async throws {
+        try await assertRuntimeToolPermissionRejection(
+            fixtureData: fixtureData,
+            decision: .denied,
+            expectedCode: "permission_denied",
+            expectedDiagnostic: "tool_permission_denied"
+        )
+        try await assertRuntimeToolPermissionRejection(
+            fixtureData: fixtureData,
+            decision: nil,
+            expectedCode: "permission_unavailable",
+            expectedDiagnostic: "tool_permission_unavailable"
+        )
+    }
+
+    private static func assertRuntimeToolPermissionRejection(
+        fixtureData: Data,
+        decision: NativeSpeechToolPermissionDecision?,
+        expectedCode: String,
+        expectedDiagnostic: String
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "permission rejection resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(output: #"{"bad":true}"#)
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        let resolver: FakeNativeSpeechToolPermissionResolver?
+        if let decision {
+            let configured = FakeNativeSpeechToolPermissionResolver(
+                automaticDecision: decision
+            )
+            runtime.configureNativeSpeechToolPermissionResolver(configured)
+            resolver = configured
+        } else {
+            resolver = nil
+        }
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: decision == nil ? 508 : 507
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("测试一次性工具授权拒绝")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-\(expectedCode)",
+                toolName: "permission_test_action",
+                arguments: Data(#"{}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        if let resolver {
+            await resolver.waitUntilRequested(count: 1)
+            await resolver.waitUntilCompleted(count: 1)
+        }
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.waitUntilToolContinuationCount(1)
+        let executedCount = await executor.requestCount()
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            executedCount == 0,
+            "denied or unavailable permission never executes Tool"
+        )
+        expect(
+            outputCount == 1 && continuationCount == 1,
+            "permission rejection returns and continues exactly once "
+                + "(output=\(outputCount), continuation=\(continuationCount))"
+        )
+        expect(
+            runtime.nativeSpeechToolPermissionTaskCountForTesting() == 0,
+            "completed permission task state is released"
+        )
+        let outputs = await provider.submittedToolOutputs
+        expect(
+            outputs.count == 1
+                && outputs[0].output.contains(expectedCode),
+            "permission rejection returns a bounded Runtime error"
+        )
+        let diagnosticCategories = diagnostics.drain().events.map(\.category)
+        expect(
+            diagnosticCategories.contains {
+                $0 == "\(expectedDiagnostic):permission_test_action"
+            },
+            "permission rejection emits its safe diagnostic"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+    }
+
+    private static func testRuntimeToolPermissionInterrupt(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "permission interrupt resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(output: #"{"late":true}"#)
+        let resolver = FakeNativeSpeechToolPermissionResolver()
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        runtime.configureNativeSpeechToolPermissionResolver(resolver)
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 509
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("这个授权会被中断")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                callID: "call-permission-stale",
+                toolName: "permission_test_action",
+                arguments: Data(#"{}"#.utf8)
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await resolver.waitUntilRequested(count: 1)
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .outputAudio(NativeSpeechAudioPayload(
+                interactionID: binding.interactionID,
+                sequenceNumber: 0,
+                bytes: Data([0, 1]),
+                format: .pcm16
+            ))
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        let generationBeforeInterrupt = runtime
+            .realtimeSpeechSubtitleSnapshot().turnGeneration
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .inputSpeechStarted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        expect(
+            runtime.realtimeSpeechSubtitleSnapshot().turnGeneration
+                > generationBeforeInterrupt,
+            "permission Interrupt advances generation"
+        )
+        expect(
+            runtime.pendingNativeSpeechToolPermissionCountForTesting() == 0,
+            "Interrupt marks the pending permission stale"
+        )
+        _ = try await commitPendingInterrupt(runtime: runtime, binding: binding)
+        await resolver.decide(.approved, requestAt: 0)
+        await resolver.waitUntilCompleted(count: 1)
+        await runtime.waitForNativeSpeechToolPermissionTasksForTesting()
+        let executedCount = await executor.requestCount()
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            executedCount == 0,
+            "late approval cannot execute a stale generation"
+        )
+        expect(
+            outputCount == 0 && continuationCount == 0,
+            "late approval cannot restore output or continuation"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+    }
+
+    private static func testRuntimeToolPermissionAcrossTurns(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "permission multi-turn resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(output: #"{"ok":true}"#)
+        let resolver = FakeNativeSpeechToolPermissionResolver(
+            automaticDecision: .approved
+        )
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        runtime.configureNativeSpeechToolPermissionResolver(resolver)
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 510
+        )
+        for turn in 1...2 {
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .finalTranscript("一次性授权轮次 \(turn)")
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .toolRequestCandidate(NativeSpeechToolRequest(
+                    callID: "call-permission-repeat",
+                    toolName: "permission_test_action",
+                    arguments: Data(#"{}"#.utf8)
+                ))
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await resolver.waitUntilRequested(count: turn)
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .responseCompleted
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await executor.waitUntilCompleted(count: turn)
+            await provider.waitUntilToolContinuationCount(turn)
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .thinking
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .outputText(
+                    text: "一次性授权回答 \(turn)",
+                    isFinal: true
+                )
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .responseCompleted
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+        }
+        let permissionCount = await resolver.requestCount()
+        let executionCount = await executor.requestCount()
+        expect(
+            permissionCount == 2 && executionCount == 2,
+            "same Tool and callID require fresh approval in each formal turn"
+        )
+        let requests = await resolver.requests
+        expect(
+            requests[0].identity.turn != requests[1].identity.turn,
+            "permission identity changes with formal turn and generation"
+        )
+        try await runtime.stopNativeSpeechInput(
+            binding: binding,
+            reason: .stopped
+        )
+    }
+
+    private static func testRuntimeMultipleToolPermissions(
+        fixtureData: Data
+    ) async throws {
+        let provider = FakeNativeSpeechProvider()
+        let runtime = configuredRuntime(
+            provider: provider,
+            sessionStore: SessionStore()
+        )
+        expect(
+            runtime.loadDR(from: fixtureData).isLoaded,
+            "multiple Tool permission resident loads"
+        )
+        let executor = FakeNativeSpeechToolExecutor(output: #"{"ok":true}"#)
+        let resolver = FakeNativeSpeechToolPermissionResolver()
+        runtime.configureNativeSpeechToolsForTesting(
+            definitions: nativeSpeechToolDefinitions(),
+            executor: executor
+        )
+        runtime.configureNativeSpeechToolPermissionResolver(resolver)
+        let binding = try await runtime.startNativeSpeechInput(
+            captureGeneration: 511
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .finalTranscript("同一轮执行两个工具")
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        let requests = [
+            NativeSpeechToolRequest(
+                callID: "call-free-multiple",
+                toolName: "lookup_test_value",
+                arguments: Data(#"{"key":"free"}"#.utf8)
+            ),
+            NativeSpeechToolRequest(
+                callID: "call-permission-multiple",
+                toolName: "permission_test_action",
+                arguments: Data(#"{}"#.utf8)
+            )
+        ]
+        for request in requests {
+            await provider.enqueue(NativeSpeechEvent(
+                interactionID: binding.interactionID,
+                kind: .toolRequestCandidate(request)
+            ))
+            _ = try await runtime.receiveNativeSpeechEvent(
+                interactionID: binding.interactionID
+            )
+        }
+        await executor.waitUntilCompleted(count: 1)
+        await resolver.waitUntilRequested(count: 1)
+        let executionBeforeApproval = await executor.requestCount()
+        expect(
+            executionBeforeApproval == 1,
+            "permission-free Tool runs while the other permission is pending"
+        )
+        expect(
+            runtime.pendingNativeSpeechToolPermissionCountForTesting() == 1,
+            "multiple-call turn retains one bounded permission request"
+        )
+        await provider.enqueue(NativeSpeechEvent(
+            interactionID: binding.interactionID,
+            kind: .responseCompleted
+        ))
+        _ = try await runtime.receiveNativeSpeechEvent(
+            interactionID: binding.interactionID
+        )
+        let continuationBeforeApproval = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            continuationBeforeApproval == 0,
+            "response continuation waits for every Tool call"
+        )
+        await resolver.decide(.approved, requestAt: 0)
+        await resolver.waitUntilCompleted(count: 1)
+        await runtime.waitForNativeSpeechToolPermissionTasksForTesting()
+        await executor.waitUntilCompleted(count: 2)
+        await provider.waitUntilToolContinuationCount(1)
+        let executionAfterApproval = await executor.requestCount()
+        let outputCount = await provider.operationCount(.toolOutput)
+        let continuationCount = await provider.operationCount(
+            .toolContinuation
+        )
+        expect(
+            executionAfterApproval == 2 && outputCount == 2,
+            "independent Tool calls each execute and produce one output"
+        )
+        expect(
+            continuationCount == 1,
+            "multiple Tool outputs create one continuation"
         )
         try await runtime.stopNativeSpeechInput(
             binding: binding,
