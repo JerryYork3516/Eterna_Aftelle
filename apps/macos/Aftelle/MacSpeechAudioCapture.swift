@@ -242,6 +242,7 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
         ) else {
             throw MacSpeechAudioCaptureError.converterUnavailable
         }
+        converter.channelMap = [0]
         self.converter = converter
         self.outputFormat = outputFormat
         inputSampleRate = inputFormat.sampleRate

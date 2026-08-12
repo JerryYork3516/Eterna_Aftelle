@@ -188,6 +188,11 @@ private struct MacSpeechAudioHostTests {
         } catch {
             fatalError("FAILED: 48 kHz stereo conversion: \(error)")
         }
+        do {
+            try testVoiceProcessingThreeChannelConversionIsAudible()
+        } catch {
+            fatalError("FAILED: 16 kHz voice-processing conversion: \(error)")
+        }
         testBoundedFrameBuffer()
         await testHostFrameDiagnosticsAndStaleRejection()
         await testDeviceChangesStopSafelyWithoutAutomaticRestart()
@@ -447,6 +452,50 @@ private struct MacSpeechAudioHostTests {
         expect(decoded.prefix(128).contains { $0 < -20_000 }, "stereo negative peak converts to mono")
         expect(decoded.suffix(128).contains { $0 > 20_000 }, "stereo positive peak converts to mono")
         expect(converted.activity > 0, "converter reports bounded activity")
+    }
+
+    private static func testVoiceProcessingThreeChannelConversionIsAudible()
+        throws
+    {
+        guard let layout = AVAudioChannelLayout(
+            layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3
+        ) else {
+            fatalError("FAILED: voice-processing channel layout creation")
+        }
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            interleaved: false,
+            channelLayout: layout
+        )
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: 1_024
+        ),
+        let channels = buffer.floatChannelData else {
+            fatalError("FAILED: voice-processing test buffer creation")
+        }
+        buffer.frameLength = 1_024
+        for channel in 0 ..< 3 {
+            for index in 0 ..< 1_024 {
+                channels[channel][index] = index < 512 ? -0.5 : 0.5
+            }
+        }
+
+        let packets = try MacSpeechAudioConverter(inputFormat: format)
+            .convert(buffer)
+        guard let converted = packets.first else {
+            fatalError("FAILED: voice-processing packet unavailable")
+        }
+        let decoded = decodePCM16(converted.bytes)
+        expect(
+            decoded.contains { abs(Int($0)) > 10_000 },
+            "three-channel voice-processing input remains audible after mono conversion"
+        )
+        expect(
+            converted.activity > 0.1,
+            "three-channel voice-processing input retains speech activity"
+        )
     }
 
     private static func testExactTwentyMillisecondPacketization() {
