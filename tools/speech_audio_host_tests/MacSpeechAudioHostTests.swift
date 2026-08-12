@@ -45,17 +45,23 @@ private final class FakeMacSpeechAudioCapture:
     MacSpeechAudioCapturing, @unchecked Sendable
 {
     private let lock = NSLock()
+    private let startError: MacSpeechAudioCaptureError?
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
     private var starts = 0
     private var stops = 0
 
+    init(startError: MacSpeechAudioCaptureError? = nil) {
+        self.startError = startError
+    }
+
     func start(
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) throws -> MacSpeechNativeInputFormat {
-        lock.withLock {
+        if let startError { throw startError }
+        return lock.withLock {
             guard !started else {
                 return MacSpeechNativeInputFormat(
                     sampleRate: 48_000,
@@ -172,6 +178,7 @@ private struct MacSpeechAudioHostTests {
         await testRequestFailure()
         await testQueryFailure()
         await testUnauthorizedCaptureIsRejected()
+        await testVoiceProcessingUnavailableFailsClosed()
         await testStartStopRestartAreIdempotent()
         await testPreparedCaptureDefersProducerAndResetsGenerationStats()
         testPCM16Encoding()
@@ -307,6 +314,28 @@ private struct MacSpeechAudioHostTests {
         expect(!snapshot.isCapturing, "unauthorized capture does not start")
         expect(capture.startCount == 0, "unauthorized capture never reaches engine")
         expect(snapshot.lastError == "microphone_not_authorized", "authorization failure is diagnostic")
+    }
+
+    private static func testVoiceProcessingUnavailableFailsClosed() async {
+        let capture = FakeMacSpeechAudioCapture(
+            startError: .voiceProcessingUnavailable
+        )
+        let host = MacSpeechAudioHost(
+            authorizationProvider: FakeMicrophoneAuthorizationProvider(
+                authorization: .authorized
+            ),
+            capture: capture,
+            deviceMonitor: FakeMacSpeechDeviceMonitor(route: availableRoute)
+        )
+
+        let snapshot = await host.startCapture()
+        expect(!snapshot.isCapturing, "capture does not bypass voice processing")
+        expect(snapshot.state == .failed, "voice processing failure stops capture")
+        expect(
+            snapshot.lastError == "voice_processing_unavailable",
+            "voice processing failure is diagnostic"
+        )
+        expect(!capture.isStarted, "raw microphone capture never starts")
     }
 
     private static func testStartStopRestartAreIdempotent() async {

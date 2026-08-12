@@ -204,6 +204,7 @@ nonisolated enum MacSpeechAudioCaptureError: String, Error, Sendable {
     case invalidInputFormat = "invalid_input_format"
     case converterUnavailable = "audio_converter_unavailable"
     case conversionFailed = "audio_conversion_failed"
+    case voiceProcessingUnavailable = "voice_processing_unavailable"
     case engineStartFailed = "audio_engine_start_failed"
 }
 
@@ -310,6 +311,15 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
             let engine = AVAudioEngine()
             let inputNode = engine.inputNode
+            do {
+                try inputNode.setVoiceProcessingEnabled(true)
+            } catch {
+                throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
+            }
+            guard inputNode.isVoiceProcessingEnabled,
+                  engine.outputNode.isVoiceProcessingEnabled else {
+                throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
+            }
             let inputFormat = inputNode.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
                 throw MacSpeechAudioCaptureError.invalidInputFormat

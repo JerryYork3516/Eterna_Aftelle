@@ -55,6 +55,17 @@ if ! rg -q 'AVAudioEngine' "$capture" \
 fi
 echo "speech_audio_host_scope=PASS"
 
+voice_processing_line="$(rg -n -m 1 'setVoiceProcessingEnabled\(true\)' "$capture" | cut -d: -f1)"
+input_tap_line="$(rg -n -m 1 'inputNode\.installTap' "$capture" | cut -d: -f1)"
+if [ "$voice_processing_line" -ge "$input_tap_line" ] \
+  || ! rg -q 'inputNode\.isVoiceProcessingEnabled' "$capture" \
+  || ! rg -q 'engine\.outputNode\.isVoiceProcessingEnabled' "$capture" \
+  || ! rg -q 'voiceProcessingUnavailable = "voice_processing_unavailable"' "$capture"; then
+  echo "speech_audio_host_voice_processing=FAIL"
+  exit 1
+fi
+echo "speech_audio_host_voice_processing=PASS"
+
 rg -q 'packetDurationMilliseconds = 20' "$capture"
 rg -q 'packetSampleCount = 480' "$capture"
 rg -q 'packetByteCount = 960' "$capture"
