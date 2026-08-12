@@ -469,6 +469,8 @@ private struct MacSpeechAudioOutputHostTests {
         expect(completed.queueDepth == 0, "queue exhausted")
         expect(completed.playbackStartedCount == 1, "playback start counted")
         expect(completed.playbackCompletedCount == 1, "playback completion counted")
+        expect(player.finishPlaybackCount == 1,
+               "formal playback completion releases the input echo gate once")
         expect(
             completed.recentEvents.filter { $0.kind == .chunkPlayed }
                 .compactMap(\.sequence) == [1, 2],
@@ -505,6 +507,8 @@ private struct MacSpeechAudioOutputHostTests {
         let gap = await host.currentSnapshot()
         expect(gap.playbackCompletedCount == 0,
                "temporary queue gap is not response completion")
+        expect(player.finishPlaybackCount == 0,
+               "temporary queue gap keeps the input echo gate active")
         expect(gap.recentEvents.map(\.kind).contains(.playbackStalled),
                "temporary queue gap reports stalled")
         _ = await host.enqueue(

@@ -7,6 +7,7 @@ trap 'rm -rf "$build_dir"' EXIT
 
 host="$repo_root/apps/macos/Aftelle/MacSpeechAudioHost.swift"
 capture="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
+player="$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputPlayer.swift"
 device_monitor="$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
 tests="$repo_root/tools/speech_audio_host_tests/MacSpeechAudioHostTests.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
@@ -55,9 +56,10 @@ if ! rg -q 'AVAudioEngine' "$capture" \
 fi
 echo "speech_audio_host_scope=PASS"
 
-voice_processing_line="$(rg -n -m 1 'setVoiceProcessingEnabled\(true\)' "$capture" | cut -d: -f1)"
+voice_processing_line="$(rg -n -m 1 'try configureIfNeeded\(\)' "$capture" | cut -d: -f1)"
 input_tap_line="$(rg -n -m 1 'inputNode\.installTap' "$capture" | cut -d: -f1)"
 if [ "$voice_processing_line" -ge "$input_tap_line" ] \
+  || ! rg -q 'setVoiceProcessingEnabled\(true\)' "$capture" \
   || ! rg -q 'inputNode\.isVoiceProcessingEnabled' "$capture" \
   || ! rg -q 'engine\.outputNode\.isVoiceProcessingEnabled' "$capture" \
   || ! rg -q 'voiceProcessingUnavailable = "voice_processing_unavailable"' "$capture"; then
@@ -65,6 +67,25 @@ if [ "$voice_processing_line" -ge "$input_tap_line" ] \
   exit 1
 fi
 echo "speech_audio_host_voice_processing=PASS"
+
+test "$(rg -n 'AVAudioEngine\(\)' "$capture" "$player" | wc -l)" -eq 1
+test "$(rg -c 'let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine\(\)' "$controller")" -eq 2
+test "$(rg -c 'SystemMacSpeechAudioCapture\(' "$controller")" -eq 2
+test "$(rg -c 'SystemMacSpeechAudioOutputPlayer\(' "$controller")" -eq 2
+rg -q 'engine\.attach\(playerNode\)' "$capture"
+rg -q 'engine\.connect\(' "$capture"
+player_attach_line="$(rg -n -m 1 'engine\.attach\(playerNode\)' "$capture" | cut -d: -f1)"
+voice_processing_enable_line="$(rg -n -m 1 'setVoiceProcessingEnabled\(true\)' "$capture" | cut -d: -f1)"
+test "$player_attach_line" -lt "$voice_processing_enable_line"
+rg -q 'audioEngine\.scheduleOutput' "$player"
+echo "speech_audio_host_shared_voice_processing_graph=PASS"
+
+rg -q 'setMutedSpeechActivityEventListener' "$capture"
+rg -q 'isVoiceProcessingInputMuted = true' "$capture"
+rg -q 'event == \.started' "$capture"
+rg -q 'func finishOutputPlayback\(\)' "$capture"
+rg -q 'unmuteInput\(\)' "$capture"
+echo "speech_audio_host_playback_echo_gate=PASS"
 
 rg -q 'packetDurationMilliseconds = 20' "$capture"
 rg -q 'packetSampleCount = 480' "$capture"

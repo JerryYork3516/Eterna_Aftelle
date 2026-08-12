@@ -426,6 +426,7 @@ actor MacSpeechAudioOutputHost {
               inFlightByteCounts.isEmpty else { return }
         timeoutTask?.cancel()
         timeoutTask = nil
+        player.finishPlayback()
         state = .completed
         appendEvent(.playbackCompleted)
     }

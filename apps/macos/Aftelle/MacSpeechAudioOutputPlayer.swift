@@ -303,6 +303,7 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
     ) throws -> MacSpeechPCMOutputEnvelope.ProcessingResult
     func resetForPlaybackGeneration()
     func start() throws
+    func finishPlayback()
     func clearScheduledPlayback()
     func stop()
     func close()
@@ -312,10 +313,16 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     MacSpeechAudioOutputPlaying, @unchecked Sendable
 {
     private let lock = NSLock()
-    private var engine: AVAudioEngine?
-    private var playerNode: AVAudioPlayerNode?
+    private let audioEngine: SystemMacSpeechVoiceProcessingEngine
     private var converter: MacSpeechPCMOutputConverter?
     private var localFormat: AVAudioFormat?
+
+    init(
+        audioEngine: SystemMacSpeechVoiceProcessingEngine =
+            SystemMacSpeechVoiceProcessingEngine()
+    ) {
+        self.audioEngine = audioEngine
+    }
 
     func prepare() throws -> MacSpeechLocalPlaybackFormat {
         try lock.withLock {
@@ -323,27 +330,22 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
                 return describe(localFormat)
             }
 
-            let engine = AVAudioEngine()
-            let playerNode = AVAudioPlayerNode()
-            engine.attach(playerNode)
-            let localFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+            let localFormat: AVAudioFormat
+            do {
+                localFormat = try audioEngine.prepareOutput()
+            } catch {
+                throw MacSpeechAudioOutputHostError.outputUnavailable
+            }
             guard localFormat.sampleRate > 0,
                   localFormat.channelCount > 0,
                   let converter = try? MacSpeechPCMOutputConverter(
                     localFormat: localFormat
                   )
             else {
+                audioEngine.closeOutput()
                 throw MacSpeechAudioOutputHostError.outputUnavailable
             }
-            engine.connect(
-                playerNode,
-                to: engine.mainMixerNode,
-                format: localFormat
-            )
-            engine.prepare()
 
-            self.engine = engine
-            self.playerNode = playerNode
             self.converter = converter
             self.localFormat = localFormat
             return describe(localFormat)
@@ -358,9 +360,7 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         ) -> Void
     ) throws -> MacSpeechPCMOutputEnvelope.ProcessingResult {
         let prepared = try lock.withLock {
-            guard let playerNode,
-                  let converter
-            else {
+            guard let converter else {
                 throw MacSpeechAudioOutputHostError.invalidState
             }
             let processing = MacSpeechPCMOutputEnvelope.processing(
@@ -370,15 +370,16 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
             let buffer = try converter.convert(
                 pcm16Bytes: processing.bytes
             )
-            return (playerNode, buffer, processing)
+            return (buffer, processing)
         }
-        prepared.0.scheduleBuffer(
-            prepared.1,
-            completionCallbackType: .dataPlayedBack
-        ) { _ in
-            completion(.success(pcm16Bytes.count))
+        do {
+            try audioEngine.scheduleOutput(prepared.0) {
+                completion(.success(pcm16Bytes.count))
+            }
+        } catch {
+            throw MacSpeechAudioOutputHostError.invalidState
         }
-        return prepared.2
+        return prepared.1
     }
 
     func resetForPlaybackGeneration() {
@@ -388,44 +389,34 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     }
 
     func start() throws {
-        try lock.withLock {
-            guard let engine, let playerNode else {
-                throw MacSpeechAudioOutputHostError.invalidState
-            }
-            if !engine.isRunning {
-                try engine.start()
-            }
-            if !playerNode.isPlaying {
-                playerNode.play()
-            }
+        let isPrepared = lock.withLock { localFormat != nil }
+        guard isPrepared else {
+            throw MacSpeechAudioOutputHostError.invalidState
         }
+        do {
+            try audioEngine.startOutput()
+        } catch {
+            throw MacSpeechAudioOutputHostError.playbackFailed
+        }
+    }
+
+    func finishPlayback() {
+        audioEngine.finishOutputPlayback()
     }
 
     func clearScheduledPlayback() {
-        lock.withLock {
-            playerNode?.stop()
-        }
+        audioEngine.clearScheduledOutput()
     }
 
     func stop() {
-        lock.withLock {
-            playerNode?.stop()
-            engine?.stop()
-        }
+        audioEngine.stopOutput()
     }
 
     func close() {
         lock.withLock {
-            playerNode?.stop()
-            engine?.stop()
-            if let engine, let playerNode {
-                engine.disconnectNodeOutput(playerNode)
-                engine.detach(playerNode)
-            }
+            audioEngine.closeOutput()
             converter = nil
             localFormat = nil
-            playerNode = nil
-            engine = nil
         }
     }
 

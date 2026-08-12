@@ -19,6 +19,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var scheduledFadeIns: [MacSpeechPCMOutputFadeIn?] = []
     private var prepareCalls = 0
     private var startCalls = 0
+    private var finishPlaybackCalls = 0
     private var clearScheduledPlaybackCalls = 0
     private var stopCalls = 0
     private var closeCalls = 0
@@ -84,6 +85,12 @@ final class FakeMacSpeechAudioOutputPlayer:
         }
     }
 
+    func finishPlayback() {
+        lock.withLock {
+            finishPlaybackCalls += 1
+        }
+    }
+
     func clearScheduledPlayback() {
         lock.withLock {
             clearScheduledPlaybackCalls += 1
@@ -128,6 +135,7 @@ final class FakeMacSpeechAudioOutputPlayer:
 
     var prepareCount: Int { lock.withLock { prepareCalls } }
     var startCount: Int { lock.withLock { startCalls } }
+    var finishPlaybackCount: Int { lock.withLock { finishPlaybackCalls } }
     var clearScheduledPlaybackCount: Int {
         lock.withLock { clearScheduledPlaybackCalls }
     }

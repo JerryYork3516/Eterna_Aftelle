@@ -6,6 +6,7 @@ build_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-speech-audio-output.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
 buffer="$repo_root/apps/macos/Aftelle/MacSpeechPCMPlaybackBuffer.swift"
+capture="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
 player="$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputPlayer.swift"
 host="$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputHost.swift"
 device_monitor="$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
@@ -19,6 +20,7 @@ swiftc \
   -strict-concurrency=complete \
   -framework AVFoundation \
   -framework CoreAudio \
+  "$capture" \
   "$buffer" \
   "$device_monitor" \
   "$player" \
@@ -47,6 +49,20 @@ if rg -q 'AVFoundation|AVAudioEngine|AVAudioPlayerNode|AVAudioConverter' \
   exit 1
 fi
 echo "speech_audio_output_runtime_boundary=PASS"
+
+test "$(rg -n 'AVAudioEngine\(\)' "$capture" "$player" | wc -l)" -eq 1
+rg -q 'SystemMacSpeechVoiceProcessingEngine' "$capture" "$player"
+if rg -q 'private var engine: AVAudioEngine|let engine = AVAudioEngine\(\)' "$player"; then
+  echo "speech_audio_output_shared_voice_processing_graph=FAIL"
+  exit 1
+fi
+echo "speech_audio_output_shared_voice_processing_graph=PASS"
+
+rg -q 'func finishPlayback\(\)' "$player"
+rg -q 'player\.finishPlayback\(\)' "$host"
+rg -q 'formal playback completion releases the input echo gate once' "$tests"
+rg -q 'temporary queue gap keeps the input echo gate active' "$tests"
+echo "speech_audio_output_echo_gate_lifecycle=PASS"
 
 if rg -q 'base64EncodedString|Bearer |print\(.*payload|String\(data:.*bytes' \
   "$repo_root/apps/macos/Aftelle/AppController.swift" \

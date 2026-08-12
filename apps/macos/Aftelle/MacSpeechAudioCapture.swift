@@ -291,47 +291,49 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
     }
 }
 
-nonisolated final class SystemMacSpeechAudioCapture:
-    MacSpeechAudioCapturing, @unchecked Sendable
+nonisolated final class SystemMacSpeechVoiceProcessingEngine:
+    @unchecked Sendable
 {
     private let lock = NSLock()
     private var engine: AVAudioEngine?
+    private var playerNode: AVAudioPlayerNode?
+    private var isConfigured = false
+    private var isCaptureActive = false
+    private var isOutputPrepared = false
+    private var isOutputPlaying = false
+    private var isInputMutedForOutput = false
+    private var outputFormat: AVAudioFormat?
 
-    func start(
+    func startCapture(
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) throws -> MacSpeechNativeInputFormat {
         try lock.withLock {
-            if let engine {
-                let format = engine.inputNode.outputFormat(forBus: 0)
-                return MacSpeechNativeInputFormat(
-                    sampleRate: format.sampleRate,
-                    channelCount: format.channelCount
-                )
+            try configureIfNeeded()
+            guard let engine else {
+                throw MacSpeechAudioCaptureError.engineStartFailed
             }
-
-            let engine = AVAudioEngine()
             let inputNode = engine.inputNode
-            do {
-                try inputNode.setVoiceProcessingEnabled(true)
-            } catch {
-                throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
-            }
-            guard inputNode.isVoiceProcessingEnabled,
-                  engine.outputNode.isVoiceProcessingEnabled else {
-                throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
-            }
             let inputFormat = inputNode.outputFormat(forBus: 0)
-            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            guard inputFormat.sampleRate > 0,
+                  inputFormat.channelCount > 0 else {
                 throw MacSpeechAudioCaptureError.invalidInputFormat
             }
-            let converter = try MacSpeechAudioConverter(inputFormat: inputFormat)
+            if isCaptureActive {
+                return describe(inputFormat)
+            }
+
+            let converter = try MacSpeechAudioConverter(
+                inputFormat: inputFormat
+            )
             inputNode.installTap(
                 onBus: 0,
                 bufferSize: MacSpeechAudioInputFormat.tapBufferSize,
                 format: inputFormat
             ) { buffer, _ in
-                guard let packets = try? converter.convert(buffer) else { return }
+                guard let packets = try? converter.convert(buffer) else {
+                    return
+                }
                 for packet in packets {
                     frameBuffer.append(
                         pcm16Bytes: packet.bytes,
@@ -340,28 +342,228 @@ nonisolated final class SystemMacSpeechAudioCapture:
                     )
                 }
             }
-            engine.prepare()
             do {
-                try engine.start()
+                if !engine.isRunning {
+                    engine.prepare()
+                    try engine.start()
+                }
             } catch {
                 inputNode.removeTap(onBus: 0)
+                tearDownIfIdle()
                 throw MacSpeechAudioCaptureError.engineStartFailed
             }
-            self.engine = engine
-            return MacSpeechNativeInputFormat(
-                sampleRate: inputFormat.sampleRate,
-                channelCount: inputFormat.channelCount
-            )
+            if !isOutputPlaying {
+                inputNode.isVoiceProcessingInputMuted = false
+                isInputMutedForOutput = false
+            }
+            isCaptureActive = true
+            return describe(inputFormat)
         }
     }
 
-    func stop() {
+    func stopCapture() {
         lock.withLock {
-            guard let engine else { return }
+            guard isCaptureActive, let engine else { return }
             engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            engine.reset()
-            self.engine = nil
+            isCaptureActive = false
+            tearDownIfIdle()
         }
+    }
+
+    func prepareOutput() throws -> AVAudioFormat {
+        try lock.withLock {
+            try configureIfNeeded()
+            guard let outputFormat else {
+                throw MacSpeechAudioCaptureError.invalidInputFormat
+            }
+            isOutputPrepared = true
+            return outputFormat
+        }
+    }
+
+    func scheduleOutput(
+        _ buffer: AVAudioPCMBuffer,
+        completion: @escaping @Sendable () -> Void
+    ) throws {
+        try lock.withLock {
+            guard isOutputPrepared, let playerNode else {
+                throw MacSpeechAudioCaptureError.engineStartFailed
+            }
+            playerNode.scheduleBuffer(
+                buffer,
+                completionCallbackType: .dataPlayedBack
+            ) { _ in
+                completion()
+            }
+        }
+    }
+
+    func startOutput() throws {
+        try lock.withLock {
+            guard isOutputPrepared,
+                  let engine,
+                  let playerNode else {
+                throw MacSpeechAudioCaptureError.engineStartFailed
+            }
+            let inputNode = engine.inputNode
+            inputNode.isVoiceProcessingInputMuted = true
+            isInputMutedForOutput = true
+            isOutputPlaying = true
+            do {
+                if !engine.isRunning {
+                    engine.prepare()
+                    try engine.start()
+                }
+                if !playerNode.isPlaying {
+                    playerNode.play()
+                }
+            } catch {
+                isOutputPlaying = false
+                unmuteInput()
+                throw error
+            }
+        }
+    }
+
+    func finishOutputPlayback() {
+        lock.withLock {
+            isOutputPlaying = false
+            unmuteInput()
+        }
+    }
+
+    func clearScheduledOutput() {
+        lock.withLock {
+            playerNode?.stop()
+            isOutputPlaying = false
+            unmuteInput()
+        }
+    }
+
+    func stopOutput() {
+        lock.withLock {
+            playerNode?.stop()
+            isOutputPlaying = false
+            unmuteInput()
+            if !isCaptureActive {
+                engine?.stop()
+            }
+        }
+    }
+
+    func closeOutput() {
+        lock.withLock {
+            playerNode?.stop()
+            isOutputPlaying = false
+            unmuteInput()
+            isOutputPrepared = false
+            tearDownIfIdle()
+        }
+    }
+
+    private func configureIfNeeded() throws {
+        guard !isConfigured else { return }
+        let engine = AVAudioEngine()
+        let playerNode = AVAudioPlayerNode()
+        engine.attach(playerNode)
+        let localFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+        guard localFormat.sampleRate > 0,
+              localFormat.channelCount > 0 else {
+            throw MacSpeechAudioCaptureError.invalidInputFormat
+        }
+        engine.connect(
+            playerNode,
+            to: engine.mainMixerNode,
+            format: localFormat
+        )
+        let inputNode = engine.inputNode
+        do {
+            try inputNode.setVoiceProcessingEnabled(true)
+        } catch {
+            throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
+        }
+        guard inputNode.isVoiceProcessingEnabled,
+              engine.outputNode.isVoiceProcessingEnabled else {
+            throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
+        }
+        guard inputNode.setMutedSpeechActivityEventListener({
+            [weak self] event in
+            self?.handleMutedSpeechActivity(event)
+        }) else {
+            throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
+        }
+        self.engine = engine
+        self.playerNode = playerNode
+        outputFormat = localFormat
+        isConfigured = true
+    }
+
+    private func tearDownIfIdle() {
+        guard !isCaptureActive, !isOutputPrepared else { return }
+        unmuteInput()
+        engine?.stop()
+        if isConfigured,
+           let engine,
+           let playerNode {
+            engine.disconnectNodeOutput(playerNode)
+            engine.detach(playerNode)
+            engine.reset()
+        }
+        playerNode = nil
+        engine = nil
+        outputFormat = nil
+        isConfigured = false
+    }
+
+    private func handleMutedSpeechActivity(
+        _ event: AVAudioVoiceProcessingSpeechActivityEvent
+    ) {
+        guard event == .started else { return }
+        lock.withLock {
+            guard isOutputPlaying, isInputMutedForOutput else { return }
+            unmuteInput()
+        }
+    }
+
+    private func unmuteInput() {
+        guard isInputMutedForOutput else { return }
+        engine?.inputNode.isVoiceProcessingInputMuted = false
+        isInputMutedForOutput = false
+    }
+
+    private func describe(
+        _ format: AVAudioFormat
+    ) -> MacSpeechNativeInputFormat {
+        MacSpeechNativeInputFormat(
+            sampleRate: format.sampleRate,
+            channelCount: format.channelCount
+        )
+    }
+}
+
+nonisolated final class SystemMacSpeechAudioCapture:
+    MacSpeechAudioCapturing, @unchecked Sendable
+{
+    private let audioEngine: SystemMacSpeechVoiceProcessingEngine
+
+    init(
+        audioEngine: SystemMacSpeechVoiceProcessingEngine =
+            SystemMacSpeechVoiceProcessingEngine()
+    ) {
+        self.audioEngine = audioEngine
+    }
+
+    func start(
+        generation: UInt64,
+        frameBuffer: MacSpeechAudioFrameBuffer
+    ) throws -> MacSpeechNativeInputFormat {
+        try audioEngine.startCapture(
+            generation: generation,
+            frameBuffer: frameBuffer
+        )
+    }
+
+    func stop() {
+        audioEngine.stopCapture()
     }
 }

@@ -424,8 +424,17 @@ final class AppController: ObservableObject {
         let runtimeCore: RuntimeCore
         #if DEBUG
         let speechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
-        speechAudioHost = MacSpeechAudioHost()
-        speechAudioOutputHost = MacSpeechAudioOutputHost()
+        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
+        speechAudioHost = MacSpeechAudioHost(
+            capture: SystemMacSpeechAudioCapture(
+                audioEngine: speechAudioEngine
+            )
+        )
+        speechAudioOutputHost = MacSpeechAudioOutputHost(
+            player: SystemMacSpeechAudioOutputPlayer(
+                audioEngine: speechAudioEngine
+            )
+        )
         nativeSpeechDiagnosticBuffer = speechDiagnosticBuffer
         runtimeCore = StepFunRealtimeRuntimeComposition.makeRuntimeCore(
             credentialReader: credentialStore,
@@ -448,8 +457,17 @@ final class AppController: ObservableObject {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         #if DEBUG
-        speechAudioHost = MacSpeechAudioHost()
-        speechAudioOutputHost = MacSpeechAudioOutputHost()
+        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
+        speechAudioHost = MacSpeechAudioHost(
+            capture: SystemMacSpeechAudioCapture(
+                audioEngine: speechAudioEngine
+            )
+        )
+        speechAudioOutputHost = MacSpeechAudioOutputHost(
+            player: SystemMacSpeechAudioOutputPlayer(
+                audioEngine: speechAudioEngine
+            )
+        )
         nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         #endif
         restoreProviderConfiguration()
