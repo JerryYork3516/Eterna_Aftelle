@@ -227,6 +227,13 @@ nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
     }
 }
 
+private struct RealtimeSpeechSubtitleProjection: Equatable {
+    let interactionShortID: String?
+    let turnNumber: UInt64
+    let turnGeneration: UInt64
+    let text: String?
+}
+
 nonisolated struct NativeSpeechPlaybackDebugSnapshot: Sendable, Equatable {
     let turnNumber: UInt64?
     let playbackGeneration: UInt64?
@@ -339,6 +346,8 @@ final class AppController: ObservableObject {
     private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
     private var realtimeSpeechPlaybackSubtitleSynchronizer =
         RealtimeSpeechPlaybackSubtitleSynchronizer()
+    private var lastRealtimeSpeechSubtitleProjection:
+        RealtimeSpeechSubtitleProjection?
     private var lastPlaybackEventOrdinal: UInt64 = 0
     private var playbackInterruptClearCount: UInt64 = 0
     private var playbackStopClearCount: UInt64 = 0
@@ -2272,10 +2281,20 @@ final class AppController: ObservableObject {
         let subtitleText = realtimeSpeechPlaybackSubtitleSynchronizer
             .displayText
             ?? subtitleSnapshot.userFinal
+        let subtitleProjection = RealtimeSpeechSubtitleProjection(
+            interactionShortID: subtitleSnapshot.interactionShortID,
+            turnNumber: subtitleSnapshot.turnNumber,
+            turnGeneration: subtitleSnapshot.turnGeneration,
+            text: subtitleText
+        )
+        let subtitleProjectionChanged =
+            subtitleProjection != lastRealtimeSpeechSubtitleProjection
+        lastRealtimeSpeechSubtitleProjection = subtitleProjection
         let subtitleState = subtitleText.map {
             ParticleSubtitleState(text: $0, phase: .showing)
         } ?? .hidden
-        if residentTextPresentationID == nil,
+        if subtitleProjectionChanged,
+           residentTextPresentationID == nil,
            particleSubtitleState != subtitleState {
             particleSubtitleState = subtitleState
         }

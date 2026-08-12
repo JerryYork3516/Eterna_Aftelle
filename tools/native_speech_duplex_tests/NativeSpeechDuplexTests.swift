@@ -1216,12 +1216,29 @@ private struct NativeSpeechDuplexTests {
         await stack.controller.startSpeechAudioCapture()
         await stack.controller.startNativeSpeechInputBridge()
 
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"old-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"old-user","transcript":"上一句语音字幕"}"#
+        ))
+        await waitUntil {
+            stack.controller.particleSubtitleState.text
+                == "上一句语音字幕"
+        }
+
         let response = stack.controller.step(inputText: "文字字幕测试")
-        let text = response.outputText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = response.outputText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
         expect(!text.isEmpty, "text dialogue produces a subtitle")
         expect(stack.controller.particleSubtitleState.text == text,
                "text dialogue owns its active subtitle")
+
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        await stack.controller.refreshMicrophoneAuthorization()
+        expect(stack.controller.particleSubtitleState.text == text,
+               "stale realtime refresh cannot restore an old subtitle")
 
         let refreshCount = stack.controller
             .realtimeSpeechDiagnosticViewState.eventCount
@@ -1231,15 +1248,23 @@ private struct NativeSpeechDuplexTests {
                 > refreshCount
         }
         expect(stack.controller.particleSubtitleState.text == text,
-               "realtime refresh does not erase active text subtitle")
+               "repeated Provider refresh keeps the current text subtitle")
 
+        await stack.controller.stopSpeechAudioCapture()
+        await transport.enqueue(.text(#"{"type":"session.created"}"#))
+        await transport.enqueue(.text(#"{"type":"session.updated"}"#))
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_started"}"#)
         )
+        await transport.enqueue(.text(
+            #"{"type":"conversation.item.input_audio_transcription.completed","transcript":"新语音字幕"}"#
+        ))
         await waitUntil {
-            stack.controller.particleSubtitleState.text != text
+            stack.controller.particleSubtitleState.text == "新语音字幕"
         }
-        expect(stack.controller.particleSubtitleState.text != text,
+        expect(stack.controller.particleSubtitleState.text == "新语音字幕",
                "new voice input takes subtitle ownership")
         await stack.controller.stopSpeechAudioCapture()
     }
