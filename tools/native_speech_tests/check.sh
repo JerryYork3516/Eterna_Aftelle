@@ -43,6 +43,26 @@ swiftc \
 
 "$build_dir/stepfun_realtime_adapter_tests"
 
+qwen_adapter_sources=(
+  "${sources[@]}"
+  "$repo_root/apps/macos/RuntimeCore/RealtimeSpeechContextProjection.swift"
+  "$repo_root/apps/macos/RuntimeCore/RealtimeWebSocketTransport.swift"
+  "$repo_root/apps/macos/RuntimeCore/QwenRealtimeCodec.swift"
+  "$repo_root/apps/macos/RuntimeCore/QwenRealtimeAdapter.swift"
+)
+
+swiftc \
+  -D DEBUG \
+  -parse-as-library \
+  -warn-concurrency \
+  -strict-concurrency=complete \
+  "${qwen_adapter_sources[@]}" \
+  "$repo_root/tools/native_speech_tests/FakeRealtimeWebSocketTransport.swift" \
+  "$repo_root/tools/native_speech_tests/QwenRealtimeAdapterTests.swift" \
+  -o "$build_dir/qwen_realtime_adapter_tests"
+
+"$build_dir/qwen_realtime_adapter_tests"
+
 runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
 swiftc \
   -D DEBUG \
@@ -83,8 +103,19 @@ if [ -n "$unexpected_stepfun" ]; then
   exit 1
 fi
 
+unexpected_qwen=$(rg -l 'Qwen|qwen' \
+  "$repo_root/apps/macos/RuntimeCore" \
+  -g '*.swift' \
+  | rg -v '/QwenRealtime(Adapter|Codec|RuntimeComposition)\.swift$' || true)
+if [ -n "$unexpected_qwen" ]; then
+  echo "native_speech_qwen_provider_leakage=FAIL"
+  printf '%s\n' "$unexpected_qwen"
+  exit 1
+fi
+
 echo "native_speech_vendor_neutrality=PASS"
 echo "native_speech_provider_leakage=PASS"
+echo "native_speech_qwen_provider_leakage=PASS"
 
 for operation in start send receive cancel close; do
   if ! rg -q "executionEngine\.${operation}NativeSpeech" \

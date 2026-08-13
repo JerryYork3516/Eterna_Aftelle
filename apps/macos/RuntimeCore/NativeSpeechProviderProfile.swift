@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated enum NativeSpeechTurnDetectionType: String, Sendable, Equatable {
     case serverVAD = "server_vad"
+    case semanticVAD = "semantic_vad"
 }
 
 nonisolated struct NativeSpeechTurnDetection: Sendable, Equatable {
