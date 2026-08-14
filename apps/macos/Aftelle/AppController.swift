@@ -22,27 +22,38 @@ private enum DefaultTextProviderConfiguration {
 }
 
 #if DEBUG
+nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
+    case flash = "qwen3.5-omni-flash-realtime"
+    case plus = "qwen3.5-omni-plus-realtime"
+}
+
 nonisolated private enum Stage75NativeSpeechConfiguration {
-    static let profile = NativeSpeechProviderProfile(
-        profileID: "stage7_5_qwen_realtime_development_beijing",
-        providerID: "Qwen",
-        capability: "native_speech",
-        adapterID: "qwen_realtime",
-        modelID: "qwen3.5-omni-flash-realtime",
-        voiceID: "Tina",
-        endpoint: URL(
-            string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
-        )!,
-        transport: "websocket",
-        inputAudioFormat: .pcm16,
-        outputAudioFormat: .pcm16,
-        turnDetection: NativeSpeechTurnDetection(
-            type: .semanticVAD,
-            prefixPaddingMilliseconds: 500
-        ),
-        languageMetadata: "zh-CN",
-        keyRef: ProviderKeychainStore.qwenKeyRef
-    )
+    static let profile = makeProfile(model: .flash)
+
+    static func makeProfile(
+        model: Stage75QwenRealtimeModel
+    ) -> NativeSpeechProviderProfile {
+        NativeSpeechProviderProfile(
+            profileID: "stage7_5_qwen_realtime_development_beijing",
+            providerID: "Qwen",
+            capability: "native_speech",
+            adapterID: "qwen_realtime",
+            modelID: model.rawValue,
+            voiceID: "Maia",
+            endpoint: URL(
+                string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=\(model.rawValue)"
+            )!,
+            transport: "websocket",
+            inputAudioFormat: .pcm16,
+            outputAudioFormat: .pcm16,
+            turnDetection: NativeSpeechTurnDetection(
+                type: .semanticVAD,
+                prefixPaddingMilliseconds: 500
+            ),
+            languageMetadata: "zh-CN",
+            keyRef: ProviderKeychainStore.qwenKeyRef
+        )
+    }
 
     static let stepFunProfile = NativeSpeechProviderProfile(
         profileID: "stage7_5_stepfun_realtime_primary",
@@ -1639,6 +1650,23 @@ final class AppController: ObservableObject {
                 statusKey: "particleDebug.qwen.status.credentialFailed"
             )
         }
+    }
+
+    func selectNativeSpeechModel(_ modelID: String) {
+        guard let model = Stage75QwenRealtimeModel(rawValue: modelID),
+              !nativeSpeechProviderDebugState.isTesting,
+              !speechInputBridgeSnapshot.hasActivePump,
+              !speechOutputBridgeSnapshot.hasActiveReceiveLoop else {
+            return
+        }
+        let currentState = nativeSpeechProviderDebugState
+        nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
+            profile: Stage75NativeSpeechConfiguration.makeProfile(
+                model: model
+            ),
+            credentialSaved: currentState.credentialSaved,
+            statusKey: "particleDebug.qwen.status.ready"
+        )
     }
 
     func refreshMicrophoneAuthorization() async {

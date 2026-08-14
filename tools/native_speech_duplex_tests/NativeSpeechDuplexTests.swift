@@ -267,9 +267,53 @@ private struct NativeSpeechDuplexTests {
                 == qwenProfile(),
             "AppController selects the Beijing Qwen Flash profile"
         )
+        let flashProfile = stack.controller.nativeSpeechProviderDebugState
+            .profile
+        stack.controller.selectNativeSpeechModel(
+            Stage75QwenRealtimeModel.plus.rawValue
+        )
+        let plusProfile = stack.controller.nativeSpeechProviderDebugState
+            .profile
+        expect(
+            plusProfile.modelID == Stage75QwenRealtimeModel.plus.rawValue
+                && plusProfile.endpoint.query
+                    == "model=\(Stage75QwenRealtimeModel.plus.rawValue)",
+            "Qwen A/B selector changes the model and endpoint together"
+        )
+        expect(
+            plusProfile.profileID == flashProfile.profileID
+                && plusProfile.providerID == flashProfile.providerID
+                && plusProfile.adapterID == flashProfile.adapterID
+                && plusProfile.voiceID == flashProfile.voiceID
+                && plusProfile.inputAudioFormat
+                    == flashProfile.inputAudioFormat
+                && plusProfile.outputAudioFormat
+                    == flashProfile.outputAudioFormat
+                && plusProfile.turnDetection == flashProfile.turnDetection
+                && plusProfile.languageMetadata
+                    == flashProfile.languageMetadata
+                && plusProfile.keyRef == flashProfile.keyRef,
+            "Qwen A/B selector holds every non-model contract fixed"
+        )
+        stack.controller.selectNativeSpeechModel(
+            Stage75QwenRealtimeModel.flash.rawValue
+        )
+        expect(
+            stack.controller.nativeSpeechProviderDebugState.profile
+                == flashProfile,
+            "Qwen A/B selector restores the Flash baseline"
+        )
 
         await stack.controller.startSpeechAudioCapture()
         await stack.controller.startNativeSpeechInputBridge()
+        stack.controller.selectNativeSpeechModel(
+            Stage75QwenRealtimeModel.plus.rawValue
+        )
+        expect(
+            stack.controller.nativeSpeechProviderDebugState.profile
+                == flashProfile,
+            "Qwen A/B selector cannot change an active realtime session"
+        )
         for marker in UInt8(1) ... UInt8(5) {
             expect(
                 stack.capture.emitPacket(marker),
@@ -2593,7 +2637,7 @@ private struct NativeSpeechDuplexTests {
             capability: "native_speech",
             adapterID: "qwen_realtime",
             modelID: "qwen3.5-omni-flash-realtime",
-            voiceID: "Tina",
+            voiceID: "Maia",
             endpoint: URL(
                 string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
             )!,

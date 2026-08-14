@@ -592,6 +592,8 @@ struct ParticleDebugWindow: View {
                 controller.saveNativeSpeechProviderCredential,
             deleteNativeSpeechProviderCredential:
                 controller.deleteNativeSpeechProviderCredential,
+            selectNativeSpeechModel:
+                controller.selectNativeSpeechModel,
             testNativeSpeechProviderConnectivity:
                 controller.testNativeSpeechProviderConnectivity,
             refreshMicrophoneAuthorization:
@@ -768,6 +770,7 @@ private struct ParticleDebugPanel: View {
     let testResidentReply: (String) async -> Void
     let saveNativeSpeechProviderCredential: (String, String) -> Void
     let deleteNativeSpeechProviderCredential: () -> Void
+    let selectNativeSpeechModel: (String) -> Void
     let testNativeSpeechProviderConnectivity: () async -> Void
     let refreshMicrophoneAuthorization: () async -> Void
     let requestMicrophoneAuthorization: () async -> Void
@@ -993,6 +996,11 @@ private struct ParticleDebugPanel: View {
                             )
                             NativeSpeechProviderDebugView(
                                 state: nativeSpeechProviderState,
+                                modelSelectionDisabled:
+                                    speechInputBridgeSnapshot.hasActivePump
+                                        || speechOutputBridgeSnapshot
+                                            .hasActiveReceiveLoop,
+                                selectModel: selectNativeSpeechModel,
                                 saveCredential:
                                     saveNativeSpeechProviderCredential,
                                 deleteCredential:
@@ -1887,6 +1895,8 @@ private struct TextProviderDebugView: View {
 
 private struct NativeSpeechProviderDebugView: View {
     let state: NativeSpeechProviderDebugViewState
+    let modelSelectionDisabled: Bool
+    let selectModel: (String) -> Void
     let saveCredential: (String, String) -> Void
     let deleteCredential: () -> Void
     let testConnectivity: () async -> Void
@@ -1905,6 +1915,24 @@ private struct NativeSpeechProviderDebugView: View {
                     String(localized: "particleDebug.qwen.configuration")
                 ) {
                     VStack(alignment: .leading, spacing: 8) {
+                        Picker(
+                            String(
+                                localized: "particleDebug.provider.modelID"
+                            ),
+                            selection: Binding(
+                                get: { state.profile.modelID },
+                                set: selectModel
+                            )
+                        ) {
+                            ForEach(
+                                Stage75QwenRealtimeModel.allCases,
+                                id: \.rawValue
+                            ) { model in
+                                Text(model.rawValue).tag(model.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(state.isTesting || modelSelectionDisabled)
                         ParticleDiagnosticsRow(
                             labelKey: "particleDebug.provider.providerID",
                             value: state.profile.providerID
