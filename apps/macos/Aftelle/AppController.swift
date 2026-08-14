@@ -102,6 +102,12 @@ private struct NativeSpeechPlaybackBinding: Sendable, Equatable {
     }
 }
 
+private struct NativeSpeechDialogueHistoryIdentity: Hashable {
+    let interactionID: NativeSpeechInteractionID
+    let turnNumber: UInt64
+    let turnGeneration: UInt64
+}
+
 nonisolated struct RealtimeSpeechPlaybackSubtitleSynchronizer: Sendable {
     private struct CompletedPlayback: Sendable {
         let interactionShortID: String
@@ -376,6 +382,8 @@ final class AppController: ObservableObject {
     private let nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer
     private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
     private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
+    private var projectedNativeSpeechDialogueHistoryIdentities:
+        Set<NativeSpeechDialogueHistoryIdentity> = []
     private var realtimeSpeechPlaybackSubtitleSynchronizer =
         RealtimeSpeechPlaybackSubtitleSynchronizer()
     private var lastRealtimeSpeechSubtitleProjection:
@@ -1808,6 +1816,9 @@ final class AppController: ObservableObject {
             residentTextPresentationID = nil
             await speechOutputDebugSink.reset()
             nativeSpeechPlaybackBinding = nil
+            projectedNativeSpeechDialogueHistoryIdentities.removeAll(
+                keepingCapacity: true
+            )
             lastPlaybackEventOrdinal = 0
             await speechAudioOutputHost.setEventSink { [weak self] event in
                 await self?.consumePlaybackHostEvent(event)
@@ -2315,6 +2326,12 @@ final class AppController: ObservableObject {
             )
         }
         syncRealtimeSpeechPresentation()
+        if event.kind == .playbackCompleted,
+           disposition == .applied {
+            projectCompletedNativeSpeechDialogueHistoryIfNeeded(
+                binding: binding
+            )
+        }
         recordRealtimeSpeechDiagnostic(
             source: .playback,
             category: event.kind.rawValue,
@@ -2338,6 +2355,60 @@ final class AppController: ObservableObject {
         speechAudioOutputHostSnapshot =
             await speechAudioOutputHost.currentSnapshot()
         refreshNativeSpeechPlaybackDebugSnapshot()
+    }
+
+    private func projectCompletedNativeSpeechDialogueHistoryIfNeeded(
+        binding: NativeSpeechPlaybackBinding
+    ) {
+        guard let completed = realtimeSpeechSubtitleSnapshot.lastCompleted,
+              completed.interactionShortID == String(
+                  binding.interactionID.rawValue.uuidString.prefix(8)
+              ),
+              completed.turnNumber == binding.turnNumber,
+              completed.turnGeneration == binding.turnGeneration,
+              let userFinal = completed.userFinal?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !userFinal.isEmpty,
+              let residentFinal = completed.residentFinal?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !residentFinal.isEmpty else {
+            return
+        }
+        let identity = NativeSpeechDialogueHistoryIdentity(
+            interactionID: binding.interactionID,
+            turnNumber: binding.turnNumber,
+            turnGeneration: binding.turnGeneration
+        )
+        guard projectedNativeSpeechDialogueHistoryIdentities
+            .insert(identity).inserted else {
+            return
+        }
+
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let entryID = [
+            "speech",
+            binding.interactionID.rawValue.uuidString,
+            String(binding.turnNumber),
+            String(binding.turnGeneration)
+        ].joined(separator: "-")
+        dialogueEntries.append(AppDialogueEntryState(
+            id: "user-\(entryID)",
+            role: "user",
+            text: userFinal,
+            timestamp: timestamp
+        ))
+        dialogueEntries.append(AppDialogueEntryState(
+            id: "resident-\(entryID)",
+            role: "resident",
+            text: residentFinal,
+            timestamp: timestamp
+        ))
+        dialogueEntries = Array(dialogueEntries.suffix(8))
+        sessionState.residentID = loadedResidentID
+        sessionState.sessionID = loadedSessionID
+        sessionState.lastUserInput = userFinal
+        sessionState.lastResidentOutput = residentFinal
+        sessionState.dialogueEntries = dialogueEntries
     }
 
     private func syncRealtimeSpeechPresentation() {

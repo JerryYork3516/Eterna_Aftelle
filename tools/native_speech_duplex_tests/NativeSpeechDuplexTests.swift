@@ -392,6 +392,11 @@ private struct NativeSpeechDuplexTests {
                 && stack.controller.particleSubtitleState.text
                     == "你好，我在。"
         }
+        expect(
+            stack.controller.sessionState.dialogueEntries.map(\.text)
+                == ["你好", "你好，我在。"],
+            "Qwen played turn enters the shared dialogue history"
+        )
 
         await transport.enqueue(.text(
             #"{"type":"input_audio_buffer.speech_started","item_id":"qwen-user-2"}"#
@@ -457,6 +462,11 @@ private struct NativeSpeechDuplexTests {
                 && stack.controller.speechOutputBridgeSnapshot
                     .hasActiveReceiveLoop,
             "Qwen Interrupt preserves the active capture and receive chain"
+        )
+        expect(
+            stack.controller.sessionState.dialogueEntries.map(\.text)
+                == ["你好", "你好，我在。"],
+            "interrupted and stale Qwen turns do not enter history"
         )
 
         await stack.controller.stopSpeechAudioCapture()
@@ -950,9 +960,16 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"response.done","response":{"id":"response-one","status":"completed"}}"#)
         )
         await waitUntil {
-            stack.controller.realtimeSpeechSubtitleSnapshot.residentFinal
-                == "我是林轩。"
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                    .completedResponseCount == 1
+                && stack.controller.realtimeSpeechSubtitleSnapshot
+                    .residentFinal == "我是林轩。"
         }
+        expect(
+            stack.controller.sessionState.dialogueEntries.isEmpty,
+            "response completion alone does not write voice history"
+        )
         await waitUntil { stack.outputPlayer.scheduledCount == 4 }
         stack.outputPlayer.completeScheduledChunk()
         await waitUntil { stack.outputPlayer.scheduledCount == 5 }
@@ -974,6 +991,21 @@ private struct NativeSpeechDuplexTests {
             stack.controller.particleSubtitleState.text == "我是林轩。",
             "playback completion releases the final voice subtitle"
         )
+        await waitUntil {
+            stack.controller.sessionState.dialogueEntries.count == 2
+        }
+        let completedEntries = stack.controller.sessionState.dialogueEntries
+        expect(
+            completedEntries.map(\.role) == ["user", "resident"]
+                && completedEntries.map(\.text)
+                    == ["你好", "我是林轩。"],
+            "played voice turn reuses the existing dialogue history"
+        )
+        stack.outputPlayer.completeScheduledChunk()
+        expect(
+            stack.controller.sessionState.dialogueEntries == completedEntries,
+            "duplicate playback completion cannot duplicate voice history"
+        )
         await stack.controller.stopSpeechAudioCapture()
     }
 
@@ -991,6 +1023,9 @@ private struct NativeSpeechDuplexTests {
         await stack.controller.startNativeSpeechInputBridge()
         await transport.enqueue(.text(
             #"{"type":"input_audio_buffer.speech_started","item_id":"stop-user"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"stop-user","transcript":"停止前的问题"}"#
         ))
         await transport.enqueue(.text(
             #"{"type":"input_audio_buffer.speech_stopped","item_id":"stop-user"}"#
@@ -1026,11 +1061,19 @@ private struct NativeSpeechDuplexTests {
                 .completedResponseCount == 1
         }
         expect(
-            stack.controller.realtimeSpeechSubtitleSnapshot
-                .residentFinal == "未播放终稿"
+            stack.controller.realtimeSpeechSubtitleSnapshot.userFinal
+                == "停止前的问题"
                 && stack.controller.realtimeSpeechSubtitleSnapshot
-                    .lastCompleted == nil,
-            "unplayed final is not a Runtime canonical completion"
+                    .residentFinal == "未播放终稿"
+                && stack.controller.realtimeSpeechSubtitleSnapshot
+                    .userFinalLocked
+                && stack.controller.realtimeSpeechSubtitleSnapshot
+                    .residentFinalLocked,
+            "response completion has both locked voice finals"
+        )
+        expect(
+            stack.controller.sessionState.dialogueEntries.isEmpty,
+            "completed response stays out of history before playback"
         )
         await waitUntil {
             stack.outputPlayer.scheduledCount > 0
@@ -1043,6 +1086,10 @@ private struct NativeSpeechDuplexTests {
         expect(
             stack.controller.particleSubtitleState.text != "未播放终稿",
             "Stop cannot expose a Runtime-completed but unplayed final"
+        )
+        expect(
+            stack.controller.sessionState.dialogueEntries.isEmpty,
+            "Stop cannot write an unplayed voice response to history"
         )
     }
 
