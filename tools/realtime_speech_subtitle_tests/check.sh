@@ -33,7 +33,7 @@ controller="$repo_root/apps/macos/Aftelle/AppController.swift"
 orchestration="$repo_root/apps/macos/Aftelle/AppModels.swift"
 particle_core="$repo_root/apps/macos/Aftelle/ParticleCore"
 
-if rg -n 'StepFun|AVFoundation|SwiftUI|SessionStore|MemoryController|Trace' \
+if rg -n 'Qwen|AVFoundation|SwiftUI|SessionStore|MemoryController|Trace' \
   "$subtitle"; then
   echo "realtime_speech_subtitle_vendor_neutrality=FAIL"
   exit 1
@@ -45,7 +45,7 @@ rg -q 'realtimeSpeechSubtitleSnapshot' "$orchestration" "$controller"
 rg -q 'RealtimeSpeechPresentationMapper\.map' "$controller"
 echo "realtime_speech_subtitle_chain=PASS"
 
-if rg -n 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter' \
+if rg -n 'QwenRealtimeAdapter|ProviderRouter' \
   "$controller" "$mapper"; then
   echo "realtime_speech_presentation_boundary=FAIL"
   exit 1
@@ -59,7 +59,7 @@ fi
 echo "realtime_speech_particle_timer_simulation=PASS"
 
 if rg -n \
-  'NativeSpeechEvent|NativeSpeechProvider|StepFun|RealtimeSpeechSubtitle|RealtimeSpeechPlaybackEvent' \
+  'NativeSpeechEvent|NativeSpeechProvider|Qwen|RealtimeSpeechSubtitle|RealtimeSpeechPlaybackEvent' \
   "$particle_core" -g '*.swift'; then
   echo "realtime_speech_particle_consumer_boundary=FAIL"
   exit 1

@@ -5,10 +5,6 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
     static let service = "com.eterna.aftelle.provider.deepseek"
     static let account = "primary-text-llm"
     static let keyRef = "keychain://com.eterna.aftelle.provider.deepseek/primary-text-llm"
-    static let stepFunService = "com.eterna.aftelle.provider.stepfun"
-    static let stepFunAccount = "stepfun_realtime_api_key"
-    static let stepFunKeyRef =
-        "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
     static let qwenService = "com.eterna.aftelle.provider.qwen"
     static let qwenAccount = "qwen_realtime_credential"
     static let qwenKeyRef =
@@ -76,8 +72,6 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
         switch keyRef {
         case Self.keyRef:
             return (Self.service, Self.account)
-        case Self.stepFunKeyRef:
-            return (Self.stepFunService, Self.stepFunAccount)
         case Self.qwenKeyRef:
             return (Self.qwenService, Self.qwenAccount)
         default:

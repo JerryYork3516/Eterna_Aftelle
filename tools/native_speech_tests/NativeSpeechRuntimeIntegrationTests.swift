@@ -4082,24 +4082,24 @@ private struct NativeSpeechRuntimeIntegrationTests {
 
     private static func nativeSpeechProfile() -> NativeSpeechProviderProfile {
         NativeSpeechProviderProfile(
-            profileID: "stage7_5_stepfun_realtime_primary",
-            providerID: "StepFun",
+            profileID: "stage7_5_qwen_realtime_development_beijing",
+            providerID: "Qwen",
             capability: "native_speech",
-            adapterID: "stepfun_realtime",
-            modelID: "stepaudio-2.5-realtime",
-            voiceID: "linjiajiejie",
+            adapterID: "qwen_realtime",
+            modelID: "qwen3.5-omni-flash-realtime",
+            voiceID: "Maia",
             endpoint: URL(
-                string: "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime"
+                string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
             )!,
             transport: "websocket",
             inputAudioFormat: .pcm16,
             outputAudioFormat: .pcm16,
             turnDetection: NativeSpeechTurnDetection(
-                type: .serverVAD,
+                type: .semanticVAD,
                 prefixPaddingMilliseconds: 500
             ),
             languageMetadata: "zh-CN",
-            keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
+            keyRef: "keychain://com.eterna.aftelle.provider.qwen/qwen_realtime_credential"
         )
     }
 

@@ -20,7 +20,7 @@ swiftc \
 
 "$build_dir/realtime_speech_state_tests"
 
-if rg -n 'StepFun|stepfun|AVFoundation|SwiftUI' \
+if rg -n 'Qwen|qwen|AVFoundation|SwiftUI' \
   "$repo_root/apps/macos/RuntimeCore/RealtimeSpeechStateMachine.swift"; then
   echo "realtime_speech_vendor_neutrality=FAIL"
   exit 1
@@ -28,7 +28,7 @@ fi
 
 if rg -n 'RealtimeSpeechStateMachine\(' \
   "$repo_root/apps/macos/Aftelle/AppController.swift" \
-  "$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"; then
+  "$repo_root/apps/macos/RuntimeCore/QwenRealtimeAdapter.swift"; then
   echo "realtime_speech_runtime_owner=FAIL"
   exit 1
 fi

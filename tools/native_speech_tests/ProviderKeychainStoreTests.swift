@@ -19,21 +19,6 @@ private struct ProviderKeychainStoreTests {
             checks: &checks
         )
 
-        let stepFun = ProviderKeychainStore.location(
-            for: ProviderKeychainStore.stepFunKeyRef
-        )
-        expect(
-            stepFun?.service == "com.eterna.aftelle.provider.stepfun"
-                && stepFun?.account == "stepfun_realtime_api_key",
-            "StepFun mapping is independent",
-            checks: &checks
-        )
-        expect(
-            deepSeek?.service != stepFun?.service
-                && deepSeek?.account != stepFun?.account,
-            "Provider credentials cannot overlap",
-            checks: &checks
-        )
         let qwen = ProviderKeychainStore.location(
             for: ProviderKeychainStore.qwenKeyRef
         )
@@ -44,9 +29,9 @@ private struct ProviderKeychainStoreTests {
             checks: &checks
         )
         expect(
-            qwen?.service != stepFun?.service
-                && qwen?.account != stepFun?.account,
-            "Qwen and StepFun credentials cannot overlap",
+            qwen?.service != deepSeek?.service
+                && qwen?.account != deepSeek?.account,
+            "Qwen and text credentials cannot overlap",
             checks: &checks
         )
         expect(
@@ -63,14 +48,10 @@ private struct ProviderKeychainStoreTests {
             "unsupported reference never reports present",
             checks: &checks
         )
-        let status = store.exists(for: ProviderKeychainStore.stepFunKeyRef)
-            ? "PRESENT"
-            : "MISSING"
         let qwenStatus = store.exists(for: ProviderKeychainStore.qwenKeyRef)
             ? "PRESENT"
             : "MISSING"
         print("provider_keychain_checks=\(checks)")
-        print("stepfun_keychain_status=\(status)")
         print("qwen_keychain_status=\(qwenStatus)")
     }
 

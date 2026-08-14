@@ -59,7 +59,7 @@ orchestration="$repo_root/apps/macos/Aftelle/AppModels.swift"
 runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
 engine="$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift"
 router="$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift"
-adapter="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
+adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeAdapter.swift"
 transport="$repo_root/apps/macos/RuntimeCore/URLSessionRealtimeWebSocketTransport.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 
@@ -95,11 +95,11 @@ rg -q 'await startNativeSpeechBridge()' "$content_view"
 rg -q 'particleDebug.audioHost.startBridge' "$localization_en" "$localization_zh"
 echo "native_speech_input_bridge_debug_entry=PASS"
 
-if rg -q 'StepFun|ProviderRouter|ExecutionEngine|RuntimeCore' "$bridge"; then
+if rg -q 'Qwen|ProviderRouter|ExecutionEngine|RuntimeCore' "$bridge"; then
   echo "native_speech_input_bridge_host_ownership=FAIL"
   exit 1
 fi
-if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter' \
+if rg -q 'QwenRealtimeAdapter|ProviderRouter' \
   "$controller"; then
   echo "native_speech_input_bridge_controller_boundary=FAIL"
   exit 1

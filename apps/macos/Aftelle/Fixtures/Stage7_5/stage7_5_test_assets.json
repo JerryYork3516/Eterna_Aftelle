@@ -23,36 +23,35 @@
   "primary_native_speech": {
     "configuration_status": "RESOLVED",
     "capability": "native_speech",
-    "provider_profile_id": "stage7_5_stepfun_realtime_primary",
-    "adapter_id": "stepfun_realtime",
-    "provider": "StepFun",
-    "model": "stepaudio-2.5-realtime",
-    "voice": "linjiajiejie",
-    "voice_source": "stepfun_official",
+    "provider_profile_id": "stage7_5_qwen_realtime_development_beijing",
+    "adapter_id": "qwen_realtime",
+    "provider": "Qwen",
+    "model": "qwen3.5-omni-flash-realtime",
+    "voice": "Maia",
+    "voice_source": "qwen_official",
     "language": "zh-CN",
     "language_metadata": "zh-CN",
     "transport": "websocket",
-    "endpoint": "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime",
-    "endpoint_source": "master_control_stage_7_5_1_A3R",
+    "endpoint": "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime",
+    "endpoint_source": "stage_7_5_10_A1_2",
     "input_audio_format": "pcm16",
     "output_audio_format": "pcm16",
     "turn_detection": {
-      "type": "server_vad",
+      "type": "semantic_vad",
       "prefix_padding_ms": 500,
       "tuning_owner_stage": "7.5.6"
     },
     "authorization_scheme": "Bearer",
-    "credential_type": "StepFun platform API Key",
-    "key_ref": "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key",
+    "credential_type": "Qwen workspace ID and API Key",
+    "key_ref": "keychain://com.eterna.aftelle.provider.qwen/qwen_realtime_credential",
     "actual_key_written": true,
     "connectivity_test_status": "PASS",
-    "connectivity_test_owner_stage": "7.5.2",
+    "connectivity_test_owner_stage": "7.5.10-A1.3",
     "fallback_enabled": false,
     "fallback_implementation_stage": "7.5.11",
     "configuration_source": [
-      "master_control_stage_7_5_1_A3R",
-      "docs/03_dev_plan.md#stage-75",
-      "docs/stage7_5/7_5_1_A2_realtime_speech_architecture_boundary.md"
+      "apps/macos/Aftelle/AppController.swift",
+      "apps/macos/RuntimeCore/QwenRealtimeCodec.swift"
     ]
   },
   "test_environment": {
@@ -79,7 +78,7 @@
     {
       "scenario_id": "primary_native_sts",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "stage7_5_stepfun_realtime_primary",
+      "provider_profile": "stage7_5_qwen_realtime_development_beijing",
       "input_device": "system_default_input",
       "output_device": "system_default_output",
       "language": "zh-CN",
@@ -90,7 +89,7 @@
     {
       "scenario_id": "airpods_route",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "stage7_5_stepfun_realtime_primary",
+      "provider_profile": "stage7_5_qwen_realtime_development_beijing",
       "input_device": "AirPods Pro 2",
       "output_device": "AirPods Pro 2",
       "language": "zh-CN",
@@ -101,7 +100,7 @@
     {
       "scenario_id": "provider_unavailable",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "stage7_5_stepfun_realtime_primary",
+      "provider_profile": "stage7_5_qwen_realtime_development_beijing",
       "input_device": "system_default_input",
       "output_device": "system_default_output",
       "language": "zh-CN",
@@ -112,7 +111,7 @@
     {
       "scenario_id": "cancelled_interaction",
       "resident_fixture": "apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident",
-      "provider_profile": "stage7_5_stepfun_realtime_primary",
+      "provider_profile": "stage7_5_qwen_realtime_development_beijing",
       "input_device": "system_default_input",
       "output_device": "system_default_output",
       "language": "zh-CN",

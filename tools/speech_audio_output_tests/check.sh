@@ -36,7 +36,7 @@ test "$(rg -c '/\* MacSpeechAudioOutputPlayer\.swift( in Sources)? \*/' "$projec
 test "$(rg -c '/\* MacSpeechAudioOutputHost\.swift( in Sources)? \*/' "$project")" -eq 4
 echo "speech_audio_output_target_membership=PASS"
 
-if rg -q 'StepFun|ProviderRouter|ExecutionEngine|RuntimeCore|NativeSpeechEvent|SessionStore|MemoryController|ParticleCore' \
+if rg -q 'Qwen|ProviderRouter|ExecutionEngine|RuntimeCore|NativeSpeechEvent|SessionStore|MemoryController|ParticleCore' \
   "$buffer" "$player" "$host"; then
   echo "speech_audio_output_ownership=FAIL"
   exit 1
@@ -72,7 +72,7 @@ if rg -q 'base64EncodedString|Bearer |print\(.*payload|String\(data:.*bytes' \
 fi
 echo "speech_audio_output_debug_privacy=PASS"
 
-if rg -q 'outputAudio|receiveNativeSpeechEvent|StepFunRealtimeAdapter' \
+if rg -q 'outputAudio|receiveNativeSpeechEvent|QwenRealtimeAdapter' \
   "$host" "$player" "$buffer"; then
   echo "speech_audio_output_a2_boundary=FAIL"
   exit 1

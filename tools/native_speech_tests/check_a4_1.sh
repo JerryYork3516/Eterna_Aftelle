@@ -22,7 +22,6 @@ for value in \
   "$(jq -r '.primary_native_speech.provider' "$manifest")" \
   "$(jq -r '.primary_native_speech.model' "$manifest")" \
   "$(jq -r '.primary_native_speech.voice' "$manifest")" \
-  "$(jq -r '.primary_native_speech.endpoint' "$manifest")" \
   "$(jq -r '.primary_native_speech.input_audio_format' "$manifest")" \
   "$(jq -r '.primary_native_speech.output_audio_format' "$manifest")" \
   "$(jq -r '.primary_native_speech.turn_detection.type' "$manifest")" \
@@ -33,6 +32,10 @@ for value in \
     exit 1
   fi
 done
+endpoint_prefix="$(jq -r \
+  '.primary_native_speech.endpoint | sub("qwen3\\.5-omni-flash-realtime$"; "")' \
+  "$manifest")"
+rg -Fq "$endpoint_prefix" "$controller"
 echo "native_speech_manifest_parity=PASS"
 
 content_view="$repo_root/apps/macos/Aftelle/ContentView.swift"
@@ -47,7 +50,7 @@ rg -q 'startNativeSpeechInteraction\(\)' "$runtime"
 rg -q 'receiveNativeSpeechEvent\(' "$runtime"
 rg -q 'closeActiveNativeSpeechInteraction\(\)' "$runtime"
 
-if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|URLSessionRealtimeWebSocketTransport' \
+if rg -q 'QwenRealtimeAdapter|URLSessionRealtimeWebSocketTransport' \
   "$content_view" "$controller"; then
   echo "native_speech_debug_ui_boundary=FAIL"
   exit 1
@@ -59,10 +62,10 @@ for strings_file in \
   "$repo_root/apps/macos/Aftelle/zh-Hans.lproj/Localizable.strings"; do
   plutil -lint "$strings_file" >/dev/null
   for key in \
-    particleDebug.stepfun.title \
-    particleDebug.stepfun.credential.present \
-    particleDebug.stepfun.credential.missing \
-    particleDebug.stepfun.testConnection; do
+    particleDebug.qwen.title \
+    particleDebug.qwen.credential.present \
+    particleDebug.qwen.credential.missing \
+    particleDebug.qwen.testConnection; do
     rg -Fq "\"$key\"" "$strings_file"
   done
 done

@@ -3,7 +3,10 @@ import Foundation
 
 private struct BridgeTestCredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? {
-        "fake-token"
+        try QwenRealtimeCredential(
+            workspaceID: "workspace-test",
+            secret: "fake-token"
+        ).storedValue()
     }
 }
 
@@ -68,7 +71,7 @@ private final class FakeBridgeAudioCapture:
             return false
         }
         return frameBuffer.append(
-            pcm16Bytes: Data([marker, 0]),
+            pcm16Bytes: Data(repeating: marker, count: 960),
             activity: Float(marker) / 255,
             generation: generation
         )
@@ -770,9 +773,12 @@ private struct NativeSpeechInputBridgeTests {
     private static func makeRuntimeStack(
         transport: FakeRealtimeWebSocketTransport
     ) -> (runtime: RuntimeCore, orchestration: OrchestrationKernel) {
-        let adapter = StepFunRealtimeAdapter(
+        let adapter = QwenRealtimeAdapter(
             credentialReader: BridgeTestCredentialReader(),
-            transport: transport
+            transport: transport,
+            configuration: QwenRealtimeConfiguration(
+                inputPacketMilliseconds: 20
+            )
         )
         let router = ProviderRouter(
             credentialReader: UnavailableProviderCredentialReader(),
@@ -801,24 +807,24 @@ private struct NativeSpeechInputBridgeTests {
 
     private static func profile() -> NativeSpeechProviderProfile {
         NativeSpeechProviderProfile(
-            profileID: "stage7_5_stepfun_realtime_primary",
-            providerID: "StepFun",
+            profileID: "stage7_5_qwen_realtime_development_beijing",
+            providerID: "Qwen",
             capability: "native_speech",
-            adapterID: "stepfun_realtime",
-            modelID: "stepaudio-2.5-realtime",
-            voiceID: "linjiajiejie",
+            adapterID: "qwen_realtime",
+            modelID: "qwen3.5-omni-flash-realtime",
+            voiceID: "Maia",
             endpoint: URL(
-                string: "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime"
+                string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
             )!,
             transport: "websocket",
             inputAudioFormat: .pcm16,
             outputAudioFormat: .pcm16,
             turnDetection: NativeSpeechTurnDetection(
-                type: .serverVAD,
+                type: .semanticVAD,
                 prefixPaddingMilliseconds: 500
             ),
             languageMetadata: "zh-CN",
-            keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
+            keyRef: "keychain://com.eterna.aftelle.provider.qwen/qwen_realtime_credential"
         )
     }
 
@@ -830,7 +836,7 @@ private struct NativeSpeechInputBridgeTests {
         NativeSpeechAudioPayload(
             interactionID: binding.interactionID,
             sequenceNumber: sequence,
-            bytes: Data([marker, 0]),
+            bytes: Data(repeating: marker, count: 960),
             format: .pcm16
         )
     }

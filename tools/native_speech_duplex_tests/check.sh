@@ -50,8 +50,6 @@ CFFIXED_USER_HOME="$runtime_home" \
 
 output_bridge="$repo_root/apps/macos/Aftelle/MacSpeechNativeOutputBridge.swift"
 input_bridge="$repo_root/apps/macos/Aftelle/MacSpeechNativeInputBridge.swift"
-codec="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeCodec.swift"
-adapter="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
 qwen_codec="$repo_root/apps/macos/RuntimeCore/QwenRealtimeCodec.swift"
 qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeAdapter.swift"
 controller="$repo_root/apps/macos/Aftelle/AppController.swift"
@@ -92,7 +90,7 @@ rg -q 'runtimeCore.receiveNativeSpeechEvent' "$orchestration"
 rg -q 'executionEngine.receiveNativeSpeechEvent' "$runtime"
 rg -q 'providerRouter.receiveNativeSpeechEvent' "$engine"
 rg -q 'nativeSpeechProvider.receive' "$router"
-rg -q 'nextRecognizedEvent' "$adapter"
+rg -q 'receiveEnvelope' "$qwen_adapter"
 echo "native_speech_duplex_return_chain=PASS"
 
 rg -q 'speechAudioOutputHost.enqueue' "$controller"
@@ -104,27 +102,20 @@ rg -q 'case playbackStarted' "$repo_root/apps/macos/RuntimeCore/RealtimeSpeechSt
 echo "native_speech_playback_forward_chain=PASS"
 echo "native_speech_playback_lifecycle_return_chain=PASS"
 
-rg -q 'case "response.audio.done"' "$codec"
-rg -q 'case "response.done"' "$codec"
-rg -q 'responseDoneKind' "$codec"
-rg -q 'return .responseCompleted' "$codec"
-rg -q 'response.function_call_arguments.done' "$codec"
-rg -q 'response.thinking.delta' "$codec"
-echo "native_speech_duplex_codec=PASS"
-
 rg -q 'case "response.audio.done"' "$qwen_codec"
 rg -q 'case "response.done"' "$qwen_codec"
 rg -Fq 'return envelope(.responseDone' "$qwen_codec"
 rg -q 'QwenRealtimeCredential' "$qwen_codec" "$qwen_adapter"
 rg -q 'didEmitCancellationAcknowledgement' "$qwen_adapter"
 echo "qwen_native_speech_duplex_codec=PASS"
+echo "native_speech_duplex_codec=PASS"
 
 if rg -q 'AVAudioPlayer|AVAudioPlayerNode|response\.create|input_audio_buffer\.commit' \
   "$output_bridge" "$controller" "$orchestration" "$runtime"; then
   echo "native_speech_duplex_scope=FAIL"
   exit 1
 fi
-if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter' \
+if rg -q 'QwenRealtimeAdapter|ProviderRouter' \
   "$controller"; then
   echo "native_speech_duplex_controller_boundary=FAIL"
   exit 1
@@ -213,19 +204,19 @@ echo "native_speech_persistent_session=PASS"
 rg -q 'commitNativeSpeechInterrupt' "$controller" "$orchestration" "$runtime"
 rg -q 'claimPendingInterrupt' "$runtime"
 rg -q 'executionEngine.cancelNativeSpeech' "$runtime"
-rg -q 'decodeEnvelope' "$codec" "$adapter"
-rg -q 'didEmitCancellationAcknowledgement' "$adapter"
+rg -q 'decodeEnvelope' "$qwen_codec" "$qwen_adapter"
+rg -q 'didEmitCancellationAcknowledgement' "$qwen_adapter"
 if rg -q 'public func commitNativeSpeechInterrupt' "$runtime" "$orchestration"; then
   echo "native_speech_interrupt_boundary=FAIL"
   exit 1
 fi
 echo "native_speech_interrupt_boundary=PASS"
 
-rg -q 'residentTranscriptAccumulator' "$adapter"
-rg -q 'userTranscriptAccumulator' "$adapter"
-rg -q 'residentAudioTranscriptDelta' "$codec" "$adapter"
-rg -q 'residentTextDelta' "$codec" "$adapter"
-rg -q 'case \.residentTextDelta, \.residentTextDone:' "$adapter"
+rg -q 'residentTranscriptAccumulator' "$qwen_adapter"
+rg -q 'lastUserTranscriptPreview' "$qwen_adapter"
+rg -q 'case "response.audio_transcript.delta"' "$qwen_codec"
+rg -q 'case \.residentTranscriptDelta:' "$qwen_adapter"
+rg -q 'case \.residentTranscriptDone:' "$qwen_adapter"
 rg -q 'case chunkPlayed' \
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputHost.swift"
 rg -q 'RealtimeSpeechPlaybackSubtitleSynchronizer' "$controller"
@@ -238,15 +229,15 @@ if rg -q 'requiredPlayedChunkCount|lastAssignedPlayedChunkCount|forceLatest' \
   echo "native_speech_subtitle_audio_watermark=FAIL"
   exit 1
 fi
-rg -q 'conversation.item.created' "$codec"
-rg -q 'provider_user_partial_unavailable' "$adapter"
+rg -q 'conversation.item.created' "$qwen_codec"
+rg -q 'pendingResidentPartial' "$qwen_adapter"
 echo "native_speech_subtitle_audio_watermark=PASS"
 if sed -n '/private func syncRealtimeSpeechPresentation()/,/^    }/p' \
   "$controller" | rg -q 'userPartial'; then
   echo "native_speech_user_partial_hidden=FAIL"
   exit 1
 fi
-rg -q 'residentPartialCheckpointCapacity = 128' "$adapter"
-rg -q 'resident_partial_checkpoints_compacted' "$adapter"
+rg -q 'residentSubtitleCheckpointCapacity = 128' "$output_bridge"
+rg -q 'deferredResidentFinal' "$qwen_adapter"
 echo "native_speech_streaming_subtitle=PASS"
 echo "native_speech_user_partial_hidden=PASS"

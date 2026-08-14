@@ -54,27 +54,6 @@ nonisolated private enum Stage75NativeSpeechConfiguration {
             keyRef: ProviderKeychainStore.qwenKeyRef
         )
     }
-
-    static let stepFunProfile = NativeSpeechProviderProfile(
-        profileID: "stage7_5_stepfun_realtime_primary",
-        providerID: "StepFun",
-        capability: "native_speech",
-        adapterID: "stepfun_realtime",
-        modelID: "stepaudio-2.5-realtime",
-        voiceID: "linjiajiejie",
-        endpoint: URL(
-            string: "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime"
-        )!,
-        transport: "websocket",
-        inputAudioFormat: .pcm16,
-        outputAudioFormat: .pcm16,
-        turnDetection: NativeSpeechTurnDetection(
-            type: .serverVAD,
-            prefixPaddingMilliseconds: 500
-        ),
-        languageMetadata: "zh-CN",
-        keyRef: ProviderKeychainStore.stepFunKeyRef
-    )
 }
 
 nonisolated struct RealtimeSpeechPlaybackSubtitleIdentity:

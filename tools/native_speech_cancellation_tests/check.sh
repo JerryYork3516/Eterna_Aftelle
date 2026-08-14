@@ -9,7 +9,7 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
 state_machine="$repo_root/apps/macos/RuntimeCore/RealtimeSpeechStateMachine.swift"
-adapter="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
+adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeAdapter.swift"
 controller="$repo_root/apps/macos/Aftelle/AppController.swift"
 orchestration="$repo_root/apps/macos/Aftelle/AppModels.swift"
 output_bridge="$repo_root/apps/macos/Aftelle/MacSpeechNativeOutputBridge.swift"
@@ -29,7 +29,7 @@ rg -q 'case \.success\(\.rejectedLate\)' "$output_bridge"
 rg -q 'interactionTerminalOutcome' "$state_machine"
 echo "native_speech_canonical_outcome_gate=PASS"
 
-if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter|"response\.cancel"' \
+if rg -q 'QwenRealtimeAdapter|ProviderRouter|"response\.cancel"' \
   "$controller" "$orchestration"; then
   echo "native_speech_cancellation_ui_boundary=FAIL"
   exit 1

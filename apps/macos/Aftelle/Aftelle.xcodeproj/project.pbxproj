@@ -38,10 +38,7 @@
 		A0752A100000000000000004 /* NativeSpeechEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A100000000000000014 /* NativeSpeechEvent.swift */; };
 		A0752A100000000000000005 /* NativeSpeechProviderProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A100000000000000015 /* NativeSpeechProviderProfile.swift */; };
 		A0752A200000000000000001 /* RealtimeWebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000011 /* RealtimeWebSocketTransport.swift */; };
-		A0752A200000000000000002 /* StepFunRealtimeCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000012 /* StepFunRealtimeCodec.swift */; };
-		A0752A200000000000000003 /* StepFunRealtimeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */; };
 		A0752A400000000000000001 /* URLSessionRealtimeWebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */; };
-		A0752A400000000000000002 /* StepFunRealtimeRuntimeComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */; };
 		A075A1000000000000000001 /* QwenRealtimeCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = A075A1000000000000000011 /* QwenRealtimeCodec.swift */; };
 		A075A1000000000000000002 /* QwenRealtimeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A075A1000000000000000012 /* QwenRealtimeAdapter.swift */; };
 		A075A1000000000000000003 /* QwenRealtimeRuntimeComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A075A1000000000000000013 /* QwenRealtimeRuntimeComposition.swift */; };
@@ -97,10 +94,7 @@
 		A0752A100000000000000014 /* NativeSpeechEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/NativeSpeechEvent.swift; sourceTree = SOURCE_ROOT; };
 		A0752A100000000000000015 /* NativeSpeechProviderProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/NativeSpeechProviderProfile.swift; sourceTree = SOURCE_ROOT; };
 		A0752A200000000000000011 /* RealtimeWebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/RealtimeWebSocketTransport.swift; sourceTree = SOURCE_ROOT; };
-		A0752A200000000000000012 /* StepFunRealtimeCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeCodec.swift; sourceTree = SOURCE_ROOT; };
-		A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/URLSessionRealtimeWebSocketTransport.swift; sourceTree = SOURCE_ROOT; };
-		A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeRuntimeComposition.swift; sourceTree = SOURCE_ROOT; };
 		A075A1000000000000000011 /* QwenRealtimeCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeCodec.swift; sourceTree = SOURCE_ROOT; };
 		A075A1000000000000000012 /* QwenRealtimeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A075A1000000000000000013 /* QwenRealtimeRuntimeComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeRuntimeComposition.swift; sourceTree = SOURCE_ROOT; };
@@ -196,11 +190,8 @@
 				A0756A100000000000000011 /* RealtimeSpeechStateMachine.swift */,
 				A0755A200000000000000011 /* RealtimeSpeechContextProjection.swift */,
 				A0755A200000000000000012 /* RealtimeSpeechContextCompiler.swift */,
-				A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */,
 				A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */,
 				A0752A200000000000000011 /* RealtimeWebSocketTransport.swift */,
-				A0752A200000000000000012 /* StepFunRealtimeCodec.swift */,
-				A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */,
 				A0752A100000000000000011 /* NativeSpeechProvider.swift */,
 				A0752A100000000000000012 /* NativeSpeechInteraction.swift */,
 				A0752A100000000000000013 /* NativeSpeechAudioPayload.swift */,
@@ -315,11 +306,8 @@
 				A0753A300000000000000001 /* MacSpeechDeviceMonitor.swift in Sources */,
 				A0753A200000000000000001 /* MacSpeechAudioCapture.swift in Sources */,
 				A0753A100000000000000001 /* MacSpeechAudioHost.swift in Sources */,
-				A0752A400000000000000002 /* StepFunRealtimeRuntimeComposition.swift in Sources */,
 				A0752A400000000000000001 /* URLSessionRealtimeWebSocketTransport.swift in Sources */,
 				A0752A200000000000000001 /* RealtimeWebSocketTransport.swift in Sources */,
-				A0752A200000000000000002 /* StepFunRealtimeCodec.swift in Sources */,
-				A0752A200000000000000003 /* StepFunRealtimeAdapter.swift in Sources */,
 				A0752A100000000000000001 /* NativeSpeechProvider.swift in Sources */,
 				A0752A100000000000000002 /* NativeSpeechInteraction.swift in Sources */,
 				A0752A100000000000000003 /* NativeSpeechAudioPayload.swift in Sources */,

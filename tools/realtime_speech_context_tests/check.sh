@@ -29,11 +29,11 @@ compiler="$repo_root/apps/macos/RuntimeCore/RealtimeSpeechContextCompiler.swift"
 runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
 engine="$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift"
 router="$repo_root/apps/macos/RuntimeCore/ProviderRouter.swift"
-adapter="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
-codec="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeCodec.swift"
+adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeAdapter.swift"
+codec="$repo_root/apps/macos/RuntimeCore/QwenRealtimeCodec.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 
-if rg -q 'StepFun|AVFoundation|AVAudio|SwiftUI|URLSession|Store|DRLoader|keyRef|secret' \
+if rg -q 'Qwen|AVFoundation|AVAudio|SwiftUI|URLSession|Store|DRLoader|keyRef|secret' \
   "$projection" "$compiler"; then
   echo "realtime_speech_context_vendor_neutrality=FAIL"
   exit 1
@@ -64,7 +64,7 @@ if rg -q 'instructions|RealtimeSpeechContextProjection' \
 fi
 echo "realtime_speech_context_persistence_leak=PASS"
 
-if rg -q 'session\.update|prefix_padding_ms|server_vad|stepaudio|linjiajiejie' \
+if rg -q 'session\.update|prefix_padding_ms|semantic_vad|qwen3\.5|Maia' \
   "$projection" "$compiler"; then
   echo "realtime_speech_context_provider_field_leak=FAIL"
   exit 1

@@ -56,7 +56,7 @@ private final class DuplexAudioCapture:
 
     @discardableResult
     func emit(_ marker: UInt8) -> Bool {
-        emit(bytes: Data([marker, 0]))
+        emit(bytes: Data(repeating: marker, count: 960))
     }
 
     @discardableResult
@@ -901,10 +901,7 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_started"}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"你"}"#)
-        )
-        await transport.enqueue(
-            .text(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"好"}"#)
+            .text(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"subtitle-user","text":"你","stash":"好"}"#)
         )
         await waitUntil {
             stack.orchestration.realtimeSpeechSubtitleSnapshot().userPartial
@@ -975,14 +972,14 @@ private struct NativeSpeechDuplexTests {
         await waitUntil { stack.outputPlayer.scheduledCount == 5 }
         stack.outputPlayer.completeScheduledChunk()
         stack.outputPlayer.completeScheduledChunk()
-        expect(
-            stack.controller.particleSubtitleState.text != "我是林轩，",
-            "resident phrase cannot lead its assigned PCM chunk"
-        )
-        stack.outputPlayer.completeScheduledChunk()
         await waitUntil {
             stack.controller.particleSubtitleState.text == "我是林轩，"
         }
+        expect(
+            stack.controller.particleSubtitleState.text == "我是林轩，",
+            "matching local playback releases the resident phrase"
+        )
+        stack.outputPlayer.completeScheduledChunk()
         stack.outputPlayer.completeScheduledChunk()
         await waitUntil {
             stack.controller.particleSubtitleState.text == "我是林轩。"
@@ -1217,6 +1214,9 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
         )
         await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
+        await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
         await transport.enqueue(
@@ -1275,6 +1275,9 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
         )
         await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
+        await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"Bgc="}"#)
         )
         await transport.enqueue(
@@ -1305,6 +1308,9 @@ private struct NativeSpeechDuplexTests {
             )
             await transport.enqueue(
                 .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+            )
+            await transport.enqueue(
+                .text(#"{"type":"response.created"}"#)
             )
             await transport.enqueue(
                 .text(#"{"type":"response.audio.delta","delta":"CAk="}"#)
@@ -1416,6 +1422,9 @@ private struct NativeSpeechDuplexTests {
         )
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
         )
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
@@ -1888,10 +1897,13 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
+            .text(#"{"type":"response.created","response":{"id":"interrupt-response"}}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+            .text(#"{"type":"response.audio.delta","response_id":"interrupt-response","delta":"AQI="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.audio.delta","response_id":"interrupt-response","delta":"AwQ="}"#)
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
@@ -1901,7 +1913,7 @@ private struct NativeSpeechDuplexTests {
 
         for _ in 0 ..< 12 {
             await transport.enqueue(
-                .text(#"{"type":"response.audio.delta","delta":"BQY="}"#)
+                .text(#"{"type":"response.audio.delta","response_id":"interrupt-response","delta":"BQY="}"#)
             )
         }
         await waitUntil {
@@ -1989,22 +2001,21 @@ private struct NativeSpeechDuplexTests {
         }
         let acceptedOutputCount = stack.controller
             .speechOutputBridgeSnapshot.outputAudioChunkCount
+        let ignoredEventCount = await stack.adapter.ignoredEventCount
 
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"AwQ="}"#)
+            .text(#"{"type":"response.audio.delta","response_id":"interrupt-response","delta":"AwQ="}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.cancelled"}"#)
+            .text(#"{"type":"response.done","response":{"id":"interrupt-response","status":"incomplete"}}"#)
         )
         await waitUntil {
-            await stack.controller.refreshMicrophoneAuthorization()
-            return stack.controller.speechOutputBridgeSnapshot
-                .runtimeRejectedEventCount == 2
+            await stack.adapter.ignoredEventCount >= ignoredEventCount + 1
         }
         expect(
             stack.controller.speechOutputBridgeSnapshot.outputAudioChunkCount
                 == acceptedOutputCount,
-            "late interrupted outputAudio is not accepted"
+            "Qwen filters late interrupted outputAudio before Runtime"
         )
         expect(
             stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop,
@@ -2215,6 +2226,9 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
         )
         await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
+        await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
         await transport.enqueue(
@@ -2269,6 +2283,9 @@ private struct NativeSpeechDuplexTests {
         )
         await transport.enqueue(
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
         )
         await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
@@ -2335,6 +2352,9 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
         )
         await transport.enqueue(
+            .text(#"{"type":"response.created"}"#)
+        )
+        await transport.enqueue(
             .text(#"{"type":"response.audio.delta","delta":"AQI="}"#)
         )
         await transport.enqueue(
@@ -2382,6 +2402,12 @@ private struct NativeSpeechDuplexTests {
             await transport.maximumConcurrentReceiveCount == 1,
             "duplicate start creates no second receive loop"
         )
+        try await stack.adapter.send(audio: NativeSpeechAudioPayload(
+            interactionID: binding.interactionID,
+            sequenceNumber: 1,
+            bytes: Data(repeating: 1, count: 960),
+            format: .pcm16
+        ))
         await transport.enqueueFailure(.transportFailure)
         await waitUntil {
             await bridge.currentSnapshot().state == .failed
@@ -2391,7 +2417,10 @@ private struct NativeSpeechDuplexTests {
             "receive failure reaches standard error"
         )
         expect(
-            await transport.calls.filter { $0 == .connect(profile().endpoint) }.count == 1,
+            await transport.calls.filter {
+                if case .connect = $0 { return true }
+                return false
+            }.count == 1,
             "streaming receive failure never reconnects"
         )
     }
@@ -2506,7 +2535,7 @@ private struct NativeSpeechDuplexTests {
         controller: AppController,
         orchestration: OrchestrationKernel,
         capture: DuplexAudioCapture,
-        adapter: StepFunRealtimeAdapter,
+        adapter: QwenRealtimeAdapter,
         outputPlayer: FakeMacSpeechAudioOutputPlayer,
         outputMonitor: FakeMacSpeechOutputDeviceMonitor
     ) {
@@ -2607,11 +2636,14 @@ private struct NativeSpeechDuplexTests {
         transport: FakeRealtimeWebSocketTransport
     ) -> (
         orchestration: OrchestrationKernel,
-        adapter: StepFunRealtimeAdapter
+        adapter: QwenRealtimeAdapter
     ) {
-        let adapter = StepFunRealtimeAdapter(
+        let adapter = QwenRealtimeAdapter(
             credentialReader: DuplexCredentialReader(),
             transport: transport,
+            configuration: QwenRealtimeConfiguration(
+                inputPacketMilliseconds: 20
+            ),
             reconnectDelay: .zero
         )
         let router = ProviderRouter(
@@ -2655,26 +2687,7 @@ private struct NativeSpeechDuplexTests {
     }
 
     private static func profile() -> NativeSpeechProviderProfile {
-        NativeSpeechProviderProfile(
-            profileID: "stage7_5_stepfun_realtime_primary",
-            providerID: "StepFun",
-            capability: "native_speech",
-            adapterID: "stepfun_realtime",
-            modelID: "stepaudio-2.5-realtime",
-            voiceID: "linjiajiejie",
-            endpoint: URL(
-                string: "wss://api.stepfun.com/v1/realtime?model=stepaudio-2.5-realtime"
-            )!,
-            transport: "websocket",
-            inputAudioFormat: .pcm16,
-            outputAudioFormat: .pcm16,
-            turnDetection: NativeSpeechTurnDetection(
-                type: .serverVAD,
-                prefixPaddingMilliseconds: 500
-            ),
-            languageMetadata: "zh-CN",
-            keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
-        )
+        qwenProfile()
     }
 
     private static func qwenProfile() -> NativeSpeechProviderProfile {
