@@ -42,6 +42,9 @@
 		A0752A200000000000000003 /* StepFunRealtimeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */; };
 		A0752A400000000000000001 /* URLSessionRealtimeWebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */; };
 		A0752A400000000000000002 /* StepFunRealtimeRuntimeComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */; };
+		A075A1000000000000000001 /* QwenRealtimeCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = A075A1000000000000000011 /* QwenRealtimeCodec.swift */; };
+		A075A1000000000000000002 /* QwenRealtimeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A075A1000000000000000012 /* QwenRealtimeAdapter.swift */; };
+		A075A1000000000000000003 /* QwenRealtimeRuntimeComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A075A1000000000000000013 /* QwenRealtimeRuntimeComposition.swift */; };
 		A0753A100000000000000001 /* MacSpeechAudioHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0753A100000000000000011 /* MacSpeechAudioHost.swift */; };
 		A0753A200000000000000001 /* MacSpeechAudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0753A200000000000000011 /* MacSpeechAudioCapture.swift */; };
 		A0753A300000000000000001 /* MacSpeechDeviceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0753A300000000000000011 /* MacSpeechDeviceMonitor.swift */; };
@@ -98,6 +101,9 @@
 		A0752A200000000000000013 /* StepFunRealtimeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A0752A400000000000000011 /* URLSessionRealtimeWebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/URLSessionRealtimeWebSocketTransport.swift; sourceTree = SOURCE_ROOT; };
 		A0752A400000000000000012 /* StepFunRealtimeRuntimeComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/StepFunRealtimeRuntimeComposition.swift; sourceTree = SOURCE_ROOT; };
+		A075A1000000000000000011 /* QwenRealtimeCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeCodec.swift; sourceTree = SOURCE_ROOT; };
+		A075A1000000000000000012 /* QwenRealtimeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeAdapter.swift; sourceTree = SOURCE_ROOT; };
+		A075A1000000000000000013 /* QwenRealtimeRuntimeComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeRuntimeComposition.swift; sourceTree = SOURCE_ROOT; };
 		A0753A100000000000000011 /* MacSpeechAudioHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioHost.swift; sourceTree = "<group>"; };
 		A0753A200000000000000011 /* MacSpeechAudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioCapture.swift; sourceTree = "<group>"; };
 		A0753A300000000000000011 /* MacSpeechDeviceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechDeviceMonitor.swift; sourceTree = "<group>"; };
@@ -183,6 +189,9 @@
 		A070C0000000000000000017 /* RuntimeCore */ = {
 			isa = PBXGroup;
 			children = (
+				A075A1000000000000000013 /* QwenRealtimeRuntimeComposition.swift */,
+				A075A1000000000000000011 /* QwenRealtimeCodec.swift */,
+				A075A1000000000000000012 /* QwenRealtimeAdapter.swift */,
 				A0759A100000000000000011 /* RealtimeSpeechSubtitle.swift */,
 				A0756A100000000000000011 /* RealtimeSpeechStateMachine.swift */,
 				A0755A200000000000000011 /* RealtimeSpeechContextProjection.swift */,
@@ -289,6 +298,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A075A1000000000000000003 /* QwenRealtimeRuntimeComposition.swift in Sources */,
+				A075A1000000000000000001 /* QwenRealtimeCodec.swift in Sources */,
+				A075A1000000000000000002 /* QwenRealtimeAdapter.swift in Sources */,
 				A0759A100000000000000001 /* RealtimeSpeechSubtitle.swift in Sources */,
 				A0759A100000000000000002 /* RealtimeSpeechPresentationMapper.swift in Sources */,
 				A0758A100000000000000001 /* MacSpeechPCMPlaybackBuffer.swift in Sources */,

@@ -766,7 +766,7 @@ private struct ParticleDebugPanel: View {
     let saveProviderCredential: (String) -> Void
     let deleteProviderCredential: () -> Void
     let testResidentReply: (String) async -> Void
-    let saveNativeSpeechProviderCredential: (String) -> Void
+    let saveNativeSpeechProviderCredential: (String, String) -> Void
     let deleteNativeSpeechProviderCredential: () -> Void
     let testNativeSpeechProviderConnectivity: () async -> Void
     let refreshMicrophoneAuthorization: () async -> Void
@@ -1887,21 +1887,22 @@ private struct TextProviderDebugView: View {
 
 private struct NativeSpeechProviderDebugView: View {
     let state: NativeSpeechProviderDebugViewState
-    let saveCredential: (String) -> Void
+    let saveCredential: (String, String) -> Void
     let deleteCredential: () -> Void
     let testConnectivity: () async -> Void
 
+    @State private var workspaceIDInput = ""
     @State private var credentialInput = ""
     @State private var isExpanded = true
 
     var body: some View {
         DebugCollapsibleMenu(
-            titleKey: "particleDebug.stepfun.title",
+            titleKey: "particleDebug.qwen.title",
             isExpanded: $isExpanded
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 GroupBox(
-                    String(localized: "particleDebug.stepfun.configuration")
+                    String(localized: "particleDebug.qwen.configuration")
                 ) {
                     VStack(alignment: .leading, spacing: 8) {
                         ParticleDiagnosticsRow(
@@ -1913,23 +1914,23 @@ private struct NativeSpeechProviderDebugView: View {
                             value: state.profile.modelID
                         )
                         ParticleDiagnosticsRow(
-                            labelKey: "particleDebug.stepfun.voice",
+                            labelKey: "particleDebug.qwen.voice",
                             value: state.profile.voiceID
                         )
                         ParticleDiagnosticsRow(
-                            labelKey: "particleDebug.stepfun.audioFormat",
+                            labelKey: "particleDebug.qwen.audioFormat",
                             value: "\(state.profile.inputAudioFormat.rawValue) / \(state.profile.outputAudioFormat.rawValue)"
                         )
                         ParticleDiagnosticsRow(
-                            labelKey: "particleDebug.stepfun.turnDetection",
+                            labelKey: "particleDebug.qwen.turnDetection",
                             value: state.profile.turnDetection.type.rawValue
                         )
                         ParticleDiagnosticsRow(
-                            labelKey: "particleDebug.stepfun.prefixPadding",
+                            labelKey: "particleDebug.qwen.prefixPadding",
                             value: "\(state.profile.turnDetection.prefixPaddingMilliseconds) ms"
                         )
                         ParticleDiagnosticsRow(
-                            labelKey: "particleDebug.stepfun.endpoint",
+                            labelKey: "particleDebug.qwen.endpoint",
                             value: state.profile.endpoint.absoluteString
                         )
                     }
@@ -1938,6 +1939,13 @@ private struct NativeSpeechProviderDebugView: View {
 
                 GroupBox(String(localized: "particleDebug.provider.credential")) {
                     VStack(alignment: .leading, spacing: 10) {
+                        TextField(
+                            String(
+                                localized:
+                                    "particleDebug.qwen.workspacePlaceholder"
+                            ),
+                            text: $workspaceIDInput
+                        )
                         SecureField(
                             String(
                                 localized:
@@ -1949,8 +1957,8 @@ private struct NativeSpeechProviderDebugView: View {
                             Text(
                                 String(
                                     localized: state.credentialSaved
-                                        ? "particleDebug.stepfun.credential.present"
-                                        : "particleDebug.stepfun.credential.missing"
+                                        ? "particleDebug.qwen.credential.present"
+                                        : "particleDebug.qwen.credential.missing"
                                 )
                             )
                             .font(.caption)
@@ -1962,6 +1970,7 @@ private struct NativeSpeechProviderDebugView: View {
                                         "particleDebug.provider.deleteCredential"
                                 )
                             ) {
+                                workspaceIDInput = ""
                                 credentialInput = ""
                                 deleteCredential()
                             }
@@ -1972,8 +1981,10 @@ private struct NativeSpeechProviderDebugView: View {
                                 )
                             ) {
                                 let credential = credentialInput
+                                let workspaceID = workspaceIDInput
+                                workspaceIDInput = ""
                                 credentialInput = ""
-                                saveCredential(credential)
+                                saveCredential(workspaceID, credential)
                             }
                         }
                         .disabled(state.isTesting)
@@ -1981,7 +1992,7 @@ private struct NativeSpeechProviderDebugView: View {
                     .padding(.top, 4)
                 }
 
-                GroupBox(String(localized: "particleDebug.stepfun.connectivity")) {
+                GroupBox(String(localized: "particleDebug.qwen.connectivity")) {
                     HStack {
                         Text(
                             String(
@@ -1997,7 +2008,7 @@ private struct NativeSpeechProviderDebugView: View {
                                 .controlSize(.small)
                         }
                         Button(
-                            String(localized: "particleDebug.stepfun.testConnection")
+                            String(localized: "particleDebug.qwen.testConnection")
                         ) {
                             Task {
                                 await testConnectivity()

@@ -758,7 +758,8 @@ private struct NativeSpeechInputBridgeTests {
         return (
             AppController(
                 orchestrationKernel: runtimeStack.orchestration,
-                speechAudioHost: host
+                speechAudioHost: host,
+                nativeSpeechProfile: profile()
             ),
             runtimeStack.orchestration,
             host,

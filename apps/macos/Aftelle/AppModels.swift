@@ -1249,7 +1249,7 @@ struct NativeSpeechProviderDebugViewState: Equatable {
         profile: NativeSpeechProviderProfile,
         credentialSaved: Bool = false,
         isTesting: Bool = false,
-        statusKey: String = "particleDebug.stepfun.status.ready"
+        statusKey: String = "particleDebug.qwen.status.ready"
     ) {
         self.profile = profile
         self.credentialSaved = credentialSaved

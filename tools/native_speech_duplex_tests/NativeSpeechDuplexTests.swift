@@ -3,7 +3,13 @@ import Foundation
 
 private struct DuplexCredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? {
-        "fake-token"
+        if keyRef.contains("provider.qwen") {
+            return try QwenRealtimeCredential(
+                workspaceID: "workspace-test",
+                secret: "fake-token"
+            ).storedValue()
+        }
+        return "fake-token"
     }
 }
 
@@ -50,6 +56,15 @@ private final class DuplexAudioCapture:
 
     @discardableResult
     func emit(_ marker: UInt8) -> Bool {
+        emit(bytes: Data([marker, 0]))
+    }
+
+    @discardableResult
+    func emitPacket(_ marker: UInt8) -> Bool {
+        emit(bytes: Data(repeating: marker, count: 960))
+    }
+
+    private func emit(bytes: Data) -> Bool {
         let target = lock.withLock { (started, frameBuffer, generation) }
         guard target.0,
               let frameBuffer = target.1,
@@ -57,7 +72,7 @@ private final class DuplexAudioCapture:
             return false
         }
         return frameBuffer.append(
-            pcm16Bytes: Data([marker, 0]),
+            pcm16Bytes: bytes,
             activity: 0.25,
             generation: generation
         )
@@ -213,6 +228,7 @@ private struct NativeSpeechDuplexTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         testRealSequenceSubtitleSynchronizer()
+        try await testQwenHostChainThroughController()
         try await testHandshakeDoesNotRunCaptureProducer()
         try await testFullDuplexThroughController()
         try await testPlaybackStallThroughController()
@@ -237,6 +253,182 @@ private struct NativeSpeechDuplexTests {
         try await testTextSubtitleSurvivesRealtimeRefresh()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
+    }
+
+    private static func testQwenHostChainThroughController() async throws {
+        let transport = handshakeTransport()
+        let stack = makeQwenControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "Qwen Host fixture loads"
+        )
+        expect(
+            stack.controller.nativeSpeechProviderDebugState.profile
+                == qwenProfile(),
+            "AppController selects the Beijing Qwen Flash profile"
+        )
+
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        for marker in UInt8(1) ... UInt8(5) {
+            expect(
+                stack.capture.emitPacket(marker),
+                "Qwen Host emits a 20 ms PCM16 packet"
+            )
+        }
+        await waitUntil {
+            try await audioAppendObjects(transport).count == 1
+        }
+        let append = try await audioAppendObjects(transport)
+        let encoded = append.first?["audio"] as? String
+        let decodedPacket = encoded.flatMap { Data(base64Encoded: $0) }
+        expect(
+            decodedPacket?.count == 4_800,
+            "Qwen Adapter aggregates five Host packets to 100 ms"
+        )
+
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"qwen-user-1"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"qwen-user-1","text":"你","stash":"好"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"qwen-user-1","transcript":"你好"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"qwen-user-1"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"qwen-response-1"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio_transcript.delta","response_id":"qwen-response-1","item_id":"qwen-resident-1","delta":"你好，"}"#
+        ))
+        await transport.enqueue(subtitleAudioFrame(
+            responseID: "qwen-response-1",
+            itemID: "qwen-resident-1",
+            seed: 21
+        ))
+        await transport.enqueue(subtitleAudioFrame(
+            responseID: "qwen-response-1",
+            itemID: "qwen-resident-1",
+            seed: 22
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio_transcript.done","response_id":"qwen-response-1","item_id":"qwen-resident-1","transcript":"你好，我在。"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.done","response_id":"qwen-response-1","item_id":"qwen-resident-1"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"qwen-response-1","status":"completed"}}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                    .completedResponseCount == 1
+                && stack.controller.realtimeSpeechSubtitleSnapshot.userFinal
+                    == "你好"
+                && stack.controller.realtimeSpeechSubtitleSnapshot
+                    .residentFinal == "你好，我在。"
+        }
+        expect(
+            stack.controller.realtimeSpeechStateSnapshot
+                .lastTurnDetectionSource == .serverVAD,
+            "Qwen semantic VAD events remain Runtime-owned turn detection"
+        )
+        await waitUntil { stack.outputPlayer.scheduledCount == 2 }
+        stack.outputPlayer.completeScheduledChunk()
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+                && stack.controller.particleSubtitleState.text
+                    == "你好，我在。"
+        }
+
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"qwen-user-2"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"qwen-user-2"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"qwen-response-2"}}"#
+        ))
+        await transport.enqueue(subtitleAudioFrame(
+            responseID: "qwen-response-2",
+            itemID: "qwen-resident-2",
+            seed: 23
+        ))
+        await transport.enqueue(subtitleAudioFrame(
+            responseID: "qwen-response-2",
+            itemID: "qwen-resident-2",
+            seed: 24
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.realtimeSpeechStateSnapshot.state
+                == .speaking
+        }
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"qwen-user-3"}"#
+        ))
+        await waitUntil {
+            let eventTypes = try await sentEventTypes(transport)
+            return eventTypes.filter { $0 == "response.cancel" }.count == 1
+                && stack.controller.nativeSpeechPlaybackDebugSnapshot
+                    .interruptClearCount == 1
+        }
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"qwen-response-2","status":"incomplete"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.audio.delta","response_id":"qwen-response-2","item_id":"qwen-resident-2","delta":"AQI="}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"qwen-user-3"}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.created","response":{"id":"qwen-response-3"}}"#
+        ))
+        await transport.enqueue(.text(
+            #"{"type":"response.done","response":{"id":"qwen-response-3","status":"completed"}}"#
+        ))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                    .completedResponseCount == 2
+                && stack.controller.realtimeSpeechStateSnapshot.state
+                    == .listening
+        }
+        expect(
+            await stack.adapter.ignoredEventCount >= 1,
+            "Qwen Adapter filters output arriving after Interrupt"
+        )
+        expect(
+            stack.controller.speechInputBridgeSnapshot.hasActivePump
+                && stack.controller.speechOutputBridgeSnapshot
+                    .hasActiveReceiveLoop,
+            "Qwen Interrupt preserves the active capture and receive chain"
+        )
+
+        await stack.controller.stopSpeechAudioCapture()
+        let eventTypes = try await sentEventTypes(transport)
+        expect(
+            eventTypes.filter { $0 == "response.cancel" }.count == 1,
+            "Stop after response.done sends no stale Qwen cancel"
+        )
+        expect(
+            eventTypes.filter { $0 == "session.finish" }.count == 1,
+            "Stop closes the Qwen session explicitly"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.count == 1,
+            "Stop closes the Qwen WebSocket once"
+        )
     }
 
     private static func testRealSequenceSubtitleSynchronizer() {
@@ -2252,13 +2444,71 @@ private struct NativeSpeechDuplexTests {
             AppController(
                 orchestrationKernel: runtimeStack.orchestration,
                 speechAudioHost: host,
-                speechAudioOutputHost: outputHost
+                speechAudioOutputHost: outputHost,
+                nativeSpeechProfile: profile()
             ),
             runtimeStack.orchestration,
             capture,
             runtimeStack.adapter,
             outputPlayer,
             outputMonitor
+        )
+    }
+
+    private static func makeQwenControllerStack(
+        transport: FakeRealtimeWebSocketTransport
+    ) -> (
+        controller: AppController,
+        orchestration: OrchestrationKernel,
+        capture: DuplexAudioCapture,
+        adapter: QwenRealtimeAdapter,
+        outputPlayer: FakeMacSpeechAudioOutputPlayer
+    ) {
+        let adapter = QwenRealtimeAdapter(
+            credentialReader: DuplexCredentialReader(),
+            transport: transport,
+            reconnectDelay: .zero
+        )
+        let router = ProviderRouter(
+            credentialReader: UnavailableProviderCredentialReader(),
+            nativeSpeechProvider: adapter
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        let orchestration = OrchestrationKernel(runtimeCore: runtime)
+        let capture = DuplexAudioCapture()
+        let host = MacSpeechAudioHost(
+            authorizationProvider: DuplexAuthorizationProvider(),
+            capture: capture,
+            deviceMonitor: DuplexDeviceMonitor()
+        )
+        let outputPlayer = FakeMacSpeechAudioOutputPlayer()
+        let outputHost = MacSpeechAudioOutputHost(
+            player: outputPlayer,
+            deviceMonitor: FakeMacSpeechOutputDeviceMonitor(),
+            configuration: MacSpeechPCMPlaybackConfiguration(
+                capacity: 8,
+                lowWatermark: 1,
+                consumerTimeoutNanoseconds: 2_000_000_000,
+                startupBufferCount: 2,
+                startupBufferDurationNanoseconds: 0,
+                scheduleAheadCount: 4
+            )
+        )
+        return (
+            AppController(
+                orchestrationKernel: orchestration,
+                speechAudioHost: host,
+                speechAudioOutputHost: outputHost,
+                nativeSpeechProfile: qwenProfile()
+            ),
+            orchestration,
+            capture,
+            adapter,
+            outputPlayer
         )
     }
 
@@ -2333,6 +2583,29 @@ private struct NativeSpeechDuplexTests {
             ),
             languageMetadata: "zh-CN",
             keyRef: "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
+        )
+    }
+
+    private static func qwenProfile() -> NativeSpeechProviderProfile {
+        NativeSpeechProviderProfile(
+            profileID: "stage7_5_qwen_realtime_development_beijing",
+            providerID: "Qwen",
+            capability: "native_speech",
+            adapterID: "qwen_realtime",
+            modelID: "qwen3.5-omni-flash-realtime",
+            voiceID: "Tina",
+            endpoint: URL(
+                string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
+            )!,
+            transport: "websocket",
+            inputAudioFormat: .pcm16,
+            outputAudioFormat: .pcm16,
+            turnDetection: NativeSpeechTurnDetection(
+                type: .semanticVAD,
+                prefixPaddingMilliseconds: 500
+            ),
+            languageMetadata: "zh-CN",
+            keyRef: "keychain://com.eterna.aftelle.provider.qwen/qwen_realtime_credential"
         )
     }
 

@@ -47,7 +47,7 @@ rg -q 'startNativeSpeechInteraction\(\)' "$runtime"
 rg -q 'receiveNativeSpeechEvent\(' "$runtime"
 rg -q 'closeActiveNativeSpeechInteraction\(\)' "$runtime"
 
-if rg -q 'StepFunRealtimeAdapter|URLSessionRealtimeWebSocketTransport' \
+if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|URLSessionRealtimeWebSocketTransport' \
   "$content_view" "$controller"; then
   echo "native_speech_debug_ui_boundary=FAIL"
   exit 1

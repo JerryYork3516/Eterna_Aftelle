@@ -37,7 +37,7 @@ private struct QwenRealtimeAdapterTests {
         ])
         let adapter = QwenRealtimeAdapter(
             credentialReader: QwenTestCredentialReader(
-                credential: "test-token"
+                credential: try storedCredential()
             ),
             transport: transport
         )
@@ -80,6 +80,13 @@ private struct QwenRealtimeAdapterTests {
         expect(
             capturedBearerToken == "test-token",
             "Bearer credential is passed only to the transport"
+        )
+        let calls = await transport.calls
+        expect(
+            calls.contains(.connect(URL(
+                string: "wss://workspace-123.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
+            )!)),
+            "Keychain workspace resolves the Beijing endpoint in Adapter"
         )
 
         var sentTexts = await textFrames(transport)
@@ -155,7 +162,7 @@ private struct QwenRealtimeAdapterTests {
         let transport = FakeRealtimeWebSocketTransport(frames: handshake())
         let adapter = QwenRealtimeAdapter(
             credentialReader: QwenTestCredentialReader(
-                credential: "test-token"
+                credential: try storedCredential()
             ),
             transport: transport
         )
@@ -425,6 +432,16 @@ private struct QwenRealtimeAdapterTests {
             checks += 1
         }
 
+        do {
+            _ = try QwenRealtimeCredential(
+                workspaceID: "非法空间",
+                secret: "test-token"
+            )
+            fatalError("FAILED: non-ASCII workspace must fail")
+        } catch NativeSpeechError.invalidConfiguration {
+            checks += 1
+        }
+
         let invalidRequest = makeRequest(
             endpoint: "wss://example.invalid/api-ws/v1/realtime?model=qwen"
         )
@@ -468,7 +485,9 @@ private struct QwenRealtimeAdapterTests {
             "close releases the WebSocket normally"
         )
         expect(
-            calls.contains(.connect(request.profile.endpoint)),
+            calls.contains(.connect(URL(
+                string: "wss://workspace-123.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
+            )!)),
             "the same adapter accepts the Singapore Plus profile"
         )
     }
@@ -478,7 +497,7 @@ private struct QwenRealtimeAdapterTests {
     ) -> QwenRealtimeAdapter {
         QwenRealtimeAdapter(
             credentialReader: QwenTestCredentialReader(
-                credential: "test-token"
+                credential: try! storedCredential()
             ),
             transport: transport,
             reconnectDelay: .zero
@@ -553,6 +572,15 @@ private struct QwenRealtimeAdapterTests {
             refreshReason: .interactionStarted,
             compilationVersion: version
         )
+    }
+
+    private static func storedCredential(
+        workspaceID: String = "workspace-123"
+    ) throws -> String {
+        try QwenRealtimeCredential(
+            workspaceID: workspaceID,
+            secret: "test-token"
+        ).storedValue()
     }
 
     private static func inputFrame(

@@ -9,6 +9,10 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
     static let stepFunAccount = "stepfun_realtime_api_key"
     static let stepFunKeyRef =
         "keychain://com.eterna.aftelle.provider.stepfun/stepfun_realtime_api_key"
+    static let qwenService = "com.eterna.aftelle.provider.qwen"
+    static let qwenAccount = "qwen_realtime_credential"
+    static let qwenKeyRef =
+        "keychain://com.eterna.aftelle.provider.qwen/qwen_realtime_credential"
 
     func save(_ credential: String, for keyRef: String) throws {
         let query = try baseQuery(for: keyRef)
@@ -74,6 +78,8 @@ nonisolated final class ProviderKeychainStore: ProviderCredentialReading, @unche
             return (Self.service, Self.account)
         case Self.stepFunKeyRef:
             return (Self.stepFunService, Self.stepFunAccount)
+        case Self.qwenKeyRef:
+            return (Self.qwenService, Self.qwenAccount)
         default:
             return nil
         }

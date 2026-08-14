@@ -99,7 +99,8 @@ if rg -q 'StepFun|ProviderRouter|ExecutionEngine|RuntimeCore' "$bridge"; then
   echo "native_speech_input_bridge_host_ownership=FAIL"
   exit 1
 fi
-if rg -q 'StepFunRealtimeAdapter|ProviderRouter' "$controller"; then
+if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter' \
+  "$controller"; then
   echo "native_speech_input_bridge_controller_boundary=FAIL"
   exit 1
 fi

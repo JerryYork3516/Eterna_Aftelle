@@ -45,7 +45,7 @@ rg -q 'realtimeSpeechSubtitleSnapshot' "$orchestration" "$controller"
 rg -q 'RealtimeSpeechPresentationMapper\.map' "$controller"
 echo "realtime_speech_subtitle_chain=PASS"
 
-if rg -n 'StepFunRealtimeAdapter|ProviderRouter' \
+if rg -n 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter' \
   "$controller" "$mapper"; then
   echo "realtime_speech_presentation_boundary=FAIL"
   exit 1

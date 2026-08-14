@@ -1,5 +1,88 @@
 import Foundation
 
+nonisolated struct QwenRealtimeCredential: Sendable, Equatable {
+    let workspaceID: String
+    let apiKey: String
+
+    init(workspaceID: String, secret: String) throws {
+        let workspaceID = workspaceID.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let apiKey = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isValidWorkspaceID(workspaceID), !apiKey.isEmpty else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        self.workspaceID = workspaceID
+        self.apiKey = apiKey
+    }
+
+    init(storedValue: String) throws {
+        guard let data = storedValue.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: String],
+              let workspaceID = object["workspace_id"],
+              let apiKey = object["api_key"] else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        try self.init(workspaceID: workspaceID, secret: apiKey)
+    }
+
+    func storedValue() throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: [
+                "api_key": apiKey,
+                "workspace_id": workspaceID
+            ],
+            options: [.sortedKeys]
+        )
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        return value
+    }
+
+    func endpoint(for profile: NativeSpeechProviderProfile) throws -> URL {
+        guard var components = URLComponents(
+            url: profile.endpoint,
+            resolvingAgainstBaseURL: false
+        ),
+        let configuredHost = components.host?.lowercased() else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        let suffixes = [
+            ".cn-beijing.maas.aliyuncs.com",
+            ".ap-southeast-1.maas.aliyuncs.com"
+        ]
+        guard let suffix = suffixes.first(where: {
+            configuredHost.hasSuffix($0)
+        }) else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        components.host = workspaceID + suffix
+        guard let endpoint = components.url else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        return endpoint
+    }
+
+    private static func isValidWorkspaceID(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              value.count <= 63,
+              value.first != "-",
+              value.last != "-" else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 45, 48 ... 57, 65 ... 90, 97 ... 122:
+                true
+            default:
+                false
+            }
+        }
+    }
+}
+
 nonisolated struct QwenRealtimeConfiguration: Sendable, Equatable {
     let inputSampleRate: Int
     let outputSampleRate: Int

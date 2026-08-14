@@ -52,6 +52,8 @@ output_bridge="$repo_root/apps/macos/Aftelle/MacSpeechNativeOutputBridge.swift"
 input_bridge="$repo_root/apps/macos/Aftelle/MacSpeechNativeInputBridge.swift"
 codec="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeCodec.swift"
 adapter="$repo_root/apps/macos/RuntimeCore/StepFunRealtimeAdapter.swift"
+qwen_codec="$repo_root/apps/macos/RuntimeCore/QwenRealtimeCodec.swift"
+qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeAdapter.swift"
 controller="$repo_root/apps/macos/Aftelle/AppController.swift"
 orchestration="$repo_root/apps/macos/Aftelle/AppModels.swift"
 runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
@@ -110,12 +112,20 @@ rg -q 'response.function_call_arguments.done' "$codec"
 rg -q 'response.thinking.delta' "$codec"
 echo "native_speech_duplex_codec=PASS"
 
+rg -q 'case "response.audio.done"' "$qwen_codec"
+rg -q 'case "response.done"' "$qwen_codec"
+rg -Fq 'return envelope(.responseDone' "$qwen_codec"
+rg -q 'QwenRealtimeCredential' "$qwen_codec" "$qwen_adapter"
+rg -q 'didEmitCancellationAcknowledgement' "$qwen_adapter"
+echo "qwen_native_speech_duplex_codec=PASS"
+
 if rg -q 'AVAudioPlayer|AVAudioPlayerNode|response\.create|input_audio_buffer\.commit' \
   "$output_bridge" "$controller" "$orchestration" "$runtime"; then
   echo "native_speech_duplex_scope=FAIL"
   exit 1
 fi
-if rg -q 'StepFunRealtimeAdapter|ProviderRouter' "$controller"; then
+if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter' \
+  "$controller"; then
   echo "native_speech_duplex_controller_boundary=FAIL"
   exit 1
 fi
@@ -138,7 +148,18 @@ echo "native_speech_duplex_provider_public_api=PASS"
 echo "native_speech_duplex_runtime_public_api=PASS"
 
 test "$(rg -c '/\* MacSpeechNativeOutputBridge\.swift( in Sources)? \*/' "$project")" -eq 4
+for source in QwenRealtimeCodec.swift QwenRealtimeAdapter.swift \
+  QwenRealtimeRuntimeComposition.swift; do
+  test "$(rg -c "/\\* ${source}( in Sources)? \\*/" "$project")" -eq 4
+done
 echo "native_speech_duplex_target_membership=PASS"
+
+rg -q 'QwenRealtimeRuntimeComposition.makeRuntimeCore' "$controller"
+rg -q 'stage7_5_qwen_realtime_development_beijing' "$controller"
+rg -q 'qwen3.5-omni-flash-realtime' "$controller"
+rg -q 'workspace.cn-beijing.maas.aliyuncs.com' "$controller"
+rg -q 'ProviderKeychainStore.qwenKeyRef' "$controller"
+echo "qwen_native_speech_host_composition=PASS"
 
 rg -q 'speechOutputBridgeSnapshot' "$content_view"
 for localization in "${localizations[@]}"; do
@@ -147,6 +168,8 @@ for localization in "${localizations[@]}"; do
   rg -q 'particleDebug\.audioHost\.completedResponses' "$localization"
   rg -q 'particleDebug\.audioHost\.outputTerminal' "$localization"
   rg -q 'particleDebug\.realtimeDiagnostics\.export' "$localization"
+  rg -q 'particleDebug\.qwen\.title' "$localization"
+  rg -q 'particleDebug\.qwen\.workspacePlaceholder' "$localization"
 done
 rg -q 'completedResponseCount' "$output_bridge" "$content_view"
 rg -q 'RealtimeSpeechDiagnosticTimeline' "$controller" "$orchestration"

@@ -34,6 +34,21 @@ private struct ProviderKeychainStoreTests {
             "Provider credentials cannot overlap",
             checks: &checks
         )
+        let qwen = ProviderKeychainStore.location(
+            for: ProviderKeychainStore.qwenKeyRef
+        )
+        expect(
+            qwen?.service == "com.eterna.aftelle.provider.qwen"
+                && qwen?.account == "qwen_realtime_credential",
+            "Qwen workspace and API Key use an independent Keychain item",
+            checks: &checks
+        )
+        expect(
+            qwen?.service != stepFun?.service
+                && qwen?.account != stepFun?.account,
+            "Qwen and StepFun credentials cannot overlap",
+            checks: &checks
+        )
         expect(
             ProviderKeychainStore.location(
                 for: "keychain://unsupported/reference"
@@ -51,8 +66,12 @@ private struct ProviderKeychainStoreTests {
         let status = store.exists(for: ProviderKeychainStore.stepFunKeyRef)
             ? "PRESENT"
             : "MISSING"
+        let qwenStatus = store.exists(for: ProviderKeychainStore.qwenKeyRef)
+            ? "PRESENT"
+            : "MISSING"
         print("provider_keychain_checks=\(checks)")
         print("stepfun_keychain_status=\(status)")
+        print("qwen_keychain_status=\(qwenStatus)")
     }
 
     private static func expect(

@@ -22,8 +22,29 @@ private enum DefaultTextProviderConfiguration {
 }
 
 #if DEBUG
-private enum Stage75NativeSpeechConfiguration {
+nonisolated private enum Stage75NativeSpeechConfiguration {
     static let profile = NativeSpeechProviderProfile(
+        profileID: "stage7_5_qwen_realtime_development_beijing",
+        providerID: "Qwen",
+        capability: "native_speech",
+        adapterID: "qwen_realtime",
+        modelID: "qwen3.5-omni-flash-realtime",
+        voiceID: "Tina",
+        endpoint: URL(
+            string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
+        )!,
+        transport: "websocket",
+        inputAudioFormat: .pcm16,
+        outputAudioFormat: .pcm16,
+        turnDetection: NativeSpeechTurnDetection(
+            type: .semanticVAD,
+            prefixPaddingMilliseconds: 500
+        ),
+        languageMetadata: "zh-CN",
+        keyRef: ProviderKeychainStore.qwenKeyRef
+    )
+
+    static let stepFunProfile = NativeSpeechProviderProfile(
         profileID: "stage7_5_stepfun_realtime_primary",
         providerID: "StepFun",
         capability: "native_speech",
@@ -436,7 +457,7 @@ final class AppController: ObservableObject {
             )
         )
         nativeSpeechDiagnosticBuffer = speechDiagnosticBuffer
-        runtimeCore = StepFunRealtimeRuntimeComposition.makeRuntimeCore(
+        runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
             credentialReader: credentialStore,
             diagnosticBuffer: speechDiagnosticBuffer
         )
@@ -481,13 +502,18 @@ final class AppController: ObservableObject {
         orchestrationKernel: OrchestrationKernel,
         speechAudioHost: MacSpeechAudioHost,
         speechAudioOutputHost: MacSpeechAudioOutputHost =
-            MacSpeechAudioOutputHost()
+            MacSpeechAudioOutputHost(),
+        nativeSpeechProfile: NativeSpeechProviderProfile =
+            Stage75NativeSpeechConfiguration.profile
     ) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         self.speechAudioHost = speechAudioHost
         self.speechAudioOutputHost = speechAudioOutputHost
         nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
+        nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
+            profile: nativeSpeechProfile
+        )
         restoreProviderConfiguration()
         refreshNativeSpeechProviderDebugState()
     }
@@ -1592,18 +1618,25 @@ final class AppController: ObservableObject {
         refreshRelationshipProgressionDebugState()
     }
 
-    func saveNativeSpeechProviderCredential(_ credential: String) {
+    func saveNativeSpeechProviderCredential(
+        workspaceID: String,
+        secret: String
+    ) {
         do {
+            let credential = try QwenRealtimeCredential(
+                workspaceID: workspaceID,
+                secret: secret
+            ).storedValue()
             try providerKeychainStore.save(
                 credential,
-                for: ProviderKeychainStore.stepFunKeyRef
+                for: ProviderKeychainStore.qwenKeyRef
             )
             nativeSpeechProviderDebugState.credentialSaved = true
             nativeSpeechProviderDebugState.statusKey =
-                "particleDebug.stepfun.status.credentialSaved"
+                "particleDebug.qwen.status.credentialSaved"
         } catch {
             refreshNativeSpeechProviderDebugState(
-                statusKey: "particleDebug.stepfun.status.credentialFailed"
+                statusKey: "particleDebug.qwen.status.credentialFailed"
             )
         }
     }
@@ -1739,7 +1772,7 @@ final class AppController: ObservableObject {
             category: "capture_prepared"
         )
         let result = await orchestrationKernel.startNativeSpeechInput(
-            profile: Stage75NativeSpeechConfiguration.profile,
+            profile: nativeSpeechProviderDebugState.profile,
             captureGeneration: captureGeneration
         )
         switch result {
@@ -2687,31 +2720,31 @@ final class AppController: ObservableObject {
     func deleteNativeSpeechProviderCredential() {
         do {
             try providerKeychainStore.delete(
-                for: ProviderKeychainStore.stepFunKeyRef
+                for: ProviderKeychainStore.qwenKeyRef
             )
             nativeSpeechProviderDebugState.credentialSaved = false
             nativeSpeechProviderDebugState.statusKey =
-                "particleDebug.stepfun.status.credentialDeleted"
+                "particleDebug.qwen.status.credentialDeleted"
         } catch {
             refreshNativeSpeechProviderDebugState(
-                statusKey: "particleDebug.stepfun.status.credentialFailed"
+                statusKey: "particleDebug.qwen.status.credentialFailed"
             )
         }
     }
 
     func testNativeSpeechProviderConnectivity() async {
         guard providerKeychainStore.exists(
-            for: ProviderKeychainStore.stepFunKeyRef
+            for: ProviderKeychainStore.qwenKeyRef
         ) else {
             refreshNativeSpeechProviderDebugState(
-                statusKey: "particleDebug.stepfun.status.credentialMissing"
+                statusKey: "particleDebug.qwen.status.credentialMissing"
             )
             return
         }
 
         nativeSpeechProviderDebugState.isTesting = true
         nativeSpeechProviderDebugState.statusKey =
-            "particleDebug.stepfun.status.testing"
+            "particleDebug.qwen.status.testing"
         let result = await orchestrationKernel.testNativeSpeechConnectivity(
             profile: nativeSpeechProviderDebugState.profile
         )
@@ -2719,14 +2752,14 @@ final class AppController: ObservableObject {
         switch result {
         case .success:
             nativeSpeechProviderDebugState.statusKey =
-                "particleDebug.stepfun.status.pass"
+                "particleDebug.qwen.status.pass"
         case .failure(let error):
             nativeSpeechProviderDebugState.statusKey =
                 nativeSpeechConnectivityStatusKey(for: error)
         }
         nativeSpeechProviderDebugState.credentialSaved =
             providerKeychainStore.exists(
-                for: ProviderKeychainStore.stepFunKeyRef
+                for: ProviderKeychainStore.qwenKeyRef
             )
     }
 
@@ -2735,7 +2768,7 @@ final class AppController: ObservableObject {
     ) {
         nativeSpeechProviderDebugState.credentialSaved =
             providerKeychainStore.exists(
-                for: ProviderKeychainStore.stepFunKeyRef
+                for: ProviderKeychainStore.qwenKeyRef
             )
         if let statusKey {
             nativeSpeechProviderDebugState.statusKey = statusKey
@@ -2747,14 +2780,14 @@ final class AppController: ObservableObject {
     ) -> String {
         switch error {
         case .unauthorized:
-            return "particleDebug.stepfun.status.failedAuthentication"
+            return "particleDebug.qwen.status.failedAuthentication"
         case .rateLimited, .unavailable, .timedOut, .transportFailure:
-            return "particleDebug.stepfun.status.failedNetwork"
+            return "particleDebug.qwen.status.failedNetwork"
         case .cancelled:
-            return "particleDebug.stepfun.status.cancelled"
+            return "particleDebug.qwen.status.cancelled"
         case .invalidConfiguration, .missingCredential, .invalidEvent,
              .interactionMismatch:
-            return "particleDebug.stepfun.status.failedProviderConfiguration"
+            return "particleDebug.qwen.status.failedProviderConfiguration"
         }
     }
 

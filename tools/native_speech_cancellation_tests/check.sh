@@ -29,7 +29,7 @@ rg -q 'case \.success\(\.rejectedLate\)' "$output_bridge"
 rg -q 'interactionTerminalOutcome' "$state_machine"
 echo "native_speech_canonical_outcome_gate=PASS"
 
-if rg -q 'StepFunRealtimeAdapter|ProviderRouter|"response\.cancel"' \
+if rg -q 'StepFunRealtimeAdapter|QwenRealtimeAdapter|ProviderRouter|"response\.cancel"' \
   "$controller" "$orchestration"; then
   echo "native_speech_cancellation_ui_boundary=FAIL"
   exit 1

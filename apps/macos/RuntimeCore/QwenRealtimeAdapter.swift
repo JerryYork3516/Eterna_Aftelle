@@ -117,7 +117,7 @@ actor QwenRealtimeAdapter:
             throw NativeSpeechError.interactionMismatch
         }
 
-        let credential: String
+        let credential: QwenRealtimeCredential
         do {
             guard let stored = try credentialReader.readCredential(
                 for: request.profile.keyRef
@@ -125,7 +125,7 @@ actor QwenRealtimeAdapter:
             !stored.isEmpty else {
                 throw NativeSpeechError.missingCredential
             }
-            credential = stored
+            credential = try QwenRealtimeCredential(storedValue: stored)
         } catch let error as NativeSpeechError {
             throw error
         } catch {
@@ -137,7 +137,8 @@ actor QwenRealtimeAdapter:
                 try await connectAndConfigure(
                     request: request,
                     projection: projection,
-                    credential: credential
+                    endpoint: try credential.endpoint(for: request.profile),
+                    bearerToken: credential.apiKey
                 )
                 return
             } catch let error as NativeSpeechError {
@@ -460,12 +461,13 @@ actor QwenRealtimeAdapter:
     private func connectAndConfigure(
         request: NativeSpeechStartRequest,
         projection: RealtimeSpeechContextProjection,
-        credential: String
+        endpoint: URL,
+        bearerToken: String
     ) async throws {
         connectionState = .connecting
         try await transport.connect(
-            endpoint: request.profile.endpoint,
-            bearerToken: credential
+            endpoint: endpoint,
+            bearerToken: bearerToken
         )
         activeInteraction = request.interaction
         activeContextVersion = projection.compilationVersion
