@@ -8,8 +8,11 @@ nonisolated enum MacSpeechAudioInputFormat {
     static let packetSampleCount = 480
     static let packetByteCount = 960
     static let frameCapacity = 25
-    static let tapBufferSize: AVAudioFrameCount = 1_024
     static let description = "24000 Hz / mono / signed PCM16 LE / interleaved"
+
+    static func tapBufferSize(for sampleRate: Double) -> AVAudioFrameCount {
+        AVAudioFrameCount(max(1, Int((sampleRate / 100).rounded())))
+    }
 }
 
 nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
@@ -458,7 +461,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             }
             inputNode.installTap(
                 onBus: 0,
-                bufferSize: MacSpeechAudioInputFormat.tapBufferSize,
+                bufferSize: MacSpeechAudioInputFormat.tapBufferSize(
+                    for: inputFormat.sampleRate
+                ),
                 format: inputFormat
             ) { [weak self] buffer, _ in
                 self?.processCapture(

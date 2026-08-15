@@ -79,6 +79,8 @@ private struct MacSpeechAcousticEchoHostTests {
         testFallbackAndPlaybackRecovery()
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
+        testNativeTenMillisecondTapFraming()
+        testSixteenToFortyEightCaptureFraming()
         testTwentyFourToFortyEightResamplingRoundTrip()
         print("speech_aec_host_checks=\(checks)")
     }
@@ -300,6 +302,65 @@ private struct MacSpeechAcousticEchoHostTests {
                "Apple voice processing is selectable")
         expect(backend.recordedOperations.isEmpty,
                "Apple and WebRTC AEC are mutually exclusive")
+    }
+
+    private static func testNativeTenMillisecondTapFraming() {
+        expect(
+            MacSpeechAudioInputFormat.tapBufferSize(for: 16_000) == 160,
+            "16 kHz input requests a 10 ms tap"
+        )
+        expect(
+            MacSpeechAudioInputFormat.tapBufferSize(for: 44_100) == 441,
+            "44.1 kHz input requests a 10 ms tap"
+        )
+        expect(
+            MacSpeechAudioInputFormat.tapBufferSize(for: 48_000) == 480,
+            "48 kHz input requests a 10 ms tap"
+        )
+    }
+
+    private static func testSixteenToFortyEightCaptureFraming() {
+        guard let format16 = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ), let input = AVAudioPCMBuffer(
+            pcmFormat: format16,
+            frameCapacity: 160
+        ), let channel = input.floatChannelData?[0] else {
+            fatalError("FAILED: 16 kHz fixture")
+        }
+        input.frameLength = 160
+        for index in 0 ..< 160 {
+            channel[index] = sin(Float(index) * 0.04) * 0.25
+        }
+
+        do {
+            let converter = try MacSpeechFloatMono48kConverter(
+                inputFormat: format16
+            )
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(
+                mode: .webRTCAEC3,
+                backend: backend
+            )
+            expect(host.configure() == .webRTCAEC3,
+                   "16 kHz capture fixture configures AEC")
+
+            for _ in 0 ..< 4 {
+                let before = host.snapshot().captureFrameCount
+                let samples = try converter.convert(input)
+                _ = host.processCapture(samples)
+                let processed = host.snapshot().captureFrameCount - before
+                expect(processed <= 1,
+                       "each 10 ms USB callback emits at most one AEC frame")
+            }
+            expect(host.snapshot().captureFrameCount >= 3,
+                   "16 kHz input sustains 10 ms AEC capture cadence")
+        } catch {
+            fatalError("FAILED: 16/48 kHz capture framing: \(error)")
+        }
     }
 
     private static func testTwentyFourToFortyEightResamplingRoundTrip() {

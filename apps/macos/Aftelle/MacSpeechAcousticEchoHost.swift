@@ -371,7 +371,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             driftTrend = "stable"
         }
         lastDriftSkew = skew
-        if captureFrameCount >= lastLoggedCaptureFrameCount + 100 {
+        let shouldLogInitialState = lastLoggedCaptureFrameCount == 0
+            && captureFrameCount >= 10
+        let shouldLogPeriodicState = lastLoggedCaptureFrameCount > 0
+            && captureFrameCount >= lastLoggedCaptureFrameCount + 100
+        if shouldLogInitialState || shouldLogPeriodicState {
             lastLoggedCaptureFrameCount = captureFrameCount
             logger.info(
                 "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) active=\(self.backendStats.active, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
