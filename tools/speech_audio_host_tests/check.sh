@@ -6,6 +6,7 @@ build_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-speech-audio-host.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
 host="$repo_root/apps/macos/Aftelle/MacSpeechAudioHost.swift"
+aec_host="$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
 capture="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
 player="$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputPlayer.swift"
 device_monitor="$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
@@ -21,6 +22,7 @@ swiftc \
   -strict-concurrency=complete \
   -framework AVFoundation \
   -framework CoreAudio \
+  "$aec_host" \
   "$capture" \
   "$device_monitor" \
   "$host" \

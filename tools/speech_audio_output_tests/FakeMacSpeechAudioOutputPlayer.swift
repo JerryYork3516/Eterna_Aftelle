@@ -21,6 +21,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var startCalls = 0
     private var finishPlaybackCalls = 0
     private var clearScheduledPlaybackCalls = 0
+    private var routeResetCalls = 0
     private var stopCalls = 0
     private var closeCalls = 0
     private var resetForPlaybackGenerationCalls = 0
@@ -98,6 +99,10 @@ final class FakeMacSpeechAudioOutputPlayer:
         }
     }
 
+    func resetForRouteChange() {
+        lock.withLock { routeResetCalls += 1 }
+    }
+
     func stop() {
         lock.withLock {
             stopCalls += 1
@@ -139,6 +144,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     var clearScheduledPlaybackCount: Int {
         lock.withLock { clearScheduledPlaybackCalls }
     }
+    var routeResetCount: Int { lock.withLock { routeResetCalls } }
     var stopCount: Int { lock.withLock { stopCalls } }
     var closeCount: Int { lock.withLock { closeCalls } }
     var scheduledCount: Int { lock.withLock { scheduledPayloads.count } }

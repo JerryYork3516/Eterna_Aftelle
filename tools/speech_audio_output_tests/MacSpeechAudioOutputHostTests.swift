@@ -842,6 +842,7 @@ private struct MacSpeechAudioOutputHostTests {
         let failed = await host.currentSnapshot()
         expect(failed.lastError == "output_device_changed", "device change error")
         expect(failed.queueDepth == 0, "device change clears playback")
+        expect(player.routeResetCount == 1, "device change invalidates AEC reference")
         expect(player.stopCount == 1, "device change stops player")
         expect(player.closeCount == 1, "device change closes player")
         let recovered = await host.prepare()

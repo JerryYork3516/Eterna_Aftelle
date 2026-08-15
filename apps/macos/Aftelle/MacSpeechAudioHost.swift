@@ -286,10 +286,16 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         let previousRoute = route
         route = deviceMonitor.currentRoute()
         let inputChanged = previousRoute.input.identifier != route.input.identifier
-        if isCapturing, inputChanged || !route.input.isAvailable {
+        let outputChanged = previousRoute.output.identifier
+            != route.output.identifier
+        if inputChanged || outputChanged {
+            capture.resetForRouteChange()
+        }
+        if isCapturing,
+           inputChanged || outputChanged || !route.input.isAvailable {
             stopCapture(
                 lastError: route.input.isAvailable
-                    ? "input_route_changed"
+                    ? "audio_route_changed"
                     : "input_device_unavailable"
             )
         } else if !isCapturing {

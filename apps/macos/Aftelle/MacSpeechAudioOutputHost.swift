@@ -596,6 +596,7 @@ actor MacSpeechAudioOutputHost {
         }
         timeoutTask?.cancel()
         timeoutTask = nil
+        player.resetForRouteChange()
         player.stop()
         player.close()
         inFlightByteCounts.removeAll(keepingCapacity: true)

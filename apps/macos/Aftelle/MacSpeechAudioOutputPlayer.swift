@@ -305,8 +305,13 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
     func start() throws
     func finishPlayback()
     func clearScheduledPlayback()
+    func resetForRouteChange()
     func stop()
     func close()
+}
+
+nonisolated extension MacSpeechAudioOutputPlaying {
+    func resetForRouteChange() {}
 }
 
 nonisolated final class SystemMacSpeechAudioOutputPlayer:
@@ -406,6 +411,10 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
 
     func clearScheduledPlayback() {
         audioEngine.clearScheduledOutput()
+    }
+
+    func resetForRouteChange() {
+        audioEngine.resetForRouteChange()
     }
 
     func stop() {

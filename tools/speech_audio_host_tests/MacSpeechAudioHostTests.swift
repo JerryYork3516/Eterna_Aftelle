@@ -51,6 +51,7 @@ private final class FakeMacSpeechAudioCapture:
     private var started = false
     private var starts = 0
     private var stops = 0
+    private var routeResets = 0
 
     init(startError: MacSpeechAudioCaptureError? = nil) {
         self.startError = startError
@@ -87,6 +88,10 @@ private final class FakeMacSpeechAudioCapture:
         }
     }
 
+    func resetForRouteChange() {
+        lock.withLock { routeResets += 1 }
+    }
+
     @discardableResult
     func emit(
         bytes: Data = Data([0, 0]),
@@ -107,6 +112,7 @@ private final class FakeMacSpeechAudioCapture:
 
     var startCount: Int { lock.withLock { starts } }
     var stopCount: Int { lock.withLock { stops } }
+    var routeResetCount: Int { lock.withLock { routeResets } }
     var isStarted: Bool { lock.withLock { started } }
 }
 
@@ -588,14 +594,17 @@ private struct MacSpeechAudioHostTests {
         _ = await host.startCapture()
         monitor.setRoute(MacSpeechDeviceRoute(input: inputB, output: outputA))
         await host.refreshDeviceRoute()
-        expect(await host.currentSnapshot().isCapturing, "output-only route change keeps input capture")
+        let outputSwitched = await host.currentSnapshot()
+        expect(!outputSwitched.isCapturing, "output route change stops old capture reference")
+        expect(outputSwitched.lastError == "audio_route_changed", "output switch is diagnostic")
 
         monitor.setRoute(MacSpeechDeviceRoute(input: inputA, output: outputA))
         await host.refreshDeviceRoute()
         let switched = await host.currentSnapshot()
         expect(!switched.isCapturing, "default input switch stops old capture")
-        expect(switched.lastError == "input_route_changed", "input switch is diagnostic")
+        expect(switched.state == .ready, "input switch remains explicitly restartable")
         expect(capture.stopCount == 2, "input switch releases active capture")
+        expect(capture.routeResetCount == 5, "all route changes invalidate AEC reference")
     }
 
     private static func decodePCM16(_ data: Data) -> [Int16] {

@@ -13,6 +13,7 @@ host_sources=(
   "$repo_root/apps/macos/Aftelle/ParticleCore/ParticleSimulation.swift"
   "$repo_root/apps/macos/Aftelle/AppModels.swift"
   "$repo_root/apps/macos/Aftelle/ProviderKeychainStore.swift"
+  "$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioHost.swift"
