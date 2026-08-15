@@ -74,6 +74,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testArbitraryCaptureCallbackFraming()
         testFIFORemainderIsBounded()
         testRenderAlignedDelay()
+        testRenderConversionFailureFallback()
         testRouteRebuildRecovery()
         testFallbackAndPlaybackRecovery()
         testStopAlwaysRecoversCapture()
@@ -197,6 +198,27 @@ private struct MacSpeechAcousticEchoHostTests {
                "render-aligned delay excludes future scheduled audio")
         expect(host.snapshot().delayMilliseconds == 32,
                "measured delay is exposed")
+    }
+
+    private static func testRenderConversionFailureFallback() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        host.renderConversionFailed()
+        let failed = host.snapshot()
+        expect(failed.mode == .halfDuplexFallback,
+               "render conversion failure enters fallback")
+        expect(failed.fallbackReason == .renderProcessingFailed,
+               "render conversion failure is diagnosed")
+        expect(host.processCapture([Float](repeating: 1, count: 480)).isEmpty,
+               "failed render reference gates playback echo")
+        host.playbackCompleted()
+        expect(host.snapshot().mode == .webRTCAEC3,
+               "playback completion recovers render failure")
     }
 
     private static func testRouteRebuildRecovery() {

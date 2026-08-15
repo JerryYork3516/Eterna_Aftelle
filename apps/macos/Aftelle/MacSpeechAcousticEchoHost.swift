@@ -87,6 +87,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var captureFIFO: [Float] = []
     private var renderFrameCount: UInt64 = 0
     private var captureFrameCount: UInt64 = 0
+    private var lastLoggedCaptureFrameCount: UInt64 = 0
     private var delayMilliseconds = 0
     private var captureProcessingMilliseconds = 0.0
     private var lastDriftSkew: Int64 = 0
@@ -123,6 +124,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             clearFIFOs()
             renderFrameCount = 0
             captureFrameCount = 0
+            lastLoggedCaptureFrameCount = 0
             isRouteRebuilding = false
             lastDriftSkew = 0
             driftTrend = "stable"
@@ -171,6 +173,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             refreshBackendStats()
             updateDrift()
         }
+    }
+
+    func renderConversionFailed() {
+        queue.sync { enterFallback(.renderProcessingFailed) }
     }
 
     func processCapture(_ samples: [Float]) -> [Float] {
@@ -365,8 +371,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             driftTrend = "stable"
         }
         lastDriftSkew = skew
-        if (renderFrameCount + captureFrameCount).isMultiple(of: 200) {
-            logger.debug(
+        if captureFrameCount >= lastLoggedCaptureFrameCount + 100 {
+            lastLoggedCaptureFrameCount = captureFrameCount
+            logger.info(
                 "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
             )
         }

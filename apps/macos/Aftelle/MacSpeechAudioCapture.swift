@@ -629,7 +629,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
         }
         try rebuildAudioFormatsLocked(engine: engine, localFormat: localFormat)
-        installRenderReferenceTapLocked(engine: engine)
+        installRenderReferenceTapLocked(
+            playerNode: playerNode,
+            format: localFormat
+        )
         _ = acousticEchoHost.configure()
         self.engine = engine
         self.playerNode = playerNode
@@ -644,7 +647,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         if isConfigured,
            let engine,
            let playerNode {
-            removeRenderReferenceTapLocked(engine: engine)
+            removeRenderReferenceTapLocked(playerNode: playerNode)
             engine.disconnectNodeOutput(playerNode)
             engine.detach(playerNode)
             engine.reset()
@@ -672,6 +675,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             guard isConfigured else { return }
             routeRebuildWasConfigured = true
+            if let playerNode {
+                removeRenderReferenceTapLocked(playerNode: playerNode)
+            }
             acousticEchoHost.routeWillRebuild()
             captureAECConverter = nil
             captureOutputConverter = nil
@@ -692,6 +698,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                         engine: engine,
                         localFormat: localFormat
                     )
+                    if let playerNode {
+                        installRenderReferenceTapLocked(
+                            playerNode: playerNode,
+                            format: localFormat
+                        )
+                    }
                 }
                 _ = acousticEchoHost.routeDidRebuild()
             } catch {
@@ -777,31 +789,42 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         outputFormat = localFormat
     }
 
-    private func installRenderReferenceTapLocked(engine: AVAudioEngine) {
+    private func installRenderReferenceTapLocked(
+        playerNode: AVAudioPlayerNode,
+        format: AVAudioFormat
+    ) {
         guard !isRenderReferenceTapInstalled else { return }
-        engine.mainMixerNode.installTap(
+        playerNode.installTap(
             onBus: 0,
             bufferSize: AVAudioFrameCount(
                 MacSpeechAcousticEchoHost.frameSampleCount
             ),
-            format: nil
+            format: format
         ) { [weak self] buffer, _ in
             self?.processRenderedOutput(buffer)
         }
         isRenderReferenceTapInstalled = true
     }
 
-    private func removeRenderReferenceTapLocked(engine: AVAudioEngine) {
+    private func removeRenderReferenceTapLocked(
+        playerNode: AVAudioPlayerNode
+    ) {
         guard isRenderReferenceTapInstalled else { return }
-        engine.mainMixerNode.removeTap(onBus: 0)
+        playerNode.removeTap(onBus: 0)
         isRenderReferenceTapInstalled = false
     }
 
     private func processRenderedOutput(_ buffer: AVAudioPCMBuffer) {
         let converter = renderConverterLock.withLock { renderAECConverter }
-        guard let converter,
-              let samples = try? converter.convert(buffer) else { return }
-        acousticEchoHost.processRender(samples)
+        guard let converter else {
+            acousticEchoHost.renderConversionFailed()
+            return
+        }
+        do {
+            acousticEchoHost.processRender(try converter.convert(buffer))
+        } catch {
+            acousticEchoHost.renderConversionFailed()
+        }
     }
 
     private func updateAcousticEchoDelayLocked() {

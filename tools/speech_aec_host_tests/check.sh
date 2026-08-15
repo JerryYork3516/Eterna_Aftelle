@@ -30,8 +30,14 @@ rg -q 'fifoSampleCapacity' "$aec_host"
 rg -q 'outputPresentationLatency' "$capture"
 rg -q 'presentationLatency' "$capture"
 rg -q 'playbackCompleted\(\)' "$aec_host" "$capture"
-rg -q 'mainMixerNode\.installTap' "$capture"
+rg -q 'playerNode\.installTap' "$capture"
 rg -q 'processRenderedOutput' "$capture"
+rg -q 'renderConversionFailed' "$aec_host" "$capture"
+if rg -q 'mainMixerNode\.installTap' "$capture"; then
+  echo "speech_aec_render_source=FAIL"
+  exit 1
+fi
+echo "speech_aec_render_source=PASS"
 test "$(rg -c 'acousticEchoHost\.processRender' "$capture")" -eq 1
 if rg -q 'scheduledOutputFrameCount|queuedOutputFrameCount' "$aec_host" "$capture"; then
   echo "speech_aec_render_timing=FAIL"
