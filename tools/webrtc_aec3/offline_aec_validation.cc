@@ -5,12 +5,17 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "api/audio/echo_canceller3_factory.h"
 #include "api/environment/environment_factory.h"
 #include "modules/audio_processing/audio_buffer.h"
+
+#ifdef AFTELLE_AEC_USE_BRIDGE
+#include "bridge/AftelleAECBridge.h"
+#endif
 
 namespace {
 
@@ -246,10 +251,47 @@ std::string ScenarioName(Scenario scenario) {
   }
 }
 
+#ifdef AFTELLE_AEC_USE_BRIDGE
+void RequireBridgeSuccess(AftelleAECBridgeError error) {
+  if (error != AFTELLE_AEC_BRIDGE_OK) {
+    throw std::runtime_error(AftelleAECBridgeErrorMessage(error));
+  }
+}
+#endif
+
 Result RunScenario(Scenario scenario, int path_delay_ms,
                    int reported_buffer_delay_ms) {
   Signals signals = MakeSignals(scenario, path_delay_ms);
   std::vector<float> output(signals.capture.size());
+  double erl_db = 0.0;
+  double erle_db = 0.0;
+  int estimated_delay_ms = 0;
+
+#ifdef AFTELLE_AEC_USE_BRIDGE
+  AftelleAECBridge* raw_bridge = nullptr;
+  RequireBridgeSuccess(AftelleAECBridgeCreate(&raw_bridge));
+  std::unique_ptr<AftelleAECBridge, decltype(&AftelleAECBridgeDestroy)> bridge(
+      raw_bridge, &AftelleAECBridgeDestroy);
+  RequireBridgeSuccess(
+      AftelleAECBridgeConfigure(bridge.get(), kSampleRate, 1, kFrameSamples));
+  RequireBridgeSuccess(
+      AftelleAECBridgeSetDelayMs(bridge.get(), reported_buffer_delay_ms));
+
+  for (size_t frame_start = 0; frame_start < signals.capture.size();
+       frame_start += kFrameSamples) {
+    RequireBridgeSuccess(AftelleAECBridgeProcessRender(
+        bridge.get(), signals.render.data() + frame_start, kFrameSamples));
+    RequireBridgeSuccess(AftelleAECBridgeProcessCapture(
+        bridge.get(), signals.capture.data() + frame_start,
+        output.data() + frame_start, kFrameSamples));
+  }
+
+  AftelleAECBridgeStats stats{};
+  RequireBridgeSuccess(AftelleAECBridgeGetStats(bridge.get(), &stats));
+  erl_db = stats.erl_db;
+  erle_db = stats.erle_db;
+  estimated_delay_ms = stats.estimated_delay_ms;
+#else
   webrtc::Environment environment = webrtc::CreateEnvironment();
   webrtc::EchoCanceller3Factory factory;
   std::unique_ptr<webrtc::EchoControl> aec =
@@ -276,8 +318,13 @@ Result RunScenario(Scenario scenario, int path_delay_ms,
     capture.CopyTo(stream_config, output_channels);
   }
 
-  const size_t evaluation_start = kEvaluationStartSeconds * kSampleRate;
   const auto metrics = aec->GetMetrics();
+  erl_db = metrics.echo_return_loss;
+  erle_db = metrics.echo_return_loss_enhancement;
+  estimated_delay_ms = metrics.delay_ms;
+#endif
+
+  const size_t evaluation_start = kEvaluationStartSeconds * kSampleRate;
   Result result{
       .scenario = ScenarioName(scenario),
       .path_delay_ms = path_delay_ms,
@@ -289,10 +336,10 @@ Result RunScenario(Scenario scenario, int path_delay_ms,
       .near_gain_db = 0.0,
       .near_correlation = 0.0,
       .echo_gain_db = 0.0,
-      .erl_db = metrics.echo_return_loss,
-      .erle_db = metrics.echo_return_loss_enhancement,
-      .estimated_delay_ms = metrics.delay_ms,
-      .delay_error_ms = std::abs(metrics.delay_ms - path_delay_ms),
+      .erl_db = erl_db,
+      .erle_db = erle_db,
+      .estimated_delay_ms = estimated_delay_ms,
+      .delay_error_ms = std::abs(estimated_delay_ms - path_delay_ms),
       .alignment_lag_samples = 0,
       .passed = false,
   };
