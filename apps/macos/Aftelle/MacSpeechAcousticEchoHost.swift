@@ -14,6 +14,7 @@ nonisolated enum MacSpeechAECFallbackReason: String, Sendable, Equatable {
     case delayInvalid = "delay_invalid"
     case statsUnavailable = "stats_unavailable"
     case fifoOverflow = "fifo_overflow"
+    case residualEcho = "residual_echo"
     case routeRebuild = "route_rebuild"
     case requested = "requested"
 }
@@ -71,6 +72,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     static let frameDurationMilliseconds = 10
     static let maximumDelayMilliseconds = 500
     static let standardFIFOFrameCapacity = 12
+    private static let reliableERLEDecibels = 3.0
+    private static let failedERLEDecibels = 1.0
+    private static let residualEchoFailureFrameCount: UInt64 = 5
 
     private let queue = DispatchQueue(
         label: "com.eterna.aftelle.speech-aec-processing"
@@ -96,6 +100,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var fallbackReason: MacSpeechAECFallbackReason?
     private var isPlaybackActive = false
     private var isRouteRebuilding = false
+    private var hasReliableEchoCancellation = false
+    private var poorResidualEchoFrameCount: UInt64 = 0
     private var backendStats = MacSpeechAECBackendStats(
         enabled: false,
         active: false,
@@ -129,6 +135,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             lastDriftSkew = 0
             driftTrend = "stable"
             fallbackReason = nil
+            hasReliableEchoCancellation = false
+            poorResidualEchoFrameCount = 0
             switch requestedMode {
             case .webRTCAEC3:
                 guard let backend else {
@@ -191,6 +199,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             }
             var output: [Float] = []
             output.reserveCapacity(samples.count)
+            let captureFrameCountBeforeProcessing = captureFrameCount
             do {
                 try processFrames(samples, remainder: &captureFIFO) { frame in
                     output.append(contentsOf: try backend.processCapture(frame))
@@ -204,6 +213,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 return isPlaybackActive || isRouteRebuilding ? [] : samples
             }
             refreshBackendStats()
+            evaluateResidualEcho(
+                processedFrameCount:
+                    captureFrameCount - captureFrameCountBeforeProcessing
+            )
             updateDrift()
             return mode == .halfDuplexFallback
                     && (isPlaybackActive || isRouteRebuilding)
@@ -246,13 +259,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     func playbackStarted() {
-        queue.sync { isPlaybackActive = true }
+        queue.sync {
+            isPlaybackActive = true
+            poorResidualEchoFrameCount = 0
+        }
     }
 
     func playbackCompleted() {
         queue.sync {
             isPlaybackActive = false
             captureFIFO.removeAll(keepingCapacity: true)
+            poorResidualEchoFrameCount = 0
             guard mode == .halfDuplexFallback,
                   fallbackReason != .routeRebuild,
                   requestedMode == .webRTCAEC3,
@@ -262,6 +279,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 try backend.setDelay(milliseconds: delayMilliseconds)
                 mode = .webRTCAEC3
                 fallbackReason = nil
+                hasReliableEchoCancellation = false
                 backendStats = try backend.stats()
                 logConfiguration()
             } catch {
@@ -274,6 +292,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         queue.sync {
             isPlaybackActive = false
             captureFIFO.removeAll(keepingCapacity: true)
+            poorResidualEchoFrameCount = 0
         }
     }
 
@@ -281,6 +300,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         queue.sync {
             routeResetCount &+= 1
             isRouteRebuilding = true
+            hasReliableEchoCancellation = false
+            poorResidualEchoFrameCount = 0
             clearFIFOs()
             if requestedMode == .webRTCAEC3 {
                 enterFallback(.routeRebuild)
@@ -306,6 +327,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 try backend.setDelay(milliseconds: delayMilliseconds)
                 mode = .webRTCAEC3
                 fallbackReason = nil
+                hasReliableEchoCancellation = false
                 backendStats = try backend.stats()
                 logConfiguration()
             } catch {
@@ -392,10 +414,37 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
     }
 
+    private func evaluateResidualEcho(processedFrameCount: UInt64) {
+        guard processedFrameCount > 0,
+              isPlaybackActive,
+              mode == .webRTCAEC3,
+              backendStats.active,
+              backendStats.erleDecibels.isFinite else {
+            poorResidualEchoFrameCount = 0
+            return
+        }
+        if backendStats.erleDecibels >= Self.reliableERLEDecibels {
+            hasReliableEchoCancellation = true
+            poorResidualEchoFrameCount = 0
+            return
+        }
+        guard hasReliableEchoCancellation,
+              backendStats.erleDecibels < Self.failedERLEDecibels else {
+            poorResidualEchoFrameCount = 0
+            return
+        }
+        poorResidualEchoFrameCount &+= processedFrameCount
+        if poorResidualEchoFrameCount
+            >= Self.residualEchoFailureFrameCount {
+            enterFallback(.residualEcho)
+        }
+    }
+
     private func enterFallback(_ reason: MacSpeechAECFallbackReason) {
         mode = .halfDuplexFallback
         fallbackReason = reason
         backendStats = disabledStats()
+        poorResidualEchoFrameCount = 0
         clearFIFOs()
         logger.error(
             "AEC fallback reason=\(reason.rawValue, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public)"

@@ -9,6 +9,9 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
     private var operations: [String] = []
     private var delays: [Int] = []
     private var resets = 0
+    private var active = true
+    private var erlDecibels = 12.0
+    private var erleDecibels = 24.0
 
     func configure() throws {
         if let configureError { throw configureError }
@@ -47,15 +50,23 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
     }
 
     func stats() throws -> MacSpeechAECBackendStats {
-        MacSpeechAECBackendStats(
-            enabled: true,
-            active: true,
-            estimatedDelayMilliseconds: lock.withLock {
-                delays.last ?? 0
-            },
-            erlDecibels: 12,
-            erleDecibels: 24
-        )
+        lock.withLock {
+            MacSpeechAECBackendStats(
+                enabled: true,
+                active: active,
+                estimatedDelayMilliseconds: delays.last ?? 0,
+                erlDecibels: erlDecibels,
+                erleDecibels: erleDecibels
+            )
+        }
+    }
+
+    func setMetrics(active: Bool = true, erl: Double = 12, erle: Double) {
+        lock.withLock {
+            self.active = active
+            erlDecibels = erl
+            erleDecibels = erle
+        }
     }
 
     var recordedOperations: [String] { lock.withLock { operations } }
@@ -77,6 +88,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testRenderConversionFailureFallback()
         testRouteRebuildRecovery()
         testFallbackAndPlaybackRecovery()
+        testResidualEchoFallbackAndRecovery()
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
         testNativeTenMillisecondTapFraming()
@@ -273,6 +285,38 @@ private struct MacSpeechAcousticEchoHostTests {
                "real playback completion attempts AEC recovery")
         expect(host.snapshot().mode == .webRTCAEC3,
                "playback completion recovers AEC")
+    }
+
+    private static func testResidualEchoFallbackAndRecovery() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        expect(host.configure() == .webRTCAEC3,
+               "residual echo fixture configures AEC")
+        host.playbackStarted()
+        backend.setMetrics(erle: 6)
+        expect(host.processCapture([Float](repeating: 1, count: 480)).count == 480,
+               "healthy ERLE keeps full-duplex capture")
+
+        backend.setMetrics(erle: 0.2)
+        for _ in 0 ..< 4 {
+            expect(host.processCapture([Float](repeating: 1, count: 480)).count == 480,
+                   "brief ERLE dip does not gate capture")
+        }
+        expect(host.processCapture([Float](repeating: 1, count: 480)).isEmpty,
+               "sustained residual echo enters safe fallback")
+        let fallback = host.snapshot()
+        expect(fallback.mode == .halfDuplexFallback
+                   && fallback.fallbackReason == .residualEcho,
+               "residual echo fallback remains diagnosable")
+
+        host.playbackCompleted()
+        expect(host.snapshot().mode == .webRTCAEC3,
+               "playback completion resets residual echo fallback")
+        expect(host.processCapture([Float](repeating: 1, count: 480)).count == 480,
+               "capture recovers after residual echo fallback")
     }
 
     private static func testStopAlwaysRecoversCapture() {
