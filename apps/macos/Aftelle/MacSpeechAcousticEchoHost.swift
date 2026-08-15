@@ -156,19 +156,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         guard !samples.isEmpty else { return }
         queue.sync {
             guard mode == .webRTCAEC3, let backend else { return }
-            guard appendBounded(samples, to: &renderFIFO) else {
-                enterFallback(.fifoOverflow)
-                return
-            }
-            while renderFIFO.count >= Self.frameSampleCount {
-                let frame = takeFrame(from: &renderFIFO)
-                do {
+            do {
+                try processFrames(samples, remainder: &renderFIFO) { frame in
                     try backend.processRender(frame)
                     renderFrameCount &+= 1
-                } catch {
-                    enterFallback(.renderProcessingFailed)
-                    return
                 }
+            } catch FrameProcessingError.fifoOverflow {
+                enterFallback(.fifoOverflow)
+                return
+            } catch {
+                enterFallback(.renderProcessingFailed)
+                return
             }
             refreshBackendStats()
             updateDrift()
@@ -185,21 +183,19 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             guard mode == .webRTCAEC3, let backend else {
                 return samples
             }
-            guard appendBounded(samples, to: &captureFIFO) else {
-                enterFallback(.fifoOverflow)
-                return isPlaybackActive || isRouteRebuilding ? [] : samples
-            }
             var output: [Float] = []
-            output.reserveCapacity(captureFIFO.count)
-            while captureFIFO.count >= Self.frameSampleCount {
-                let frame = takeFrame(from: &captureFIFO)
-                do {
+            output.reserveCapacity(samples.count)
+            do {
+                try processFrames(samples, remainder: &captureFIFO) { frame in
                     output.append(contentsOf: try backend.processCapture(frame))
                     captureFrameCount &+= 1
-                } catch {
-                    enterFallback(.captureProcessingFailed)
-                    return isPlaybackActive || isRouteRebuilding ? [] : samples
                 }
+            } catch FrameProcessingError.fifoOverflow {
+                enterFallback(.fifoOverflow)
+                return isPlaybackActive || isRouteRebuilding ? [] : samples
+            } catch {
+                enterFallback(.captureProcessingFailed)
+                return isPlaybackActive || isRouteRebuilding ? [] : samples
             }
             refreshBackendStats()
             updateDrift()
@@ -297,27 +293,74 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    func routeDidRebuild() -> MacSpeechAudioProcessingMode {
+        queue.sync {
+            clearFIFOs()
+            isRouteRebuilding = false
+            guard requestedMode == .webRTCAEC3, let backend else {
+                mode = requestedMode
+                return mode
+            }
+            do {
+                try backend.reset()
+                try backend.configure()
+                try backend.setDelay(milliseconds: delayMilliseconds)
+                mode = .webRTCAEC3
+                fallbackReason = nil
+                backendStats = try backend.stats()
+                logConfiguration()
+            } catch {
+                enterFallback(.initializationFailed)
+            }
+            return mode
+        }
+    }
+
     func snapshot() -> MacSpeechAcousticEchoSnapshot {
         queue.sync { makeSnapshot() }
     }
 
-    private func appendBounded(
-        _ samples: [Float],
-        to fifo: inout [Float]
-    ) -> Bool {
-        guard samples.count <= fifoSampleCapacity,
-              fifo.count <= fifoSampleCapacity - samples.count else {
-            fifo.removeAll(keepingCapacity: true)
-            return false
-        }
-        fifo.append(contentsOf: samples)
-        return true
+    private enum FrameProcessingError: Error {
+        case fifoOverflow
     }
 
-    private func takeFrame(from fifo: inout [Float]) -> [Float] {
-        let frame = Array(fifo.prefix(Self.frameSampleCount))
-        fifo.removeFirst(Self.frameSampleCount)
-        return frame
+    private func processFrames(
+        _ samples: [Float],
+        remainder: inout [Float],
+        process: ([Float]) throws -> Void
+    ) throws {
+        guard remainder.count < Self.frameSampleCount,
+              remainder.count <= fifoSampleCapacity else {
+            throw FrameProcessingError.fifoOverflow
+        }
+
+        var offset = 0
+        if !remainder.isEmpty {
+            let needed = Self.frameSampleCount - remainder.count
+            let consumed = min(needed, samples.count)
+            remainder.append(contentsOf: samples.prefix(consumed))
+            offset += consumed
+            if remainder.count == Self.frameSampleCount {
+                try process(remainder)
+                remainder.removeAll(keepingCapacity: true)
+            }
+        }
+
+        while samples.count - offset >= Self.frameSampleCount {
+            let end = offset + Self.frameSampleCount
+            try process(Array(samples[offset ..< end]))
+            offset = end
+        }
+
+        if offset < samples.count {
+            remainder.append(contentsOf: samples[offset...])
+        }
+        guard remainder.count < Self.frameSampleCount,
+              remainder.count <= fifoSampleCapacity else {
+            remainder.removeAll(keepingCapacity: true)
+            throw FrameProcessingError.fifoOverflow
+        }
     }
 
     private func updateDrift() {

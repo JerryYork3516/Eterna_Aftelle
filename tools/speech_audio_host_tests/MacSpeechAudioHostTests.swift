@@ -52,6 +52,8 @@ private final class FakeMacSpeechAudioCapture:
     private var starts = 0
     private var stops = 0
     private var routeResets = 0
+    private var routeRebuildCompletions = 0
+    private var routeRebuildCompletionsWhileStarted = 0
 
     init(startError: MacSpeechAudioCaptureError? = nil) {
         self.startError = startError
@@ -88,8 +90,15 @@ private final class FakeMacSpeechAudioCapture:
         }
     }
 
-    func resetForRouteChange() {
+    func routeWillRebuild() {
         lock.withLock { routeResets += 1 }
+    }
+
+    func routeDidRebuild() {
+        lock.withLock {
+            routeRebuildCompletions += 1
+            if started { routeRebuildCompletionsWhileStarted += 1 }
+        }
     }
 
     @discardableResult
@@ -113,6 +122,12 @@ private final class FakeMacSpeechAudioCapture:
     var startCount: Int { lock.withLock { starts } }
     var stopCount: Int { lock.withLock { stops } }
     var routeResetCount: Int { lock.withLock { routeResets } }
+    var routeRebuildCompletionCount: Int {
+        lock.withLock { routeRebuildCompletions }
+    }
+    var routeRebuildCompletionWhileStartedCount: Int {
+        lock.withLock { routeRebuildCompletionsWhileStarted }
+    }
     var isStarted: Bool { lock.withLock { started } }
 }
 
@@ -201,6 +216,7 @@ private struct MacSpeechAudioHostTests {
         }
         testBoundedFrameBuffer()
         await testHostFrameDiagnosticsAndStaleRejection()
+        await testInputOutputAndCombinedRouteRebuilds()
         await testDeviceChangesStopSafelyWithoutAutomaticRestart()
         print("speech_audio_host_checks=\(checks)")
     }
@@ -605,6 +621,35 @@ private struct MacSpeechAudioHostTests {
         expect(switched.state == .ready, "input switch remains explicitly restartable")
         expect(capture.stopCount == 2, "input switch releases active capture")
         expect(capture.routeResetCount == 5, "all route changes invalidate AEC reference")
+    }
+
+    private static func testInputOutputAndCombinedRouteRebuilds() async {
+        let cases: [(String, MacSpeechDeviceRoute)] = [
+            ("input-only", MacSpeechDeviceRoute(input: inputB, output: outputA)),
+            ("output-only", MacSpeechDeviceRoute(input: inputA, output: outputB)),
+            ("input+output", MacSpeechDeviceRoute(input: inputB, output: outputB))
+        ]
+        for (name, changedRoute) in cases {
+            let (host, _, capture, monitor) = makeHost(
+                authorization: .authorized
+            )
+            _ = await host.startCapture()
+            monitor.setRoute(changedRoute)
+            await host.refreshDeviceRoute()
+            let rebuilding = await host.currentSnapshot()
+            expect(!rebuilding.isCapturing,
+                   "\(name) route rebuild pauses capture")
+            expect(capture.routeResetCount == 2,
+                   "\(name) route rebuild completes once after initial setup")
+            expect(capture.routeRebuildCompletionCount == 2,
+                   "\(name) route rebuild has a deterministic completion")
+            expect(capture.routeRebuildCompletionWhileStartedCount == 0,
+                   "\(name) route rebuild completes only after old capture stops")
+            let recovered = await host.startCapture()
+            expect(recovered.isCapturing,
+                   "\(name) route rebuild is deterministically restartable")
+            _ = await host.stopCapture()
+        }
     }
 
     private static func decodePCM16(_ data: Data) -> [Int16] {

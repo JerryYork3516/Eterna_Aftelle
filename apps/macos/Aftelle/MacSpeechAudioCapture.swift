@@ -214,11 +214,13 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
         frameBuffer: MacSpeechAudioFrameBuffer
     ) throws -> MacSpeechNativeInputFormat
     func stop()
-    func resetForRouteChange()
+    func routeWillRebuild()
+    func routeDidRebuild()
 }
 
 nonisolated extension MacSpeechAudioCapturing {
-    func resetForRouteChange() {}
+    func routeWillRebuild() {}
+    func routeDidRebuild() {}
 }
 
 nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
@@ -407,6 +409,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var isInputMutedForOutput = false
     private var outputFormat: AVAudioFormat?
     private var scheduledOutputFrameCount = 0
+    private var routeRebuildWasConfigured = false
 
     init(
         audioProcessingMode: MacSpeechAudioProcessingMode = .webRTCAEC3,
@@ -642,23 +645,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     || engine.outputNode.isVoiceProcessingEnabled {
             throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
         }
-        captureAECConverter = try MacSpeechFloatMono48kConverter(
-            inputFormat: inputNode.outputFormat(forBus: 0)
-        )
-        guard let aecFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(MacSpeechAcousticEchoHost.sampleRate),
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw MacSpeechAudioCaptureError.converterUnavailable
-        }
-        captureOutputConverter = try MacSpeechAudioConverter(
-            inputFormat: aecFormat
-        )
-        renderAECConverter = try MacSpeechFloatMono48kConverter(
-            inputFormat: localFormat
-        )
+        try rebuildAudioFormatsLocked(engine: engine, localFormat: localFormat)
         _ = acousticEchoHost.configure()
         self.engine = engine
         self.playerNode = playerNode
@@ -697,11 +684,44 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
     }
 
-    func resetForRouteChange() {
+    func routeWillRebuild() {
         lock.withLock {
+            guard isConfigured else { return }
+            routeRebuildWasConfigured = true
             clearScheduledOutputFrames()
             acousticEchoHost.routeWillRebuild()
+            captureAECConverter = nil
+            captureOutputConverter = nil
+            renderAECConverter = nil
         }
+    }
+
+    func routeDidRebuild() {
+        lock.withLock {
+            guard routeRebuildWasConfigured else { return }
+            defer { routeRebuildWasConfigured = false }
+            do {
+                if !isConfigured {
+                    try configureIfNeeded()
+                } else if let engine {
+                    let localFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+                    try rebuildAudioFormatsLocked(
+                        engine: engine,
+                        localFormat: localFormat
+                    )
+                }
+                _ = acousticEchoHost.routeDidRebuild()
+            } catch {
+                captureAECConverter = nil
+                captureOutputConverter = nil
+                renderAECConverter = nil
+            }
+        }
+    }
+
+    func resetForRouteChange() {
+        routeWillRebuild()
+        routeDidRebuild()
     }
 
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot {
@@ -740,6 +760,35 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             nanoseconds: DispatchTime.now().uptimeNanoseconds &- startedAt
         )
         lock.withLock { updateAcousticEchoDelayLocked() }
+    }
+
+    private func rebuildAudioFormatsLocked(
+        engine: AVAudioEngine,
+        localFormat: AVAudioFormat
+    ) throws {
+        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0,
+              inputFormat.channelCount > 0,
+              localFormat.sampleRate > 0,
+              localFormat.channelCount > 0,
+              let aecFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: Double(MacSpeechAcousticEchoHost.sampleRate),
+                channels: 1,
+                interleaved: false
+              ) else {
+            throw MacSpeechAudioCaptureError.invalidInputFormat
+        }
+        captureAECConverter = try MacSpeechFloatMono48kConverter(
+            inputFormat: inputFormat
+        )
+        captureOutputConverter = try MacSpeechAudioConverter(
+            inputFormat: aecFormat
+        )
+        renderAECConverter = try MacSpeechFloatMono48kConverter(
+            inputFormat: localFormat
+        )
+        outputFormat = localFormat
     }
 
     private func updateAcousticEchoDelayLocked() {
@@ -811,7 +860,11 @@ nonisolated final class SystemMacSpeechAudioCapture:
         audioEngine.stopCapture()
     }
 
-    func resetForRouteChange() {
-        audioEngine.resetForRouteChange()
+    func routeWillRebuild() {
+        audioEngine.routeWillRebuild()
+    }
+
+    func routeDidRebuild() {
+        audioEngine.routeDidRebuild()
     }
 }

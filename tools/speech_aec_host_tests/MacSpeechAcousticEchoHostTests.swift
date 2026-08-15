@@ -70,9 +70,11 @@ private struct MacSpeechAcousticEchoHostTests {
 
     static func main() {
         testConfigureAndSerializedFraming()
-        testBoundedFIFOFailure()
+        testArbitraryRenderCallbackFraming()
+        testArbitraryCaptureCallbackFraming()
+        testFIFORemainderIsBounded()
         testMeasuredDelay()
-        testRouteReset()
+        testRouteRebuildRecovery()
         testFallbackAndPlaybackRecovery()
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
@@ -109,21 +111,74 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(snapshot.erleDecibels == 24, "ERLE exposed")
     }
 
-    private static func testBoundedFIFOFailure() {
+    private static func testArbitraryRenderCallbackFraming() {
+        for durationMilliseconds in [120, 250, 500] {
+            let host = MacSpeechAcousticEchoHost(
+                mode: .webRTCAEC3,
+                backend: FakeAECBackend(),
+                fifoFrameCapacity: 1
+            )
+            _ = host.configure()
+            let sampleCount = durationMilliseconds * 48
+            host.processRender([Float](repeating: 0, count: sampleCount))
+            let snapshot = host.snapshot()
+            expect(snapshot.mode == .webRTCAEC3,
+                   "\(durationMilliseconds) ms render callback stays in AEC")
+            expect(snapshot.renderFrameCount == UInt64(sampleCount / 480),
+                   "\(durationMilliseconds) ms render callback is fully framed")
+            expect(snapshot.renderFIFOSampleCount == sampleCount % 480,
+                   "render keeps only the incomplete frame")
+        }
+    }
+
+    private static func testArbitraryCaptureCallbackFraming() {
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
             backend: FakeAECBackend(),
             fifoFrameCapacity: 1
         )
         _ = host.configure()
-        host.processRender([Float](repeating: 0, count: 481))
+        let samples = [Float](repeating: 0.5, count: 24_000)
+        let output = host.processCapture(samples)
         let snapshot = host.snapshot()
-        expect(snapshot.mode == .halfDuplexFallback,
-               "FIFO overflow enters fallback")
-        expect(snapshot.fallbackReason == .fifoOverflow,
-               "FIFO overflow is diagnostic")
-        expect(snapshot.renderFIFOSampleCount == 0,
-               "overflow clears render FIFO")
+        expect(output.count == samples.count,
+               "500 ms capture callback preserves all complete output")
+        expect(snapshot.captureFrameCount == 50,
+               "500 ms capture callback is split into 10 ms frames")
+        expect(snapshot.captureFIFOSampleCount == 0,
+               "large capture callback leaves no complete frame queued")
+    }
+
+    private static func testFIFORemainderIsBounded() {
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: FakeAECBackend(),
+            fifoFrameCapacity: 1
+        )
+        _ = host.configure()
+        host.processRender([Float](repeating: 0, count: 24_001))
+        expect(host.snapshot().renderFIFOSampleCount == 1,
+               "render keeps only one incomplete-frame sample")
+        host.processRender([Float](repeating: 0, count: 479))
+        expect(host.snapshot().renderFIFOSampleCount == 0,
+               "render remainder completes without backlog")
+        let first = host.processCapture(
+            [Float](repeating: 0.5, count: 24_001)
+        )
+        expect(first.count == 24_000,
+               "complete capture frames are emitted immediately")
+        expect(host.snapshot().captureFIFOSampleCount == 1,
+               "only one capture remainder sample is retained")
+        let second = host.processCapture(
+            [Float](repeating: 0.5, count: 479)
+        )
+        expect(second.count == 480,
+               "remainder completes the next frame")
+        let snapshot = host.snapshot()
+        expect(snapshot.captureFIFOSampleCount < 480,
+               "capture remainder stays below one frame")
+        expect(snapshot.mode == .webRTCAEC3,
+               "legal large callbacks never report FIFO overflow")
     }
 
     private static func testMeasuredDelay() {
@@ -146,10 +201,11 @@ private struct MacSpeechAcousticEchoHostTests {
                "measured delay is exposed")
     }
 
-    private static func testRouteReset() {
+    private static func testRouteRebuildRecovery() {
+        let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
-            backend: FakeAECBackend()
+            backend: backend
         )
         _ = host.configure()
         host.processRender([Float](repeating: 0, count: 100))
@@ -165,8 +221,12 @@ private struct MacSpeechAcousticEchoHostTests {
                "route reset counted")
         expect(host.processCapture([Float](repeating: 1, count: 480)).isEmpty,
                "route rebuild suppresses capture until reconfigured")
-        expect(host.configure() == .webRTCAEC3,
-               "format rebuild reconfigures AEC")
+        expect(host.routeDidRebuild() == .webRTCAEC3,
+               "completed format rebuild deterministically restores AEC")
+        expect(backend.resetCount == 1,
+               "route rebuild resets the existing AEC backend")
+        expect(host.processCapture([Float](repeating: 1, count: 480)).count == 480,
+               "capture resumes after route rebuild completes")
     }
 
     private static func testFallbackAndPlaybackRecovery() {

@@ -289,7 +289,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         let outputChanged = previousRoute.output.identifier
             != route.output.identifier
         if inputChanged || outputChanged {
-            capture.resetForRouteChange()
+            capture.routeWillRebuild()
         }
         if isCapturing,
            inputChanged || outputChanged || !route.input.isAvailable {
@@ -300,6 +300,9 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
             )
         } else if !isCapturing {
             state = hostState(for: authorization)
+        }
+        if inputChanged || outputChanged {
+            capture.routeDidRebuild()
         }
     }
 
