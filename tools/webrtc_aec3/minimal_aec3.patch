@@ -1,0 +1,23 @@
+diff --git a/common_audio/third_party/ooura/BUILD.gn b/common_audio/third_party/ooura/BUILD.gn
+index a12adb2c0b..c42685b2d7 100644
+--- a/common_audio/third_party/ooura/BUILD.gn
++++ b/common_audio/third_party/ooura/BUILD.gn
+@@ -39,2 +38,0 @@ rtc_library("fft_size_128") {
+-    deps += [ "../../../common_audio" ]
+-
+diff --git a/modules/audio_processing/BUILD.gn b/modules/audio_processing/BUILD.gn
+index 9e44020303..212e737e70 100644
+--- a/modules/audio_processing/BUILD.gn
++++ b/modules/audio_processing/BUILD.gn
+@@ -59 +59 @@ rtc_library("audio_buffer") {
+-    "../../api/audio:audio_frame_api",
++    "//aftelle_apm:aftelle_audio_view",
+@@ -61 +61 @@ rtc_library("audio_buffer") {
+-    "../../common_audio",
++    "//aftelle_apm:aftelle_common_audio",
+@@ -275 +274,0 @@ rtc_library("apm_logging") {
+-    "../../common_audio",
+@@ -279,0 +279,3 @@ rtc_library("apm_logging") {
++  if (apm_debug_dump) {
++    deps += [ "../../common_audio" ]
++  }

@@ -1,0 +1,11 @@
+solutions = [
+  {
+    "name": "src",
+    "url": "https://webrtc.googlesource.com/src.git@9f30e83c018647b05804571699cf22b1f0f3409e",
+    "deps_file": "DEPS",
+    "managed": False,
+    "custom_deps": {},
+    "custom_vars": {},
+  },
+]
+target_os = ["mac"]

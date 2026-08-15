@@ -1,0 +1,48 @@
+import("//webrtc.gni")
+
+if (current_cpu == "x64") {
+  rtc_library("aftelle_sinc_resampler_avx2") {
+    sources = [ "//common_audio/resampler/sinc_resampler_avx2.cc" ]
+    cflags = [
+      "-mavx2",
+      "-mfma",
+    ]
+    deps = [ "//rtc_base:checks" ]
+  }
+}
+
+rtc_source_set("aftelle_audio_view") {
+  sources = [ "//api/audio/audio_view.h" ]
+}
+
+rtc_library("aftelle_common_audio") {
+  sources = [
+    "//common_audio/audio_util.cc",
+    "//common_audio/channel_buffer.cc",
+    "//common_audio/resampler/push_sinc_resampler.cc",
+    "//common_audio/resampler/sinc_resampler.cc",
+  ]
+  deps = [
+    "//rtc_base:checks",
+    "//rtc_base:cpu_info",
+    "//rtc_base:gtest_prod",
+    "//rtc_base/memory:aligned_malloc",
+    "//rtc_base/system:arch",
+  ]
+  if (current_cpu == "arm64") {
+    sources += [ "//common_audio/resampler/sinc_resampler_neon.cc" ]
+  } else if (current_cpu == "x64") {
+    sources += [ "//common_audio/resampler/sinc_resampler_sse.cc" ]
+    cflags = [ "-msse2" ]
+    deps += [ ":aftelle_sinc_resampler_avx2" ]
+  }
+}
+
+rtc_static_library("aftelle_webrtc_apm") {
+  complete_static_lib = true
+  sources = [ "anchor.cc" ]
+  deps = [
+    "//api/audio:aec3_factory",
+    "//api/environment:environment_factory",
+  ]
+}

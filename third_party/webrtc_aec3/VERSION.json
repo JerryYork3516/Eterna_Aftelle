@@ -1,0 +1,7 @@
+{
+  "webrtc_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+  "depot_tools_commit": "13febbee9ece9e03df923f69d540afc63c6db93e",
+  "macos_deployment_target": "14.0",
+  "architectures": ["arm64", "x86_64"],
+  "gn_target": "//aftelle_apm:aftelle_webrtc_apm"
+}

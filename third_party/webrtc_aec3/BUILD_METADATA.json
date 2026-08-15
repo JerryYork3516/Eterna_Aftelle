@@ -1,0 +1,41 @@
+{
+  "webrtc_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+  "depot_tools_commit": "13febbee9ece9e03df923f69d540afc63c6db93e",
+  "gn_target": "//aftelle_apm:aftelle_webrtc_apm",
+  "gn_args": {
+    "is_debug": false,
+    "is_component_build": false,
+    "target_os": "mac",
+    "mac_deployment_target": "14.0",
+    "rtc_include_tests": false,
+    "rtc_build_examples": false,
+    "rtc_build_tools": false,
+    "rtc_enable_protobuf": false,
+    "rtc_include_builtin_audio_codecs": false,
+    "rtc_include_internal_audio_device": false,
+    "rtc_enable_objc_symbol_export": false,
+    "rtc_disable_trace_events": true,
+    "use_custom_libcxx": false,
+    "symbol_level": 0,
+    "treat_warnings_as_errors": false
+  },
+  "outputs": {
+    "arm64_bytes": 1072808,
+    "x86_64_bytes": 1235968,
+    "universal_binary_bytes": 2308824,
+    "xcframework_total_bytes": 3059932,
+    "universal_binary_sha256": "b6a7235440eadc7b87a6251d53e651e36a734f1d88efc19f154a47de84c64898",
+    "xcframework_info_plist_sha256": "f3b2ba0b335f1de3957959d3eadf592cf9c6435ac7c2f7df98ae5794d2f3793a"
+  },
+  "dependency_labels": {
+    "arm64": 122,
+    "x86_64": 124,
+    "forbidden_full_stack_matches": 0
+  },
+  "verification": {
+    "repeat_build_hash_match": true,
+    "arm64_link_and_run": true,
+    "x86_64_link": true,
+    "offline_network_denied_run": true
+  }
+}
