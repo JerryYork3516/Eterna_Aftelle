@@ -998,10 +998,23 @@ private struct NativeSpeechDuplexTests {
                     == ["你好", "我是林轩。"],
             "played voice turn reuses the existing dialogue history"
         )
+        let completedAuditEntries =
+            stack.controller.dialogueAuditState.entries
+        expect(
+            completedAuditEntries.map(\.role) == [.user, .resident]
+                && completedAuditEntries.map(\.text)
+                    == ["你好", "我是林轩。"],
+            "played voice turn appears in the existing history UI"
+        )
         stack.outputPlayer.completeScheduledChunk()
         expect(
             stack.controller.sessionState.dialogueEntries == completedEntries,
             "duplicate playback completion cannot duplicate voice history"
+        )
+        expect(
+            stack.controller.dialogueAuditState.entries
+                == completedAuditEntries,
+            "duplicate playback completion cannot duplicate history UI"
         )
         await stack.controller.stopSpeechAudioCapture()
     }

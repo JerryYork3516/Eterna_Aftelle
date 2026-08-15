@@ -2363,6 +2363,12 @@ final class AppController: ObservableObject {
             return
         }
 
+        appendDialogueAuditUser(userFinal)
+        appendDialogueAuditResident(
+            residentFinal,
+            displayName: currentAuditResidentDisplayName
+        )
+
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let entryID = [
             "speech",
