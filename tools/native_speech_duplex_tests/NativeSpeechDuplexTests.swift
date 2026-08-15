@@ -2030,13 +2030,16 @@ private struct NativeSpeechDuplexTests {
             .text(#"{"type":"input_audio_buffer.speech_stopped"}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.created"}"#)
+            .text(#"{"type":"response.created","response":{"id":"next-response"}}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.audio.delta","delta":"BQY="}"#)
+            .text(#"{"type":"response.done","response":{"status":"cancelled"}}"#)
         )
         await transport.enqueue(
-            .text(#"{"type":"response.done","response":{"status":"completed"}}"#)
+            .text(#"{"type":"response.audio.delta","response_id":"next-response","delta":"Bwg="}"#)
+        )
+        await transport.enqueue(
+            .text(#"{"type":"response.done","response":{"id":"next-response","status":"completed"}}"#)
         )
         await waitUntil {
             await stack.controller.refreshMicrophoneAuthorization()
@@ -2053,6 +2056,10 @@ private struct NativeSpeechDuplexTests {
             stack.controller.realtimeSpeechStateSnapshot.currentTurnNumber
                 == 3,
             "next turn completes without rebuilding interaction"
+        )
+        expect(
+            await transport.calls.filter { $0 == .close(.normal) }.isEmpty,
+            "late response cancellation does not close the persistent session"
         )
         let connectCount = await transport.calls.filter {
             if case .connect = $0 { return true }

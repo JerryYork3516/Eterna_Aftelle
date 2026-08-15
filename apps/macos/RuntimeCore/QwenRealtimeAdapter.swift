@@ -338,6 +338,10 @@ actor QwenRealtimeAdapter:
                     acknowledgeCancellation(interactionID: interactionID)
                     return pendingEvents.removeFirst()
                 }
+                if case .cancelled = envelope.event?.kind {
+                    ignore(envelope, disposition: "stale_response_cancelled")
+                    continue
+                }
                 let terminal = envelope.event ?? NativeSpeechEvent(
                     interactionID: interactionID,
                     kind: .turnFailed(.invalidEvent)
