@@ -828,10 +828,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     private func updateAcousticEchoDelayLocked() {
-        guard let engine, let playerNode else { return }
+        guard let engine else { return }
         acousticEchoHost.updateDelay(
             outputPresentationLatencySeconds:
-                playerNode.outputPresentationLatency,
+                engine.outputNode.presentationLatency,
             capturePresentationLatencySeconds:
                 engine.inputNode.presentationLatency
         )
