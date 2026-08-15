@@ -29,13 +29,17 @@ rg -q 'speech-aec-processing' "$aec_host"
 rg -q 'fifoSampleCapacity' "$aec_host"
 rg -q 'outputPresentationLatency' "$capture"
 rg -q 'presentationLatency' "$capture"
-rg -q 'scheduledOutputFrameCount' "$capture"
 rg -q 'playbackCompleted\(\)' "$aec_host" "$capture"
-render_reference_line="$(rg -n -m 1 'renderAECConverter\.convert' "$capture" | cut -d: -f1)"
-schedule_output_line="$(rg -n -m 1 'playerNode\.scheduleBuffer' "$capture" | cut -d: -f1)"
+rg -q 'mainMixerNode\.installTap' "$capture"
+rg -q 'processRenderedOutput' "$capture"
+test "$(rg -c 'acousticEchoHost\.processRender' "$capture")" -eq 1
+if rg -q 'scheduledOutputFrameCount|queuedOutputFrameCount' "$aec_host" "$capture"; then
+  echo "speech_aec_render_timing=FAIL"
+  exit 1
+fi
+echo "speech_aec_render_timing=PASS"
 capture_aec_line="$(rg -n -m 1 'acousticEchoHost\.processCapture' "$capture" | cut -d: -f1)"
 capture_packet_line="$(rg -n -m 1 'outputConverter\.convert' "$capture" | cut -d: -f1)"
-test "$render_reference_line" -lt "$schedule_output_line"
 test "$capture_aec_line" -lt "$capture_packet_line"
 if rg -q 'Task\.sleep|usleep|Thread\.sleep' "$aec_host" "$capture"; then
   echo "speech_aec_timer_fallback=FAIL"

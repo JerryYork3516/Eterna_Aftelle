@@ -207,24 +207,16 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func updateDelay(
         outputPresentationLatencySeconds: Double,
-        capturePresentationLatencySeconds: Double,
-        queuedOutputFrameCount: Int,
-        outputSampleRate: Double
+        capturePresentationLatencySeconds: Double
     ) {
         queue.sync {
             guard outputPresentationLatencySeconds.isFinite,
-                  capturePresentationLatencySeconds.isFinite,
-                  outputSampleRate.isFinite,
-                  outputSampleRate > 0,
-                  queuedOutputFrameCount >= 0 else {
+                  capturePresentationLatencySeconds.isFinite else {
                 enterFallback(.delayInvalid)
                 return
             }
-            let queuedSeconds = Double(queuedOutputFrameCount)
-                / outputSampleRate
             let totalSeconds = max(0, outputPresentationLatencySeconds)
                 + max(0, capturePresentationLatencySeconds)
-                + queuedSeconds
                 + max(0, captureProcessingMilliseconds) / 1_000
             let measuredMilliseconds = Int((totalSeconds * 1_000).rounded())
             guard measuredMilliseconds <= Self.maximumDelayMilliseconds else {

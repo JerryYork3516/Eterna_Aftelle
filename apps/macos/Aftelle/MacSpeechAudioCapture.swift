@@ -394,7 +394,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     @unchecked Sendable
 {
     private let lock = NSLock()
-    private let scheduledOutputLock = NSLock()
+    private let renderConverterLock = NSLock()
     private let audioProcessingMode: MacSpeechAudioProcessingMode
     private let acousticEchoHost: MacSpeechAcousticEchoHost
     private var engine: AVAudioEngine?
@@ -407,8 +407,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var isOutputPrepared = false
     private var isOutputPlaying = false
     private var isInputMutedForOutput = false
+    private var isRenderReferenceTapInstalled = false
     private var outputFormat: AVAudioFormat?
-    private var scheduledOutputFrameCount = 0
     private var routeRebuildWasConfigured = false
 
     init(
@@ -513,26 +513,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     ) throws {
         try lock.withLock {
             guard isOutputPrepared,
-                  let playerNode,
-                  let renderAECConverter else {
+                  let playerNode else {
                 throw MacSpeechAudioCaptureError.engineStartFailed
-            }
-            let renderSamples = try renderAECConverter.convert(buffer)
-            updateAcousticEchoDelayLocked()
-            acousticEchoHost.processRender(renderSamples)
-            let scheduledFrameCount = Int(buffer.frameLength)
-            scheduledOutputLock.withLock {
-                scheduledOutputFrameCount += scheduledFrameCount
             }
             playerNode.scheduleBuffer(
                 buffer,
                 completionCallbackType: .dataPlayedBack
-            ) { [weak self] _ in
-                self?.completeScheduledOutput(
-                    frameCount: scheduledFrameCount
-                )
-                completion()
-            }
+            ) { _ in completion() }
         }
     }
 
@@ -570,7 +557,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     func finishOutputPlayback() {
         lock.withLock {
             isOutputPlaying = false
-            clearScheduledOutputFrames()
             acousticEchoHost.playbackCompleted()
             unmuteInput()
         }
@@ -580,7 +566,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             playerNode?.stop()
             isOutputPlaying = false
-            clearScheduledOutputFrames()
             acousticEchoHost.playbackStopped()
             unmuteInput()
         }
@@ -590,7 +575,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             playerNode?.stop()
             isOutputPlaying = false
-            clearScheduledOutputFrames()
             acousticEchoHost.playbackStopped()
             unmuteInput()
             if !isCaptureActive {
@@ -603,7 +587,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             playerNode?.stop()
             isOutputPlaying = false
-            clearScheduledOutputFrames()
             acousticEchoHost.playbackStopped()
             unmuteInput()
             isOutputPrepared = false
@@ -646,6 +629,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
         }
         try rebuildAudioFormatsLocked(engine: engine, localFormat: localFormat)
+        installRenderReferenceTapLocked(engine: engine)
         _ = acousticEchoHost.configure()
         self.engine = engine
         self.playerNode = playerNode
@@ -660,6 +644,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         if isConfigured,
            let engine,
            let playerNode {
+            removeRenderReferenceTapLocked(engine: engine)
             engine.disconnectNodeOutput(playerNode)
             engine.detach(playerNode)
             engine.reset()
@@ -669,8 +654,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         outputFormat = nil
         captureAECConverter = nil
         captureOutputConverter = nil
-        renderAECConverter = nil
-        clearScheduledOutputFrames()
+        renderConverterLock.withLock { renderAECConverter = nil }
         isConfigured = false
     }
 
@@ -688,11 +672,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             guard isConfigured else { return }
             routeRebuildWasConfigured = true
-            clearScheduledOutputFrames()
             acousticEchoHost.routeWillRebuild()
             captureAECConverter = nil
             captureOutputConverter = nil
-            renderAECConverter = nil
+            renderConverterLock.withLock { renderAECConverter = nil }
         }
     }
 
@@ -714,7 +697,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             } catch {
                 captureAECConverter = nil
                 captureOutputConverter = nil
-                renderAECConverter = nil
+                renderConverterLock.withLock { renderAECConverter = nil }
             }
         }
     }
@@ -785,10 +768,40 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         captureOutputConverter = try MacSpeechAudioConverter(
             inputFormat: aecFormat
         )
-        renderAECConverter = try MacSpeechFloatMono48kConverter(
+        let renderConverter = try MacSpeechFloatMono48kConverter(
             inputFormat: localFormat
         )
+        renderConverterLock.withLock {
+            renderAECConverter = renderConverter
+        }
         outputFormat = localFormat
+    }
+
+    private func installRenderReferenceTapLocked(engine: AVAudioEngine) {
+        guard !isRenderReferenceTapInstalled else { return }
+        engine.mainMixerNode.installTap(
+            onBus: 0,
+            bufferSize: AVAudioFrameCount(
+                MacSpeechAcousticEchoHost.frameSampleCount
+            ),
+            format: nil
+        ) { [weak self] buffer, _ in
+            self?.processRenderedOutput(buffer)
+        }
+        isRenderReferenceTapInstalled = true
+    }
+
+    private func removeRenderReferenceTapLocked(engine: AVAudioEngine) {
+        guard isRenderReferenceTapInstalled else { return }
+        engine.mainMixerNode.removeTap(onBus: 0)
+        isRenderReferenceTapInstalled = false
+    }
+
+    private func processRenderedOutput(_ buffer: AVAudioPCMBuffer) {
+        let converter = renderConverterLock.withLock { renderAECConverter }
+        guard let converter,
+              let samples = try? converter.convert(buffer) else { return }
+        acousticEchoHost.processRender(samples)
     }
 
     private func updateAcousticEchoDelayLocked() {
@@ -797,25 +810,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             outputPresentationLatencySeconds:
                 playerNode.outputPresentationLatency,
             capturePresentationLatencySeconds:
-                engine.inputNode.presentationLatency,
-            queuedOutputFrameCount: scheduledOutputLock.withLock {
-                scheduledOutputFrameCount
-            },
-            outputSampleRate: outputFormat?.sampleRate ?? 0
+                engine.inputNode.presentationLatency
         )
-    }
-
-    private func completeScheduledOutput(frameCount: Int) {
-        scheduledOutputLock.withLock {
-            scheduledOutputFrameCount = max(
-                0,
-                scheduledOutputFrameCount - max(0, frameCount)
-            )
-        }
-    }
-
-    private func clearScheduledOutputFrames() {
-        scheduledOutputLock.withLock { scheduledOutputFrameCount = 0 }
     }
 
     private func unmuteInput() {

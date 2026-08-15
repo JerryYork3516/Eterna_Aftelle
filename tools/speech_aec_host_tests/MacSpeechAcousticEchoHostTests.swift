@@ -73,7 +73,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testArbitraryRenderCallbackFraming()
         testArbitraryCaptureCallbackFraming()
         testFIFORemainderIsBounded()
-        testMeasuredDelay()
+        testRenderAlignedDelay()
         testRouteRebuildRecovery()
         testFallbackAndPlaybackRecovery()
         testStopAlwaysRecoversCapture()
@@ -181,7 +181,7 @@ private struct MacSpeechAcousticEchoHostTests {
                "legal large callbacks never report FIFO overflow")
     }
 
-    private static func testMeasuredDelay() {
+    private static func testRenderAlignedDelay() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
@@ -191,13 +191,11 @@ private struct MacSpeechAcousticEchoHostTests {
         host.recordCaptureProcessingDuration(nanoseconds: 2_000_000)
         host.updateDelay(
             outputPresentationLatencySeconds: 0.020,
-            capturePresentationLatencySeconds: 0.010,
-            queuedOutputFrameCount: 480,
-            outputSampleRate: 48_000
+            capturePresentationLatencySeconds: 0.010
         )
-        expect(backend.recordedDelays.last == 42,
-               "delay sums presentation queue and processing measurements")
-        expect(host.snapshot().delayMilliseconds == 42,
+        expect(backend.recordedDelays.last == 32,
+               "render-aligned delay excludes future scheduled audio")
+        expect(host.snapshot().delayMilliseconds == 32,
                "measured delay is exposed")
     }
 
