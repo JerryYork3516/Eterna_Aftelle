@@ -297,6 +297,14 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 - A2 只产出 provider-neutral ASR events，不把 final transcript 提交给 RuntimeCore formal turn，不调用 LLM，不实现 TTS；正式 turn 接线属于 A3。
 - 地域、endpoint、model 与 `key_ref` 只属于本地 Provider 配置，不进入 DR / Store / Trace / Memory。
 
+**7.5.11-A3｜ASR Final → RuntimeCore 正式语音轮次**
+
+- RuntimeCore 只接受当前 generation、当前 Session 中已接收并锁定的非空 ASR final；partial、cancelled、stale、未锁定或重复 final 均不得创建正式轮次。
+- 合法 final 直接复用现有 `requestResidentReply`，继续经过同一上下文编译、Memory 检查、ExecutionEngine / ProviderRouter、Session 与 Dialogue History 持久化；Tool / Permission ownership 继续留在 RuntimeCore，不新增语音专用 Runtime、LLM、Memory、Tool、Permission 或 History。
+- RuntimeCore 返回的 `RuntimeResidentReply.replyText` 是唯一 canonical resident response text，供后续 A4 TTS 与居民字幕使用；Speech Adapter 不得改写。
+- A3 不启动 TTS，不恢复 Qwen Omni resident transcript 路线；TTS 请求与播放接线属于 A4。
+- generation、cancel、Session 失效与 final 幂等仍由 RuntimeCore 决策；ASR 只提供 transcript / activity。
+
 注意：ASR、现有 LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
 
 注意：打断机制必须复用 7.1.10 的统一中断语义，同时取消本地播放、服务端生成、字幕、状态和未完成任务。

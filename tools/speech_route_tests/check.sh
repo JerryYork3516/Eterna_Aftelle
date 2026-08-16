@@ -45,9 +45,27 @@ done
 
 rg -q 'executionEngine\.requestResidentReply' \
   "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
-rg -q 'executionEngine\.startTTS' \
+rg -q 'finalAlreadySubmitted' \
   "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+rg -q 'canonicalResponseText' \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+if sed -n \
+  '/func submitSpeechRouteASRFinal(/,/^    }/p' \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift" \
+  | rg -n 'startTTS|TTSSynthesisRequest|ttsProvider'; then
+  echo "speech_route_a3_tts_boundary=FAIL"
+  exit 1
+fi
+if rg -n 'SpeechMemory|SpeechHistory' \
+  "$repo_root/apps/macos/RuntimeCore" \
+  -g '*.swift'; then
+  echo "speech_route_parallel_storage=FAIL"
+  exit 1
+fi
 
 echo "speech_route_provider_neutrality=PASS"
 echo "speech_route_duplicate_llm=PASS"
 echo "speech_route_execution_gate=PASS"
+echo "speech_route_final_claim=PASS"
+echo "speech_route_a3_tts_boundary=PASS"
+echo "speech_route_parallel_storage=PASS"

@@ -10,11 +10,11 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:Stage 7.5.11-A2 Qwen Realtime ASR Adapter 完成
-- **上一步刚完成**:A1 provider-neutral ASR / LLM / TTS 契约与必要接线
+- **现在在做**:Stage 7.5.11-A3 ASR Final → RuntimeCore 正式语音轮次完成
+- **上一步刚完成**:A2 Qwen Realtime ASR Adapter
 - **当前卡在**:无
-- **下一步**:可在新任务中进入 `7.5.11-A3`
-- **本轮范围**:只实现 Qwen Realtime ASR Adapter、48 kHz → 16 kHz 输入转换、Fake Transport 测试与必要 composition；不提交 formal turn、不调用 LLM / TTS、不改 AEC Host / DR / Store schema、不进入 A6
+- **下一步**:可在新任务中进入 `7.5.11-A4`
+- **本轮范围**:只把已锁定 ASR final 一次性提交给 RuntimeCore 现有 formal turn 并返回 canonical response；不启动 TTS、不新增语音专用 Runtime / LLM / Memory / History、不改 DR / Store schema、不进入 A6
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
 > - **上一步刚完成**:Stage 7.1.5 DR Loader 读取 / 浅校验 / 加载边界已正规化
@@ -118,6 +118,7 @@
 - 2026-08-16 — Stage 7.5.11-A0 架构冻结 — 正式主链冻结为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History；ASR / LLM / TTS 独立可替换，不新增第二套 `LanguageModelProvider`，语音复用文本的十三层、Session、Memory、Tool / Permission 与 Dialogue History。AEC / ASR / TTS / Host 不拥有 Runtime、Session、Memory 或 Interrupt decision；7.5.10 未完成声学验收统一迁移至 7.5.11-A6。仅改文档，未改产品代码、语音执行链、Runtime API、DR / Store schema 或平台 target；`git diff --check`、architecture guard、secret guard 通过，Stage 7 forbidden checklist `PASS`。
 - 2026-08-16 — Stage 7.5.11-A1 provider-neutral Speech Route — 新增纯 Foundation `ASRProvider` / `TTSProvider` 契约：ASR 只接 `.aec3Processed` PCM，输出 partial / final / activity / cancel / error / stale generation；final 经 RuntimeCore `requestResidentReply` 复用现有十三层、Session、Memory、Tool / Permission、唯一文本 ProviderRouter 和 Dialogue History 持久化。TTS 只接 canonical response text 与 provider-neutral VoiceProfile / emotion / pace / style，输出 streaming PCM 和 lifecycle 事件；不含 `voice_id`。generation / cancel / stale 判定仍归 RuntimeCore。未新增 `LanguageModelProvider`，未实现厂商 Adapter，未改 Runtime API / DR / Store schema，未进入 A6。A1 契约 22 项、既有 NativeSpeech / context / input / duplex / output 回归、macOS 构建、architecture / secret guard、diff 与 Stage 7 forbidden checklist 均通过。
 - 2026-08-16 — Stage 7.5.11-A2 Qwen Realtime ASR Adapter — 基于阿里云百炼 Qwen-ASR Realtime 当前 WebSocket 协议实现 `qwen3-asr-flash-realtime` Adapter，复用现有 transport、Keychain credential reader、workspace endpoint 解析和 ProviderRouter 注入。AEC3 仍为 48 kHz / mono / 10 ms，Adapter 内确定性转换为 16 kHz / mono / PCM16；partial 合并 `text + stash`，final 只取 `completed.transcript`，并映射 activity / failed / error / cancel / close / stale generation。A2 未提交 RuntimeCore formal turn，未调用 LLM / TTS，未改 AEC Host、Runtime API、DR / Store schema 或平台 target，未进入 A6。A2 Fake Transport 24 项、既有 A1 / NativeSpeech / Audio 回归、macOS 构建、architecture / secret guard、diff 与 Stage 7 forbidden checklist 均通过。
+- 2026-08-16 — Stage 7.5.11-A3 ASR Final → RuntimeCore 正式语音轮次 — RuntimeCore 只锁定当前 generation 与 Session 中首个非空 ASR final，并以一次性 claim 调用既有 `requestResidentReply`；partial、cancelled、stale、未锁定、空白或重复 final 均不进入正式轮次。正式语音输入继续复用现有上下文编译、Memory、ExecutionEngine / ProviderRouter、Session 与 Dialogue History，Tool / Permission ownership 继续归 RuntimeCore，输出 `RuntimeResidentReply.replyText` 作为唯一 canonical resident response。A3 未启动 TTS，未新增 `LanguageModelProvider`、语音专用存储或 schema，未进入 A6。Speech Route 36 项、A2 24 项、十三层 Context 77 项、Narrative Memory 96 项、既有 duplex/history 323 项、Runtime expression 220 项、macOS 构建、architecture / secret guard、diff 与 Stage 7 forbidden checklist 均通过。
 
 ---
 

@@ -46,15 +46,16 @@ public struct RuntimeCancellationState {
 enum SpeechRouteTurnError: Error, Equatable {
     case invalidASREvent
     case emptyTranscript
+    case finalAlreadySubmitted
     case staleGeneration
     case runtime(ProviderRequestError)
-    case tts(SpeechRouteError)
 }
 
 struct SpeechRouteTurnResult: Equatable {
     let generation: UInt64
     let reply: RuntimeResidentReply
-    let ttsRequest: TTSSynthesisRequest
+
+    var canonicalResponseText: String { reply.replyText }
 }
 
 public struct AvatarState {
@@ -1174,6 +1175,13 @@ nonisolated struct NativeSpeechToolLifecycleDebugSnapshot: Equatable {
 public final class RuntimeCore {
     private static let nativeSpeechToolExecutionCapacity = 8
 
+    private struct SpeechRouteASRFinalState {
+        let generation: UInt64
+        let transcript: String
+        let session: RuntimeSessionContext
+        var isSubmitted: Bool
+    }
+
     private struct NativeSpeechTurnCommitIdentity: Equatable {
         let interactionID: NativeSpeechInteractionID
         let turnNumber: UInt64
@@ -1251,6 +1259,7 @@ public final class RuntimeCore {
         RuntimeNarrativeMemoryProjection?
     private var activeExpressionRequestID: UUID?
     private var speechRouteGeneration: UInt64 = 0
+    private var speechRouteASRFinalState: SpeechRouteASRFinalState?
     private let nativeSpeechInteractionGate =
         RuntimeNativeSpeechInteractionGate()
     private nonisolated let nativeSpeechInputGate = NativeSpeechInputGate()
@@ -1332,6 +1341,7 @@ public final class RuntimeCore {
     ) async -> Result<UInt64, SpeechRouteError> {
         activeExpressionRequestID = nil
         speechRouteGeneration &+= 1
+        speechRouteASRFinalState = nil
         let generation = speechRouteGeneration
         do {
             try await executionEngine.startASR(
@@ -1375,15 +1385,26 @@ public final class RuntimeCore {
                 kind: .staleGeneration
             )
         }
+        if case .finalTranscript(let transcript) = event.kind {
+            let normalized = transcript.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if !normalized.isEmpty,
+               speechRouteASRFinalState == nil,
+               let sessionContext {
+                speechRouteASRFinalState = SpeechRouteASRFinalState(
+                    generation: event.generation,
+                    transcript: normalized,
+                    session: sessionContext,
+                    isSubmitted: false
+                )
+            }
+        }
         return event
     }
 
     func submitSpeechRouteASRFinal(
         _ event: ASREvent,
-        voiceProfile: SpeechVoiceProfile,
-        emotion: String? = nil,
-        pace: Double = 1,
-        style: String? = nil,
         interactionID: UUID? = nil
     ) async -> Result<SpeechRouteTurnResult, SpeechRouteTurnError> {
         guard event.generation == speechRouteGeneration else {
@@ -1398,6 +1419,17 @@ public final class RuntimeCore {
         guard !inputText.isEmpty else {
             return .failure(.emptyTranscript)
         }
+        guard var finalState = speechRouteASRFinalState,
+              finalState.generation == event.generation,
+              finalState.transcript == inputText,
+              finalState.session == sessionContext else {
+            return .failure(.invalidASREvent)
+        }
+        guard !finalState.isSubmitted else {
+            return .failure(.finalAlreadySubmitted)
+        }
+        finalState.isSubmitted = true
+        speechRouteASRFinalState = finalState
 
         let result = await requestResidentReply(
             inputText: inputText,
@@ -1410,26 +1442,10 @@ public final class RuntimeCore {
         case .failure(let error):
             return .failure(.runtime(error))
         case .success(let reply):
-            let request = TTSSynthesisRequest(
+            return .success(SpeechRouteTurnResult(
                 generation: event.generation,
-                canonicalResponseText: reply.replyText,
-                voiceProfile: voiceProfile,
-                emotion: emotion,
-                pace: pace,
-                style: style
-            )
-            do {
-                try await executionEngine.startTTS(request: request)
-                return .success(SpeechRouteTurnResult(
-                    generation: event.generation,
-                    reply: reply,
-                    ttsRequest: request
-                ))
-            } catch let error as SpeechRouteError {
-                return .failure(.tts(error))
-            } catch {
-                return .failure(.tts(.transportFailure))
-            }
+                reply: reply
+            ))
         }
     }
 
@@ -1456,6 +1472,7 @@ public final class RuntimeCore {
         }
         activeExpressionRequestID = nil
         speechRouteGeneration &+= 1
+        speechRouteASRFinalState = nil
         let providerError = await stopSpeechRouteProviders(
             generation: generation,
             close: false
@@ -1474,6 +1491,7 @@ public final class RuntimeCore {
         }
         activeExpressionRequestID = nil
         speechRouteGeneration &+= 1
+        speechRouteASRFinalState = nil
         let providerError = await stopSpeechRouteProviders(
             generation: generation,
             close: true
