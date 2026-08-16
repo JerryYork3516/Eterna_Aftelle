@@ -42,8 +42,18 @@ nonisolated struct QwenRealtimeCredential: Sendable, Equatable {
     }
 
     func endpoint(for profile: NativeSpeechProviderProfile) throws -> URL {
+        try endpoint(
+            configuredEndpoint: profile.endpoint,
+            modelID: profile.modelID
+        )
+    }
+
+    func endpoint(
+        configuredEndpoint: URL,
+        modelID: String
+    ) throws -> URL {
         guard var components = URLComponents(
-            url: profile.endpoint,
+            url: configuredEndpoint,
             resolvingAgainstBaseURL: false
         ),
         let configuredHost = components.host?.lowercased() else {
@@ -56,6 +66,15 @@ nonisolated struct QwenRealtimeCredential: Sendable, Equatable {
         guard let suffix = suffixes.first(where: {
             configuredHost.hasSuffix($0)
         }) else {
+            throw NativeSpeechError.invalidConfiguration
+        }
+        guard components.scheme?.lowercased() == "wss",
+              components.user == nil,
+              components.password == nil,
+              components.path == "/api-ws/v1/realtime",
+              components.queryItems?.first(where: {
+                  $0.name == "model"
+              })?.value == modelID else {
             throw NativeSpeechError.invalidConfiguration
         }
         components.host = workspaceID + suffix

@@ -4,18 +4,27 @@ import Foundation
 enum QwenRealtimeRuntimeComposition {
     static func makeRuntimeCore(
         credentialReader: ProviderCredentialReading,
-        diagnosticBuffer: NativeSpeechDiagnosticBuffer
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer,
+        asrConfiguration: QwenRealtimeASRConfiguration
     ) -> RuntimeCore {
-        let provider = QwenRealtimeAdapter(
+        let nativeSpeechProvider = QwenRealtimeAdapter(
             credentialReader: credentialReader,
             transport: URLSessionRealtimeWebSocketTransport(
                 diagnosticBuffer: diagnosticBuffer
             ),
             diagnosticBuffer: diagnosticBuffer
         )
+        let asrProvider = QwenRealtimeASRAdapter(
+            credentialReader: credentialReader,
+            transport: URLSessionRealtimeWebSocketTransport(
+                diagnosticBuffer: diagnosticBuffer
+            ),
+            configuration: asrConfiguration
+        )
         let router = ProviderRouter(
             credentialReader: credentialReader,
-            nativeSpeechProvider: provider
+            asrProvider: asrProvider,
+            nativeSpeechProvider: nativeSpeechProvider
         )
         let runtime = RuntimeCore(
             executionEngine: ExecutionEngine(providerRouter: router),

@@ -288,6 +288,15 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 - generation 验证、取消和过期事件拒绝由 RuntimeCore 统一决策；ProviderRouter / Adapter 只转发。
 - A6 的 near-end / source-gate / double-talk / 外置设备与真机声学验收不进入 A1。
 
+**7.5.11-A2｜Qwen Realtime ASR Adapter**
+
+- 正式 ASR Adapter 使用 `qwen3-asr-flash-realtime`，复用现有 Realtime WebSocket transport、Keychain credential reader 与 ProviderRouter 注入点。
+- AEC3 继续运行在 48 kHz / mono / 10 ms 域；Adapter 输入边界将 AEC 后 PCM16 确定性降采样为 Qwen 所需的 16 kHz / mono / PCM16，不修改 Audio Host。
+- 按 Qwen-ASR Realtime 当前协议处理 session.created / updated / finished、speech_started / stopped、transcription text / completed / failed 与 error；partial 为 `text + stash`，final 只认 `completed.transcript`。
+- Server VAD 只投影 speech activity；Adapter 不拥有 Interrupt、Session、Memory 或 generation decision。
+- A2 只产出 provider-neutral ASR events，不把 final transcript 提交给 RuntimeCore formal turn，不调用 LLM，不实现 TTS；正式 turn 接线属于 A3。
+- 地域、endpoint、model 与 `key_ref` 只属于本地 Provider 配置，不进入 DR / Store / Trace / Memory。
+
 注意：ASR、现有 LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
 
 注意：打断机制必须复用 7.1.10 的统一中断语义，同时取消本地播放、服务端生成、字幕、状态和未完成任务。

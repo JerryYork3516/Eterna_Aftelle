@@ -61,6 +61,7 @@
 		A076A100000000000000003 /* AftelleAECBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = A076A100000000000000013 /* AftelleAECBridge.mm */; };
 		A076A100000000000000004 /* WebRTCAEC3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A076A100000000000000014 /* WebRTCAEC3.xcframework */; };
 		A076B100000000000000001 /* SpeechRouteProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A076B100000000000000011 /* SpeechRouteProvider.swift */; };
+		A076C100000000000000001 /* QwenRealtimeASRAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A076C100000000000000011 /* QwenRealtimeASRAdapter.swift */; };
 		A070C0000000000000000031 /* Freezev03.calibration_fixture.json in Resources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000030 /* Freezev03.calibration_fixture.json */; };
 /* End PBXBuildFile section */
 
@@ -123,6 +124,7 @@
 		A076A100000000000000014 /* WebRTCAEC3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ../../../third_party/webrtc_aec3/WebRTCAEC3.xcframework; sourceTree = "<group>"; };
 		A076A100000000000000015 /* Aftelle-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Aftelle-Bridging-Header.h"; sourceTree = "<group>"; };
 		A076B100000000000000011 /* SpeechRouteProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/SpeechRouteProvider.swift; sourceTree = SOURCE_ROOT; };
+		A076C100000000000000011 /* QwenRealtimeASRAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeASRAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A070C0000000000000000030 /* Freezev03.calibration_fixture.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Freezev03.calibration_fixture.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -201,6 +203,7 @@
 			isa = PBXGroup;
 			children = (
 				A076B100000000000000011 /* SpeechRouteProvider.swift */,
+				A076C100000000000000011 /* QwenRealtimeASRAdapter.swift */,
 				A075A1000000000000000013 /* QwenRealtimeRuntimeComposition.swift */,
 				A075A1000000000000000011 /* QwenRealtimeCodec.swift */,
 				A075A1000000000000000012 /* QwenRealtimeAdapter.swift */,
@@ -335,6 +338,7 @@
 				A0752A100000000000000004 /* NativeSpeechEvent.swift in Sources */,
 				A0752A100000000000000005 /* NativeSpeechProviderProfile.swift in Sources */,
 				A076B100000000000000001 /* SpeechRouteProvider.swift in Sources */,
+				A076C100000000000000001 /* QwenRealtimeASRAdapter.swift in Sources */,
 				A070C0000000000000000001 /* AftelleApp.swift in Sources */,
 				A070C0000000000000000003 /* ContentView.swift in Sources */,
 				A070C0000000000000000028 /* AppController.swift in Sources */,

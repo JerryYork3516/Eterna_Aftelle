@@ -266,6 +266,8 @@ Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS
 
 7.5.11-A1 在 RuntimeCore 内以 `ASRProvider` / `TTSProvider` 两个窄协议固定厂商无关边界：ASR 只消费 `.aec3Processed` PCM 并产生 transcript / activity / lifecycle 事实；final transcript 必须调用 RuntimeCore `requestResidentReply`，该入口继续走现有 ExecutionEngine / ProviderRouter 文本 LLM 路由。TTS 只消费该入口返回的 canonical response text 和 provider-neutral VoiceProfile / emotion / pace / style，输出 streaming PCM 及 started / done / cancel / error。两类 Adapter 都不持有 Session / Memory / Tool / Permission / generation decision，不得改写回答文本；provider `voice_id` 不进入 DR。
 
+7.5.11-A2 的 Qwen Realtime ASR Adapter 复用既有 Realtime WebSocket transport 与安全凭据读取链，仅在 Adapter 边界把 AEC3 的 48 kHz / mono / 10 ms PCM16 转为 16 kHz / mono / PCM16。Qwen `speech_started` / `speech_stopped` 只映射 ASR activity；实时预览按 `text + stash` 合并，正式 final 只来自 `completed.transcript`。A2 不提交 RuntimeCore formal turn，不调用 LLM / TTS；该连接由 A3 承接。
+
 实验 / 参考链路可继续保留 `NativeSpeechProvider` / Qwen Omni Adapter，但不得成为正式默认选路。
 
 ### 3.10.2 AEC 保留资产与迁移边界
