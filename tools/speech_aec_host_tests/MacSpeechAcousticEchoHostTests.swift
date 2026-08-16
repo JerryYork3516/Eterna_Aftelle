@@ -99,12 +99,12 @@ private struct MacSpeechAcousticEchoHostTests {
         testDoubleTalkSourceGate()
         testMixedResidentRenderIsOneFarEndReference()
         testLongLoudEchoStaysSuppressed()
-        testUncertainSourceGateIsBounded()
-        testAmbiguousSourceEntersFallback()
+        testUncertainSourceGateIsBoundedAndRecoverable()
+        testAmbiguousSourceStaysGatedAndRecovers()
         testRenderConversionFailureFallback()
         testRouteRebuildRecovery()
         testFallbackAndPlaybackRecovery()
-        testResidualEchoFallbackAndRecovery()
+        testPoorERLEPreservesEchoGateAndBargeIn()
         testPlaybackStopClearsSourceGateState()
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
@@ -417,7 +417,7 @@ private struct MacSpeechAcousticEchoHostTests {
                     3_090_000_000 + UInt64(index * 10_000_000)
             )
         }
-        let snapshot = host.snapshot()
+        var snapshot = host.snapshot()
         expect(output.count == 3 * 480,
                "confirmed double-talk releases near-end pre-roll")
         expect(snapshot.inputClassification == .doubleTalk,
@@ -427,6 +427,26 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(snapshot.doubleTalkFrameCount == 3
                    && snapshot.sourceForwardedFrameCount == 3,
                "double-talk diagnostics count forwarded pre-roll")
+
+        backend.setCaptureOutput(user)
+        for _ in 0 ..< 5 {
+            expect(host.processCapture(user).isEmpty,
+                   "uncertain post-barge audio is never forwarded")
+        }
+        snapshot = host.snapshot()
+        expect(snapshot.sourceGateOpen
+                   && snapshot.sourceForwardedFrameCount == 3,
+               "uncertain hangover preserves the gate without leaking audio")
+
+        backend.setCaptureOutput(nil)
+        expect(host.processCapture(
+            render,
+            hostTimeNanoseconds: 3_170_000_000
+        ).isEmpty, "resident echo after barge-in remains suppressed")
+        snapshot = host.snapshot()
+        expect(!snapshot.sourceGateOpen
+                   && snapshot.sourceGateCloseCount == 1,
+               "resident echo closes the post-barge source gate")
     }
 
     private static func testMixedResidentRenderIsOneFarEndReference() {
@@ -501,7 +521,7 @@ private struct MacSpeechAcousticEchoHostTests {
                "diagnostic reset does not alter audio processing")
     }
 
-    private static func testUncertainSourceGateIsBounded() {
+    private static func testUncertainSourceGateIsBoundedAndRecoverable() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
@@ -533,15 +553,34 @@ private struct MacSpeechAcousticEchoHostTests {
                    "sustained missing alignment remains safely suppressed")
         }
         snapshot = host.snapshot()
-        expect(snapshot.mode == .halfDuplexFallback
-                   && snapshot.fallbackReason
-                       == .sourceAlignmentUnavailable,
-               "200 ms without alignment enters deterministic fallback")
+        expect(snapshot.mode == .webRTCAEC3
+                   && snapshot.fallbackReason == nil,
+               "alignment loss keeps AEC available for later barge-in")
         expect(snapshot.sourceTimingUnavailableFrameCount == 20,
-               "alignment loss is counted before fallback")
+               "alignment loss remains diagnosable")
         expect(snapshot.sourceSuppressedFrameCount == 20
                    && snapshot.sourceGatePreRollFrameCount == 0,
-               "fallback discards the bounded uncertain pre-roll")
+               "source protection discards the bounded uncertain pre-roll")
+
+        let recoveryRenderTime: UInt64 = 4_300_000_000
+        host.processRender(
+            render,
+            hostTimeNanoseconds: recoveryRenderTime
+        )
+        backend.setCaptureOutput(capture)
+        var recovered: [Float] = []
+        for index in 0 ..< 3 {
+            recovered = host.processCapture(
+                capture,
+                hostTimeNanoseconds:
+                    recoveryRenderTime + 80_000_000
+                        + UInt64(index * 10_000_000)
+            )
+        }
+        snapshot = host.snapshot()
+        expect(recovered.count == 3 * 480
+                   && snapshot.sourceGateOpen,
+               "aligned near-end speech recovers without playback ending")
 
         host.playbackCompleted()
         snapshot = host.snapshot()
@@ -549,11 +588,11 @@ private struct MacSpeechAcousticEchoHostTests {
                "playback completion discards uncertain pre-roll")
         expect(host.processCapture(capture).count == 480,
                "capture resumes normally outside resident playback")
-        expect(snapshot.lastFallbackReason == .sourceAlignmentUnavailable,
-               "recovered diagnostics retain the last fallback reason")
+        expect(snapshot.fallbackCount == 0,
+               "recoverable alignment loss is not a hard fallback")
     }
 
-    private static func testAmbiguousSourceEntersFallback() {
+    private static func testAmbiguousSourceStaysGatedAndRecovers() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
@@ -576,14 +615,31 @@ private struct MacSpeechAcousticEchoHostTests {
                     6_080_000_000 + UInt64(index * 10_000_000)
             ).isEmpty, "ambiguous energetic capture stays source-gated")
         }
-        let snapshot = host.snapshot()
-        expect(snapshot.mode == .halfDuplexFallback
-                   && snapshot.fallbackReason
-                       == .sourceClassificationUncertain,
-               "sustained ambiguous source enters deterministic fallback")
+        var snapshot = host.snapshot()
+        expect(snapshot.mode == .webRTCAEC3
+                   && snapshot.fallbackReason == nil,
+               "ambiguous source stays gated without disabling AEC")
         expect(snapshot.uncertainFrameCount == 20
                    && snapshot.sourceTimingCandidateFrameCount == 20,
-               "ambiguous fallback distinguishes timing from attribution")
+               "diagnostics distinguish timing from attribution")
+        expect(snapshot.sourceGatePreRollFrameCount == 0,
+               "bounded ambiguous pre-roll is discarded")
+
+        backend.setCaptureOutput(independent)
+        var recovered: [Float] = []
+        for index in 0 ..< 3 {
+            recovered = host.processCapture(
+                independent,
+                hostTimeNanoseconds:
+                    6_280_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        snapshot = host.snapshot()
+        expect(recovered.count == 3 * 480
+                   && snapshot.inputClassification == .nearEndSpeech,
+               "confident near-end speech recovers from ambiguity")
+        expect(snapshot.fallbackCount == 0,
+               "source ambiguity never locks the remainder of playback")
     }
 
     private static func testRenderConversionFailureFallback() {
@@ -659,7 +715,7 @@ private struct MacSpeechAcousticEchoHostTests {
                "playback completion recovers AEC")
     }
 
-    private static func testResidualEchoFallbackAndRecovery() {
+    private static func testPoorERLEPreservesEchoGateAndBargeIn() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
@@ -668,30 +724,65 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(host.configure() == .webRTCAEC3,
                "residual echo fixture configures AEC")
         host.playbackStarted()
+        let render = testSignal(seed: 13, amplitude: 0.35)
+        let user = testSignal(seed: 14, amplitude: 0.2)
         backend.setMetrics(erle: 6)
-        expect(host.processCapture([Float](repeating: 1, count: 480)).isEmpty,
-               "unaligned playback capture remains source-gated")
+        host.processRender(render, hostTimeNanoseconds: 7_000_000_000)
+        expect(host.processCapture(
+            render,
+            hostTimeNanoseconds: 7_080_000_000
+        ).isEmpty, "healthy resident echo remains source-gated")
         expect(host.snapshot().mode == .webRTCAEC3,
                "healthy ERLE keeps the AEC backend active")
 
         backend.setMetrics(erle: 0.2)
-        for _ in 0 ..< 4 {
-            _ = host.processCapture([Float](repeating: 1, count: 480))
-            expect(host.snapshot().mode == .webRTCAEC3,
-                   "brief ERLE dip does not enter fallback")
+        for index in 0 ..< 300 {
+            let renderTime = 7_010_000_000
+                + UInt64(index * 10_000_000)
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            expect(host.processCapture(
+                render,
+                hostTimeNanoseconds: renderTime + 80_000_000
+            ).isEmpty, "poor-ERLE resident echo remains suppressed")
         }
-        expect(host.processCapture([Float](repeating: 1, count: 480)).isEmpty,
-               "sustained residual echo enters safe fallback")
-        let fallback = host.snapshot()
-        expect(fallback.mode == .halfDuplexFallback
-                   && fallback.fallbackReason == .residualEcho,
-               "residual echo fallback remains diagnosable")
+        var snapshot = host.snapshot()
+        expect(snapshot.mode == .webRTCAEC3
+                   && snapshot.fallbackCount == 0
+                   && snapshot.sourceForwardedFrameCount == 0,
+               "poor ERLE cannot forward echo or lock full duplex")
 
-        host.playbackCompleted()
-        expect(host.snapshot().mode == .webRTCAEC3,
-               "playback completion resets residual echo fallback")
-        expect(host.processCapture([Float](repeating: 1, count: 480)).count == 480,
-               "capture recovers after residual echo fallback")
+        backend.setCaptureOutput(user)
+        let mixedCapture = zip(render, user).map { sample in
+            sample.0 * 0.8 + sample.1
+        }
+        var interrupted: [Float] = []
+        for index in 0 ..< 3 {
+            let renderTime = 10_100_000_000
+                + UInt64(index * 10_000_000)
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            interrupted = host.processCapture(
+                mixedCapture,
+                hostTimeNanoseconds: renderTime + 80_000_000
+            )
+        }
+        snapshot = host.snapshot()
+        expect(interrupted.count == 3 * 480
+                   && snapshot.inputClassification == .doubleTalk,
+               "late double-talk opens barge-in despite poor ERLE")
+        expect(snapshot.sourceGateOpen,
+               "confirmed user speech keeps the source gate open")
+
+        backend.setCaptureOutput(nil)
+        let echoOnlyTime: UInt64 = 10_200_000_000
+        host.processRender(render, hostTimeNanoseconds: echoOnlyTime)
+        expect(host.processCapture(
+            render,
+            hostTimeNanoseconds: echoOnlyTime + 80_000_000
+        ).isEmpty, "resident echo closes the gate after user speech")
+        snapshot = host.snapshot()
+        expect(!snapshot.sourceGateOpen
+                   && snapshot.sourceGateCloseCount == 1,
+               "post-barge-in resident audio cannot self-interrupt")
     }
 
     private static func testStopAlwaysRecoversCapture() {
