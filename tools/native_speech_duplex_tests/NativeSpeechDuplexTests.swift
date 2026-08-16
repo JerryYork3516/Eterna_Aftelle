@@ -25,6 +25,194 @@ private struct DuplexAuthorizationProvider:
     }
 }
 
+private final class DuplexFormalTextTransport: ProviderHTTPTransport {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let reply = #"{"reply_text":"canonical response","expression_state":"neutral","expression_intensity":0}"#
+        let body: [String: Any] = [
+            "choices": [["message": ["content": reply]]]
+        ]
+        return (
+            try JSONSerialization.data(withJSONObject: body),
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+        )
+    }
+}
+
+private actor DuplexFormalASRProvider: ASRProvider {
+    private var activeGeneration: UInt64?
+    private var events: [ASREvent] = []
+    private(set) var startedGenerations: [UInt64] = []
+
+    func start(request: ASRStartRequest) async throws {
+        activeGeneration = request.generation
+        startedGenerations.append(request.generation)
+        if startedGenerations.count == 1 {
+            events = [
+                ASREvent(
+                    generation: request.generation,
+                    kind: .partialTranscript("hello")
+                ),
+                ASREvent(
+                    generation: request.generation,
+                    kind: .finalTranscript("hello resident")
+                )
+            ]
+        } else {
+            events.removeAll(keepingCapacity: true)
+        }
+    }
+
+    func send(_ input: ASRAudioInput) async throws {
+        guard input.generation == activeGeneration else {
+            throw SpeechRouteError.staleGeneration
+        }
+    }
+
+    func receive(generation: UInt64) async throws -> ASREvent {
+        guard generation == activeGeneration else {
+            throw SpeechRouteError.staleGeneration
+        }
+        if !events.isEmpty {
+            return events.removeFirst()
+        }
+        try await Task.sleep(for: .seconds(60))
+        throw SpeechRouteError.cancelled
+    }
+
+    func cancel(generation: UInt64) async throws {
+        guard generation == activeGeneration else { return }
+        activeGeneration = nil
+    }
+
+    func close(generation: UInt64) async throws {}
+}
+
+private actor DuplexFormalTTSProvider: TTSProvider {
+    private var activeGeneration: UInt64?
+    private var events: [TTSEvent] = []
+    private var waiter: CheckedContinuation<TTSEvent, Error>?
+    private(set) var requests: [TTSSynthesisRequest] = []
+    private(set) var cancelledGenerations: [UInt64] = []
+    private(set) var startedDelivered = false
+
+    func start(request: TTSSynthesisRequest) async throws {
+        activeGeneration = request.generation
+        requests.append(request)
+        events = [TTSEvent(generation: request.generation, kind: .started)]
+    }
+
+    func receive(generation: UInt64) async throws -> TTSEvent {
+        guard generation == activeGeneration else {
+            throw SpeechRouteError.staleGeneration
+        }
+        if !events.isEmpty {
+            let event = events.removeFirst()
+            if case .started = event.kind {
+                startedDelivered = true
+            }
+            return event
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            waiter = continuation
+        }
+    }
+
+    func releaseAudio() {
+        guard let generation = activeGeneration else { return }
+        deliver(TTSEvent(
+            generation: generation,
+            kind: .audio(TTSAudioChunk(
+                generation: generation,
+                sequenceNumber: 1,
+                bytes: Data([0x01, 0x02]),
+                format: .pcm16,
+                sampleRate: 24_000,
+                channelCount: 1
+            ))
+        ))
+    }
+
+    func cancel(generation: UInt64) async throws {
+        guard generation == activeGeneration else { return }
+        cancelledGenerations.append(generation)
+        activeGeneration = nil
+        waiter?.resume(throwing: SpeechRouteError.cancelled)
+        waiter = nil
+    }
+
+    func close(generation: UInt64) async throws {
+        guard generation == activeGeneration else { return }
+        activeGeneration = nil
+        waiter?.resume(throwing: SpeechRouteError.cancelled)
+        waiter = nil
+    }
+
+    private func deliver(_ event: TTSEvent) {
+        if let waiter {
+            self.waiter = nil
+            waiter.resume(returning: event)
+        } else {
+            events.append(event)
+        }
+    }
+}
+
+private final class DuplexFormalAECBackend:
+    MacSpeechAECBackend, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var captureOutput: [Float]?
+
+    func configure() throws {}
+
+    func processRender(_ samples: [Float]) throws {
+        guard samples.count == MacSpeechAcousticEchoHost.frameSampleCount else {
+            throw MacSpeechAECBackendError.renderFailed
+        }
+    }
+
+    func processCapture(_ samples: [Float]) throws
+        -> MacSpeechAECCaptureResult {
+        guard samples.count == MacSpeechAcousticEchoHost.frameSampleCount else {
+            throw MacSpeechAECBackendError.captureFailed
+        }
+        let processed = lock.withLock { captureOutput ?? samples }
+        return MacSpeechAECCaptureResult(
+            processedSamples: processed,
+            linearOutputSamples: stride(
+                from: 0,
+                to: processed.count,
+                by: 3
+            ).map { index in
+                (processed[index] + processed[index + 1]
+                    + processed[index + 2]) / 3
+            }
+        )
+    }
+
+    func setDelay(milliseconds: Int) throws {}
+    func reset() throws {}
+
+    func stats() throws -> MacSpeechAECBackendStats {
+        MacSpeechAECBackendStats(
+            enabled: true,
+            active: true,
+            estimatedDelayMilliseconds: 0,
+            erlDecibels: 12,
+            erleDecibels: 24
+        )
+    }
+
+    func setCaptureOutput(_ samples: [Float]) {
+        lock.withLock { captureOutput = samples }
+    }
+}
+
 private struct DuplexPassiveASRProvider: ASRProvider {
     func start(request: ASRStartRequest) async throws {}
     func send(_ input: ASRAudioInput) async throws {}
@@ -101,9 +289,14 @@ private final class DuplexAudioCapture:
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
-    private let acousticEchoHost = MacSpeechAcousticEchoHost(
-        mode: .appleVoiceProcessing
-    )
+    private let acousticEchoHost: MacSpeechAcousticEchoHost
+
+    init(
+        acousticEchoHost: MacSpeechAcousticEchoHost =
+            MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+    ) {
+        self.acousticEchoHost = acousticEchoHost
+    }
 
     func start(
         generation: UInt64,
@@ -333,6 +526,7 @@ private struct NativeSpeechDuplexTests {
         try await testTextSubtitleSurvivesRealtimeRefresh()
         try await testFormalSpeechStartsCaptureFromOneClick()
         try await testFormalSpeechFinalIgnoresClosingAudioSend()
+        try await testFormalSpeechInterruptCrossesEveryRuntimeBoundary()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
     }
@@ -1120,6 +1314,193 @@ private struct NativeSpeechDuplexTests {
             "ASR close does not fail a valid final as stale"
         )
         await controller.stopSpeechAudioCapture()
+    }
+
+    private static func testFormalSpeechInterruptCrossesEveryRuntimeBoundary()
+        async throws {
+        let asr = DuplexFormalASRProvider()
+        let tts = DuplexFormalTTSProvider()
+        let router = ProviderRouter(
+            credentialReader: DuplexCredentialReader(),
+            transport: DuplexFormalTextTransport(),
+            asrProvider: asr,
+            ttsProvider: tts
+        )
+        let sessionStore = SessionStore()
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: sessionStore
+        )
+        let orchestration = OrchestrationKernel(runtimeCore: runtime)
+        expect(
+            orchestration.configureTextProvider(profile: ProviderProfile(
+                profileID: "formal-text-profile",
+                providerID: "formal-text-provider",
+                adapterType: "openai_compatible",
+                modelID: "existing-model",
+                baseURL: "https://example.invalid/v1",
+                keyRef: "keychain://test/formal-text",
+                enabled: true,
+                timeout: 5,
+                stream: false,
+                thinkingMode: "disabled"
+            )) == nil,
+            "formal route uses the existing text ProviderRouter"
+        )
+
+        let aecBackend = DuplexFormalAECBackend()
+        let acousticEchoHost = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: aecBackend
+        )
+        expect(
+            acousticEchoHost.configure() == .webRTCAEC3,
+            "formal route integration enables WebRTC AEC3"
+        )
+        let capture = DuplexAudioCapture(acousticEchoHost: acousticEchoHost)
+        let audioHost = MacSpeechAudioHost(
+            authorizationProvider: DuplexAuthorizationProvider(),
+            capture: capture,
+            deviceMonitor: DuplexDeviceMonitor()
+        )
+        let outputPlayer = FakeMacSpeechAudioOutputPlayer()
+        let outputHost = MacSpeechAudioOutputHost(
+            player: outputPlayer,
+            deviceMonitor: FakeMacSpeechOutputDeviceMonitor(),
+            configuration: MacSpeechPCMPlaybackConfiguration(
+                capacity: 4,
+                lowWatermark: 1,
+                consumerTimeoutNanoseconds: 2_000_000_000,
+                startupBufferCount: 1,
+                startupBufferDurationNanoseconds: 0,
+                scheduleAheadCount: 2
+            )
+        )
+        let controller = AppController(
+            orchestrationKernel: orchestration,
+            speechAudioHost: audioHost,
+            speechAudioOutputHost: outputHost
+        )
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "formal-speech-interrupt.digital_resident"
+            )
+        try fixtureData.write(to: fixtureURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fixtureURL) }
+        controller.debugImportResident(from: fixtureURL)
+        let dialogueBefore = try sessionStore.loadMostRecentDialogueEntries()
+
+        await controller.startFormalSpeechRoute()
+        await waitUntil { await tts.startedDelivered }
+        let ttsRequests = await tts.requests
+        expect(
+            ttsRequests.count == 1
+                && ttsRequests[0].canonicalResponseText
+                    == "canonical response",
+            "ASR final reaches the existing LLM and canonical text reaches TTS"
+        )
+        expect(
+            controller.formalSpeechRouteDebugSnapshot.phase == .processing,
+            "TTS started does not claim that playback has started"
+        )
+        expect(
+            controller.particleSubtitleState.text != "canonical response"
+                && controller.residentVisualIntent != .speaking,
+            "resident subtitle and Particle speaking wait for real playback"
+        )
+
+        await tts.releaseAudio()
+        await waitUntil {
+            outputPlayer.startCount == 1
+                && controller.formalSpeechRouteDebugSnapshot.phase == .speaking
+        }
+        expect(
+            controller.particleSubtitleState.text == "canonical response"
+                && controller.residentSpeechSignal.phase == .started
+                && controller.residentVisualIntent == .speaking,
+            "real Playback started drives resident subtitle and expression"
+        )
+        guard let interruptedGeneration = controller
+            .formalSpeechRouteDebugSnapshot.generation else {
+            fatalError("FAILED: formal playback exposes its generation")
+        }
+
+        acousticEchoHost.playbackStarted()
+        let render = formalSpeechSignal(seed: 2, amplitude: 0.3)
+        let user = formalSpeechSignal(seed: 3, amplitude: 0.25)
+        acousticEchoHost.processRender(
+            render,
+            hostTimeNanoseconds: 2_000_000_000
+        )
+        aecBackend.setCaptureOutput(user)
+        for index in 0 ..< 3 {
+            _ = acousticEchoHost.processCapture(
+                user,
+                hostTimeNanoseconds:
+                    2_080_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        expect(
+            acousticEchoHost.snapshot().sourceGateOpen,
+            "confirmed AEC near-end evidence opens the source gate"
+        )
+        expect(capture.emit(0x31), "near-end frame enters the formal Host pump")
+
+        await waitUntil {
+            controller.formalSpeechRouteDebugSnapshot.phase == .listening
+                && controller.formalSpeechRouteDebugSnapshot.generation
+                    != interruptedGeneration
+        }
+        let restartedGenerations = await asr.startedGenerations
+        let cancelledTTSGenerations = await tts.cancelledGenerations
+        expect(
+            outputPlayer.clearScheduledPlaybackCount == 1,
+            "Host near-end event locally pre-clears existing Playback"
+        )
+        expect(
+            restartedGenerations.count == 2
+                && restartedGenerations[1] > interruptedGeneration,
+            "RuntimeCore invalidates the old generation and starts new ASR"
+        )
+        expect(
+            cancelledTTSGenerations == [interruptedGeneration],
+            "RuntimeCore owns cancellation of the interrupted TTS"
+        )
+        expect(
+            controller.particleSubtitleState == .hidden
+                && controller.residentVisualIntent == .listening,
+            "interruption clears the old resident subtitle and speaking state"
+        )
+
+        outputPlayer.completeStoppedChunk()
+        try? await Task.sleep(for: .milliseconds(20))
+        expect(
+            controller.formalSpeechRouteDebugSnapshot.phase == .listening
+                && controller.formalSpeechRouteDebugSnapshot.generation
+                    == restartedGenerations[1],
+            "late old-generation Playback completion stays stale"
+        )
+        let dialogueAfterInterrupt = try sessionStore
+            .loadMostRecentDialogueEntries()
+        expect(
+            controller.sessionState.dialogueEntries.isEmpty
+                && dialogueAfterInterrupt == dialogueBefore,
+            "interrupted generation writes no UI or Runtime dialogue history"
+        )
+        await controller.stopSpeechAudioCapture()
+    }
+
+    private static func formalSpeechSignal(
+        seed: UInt32,
+        amplitude: Float
+    ) -> [Float] {
+        var state = seed
+        return (0 ..< MacSpeechAcousticEchoHost.frameSampleCount).map { _ in
+            state = state &* 1_664_525 &+ 1_013_904_223
+            let unit = Float(state >> 8) / Float(0x00FF_FFFF)
+            return (unit * 2 - 1) * amplitude
+        }
     }
 
     private static func testCumulativeSubtitleThroughController() async throws {

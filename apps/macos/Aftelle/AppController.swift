@@ -2278,14 +2278,12 @@ final class AppController: ObservableObject {
         }
         await receiveFormalSpeechTTS(
             generation: generation,
-            canonicalText: canonicalText,
             playbackGeneration: prepared.generation
         )
     }
 
     private func receiveFormalSpeechTTS(
         generation: UInt64,
-        canonicalText: String,
         playbackGeneration: UInt64
     ) async {
         while !Task.isCancelled,
@@ -2312,24 +2310,7 @@ final class AppController: ObservableObject {
             }
             switch event.kind {
             case .started:
-                formalSpeechRouteDebugSnapshot =
-                    FormalSpeechRouteDebugSnapshot(
-                        phase: .speaking,
-                        generation: generation,
-                        lastErrorCode: nil
-                    )
-                particleSubtitleState = ParticleSubtitleState(
-                    text: canonicalText,
-                    phase: .showing
-                )
-                residentSpeechSignal = ResidentSpeechSignal(
-                    phase: .started,
-                    intensity: ParticleTuning.Engine.defaultSpeechIntensity
-                )
-                refreshResidentVisualIntent(
-                    visualStateMode: ResidentVisualIntent.speaking.rawValue
-                )
-                refreshParticleDebugSnapshot()
+                break
             case .audio(let chunk):
                 guard chunk.format == .pcm16,
                       chunk.sampleRate == 24_000,
@@ -2348,10 +2329,6 @@ final class AppController: ObservableObject {
                     )
                 speechAudioOutputHostSnapshot = await speechAudioOutputHost
                     .start()
-                residentSpeechSignal = ResidentSpeechSignal(
-                    phase: .sustained,
-                    intensity: ParticleTuning.Engine.defaultSpeechIntensity
-                )
             case .done:
                 speechAudioOutputHostSnapshot = await speechAudioOutputHost
                     .finishProviderResponse(generation: playbackGeneration)
@@ -2455,7 +2432,27 @@ final class AppController: ObservableObject {
             return
         }
         switch event.kind {
-        case .playbackStarted, .playbackResumed:
+        case .playbackStarted:
+            formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+                phase: .speaking,
+                generation: generation,
+                lastErrorCode: nil
+            )
+            if let canonicalText = formalSpeechCanonicalResponse {
+                particleSubtitleState = ParticleSubtitleState(
+                    text: canonicalText,
+                    phase: .showing
+                )
+            }
+            residentSpeechSignal = ResidentSpeechSignal(
+                phase: .started,
+                intensity: ParticleTuning.Engine.defaultSpeechIntensity
+            )
+            refreshResidentVisualIntent(
+                visualStateMode: ResidentVisualIntent.speaking.rawValue
+            )
+            refreshParticleDebugSnapshot()
+        case .playbackResumed:
             residentSpeechSignal = ResidentSpeechSignal(
                 phase: .sustained,
                 intensity: ParticleTuning.Engine.defaultSpeechIntensity
