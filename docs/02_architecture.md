@@ -248,29 +248,30 @@ Audio Host 负责 macOS 麦克风权限、采集、设备路由、播放与实�
 边界:
 - 前台语音会话必须由 App Controller / Orchestration 进入 RuntimeCore。
 - RuntimeCore 拥有 interaction / turn / generation、Provider 路由、Memory、Tool / Permission 编排与取消语义。
-- ASR、现有 RuntimeCore LLM、TTS 三段必须独立可替换；RuntimeCore LLM 是唯一正式语音认知大脑。
+- ASR、现有 RuntimeCore LLM、TTS 三段必须独立可替换；RuntimeCore 现有 LLM 是唯一正式语音认知大脑，不新增第二套 `LanguageModelProvider`。
+- 语音与文本复用现有十三层、Session、Memory、Tool / Permission 与 Dialogue History，不建立旁路。
 - ProviderRouter / ProviderAdapter 负责供应商路由与协议转换;Adapter 不编排、不写 Memory、不执行 Tool。
 - Apple 本地 ASR / TTS 不作为正式链。
-- AEC / Audio Host 只处理平台音频事实，不拥有 Runtime Interrupt 决策。
+- AEC / ASR / TTS / Audio Host 不拥有 Runtime、Session、Memory 或 Interrupt decision；AEC / Audio Host 只处理平台音频事实。
 - UI 和 Audio Host 不直连 ASR / LLM / TTS Provider,不持有长期 Memory,不做权限决策。
 - 本节不新增 Runtime API 平台字段,不修改 `runtime_api_contract.md`、DR schema、Provider Profile 或 Store schema。
 
 概念数据流:
 ```
-macOS Audio Host → App Controller / Orchestration → RuntimeCore ProviderRouter → ASR Adapter
-→ final transcript → RuntimeCore ExecutionEngine → ProviderRouter → LLM Adapter
-→ response text → ProviderRouter → TTS Adapter
-→ Runtime standard events → Audio Host playback / Subtitle / ParticleCore
+Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS
+→ Playback / Subtitle / Particle / Dialogue History
 ```
+
+其中 Host 平台事实经 App Controller / Orchestration 进入 RuntimeCore，ASR / 现有 LLM / TTS 仍由统一 ProviderRouter / ProviderAdapter 路由，输出通过 Runtime standard events 投影到播放、字幕、粒子与现有对话历史。
 
 实验 / 参考链路可继续保留 `NativeSpeechProvider` / Qwen Omni Adapter，但不得成为正式默认选路。
 
 ### 3.10.2 AEC 保留资产与迁移边界
 Stage 7.5.10 保留 WebRTC AEC3 XCFramework、AEC Bridge、AEC Host，以及 delay / route / drift / diagnostic 基础，不把未完成的真机声学验收声明为通过。
 
-USB / 蓝牙外置输出下的稳定插话、resident-only 零 self-interrupt、double-talk、source gate / near-end detection、render / capture alignment、AEC 完整真机矩阵与 30 分钟稳定性迁移至 7.5.11。
+USB / 蓝牙外置输出下的稳定插话、resident-only 零 self-interrupt、double-talk、source gate / near-end detection、render / capture alignment、AEC 完整真机矩阵与 30 分钟稳定性统一迁移至 7.5.11-A6；A0 不实现这些项。
 
-禁止:always-on 麦克风、未授权后台监听、唤醒词、声纹识别、后台持续 voice loop、UI / Host / Adapter 直连 Provider、AEC / Host 拥有 Runtime Interrupt 决策,或绕过 RuntimeCore 执行 Tool / Memory / Permission 操作。
+禁止:always-on 麦克风、未授权后台监听、唤醒词、声纹识别、后台持续 voice loop、UI / Host / Adapter 直连 Provider、AEC / ASR / TTS / Host 拥有 Runtime / Session / Memory / Interrupt decision,或绕过 RuntimeCore 执行 Tool / Memory / Permission 操作。
 
 ### 3.11 Screen Guide Prototype
 只做 Aftelle 内部指导原型。

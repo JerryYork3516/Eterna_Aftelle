@@ -10,10 +10,10 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:Stage 7.5.10 已 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE`;准备进入 7.5.11-A0
-- **上一步刚完成**:Qwen Omni STS 正式主链定位收口;Qwen Adapter 与 AEC3 / Bridge / Host 基础保留为实验和迁移资产
+- **现在在做**:Stage 7.5.11-A0 架构冻结与 7.5.10 迁移收口完成
+- **上一步刚完成**:Qwen Omni STS 正式主链定位收口;Qwen Adapter 与 AEC3 / Bridge / Host / 诊断基础保留为实验和迁移资产
 - **当前卡在**:无
-- **下一步**:仅在新的明确授权下进入 `7.5.11-A0｜架构冻结与 7.5.10 迁移收口`;不自动创建 ASR / TTS Adapter
+- **下一步**:可在新的明确授权下进入 `7.5.11-A1`;本节点不自动创建 ASR / TTS Adapter
 - **本轮范围**:只更新规划 / 架构文档;不改产品代码、现有语音执行链、Runtime API、DR schema、Store schema 或平台 target
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
@@ -114,7 +114,8 @@
 - 2026-07-05 — Stage 7.3 Final Review PASS — 完成 7.3.1–7.3.16 最终代码审查与验证,确认默认启动为 `dark_shell` + `particle_core` + `idle` + no subtitle + Debug closed;I/T/S/L/E/X 与 C/V/B Debug-only 快捷键、DR color profile、Avatar State binding、Debug snapshot、Render Adapter reserved、Shell Mode 均保持可用。Final Review 仅做 1 个小修:将 App 退出菜单项改为本地化 key。验收通过:`xcodebuild` BUILD SUCCEEDED、`git diff --check` 通过、`architecture_guard` ok、`secret_guard` ok。未改 RuntimeCore / Runtime API / DR schema,未接 Provider / TTS,未新增 Apple 平台 target。Stage 7.3 允许归档并进入 Stage 7.4。
 - 2026-07-19 — Stage 7.4.9-A3 真实文本 Provider 接入待审核 — 复用现有 `ProviderRouter` 与 A2 `ResidentDialogueContext`,新增 internal OpenAI-compatible Chat Completions adapter、可替换本地 Provider Profile、macOS Keychain 凭据适配和 Debug-only 居民回复测试入口；当前固定为非流式且关闭思考模式。真实 Key 不进入 UserDefaults / 文件 / DR / Store / Trace / Git,现有 public Runtime API 与同步 mock step 不变。
 - 2026-08-11 — Stage 7.5 文档权威对齐 — 以 `03_dev_plan.md` 7.5.1–7.5.28 为当前唯一执行口径;同步规划、架构、Runtime Boundary、Forbidden Checklist、产品、入场 Gate、执行与文档控制说明。前台用户主动实时语音合法;always-on、未授权后台监听、唤醒词、声纹、Provider / Memory / Tool / Permission ownership 越界仍禁止。本轮不改源码、Runtime API、DR schema 或 Store schema。
-- 2026-08-16 — Stage 7.5.10 收口 — 状态冻结为 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE`;Qwen Omni 端到端 STS 不再作为正式默认主链，Adapter 暂留为实验 / 参考实现。保留 WebRTC AEC3 XCFramework、AEC Bridge、AEC Host 与 delay / route / drift / diagnostic 基础；未通过的外置输出插话、零 self-interrupt、double-talk、近端声源判定、render / capture 对齐和完整真机稳定性迁移至 7.5.11。下一入口为 `7.5.11-A0｜架构冻结与 7.5.10 迁移收口`，本轮未改产品代码或执行链。
+- 2026-08-16 — Stage 7.5.10 收口 — 状态冻结为 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE`;Qwen Omni 端到端 STS 不再作为正式默认主链，Adapter 暂留为实验 / 参考实现。保留 WebRTC AEC3 XCFramework、AEC Bridge、AEC Host 与 delay / route / drift / diagnostic 基础；未通过的外置输出插话、零 self-interrupt、double-talk、近端声源判定、render / capture 对齐和完整真机稳定性统一迁移至 7.5.11-A6。下一入口为 `7.5.11-A0｜架构冻结与 7.5.10 迁移收口`，本轮未改产品代码或执行链。
+- 2026-08-16 — Stage 7.5.11-A0 架构冻结 — 正式主链冻结为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History；ASR / LLM / TTS 独立可替换，不新增第二套 `LanguageModelProvider`，语音复用文本的十三层、Session、Memory、Tool / Permission 与 Dialogue History。AEC / ASR / TTS / Host 不拥有 Runtime、Session、Memory 或 Interrupt decision；7.5.10 未完成声学验收统一迁移至 7.5.11-A6。仅改文档，未改产品代码、语音执行链、Runtime API、DR / Store schema 或平台 target；`git diff --check`、architecture guard、secret guard 通过，Stage 7 forbidden checklist `PASS`。
 
 ---
 

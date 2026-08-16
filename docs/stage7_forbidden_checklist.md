@@ -97,10 +97,13 @@ FAIL:后台主动运行、复杂调度、无界 planner / 自主工具系统、�
 - [ ] Aftelle 未为 Avatar 推理人格 / 情绪,只渲染 RuntimeCore 返回的 `visual_state` / `resident_state`。
 - [ ] 实时语音仅在用户主动启动的前台会话中运行。
 - [ ] 实时会话、Provider 路由、Memory、Tool / Permission 编排和取消语义均由 RuntimeCore 拥有。
-- [ ] 正式语音主链为 ASR → RuntimeCore LLM → TTS,三段独立可替换,且 RuntimeCore LLM 是唯一正式语音认知大脑。
+- [ ] 正式语音主链为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History。
+- [ ] ASR / 现有 RuntimeCore LLM / TTS 三段独立可替换,且未新增第二套 `LanguageModelProvider`。
+- [ ] 语音与文本复用现有十三层、Session、Memory、Tool / Permission 与 Dialogue History,未建立旁路。
 - [ ] Qwen Omni Adapter 仅保留为实验 / 参考实现,未作为正式默认主链。
 - [ ] Apple 本地 ASR / TTS 未作为正式链。
-- [ ] AEC / Host 未拥有 Runtime Interrupt 决策。
+- [ ] AEC / ASR / TTS / Host 未拥有 Runtime、Session、Memory 或 Interrupt decision。
+- [ ] 7.5.10 保留 AEC3 / Bridge / Host / 诊断基础,未通过的外置输出插话、self-interrupt、double-talk、source gate / near-end、alignment、AEC 真机矩阵与 30 分钟稳定性统一迁移至 7.5.11-A6。
 - [ ] UI / Host / Adapter 未直连 ASR / LLM / TTS Provider,未直接写 Memory 或执行 Tool。
 - [ ] 未实现 always-on 麦克风或未授权后台监听。
 - [ ] 未实现唤醒词。

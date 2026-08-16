@@ -257,7 +257,7 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 - AEC Bridge；
 - AEC Host，以及 delay / route / drift / diagnostic 基础。
 
-以下未通过项迁移至 7.5.11：
+以下未通过项统一迁移至 7.5.11-A6（A0 不实现）：
 
 - USB / 蓝牙外置输出下的稳定插话；
 - resident-only 零 self-interrupt；
@@ -270,13 +270,15 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 
 冻结原则：
 
+- 正式主链固定为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History；
 - ASR、现有 RuntimeCore LLM、TTS 三段独立可替换；
-- RuntimeCore LLM 是唯一正式语音认知大脑；
+- RuntimeCore 现有 LLM 是唯一正式语音认知大脑，不新增第二套 `LanguageModelProvider`；
+- 语音与文本复用现有十三层、Session、Memory、Tool、Permission 与 Dialogue History；
 - Apple 本地 ASR / TTS 不作为正式链；
-- AEC / Host 不拥有 Runtime Interrupt 决策；
+- AEC / ASR / TTS / Host 不拥有 Runtime、Session、Memory 或 Interrupt decision；
 - 不修改 DR schema、Store schema 或 Runtime ownership。
 
-注意：ASR、LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
+注意：ASR、现有 LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
 
 注意：打断机制必须复用 7.1.10 的统一中断语义，同时取消本地播放、服务端生成、字幕、状态和未完成任务。
 
