@@ -1,4 +1,5 @@
 #include <array>
+#include <cmath>
 #include <iostream>
 
 #include "AftelleAECBridge.h"
@@ -6,6 +7,7 @@
 namespace {
 
 constexpr size_t kFrameSamples = 480;
+constexpr size_t kLinearOutputFrameSamples = 160;
 
 bool Expect(AftelleAECBridgeError actual, AftelleAECBridgeError expected,
             const char* operation) {
@@ -22,6 +24,7 @@ bool RunLifecycleAndErrorChecks() {
   bool passed = true;
   std::array<float, kFrameSamples> input{};
   std::array<float, kFrameSamples> output{};
+  std::array<float, kLinearOutputFrameSamples> linear_output{};
   AftelleAECBridgeStats stats{};
 
   passed &= Expect(AftelleAECBridgeCreate(nullptr),
@@ -38,6 +41,11 @@ bool RunLifecycleAndErrorChecks() {
       Expect(AftelleAECBridgeProcessCapture(bridge, input.data(), output.data(),
                                             kFrameSamples),
              AFTELLE_AEC_BRIDGE_INVALID_STATE, "capture before configure");
+  passed &= Expect(AftelleAECBridgeProcessCaptureWithLinearOutput(
+                       bridge, input.data(), output.data(), kFrameSamples,
+                       linear_output.data(), kLinearOutputFrameSamples),
+                   AFTELLE_AEC_BRIDGE_INVALID_STATE,
+                   "linear capture before configure");
   passed &= Expect(AftelleAECBridgeSetDelayMs(bridge, 0),
                    AFTELLE_AEC_BRIDGE_INVALID_STATE, "delay before configure");
   passed &= Expect(AftelleAECBridgeReset(bridge),
@@ -78,6 +86,16 @@ bool RunLifecycleAndErrorChecks() {
   passed &= Expect(
       AftelleAECBridgeProcessCapture(bridge, input.data(), output.data(), 481),
       AFTELLE_AEC_BRIDGE_INVALID_FRAME_SIZE, "capture invalid frame");
+  passed &= Expect(AftelleAECBridgeProcessCaptureWithLinearOutput(
+                       bridge, input.data(), output.data(), kFrameSamples,
+                       nullptr, kLinearOutputFrameSamples),
+                   AFTELLE_AEC_BRIDGE_NULL_ARGUMENT,
+                   "linear capture null output");
+  passed &= Expect(AftelleAECBridgeProcessCaptureWithLinearOutput(
+                       bridge, input.data(), output.data(), kFrameSamples,
+                       linear_output.data(), kLinearOutputFrameSamples - 1),
+                   AFTELLE_AEC_BRIDGE_INVALID_FRAME_SIZE,
+                   "linear capture invalid frame");
   passed &= Expect(AftelleAECBridgeSetDelayMs(bridge, -1),
                    AFTELLE_AEC_BRIDGE_INVALID_DELAY, "negative delay");
   passed &= Expect(AftelleAECBridgeSetDelayMs(bridge, 501),
@@ -89,9 +107,13 @@ bool RunLifecycleAndErrorChecks() {
     passed &= Expect(
         AftelleAECBridgeProcessRender(bridge, input.data(), kFrameSamples),
         AFTELLE_AEC_BRIDGE_OK, "render frame");
-    passed &= Expect(AftelleAECBridgeProcessCapture(
-                         bridge, input.data(), output.data(), kFrameSamples),
-                     AFTELLE_AEC_BRIDGE_OK, "capture frame");
+    passed &= Expect(AftelleAECBridgeProcessCaptureWithLinearOutput(
+                         bridge, input.data(), output.data(), kFrameSamples,
+                         linear_output.data(), kLinearOutputFrameSamples),
+                     AFTELLE_AEC_BRIDGE_OK, "linear capture frame");
+  }
+  for (float sample : linear_output) {
+    passed &= std::isfinite(sample);
   }
 
   passed &= Expect(AftelleAECBridgeProcessCapture(bridge, input.data(),

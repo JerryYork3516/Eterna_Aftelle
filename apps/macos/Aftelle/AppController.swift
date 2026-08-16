@@ -963,6 +963,10 @@ final class AppController: ObservableObject {
         export.renderCaptureCorrelation = snapshot.renderCaptureCorrelation
         export.residualRenderCorrelation =
             snapshot.residualRenderCorrelation
+        export.linearAECOutputRMS = snapshot.linearAECOutputRMS
+        export.linearRenderCorrelation = snapshot.linearRenderCorrelation
+        export.processedLinearCorrelation =
+            snapshot.processedLinearCorrelation
         export.renderTimingFrameCount = snapshot.renderTimingFrameCount
         export.renderFIFOSampleCount = snapshot.renderFIFOSampleCount
         export.captureFIFOSampleCount = snapshot.captureFIFOSampleCount
@@ -988,8 +992,16 @@ final class AppController: ObservableObject {
             snapshot.rawEchoGainBaseline
         export.residualEchoGainBaseline =
             snapshot.residualEchoGainBaseline
+        export.linearAECOutputGainBaseline =
+            snapshot.linearAECOutputGainBaseline
         export.residualEchoBaselineFrameCount =
             snapshot.residualEchoBaselineFrameCount
+        export.residualEchoBaselineFrozen =
+            snapshot.residualEchoBaselineFrozen
+        export.residualEchoBaselineUpdateCount =
+            snapshot.residualEchoBaselineUpdateCount
+        export.residualEchoBaselineFreezeCount =
+            snapshot.residualEchoBaselineFreezeCount
         export.adaptiveEvidenceCandidateFrameCount =
             snapshot.adaptiveEvidenceCandidateFrameCount
         export.adaptiveDoubleTalkFrameCount =
@@ -998,6 +1010,14 @@ final class AppController: ObservableObject {
             snapshot.maximumAdaptiveRawExcessRMS
         export.maximumAdaptiveResidualExcessRMS =
             snapshot.maximumAdaptiveResidualExcessRMS
+        export.maximumAdaptiveLinearExcessRMS =
+            snapshot.maximumAdaptiveLinearExcessRMS
+        export.sourceAlignmentLocked = snapshot.sourceAlignmentLocked
+        export.sourceAlignmentAcquisitionFrameCount =
+            snapshot.sourceAlignmentAcquisitionFrameCount
+        export.sourceAlignmentMissCount = snapshot.sourceAlignmentMissCount
+        export.sourceAlignmentReacquisitionCount =
+            snapshot.sourceAlignmentReacquisitionCount
         export.lastSourceGateCloseReason =
             snapshot.lastSourceGateCloseReason?.rawValue
         export.sourceGateEpochs = snapshot.sourceGateEpochs.map { epoch in
@@ -1021,6 +1041,10 @@ final class AppController: ObservableObject {
                     epoch.residualEchoGainBaselineAtOpen,
                 residualEchoGainBaselineAtClose:
                     epoch.residualEchoGainBaselineAtClose,
+                linearAECOutputGainBaselineAtOpen:
+                    epoch.linearAECOutputGainBaselineAtOpen,
+                linearAECOutputGainBaselineAtClose:
+                    epoch.linearAECOutputGainBaselineAtClose,
                 aecBufferDelayMillisecondsAtOpen:
                     epoch.aecBufferDelayMillisecondsAtOpen,
                 aecBufferDelayMillisecondsAtClose:

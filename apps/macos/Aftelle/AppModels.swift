@@ -1029,6 +1029,8 @@ struct RealtimeSpeechSourceGateEpochDiagnosticExport: Encodable, Sendable {
     let rawEchoGainBaselineAtClose: Double
     let residualEchoGainBaselineAtOpen: Double
     let residualEchoGainBaselineAtClose: Double
+    let linearAECOutputGainBaselineAtOpen: Double
+    let linearAECOutputGainBaselineAtClose: Double
     let aecBufferDelayMillisecondsAtOpen: Int
     let aecBufferDelayMillisecondsAtClose: Int
     let sourceAlignmentDelayMillisecondsAtOpen: Int?
@@ -1061,6 +1063,9 @@ struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var processedCaptureRMS = 0.0
     var renderCaptureCorrelation = 0.0
     var residualRenderCorrelation = 0.0
+    var linearAECOutputRMS = 0.0
+    var linearRenderCorrelation = 0.0
+    var processedLinearCorrelation = 0.0
     var renderTimingFrameCount = 0
     var renderFIFOSampleCount = 0
     var captureFIFOSampleCount = 0
@@ -1078,11 +1083,20 @@ struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var maximumContinuousSourceForwardedFrameCount: UInt64 = 0
     var rawEchoGainBaseline = 0.0
     var residualEchoGainBaseline = 0.0
+    var linearAECOutputGainBaseline = 0.0
     var residualEchoBaselineFrameCount: UInt64 = 0
+    var residualEchoBaselineFrozen = false
+    var residualEchoBaselineUpdateCount: UInt64 = 0
+    var residualEchoBaselineFreezeCount: UInt64 = 0
     var adaptiveEvidenceCandidateFrameCount: UInt64 = 0
     var adaptiveDoubleTalkFrameCount: UInt64 = 0
     var maximumAdaptiveRawExcessRMS = 0.0
     var maximumAdaptiveResidualExcessRMS = 0.0
+    var maximumAdaptiveLinearExcessRMS = 0.0
+    var sourceAlignmentLocked = false
+    var sourceAlignmentAcquisitionFrameCount = 0
+    var sourceAlignmentMissCount: UInt64 = 0
+    var sourceAlignmentReacquisitionCount: UInt64 = 0
     var lastSourceGateCloseReason: String?
     var sourceGateEpochs: [
         RealtimeSpeechSourceGateEpochDiagnosticExport

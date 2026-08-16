@@ -45,6 +45,11 @@ nonisolated struct MacSpeechAECBackendStats: Sendable, Equatable {
     let erleDecibels: Double
 }
 
+nonisolated struct MacSpeechAECCaptureResult: Sendable, Equatable {
+    let processedSamples: [Float]
+    let linearOutputSamples: [Float]
+}
+
 nonisolated struct MacSpeechSourceGateEpochDiagnostic: Sendable, Equatable {
     let playbackSequence: UInt64
     let epochSequence: UInt64
@@ -61,6 +66,8 @@ nonisolated struct MacSpeechSourceGateEpochDiagnostic: Sendable, Equatable {
     let rawEchoGainBaselineAtClose: Double
     let residualEchoGainBaselineAtOpen: Double
     let residualEchoGainBaselineAtClose: Double
+    let linearAECOutputGainBaselineAtOpen: Double
+    let linearAECOutputGainBaselineAtClose: Double
     let aecBufferDelayMillisecondsAtOpen: Int
     let aecBufferDelayMillisecondsAtClose: Int
     let sourceAlignmentDelayMillisecondsAtOpen: Int?
@@ -83,7 +90,8 @@ nonisolated enum MacSpeechAECBackendError: Error, Sendable, Equatable {
 nonisolated protocol MacSpeechAECBackend: AnyObject, Sendable {
     func configure() throws
     func processRender(_ samples: [Float]) throws
-    func processCapture(_ samples: [Float]) throws -> [Float]
+    func processCapture(_ samples: [Float]) throws
+        -> MacSpeechAECCaptureResult
     func setDelay(milliseconds: Int) throws
     func reset() throws
     func stats() throws -> MacSpeechAECBackendStats
@@ -113,6 +121,9 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let processedCaptureRMS: Double
     let renderCaptureCorrelation: Double
     let residualRenderCorrelation: Double
+    let linearAECOutputRMS: Double
+    let linearRenderCorrelation: Double
+    let processedLinearCorrelation: Double
     let inputClassification: MacSpeechAcousticInputClassification
     let sourceGateOpen: Bool
     let sourceGatePreRollFrameCount: Int
@@ -130,11 +141,20 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let maximumContinuousSourceForwardedFrameCount: UInt64
     let rawEchoGainBaseline: Double
     let residualEchoGainBaseline: Double
+    let linearAECOutputGainBaseline: Double
     let residualEchoBaselineFrameCount: UInt64
+    let residualEchoBaselineFrozen: Bool
+    let residualEchoBaselineUpdateCount: UInt64
+    let residualEchoBaselineFreezeCount: UInt64
     let adaptiveEvidenceCandidateFrameCount: UInt64
     let adaptiveDoubleTalkFrameCount: UInt64
     let maximumAdaptiveRawExcessRMS: Double
     let maximumAdaptiveResidualExcessRMS: Double
+    let maximumAdaptiveLinearExcessRMS: Double
+    let sourceAlignmentLocked: Bool
+    let sourceAlignmentAcquisitionFrameCount: Int
+    let sourceAlignmentMissCount: UInt64
+    let sourceAlignmentReacquisitionCount: UInt64
     let lastSourceGateCloseReason: MacSpeechSourceGateCloseReason?
     let sourceGateEpochs: [MacSpeechSourceGateEpochDiagnostic]
     let fallbackCount: UInt64
@@ -147,6 +167,8 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
 nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     static let sampleRate = 48_000
     static let frameSampleCount = 480
+    static let linearOutputSampleRate = 16_000
+    static let linearOutputFrameSampleCount = 160
     static let frameDurationMilliseconds = 10
     static let maximumDelayMilliseconds = 500
     static let standardFIFOFrameCapacity = 12
@@ -158,8 +180,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let maximumNearEndCorrelation = 0.25
     private static let maximumDoubleTalkResidualCorrelation = 0.25
     private static let maximumAdaptiveDoubleTalkResidualCorrelation = 0.65
+    private static let maximumLinearNearEndCorrelation = 0.35
+    private static let minimumProcessedLinearNearEndCorrelation = 0.65
+    private static let minimumResidentOnlyRawCorrelation = 0.7
+    private static let minimumResidentOnlyResidualCorrelation = 0.55
     private static let minimumResidualEchoBaselineFrameCount: UInt64 = 5
     private static let residualEchoBaselineSmoothingFactor = 0.1
+    private static let maximumBaselineGainIncreaseRatio = 1.25
+    private static let timingLockAcquisitionFrameCount = 3
+    private static let timingLockCandidateToleranceMilliseconds = 20.0
+    private static let timingLockSearchRadiusMilliseconds = 30.0
+    private static let timingLockMissFrameCount = 5
     private static let requiredSourceGateConfirmationFrames = 3
     private static let maximumSourceGateNonUserHangoverFrames = 20
     private static let sourceGatePreRollFrameCapacity = 15
@@ -196,6 +227,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var processedCaptureRMS = 0.0
     private var renderCaptureCorrelation = 0.0
     private var residualRenderCorrelation = 0.0
+    private var linearAECOutputRMS = 0.0
+    private var linearRenderCorrelation = 0.0
+    private var processedLinearCorrelation = 0.0
     private var inputClassification: MacSpeechAcousticInputClassification =
         .uncertain
     private var sourceGateOpen = false
@@ -223,11 +257,22 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var maximumContinuousSourceForwardedFrameCount: UInt64 = 0
     private var rawEchoGainBaseline = 0.0
     private var residualEchoGainBaseline = 0.0
+    private var linearAECOutputGainBaseline = 0.0
     private var residualEchoBaselineFrameCount: UInt64 = 0
+    private var residualEchoBaselineFrozen = false
+    private var residualEchoBaselineUpdateCount: UInt64 = 0
+    private var residualEchoBaselineFreezeCount: UInt64 = 0
     private var adaptiveEvidenceCandidateFrameCount: UInt64 = 0
     private var adaptiveDoubleTalkFrameCount: UInt64 = 0
     private var maximumAdaptiveRawExcessRMS = 0.0
     private var maximumAdaptiveResidualExcessRMS = 0.0
+    private var maximumAdaptiveLinearExcessRMS = 0.0
+    private var timingLockCandidateMilliseconds: Double?
+    private var timingLockCandidateFrameCount = 0
+    private var timingLockedDelayMilliseconds: Double?
+    private var timingLockConsecutiveMissFrameCount = 0
+    private var sourceAlignmentMissCount: UInt64 = 0
+    private var sourceAlignmentReacquisitionCount: UInt64 = 0
     private var lastSourceGateCloseReason: MacSpeechSourceGateCloseReason?
     private var playbackSequence: UInt64 = 0
     private var sourceGateEpochSequence: UInt64 = 0
@@ -381,15 +426,18 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         for: frame,
                         captureHostTimeNanoseconds: frameHostTimeNanoseconds
                     )
-                    if let timingMatch,
-                       timingMatch.correlation
-                           >= Self.minimumTimingCorrelation {
-                        updateAlignedDelay(timingMatch.delayMilliseconds)
+                    let captureResult = try backend.processCapture(frame)
+                    guard captureResult.processedSamples.count
+                            == Self.frameSampleCount,
+                          captureResult.linearOutputSamples.count
+                            == Self.linearOutputFrameSampleCount else {
+                        throw MacSpeechAECBackendError.captureFailed
                     }
-                    let processedFrame = try backend.processCapture(frame)
+                    let processedFrame = captureResult.processedSamples
                     updateSignalDiagnostics(
                         rawCapture: frame,
                         processedCapture: processedFrame,
+                        linearAECOutput: captureResult.linearOutputSamples,
                         timingMatch: timingMatch
                     )
                     output.append(contentsOf: gatedCaptureFrame(
@@ -584,6 +632,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         let uncertainFrameCountAtOpen: UInt64
         let rawEchoGainBaselineAtOpen: Double
         let residualEchoGainBaselineAtOpen: Double
+        let linearAECOutputGainBaselineAtOpen: Double
         let aecBufferDelayMillisecondsAtOpen: Int
         let sourceAlignmentDelayMillisecondsAtOpen: Int?
         let estimatedDelayMillisecondsAtOpen: Int
@@ -678,6 +727,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
               signalRMS(captureSamples) >= Self.minimumTimingRMS else {
             return nil
         }
+        let lockedDelay = timingLockedDelayMilliseconds
         var bestMatch: TimingMatch?
         for renderFrame in renderTimingHistory {
             guard captureHostTimeNanoseconds >= renderFrame.hostTimeNanoseconds
@@ -689,12 +739,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                   renderFrame.rms >= Self.minimumTimingRMS else {
                 continue
             }
+            if let lockedDelay,
+               abs(delayMilliseconds - lockedDelay)
+                > Self.timingLockSearchRadiusMilliseconds {
+                continue
+            }
             let correlation = normalizedCorrelation(
                 captureSamples,
                 renderFrame.samples
             )
             if bestMatch == nil
-                || correlation > (bestMatch?.correlation ?? 0) {
+                || correlation >= (bestMatch?.correlation ?? 0) {
                 bestMatch = TimingMatch(
                     renderSamples: renderFrame.samples,
                     delayMilliseconds: delayMilliseconds,
@@ -702,7 +757,60 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 )
             }
         }
+        updateTimingLock(with: bestMatch)
         return bestMatch
+    }
+
+    private func updateTimingLock(with timingMatch: TimingMatch?) {
+        guard let timingMatch,
+              timingMatch.correlation >= Self.minimumTimingCorrelation else {
+            if timingLockedDelayMilliseconds != nil {
+                sourceAlignmentMissCount &+= 1
+                timingLockConsecutiveMissFrameCount += 1
+                if timingLockConsecutiveMissFrameCount
+                    >= Self.timingLockMissFrameCount {
+                    timingLockedDelayMilliseconds = nil
+                    timingLockCandidateMilliseconds = nil
+                    timingLockCandidateFrameCount = 0
+                    timingLockConsecutiveMissFrameCount = 0
+                    alignedDelayMilliseconds = nil
+                    sourceAlignmentReacquisitionCount &+= 1
+                }
+            } else {
+                timingLockCandidateMilliseconds = nil
+                timingLockCandidateFrameCount = 0
+            }
+            return
+        }
+
+        timingLockConsecutiveMissFrameCount = 0
+        if let lockedDelay = timingLockedDelayMilliseconds {
+            let updatedDelay = lockedDelay * 0.9
+                + timingMatch.delayMilliseconds * 0.1
+            timingLockedDelayMilliseconds = updatedDelay
+            updateAlignedDelay(updatedDelay)
+            return
+        }
+
+        if let candidate = timingLockCandidateMilliseconds,
+           abs(timingMatch.delayMilliseconds - candidate)
+            <= Self.timingLockCandidateToleranceMilliseconds {
+            timingLockCandidateFrameCount += 1
+            let count = Double(timingLockCandidateFrameCount)
+            timingLockCandidateMilliseconds = candidate
+                + (timingMatch.delayMilliseconds - candidate) / count
+        } else {
+            timingLockCandidateMilliseconds = timingMatch.delayMilliseconds
+            timingLockCandidateFrameCount = 1
+        }
+
+        guard timingLockCandidateFrameCount
+                >= Self.timingLockAcquisitionFrameCount,
+              let candidate = timingLockCandidateMilliseconds else {
+            return
+        }
+        timingLockedDelayMilliseconds = candidate
+        updateAlignedDelay(candidate)
     }
 
     private func gatedCaptureFrame(
@@ -778,39 +886,86 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             processedFrame,
             timingMatch.renderSamples
         )
-        let classification: MacSpeechAcousticInputClassification
-        if cleanRMS < Self.minimumNearEndRMS {
-            classification = timingMatch.correlation
-                    >= Self.minimumTimingCorrelation
-                ? .echoOnly : .uncertain
-        } else if timingMatch.correlation >= Self.minimumTimingCorrelation {
-            if residualCorrelation
-                <= Self.maximumDoubleTalkResidualCorrelation {
-                classification = .doubleTalk
-            } else if hasAdaptiveDoubleTalkEvidence(
-                cleanRMS: cleanRMS,
-                residualCorrelation: residualCorrelation,
-                timingMatch: timingMatch
-            ) {
-                classification = .doubleTalk
-                adaptiveDoubleTalkFrameCount &+= 1
-            } else {
-                classification = .echoOnly
-            }
-        } else if timingMatch.correlation
-                    <= Self.maximumNearEndCorrelation,
-                  residualCorrelation <= Self.maximumNearEndCorrelation {
-            classification = .nearEndSpeech
-        } else {
-            classification = .uncertain
-        }
-        updateResidualEchoBaseline(
-            classification: classification,
+        let residentOnlyEvidence = hasHighConfidenceResidentOnlyEvidence(
             cleanRMS: cleanRMS,
             residualCorrelation: residualCorrelation,
             timingMatch: timingMatch
         )
+        let classification: MacSpeechAcousticInputClassification
+        if residentOnlyEvidence {
+            classification = .echoOnly
+        } else if hasImmediateDoubleTalkEvidence(
+            cleanRMS: cleanRMS,
+            residualCorrelation: residualCorrelation,
+            timingMatch: timingMatch
+        ) {
+            classification = .doubleTalk
+            freezeResidualEchoBaseline()
+        } else if hasAdaptiveDoubleTalkEvidence(
+            cleanRMS: cleanRMS,
+            residualCorrelation: residualCorrelation,
+            timingMatch: timingMatch
+        ) {
+            classification = .doubleTalk
+            adaptiveDoubleTalkFrameCount &+= 1
+            freezeResidualEchoBaseline()
+        } else if timingMatch.correlation
+                    <= Self.maximumNearEndCorrelation,
+                  residualCorrelation <= Self.maximumNearEndCorrelation,
+                  linearRenderCorrelation
+                    <= Self.maximumLinearNearEndCorrelation,
+                  processedLinearCorrelation
+                    >= Self.minimumProcessedLinearNearEndCorrelation,
+                  max(cleanRMS, linearAECOutputRMS)
+                    >= Self.minimumNearEndRMS {
+            classification = .nearEndSpeech
+            freezeResidualEchoBaseline()
+        } else if timingMatch.correlation
+                    >= Self.minimumTimingCorrelation {
+            classification = .echoOnly
+        } else {
+            classification = .uncertain
+        }
+        updateResidualEchoBaseline(
+            hasHighConfidenceResidentOnlyEvidence: residentOnlyEvidence,
+            cleanRMS: cleanRMS,
+            timingMatch: timingMatch
+        )
         return classification
+    }
+
+    private func hasHighConfidenceResidentOnlyEvidence(
+        cleanRMS: Double,
+        residualCorrelation: Double,
+        timingMatch: TimingMatch
+    ) -> Bool {
+        guard timingMatch.correlation
+                >= Self.minimumResidentOnlyRawCorrelation else {
+            return false
+        }
+        let bothOutputsQuiet = cleanRMS < Self.minimumNearEndRMS
+            && linearAECOutputRMS < Self.minimumNearEndRMS
+        let bothOutputsTrackRender = residualCorrelation
+                >= Self.minimumResidentOnlyResidualCorrelation
+            && linearRenderCorrelation
+                >= Self.minimumResidentOnlyResidualCorrelation
+        return bothOutputsQuiet || bothOutputsTrackRender
+    }
+
+    private func hasImmediateDoubleTalkEvidence(
+        cleanRMS: Double,
+        residualCorrelation: Double,
+        timingMatch: TimingMatch
+    ) -> Bool {
+        timingMatch.correlation >= Self.minimumTimingCorrelation
+            && cleanRMS >= Self.minimumNearEndRMS
+            && linearAECOutputRMS >= Self.minimumNearEndRMS
+            && residualCorrelation
+                <= Self.maximumDoubleTalkResidualCorrelation
+            && linearRenderCorrelation
+                <= Self.maximumLinearNearEndCorrelation
+            && processedLinearCorrelation
+                >= Self.minimumProcessedLinearNearEndCorrelation
     }
 
     private func hasAdaptiveDoubleTalkEvidence(
@@ -821,6 +976,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         guard residualEchoBaselineFrameCount
                 >= Self.minimumResidualEchoBaselineFrameCount,
               residualCorrelation
+                <= Self.maximumAdaptiveDoubleTalkResidualCorrelation,
+              linearRenderCorrelation
                 <= Self.maximumAdaptiveDoubleTalkResidualCorrelation else {
             return false
         }
@@ -828,13 +985,16 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         guard renderRMS >= Self.minimumTimingRMS else { return false }
         let expectedRawEchoRMS = rawEchoGainBaseline * renderRMS
         let expectedEchoRMS = residualEchoGainBaseline * renderRMS
+        let expectedLinearRMS = linearAECOutputGainBaseline * renderRMS
         let rawExcessPower = rawCaptureRMS * rawCaptureRMS
             - expectedRawEchoRMS * expectedRawEchoRMS
         let excessPower = cleanRMS * cleanRMS
             - expectedEchoRMS * expectedEchoRMS
+        let linearExcessPower = linearAECOutputRMS * linearAECOutputRMS
+            - expectedLinearRMS * expectedLinearRMS
         let rawExcessRMS = sqrt(max(0, rawExcessPower))
         let residualExcessRMS = sqrt(max(0, excessPower))
-        adaptiveEvidenceCandidateFrameCount &+= 1
+        let linearExcessRMS = sqrt(max(0, linearExcessPower))
         maximumAdaptiveRawExcessRMS = max(
             maximumAdaptiveRawExcessRMS,
             rawExcessRMS
@@ -843,42 +1003,82 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             maximumAdaptiveResidualExcessRMS,
             residualExcessRMS
         )
+        maximumAdaptiveLinearExcessRMS = max(
+            maximumAdaptiveLinearExcessRMS,
+            linearExcessRMS
+        )
         let minimumNearEndPower = Self.minimumNearEndRMS
             * Self.minimumNearEndRMS
+        let hasCandidate = rawExcessPower >= minimumNearEndPower
+            && max(excessPower, linearExcessPower) >= minimumNearEndPower
+        adaptiveEvidenceCandidateFrameCount &+= 1
+        if hasCandidate {
+            freezeResidualEchoBaseline()
+        }
         return rawExcessPower >= minimumNearEndPower
             && excessPower >= minimumNearEndPower
+            && linearExcessPower >= minimumNearEndPower
+            && processedLinearCorrelation
+                >= Self.minimumProcessedLinearNearEndCorrelation
     }
 
     private func updateResidualEchoBaseline(
-        classification: MacSpeechAcousticInputClassification,
+        hasHighConfidenceResidentOnlyEvidence: Bool,
         cleanRMS: Double,
-        residualCorrelation: Double,
         timingMatch: TimingMatch
     ) {
-        guard classification == .echoOnly,
+        guard hasHighConfidenceResidentOnlyEvidence,
+              !residualEchoBaselineFrozen,
               !sourceGateOpen,
-              sourceGateConfirmationFrameCount == 0,
-              residualCorrelation
-                > Self.maximumDoubleTalkResidualCorrelation else {
+              sourceGateConfirmationFrameCount == 0 else {
             return
         }
         let renderRMS = signalRMS(timingMatch.renderSamples)
         guard renderRMS >= Self.minimumTimingRMS else { return }
         let observedGain = cleanRMS / renderRMS
         let observedRawGain = rawCaptureRMS / renderRMS
-        guard observedGain.isFinite, observedRawGain.isFinite else { return }
+        let observedLinearGain = linearAECOutputRMS / renderRMS
+        guard observedGain.isFinite,
+              observedRawGain.isFinite,
+              observedLinearGain.isFinite else { return }
         if residualEchoBaselineFrameCount == 0 {
             rawEchoGainBaseline = observedRawGain
             residualEchoGainBaseline = observedGain
+            linearAECOutputGainBaseline = observedLinearGain
         } else {
-            rawEchoGainBaseline += (
-                observedRawGain - rawEchoGainBaseline
-            ) * Self.residualEchoBaselineSmoothingFactor
-            residualEchoGainBaseline += (
-                observedGain - residualEchoGainBaseline
-            ) * Self.residualEchoBaselineSmoothingFactor
+            rawEchoGainBaseline = smoothedBaselineGain(
+                rawEchoGainBaseline,
+                observed: observedRawGain
+            )
+            residualEchoGainBaseline = smoothedBaselineGain(
+                residualEchoGainBaseline,
+                observed: observedGain
+            )
+            linearAECOutputGainBaseline = smoothedBaselineGain(
+                linearAECOutputGainBaseline,
+                observed: observedLinearGain
+            )
         }
         residualEchoBaselineFrameCount &+= 1
+        residualEchoBaselineUpdateCount &+= 1
+    }
+
+    private func smoothedBaselineGain(
+        _ current: Double,
+        observed: Double
+    ) -> Double {
+        let boundedObservation = min(
+            observed,
+            current * Self.maximumBaselineGainIncreaseRatio
+        )
+        return current + (boundedObservation - current)
+            * Self.residualEchoBaselineSmoothingFactor
+    }
+
+    private func freezeResidualEchoBaseline() {
+        guard !residualEchoBaselineFrozen else { return }
+        residualEchoBaselineFrozen = true
+        residualEchoBaselineFreezeCount &+= 1
     }
 
     private func recordSourceGateOpenFrame() {
@@ -903,10 +1103,6 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     reason: .nonUserHangover
                 )
             }
-            guard signalRMS(processedFrame) >= Self.minimumNearEndRMS else {
-                recordSuppressedSourceFrames(1)
-                return silenceFrames(1)
-            }
             recordForwardedSourceFrames(1)
             return processedFrame
         case .echoOnly:
@@ -917,8 +1113,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     reason: .nonUserHangover
                 )
             }
-            recordSuppressedSourceFrames(1)
-            return silenceFrames(1)
+            recordForwardedSourceFrames(1)
+            return processedFrame
         }
     }
 
@@ -1045,6 +1241,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             uncertainFrameCountAtOpen: uncertainFrameCount,
             rawEchoGainBaselineAtOpen: rawEchoGainBaseline,
             residualEchoGainBaselineAtOpen: residualEchoGainBaseline,
+            linearAECOutputGainBaselineAtOpen:
+                linearAECOutputGainBaseline,
             aecBufferDelayMillisecondsAtOpen: delayMilliseconds,
             sourceAlignmentDelayMillisecondsAtOpen:
                 roundedSourceAlignmentDelay,
@@ -1057,10 +1255,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         reason: MacSpeechSourceGateCloseReason?
     ) {
         guard let accumulator = activeSourceGateEpoch else { return }
+        let closesDuringCurrentCapture = reason == .nonUserHangover
+            || reason == .sourceEvidenceReset
         appendSourceGateEpochDiagnostic(
             makeSourceGateEpochDiagnostic(
                 accumulator,
-                closedAtCaptureFrame: captureFrameCount,
+                closedAtCaptureFrame: captureFrameCount
+                    &+ (closesDuringCurrentCapture ? 1 : 0),
                 closeReason: reason
             )
         )
@@ -1111,6 +1312,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             residualEchoGainBaselineAtOpen:
                 accumulator.residualEchoGainBaselineAtOpen,
             residualEchoGainBaselineAtClose: residualEchoGainBaseline,
+            linearAECOutputGainBaselineAtOpen:
+                accumulator.linearAECOutputGainBaselineAtOpen,
+            linearAECOutputGainBaselineAtClose:
+                linearAECOutputGainBaseline,
             aecBufferDelayMillisecondsAtOpen:
                 accumulator.aecBufferDelayMillisecondsAtOpen,
             aecBufferDelayMillisecondsAtClose: delayMilliseconds,
@@ -1180,16 +1385,37 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private func updateSignalDiagnostics(
         rawCapture: [Float],
         processedCapture: [Float],
+        linearAECOutput: [Float],
         timingMatch: TimingMatch?
     ) {
         rawCaptureRMS = signalRMS(rawCapture)
         processedCaptureRMS = signalRMS(processedCapture)
+        linearAECOutputRMS = signalRMS(linearAECOutput)
+        processedLinearCorrelation = normalizedCorrelation(
+            downsampleToSixteenKilohertz(processedCapture),
+            linearAECOutput
+        )
         if let timingMatch {
             renderCaptureCorrelation = timingMatch.correlation
             residualRenderCorrelation = normalizedCorrelation(
                 processedCapture,
                 timingMatch.renderSamples
             )
+            linearRenderCorrelation = normalizedCorrelation(
+                linearAECOutput,
+                downsampleToSixteenKilohertz(timingMatch.renderSamples)
+            )
+        } else {
+            renderCaptureCorrelation = 0
+            residualRenderCorrelation = 0
+            linearRenderCorrelation = 0
+        }
+    }
+
+    private func downsampleToSixteenKilohertz(_ samples: [Float]) -> [Float] {
+        guard samples.count == Self.frameSampleCount else { return [] }
+        return stride(from: 0, to: samples.count, by: 3).map { index in
+            (samples[index] + samples[index + 1] + samples[index + 2]) / 3
         }
     }
 
@@ -1318,6 +1544,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private func clearTimingHistory() {
         renderTimingHistory.removeAll(keepingCapacity: true)
+        timingLockCandidateMilliseconds = nil
+        timingLockCandidateFrameCount = 0
+        timingLockedDelayMilliseconds = nil
+        timingLockConsecutiveMissFrameCount = 0
     }
 
     private func resetSignalDiagnostics() {
@@ -1325,6 +1555,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         processedCaptureRMS = 0
         renderCaptureCorrelation = 0
         residualRenderCorrelation = 0
+        linearAECOutputRMS = 0
+        linearRenderCorrelation = 0
+        processedLinearCorrelation = 0
     }
 
     private func resetSourceGate(
@@ -1373,6 +1606,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         adaptiveDoubleTalkFrameCount = 0
         maximumAdaptiveRawExcessRMS = 0
         maximumAdaptiveResidualExcessRMS = 0
+        maximumAdaptiveLinearExcessRMS = 0
+        residualEchoBaselineUpdateCount = 0
+        residualEchoBaselineFreezeCount = 0
         lastSourceGateCloseReason = nil
         sourceGateEpochSequence = 0
         sourceGateEpochs.removeAll(keepingCapacity: true)
@@ -1382,6 +1618,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         consecutiveSourceAlignmentUnavailableFrameCount = 0
         consecutiveSourceUncertainFrameCount = 0
         pendingSourceGateReset = false
+        sourceAlignmentMissCount = 0
+        sourceAlignmentReacquisitionCount = 0
     }
 
     private func resetTimingState(
@@ -1399,7 +1637,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private func resetResidualEchoBaseline() {
         rawEchoGainBaseline = 0
         residualEchoGainBaseline = 0
+        linearAECOutputGainBaseline = 0
         residualEchoBaselineFrameCount = 0
+        residualEchoBaselineFrozen = false
     }
 
     private func disabledStats() -> MacSpeechAECBackendStats {
@@ -1440,6 +1680,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             processedCaptureRMS: processedCaptureRMS,
             renderCaptureCorrelation: renderCaptureCorrelation,
             residualRenderCorrelation: residualRenderCorrelation,
+            linearAECOutputRMS: linearAECOutputRMS,
+            linearRenderCorrelation: linearRenderCorrelation,
+            processedLinearCorrelation: processedLinearCorrelation,
             inputClassification: inputClassification,
             sourceGateOpen: sourceGateOpen,
             sourceGatePreRollFrameCount: sourceGatePreRoll.count,
@@ -1460,8 +1703,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 maximumContinuousSourceForwardedFrameCount,
             rawEchoGainBaseline: rawEchoGainBaseline,
             residualEchoGainBaseline: residualEchoGainBaseline,
+            linearAECOutputGainBaseline: linearAECOutputGainBaseline,
             residualEchoBaselineFrameCount:
                 residualEchoBaselineFrameCount,
+            residualEchoBaselineFrozen: residualEchoBaselineFrozen,
+            residualEchoBaselineUpdateCount:
+                residualEchoBaselineUpdateCount,
+            residualEchoBaselineFreezeCount:
+                residualEchoBaselineFreezeCount,
             adaptiveEvidenceCandidateFrameCount:
                 adaptiveEvidenceCandidateFrameCount,
             adaptiveDoubleTalkFrameCount: adaptiveDoubleTalkFrameCount,
@@ -1469,6 +1718,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 maximumAdaptiveRawExcessRMS,
             maximumAdaptiveResidualExcessRMS:
                 maximumAdaptiveResidualExcessRMS,
+            maximumAdaptiveLinearExcessRMS:
+                maximumAdaptiveLinearExcessRMS,
+            sourceAlignmentLocked:
+                timingLockedDelayMilliseconds != nil,
+            sourceAlignmentAcquisitionFrameCount:
+                timingLockCandidateFrameCount,
+            sourceAlignmentMissCount: sourceAlignmentMissCount,
+            sourceAlignmentReacquisitionCount:
+                sourceAlignmentReacquisitionCount,
             lastSourceGateCloseReason: lastSourceGateCloseReason,
             sourceGateEpochs: sourceGateEpochDiagnostics(),
             fallbackCount: fallbackCount,

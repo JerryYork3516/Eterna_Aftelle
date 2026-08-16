@@ -40,27 +40,39 @@ nonisolated final class MacSpeechWebRTCAECProcessor:
         }
     }
 
-    func processCapture(_ samples: [Float]) throws -> [Float] {
+    func processCapture(_ samples: [Float]) throws
+        -> MacSpeechAECCaptureResult {
         guard let bridge else { throw MacSpeechAECBackendError.captureFailed }
         try requireFrame(samples)
         var output = [Float](
             repeating: 0,
             count: MacSpeechAcousticEchoHost.frameSampleCount
         )
+        var linearOutput = [Float](
+            repeating: 0,
+            count: MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+        )
         try samples.withUnsafeBufferPointer { input in
             try output.withUnsafeMutableBufferPointer { destination in
-                try requireSuccess(
-                    AftelleAECBridgeProcessCapture(
-                        bridge,
-                        input.baseAddress,
-                        destination.baseAddress,
-                        input.count
-                    ),
-                    .captureFailed
-                )
+                try linearOutput.withUnsafeMutableBufferPointer { linear in
+                    try requireSuccess(
+                        AftelleAECBridgeProcessCaptureWithLinearOutput(
+                            bridge,
+                            input.baseAddress,
+                            destination.baseAddress,
+                            input.count,
+                            linear.baseAddress,
+                            linear.count
+                        ),
+                        .captureFailed
+                    )
+                }
             }
         }
-        return output
+        return MacSpeechAECCaptureResult(
+            processedSamples: output,
+            linearOutputSamples: linearOutput
+        )
     }
 
     func setDelay(milliseconds: Int) throws {

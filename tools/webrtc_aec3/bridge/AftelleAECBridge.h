@@ -44,6 +44,11 @@ AftelleAECBridgeError AftelleAECBridgeProcessCapture(
     AftelleAECBridge* bridge, const float* input_mono_pcm,
     float* output_mono_pcm, size_t frame_samples);
 
+AftelleAECBridgeError AftelleAECBridgeProcessCaptureWithLinearOutput(
+    AftelleAECBridge* bridge, const float* input_mono_pcm,
+    float* output_mono_pcm, size_t frame_samples,
+    float* linear_output_mono_pcm, size_t linear_output_frame_samples);
+
 AftelleAECBridgeError AftelleAECBridgeSetDelayMs(AftelleAECBridge* bridge,
                                                  int32_t delay_ms);
 

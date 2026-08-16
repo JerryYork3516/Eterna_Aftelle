@@ -24,6 +24,7 @@ stopped using the handle.
 | `AftelleAECBridgeConfigure` | Accepts only 48 kHz, mono, 480 samples |
 | `AftelleAECBridgeProcessRender` | Consumes one normalized float PCM render frame |
 | `AftelleAECBridgeProcessCapture` | Processes one capture frame; in-place output is supported |
+| `AftelleAECBridgeProcessCaptureWithLinearOutput` | Also returns AEC3's 16 kHz mono, 160-sample linear residual for Host-only source evidence |
 | `AftelleAECBridgeSetDelayMs` | Accepts 0–500 ms after configure |
 | `AftelleAECBridgeReset` | Recreates AEC3 while retaining the configured delay |
 | `AftelleAECBridgeGetStats` | Returns enabled, active, estimated delay, ERL, and ERLE |
