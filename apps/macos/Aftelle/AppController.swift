@@ -862,7 +862,7 @@ final class AppController: ObservableObject {
         drainNativeSpeechInternalDiagnostics()
         let bundle = Bundle.main
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 4,
+            schemaVersion: 5,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -976,6 +976,10 @@ final class AppController: ObservableObject {
             snapshot.sourceTimingUnavailableFrameCount
         export.sourceGateOpenCount = snapshot.sourceGateOpenCount
         export.sourceGateCloseCount = snapshot.sourceGateCloseCount
+        export.maximumContinuousSourceForwardedFrameCount =
+            snapshot.maximumContinuousSourceForwardedFrameCount
+        export.lastSourceGateCloseReason =
+            snapshot.lastSourceGateCloseReason?.rawValue
         export.fallbackCount = snapshot.fallbackCount
         export.fallbackReason = snapshot.fallbackReason?.rawValue
         export.lastFallbackReason = snapshot.lastFallbackReason?.rawValue

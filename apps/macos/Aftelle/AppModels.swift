@@ -1047,6 +1047,8 @@ struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var sourceTimingUnavailableFrameCount: UInt64 = 0
     var sourceGateOpenCount: UInt64 = 0
     var sourceGateCloseCount: UInt64 = 0
+    var maximumContinuousSourceForwardedFrameCount: UInt64 = 0
+    var lastSourceGateCloseReason: String?
     var fallbackCount: UInt64 = 0
     var fallbackReason: String?
     var lastFallbackReason: String?
