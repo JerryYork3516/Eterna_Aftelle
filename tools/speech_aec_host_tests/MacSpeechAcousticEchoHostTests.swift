@@ -85,6 +85,8 @@ private struct MacSpeechAcousticEchoHostTests {
         testArbitraryCaptureCallbackFraming()
         testFIFORemainderIsBounded()
         testRenderAlignedDelay()
+        testHostTimeAlignedDelayAndDiagnostics()
+        testTimingHistoryIsBoundedAndReset()
         testRenderConversionFailureFallback()
         testRouteRebuildRecovery()
         testFallbackAndPlaybackRecovery()
@@ -212,6 +214,78 @@ private struct MacSpeechAcousticEchoHostTests {
                "render-aligned delay excludes future scheduled audio")
         expect(host.snapshot().delayMilliseconds == 32,
                "measured delay is exposed")
+    }
+
+    private static func testHostTimeAlignedDelayAndDiagnostics() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.updateDelay(
+            outputPresentationLatencySeconds: 0.020,
+            capturePresentationLatencySeconds: 0.010
+        )
+        host.playbackStarted()
+        let frame = (0 ..< 480).map {
+            sin(Float($0) * 0.07) * 0.25
+        }
+        host.processRender(
+            frame,
+            hostTimeNanoseconds: 1_000_000_000
+        )
+        _ = host.processCapture(
+            frame,
+            hostTimeNanoseconds: 1_080_000_000
+        )
+
+        let snapshot = host.snapshot()
+        expect(snapshot.presentationDelayMilliseconds == 30,
+               "presentation delay remains available as a baseline")
+        expect(snapshot.alignedDelayMilliseconds == 80,
+               "matched host times establish the acoustic delay")
+        expect(snapshot.delayMilliseconds == 80,
+               "host-time alignment drives the AEC delay")
+        expect(backend.recordedDelays.last == 80,
+               "aligned delay reaches the backend")
+        expect(snapshot.renderCaptureCorrelation > 0.99,
+               "render/capture correlation is diagnosed")
+        expect(snapshot.rawCaptureRMS > snapshot.processedCaptureRMS,
+               "raw and processed capture energy are diagnosed")
+        expect(snapshot.residualRenderCorrelation > 0.99,
+               "residual render correlation is diagnosed")
+
+        host.updateDelay(
+            outputPresentationLatencySeconds: 0.001,
+            capturePresentationLatencySeconds: 0.001
+        )
+        expect(host.snapshot().delayMilliseconds == 80,
+               "presentation updates do not overwrite aligned delay")
+    }
+
+    private static func testTimingHistoryIsBoundedAndReset() {
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: FakeAECBackend()
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let frame = (0 ..< 480).map {
+            sin(Float($0) * 0.04) * 0.2
+        }
+        for index in 0 ..< 80 {
+            host.processRender(
+                frame,
+                hostTimeNanoseconds:
+                    1_000_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        expect(host.snapshot().renderTimingFrameCount == 50,
+               "timing history is bounded to the 500 ms delay window")
+        host.playbackCompleted()
+        expect(host.snapshot().renderTimingFrameCount == 0,
+               "playback completion clears old render timing")
     }
 
     private static func testRenderConversionFailureFallback() {

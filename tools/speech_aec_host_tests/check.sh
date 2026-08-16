@@ -38,6 +38,11 @@ rg -q 'playbackCompleted\(\)' "$aec_host" "$capture"
 rg -q 'playerNode\.installTap' "$capture"
 rg -q 'processRenderedOutput' "$capture"
 rg -q 'renderConversionFailed' "$aec_host" "$capture"
+test "$(rg -c 'hostTimeNanoseconds: Self\.hostTimeNanoseconds\(when\)' "$capture")" -eq 2
+rg -q 'AVAudioTime\.seconds\(forHostTime:' "$capture"
+rg -q 'renderTimingHistory' "$aec_host"
+rg -q 'renderCaptureCorrelation' "$aec_host"
+rg -q 'residualRenderCorrelation' "$aec_host"
 if rg -q 'mainMixerNode\.installTap' "$capture"; then
   echo "speech_aec_render_source=FAIL"
   exit 1

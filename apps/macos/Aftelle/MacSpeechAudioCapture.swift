@@ -465,9 +465,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     for: inputFormat.sampleRate
                 ),
                 format: inputFormat
-            ) { [weak self] buffer, _ in
+            ) { [weak self] buffer, when in
                 self?.processCapture(
                     buffer,
+                    hostTimeNanoseconds: Self.hostTimeNanoseconds(when),
                     generation: generation,
                     frameBuffer: frameBuffer
                 )
@@ -730,6 +731,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     private func processCapture(
         _ buffer: AVAudioPCMBuffer,
+        hostTimeNanoseconds: UInt64?,
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) {
@@ -742,7 +744,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
               let inputSamples = try? inputConverter.convert(buffer) else {
             return
         }
-        let cleanedSamples = acousticEchoHost.processCapture(inputSamples)
+        let cleanedSamples = acousticEchoHost.processCapture(
+            inputSamples,
+            hostTimeNanoseconds: hostTimeNanoseconds
+        )
         if !cleanedSamples.isEmpty,
            let cleanedBuffer = try? MacSpeechFloatMono48kConverter.makeBuffer(
             samples: cleanedSamples
@@ -805,8 +810,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 MacSpeechAcousticEchoHost.frameSampleCount
             ),
             format: format
-        ) { [weak self] buffer, _ in
-            self?.processRenderedOutput(buffer)
+        ) { [weak self] buffer, when in
+            self?.processRenderedOutput(
+                buffer,
+                hostTimeNanoseconds: Self.hostTimeNanoseconds(when)
+            )
         }
         isRenderReferenceTapInstalled = true
     }
@@ -819,14 +827,20 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         isRenderReferenceTapInstalled = false
     }
 
-    private func processRenderedOutput(_ buffer: AVAudioPCMBuffer) {
+    private func processRenderedOutput(
+        _ buffer: AVAudioPCMBuffer,
+        hostTimeNanoseconds: UInt64?
+    ) {
         let converter = renderConverterLock.withLock { renderAECConverter }
         guard let converter else {
             acousticEchoHost.renderConversionFailed()
             return
         }
         do {
-            acousticEchoHost.processRender(try converter.convert(buffer))
+            acousticEchoHost.processRender(
+                try converter.convert(buffer),
+                hostTimeNanoseconds: hostTimeNanoseconds
+            )
         } catch {
             acousticEchoHost.renderConversionFailed()
         }
@@ -840,6 +854,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             capturePresentationLatencySeconds:
                 engine.inputNode.presentationLatency
         )
+    }
+
+    private static func hostTimeNanoseconds(_ time: AVAudioTime) -> UInt64? {
+        guard time.isHostTimeValid else { return nil }
+        let seconds = AVAudioTime.seconds(forHostTime: time.hostTime)
+        guard seconds.isFinite, seconds >= 0 else { return nil }
+        return UInt64((seconds * 1_000_000_000).rounded())
     }
 
     private func unmuteInput() {
