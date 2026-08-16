@@ -103,6 +103,7 @@ FAIL:后台主动运行、复杂调度、无界 planner / 自主工具系统、�
 - [ ] Qwen Omni Adapter 仅保留为实验 / 参考实现,未作为正式默认主链。
 - [ ] Apple 本地 ASR / TTS 未作为正式链。
 - [ ] AEC / ASR / TTS / Host 未拥有 Runtime、Session、Memory 或 Interrupt decision。
+- [ ] TTS 未改写 RuntimeCore canonical response text，provider `voice_id` 未进入 DR。
 - [ ] 7.5.10 保留 AEC3 / Bridge / Host / 诊断基础,未通过的外置输出插话、self-interrupt、double-talk、source gate / near-end、alignment、AEC 真机矩阵与 30 分钟稳定性统一迁移至 7.5.11-A6。
 - [ ] UI / Host / Adapter 未直连 ASR / LLM / TTS Provider,未直接写 Memory 或执行 Tool。
 - [ ] 未实现 always-on 麦克风或未授权后台监听。

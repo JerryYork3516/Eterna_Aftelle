@@ -861,6 +861,8 @@ final class OpenAICompatibleAdapter {
 
 public final class ProviderRouter {
     private let adapter: OpenAICompatibleAdapter
+    private nonisolated let asrProvider: (any ASRProvider)?
+    private nonisolated let ttsProvider: (any TTSProvider)?
     private nonisolated let nativeSpeechProvider: NativeSpeechProvider?
     private var textProfile: ProviderProfile?
     private var nativeSpeechProfile: NativeSpeechProviderProfile?
@@ -869,6 +871,8 @@ public final class ProviderRouter {
         self.init(
             credentialReader: UnavailableProviderCredentialReader(),
             transport: URLSessionProviderHTTPTransport(),
+            asrProvider: nil,
+            ttsProvider: nil,
             nativeSpeechProvider: nil
         )
     }
@@ -876,12 +880,16 @@ public final class ProviderRouter {
     init(
         credentialReader: ProviderCredentialReading,
         transport: ProviderHTTPTransport = URLSessionProviderHTTPTransport(),
+        asrProvider: (any ASRProvider)? = nil,
+        ttsProvider: (any TTSProvider)? = nil,
         nativeSpeechProvider: NativeSpeechProvider? = nil
     ) {
         adapter = OpenAICompatibleAdapter(
             credentialReader: credentialReader,
             transport: transport
         )
+        self.asrProvider = asrProvider
+        self.ttsProvider = ttsProvider
         self.nativeSpeechProvider = nativeSpeechProvider
     }
 
@@ -934,6 +942,69 @@ public final class ProviderRouter {
             expressionMapping: expressionMapping,
             narrativeMemoryProjection: narrativeMemoryProjection
         )
+    }
+
+    func startASR(request: ASRStartRequest) async throws {
+        guard let asrProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        try await asrProvider.start(request: request)
+    }
+
+    nonisolated func sendASRAudio(_ input: ASRAudioInput) async throws {
+        guard let asrProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        try await asrProvider.send(input)
+    }
+
+    func receiveASREvent(generation: UInt64) async throws -> ASREvent {
+        guard let asrProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        return try await asrProvider.receive(generation: generation)
+    }
+
+    func cancelASR(generation: UInt64) async throws {
+        guard let asrProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        try await asrProvider.cancel(generation: generation)
+    }
+
+    func closeASR(generation: UInt64) async throws {
+        guard let asrProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        try await asrProvider.close(generation: generation)
+    }
+
+    func startTTS(request: TTSSynthesisRequest) async throws {
+        guard let ttsProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        try await ttsProvider.start(request: request)
+    }
+
+    func receiveTTSEvent(generation: UInt64) async throws -> TTSEvent {
+        guard let ttsProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        return try await ttsProvider.receive(generation: generation)
+    }
+
+    func cancelTTS(generation: UInt64) async throws {
+        guard let ttsProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        try await ttsProvider.cancel(generation: generation)
+    }
+
+    func closeTTS(generation: UInt64) async throws {
+        guard let ttsProvider else {
+            throw SpeechRouteError.unavailable
+        }
+        try await ttsProvider.close(generation: generation)
     }
 
     func startNativeSpeech(

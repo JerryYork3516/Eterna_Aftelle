@@ -1648,7 +1648,10 @@ public final class OrchestrationKernel {
         inputText: String,
         interactionID: UUID? = nil
     ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
-        await runtimeCore.testResidentReply(inputText: inputText, interactionID: interactionID)
+        await runtimeCore.requestResidentReply(
+            inputText: inputText,
+            interactionID: interactionID
+        )
     }
 
     public func cancelCurrentStep() {

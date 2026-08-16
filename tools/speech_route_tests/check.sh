@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+build_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-speech-route.XXXXXX")"
+trap 'rm -rf "$build_dir"' EXIT
+
+runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
+swiftc \
+  -D DEBUG \
+  -parse-as-library \
+  -warn-concurrency \
+  "${runtime_sources[@]}" \
+  "$repo_root/tools/speech_route_tests/SpeechRouteContractTests.swift" \
+  -o "$build_dir/speech_route_contract_tests"
+
+fixture_path="$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident"
+if [ ! -f "$fixture_path" ]; then
+  echo "speech_route_fixed_fixture=BLOCKED"
+  exit 1
+fi
+
+runtime_home="$build_dir/runtime-home"
+mkdir -p "$runtime_home"
+CFFIXED_USER_HOME="$runtime_home" \
+  "$build_dir/speech_route_contract_tests" "$fixture_path"
+
+contract="$repo_root/apps/macos/RuntimeCore/SpeechRouteProvider.swift"
+if rg -n 'Qwen|voiceID|voice_id|LanguageModelProvider' "$contract"; then
+  echo "speech_route_provider_neutrality=FAIL"
+  exit 1
+fi
+
+if rg -n 'LanguageModelProvider' \
+  "$repo_root/apps/macos/RuntimeCore" \
+  -g '*.swift'; then
+  echo "speech_route_duplicate_llm=FAIL"
+  exit 1
+fi
+
+for operation in startASR sendASRAudio receiveASREvent startTTS receiveTTSEvent; do
+  rg -q "providerRouter\.${operation}" \
+    "$repo_root/apps/macos/RuntimeCore/ExecutionEngine.swift"
+done
+
+rg -q 'executionEngine\.requestResidentReply' \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+rg -q 'executionEngine\.startTTS' \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+
+echo "speech_route_provider_neutrality=PASS"
+echo "speech_route_duplicate_llm=PASS"
+echo "speech_route_execution_gate=PASS"

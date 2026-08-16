@@ -264,6 +264,8 @@ Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS
 
 其中 Host 平台事实经 App Controller / Orchestration 进入 RuntimeCore，ASR / 现有 LLM / TTS 仍由统一 ProviderRouter / ProviderAdapter 路由，输出通过 Runtime standard events 投影到播放、字幕、粒子与现有对话历史。
 
+7.5.11-A1 在 RuntimeCore 内以 `ASRProvider` / `TTSProvider` 两个窄协议固定厂商无关边界：ASR 只消费 `.aec3Processed` PCM 并产生 transcript / activity / lifecycle 事实；final transcript 必须调用 RuntimeCore `requestResidentReply`，该入口继续走现有 ExecutionEngine / ProviderRouter 文本 LLM 路由。TTS 只消费该入口返回的 canonical response text 和 provider-neutral VoiceProfile / emotion / pace / style，输出 streaming PCM 及 started / done / cancel / error。两类 Adapter 都不持有 Session / Memory / Tool / Permission / generation decision，不得改写回答文本；provider `voice_id` 不进入 DR。
+
 实验 / 参考链路可继续保留 `NativeSpeechProvider` / Qwen Omni Adapter，但不得成为正式默认选路。
 
 ### 3.10.2 AEC 保留资产与迁移边界
@@ -337,7 +339,7 @@ macOS Audio Host → App Controller → Orchestration Kernel → RuntimeCore Pro
 → Runtime standard events → playback / subtitle / ParticleCore / Session / Memory
 ```
 
-ASR、现有 RuntimeCore LLM、TTS 分段独立可替换，并复用同一 Runtime owner 和 Session / Memory 语义。Qwen Omni 端到端 STS 只保留为实验 / 参考选路。Host 仅处理平台音频资源与状态展示；AEC / Host 不拥有 Runtime Interrupt 决策。
+ASR、现有 RuntimeCore LLM、TTS 分段独立可替换，并复用同一 Runtime owner 和 Session / Memory 语义。Qwen Omni 端到端 STS 只保留为实验 / 参考选路。Host 仅处理平台音频资源与状态展示；AEC / ASR / TTS / Host 不拥有 Runtime、Session、Memory 或 Interrupt decision。
 
 **双居民链路:**
 ```

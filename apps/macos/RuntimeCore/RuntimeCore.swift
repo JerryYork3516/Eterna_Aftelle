@@ -43,6 +43,20 @@ public struct RuntimeCancellationState {
     public static let none = RuntimeCancellationState()
 }
 
+enum SpeechRouteTurnError: Error, Equatable {
+    case invalidASREvent
+    case emptyTranscript
+    case staleGeneration
+    case runtime(ProviderRequestError)
+    case tts(SpeechRouteError)
+}
+
+struct SpeechRouteTurnResult: Equatable {
+    let generation: UInt64
+    let reply: RuntimeResidentReply
+    let ttsRequest: TTSSynthesisRequest
+}
+
 public struct AvatarState {
     public var residentID: String
     public var displayName: String
@@ -1236,6 +1250,7 @@ public final class RuntimeCore {
     private(set) var currentNarrativeMemoryProjection:
         RuntimeNarrativeMemoryProjection?
     private var activeExpressionRequestID: UUID?
+    private var speechRouteGeneration: UInt64 = 0
     private let nativeSpeechInteractionGate =
         RuntimeNativeSpeechInteractionGate()
     private nonisolated let nativeSpeechInputGate = NativeSpeechInputGate()
@@ -1310,6 +1325,198 @@ public final class RuntimeCore {
             executionEngine: ExecutionEngine(providerRouter: router),
             providerRouter: router
         )
+    }
+
+    func startSpeechRouteASR(
+        locale: String? = nil
+    ) async -> Result<UInt64, SpeechRouteError> {
+        activeExpressionRequestID = nil
+        speechRouteGeneration &+= 1
+        let generation = speechRouteGeneration
+        do {
+            try await executionEngine.startASR(
+                request: ASRStartRequest(
+                    generation: generation,
+                    locale: locale
+                )
+            )
+            return .success(generation)
+        } catch let error as SpeechRouteError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
+    func sendSpeechRouteASRAudio(
+        _ input: ASRAudioInput
+    ) async throws {
+        guard input.generation == speechRouteGeneration else {
+            throw SpeechRouteError.staleGeneration
+        }
+        try await executionEngine.sendASRAudio(input)
+    }
+
+    func receiveSpeechRouteASREvent(
+        generation: UInt64
+    ) async throws -> ASREvent {
+        guard generation == speechRouteGeneration else {
+            return ASREvent(
+                generation: generation,
+                kind: .staleGeneration
+            )
+        }
+        let event = try await executionEngine.receiveASREvent(
+            generation: generation
+        )
+        guard event.generation == speechRouteGeneration else {
+            return ASREvent(
+                generation: event.generation,
+                kind: .staleGeneration
+            )
+        }
+        return event
+    }
+
+    func submitSpeechRouteASRFinal(
+        _ event: ASREvent,
+        voiceProfile: SpeechVoiceProfile,
+        emotion: String? = nil,
+        pace: Double = 1,
+        style: String? = nil,
+        interactionID: UUID? = nil
+    ) async -> Result<SpeechRouteTurnResult, SpeechRouteTurnError> {
+        guard event.generation == speechRouteGeneration else {
+            return .failure(.staleGeneration)
+        }
+        guard case .finalTranscript(let transcript) = event.kind else {
+            return .failure(.invalidASREvent)
+        }
+        let inputText = transcript.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !inputText.isEmpty else {
+            return .failure(.emptyTranscript)
+        }
+
+        let result = await requestResidentReply(
+            inputText: inputText,
+            interactionID: interactionID
+        )
+        guard event.generation == speechRouteGeneration else {
+            return .failure(.staleGeneration)
+        }
+        switch result {
+        case .failure(let error):
+            return .failure(.runtime(error))
+        case .success(let reply):
+            let request = TTSSynthesisRequest(
+                generation: event.generation,
+                canonicalResponseText: reply.replyText,
+                voiceProfile: voiceProfile,
+                emotion: emotion,
+                pace: pace,
+                style: style
+            )
+            do {
+                try await executionEngine.startTTS(request: request)
+                return .success(SpeechRouteTurnResult(
+                    generation: event.generation,
+                    reply: reply,
+                    ttsRequest: request
+                ))
+            } catch let error as SpeechRouteError {
+                return .failure(.tts(error))
+            } catch {
+                return .failure(.tts(.transportFailure))
+            }
+        }
+    }
+
+    func receiveSpeechRouteTTSEvent(
+        generation: UInt64
+    ) async throws -> TTSEvent {
+        guard generation == speechRouteGeneration else {
+            throw SpeechRouteError.staleGeneration
+        }
+        let event = try await executionEngine.receiveTTSEvent(
+            generation: generation
+        )
+        guard event.generation == speechRouteGeneration else {
+            throw SpeechRouteError.staleGeneration
+        }
+        return event
+    }
+
+    func cancelSpeechRoute(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        guard generation == speechRouteGeneration else {
+            return .failure(.staleGeneration)
+        }
+        activeExpressionRequestID = nil
+        speechRouteGeneration &+= 1
+        let providerError = await stopSpeechRouteProviders(
+            generation: generation,
+            close: false
+        )
+        if let providerError {
+            return .failure(providerError)
+        }
+        return .success(())
+    }
+
+    func closeSpeechRoute(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        guard generation == speechRouteGeneration else {
+            return .failure(.staleGeneration)
+        }
+        activeExpressionRequestID = nil
+        speechRouteGeneration &+= 1
+        let providerError = await stopSpeechRouteProviders(
+            generation: generation,
+            close: true
+        )
+        if let providerError {
+            return .failure(providerError)
+        }
+        return .success(())
+    }
+
+    private func stopSpeechRouteProviders(
+        generation: UInt64,
+        close: Bool
+    ) async -> SpeechRouteError? {
+        var firstError: SpeechRouteError?
+        do {
+            if close {
+                try await executionEngine.closeASR(generation: generation)
+            } else {
+                try await executionEngine.cancelASR(generation: generation)
+            }
+        } catch let error as SpeechRouteError {
+            if error != .unavailable {
+                firstError = error
+            }
+        } catch {
+            firstError = .transportFailure
+        }
+
+        do {
+            if close {
+                try await executionEngine.closeTTS(generation: generation)
+            } else {
+                try await executionEngine.cancelTTS(generation: generation)
+            }
+        } catch let error as SpeechRouteError {
+            if error != .unavailable {
+                firstError = firstError ?? error
+            }
+        } catch {
+            firstError = firstError ?? .transportFailure
+        }
+        return firstError
     }
 
     func attachNativeSpeechDiagnosticBuffer(
@@ -5136,7 +5343,7 @@ public final class RuntimeCore {
         }
     }
 
-    func testResidentReply(
+    func requestResidentReply(
         inputText: String,
         interactionID: UUID? = nil
     ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
@@ -5264,7 +5471,7 @@ public final class RuntimeCore {
         let expressionRequestID = UUID()
         activeExpressionRequestID = expressionRequestID
         let expressionMappingAtStart = currentVisualExpressionMapping
-        let result = await executionEngine.testResidentReply(
+        let result = await executionEngine.requestResidentReply(
             context: context,
             expressionMapping: expressionMappingAtStart,
             narrativeMemoryProjection:
@@ -5406,6 +5613,16 @@ public final class RuntimeCore {
         )
         #endif
         return result
+    }
+
+    func testResidentReply(
+        inputText: String,
+        interactionID: UUID? = nil
+    ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
+        await requestResidentReply(
+            inputText: inputText,
+            interactionID: interactionID
+        )
     }
 
     @discardableResult

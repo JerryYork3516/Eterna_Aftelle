@@ -29,6 +29,42 @@ public final class ExecutionEngine {
         providerRouter.configuredNativeSpeechProfileID()
     }
 
+    func startASR(request: ASRStartRequest) async throws {
+        try await providerRouter.startASR(request: request)
+    }
+
+    nonisolated func sendASRAudio(_ input: ASRAudioInput) async throws {
+        try await providerRouter.sendASRAudio(input)
+    }
+
+    func receiveASREvent(generation: UInt64) async throws -> ASREvent {
+        try await providerRouter.receiveASREvent(generation: generation)
+    }
+
+    func cancelASR(generation: UInt64) async throws {
+        try await providerRouter.cancelASR(generation: generation)
+    }
+
+    func closeASR(generation: UInt64) async throws {
+        try await providerRouter.closeASR(generation: generation)
+    }
+
+    func startTTS(request: TTSSynthesisRequest) async throws {
+        try await providerRouter.startTTS(request: request)
+    }
+
+    func receiveTTSEvent(generation: UInt64) async throws -> TTSEvent {
+        try await providerRouter.receiveTTSEvent(generation: generation)
+    }
+
+    func cancelTTS(generation: UInt64) async throws {
+        try await providerRouter.cancelTTS(generation: generation)
+    }
+
+    func closeTTS(generation: UInt64) async throws {
+        try await providerRouter.closeTTS(generation: generation)
+    }
+
     func startNativeSpeech(
         interaction: NativeSpeechInteraction,
         contextProjection: RealtimeSpeechContextProjection,
@@ -97,7 +133,7 @@ public final class ExecutionEngine {
         )
     }
 
-    func testResidentReply(
+    func requestResidentReply(
         context: ResidentDialogueContext,
         expressionMapping: RuntimeVisualExpressionMapping,
         narrativeMemoryProjection:
@@ -121,6 +157,19 @@ public final class ExecutionEngine {
                     reply.narrativeMemoryCandidates
             )
         }
+    }
+
+    func testResidentReply(
+        context: ResidentDialogueContext,
+        expressionMapping: RuntimeVisualExpressionMapping,
+        narrativeMemoryProjection:
+            RuntimeNarrativeMemoryProjection?
+    ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
+        await requestResidentReply(
+            context: context,
+            expressionMapping: expressionMapping,
+            narrativeMemoryProjection: narrativeMemoryProjection
+        )
     }
 
     public func step(request: RuntimeStepRequest, cancellationState: RuntimeCancellationState = .none) -> RuntimeStepResponse {

@@ -278,6 +278,16 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 - AEC / ASR / TTS / Host 不拥有 Runtime、Session、Memory 或 Interrupt decision；
 - 不修改 DR schema、Store schema 或 Runtime ownership。
 
+**7.5.11-A1｜Provider-neutral Speech Route**
+
+- ASR 输入仅接受 AEC3 处理后 PCM，输出 partial / final / speech activity / cancel / error / stale generation；ASR 不生成居民回答。
+- ASR final 只能进入 RuntimeCore `requestResidentReply`，复用现有十三层、Session、Memory、Tool / Permission、ProviderRouter 和 Dialogue History 持久化。
+- 现有 RuntimeCore LLM 路由保持唯一；本节点不新增 `LanguageModelProvider` 或语音专用 LLM 抽象。
+- TTS 输入为 canonical response text 和 provider-neutral VoiceProfile / emotion / pace / style，输出 started / streaming PCM / done / cancel / error；TTS 不得改写 canonical response text。
+- provider `voice_id` 只能由未来 Adapter 映射，不进入 DR；A1 不实现任何厂商 Adapter。
+- generation 验证、取消和过期事件拒绝由 RuntimeCore 统一决策；ProviderRouter / Adapter 只转发。
+- A6 的 near-end / source-gate / double-talk / 外置设备与真机声学验收不进入 A1。
+
 注意：ASR、现有 LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
 
 注意：打断机制必须复用 7.1.10 的统一中断语义，同时取消本地播放、服务端生成、字幕、状态和未完成任务。
