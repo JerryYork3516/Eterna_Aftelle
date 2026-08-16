@@ -43,6 +43,11 @@ rg -q 'AVAudioTime\.seconds\(forHostTime:' "$capture"
 rg -q 'renderTimingHistory' "$aec_host"
 rg -q 'renderCaptureCorrelation' "$aec_host"
 rg -q 'residualRenderCorrelation' "$aec_host"
+rg -q 'case echoOnly = "echo_only"' "$aec_host"
+rg -q 'case nearEndSpeech = "near_end_speech"' "$aec_host"
+rg -q 'case doubleTalk = "double_talk"' "$aec_host"
+rg -q 'sourceGatePreRollFrameCapacity = 15' "$aec_host"
+rg -q 'classifyCapture' "$aec_host"
 if rg -q 'mainMixerNode\.installTap' "$capture"; then
   echo "speech_aec_render_source=FAIL"
   exit 1
@@ -70,7 +75,7 @@ test "$(rg -c '/\* WebRTCAEC3\.xcframework( in Frameworks)? \*/' "$project")" -e
 rg -q 'SWIFT_OBJC_BRIDGING_HEADER = "Aftelle-Bridging-Header.h"' "$project"
 echo "speech_aec_target_membership=PASS"
 
-if rg -q 'RuntimeCore|ProviderRouter|Qwen|SessionStore|MemoryController|Keychain|transcript|pcm16Bytes' "$aec_host"; then
+if rg -q 'RuntimeCore|ProviderRouter|Qwen|SessionStore|MemoryController|Keychain|transcript|pcm16Bytes|response\.cancel|Interrupt' "$aec_host"; then
   echo "speech_aec_host_ownership_privacy=FAIL"
   exit 1
 fi

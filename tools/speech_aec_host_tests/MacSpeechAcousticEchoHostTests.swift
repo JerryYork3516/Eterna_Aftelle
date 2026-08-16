@@ -12,6 +12,7 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
     private var active = true
     private var erlDecibels = 12.0
     private var erleDecibels = 24.0
+    private var captureOutput: [Float]?
 
     func configure() throws {
         if let configureError { throw configureError }
@@ -31,8 +32,10 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
         guard samples.count == MacSpeechAcousticEchoHost.frameSampleCount else {
             throw MacSpeechAECBackendError.captureFailed
         }
-        lock.withLock { operations.append("capture") }
-        return samples.map { $0 * 0.5 }
+        return lock.withLock {
+            operations.append("capture")
+            return captureOutput ?? samples.map { $0 * 0.5 }
+        }
     }
 
     func setDelay(milliseconds: Int) throws {
@@ -69,6 +72,10 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
         }
     }
 
+    func setCaptureOutput(_ samples: [Float]?) {
+        lock.withLock { captureOutput = samples }
+    }
+
     var recordedOperations: [String] { lock.withLock { operations } }
     var recordedDelays: [Int] { lock.withLock { delays } }
     var resetCount: Int { lock.withLock { resets } }
@@ -87,6 +94,10 @@ private struct MacSpeechAcousticEchoHostTests {
         testRenderAlignedDelay()
         testHostTimeAlignedDelayAndDiagnostics()
         testTimingHistoryIsBoundedAndReset()
+        testEchoOnlySourceGate()
+        testNearEndSourceGateAndPreRoll()
+        testDoubleTalkSourceGate()
+        testUncertainSourceGateIsBounded()
         testRenderConversionFailureFallback()
         testRouteRebuildRecovery()
         testFallbackAndPlaybackRecovery()
@@ -288,6 +299,161 @@ private struct MacSpeechAcousticEchoHostTests {
                "playback completion clears old render timing")
     }
 
+    private static func testEchoOnlySourceGate() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 1, amplitude: 0.3)
+        host.processRender(render, hostTimeNanoseconds: 1_000_000_000)
+
+        let output = host.processCapture(
+            render,
+            hostTimeNanoseconds: 1_080_000_000
+        )
+        let snapshot = host.snapshot()
+        expect(output.isEmpty,
+               "aligned resident-only echo is not forwarded")
+        expect(snapshot.inputClassification == .echoOnly,
+               "resident-only echo is classified from PCM correlation")
+        expect(!snapshot.sourceGateOpen,
+               "resident-only echo keeps the source gate closed")
+        expect(snapshot.sourceGatePreRollFrameCount == 0,
+               "resident-only echo is not retained as user pre-roll")
+        expect(snapshot.mode == .webRTCAEC3,
+               "source gating does not replace a healthy AEC backend")
+    }
+
+    private static func testNearEndSourceGateAndPreRoll() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 2, amplitude: 0.3)
+        let user = testSignal(seed: 3, amplitude: 0.25)
+        host.processRender(render, hostTimeNanoseconds: 2_000_000_000)
+        backend.setCaptureOutput(user)
+
+        for index in 0 ..< 2 {
+            let output = host.processCapture(
+                user,
+                hostTimeNanoseconds:
+                    2_080_000_000 + UInt64(index * 10_000_000)
+            )
+            expect(output.isEmpty,
+                   "near-end speech waits for bounded confirmation")
+        }
+        let confirmed = host.processCapture(
+            user,
+            hostTimeNanoseconds: 2_100_000_000
+        )
+        var snapshot = host.snapshot()
+        expect(confirmed.count == 3 * 480,
+               "confirmed near-end speech releases its pre-roll")
+        expect(snapshot.inputClassification == .nearEndSpeech,
+               "independent near-end PCM is classified as user speech")
+        expect(snapshot.sourceGateOpen,
+               "confirmed near-end speech opens the source gate")
+        expect(snapshot.sourceGatePreRollFrameCount == 0,
+               "released near-end pre-roll is drained")
+        expect(host.processCapture(
+            user,
+            hostTimeNanoseconds: 2_110_000_000
+        ).count == 480, "open source gate forwards near-end speech")
+
+        backend.setCaptureOutput(nil)
+        expect(host.processCapture(
+            render,
+            hostTimeNanoseconds: 2_120_000_000
+        ).isEmpty, "resident echo closes an open source gate")
+        snapshot = host.snapshot()
+        expect(snapshot.inputClassification == .echoOnly
+                   && !snapshot.sourceGateOpen,
+               "source gate returns to resident-only suppression")
+    }
+
+    private static func testDoubleTalkSourceGate() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 4, amplitude: 0.35)
+        let user = testSignal(seed: 5, amplitude: 0.2)
+        let mixedCapture = zip(render, user).map { sample in
+            sample.0 * 0.8 + sample.1
+        }
+        host.processRender(render, hostTimeNanoseconds: 3_000_000_000)
+        backend.setCaptureOutput(user)
+
+        var output: [Float] = []
+        for index in 0 ..< 3 {
+            output = host.processCapture(
+                mixedCapture,
+                hostTimeNanoseconds:
+                    3_090_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        let snapshot = host.snapshot()
+        expect(output.count == 3 * 480,
+               "confirmed double-talk releases near-end pre-roll")
+        expect(snapshot.inputClassification == .doubleTalk,
+               "echo plus preserved near-end PCM is double-talk")
+        expect(snapshot.sourceGateOpen,
+               "double-talk remains eligible for normal barge-in")
+    }
+
+    private static func testUncertainSourceGateIsBounded() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 6, amplitude: 0.3)
+        let capture = testSignal(seed: 7, amplitude: 0.2)
+        host.processRender(render, hostTimeNanoseconds: 4_000_000_000)
+        backend.setCaptureOutput(capture)
+
+        for _ in 0 ..< 25 {
+            expect(host.processCapture(capture).isEmpty,
+                   "unconfirmed capture is not forwarded during playback")
+        }
+        var snapshot = host.snapshot()
+        expect(snapshot.inputClassification == .uncertain,
+               "missing alignment evidence remains uncertain")
+        expect(snapshot.sourceGatePreRollFrameCount == 15,
+               "uncertain pre-roll is bounded to 150 ms")
+        expect(!snapshot.sourceGateOpen,
+               "uncertain capture never opens the source gate")
+
+        backend.setCaptureOutput(nil)
+        expect(host.processCapture(
+            render,
+            hostTimeNanoseconds: 4_080_000_000
+        ).isEmpty, "resident echo replaces uncertain capture")
+        snapshot = host.snapshot()
+        expect(snapshot.inputClassification == .echoOnly
+                   && snapshot.sourceGatePreRollFrameCount == 0,
+               "resident echo discards unconfirmed pre-roll")
+
+        host.playbackCompleted()
+        snapshot = host.snapshot()
+        expect(snapshot.sourceGatePreRollFrameCount == 0,
+               "playback completion discards uncertain pre-roll")
+        expect(host.processCapture(capture).count == 480,
+               "capture resumes normally outside resident playback")
+    }
+
     private static func testRenderConversionFailureFallback() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
@@ -371,13 +537,16 @@ private struct MacSpeechAcousticEchoHostTests {
                "residual echo fixture configures AEC")
         host.playbackStarted()
         backend.setMetrics(erle: 6)
-        expect(host.processCapture([Float](repeating: 1, count: 480)).count == 480,
-               "healthy ERLE keeps full-duplex capture")
+        expect(host.processCapture([Float](repeating: 1, count: 480)).isEmpty,
+               "unaligned playback capture remains source-gated")
+        expect(host.snapshot().mode == .webRTCAEC3,
+               "healthy ERLE keeps the AEC backend active")
 
         backend.setMetrics(erle: 0.2)
         for _ in 0 ..< 4 {
-            expect(host.processCapture([Float](repeating: 1, count: 480)).count == 480,
-                   "brief ERLE dip does not gate capture")
+            _ = host.processCapture([Float](repeating: 1, count: 480))
+            expect(host.snapshot().mode == .webRTCAEC3,
+                   "brief ERLE dip does not enter fallback")
         }
         expect(host.processCapture([Float](repeating: 1, count: 480)).isEmpty,
                "sustained residual echo enters safe fallback")
@@ -519,6 +688,15 @@ private struct MacSpeechAcousticEchoHostTests {
                    "Qwen wire packets remain 24 kHz PCM16 20 ms")
         } catch {
             fatalError("FAILED: 24/48 kHz conversion: \(error)")
+        }
+    }
+
+    private static func testSignal(seed: UInt32, amplitude: Float) -> [Float] {
+        var state = seed
+        return (0 ..< 480).map { _ in
+            state = state &* 1_664_525 &+ 1_013_904_223
+            let unit = Float(state >> 8) / Float(0x00FF_FFFF)
+            return (unit * 2 - 1) * amplitude
         }
     }
 

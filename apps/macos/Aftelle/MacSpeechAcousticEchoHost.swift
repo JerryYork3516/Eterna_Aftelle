@@ -19,6 +19,13 @@ nonisolated enum MacSpeechAECFallbackReason: String, Sendable, Equatable {
     case requested = "requested"
 }
 
+nonisolated enum MacSpeechAcousticInputClassification: String, Sendable, Equatable {
+    case echoOnly = "echo_only"
+    case nearEndSpeech = "near_end_speech"
+    case doubleTalk = "double_talk"
+    case uncertain
+}
+
 nonisolated struct MacSpeechAECBackendStats: Sendable, Equatable {
     let enabled: Bool
     let active: Bool
@@ -68,6 +75,9 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let processedCaptureRMS: Double
     let renderCaptureCorrelation: Double
     let residualRenderCorrelation: Double
+    let inputClassification: MacSpeechAcousticInputClassification
+    let sourceGateOpen: Bool
+    let sourceGatePreRollFrameCount: Int
     let routeResetCount: UInt64
     let fallbackReason: MacSpeechAECFallbackReason?
     let isPlaybackActive: Bool
@@ -83,6 +93,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         maximumDelayMilliseconds / frameDurationMilliseconds
     private static let minimumTimingCorrelation = 0.35
     private static let minimumTimingRMS = 0.005
+    private static let minimumNearEndRMS = 0.012
+    private static let maximumNearEndCorrelation = 0.25
+    private static let maximumDoubleTalkResidualCorrelation = 0.25
+    private static let requiredSourceGateConfirmationFrames = 3
+    private static let maximumSourceGateUncertainHangoverFrames = 5
+    private static let sourceGatePreRollFrameCapacity = 15
     private static let reliableERLEDecibels = 3.0
     private static let failedERLEDecibels = 1.0
     private static let residualEchoFailureFrameCount: UInt64 = 5
@@ -114,6 +130,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var processedCaptureRMS = 0.0
     private var renderCaptureCorrelation = 0.0
     private var residualRenderCorrelation = 0.0
+    private var inputClassification: MacSpeechAcousticInputClassification =
+        .uncertain
+    private var sourceGateOpen = false
+    private var sourceGatePreRoll: [[Float]] = []
+    private var sourceGateConfirmationFrameCount = 0
+    private var sourceGateUncertainHangoverFrameCount = 0
     private var lastDriftSkew: Int64 = 0
     private var driftTrend = "stable"
     private var routeResetCount: UInt64 = 0
@@ -143,6 +165,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         renderFIFO.reserveCapacity(fifoSampleCapacity)
         captureFIFO.reserveCapacity(fifoSampleCapacity)
         renderTimingHistory.reserveCapacity(Self.timingHistoryFrameCapacity)
+        sourceGatePreRoll.reserveCapacity(
+            Self.sourceGatePreRollFrameCapacity
+        )
     }
 
     @discardableResult
@@ -253,7 +278,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         for: frame,
                         captureHostTimeNanoseconds: frameHostTimeNanoseconds
                     )
-                    if let timingMatch {
+                    if let timingMatch,
+                       timingMatch.correlation
+                           >= Self.minimumTimingCorrelation {
                         updateAlignedDelay(timingMatch.delayMilliseconds)
                     }
                     let processedFrame = try backend.processCapture(frame)
@@ -262,7 +289,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         processedCapture: processedFrame,
                         timingMatch: timingMatch
                     )
-                    output.append(contentsOf: processedFrame)
+                    output.append(contentsOf: gatedCaptureFrame(
+                        processedFrame,
+                        timingMatch: timingMatch
+                    ))
                     captureFrameCount &+= 1
                 }
             } catch FrameProcessingError.fifoOverflow {
@@ -325,6 +355,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             clearTimingHistory()
             alignedDelayMilliseconds = nil
             resetSignalDiagnostics()
+            resetSourceGate()
             poorResidualEchoFrameCount = 0
         }
     }
@@ -335,6 +366,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
             clearTimingHistory()
+            resetSourceGate()
             poorResidualEchoFrameCount = 0
             guard mode == .halfDuplexFallback,
                   fallbackReason != .routeRebuild,
@@ -360,6 +392,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
             clearTimingHistory()
+            resetSourceGate()
             poorResidualEchoFrameCount = 0
         }
     }
@@ -512,7 +545,6 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     ) -> TimingMatch? {
         guard isPlaybackActive,
               let captureHostTimeNanoseconds,
-              captureFrameCount.isMultiple(of: 5),
               signalRMS(captureSamples) >= Self.minimumTimingRMS else {
             return nil
         }
@@ -531,7 +563,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 captureSamples,
                 renderFrame.samples
             )
-            if correlation > (bestMatch?.correlation ?? 0) {
+            if bestMatch == nil
+                || correlation > (bestMatch?.correlation ?? 0) {
                 bestMatch = TimingMatch(
                     renderSamples: renderFrame.samples,
                     delayMilliseconds: delayMilliseconds,
@@ -539,11 +572,109 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 )
             }
         }
-        guard let bestMatch,
-              bestMatch.correlation >= Self.minimumTimingCorrelation else {
-            return nil
-        }
         return bestMatch
+    }
+
+    private func gatedCaptureFrame(
+        _ processedFrame: [Float],
+        timingMatch: TimingMatch?
+    ) -> [Float] {
+        guard isPlaybackActive else {
+            inputClassification = .nearEndSpeech
+            resetSourceGate(keepingClassification: true)
+            return processedFrame
+        }
+
+        inputClassification = classifyCapture(
+            processedFrame,
+            timingMatch: timingMatch
+        )
+        if sourceGateOpen {
+            return captureWhileGateIsOpen(processedFrame)
+        }
+
+        switch inputClassification {
+        case .echoOnly:
+            resetSourceGate(keepingClassification: true)
+            return []
+        case .uncertain:
+            sourceGateConfirmationFrameCount = 0
+            appendSourceGatePreRoll(processedFrame)
+            return []
+        case .nearEndSpeech, .doubleTalk:
+            appendSourceGatePreRoll(processedFrame)
+            sourceGateConfirmationFrameCount += 1
+            guard sourceGateConfirmationFrameCount
+                    >= Self.requiredSourceGateConfirmationFrames else {
+                return []
+            }
+            sourceGateOpen = true
+            sourceGateConfirmationFrameCount = 0
+            sourceGateUncertainHangoverFrameCount = 0
+            return drainSourceGatePreRoll()
+        }
+    }
+
+    private func classifyCapture(
+        _ processedFrame: [Float],
+        timingMatch: TimingMatch?
+    ) -> MacSpeechAcousticInputClassification {
+        guard let timingMatch else { return .uncertain }
+        let cleanRMS = signalRMS(processedFrame)
+        guard cleanRMS >= Self.minimumNearEndRMS else {
+            return timingMatch.correlation
+                    >= Self.minimumTimingCorrelation
+                ? .echoOnly : .uncertain
+        }
+
+        let residualCorrelation = normalizedCorrelation(
+            processedFrame,
+            timingMatch.renderSamples
+        )
+        if timingMatch.correlation >= Self.minimumTimingCorrelation {
+            return residualCorrelation
+                    <= Self.maximumDoubleTalkResidualCorrelation
+                ? .doubleTalk : .echoOnly
+        }
+        if timingMatch.correlation <= Self.maximumNearEndCorrelation,
+           residualCorrelation <= Self.maximumNearEndCorrelation {
+            return .nearEndSpeech
+        }
+        return .uncertain
+    }
+
+    private func captureWhileGateIsOpen(_ processedFrame: [Float]) -> [Float] {
+        switch inputClassification {
+        case .nearEndSpeech, .doubleTalk:
+            sourceGateUncertainHangoverFrameCount = 0
+            return processedFrame
+        case .uncertain:
+            sourceGateUncertainHangoverFrameCount += 1
+            guard sourceGateUncertainHangoverFrameCount
+                    > Self.maximumSourceGateUncertainHangoverFrames else {
+                return processedFrame
+            }
+            resetSourceGate(keepingClassification: true)
+            appendSourceGatePreRoll(processedFrame)
+            return []
+        case .echoOnly:
+            resetSourceGate(keepingClassification: true)
+            return []
+        }
+    }
+
+    private func appendSourceGatePreRoll(_ frame: [Float]) {
+        if sourceGatePreRoll.count
+            == Self.sourceGatePreRollFrameCapacity {
+            sourceGatePreRoll.removeFirst()
+        }
+        sourceGatePreRoll.append(frame)
+    }
+
+    private func drainSourceGatePreRoll() -> [Float] {
+        let output = sourceGatePreRoll.flatMap { $0 }
+        sourceGatePreRoll.removeAll(keepingCapacity: true)
+        return output
     }
 
     private func updateAlignedDelay(_ contentDelayMilliseconds: Double) {
@@ -643,7 +774,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         if shouldLogInitialState || shouldLogPeriodicState {
             lastLoggedCaptureFrameCount = captureFrameCount
             logger.info(
-                "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) active=\(self.backendStats.active, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) presentation_ms=\(self.presentationDelayMilliseconds, privacy: .public) aligned_ms=\(self.alignedDelayMilliseconds ?? -1, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) raw_rms=\(self.rawCaptureRMS, privacy: .public) clean_rms=\(self.processedCaptureRMS, privacy: .public) correlation=\(self.renderCaptureCorrelation, privacy: .public) residual_correlation=\(self.residualRenderCorrelation, privacy: .public) timing_frames=\(self.renderTimingHistory.count, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
+                "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) active=\(self.backendStats.active, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) presentation_ms=\(self.presentationDelayMilliseconds, privacy: .public) aligned_ms=\(self.alignedDelayMilliseconds ?? -1, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) raw_rms=\(self.rawCaptureRMS, privacy: .public) clean_rms=\(self.processedCaptureRMS, privacy: .public) correlation=\(self.renderCaptureCorrelation, privacy: .public) residual_correlation=\(self.residualRenderCorrelation, privacy: .public) source=\(self.inputClassification.rawValue, privacy: .public) source_gate=\(self.sourceGateOpen, privacy: .public) preroll_frames=\(self.sourceGatePreRoll.count, privacy: .public) timing_frames=\(self.renderTimingHistory.count, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
             )
         }
     }
@@ -689,6 +820,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         backendStats = disabledStats()
         poorResidualEchoFrameCount = 0
         clearFIFOs()
+        resetSourceGate()
         logger.error(
             "AEC fallback reason=\(reason.rawValue, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public)"
         )
@@ -712,12 +844,23 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         residualRenderCorrelation = 0
     }
 
+    private func resetSourceGate(keepingClassification: Bool = false) {
+        sourceGateOpen = false
+        sourceGatePreRoll.removeAll(keepingCapacity: true)
+        sourceGateConfirmationFrameCount = 0
+        sourceGateUncertainHangoverFrameCount = 0
+        if !keepingClassification {
+            inputClassification = .uncertain
+        }
+    }
+
     private func resetTimingState() {
         clearTimingHistory()
         delayMilliseconds = 0
         presentationDelayMilliseconds = 0
         alignedDelayMilliseconds = nil
         resetSignalDiagnostics()
+        resetSourceGate()
     }
 
     private func disabledStats() -> MacSpeechAECBackendStats {
@@ -757,6 +900,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             processedCaptureRMS: processedCaptureRMS,
             renderCaptureCorrelation: renderCaptureCorrelation,
             residualRenderCorrelation: residualRenderCorrelation,
+            inputClassification: inputClassification,
+            sourceGateOpen: sourceGateOpen,
+            sourceGatePreRollFrameCount: sourceGatePreRoll.count,
             routeResetCount: routeResetCount,
             fallbackReason: fallbackReason,
             isPlaybackActive: isPlaybackActive
