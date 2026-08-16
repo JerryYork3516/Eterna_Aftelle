@@ -25,6 +25,75 @@ private struct DuplexAuthorizationProvider:
     }
 }
 
+private struct DuplexPassiveASRProvider: ASRProvider {
+    func start(request: ASRStartRequest) async throws {}
+    func send(_ input: ASRAudioInput) async throws {}
+
+    func receive(generation: UInt64) async throws -> ASREvent {
+        try await Task.sleep(for: .seconds(60))
+        throw SpeechRouteError.cancelled
+    }
+
+    func cancel(generation: UInt64) async throws {}
+    func close(generation: UInt64) async throws {}
+}
+
+private actor DuplexFinalSendRaceASRProvider: ASRProvider {
+    private var generation: UInt64?
+    private var sendStarted = false
+    private var receiveWaiter: CheckedContinuation<Void, Never>?
+    private var sendWaiter: CheckedContinuation<Void, Never>?
+
+    func start(request: ASRStartRequest) async throws {
+        generation = request.generation
+        sendStarted = false
+    }
+
+    func send(_ input: ASRAudioInput) async throws {
+        guard input.generation == generation else {
+            throw SpeechRouteError.staleGeneration
+        }
+        sendStarted = true
+        receiveWaiter?.resume()
+        receiveWaiter = nil
+        await withCheckedContinuation { sendWaiter = $0 }
+        throw SpeechRouteError.staleGeneration
+    }
+
+    func receive(generation: UInt64) async throws -> ASREvent {
+        guard generation == self.generation else {
+            throw SpeechRouteError.staleGeneration
+        }
+        if !sendStarted {
+            await withCheckedContinuation { receiveWaiter = $0 }
+        }
+        guard generation == self.generation else {
+            throw SpeechRouteError.staleGeneration
+        }
+        return ASREvent(
+            generation: generation,
+            kind: .finalTranscript("你好")
+        )
+    }
+
+    func cancel(generation: UInt64) async throws {
+        finish(generation: generation)
+    }
+
+    func close(generation: UInt64) async throws {
+        finish(generation: generation)
+    }
+
+    private func finish(generation: UInt64) {
+        guard generation == self.generation else { return }
+        self.generation = nil
+        receiveWaiter?.resume()
+        receiveWaiter = nil
+        sendWaiter?.resume()
+        sendWaiter = nil
+    }
+}
+
 private final class DuplexAudioCapture:
     MacSpeechAudioCapturing, @unchecked Sendable
 {
@@ -262,6 +331,8 @@ private struct NativeSpeechDuplexTests {
         try await testStopDoesNotExposeUnplayedFinalThroughController()
         try await testLateUserFinalThroughController()
         try await testTextSubtitleSurvivesRealtimeRefresh()
+        try await testFormalSpeechStartsCaptureFromOneClick()
+        try await testFormalSpeechFinalIgnoresClosingAudioSend()
         try await testRedactedDiagnosticsAndExport()
         print("native_speech_duplex_checks=\(checks)")
     }
@@ -858,6 +929,8 @@ private struct NativeSpeechDuplexTests {
             as! [String: Any]
         expect(object["schema_version"] as? Int == 7,
                "diagnostic export freezes schema version 7")
+        expect(object["formal_route_state"] as? String == "idle",
+               "diagnostic export identifies the formal route state")
         expect(object["events"] is [[String: Any]],
                "diagnostic export contains structured events")
         let acousticEcho = object["acoustic_echo"] as? [String: Any]
@@ -942,6 +1015,111 @@ private struct NativeSpeechDuplexTests {
             "controller clears diagnostic timeline"
         )
         await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testFormalSpeechStartsCaptureFromOneClick()
+        async throws {
+        let router = ProviderRouter(
+            credentialReader: UnavailableProviderCredentialReader(),
+            asrProvider: DuplexPassiveASRProvider()
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        let orchestration = OrchestrationKernel(runtimeCore: runtime)
+        let capture = DuplexAudioCapture()
+        let host = MacSpeechAudioHost(
+            authorizationProvider: DuplexAuthorizationProvider(),
+            capture: capture,
+            deviceMonitor: DuplexDeviceMonitor()
+        )
+        let controller = AppController(
+            orchestrationKernel: orchestration,
+            speechAudioHost: host,
+            speechAudioOutputHost: MacSpeechAudioOutputHost(
+                player: FakeMacSpeechAudioOutputPlayer(),
+                deviceMonitor: FakeMacSpeechOutputDeviceMonitor()
+            )
+        )
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("formal-speech-fixture.digital_resident")
+        try fixtureData.write(to: fixtureURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fixtureURL) }
+        controller.debugImportResident(from: fixtureURL)
+        expect(controller.isResidentTextInputAvailable,
+               "formal speech fixture loads")
+
+        await controller.startFormalSpeechRoute()
+        expect(capture.isStarted,
+               "one formal speech click starts microphone capture")
+        expect(
+            controller.formalSpeechRouteDebugSnapshot.phase == .listening,
+            "formal speech exposes listening state"
+        )
+        expect(
+            controller.realtimeSpeechDiagnosticTimeline.events.contains {
+                $0.category == "formal_route_listening"
+            },
+            "formal speech start is present in diagnostics"
+        )
+
+        await controller.stopSpeechAudioCapture()
+        expect(
+            controller.formalSpeechRouteDebugSnapshot.phase == .idle,
+            "manual stop returns formal speech to idle"
+        )
+    }
+
+    private static func testFormalSpeechFinalIgnoresClosingAudioSend()
+        async throws {
+        let router = ProviderRouter(
+            credentialReader: UnavailableProviderCredentialReader(),
+            asrProvider: DuplexFinalSendRaceASRProvider()
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        let orchestration = OrchestrationKernel(runtimeCore: runtime)
+        let capture = DuplexAudioCapture()
+        let controller = AppController(
+            orchestrationKernel: orchestration,
+            speechAudioHost: MacSpeechAudioHost(
+                authorizationProvider: DuplexAuthorizationProvider(),
+                capture: capture,
+                deviceMonitor: DuplexDeviceMonitor()
+            ),
+            speechAudioOutputHost: MacSpeechAudioOutputHost(
+                player: FakeMacSpeechAudioOutputPlayer(),
+                deviceMonitor: FakeMacSpeechOutputDeviceMonitor()
+            )
+        )
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "formal-speech-final-race.digital_resident"
+            )
+        try fixtureData.write(to: fixtureURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fixtureURL) }
+        controller.debugImportResident(from: fixtureURL)
+
+        await controller.startFormalSpeechRoute()
+        expect(capture.emit(0x2A), "formal speech race emits one frame")
+        await waitUntil {
+            controller.realtimeSpeechDiagnosticTimeline.events.contains {
+                $0.category == "formal_route_late_asr_send_ignored"
+            }
+        }
+        expect(
+            !controller.realtimeSpeechDiagnosticTimeline.events.contains {
+                $0.category == "formal_route_failed"
+                    && $0.errorCode == "stale_generation"
+            },
+            "ASR close does not fail a valid final as stale"
+        )
+        await controller.stopSpeechAudioCapture()
     }
 
     private static func testCumulativeSubtitleThroughController() async throws {

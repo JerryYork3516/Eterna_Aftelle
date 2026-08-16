@@ -414,6 +414,77 @@ private struct SpeechRouteContractTests {
             "cancelled canonical response is not persisted before playback"
         )
 
+        let interruptedGeneration = try success(
+            await runtime.startSpeechRouteASR(locale: "en-US")
+        )
+        _ = try await runtime.receiveSpeechRouteASREvent(
+            generation: interruptedGeneration
+        )
+        _ = try await runtime.receiveSpeechRouteASREvent(
+            generation: interruptedGeneration
+        )
+        let interruptedFinal = try await runtime
+            .receiveSpeechRouteASREvent(generation: interruptedGeneration)
+        _ = try success(await runtime.finishSpeechRouteASR(
+            generation: interruptedGeneration
+        ))
+        let interruptedTurn = try turnSuccess(
+            await runtime.submitSpeechRouteASRFinal(interruptedFinal)
+        )
+        _ = try success(await runtime.startSpeechRouteTTS(
+            request: TTSSynthesisRequest(
+                generation: interruptedGeneration,
+                canonicalResponseText:
+                    interruptedTurn.canonicalResponseText,
+                voiceProfile: ttsRequest.voiceProfile,
+                emotion: nil,
+                pace: 1,
+                style: nil
+            )
+        ))
+        let restartedGeneration = try success(
+            await runtime.interruptSpeechRouteForNearEnd(
+                generation: interruptedGeneration,
+                locale: "en-US"
+            )
+        )
+        expect(
+            restartedGeneration > interruptedGeneration,
+            "near-end interruption invalidates the old generation"
+        )
+        expectFailure(
+            runtime.commitSpeechRoutePlayback(
+                generation: interruptedGeneration
+            ),
+            equals: .staleGeneration,
+            "interrupted playback cannot persist its pending exchange"
+        )
+        let dialogueAfterInterrupt = try sessionStore
+            .loadMostRecentDialogueEntries()
+        expect(
+            dialogueAfterInterrupt == dialogue,
+            "interrupted formal turn writes no dialogue history"
+        )
+        let restartedInput = ASRAudioInput(
+            generation: restartedGeneration,
+            sequenceNumber: 2,
+            bytes: Data([0x03, 0x04]),
+            format: .pcm16,
+            sampleRate: 24_000,
+            channelCount: 1,
+            source: .aec3Processed
+        )
+        try await runtime.sendSpeechRouteASRAudio(restartedInput)
+        let restartedActivity = try await runtime
+            .receiveSpeechRouteASREvent(generation: restartedGeneration)
+        expect(
+            restartedActivity.kind == .speechActivity(.started),
+            "RuntimeCore opens the replacement ASR generation"
+        )
+        _ = try success(await runtime.cancelSpeechRoute(
+            generation: restartedGeneration
+        ))
+
         let nextGeneration = try success(
             await runtime.startSpeechRouteASR(locale: "en-US")
         )
@@ -456,13 +527,13 @@ private struct SpeechRouteContractTests {
         )
         let cancelledASRGenerations = await asr.cancelledGenerations
         expect(
-            cancelledASRGenerations == [nextGeneration],
+            cancelledASRGenerations == [restartedGeneration, nextGeneration],
             "RuntimeCore owns ASR cancellation"
         )
         let cancelledTTSGenerations = await tts.cancelledGenerations
         expect(
-            cancelledTTSGenerations.isEmpty,
-            "RuntimeCore does not cancel an unstarted TTS provider"
+            cancelledTTSGenerations == [interruptedGeneration],
+            "RuntimeCore owns interrupted TTS cancellation"
         )
 
         expect(
@@ -505,6 +576,7 @@ private struct SpeechRouteContractTests {
             closedASRGenerations == [
                 generation,
                 cancelledPendingGeneration,
+                interruptedGeneration,
                 closeGeneration
             ],
             "RuntimeCore closes ASR"

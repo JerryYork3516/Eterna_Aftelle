@@ -118,7 +118,7 @@
 "particleDebug.audioHost.activity" = "最近音量活动";
 "particleDebug.audioHost.lastError" = "最近错误";
 "particleDebug.audioHost.startCapture" = "开始采集";
-"particleDebug.audioHost.startBridge" = "启动 STS Bridge";
+"particleDebug.audioHost.startBridge" = "启动正式语音";
 "particleDebug.audioHost.stopCapture" = "停止采集";
 "particleDebug.audioHost.inputBridge" = "输入桥";
 "particleDebug.audioHost.inputBridge.idle" = "空闲";
@@ -547,6 +547,13 @@
 "relationshipProgression.debug.reset" = "重置关系";
 "relationshipProgression.debug.unavailable" = "当前 DR 未启用关系演进。";
 "particleDebug.realtimeSpeech.state" = "当前语音状态";
+"particleDebug.formalSpeech.generation" = "正式语音 generation";
+"particleDebug.formalSpeech.phase.idle" = "空闲";
+"particleDebug.formalSpeech.phase.starting" = "启动中";
+"particleDebug.formalSpeech.phase.listening" = "聆听中";
+"particleDebug.formalSpeech.phase.processing" = "处理中";
+"particleDebug.formalSpeech.phase.speaking" = "播放中";
+"particleDebug.formalSpeech.phase.failed" = "启动/运行失败";
 "particleDebug.realtimeSpeech.turn" = "当前轮次";
 "particleDebug.realtimeSpeech.interaction" = "当前 Interaction";
 "particleDebug.realtimeSubtitle.generation" = "字幕代际";
@@ -563,11 +570,12 @@
 "particleDebug.realtimeSpeech.interruptedTurns" = "已插话轮次";
 "particleDebug.realtimeSpeech.rejectedLate" = "Runtime 拒绝迟到事件";
 "particleDebug.realtimeSpeech.canonicalOutcome" = "当前规范结果";
-"particleDebug.realtimeSpeech.webSocket" = "WebSocket 状态";
+"particleDebug.realtimeSpeech.webSocket" = "旧 STS WebSocket 状态";
 "particleDebug.realtimeSpeech.completedTurns" = "已完成轮次";
 "particleDebug.realtimeSpeech.turnDetection" = "最近判停来源";
 "particleDebug.realtimeSpeech.guardTimeout" = "保护超时";
-"particleDebug.realtimeSpeech.lastError" = "最近标准错误";
+"particleDebug.realtimeSpeech.lastError" = "正式语音错误";
+"particleDebug.legacySpeech.lastError" = "旧 STS 标准错误";
 "particleDebug.realtimeSpeech.path" = "最近状态路径";
 "particleDebug.realtimeDiagnostics.title" = "实时语音脱敏诊断";
 "particleDebug.realtimeDiagnostics.empty" = "暂无诊断事件。";

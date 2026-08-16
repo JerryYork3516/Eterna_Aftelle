@@ -65,7 +65,7 @@ fi
 
 rg -q 'controller\.startFormalSpeechRoute' \
   "$repo_root/apps/macos/Aftelle/ContentView.swift"
-for operation in startSpeechRouteASR submitSpeechRouteASRFinal startSpeechRouteTTS commitSpeechRoutePlayback; do
+for operation in startSpeechRouteASR submitSpeechRouteASRFinal startSpeechRouteTTS commitSpeechRoutePlayback interruptSpeechRouteForNearEnd; do
   rg -q "${operation}" \
     "$repo_root/apps/macos/Aftelle/AppController.swift"
 done
@@ -77,6 +77,12 @@ rg -q 'playback_pending' \
   "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
 rg -q 'input\.sampleRate == 48_000 || input\.sampleRate == 24_000' \
   "$repo_root/apps/macos/RuntimeCore/QwenRealtimeASRAdapter.swift"
+rg -q 'sourceGateOpenCount' \
+  "$repo_root/apps/macos/Aftelle/AppController.swift"
+rg -q 'clearForAcceptedSpeechStart' \
+  "$repo_root/apps/macos/Aftelle/AppController.swift"
+rg -q 'handleFormalNearEndSpeechStartedIfNeeded' \
+  "$repo_root/apps/macos/Aftelle/AppController.swift"
 
 echo "speech_route_provider_neutrality=PASS"
 echo "speech_route_duplicate_llm=PASS"
@@ -87,3 +93,4 @@ echo "speech_route_parallel_storage=PASS"
 echo "speech_route_a5_formal_wiring=PASS"
 echo "speech_route_playback_commit_gate=PASS"
 echo "speech_route_host_format_boundary=PASS"
+echo "speech_route_a6_interrupt_ownership=PASS"

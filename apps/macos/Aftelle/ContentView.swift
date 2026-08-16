@@ -554,6 +554,8 @@ struct ParticleDebugWindow: View {
                 controller.realtimeSpeechDiagnosticViewState,
             realtimeSpeechDiagnosticStatusKey:
                 controller.realtimeSpeechDiagnosticStatusKey,
+            formalSpeechRouteDebugSnapshot:
+                controller.formalSpeechRouteDebugSnapshot,
             dialogueAuditState: controller.dialogueAuditState,
             runtimeOrchestrationState: controller.runtimeOrchestrationState,
             relationshipProgressionState:
@@ -734,6 +736,7 @@ private struct ParticleDebugPanel: View {
     let realtimeSpeechDiagnosticViewState:
         RealtimeSpeechDiagnosticViewState
     let realtimeSpeechDiagnosticStatusKey: String?
+    let formalSpeechRouteDebugSnapshot: FormalSpeechRouteDebugSnapshot
     let dialogueAuditState: DialogueAuditViewState
     let runtimeOrchestrationState: RuntimeOrchestrationViewState
     let relationshipProgressionState:
@@ -1029,6 +1032,8 @@ private struct ParticleDebugPanel: View {
                                     realtimeSpeechDiagnosticViewState,
                                 diagnosticStatusKey:
                                     realtimeSpeechDiagnosticStatusKey,
+                                formalRouteSnapshot:
+                                    formalSpeechRouteDebugSnapshot,
                                 refreshAuthorization:
                                     refreshMicrophoneAuthorization,
                                 requestAuthorization:
@@ -2063,6 +2068,7 @@ private struct SpeechAudioHostDebugView: View {
     let realtimeSpeechSignal: ResidentSpeechSignal
     let diagnosticViewState: RealtimeSpeechDiagnosticViewState
     let diagnosticStatusKey: String?
+    let formalRouteSnapshot: FormalSpeechRouteDebugSnapshot
     let refreshAuthorization: () async -> Void
     let requestAuthorization: () async -> Void
     let startCapture: () async -> Void
@@ -2287,7 +2293,18 @@ private struct SpeechAudioHostDebugView: View {
                 Divider()
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.realtimeSpeech.state",
-                    value: realtimeSpeechStateSnapshot.state.rawValue
+                    value: localizedAudioHostValue(
+                        "particleDebug.formalSpeech.phase.\(formalRouteSnapshot.phase.rawValue)"
+                    )
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.formalSpeech.generation",
+                    value: formalRouteSnapshot.generation
+                        .map(String.init) ?? "—"
+                )
+                ParticleDiagnosticsRow(
+                    labelKey: "particleDebug.realtimeSpeech.lastError",
+                    value: formalRouteSnapshot.lastErrorCode ?? "—"
                 )
                 ParticleDiagnosticsRow(
                     labelKey: "particleDebug.realtimeSpeech.turn",
@@ -2403,7 +2420,7 @@ private struct SpeechAudioHostDebugView: View {
                         ? "YES" : "NO"
                 )
                 ParticleDiagnosticsRow(
-                    labelKey: "particleDebug.realtimeSpeech.lastError",
+                    labelKey: "particleDebug.legacySpeech.lastError",
                     value: realtimeSpeechStateSnapshot.lastStandardError ?? "—"
                 )
                 ParticleDiagnosticsRow(
@@ -2448,7 +2465,9 @@ private struct SpeechAudioHostDebugView: View {
                         }
                     }
                     .disabled(
-                        !snapshot.isCapturing
+                        snapshot.authorization != .authorized
+                            || !snapshot.inputDevice.isAvailable
+                            || formalRouteSnapshot.phase.isActive
                             || bridgeSnapshot.hasActivePump
                             || outputBridgeSnapshot.hasActiveReceiveLoop
                     )

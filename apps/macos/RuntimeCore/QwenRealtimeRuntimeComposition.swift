@@ -20,7 +20,8 @@ enum QwenRealtimeRuntimeComposition {
             transport: URLSessionRealtimeWebSocketTransport(
                 diagnosticBuffer: diagnosticBuffer
             ),
-            configuration: asrConfiguration
+            configuration: asrConfiguration,
+            diagnosticBuffer: diagnosticBuffer
         )
         let ttsProvider = QwenRealtimeTTSAdapter(
             credentialReader: credentialReader,

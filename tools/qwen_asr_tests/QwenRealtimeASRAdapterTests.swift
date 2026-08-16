@@ -154,6 +154,7 @@ private struct QwenRealtimeASRAdapterTests {
     }
 
     private static func testFailedAndErrorMapping() async throws {
+        let diagnosticBuffer = NativeSpeechDiagnosticBuffer()
         let failedTransport = QwenASRFakeRealtimeWebSocketTransport(frames:
             handshake() + [text(#"{"type":"conversation.item.input_audio_transcription.failed","error":{"code":"asr_failed"}}"#)]
         )
@@ -161,7 +162,8 @@ private struct QwenRealtimeASRAdapterTests {
             credentialReader: QwenASRTestCredentialReader(
                 storedCredential: try credential()
             ),
-            transport: failedTransport
+            transport: failedTransport,
+            diagnosticBuffer: diagnosticBuffer
         )
         try await failedAdapter.start(request: ASRStartRequest(
             generation: 1,
@@ -171,6 +173,13 @@ private struct QwenRealtimeASRAdapterTests {
         expect(
             failed.kind == .error(.transportFailure),
             "transcription.failed maps to provider-neutral error"
+        )
+        expect(
+            diagnosticBuffer.drain().events.contains {
+                $0.category == "asr_recognition_failed"
+                    && $0.errorCode == "asr_failed"
+            },
+            "transcription failure exports only the sanitized provider code"
         )
 
         let errorTransport = QwenASRFakeRealtimeWebSocketTransport(frames:
@@ -303,7 +312,8 @@ private struct QwenRealtimeASRAdapterTests {
 
     private static func makeAdapter(
         credentialReader: ProviderCredentialReading,
-        transport: RealtimeWebSocketTransport
+        transport: RealtimeWebSocketTransport,
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil
     ) -> QwenRealtimeASRAdapter {
         QwenRealtimeASRAdapter(
             credentialReader: credentialReader,
@@ -314,7 +324,8 @@ private struct QwenRealtimeASRAdapterTests {
                 )!,
                 modelID: "qwen3-asr-flash-realtime",
                 keyRef: "keychain://test/qwen"
-            )
+            ),
+            diagnosticBuffer: diagnosticBuffer
         )
     }
 

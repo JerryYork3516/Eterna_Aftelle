@@ -118,7 +118,7 @@
 "particleDebug.audioHost.activity" = "Latest Activity";
 "particleDebug.audioHost.lastError" = "Last Error";
 "particleDebug.audioHost.startCapture" = "Start Capture";
-"particleDebug.audioHost.startBridge" = "Start STS Bridge";
+"particleDebug.audioHost.startBridge" = "Start formal speech";
 "particleDebug.audioHost.stopCapture" = "Stop Capture";
 "particleDebug.audioHost.inputBridge" = "Input Bridge";
 "particleDebug.audioHost.inputBridge.idle" = "Idle";
@@ -547,6 +547,13 @@
 "relationshipProgression.debug.reset" = "Reset Relationship";
 "relationshipProgression.debug.unavailable" = "This DR does not enable relationship progression.";
 "particleDebug.realtimeSpeech.state" = "Realtime speech state";
+"particleDebug.formalSpeech.generation" = "Formal speech generation";
+"particleDebug.formalSpeech.phase.idle" = "Idle";
+"particleDebug.formalSpeech.phase.starting" = "Starting";
+"particleDebug.formalSpeech.phase.listening" = "Listening";
+"particleDebug.formalSpeech.phase.processing" = "Processing";
+"particleDebug.formalSpeech.phase.speaking" = "Speaking";
+"particleDebug.formalSpeech.phase.failed" = "Start/runtime failed";
 "particleDebug.realtimeSpeech.turn" = "Current turn";
 "particleDebug.realtimeSpeech.interaction" = "Current interaction";
 "particleDebug.realtimeSubtitle.generation" = "Subtitle generation";
@@ -563,11 +570,12 @@
 "particleDebug.realtimeSpeech.interruptedTurns" = "Interrupted turns";
 "particleDebug.realtimeSpeech.rejectedLate" = "Rejected late events";
 "particleDebug.realtimeSpeech.canonicalOutcome" = "Canonical outcome";
-"particleDebug.realtimeSpeech.webSocket" = "WebSocket state";
+"particleDebug.realtimeSpeech.webSocket" = "Legacy STS WebSocket state";
 "particleDebug.realtimeSpeech.completedTurns" = "Completed turns";
 "particleDebug.realtimeSpeech.turnDetection" = "Turn detection source";
 "particleDebug.realtimeSpeech.guardTimeout" = "Guard timeout";
-"particleDebug.realtimeSpeech.lastError" = "Standard error";
+"particleDebug.realtimeSpeech.lastError" = "Formal speech error";
+"particleDebug.legacySpeech.lastError" = "Legacy STS standard error";
 "particleDebug.realtimeSpeech.path" = "Recent state path";
 "particleDebug.realtimeDiagnostics.title" = "Redacted realtime diagnostics";
 "particleDebug.realtimeDiagnostics.empty" = "No diagnostic events.";

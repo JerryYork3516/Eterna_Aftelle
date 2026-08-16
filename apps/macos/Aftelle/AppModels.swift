@@ -1013,6 +1013,36 @@ struct RealtimeSpeechDiagnosticViewState: Equatable, Sendable {
     }
 }
 
+enum FormalSpeechRoutePhase: String, Equatable, Sendable {
+    case idle
+    case starting
+    case listening
+    case processing
+    case speaking
+    case failed
+
+    var isActive: Bool {
+        switch self {
+        case .starting, .listening, .processing, .speaking:
+            true
+        case .idle, .failed:
+            false
+        }
+    }
+}
+
+struct FormalSpeechRouteDebugSnapshot: Equatable, Sendable {
+    let phase: FormalSpeechRoutePhase
+    let generation: UInt64?
+    let lastErrorCode: String?
+
+    static let idle = FormalSpeechRouteDebugSnapshot(
+        phase: .idle,
+        generation: nil,
+        lastErrorCode: nil
+    )
+}
+
 struct RealtimeSpeechSourceGateEpochDiagnosticExport: Encodable, Sendable {
     let playbackSequence: UInt64
     let epochSequence: UInt64
@@ -1117,6 +1147,9 @@ struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let providerID: String
     let modelID: String
     let voiceID: String
+    let formalRouteState: String
+    let formalRouteGeneration: UInt64?
+    let formalRouteLastError: String?
     let finalState: String
     let interactionShortID: String?
     let turnNumber: UInt64
@@ -1588,6 +1621,16 @@ public final class OrchestrationKernel {
         generation: UInt64
     ) async -> Result<Void, SpeechRouteError> {
         await runtimeCore.cancelSpeechRoute(generation: generation)
+    }
+
+    func interruptSpeechRouteForNearEnd(
+        generation: UInt64,
+        locale: String? = nil
+    ) async -> Result<UInt64, SpeechRouteError> {
+        await runtimeCore.interruptSpeechRouteForNearEnd(
+            generation: generation,
+            locale: locale
+        )
     }
 
     func closeSpeechRoute(

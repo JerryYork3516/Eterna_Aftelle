@@ -356,6 +356,8 @@ final class AppController: ObservableObject {
     @Published private(set) var realtimeSpeechDiagnosticViewState =
         RealtimeSpeechDiagnosticViewState.initial
     @Published private(set) var realtimeSpeechDiagnosticStatusKey: String?
+    @Published private(set) var formalSpeechRouteDebugSnapshot =
+        FormalSpeechRouteDebugSnapshot.idle
     @Published private(set) var dialogueAuditState = DialogueAuditViewState()
     @Published private(set) var runtimeOrchestrationState = RuntimeOrchestrationViewState()
     @Published private(set) var relationshipProgressionDebugState =
@@ -391,6 +393,10 @@ final class AppController: ObservableObject {
     private var formalSpeechInputTask: Task<Void, Never>?
     private var formalSpeechRouteTask: Task<Void, Never>?
     private var formalSpeechPlaybackCommitted = false
+    private var formalSpeechASRAcceptsAudio = false
+    private var formalSpeechFailingGeneration: UInt64?
+    private var formalSpeechObservedSourceGateOpenCount: UInt64 = 0
+    private var formalSpeechInterruptingGeneration: UInt64?
     private var projectedNativeSpeechDialogueHistoryIdentities:
         Set<NativeSpeechDialogueHistoryIdentity> = []
     private var realtimeSpeechPlaybackSubtitleSynchronizer =
@@ -907,6 +913,10 @@ final class AppController: ObservableObject {
             providerID: nativeSpeechProviderDebugState.profile.providerID,
             modelID: nativeSpeechProviderDebugState.profile.modelID,
             voiceID: nativeSpeechProviderDebugState.profile.voiceID,
+            formalRouteState: formalSpeechRouteDebugSnapshot.phase.rawValue,
+            formalRouteGeneration: formalSpeechRouteDebugSnapshot.generation,
+            formalRouteLastError:
+                formalSpeechRouteDebugSnapshot.lastErrorCode,
             finalState: realtimeSpeechStateSnapshot.state.rawValue,
             interactionShortID:
                 realtimeSpeechStateSnapshot.interactionShortID,
@@ -1929,14 +1939,29 @@ final class AppController: ObservableObject {
     }
 
     func startFormalSpeechRoute() async {
-        guard formalSpeechRouteGeneration == nil,
-              !speechInputBridgeSnapshot.hasActivePump,
-              isResidentTextInputAvailable else {
+        guard formalSpeechRouteGeneration == nil else { return }
+        guard !speechInputBridgeSnapshot.hasActivePump else {
+            publishFormalSpeechRouteFailure("legacy_bridge_active")
             return
         }
+        guard isResidentTextInputAvailable else {
+            publishFormalSpeechRouteFailure("resident_unavailable")
+            return
+        }
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: .starting,
+            generation: nil,
+            lastErrorCode: nil
+        )
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "formal_route_start_requested",
+            stateAfter: FormalSpeechRoutePhase.starting.rawValue
+        )
         guard let captureGeneration =
             await speechAudioHost.prepareCaptureGeneration() else {
             speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+            publishFormalSpeechRouteFailure("capture_unavailable")
             return
         }
         let startResult = await orchestrationKernel.startSpeechRouteASR(
@@ -1945,6 +1970,11 @@ final class AppController: ObservableObject {
         guard case .success(let generation) = startResult else {
             speechAudioHostSnapshot = await speechAudioHost
                 .cancelPreparedCapture(generation: captureGeneration)
+            if case .failure(let error) = startResult {
+                publishFormalSpeechRouteFailure(
+                    Self.formalSpeechErrorCode(error)
+                )
+            }
             return
         }
 
@@ -1956,6 +1986,10 @@ final class AppController: ObservableObject {
         formalSpeechCanonicalResponse = nil
         formalSpeechPlaybackGeneration = nil
         formalSpeechPlaybackCommitted = false
+        formalSpeechASRAcceptsAudio = true
+        formalSpeechFailingGeneration = nil
+        formalSpeechObservedSourceGateOpenCount = speechAudioHost
+            .currentAcousticEchoSnapshot()?.sourceGateOpenCount ?? 0
         residentTextPresentationID = nil
         residentSpeechSignal = .ended
         particleSubtitleState = .hidden
@@ -1969,13 +2003,26 @@ final class AppController: ObservableObject {
         speechAudioHostSnapshot = await speechAudioHost
             .startPreparedCapture(generation: captureGeneration)
         guard speechAudioHostSnapshot.isCapturing else {
-            await failFormalSpeechRoute(generation: generation)
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: "capture_start_failed"
+            )
             return
         }
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: .listening,
+            generation: generation,
+            lastErrorCode: nil
+        )
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "formal_route_listening",
+            turnGeneration: generation,
+            stateAfter: FormalSpeechRoutePhase.listening.rawValue
+        )
 
         formalSpeechInputTask = Task { @MainActor [weak self] in
             await self?.pumpFormalSpeechAudio(
-                generation: generation,
                 captureGeneration: captureGeneration
             )
         }
@@ -1989,11 +2036,10 @@ final class AppController: ObservableObject {
     }
 
     private func pumpFormalSpeechAudio(
-        generation: UInt64,
         captureGeneration: UInt64
     ) async {
         while !Task.isCancelled,
-              formalSpeechRouteGeneration == generation,
+              formalSpeechCaptureGeneration == captureGeneration,
               await speechAudioHost.isCaptureGenerationActive(
                   captureGeneration
               ) {
@@ -2002,6 +2048,11 @@ final class AppController: ObservableObject {
             )
             if frames.isEmpty {
                 try? await Task.sleep(for: .milliseconds(5))
+                continue
+            }
+            _ = await handleFormalNearEndSpeechStartedIfNeeded()
+            guard formalSpeechASRAcceptsAudio,
+                  let generation = formalSpeechRouteGeneration else {
                 continue
             }
             for frame in frames {
@@ -2025,7 +2076,25 @@ final class AppController: ObservableObject {
                         )
                     )
                 } catch {
-                    await failFormalSpeechRoute(generation: generation)
+                    if !formalSpeechASRAcceptsAudio,
+                       formalSpeechRouteGeneration == generation {
+                        recordRealtimeSpeechDiagnostic(
+                            source: .lifecycle,
+                            category: "formal_route_late_asr_send_ignored",
+                            turnGeneration: generation,
+                            disposition: "ignored_after_final",
+                            errorCode: Self.formalSpeechErrorCode(error)
+                        )
+                    }
+                    guard formalSpeechASRAcceptsAudio,
+                          formalSpeechRouteGeneration == generation,
+                          !Task.isCancelled else {
+                        break
+                    }
+                    await failFormalSpeechRoute(
+                        generation: generation,
+                        errorCode: Self.formalSpeechErrorCode(error)
+                    )
                     return
                 }
             }
@@ -2043,7 +2112,10 @@ final class AppController: ObservableObject {
                 event = try await orchestrationKernel
                     .receiveSpeechRouteASREvent(generation: generation)
             } catch {
-                await failFormalSpeechRoute(generation: generation)
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: Self.formalSpeechErrorCode(error)
+                )
                 return
             }
             guard formalSpeechRouteGeneration == generation else { return }
@@ -2073,8 +2145,23 @@ final class AppController: ObservableObject {
                     interactionID: interactionID
                 )
                 return
-            case .cancelled, .error, .staleGeneration:
-                await failFormalSpeechRoute(generation: generation)
+            case .cancelled:
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: "cancelled"
+                )
+                return
+            case .error(let error):
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: Self.formalSpeechErrorCode(error)
+                )
+                return
+            case .staleGeneration:
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: "stale_generation"
+                )
                 return
             }
         }
@@ -2086,29 +2173,47 @@ final class AppController: ObservableObject {
         interactionID: UUID
     ) async {
         guard case .finalTranscript(let transcript) = event.kind else {
-            await failFormalSpeechRoute(generation: generation)
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: "invalid_asr_final"
+            )
             return
         }
         let userFinal = transcript.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
         guard !userFinal.isEmpty else {
-            await failFormalSpeechRoute(generation: generation)
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: "empty_asr_final"
+            )
             return
         }
         formalSpeechUserFinal = userFinal
+        formalSpeechASRAcceptsAudio = false
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: .processing,
+            generation: generation,
+            lastErrorCode: nil
+        )
         particleSubtitleState = ParticleSubtitleState(
             text: userFinal,
             phase: .showing
         )
-        formalSpeechInputTask?.cancel()
-        formalSpeechInputTask = nil
-        speechAudioHostSnapshot = await speechAudioHost.stopCapture()
         let asrFinishResult = await orchestrationKernel.finishSpeechRouteASR(
             generation: generation
         )
         guard case .success = asrFinishResult else {
-            await failFormalSpeechRoute(generation: generation)
+            let errorCode: String
+            if case .failure(let error) = asrFinishResult {
+                errorCode = Self.formalSpeechErrorCode(error)
+            } else {
+                errorCode = "asr_finish_failed"
+            }
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: errorCode
+            )
             return
         }
         residentSpeechSignal = .ended
@@ -2122,7 +2227,10 @@ final class AppController: ObservableObject {
         )
         guard case .success(let turn) = turnResult,
               formalSpeechRouteGeneration == generation else {
-            await failFormalSpeechRoute(generation: generation)
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: "runtime_turn_failed"
+            )
             return
         }
         let canonicalText = turn.canonicalResponseText
@@ -2135,7 +2243,10 @@ final class AppController: ObservableObject {
         let prepared = await speechAudioOutputHost.prepare()
         speechAudioOutputHostSnapshot = prepared
         guard prepared.state == .prepared else {
-            await failFormalSpeechRoute(generation: generation)
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: "playback_prepare_failed"
+            )
             return
         }
         formalSpeechPlaybackGeneration = prepared.generation
@@ -2153,7 +2264,16 @@ final class AppController: ObservableObject {
             )
         )
         guard case .success = ttsResult else {
-            await failFormalSpeechRoute(generation: generation)
+            let errorCode: String
+            if case .failure(let error) = ttsResult {
+                errorCode = Self.formalSpeechErrorCode(error)
+            } else {
+                errorCode = "tts_start_failed"
+            }
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: errorCode
+            )
             return
         }
         await receiveFormalSpeechTTS(
@@ -2175,11 +2295,29 @@ final class AppController: ObservableObject {
                 event = try await orchestrationKernel
                     .receiveSpeechRouteTTSEvent(generation: generation)
             } catch {
-                await failFormalSpeechRoute(generation: generation)
+                if formalSpeechInterruptingGeneration == generation
+                    || Task.isCancelled {
+                    return
+                }
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: Self.formalSpeechErrorCode(error)
+                )
+                return
+            }
+            guard formalSpeechInterruptingGeneration != generation,
+                  !Task.isCancelled,
+                  formalSpeechRouteGeneration == generation else {
                 return
             }
             switch event.kind {
             case .started:
+                formalSpeechRouteDebugSnapshot =
+                    FormalSpeechRouteDebugSnapshot(
+                        phase: .speaking,
+                        generation: generation,
+                        lastErrorCode: nil
+                    )
                 particleSubtitleState = ParticleSubtitleState(
                     text: canonicalText,
                     phase: .showing
@@ -2196,7 +2334,10 @@ final class AppController: ObservableObject {
                 guard chunk.format == .pcm16,
                       chunk.sampleRate == 24_000,
                       chunk.channelCount == 1 else {
-                    await failFormalSpeechRoute(generation: generation)
+                    await failFormalSpeechRoute(
+                        generation: generation,
+                        errorCode: "invalid_tts_audio_format"
+                    )
                     return
                 }
                 speechAudioOutputHostSnapshot = await speechAudioOutputHost
@@ -2219,11 +2360,91 @@ final class AppController: ObservableObject {
                 )
                 formalSpeechRouteTask = nil
                 return
-            case .cancelled, .error:
-                await failFormalSpeechRoute(generation: generation)
+            case .cancelled:
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: "cancelled"
+                )
+                return
+            case .error(let error):
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: Self.formalSpeechErrorCode(error)
+                )
                 return
             }
         }
+    }
+
+    private func handleFormalNearEndSpeechStartedIfNeeded() async -> Bool {
+        guard let snapshot = speechAudioHost.currentAcousticEchoSnapshot()
+        else { return false }
+        if snapshot.sourceGateOpenCount
+                < formalSpeechObservedSourceGateOpenCount {
+            formalSpeechObservedSourceGateOpenCount =
+                snapshot.sourceGateOpenCount
+        }
+        guard !formalSpeechASRAcceptsAudio,
+              formalSpeechPlaybackGeneration != nil,
+              snapshot.mode == .webRTCAEC3,
+              snapshot.isPlaybackActive,
+              snapshot.sourceGateOpen,
+              snapshot.sourceGateOpenCount
+                > formalSpeechObservedSourceGateOpenCount,
+              let interruptedGeneration = formalSpeechRouteGeneration else {
+            return false
+        }
+        formalSpeechObservedSourceGateOpenCount = snapshot.sourceGateOpenCount
+
+        speechAudioOutputHostSnapshot = await speechAudioOutputHost
+            .clearForAcceptedSpeechStart()
+        formalSpeechPlaybackGeneration = nil
+        formalSpeechInterruptingGeneration = interruptedGeneration
+
+        let interruptResult = await orchestrationKernel
+            .interruptSpeechRouteForNearEnd(
+                generation: interruptedGeneration,
+                locale: "zh-CN"
+            )
+        guard case .success(let nextGeneration) = interruptResult,
+              formalSpeechRouteGeneration == interruptedGeneration else {
+            formalSpeechInterruptingGeneration = nil
+            await failFormalSpeechRoute(
+                generation: interruptedGeneration,
+                errorCode: "interrupt_failed"
+            )
+            return false
+        }
+
+        formalSpeechRouteTask?.cancel()
+        formalSpeechRouteTask = nil
+        let interactionID = UUID()
+        formalSpeechRouteGeneration = nextGeneration
+        formalSpeechInteractionID = interactionID
+        formalSpeechUserFinal = nil
+        formalSpeechCanonicalResponse = nil
+        formalSpeechPlaybackCommitted = false
+        formalSpeechASRAcceptsAudio = true
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: .listening,
+            generation: nextGeneration,
+            lastErrorCode: nil
+        )
+        formalSpeechInterruptingGeneration = nil
+        residentSpeechSignal = .ended
+        particleSubtitleState = .hidden
+        runtimeState = .running
+        refreshResidentVisualIntent(
+            visualStateMode: ResidentVisualIntent.listening.rawValue
+        )
+        formalSpeechRouteTask = Task { @MainActor [weak self] in
+            await self?.receiveFormalSpeechRoute(
+                generation: nextGeneration,
+                interactionID: interactionID
+            )
+        }
+        refreshParticleDebugSnapshot()
+        return true
     }
 
     private func consumeFormalSpeechPlaybackEvent(
@@ -2245,10 +2466,16 @@ final class AppController: ObservableObject {
         case .playbackCompleted:
             guard !formalSpeechPlaybackCommitted else { return }
             formalSpeechPlaybackCommitted = true
+            formalSpeechInputTask?.cancel()
+            formalSpeechInputTask = nil
+            speechAudioHostSnapshot = await speechAudioHost.stopCapture()
             let commitResult = orchestrationKernel
                 .commitSpeechRoutePlayback(generation: generation)
             guard case .success = commitResult else {
-                await failFormalSpeechRoute(generation: generation)
+                await failFormalSpeechRoute(
+                    generation: generation,
+                    errorCode: "playback_commit_failed"
+                )
                 return
             }
             projectFormalSpeechDialogueHistory()
@@ -2257,6 +2484,13 @@ final class AppController: ObservableObject {
                 generation: generation
             )
             resetFormalSpeechRouteState()
+            formalSpeechRouteDebugSnapshot = .idle
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "formal_route_completed",
+                turnGeneration: generation,
+                stateAfter: FormalSpeechRoutePhase.idle.rawValue
+            )
             residentSpeechSignal = .ended
             runtimeState = .idle
             refreshResidentVisualIntent(
@@ -2265,7 +2499,10 @@ final class AppController: ObservableObject {
             hideDebugSubtitle()
             refreshParticleDebugSnapshot()
         case .failed, .stopped:
-            await failFormalSpeechRoute(generation: generation)
+            await failFormalSpeechRoute(
+                generation: generation,
+                errorCode: "playback_failed"
+            )
         default:
             break
         }
@@ -2315,11 +2552,25 @@ final class AppController: ObservableObject {
         guard let generation = formalSpeechRouteGeneration else { return }
         formalSpeechInputTask?.cancel()
         formalSpeechRouteTask?.cancel()
-        await failFormalSpeechRoute(generation: generation)
+        formalSpeechInterruptingGeneration = nil
+        await failFormalSpeechRoute(
+            generation: generation,
+            errorCode: "cancelled",
+            terminalPhase: .idle
+        )
     }
 
-    private func failFormalSpeechRoute(generation: UInt64) async {
-        guard formalSpeechRouteGeneration == generation else { return }
+    private func failFormalSpeechRoute(
+        generation: UInt64,
+        errorCode: String,
+        terminalPhase: FormalSpeechRoutePhase = .failed
+    ) async {
+        guard formalSpeechRouteGeneration == generation,
+              formalSpeechInterruptingGeneration != generation,
+              formalSpeechFailingGeneration != generation else {
+            return
+        }
+        formalSpeechFailingGeneration = generation
         formalSpeechInputTask?.cancel()
         formalSpeechRouteTask?.cancel()
         formalSpeechInputTask = nil
@@ -2330,10 +2581,61 @@ final class AppController: ObservableObject {
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
         speechAudioOutputHostSnapshot = await speechAudioOutputHost.stop()
         resetFormalSpeechRouteState()
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: terminalPhase,
+            generation: nil,
+            lastErrorCode: terminalPhase == .failed ? errorCode : nil
+        )
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: terminalPhase == .failed
+                ? "formal_route_failed" : "formal_route_cancelled",
+            turnGeneration: generation,
+            stateAfter: terminalPhase.rawValue,
+            errorCode: errorCode
+        )
         residentSpeechSignal = .ended
         runtimeState = .idle
         refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
+        formalSpeechFailingGeneration = nil
+    }
+
+    private func publishFormalSpeechRouteFailure(_ errorCode: String) {
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: .failed,
+            generation: nil,
+            lastErrorCode: errorCode
+        )
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "formal_route_start_failed",
+            stateAfter: FormalSpeechRoutePhase.failed.rawValue,
+            errorCode: errorCode
+        )
+    }
+
+    private static func formalSpeechErrorCode(
+        _ error: Error
+    ) -> String {
+        guard let error = error as? SpeechRouteError else {
+            return "unknown"
+        }
+        return formalSpeechErrorCode(error)
+    }
+
+    private static func formalSpeechErrorCode(
+        _ error: SpeechRouteError
+    ) -> String {
+        switch error {
+        case .invalidConfiguration: "invalid_configuration"
+        case .unavailable: "unavailable"
+        case .timedOut: "timed_out"
+        case .cancelled: "cancelled"
+        case .transportFailure: "transport_failure"
+        case .invalidEvent: "invalid_event"
+        case .staleGeneration: "stale_generation"
+        }
     }
 
     private func resetFormalSpeechRouteState() {
@@ -2346,6 +2648,9 @@ final class AppController: ObservableObject {
         formalSpeechInputTask = nil
         formalSpeechRouteTask = nil
         formalSpeechPlaybackCommitted = false
+        formalSpeechASRAcceptsAudio = false
+        formalSpeechObservedSourceGateOpenCount = 0
+        formalSpeechInterruptingGeneration = nil
     }
 
     func startNativeSpeechInputBridge() async {

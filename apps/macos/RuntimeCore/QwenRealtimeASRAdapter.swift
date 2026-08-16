@@ -38,9 +38,9 @@ nonisolated private enum QwenRealtimeASRWireEvent: Equatable {
     case speechStopped
     case partial(String)
     case final(String)
-    case failed
+    case failed(String?)
     case sessionFinished
-    case providerError(SpeechRouteError)
+    case providerError(SpeechRouteError, String?)
     case other
 }
 
@@ -115,7 +115,8 @@ nonisolated private struct QwenRealtimeASRCodec: Sendable {
             }
             return .final(transcript)
         case "conversation.item.input_audio_transcription.failed":
-            return .failed
+            let error = object["error"] as? [String: Any]
+            return .failed(Self.sanitizedErrorCode(error?["code"]))
         case "session.finished":
             return .sessionFinished
         case "error":
@@ -124,7 +125,8 @@ nonisolated private struct QwenRealtimeASRCodec: Sendable {
             return .providerError(
                 kind == "invalid_request_error"
                     ? .invalidConfiguration
-                    : .transportFailure
+                    : .transportFailure,
+                Self.sanitizedErrorCode(error?["code"])
             )
         default:
             return .other
@@ -141,6 +143,16 @@ nonisolated private struct QwenRealtimeASRCodec: Sendable {
             throw SpeechRouteError.invalidEvent
         }
         return text
+    }
+
+    private static func sanitizedErrorCode(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(
+            CharacterSet(charactersIn: "._-")
+        )
+        let filtered = value.unicodeScalars.filter { allowed.contains($0) }
+        guard !filtered.isEmpty else { return nil }
+        return String(String.UnicodeScalarView(filtered).prefix(64))
     }
 
     private static func languageCode(for locale: String?) -> String? {
@@ -231,6 +243,7 @@ actor QwenRealtimeASRAdapter: ASRProvider {
     private let transport: RealtimeWebSocketTransport
     private let configuration: QwenRealtimeASRConfiguration
     private let codec: QwenRealtimeASRCodec
+    private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
 
     private var activeGeneration: UInt64?
     private var terminatedGeneration: UInt64?
@@ -240,11 +253,13 @@ actor QwenRealtimeASRAdapter: ASRProvider {
     init(
         credentialReader: ProviderCredentialReading,
         transport: RealtimeWebSocketTransport,
-        configuration: QwenRealtimeASRConfiguration
+        configuration: QwenRealtimeASRConfiguration,
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil
     ) {
         self.credentialReader = credentialReader
         self.transport = transport
         self.configuration = configuration
+        self.diagnosticBuffer = diagnosticBuffer
         codec = QwenRealtimeASRCodec(configuration: configuration)
     }
 
@@ -279,6 +294,11 @@ actor QwenRealtimeASRAdapter: ASRProvider {
                 throw SpeechRouteError.invalidEvent
             }
         } catch {
+            record(
+                category: "asr_start_failed",
+                generation: request.generation,
+                errorCode: Self.errorCode(error)
+            )
             await transport.close(reason: .cancelled)
             throw Self.map(error)
         }
@@ -307,6 +327,11 @@ actor QwenRealtimeASRAdapter: ASRProvider {
         do {
             try await transport.send(.text(try codec.audioAppend(converted)))
         } catch {
+            record(
+                category: "asr_send_failed",
+                generation: input.generation,
+                errorCode: Self.errorCode(error)
+            )
             throw Self.map(error)
         }
     }
@@ -325,6 +350,11 @@ actor QwenRealtimeASRAdapter: ASRProvider {
             do {
                 wire = try await receiveWireEvent()
             } catch {
+                record(
+                    category: "asr_receive_failed",
+                    generation: generation,
+                    errorCode: Self.errorCode(error)
+                )
                 return ASREvent(
                     generation: generation,
                     kind: .error(Self.map(error))
@@ -357,12 +387,22 @@ actor QwenRealtimeASRAdapter: ASRProvider {
                     generation: generation,
                     kind: .finalTranscript(transcript)
                 )
-            case .failed:
+            case .failed(let errorCode):
+                record(
+                    category: "asr_recognition_failed",
+                    generation: generation,
+                    errorCode: errorCode ?? "recognition_failed"
+                )
                 return ASREvent(
                     generation: generation,
                     kind: .error(.transportFailure)
                 )
-            case .providerError(let error):
+            case .providerError(let error, let providerCode):
+                record(
+                    category: "asr_provider_error",
+                    generation: generation,
+                    errorCode: providerCode ?? Self.errorCode(error)
+                )
                 return ASREvent(
                     generation: generation,
                     kind: .error(error)
@@ -444,6 +484,38 @@ actor QwenRealtimeASRAdapter: ASRProvider {
             }
         } catch {
             throw Self.map(error)
+        }
+    }
+
+    private func record(
+        category: String,
+        generation: UInt64,
+        errorCode: String
+    ) {
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: category,
+            turnGeneration: generation,
+            errorCode: errorCode
+        ))
+    }
+
+    private static func errorCode(_ error: Error) -> String {
+        guard let error = error as? SpeechRouteError else {
+            return "unknown"
+        }
+        return errorCode(error)
+    }
+
+    private static func errorCode(_ error: SpeechRouteError) -> String {
+        switch error {
+        case .invalidConfiguration: "invalid_configuration"
+        case .unavailable: "unavailable"
+        case .timedOut: "timed_out"
+        case .cancelled: "cancelled"
+        case .transportFailure: "transport_failure"
+        case .invalidEvent: "invalid_event"
+        case .staleGeneration: "stale_generation"
         }
     }
 

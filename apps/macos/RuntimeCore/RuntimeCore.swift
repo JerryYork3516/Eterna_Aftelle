@@ -1629,6 +1629,38 @@ public final class RuntimeCore {
         return .success(())
     }
 
+    func interruptSpeechRouteForNearEnd(
+        generation: UInt64,
+        locale: String? = nil
+    ) async -> Result<UInt64, SpeechRouteError> {
+        guard generation == speechRouteGeneration else {
+            return .failure(.staleGeneration)
+        }
+        activeExpressionRequestID = nil
+        speechRouteGeneration &+= 1
+        speechRouteASRFinalState = nil
+        speechRoutePendingTurn = nil
+        let nextGeneration = speechRouteGeneration
+        if let providerError = await stopSpeechRouteProviders(
+            generation: generation,
+            close: false
+        ) {
+            return .failure(providerError)
+        }
+        do {
+            try await executionEngine.startASR(request: ASRStartRequest(
+                generation: nextGeneration,
+                locale: locale
+            ))
+            speechRouteASRActive = true
+            return .success(nextGeneration)
+        } catch let error as SpeechRouteError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
     func closeSpeechRoute(
         generation: UInt64
     ) async -> Result<Void, SpeechRouteError> {
