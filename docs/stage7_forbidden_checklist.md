@@ -81,7 +81,6 @@ FAIL:把活态、记忆或 trace 写回 DR,或让 Aftelle 变成 Memory / LiveSt
 - [ ] Stage 7.1 只允许 no-op tick / `system.tick` trace。
 - [ ] 未实现真实 scheduler loop / timer / 后台循环。
 - [ ] 未实现多居民复杂调度。
-- [ ] Stage 7.5.10 仅允许 RuntimeCore-owned Tool 编排与权限门禁,未引入无界 planner 或自主工具系统。
 - [ ] 未实现社交媒体自主操控或跨 App 操作。
 
 FAIL:后台主动运行、复杂调度、无界 planner / 自主工具系统、未经权限的跨 App 行动或无界多居民循环进入 Stage 7。
@@ -98,7 +97,11 @@ FAIL:后台主动运行、复杂调度、无界 planner / 自主工具系统、�
 - [ ] Aftelle 未为 Avatar 推理人格 / 情绪,只渲染 RuntimeCore 返回的 `visual_state` / `resident_state`。
 - [ ] 实时语音仅在用户主动启动的前台会话中运行。
 - [ ] 实时会话、Provider 路由、Memory、Tool / Permission 编排和取消语义均由 RuntimeCore 拥有。
-- [ ] UI / Host / Adapter 未直连 STS / STT / LLM / TTS Provider,未直接写 Memory 或执行 Tool。
+- [ ] 正式语音主链为 ASR → RuntimeCore LLM → TTS,三段独立可替换,且 RuntimeCore LLM 是唯一正式语音认知大脑。
+- [ ] Qwen Omni Adapter 仅保留为实验 / 参考实现,未作为正式默认主链。
+- [ ] Apple 本地 ASR / TTS 未作为正式链。
+- [ ] AEC / Host 未拥有 Runtime Interrupt 决策。
+- [ ] UI / Host / Adapter 未直连 ASR / LLM / TTS Provider,未直接写 Memory 或执行 Tool。
 - [ ] 未实现 always-on 麦克风或未授权后台监听。
 - [ ] 未实现唤醒词。
 - [ ] 未实现声纹识别。

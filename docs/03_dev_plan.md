@@ -5,7 +5,7 @@
 
 ## 主线顺序
 
-7.1–7.4 完成单居民 Runtime 基础闭环。Stage 7.5 按 7.5.1–7.5.28 依次完成原生全双工 STS 主链、STT + LLM + TTS 级联降级、Studio Next 1.0 重构与真实资产联调。
+7.1–7.4 完成单居民 Runtime 基础闭环。Stage 7.5 按 7.5.1–7.5.28 依次完成原生全双工 STS 实验链验证与收口、ASR → RuntimeCore LLM → TTS 正式语音主链、Studio Next 1.0 重构与真实资产联调。
 Live-state 功能卡的最小实现仍按 `feature_livestate.md` 控制;该文件不定义 Stage 7.5 的全部范围。
 
 **Stage 7 Extended Demo = 7.6–7.12。** 行业居民、双居民、屏幕指导、隔离验证、展示版体验打磨与 Demo Lock 每段单独 Gate,不作为 MVP 前提。
@@ -15,7 +15,7 @@ Live-state 功能卡的最小实现仍按 `feature_livestate.md` 控制;该文�
 → 7.2 记忆与会话持久化(PASS / completed)
 → 7.3 粒子生命体视觉底座 + 字幕基础(准备中)
 → 7.4 人文共情居民打磨
-→ 7.5 原生实时语音 + 级联降级 + Studio Next 1.0 + 真实资产联调
+→ 7.5 实时语音实验链收口 + ASR → RuntimeCore LLM → TTS 正式主链 + Studio Next 1.0 + 真实资产联调
 → 7.6 行业专精居民基础版
 → 7.7 本地双居民导入与主次切换
 → 7.8 编排系统双居民调度
@@ -212,7 +212,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 
 ## Stage 7.5 实时语音闭环 / Studio Next 1.0 / 真实资产联调
 
-目标：先使用固定居民与固定语音资产完成 Aftelle 原生实时语音通话底座，并建立 STT + LLM + TTS 降级链路；随后暂停 Aftelle，完成 Studio Next 1.0、外观构建器、音色构建器、Layer 10 与迁移；最后恢复 Aftelle，使用 Studio 真实资产完成最终联调。
+目标：先使用固定居民与固定语音资产完成并收口 Aftelle 原生实时语音实验底座，再建立 ASR → RuntimeCore LLM → TTS 正式语音主链；随后暂停 Aftelle，完成 Studio Next 1.0、外观构建器、音色构建器、Layer 10 与迁移；最后恢复 Aftelle，使用 Studio 真实资产完成最终联调。
 
 7.5.1 实时语音架构边界与固定测试资产
 7.5.2 NativeSpeechProvider 协议与首个 STS Adapter
@@ -223,8 +223,8 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 7.5.7 插话、Stop 与统一任务取消
 7.5.8 流式语音播放、缓冲与异常恢复
 7.5.9 实时字幕与 ParticleCore 状态同步
-7.5.10 语音会话中的记忆、工具与权限调用
-7.5.11 STT + LLM + TTS 级联降级链路
+7.5.10 STS 前置稳定化与收口（CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE）
+Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 7.5.12 延迟、Trace、自动测试与 Stage 7.5-A 预验收
 7.5.13 Aftelle 实时语音底座冻结并暂停新增功能
 
@@ -239,15 +239,44 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 7.5.22 旧居民与旧资产迁移、Layer 10 正式接入、四项契约冻结
 
 7.5.23 Aftelle 加载 Studio 真实外观、粒子锚点与 VoiceProfile
-7.5.24 真实 STS Provider 与居民音色映射联调
+7.5.24 真实 ASR / TTS Provider 与居民音色映射联调
 7.5.25 插话、动态轮次、字幕、ParticleCore 与设备路由联调
-7.5.26 级联降级、长内容交付与异常恢复联调
+7.5.26 ASR / RuntimeCore LLM / TTS、长内容交付与异常恢复联调
 7.5.27 旧居民兼容、性能与完整回归测试
 7.5.28 Stage 7.5-B 最终验收，Studio Next 1.0 冻结
 
-注意：原生 STS 是主链，STT + LLM + TTS 仅作为降级链路。
+### 7.5.10 收口与 7.5.11 迁移入口
 
-注意：所有 STS、STT、LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行。
+**7.5.10 最终状态：CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE**
+
+被替代的是 Qwen Omni 端到端 STS 作为正式语音主链的定位。Qwen Omni Adapter 暂留为实验 / 参考实现，不作为正式默认主链。
+
+保留的技术资产：
+
+- WebRTC AEC3 XCFramework；
+- AEC Bridge；
+- AEC Host，以及 delay / route / drift / diagnostic 基础。
+
+以下未通过项迁移至 7.5.11：
+
+- USB / 蓝牙外置输出下的稳定插话；
+- resident-only 零 self-interrupt；
+- double-talk；
+- source gate / near-end detection；
+- render / capture alignment；
+- AEC 完整真机矩阵与 30 分钟稳定性。
+
+7.5.11 的首个入口为：**7.5.11-A0｜架构冻结与 7.5.10 迁移收口**。A0 完成前不得创建 ASR / TTS Adapter 或修改现有语音执行链。
+
+冻结原则：
+
+- ASR、现有 RuntimeCore LLM、TTS 三段独立可替换；
+- RuntimeCore LLM 是唯一正式语音认知大脑；
+- Apple 本地 ASR / TTS 不作为正式链；
+- AEC / Host 不拥有 Runtime Interrupt 决策；
+- 不修改 DR schema、Store schema 或 Runtime ownership。
+
+注意：ASR、LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
 
 注意：打断机制必须复用 7.1.10 的统一中断语义，同时取消本地播放、服务端生成、字幕、状态和未完成任务。
 
@@ -257,7 +286,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 
-验收：固定资产下的实时语音主链和级联降级链稳定；Studio Next 能生成真实外观、音色和 Layer 10 配置；Stage 7.5-B 完成真实 DR 端到端联调；无 P0 / P1 阻塞后才能进入 Stage 7.6。
+验收：固定资产下的 ASR → RuntimeCore LLM → TTS 正式语音主链稳定；Studio Next 能生成真实外观、音色和 Layer 10 配置；Stage 7.5-B 完成真实 DR 端到端联调；无 P0 / P1 阻塞后才能进入 Stage 7.6。
 
 ---
 
@@ -386,7 +415,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 7.11.4 粒子状态打磨
 7.11.5 单居民交互打磨
 7.11.6 双居民交互打磨(若 7.7 / 7.8 未完成则跳过,不阻塞 7.12)
-7.11.7 原生实时语音与级联降级体验打磨
+7.11.7 ASR → RuntimeCore LLM → TTS 正式语音链体验打磨
 7.11.8 TTS / 字幕 / 粒子同步打磨
 7.11.9 音效体验打磨
 7.11.10 权限流程打磨
@@ -395,7 +424,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 7.11.13 Presentation Mode
 7.11.14 最终禁止项复查
 
-验收:核心演示路径稳定、Debug 痕迹默认隐藏、Presentation Mode 可用、粒子 / 字幕 / 原生实时语音 / 级联降级体验不割裂,且不引入 always-on 麦克风、后台监听、唤醒词或声纹识别。
+验收:核心演示路径稳定、Debug 痕迹默认隐藏、Presentation Mode 可用、粒子 / 字幕 / 正式语音主链体验不割裂,且不引入 always-on 麦克风、后台监听、唤醒词或声纹识别。
 
 ---
 
@@ -416,7 +445,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 7.12.8 行业专业回答演示
 7.12.9 双居民协作演示
 7.12.10 粒子视觉演示
-7.12.11 原生实时语音 / 级联降级 / 字幕演示
+7.12.11 ASR → RuntimeCore LLM → TTS 正式语音主链 / 字幕演示
 7.12.12 屏幕指导原型演示
 7.12.13 Bug 修复
 7.12.14 性能优化
@@ -432,7 +461,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 
 **区分两个标准,别都叫"Stage 7 成功":**
 
-- **Stage 7.5 成立标准**:在已有单居民 Runtime 闭环上,原生 STS 主链、插话 / Stop、流式播放与字幕、Runtime-owned Memory / Tool / Permission 路由、STT + LLM + TTS 降级链、Studio Next 1.0 与真实资产联调均按 7.5.1–7.5.28 通过验收。
+- **Stage 7.5 成立标准**:在已有单居民 Runtime 闭环上,STS 实验链完成收口,ASR → RuntimeCore LLM → TTS 正式语音主链、插话 / Stop、流式播放与字幕、Runtime-owned Memory / Tool / Permission 路由、Studio Next 1.0 与真实资产联调均按 7.5.1–7.5.28 通过验收。
 
 - **Stage 7 Extended Demo 标准(7.6–7.12)**:行业居民、双居民、屏幕指导、隔离验证、展示版体验打磨、Demo Lock 与录屏展示按各段 Gate 单独评审。
 
@@ -450,6 +479,6 @@ Stage 7 只做 AR 铺垫。Stage 8 才开始:iOS / Android App、AR 相机、空
 
 ## 当前 Stage 7.5 口径
 
-Stage 7.5 已从早期录音转文字入口重排为原生全双工 STS 主链 + STT / LLM / TTS 级联降级 + Studio Next 1.0 重构 + 真实资产联调。
+Stage 7.5 已从早期录音转文字入口重排为原生全双工 STS 实验链收口 + ASR → RuntimeCore LLM → TTS 正式语音主链 + Studio Next 1.0 重构 + 真实资产联调。Stage 7.5.10 已以 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE` 收口，Qwen Omni 端到端 STS 不再作为正式默认主链。
 
 实时语音必须由 RuntimeCore 持有会话、Provider 路由、Memory、Tool / Permission 编排与取消语义。Stage 7.5 仍不做 always-on 麦克风、未授权后台监听、唤醒词、声纹识别、多设备并行主脑、精准 viseme 或真实口腔同步。本次口径对齐不改 Runtime API、DR schema 或 Store schema。
