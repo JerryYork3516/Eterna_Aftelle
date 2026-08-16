@@ -3,7 +3,7 @@
 > 系统骨架。本文件定义 Stage 7 的模块结构、运行链路、红线与接口契约。
 > 配套:03_dev_plan.md v8 + 06_product_design.md v8 + 04_code_standards.md + 05_dev_guide.md。
 > 文档职责:AGENTS.md 是工作入口;本文件是架构事实源;04_code_standards.md 是代码事实源。冲突时,红线以"02_architecture.md + 04_code_standards.md 一致版本"为准,AGENTS.md 不覆盖架构事实。
-> **Stage 7.5 当前口径:**允许用户主动启动的前台实时语音会话。Stage 7.5.10 已以 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE` 收口，Qwen Omni 端到端 STS 不再作为正式主链；Stage 7.5.11 将建立 ASR → RuntimeCore LLM → TTS 正式语音主链。RuntimeCore 仍是实时会话、Provider 路由、Memory、Tool / Permission 编排和取消语义的唯一 owner;不改 Runtime API contract / DR schema / Store schema。
+> **Stage 7.5 当前口径:**允许用户主动启动的前台语音交互。Stage 7.5.10 已以 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE` 收口，Qwen Omni 端到端 STS 不再作为正式主链；Stage 7.5.11 的 ASR → RuntimeCore LLM → TTS Cascaded Speech Route 定位为语音消息、Realtime Speech 可靠 fallback 与低成本 / 高兼容语音链。RuntimeCore 仍是 Provider 路由、Memory、Tool / Permission 编排和取消语义的唯一 owner;不改 Runtime API contract / DR schema / Store schema。
 
 > **G0 已锁定:** Runtime 选 A:**Swift RuntimeCore**(App 内置运行内核);DR 读取以真实 DR v0.3 与 `dr_contract_v0_3.md` 为准;真实 LLM 只能走 `RuntimeCore ProviderRouter → ProviderAdapter → ExecutionEngine`,UI 不直连模型。Studio(Python)是产出 `.digital_resident` 的上游;调度/Agent/未来扩展的核心都在 Aftelle RuntimeCore。
 > **Boundary 权威源:** 4 条 Invariants 的权威定义见 `aftelle_runtime_boundary.md §1`。本文件只做本地化落点说明,不得复制或改写边界。
@@ -14,7 +14,7 @@
 
 Stage 7 做一个 **macOS 桌面展示版**:能运行 DR、能记忆、能说话、能展示粒子生命体、能双居民协作、能做 Aftelle 内部屏幕指导原型,并最终稳定录屏。
 
-Stage 7.5 的当前执行范围以 `03_dev_plan.md` 中 7.5.1–7.5.28 为唯一规划权威:原生实时语音实验底座收口、ASR → RuntimeCore LLM → TTS 正式语音主链、Studio Next 1.0 重构与真实资产联调。7.6–7.12 的后续展示节点仍各自 Gate。
+Stage 7.5 的当前执行范围以 `03_dev_plan.md` 中 7.5.1–7.5.28 为唯一规划权威:原生实时语音实验底座收口、ASR → RuntimeCore LLM → TTS Cascaded Speech Route、Studio Next 1.0 重构与真实资产联调。7.6–7.12 的后续展示节点仍各自 Gate。
 
 **技术栈定调:** Swift + SwiftUI(外壳)+ Metal(粒子渲染)+ **Swift RuntimeCore(内置运行内核)** + SQLite(本地存储)+ 本地 Provider 配置只保存 `key_ref`(真实 secret 在 Apple Keychain)+ macOS Audio Host(麦克风、设备路由、播放等平台资源)+ RuntimeCore ProviderRouter / ProviderAdapter 链路。`NativeSpeechProvider` / Qwen Omni Adapter 暂留为实验 / 参考实现。Apple 生态优先(LiDAR + Metal);未来非 Apple 端由 Python 承担运行逻辑,身体重做、逻辑经契约复用。
 
@@ -240,8 +240,8 @@ Abstract Bust Avatar 是 platform-macos 渲染层规划:7.3 只预留 `avatar_mo
 负责:TTS 请求、音频播放、字幕基础与同步、启动/导入/退出音效、停止/打断说话。
 **打断必须复用 7.1.10 统一中断 / 取消语义。**
 
-### 3.10.1 Realtime Speech Host / 正式语音主链
-Stage 7.5 实现用户主动启动的前台实时语音会话。Qwen Omni 端到端 STS 作为正式语音主链的定位已被替代；`NativeSpeechProvider` / Qwen Omni Adapter 暂留为实验 / 参考实现，不作为正式默认主链。Stage 7.5.11 的正式语音主链为 ASR → RuntimeCore LLM → TTS。
+### 3.10.1 Realtime Speech Host / Cascaded Speech Route
+Stage 7.5.11 实现用户主动启动的前台语音消息链。Qwen Omni 端到端 STS 作为正式语音主链的定位已被替代；`NativeSpeechProvider` / Qwen Omni Adapter 暂留为实验 / 参考实现，不作为正式默认主链。Cascaded Speech Route 为 ASR → RuntimeCore LLM → TTS。
 
 Audio Host 负责 macOS 麦克风权限、采集、设备路由、播放与实际播放状态;Host 只上报平台事实,不拥有会话业务语义。
 
@@ -264,6 +264,8 @@ Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS
 
 其中 Host 平台事实经 App Controller / Orchestration 进入 RuntimeCore，ASR / 现有 LLM / TTS 仍由统一 ProviderRouter / ProviderAdapter 路由，输出通过 Runtime standard events 投影到播放、字幕、粒子与现有对话历史。
 
+产品边界：用户每次主动启动并完成一段语音，系统返回一段居民语音消息；该次消息完成后结束本次前台语音交互，下一条消息再次由用户主动启动。该链同时作为独立 Realtime Speech 不可用或不适合时的可靠 fallback，以及低成本 / 高兼容语音链。它不承诺 continuous full-duplex、持续听说、自然 turn-taking 或播放中实时语义插话。
+
 7.5.11-A1 在 RuntimeCore 内以 `ASRProvider` / `TTSProvider` 两个窄协议固定厂商无关边界：ASR 只消费 `.aec3Processed` PCM 并产生 transcript / activity / lifecycle 事实；final transcript 必须调用 RuntimeCore `requestResidentReply`，该入口继续走现有 ExecutionEngine / ProviderRouter 文本 LLM 路由。TTS 只消费该入口返回的 canonical response text 和 provider-neutral VoiceProfile / emotion / pace / style，输出 streaming PCM 及 started / done / cancel / error。两类 Adapter 都不持有 Session / Memory / Tool / Permission / generation decision，不得改写回答文本；provider `voice_id` 不进入 DR。
 
 7.5.11-A2 的 Qwen Realtime ASR Adapter 复用既有 Realtime WebSocket transport 与安全凭据读取链。AEC3 内部继续固定 48 kHz / mono / 10 ms；Adapter 边界接受 Audio Host 交付的 24 kHz 或 48 kHz AEC 后 PCM16，并统一转为 16 kHz / mono / PCM16。Qwen `speech_started` / `speech_stopped` 只映射 ASR activity；实时预览按 `text + stash` 合并，正式 final 只来自 `completed.transcript`。A2 不提交 RuntimeCore formal turn，不调用 LLM / TTS；该连接由 A3 承接。
@@ -272,14 +274,16 @@ Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS
 
 7.5.11-A4 的 Qwen Realtime TTS Adapter 复用既有 Realtime WebSocket transport、Keychain credential reader、workspace endpoint 解析与 ProviderRouter 注入点。它只把 provider-neutral VoiceProfile 映射为本地 Provider voice binding，把 locale / pace / emotion / style 映射为 Qwen `language_type` / `speech_rate` / `instructions`，并将 canonical response text 原样写入 `input_text_buffer.append.text`。服务端 Base64 `response.audio.delta` 只解码为 24 kHz / mono / signed PCM16 LE；cancel 或 stale generation 后不再产生有效音频事件。A4 不启动正式 TTS 请求，也不接 Playback / Subtitle / Particle / Dialogue History；全链接线属于 A5。
 
-7.5.11-A5 由 App Controller / Orchestration 把默认前台语音入口接入正式 Speech Route：AEC 后 PCM → ASR，partial / final 投影用户字幕；锁定 final → RuntimeCore 正式认知链；canonical resident response 原文 → 居民字幕与 TTS；TTS 的 24 kHz / mono / PCM16 → 既有 `MacSpeechAudioOutputHost`。既有 Playback 事实驱动 speaking / idle 粒子表达，只有当前 generation 的 Playback completed 才调用 RuntimeCore 一次性提交 Session / Memory / Dialogue History；cancel、stale、播放失败或重复 completion 不持久化。Qwen Omni 仍仅为实验 / 参考；A5 不进入 A6 声学问题。
+7.5.11-A5 由 App Controller / Orchestration 把默认前台语音入口接入 Cascaded Speech Route：AEC 后 PCM → ASR，partial / final 投影用户字幕；锁定 final → RuntimeCore 正式认知链；canonical resident response 原文 → 居民字幕与 TTS；TTS 的 24 kHz / mono / PCM16 → 既有 `MacSpeechAudioOutputHost`。既有 Playback 事实驱动 speaking / idle 粒子表达，只有当前 generation 的 Playback completed 才调用 RuntimeCore 一次性提交 Session / Memory / Dialogue History；cancel、stale、播放失败或重复 completion 不持久化。Qwen Omni 仍仅为实验 / 参考；A5 不进入 A6 声学问题。
 
 实验 / 参考链路可继续保留 `NativeSpeechProvider` / Qwen Omni Adapter，但不得成为正式默认选路。
 
 ### 3.10.2 AEC 保留资产与迁移边界
 Stage 7.5.10 保留 WebRTC AEC3 XCFramework、AEC Bridge、AEC Host，以及 delay / route / drift / diagnostic 基础，不把未完成的真机声学验收声明为通过。
 
-USB / 蓝牙外置输出下的稳定插话、resident-only 零 self-interrupt、double-talk、source gate / near-end detection、render / capture alignment、AEC 完整真机矩阵与 30 分钟稳定性统一迁移至 7.5.11-A6；A0 不实现这些项。
+USB / 蓝牙外置输出下的稳定插话、resident-only 零 self-interrupt、double-talk、source gate / near-end detection、render / capture alignment、AEC 真机矩阵与稳定性曾进入 7.5.11-A6。相关实现与诊断资产继续保留，但不再作为 Cascaded 语音消息链达到 continuous full-duplex 的产品证明；未执行的外置设备矩阵不得表述为已通过。
+
+不得继续通过修改 Cascaded lifecycle、VAD、AEC、source gate 或插话阈值强行逼近 GPT-Live 类体验。持续听说与自然实时插话属于后续独立 Realtime Speech / Omni Route，本阶段不确定新的 Stage 编号，也不提前实现。
 
 禁止:always-on 麦克风、未授权后台监听、唤醒词、声纹识别、后台持续 voice loop、UI / Host / Adapter 直连 Provider、AEC / ASR / TTS / Host 拥有 Runtime / Session / Memory / Interrupt decision,或绕过 RuntimeCore 执行 Tool / Memory / Permission 操作。
 
@@ -339,7 +343,7 @@ EnvironmentEvent(type: "user.text", payload: ["input_text": "..."])
 ```
 RuntimeCore 契约仍按 `runtime_api_contract.md` 保留 `input_text` 兼容字段(长期内核模型是 environment→resident 事件)。
 
-**正式语音主链:**
+**Cascaded Speech Route:**
 ```
 macOS Audio Host → App Controller → Orchestration Kernel → RuntimeCore ProviderRouter
 → ASR Adapter → final transcript → RuntimeCore ExecutionEngine → ProviderRouter → LLM Adapter
@@ -347,7 +351,7 @@ macOS Audio Host → App Controller → Orchestration Kernel → RuntimeCore Pro
 → Runtime standard events → playback / subtitle / ParticleCore / Session / Memory
 ```
 
-ASR、现有 RuntimeCore LLM、TTS 分段独立可替换，并复用同一 Runtime owner 和 Session / Memory 语义。Qwen Omni 端到端 STS 只保留为实验 / 参考选路。Host 仅处理平台音频资源与状态展示；AEC / ASR / TTS / Host 不拥有 Runtime、Session、Memory 或 Interrupt decision。
+ASR、现有 RuntimeCore LLM、TTS 分段独立可替换，并复用同一 Runtime owner 和 Session / Memory 语义。Qwen Omni 端到端 STS 只保留为实验 / 参考选路。Host 仅处理平台音频资源与状态展示；AEC / ASR / TTS / Host 不拥有 Runtime、Session、Memory 或 Interrupt decision。Cascaded 路线按一条语音消息一个显式前台交互运行，不以居民播放期间插话作为产品验收项。
 
 **双居民链路:**
 ```

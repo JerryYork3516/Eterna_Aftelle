@@ -95,16 +95,19 @@ FAIL:后台主动运行、复杂调度、无界 planner / 自主工具系统、�
 - [ ] 文档级 `avatar_mode: particle_core / abstract_bust` 只作为本地 UI / 渲染层预留。
 - [ ] Stage 7.3 未实现完整半身 Avatar、写实 Avatar、AR / 3D 数字人、骨骼、Blendshape、精准 lip sync、viseme 或 Avatar 编辑器。
 - [ ] Aftelle 未为 Avatar 推理人格 / 情绪,只渲染 RuntimeCore 返回的 `visual_state` / `resident_state`。
-- [ ] 实时语音仅在用户主动启动的前台会话中运行。
-- [ ] 实时会话、Provider 路由、Memory、Tool / Permission 编排和取消语义均由 RuntimeCore 拥有。
-- [ ] 正式语音主链为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History。
+- [ ] Cascaded 语音消息仅在用户主动启动的前台交互中运行，一条消息完成后结束本次交互。
+- [ ] Provider 路由、Memory、Tool / Permission 编排和取消语义均由 RuntimeCore 拥有。
+- [ ] Cascaded Speech Route 为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History。
 - [ ] ASR / 现有 RuntimeCore LLM / TTS 三段独立可替换,且未新增第二套 `LanguageModelProvider`。
 - [ ] 语音与文本复用现有十三层、Session、Memory、Tool / Permission 与 Dialogue History,未建立旁路。
 - [ ] Qwen Omni Adapter 仅保留为实验 / 参考实现,未作为正式默认主链。
 - [ ] Apple 本地 ASR / TTS 未作为正式链。
 - [ ] AEC / ASR / TTS / Host 未拥有 Runtime、Session、Memory 或 Interrupt decision。
 - [ ] TTS 未改写 RuntimeCore canonical response text，provider `voice_id` 未进入 DR。
-- [ ] 7.5.10 保留 AEC3 / Bridge / Host / 诊断基础,未通过的外置输出插话、self-interrupt、double-talk、source gate / near-end、alignment、AEC 真机矩阵与 30 分钟稳定性统一迁移至 7.5.11-A6。
+- [ ] AEC3 / Bridge / Host / 诊断及 A6 声学 / 取消资产继续保留，未执行的外置设备矩阵未被表述为已通过。
+- [ ] Cascaded 路线未承诺 continuous full-duplex、持续听说、自然 turn-taking 或播放中实时语义插话。
+- [ ] 未继续修改 Cascaded lifecycle、VAD、AEC、source gate 或插话阈值以强行逼近 GPT-Live 类体验。
+- [ ] 后续独立 Realtime Speech / Omni Route 未在当前 Stage 下提前实现或擅自编号。
 - [ ] UI / Host / Adapter 未直连 ASR / LLM / TTS Provider,未直接写 Memory 或执行 Tool。
 - [ ] 未实现 always-on 麦克风或未授权后台监听。
 - [ ] 未实现唤醒词。
@@ -112,7 +115,7 @@ FAIL:后台主动运行、复杂调度、无界 planner / 自主工具系统、�
 - [ ] 未绕过权限门禁做跨 App / 系统操作。
 - [ ] 未实现多设备并行主脑、精准 viseme 或真实口腔同步。
 
-PASS:文档级 `avatar_mode` 预留不扩展为 Stage 8 身体系统;Stage 7.5 前台实时语音按 `03_dev_plan.md` 执行,且 Runtime ownership、Provider / Memory / Tool / Permission 边界与隐私限制全部保持。
+PASS:文档级 `avatar_mode` 预留不扩展为 Stage 8 身体系统;Stage 7.5 Cascaded 语音消息按 `03_dev_plan.md` 执行,且 Runtime ownership、Provider / Memory / Tool / Permission 边界与隐私限制全部保持；独立 Realtime Speech / Omni Route 未被提前实现。
 REWORK:开始实现 `avatar_mode` 代码、渲染接口或 Debug Panel 展示,但未说明 7.3 范围与边界。
 FAIL:UI / Host / Adapter 绕过 Controller / Orchestration / RuntimeCore 拥有 Provider、Memory、Tool / Permission 或取消语义;引入 always-on / 未授权后台监听 / 唤醒词 / 声纹识别;或把写实 Avatar / AR / 3D 数字人 / 精准 lip sync / Avatar 编辑器推进 Stage 7.3。
 
