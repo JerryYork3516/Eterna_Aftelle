@@ -270,6 +270,8 @@ Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS
 
 7.5.11-A3 由 RuntimeCore 锁定当前 generation 与 Session 中首个有效 ASR final，并以一次性 claim 提交既有 `requestResidentReply` 正式认知入口。该入口继续复用同一上下文投影、Memory、ExecutionEngine / ProviderRouter、Session 与 Dialogue History，Tool / Permission ownership 也继续留在 RuntimeCore；partial、cancelled、stale、空白、未锁定或重复 final 均不触发正式轮次。`RuntimeResidentReply.replyText` 是唯一 canonical resident response text；A3 不启动 TTS，A4 只能消费该文本边界。
 
+7.5.11-A4 的 Qwen Realtime TTS Adapter 复用既有 Realtime WebSocket transport、Keychain credential reader、workspace endpoint 解析与 ProviderRouter 注入点。它只把 provider-neutral VoiceProfile 映射为本地 Provider voice binding，把 locale / pace / emotion / style 映射为 Qwen `language_type` / `speech_rate` / `instructions`，并将 canonical response text 原样写入 `input_text_buffer.append.text`。服务端 Base64 `response.audio.delta` 只解码为 24 kHz / mono / signed PCM16 LE；cancel 或 stale generation 后不再产生有效音频事件。A4 不启动正式 TTS 请求，也不接 Playback / Subtitle / Particle / Dialogue History；全链接线属于 A5。
+
 实验 / 参考链路可继续保留 `NativeSpeechProvider` / Qwen Omni Adapter，但不得成为正式默认选路。
 
 ### 3.10.2 AEC 保留资产与迁移边界

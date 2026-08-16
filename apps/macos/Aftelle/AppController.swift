@@ -66,6 +66,17 @@ nonisolated private enum Stage7511QwenASRConfiguration {
     )
 }
 
+nonisolated private enum Stage7511QwenTTSConfiguration {
+    static let value = QwenRealtimeTTSConfiguration(
+        endpoint: URL(
+            string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-instruct-flash-realtime"
+        )!,
+        modelID: "qwen3-tts-instruct-flash-realtime",
+        keyRef: ProviderKeychainStore.qwenKeyRef,
+        voiceBindings: ["resident-default": "Cherry"]
+    )
+}
+
 nonisolated struct RealtimeSpeechPlaybackSubtitleIdentity:
     Sendable,
     Equatable {
@@ -468,7 +479,8 @@ final class AppController: ObservableObject {
         runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
             credentialReader: credentialStore,
             diagnosticBuffer: speechDiagnosticBuffer,
-            asrConfiguration: Stage7511QwenASRConfiguration.value
+            asrConfiguration: Stage7511QwenASRConfiguration.value,
+            ttsConfiguration: Stage7511QwenTTSConfiguration.value
         )
         #else
         runtimeCore = RuntimeCore(providerCredentialReader: credentialStore)
