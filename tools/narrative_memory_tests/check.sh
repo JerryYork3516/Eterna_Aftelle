@@ -15,7 +15,7 @@ trap 'rm -rf "$build_dir"' EXIT
 
 mkdir -p "$runtime_home"
 
-expected_sha=84098dd0d6d116572b5282ec2d07417e43d1c6cc161f07cff3beb306f9e60cf2
+expected_sha=f30d4b2ac33c3598918de992a8178f90b776109d54e3ac33fd88764dde7d1881
 before_sha=$(shasum -a 256 "$dr_path" | awk '{print $1}')
 before_size=$(stat -f '%z' "$dr_path")
 before_mtime=$(stat -f '%m' "$dr_path")

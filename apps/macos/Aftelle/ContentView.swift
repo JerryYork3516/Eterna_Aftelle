@@ -603,7 +603,7 @@ struct ParticleDebugWindow: View {
             startSpeechAudioCapture:
                 controller.startSpeechAudioCapture,
             startNativeSpeechInputBridge:
-                controller.startNativeSpeechInputBridge,
+                controller.startFormalSpeechRoute,
             stopSpeechAudioCapture:
                 controller.stopSpeechAudioCapture,
             exportRealtimeSpeechDiagnostics:

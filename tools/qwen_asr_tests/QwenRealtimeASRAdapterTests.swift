@@ -282,6 +282,12 @@ private struct QwenRealtimeASRAdapterTests {
     }
 
     private static func testDownsamplerValidation() throws {
+        let converted24k = try QwenASRPCM16Downsampler
+            .convert24kMonoTo16k(pcm16([0, 10, 20, 30, 40, 50]))
+        expect(
+            pcm16Samples(converted24k) == [0, 15, 30, 45],
+            "24 kHz post-AEC PCM converts deterministically to 16 kHz"
+        )
         do {
             _ = try QwenASRPCM16Downsampler.convert48kMonoTo16k(
                 Data(repeating: 0, count: 4)

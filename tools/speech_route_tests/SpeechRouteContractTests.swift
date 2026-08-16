@@ -77,11 +77,16 @@ private actor TestASRProvider: ASRProvider {
 
 private actor TestTTSProvider: TTSProvider {
     private var events: [TTSEvent] = []
+    private var activeGeneration: UInt64?
     private(set) var requests: [TTSSynthesisRequest] = []
     private(set) var cancelledGenerations: [UInt64] = []
     private(set) var closedGenerations: [UInt64] = []
 
     func start(request: TTSSynthesisRequest) async throws {
+        guard activeGeneration == nil else {
+            throw SpeechRouteError.invalidConfiguration
+        }
+        activeGeneration = request.generation
         requests.append(request)
         events = [
             TTSEvent(generation: request.generation, kind: .started),
@@ -101,6 +106,9 @@ private actor TestTTSProvider: TTSProvider {
     }
 
     func receive(generation: UInt64) async throws -> TTSEvent {
+        guard activeGeneration == generation else {
+            throw SpeechRouteError.staleGeneration
+        }
         guard !events.isEmpty else {
             throw SpeechRouteError.invalidEvent
         }
@@ -108,12 +116,20 @@ private actor TestTTSProvider: TTSProvider {
     }
 
     func cancel(generation: UInt64) async throws {
+        guard activeGeneration == generation else {
+            throw SpeechRouteError.staleGeneration
+        }
         cancelledGenerations.append(generation)
+        activeGeneration = nil
         events.append(TTSEvent(generation: generation, kind: .cancelled))
     }
 
     func close(generation: UInt64) async throws {
+        guard activeGeneration == generation else {
+            throw SpeechRouteError.staleGeneration
+        }
         closedGenerations.append(generation)
+        activeGeneration = nil
     }
 }
 
@@ -218,6 +234,9 @@ private struct SpeechRouteContractTests {
             final.kind == .finalTranscript("hello resident"),
             "ASR exposes final transcript"
         )
+        _ = try success(await runtime.finishSpeechRouteASR(
+            generation: generation
+        ))
 
         let interactionID = UUID()
         let turn = try turnSuccess(await runtime.submitSpeechRouteASRFinal(
@@ -236,7 +255,7 @@ private struct SpeechRouteContractTests {
             textTransport.requests().count == 1,
             "one locked final creates one existing text-provider request"
         )
-        let orchestration = runtime.runtimeOrchestrationSnapshot().first {
+        var orchestration = runtime.runtimeOrchestrationSnapshot().first {
             $0.id == interactionID
         }
         let completedSteps = orchestration?.steps.filter {
@@ -244,25 +263,109 @@ private struct SpeechRouteContractTests {
         }.map(\.kind) ?? []
         expect(
             orchestration?.result == .success
-                && orchestration?.sessionWriteStatus == .saved,
+                && orchestration?.sessionWriteStatus == .skipped,
             "speech final uses the formal RuntimeCore orchestration"
         )
         expect(
             completedSteps.contains(.contextCompiled)
                 && completedSteps.contains(.memoryChecked)
                 && completedSteps.contains(.providerRouted)
-                && completedSteps.contains(.requestCompleted)
-                && completedSteps.contains(.sessionPersisted),
-            "formal turn compiles context, checks memory, routes and persists"
+                && completedSteps.contains(.requestCompleted),
+            "formal turn compiles context, checks memory and routes"
+        )
+        expect(
+            orchestration?.steps.first(where: {
+                $0.kind == .sessionPersisted
+            })?.status == .pending,
+            "speech persistence waits for playback completion"
         )
         let ttsRequestsAfterFormalTurn = await tts.requests
         expect(ttsRequestsAfterFormalTurn.isEmpty, "A3 does not start TTS")
 
+        let dialogueBeforePlayback = try sessionStore
+            .loadMostRecentDialogueEntries()
+        expect(
+            dialogueBeforePlayback.isEmpty,
+            "canonical response does not persist before playback"
+        )
+
+        let ttsRequest = TTSSynthesisRequest(
+            generation: generation,
+            canonicalResponseText: turn.canonicalResponseText,
+            voiceProfile: SpeechVoiceProfile(
+                profileID: "resident-default",
+                locale: "en-US"
+            ),
+            emotion: "calm",
+            pace: 0.95,
+            style: "conversational"
+        )
+        expectFailure(
+            await runtime.startSpeechRouteTTS(request: TTSSynthesisRequest(
+                generation: generation,
+                canonicalResponseText: "rewritten response",
+                voiceProfile: ttsRequest.voiceProfile,
+                emotion: ttsRequest.emotion,
+                pace: ttsRequest.pace,
+                style: ttsRequest.style
+            )),
+            equals: .invalidEvent,
+            "TTS cannot replace RuntimeCore canonical response text"
+        )
+        _ = try success(await runtime.startSpeechRouteTTS(
+            request: ttsRequest
+        ))
+        let ttsRequests = await tts.requests
+        expect(
+            ttsRequests == [ttsRequest],
+            "RuntimeCore starts TTS with canonical response text"
+        )
+        let started = try await runtime.receiveSpeechRouteTTSEvent(
+            generation: generation
+        )
+        expect(started.kind == .started, "TTS exposes started")
+        let audio = try await runtime.receiveSpeechRouteTTSEvent(
+            generation: generation
+        )
+        guard case .audio(let chunk) = audio.kind else {
+            fatalError("FAILED: TTS exposes streaming PCM")
+        }
+        expect(chunk.bytes == Data([0x01, 0x02]), "TTS streams PCM")
+        let done = try await runtime.receiveSpeechRouteTTSEvent(
+            generation: generation
+        )
+        expect(done.kind == .done, "TTS exposes done")
+        _ = try success(await runtime.finishSpeechRouteTTS(
+            generation: generation
+        ))
+
+        let committed = try success(runtime.commitSpeechRoutePlayback(
+            generation: generation
+        ))
+        expect(
+            committed.canonicalResponseText == turn.canonicalResponseText,
+            "playback commits the same canonical response"
+        )
         let dialogue = try sessionStore.loadMostRecentDialogueEntries()
         expect(
             dialogue.suffix(2).map(\.text)
                 == ["hello resident", "canonical response"],
-            "speech final reuses RuntimeCore dialogue persistence"
+            "completed playback reuses RuntimeCore dialogue persistence"
+        )
+        expectFailure(
+            runtime.commitSpeechRoutePlayback(generation: generation),
+            equals: .staleGeneration,
+            "playback completion is idempotent"
+        )
+        orchestration = runtime.runtimeOrchestrationSnapshot().first {
+            $0.id == interactionID
+        }
+        expect(
+            orchestration?.sessionWriteStatus == .saved
+                && orchestration?.steps.first(where: {
+                    $0.kind == .sessionPersisted
+                })?.status == .completed,
+            "playback completion closes formal persistence"
         )
         expectTurnFailure(
             await runtime.submitSpeechRouteASRFinal(final),
@@ -280,6 +383,35 @@ private struct SpeechRouteContractTests {
             )),
             equals: .emptyTranscript,
             "empty final cannot create a formal turn"
+        )
+
+        let cancelledPendingGeneration = try success(
+            await runtime.startSpeechRouteASR(locale: "en-US")
+        )
+        _ = try await runtime.receiveSpeechRouteASREvent(
+            generation: cancelledPendingGeneration
+        )
+        _ = try await runtime.receiveSpeechRouteASREvent(
+            generation: cancelledPendingGeneration
+        )
+        let cancelledPendingFinal = try await runtime
+            .receiveSpeechRouteASREvent(
+                generation: cancelledPendingGeneration
+            )
+        _ = try success(await runtime.finishSpeechRouteASR(
+            generation: cancelledPendingGeneration
+        ))
+        _ = try turnSuccess(await runtime.submitSpeechRouteASRFinal(
+            cancelledPendingFinal
+        ))
+        _ = try success(await runtime.cancelSpeechRoute(
+            generation: cancelledPendingGeneration
+        ))
+        let dialogueAfterPendingCancel = try sessionStore
+            .loadMostRecentDialogueEntries()
+        expect(
+            dialogueAfterPendingCancel == dialogue,
+            "cancelled canonical response is not persisted before playback"
         )
 
         let nextGeneration = try success(
@@ -329,8 +461,8 @@ private struct SpeechRouteContractTests {
         )
         let cancelledTTSGenerations = await tts.cancelledGenerations
         expect(
-            cancelledTTSGenerations == [nextGeneration],
-            "RuntimeCore owns TTS cancellation"
+            cancelledTTSGenerations.isEmpty,
+            "RuntimeCore does not cancel an unstarted TTS provider"
         )
 
         expect(
@@ -362,39 +494,6 @@ private struct SpeechRouteContractTests {
             "TTS exposes cancelled"
         )
 
-        let ttsRequest = TTSSynthesisRequest(
-            generation: generation,
-            canonicalResponseText: turn.canonicalResponseText,
-            voiceProfile: SpeechVoiceProfile(
-                profileID: "resident-default",
-                locale: "en-US"
-            ),
-            emotion: "calm",
-            pace: 0.95,
-            style: "conversational"
-        )
-        try await executionEngine.startTTS(request: ttsRequest)
-        let ttsRequests = await tts.requests
-        expect(
-            ttsRequests == [ttsRequest],
-            "A1 TTS contract remains available independently for A4"
-        )
-        let started = try await executionEngine.receiveTTSEvent(
-            generation: generation
-        )
-        expect(started.kind == .started, "TTS exposes started")
-        let audio = try await executionEngine.receiveTTSEvent(
-            generation: generation
-        )
-        guard case .audio(let chunk) = audio.kind else {
-            fatalError("FAILED: TTS exposes streaming PCM")
-        }
-        expect(chunk.bytes == Data([0x01, 0x02]), "TTS streams PCM")
-        let done = try await executionEngine.receiveTTSEvent(
-            generation: generation
-        )
-        expect(done.kind == .done, "TTS exposes done")
-
         let closeGeneration = try success(
             await runtime.startSpeechRouteASR(locale: "en-US")
         )
@@ -403,13 +502,17 @@ private struct SpeechRouteContractTests {
         ))
         let closedASRGenerations = await asr.closedGenerations
         expect(
-            closedASRGenerations == [closeGeneration],
+            closedASRGenerations == [
+                generation,
+                cancelledPendingGeneration,
+                closeGeneration
+            ],
             "RuntimeCore closes ASR"
         )
         let closedTTSGenerations = await tts.closedGenerations
         expect(
-            closedTTSGenerations == [closeGeneration],
-            "RuntimeCore closes TTS"
+            closedTTSGenerations == [generation],
+            "RuntimeCore closes only the active TTS provider"
         )
 
         print("speech_route_contract_checks=\(checks)")
@@ -435,6 +538,18 @@ private struct SpeechRouteContractTests {
         case .failure(let error):
             throw error
         }
+    }
+
+    private static func expectFailure<T>(
+        _ result: Result<T, SpeechRouteError>,
+        equals expected: SpeechRouteError,
+        _ message: String
+    ) {
+        guard case .failure(let error) = result,
+              error == expected else {
+            fatalError("FAILED: \(message)")
+        }
+        checks += 1
     }
 
     private static func expectTurnFailure(

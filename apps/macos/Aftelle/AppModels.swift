@@ -1522,6 +1522,80 @@ public final class OrchestrationKernel {
     }
     #endif
 
+    func startSpeechRouteASR(
+        locale: String? = nil
+    ) async -> Result<UInt64, SpeechRouteError> {
+        await runtimeCore.startSpeechRouteASR(locale: locale)
+    }
+
+    func sendSpeechRouteASRAudio(
+        _ input: ASRAudioInput
+    ) async throws {
+        try await runtimeCore.sendSpeechRouteASRAudio(input)
+    }
+
+    func receiveSpeechRouteASREvent(
+        generation: UInt64
+    ) async throws -> ASREvent {
+        try await runtimeCore.receiveSpeechRouteASREvent(
+            generation: generation
+        )
+    }
+
+    func submitSpeechRouteASRFinal(
+        _ event: ASREvent,
+        interactionID: UUID
+    ) async -> Result<SpeechRouteTurnResult, SpeechRouteTurnError> {
+        await runtimeCore.submitSpeechRouteASRFinal(
+            event,
+            interactionID: interactionID
+        )
+    }
+
+    func startSpeechRouteTTS(
+        request: TTSSynthesisRequest
+    ) async -> Result<Void, SpeechRouteError> {
+        await runtimeCore.startSpeechRouteTTS(request: request)
+    }
+
+    func receiveSpeechRouteTTSEvent(
+        generation: UInt64
+    ) async throws -> TTSEvent {
+        try await runtimeCore.receiveSpeechRouteTTSEvent(
+            generation: generation
+        )
+    }
+
+    func finishSpeechRouteASR(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        await runtimeCore.finishSpeechRouteASR(generation: generation)
+    }
+
+    func finishSpeechRouteTTS(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        await runtimeCore.finishSpeechRouteTTS(generation: generation)
+    }
+
+    func commitSpeechRoutePlayback(
+        generation: UInt64
+    ) -> Result<SpeechRouteTurnResult, SpeechRouteError> {
+        runtimeCore.commitSpeechRoutePlayback(generation: generation)
+    }
+
+    func cancelSpeechRoute(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        await runtimeCore.cancelSpeechRoute(generation: generation)
+    }
+
+    func closeSpeechRoute(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        await runtimeCore.closeSpeechRoute(generation: generation)
+    }
+
     func startNativeSpeechInput(
         profile: NativeSpeechProviderProfile,
         captureGeneration: UInt64

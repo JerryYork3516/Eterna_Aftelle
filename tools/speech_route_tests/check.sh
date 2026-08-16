@@ -63,9 +63,27 @@ if rg -n 'SpeechMemory|SpeechHistory' \
   exit 1
 fi
 
+rg -q 'controller\.startFormalSpeechRoute' \
+  "$repo_root/apps/macos/Aftelle/ContentView.swift"
+for operation in startSpeechRouteASR submitSpeechRouteASRFinal startSpeechRouteTTS commitSpeechRoutePlayback; do
+  rg -q "${operation}" \
+    "$repo_root/apps/macos/Aftelle/AppController.swift"
+done
+rg -q 'speechAudioOutputHost.*\.enqueue|speechAudioOutputHost' \
+  "$repo_root/apps/macos/Aftelle/AppController.swift"
+rg -q 'defersSuccessfulCommit: true' \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+rg -q 'playback_pending' \
+  "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+rg -q 'input\.sampleRate == 48_000 || input\.sampleRate == 24_000' \
+  "$repo_root/apps/macos/RuntimeCore/QwenRealtimeASRAdapter.swift"
+
 echo "speech_route_provider_neutrality=PASS"
 echo "speech_route_duplicate_llm=PASS"
 echo "speech_route_execution_gate=PASS"
 echo "speech_route_final_claim=PASS"
 echo "speech_route_a3_tts_boundary=PASS"
 echo "speech_route_parallel_storage=PASS"
+echo "speech_route_a5_formal_wiring=PASS"
+echo "speech_route_playback_commit_gate=PASS"
+echo "speech_route_host_format_boundary=PASS"

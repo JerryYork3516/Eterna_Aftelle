@@ -90,11 +90,12 @@ rg -q 'nativeSpeechProvider.send' "$router"
 rg -q 'codec.audioAppend' "$adapter"
 echo "native_speech_input_bridge_execution_chain=PASS"
 
-rg -q 'controller.startNativeSpeechInputBridge' "$content_view"
+rg -q 'controller.startFormalSpeechRoute' "$content_view"
+rg -q 'func startNativeSpeechInputBridge' "$controller"
 rg -q 'startNativeSpeechBridge:' "$content_view"
 rg -q 'await startNativeSpeechBridge()' "$content_view"
 rg -q 'particleDebug.audioHost.startBridge' "$localization_en" "$localization_zh"
-echo "native_speech_input_bridge_debug_entry=PASS"
+echo "native_speech_formal_default_and_experiment_entry=PASS"
 
 if rg -q 'Qwen|ProviderRouter|ExecutionEngine|RuntimeCore' "$bridge"; then
   echo "native_speech_input_bridge_host_ownership=FAIL"

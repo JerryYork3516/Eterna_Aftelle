@@ -1182,6 +1182,14 @@ public final class RuntimeCore {
         var isSubmitted: Bool
     }
 
+    private struct SpeechRoutePendingTurn {
+        let generation: UInt64
+        let inputText: String
+        let reply: RuntimeResidentReply
+        let session: RuntimeSessionContext
+        let interactionID: UUID?
+    }
+
     private struct NativeSpeechTurnCommitIdentity: Equatable {
         let interactionID: NativeSpeechInteractionID
         let turnNumber: UInt64
@@ -1260,6 +1268,9 @@ public final class RuntimeCore {
     private var activeExpressionRequestID: UUID?
     private var speechRouteGeneration: UInt64 = 0
     private var speechRouteASRFinalState: SpeechRouteASRFinalState?
+    private var speechRoutePendingTurn: SpeechRoutePendingTurn?
+    private var speechRouteASRActive = false
+    private var speechRouteTTSActive = false
     private let nativeSpeechInteractionGate =
         RuntimeNativeSpeechInteractionGate()
     private nonisolated let nativeSpeechInputGate = NativeSpeechInputGate()
@@ -1342,6 +1353,9 @@ public final class RuntimeCore {
         activeExpressionRequestID = nil
         speechRouteGeneration &+= 1
         speechRouteASRFinalState = nil
+        speechRoutePendingTurn = nil
+        speechRouteASRActive = false
+        speechRouteTTSActive = false
         let generation = speechRouteGeneration
         do {
             try await executionEngine.startASR(
@@ -1350,6 +1364,7 @@ public final class RuntimeCore {
                     locale: locale
                 )
             )
+            speechRouteASRActive = true
             return .success(generation)
         } catch let error as SpeechRouteError {
             return .failure(error)
@@ -1433,7 +1448,8 @@ public final class RuntimeCore {
 
         let result = await requestResidentReply(
             inputText: inputText,
-            interactionID: interactionID
+            interactionID: interactionID,
+            defersSuccessfulCommit: true
         )
         guard event.generation == speechRouteGeneration else {
             return .failure(.staleGeneration)
@@ -1442,10 +1458,44 @@ public final class RuntimeCore {
         case .failure(let error):
             return .failure(.runtime(error))
         case .success(let reply):
+            guard let sessionContext,
+                  sessionContext == finalState.session else {
+                return .failure(.staleGeneration)
+            }
+            speechRoutePendingTurn = SpeechRoutePendingTurn(
+                generation: event.generation,
+                inputText: inputText,
+                reply: reply,
+                session: sessionContext,
+                interactionID: interactionID
+            )
             return .success(SpeechRouteTurnResult(
                 generation: event.generation,
                 reply: reply
             ))
+        }
+    }
+
+    func startSpeechRouteTTS(
+        request: TTSSynthesisRequest
+    ) async -> Result<Void, SpeechRouteError> {
+        guard request.generation == speechRouteGeneration,
+              let pendingTurn = speechRoutePendingTurn,
+              pendingTurn.generation == request.generation,
+              pendingTurn.session == sessionContext else {
+            return .failure(.staleGeneration)
+        }
+        guard request.canonicalResponseText == pendingTurn.reply.replyText else {
+            return .failure(.invalidEvent)
+        }
+        do {
+            try await executionEngine.startTTS(request: request)
+            speechRouteTTSActive = true
+            return .success(())
+        } catch let error as SpeechRouteError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
         }
     }
 
@@ -1464,6 +1514,101 @@ public final class RuntimeCore {
         return event
     }
 
+    func finishSpeechRouteASR(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        guard generation == speechRouteGeneration else {
+            return .failure(.staleGeneration)
+        }
+        guard speechRouteASRActive else { return .success(()) }
+        do {
+            try await executionEngine.closeASR(generation: generation)
+            speechRouteASRActive = false
+            return .success(())
+        } catch let error as SpeechRouteError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
+    func finishSpeechRouteTTS(
+        generation: UInt64
+    ) async -> Result<Void, SpeechRouteError> {
+        guard generation == speechRouteGeneration else {
+            return .failure(.staleGeneration)
+        }
+        guard speechRouteTTSActive else { return .success(()) }
+        do {
+            try await executionEngine.closeTTS(generation: generation)
+            speechRouteTTSActive = false
+            return .success(())
+        } catch let error as SpeechRouteError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
+    func commitSpeechRoutePlayback(
+        generation: UInt64
+    ) -> Result<SpeechRouteTurnResult, SpeechRouteError> {
+        guard generation == speechRouteGeneration,
+              let pendingTurn = speechRoutePendingTurn,
+              pendingTurn.generation == generation,
+              pendingTurn.session == sessionContext else {
+            return .failure(.staleGeneration)
+        }
+        speechRoutePendingTurn = nil
+
+        let relationshipControl = relationshipUserControl(
+            for: pendingTurn.inputText
+        )
+        if relationshipControl != nil {
+            _ = applyRelationshipUserControl(relationshipControl)
+        } else {
+            _ = evaluateRelationshipEvidence(
+                pendingTurn.reply.relationshipEvidenceCandidates
+            )
+        }
+        let narrativeMemoryControl = narrativeMemoryUserControl(
+            for: pendingTurn.inputText
+        )
+        _ = applyNarrativeMemoryUserControl(
+            narrativeMemoryControl,
+            input: pendingTurn.inputText,
+            residentID: pendingTurn.session.residentID
+        )
+        _ = evaluateNarrativeMemoryCandidates(
+            pendingTurn.reply.narrativeMemoryCandidates,
+            session: pendingTurn.session,
+            userControl: narrativeMemoryControl
+        )
+        _ = commitExpressionResult(
+            pendingTurn.reply.expression,
+            expectedSession: pendingTurn.session
+        )
+        guard persistResidentDialogueExchange(
+            userInput: pendingTurn.inputText,
+            residentReply: pendingTurn.reply.replyText,
+            session: pendingTurn.session
+        ) else {
+            completeSpeechRoutePersistence(
+                interactionID: pendingTurn.interactionID,
+                succeeded: false
+            )
+            return .failure(.transportFailure)
+        }
+        completeSpeechRoutePersistence(
+            interactionID: pendingTurn.interactionID,
+            succeeded: true
+        )
+        return .success(SpeechRouteTurnResult(
+            generation: generation,
+            reply: pendingTurn.reply
+        ))
+    }
+
     func cancelSpeechRoute(
         generation: UInt64
     ) async -> Result<Void, SpeechRouteError> {
@@ -1473,6 +1618,7 @@ public final class RuntimeCore {
         activeExpressionRequestID = nil
         speechRouteGeneration &+= 1
         speechRouteASRFinalState = nil
+        speechRoutePendingTurn = nil
         let providerError = await stopSpeechRouteProviders(
             generation: generation,
             close: false
@@ -1492,6 +1638,7 @@ public final class RuntimeCore {
         activeExpressionRequestID = nil
         speechRouteGeneration &+= 1
         speechRouteASRFinalState = nil
+        speechRoutePendingTurn = nil
         let providerError = await stopSpeechRouteProviders(
             generation: generation,
             close: true
@@ -1507,32 +1654,38 @@ public final class RuntimeCore {
         close: Bool
     ) async -> SpeechRouteError? {
         var firstError: SpeechRouteError?
-        do {
-            if close {
-                try await executionEngine.closeASR(generation: generation)
-            } else {
-                try await executionEngine.cancelASR(generation: generation)
+        if speechRouteASRActive {
+            do {
+                if close {
+                    try await executionEngine.closeASR(generation: generation)
+                } else {
+                    try await executionEngine.cancelASR(generation: generation)
+                }
+            } catch let error as SpeechRouteError {
+                if error != .unavailable {
+                    firstError = error
+                }
+            } catch {
+                firstError = .transportFailure
             }
-        } catch let error as SpeechRouteError {
-            if error != .unavailable {
-                firstError = error
-            }
-        } catch {
-            firstError = .transportFailure
+            speechRouteASRActive = false
         }
 
-        do {
-            if close {
-                try await executionEngine.closeTTS(generation: generation)
-            } else {
-                try await executionEngine.cancelTTS(generation: generation)
+        if speechRouteTTSActive {
+            do {
+                if close {
+                    try await executionEngine.closeTTS(generation: generation)
+                } else {
+                    try await executionEngine.cancelTTS(generation: generation)
+                }
+            } catch let error as SpeechRouteError {
+                if error != .unavailable {
+                    firstError = firstError ?? error
+                }
+            } catch {
+                firstError = firstError ?? .transportFailure
             }
-        } catch let error as SpeechRouteError {
-            if error != .unavailable {
-                firstError = firstError ?? error
-            }
-        } catch {
-            firstError = firstError ?? .transportFailure
+            speechRouteTTSActive = false
         }
         return firstError
     }
@@ -5363,7 +5516,8 @@ public final class RuntimeCore {
 
     func requestResidentReply(
         inputText: String,
-        interactionID: UUID? = nil
+        interactionID: UUID? = nil,
+        defersSuccessfulCommit: Bool = false
     ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
         #if DEBUG
         let orchestrationID = interactionID ?? UUID()
@@ -5415,14 +5569,20 @@ public final class RuntimeCore {
         let relationshipControl = relationshipUserControl(
             for: inputText
         )
-        var relationshipDecision = applyRelationshipUserControl(
-            relationshipControl
-        )
+        var relationshipDecision = defersSuccessfulCommit
+            ? currentRelationshipDecision(reason: "playback_pending")
+            : applyRelationshipUserControl(relationshipControl)
         let narrativeMemoryControl = narrativeMemoryUserControl(
             for: inputText
         )
-        var narrativeMemoryControlResult =
-            applyNarrativeMemoryUserControl(
+        var narrativeMemoryControlResult = defersSuccessfulCommit
+            ? RuntimeNarrativeMemoryControlResult(
+                control: narrativeMemoryControl,
+                affectedMemoryIDs: [],
+                decision: "pending",
+                reason: "playback_pending"
+            )
+            : applyNarrativeMemoryUserControl(
                 narrativeMemoryControl,
                 input: inputText,
                 residentID: sessionAtStart.residentID
@@ -5557,7 +5717,8 @@ public final class RuntimeCore {
         #if DEBUG
         let sessionWriteStartedAt = Date()
         #endif
-        if case .success(let reply) = result {
+        if case .success(let reply) = result,
+           !defersSuccessfulCommit {
             _ = commitExpressionResult(
                 reply.expression,
                 expectedSession: sessionAtStart
@@ -5596,8 +5757,13 @@ public final class RuntimeCore {
         let sessionStepStatus: RuntimeOrchestrationStepStatus
         switch result {
         case .success:
-            sessionWriteStatus = sessionWriteSucceeded ? .saved : .failed
-            sessionStepStatus = sessionWriteSucceeded ? .completed : .failed
+            if defersSuccessfulCommit {
+                sessionWriteStatus = .skipped
+                sessionStepStatus = .pending
+            } else {
+                sessionWriteStatus = sessionWriteSucceeded ? .saved : .failed
+                sessionStepStatus = sessionWriteSucceeded ? .completed : .failed
+            }
         case .failure:
             sessionWriteStatus = .skipped
             sessionStepStatus = .skipped
@@ -5736,6 +5902,29 @@ public final class RuntimeCore {
         return entries.map {
             ResidentDialogueMessage(role: $0.role, text: $0.text, timestamp: $0.timestamp)
         }
+    }
+
+    private func completeSpeechRoutePersistence(
+        interactionID: UUID?,
+        succeeded: Bool
+    ) {
+        #if DEBUG
+        guard let interactionID,
+              let index = runtimeOrchestrationRecords.firstIndex(where: {
+                  $0.id == interactionID
+              }) else {
+            return
+        }
+        runtimeOrchestrationRecords[index].sessionWriteStatus =
+            succeeded ? .saved : .failed
+        if let stepIndex = runtimeOrchestrationRecords[index].steps.firstIndex(where: {
+            $0.kind == .sessionPersisted
+        }) {
+            runtimeOrchestrationRecords[index].steps[stepIndex].status =
+                succeeded ? .completed : .failed
+        }
+        runtimeOrchestrationRecords[index].endedAt = Date()
+        #endif
     }
 
     #if DEBUG

@@ -160,6 +160,20 @@ nonisolated private struct QwenRealtimeASRCodec: Sendable {
 }
 
 nonisolated enum QwenASRPCM16Downsampler {
+    static func convertMonoTo16k(
+        _ bytes: Data,
+        sampleRate: Int
+    ) throws -> Data {
+        switch sampleRate {
+        case 48_000:
+            return try convert48kMonoTo16k(bytes)
+        case 24_000:
+            return try convert24kMonoTo16k(bytes)
+        default:
+            throw SpeechRouteError.invalidConfiguration
+        }
+    }
+
     static func convert48kMonoTo16k(_ bytes: Data) throws -> Data {
         guard !bytes.isEmpty, bytes.count.isMultiple(of: 6) else {
             throw SpeechRouteError.invalidConfiguration
@@ -179,6 +193,30 @@ nonisolated enum QwenASRPCM16Downsampler {
             output.append(UInt8(truncatingIfNeeded: bits >> 8))
         }
         return Data(output)
+    }
+
+    static func convert24kMonoTo16k(_ bytes: Data) throws -> Data {
+        guard !bytes.isEmpty, bytes.count.isMultiple(of: 6) else {
+            throw SpeechRouteError.invalidConfiguration
+        }
+        let input = [UInt8](bytes)
+        var output = [UInt8]()
+        output.reserveCapacity(bytes.count * 2 / 3)
+        for offset in stride(from: 0, to: input.count, by: 6) {
+            append(sample(input, at: offset), to: &output)
+            let interpolated = Int16(
+                (Int32(sample(input, at: offset + 2))
+                    + Int32(sample(input, at: offset + 4))) / 2
+            )
+            append(interpolated, to: &output)
+        }
+        return Data(output)
+    }
+
+    private static func append(_ sample: Int16, to bytes: inout [UInt8]) {
+        let bits = UInt16(bitPattern: sample)
+        bytes.append(UInt8(truncatingIfNeeded: bits))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 8))
     }
 
     private static func sample(_ bytes: [UInt8], at offset: Int) -> Int16 {
@@ -257,12 +295,15 @@ actor QwenRealtimeASRAdapter: ASRProvider {
         }
         guard input.source == .aec3Processed,
               input.format == .pcm16,
-              input.sampleRate == 48_000,
+              input.sampleRate == 48_000 || input.sampleRate == 24_000,
               input.channelCount == 1 else {
             throw SpeechRouteError.invalidConfiguration
         }
         let converted = try QwenASRPCM16Downsampler
-            .convert48kMonoTo16k(input.bytes)
+            .convertMonoTo16k(
+                input.bytes,
+                sampleRate: input.sampleRate
+            )
         do {
             try await transport.send(.text(try codec.audioAppend(converted)))
         } catch {

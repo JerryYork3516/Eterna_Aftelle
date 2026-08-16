@@ -291,7 +291,7 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 **7.5.11-A2｜Qwen Realtime ASR Adapter**
 
 - 正式 ASR Adapter 使用 `qwen3-asr-flash-realtime`，复用现有 Realtime WebSocket transport、Keychain credential reader 与 ProviderRouter 注入点。
-- AEC3 继续运行在 48 kHz / mono / 10 ms 域；Adapter 输入边界将 AEC 后 PCM16 确定性降采样为 Qwen 所需的 16 kHz / mono / PCM16，不修改 Audio Host。
+- AEC3 继续运行在 48 kHz / mono / 10 ms 域；Adapter 输入边界接受 Audio Host 交付的 24 kHz 或 48 kHz AEC 后 PCM16，并确定性转换为 Qwen 所需的 16 kHz / mono / PCM16，不修改 AEC Host 处理域。
 - 按 Qwen-ASR Realtime 当前协议处理 session.created / updated / finished、speech_started / stopped、transcription text / completed / failed 与 error；partial 为 `text + stash`，final 只认 `completed.transcript`。
 - Server VAD 只投影 speech activity；Adapter 不拥有 Interrupt、Session、Memory 或 generation decision。
 - A2 只产出 provider-neutral ASR events，不把 final transcript 提交给 RuntimeCore formal turn，不调用 LLM，不实现 TTS；正式 turn 接线属于 A3。
@@ -300,7 +300,7 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 **7.5.11-A3｜ASR Final → RuntimeCore 正式语音轮次**
 
 - RuntimeCore 只接受当前 generation、当前 Session 中已接收并锁定的非空 ASR final；partial、cancelled、stale、未锁定或重复 final 均不得创建正式轮次。
-- 合法 final 直接复用现有 `requestResidentReply`，继续经过同一上下文编译、Memory 检查、ExecutionEngine / ProviderRouter、Session 与 Dialogue History 持久化；Tool / Permission ownership 继续留在 RuntimeCore，不新增语音专用 Runtime、LLM、Memory、Tool、Permission 或 History。
+- 合法 final 直接复用现有 `requestResidentReply`，继续经过同一上下文编译、Memory 检查与 ExecutionEngine / ProviderRouter；正式语音轮次的 Session / Memory / Dialogue History 提交延迟到 A5 Playback 完成，cancel / stale / 播放失败不得持久化。Tool / Permission ownership 继续留在 RuntimeCore，不新增语音专用 Runtime、LLM、Memory、Tool、Permission 或 History。
 - RuntimeCore 返回的 `RuntimeResidentReply.replyText` 是唯一 canonical resident response text，供后续 A4 TTS 与居民字幕使用；Speech Adapter 不得改写。
 - A3 不启动 TTS，不恢复 Qwen Omni resident transcript 路线；Qwen TTS Adapter 属于 A4，正式 TTS 请求与播放接线属于 A5。
 - generation、cancel、Session 失效与 final 幂等仍由 RuntimeCore 决策；ASR 只提供 transcript / activity。
@@ -312,6 +312,15 @@ Stage 7.5.11｜ASR → RuntimeCore LLM → TTS 正式语音主链
 - VoiceProfile 由本地 Provider binding 映射为 Qwen 系统音色，locale / pace / emotion / style 分别映射 `language_type` / `speech_rate` / `instructions`；provider voice 名称不进入 DR。
 - 输出固定为 24 kHz / mono / signed PCM16 LE，映射 response.created / audio.delta / audio.done / error 为 started / streaming PCM / done / error；正常 close 走 session.finish / session.finished。
 - cancel 立即关闭 transport；RuntimeCore generation 失效后 Adapter 不再上送有效音频。A4 不启动真实 TTS 请求、不接 Playback / Subtitle / Particle / History，不进入 A5 或 A6。
+
+**7.5.11-A5｜正式语音全链接线**
+
+- 默认前台语音入口进入 provider-neutral Speech Route；Qwen Omni / `NativeSpeechProvider` 继续保留为实验 / 参考，不再作为默认选路。
+- Audio Host 将 AEC3 后 PCM 交给 ASR；ASR partial / final 投影用户字幕，只有锁定 final 经 RuntimeCore 正式 turn 取得 canonical resident response。
+- canonical resident response 原文同时作为居民字幕与 TTS 唯一输入；24 kHz / mono / PCM16 进入既有 `MacSpeechAudioOutputHost`，不新增平行播放器。
+- Playback started / completed 驱动既有 speaking / idle 粒子表达链；只有当前 generation 的 Playback completed 才一次性提交 RuntimeCore Session / Memory / Dialogue History 并投影 UI 历史。
+- cancel、stale、播放失败或未完成 generation 清除待提交轮次，不写正式 resident exchange；RuntimeCore 继续唯一拥有 Runtime / Session / Memory / generation / cancel decision。
+- A5 不修改 DR / Store schema、Runtime API、平台 target 或 AEC3 48 kHz / 10 ms 处理域；near-end / source-gate / double-talk / USB / Bluetooth 与声学调参仍属于 A6。
 
 注意：ASR、现有 LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
 

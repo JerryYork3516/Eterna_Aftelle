@@ -382,6 +382,15 @@ final class AppController: ObservableObject {
     private let nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer
     private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
     private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
+    private var formalSpeechRouteGeneration: UInt64?
+    private var formalSpeechCaptureGeneration: UInt64?
+    private var formalSpeechPlaybackGeneration: UInt64?
+    private var formalSpeechInteractionID: UUID?
+    private var formalSpeechUserFinal: String?
+    private var formalSpeechCanonicalResponse: String?
+    private var formalSpeechInputTask: Task<Void, Never>?
+    private var formalSpeechRouteTask: Task<Void, Never>?
+    private var formalSpeechPlaybackCommitted = false
     private var projectedNativeSpeechDialogueHistoryIdentities:
         Set<NativeSpeechDialogueHistoryIdentity> = []
     private var realtimeSpeechPlaybackSubtitleSynchronizer =
@@ -1854,6 +1863,7 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
+        await cancelFormalSpeechRoute()
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "manual_stop_started"
@@ -1900,6 +1910,7 @@ final class AppController: ObservableObject {
     }
 
     func shutdownSpeechAudioHost() async {
+        await cancelFormalSpeechRoute()
         if nativeSpeechPlaybackBinding != nil {
             playbackStopClearCount &+= 1
         }
@@ -1915,6 +1926,426 @@ final class AppController: ObservableObject {
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
         syncRealtimeSpeechPresentation()
         refreshNativeSpeechPlaybackDebugSnapshot()
+    }
+
+    func startFormalSpeechRoute() async {
+        guard formalSpeechRouteGeneration == nil,
+              !speechInputBridgeSnapshot.hasActivePump,
+              isResidentTextInputAvailable else {
+            return
+        }
+        guard let captureGeneration =
+            await speechAudioHost.prepareCaptureGeneration() else {
+            speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+            return
+        }
+        let startResult = await orchestrationKernel.startSpeechRouteASR(
+            locale: "zh-CN"
+        )
+        guard case .success(let generation) = startResult else {
+            speechAudioHostSnapshot = await speechAudioHost
+                .cancelPreparedCapture(generation: captureGeneration)
+            return
+        }
+
+        let interactionID = UUID()
+        formalSpeechRouteGeneration = generation
+        formalSpeechCaptureGeneration = captureGeneration
+        formalSpeechInteractionID = interactionID
+        formalSpeechUserFinal = nil
+        formalSpeechCanonicalResponse = nil
+        formalSpeechPlaybackGeneration = nil
+        formalSpeechPlaybackCommitted = false
+        residentTextPresentationID = nil
+        residentSpeechSignal = .ended
+        particleSubtitleState = .hidden
+        runtimeState = .running
+        refreshResidentVisualIntent(
+            visualStateMode: ResidentVisualIntent.listening.rawValue
+        )
+        await speechAudioOutputHost.setEventSink { [weak self] event in
+            await self?.consumeFormalSpeechPlaybackEvent(event)
+        }
+        speechAudioHostSnapshot = await speechAudioHost
+            .startPreparedCapture(generation: captureGeneration)
+        guard speechAudioHostSnapshot.isCapturing else {
+            await failFormalSpeechRoute(generation: generation)
+            return
+        }
+
+        formalSpeechInputTask = Task { @MainActor [weak self] in
+            await self?.pumpFormalSpeechAudio(
+                generation: generation,
+                captureGeneration: captureGeneration
+            )
+        }
+        formalSpeechRouteTask = Task { @MainActor [weak self] in
+            await self?.receiveFormalSpeechRoute(
+                generation: generation,
+                interactionID: interactionID
+            )
+        }
+        refreshParticleDebugSnapshot()
+    }
+
+    private func pumpFormalSpeechAudio(
+        generation: UInt64,
+        captureGeneration: UInt64
+    ) async {
+        while !Task.isCancelled,
+              formalSpeechRouteGeneration == generation,
+              await speechAudioHost.isCaptureGenerationActive(
+                  captureGeneration
+              ) {
+            let frames = await speechAudioHost.drainFrames(
+                maxCount: MacSpeechAudioInputFormat.frameCapacity
+            )
+            if frames.isEmpty {
+                try? await Task.sleep(for: .milliseconds(5))
+                continue
+            }
+            for frame in frames {
+                guard !Task.isCancelled,
+                      formalSpeechRouteGeneration == generation,
+                      frame.captureGeneration == captureGeneration else {
+                    return
+                }
+                do {
+                    try await orchestrationKernel.sendSpeechRouteASRAudio(
+                        ASRAudioInput(
+                            generation: generation,
+                            sequenceNumber: frame.sequenceNumber,
+                            bytes: frame.pcm16Bytes,
+                            format: .pcm16,
+                            sampleRate: Int(
+                                MacSpeechAudioInputFormat.sampleRate
+                            ),
+                            channelCount: 1,
+                            source: .aec3Processed
+                        )
+                    )
+                } catch {
+                    await failFormalSpeechRoute(generation: generation)
+                    return
+                }
+            }
+        }
+    }
+
+    private func receiveFormalSpeechRoute(
+        generation: UInt64,
+        interactionID: UUID
+    ) async {
+        while !Task.isCancelled,
+              formalSpeechRouteGeneration == generation {
+            let event: ASREvent
+            do {
+                event = try await orchestrationKernel
+                    .receiveSpeechRouteASREvent(generation: generation)
+            } catch {
+                await failFormalSpeechRoute(generation: generation)
+                return
+            }
+            guard formalSpeechRouteGeneration == generation else { return }
+            switch event.kind {
+            case .speechActivity(.started):
+                residentSpeechSignal = .ended
+                refreshResidentVisualIntent(
+                    visualStateMode: ResidentVisualIntent.listening.rawValue
+                )
+            case .speechActivity(.ended):
+                break
+            case .partialTranscript(let text):
+                let normalized = text.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if !normalized.isEmpty {
+                    particleSubtitleState = ParticleSubtitleState(
+                        text: normalized,
+                        phase: .showing
+                    )
+                    refreshParticleDebugSnapshot()
+                }
+            case .finalTranscript:
+                await handleFormalSpeechFinal(
+                    event,
+                    generation: generation,
+                    interactionID: interactionID
+                )
+                return
+            case .cancelled, .error, .staleGeneration:
+                await failFormalSpeechRoute(generation: generation)
+                return
+            }
+        }
+    }
+
+    private func handleFormalSpeechFinal(
+        _ event: ASREvent,
+        generation: UInt64,
+        interactionID: UUID
+    ) async {
+        guard case .finalTranscript(let transcript) = event.kind else {
+            await failFormalSpeechRoute(generation: generation)
+            return
+        }
+        let userFinal = transcript.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !userFinal.isEmpty else {
+            await failFormalSpeechRoute(generation: generation)
+            return
+        }
+        formalSpeechUserFinal = userFinal
+        particleSubtitleState = ParticleSubtitleState(
+            text: userFinal,
+            phase: .showing
+        )
+        formalSpeechInputTask?.cancel()
+        formalSpeechInputTask = nil
+        speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+        let asrFinishResult = await orchestrationKernel.finishSpeechRouteASR(
+            generation: generation
+        )
+        guard case .success = asrFinishResult else {
+            await failFormalSpeechRoute(generation: generation)
+            return
+        }
+        residentSpeechSignal = .ended
+        refreshResidentVisualIntent(
+            visualStateMode: ResidentVisualIntent.thinking.rawValue
+        )
+
+        let turnResult = await orchestrationKernel.submitSpeechRouteASRFinal(
+            event,
+            interactionID: interactionID
+        )
+        guard case .success(let turn) = turnResult,
+              formalSpeechRouteGeneration == generation else {
+            await failFormalSpeechRoute(generation: generation)
+            return
+        }
+        let canonicalText = turn.canonicalResponseText
+        formalSpeechCanonicalResponse = canonicalText
+        particleExpressionInput = makeParticleExpressionInput(
+            from: turn.reply.expression,
+            interactionID: interactionID
+        )
+
+        let prepared = await speechAudioOutputHost.prepare()
+        speechAudioOutputHostSnapshot = prepared
+        guard prepared.state == .prepared else {
+            await failFormalSpeechRoute(generation: generation)
+            return
+        }
+        formalSpeechPlaybackGeneration = prepared.generation
+        let ttsResult = await orchestrationKernel.startSpeechRouteTTS(
+            request: TTSSynthesisRequest(
+                generation: generation,
+                canonicalResponseText: canonicalText,
+                voiceProfile: SpeechVoiceProfile(
+                    profileID: "resident-default",
+                    locale: "zh-CN"
+                ),
+                emotion: nil,
+                pace: 1,
+                style: nil
+            )
+        )
+        guard case .success = ttsResult else {
+            await failFormalSpeechRoute(generation: generation)
+            return
+        }
+        await receiveFormalSpeechTTS(
+            generation: generation,
+            canonicalText: canonicalText,
+            playbackGeneration: prepared.generation
+        )
+    }
+
+    private func receiveFormalSpeechTTS(
+        generation: UInt64,
+        canonicalText: String,
+        playbackGeneration: UInt64
+    ) async {
+        while !Task.isCancelled,
+              formalSpeechRouteGeneration == generation {
+            let event: TTSEvent
+            do {
+                event = try await orchestrationKernel
+                    .receiveSpeechRouteTTSEvent(generation: generation)
+            } catch {
+                await failFormalSpeechRoute(generation: generation)
+                return
+            }
+            switch event.kind {
+            case .started:
+                particleSubtitleState = ParticleSubtitleState(
+                    text: canonicalText,
+                    phase: .showing
+                )
+                residentSpeechSignal = ResidentSpeechSignal(
+                    phase: .started,
+                    intensity: ParticleTuning.Engine.defaultSpeechIntensity
+                )
+                refreshResidentVisualIntent(
+                    visualStateMode: ResidentVisualIntent.speaking.rawValue
+                )
+                refreshParticleDebugSnapshot()
+            case .audio(let chunk):
+                guard chunk.format == .pcm16,
+                      chunk.sampleRate == 24_000,
+                      chunk.channelCount == 1 else {
+                    await failFormalSpeechRoute(generation: generation)
+                    return
+                }
+                speechAudioOutputHostSnapshot = await speechAudioOutputHost
+                    .enqueue(
+                        pcm16Bytes: chunk.bytes,
+                        sequence: chunk.sequenceNumber,
+                        generation: playbackGeneration
+                    )
+                speechAudioOutputHostSnapshot = await speechAudioOutputHost
+                    .start()
+                residentSpeechSignal = ResidentSpeechSignal(
+                    phase: .sustained,
+                    intensity: ParticleTuning.Engine.defaultSpeechIntensity
+                )
+            case .done:
+                speechAudioOutputHostSnapshot = await speechAudioOutputHost
+                    .finishProviderResponse(generation: playbackGeneration)
+                _ = await orchestrationKernel.finishSpeechRouteTTS(
+                    generation: generation
+                )
+                formalSpeechRouteTask = nil
+                return
+            case .cancelled, .error:
+                await failFormalSpeechRoute(generation: generation)
+                return
+            }
+        }
+    }
+
+    private func consumeFormalSpeechPlaybackEvent(
+        _ event: MacSpeechAudioOutputEvent
+    ) async {
+        guard let generation = formalSpeechRouteGeneration,
+              event.generation == formalSpeechPlaybackGeneration else {
+            return
+        }
+        switch event.kind {
+        case .playbackStarted, .playbackResumed:
+            residentSpeechSignal = ResidentSpeechSignal(
+                phase: .sustained,
+                intensity: ParticleTuning.Engine.defaultSpeechIntensity
+            )
+            refreshResidentVisualIntent(
+                visualStateMode: ResidentVisualIntent.speaking.rawValue
+            )
+        case .playbackCompleted:
+            guard !formalSpeechPlaybackCommitted else { return }
+            formalSpeechPlaybackCommitted = true
+            let commitResult = orchestrationKernel
+                .commitSpeechRoutePlayback(generation: generation)
+            guard case .success = commitResult else {
+                await failFormalSpeechRoute(generation: generation)
+                return
+            }
+            projectFormalSpeechDialogueHistory()
+            formalSpeechPlaybackGeneration = nil
+            _ = await orchestrationKernel.closeSpeechRoute(
+                generation: generation
+            )
+            resetFormalSpeechRouteState()
+            residentSpeechSignal = .ended
+            runtimeState = .idle
+            refreshResidentVisualIntent(
+                visualStateMode: ResidentVisualIntent.idle.rawValue
+            )
+            hideDebugSubtitle()
+            refreshParticleDebugSnapshot()
+        case .failed, .stopped:
+            await failFormalSpeechRoute(generation: generation)
+        default:
+            break
+        }
+    }
+
+    private func projectFormalSpeechDialogueHistory() {
+        guard let interactionID = formalSpeechInteractionID,
+              let userFinal = formalSpeechUserFinal,
+              let canonicalResponse = formalSpeechCanonicalResponse else {
+            return
+        }
+        appendDialogueAuditUser(userFinal)
+        appendDialogueAuditResident(
+            canonicalResponse,
+            displayName: currentAuditResidentDisplayName
+        )
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        dialogueEntries.append(AppDialogueEntryState(
+            id: "user-speech-route-\(interactionID.uuidString)",
+            role: "user",
+            text: userFinal,
+            timestamp: timestamp
+        ))
+        dialogueEntries.append(AppDialogueEntryState(
+            id: "resident-speech-route-\(interactionID.uuidString)",
+            role: "resident",
+            text: canonicalResponse,
+            timestamp: timestamp
+        ))
+        dialogueEntries = Array(dialogueEntries.suffix(8))
+        sessionState.residentID = loadedResidentID
+        sessionState.sessionID = loadedSessionID
+        sessionState.lastUserInput = userFinal
+        sessionState.lastResidentOutput = canonicalResponse
+        sessionState.dialogueEntries = dialogueEntries
+        completeRuntimeOrchestrationPresentation(
+            interactionID: interactionID,
+            expectedSessionID: loadedSessionID,
+            subtitleState: String(describing: particleSubtitleState.phase),
+            particleState: String(describing: residentVisualIntent),
+            lifecycleState: .speaking,
+            status: .completed
+        )
+    }
+
+    private func cancelFormalSpeechRoute() async {
+        guard let generation = formalSpeechRouteGeneration else { return }
+        formalSpeechInputTask?.cancel()
+        formalSpeechRouteTask?.cancel()
+        await failFormalSpeechRoute(generation: generation)
+    }
+
+    private func failFormalSpeechRoute(generation: UInt64) async {
+        guard formalSpeechRouteGeneration == generation else { return }
+        formalSpeechInputTask?.cancel()
+        formalSpeechRouteTask?.cancel()
+        formalSpeechInputTask = nil
+        formalSpeechRouteTask = nil
+        _ = await orchestrationKernel.cancelSpeechRoute(
+            generation: generation
+        )
+        speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+        speechAudioOutputHostSnapshot = await speechAudioOutputHost.stop()
+        resetFormalSpeechRouteState()
+        residentSpeechSignal = .ended
+        runtimeState = .idle
+        refreshResidentVisualIntent()
+        refreshParticleDebugSnapshot()
+    }
+
+    private func resetFormalSpeechRouteState() {
+        formalSpeechRouteGeneration = nil
+        formalSpeechCaptureGeneration = nil
+        formalSpeechPlaybackGeneration = nil
+        formalSpeechInteractionID = nil
+        formalSpeechUserFinal = nil
+        formalSpeechCanonicalResponse = nil
+        formalSpeechInputTask = nil
+        formalSpeechRouteTask = nil
+        formalSpeechPlaybackCommitted = false
     }
 
     func startNativeSpeechInputBridge() async {
