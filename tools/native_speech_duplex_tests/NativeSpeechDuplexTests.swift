@@ -856,8 +856,8 @@ private struct NativeSpeechDuplexTests {
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 5,
-               "diagnostic export freezes schema version 5")
+        expect(object["schema_version"] as? Int == 6,
+               "diagnostic export freezes schema version 6")
         expect(object["events"] is [[String: Any]],
                "diagnostic export contains structured events")
         let acousticEcho = object["acoustic_echo"] as? [String: Any]
@@ -871,7 +871,15 @@ private struct NativeSpeechDuplexTests {
             "source_suppressed_frame_count",
             "source_timing_candidate_frame_count",
             "source_timing_unavailable_frame_count",
+            "maximum_source_gate_open_frame_count",
             "maximum_continuous_source_forwarded_frame_count",
+            "raw_echo_gain_baseline",
+            "residual_echo_gain_baseline",
+            "residual_echo_baseline_frame_count",
+            "adaptive_evidence_candidate_frame_count",
+            "adaptive_double_talk_frame_count",
+            "maximum_adaptive_raw_excess_rms",
+            "maximum_adaptive_residual_excess_rms",
             "last_source_gate_close_reason",
             "fallback_count",
             "last_fallback_reason"

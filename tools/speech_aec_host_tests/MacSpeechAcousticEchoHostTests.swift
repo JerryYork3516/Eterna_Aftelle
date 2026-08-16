@@ -99,6 +99,8 @@ private struct MacSpeechAcousticEchoHostTests {
         testAbortedSourceGatePreRollPreservesCadence()
         testDoubleTalkSourceGate()
         testRouteIndependentBargeInHysteresis()
+        testAdaptiveExternalOutputDoubleTalk()
+        testAdaptiveGateRejectsResidualEchoVariation()
         testMixedResidentRenderIsOneFarEndReference()
         testLongLoudEchoStaysSuppressed()
         testUncertainSourceGateIsBoundedAndRecoverable()
@@ -584,6 +586,176 @@ private struct MacSpeechAcousticEchoHostTests {
                "resident-only tail deterministically closes the gate")
     }
 
+    private static func testAdaptiveExternalOutputDoubleTalk() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let baseRender = testSignal(seed: 19, amplitude: 0.55)
+        let user = testSignal(seed: 20, amplitude: 0.11)
+        let playbackScales: [Float] = [
+            0.6, 0.8, 1.0, 1.2, 0.7,
+            1.1, 0.9, 1.3, 0.75, 1.0
+        ]
+        var renderTime: UInt64 = 9_000_000_000
+
+        for (index, scale) in playbackScales.enumerated() {
+            let render = testSignal(
+                seed: UInt32(100 + index),
+                amplitude: 0.55
+            ).map { $0 * scale }
+            backend.setCaptureOutput(render.map { $0 * 0.12 })
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            expect(isSilence(host.processCapture(
+                render.map { $0 * 0.9 },
+                hostTimeNanoseconds: renderTime + 146_000_000
+            )), "adaptive baseline keeps resident-only PCM zeroed")
+            renderTime += 10_000_000
+        }
+
+        var snapshot = host.snapshot()
+        expect(snapshot.residualEchoBaselineFrameCount == 10,
+               "resident-only frames establish the route baseline")
+        expect(abs(snapshot.rawEchoGainBaseline - 0.9) < 0.001,
+               "raw echo coupling is normalized against render level")
+        expect(abs(snapshot.residualEchoGainBaseline - 0.12) < 0.001,
+               "normalized residual gain ignores playback level")
+        expect(snapshot.adaptiveDoubleTalkFrameCount == 0
+                   && snapshot.sourceGateOpenCount == 0,
+               "baseline learning cannot open the user gate")
+
+        let render = baseRender
+        let residualEcho = render.map { $0 * 0.12 }
+        let rawDoubleTalk = zip(render, user).map { sample in
+            sample.0 * 0.9 + sample.1
+        }
+        let processedDoubleTalk = zip(residualEcho, user).map { sample in
+            sample.0 + sample.1
+        }
+        backend.setCaptureOutput(processedDoubleTalk)
+        var opened: [Float] = []
+        for _ in 0 ..< 3 {
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            opened = host.processCapture(
+                rawDoubleTalk,
+                hostTimeNanoseconds: renderTime + 146_000_000
+            )
+            renderTime += 10_000_000
+        }
+        snapshot = host.snapshot()
+        expect(opened.count == 3 * 480
+                   && snapshot.inputClassification == .doubleTalk,
+               "adaptive residual energy opens external-output barge-in")
+        expect(snapshot.residualRenderCorrelation > 0.25,
+               "fixture exercises the former fixed-correlation rejection")
+
+        for _ in 0 ..< 30 {
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            let continued = host.processCapture(
+                rawDoubleTalk,
+                hostTimeNanoseconds: renderTime + 146_000_000
+            )
+            expect(continued.count == 480 && !isSilence(continued),
+                   "adaptive double-talk remains continuous for VAD")
+            renderTime += 10_000_000
+        }
+        snapshot = host.snapshot()
+        expect(snapshot.adaptiveEvidenceCandidateFrameCount == 33
+                   && snapshot.adaptiveDoubleTalkFrameCount == 33,
+               "adaptive double-talk decisions remain diagnosable")
+        expect(snapshot.maximumAdaptiveRawExcessRMS > 0.012
+                   && snapshot.maximumAdaptiveResidualExcessRMS > 0.012,
+               "both raw and cleaned near-end excess are measured")
+        expect(snapshot.maximumSourceGateOpenFrameCount == 33
+                   && snapshot.maximumContinuousSourceForwardedFrameCount
+                       == 33,
+               "external-output user audio reaches a 330 ms run")
+
+        backend.setCaptureOutput(residualEcho)
+        for _ in 0 ..< 20 {
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            expect(isSilence(host.processCapture(
+                render.map { $0 * 0.9 },
+                hostTimeNanoseconds: renderTime + 146_000_000
+            )), "resident-only tail remains zeroed after barge-in")
+            renderTime += 10_000_000
+        }
+        snapshot = host.snapshot()
+        expect(!snapshot.sourceGateOpen
+                   && snapshot.lastSourceGateCloseReason
+                       == .nonUserHangover,
+               "resident-only tail closes the adaptive user epoch")
+    }
+
+    private static func testAdaptiveGateRejectsResidualEchoVariation() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        var renderTime: UInt64 = 10_000_000_000
+
+        for index in 0 ..< 10 {
+            let render = testSignal(
+                seed: UInt32(200 + index),
+                amplitude: 0.55
+            )
+            let artifact = testSignal(
+                seed: UInt32(300 + index),
+                amplitude: 0.55
+            )
+            let processedEcho = zip(render, artifact).map { sample in
+                sample.0 * 0.04 + sample.1 * 0.10
+            }
+            backend.setCaptureOutput(processedEcho)
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            expect(isSilence(host.processCapture(
+                render.map { $0 * 0.9 },
+                hostTimeNanoseconds: renderTime + 146_000_000
+            )), "decorrelated residual echo establishes a safe baseline")
+            renderTime += 10_000_000
+        }
+
+        for index in 0 ..< 10 {
+            let render = testSignal(
+                seed: UInt32(400 + index),
+                amplitude: 0.55
+            )
+            let artifact = testSignal(
+                seed: UInt32(500 + index),
+                amplitude: 0.55
+            )
+            let processedEcho = zip(render, artifact).map { sample in
+                sample.0 * 0.04 + sample.1 * 0.11
+            }
+            backend.setCaptureOutput(processedEcho)
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            expect(isSilence(host.processCapture(
+                render.map { $0 * 0.9 },
+                hostTimeNanoseconds: renderTime + 146_000_000
+            )), "residual-only variation cannot become double-talk")
+            renderTime += 10_000_000
+        }
+
+        let snapshot = host.snapshot()
+        expect(snapshot.residualRenderCorrelation > 0.25
+                   && snapshot.residualRenderCorrelation < 0.65,
+               "fixture reaches the adaptive residual-correlation band")
+        expect(snapshot.adaptiveDoubleTalkFrameCount == 0
+                   && snapshot.sourceGateOpenCount == 0
+                   && snapshot.sourceForwardedFrameCount == 0,
+               "raw echo evidence blocks residual-only false barge-in")
+        expect(snapshot.adaptiveEvidenceCandidateFrameCount > 0
+                   && snapshot.maximumAdaptiveRawExcessRMS < 0.001
+                   && snapshot.maximumAdaptiveResidualExcessRMS > 0.012,
+               "diagnostics expose which adaptive evidence was absent")
+    }
+
     private static func testMixedResidentRenderIsOneFarEndReference() {
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
@@ -647,6 +819,12 @@ private struct MacSpeechAcousticEchoHostTests {
                "resident-only playback never opens the source gate")
         expect(snapshot.maximumContinuousSourceForwardedFrameCount == 0,
                "resident-only playback never emits nonzero source PCM")
+        expect(snapshot.residualEchoBaselineFrameCount == 300
+                   && abs(snapshot.residualEchoGainBaseline - 0.5) < 0.001,
+               "resident-only playback learns a stable residual gain")
+        expect(snapshot.adaptiveDoubleTalkFrameCount == 0
+                   && snapshot.maximumSourceGateOpenFrameCount == 0,
+               "loud resident-only PCM cannot satisfy adaptive evidence")
 
         host.resetDiagnostics()
         snapshot = host.snapshot()
@@ -656,6 +834,8 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(snapshot.mode == .webRTCAEC3
                    && snapshot.isPlaybackActive,
                "diagnostic reset does not alter audio processing")
+        expect(snapshot.residualEchoBaselineFrameCount == 300,
+               "diagnostic reset preserves the live echo baseline")
     }
 
     private static func testUncertainSourceGateIsBoundedAndRecoverable() {

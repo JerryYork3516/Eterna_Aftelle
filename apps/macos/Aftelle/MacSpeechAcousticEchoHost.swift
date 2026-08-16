@@ -99,7 +99,15 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let sourceTimingUnavailableFrameCount: UInt64
     let sourceGateOpenCount: UInt64
     let sourceGateCloseCount: UInt64
+    let maximumSourceGateOpenFrameCount: UInt64
     let maximumContinuousSourceForwardedFrameCount: UInt64
+    let rawEchoGainBaseline: Double
+    let residualEchoGainBaseline: Double
+    let residualEchoBaselineFrameCount: UInt64
+    let adaptiveEvidenceCandidateFrameCount: UInt64
+    let adaptiveDoubleTalkFrameCount: UInt64
+    let maximumAdaptiveRawExcessRMS: Double
+    let maximumAdaptiveResidualExcessRMS: Double
     let lastSourceGateCloseReason: MacSpeechSourceGateCloseReason?
     let fallbackCount: UInt64
     let lastFallbackReason: MacSpeechAECFallbackReason?
@@ -121,6 +129,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let minimumNearEndRMS = 0.012
     private static let maximumNearEndCorrelation = 0.25
     private static let maximumDoubleTalkResidualCorrelation = 0.25
+    private static let maximumAdaptiveDoubleTalkResidualCorrelation = 0.65
+    private static let minimumResidualEchoBaselineFrameCount: UInt64 = 5
+    private static let residualEchoBaselineSmoothingFactor = 0.1
     private static let requiredSourceGateConfirmationFrames = 3
     private static let maximumSourceGateNonUserHangoverFrames = 20
     private static let sourceGatePreRollFrameCapacity = 15
@@ -175,8 +186,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var sourceTimingUnavailableFrameCount: UInt64 = 0
     private var sourceGateOpenCount: UInt64 = 0
     private var sourceGateCloseCount: UInt64 = 0
+    private var currentSourceGateOpenFrameCount: UInt64 = 0
+    private var maximumSourceGateOpenFrameCount: UInt64 = 0
     private var currentContinuousSourceForwardedFrameCount: UInt64 = 0
     private var maximumContinuousSourceForwardedFrameCount: UInt64 = 0
+    private var rawEchoGainBaseline = 0.0
+    private var residualEchoGainBaseline = 0.0
+    private var residualEchoBaselineFrameCount: UInt64 = 0
+    private var adaptiveEvidenceCandidateFrameCount: UInt64 = 0
+    private var adaptiveDoubleTalkFrameCount: UInt64 = 0
+    private var maximumAdaptiveRawExcessRMS = 0.0
+    private var maximumAdaptiveResidualExcessRMS = 0.0
     private var lastSourceGateCloseReason: MacSpeechSourceGateCloseReason?
     private var fallbackCount: UInt64 = 0
     private var lastFallbackReason: MacSpeechAECFallbackReason?
@@ -400,6 +420,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             clearTimingHistory()
             alignedDelayMilliseconds = nil
             resetSignalDiagnostics()
+            resetResidualEchoBaseline()
             resetSourceGate(closeReason: .playbackLifecycle)
             poorResidualEchoFrameCount = 0
         }
@@ -642,6 +663,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             timingMatch: timingMatch
         )
         recordSourceClassification(timingMatch: timingMatch)
+        if sourceGateOpen {
+            recordSourceGateOpenFrame()
+        }
         if pendingSourceGateReset {
             return suppressCaptureFrameAndCloseGate(
                 reason: .sourceEvidenceReset
@@ -667,6 +691,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             sourceGateOpenCount &+= 1
             sourceGateConfirmationFrameCount = 0
             sourceGateNonUserHangoverFrameCount = 0
+            currentSourceGateOpenFrameCount = UInt64(
+                sourceGatePreRoll.count
+            )
+            maximumSourceGateOpenFrameCount = max(
+                maximumSourceGateOpenFrameCount,
+                currentSourceGateOpenFrameCount
+            )
             return drainSourceGatePreRoll()
         }
     }
@@ -677,26 +708,119 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     ) -> MacSpeechAcousticInputClassification {
         guard let timingMatch else { return .uncertain }
         let cleanRMS = signalRMS(processedFrame)
-        guard cleanRMS >= Self.minimumNearEndRMS else {
-            return timingMatch.correlation
-                    >= Self.minimumTimingCorrelation
-                ? .echoOnly : .uncertain
-        }
-
         let residualCorrelation = normalizedCorrelation(
             processedFrame,
             timingMatch.renderSamples
         )
-        if timingMatch.correlation >= Self.minimumTimingCorrelation {
-            return residualCorrelation
-                    <= Self.maximumDoubleTalkResidualCorrelation
-                ? .doubleTalk : .echoOnly
+        let classification: MacSpeechAcousticInputClassification
+        if cleanRMS < Self.minimumNearEndRMS {
+            classification = timingMatch.correlation
+                    >= Self.minimumTimingCorrelation
+                ? .echoOnly : .uncertain
+        } else if timingMatch.correlation >= Self.minimumTimingCorrelation {
+            if residualCorrelation
+                <= Self.maximumDoubleTalkResidualCorrelation {
+                classification = .doubleTalk
+            } else if hasAdaptiveDoubleTalkEvidence(
+                cleanRMS: cleanRMS,
+                residualCorrelation: residualCorrelation,
+                timingMatch: timingMatch
+            ) {
+                classification = .doubleTalk
+                adaptiveDoubleTalkFrameCount &+= 1
+            } else {
+                classification = .echoOnly
+            }
+        } else if timingMatch.correlation
+                    <= Self.maximumNearEndCorrelation,
+                  residualCorrelation <= Self.maximumNearEndCorrelation {
+            classification = .nearEndSpeech
+        } else {
+            classification = .uncertain
         }
-        if timingMatch.correlation <= Self.maximumNearEndCorrelation,
-           residualCorrelation <= Self.maximumNearEndCorrelation {
-            return .nearEndSpeech
+        updateResidualEchoBaseline(
+            classification: classification,
+            cleanRMS: cleanRMS,
+            residualCorrelation: residualCorrelation,
+            timingMatch: timingMatch
+        )
+        return classification
+    }
+
+    private func hasAdaptiveDoubleTalkEvidence(
+        cleanRMS: Double,
+        residualCorrelation: Double,
+        timingMatch: TimingMatch
+    ) -> Bool {
+        guard residualEchoBaselineFrameCount
+                >= Self.minimumResidualEchoBaselineFrameCount,
+              residualCorrelation
+                <= Self.maximumAdaptiveDoubleTalkResidualCorrelation else {
+            return false
         }
-        return .uncertain
+        let renderRMS = signalRMS(timingMatch.renderSamples)
+        guard renderRMS >= Self.minimumTimingRMS else { return false }
+        let expectedRawEchoRMS = rawEchoGainBaseline * renderRMS
+        let expectedEchoRMS = residualEchoGainBaseline * renderRMS
+        let rawExcessPower = rawCaptureRMS * rawCaptureRMS
+            - expectedRawEchoRMS * expectedRawEchoRMS
+        let excessPower = cleanRMS * cleanRMS
+            - expectedEchoRMS * expectedEchoRMS
+        let rawExcessRMS = sqrt(max(0, rawExcessPower))
+        let residualExcessRMS = sqrt(max(0, excessPower))
+        adaptiveEvidenceCandidateFrameCount &+= 1
+        maximumAdaptiveRawExcessRMS = max(
+            maximumAdaptiveRawExcessRMS,
+            rawExcessRMS
+        )
+        maximumAdaptiveResidualExcessRMS = max(
+            maximumAdaptiveResidualExcessRMS,
+            residualExcessRMS
+        )
+        let minimumNearEndPower = Self.minimumNearEndRMS
+            * Self.minimumNearEndRMS
+        return rawExcessPower >= minimumNearEndPower
+            && excessPower >= minimumNearEndPower
+    }
+
+    private func updateResidualEchoBaseline(
+        classification: MacSpeechAcousticInputClassification,
+        cleanRMS: Double,
+        residualCorrelation: Double,
+        timingMatch: TimingMatch
+    ) {
+        guard classification == .echoOnly,
+              !sourceGateOpen,
+              sourceGateConfirmationFrameCount == 0,
+              residualCorrelation
+                > Self.maximumDoubleTalkResidualCorrelation else {
+            return
+        }
+        let renderRMS = signalRMS(timingMatch.renderSamples)
+        guard renderRMS >= Self.minimumTimingRMS else { return }
+        let observedGain = cleanRMS / renderRMS
+        let observedRawGain = rawCaptureRMS / renderRMS
+        guard observedGain.isFinite, observedRawGain.isFinite else { return }
+        if residualEchoBaselineFrameCount == 0 {
+            rawEchoGainBaseline = observedRawGain
+            residualEchoGainBaseline = observedGain
+        } else {
+            rawEchoGainBaseline += (
+                observedRawGain - rawEchoGainBaseline
+            ) * Self.residualEchoBaselineSmoothingFactor
+            residualEchoGainBaseline += (
+                observedGain - residualEchoGainBaseline
+            ) * Self.residualEchoBaselineSmoothingFactor
+        }
+        residualEchoBaselineFrameCount &+= 1
+    }
+
+    private func recordSourceGateOpenFrame() {
+        currentSourceGateOpenFrameCount &+= 1
+        maximumSourceGateOpenFrameCount = max(
+            maximumSourceGateOpenFrameCount,
+            currentSourceGateOpenFrameCount
+        )
     }
 
     private func captureWhileGateIsOpen(_ processedFrame: [Float]) -> [Float] {
@@ -927,7 +1051,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         if shouldLogInitialState || shouldLogPeriodicState {
             lastLoggedCaptureFrameCount = captureFrameCount
             logger.info(
-                "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) active=\(self.backendStats.active, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) presentation_ms=\(self.presentationDelayMilliseconds, privacy: .public) aligned_ms=\(self.alignedDelayMilliseconds ?? -1, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) raw_rms=\(self.rawCaptureRMS, privacy: .public) clean_rms=\(self.processedCaptureRMS, privacy: .public) correlation=\(self.renderCaptureCorrelation, privacy: .public) residual_correlation=\(self.residualRenderCorrelation, privacy: .public) source=\(self.inputClassification.rawValue, privacy: .public) source_gate=\(self.sourceGateOpen, privacy: .public) source_forwarded=\(self.sourceForwardedFrameCount, privacy: .public) source_suppressed=\(self.sourceSuppressedFrameCount, privacy: .public) source_max_run=\(self.maximumContinuousSourceForwardedFrameCount, privacy: .public) source_close=\(self.lastSourceGateCloseReason?.rawValue ?? "-", privacy: .public) source_timing=\(self.sourceTimingCandidateFrameCount, privacy: .public)/\(self.sourceTimingUnavailableFrameCount, privacy: .public) preroll_frames=\(self.sourceGatePreRoll.count, privacy: .public) timing_frames=\(self.renderTimingHistory.count, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
+                "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) active=\(self.backendStats.active, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) presentation_ms=\(self.presentationDelayMilliseconds, privacy: .public) aligned_ms=\(self.alignedDelayMilliseconds ?? -1, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) raw_rms=\(self.rawCaptureRMS, privacy: .public) clean_rms=\(self.processedCaptureRMS, privacy: .public) correlation=\(self.renderCaptureCorrelation, privacy: .public) residual_correlation=\(self.residualRenderCorrelation, privacy: .public) echo_gain=\(self.rawEchoGainBaseline, privacy: .public)/\(self.residualEchoGainBaseline, privacy: .public)/\(self.residualEchoBaselineFrameCount, privacy: .public) adaptive=\(self.adaptiveEvidenceCandidateFrameCount, privacy: .public)/\(self.adaptiveDoubleTalkFrameCount, privacy: .public)/\(self.maximumAdaptiveRawExcessRMS, privacy: .public)/\(self.maximumAdaptiveResidualExcessRMS, privacy: .public) source=\(self.inputClassification.rawValue, privacy: .public) source_gate=\(self.sourceGateOpen, privacy: .public) source_gate_max=\(self.maximumSourceGateOpenFrameCount, privacy: .public) source_forwarded=\(self.sourceForwardedFrameCount, privacy: .public) source_suppressed=\(self.sourceSuppressedFrameCount, privacy: .public) source_max_run=\(self.maximumContinuousSourceForwardedFrameCount, privacy: .public) source_close=\(self.lastSourceGateCloseReason?.rawValue ?? "-", privacy: .public) source_timing=\(self.sourceTimingCandidateFrameCount, privacy: .public)/\(self.sourceTimingUnavailableFrameCount, privacy: .public) preroll_frames=\(self.sourceGatePreRoll.count, privacy: .public) timing_frames=\(self.renderTimingHistory.count, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
             )
         }
     }
@@ -1022,6 +1146,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
         recordSuppressedSourceFrames(sourceGatePreRoll.count)
         sourceGateOpen = false
+        currentSourceGateOpenFrameCount = 0
         sourceGatePreRoll.removeAll(keepingCapacity: true)
         sourceGateConfirmationFrameCount = 0
         sourceGateNonUserHangoverFrameCount = 0
@@ -1044,8 +1169,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         sourceTimingUnavailableFrameCount = 0
         sourceGateOpenCount = 0
         sourceGateCloseCount = 0
+        currentSourceGateOpenFrameCount = 0
+        maximumSourceGateOpenFrameCount = 0
         currentContinuousSourceForwardedFrameCount = 0
         maximumContinuousSourceForwardedFrameCount = 0
+        adaptiveEvidenceCandidateFrameCount = 0
+        adaptiveDoubleTalkFrameCount = 0
+        maximumAdaptiveRawExcessRMS = 0
+        maximumAdaptiveResidualExcessRMS = 0
         lastSourceGateCloseReason = nil
         fallbackCount = 0
         lastFallbackReason = nil
@@ -1062,7 +1193,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         presentationDelayMilliseconds = 0
         alignedDelayMilliseconds = nil
         resetSignalDiagnostics()
+        resetResidualEchoBaseline()
         resetSourceGate(closeReason: closeReason)
+    }
+
+    private func resetResidualEchoBaseline() {
+        rawEchoGainBaseline = 0
+        residualEchoGainBaseline = 0
+        residualEchoBaselineFrameCount = 0
     }
 
     private func disabledStats() -> MacSpeechAECBackendStats {
@@ -1116,8 +1254,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 sourceTimingUnavailableFrameCount,
             sourceGateOpenCount: sourceGateOpenCount,
             sourceGateCloseCount: sourceGateCloseCount,
+            maximumSourceGateOpenFrameCount:
+                maximumSourceGateOpenFrameCount,
             maximumContinuousSourceForwardedFrameCount:
                 maximumContinuousSourceForwardedFrameCount,
+            rawEchoGainBaseline: rawEchoGainBaseline,
+            residualEchoGainBaseline: residualEchoGainBaseline,
+            residualEchoBaselineFrameCount:
+                residualEchoBaselineFrameCount,
+            adaptiveEvidenceCandidateFrameCount:
+                adaptiveEvidenceCandidateFrameCount,
+            adaptiveDoubleTalkFrameCount: adaptiveDoubleTalkFrameCount,
+            maximumAdaptiveRawExcessRMS:
+                maximumAdaptiveRawExcessRMS,
+            maximumAdaptiveResidualExcessRMS:
+                maximumAdaptiveResidualExcessRMS,
             lastSourceGateCloseReason: lastSourceGateCloseReason,
             fallbackCount: fallbackCount,
             lastFallbackReason: lastFallbackReason,
