@@ -135,6 +135,15 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         makeSnapshot()
     }
 
+    nonisolated func currentAcousticEchoSnapshot()
+        -> MacSpeechAcousticEchoSnapshot? {
+        capture.acousticEchoSnapshot()
+    }
+
+    nonisolated func resetAcousticEchoDiagnostics() {
+        capture.resetAcousticEchoDiagnostics()
+    }
+
     func refreshAuthorization() async -> MacSpeechAudioHostSnapshot {
         do {
             update(

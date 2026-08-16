@@ -219,11 +219,15 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
     func stop()
     func routeWillRebuild()
     func routeDidRebuild()
+    func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot?
+    func resetAcousticEchoDiagnostics()
 }
 
 nonisolated extension MacSpeechAudioCapturing {
     func routeWillRebuild() {}
     func routeDidRebuild() {}
+    func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? { nil }
+    func resetAcousticEchoDiagnostics() {}
 }
 
 nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
@@ -729,6 +733,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         acousticEchoHost.snapshot()
     }
 
+    func resetAcousticEchoDiagnostics() {
+        acousticEchoHost.resetDiagnostics()
+    }
+
     private func processCapture(
         _ buffer: AVAudioPCMBuffer,
         hostTimeNanoseconds: UInt64?,
@@ -911,5 +919,13 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
     func routeDidRebuild() {
         audioEngine.routeDidRebuild()
+    }
+
+    func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? {
+        audioEngine.acousticEchoSnapshot()
+    }
+
+    func resetAcousticEchoDiagnostics() {
+        audioEngine.resetAcousticEchoDiagnostics()
     }
 }

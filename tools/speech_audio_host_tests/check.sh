@@ -89,6 +89,10 @@ rg -q 'func finishOutputPlayback\(\)' "$capture"
 rg -q 'unmuteInput\(\)' "$capture"
 echo "speech_audio_host_playback_echo_gate=PASS"
 
+rg -q 'currentAcousticEchoSnapshot' "$host"
+rg -q 'resetAcousticEchoDiagnostics' "$host" "$capture"
+echo "speech_audio_host_aec_diagnostics=PASS"
+
 rg -q 'packetDurationMilliseconds = 20' "$capture"
 rg -q 'packetSampleCount = 480' "$capture"
 rg -q 'packetByteCount = 960' "$capture"

@@ -54,6 +54,7 @@ private final class FakeMacSpeechAudioCapture:
     private var routeResets = 0
     private var routeRebuildCompletions = 0
     private var routeRebuildCompletionsWhileStarted = 0
+    private var acousticDiagnosticResets = 0
 
     init(startError: MacSpeechAudioCaptureError? = nil) {
         self.startError = startError
@@ -101,6 +102,10 @@ private final class FakeMacSpeechAudioCapture:
         }
     }
 
+    func resetAcousticEchoDiagnostics() {
+        lock.withLock { acousticDiagnosticResets += 1 }
+    }
+
     @discardableResult
     func emit(
         bytes: Data = Data([0, 0]),
@@ -127,6 +132,9 @@ private final class FakeMacSpeechAudioCapture:
     }
     var routeRebuildCompletionWhileStartedCount: Int {
         lock.withLock { routeRebuildCompletionsWhileStarted }
+    }
+    var acousticDiagnosticResetCount: Int {
+        lock.withLock { acousticDiagnosticResets }
     }
     var isStarted: Bool { lock.withLock { started } }
 }
@@ -216,6 +224,7 @@ private struct MacSpeechAudioHostTests {
         }
         testBoundedFrameBuffer()
         await testHostFrameDiagnosticsAndStaleRejection()
+        testAcousticDiagnosticsPassThrough()
         await testInputOutputAndCombinedRouteRebuilds()
         await testDeviceChangesStopSafelyWithoutAutomaticRestart()
         print("speech_audio_host_checks=\(checks)")
@@ -650,6 +659,15 @@ private struct MacSpeechAudioHostTests {
                    "\(name) route rebuild is deterministically restartable")
             _ = await host.stopCapture()
         }
+    }
+
+    private static func testAcousticDiagnosticsPassThrough() {
+        let (host, _, capture, _) = makeHost(authorization: .authorized)
+        expect(host.currentAcousticEchoSnapshot() == nil,
+               "non-AEC capture reports unavailable diagnostics")
+        host.resetAcousticEchoDiagnostics()
+        expect(capture.acousticDiagnosticResetCount == 1,
+               "audio host forwards diagnostic reset to capture")
     }
 
     private static func decodePCM16(_ data: Data) -> [Int16] {

@@ -1013,6 +1013,47 @@ struct RealtimeSpeechDiagnosticViewState: Equatable, Sendable {
     }
 }
 
+struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
+    var available = false
+    var mode = "unavailable"
+    var enabled = false
+    var active = false
+    var isPlaybackActive = false
+    var inputClassification = "uncertain"
+    var sourceGateOpen = false
+    var sourceGatePreRollFrameCount = 0
+    var renderFrameCount: UInt64 = 0
+    var captureFrameCount: UInt64 = 0
+    var delayMilliseconds = 0
+    var presentationDelayMilliseconds = 0
+    var alignedDelayMilliseconds: Int?
+    var estimatedDelayMilliseconds = 0
+    var erlDecibels = 0.0
+    var erleDecibels = 0.0
+    var rawCaptureRMS = 0.0
+    var processedCaptureRMS = 0.0
+    var renderCaptureCorrelation = 0.0
+    var residualRenderCorrelation = 0.0
+    var renderTimingFrameCount = 0
+    var renderFIFOSampleCount = 0
+    var captureFIFOSampleCount = 0
+    var echoOnlyFrameCount: UInt64 = 0
+    var nearEndSpeechFrameCount: UInt64 = 0
+    var doubleTalkFrameCount: UInt64 = 0
+    var uncertainFrameCount: UInt64 = 0
+    var sourceForwardedFrameCount: UInt64 = 0
+    var sourceSuppressedFrameCount: UInt64 = 0
+    var sourceTimingCandidateFrameCount: UInt64 = 0
+    var sourceTimingUnavailableFrameCount: UInt64 = 0
+    var sourceGateOpenCount: UInt64 = 0
+    var sourceGateCloseCount: UInt64 = 0
+    var fallbackCount: UInt64 = 0
+    var fallbackReason: String?
+    var lastFallbackReason: String?
+    var routeResetCount: UInt64 = 0
+    var driftTrend = "stable"
+}
+
 struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let schemaVersion: Int
     let exportedAt: Date
@@ -1040,6 +1081,7 @@ struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let playbackCompletedCount: Int
     let playbackRejectedCount: UInt64
     let outputRuntimeRejectedEventCount: UInt64
+    let acousticEcho: RealtimeSpeechAcousticEchoDiagnosticExport
     let droppedEventCount: UInt64
     let events: [RealtimeSpeechDiagnosticEvent]
 }

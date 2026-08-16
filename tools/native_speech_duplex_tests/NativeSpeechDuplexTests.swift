@@ -32,6 +32,9 @@ private final class DuplexAudioCapture:
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
+    private let acousticEchoHost = MacSpeechAcousticEchoHost(
+        mode: .appleVoiceProcessing
+    )
 
     func start(
         generation: UInt64,
@@ -50,6 +53,14 @@ private final class DuplexAudioCapture:
 
     func stop() {
         lock.withLock { started = false }
+    }
+
+    func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? {
+        acousticEchoHost.snapshot()
+    }
+
+    func resetAcousticEchoDiagnostics() {
+        acousticEchoHost.resetDiagnostics()
     }
 
     var isStarted: Bool { lock.withLock { started } }
@@ -845,10 +856,30 @@ private struct NativeSpeechDuplexTests {
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 3,
-               "diagnostic export freezes schema version 3")
+        expect(object["schema_version"] as? Int == 4,
+               "diagnostic export freezes schema version 4")
         expect(object["events"] is [[String: Any]],
                "diagnostic export contains structured events")
+        let acousticEcho = object["acoustic_echo"] as? [String: Any]
+        expect(acousticEcho?["available"] as? Bool == true,
+               "diagnostic export includes Host AEC diagnostics")
+        expect(acousticEcho?["mode"] as? String == "appleVoiceProcessing",
+               "diagnostic export maps the Host audio mode")
+        for metric in [
+            "input_classification",
+            "source_forwarded_frame_count",
+            "source_suppressed_frame_count",
+            "source_timing_candidate_frame_count",
+            "source_timing_unavailable_frame_count",
+            "fallback_count",
+            "last_fallback_reason"
+        ] {
+            expect(
+                acousticEcho?[metric] != nil
+                    || metric == "last_fallback_reason",
+                "diagnostic export includes acoustic (metric)"
+            )
+        }
         for metric in [
             "input_send_operation_count",
             "input_average_send_duration_milliseconds",

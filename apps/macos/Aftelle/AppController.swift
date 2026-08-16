@@ -845,6 +845,7 @@ final class AppController: ObservableObject {
         realtimeSpeechDiagnosticViewRefreshTask = nil
         realtimeSpeechDiagnosticTimeline.clear()
         nativeSpeechDiagnosticBuffer.clear()
+        speechAudioHost.resetAcousticEchoDiagnostics()
         publishRealtimeSpeechDiagnosticViewState()
         realtimeSpeechDiagnosticStatusKey = nil
         lastDiagnosticAggregateNanoseconds = 0
@@ -861,7 +862,7 @@ final class AppController: ObservableObject {
         drainNativeSpeechInternalDiagnostics()
         let bundle = Bundle.main
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 3,
+            schemaVersion: 4,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -908,6 +909,7 @@ final class AppController: ObservableObject {
                 nativeSpeechPlaybackDebugSnapshot.rejectedEventCount,
             outputRuntimeRejectedEventCount:
                 speechOutputBridgeSnapshot.runtimeRejectedEventCount,
+            acousticEcho: realtimeSpeechAcousticEchoDiagnosticExport(),
             droppedEventCount:
                 realtimeSpeechDiagnosticTimeline.droppedEventCount,
             events: realtimeSpeechDiagnosticTimeline.events
@@ -925,6 +927,61 @@ final class AppController: ObservableObject {
     ) throws {
         try realtimeSpeechDiagnosticExportData(exportedAt: exportedAt)
             .write(to: url, options: [.withoutOverwriting])
+    }
+
+    private func realtimeSpeechAcousticEchoDiagnosticExport()
+        -> RealtimeSpeechAcousticEchoDiagnosticExport {
+        var export = RealtimeSpeechAcousticEchoDiagnosticExport()
+        guard let snapshot = speechAudioHost.currentAcousticEchoSnapshot()
+        else { return export }
+
+        export.available = true
+        export.mode = snapshot.mode.rawValue
+        export.enabled = snapshot.enabled
+        export.active = snapshot.active
+        export.isPlaybackActive = snapshot.isPlaybackActive
+        export.inputClassification = snapshot.inputClassification.rawValue
+        export.sourceGateOpen = snapshot.sourceGateOpen
+        export.sourceGatePreRollFrameCount =
+            snapshot.sourceGatePreRollFrameCount
+        export.renderFrameCount = snapshot.renderFrameCount
+        export.captureFrameCount = snapshot.captureFrameCount
+        export.delayMilliseconds = snapshot.delayMilliseconds
+        export.presentationDelayMilliseconds =
+            snapshot.presentationDelayMilliseconds
+        export.alignedDelayMilliseconds = snapshot.alignedDelayMilliseconds
+        export.estimatedDelayMilliseconds =
+            snapshot.estimatedDelayMilliseconds
+        export.erlDecibels = snapshot.erlDecibels
+        export.erleDecibels = snapshot.erleDecibels
+        export.rawCaptureRMS = snapshot.rawCaptureRMS
+        export.processedCaptureRMS = snapshot.processedCaptureRMS
+        export.renderCaptureCorrelation = snapshot.renderCaptureCorrelation
+        export.residualRenderCorrelation =
+            snapshot.residualRenderCorrelation
+        export.renderTimingFrameCount = snapshot.renderTimingFrameCount
+        export.renderFIFOSampleCount = snapshot.renderFIFOSampleCount
+        export.captureFIFOSampleCount = snapshot.captureFIFOSampleCount
+        export.echoOnlyFrameCount = snapshot.echoOnlyFrameCount
+        export.nearEndSpeechFrameCount = snapshot.nearEndSpeechFrameCount
+        export.doubleTalkFrameCount = snapshot.doubleTalkFrameCount
+        export.uncertainFrameCount = snapshot.uncertainFrameCount
+        export.sourceForwardedFrameCount =
+            snapshot.sourceForwardedFrameCount
+        export.sourceSuppressedFrameCount =
+            snapshot.sourceSuppressedFrameCount
+        export.sourceTimingCandidateFrameCount =
+            snapshot.sourceTimingCandidateFrameCount
+        export.sourceTimingUnavailableFrameCount =
+            snapshot.sourceTimingUnavailableFrameCount
+        export.sourceGateOpenCount = snapshot.sourceGateOpenCount
+        export.sourceGateCloseCount = snapshot.sourceGateCloseCount
+        export.fallbackCount = snapshot.fallbackCount
+        export.fallbackReason = snapshot.fallbackReason?.rawValue
+        export.lastFallbackReason = snapshot.lastFallbackReason?.rawValue
+        export.routeResetCount = snapshot.routeResetCount
+        export.driftTrend = snapshot.driftTrend
+        return export
     }
 
     func copyRuntimeOrchestrationInteraction(_ interactionID: UUID) {

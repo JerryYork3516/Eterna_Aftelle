@@ -15,6 +15,8 @@ nonisolated enum MacSpeechAECFallbackReason: String, Sendable, Equatable {
     case statsUnavailable = "stats_unavailable"
     case fifoOverflow = "fifo_overflow"
     case residualEcho = "residual_echo"
+    case sourceAlignmentUnavailable = "source_alignment_unavailable"
+    case sourceClassificationUncertain = "source_classification_uncertain"
     case routeRebuild = "route_rebuild"
     case requested = "requested"
 }
@@ -78,6 +80,18 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let inputClassification: MacSpeechAcousticInputClassification
     let sourceGateOpen: Bool
     let sourceGatePreRollFrameCount: Int
+    let echoOnlyFrameCount: UInt64
+    let nearEndSpeechFrameCount: UInt64
+    let doubleTalkFrameCount: UInt64
+    let uncertainFrameCount: UInt64
+    let sourceForwardedFrameCount: UInt64
+    let sourceSuppressedFrameCount: UInt64
+    let sourceTimingCandidateFrameCount: UInt64
+    let sourceTimingUnavailableFrameCount: UInt64
+    let sourceGateOpenCount: UInt64
+    let sourceGateCloseCount: UInt64
+    let fallbackCount: UInt64
+    let lastFallbackReason: MacSpeechAECFallbackReason?
     let routeResetCount: UInt64
     let fallbackReason: MacSpeechAECFallbackReason?
     let isPlaybackActive: Bool
@@ -99,6 +113,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let requiredSourceGateConfirmationFrames = 3
     private static let maximumSourceGateUncertainHangoverFrames = 5
     private static let sourceGatePreRollFrameCapacity = 15
+    private static let sourceGateFailureFrameCount = 20
     private static let reliableERLEDecibels = 3.0
     private static let failedERLEDecibels = 1.0
     private static let residualEchoFailureFrameCount: UInt64 = 5
@@ -136,6 +151,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var sourceGatePreRoll: [[Float]] = []
     private var sourceGateConfirmationFrameCount = 0
     private var sourceGateUncertainHangoverFrameCount = 0
+    private var consecutiveSourceAlignmentUnavailableFrameCount = 0
+    private var consecutiveSourceUncertainFrameCount = 0
+    private var pendingSourceGateFallbackReason: MacSpeechAECFallbackReason?
+    private var echoOnlyFrameCount: UInt64 = 0
+    private var nearEndSpeechFrameCount: UInt64 = 0
+    private var doubleTalkFrameCount: UInt64 = 0
+    private var uncertainFrameCount: UInt64 = 0
+    private var sourceForwardedFrameCount: UInt64 = 0
+    private var sourceSuppressedFrameCount: UInt64 = 0
+    private var sourceTimingCandidateFrameCount: UInt64 = 0
+    private var sourceTimingUnavailableFrameCount: UInt64 = 0
+    private var sourceGateOpenCount: UInt64 = 0
+    private var sourceGateCloseCount: UInt64 = 0
+    private var fallbackCount: UInt64 = 0
+    private var lastFallbackReason: MacSpeechAECFallbackReason?
     private var lastDriftSkew: Int64 = 0
     private var driftTrend = "stable"
     private var routeResetCount: UInt64 = 0
@@ -178,6 +208,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             captureFrameCount = 0
             lastLoggedCaptureFrameCount = 0
             resetTimingState()
+            resetDiagnosticCounters()
             isRouteRebuilding = false
             lastDriftSkew = 0
             driftTrend = "stable"
@@ -301,6 +332,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             } catch {
                 enterFallback(.captureProcessingFailed)
                 return isPlaybackActive || isRouteRebuilding ? [] : samples
+            }
+            if let pendingSourceGateFallbackReason {
+                enterFallback(pendingSourceGateFallbackReason)
+                return []
             }
             refreshBackendStats()
             evaluateResidualEcho(
@@ -441,6 +476,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func snapshot() -> MacSpeechAcousticEchoSnapshot {
         queue.sync { makeSnapshot() }
+    }
+
+    func resetDiagnostics() {
+        queue.sync { resetDiagnosticCounters() }
     }
 
     private enum FrameProcessingError: Error {
@@ -589,6 +628,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             processedFrame,
             timingMatch: timingMatch
         )
+        recordSourceClassification(timingMatch: timingMatch)
+        if pendingSourceGateFallbackReason != nil {
+            sourceSuppressedFrameCount &+= 1
+            return []
+        }
         if sourceGateOpen {
             return captureWhileGateIsOpen(processedFrame)
         }
@@ -596,6 +640,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         switch inputClassification {
         case .echoOnly:
             resetSourceGate(keepingClassification: true)
+            sourceSuppressedFrameCount &+= 1
             return []
         case .uncertain:
             sourceGateConfirmationFrameCount = 0
@@ -609,6 +654,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 return []
             }
             sourceGateOpen = true
+            sourceGateOpenCount &+= 1
             sourceGateConfirmationFrameCount = 0
             sourceGateUncertainHangoverFrameCount = 0
             return drainSourceGatePreRoll()
@@ -647,11 +693,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         switch inputClassification {
         case .nearEndSpeech, .doubleTalk:
             sourceGateUncertainHangoverFrameCount = 0
+            sourceForwardedFrameCount &+= 1
             return processedFrame
         case .uncertain:
             sourceGateUncertainHangoverFrameCount += 1
             guard sourceGateUncertainHangoverFrameCount
                     > Self.maximumSourceGateUncertainHangoverFrames else {
+                sourceForwardedFrameCount &+= 1
                 return processedFrame
             }
             resetSourceGate(keepingClassification: true)
@@ -659,7 +707,50 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             return []
         case .echoOnly:
             resetSourceGate(keepingClassification: true)
+            sourceSuppressedFrameCount &+= 1
             return []
+        }
+    }
+
+    private func recordSourceClassification(timingMatch: TimingMatch?) {
+        switch inputClassification {
+        case .echoOnly:
+            echoOnlyFrameCount &+= 1
+        case .nearEndSpeech:
+            nearEndSpeechFrameCount &+= 1
+        case .doubleTalk:
+            doubleTalkFrameCount &+= 1
+        case .uncertain:
+            uncertainFrameCount &+= 1
+        }
+
+        if timingMatch == nil,
+           rawCaptureRMS >= Self.minimumNearEndRMS {
+            sourceTimingUnavailableFrameCount &+= 1
+            consecutiveSourceAlignmentUnavailableFrameCount += 1
+            consecutiveSourceUncertainFrameCount = 0
+            if consecutiveSourceAlignmentUnavailableFrameCount
+                >= Self.sourceGateFailureFrameCount {
+                pendingSourceGateFallbackReason =
+                    .sourceAlignmentUnavailable
+            }
+            return
+        }
+
+        consecutiveSourceAlignmentUnavailableFrameCount = 0
+        if timingMatch != nil {
+            sourceTimingCandidateFrameCount &+= 1
+        }
+        if inputClassification == .uncertain,
+           rawCaptureRMS >= Self.minimumNearEndRMS {
+            consecutiveSourceUncertainFrameCount += 1
+            if consecutiveSourceUncertainFrameCount
+                >= Self.sourceGateFailureFrameCount {
+                pendingSourceGateFallbackReason =
+                    .sourceClassificationUncertain
+            }
+        } else {
+            consecutiveSourceUncertainFrameCount = 0
         }
     }
 
@@ -667,12 +758,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         if sourceGatePreRoll.count
             == Self.sourceGatePreRollFrameCapacity {
             sourceGatePreRoll.removeFirst()
+            sourceSuppressedFrameCount &+= 1
         }
         sourceGatePreRoll.append(frame)
     }
 
     private func drainSourceGatePreRoll() -> [Float] {
         let output = sourceGatePreRoll.flatMap { $0 }
+        sourceForwardedFrameCount &+= UInt64(sourceGatePreRoll.count)
         sourceGatePreRoll.removeAll(keepingCapacity: true)
         return output
     }
@@ -774,7 +867,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         if shouldLogInitialState || shouldLogPeriodicState {
             lastLoggedCaptureFrameCount = captureFrameCount
             logger.info(
-                "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) active=\(self.backendStats.active, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) presentation_ms=\(self.presentationDelayMilliseconds, privacy: .public) aligned_ms=\(self.alignedDelayMilliseconds ?? -1, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) raw_rms=\(self.rawCaptureRMS, privacy: .public) clean_rms=\(self.processedCaptureRMS, privacy: .public) correlation=\(self.renderCaptureCorrelation, privacy: .public) residual_correlation=\(self.residualRenderCorrelation, privacy: .public) source=\(self.inputClassification.rawValue, privacy: .public) source_gate=\(self.sourceGateOpen, privacy: .public) preroll_frames=\(self.sourceGatePreRoll.count, privacy: .public) timing_frames=\(self.renderTimingHistory.count, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
+                "AEC mode=\(self.mode.rawValue, privacy: .public) enabled=\(self.backendStats.enabled, privacy: .public) active=\(self.backendStats.active, privacy: .public) frames=\(self.renderFrameCount, privacy: .public)/\(self.captureFrameCount, privacy: .public) delay_ms=\(self.delayMilliseconds, privacy: .public) presentation_ms=\(self.presentationDelayMilliseconds, privacy: .public) aligned_ms=\(self.alignedDelayMilliseconds ?? -1, privacy: .public) estimated_ms=\(self.backendStats.estimatedDelayMilliseconds, privacy: .public) erl=\(self.backendStats.erlDecibels, privacy: .public) erle=\(self.backendStats.erleDecibels, privacy: .public) raw_rms=\(self.rawCaptureRMS, privacy: .public) clean_rms=\(self.processedCaptureRMS, privacy: .public) correlation=\(self.renderCaptureCorrelation, privacy: .public) residual_correlation=\(self.residualRenderCorrelation, privacy: .public) source=\(self.inputClassification.rawValue, privacy: .public) source_gate=\(self.sourceGateOpen, privacy: .public) source_forwarded=\(self.sourceForwardedFrameCount, privacy: .public) source_suppressed=\(self.sourceSuppressedFrameCount, privacy: .public) source_timing=\(self.sourceTimingCandidateFrameCount, privacy: .public)/\(self.sourceTimingUnavailableFrameCount, privacy: .public) preroll_frames=\(self.sourceGatePreRoll.count, privacy: .public) timing_frames=\(self.renderTimingHistory.count, privacy: .public) fifo=\(self.renderFIFO.count, privacy: .public)/\(self.captureFIFO.count, privacy: .public) drift=\(self.driftTrend, privacy: .public)"
             )
         }
     }
@@ -815,6 +908,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private func enterFallback(_ reason: MacSpeechAECFallbackReason) {
+        if mode != .halfDuplexFallback || fallbackReason != reason {
+            fallbackCount &+= 1
+        }
+        lastFallbackReason = reason
         mode = .halfDuplexFallback
         fallbackReason = reason
         backendStats = disabledStats()
@@ -845,13 +942,38 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private func resetSourceGate(keepingClassification: Bool = false) {
+        if sourceGateOpen {
+            sourceGateCloseCount &+= 1
+        }
+        sourceSuppressedFrameCount &+= UInt64(sourceGatePreRoll.count)
         sourceGateOpen = false
         sourceGatePreRoll.removeAll(keepingCapacity: true)
         sourceGateConfirmationFrameCount = 0
         sourceGateUncertainHangoverFrameCount = 0
+        consecutiveSourceAlignmentUnavailableFrameCount = 0
+        consecutiveSourceUncertainFrameCount = 0
+        pendingSourceGateFallbackReason = nil
         if !keepingClassification {
             inputClassification = .uncertain
         }
+    }
+
+    private func resetDiagnosticCounters() {
+        echoOnlyFrameCount = 0
+        nearEndSpeechFrameCount = 0
+        doubleTalkFrameCount = 0
+        uncertainFrameCount = 0
+        sourceForwardedFrameCount = 0
+        sourceSuppressedFrameCount = 0
+        sourceTimingCandidateFrameCount = 0
+        sourceTimingUnavailableFrameCount = 0
+        sourceGateOpenCount = 0
+        sourceGateCloseCount = 0
+        fallbackCount = 0
+        lastFallbackReason = nil
+        consecutiveSourceAlignmentUnavailableFrameCount = 0
+        consecutiveSourceUncertainFrameCount = 0
+        pendingSourceGateFallbackReason = nil
     }
 
     private func resetTimingState() {
@@ -903,6 +1025,19 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             inputClassification: inputClassification,
             sourceGateOpen: sourceGateOpen,
             sourceGatePreRollFrameCount: sourceGatePreRoll.count,
+            echoOnlyFrameCount: echoOnlyFrameCount,
+            nearEndSpeechFrameCount: nearEndSpeechFrameCount,
+            doubleTalkFrameCount: doubleTalkFrameCount,
+            uncertainFrameCount: uncertainFrameCount,
+            sourceForwardedFrameCount: sourceForwardedFrameCount,
+            sourceSuppressedFrameCount: sourceSuppressedFrameCount,
+            sourceTimingCandidateFrameCount: sourceTimingCandidateFrameCount,
+            sourceTimingUnavailableFrameCount:
+                sourceTimingUnavailableFrameCount,
+            sourceGateOpenCount: sourceGateOpenCount,
+            sourceGateCloseCount: sourceGateCloseCount,
+            fallbackCount: fallbackCount,
+            lastFallbackReason: lastFallbackReason,
             routeResetCount: routeResetCount,
             fallbackReason: fallbackReason,
             isPlaybackActive: isPlaybackActive
