@@ -166,7 +166,7 @@ done
 rg -q 'completedResponseCount' "$output_bridge" "$content_view"
 rg -q 'RealtimeSpeechDiagnosticTimeline' "$controller" "$orchestration"
 rg -q 'NSSavePanel' "$controller"
-rg -q 'schemaVersion: 6' "$controller"
+rg -q 'schemaVersion: 7' "$controller"
 rg -q 'realtimeSpeechAcousticEchoDiagnosticExport' "$controller"
 rg -q 'sourceTimingCandidateFrameCount' "$controller"
 rg -q 'sourceTimingUnavailableFrameCount' "$controller"

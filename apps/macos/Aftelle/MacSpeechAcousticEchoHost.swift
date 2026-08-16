@@ -45,6 +45,31 @@ nonisolated struct MacSpeechAECBackendStats: Sendable, Equatable {
     let erleDecibels: Double
 }
 
+nonisolated struct MacSpeechSourceGateEpochDiagnostic: Sendable, Equatable {
+    let playbackSequence: UInt64
+    let epochSequence: UInt64
+    let openedAtCaptureFrame: UInt64
+    let closedAtCaptureFrame: UInt64?
+    let totalFrameCount: UInt64
+    let forwardedFrameCount: UInt64
+    let suppressedFrameCount: UInt64
+    let echoOnlyFrameCount: UInt64
+    let nearEndSpeechFrameCount: UInt64
+    let doubleTalkFrameCount: UInt64
+    let uncertainFrameCount: UInt64
+    let rawEchoGainBaselineAtOpen: Double
+    let rawEchoGainBaselineAtClose: Double
+    let residualEchoGainBaselineAtOpen: Double
+    let residualEchoGainBaselineAtClose: Double
+    let aecBufferDelayMillisecondsAtOpen: Int
+    let aecBufferDelayMillisecondsAtClose: Int
+    let sourceAlignmentDelayMillisecondsAtOpen: Int?
+    let sourceAlignmentDelayMillisecondsAtClose: Int?
+    let estimatedDelayMillisecondsAtOpen: Int
+    let estimatedDelayMillisecondsAtClose: Int
+    let closeReason: MacSpeechSourceGateCloseReason?
+}
+
 nonisolated enum MacSpeechAECBackendError: Error, Sendable, Equatable {
     case createFailed
     case configureFailed
@@ -72,6 +97,7 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let renderFrameCount: UInt64
     let captureFrameCount: UInt64
     let delayMilliseconds: Int
+    let aecBufferDelayMilliseconds: Int
     let estimatedDelayMilliseconds: Int
     let erlDecibels: Double
     let erleDecibels: Double
@@ -81,6 +107,7 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let driftTrend: String
     let presentationDelayMilliseconds: Int
     let alignedDelayMilliseconds: Int?
+    let sourceAlignmentDelayMilliseconds: Int?
     let renderTimingFrameCount: Int
     let rawCaptureRMS: Double
     let processedCaptureRMS: Double
@@ -109,6 +136,7 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let maximumAdaptiveRawExcessRMS: Double
     let maximumAdaptiveResidualExcessRMS: Double
     let lastSourceGateCloseReason: MacSpeechSourceGateCloseReason?
+    let sourceGateEpochs: [MacSpeechSourceGateEpochDiagnostic]
     let fallbackCount: UInt64
     let lastFallbackReason: MacSpeechAECFallbackReason?
     let routeResetCount: UInt64
@@ -135,6 +163,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let requiredSourceGateConfirmationFrames = 3
     private static let maximumSourceGateNonUserHangoverFrames = 20
     private static let sourceGatePreRollFrameCapacity = 15
+    private static let sourceGateEpochDiagnosticCapacity = 16
     private static let sourceGateResetFrameCount = 20
     private static let reliableERLEDecibels = 3.0
     private static let failedERLEDecibels = 1.0
@@ -171,6 +200,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         .uncertain
     private var sourceGateOpen = false
     private var sourceGatePreRoll: [[Float]] = []
+    private var sourceGateCandidateNearEndFrameCount: UInt64 = 0
+    private var sourceGateCandidateDoubleTalkFrameCount: UInt64 = 0
     private var sourceGateConfirmationFrameCount = 0
     private var sourceGateNonUserHangoverFrameCount = 0
     private var consecutiveSourceAlignmentUnavailableFrameCount = 0
@@ -198,6 +229,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var maximumAdaptiveRawExcessRMS = 0.0
     private var maximumAdaptiveResidualExcessRMS = 0.0
     private var lastSourceGateCloseReason: MacSpeechSourceGateCloseReason?
+    private var playbackSequence: UInt64 = 0
+    private var sourceGateEpochSequence: UInt64 = 0
+    private var sourceGateEpochs: [MacSpeechSourceGateEpochDiagnostic] = []
+    private var activeSourceGateEpoch: SourceGateEpochAccumulator?
     private var fallbackCount: UInt64 = 0
     private var lastFallbackReason: MacSpeechAECFallbackReason?
     private var lastDriftSkew: Int64 = 0
@@ -231,6 +266,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         renderTimingHistory.reserveCapacity(Self.timingHistoryFrameCapacity)
         sourceGatePreRoll.reserveCapacity(
             Self.sourceGatePreRollFrameCapacity
+        )
+        sourceGateEpochs.reserveCapacity(
+            Self.sourceGateEpochDiagnosticCapacity
         )
     }
 
@@ -402,9 +440,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 enterFallback(.delayInvalid)
                 return
             }
-            if alignedDelayMilliseconds == nil {
-                applyDelay(measuredMilliseconds)
-            }
+            applyDelay(measuredMilliseconds)
         }
     }
 
@@ -416,6 +452,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func playbackStarted() {
         queue.sync {
+            playbackSequence &+= 1
             isPlaybackActive = true
             clearTimingHistory()
             alignedDelayMilliseconds = nil
@@ -510,7 +547,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     func resetDiagnostics() {
-        queue.sync { resetDiagnosticCounters() }
+        queue.sync {
+            let gateWasOpen = sourceGateOpen
+            resetDiagnosticCounters()
+            if gateWasOpen {
+                beginSourceGateEpoch()
+            }
+        }
     }
 
     private enum FrameProcessingError: Error {
@@ -527,6 +570,23 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         let renderSamples: [Float]
         let delayMilliseconds: Double
         let correlation: Double
+    }
+
+    private struct SourceGateEpochAccumulator {
+        let playbackSequence: UInt64
+        let epochSequence: UInt64
+        let openedAtCaptureFrame: UInt64
+        let forwardedFrameCountAtOpen: UInt64
+        let suppressedFrameCountAtOpen: UInt64
+        let echoOnlyFrameCountAtOpen: UInt64
+        let nearEndSpeechFrameCountAtOpen: UInt64
+        let doubleTalkFrameCountAtOpen: UInt64
+        let uncertainFrameCountAtOpen: UInt64
+        let rawEchoGainBaselineAtOpen: Double
+        let residualEchoGainBaselineAtOpen: Double
+        let aecBufferDelayMillisecondsAtOpen: Int
+        let sourceAlignmentDelayMillisecondsAtOpen: Int?
+        let estimatedDelayMillisecondsAtOpen: Int
     }
 
     private func processFrames(
@@ -682,6 +742,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             return suppressClosedGateFrame()
         case .nearEndSpeech, .doubleTalk:
             appendSourceGatePreRoll(processedFrame)
+            if inputClassification == .nearEndSpeech {
+                sourceGateCandidateNearEndFrameCount &+= 1
+            } else {
+                sourceGateCandidateDoubleTalkFrameCount &+= 1
+            }
             sourceGateConfirmationFrameCount += 1
             guard sourceGateConfirmationFrameCount
                     >= Self.requiredSourceGateConfirmationFrames else {
@@ -698,6 +763,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 maximumSourceGateOpenFrameCount,
                 currentSourceGateOpenFrameCount
             )
+            beginSourceGateEpoch()
             return drainSourceGatePreRoll()
         }
     }
@@ -909,6 +975,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         let suppressedFrameCount = sourceGatePreRoll.count + 1
         sourceGatePreRoll.removeAll(keepingCapacity: true)
         sourceGateConfirmationFrameCount = 0
+        sourceGateCandidateNearEndFrameCount = 0
+        sourceGateCandidateDoubleTalkFrameCount = 0
         recordSuppressedSourceFrames(suppressedFrameCount)
         return silenceFrames(suppressedFrameCount)
     }
@@ -917,11 +985,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         reason: MacSpeechSourceGateCloseReason
     ) -> [Float] {
         let suppressedFrameCount = sourceGatePreRoll.count + 1
+        recordSuppressedSourceFrames(1)
         resetSourceGate(
             keepingClassification: true,
             closeReason: reason
         )
-        recordSuppressedSourceFrames(1)
         return silenceFrames(suppressedFrameCount)
     }
 
@@ -951,23 +1019,146 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         let output = sourceGatePreRoll.flatMap { $0 }
         recordForwardedSourceFrames(sourceGatePreRoll.count)
         sourceGatePreRoll.removeAll(keepingCapacity: true)
+        sourceGateCandidateNearEndFrameCount = 0
+        sourceGateCandidateDoubleTalkFrameCount = 0
         return output
     }
 
+    private func beginSourceGateEpoch() {
+        sourceGateEpochSequence &+= 1
+        let preRollFrameCount = UInt64(sourceGatePreRoll.count)
+        let currentCaptureFrame = captureFrameCount &+ 1
+        activeSourceGateEpoch = SourceGateEpochAccumulator(
+            playbackSequence: playbackSequence,
+            epochSequence: sourceGateEpochSequence,
+            openedAtCaptureFrame:
+                currentCaptureFrame &+ 1 &- preRollFrameCount,
+            forwardedFrameCountAtOpen: sourceForwardedFrameCount,
+            suppressedFrameCountAtOpen: sourceSuppressedFrameCount,
+            echoOnlyFrameCountAtOpen: echoOnlyFrameCount,
+            nearEndSpeechFrameCountAtOpen:
+                nearEndSpeechFrameCount
+                    &- sourceGateCandidateNearEndFrameCount,
+            doubleTalkFrameCountAtOpen:
+                doubleTalkFrameCount
+                    &- sourceGateCandidateDoubleTalkFrameCount,
+            uncertainFrameCountAtOpen: uncertainFrameCount,
+            rawEchoGainBaselineAtOpen: rawEchoGainBaseline,
+            residualEchoGainBaselineAtOpen: residualEchoGainBaseline,
+            aecBufferDelayMillisecondsAtOpen: delayMilliseconds,
+            sourceAlignmentDelayMillisecondsAtOpen:
+                roundedSourceAlignmentDelay,
+            estimatedDelayMillisecondsAtOpen:
+                backendStats.estimatedDelayMilliseconds
+        )
+    }
+
+    private func closeSourceGateEpoch(
+        reason: MacSpeechSourceGateCloseReason?
+    ) {
+        guard let accumulator = activeSourceGateEpoch else { return }
+        appendSourceGateEpochDiagnostic(
+            makeSourceGateEpochDiagnostic(
+                accumulator,
+                closedAtCaptureFrame: captureFrameCount,
+                closeReason: reason
+            )
+        )
+        activeSourceGateEpoch = nil
+    }
+
+    private func appendSourceGateEpochDiagnostic(
+        _ diagnostic: MacSpeechSourceGateEpochDiagnostic
+    ) {
+        if sourceGateEpochs.count
+            == Self.sourceGateEpochDiagnosticCapacity {
+            sourceGateEpochs.removeFirst()
+        }
+        sourceGateEpochs.append(diagnostic)
+    }
+
+    private func makeSourceGateEpochDiagnostic(
+        _ accumulator: SourceGateEpochAccumulator,
+        closedAtCaptureFrame: UInt64?,
+        closeReason: MacSpeechSourceGateCloseReason?
+    ) -> MacSpeechSourceGateEpochDiagnostic {
+        MacSpeechSourceGateEpochDiagnostic(
+            playbackSequence: accumulator.playbackSequence,
+            epochSequence: accumulator.epochSequence,
+            openedAtCaptureFrame: accumulator.openedAtCaptureFrame,
+            closedAtCaptureFrame: closedAtCaptureFrame,
+            totalFrameCount: currentSourceGateOpenFrameCount,
+            forwardedFrameCount:
+                sourceForwardedFrameCount
+                    &- accumulator.forwardedFrameCountAtOpen,
+            suppressedFrameCount:
+                sourceSuppressedFrameCount
+                    &- accumulator.suppressedFrameCountAtOpen,
+            echoOnlyFrameCount:
+                echoOnlyFrameCount &- accumulator.echoOnlyFrameCountAtOpen,
+            nearEndSpeechFrameCount:
+                nearEndSpeechFrameCount
+                    &- accumulator.nearEndSpeechFrameCountAtOpen,
+            doubleTalkFrameCount:
+                doubleTalkFrameCount
+                    &- accumulator.doubleTalkFrameCountAtOpen,
+            uncertainFrameCount:
+                uncertainFrameCount
+                    &- accumulator.uncertainFrameCountAtOpen,
+            rawEchoGainBaselineAtOpen:
+                accumulator.rawEchoGainBaselineAtOpen,
+            rawEchoGainBaselineAtClose: rawEchoGainBaseline,
+            residualEchoGainBaselineAtOpen:
+                accumulator.residualEchoGainBaselineAtOpen,
+            residualEchoGainBaselineAtClose: residualEchoGainBaseline,
+            aecBufferDelayMillisecondsAtOpen:
+                accumulator.aecBufferDelayMillisecondsAtOpen,
+            aecBufferDelayMillisecondsAtClose: delayMilliseconds,
+            sourceAlignmentDelayMillisecondsAtOpen:
+                accumulator.sourceAlignmentDelayMillisecondsAtOpen,
+            sourceAlignmentDelayMillisecondsAtClose:
+                roundedSourceAlignmentDelay,
+            estimatedDelayMillisecondsAtOpen:
+                accumulator.estimatedDelayMillisecondsAtOpen,
+            estimatedDelayMillisecondsAtClose:
+                backendStats.estimatedDelayMilliseconds,
+            closeReason: closeReason
+        )
+    }
+
+    private var roundedSourceAlignmentDelay: Int? {
+        alignedDelayMilliseconds.map { Int($0.rounded()) }
+    }
+
+    private func sourceGateEpochDiagnostics()
+        -> [MacSpeechSourceGateEpochDiagnostic] {
+        var diagnostics = sourceGateEpochs
+        if let activeSourceGateEpoch {
+            diagnostics.append(makeSourceGateEpochDiagnostic(
+                activeSourceGateEpoch,
+                closedAtCaptureFrame: nil,
+                closeReason: nil
+            ))
+        }
+        if diagnostics.count > Self.sourceGateEpochDiagnosticCapacity {
+            diagnostics.removeFirst(
+                diagnostics.count - Self.sourceGateEpochDiagnosticCapacity
+            )
+        }
+        return diagnostics
+    }
+
     private func updateAlignedDelay(_ contentDelayMilliseconds: Double) {
-        let measuredDelay = max(
-            contentDelayMilliseconds,
-            Double(presentationDelayMilliseconds)
-        ) + max(0, captureProcessingMilliseconds)
-        guard measuredDelay.isFinite,
-              measuredDelay <= Double(Self.maximumDelayMilliseconds) else {
+        guard contentDelayMilliseconds.isFinite,
+              contentDelayMilliseconds >= 0,
+              contentDelayMilliseconds
+                <= Double(Self.maximumDelayMilliseconds) else {
             return
         }
         let smoothedDelay = alignedDelayMilliseconds.map {
-            $0 * 0.8 + measuredDelay * 0.2
-        } ?? measuredDelay
+            $0 * 0.8 + contentDelayMilliseconds * 0.2
+        } ?? contentDelayMilliseconds
         alignedDelayMilliseconds = smoothedDelay
-        applyDelay(Int(smoothedDelay.rounded()))
     }
 
     private func applyDelay(_ milliseconds: Int) {
@@ -1140,14 +1331,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         keepingClassification: Bool = false,
         closeReason: MacSpeechSourceGateCloseReason? = nil
     ) {
+        recordSuppressedSourceFrames(sourceGatePreRoll.count)
         if sourceGateOpen {
             sourceGateCloseCount &+= 1
             lastSourceGateCloseReason = closeReason
+            closeSourceGateEpoch(reason: closeReason)
         }
-        recordSuppressedSourceFrames(sourceGatePreRoll.count)
         sourceGateOpen = false
         currentSourceGateOpenFrameCount = 0
         sourceGatePreRoll.removeAll(keepingCapacity: true)
+        sourceGateCandidateNearEndFrameCount = 0
+        sourceGateCandidateDoubleTalkFrameCount = 0
         sourceGateConfirmationFrameCount = 0
         sourceGateNonUserHangoverFrameCount = 0
         consecutiveSourceAlignmentUnavailableFrameCount = 0
@@ -1169,6 +1363,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         sourceTimingUnavailableFrameCount = 0
         sourceGateOpenCount = 0
         sourceGateCloseCount = 0
+        sourceGateCandidateNearEndFrameCount = 0
+        sourceGateCandidateDoubleTalkFrameCount = 0
         currentSourceGateOpenFrameCount = 0
         maximumSourceGateOpenFrameCount = 0
         currentContinuousSourceForwardedFrameCount = 0
@@ -1178,6 +1374,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         maximumAdaptiveRawExcessRMS = 0
         maximumAdaptiveResidualExcessRMS = 0
         lastSourceGateCloseReason = nil
+        sourceGateEpochSequence = 0
+        sourceGateEpochs.removeAll(keepingCapacity: true)
+        activeSourceGateEpoch = nil
         fallbackCount = 0
         lastFallbackReason = nil
         consecutiveSourceAlignmentUnavailableFrameCount = 0
@@ -1222,6 +1421,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             renderFrameCount: renderFrameCount,
             captureFrameCount: captureFrameCount,
             delayMilliseconds: delayMilliseconds,
+            aecBufferDelayMilliseconds: delayMilliseconds,
             estimatedDelayMilliseconds:
                 backendStats.estimatedDelayMilliseconds,
             erlDecibels: backendStats.erlDecibels,
@@ -1232,9 +1432,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 Int64(renderFrameCount) - Int64(captureFrameCount),
             driftTrend: driftTrend,
             presentationDelayMilliseconds: presentationDelayMilliseconds,
-            alignedDelayMilliseconds: alignedDelayMilliseconds.map {
-                Int($0.rounded())
-            },
+            alignedDelayMilliseconds: roundedSourceAlignmentDelay,
+            sourceAlignmentDelayMilliseconds:
+                roundedSourceAlignmentDelay,
             renderTimingFrameCount: renderTimingHistory.count,
             rawCaptureRMS: rawCaptureRMS,
             processedCaptureRMS: processedCaptureRMS,
@@ -1270,6 +1470,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             maximumAdaptiveResidualExcessRMS:
                 maximumAdaptiveResidualExcessRMS,
             lastSourceGateCloseReason: lastSourceGateCloseReason,
+            sourceGateEpochs: sourceGateEpochDiagnostics(),
             fallbackCount: fallbackCount,
             lastFallbackReason: lastFallbackReason,
             routeResetCount: routeResetCount,

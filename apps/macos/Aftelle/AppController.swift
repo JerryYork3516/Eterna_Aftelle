@@ -862,7 +862,7 @@ final class AppController: ObservableObject {
         drainNativeSpeechInternalDiagnostics()
         let bundle = Bundle.main
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 6,
+            schemaVersion: 7,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -947,9 +947,13 @@ final class AppController: ObservableObject {
         export.renderFrameCount = snapshot.renderFrameCount
         export.captureFrameCount = snapshot.captureFrameCount
         export.delayMilliseconds = snapshot.delayMilliseconds
+        export.aecBufferDelayMilliseconds =
+            snapshot.aecBufferDelayMilliseconds
         export.presentationDelayMilliseconds =
             snapshot.presentationDelayMilliseconds
         export.alignedDelayMilliseconds = snapshot.alignedDelayMilliseconds
+        export.sourceAlignmentDelayMilliseconds =
+            snapshot.sourceAlignmentDelayMilliseconds
         export.estimatedDelayMilliseconds =
             snapshot.estimatedDelayMilliseconds
         export.erlDecibels = snapshot.erlDecibels
@@ -996,6 +1000,42 @@ final class AppController: ObservableObject {
             snapshot.maximumAdaptiveResidualExcessRMS
         export.lastSourceGateCloseReason =
             snapshot.lastSourceGateCloseReason?.rawValue
+        export.sourceGateEpochs = snapshot.sourceGateEpochs.map { epoch in
+            RealtimeSpeechSourceGateEpochDiagnosticExport(
+                playbackSequence: epoch.playbackSequence,
+                epochSequence: epoch.epochSequence,
+                openedAtCaptureFrame: epoch.openedAtCaptureFrame,
+                closedAtCaptureFrame: epoch.closedAtCaptureFrame,
+                totalFrameCount: epoch.totalFrameCount,
+                forwardedFrameCount: epoch.forwardedFrameCount,
+                suppressedFrameCount: epoch.suppressedFrameCount,
+                echoOnlyFrameCount: epoch.echoOnlyFrameCount,
+                nearEndSpeechFrameCount: epoch.nearEndSpeechFrameCount,
+                doubleTalkFrameCount: epoch.doubleTalkFrameCount,
+                uncertainFrameCount: epoch.uncertainFrameCount,
+                rawEchoGainBaselineAtOpen:
+                    epoch.rawEchoGainBaselineAtOpen,
+                rawEchoGainBaselineAtClose:
+                    epoch.rawEchoGainBaselineAtClose,
+                residualEchoGainBaselineAtOpen:
+                    epoch.residualEchoGainBaselineAtOpen,
+                residualEchoGainBaselineAtClose:
+                    epoch.residualEchoGainBaselineAtClose,
+                aecBufferDelayMillisecondsAtOpen:
+                    epoch.aecBufferDelayMillisecondsAtOpen,
+                aecBufferDelayMillisecondsAtClose:
+                    epoch.aecBufferDelayMillisecondsAtClose,
+                sourceAlignmentDelayMillisecondsAtOpen:
+                    epoch.sourceAlignmentDelayMillisecondsAtOpen,
+                sourceAlignmentDelayMillisecondsAtClose:
+                    epoch.sourceAlignmentDelayMillisecondsAtClose,
+                estimatedDelayMillisecondsAtOpen:
+                    epoch.estimatedDelayMillisecondsAtOpen,
+                estimatedDelayMillisecondsAtClose:
+                    epoch.estimatedDelayMillisecondsAtClose,
+                closeReason: epoch.closeReason?.rawValue
+            )
+        }
         export.fallbackCount = snapshot.fallbackCount
         export.fallbackReason = snapshot.fallbackReason?.rawValue
         export.lastFallbackReason = snapshot.lastFallbackReason?.rawValue

@@ -1013,6 +1013,31 @@ struct RealtimeSpeechDiagnosticViewState: Equatable, Sendable {
     }
 }
 
+struct RealtimeSpeechSourceGateEpochDiagnosticExport: Encodable, Sendable {
+    let playbackSequence: UInt64
+    let epochSequence: UInt64
+    let openedAtCaptureFrame: UInt64
+    let closedAtCaptureFrame: UInt64?
+    let totalFrameCount: UInt64
+    let forwardedFrameCount: UInt64
+    let suppressedFrameCount: UInt64
+    let echoOnlyFrameCount: UInt64
+    let nearEndSpeechFrameCount: UInt64
+    let doubleTalkFrameCount: UInt64
+    let uncertainFrameCount: UInt64
+    let rawEchoGainBaselineAtOpen: Double
+    let rawEchoGainBaselineAtClose: Double
+    let residualEchoGainBaselineAtOpen: Double
+    let residualEchoGainBaselineAtClose: Double
+    let aecBufferDelayMillisecondsAtOpen: Int
+    let aecBufferDelayMillisecondsAtClose: Int
+    let sourceAlignmentDelayMillisecondsAtOpen: Int?
+    let sourceAlignmentDelayMillisecondsAtClose: Int?
+    let estimatedDelayMillisecondsAtOpen: Int
+    let estimatedDelayMillisecondsAtClose: Int
+    let closeReason: String?
+}
+
 struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var available = false
     var mode = "unavailable"
@@ -1025,8 +1050,10 @@ struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var renderFrameCount: UInt64 = 0
     var captureFrameCount: UInt64 = 0
     var delayMilliseconds = 0
+    var aecBufferDelayMilliseconds = 0
     var presentationDelayMilliseconds = 0
     var alignedDelayMilliseconds: Int?
+    var sourceAlignmentDelayMilliseconds: Int?
     var estimatedDelayMilliseconds = 0
     var erlDecibels = 0.0
     var erleDecibels = 0.0
@@ -1057,6 +1084,9 @@ struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var maximumAdaptiveRawExcessRMS = 0.0
     var maximumAdaptiveResidualExcessRMS = 0.0
     var lastSourceGateCloseReason: String?
+    var sourceGateEpochs: [
+        RealtimeSpeechSourceGateEpochDiagnosticExport
+    ] = []
     var fallbackCount: UInt64 = 0
     var fallbackReason: String?
     var lastFallbackReason: String?

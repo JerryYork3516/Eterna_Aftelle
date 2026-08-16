@@ -93,6 +93,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testFIFORemainderIsBounded()
         testRenderAlignedDelay()
         testHostTimeAlignedDelayAndDiagnostics()
+        testSourceGateEpochDiagnosticsAreBounded()
         testTimingHistoryIsBoundedAndReset()
         testEchoOnlySourceGate()
         testNearEndSourceGateAndPreRoll()
@@ -264,10 +265,12 @@ private struct MacSpeechAcousticEchoHostTests {
                "presentation delay remains available as a baseline")
         expect(snapshot.alignedDelayMilliseconds == 80,
                "matched host times establish the acoustic delay")
-        expect(snapshot.delayMilliseconds == 80,
-               "host-time alignment drives the AEC delay")
-        expect(backend.recordedDelays.last == 80,
-               "aligned delay reaches the backend")
+        expect(snapshot.sourceAlignmentDelayMilliseconds == 80,
+               "source alignment has an explicit diagnostic field")
+        expect(snapshot.aecBufferDelayMilliseconds == 30,
+               "AEC buffer delay remains presentation-derived")
+        expect(backend.recordedDelays.last == 30,
+               "source alignment is not forced into the AEC backend")
         expect(snapshot.renderCaptureCorrelation > 0.99,
                "render/capture correlation is diagnosed")
         expect(snapshot.rawCaptureRMS > snapshot.processedCaptureRMS,
@@ -279,8 +282,10 @@ private struct MacSpeechAcousticEchoHostTests {
             outputPresentationLatencySeconds: 0.001,
             capturePresentationLatencySeconds: 0.001
         )
-        expect(host.snapshot().delayMilliseconds == 80,
-               "presentation updates do not overwrite aligned delay")
+        expect(host.snapshot().delayMilliseconds == 2,
+               "presentation updates control only AEC buffer delay")
+        expect(host.snapshot().sourceAlignmentDelayMilliseconds == 80,
+               "presentation updates preserve source alignment")
     }
 
     private static func testTimingHistoryIsBoundedAndReset() {
@@ -305,6 +310,59 @@ private struct MacSpeechAcousticEchoHostTests {
         host.playbackCompleted()
         expect(host.snapshot().renderTimingFrameCount == 0,
                "playback completion clears old render timing")
+    }
+
+    private static func testSourceGateEpochDiagnosticsAreBounded() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        var hostTime: UInt64 = 20_000_000_000
+        for playback in 0 ..< 18 {
+            host.playbackStarted()
+            let render = testSignal(
+                seed: UInt32(1_000 + playback),
+                amplitude: 0.3
+            )
+            let user = testSignal(
+                seed: UInt32(2_000 + playback),
+                amplitude: 0.2
+            )
+            let mixedCapture = zip(render, user).map { sample in
+                sample.0 * 0.8 + sample.1
+            }
+            backend.setCaptureOutput(user)
+            host.processRender(render, hostTimeNanoseconds: hostTime)
+            for frame in 0 ..< 3 {
+                _ = host.processCapture(
+                    mixedCapture,
+                    hostTimeNanoseconds:
+                        hostTime + 80_000_000
+                            + UInt64(frame * 10_000_000)
+                )
+            }
+            host.playbackCompleted()
+            hostTime += 1_000_000_000
+        }
+
+        let epochs = host.snapshot().sourceGateEpochs
+        expect(epochs.count == 16,
+               "source gate epoch diagnostics use a bounded ring")
+        expect(epochs.first?.playbackSequence == 3
+                   && epochs.last?.playbackSequence == 18,
+               "source gate epoch ring retains the newest playbacks")
+        expect(epochs.last?.forwardedFrameCount == 3
+                   && epochs.last?.totalFrameCount == 3,
+               "source gate epoch records released pre-roll")
+        expect(epochs.last?.closeReason == .playbackLifecycle
+                   && epochs.last?.closedAtCaptureFrame != nil,
+               "source gate epoch records deterministic closure")
+        expect(epochs.last?.aecBufferDelayMillisecondsAtOpen == 0
+                   && epochs.last?.sourceAlignmentDelayMillisecondsAtOpen
+                       == 86,
+               "source gate epoch keeps delay semantics separate")
     }
 
     private static func testEchoOnlySourceGate() {

@@ -856,8 +856,8 @@ private struct NativeSpeechDuplexTests {
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 6,
-               "diagnostic export freezes schema version 6")
+        expect(object["schema_version"] as? Int == 7,
+               "diagnostic export freezes schema version 7")
         expect(object["events"] is [[String: Any]],
                "diagnostic export contains structured events")
         let acousticEcho = object["acoustic_echo"] as? [String: Any]
@@ -867,6 +867,8 @@ private struct NativeSpeechDuplexTests {
                "diagnostic export maps the Host audio mode")
         for metric in [
             "input_classification",
+            "aec_buffer_delay_milliseconds",
+            "source_alignment_delay_milliseconds",
             "source_forwarded_frame_count",
             "source_suppressed_frame_count",
             "source_timing_candidate_frame_count",
@@ -881,11 +883,13 @@ private struct NativeSpeechDuplexTests {
             "maximum_adaptive_raw_excess_rms",
             "maximum_adaptive_residual_excess_rms",
             "last_source_gate_close_reason",
+            "source_gate_epochs",
             "fallback_count",
             "last_fallback_reason"
         ] {
             expect(
                 acousticEcho?[metric] != nil
+                    || metric == "source_alignment_delay_milliseconds"
                     || metric == "last_source_gate_close_reason"
                     || metric == "last_fallback_reason",
                 "diagnostic export includes acoustic (metric)"
