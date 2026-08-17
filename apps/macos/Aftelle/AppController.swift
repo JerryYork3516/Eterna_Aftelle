@@ -414,6 +414,7 @@ final class AppController: ObservableObject {
     private var lastDiagnosticCaptureDroppedCount: UInt64 = 0
     private var lastDiagnosticPCMEndSample: Int16?
     private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
+    private var speechHostLifecycleOperationCount = 0
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
         sendFrame: { [orchestrationKernel] payload, context in
@@ -1391,7 +1392,31 @@ final class AppController: ObservableObject {
         try Data(text.utf8).write(to: url, options: .withoutOverwriting)
     }
 
+    private var speechHostAllowsSessionReplacement: Bool {
+        guard speechHostLifecycleOperationCount == 0,
+              !speechAudioHostSnapshot.isCapturing,
+              formalSpeechRouteGeneration == nil,
+              !speechInputBridgeSnapshot.hasActivePump,
+              !speechOutputBridgeSnapshot.hasActiveReceiveLoop,
+              nativeSpeechPlaybackBinding == nil else {
+            return false
+        }
+        switch speechAudioOutputHostSnapshot.state {
+        case .prepared, .playing, .stalled, .draining:
+            return false
+        case .idle, .completed, .stopped, .failed, .closed:
+            return true
+        }
+    }
+
     func clearDialogueTestData() {
+        guard speechHostAllowsSessionReplacement else {
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "session_replacement_blocked_active_host"
+            )
+            return
+        }
         invalidateResidentTextSubmission()
         providerTestRequestID = nil
         providerTestTask?.cancel()
@@ -1647,6 +1672,14 @@ final class AppController: ObservableObject {
     }
 
     func debugImportResident(from url: URL) {
+        guard speechHostAllowsSessionReplacement else {
+            fixtureStatus = "Debug DR: stop speech before import"
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "session_replacement_blocked_active_host"
+            )
+            return
+        }
         invalidateResidentTextSubmission()
         startupState = .loading
         refreshResidentVisualIntent()
@@ -1858,6 +1891,8 @@ final class AppController: ObservableObject {
     }
 
     func startSpeechAudioCapture() async {
+        speechHostLifecycleOperationCount += 1
+        defer { speechHostLifecycleOperationCount -= 1 }
         speechAudioHostSnapshot = await speechAudioHost.startCapture()
         if speechAudioHostSnapshot.isCapturing {
             lastDiagnosticAggregateNanoseconds = 0
@@ -1873,6 +1908,8 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
+        speechHostLifecycleOperationCount += 1
+        defer { speechHostLifecycleOperationCount -= 1 }
         await cancelFormalSpeechRoute()
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
@@ -1920,6 +1957,8 @@ final class AppController: ObservableObject {
     }
 
     func shutdownSpeechAudioHost() async {
+        speechHostLifecycleOperationCount += 1
+        defer { speechHostLifecycleOperationCount -= 1 }
         await cancelFormalSpeechRoute()
         if nativeSpeechPlaybackBinding != nil {
             playbackStopClearCount &+= 1
@@ -1940,14 +1979,21 @@ final class AppController: ObservableObject {
 
     func startFormalSpeechRoute() async {
         guard formalSpeechRouteGeneration == nil else { return }
+        guard speechHostLifecycleOperationCount == 0 else {
+            publishFormalSpeechRouteFailure("speech_input_busy")
+            return
+        }
+        // Host capture readiness only; RuntimeCore owns Brain admission.
         guard !speechInputBridgeSnapshot.hasActivePump else {
-            publishFormalSpeechRouteFailure("legacy_bridge_active")
+            publishFormalSpeechRouteFailure("speech_input_busy")
             return
         }
         guard isResidentTextInputAvailable else {
             publishFormalSpeechRouteFailure("resident_unavailable")
             return
         }
+        speechHostLifecycleOperationCount += 1
+        defer { speechHostLifecycleOperationCount -= 1 }
         formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
             phase: .starting,
             generation: nil,
@@ -2656,13 +2702,16 @@ final class AppController: ObservableObject {
             source: .lifecycle,
             category: "bridge_start_requested"
         )
-        guard !speechInputBridgeSnapshot.hasActivePump else {
+        guard speechHostLifecycleOperationCount == 0,
+              !speechInputBridgeSnapshot.hasActivePump else {
             recordRealtimeSpeechDiagnostic(
                 source: .lifecycle,
                 category: "bridge_start_ignored_active"
             )
             return
         }
+        speechHostLifecycleOperationCount += 1
+        defer { speechHostLifecycleOperationCount -= 1 }
         guard let captureGeneration =
             await speechAudioHost.prepareCaptureGeneration() else {
             speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()

@@ -968,6 +968,230 @@ nonisolated enum NativeSpeechEventDisposition: Equatable {
     case rejectedOutOfOrder
 }
 
+nonisolated enum RuntimeBrainRoute: String, Sendable, Equatable {
+    case textConversation
+    case cascadedSpeech
+    case nativeSpeech
+}
+
+nonisolated enum RuntimeBrainGeneration: Sendable, Equatable {
+    case textRequest(UUID)
+    case speechRoute(UInt64)
+    case nativeInteraction(NativeSpeechInteractionID)
+}
+
+nonisolated enum RuntimeBrainLeaseState: String, Sendable, Equatable {
+    case active
+    case settling
+}
+
+nonisolated struct ActiveBrainLease: Sendable, Equatable {
+    let brainLeaseID: UUID
+    let runtimeSessionID: String
+    let residentID: String
+    let route: RuntimeBrainRoute
+    let routeEpoch: UInt64
+    let generation: RuntimeBrainGeneration
+    let state: RuntimeBrainLeaseState
+}
+
+nonisolated final class RuntimeActiveBrainLeaseGate:
+    @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeLease: ActiveBrainLease?
+    private var routeEpoch: UInt64 = 0
+    private var providerStartCounts: [UUID: Int] = [:]
+    private var providerStartWaiters:
+        [UUID: [CheckedContinuation<Void, Never>]] = [:]
+
+    func acquire(
+        residentID: String,
+        runtimeSessionID: String,
+        route: RuntimeBrainRoute,
+        generation: RuntimeBrainGeneration,
+        replacingCurrentRoute: Bool = false
+    ) -> ActiveBrainLease? {
+        lock.withLock {
+            if let activeLease {
+                guard replacingCurrentRoute,
+                      activeLease.state == .active,
+                      activeLease.residentID == residentID,
+                      activeLease.runtimeSessionID == runtimeSessionID,
+                      activeLease.route == route else {
+                    return nil
+                }
+            }
+            routeEpoch &+= 1
+            let lease = ActiveBrainLease(
+                brainLeaseID: UUID(),
+                runtimeSessionID: runtimeSessionID,
+                residentID: residentID,
+                route: route,
+                routeEpoch: routeEpoch,
+                generation: generation,
+                state: .active
+            )
+            activeLease = lease
+            return lease
+        }
+    }
+
+    func current() -> ActiveBrainLease? {
+        lock.withLock { activeLease }
+    }
+
+    func isCurrent(_ lease: ActiveBrainLease) -> Bool {
+        lock.withLock {
+            activeLease == lease && lease.state == .active
+        }
+    }
+
+    func current(
+        residentID: String,
+        runtimeSessionID: String,
+        route: RuntimeBrainRoute,
+        generation: RuntimeBrainGeneration
+    ) -> ActiveBrainLease? {
+        lock.withLock {
+            guard let activeLease,
+                  activeLease.state == .active,
+                  activeLease.residentID == residentID,
+                  activeLease.runtimeSessionID == runtimeSessionID,
+                  activeLease.route == route,
+                  activeLease.generation == generation else {
+                return nil
+            }
+            return activeLease
+        }
+    }
+
+    func advanceGeneration(
+        for lease: ActiveBrainLease,
+        to generation: RuntimeBrainGeneration
+    ) -> ActiveBrainLease? {
+        lock.withLock {
+            guard activeLease == lease,
+                  lease.state == .active else { return nil }
+            let advanced = ActiveBrainLease(
+                brainLeaseID: lease.brainLeaseID,
+                runtimeSessionID: lease.runtimeSessionID,
+                residentID: lease.residentID,
+                route: lease.route,
+                routeEpoch: lease.routeEpoch,
+                generation: generation,
+                state: .active
+            )
+            activeLease = advanced
+            return advanced
+        }
+    }
+
+    func beginProviderStart(for lease: ActiveBrainLease) -> Bool {
+        lock.withLock {
+            guard activeLease == lease,
+                  lease.state == .active else { return false }
+            providerStartCounts[lease.brainLeaseID, default: 0] += 1
+            return true
+        }
+    }
+
+    func finishProviderStart(for lease: ActiveBrainLease) {
+        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+            let leaseID = lease.brainLeaseID
+            guard let count = providerStartCounts[leaseID], count > 0 else {
+                return []
+            }
+            if count > 1 {
+                providerStartCounts[leaseID] = count - 1
+                return []
+            }
+            providerStartCounts.removeValue(forKey: leaseID)
+            return providerStartWaiters.removeValue(forKey: leaseID) ?? []
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    func beginSettlement(
+        for lease: ActiveBrainLease
+    ) -> ActiveBrainLease? {
+        lock.withLock {
+            guard activeLease == lease,
+                  lease.state == .active else { return nil }
+            let settling = ActiveBrainLease(
+                brainLeaseID: lease.brainLeaseID,
+                runtimeSessionID: lease.runtimeSessionID,
+                residentID: lease.residentID,
+                route: lease.route,
+                routeEpoch: lease.routeEpoch,
+                generation: lease.generation,
+                state: .settling
+            )
+            activeLease = settling
+            return settling
+        }
+    }
+
+    func waitForProviderStartsToFinish(
+        for lease: ActiveBrainLease
+    ) async {
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock {
+                guard providerStartCounts[lease.brainLeaseID, default: 0] > 0
+                else {
+                    return true
+                }
+                providerStartWaiters[
+                    lease.brainLeaseID,
+                    default: []
+                ].append(continuation)
+                return false
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    @discardableResult
+    func release(_ lease: ActiveBrainLease) -> Bool {
+        lock.withLock {
+            guard activeLease == lease,
+                  providerStartCounts[lease.brainLeaseID, default: 0] == 0
+            else {
+                return false
+            }
+            activeLease = nil
+            return true
+        }
+    }
+
+    @discardableResult
+    func releaseCurrent(route: RuntimeBrainRoute) -> ActiveBrainLease? {
+        lock.withLock {
+            guard let activeLease,
+                  activeLease.route == route,
+                  providerStartCounts[activeLease.brainLeaseID, default: 0]
+                    == 0 else { return nil }
+            let released = activeLease
+            self.activeLease = nil
+            return released
+        }
+    }
+
+    @discardableResult
+    func invalidate() -> ActiveBrainLease? {
+        lock.withLock {
+            guard let activeLease,
+                  providerStartCounts[activeLease.brainLeaseID, default: 0]
+                    == 0 else { return nil }
+            let invalidated = activeLease
+            self.activeLease = nil
+            return invalidated
+        }
+    }
+
+}
+
 private struct RuntimeNativeSpeechPendingInterrupt: Equatable {
     let interactionID: NativeSpeechInteractionID
     let turnNumber: UInt64
@@ -1118,7 +1342,7 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
     private let interactionGate: RuntimeNativeSpeechInteractionGate
     private let inputGate: NativeSpeechInputGate
     private let executionEngine: ExecutionEngine
-    private let onTerminal: () -> Void
+    private let onTerminal: (NativeSpeechInteractionID, Bool) -> Void
 
     init(
         stateMachine: RealtimeSpeechStateMachine,
@@ -1126,7 +1350,7 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
         interactionGate: RuntimeNativeSpeechInteractionGate,
         inputGate: NativeSpeechInputGate,
         executionEngine: ExecutionEngine,
-        onTerminal: @escaping () -> Void
+        onTerminal: @escaping (NativeSpeechInteractionID, Bool) -> Void
     ) {
         self.stateMachine = stateMachine
         self.subtitleStateMachine = subtitleStateMachine
@@ -1149,14 +1373,22 @@ nonisolated final class RuntimeNativeSpeechTimeoutHandler:
             reason: .failed
         )
         inputGate.invalidate(interactionID: interaction.id)
-        onTerminal()
         try? await executionEngine.cancelNativeSpeech(
             interactionID: interaction.id,
             reason: .interrupted
         )
-        try? await executionEngine.closeNativeSpeech(
-            interactionID: interaction.id
-        )
+        let providerSettled: Bool
+        do {
+            try await executionEngine.closeNativeSpeech(
+                interactionID: interaction.id
+            )
+            providerSettled = true
+        } catch NativeSpeechError.unavailable {
+            providerSettled = true
+        } catch {
+            providerSettled = false
+        }
+        onTerminal(interaction.id, providerSettled)
     }
 }
 
@@ -1266,6 +1498,9 @@ public final class RuntimeCore {
     private(set) var currentNarrativeMemoryProjection:
         RuntimeNarrativeMemoryProjection?
     private var activeExpressionRequestID: UUID?
+    private nonisolated let activeBrainLeaseGate =
+        RuntimeActiveBrainLeaseGate()
+    private var runtimeSessionReplacementCleanupTask: Task<Void, Never>?
     private var speechRouteGeneration: UInt64 = 0
     private var speechRouteASRFinalState: SpeechRouteASRFinalState?
     private var speechRoutePendingTurn: SpeechRoutePendingTurn?
@@ -1310,7 +1545,12 @@ public final class RuntimeCore {
             interactionGate: nativeSpeechInteractionGate,
             inputGate: nativeSpeechInputGate,
             executionEngine: executionEngine,
-            onTerminal: { [weak self] in
+            onTerminal: { [weak self] interactionID, providerSettled in
+                if providerSettled {
+                    self?.releaseNativeSpeechBrainLease(
+                        interactionID: interactionID
+                    )
+                }
                 self?.resetNativeSpeechToolState()
             }
         )
@@ -1347,16 +1587,202 @@ public final class RuntimeCore {
         )
     }
 
+    private func currentBrainLease(
+        session: RuntimeSessionContext,
+        route: RuntimeBrainRoute,
+        generation: RuntimeBrainGeneration
+    ) -> ActiveBrainLease? {
+        activeBrainLeaseGate.current(
+            residentID: session.residentID,
+            runtimeSessionID: session.sessionID.rawValue,
+            route: route,
+            generation: generation
+        )
+    }
+
+    private func currentSpeechRouteBrainLease(
+        generation: UInt64
+    ) -> ActiveBrainLease? {
+        guard let sessionContext else { return nil }
+        return currentBrainLease(
+            session: sessionContext,
+            route: .cascadedSpeech,
+            generation: .speechRoute(generation)
+        )
+    }
+
+    private func currentNativeSpeechBrainLease(
+        interaction: NativeSpeechInteraction
+    ) -> ActiveBrainLease? {
+        activeBrainLeaseGate.current(
+            residentID: interaction.residentID,
+            runtimeSessionID: interaction.sessionID,
+            route: .nativeSpeech,
+            generation: .nativeInteraction(interaction.id)
+        )
+    }
+
+    private func releaseNativeSpeechBrainLease(
+        interactionID: NativeSpeechInteractionID
+    ) {
+        guard let lease = activeBrainLeaseGate.current(),
+              lease.state == .active,
+              lease.route == .nativeSpeech,
+              lease.generation == .nativeInteraction(interactionID) else {
+            return
+        }
+        activeBrainLeaseGate.release(lease)
+    }
+
+    private func settleSpeechRouteProviders(
+        generation: UInt64
+    ) async -> Bool {
+        var settled = true
+        do {
+            try await executionEngine.closeASR(generation: generation)
+        } catch SpeechRouteError.unavailable {
+        } catch {
+            settled = false
+        }
+        do {
+            try await executionEngine.closeTTS(generation: generation)
+        } catch SpeechRouteError.unavailable {
+        } catch {
+            settled = false
+        }
+        return settled
+    }
+
+    private func settleNativeSpeechProvider(
+        interactionID: NativeSpeechInteractionID
+    ) async -> Bool {
+        do {
+            try await executionEngine.closeNativeSpeech(
+                interactionID: interactionID
+            )
+            return true
+        } catch NativeSpeechError.unavailable {
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func beginRuntimeSessionReplacement() {
+        guard let lease = activeBrainLeaseGate.current() else { return }
+        guard lease.route != .textConversation else {
+            activeBrainLeaseGate.release(lease)
+            return
+        }
+        guard runtimeSessionReplacementCleanupTask == nil else { return }
+        let settlingLease: ActiveBrainLease
+        if lease.state == .settling {
+            settlingLease = lease
+        } else {
+            guard let lease = activeBrainLeaseGate.beginSettlement(
+                for: lease
+            ) else { return }
+            settlingLease = lease
+        }
+        let executionEngine = executionEngine
+        let activeBrainLeaseGate = activeBrainLeaseGate
+        runtimeSessionReplacementCleanupTask = Task {
+            await activeBrainLeaseGate.waitForProviderStartsToFinish(
+                for: settlingLease
+            )
+            let settled: Bool
+            switch settlingLease.generation {
+            case .speechRoute(let generation):
+                var providersSettled = true
+                for providerGeneration in [generation, generation &- 1] {
+                    try? await executionEngine.cancelASR(
+                        generation: providerGeneration
+                    )
+                    try? await executionEngine.cancelTTS(
+                        generation: providerGeneration
+                    )
+                    do {
+                        try await executionEngine.closeASR(
+                            generation: providerGeneration
+                        )
+                    } catch SpeechRouteError.unavailable {
+                    } catch {
+                        providersSettled = false
+                    }
+                    do {
+                        try await executionEngine.closeTTS(
+                            generation: providerGeneration
+                        )
+                    } catch SpeechRouteError.unavailable {
+                    } catch {
+                        providersSettled = false
+                    }
+                }
+                settled = providersSettled
+            case .nativeInteraction(let interactionID):
+                try? await executionEngine.cancelNativeSpeech(
+                    interactionID: interactionID,
+                    reason: .superseded
+                )
+                do {
+                    try await executionEngine.closeNativeSpeech(
+                        interactionID: interactionID
+                    )
+                    settled = true
+                } catch NativeSpeechError.unavailable {
+                    settled = true
+                } catch {
+                    settled = false
+                }
+            case .textRequest:
+                settled = true
+            }
+            if settled {
+                activeBrainLeaseGate.release(settlingLease)
+            }
+        }
+    }
+
+    private func waitForRuntimeSessionReplacementCleanup() async {
+        guard let task = runtimeSessionReplacementCleanupTask else { return }
+        await task.value
+        runtimeSessionReplacementCleanupTask = nil
+    }
+
+    #if DEBUG
+    func activeBrainLeaseForTesting() -> ActiveBrainLease? {
+        activeBrainLeaseGate.current()
+    }
+
+    #endif
+
     func startSpeechRouteASR(
         locale: String? = nil
     ) async -> Result<UInt64, SpeechRouteError> {
+        await waitForRuntimeSessionReplacementCleanup()
+        guard let session = sessionContext else {
+            return .failure(.unavailable)
+        }
+        let generation = speechRouteGeneration &+ 1
+        guard let brainLease = activeBrainLeaseGate.acquire(
+            residentID: session.residentID,
+            runtimeSessionID: session.sessionID.rawValue,
+            route: .cascadedSpeech,
+            generation: .speechRoute(generation)
+        ) else {
+            return .failure(.unavailable)
+        }
         activeExpressionRequestID = nil
-        speechRouteGeneration &+= 1
+        speechRouteGeneration = generation
         speechRouteASRFinalState = nil
         speechRoutePendingTurn = nil
         speechRouteASRActive = false
         speechRouteTTSActive = false
-        let generation = speechRouteGeneration
+        guard activeBrainLeaseGate.beginProviderStart(for: brainLease) else {
+            return .failure(.cancelled)
+        }
+        speechRouteASRActive = true
+        let startError: SpeechRouteError?
         do {
             try await executionEngine.startASR(
                 request: ASRStartRequest(
@@ -1364,28 +1790,51 @@ public final class RuntimeCore {
                     locale: locale
                 )
             )
-            speechRouteASRActive = true
-            return .success(generation)
+            startError = nil
         } catch let error as SpeechRouteError {
-            return .failure(error)
+            startError = error
         } catch {
-            return .failure(.transportFailure)
+            startError = .transportFailure
         }
+        activeBrainLeaseGate.finishProviderStart(for: brainLease)
+        guard activeBrainLeaseGate.isCurrent(brainLease),
+              sessionContext == session else {
+            return .failure(.cancelled)
+        }
+        if let startError {
+            try? await executionEngine.cancelASR(generation: generation)
+            if await settleSpeechRouteProviders(generation: generation) {
+                speechRouteASRActive = false
+                speechRouteTTSActive = false
+                activeBrainLeaseGate.release(brainLease)
+            }
+            return .failure(startError)
+        }
+        return .success(generation)
     }
 
     func sendSpeechRouteASRAudio(
         _ input: ASRAudioInput
     ) async throws {
-        guard input.generation == speechRouteGeneration else {
+        guard input.generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: input.generation
+              ) else {
             throw SpeechRouteError.staleGeneration
         }
         try await executionEngine.sendASRAudio(input)
+        guard activeBrainLeaseGate.isCurrent(brainLease) else {
+            throw SpeechRouteError.staleGeneration
+        }
     }
 
     func receiveSpeechRouteASREvent(
         generation: UInt64
     ) async throws -> ASREvent {
-        guard generation == speechRouteGeneration else {
+        guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ) else {
             return ASREvent(
                 generation: generation,
                 kind: .staleGeneration
@@ -1394,7 +1843,8 @@ public final class RuntimeCore {
         let event = try await executionEngine.receiveASREvent(
             generation: generation
         )
-        guard event.generation == speechRouteGeneration else {
+        guard event.generation == speechRouteGeneration,
+              activeBrainLeaseGate.isCurrent(brainLease) else {
             return ASREvent(
                 generation: event.generation,
                 kind: .staleGeneration
@@ -1443,15 +1893,22 @@ public final class RuntimeCore {
         guard !finalState.isSubmitted else {
             return .failure(.finalAlreadySubmitted)
         }
+        guard let brainLease = currentSpeechRouteBrainLease(
+            generation: event.generation
+        ) else {
+            return .failure(.staleGeneration)
+        }
         finalState.isSubmitted = true
         speechRouteASRFinalState = finalState
 
         let result = await requestResidentReply(
             inputText: inputText,
             interactionID: interactionID,
-            defersSuccessfulCommit: true
+            defersSuccessfulCommit: true,
+            brainLease: brainLease
         )
-        guard event.generation == speechRouteGeneration else {
+        guard event.generation == speechRouteGeneration,
+              activeBrainLeaseGate.isCurrent(brainLease) else {
             return .failure(.staleGeneration)
         }
         switch result {
@@ -1480,6 +1937,9 @@ public final class RuntimeCore {
         request: TTSSynthesisRequest
     ) async -> Result<Void, SpeechRouteError> {
         guard request.generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: request.generation
+              ),
               let pendingTurn = speechRoutePendingTurn,
               pendingTurn.generation == request.generation,
               pendingTurn.session == sessionContext else {
@@ -1488,27 +1948,54 @@ public final class RuntimeCore {
         guard request.canonicalResponseText == pendingTurn.reply.replyText else {
             return .failure(.invalidEvent)
         }
+        guard activeBrainLeaseGate.beginProviderStart(for: brainLease) else {
+            return .failure(.staleGeneration)
+        }
+        speechRouteTTSActive = true
+        let startError: SpeechRouteError?
         do {
             try await executionEngine.startTTS(request: request)
-            speechRouteTTSActive = true
-            return .success(())
+            startError = nil
         } catch let error as SpeechRouteError {
-            return .failure(error)
+            startError = error
         } catch {
-            return .failure(.transportFailure)
+            startError = .transportFailure
         }
+        activeBrainLeaseGate.finishProviderStart(for: brainLease)
+        guard activeBrainLeaseGate.isCurrent(brainLease),
+              pendingTurn.session == sessionContext else {
+            return .failure(.staleGeneration)
+        }
+        if let startError {
+            try? await executionEngine.cancelTTS(
+                generation: request.generation
+            )
+            if await settleSpeechRouteProviders(
+                generation: request.generation
+            ) {
+                speechRouteASRActive = false
+                speechRouteTTSActive = false
+                activeBrainLeaseGate.release(brainLease)
+            }
+            return .failure(startError)
+        }
+        return .success(())
     }
 
     func receiveSpeechRouteTTSEvent(
         generation: UInt64
     ) async throws -> TTSEvent {
-        guard generation == speechRouteGeneration else {
+        guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ) else {
             throw SpeechRouteError.staleGeneration
         }
         let event = try await executionEngine.receiveTTSEvent(
             generation: generation
         )
-        guard event.generation == speechRouteGeneration else {
+        guard event.generation == speechRouteGeneration,
+              activeBrainLeaseGate.isCurrent(brainLease) else {
             throw SpeechRouteError.staleGeneration
         }
         return event
@@ -1517,12 +2004,18 @@ public final class RuntimeCore {
     func finishSpeechRouteASR(
         generation: UInt64
     ) async -> Result<Void, SpeechRouteError> {
-        guard generation == speechRouteGeneration else {
+        guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ) else {
             return .failure(.staleGeneration)
         }
         guard speechRouteASRActive else { return .success(()) }
         do {
             try await executionEngine.closeASR(generation: generation)
+            guard activeBrainLeaseGate.isCurrent(brainLease) else {
+                return .failure(.staleGeneration)
+            }
             speechRouteASRActive = false
             return .success(())
         } catch let error as SpeechRouteError {
@@ -1535,12 +2028,18 @@ public final class RuntimeCore {
     func finishSpeechRouteTTS(
         generation: UInt64
     ) async -> Result<Void, SpeechRouteError> {
-        guard generation == speechRouteGeneration else {
+        guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ) else {
             return .failure(.staleGeneration)
         }
         guard speechRouteTTSActive else { return .success(()) }
         do {
             try await executionEngine.closeTTS(generation: generation)
+            guard activeBrainLeaseGate.isCurrent(brainLease) else {
+                return .failure(.staleGeneration)
+            }
             speechRouteTTSActive = false
             return .success(())
         } catch let error as SpeechRouteError {
@@ -1554,6 +2053,9 @@ public final class RuntimeCore {
         generation: UInt64
     ) -> Result<SpeechRouteTurnResult, SpeechRouteError> {
         guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ),
               let pendingTurn = speechRoutePendingTurn,
               pendingTurn.generation == generation,
               pendingTurn.session == sessionContext else {
@@ -1603,6 +2105,7 @@ public final class RuntimeCore {
             interactionID: pendingTurn.interactionID,
             succeeded: true
         )
+        activeBrainLeaseGate.release(brainLease)
         return .success(SpeechRouteTurnResult(
             generation: generation,
             reply: pendingTurn.reply
@@ -1612,20 +2115,38 @@ public final class RuntimeCore {
     func cancelSpeechRoute(
         generation: UInt64
     ) async -> Result<Void, SpeechRouteError> {
-        guard generation == speechRouteGeneration else {
+        guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ) else {
             return .failure(.staleGeneration)
         }
         activeExpressionRequestID = nil
-        speechRouteGeneration &+= 1
+        let invalidatedGeneration = speechRouteGeneration &+ 1
+        guard let terminalLease = activeBrainLeaseGate.advanceGeneration(
+            for: brainLease,
+            to: .speechRoute(invalidatedGeneration)
+        ) else {
+            return .failure(.staleGeneration)
+        }
+        speechRouteGeneration = invalidatedGeneration
         speechRouteASRFinalState = nil
         speechRoutePendingTurn = nil
+        await activeBrainLeaseGate.waitForProviderStartsToFinish(
+            for: terminalLease
+        )
         let providerError = await stopSpeechRouteProviders(
             generation: generation,
-            close: false
+            close: false,
+            brainLease: terminalLease
         )
         if let providerError {
+            if await settleSpeechRouteProviders(generation: generation) {
+                activeBrainLeaseGate.release(terminalLease)
+            }
             return .failure(providerError)
         }
+        activeBrainLeaseGate.release(terminalLease)
         return .success(())
     }
 
@@ -1633,60 +2154,119 @@ public final class RuntimeCore {
         generation: UInt64,
         locale: String? = nil
     ) async -> Result<UInt64, SpeechRouteError> {
-        guard generation == speechRouteGeneration else {
+        guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ) else {
             return .failure(.staleGeneration)
         }
         activeExpressionRequestID = nil
-        speechRouteGeneration &+= 1
+        let nextGeneration = speechRouteGeneration &+ 1
+        guard let nextLease = activeBrainLeaseGate.advanceGeneration(
+            for: brainLease,
+            to: .speechRoute(nextGeneration)
+        ) else {
+            return .failure(.staleGeneration)
+        }
+        speechRouteGeneration = nextGeneration
         speechRouteASRFinalState = nil
         speechRoutePendingTurn = nil
-        let nextGeneration = speechRouteGeneration
+        await activeBrainLeaseGate.waitForProviderStartsToFinish(
+            for: nextLease
+        )
         if let providerError = await stopSpeechRouteProviders(
             generation: generation,
-            close: false
+            close: false,
+            brainLease: nextLease
         ) {
+            if await settleSpeechRouteProviders(generation: generation) {
+                activeBrainLeaseGate.release(nextLease)
+            }
             return .failure(providerError)
         }
+        guard activeBrainLeaseGate.beginProviderStart(for: nextLease) else {
+            return .failure(.staleGeneration)
+        }
+        speechRouteASRActive = true
+        let startError: SpeechRouteError?
         do {
             try await executionEngine.startASR(request: ASRStartRequest(
                 generation: nextGeneration,
                 locale: locale
             ))
-            speechRouteASRActive = true
-            return .success(nextGeneration)
+            startError = nil
         } catch let error as SpeechRouteError {
-            return .failure(error)
+            startError = error
         } catch {
-            return .failure(.transportFailure)
+            startError = .transportFailure
         }
+        activeBrainLeaseGate.finishProviderStart(for: nextLease)
+        guard activeBrainLeaseGate.isCurrent(nextLease) else {
+            return .failure(.staleGeneration)
+        }
+        if let startError {
+            try? await executionEngine.cancelASR(
+                generation: nextGeneration
+            )
+            if await settleSpeechRouteProviders(
+                generation: nextGeneration
+            ) {
+                speechRouteASRActive = false
+                speechRouteTTSActive = false
+                activeBrainLeaseGate.release(nextLease)
+            }
+            return .failure(startError)
+        }
+        return .success(nextGeneration)
     }
 
     func closeSpeechRoute(
         generation: UInt64
     ) async -> Result<Void, SpeechRouteError> {
-        guard generation == speechRouteGeneration else {
+        guard generation == speechRouteGeneration,
+              let brainLease = currentSpeechRouteBrainLease(
+                generation: generation
+              ) else {
             return .failure(.staleGeneration)
         }
         activeExpressionRequestID = nil
-        speechRouteGeneration &+= 1
+        let invalidatedGeneration = speechRouteGeneration &+ 1
+        guard let terminalLease = activeBrainLeaseGate.advanceGeneration(
+            for: brainLease,
+            to: .speechRoute(invalidatedGeneration)
+        ) else {
+            return .failure(.staleGeneration)
+        }
+        speechRouteGeneration = invalidatedGeneration
         speechRouteASRFinalState = nil
         speechRoutePendingTurn = nil
+        await activeBrainLeaseGate.waitForProviderStartsToFinish(
+            for: terminalLease
+        )
         let providerError = await stopSpeechRouteProviders(
             generation: generation,
-            close: true
+            close: true,
+            brainLease: terminalLease
         )
         if let providerError {
+            if await settleSpeechRouteProviders(generation: generation) {
+                activeBrainLeaseGate.release(terminalLease)
+            }
             return .failure(providerError)
         }
+        activeBrainLeaseGate.release(terminalLease)
         return .success(())
     }
 
     private func stopSpeechRouteProviders(
         generation: UInt64,
-        close: Bool
+        close: Bool,
+        brainLease: ActiveBrainLease
     ) async -> SpeechRouteError? {
         var firstError: SpeechRouteError?
-        if speechRouteASRActive {
+        let asrWasActive = speechRouteASRActive
+        let ttsWasActive = speechRouteTTSActive
+        if asrWasActive {
             do {
                 if close {
                     try await executionEngine.closeASR(generation: generation)
@@ -1700,10 +2280,12 @@ public final class RuntimeCore {
             } catch {
                 firstError = .transportFailure
             }
-            speechRouteASRActive = false
+            if activeBrainLeaseGate.isCurrent(brainLease) {
+                speechRouteASRActive = false
+            }
         }
 
-        if speechRouteTTSActive {
+        if ttsWasActive {
             do {
                 if close {
                     try await executionEngine.closeTTS(generation: generation)
@@ -1717,7 +2299,9 @@ public final class RuntimeCore {
             } catch {
                 firstError = firstError ?? .transportFailure
             }
-            speechRouteTTSActive = false
+            if activeBrainLeaseGate.isCurrent(brainLease) {
+                speechRouteTTSActive = false
+            }
         }
         return firstError
     }
@@ -1760,6 +2344,7 @@ public final class RuntimeCore {
                 )
             }
 
+            beginRuntimeSessionReplacement()
             let sessionID = RuntimeSessionID.make()
             let identityProjection = RuntimeResidentIdentityProjection(loadedDR: loadedDR)
             let memoryPolicyProjection = RuntimeMemoryPolicyProjection(loadedDR: loadedDR)
@@ -1892,6 +2477,7 @@ public final class RuntimeCore {
         let avatarMoodHint = displayCache?.avatarMoodHint ?? ""
         let avatarActivityHint = displayCache?.avatarActivityHint ?? ""
         let avatarParticleHint = displayCache?.avatarParticleHint ?? ""
+        beginRuntimeSessionReplacement()
         nativeSpeechInteractionGate.clear()
         resetRealtimeSpeechState()
         sessionContext = RuntimeSessionContext(
@@ -2058,17 +2644,43 @@ public final class RuntimeCore {
         let displayName = currentResidentIdentity?.residentID == request.residentID
             ? currentResidentIdentity?.displayName ?? ""
             : ""
+        guard !request.residentID.isEmpty else {
+            return executionEngine.step(
+                request: request,
+                residentDisplayName: displayName,
+                cancellationState: pendingCancellation
+            )
+        }
+
+        let sessionID = sessionContext?.sessionID ?? .make()
+        let session = RuntimeSessionContext(
+            residentID: request.residentID,
+            sessionID: sessionID
+        )
+        guard let brainLease = activeBrainLeaseGate.acquire(
+            residentID: session.residentID,
+            runtimeSessionID: session.sessionID.rawValue,
+            route: .textConversation,
+            generation: .textRequest(UUID()),
+            replacingCurrentRoute: true
+        ) else {
+            return executionEngine.step(
+                request: request,
+                residentDisplayName: displayName,
+                cancellationState: RuntimeCancellationState(
+                    isCancelled: true,
+                    reason: .cancelled
+                )
+            )
+        }
+        defer { activeBrainLeaseGate.release(brainLease) }
+
         var response = executionEngine.step(
             request: request,
             residentDisplayName: displayName,
             cancellationState: pendingCancellation
         )
-        guard !request.residentID.isEmpty else {
-            return response
-        }
-
-        let sessionID = sessionContext?.sessionID ?? .make()
-        sessionContext = RuntimeSessionContext(residentID: request.residentID, sessionID: sessionID)
+        sessionContext = session
         response.residentState.sessionID = sessionID.rawValue
         markSessionUnclean(
             lastUserInput: request.inputText,
@@ -3560,6 +4172,7 @@ public final class RuntimeCore {
     #endif
 
     func startNativeSpeechInteraction() async throws -> NativeSpeechInteraction {
+        await waitForRuntimeSessionReplacementCleanup()
         guard let session = sessionContext,
               currentResidentIdentity?.residentID == session.residentID,
               let providerProfileID =
@@ -3589,14 +4202,28 @@ public final class RuntimeCore {
             interaction: interaction,
             refreshReason: refreshReason
         )
+        guard let brainLease = activeBrainLeaseGate.acquire(
+            residentID: session.residentID,
+            runtimeSessionID: session.sessionID.rawValue,
+            route: .nativeSpeech,
+            generation: .nativeInteraction(interaction.id)
+        ) else {
+            throw NativeSpeechError.invalidConfiguration
+        }
         guard nativeSpeechInteractionGate.reserve(
             interaction,
             contextProjection: contextProjection,
             compilationKey: compilationKey
         ) else {
+            activeBrainLeaseGate.release(brainLease)
             throw NativeSpeechError.invalidConfiguration
         }
 
+        guard activeBrainLeaseGate.beginProviderStart(for: brainLease) else {
+            nativeSpeechInteractionGate.clear(matching: interaction.id)
+            throw NativeSpeechError.cancelled
+        }
+        var startError: Error?
         do {
             try await executionEngine.startNativeSpeech(
                 interaction: interaction,
@@ -3604,21 +4231,42 @@ public final class RuntimeCore {
                 tools: nativeSpeechToolDefinitions
             )
         } catch {
+            startError = error
+        }
+        activeBrainLeaseGate.finishProviderStart(for: brainLease)
+        if let startError {
             nativeSpeechInteractionGate.clear(matching: interaction.id)
-            throw error
+            guard activeBrainLeaseGate.isCurrent(brainLease) else {
+                throw NativeSpeechError.cancelled
+            }
+            try? await executionEngine.cancelNativeSpeech(
+                interactionID: interaction.id,
+                reason: .interrupted
+            )
+            if await settleNativeSpeechProvider(
+                interactionID: interaction.id
+            ) {
+                activeBrainLeaseGate.release(brainLease)
+            }
+            throw startError
         }
 
         guard sessionContext == session,
-              nativeSpeechInteractionGate.current()?.id == interaction.id else {
+              nativeSpeechInteractionGate.current()?.id == interaction.id,
+              activeBrainLeaseGate.isCurrent(brainLease) else {
             nativeSpeechInteractionGate.clear(matching: interaction.id)
             resetNativeSpeechToolState()
-            try? await executionEngine.cancelNativeSpeech(
-                interactionID: interaction.id,
-                reason: .superseded
-            )
-            try? await executionEngine.closeNativeSpeech(
-                interactionID: interaction.id
-            )
+            if activeBrainLeaseGate.isCurrent(brainLease) {
+                try? await executionEngine.cancelNativeSpeech(
+                    interactionID: interaction.id,
+                    reason: .superseded
+                )
+                if await settleNativeSpeechProvider(
+                    interactionID: interaction.id
+                ) {
+                    activeBrainLeaseGate.release(brainLease)
+                }
+            }
             throw NativeSpeechError.cancelled
         }
 
@@ -3635,9 +4283,11 @@ public final class RuntimeCore {
                 interactionID: interaction.id,
                 reason: .superseded
             )
-            try? await executionEngine.closeNativeSpeech(
+            if await settleNativeSpeechProvider(
                 interactionID: interaction.id
-            )
+            ) {
+                activeBrainLeaseGate.release(brainLease)
+            }
             throw NativeSpeechError.cancelled
         }
         return active
@@ -3672,10 +4322,20 @@ public final class RuntimeCore {
         _ payload: NativeSpeechAudioPayload,
         context: NativeSpeechInputFrameContext
     ) async throws -> NativeSpeechInputFrameDisposition {
-        guard nativeSpeechInputGate.accepts(payload, context: context) else {
+        guard let brainLease = activeBrainLeaseGate.current(
+            residentID: context.binding.residentID,
+            runtimeSessionID: context.binding.sessionID,
+            route: .nativeSpeech,
+            generation: .nativeInteraction(
+                context.binding.interactionID
+            )
+        ), nativeSpeechInputGate.accepts(payload, context: context) else {
             return .rejectedStale
         }
         try await executionEngine.sendNativeSpeechAudio(payload)
+        guard activeBrainLeaseGate.isCurrent(brainLease) else {
+            return .rejectedStale
+        }
         return .forwarded
     }
 
@@ -3725,17 +4385,27 @@ public final class RuntimeCore {
     func sendNativeSpeechAudio(
         _ payload: NativeSpeechAudioPayload
     ) async throws {
-        guard nativeSpeechInteractionGate.current()?.id
-                == payload.interactionID else {
+        guard let interaction = nativeSpeechInteractionGate.current(),
+              interaction.id == payload.interactionID,
+              let brainLease = currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) else {
             throw NativeSpeechError.interactionMismatch
         }
         try await executionEngine.sendNativeSpeechAudio(payload)
+        guard activeBrainLeaseGate.isCurrent(brainLease) else {
+            throw NativeSpeechError.interactionMismatch
+        }
     }
 
     func receiveNativeSpeechEvent(
         interactionID: NativeSpeechInteractionID
     ) async throws -> NativeSpeechEventDisposition {
-        guard nativeSpeechInteractionGate.current()?.id == interactionID else {
+        guard let initialInteraction = nativeSpeechInteractionGate.current(),
+              initialInteraction.id == interactionID,
+              let brainLease = currentNativeSpeechBrainLease(
+                interaction: initialInteraction
+              ) else {
             recordNativeSpeechRuntimeRejection(
                 eventKind: nil,
                 interactionID: interactionID,
@@ -3750,7 +4420,8 @@ public final class RuntimeCore {
                 interactionID: interactionID
             )
             guard let interaction = nativeSpeechInteractionGate.current(),
-                  interaction.id == interactionID else {
+                  interaction.id == interactionID,
+                  activeBrainLeaseGate.isCurrent(brainLease) else {
                 recordNativeSpeechRuntimeRejection(
                     eventKind: event.kind,
                     interactionID: interactionID,
@@ -3781,6 +4452,9 @@ public final class RuntimeCore {
                 try await continueNativeSpeechToolTurnIfReady(
                     interaction: interaction
                 )
+                guard activeBrainLeaseGate.isCurrent(brainLease) else {
+                    return .rejectedStale
+                }
                 return .accepted(event)
             }
             var stateTransition: RealtimeSpeechTransitionResult?
@@ -3920,6 +4594,9 @@ public final class RuntimeCore {
                     interaction: interaction,
                     identity: turnIdentity
                 )
+                guard activeBrainLeaseGate.isCurrent(brainLease) else {
+                    return .rejectedStale
+                }
             }
             if case .accepted(let acceptedEvent) = disposition,
                case .finalTranscript(let transcript) = acceptedEvent.kind {
@@ -3932,6 +4609,9 @@ public final class RuntimeCore {
                     currentUserInput: transcript,
                     reason: .finalTranscript
                 )
+                guard activeBrainLeaseGate.isCurrent(brainLease) else {
+                    return .rejectedStale
+                }
             }
             if requiresInterruptCommit {
                 let subtitleSnapshot =
@@ -3954,14 +4634,19 @@ public final class RuntimeCore {
             }
             if case .accepted = disposition,
                nativeSpeechEventIsTerminal(event) {
-                try? await executionEngine.closeNativeSpeech(
+                if await settleNativeSpeechProvider(
                     interactionID: interactionID
-                )
+                ) {
+                    releaseNativeSpeechBrainLease(
+                        interactionID: interactionID
+                    )
+                }
             }
             return disposition
         } catch let error as NativeSpeechError {
             guard nativeSpeechInteractionGate.current()?.id
-                    == interactionID else {
+                    == interactionID,
+                  activeBrainLeaseGate.isCurrent(brainLease) else {
                 return .rejectedStale
             }
             await failActiveNativeSpeechInteraction(
@@ -3971,7 +4656,8 @@ public final class RuntimeCore {
             throw error
         } catch {
             guard nativeSpeechInteractionGate.current()?.id
-                    == interactionID else {
+                    == interactionID,
+                  activeBrainLeaseGate.isCurrent(brainLease) else {
                 return .rejectedStale
             }
             await failActiveNativeSpeechInteraction(
@@ -3987,7 +4673,12 @@ public final class RuntimeCore {
         turnNumber: UInt64,
         turnGeneration: UInt64
     ) async throws -> Bool {
-        guard nativeSpeechInteractionGate.claimPendingInterrupt(
+        guard let interaction = nativeSpeechInteractionGate.current(),
+              interaction.id == interactionID,
+              currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) != nil,
+              nativeSpeechInteractionGate.claimPendingInterrupt(
             interactionID: interactionID,
             turnNumber: turnNumber,
             turnGeneration: turnGeneration
@@ -4019,7 +4710,10 @@ public final class RuntimeCore {
         _ event: RealtimeSpeechPlaybackEvent
     ) async -> RealtimeSpeechTransitionDisposition {
         guard let interaction = nativeSpeechInteractionGate.current(),
-              interaction.id == event.interactionID else {
+              interaction.id == event.interactionID,
+              currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) != nil else {
             recordNativeSpeechRuntimeRejection(
                 eventKind: nil,
                 interactionID: event.interactionID,
@@ -4117,9 +4811,11 @@ public final class RuntimeCore {
             interactionID: interaction.id,
             reason: .interrupted
         )
-        try? await executionEngine.closeNativeSpeech(
+        if await settleNativeSpeechProvider(
             interactionID: interaction.id
-        )
+        ) {
+            releaseNativeSpeechBrainLease(interactionID: interaction.id)
+        }
         return transition.disposition
     }
 
@@ -4240,7 +4936,10 @@ public final class RuntimeCore {
               !residentFinal.isEmpty,
               let session = sessionContext,
               session.residentID == interaction.residentID,
-              session.sessionID.rawValue == interaction.sessionID else {
+              session.sessionID.rawValue == interaction.sessionID,
+              currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) != nil else {
             return
         }
         let identity = NativeSpeechTurnCommitIdentity(
@@ -4385,7 +5084,10 @@ public final class RuntimeCore {
     ) {
         guard let session = sessionContext,
               session.residentID == interaction.residentID,
-              session.sessionID.rawValue == interaction.sessionID else {
+              session.sessionID.rawValue == interaction.sessionID,
+              currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) != nil else {
             return
         }
         let identity = NativeSpeechTurnCommitIdentity(
@@ -5125,6 +5827,9 @@ public final class RuntimeCore {
         guard nativeSpeechInteractionGate.current()?.id
                 == identity.interactionID,
               interaction.id == identity.interactionID,
+              currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) != nil,
               realtimeSpeechStateMachine.snapshot().currentTurnNumber
                 == identity.turnNumber,
               realtimeSpeechSubtitleStateMachine.snapshot().turnGeneration
@@ -5278,9 +5983,11 @@ public final class RuntimeCore {
             interactionID: interaction.id,
             reason: .interrupted
         )
-        try? await executionEngine.closeNativeSpeech(
+        if await settleNativeSpeechProvider(
             interactionID: interaction.id
-        )
+        ) {
+            releaseNativeSpeechBrainLease(interactionID: interaction.id)
+        }
     }
 
     private func refreshNativeSpeechContext(
@@ -5291,7 +5998,10 @@ public final class RuntimeCore {
         guard let interaction = nativeSpeechInteractionGate.current(),
               interaction.id == interactionID,
               sessionContext?.residentID == interaction.residentID,
-              sessionContext?.sessionID.rawValue == interaction.sessionID else {
+              sessionContext?.sessionID.rawValue == interaction.sessionID,
+              let brainLease = currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) else {
             throw NativeSpeechError.interactionMismatch
         }
         let compilationKey = RealtimeSpeechContextCompilationKey(
@@ -5318,7 +6028,8 @@ public final class RuntimeCore {
         if nativeSpeechInteractionGate.currentContextProjection(
             matching: interactionID
         )?.compilationVersion == projection.compilationVersion {
-            guard nativeSpeechInteractionGate.updateCompilationKey(
+            guard activeBrainLeaseGate.isCurrent(brainLease),
+                  nativeSpeechInteractionGate.updateCompilationKey(
                 compilationKey
             ) else {
                 throw NativeSpeechError.interactionMismatch
@@ -5326,7 +6037,8 @@ public final class RuntimeCore {
             return
         }
         try await executionEngine.updateNativeSpeechContext(projection)
-        guard nativeSpeechInteractionGate.updateContextProjection(
+        guard activeBrainLeaseGate.isCurrent(brainLease),
+              nativeSpeechInteractionGate.updateContextProjection(
             projection,
             compilationKey: compilationKey
         ) else {
@@ -5339,6 +6051,13 @@ public final class RuntimeCore {
     ) async throws {
         guard let interaction = nativeSpeechInteractionGate.clear() else {
             return
+        }
+        guard let brainLease = currentNativeSpeechBrainLease(
+            interaction: interaction
+        ), let terminalLease = activeBrainLeaseGate.beginSettlement(
+            for: brainLease
+        ) else {
+            throw NativeSpeechError.interactionMismatch
         }
         realtimeSpeechGuardScheduler.cancel()
         resetNativeSpeechToolState()
@@ -5353,25 +6072,40 @@ public final class RuntimeCore {
             )
         }
         invalidateNativeSpeechInput(for: interaction.id)
+        await activeBrainLeaseGate.waitForProviderStartsToFinish(
+            for: terminalLease
+        )
         do {
             try await executionEngine.cancelNativeSpeech(
                 interactionID: interaction.id,
                 reason: reason
             )
         } catch {
-            try? await executionEngine.closeNativeSpeech(
+            if await settleNativeSpeechProvider(
                 interactionID: interaction.id
-            )
+            ) {
+                activeBrainLeaseGate.release(terminalLease)
+            }
             throw error
         }
-        try await executionEngine.closeNativeSpeech(
+        guard await settleNativeSpeechProvider(
             interactionID: interaction.id
-        )
+        ) else {
+            throw NativeSpeechError.transportFailure
+        }
+        activeBrainLeaseGate.release(terminalLease)
     }
 
     func closeActiveNativeSpeechInteraction() async throws {
         guard let interaction = nativeSpeechInteractionGate.clear() else {
             return
+        }
+        guard let brainLease = currentNativeSpeechBrainLease(
+            interaction: interaction
+        ), let terminalLease = activeBrainLeaseGate.beginSettlement(
+            for: brainLease
+        ) else {
+            throw NativeSpeechError.interactionMismatch
         }
         realtimeSpeechGuardScheduler.cancel()
         resetNativeSpeechToolState()
@@ -5386,9 +6120,15 @@ public final class RuntimeCore {
             )
         }
         invalidateNativeSpeechInput(for: interaction.id)
-        try await executionEngine.closeNativeSpeech(
-            interactionID: interaction.id
+        await activeBrainLeaseGate.waitForProviderStartsToFinish(
+            for: terminalLease
         )
+        guard await settleNativeSpeechProvider(
+            interactionID: interaction.id
+        ) else {
+            throw NativeSpeechError.transportFailure
+        }
+        activeBrainLeaseGate.release(terminalLease)
     }
 
     func nativeSpeechDisposition(
@@ -5397,7 +6137,10 @@ public final class RuntimeCore {
     ) -> NativeSpeechEventDisposition {
         guard let interaction = nativeSpeechInteractionGate.current(),
               interaction.id == expectedInteractionID,
-              event.interactionID == expectedInteractionID else {
+              event.interactionID == expectedInteractionID,
+              currentNativeSpeechBrainLease(
+                interaction: interaction
+              ) != nil else {
             return .rejectedStale
         }
         if case .outputAudio(let payload) = event.kind,
@@ -5549,8 +6292,10 @@ public final class RuntimeCore {
     func requestResidentReply(
         inputText: String,
         interactionID: UUID? = nil,
-        defersSuccessfulCommit: Bool = false
+        defersSuccessfulCommit: Bool = false,
+        brainLease inheritedBrainLease: ActiveBrainLease? = nil
     ) async -> Result<RuntimeResidentReply, ProviderRequestError> {
+        await waitForRuntimeSessionReplacementCleanup()
         #if DEBUG
         let orchestrationID = interactionID ?? UUID()
         let orchestrationStartedAt = Date()
@@ -5588,6 +6333,40 @@ public final class RuntimeCore {
             )
             #endif
             return .failure(.residentUnavailable)
+        }
+
+        let expressionRequestID = UUID()
+        let brainLease: ActiveBrainLease
+        let ownsBrainLease: Bool
+        if let inheritedBrainLease {
+            guard inheritedBrainLease.residentID == sessionAtStart.residentID,
+                  inheritedBrainLease.runtimeSessionID
+                    == sessionAtStart.sessionID.rawValue,
+                  inheritedBrainLease.route == .cascadedSpeech,
+                  activeBrainLeaseGate.isCurrent(
+                    inheritedBrainLease
+                  ) else {
+                return .failure(.cancelled)
+            }
+            brainLease = inheritedBrainLease
+            ownsBrainLease = false
+        } else {
+            guard let acquired = activeBrainLeaseGate.acquire(
+                residentID: sessionAtStart.residentID,
+                runtimeSessionID: sessionAtStart.sessionID.rawValue,
+                route: .textConversation,
+                generation: .textRequest(expressionRequestID),
+                replacingCurrentRoute: true
+            ) else {
+                return .failure(.cancelled)
+            }
+            brainLease = acquired
+            ownsBrainLease = true
+        }
+        defer {
+            if ownsBrainLease {
+                activeBrainLeaseGate.release(brainLease)
+            }
         }
 
         #if DEBUG
@@ -5678,7 +6457,6 @@ public final class RuntimeCore {
         ))
         let requestStartedAt = Date()
         #endif
-        let expressionRequestID = UUID()
         activeExpressionRequestID = expressionRequestID
         let expressionMappingAtStart = currentVisualExpressionMapping
         let result = await executionEngine.requestResidentReply(
@@ -5697,8 +6475,10 @@ public final class RuntimeCore {
         #endif
         let staleSession = sessionContext != sessionAtStart
         let staleRequest = activeExpressionRequestID != expressionRequestID
+        let staleBrainLease = !activeBrainLeaseGate.isCurrent(brainLease)
         let requestCancelled = Task.isCancelled || cancellationState.isCancelled
-        guard !staleSession, !staleRequest, !requestCancelled else {
+        guard !staleSession, !staleRequest, !staleBrainLease,
+              !requestCancelled else {
             if activeExpressionRequestID == expressionRequestID {
                 activeExpressionRequestID = nil
             }
@@ -5725,7 +6505,9 @@ public final class RuntimeCore {
                 expressionSnapshot: orchestrationExpressionSnapshot,
                 errorCategoryOverride:
                     staleSession ? "stale_session"
-                    : (staleRequest ? "stale_request" : "cancelled"),
+                    : (staleRequest ? "stale_request"
+                        : (staleBrainLease ? "stale_brain_lease"
+                            : "cancelled")),
                 sessionWriteStatus: .skipped,
                 steps: orchestrationSteps,
                 presentationPending: false,
@@ -6075,6 +6857,7 @@ public final class RuntimeCore {
     }
 
     func clearDialogueTestData() throws -> String? {
+        beginRuntimeSessionReplacement()
         let residentID = currentResidentIdentity?.residentID
         activeExpressionRequestID = nil
         try sessionStore.clearDialogueTestData(
@@ -6293,11 +7076,13 @@ public final class RuntimeCore {
 
     public func cancelCurrentStep() {
         activeExpressionRequestID = nil
+        activeBrainLeaseGate.releaseCurrent(route: .textConversation)
         cancellationState = RuntimeCancellationState(isCancelled: true, reason: .cancelled)
     }
 
     public func interrupt(request: RuntimeCancellationRequest) {
         activeExpressionRequestID = nil
+        activeBrainLeaseGate.releaseCurrent(route: .textConversation)
         cancellationState = RuntimeCancellationState(isCancelled: true, reason: request.reason)
     }
 

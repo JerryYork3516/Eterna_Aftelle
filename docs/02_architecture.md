@@ -290,7 +290,7 @@ USB / 蓝牙外置输出下的稳定插话、resident-only 零 self-interrupt、
 ### 3.10.3 Realtime Resident Brain Route
 Realtime Resident Brain Route 是体验优先的 continuous full-duplex 正式方向。其 Single-Brain ownership、ActiveBrainLease、Canonical Resident Turn、Context / Memory、Tool / Permission、Studio Voice、Interrupt 与 Dual Route / Fallback 权威定义统一见 `realtime_resident_brain_architecture.md`，本文件不重复复制。
 
-该 Route 仍使用同一个 RuntimeCore、Runtime Session、Memory、Tool / Permission 与 Dialogue History。Realtime Brain 只是 ActiveBrainLease 当前选中的唯一回答生成 Provider，不是第二 Runtime；Cascaded Speech Route 保留为语音消息、低成本 / 高兼容和 Realtime fallback。R0 已冻结，代码实施从 R1 的 lease / route epoch / single-brain enforcement 开始。
+该 Route 仍使用同一个 RuntimeCore、Runtime Session、Memory、Tool / Permission 与 Dialogue History。Realtime Brain 只是 ActiveBrainLease 当前选中的唯一回答生成 Provider，不是第二 Runtime；Cascaded Speech Route 保留为语音消息、低成本 / 高兼容和 Realtime fallback。R1 已在 RuntimeCore 内以单一 ActiveBrainLease gate、单调 route epoch 和既有 text request / Speech Route generation / Native interaction identity 建立跨路线 stale fence，并让 lease 覆盖 Provider start-in-flight 与 definitive close；teardown 硬失败保持 fail-closed。DR / Session 替换可立即让旧 Speech callback stale，但新 Brain admission 必须等待旧 Provider start / close 收口；普通文本保留既有 Session 替换能力，未决旧回答由 lease stale gate 丢弃。AppController 的本地 bridge 与 Audio Host 状态只约束采集已占用、正在准备或启动时的 Host readiness，不决定 Brain ownership。
 
 ### 3.11 Screen Guide Prototype
 只做 Aftelle 内部指导原型。

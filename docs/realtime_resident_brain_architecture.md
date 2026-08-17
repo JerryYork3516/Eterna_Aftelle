@@ -341,7 +341,7 @@ R 序列是 Realtime Resident Brain Route 的独立实施序列，不改变现�
 
 ```text
 R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
-R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement
+R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
 R2 Provider-neutral Realtime Brain Contract
 R3 First Realtime Provider Adapter
 R4 Context / Canonical Turn / Memory Bridge
@@ -359,7 +359,7 @@ R1 只解决 RuntimeCore-owned lease、route epoch、单 Brain acquisition/relea
 
 ---
 
-## R0 Freeze Result
+## R0 / R1 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -371,5 +371,8 @@ Tool / Permission bypass: forbidden
 Provider-private voice identity in DR: forbidden
 Cascaded Route: retained as fallback / voice message / low-cost compatibility route
 First implementation candidate: Qwen Omni Realtime behind provider-neutral boundaries
-Next allowed node: R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement
+R1 implementation: RuntimeCore-owned lease gate with existing route identities
+R1 second-Brain policy: deterministic rejection; no automatic fallback
+R1 lifecycle: release only after completed delivery or Provider start / definitive close settlement; Session replacement waits before new Brain admission
+Next allowed node: R2 Provider-neutral Realtime Brain Contract
 ```
