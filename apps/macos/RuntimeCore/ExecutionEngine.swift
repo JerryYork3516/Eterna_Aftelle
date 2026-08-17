@@ -133,6 +133,56 @@ public final class ExecutionEngine {
         )
     }
 
+    func openRealtimeResidentBrainSession(
+        _ command: RealtimeBrainOpenSessionCommand
+    ) async throws {
+        try await providerRouter.openRealtimeResidentBrainSession(command)
+    }
+
+    func updateRealtimeResidentBrainContext(
+        _ update: RealtimeBrainRuntimeContextUpdate
+    ) async throws {
+        try await providerRouter.updateRealtimeResidentBrainContext(update)
+    }
+
+    nonisolated func appendRealtimeResidentBrainAudio(
+        _ frame: RealtimeBrainAudioFrame
+    ) async throws {
+        try await providerRouter.appendRealtimeResidentBrainAudio(frame)
+    }
+
+    func submitRealtimeResidentBrainToolResult(
+        _ command: RealtimeBrainToolResultCommand
+    ) async throws {
+        try await providerRouter.submitRealtimeResidentBrainToolResult(command)
+    }
+
+    func cancelRealtimeResidentBrainGeneration(
+        _ command: RealtimeBrainCancelGenerationCommand
+    ) async throws {
+        try await providerRouter.cancelRealtimeResidentBrainGeneration(command)
+    }
+
+    func interruptRealtimeResidentBrain(
+        _ command: RealtimeBrainInterruptCommand
+    ) async throws {
+        try await providerRouter.interruptRealtimeResidentBrain(command)
+    }
+
+    func receiveRealtimeResidentBrainEvent(
+        session: RealtimeBrainSessionIdentity
+    ) async throws -> RealtimeResidentBrainEvent {
+        try await providerRouter.receiveRealtimeResidentBrainEvent(
+            session: session
+        )
+    }
+
+    func closeRealtimeResidentBrainSession(
+        _ command: RealtimeBrainCloseSessionCommand
+    ) async throws {
+        try await providerRouter.closeRealtimeResidentBrainSession(command)
+    }
+
     func requestResidentReply(
         context: ResidentDialogueContext,
         expressionMapping: RuntimeVisualExpressionMapping,

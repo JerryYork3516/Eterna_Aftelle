@@ -348,7 +348,7 @@ A6 已保留相应声学、取消与诊断基础，但最终产品定位不再�
 ```text
 R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
 R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
-R2 Provider-neutral Realtime Brain Contract
+R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
 R3 First Realtime Provider Adapter
 R4 Context / Canonical Turn / Memory Bridge
 R5 Tool / Permission Bridge
@@ -359,7 +359,7 @@ R9 Cascaded Fallback + Regression
 R10 Real-device / Long-session Freeze
 ```
 
-R1 已冻结：RuntimeCore 对普通文本、Cascaded Speech 与 Native Speech 统一执行单 Brain acquire / validate / release，route epoch 单调递增，并继续复用各路线既有 generation / interaction identity。下一轮才允许进入 R2；本轮未实现 R2～R10。
+R2 已冻结：`RealtimeResidentBrainProvider` 使用 R1 resident / Runtime Session / Brain lease / route epoch / generation identity，经既有 RuntimeCore → ExecutionEngine → ProviderRouter 接缝承载 provider-neutral command、event、canonical semantic final、context revision、Tool candidate / result、interruption proposal 与 PCM frame。Fake Provider 仅做零网络契约验证；未接真实 Adapter / WebSocket，未实现 R3～R10。下一轮只允许进入 R3。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 

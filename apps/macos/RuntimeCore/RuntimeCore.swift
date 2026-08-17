@@ -972,12 +972,14 @@ nonisolated enum RuntimeBrainRoute: String, Sendable, Equatable {
     case textConversation
     case cascadedSpeech
     case nativeSpeech
+    case realtimeResidentBrain
 }
 
 nonisolated enum RuntimeBrainGeneration: Sendable, Equatable {
     case textRequest(UUID)
     case speechRoute(UInt64)
     case nativeInteraction(NativeSpeechInteractionID)
+    case realtimeResidentBrain(UInt64)
 }
 
 nonisolated enum RuntimeBrainLeaseState: String, Sendable, Equatable {
@@ -1500,7 +1502,10 @@ public final class RuntimeCore {
     private var activeExpressionRequestID: UUID?
     private nonisolated let activeBrainLeaseGate =
         RuntimeActiveBrainLeaseGate()
+    private nonisolated let realtimeBrainSessionGate =
+        RuntimeRealtimeBrainSessionGate()
     private var runtimeSessionReplacementCleanupTask: Task<Void, Never>?
+    private var realtimeBrainGeneration: UInt64 = 0
     private var speechRouteGeneration: UInt64 = 0
     private var speechRouteASRFinalState: SpeechRouteASRFinalState?
     private var speechRoutePendingTurn: SpeechRoutePendingTurn?
@@ -1622,6 +1627,41 @@ public final class RuntimeCore {
         )
     }
 
+    private nonisolated func currentRealtimeBrainLease(
+        identity: RealtimeBrainSessionIdentity,
+        allowsSettling: Bool = false
+    ) -> ActiveBrainLease? {
+        guard let lease = activeBrainLeaseGate.current(),
+              lease.residentID == identity.residentID,
+              lease.runtimeSessionID == identity.runtimeSessionID,
+              lease.brainLeaseID == identity.brainLeaseID,
+              lease.route == .realtimeResidentBrain,
+              lease.routeEpoch == identity.routeEpoch,
+              lease.generation
+                == .realtimeResidentBrain(identity.generation),
+              allowsSettling || lease.state == .active else {
+            return nil
+        }
+        return lease
+    }
+
+    private nonisolated static func realtimeBrainIdentity(
+        from lease: ActiveBrainLease
+    ) -> RealtimeBrainSessionIdentity? {
+        guard lease.route == .realtimeResidentBrain,
+              case .realtimeResidentBrain(let generation) =
+                lease.generation else {
+            return nil
+        }
+        return RealtimeBrainSessionIdentity(
+            residentID: lease.residentID,
+            runtimeSessionID: lease.runtimeSessionID,
+            brainLeaseID: lease.brainLeaseID,
+            routeEpoch: lease.routeEpoch,
+            generation: generation
+        )
+    }
+
     private func releaseNativeSpeechBrainLease(
         interactionID: NativeSpeechInteractionID
     ) {
@@ -1668,6 +1708,50 @@ public final class RuntimeCore {
         }
     }
 
+    private nonisolated static func closeRealtimeResidentBrainProvider(
+        identity: RealtimeBrainSessionIdentity,
+        executionEngine: ExecutionEngine,
+        sessionGate: RuntimeRealtimeBrainSessionGate
+    ) async -> RuntimeRealtimeBrainProviderCloseOutcome {
+        switch sessionGate.claimClose(identity) {
+        case .closed:
+            return .closed
+        case .invalid:
+            return .failed(.invalidIdentity)
+        case .wait(let attemptID):
+            return await sessionGate.waitForClose(
+                attemptID: attemptID
+            )
+        case .perform(let attemptID, let closeIdentities):
+            await sessionGate.waitForProviderOperationsToFinish()
+            var ambiguousError: RealtimeResidentBrainError?
+            for closeIdentity in closeIdentities {
+                do {
+                    try await executionEngine
+                        .closeRealtimeResidentBrainSession(
+                            RealtimeBrainCloseSessionCommand(
+                                identity: closeIdentity
+                            )
+                        )
+                } catch RealtimeResidentBrainError.unavailable {
+                } catch RealtimeResidentBrainError.invalidIdentity {
+                } catch {
+                    ambiguousError = realtimeBrainError(error)
+                }
+            }
+            let outcome: RuntimeRealtimeBrainProviderCloseOutcome =
+                ambiguousError.map {
+                    .failed($0)
+                } ?? .closed
+            sessionGate.finishClose(
+                identity: identity,
+                attemptID: attemptID,
+                outcome: outcome
+            )
+            return outcome
+        }
+    }
+
     private func beginRuntimeSessionReplacement() {
         guard let lease = activeBrainLeaseGate.current() else { return }
         guard lease.route != .textConversation else {
@@ -1686,6 +1770,7 @@ public final class RuntimeCore {
         }
         let executionEngine = executionEngine
         let activeBrainLeaseGate = activeBrainLeaseGate
+        let realtimeBrainSessionGate = realtimeBrainSessionGate
         runtimeSessionReplacementCleanupTask = Task {
             await activeBrainLeaseGate.waitForProviderStartsToFinish(
                 for: settlingLease
@@ -1734,6 +1819,18 @@ public final class RuntimeCore {
                 } catch {
                     settled = false
                 }
+            case .realtimeResidentBrain:
+                guard let identity = Self.realtimeBrainIdentity(
+                    from: settlingLease
+                ) else {
+                    settled = false
+                    break
+                }
+                settled = await Self.closeRealtimeResidentBrainProvider(
+                    identity: identity,
+                    executionEngine: executionEngine,
+                    sessionGate: realtimeBrainSessionGate
+                ) == .closed
             case .textRequest:
                 settled = true
             }
@@ -1755,6 +1852,540 @@ public final class RuntimeCore {
     }
 
     #endif
+
+    @MainActor
+    func openRealtimeResidentBrainSession() async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        await waitForRuntimeSessionReplacementCleanup()
+        guard let session = sessionContext,
+              currentResidentIdentity?.residentID == session.residentID else {
+            return .failure(.unavailable)
+        }
+        let generation = realtimeBrainGeneration &+ 1
+        guard let brainLease = activeBrainLeaseGate.acquire(
+            residentID: session.residentID,
+            runtimeSessionID: session.sessionID.rawValue,
+            route: .realtimeResidentBrain,
+            generation: .realtimeResidentBrain(generation)
+        ), let identity = Self.realtimeBrainIdentity(
+            from: brainLease
+        ) else {
+            return .failure(.unavailable)
+        }
+        guard realtimeBrainSessionGate.reserve(identity) else {
+            activeBrainLeaseGate.release(brainLease)
+            return .failure(.unavailable)
+        }
+        realtimeBrainGeneration = generation
+        guard activeBrainLeaseGate.beginProviderStart(for: brainLease) else {
+            return .failure(.cancelled)
+        }
+        let startError: RealtimeResidentBrainError?
+        do {
+            try await executionEngine.openRealtimeResidentBrainSession(
+                RealtimeBrainOpenSessionCommand(identity: identity)
+            )
+            startError = nil
+        } catch {
+            startError = Self.realtimeBrainError(error)
+        }
+        activeBrainLeaseGate.finishProviderStart(for: brainLease)
+
+        guard activeBrainLeaseGate.isCurrent(brainLease),
+              sessionContext == session else {
+            return .failure(.cancelled)
+        }
+        if let startError {
+            if await Self.closeRealtimeResidentBrainProvider(
+                identity: identity,
+                executionEngine: executionEngine,
+                sessionGate: realtimeBrainSessionGate
+            ) == .closed {
+                activeBrainLeaseGate.release(brainLease)
+            }
+            return .failure(startError)
+        }
+        guard realtimeBrainSessionGate.activate(identity) else {
+            if await Self.closeRealtimeResidentBrainProvider(
+                identity: identity,
+                executionEngine: executionEngine,
+                sessionGate: realtimeBrainSessionGate
+            ) == .closed {
+                activeBrainLeaseGate.release(brainLease)
+            }
+            return .failure(.cancelled)
+        }
+        return .success(identity)
+    }
+
+    @MainActor
+    func updateRealtimeResidentBrainContext(
+        _ update: RealtimeBrainRuntimeContextUpdate
+    ) async -> Result<Void, RealtimeResidentBrainError> {
+        guard let brainLease = currentRealtimeBrainLease(
+            identity: update.identity
+        ) else {
+            return .failure(.invalidIdentity)
+        }
+        guard let token = realtimeBrainSessionGate.beginContextUpdate(
+            update
+        ) else {
+            return .failure(.invalidContextRevision)
+        }
+        do {
+            try await executionEngine.updateRealtimeResidentBrainContext(
+                update
+            )
+        } catch {
+            let mappedError = Self.realtimeBrainError(error)
+            _ = realtimeBrainSessionGate.finishContextUpdate(
+                token: token,
+                update: update,
+                succeeded: false
+            )
+            await settleFailedRealtimeBrainSession(
+                identity: update.identity,
+                lease: brainLease
+            )
+            return .failure(mappedError)
+        }
+        guard activeBrainLeaseGate.isCurrent(brainLease),
+              realtimeBrainSessionGate.finishContextUpdate(
+                token: token,
+                update: update,
+                succeeded: true
+              ) else {
+            _ = realtimeBrainSessionGate.finishContextUpdate(
+                token: token,
+                update: update,
+                succeeded: false
+            )
+            return .failure(.cancelled)
+        }
+        return .success(())
+    }
+
+    nonisolated func appendRealtimeResidentBrainAudio(
+        _ frame: RealtimeBrainAudioFrame
+    ) async -> Result<Void, RealtimeResidentBrainError> {
+        guard let brainLease = currentRealtimeBrainLease(
+            identity: frame.identity
+        ), realtimeBrainSessionGate.isActive(frame.identity) else {
+            return .failure(.invalidIdentity)
+        }
+        let audioStart = realtimeBrainSessionGate.beginAudioInput(frame)
+        let token: UUID
+        switch audioStart {
+        case .accepted(let acceptedToken):
+            token = acceptedToken
+        case .busy:
+            return .failure(.operationInFlight)
+        case .invalid:
+            return .failure(.invalidAudioFrame)
+        }
+        do {
+            try await executionEngine.appendRealtimeResidentBrainAudio(frame)
+        } catch {
+            let mappedError = Self.realtimeBrainError(error)
+            _ = realtimeBrainSessionGate.finishAudioInput(
+                token: token,
+                frame: frame,
+                succeeded: false
+            )
+            await settleFailedRealtimeBrainSession(
+                identity: frame.identity,
+                lease: brainLease
+            )
+            return .failure(mappedError)
+        }
+        guard activeBrainLeaseGate.isCurrent(brainLease),
+              realtimeBrainSessionGate.finishAudioInput(
+                token: token,
+                frame: frame,
+                succeeded: true
+              ) else {
+            _ = realtimeBrainSessionGate.finishAudioInput(
+                token: token,
+                frame: frame,
+                succeeded: false
+            )
+            return .failure(.cancelled)
+        }
+        return .success(())
+    }
+
+    @MainActor
+    func submitRealtimeResidentBrainToolResult(
+        _ command: RealtimeBrainToolResultCommand
+    ) async -> Result<Void, RealtimeResidentBrainError> {
+        guard command.identity.turnID != nil,
+              command.identity.responseID != nil,
+              command.sequence > 0,
+              !command.callID.rawValue.isEmpty,
+              let brainLease = currentRealtimeBrainLease(
+                identity: command.identity.session
+              ), realtimeBrainSessionGate.isCurrent(command.identity) else {
+            return .failure(.invalidIdentity)
+        }
+        guard let token = realtimeBrainSessionGate.beginToolResult(
+            command
+        ) else {
+            return .failure(.invalidIdentity)
+        }
+        do {
+            try await executionEngine.submitRealtimeResidentBrainToolResult(
+                command
+            )
+        } catch {
+            let mappedError = Self.realtimeBrainError(error)
+            _ = realtimeBrainSessionGate.finishToolResult(
+                token: token,
+                command: command,
+                succeeded: false
+            )
+            await settleFailedRealtimeBrainSession(
+                identity: command.identity.session,
+                lease: brainLease
+            )
+            return .failure(mappedError)
+        }
+        guard activeBrainLeaseGate.isCurrent(brainLease),
+              realtimeBrainSessionGate.finishToolResult(
+                token: token,
+                command: command,
+                succeeded: true
+              ) else {
+            _ = realtimeBrainSessionGate.finishToolResult(
+                token: token,
+                command: command,
+                succeeded: false
+            )
+            return .failure(.cancelled)
+        }
+        return .success(())
+    }
+
+    @MainActor
+    func cancelRealtimeResidentBrainGeneration(
+        identity: RealtimeBrainSessionIdentity,
+        reason: RealtimeBrainCancellationReason
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        guard let brainLease = currentRealtimeBrainLease(
+            identity: identity
+        ), realtimeBrainSessionGate.isActive(identity) else {
+            return .failure(.invalidIdentity)
+        }
+        let nextGeneration = realtimeBrainGeneration &+ 1
+        let nextIdentity = RealtimeBrainSessionIdentity(
+            residentID: identity.residentID,
+            runtimeSessionID: identity.runtimeSessionID,
+            brainLeaseID: identity.brainLeaseID,
+            routeEpoch: identity.routeEpoch,
+            generation: nextGeneration
+        )
+        guard let transitionToken = realtimeBrainSessionGate
+            .beginGenerationTransition(
+                from: identity,
+                to: nextIdentity
+            ) else {
+            return .failure(.cancelled)
+        }
+        do {
+            try await executionEngine.cancelRealtimeResidentBrainGeneration(
+                RealtimeBrainCancelGenerationCommand(
+                    identity: identity,
+                    nextGeneration: nextGeneration,
+                    reason: reason
+                )
+            )
+        } catch {
+            let mappedError = Self.realtimeBrainError(error)
+            realtimeBrainSessionGate.cancelGenerationTransition(
+                token: transitionToken
+            )
+            await settleFailedRealtimeBrainSession(
+                identity: identity,
+                lease: brainLease
+            )
+            return .failure(mappedError)
+        }
+        return advanceRealtimeBrainGeneration(
+            from: identity,
+            lease: brainLease,
+            to: nextIdentity,
+            transitionToken: transitionToken
+        )
+    }
+
+    @MainActor
+    func interruptRealtimeResidentBrain(
+        identity: RealtimeBrainSessionIdentity,
+        reason: RealtimeBrainInterruptReason
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        guard let brainLease = currentRealtimeBrainLease(
+            identity: identity
+        ), realtimeBrainSessionGate.isActive(identity) else {
+            return .failure(.invalidIdentity)
+        }
+        let nextGeneration = realtimeBrainGeneration &+ 1
+        let nextIdentity = RealtimeBrainSessionIdentity(
+            residentID: identity.residentID,
+            runtimeSessionID: identity.runtimeSessionID,
+            brainLeaseID: identity.brainLeaseID,
+            routeEpoch: identity.routeEpoch,
+            generation: nextGeneration
+        )
+        guard let transitionToken = realtimeBrainSessionGate
+            .beginGenerationTransition(
+                from: identity,
+                to: nextIdentity
+            ) else {
+            return .failure(.cancelled)
+        }
+        do {
+            try await executionEngine.interruptRealtimeResidentBrain(
+                RealtimeBrainInterruptCommand(
+                    identity: identity,
+                    nextGeneration: nextGeneration,
+                    reason: reason
+                )
+            )
+        } catch {
+            let mappedError = Self.realtimeBrainError(error)
+            realtimeBrainSessionGate.cancelGenerationTransition(
+                token: transitionToken
+            )
+            await settleFailedRealtimeBrainSession(
+                identity: identity,
+                lease: brainLease
+            )
+            return .failure(mappedError)
+        }
+        return advanceRealtimeBrainGeneration(
+            from: identity,
+            lease: brainLease,
+            to: nextIdentity,
+            transitionToken: transitionToken
+        )
+    }
+
+    @MainActor
+    func receiveRealtimeResidentBrainEvent(
+        session identity: RealtimeBrainSessionIdentity
+    ) async throws -> RealtimeBrainEventDisposition {
+        let receiveStart = realtimeBrainSessionGate.beginReceiving(identity)
+        switch receiveStart {
+        case .rejected(let disposition):
+            return disposition
+        case .buffered(let event):
+            guard let brainLease = currentRealtimeBrainLease(
+                identity: identity
+            ) else { return .rejectedStale }
+            return await finishRealtimeResidentBrainEvent(
+                .accepted(event),
+                identity: identity,
+                lease: brainLease
+            )
+        case .provider:
+            break
+        }
+        guard case .provider(let token) = receiveStart,
+              let brainLease = currentRealtimeBrainLease(
+                identity: identity
+              ) else {
+            return .rejectedStale
+        }
+        let event: RealtimeResidentBrainEvent
+        do {
+            event = try await executionEngine
+                .receiveRealtimeResidentBrainEvent(session: identity)
+        } catch {
+            realtimeBrainSessionGate.cancelReceiving(token: token)
+            await settleFailedRealtimeBrainSession(
+                identity: identity,
+                lease: brainLease
+            )
+            throw Self.realtimeBrainError(error)
+        }
+        guard activeBrainLeaseGate.isCurrent(brainLease) else {
+            realtimeBrainSessionGate.cancelReceiving(token: token)
+            return realtimeBrainSessionGate.isClosed(identity)
+                ? .rejectedClosed : .rejectedStale
+        }
+        let disposition = realtimeBrainSessionGate.accept(
+            event,
+            expected: identity,
+            token: token
+        )
+        return await finishRealtimeResidentBrainEvent(
+            disposition,
+            identity: identity,
+            lease: brainLease
+        )
+    }
+
+    @MainActor
+    func closeRealtimeResidentBrainSession(
+        identity: RealtimeBrainSessionIdentity
+    ) async -> Result<Void, RealtimeResidentBrainError> {
+        if realtimeBrainSessionGate.isClosed(identity) {
+            return .success(())
+        }
+        guard let brainLease = currentRealtimeBrainLease(
+            identity: identity,
+            allowsSettling: true
+        ) else {
+            return .failure(.invalidIdentity)
+        }
+        let terminalLease: ActiveBrainLease
+        if brainLease.state == .settling {
+            terminalLease = brainLease
+        } else {
+            guard let settling = activeBrainLeaseGate.beginSettlement(
+                for: brainLease
+            ) else {
+                return .failure(.invalidIdentity)
+            }
+            terminalLease = settling
+        }
+        await activeBrainLeaseGate.waitForProviderStartsToFinish(
+            for: terminalLease
+        )
+        let outcome = await Self.closeRealtimeResidentBrainProvider(
+            identity: identity,
+            executionEngine: executionEngine,
+            sessionGate: realtimeBrainSessionGate
+        )
+        guard outcome == .closed else {
+            if case .failed(let error) = outcome {
+                return .failure(error)
+            }
+            return .failure(.transportFailure)
+        }
+        activeBrainLeaseGate.release(terminalLease)
+        return .success(())
+    }
+
+    @MainActor
+    private func finishRealtimeResidentBrainEvent(
+        _ disposition: RealtimeBrainEventDisposition,
+        identity: RealtimeBrainSessionIdentity,
+        lease: ActiveBrainLease
+    ) async -> RealtimeBrainEventDisposition {
+        guard case .accepted(let event) = disposition,
+              event.kind == .sessionClosed else {
+            return disposition
+        }
+        guard let terminalLease = activeBrainLeaseGate.beginSettlement(
+            for: lease
+        ) else {
+            return .rejectedStale
+        }
+        switch realtimeBrainSessionGate.claimClose(identity) {
+        case .closed:
+            break
+        case .invalid:
+            return .rejectedStale
+        case .wait(let attemptID):
+            guard await realtimeBrainSessionGate.waitForClose(
+                attemptID: attemptID
+            ) == .closed else {
+                return .rejectedStale
+            }
+        case .perform(let attemptID, _):
+            await realtimeBrainSessionGate
+                .waitForProviderOperationsToFinish()
+            realtimeBrainSessionGate.finishClose(
+                identity: identity,
+                attemptID: attemptID,
+                outcome: .closed
+            )
+        }
+        activeBrainLeaseGate.release(terminalLease)
+        return disposition
+    }
+
+    @MainActor
+    private func settleFailedRealtimeBrainSession(
+        identity: RealtimeBrainSessionIdentity,
+        lease: ActiveBrainLease
+    ) async {
+        let terminalLease: ActiveBrainLease
+        if let settlingLease = activeBrainLeaseGate.beginSettlement(
+            for: lease
+        ) {
+            terminalLease = settlingLease
+        } else if let currentLease = currentRealtimeBrainLease(
+            identity: identity,
+            allowsSettling: true
+        ) {
+            terminalLease = currentLease
+        } else {
+            return
+        }
+        await activeBrainLeaseGate.waitForProviderStartsToFinish(
+            for: terminalLease
+        )
+        if await Self.closeRealtimeResidentBrainProvider(
+            identity: identity,
+            executionEngine: executionEngine,
+            sessionGate: realtimeBrainSessionGate
+        ) == .closed {
+            activeBrainLeaseGate.release(terminalLease)
+        }
+    }
+
+    @MainActor
+    private func advanceRealtimeBrainGeneration(
+        from identity: RealtimeBrainSessionIdentity,
+        lease: ActiveBrainLease,
+        to proposedIdentity: RealtimeBrainSessionIdentity,
+        transitionToken: UUID
+    ) -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        guard let advancedLease = activeBrainLeaseGate.advanceGeneration(
+            for: lease,
+            to: .realtimeResidentBrain(proposedIdentity.generation)
+        ), let nextIdentity = Self.realtimeBrainIdentity(
+            from: advancedLease
+        ) else {
+            realtimeBrainSessionGate.cancelGenerationTransition(
+                token: transitionToken
+            )
+            return .failure(.cancelled)
+        }
+        guard realtimeBrainSessionGate.commitGenerationTransition(
+            token: transitionToken,
+            from: identity,
+            to: nextIdentity
+        ) else {
+            return .failure(.cancelled)
+        }
+        realtimeBrainGeneration = nextIdentity.generation
+        return .success(nextIdentity)
+    }
+
+    private nonisolated static func realtimeBrainError(
+        _ error: Error
+    ) -> RealtimeResidentBrainError {
+        if let error = error as? RealtimeResidentBrainError {
+            return error
+        }
+        if error is CancellationError {
+            return .cancelled
+        }
+        return .transportFailure
+    }
 
     func startSpeechRouteASR(
         locale: String? = nil

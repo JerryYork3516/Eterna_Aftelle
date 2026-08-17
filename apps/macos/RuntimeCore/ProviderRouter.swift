@@ -864,6 +864,8 @@ public final class ProviderRouter {
     private nonisolated let asrProvider: (any ASRProvider)?
     private nonisolated let ttsProvider: (any TTSProvider)?
     private nonisolated let nativeSpeechProvider: NativeSpeechProvider?
+    private nonisolated let realtimeResidentBrainProvider:
+        (any RealtimeResidentBrainProvider)?
     private var textProfile: ProviderProfile?
     private var nativeSpeechProfile: NativeSpeechProviderProfile?
 
@@ -873,7 +875,8 @@ public final class ProviderRouter {
             transport: URLSessionProviderHTTPTransport(),
             asrProvider: nil,
             ttsProvider: nil,
-            nativeSpeechProvider: nil
+            nativeSpeechProvider: nil,
+            realtimeResidentBrainProvider: nil
         )
     }
 
@@ -882,7 +885,9 @@ public final class ProviderRouter {
         transport: ProviderHTTPTransport = URLSessionProviderHTTPTransport(),
         asrProvider: (any ASRProvider)? = nil,
         ttsProvider: (any TTSProvider)? = nil,
-        nativeSpeechProvider: NativeSpeechProvider? = nil
+        nativeSpeechProvider: NativeSpeechProvider? = nil,
+        realtimeResidentBrainProvider:
+            (any RealtimeResidentBrainProvider)? = nil
     ) {
         adapter = OpenAICompatibleAdapter(
             credentialReader: credentialReader,
@@ -891,6 +896,7 @@ public final class ProviderRouter {
         self.asrProvider = asrProvider
         self.ttsProvider = ttsProvider
         self.nativeSpeechProvider = nativeSpeechProvider
+        self.realtimeResidentBrainProvider = realtimeResidentBrainProvider
     }
 
     public func routeMockProvider() -> String {
@@ -1102,6 +1108,80 @@ public final class ProviderRouter {
         try await nativeSpeechProvider.requestToolContinuation(
             interactionID: interactionID
         )
+    }
+
+    func openRealtimeResidentBrainSession(
+        _ command: RealtimeBrainOpenSessionCommand
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.openSession(command)
+    }
+
+    func updateRealtimeResidentBrainContext(
+        _ update: RealtimeBrainRuntimeContextUpdate
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.updateRuntimeContext(update)
+    }
+
+    nonisolated func appendRealtimeResidentBrainAudio(
+        _ frame: RealtimeBrainAudioFrame
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.appendAudio(frame)
+    }
+
+    func submitRealtimeResidentBrainToolResult(
+        _ command: RealtimeBrainToolResultCommand
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.submitToolResult(command)
+    }
+
+    func cancelRealtimeResidentBrainGeneration(
+        _ command: RealtimeBrainCancelGenerationCommand
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.cancelGeneration(command)
+    }
+
+    func interruptRealtimeResidentBrain(
+        _ command: RealtimeBrainInterruptCommand
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.interrupt(command)
+    }
+
+    func receiveRealtimeResidentBrainEvent(
+        session: RealtimeBrainSessionIdentity
+    ) async throws -> RealtimeResidentBrainEvent {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        return try await realtimeResidentBrainProvider.receiveEvent(
+            session: session
+        )
+    }
+
+    func closeRealtimeResidentBrainSession(
+        _ command: RealtimeBrainCloseSessionCommand
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.closeSession(command)
     }
 
     public func diagnostics(for config: ProviderRuntimeConfig, secretState: SecretReferenceState) -> ProviderRoutingDiagnostics {

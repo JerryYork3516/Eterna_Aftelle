@@ -2129,6 +2129,7 @@ private struct NativeSpeechRuntimeIntegrationTests {
             playbackCompleted == .applied,
             "actual playback completion drains the gate"
         )
+        await provider.waitUntilToolContinuationCount(1)
         let outputAfterDrain = await provider.operationCount(.toolOutput)
         let continuationAfterDrain = await provider.operationCount(
             .toolContinuation

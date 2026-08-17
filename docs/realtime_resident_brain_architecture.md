@@ -342,7 +342,7 @@ R 序列是 Realtime Resident Brain Route 的独立实施序列，不改变现�
 ```text
 R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
 R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
-R2 Provider-neutral Realtime Brain Contract
+R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
 R3 First Realtime Provider Adapter
 R4 Context / Canonical Turn / Memory Bridge
 R5 Tool / Permission Bridge
@@ -355,14 +355,20 @@ R10 Real-device / Long-session Freeze
 
 依赖顺序不可倒置。每个节点必须小步、可验收、可回滚；未完成前一节点时不得提前把后一节点能力混入实现。
 
-R1 只解决 RuntimeCore-owned lease、route epoch、单 Brain acquisition/release 和 stale gate。R1 不新增 Realtime Provider contract、不修改 Qwen Adapter、不实现 Voice Binding、Context delta、Tool bridge、full-duplex、semantic interruption 或自动 fallback。
+R2 冻结 `RealtimeResidentBrainProvider` 及其 open、context update、audio append、Tool result、cancel、interrupt、event receive 与 close 命令。命令和事件统一绑定 resident、Runtime Session、R1 Brain lease、route epoch 与 generation；turn / response、context revision 与 sequence 在相关事件和 Tool result 中继续显式关联。
+
+`residentSemanticFinal` 是 Provider 提交给 RuntimeCore 的最终居民语义候选，绑定 turn / response 与 canonical text，但不是 History / Memory commit。Runtime context 只接受 bootstrap 与单调 revision delta；Tool 只产生 candidate 并接收 Runtime 已处理的 result；interruption 只产生 proposal，generation advance 仍归 RuntimeCore。Audio contract 只冻结 PCM encoding、sample rate、channels、sequence、timestamp 与 provenance，不冻结任何厂商 wire format。
+
+R2 仅在既有 RuntimeCore → ExecutionEngine → ProviderRouter 链增加一个可注入接缝，并复用 R1 唯一 lease gate。Fake Provider 以零网络覆盖完整 lifecycle、全部事件族及 stale / duplicate / out-of-order / late / error 路径。本轮未实现真实 Provider Adapter、WebSocket、十三层 continuous projection、Tool execution、Voice Binding、full-duplex、turn-taking 或 fallback。
 
 ---
 
-## R0 / R1 Freeze Result
+## R0–R2 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
+R1 = PASS / FROZEN
+R2 = PASS / FROZEN
 
 Single Runtime authority: RuntimeCore
 Max active Brain per Runtime Session: 1
@@ -374,5 +380,8 @@ First implementation candidate: Qwen Omni Realtime behind provider-neutral bound
 R1 implementation: RuntimeCore-owned lease gate with existing route identities
 R1 second-Brain policy: deterministic rejection; no automatic fallback
 R1 lifecycle: release only after completed delivery or Provider start / definitive close settlement; Session replacement waits before new Brain admission
-Next allowed node: R2 Provider-neutral Realtime Brain Contract
+R2 contract: RealtimeResidentBrainProvider with provider-neutral commands, events, identity, semantic final, context, Tool candidate, interruption proposal and PCM frames
+R2 routing seam: existing RuntimeCore → ExecutionEngine → ProviderRouter only
+R2 network dependency: zero; Fake Provider only
+Next allowed node: R3 First Realtime Provider Adapter
 ```
