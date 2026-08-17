@@ -3,7 +3,7 @@
 > 系统骨架。本文件定义 Stage 7 的模块结构、运行链路、红线与接口契约。
 > 配套:03_dev_plan.md v8 + 06_product_design.md v8 + 04_code_standards.md + 05_dev_guide.md。
 > 文档职责:AGENTS.md 是工作入口;本文件是架构事实源;04_code_standards.md 是代码事实源。冲突时,红线以"02_architecture.md + 04_code_standards.md 一致版本"为准,AGENTS.md 不覆盖架构事实。
-> **Stage 7.5 当前口径:**允许用户主动启动的前台语音交互。Stage 7.5.10 已以 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE` 收口，Qwen Omni 端到端 STS 不再作为正式主链；Stage 7.5.11 的 ASR → RuntimeCore LLM → TTS Cascaded Speech Route 定位为语音消息、Realtime Speech 可靠 fallback 与低成本 / 高兼容语音链。RuntimeCore 仍是 Provider 路由、Memory、Tool / Permission 编排和取消语义的唯一 owner;不改 Runtime API contract / DR schema / Store schema。
+> **Stage 7.5 当前口径:**允许用户主动启动的前台语音交互。Stage 7.5.10 已以 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE` 收口，Qwen Omni 端到端 STS 不再作为正式主链；Stage 7.5.11 的 ASR → RuntimeCore LLM → TTS Cascaded Speech Route 定位为语音消息、Realtime Speech 可靠 fallback 与低成本 / 高兼容语音链。Realtime Resident Brain Route 的 R0 正式架构见 `realtime_resident_brain_architecture.md`，其独立 R1～R10 序列不改变现有 Stage 编号。RuntimeCore 仍是 Provider 路由、Memory、Tool / Permission 编排和取消语义的唯一 owner;不改 Runtime API contract / DR schema / Store schema。
 
 > **G0 已锁定:** Runtime 选 A:**Swift RuntimeCore**(App 内置运行内核);DR 读取以真实 DR v0.3 与 `dr_contract_v0_3.md` 为准;真实 LLM 只能走 `RuntimeCore ProviderRouter → ProviderAdapter → ExecutionEngine`,UI 不直连模型。Studio(Python)是产出 `.digital_resident` 的上游;调度/Agent/未来扩展的核心都在 Aftelle RuntimeCore。
 > **Boundary 权威源:** 4 条 Invariants 的权威定义见 `aftelle_runtime_boundary.md §1`。本文件只做本地化落点说明,不得复制或改写边界。
@@ -283,9 +283,14 @@ Stage 7.5.10 保留 WebRTC AEC3 XCFramework、AEC Bridge、AEC Host，以及 del
 
 USB / 蓝牙外置输出下的稳定插话、resident-only 零 self-interrupt、double-talk、source gate / near-end detection、render / capture alignment、AEC 真机矩阵与稳定性曾进入 7.5.11-A6。相关实现与诊断资产继续保留，但不再作为 Cascaded 语音消息链达到 continuous full-duplex 的产品证明；未执行的外置设备矩阵不得表述为已通过。
 
-不得继续通过修改 Cascaded lifecycle、VAD、AEC、source gate 或插话阈值强行逼近 GPT-Live 类体验。持续听说与自然实时插话属于后续独立 Realtime Speech / Omni Route，本阶段不确定新的 Stage 编号，也不提前实现。
+不得继续通过修改 Cascaded lifecycle、VAD、AEC、source gate 或插话阈值强行逼近 GPT-Live 类体验。持续听说与自然实时插话由独立 Realtime Resident Brain Route 的 R1～R10 序列承接；该序列不改变现有 Stage 编号，也不得把后续节点能力提前混入当前实现。
 
 禁止:always-on 麦克风、未授权后台监听、唤醒词、声纹识别、后台持续 voice loop、UI / Host / Adapter 直连 Provider、AEC / ASR / TTS / Host 拥有 Runtime / Session / Memory / Interrupt decision,或绕过 RuntimeCore 执行 Tool / Memory / Permission 操作。
+
+### 3.10.3 Realtime Resident Brain Route
+Realtime Resident Brain Route 是体验优先的 continuous full-duplex 正式方向。其 Single-Brain ownership、ActiveBrainLease、Canonical Resident Turn、Context / Memory、Tool / Permission、Studio Voice、Interrupt 与 Dual Route / Fallback 权威定义统一见 `realtime_resident_brain_architecture.md`，本文件不重复复制。
+
+该 Route 仍使用同一个 RuntimeCore、Runtime Session、Memory、Tool / Permission 与 Dialogue History。Realtime Brain 只是 ActiveBrainLease 当前选中的唯一回答生成 Provider，不是第二 Runtime；Cascaded Speech Route 保留为语音消息、低成本 / 高兼容和 Realtime fallback。R0 已冻结，代码实施从 R1 的 lease / route epoch / single-brain enforcement 开始。
 
 ### 3.11 Screen Guide Prototype
 只做 Aftelle 内部指导原型。

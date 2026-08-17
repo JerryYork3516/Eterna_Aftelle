@@ -1,7 +1,7 @@
 # Aftelle Desktop · 开发计划 · Stage 7 · v8
 
 > 7.1→7.12 的开发顺序与每阶段内容、验收。与02_architecture.md v8、04_code_standards.md、AGENTS.md 配套。
-> **Stage 7.5 当前唯一权威:**本文件「Stage 7.5 实时语音闭环 / Studio Next 1.0 / 真实资产联调」中的 7.5.1–7.5.28。7.5.11 的 Cascaded Speech Route 最终定位为语音消息、Realtime Speech 可靠 fallback 与低成本 / 高兼容语音链。
+> **Stage 7.5 当前唯一权威:**本文件「Stage 7.5 实时语音闭环 / Studio Next 1.0 / 真实资产联调」中的 7.5.1–7.5.28。7.5.11 的 Cascaded Speech Route 最终定位为语音消息、Realtime Speech 可靠 fallback 与低成本 / 高兼容语音链。Realtime Resident Brain Route 按 `realtime_resident_brain_architecture.md` 的独立 R0～R10 序列推进，不改变现有 Stage 编号。
 
 ## 主线顺序
 
@@ -330,7 +330,7 @@ A6 已保留相应声学、取消与诊断基础，但最终产品定位不再�
 - A8 最终产品验收按语音消息模式执行：用户每次主动启动并完成一段语音，ASR final 经 RuntimeCore 取得 canonical response，再由 TTS 返回一段居民语音；一条消息完成后结束本次前台语音交互，下一条消息由用户再次主动启动。
 - Cascaded Speech Route 同时承担 Realtime Speech 不可用或不适合时的可靠 fallback，以及低成本 / 高兼容语音链。
 - A0～A8 不再承担 GPT-Live 类 continuous full-duplex、持续听说、自然 turn-taking 或播放中实时语义插话目标；Cascaded 模式不以居民播放期间插话作为产品验收项。
-- 不继续通过修改 cascaded lifecycle、VAD、AEC、source gate 或插话阈值强行逼近上述体验。GPT-Live 类能力属于后续独立 Realtime Speech / Omni Route，本阶段不确定新的 Stage 编号，也不提前实现。
+- 不继续通过修改 cascaded lifecycle、VAD、AEC、source gate 或插话阈值强行逼近上述体验。GPT-Live 类能力由独立 Realtime Resident Brain Route 承接；该路线使用 R 序列，不改变现有 Stage 编号，也不得跳过依赖顺序。
 - 最终冻结链路保持为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History。RuntimeCore ownership、provider-neutral ASR / LLM / TTS、Studio VoiceProfile / Provider Binding 与 DR / Store schema 边界不变。
 
 注意：ASR、现有 LLM、TTS Provider 均不得绑定单一供应商，必须通过 RuntimeCore 的统一 ProviderRouter 与 ProviderAdapter 运行；保留的 NativeSpeechProvider / Qwen Omni Adapter 仅用于实验与参考。
@@ -340,6 +340,26 @@ A6 已保留相应声学、取消与诊断基础，但最终产品定位不再�
 注意：Studio 负责定义 VoiceProfile、Provider 意图、轮次策略、长内容交付策略和设备输出策略；Aftelle 负责实时运行，不承担音色或外观编辑。
 
 禁止：不做唤醒词、声纹识别、无授权后台监听、多设备并行主脑、精准 viseme 和真实口腔同步。
+
+### Realtime Resident Brain Route（独立 R 序列）
+
+正式架构见 `realtime_resident_brain_architecture.md`。两条 Speech Route 共用 RuntimeCore、Runtime Session、resident identity、Memory、Tool / Permission 与 Dialogue History，且不得同时获得回答生成权。
+
+```text
+R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
+R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement
+R2 Provider-neutral Realtime Brain Contract
+R3 First Realtime Provider Adapter
+R4 Context / Canonical Turn / Memory Bridge
+R5 Tool / Permission Bridge
+R6 Studio Voice Binding
+R7 Full-duplex Audio Integration
+R8 Interruption / Turn-taking
+R9 Cascaded Fallback + Regression
+R10 Real-device / Long-session Freeze
+```
+
+当前只允许进入 R1。R1 只建立 RuntimeCore-owned lease、route epoch、单 Brain acquisition/release 与 stale gate；不得提前实现 R2～R10。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 
