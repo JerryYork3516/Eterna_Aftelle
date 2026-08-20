@@ -225,6 +225,8 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 7.5.9 实时字幕与 ParticleCore 状态同步
 7.5.10 STS 前置稳定化与收口（CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE）
 Stage 7.5.11｜ASR → RuntimeCore LLM → TTS Cascaded Speech Route
+
+Realtime Resident Brain Route 仍按 `docs/realtime_resident_brain_architecture.md` 的 R0–R10 序列独立推进；R7 仅允许补齐 full-duplex 音频集成与回归，不改变 7.5.11 的 Cascaded 主线定位。
 7.5.12 延迟、Trace、自动测试与 Stage 7.5-A 预验收
 7.5.13 Aftelle 实时语音底座冻结并暂停新增功能
 

@@ -504,6 +504,7 @@ private struct NativeSpeechDuplexTests {
         try await testQwenHostChainThroughController()
         try await testHandshakeDoesNotRunCaptureProducer()
         try await testFullDuplexThroughController()
+        try await testR7FullDuplexSessionContinuationAndStopCleanup()
         try await testPlaybackStallThroughController()
         try await testInterruptThroughController()
         try await testInterruptAfterProviderCompletionThroughController()
@@ -1768,6 +1769,83 @@ private struct NativeSpeechDuplexTests {
             "late current-turn final is not rejected by Runtime"
         )
         await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testR7FullDuplexSessionContinuationAndStopCleanup()
+        async throws
+    {
+        let transport = handshakeTransport()
+        let stack = makeControllerStack(transport: transport)
+        expect(
+            stack.orchestration.loadResident(fixtureData: fixtureData).isLoaded,
+            "R7 fixture loads"
+        )
+        await stack.controller.startSpeechAudioCapture()
+        await stack.controller.startNativeSpeechInputBridge()
+        for marker in UInt8(1) ... UInt8(3) {
+            expect(stack.capture.emit(marker), "R7 source emits input frame")
+        }
+        await waitUntil {
+            try await audioAppendObjects(transport).count == 3
+        }
+        await transport.enqueue(.text(#"{"type":"input_audio_buffer.speech_started"}"#))
+        await transport.enqueue(.text(#"{"type":"input_audio_buffer.speech_stopped"}"#))
+        await transport.enqueue(.text(#"{"type":"response.created","response":{"id":"r7-response"}}"#))
+        await transport.enqueue(.text(#"{"type":"response.audio.delta","response_id":"r7-response","delta":"AQI="}"#))
+        await transport.enqueue(.text(#"{"type":"response.audio.delta","response_id":"r7-response","delta":"AwQ="}"#))
+        await transport.enqueue(.text(#"{"type":"response.audio.done","response_id":"r7-response"}"#))
+        await transport.enqueue(.text(#"{"type":"response.done","response":{"id":"r7-response","status":"completed"}}"#))
+        await waitUntil {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return stack.controller.speechOutputBridgeSnapshot
+                .completedResponseCount == 1
+                && stack.controller.realtimeSpeechStateSnapshot.state
+                    == .speaking
+        }
+        expect(
+            stack.outputPlayer.scheduledCount > 0,
+            "completed response schedules audible PCM"
+        )
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot
+                .playbackCompletedCount == 0,
+            "semantic completion is not local playback completion"
+        )
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot.state != .completed,
+            "response completion waits for real playback chunks"
+        )
+        let beforeStopInputCount = try await audioAppendObjects(transport).count
+        expect(beforeStopInputCount == 3, "input queue remains bounded before stop")
+        stack.outputPlayer.completeScheduledChunk()
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntil {
+            stack.controller.speechAudioOutputHostSnapshot.state == .completed
+        }
+        expect(
+            stack.controller.speechOutputBridgeSnapshot.completedResponseCount == 1
+                && stack.controller.speechAudioOutputHostSnapshot.playbackCompletedCount == 1,
+            "semantic completion and playback completion stay distinct"
+        )
+        await stack.controller.stopSpeechAudioCapture()
+        expect(
+            stack.controller.speechAudioOutputHostSnapshot.state == .closed,
+            "Stop closes playback host"
+        )
+        expect(
+            stack.controller.speechOutputBridgeSnapshot.hasActiveReceiveLoop == false,
+            "Stop releases receive loop"
+        )
+        expect(
+            stack.controller.speechInputBridgeSnapshot.hasActivePump == false,
+            "Stop releases input pump"
+        )
+        expect(
+            stack.controller.speechAudioHostSnapshot.isCapturing == false,
+            "Stop releases capture"
+        )
+        let closeCount = await transport.calls.filter { $0 == .close(.normal) }.count
+        expect(closeCount == 1, "Stop closes the transport once")
     }
 
     private static func testHandshakeDoesNotRunCaptureProducer() async throws {

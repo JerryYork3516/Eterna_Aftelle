@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R6 Freeze
+# Realtime Resident Brain Architecture · R0–R7 Freeze
 
-> 状态：`PASS / FROZEN`
+> 状态：`R0–R6 PASS / FROZEN`；R7 回归测试已就绪，等待实施
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -417,7 +417,7 @@ R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、�
 
 ---
 
-## R0–R6 Freeze Result
+## R0–R7 Freeze Result
 
 ```text
 R0 = PASS / FROZEN

@@ -10,11 +10,11 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:R6 Realtime Voice Binding Foundation — PASS / FROZEN
-- **上一步刚完成**:provider-neutral Runtime Voice Binding、providerDefault 解析与 Provider-private voice 隔离收口
+- **现在在做**:R7 Full-duplex Audio Integration — regression patching
+- **上一步刚完成**:R6 Runtime Voice Binding 基础层与 Realtime 主链冻结收口
 - **当前卡在**:无
-- **下一步**:只允许在新任务中进入 R7 Full-duplex Audio Integration
-- **本轮范围**:只完成 R6 Runtime Voice Binding 基础层；当前仅启用 providerDefault，不实现 Studio VoiceProfile、声音复刻、Host full-duplex、turn-taking、route fallback 或 R7～R10
+- **下一步**:只补 R7 回归与文档，不回头改 R0–R6 冻结事实
+- **本轮范围**:只补 R7 最小回归入口；不改 Provider 语义、不改 Runtime API、不改 DR schema、不新增平台 target
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
 > - **上一步刚完成**:Stage 7.1.5 DR Loader 读取 / 浅校验 / 加载边界已正规化
