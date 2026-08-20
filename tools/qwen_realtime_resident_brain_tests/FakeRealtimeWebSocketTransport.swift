@@ -1,0 +1,167 @@
+import Foundation
+
+actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
+    private(set) var connectedEndpoints: [URL] = []
+    private(set) var bearerTokens: [String] = []
+    private(set) var sentFrames: [RealtimeWebSocketFrame] = []
+    private(set) var closeReasons: [RealtimeWebSocketCloseReason] = []
+
+    private var queuedFrames: [RealtimeWebSocketFrame] = []
+    private var receiveWaiter:
+        CheckedContinuation<RealtimeWebSocketFrame, any Error>?
+    private var isConnected = false
+    private var activeResponseID: String?
+    private var generatedResponseIndex = 0
+    private var holdsResponseCreation = false
+    private var heldResponseCreatedFrames: [String] = []
+    private var holdsInputClear = false
+    private var heldInputClearAcknowledgements = 0
+    private var failsNextResponseCancel = false
+
+    func connect(endpoint: URL, bearerToken: String) async throws {
+        guard !isConnected else { throw NativeSpeechError.invalidConfiguration }
+        isConnected = true
+        connectedEndpoints.append(endpoint)
+        bearerTokens.append(bearerToken)
+        enqueueText(#"{"type":"session.created","session":{"id":"session-r3"}}"#)
+    }
+
+    func send(_ frame: RealtimeWebSocketFrame) async throws {
+        guard isConnected else { throw NativeSpeechError.transportFailure }
+        sentFrames.append(frame)
+        guard case .text(let text) = frame,
+              let data = text.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let type = object["type"] as? String else { return }
+
+        switch type {
+        case "session.update":
+            enqueueText(#"{"type":"session.updated","session":{"id":"session-r3"}}"#)
+        case "conversation.item.create":
+            break
+        case "response.create":
+            generatedResponseIndex += 1
+            let responseID = "response-tool-\(generatedResponseIndex)"
+            let event =
+                #"{"type":"response.created","response":{"id":"\#(responseID)","status":"in_progress"}}"#
+            if holdsResponseCreation {
+                heldResponseCreatedFrames.append(event)
+            } else {
+                enqueueText(event)
+            }
+        case "response.cancel":
+            if failsNextResponseCancel {
+                failsNextResponseCancel = false
+                enqueueText(#"{"type":"error","error":{"code":"cancel_failed"}}"#)
+            } else if let activeResponseID {
+                enqueueText(
+                    #"{"type":"response.done","response":{"id":"\#(activeResponseID)","status":"incomplete","output":[]}}"#
+                )
+                self.activeResponseID = nil
+            } else {
+                enqueueText(#"{"type":"error","error":{"code":"no_active_response"}}"#)
+            }
+        case "input_audio_buffer.clear":
+            if holdsInputClear {
+                heldInputClearAcknowledgements += 1
+            } else {
+                enqueueText(#"{"type":"input_audio_buffer.cleared"}"#)
+            }
+        default:
+            break
+        }
+    }
+
+    func receive() async throws -> RealtimeWebSocketFrame {
+        guard isConnected else { throw NativeSpeechError.transportFailure }
+        if !queuedFrames.isEmpty { return queuedFrames.removeFirst() }
+        guard receiveWaiter == nil else {
+            throw NativeSpeechError.invalidEvent
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            receiveWaiter = continuation
+        }
+    }
+
+    func close(reason: RealtimeWebSocketCloseReason) async {
+        closeReasons.append(reason)
+        isConnected = false
+        activeResponseID = nil
+        queuedFrames.removeAll(keepingCapacity: true)
+        if let waiter = receiveWaiter {
+            receiveWaiter = nil
+            waiter.resume(throwing: NativeSpeechError.cancelled)
+        }
+    }
+
+    func enqueueText(_ text: String) {
+        if let data = text.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+           object["type"] as? String == "response.created",
+           let response = object["response"] as? [String: Any],
+           let responseID = response["id"] as? String {
+            activeResponseID = responseID
+        }
+        enqueue(.text(text))
+    }
+
+    func enqueue(_ frame: RealtimeWebSocketFrame) {
+        if let waiter = receiveWaiter {
+            receiveWaiter = nil
+            waiter.resume(returning: frame)
+        } else {
+            queuedFrames.append(frame)
+        }
+    }
+
+    func sentTexts() -> [String] {
+        sentFrames.compactMap { frame in
+            guard case .text(let text) = frame else { return nil }
+            return text
+        }
+    }
+
+    func holdResponseCreationAcknowledgements() {
+        holdsResponseCreation = true
+    }
+
+    func releaseResponseCreationAcknowledgements() {
+        holdsResponseCreation = false
+        let frames = heldResponseCreatedFrames
+        heldResponseCreatedFrames.removeAll(keepingCapacity: true)
+        frames.forEach(enqueueText)
+    }
+
+    func holdInputClearAcknowledgements() {
+        holdsInputClear = true
+    }
+
+    func releaseInputClearAcknowledgements() {
+        holdsInputClear = false
+        let count = heldInputClearAcknowledgements
+        heldInputClearAcknowledgements = 0
+        for _ in 0 ..< count {
+            enqueueText(#"{"type":"input_audio_buffer.cleared"}"#)
+        }
+    }
+
+    func failNextResponseCancelWithGenericError() {
+        failsNextResponseCancel = true
+    }
+
+    func waitUntilSent(type: String, count: Int = 1) async {
+        while sentTexts().filter({ text in
+            guard let data = text.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data)
+                    as? [String: Any] else { return false }
+            return object["type"] as? String == type
+        }).count < count {
+            await Task.yield()
+        }
+    }
+
+    func connectCount() -> Int { connectedEndpoints.count }
+    func closeCount() -> Int { closeReasons.count }
+}

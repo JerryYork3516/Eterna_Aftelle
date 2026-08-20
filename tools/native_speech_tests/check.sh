@@ -85,7 +85,7 @@ fi
 unexpected_qwen=$(rg -l 'Qwen|qwen' \
   "$repo_root/apps/macos/RuntimeCore" \
   -g '*.swift' \
-  | rg -v '/QwenRealtime(ASRAdapter|TTSAdapter|Adapter|Codec|RuntimeComposition)\.swift$' || true)
+  | rg -v '/QwenRealtime(ASRAdapter|TTSAdapter|ResidentBrainAdapter|Adapter|Codec|RuntimeComposition)\.swift$' || true)
 if [ -n "$unexpected_qwen" ]; then
   echo "native_speech_qwen_provider_leakage=FAIL"
   printf '%s\n' "$unexpected_qwen"

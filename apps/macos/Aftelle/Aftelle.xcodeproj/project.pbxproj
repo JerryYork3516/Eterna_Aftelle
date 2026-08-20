@@ -64,6 +64,7 @@
 		A076C100000000000000001 /* QwenRealtimeASRAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A076C100000000000000011 /* QwenRealtimeASRAdapter.swift */; };
 		A076D100000000000000001 /* QwenRealtimeTTSAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A076D100000000000000011 /* QwenRealtimeTTSAdapter.swift */; };
 		A077A100000000000000001 /* RealtimeResidentBrainProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A077A100000000000000011 /* RealtimeResidentBrainProvider.swift */; };
+		A078A100000000000000001 /* QwenRealtimeResidentBrainAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A078A100000000000000011 /* QwenRealtimeResidentBrainAdapter.swift */; };
 		A070C0000000000000000031 /* Freezev03.calibration_fixture.json in Resources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000030 /* Freezev03.calibration_fixture.json */; };
 /* End PBXBuildFile section */
 
@@ -129,6 +130,7 @@
 		A076C100000000000000011 /* QwenRealtimeASRAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeASRAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A076D100000000000000011 /* QwenRealtimeTTSAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeTTSAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A077A100000000000000011 /* RealtimeResidentBrainProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/RealtimeResidentBrainProvider.swift; sourceTree = SOURCE_ROOT; };
+		A078A100000000000000011 /* QwenRealtimeResidentBrainAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../RuntimeCore/QwenRealtimeResidentBrainAdapter.swift; sourceTree = SOURCE_ROOT; };
 		A070C0000000000000000030 /* Freezev03.calibration_fixture.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Freezev03.calibration_fixture.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -207,6 +209,7 @@
 			isa = PBXGroup;
 			children = (
 				A077A100000000000000011 /* RealtimeResidentBrainProvider.swift */,
+				A078A100000000000000011 /* QwenRealtimeResidentBrainAdapter.swift */,
 				A076B100000000000000011 /* SpeechRouteProvider.swift */,
 				A076C100000000000000011 /* QwenRealtimeASRAdapter.swift */,
 				A076D100000000000000011 /* QwenRealtimeTTSAdapter.swift */,
@@ -347,6 +350,7 @@
 				A076C100000000000000001 /* QwenRealtimeASRAdapter.swift in Sources */,
 				A076D100000000000000001 /* QwenRealtimeTTSAdapter.swift in Sources */,
 				A077A100000000000000001 /* RealtimeResidentBrainProvider.swift in Sources */,
+				A078A100000000000000001 /* QwenRealtimeResidentBrainAdapter.swift in Sources */,
 				A070C0000000000000000001 /* AftelleApp.swift in Sources */,
 				A070C0000000000000000003 /* ContentView.swift in Sources */,
 				A070C0000000000000000028 /* AppController.swift in Sources */,

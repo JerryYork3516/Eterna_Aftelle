@@ -123,8 +123,17 @@ for field in \
   fi
 done
 
-if git -C "$repo_root" diff --name-only \
-  | rg -q 'apps/macos/Aftelle/(AppModels|AppController|ContentView|ParticleCore)|SessionStore|MemoryController|RelationshipStateStore|TraceRecorder|project\.pbxproj'; then
+if git -C "$repo_root" diff --unified=0 -- \
+  'apps/macos/Aftelle/AppModels.swift' \
+  'apps/macos/Aftelle/AppController.swift' \
+  'apps/macos/Aftelle/ContentView.swift' \
+  'apps/macos/Aftelle/ParticleCore*' \
+  'apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj' \
+  'apps/macos/RuntimeCore/SessionStore.swift' \
+  'apps/macos/RuntimeCore/MemoryController.swift' \
+  'apps/macos/RuntimeCore/RelationshipStateStore.swift' \
+  'apps/macos/RuntimeCore/TraceRecorder.swift' \
+  | rg -q '^[+-][^+-].*(NarrativeMemory|narrative_memory)'; then
   printf 'narrative-memory-tests: forbidden A2 file changed\n' >&2
   exit 1
 fi

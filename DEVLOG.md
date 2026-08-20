@@ -10,11 +10,11 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:R2 Provider-neutral Realtime Resident Brain Contract — PASS / FROZEN
-- **上一步刚完成**:R2 provider-neutral contract、Fake Provider、Runtime 最小接缝与自动化冻结
+- **现在在做**:R3 First Realtime Provider Adapter — PASS / FROZEN
+- **上一步刚完成**:Qwen Realtime Resident Brain Adapter、真实 WebSocket transport 接缝、Fake wire 契约与 A7 总回归冻结
 - **当前卡在**:无
-- **下一步**:只允许在新任务中进入 R3 First Realtime Provider Adapter
-- **本轮范围**:只冻结 provider-neutral contract、Fake Provider、RuntimeCore → ExecutionEngine → ProviderRouter 最小接缝与自动化；不接真实 Provider / WebSocket，不实现 R3～R10
+- **下一步**:只允许在新任务中进入 R4 Context / Canonical Turn / Memory Bridge
+- **本轮范围**:只实现首个 Qwen Realtime Adapter 与离线 wire / Runtime 接缝验证；不接 Host 音频主链，不实现 Memory / History commit、Tool execution、Voice Binding、turn-taking、fallback 或 R4～R10
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
 > - **上一步刚完成**:Stage 7.1.5 DR Loader 读取 / 浅校验 / 加载边界已正规化
@@ -128,6 +128,7 @@
 - 2026-08-17 — R0 Realtime Resident Brain Architecture 正式归档 — 新增 `docs/realtime_resident_brain_architecture.md`，冻结 Single-Brain、RuntimeCore ownership、ActiveBrainLease / route epoch、Canonical Resident Turn、continuous context / Memory、Tool / Permission、Studio Voice、Interrupt 与 Dual Route / Fallback 边界；Qwen Omni 只作为第一 Adapter 候选，正式架构保持 provider-neutral。R0 状态为 `PASS / FROZEN`，后续按独立 R1～R10 顺序推进且不改变现有 Stage 编号；Cascaded Speech Route 保留为语音消息、Realtime fallback 与低成本 / 高兼容路线。本归档不改产品代码、Runtime API、DR / Store schema、Provider 实现或平台 target。
 - 2026-08-17 — R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement 冻结 — RuntimeCore 新增唯一 ActiveBrainLease gate，以 resident / Runtime Session / brain lease / route epoch 和既有 text request UUID、Cascaded generation、Native interaction identity 统一验证普通文本、Cascaded Speech 与 Native Speech；同 Session 第二 Brain 确定性拒绝，cancel / interrupt / close / terminal 后旧 callback 均 stale，Provider start-in-flight 与 definitive close 完成前不释放当前 lease，teardown 硬失败保持 fail-closed。DR load、Session restore 与 debug data clear 可立即让旧 Speech callback stale，但新 Brain admission 必须先等待旧 Provider start / close 收口；普通文本 Session 替换仍直接用 lease stale gate 丢弃未决 HTTP 回答。AppController 的 legacy bridge ownership 判断收缩为不触碰 Brain admission 的 `speech_input_busy` Host capture readiness；正在采集、准备或启动 Speech Host 时拒绝 Session 替换，Brain 启动权威仍统一归 RuntimeCore。ExecutionEngine、ProviderRouter、Provider contract、DR / Store schema、Memory / History 规则与 Cascaded 语音消息能力不变。新增独立 R1 自动化并纳入 A7 总回归；R1 为 `PASS / FROZEN`，本轮未进入 R2～R10。
 - 2026-08-17 — R2 Provider-neutral Realtime Resident Brain Contract 冻结 — 新增内部 `RealtimeResidentBrainProvider`，统一 open、context update、audio append、Tool result、cancel、interrupt、event receive 与 close，并复用 R1 resident / Runtime Session / Brain lease / route epoch / generation identity。`residentSemanticFinal` 只作为 canonical text 候选返回 RuntimeCore；Context、Tool、interruption 与 PCM frame 均保留 RuntimeCore ownership 和严格 identity / sequence / lifecycle fence。既有 RuntimeCore → ExecutionEngine → ProviderRouter 仍是唯一 routing seam，Fake Provider 以零网络覆盖正常、stale、duplicate、out-of-order、late、ambiguous error 与 definitive close。R2 独立契约 6 cases / 208 checks 与 A7 19 个入口 / 3717 项断言通过，macOS clean build、architecture guard、secret guard、diff 与 Stage 7 forbidden checklist 均通过。未接真实 Adapter / WebSocket，未新增 Runtime、Session、Memory / History、DR / Store schema 或厂商 public contract，未进入 R3～R10。
+- 2026-08-20 — R3 First Realtime Provider Adapter 冻结 — 新增内部 `QwenRealtimeResidentBrainAdapter`，以既有 Keychain credential reader、单一 ProviderRouter 与 URLSession WebSocket transport 接入 `qwen3.5-omni-plus-realtime`；Qwen wire / workspace / model / temporary Provider voice / session ID 均留在 Adapter / composition 私有边界。全部 R2 command / event 已映射，completed `response.done` 是唯一 `residentSemanticFinal` 来源，Provider speech activity 只提交 interruption proposal，cancel / interrupt 在 Runtime generation 前进前等待 input clear ACK。R3 离线 Fake wire 10 cases / 110 checks、A7 17 个顶层 suite / 20 个入口 / 3827 项断言、macOS clean build、architecture guard、secret guard、diff 与仓库无污染检查均通过；真实 Qwen WebSocket 为 `NOT_RUN / HUMAN_GATE`。已观察 wire ID 的 stale fence 已冻结；此前未观察旧 `response.created` 跨 clear ACK 的厂商顺序仍为 `NOT_PROVEN_REAL_WIRE`，未声称自动化已证明。未改公共 Runtime contract、DR / Store schema、Memory / History ownership、Host Audio / AEC、Voice Binding 或平台 target，未进入 R4～R10。
 
 ---
 

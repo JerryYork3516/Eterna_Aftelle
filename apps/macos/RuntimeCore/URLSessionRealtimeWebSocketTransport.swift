@@ -373,6 +373,9 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private let writeWindow: BoundedRealtimeWebSocketWriteWindow
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
+    private var connectionGeneration: UInt64 = 0
+    private var isConnecting = false
+    private var isClosing = false
 
     init(diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil) {
         self.diagnosticBuffer = diagnosticBuffer
@@ -383,9 +386,13 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     }
 
     func connect(endpoint: URL, bearerToken: String) async throws {
-        guard task == nil else {
+        guard task == nil, !isConnecting, !isClosing else {
             throw NativeSpeechError.invalidConfiguration
         }
+        isConnecting = true
+        defer { isConnecting = false }
+        connectionGeneration &+= 1
+        let acceptedGeneration = connectionGeneration
         record(category: "websocket_connect_started")
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
@@ -399,6 +406,13 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         let session = URLSession(configuration: configuration)
         let task = session.webSocketTask(with: request)
         await writeWindow.reset()
+        guard acceptedGeneration == connectionGeneration,
+              !isClosing,
+              self.task == nil else {
+            task.cancel(with: .goingAway, reason: nil)
+            session.invalidateAndCancel()
+            throw NativeSpeechError.cancelled
+        }
         self.session = session
         self.task = task
         task.resume()
@@ -406,7 +420,7 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     }
 
     func send(_ frame: RealtimeWebSocketFrame) async throws {
-        guard let task else {
+        guard let task, !isClosing else {
             throw NativeSpeechError.transportFailure
         }
         try await writeWindow.enqueue(frame) { frame, completion in
@@ -428,14 +442,21 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     }
 
     func receive() async throws -> RealtimeWebSocketFrame {
-        guard let task else {
+        guard let task, !isClosing else {
             throw NativeSpeechError.transportFailure
         }
+        let acceptedGeneration = connectionGeneration
         if let writeError = await writeWindow.currentError() {
             throw writeError
         }
         do {
-            switch try await task.receive() {
+            let message = try await task.receive()
+            guard acceptedGeneration == connectionGeneration,
+                  self.task === task,
+                  !isClosing else {
+                throw NativeSpeechError.cancelled
+            }
+            switch message {
             case .string(let text):
                 return .text(text)
             case .data(let data):
@@ -446,6 +467,11 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         } catch let error as NativeSpeechError {
             throw error
         } catch {
+            guard acceptedGeneration == connectionGeneration,
+                  self.task === task,
+                  !isClosing else {
+                throw NativeSpeechError.cancelled
+            }
             if let writeError = await writeWindow.currentError() {
                 throw writeError
             }
@@ -454,10 +480,14 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     }
 
     func close(reason: RealtimeWebSocketCloseReason) async {
-        guard let task else { return }
-        self.task = nil
+        if isConnecting, task == nil {
+            connectionGeneration &+= 1
+            return
+        }
+        guard let task, !isClosing else { return }
+        isClosing = true
+        connectionGeneration &+= 1
         let closingSession = session
-        session = nil
         let drainError = await writeWindow.beginCloseAndDrain(
             timeoutNanoseconds: Self.closeDrainTimeoutNanoseconds
         )
@@ -475,6 +505,11 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
             reason == .normal ? .normalClosure : .goingAway
         task.cancel(with: closeCode, reason: nil)
         await writeWindow.close()
+        if self.task === task {
+            self.task = nil
+            session = nil
+        }
+        isClosing = false
         if reason == .normal {
             closingSession?.finishTasksAndInvalidate()
         } else {

@@ -343,7 +343,7 @@ R 序列是 Realtime Resident Brain Route 的独立实施序列，不改变现�
 R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
 R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
 R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
-R3 First Realtime Provider Adapter
+R3 First Realtime Provider Adapter — PASS / FROZEN
 R4 Context / Canonical Turn / Memory Bridge
 R5 Tool / Permission Bridge
 R6 Studio Voice Binding
@@ -361,14 +361,21 @@ R2 冻结 `RealtimeResidentBrainProvider` 及其 open、context update、audio a
 
 R2 仅在既有 RuntimeCore → ExecutionEngine → ProviderRouter 链增加一个可注入接缝，并复用 R1 唯一 lease gate。Fake Provider 以零网络覆盖完整 lifecycle、全部事件族及 stale / duplicate / out-of-order / late / error 路径。本轮未实现真实 Provider Adapter、WebSocket、十三层 continuous projection、Tool execution、Voice Binding、full-duplex、turn-taking 或 fallback。
 
+R3 在冻结的 R2 契约后实现内部 `QwenRealtimeResidentBrainAdapter`，以 `qwen3.5-omni-plus-realtime`、既有 Keychain credential reader 和 URLSession WebSocket transport 完成首个真实 Adapter 接缝。Qwen wire 类型、workspace、model、Provider voice 与 session ID 均留在 Adapter / composition 私有边界；RuntimeCore、ExecutionEngine 与 ProviderRouter 的 provider-neutral contract 不变，AppController 不获得 Brain ownership。
+
+Adapter 将 Runtime context、PCM audio、Tool result、cancel / interrupt 与 close 映射到 Qwen wire，并把 transcript、resident text / audio、speaking lifecycle、Tool candidate、interruption proposal、cancel / error 与 completed `response.done` 映射回 R2 event。`residentSemanticFinal` 只来自 completed `response.done`；cancel / interrupt 必须在 generation 前进前等待 `input_audio_buffer.cleared`。离线 Fake wire 套件为 10 cases / 110 checks / zero network；真实 Qwen WebSocket 为 `NOT_RUN / HUMAN_GATE`。已观察 wire ID 会跨 generation tombstone；阿里文档未保证 `input_audio_buffer.cleared` 排空此前未观察到的旧 `response.created`，该极端顺序保持 `NOT_PROVEN_REAL_WIRE`，不得表述为自动化已证明。
+
+R3 未实现完整十三层 continuous projection、durable Memory / History、真实 Tool execution、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；这些能力仍分别留在 R4～R10。
+
 ---
 
-## R0–R2 Freeze Result
+## R0–R3 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
 R1 = PASS / FROZEN
 R2 = PASS / FROZEN
+R3 = PASS / FROZEN
 
 Single Runtime authority: RuntimeCore
 Max active Brain per Runtime Session: 1
@@ -376,12 +383,15 @@ Second Runtime / Session / Memory / History: forbidden
 Tool / Permission bypass: forbidden
 Provider-private voice identity in DR: forbidden
 Cascaded Route: retained as fallback / voice message / low-cost compatibility route
-First implementation candidate: Qwen Omni Realtime behind provider-neutral boundaries
+First implementation: Qwen Omni Realtime behind provider-neutral boundaries
 R1 implementation: RuntimeCore-owned lease gate with existing route identities
 R1 second-Brain policy: deterministic rejection; no automatic fallback
 R1 lifecycle: release only after completed delivery or Provider start / definitive close settlement; Session replacement waits before new Brain admission
 R2 contract: RealtimeResidentBrainProvider with provider-neutral commands, events, identity, semantic final, context, Tool candidate, interruption proposal and PCM frames
 R2 routing seam: existing RuntimeCore → ExecutionEngine → ProviderRouter only
 R2 network dependency: zero; Fake Provider only
-Next allowed node: R3 First Realtime Provider Adapter
+R3 adapter: internal QwenRealtimeResidentBrainAdapter; Qwen wire stays private
+R3 verification: 10 cases / 110 checks / zero-network fixtures; real WebSocket HUMAN_GATE
+R3 known wire risk: unseen-old response.created ordering is NOT_PROVEN_REAL_WIRE
+Next allowed node: R4 Context / Canonical Turn / Memory Bridge
 ```

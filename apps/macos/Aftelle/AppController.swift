@@ -66,6 +66,15 @@ nonisolated private enum Stage7511QwenASRConfiguration {
     )
 }
 
+nonisolated private enum StageR3QwenRealtimeBrainConfiguration {
+    static let value = QwenRealtimeResidentBrainConfiguration(
+        endpoint: URL(
+            string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
+        )!,
+        keyRef: ProviderKeychainStore.qwenKeyRef
+    )
+}
+
 nonisolated private enum Stage7511QwenTTSConfiguration {
     static let value = QwenRealtimeTTSConfiguration(
         endpoint: URL(
@@ -495,6 +504,8 @@ final class AppController: ObservableObject {
         runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
             credentialReader: credentialStore,
             diagnosticBuffer: speechDiagnosticBuffer,
+            realtimeBrainConfiguration:
+                StageR3QwenRealtimeBrainConfiguration.value,
             asrConfiguration: Stage7511QwenASRConfiguration.value,
             ttsConfiguration: Stage7511QwenTTSConfiguration.value
         )

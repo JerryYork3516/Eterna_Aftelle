@@ -349,7 +349,7 @@ A6 已保留相应声学、取消与诊断基础，但最终产品定位不再�
 R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
 R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
 R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
-R3 First Realtime Provider Adapter
+R3 First Realtime Provider Adapter — PASS / FROZEN
 R4 Context / Canonical Turn / Memory Bridge
 R5 Tool / Permission Bridge
 R6 Studio Voice Binding
@@ -359,7 +359,9 @@ R9 Cascaded Fallback + Regression
 R10 Real-device / Long-session Freeze
 ```
 
-R2 已冻结：`RealtimeResidentBrainProvider` 使用 R1 resident / Runtime Session / Brain lease / route epoch / generation identity，经既有 RuntimeCore → ExecutionEngine → ProviderRouter 接缝承载 provider-neutral command、event、canonical semantic final、context revision、Tool candidate / result、interruption proposal 与 PCM frame。Fake Provider 仅做零网络契约验证；未接真实 Adapter / WebSocket，未实现 R3～R10。下一轮只允许进入 R3。
+R2 已冻结：`RealtimeResidentBrainProvider` 使用 R1 resident / Runtime Session / Brain lease / route epoch / generation identity，经既有 RuntimeCore → ExecutionEngine → ProviderRouter 接缝承载 provider-neutral command、event、canonical semantic final、context revision、Tool candidate / result、interruption proposal 与 PCM frame。
+
+R3 已冻结：内部 `QwenRealtimeResidentBrainAdapter` 通过既有 credential reader、单一 ProviderRouter 与 URLSession WebSocket transport 接入 `qwen3.5-omni-plus-realtime`，Qwen wire / workspace / model / voice / session ID 不进入公共 Runtime contract。completed `response.done` 是唯一 `residentSemanticFinal` 来源；cancel / interrupt 在 generation 前进前等待 Provider input clear ACK。离线 Fake wire 为 10 cases / 110 checks / zero network；真实 WebSocket 仍为 Human Gate，未证明此前未观察旧 `response.created` 跨 clear ACK 的极端顺序。未实现 R4～R10；下一轮只允许进入 R4。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 
