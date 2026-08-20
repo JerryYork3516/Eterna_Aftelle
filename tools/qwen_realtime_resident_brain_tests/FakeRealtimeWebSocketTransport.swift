@@ -10,18 +10,24 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var receiveWaiter:
         CheckedContinuation<RealtimeWebSocketFrame, any Error>?
     private var isConnected = false
+    private var currentConnectionNumber: Int?
     private var activeResponseID: String?
     private var generatedResponseIndex = 0
     private var holdsResponseCreation = false
     private var heldResponseCreatedFrames: [String] = []
     private var holdsInputClear = false
     private var heldInputClearAcknowledgements = 0
+    private var holdsSessionUpdate = false
+    private var heldSessionUpdateAcknowledgements = 0
+    private var holdsNextCloseCompletion = false
+    private var heldCloseContinuation: CheckedContinuation<Void, Never>?
     private var failsNextResponseCancel = false
 
     func connect(endpoint: URL, bearerToken: String) async throws {
         guard !isConnected else { throw NativeSpeechError.invalidConfiguration }
         isConnected = true
         connectedEndpoints.append(endpoint)
+        currentConnectionNumber = connectedEndpoints.count
         bearerTokens.append(bearerToken)
         enqueueText(#"{"type":"session.created","session":{"id":"session-r3"}}"#)
     }
@@ -37,7 +43,11 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
         switch type {
         case "session.update":
-            enqueueText(#"{"type":"session.updated","session":{"id":"session-r3"}}"#)
+            if holdsSessionUpdate {
+                heldSessionUpdateAcknowledgements += 1
+            } else {
+                enqueueText(#"{"type":"session.updated","session":{"id":"session-r3"}}"#)
+            }
         case "conversation.item.create":
             break
         case "response.create":
@@ -87,11 +97,19 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     func close(reason: RealtimeWebSocketCloseReason) async {
         closeReasons.append(reason)
         isConnected = false
+        currentConnectionNumber = nil
         activeResponseID = nil
+        heldSessionUpdateAcknowledgements = 0
         queuedFrames.removeAll(keepingCapacity: true)
         if let waiter = receiveWaiter {
             receiveWaiter = nil
             waiter.resume(throwing: NativeSpeechError.cancelled)
+        }
+        if holdsNextCloseCompletion {
+            holdsNextCloseCompletion = false
+            await withCheckedContinuation { continuation in
+                heldCloseContinuation = continuation
+            }
         }
     }
 
@@ -145,6 +163,37 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         for _ in 0 ..< count {
             enqueueText(#"{"type":"input_audio_buffer.cleared"}"#)
         }
+    }
+
+    func holdSessionUpdateAcknowledgements() {
+        holdsSessionUpdate = true
+    }
+
+    func releaseSessionUpdateAcknowledgements() {
+        holdsSessionUpdate = false
+        let count = heldSessionUpdateAcknowledgements
+        heldSessionUpdateAcknowledgements = 0
+        for _ in 0 ..< count {
+            enqueueText(#"{"type":"session.updated","session":{"id":"session-r3"}}"#)
+        }
+    }
+
+    func enqueueText(
+        _ text: String,
+        connectionNumber: Int
+    ) -> Bool {
+        guard currentConnectionNumber == connectionNumber else { return false }
+        enqueueText(text)
+        return true
+    }
+
+    func holdNextCloseCompletion() {
+        holdsNextCloseCompletion = true
+    }
+
+    func releaseHeldCloseCompletion() {
+        heldCloseContinuation?.resume()
+        heldCloseContinuation = nil
     }
 
     func failNextResponseCancelWithGenericError() {

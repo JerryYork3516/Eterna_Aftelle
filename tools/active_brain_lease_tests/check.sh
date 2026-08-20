@@ -9,6 +9,7 @@ runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
 swiftc \
   -D DEBUG \
   -parse-as-library \
+  -default-isolation MainActor \
   -warn-concurrency \
   "${runtime_sources[@]}" \
   "$repo_root/tools/active_brain_lease_tests/ActiveBrainLeaseTests.swift" \

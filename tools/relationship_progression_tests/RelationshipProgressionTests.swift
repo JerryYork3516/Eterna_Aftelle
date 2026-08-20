@@ -224,6 +224,35 @@ struct RelationshipProgressionTests {
             "forbidden, reserved, inferred, and undetected evidence ignored"
         )
 
+        let confirmationRequiredState = runtime
+            .relationshipProgressionDebugSnapshot()
+        transport.content = envelope(
+            text: "confirmation required",
+            candidates: [[
+                "evidence_type": "explicit_familiarity_or_trust",
+                "evidence_detected": true,
+                "evidence_source": "explicit_user_expression",
+                "requires_user_confirmation": true
+            ]]
+        )
+        try expectSuccess(
+            await runtime.testResidentReply(
+                inputText: "unconfirmed relationship evidence"
+            ),
+            "confirmation-required evidence response"
+        )
+        let afterConfirmationRequired = runtime
+            .relationshipProgressionDebugSnapshot()
+        try expect(
+            afterConfirmationRequired.stageID
+                == confirmationRequiredState.stageID
+                && afterConfirmationRequired.evidenceIDs
+                    == confirmationRequiredState.evidenceIDs
+                && afterConfirmationRequired.revision
+                    == confirmationRequiredState.revision,
+            "confirmation-required evidence does not write or advance state"
+        )
+
         transport.content = envelope(
             text: "SENSITIVE_REPLY_BODY",
             candidates: [
@@ -720,7 +749,7 @@ struct RelationshipProgressionTests {
             "evidence_type": evidenceType,
             "evidence_detected": true,
             "evidence_source": "explicit_user_expression",
-            "requires_user_confirmation": true
+            "requires_user_confirmation": false
         ]
     }
 

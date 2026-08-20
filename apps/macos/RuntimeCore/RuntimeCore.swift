@@ -1047,7 +1047,11 @@ nonisolated final class RuntimeActiveBrainLeaseGate:
                       activeLease.state == .active,
                       activeLease.residentID == residentID,
                       activeLease.runtimeSessionID == runtimeSessionID,
-                      activeLease.route == route else {
+                      activeLease.route == route,
+                      providerStartCounts[
+                        activeLease.brainLeaseID,
+                        default: 0
+                      ] == 0 else {
                     return nil
                 }
             }
@@ -1136,6 +1140,26 @@ nonisolated final class RuntimeActiveBrainLeaseGate:
                 return []
             }
             providerStartCounts.removeValue(forKey: leaseID)
+            return providerStartWaiters.removeValue(forKey: leaseID) ?? []
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    func finishTextProviderRequestAndRelease(for lease: ActiveBrainLease) {
+        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+            guard lease.route == .textConversation else { return [] }
+            let leaseID = lease.brainLeaseID
+            guard let count = providerStartCounts[leaseID], count > 0 else {
+                return []
+            }
+            if count > 1 {
+                providerStartCounts[leaseID] = count - 1
+                return []
+            }
+            providerStartCounts.removeValue(forKey: leaseID)
+            if activeLease?.brainLeaseID == leaseID {
+                activeLease = nil
+            }
             return providerStartWaiters.removeValue(forKey: leaseID) ?? []
         }
         waiters.forEach { $0.resume() }
@@ -1927,10 +1951,6 @@ public final class RuntimeCore {
 
     private func beginRuntimeSessionReplacement() {
         guard let lease = activeBrainLeaseGate.current() else { return }
-        guard lease.route != .textConversation else {
-            activeBrainLeaseGate.release(lease)
-            return
-        }
         guard runtimeSessionReplacementCleanupTask == nil else { return }
         let settlingLease: ActiveBrainLease
         if lease.state == .settling {
@@ -2011,6 +2031,25 @@ public final class RuntimeCore {
                 activeBrainLeaseGate.release(settlingLease)
             }
         }
+    }
+
+    private func settleActiveTextBrainLease() {
+        guard let lease = activeBrainLeaseGate.current(),
+              lease.route == .textConversation else {
+            return
+        }
+        let settlingLease: ActiveBrainLease
+        if lease.state == .settling {
+            settlingLease = lease
+        } else {
+            guard let settling = activeBrainLeaseGate.beginSettlement(
+                for: lease
+            ) else {
+                return
+            }
+            settlingLease = settling
+        }
+        activeBrainLeaseGate.release(settlingLease)
     }
 
     private func waitForRuntimeSessionReplacementCleanup() async {
@@ -4535,8 +4574,20 @@ public final class RuntimeCore {
             )
         }
 
+        let confirmedCandidates = candidates.filter {
+            !$0.requiresUserConfirmation
+        }
+        guard !confirmedCandidates.isEmpty else {
+            return currentRelationshipDecision(
+                decision: "evidence_ignored",
+                reason: candidates.isEmpty
+                    ? "no_valid_evidence"
+                    : "user_confirmation_required"
+            )
+        }
+
         let detectedUserEvidence = Set(
-            candidates.compactMap { candidate -> String? in
+            confirmedCandidates.compactMap { candidate -> String? in
                 let evidenceSource = candidate.evidenceSource
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased()
@@ -4561,7 +4612,8 @@ public final class RuntimeCore {
             )
         }
 
-        let evidenceIDs = Set(candidates.compactMap { candidate -> String? in
+        let evidenceIDs = Set(confirmedCandidates.compactMap {
+            candidate -> String? in
             let evidenceType = candidate.evidenceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
@@ -7577,9 +7629,19 @@ public final class RuntimeCore {
             brainLease = acquired
             ownsBrainLease = true
         }
+        if ownsBrainLease {
+            guard activeBrainLeaseGate.beginProviderStart(
+                for: brainLease
+            ) else {
+                activeBrainLeaseGate.release(brainLease)
+                return .failure(.cancelled)
+            }
+        }
         defer {
             if ownsBrainLease {
-                activeBrainLeaseGate.release(brainLease)
+                activeBrainLeaseGate.finishTextProviderRequestAndRelease(
+                    for: brainLease
+                )
             }
         }
 
@@ -8326,13 +8388,13 @@ public final class RuntimeCore {
 
     public func cancelCurrentStep() {
         activeExpressionRequestID = nil
-        activeBrainLeaseGate.releaseCurrent(route: .textConversation)
+        settleActiveTextBrainLease()
         cancellationState = RuntimeCancellationState(isCancelled: true, reason: .cancelled)
     }
 
     public func interrupt(request: RuntimeCancellationRequest) {
         activeExpressionRequestID = nil
-        activeBrainLeaseGate.releaseCurrent(route: .textConversation)
+        settleActiveTextBrainLease()
         cancellationState = RuntimeCancellationState(isCancelled: true, reason: request.reason)
     }
 

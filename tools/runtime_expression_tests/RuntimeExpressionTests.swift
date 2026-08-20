@@ -70,6 +70,10 @@ private actor BlockingFirstResponse {
         firstContinuation?.resume(returning: data)
         firstContinuation = nil
     }
+
+    func recordedCallCount() -> Int {
+        callCount
+    }
 }
 
 private final class BlockingFirstTransport: ProviderHTTPTransport {
@@ -103,6 +107,10 @@ private final class BlockingFirstTransport: ProviderHTTPTransport {
             with: try RuntimeExpressionTests.completionData(content: content)
         )
     }
+
+    func requestCount() async -> Int {
+        await responses.recordedCallCount()
+    }
 }
 
 @main
@@ -122,7 +130,7 @@ struct RuntimeExpressionTests {
         try testOldDRCompatibility(drData)
         try testMappingClamp(drData)
         try await testFailureDoesNotPollute(drData, mapping: mapping)
-        try await testSameSessionStaleResponse(drData)
+        try await testSameSessionSettlement(drData)
         try await testCancellationDoesNotPollute(drData)
         try await testSessionSwitchDoesNotPollute(drData)
         print("runtime-expression-tests: \(checkCount) checks passed")
@@ -611,7 +619,7 @@ struct RuntimeExpressionTests {
     }
 
     @MainActor
-    private static func testSameSessionStaleResponse(
+    private static func testSameSessionSettlement(
         _ drData: Data
     ) async throws {
         let firstContent = envelope(
@@ -632,7 +640,8 @@ struct RuntimeExpressionTests {
             drData: drData
         )
         let firstID = UUID()
-        let secondID = UUID()
+        let blockedID = UUID()
+        let settledID = UUID()
         let firstTask = Task { @MainActor in
             await runtime.testResidentReply(
                 inputText: "first input",
@@ -640,50 +649,113 @@ struct RuntimeExpressionTests {
             )
         }
         await transport.waitUntilFirstStarts()
-        let secondResult = await runtime.testResidentReply(
-            inputText: "second input",
-            interactionID: secondID
+        let blockedResult = await runtime.testResidentReply(
+            inputText: "blocked input",
+            interactionID: blockedID
         )
-        guard case .success(let secondReply) = secondResult else {
-            throw ContractTestError.failed("newer same-session request failed")
-        }
         try expect(
-            secondReply.expression.expressionState == .joyful,
-            "newer request must map joyful"
+            blockedResult == .failure(.cancelled),
+            "same-session request must wait for Provider settlement"
         )
+        let blockedRequestCount = await transport.requestCount()
+        try expect(
+            blockedRequestCount == 1,
+            "blocked same-session request must not reach Provider"
+        )
+        try expectNeutral(
+            runtime.currentExpressionResult,
+            "blocked request expression"
+        )
+        let contextWhileBlocked = try require(
+            runtime.compileResidentDialogueContext(
+                currentUserInput: "history inspection"
+            )
+        )
+        try expect(
+            contextWhileBlocked.recentMessages.isEmpty,
+            "blocked request cannot pre-commit canonical dialogue"
+        )
+
         try await transport.resumeFirst(content: firstContent)
         let firstResult = await firstTask.value
+        guard case .success(let firstReply) = firstResult else {
+            throw ContractTestError.failed(
+                "first same-session request failed after settlement"
+            )
+        }
         try expect(
-            firstResult == .failure(.cancelled),
-            "older same-session response must be rejected"
+            firstReply.expression.expressionState == .caring
+                && runtime.currentExpressionResult.expressionState == .caring,
+            "settled first request commits its expression"
+        )
+        let contextAfterFirst = try require(
+            runtime.compileResidentDialogueContext(
+                currentUserInput: "history after first"
+            )
+        )
+        try expect(
+            contextAfterFirst.recentMessages.map(\.text)
+                == ["first input", "first visible"],
+            "settled first request commits one canonical dialogue"
+        )
+
+        let settledResult = await runtime.testResidentReply(
+            inputText: "second input",
+            interactionID: settledID
+        )
+        guard case .success(let settledReply) = settledResult else {
+            throw ContractTestError.failed(
+                "post-settlement same-session request failed"
+            )
+        }
+        try expect(
+            settledReply.expression.expressionState == .joyful,
+            "post-settlement request must map joyful"
+        )
+        let settledRequestCount = await transport.requestCount()
+        try expect(
+            settledRequestCount == 2,
+            "post-settlement request reaches Provider exactly once"
         )
         try expect(
             runtime.currentExpressionResult.expressionState == .joyful,
-            "older response must not overwrite newer expression"
+            "post-settlement expression becomes current"
+        )
+        let contextAfterSettled = try require(
+            runtime.compileResidentDialogueContext(
+                currentUserInput: "history after settlement"
+            )
+        )
+        try expect(
+            contextAfterSettled.recentMessages.map(\.text) == [
+                "first input", "first visible",
+                "second input", "second visible"
+            ],
+            "only settled requests commit canonical dialogue"
         )
 
         let records = runtime.runtimeOrchestrationSnapshot()
         let firstRecord = try require(records.first { $0.id == firstID })
-        let secondRecord = try require(records.first { $0.id == secondID })
+        let settledRecord = try require(records.first { $0.id == settledID })
         try expect(
-            firstRecord.errorCategory == "stale_request"
-                && firstRecord.expressionState == "neutral",
-            "stale D1 record must retain its starting expression snapshot"
+            firstRecord.expressionState == "caring"
+                && firstRecord.expressionIntensity == 0.2,
+            "settled first D1 record retains its expression"
         )
         try expect(
-            secondRecord.expressionState == "joyful"
-                && secondRecord.expressionIntensity == 0.9
-                && !secondRecord.expressionFallbackOccurred
-                && secondRecord.expressionMappingSource == "dr",
+            settledRecord.expressionState == "joyful"
+                && settledRecord.expressionIntensity == 0.9
+                && !settledRecord.expressionFallbackOccurred
+                && settledRecord.expressionMappingSource == "dr",
             "D1 must show expression state, intensity, fallback, and source"
         )
         try expectMultipliers(
-            secondRecord.expressionMapping,
-            secondReply.expression.expressionMapping,
+            settledRecord.expressionMapping,
+            settledReply.expression.expressionMapping,
             "D1 six multipliers"
         )
         runtime.completeRuntimeOrchestrationPresentation(
-            interactionID: secondID,
+            interactionID: settledID,
             expectedSessionID: try require(load.sessionID).rawValue,
             subtitleState: "showing",
             particleState: "idle",
@@ -691,7 +763,9 @@ struct RuntimeExpressionTests {
             status: .completed
         )
         let completed = try require(
-            runtime.runtimeOrchestrationSnapshot().first { $0.id == secondID }
+            runtime.runtimeOrchestrationSnapshot().first {
+                $0.id == settledID
+            }
         )
         try expect(
             completed.lifecycleState == .speaking

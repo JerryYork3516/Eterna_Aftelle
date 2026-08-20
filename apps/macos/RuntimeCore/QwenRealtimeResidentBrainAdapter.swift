@@ -406,6 +406,8 @@ nonisolated private enum QwenRealtimePCM16Converter {
 
 actor QwenRealtimeResidentBrainAdapter:
     RealtimeResidentBrainProvider {
+    private static let maximumPendingEventCount = 256
+
     private enum Lifecycle {
         case closed
         case opening
@@ -459,6 +461,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private var contextRevision: UInt64 = 0
     private var connectionToken: UUID?
     private var receiverTask: Task<Void, Never>?
+    private var terminalTransportCloseTask: Task<Void, Never>?
     private var terminalError: RealtimeResidentBrainError?
 
     private var acknowledgementSerial: UInt64 = 0
@@ -506,6 +509,7 @@ actor QwenRealtimeResidentBrainAdapter:
     ) async throws {
         guard lifecycle == .closed,
               identity == nil,
+              terminalTransportCloseTask == nil,
               configuration.modelID
                 == QwenRealtimeResidentBrainConfiguration.supportedModelID,
               !configuration.keyRef.isEmpty,
@@ -695,6 +699,26 @@ actor QwenRealtimeResidentBrainAdapter:
     ) -> Bool {
         eventWaiter?.session == session
     }
+
+    func activeWireResponseIDForTesting(
+        session: RealtimeBrainSessionIdentity
+    ) -> String? {
+        guard identity == session else { return nil }
+        return activeResponse?.wireID
+    }
+
+    func terminalErrorForTesting(
+        session: RealtimeBrainSessionIdentity
+    ) -> RealtimeResidentBrainError? {
+        guard identity == session else { return nil }
+        return terminalError
+    }
+
+    func isClosingForTesting(
+        session: RealtimeBrainSessionIdentity
+    ) -> Bool {
+        identity == session && lifecycle == .closing
+    }
     #endif
 
     func closeSession(
@@ -714,9 +738,16 @@ actor QwenRealtimeResidentBrainAdapter:
         }
         lifecycle = .closing
         connectionToken = nil
-        receiverTask?.cancel()
+        let oldReceiver = receiverTask
         receiverTask = nil
-        await transport.close(reason: .normal)
+        oldReceiver?.cancel()
+        if let terminalTransportCloseTask {
+            await terminalTransportCloseTask.value
+        } else {
+            await transport.close(reason: .normal)
+            _ = await oldReceiver?.value
+        }
+        terminalTransportCloseTask = nil
         failWaiters(with: .cancelled)
         closedSessionIdentity = command.identity
         identity = nil
@@ -756,19 +787,87 @@ actor QwenRealtimeResidentBrainAdapter:
                 expectedInputClear = nil
             }
             retireCurrentGenerationWireState()
+            let nextConnectionToken = try await reconnectForGeneration(
+                expectedIdentity: current
+            )
             resumeStaleEventWaiter(
                 expected: current,
                 reason: reason
             )
             identity = next
-            lifecycle = .active
             resetGenerationStatePreservingTombstones()
+            resetWireTombstones()
+            connectionToken = nextConnectionToken
+            lifecycle = .active
+            startReceiver(connectionToken: nextConnectionToken)
             enqueue(kind: .cancelled(reason))
         } catch {
             expectedInputClear = nil
             locallyCancellingResponseID = nil
-            lifecycle = .failed
-            throw Self.map(error)
+            let mapped = Self.map(error)
+            if lifecycle == .transitioning, identity == current {
+                lifecycle = .failed
+                terminalError = mapped
+                failWaiters(with: mapped)
+            }
+            throw mapped
+        }
+    }
+
+    private func reconnectForGeneration(
+        expectedIdentity: RealtimeBrainSessionIdentity
+    ) async throws -> UUID {
+        connectionToken = nil
+        let oldReceiver = receiverTask
+        receiverTask = nil
+        oldReceiver?.cancel()
+        await transport.close(reason: .cancelled)
+        _ = await oldReceiver?.value
+        try requireOwnedGenerationTransition(expectedIdentity)
+
+        let credential = try readCredential()
+        let endpoint = try credential.endpoint(
+            configuredEndpoint: configuration.endpoint,
+            modelID: configuration.modelID
+        )
+        var didConnect = false
+        do {
+            try await transport.connect(
+                endpoint: endpoint,
+                bearerToken: credential.apiKey
+            )
+            didConnect = true
+            try requireOwnedGenerationTransition(expectedIdentity)
+            guard case .sessionCreated = try await receiveHandshakeEvent()
+            else {
+                throw RealtimeResidentBrainError.invalidEvent
+            }
+            try requireOwnedGenerationTransition(expectedIdentity)
+            try await send(codec.initialSessionUpdate(
+                instructions: Self.instructions(from: contextSectionsByScope)
+            ))
+            guard case .sessionUpdated = try await receiveHandshakeEvent()
+            else {
+                throw RealtimeResidentBrainError.invalidEvent
+            }
+            try requireOwnedGenerationTransition(expectedIdentity)
+            return UUID()
+        } catch {
+            if didConnect,
+               lifecycle == .transitioning,
+               identity == expectedIdentity {
+                await transport.close(reason: .cancelled)
+            }
+            throw error
+        }
+    }
+
+    private func requireOwnedGenerationTransition(
+        _ expectedIdentity: RealtimeBrainSessionIdentity
+    ) throws {
+        guard lifecycle == .transitioning,
+              identity == expectedIdentity else {
+            throw RealtimeResidentBrainError.cancelled
         }
     }
 
@@ -825,7 +924,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 enqueue(kind: .interruptionProposed(
                     RealtimeBrainInterruptionProposal(
                         identity: eventIdentity,
-                        reason: "qwen_input_speech_started"
+                        reason: "user_speech_started_during_resident_response"
                     )
                 ), identity: eventIdentity)
             }
@@ -1194,8 +1293,28 @@ actor QwenRealtimeResidentBrainAdapter:
             eventWaiter = nil
             waiter.continuation.resume(returning: event)
         } else if eventIdentity.session == identity {
+            guard pendingEvents.count < Self.maximumPendingEventCount else {
+                failPendingEventBuffer()
+                return
+            }
             pendingEvents.append(event)
         }
+    }
+
+    private func failPendingEventBuffer() {
+        pendingEvents.removeAll(keepingCapacity: true)
+        terminalError = .providerFailure
+        lifecycle = .failed
+        connectionToken = nil
+        let oldReceiver = receiverTask
+        receiverTask = nil
+        oldReceiver?.cancel()
+        let transport = transport
+        terminalTransportCloseTask = Task {
+            await transport.close(reason: .cancelled)
+            _ = await oldReceiver?.value
+        }
+        failWaiters(with: .providerFailure)
     }
 
     private func makeEventIdentity(
@@ -1330,11 +1449,13 @@ actor QwenRealtimeResidentBrainAdapter:
     ) throws {
         guard identity == expected,
               lifecycle != .closed,
-              lifecycle != .closing,
-              lifecycle != .failed else {
+              lifecycle != .closing else {
             throw RealtimeResidentBrainError.invalidIdentity
         }
         if let terminalError { throw terminalError }
+        guard lifecycle != .failed else {
+            throw RealtimeResidentBrainError.invalidIdentity
+        }
     }
 
     private func requireActive(
@@ -1412,11 +1533,15 @@ actor QwenRealtimeResidentBrainAdapter:
 
     private func resetSessionState() {
         resetGenerationStatePreservingTombstones()
+        resetWireTombstones()
+        contextSectionsByScope.removeAll(keepingCapacity: true)
+    }
+
+    private func resetWireTombstones() {
         retiredItemIDs.removeAll(keepingCapacity: true)
         retiredItemOrder.removeAll(keepingCapacity: true)
         retiredResponseIDs.removeAll(keepingCapacity: true)
         retiredResponseOrder.removeAll(keepingCapacity: true)
-        contextSectionsByScope.removeAll(keepingCapacity: true)
     }
 
     private static let contextScopeOrder: [RealtimeBrainContextScope] = [

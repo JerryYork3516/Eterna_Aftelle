@@ -61,8 +61,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testAudioAndEventMapping()
         try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
+        try await testGenerationReconnectRejectsUnseenOldResponse()
+        try await testCloseWinsGenerationReconnect()
         try await testToolFixture()
         try await testFailureAndCloseLifecycle()
+        try await testPendingEventBufferFailsClosed()
         try await testGenericErrorDuringTransition()
         try await testRuntimeCancelInputFence(fixture: fixture)
         try await testRuntimeGenerationFence(fixture: fixture)
@@ -592,7 +595,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         guard case .interruptionProposed(let evidence) = proposal.kind else {
             fatalError("interruption proposal expected")
         }
-        expect(evidence.reason == "qwen_input_speech_started", "speech evidence is a proposal, not Runtime authority")
+        expect(
+            evidence.reason
+                == "user_speech_started_during_resident_response",
+            "speech evidence is provider-neutral and not Runtime authority"
+        )
         expect(evidence.identity == proposal.identity, "proposal identity is exact")
         let nextSpeech = try await stack.adapter.receiveEvent(session: identity)
         expect(nextSpeech.kind == .userSpeechStarted, "new speech lifecycle is preserved beside proposal")
@@ -680,6 +687,173 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: nextIdentity)
+        )
+    }
+
+    private static func testGenerationReconnectRejectsUnseenOldResponse()
+        async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 8)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"reused-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"reused-response","status":"in_progress"}}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.text.delta","response_id":"reused-response","delta":"old"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+
+        let nextIdentity = sessionIdentity(
+            generation: 9,
+            leaseID: identity.brainLeaseID,
+            routeEpoch: identity.routeEpoch
+        )
+        try await stack.adapter.cancelGeneration(
+            RealtimeBrainCancelGenerationCommand(
+                identity: identity,
+                nextGeneration: nextIdentity.generation,
+                reason: .runtimeDecision
+            )
+        )
+        let cancelled = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        expect(
+            cancelled.kind == .cancelled(.runtimeDecision),
+            "generation reconnect retains the Runtime cancellation event"
+        )
+        let connectionCount = await stack.transport.connectCount()
+        expect(
+            connectionCount == 2,
+            "generation transition opens a fresh physical WebSocket"
+        )
+
+        let updates = try await sentObjects(stack.transport).filter {
+            $0["type"] as? String == "session.update"
+        }
+        let replayedInstructions = (updates.last?["session"]
+            as? [String: Any])?["instructions"] as? String
+        expect(
+            replayedInstructions?.contains("[stableResident]\nfixture context")
+                == true,
+            "fresh WebSocket replays only the acknowledged Runtime context"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"reused-user"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"reused-user","transcript":"reused transcript"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"fallback-user"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"fallback-user","transcript":"fallback transcript"}"#
+        )
+        let currentSpeech = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        expect(
+            currentSpeech.kind == .userSpeechStarted,
+            "new generation establishes its own turn before response mapping"
+        )
+        let reusedTranscript = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        expect(
+            reusedTranscript.kind
+                == .userTranscriptFinal("reused transcript"),
+            "fresh Qwen session may reuse an old item ID"
+        )
+        _ = try await stack.adapter.receiveEvent(session: nextIdentity)
+        _ = try await stack.adapter.receiveEvent(session: nextIdentity)
+
+        let oldFrameEnteredCurrentConnection = await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"unseen-old-response","status":"in_progress"}}"#,
+            connectionNumber: 1
+        )
+        expect(
+            !oldFrameEnteredCurrentConnection,
+            "closed-generation response.created cannot enter the new socket"
+        )
+        let activeResponseID = await stack.adapter
+            .activeWireResponseIDForTesting(session: nextIdentity)
+        expect(
+            activeResponseID == nil,
+            "unseen old response is never relabeled with the new generation"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"reused-response","status":"in_progress"}}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.text.done","response_id":"reused-response","text":"reused response"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"fallback-response","status":"in_progress"}}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.text.done","response_id":"fallback-response","text":"fallback response"}"#
+        )
+        let currentText = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        expect(
+            currentText.kind == .residentTextFinal("reused response")
+                && currentText.identity.session == nextIdentity,
+            "fresh Qwen session may reuse an old response ID"
+        )
+
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: nextIdentity)
+        )
+    }
+
+    private static func testCloseWinsGenerationReconnect() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 10)
+        try await openAndBootstrap(stack, identity: identity)
+        await stack.transport.holdSessionUpdateAcknowledgements()
+
+        let transition = Task { () -> RealtimeResidentBrainError? in
+            do {
+                try await stack.adapter.cancelGeneration(
+                    RealtimeBrainCancelGenerationCommand(
+                        identity: identity,
+                        nextGeneration: identity.generation + 1,
+                        reason: .runtimeDecision
+                    )
+                )
+                return nil
+            } catch let error as RealtimeResidentBrainError {
+                return error
+            } catch {
+                return .transportFailure
+            }
+        }
+        await stack.transport.waitUntilSent(type: "session.update", count: 3)
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+        let transitionError = await transition.value
+        expect(
+            transitionError == .cancelled,
+            "definitive close wins a reconnect handshake race"
+        )
+        await stack.transport.releaseSessionUpdateAcknowledgements()
+
+        let reopenedIdentity = sessionIdentity(generation: 1)
+        try await openAndBootstrap(stack, identity: reopenedIdentity)
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: reopenedIdentity)
         )
     }
 
@@ -917,6 +1091,66 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: reopened)
+        )
+    }
+
+    private static func testPendingEventBufferFailsClosed() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 27)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"buffer-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"buffer-response","status":"in_progress"}}"#
+        )
+        await stack.transport.holdNextCloseCompletion()
+        for _ in 0 ... 256 {
+            await stack.transport.enqueueText(
+                #"{"type":"response.audio.delta","response_id":"buffer-response","delta":"AAA="}"#
+            )
+        }
+        await waitUntilTerminalError(
+            stack.adapter,
+            session: identity,
+            expected: .providerFailure
+        )
+        await waitUntilTransportCloseCount(stack.transport, expected: 1)
+
+        let closeTask = Task {
+            try await stack.adapter.closeSession(
+                RealtimeBrainCloseSessionCommand(identity: identity)
+            )
+        }
+        await waitUntilClosing(stack.adapter, session: identity)
+        let closeCountWhileJoining = await stack.transport.closeCount()
+        expect(
+            closeCountWhileJoining == 1,
+            "formal close joins the overflow transport close"
+        )
+        await stack.transport.releaseHeldCloseCompletion()
+        try await closeTask.value
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+        let closeCountAfterFormalClose = await stack.transport.closeCount()
+        expect(
+            closeCountAfterFormalClose == 1,
+            "formal close remains idempotent after overflow emergency close"
+        )
+
+        let reopenedIdentity = sessionIdentity(generation: 1)
+        try await openAndBootstrap(stack, identity: reopenedIdentity)
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: reopenedIdentity)
+        )
+        let recoveredCloseCount = await stack.transport.closeCount()
+        expect(
+            recoveredCloseCount == 2,
+            "overflow close completes before a recovered session can reopen"
         )
     }
 
@@ -1222,6 +1456,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
 
         await stack.transport.holdInputClearAcknowledgements()
+        await stack.transport.holdSessionUpdateAcknowledgements()
         let cancelTask = Task {
             await runtime.cancelRealtimeResidentBrainGeneration(
                 identity: identity,
@@ -1238,10 +1473,22 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             #"{"type":"input_audio_buffer.speech_started","item_id":"unseen-old-user"}"#
         )
         await stack.transport.releaseInputClearAcknowledgements()
+        await stack.transport.waitUntilSent(type: "session.update", count: 3)
+        let reconnectCount = await stack.transport.connectCount()
+        expect(
+            reconnectCount == 2,
+            "generation fence opens a replacement Provider session"
+        )
+        expect(
+            runtime.activeBrainLeaseForTesting()?.generation
+                == .realtimeResidentBrain(identity.generation),
+            "Runtime generation does not advance before reconnect context ACK"
+        )
+        await stack.transport.releaseSessionUpdateAcknowledgements()
         let nextIdentity = try realtimeIdentity(await cancelTask.value)
         expect(
             nextIdentity.generation == identity.generation + 1,
-            "cancel advances generation only after the input fence"
+            "cancel advances generation only after clear and reconnect ACKs"
         )
         expectAccepted(
             try await runtime.receiveRealtimeResidentBrainEvent(
@@ -1437,6 +1684,43 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             await Task.yield()
         }
         fatalError("event receive did not enter the Adapter waiter")
+    }
+
+    private static func waitUntilTerminalError(
+        _ adapter: QwenRealtimeResidentBrainAdapter,
+        session: RealtimeBrainSessionIdentity,
+        expected: RealtimeResidentBrainError
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if await adapter.terminalErrorForTesting(session: session)
+                == expected {
+                return
+            }
+            await Task.yield()
+        }
+        fatalError("Adapter did not enter the expected terminal failure")
+    }
+
+    private static func waitUntilTransportCloseCount(
+        _ transport: R3FakeRealtimeWebSocketTransport,
+        expected: Int
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if await transport.closeCount() >= expected { return }
+            await Task.yield()
+        }
+        fatalError("transport did not enter the expected close")
+    }
+
+    private static func waitUntilClosing(
+        _ adapter: QwenRealtimeResidentBrainAdapter,
+        session: RealtimeBrainSessionIdentity
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if await adapter.isClosingForTesting(session: session) { return }
+            await Task.yield()
+        }
+        fatalError("Adapter did not join the terminal transport close")
     }
 
     private static func sentTypes(

@@ -439,10 +439,18 @@ private struct RealtimeResidentBrainContextTests {
                 relationshipEvidenceCandidates: [
                     RealtimeBrainRelationshipEvidenceCandidate(
                         identity: responseIdentity,
-                        evidenceType: "explicit_willingness_to_continue",
+                        evidenceType: "explicit_familiarity_or_trust",
                         evidenceDetected: true,
                         evidenceSource: "explicit_user_expression",
                         requiresUserConfirmation: true,
+                        confidence: 0.95
+                    ),
+                    RealtimeBrainRelationshipEvidenceCandidate(
+                        identity: responseIdentity,
+                        evidenceType: "explicit_willingness_to_continue",
+                        evidenceDetected: true,
+                        evidenceSource: "explicit_user_expression",
+                        requiresUserConfirmation: false,
                         confidence: 0.9
                     )
                 ],
@@ -477,7 +485,9 @@ private struct RealtimeResidentBrainContextTests {
             .relationshipProgressionDebugSnapshot()
         expect(relationshipSnapshot.evidenceIDs.contains(
             "explicit_willingness_to_continue"
-        ), "accepted candidate uses the existing Relationship pipeline")
+        ) && !relationshipSnapshot.evidenceIDs.contains(
+            "explicit_familiarity_or_trust"
+        ), "only confirmation-complete candidates reach Relationship state")
         expect(stack.runtime
                 .realtimeGrowthObservationDecisionCountForTesting() == 1
                 && stack.runtime

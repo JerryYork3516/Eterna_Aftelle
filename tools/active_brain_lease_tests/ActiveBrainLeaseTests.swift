@@ -78,6 +78,27 @@ private final class LeaseTextTransport: ProviderHTTPTransport {
     }
 }
 
+@MainActor
+private final class LeaseTaskStartLatch {
+    private var started = false
+    private var waiters = [CheckedContinuation<Void, Never>]()
+
+    func markStarted() {
+        guard !started else { return }
+        started = true
+        let pendingWaiters = waiters
+        waiters.removeAll(keepingCapacity: true)
+        pendingWaiters.forEach { $0.resume() }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+}
+
 private actor LeaseASRProvider: ASRProvider {
     private var activeGeneration: UInt64?
     private var nextEventKind: ASREventKind = .partialTranscript("active")
@@ -326,6 +347,7 @@ private struct ActiveBrainLeaseTests {
         testLeaseGate()
         try await testRuntimeEnforcement(fixture: fixture)
         try await testPendingRouteEnforcement(fixture: fixture)
+        try await testTextSettlementEnforcement(fixture: fixture)
         try await testTTSStartFailureSettlement(fixture: fixture)
         try await testTeardownFailureEnforcement(fixture: fixture)
         try await testIndependentRuntimeSessions(fixture: fixture)
@@ -397,6 +419,21 @@ private struct ActiveBrainLeaseTests {
             "a new route lifecycle increments route epoch"
         )
         expect(!gate.isCurrent(first), "an old lease ID stays stale")
+        expect(
+            gate.beginProviderStart(for: replacement),
+            "a text lease registers its in-flight Provider request"
+        )
+        expect(
+            gate.acquire(
+                residentID: "resident-a",
+                runtimeSessionID: "session-a",
+                route: .textConversation,
+                generation: .textRequest(UUID()),
+                replacingCurrentRoute: true
+            ) == nil,
+            "an in-flight text Provider request rejects supersession"
+        )
+        gate.finishProviderStart(for: replacement)
         let newerTextRequest = gate.acquire(
             residentID: "resident-a",
             runtimeSessionID: "session-a",
@@ -761,6 +798,13 @@ private struct ActiveBrainLeaseTests {
             )
         }
         await textStack.textTransport.waitForHeldRequest()
+        expectProviderFailure(
+            await textStack.runtime.requestResidentReply(
+                inputText: "second pending text answer"
+            ),
+            equals: .cancelled,
+            "pending text generation rejects same-route supersession"
+        )
         expectSpeechFailure(
             await textStack.runtime.startSpeechRouteASR(locale: "en-US"),
             equals: .unavailable,
@@ -826,6 +870,144 @@ private struct ActiveBrainLeaseTests {
             teardownStack.runtime.activeBrainLeaseForTesting() == nil,
             "Provider close completion releases the Native lease"
         )
+    }
+
+    private static func testTextSettlementEnforcement(
+        fixture: Data
+    ) async throws {
+        let replacementStack = configuredStack(fixture: fixture)
+        replacementStack.textTransport.holdNextResponse()
+        let oldSessionRequest = Task {
+            await replacementStack.runtime.requestResidentReply(
+                inputText: "old Session text"
+            )
+        }
+        await replacementStack.textTransport.waitForHeldRequest()
+        expect(
+            replacementStack.runtime.loadDR(from: fixture).isLoaded,
+            "text Session replacement publishes the new Runtime session"
+        )
+        expect(
+            replacementStack.runtime.activeBrainLeaseForTesting()?.state
+                == .settling,
+            "text Session replacement marks the old lease settling"
+        )
+        let newSessionStartLatch = LeaseTaskStartLatch()
+        let newSessionRequest = Task {
+            newSessionStartLatch.markStarted()
+            return await replacementStack.runtime.requestResidentReply(
+                inputText: "new Session text"
+            )
+        }
+        await newSessionStartLatch.waitUntilStarted()
+        expect(
+            replacementStack.textTransport.requestCount() == 1,
+            "started new Session task waits for the old text Provider request"
+        )
+        replacementStack.textTransport.resumeHeldResponse()
+        expectProviderFailure(
+            await oldSessionRequest.value,
+            equals: .cancelled,
+            "old Session text callback remains stale"
+        )
+        switch await newSessionRequest.value {
+        case .success:
+            checks += 1
+        case .failure(let error):
+            fatalError(
+                "FAILED: new Session text starts after settlement: \(error)"
+            )
+        }
+        expect(
+            replacementStack.textTransport.requestCount() == 2,
+            "Session replacement never overlaps text Provider requests"
+        )
+
+        let cancelStack = configuredStack(fixture: fixture)
+        cancelStack.textTransport.holdNextResponse()
+        let cancelledRequest = Task {
+            await cancelStack.runtime.requestResidentReply(
+                inputText: "cancelled text"
+            )
+        }
+        await cancelStack.textTransport.waitForHeldRequest()
+        cancelStack.runtime.cancelCurrentStep()
+        expect(
+            cancelStack.runtime.activeBrainLeaseForTesting()?.state
+                == .settling,
+            "text cancel retains a settling lease until Provider return"
+        )
+        expectProviderFailure(
+            await cancelStack.runtime.requestResidentReply(
+                inputText: "blocked during cancel"
+            ),
+            equals: .cancelled,
+            "text cancel blocks replacement before settlement"
+        )
+        expect(
+            cancelStack.textTransport.requestCount() == 1,
+            "text cancel cannot start a parallel Provider request"
+        )
+        cancelStack.textTransport.resumeHeldResponse()
+        expectProviderFailure(
+            await cancelledRequest.value,
+            equals: .cancelled,
+            "cancelled text callback remains stale"
+        )
+        switch await cancelStack.runtime.requestResidentReply(
+            inputText: "after cancel settlement"
+        ) {
+        case .success:
+            checks += 1
+        case .failure(let error):
+            fatalError(
+                "FAILED: settled text cancel permits a new request: \(error)"
+            )
+        }
+
+        let interruptStack = configuredStack(fixture: fixture)
+        interruptStack.textTransport.holdNextResponse()
+        let interruptedRequest = Task {
+            await interruptStack.runtime.requestResidentReply(
+                inputText: "interrupted text"
+            )
+        }
+        await interruptStack.textTransport.waitForHeldRequest()
+        interruptStack.runtime.interrupt(
+            request: RuntimeCancellationRequest(reason: .interrupted)
+        )
+        expect(
+            interruptStack.runtime.activeBrainLeaseForTesting()?.state
+                == .settling,
+            "text interrupt retains a settling lease until Provider return"
+        )
+        expectProviderFailure(
+            await interruptStack.runtime.requestResidentReply(
+                inputText: "blocked during interrupt"
+            ),
+            equals: .cancelled,
+            "text interrupt blocks replacement before settlement"
+        )
+        expect(
+            interruptStack.textTransport.requestCount() == 1,
+            "text interrupt cannot start a parallel Provider request"
+        )
+        interruptStack.textTransport.resumeHeldResponse()
+        expectProviderFailure(
+            await interruptedRequest.value,
+            equals: .cancelled,
+            "interrupted text callback remains stale"
+        )
+        switch await interruptStack.runtime.requestResidentReply(
+            inputText: "after interrupt settlement"
+        ) {
+        case .success:
+            checks += 1
+        case .failure(let error):
+            fatalError(
+                "FAILED: settled text interrupt permits a new request: \(error)"
+            )
+        }
     }
 
     private static func testTTSStartFailureSettlement(
