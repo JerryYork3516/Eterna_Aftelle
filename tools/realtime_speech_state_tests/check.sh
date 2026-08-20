@@ -12,6 +12,7 @@ swiftc \
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechInteraction.swift" \
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechAudioPayload.swift" \
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechProviderProfile.swift" \
+  "$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift" \
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechEvent.swift" \
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechProvider.swift" \
   "$repo_root/apps/macos/RuntimeCore/RealtimeSpeechStateMachine.swift" \

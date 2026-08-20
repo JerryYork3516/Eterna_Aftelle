@@ -108,11 +108,11 @@ private actor FakeNativeSpeechProvider:
         if !events.isEmpty {
             return events.removeFirst()
         }
-        receiveStarted = true
-        receiveStartedContinuation?.resume()
-        receiveStartedContinuation = nil
         return try await withCheckedThrowingContinuation { continuation in
             receiveContinuation = continuation
+            receiveStarted = true
+            receiveStartedContinuation?.resume()
+            receiveStartedContinuation = nil
         }
     }
 
@@ -134,11 +134,11 @@ private actor FakeNativeSpeechProvider:
         operations.append(.toolOutput(interactionID, output.callID))
         submittedToolOutputs.append(output)
         if suspendsToolOutputSubmission {
-            toolOutputSubmissionStarted = true
-            toolOutputSubmissionStartedContinuation?.resume()
-            toolOutputSubmissionStartedContinuation = nil
             await withCheckedContinuation { continuation in
                 toolOutputSubmissionContinuation = continuation
+                toolOutputSubmissionStarted = true
+                toolOutputSubmissionStartedContinuation?.resume()
+                toolOutputSubmissionStartedContinuation = nil
             }
         }
     }
@@ -166,7 +166,11 @@ private actor FakeNativeSpeechProvider:
     func waitUntilReceiveStarts() async {
         guard !receiveStarted else { return }
         await withCheckedContinuation { continuation in
-            receiveStartedContinuation = continuation
+            if receiveStarted {
+                continuation.resume()
+            } else {
+                receiveStartedContinuation = continuation
+            }
         }
     }
 
@@ -191,14 +195,24 @@ private actor FakeNativeSpeechProvider:
     func waitUntilToolContinuationCount(_ count: Int) async {
         guard operationCount(.toolContinuation) < count else { return }
         await withCheckedContinuation { continuation in
-            toolContinuationWaiters[count, default: []].append(continuation)
+            if operationCount(.toolContinuation) >= count {
+                continuation.resume()
+            } else {
+                toolContinuationWaiters[count, default: []].append(
+                    continuation
+                )
+            }
         }
     }
 
     func waitUntilToolOutputSubmissionStarts() async {
         guard !toolOutputSubmissionStarted else { return }
         await withCheckedContinuation { continuation in
-            toolOutputSubmissionStartedContinuation = continuation
+            if toolOutputSubmissionStarted {
+                continuation.resume()
+            } else {
+                toolOutputSubmissionStartedContinuation = continuation
+            }
         }
     }
 
@@ -226,13 +240,17 @@ private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
     func execute(
         _ request: NativeSpeechToolExecutionRequest
     ) async throws -> String {
-        requests.append(request)
-        startedContinuation?.resume()
-        startedContinuation = nil
         if suspends {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
+                requests.append(request)
+                startedContinuation?.resume()
+                startedContinuation = nil
             }
+        } else {
+            requests.append(request)
+            startedContinuation?.resume()
+            startedContinuation = nil
         }
         completedRequestCount += 1
         completedContinuations.removeValue(
@@ -244,7 +262,11 @@ private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
     func waitUntilStarted() async {
         guard requests.isEmpty else { return }
         await withCheckedContinuation { continuation in
-            startedContinuation = continuation
+            if requests.isEmpty {
+                startedContinuation = continuation
+            } else {
+                continuation.resume()
+            }
         }
     }
 
@@ -260,7 +282,13 @@ private actor FakeNativeSpeechToolExecutor: NativeSpeechToolExecuting {
     func waitUntilCompleted(count: Int) async {
         guard completedRequestCount < count else { return }
         await withCheckedContinuation { continuation in
-            completedContinuations[count, default: []].append(continuation)
+            if completedRequestCount >= count {
+                continuation.resume()
+            } else {
+                completedContinuations[count, default: []].append(
+                    continuation
+                )
+            }
         }
     }
 
@@ -292,16 +320,21 @@ private actor FakeNativeSpeechToolPermissionResolver:
     func resolve(
         _ request: NativeSpeechToolPermissionRequest
     ) async -> NativeSpeechToolPermissionDecision {
-        requests.append(request)
-        requestWaiters.removeValue(forKey: requests.count)?.forEach {
-            $0.resume()
-        }
+        let requestCount = requests.count + 1
         let decision: NativeSpeechToolPermissionDecision
         if let automaticDecision {
+            requests.append(request)
+            requestWaiters.removeValue(forKey: requestCount)?.forEach {
+                $0.resume()
+            }
             decision = automaticDecision
         } else {
             decision = await withCheckedContinuation { continuation in
                 continuations[request.identity] = continuation
+                requests.append(request)
+                requestWaiters.removeValue(forKey: requestCount)?.forEach {
+                    $0.resume()
+                }
             }
         }
         completedCount += 1
@@ -316,22 +349,33 @@ private actor FakeNativeSpeechToolPermissionResolver:
         requestAt index: Int
     ) {
         let identity = requests[index].identity
-        continuations.removeValue(forKey: identity)?.resume(
-            returning: decision
-        )
+        guard let continuation = continuations.removeValue(
+            forKey: identity
+        ) else {
+            fatalError("permission decision requested before resolver was ready")
+        }
+        continuation.resume(returning: decision)
     }
 
     func waitUntilRequested(count: Int) async {
         guard requests.count < count else { return }
         await withCheckedContinuation { continuation in
-            requestWaiters[count, default: []].append(continuation)
+            if requests.count >= count {
+                continuation.resume()
+            } else {
+                requestWaiters[count, default: []].append(continuation)
+            }
         }
     }
 
     func waitUntilCompleted(count: Int) async {
         guard completedCount < count else { return }
         await withCheckedContinuation { continuation in
-            completionWaiters[count, default: []].append(continuation)
+            if completedCount >= count {
+                continuation.resume()
+            } else {
+                completionWaiters[count, default: []].append(continuation)
+            }
         }
     }
 
@@ -1193,9 +1237,9 @@ private struct NativeSpeechRuntimeIntegrationTests {
         await resolver.waitUntilRequested(count: 1)
         let permissionRequest = await resolver.request(at: 0)
         expect(
-            permissionRequest.identity.turn.interactionID
+            permissionRequest.identity.turn?.interactionID
                 == binding.interactionID
-                && permissionRequest.identity.turn.turnNumber == 1
+                && permissionRequest.identity.turn?.turnNumber == 1
                 && permissionRequest.identity.callID
                     == "call-permission-approve"
                 && permissionRequest.toolName == "permission_test_action",

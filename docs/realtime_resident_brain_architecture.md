@@ -1,4 +1,4 @@
-# Realtime Resident Brain Architecture · R0–R4 Freeze
+# Realtime Resident Brain Architecture · R0–R5 Freeze
 
 > 状态：`PASS / FROZEN`
 >
@@ -223,6 +223,17 @@ Realtime Brain
 
 Provider 不得直接调用外部 Tool，不得绕过 Permission，不得自行持久化 Tool 结果，也不得根据 Tool 失败自行切换 Route。call identity、参数校验、并发限制、stale gate、执行结果与 Trace 均由 RuntimeCore 管理。
 
+R5 冻结以下实现边界：
+
+- `RuntimeToolDefinition`、`RuntimeToolExecuting` 与 `RuntimeToolPermissionResolving` 是 RuntimeCore 内唯一 Tool 定义、执行与权限接缝；NativeSpeech 与 Realtime Resident Brain 共用该内核，不新增 Speech / Voice / Realtime Tool Registry；
+- Realtime Session open 只向 Provider 发送 Runtime-owned Tool 定义快照。Provider Adapter 只能在私有 wire 边界映射 name、description 与 parameters，不得获得 permission policy、executor、secret 或系统能力；generation reconnect 必须重放同一快照；
+- accepted `ToolCallCandidate` 先经过 R1 lease / route epoch / generation、R2 turn / response / context identity gate，再由 RuntimeCore 校验 Tool 存在、JSON object 参数、schema 与并发上限；需要权限的调用必须等待 Runtime-owned resolver，默认不可用时 fail-closed；
+- RuntimeCore 执行成功、失败或超时后，以原 candidate 的 call / turn / response / lease / epoch / generation identity 和 Runtime-owned 单调 result sequence 调用既有 `submitToolResult`；多个调用可乱序完成，不依赖 Provider 顺序；
+- generation cancel、interrupt、session close / replacement、Provider terminal error 会失效相应 pending permission、execution 与 result delivery。duplicate、late、stale 或错误 identity 的 result 不得恢复旧回答；timeout / interrupt 只保证迟到结果不再被采纳，不声明已撤销外部世界中可能已经发生的副作用；
+- Tool result 不自动写入 Memory、Relationship、Session 或 DR；后续语义仍须经过 R4 RuntimeCore-owned canonical / candidate pipeline。
+
+当前代码没有独立的 Text LLM Tool-calling 实现。R5 没有为满足“统一”口径而复制一套 Text Tool；未来 Text Tool 如进入实现，必须接入同一 `RuntimeTool*` 内核。
+
 ## 10. Studio Voice
 
 正式链路：
@@ -345,7 +356,7 @@ R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
 R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
 R3 First Realtime Provider Adapter — PASS / FROZEN
 R4 Context / Canonical Turn / Memory Bridge — PASS / FROZEN
-R5 Tool / Permission Bridge
+R5 Tool / Permission Bridge — PASS / FROZEN
 R6 Studio Voice Binding
 R7 Full-duplex Audio Integration
 R8 Interruption / Turn-taking
@@ -363,7 +374,7 @@ R2 仅在既有 RuntimeCore → ExecutionEngine → ProviderRouter 链增加一�
 
 R3 在冻结的 R2 契约后实现内部 `QwenRealtimeResidentBrainAdapter`，以 `qwen3.5-omni-plus-realtime`、既有 Keychain credential reader 和 URLSession WebSocket transport 完成首个真实 Adapter 接缝。Qwen wire 类型、workspace、model、Provider voice 与 session ID 均留在 Adapter / composition 私有边界；RuntimeCore、ExecutionEngine 与 ProviderRouter 的 provider-neutral contract 不变，AppController 不获得 Brain ownership。
 
-Adapter 将 Runtime context、PCM audio、Tool result、cancel / interrupt 与 close 映射到 Qwen wire，并把 transcript、resident text / audio、speaking lifecycle、Tool candidate、interruption proposal、cancel / error 与 completed `response.done` 映射回 R2 event。`residentSemanticFinal` 只来自 completed `response.done`。cancel / interrupt 在 Runtime generation 前进前先等待 `input_audio_buffer.cleared`，再关闭旧物理 WebSocket、等待旧 receiver 退出、重连并重放已 ACK context；新 session ACK 后才切换 Runtime identity。事件队列有界，overflow 主动关闭物理 transport，但不释放 Runtime lease。当前离线 Fake wire 套件为 15 cases / 134 checks / zero network；真实 Qwen WebSocket 与生产 `URLSessionWebSocketTask` 的 callback / close 完成时序仍为 `NOT_RUN / HUMAN_GATE`。
+Adapter 将 Runtime context、PCM audio、Tool result、cancel / interrupt 与 close 映射到 Qwen wire，并把 transcript、resident text / audio、speaking lifecycle、Tool candidate、interruption proposal、cancel / error 与 completed `response.done` 映射回 R2 event。`residentSemanticFinal` 只来自 completed `response.done`。cancel / interrupt 在 Runtime generation 前进前先等待 `input_audio_buffer.cleared`，再关闭旧物理 WebSocket、等待旧 receiver 退出、重连并重放已 ACK context；新 session ACK 后才切换 Runtime identity。事件队列有界，overflow 主动关闭物理 transport，但不释放 Runtime lease。当前离线 Fake wire 套件为 16 cases / 149 checks / zero network；真实 Qwen WebSocket 与生产 `URLSessionWebSocketTask` 的 callback / close 完成时序仍为 `NOT_RUN / HUMAN_GATE`。
 
 R4 冻结 RuntimeCore-owned Realtime context bridge：RuntimeCore Compiler 只投影 provider-eligible 十三层 section，以有界、确定性的 bootstrap snapshot 打开 Session，并只在 stable boundary 发送单调 `contextRevision` delta。Provider 不读取 DR、SessionStore 或 Memory Store；Qwen Adapter 只缓存已由 Provider ACK 的私有 context slots，省略 scope 保留、空 scope 清除、显式 scope 替换。
 
@@ -373,9 +384,15 @@ Narrative Memory、Relationship 与 Growth 只由 Provider 产生带完整 event
 
 R4 未实现真实 Tool execution / Permission、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；这些能力仍分别留在 R5～R10。
 
+R5 将既有 NativeSpeech-only Tool registry / validation / permission / executor / audit 内核泛化为唯一 `RuntimeTool*` 内核，并把 R2 `toolCall` candidate 接入该内核。Realtime result 继续只经 RuntimeCore → ExecutionEngine → ProviderRouter → Provider Adapter 回传；Qwen 仅在私有 session wire 广告 Runtime 定义快照并在 generation reconnect 重放，不获得执行或权限能力。
+
+R5 的执行 attempt 使用 Runtime-owned start gate、worker / timeout 双任务和 attempt identity 做 first-settlement；路由级与 Session replacement 清理只失效目标 route，旧任务的迟到 completion 和旧 result delivery 均被丢弃。同一 Runtime Session 内提供 fail-closed、at-most-once result acceptance，不声称 crash-durable exactly-once，也不声称 cancellation 可回滚外部副作用。
+
+R5 未实现 Text LLM Tool calling、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；后续能力仍留在 R6～R10。真实 Qwen Tool wire 仍为 `NOT_RUN / HUMAN_GATE`。
+
 ---
 
-## R0–R4 Freeze Result
+## R0–R5 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -383,6 +400,7 @@ R1 = PASS / FROZEN
 R2 = PASS / FROZEN
 R3 = PASS / FROZEN
 R4 = PASS / FROZEN
+R5 = PASS / FROZEN
 
 Single Runtime authority: RuntimeCore
 Max active Brain per Runtime Session: 1
@@ -399,11 +417,14 @@ R2 contract: RealtimeResidentBrainProvider with provider-neutral commands, event
 R2 routing seam: existing RuntimeCore → ExecutionEngine → ProviderRouter only
 R2 network dependency: zero; Fake Provider only
 R3 adapter: internal QwenRealtimeResidentBrainAdapter; Qwen wire stays private
-R3 verification: 15 cases / 134 checks / zero-network fixtures; real WebSocket HUMAN_GATE
+R3/R5 Qwen verification: 16 cases / 149 checks / zero-network fixtures; real WebSocket HUMAN_GATE
 R3 remaining wire risk: production URLSessionWebSocketTask callback / close completion requires Human Gate evidence
 R4 context: RuntimeCore-compiled provider-eligible bootstrap + monotonic delta at stable boundaries
 R4 canonical turn: one provider-neutral identity; semantic completion for Text / Realtime, delivery completion for Cascaded / Native
 R4 persistence: RuntimeCore-only History / Memory / Relationship evaluation; runtime-session-local dedupe; no Store schema change
 R4 verification: 4 cases / 81 checks; R2 8 cases / 261 checks; A7 18 suites / 21 entrypoints / 4038 assertions
-Next allowed node: R5 Tool / Permission Bridge
+R5 Tool kernel: one RuntimeTool registry / permission / executor / audit shared by NativeSpeech and Realtime; no Text Tool implementation was invented
+R5 result path: original candidate identity + Runtime-owned sequence through existing submitToolResult seam; duplicate / stale / late results fail closed
+R5 verification: 7 cases / 120 checks / zero network; R2 8 cases / 263 checks; NativeSpeech integration 545 checks; A7 19 suites / 22 entrypoints / 4175 assertions
+Next allowed node: R6 Studio Voice Binding
 ```

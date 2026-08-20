@@ -44,6 +44,15 @@ private actor R3ASRProvider: ASRProvider {
     func startCount() -> Int { starts }
 }
 
+private actor R3SuspendingRuntimeToolExecutor: RuntimeToolExecuting {
+    func execute(
+        _ request: RuntimeToolExecutionRequest
+    ) async throws -> String {
+        try await Task.sleep(for: .seconds(300))
+        return "{}"
+    }
+}
+
 @main
 private struct QwenRealtimeResidentBrainAdapterTests {
     private static var checks = 0
@@ -57,6 +66,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         try await testHandshakeAndBootstrap()
+        try await testInvalidToolAdvertisementsFailClosed()
         try await testContextScopeReplacement()
         try await testAudioAndEventMapping()
         try await testGenerationGlobalOutputAudioClock()
@@ -80,8 +90,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         cases += 1
         let stack = try makeStack()
         let identity = sessionIdentity(generation: 1)
+        let tools = runtimeToolAdvertisements()
         try await stack.adapter.openSession(
-            RealtimeBrainOpenSessionCommand(identity: identity)
+            RealtimeBrainOpenSessionCommand(
+                identity: identity,
+                tools: tools
+            )
         )
         try await stack.adapter.updateRuntimeContext(
             RealtimeBrainRuntimeContextUpdate(
@@ -161,9 +175,37 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 == "qwen3-asr-flash-realtime",
             "input transcript fixture uses the fixed official model"
         )
+        guard let wireTools = initialSession?["tools"]
+                as? [[String: Any]],
+              let wireTool = wireTools.first,
+              let function = wireTool["function"] as? [String: Any],
+              let parameters = function["parameters"] as? [String: Any],
+              let properties = parameters["properties"] as? [String: Any],
+              let city = properties["city"] as? [String: Any] else {
+            fatalError("Runtime Tool definitions must map to Qwen wire tools")
+        }
         expect(
-            initialSession?["tools"] == nil,
-            "R3 does not pre-register a Tool registry before R5"
+            wireTools.count == 1,
+            "Qwen advertises the Runtime Tool snapshot"
+        )
+        expect(
+            Set(wireTool.keys) == Set(["type", "function"])
+                && wireTool["type"] as? String == "function",
+            "Qwen wire keeps Provider function framing private"
+        )
+        expect(
+            Set(function.keys) == Set(["name", "description", "parameters"])
+                && function["name"] as? String == "weather_lookup"
+                && function["description"] as? String
+                    == "Look up weather by city.",
+            "Qwen wire exposes only the Runtime Tool advertisement fields"
+        )
+        expect(
+            parameters["type"] as? String == "object"
+                && parameters["required"] as? [String] == ["city"]
+                && parameters["additionalProperties"] as? Bool == false
+                && city["type"] as? String == "string",
+            "Runtime parameters JSON maps to an object rather than encoded data"
         )
         let bootstrapInstructions = (updates[1]["session"]
             as? [String: Any])?["instructions"] as? String
@@ -177,8 +219,10 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             sentTexts.allSatisfy {
                 !$0.contains("fixture-secret")
                     && !$0.contains("fixture-workspace")
+                    && !$0.contains("requires_permission")
+                    && !$0.contains("executionTimeout")
             },
-            "credential and workspace never enter wire JSON"
+            "credentials and Runtime execution policy never enter wire JSON"
         )
 
         try await stack.adapter.closeSession(
@@ -189,6 +233,57 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         let closeCount = await stack.transport.closeCount()
         expect(closeCount == 1, "close is idempotent")
+
+        let reopenedIdentity = sessionIdentity(generation: 2)
+        try await openAndBootstrap(stack, identity: reopenedIdentity)
+        let advertisedSessions = try await sentObjects(stack.transport)
+            .compactMap { $0["session"] as? [String: Any] }
+            .filter { $0["tools"] != nil }
+        expect(
+            (advertisedSessions.last?["tools"] as? [[String: Any]])?.isEmpty
+                == true,
+            "reopened session replaces the prior Tool advertisement snapshot"
+        )
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: reopenedIdentity)
+        )
+    }
+
+    private static func testInvalidToolAdvertisementsFailClosed()
+        async throws {
+        cases += 1
+        let invalidSchemas: [(Data, String)] = [
+            (Data("{".utf8), "malformed"),
+            (Data("[]".utf8), "non-object")
+        ]
+        for (offset, fixture) in invalidSchemas.enumerated() {
+            let stack = try makeStack()
+            let identity = sessionIdentity(
+                generation: UInt64(30 + offset)
+            )
+            await expectRealtimeError(.invalidEvent) {
+                try await stack.adapter.openSession(
+                    RealtimeBrainOpenSessionCommand(
+                        identity: identity,
+                        tools: [RealtimeBrainToolAdvertisement(
+                            name: "invalid_tool",
+                            description: "Invalid \(fixture.1) schema.",
+                            parametersJSON: fixture.0
+                        )]
+                    )
+                )
+            }
+            let closeCount = await stack.transport.closeCount()
+            expect(
+                closeCount == 1,
+                "\(fixture.1) Tool schema closes the failed open"
+            )
+            let types = try await sentTypes(stack.transport)
+            expect(
+                types.allSatisfy { $0 != "session.update" },
+                "\(fixture.1) Tool schema never reaches Qwen wire"
+            )
+        }
     }
 
     private static func testContextScopeReplacement() async throws {
@@ -695,7 +790,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         cases += 1
         let stack = try makeStack()
         let identity = sessionIdentity(generation: 8)
-        try await openAndBootstrap(stack, identity: identity)
+        let tools = runtimeToolAdvertisements()
+        try await openAndBootstrap(
+            stack,
+            identity: identity,
+            tools: tools
+        )
 
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"reused-user"}"#
@@ -737,8 +837,30 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let updates = try await sentObjects(stack.transport).filter {
             $0["type"] as? String == "session.update"
         }
-        let replayedInstructions = (updates.last?["session"]
-            as? [String: Any])?["instructions"] as? String
+        guard let initialSession = updates.first?["session"]
+                as? [String: Any],
+              let replayedSession = updates.last?["session"]
+                as? [String: Any],
+              let initialTools = initialSession["tools"]
+                as? [[String: Any]],
+              let replayedTools = replayedSession["tools"]
+                as? [[String: Any]] else {
+            fatalError("generation reconnect must retain Runtime Tools")
+        }
+        let initialToolsJSON = try JSONSerialization.data(
+            withJSONObject: initialTools,
+            options: [.sortedKeys]
+        )
+        let replayedToolsJSON = try JSONSerialization.data(
+            withJSONObject: replayedTools,
+            options: [.sortedKeys]
+        )
+        expect(
+            initialTools.count == tools.count
+                && replayedToolsJSON == initialToolsJSON,
+            "fresh WebSocket replays the identical Runtime Tool snapshot"
+        )
+        let replayedInstructions = replayedSession["instructions"] as? String
         expect(
             replayedInstructions?.contains("[stableResident]\nfixture context")
                 == true,
@@ -861,7 +983,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         cases += 1
         let stack = try makeStack()
         let identity = sessionIdentity(generation: 11)
-        try await openAndBootstrap(stack, identity: identity)
+        try await openAndBootstrap(
+            stack,
+            identity: identity,
+            tools: runtimeToolAdvertisements()
+        )
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"tool-user"}"#
         )
@@ -887,6 +1013,26 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
         await stack.transport.enqueueText(
             #"{"type":"response.done","response":{"id":"tool-response","status":"completed","output":[{"type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}]}}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"tool-collision-response","status":"in_progress"}}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.function_call_arguments.done","response_id":"tool-collision-response","item_id":"tool-collision-item","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}"#
+        )
+        let collisionEvent = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        guard case .toolCall(let collisionCandidate) = collisionEvent.kind else {
+            fatalError("duplicate callID candidate expected")
+        }
+        expect(
+            collisionCandidate.callID == candidate.callID
+                && collisionCandidate.identity != candidate.identity,
+            "duplicate callID remains a distinct Runtime candidate"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"tool-collision-response","status":"completed","output":[{"type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}]}}"#
         )
         await stack.transport.holdResponseCreationAcknowledgements()
         let toolResultCommand = RealtimeBrainToolResultCommand(
@@ -918,9 +1064,20 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         await stack.transport.releaseResponseCreationAcknowledgements()
         try await toolResultTask.value
+        await expectRealtimeError(.invalidIdentity) {
+            try await stack.adapter.submitToolResult(
+                RealtimeBrainToolResultCommand(
+                    identity: collisionEvent.identity,
+                    sequence: 2,
+                    callID: collisionCandidate.callID,
+                    output: #"{"temperature":26}"#,
+                    isError: false
+                )
+            )
+        }
         expect(
             true,
-            "generation transition cannot discard an in-flight Tool continuation"
+            "original Tool correlation survives a duplicate callID candidate"
         )
         let sent = try await sentObjects(stack.transport)
         guard let itemCreate = sent.last(where: {
@@ -1202,6 +1359,18 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             sessionStore: SessionStore()
         )
         expect(runtime.loadDR(from: fixture).isLoaded, "operation fixture resident loads")
+        expect(
+            runtime.configureRuntimeTools(
+                definitions: [RuntimeToolDefinition(
+                    name: "fixture_tool",
+                    description: "Operation-fence fixture.",
+                    parametersJSON: Data(#"{"type":"object"}"#.utf8),
+                    permission: .permissionFree
+                )],
+                executor: R3SuspendingRuntimeToolExecutor()
+            ),
+            "operation fixture configures the shared Runtime Tool kernel"
+        )
         let identity = try realtimeIdentity(
             await runtime.openRealtimeResidentBrainSession()
         )
@@ -1624,10 +1793,14 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             adapter: QwenRealtimeResidentBrainAdapter,
             transport: R3FakeRealtimeWebSocketTransport
         ),
-        identity: RealtimeBrainSessionIdentity
+        identity: RealtimeBrainSessionIdentity,
+        tools: [RealtimeBrainToolAdvertisement] = []
     ) async throws {
         try await stack.adapter.openSession(
-            RealtimeBrainOpenSessionCommand(identity: identity)
+            RealtimeBrainOpenSessionCommand(
+                identity: identity,
+                tools: tools
+            )
         )
         try await stack.adapter.updateRuntimeContext(
             RealtimeBrainRuntimeContextUpdate(
@@ -1642,6 +1815,24 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         let ready = try await stack.adapter.receiveEvent(session: identity)
         expect(ready.kind == .sessionReady, "fixture session becomes ready")
+    }
+
+    private static func runtimeToolAdvertisements()
+        -> [RealtimeBrainToolAdvertisement] {
+        [RealtimeBrainToolAdvertisement(
+            name: "weather_lookup",
+            description: "Look up weather by city.",
+            parametersJSON: Data(
+                """
+                {
+                  "type": "object",
+                  "properties": {"city": {"type": "string"}},
+                  "required": ["city"],
+                  "additionalProperties": false
+                }
+                """.utf8
+            )
+        )]
     }
 
     private static func sessionIdentity(

@@ -41,8 +41,23 @@ nonisolated struct RealtimeBrainToolCallID: Hashable, Sendable {
     let rawValue: String
 }
 
+nonisolated struct RealtimeBrainToolAdvertisement: Sendable, Equatable {
+    let name: String
+    let description: String
+    let parametersJSON: Data
+}
+
 nonisolated struct RealtimeBrainOpenSessionCommand: Sendable, Equatable {
     let identity: RealtimeBrainSessionIdentity
+    let tools: [RealtimeBrainToolAdvertisement]
+
+    init(
+        identity: RealtimeBrainSessionIdentity,
+        tools: [RealtimeBrainToolAdvertisement] = []
+    ) {
+        self.identity = identity
+        self.tools = tools
+    }
 }
 
 nonisolated enum RealtimeBrainContextUpdateKind:

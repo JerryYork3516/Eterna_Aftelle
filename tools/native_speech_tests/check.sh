@@ -9,6 +9,7 @@ sources=(
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechInteraction.swift"
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechAudioPayload.swift"
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechProviderProfile.swift"
+  "$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechEvent.swift"
   "$repo_root/apps/macos/RuntimeCore/NativeSpeechProvider.swift"
 )
@@ -47,6 +48,7 @@ runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
 swiftc \
   -D DEBUG \
   -parse-as-library \
+  -default-isolation MainActor \
   "${runtime_sources[@]}" \
   "$repo_root/tools/native_speech_tests/NativeSpeechRuntimeIntegrationTests.swift" \
   -o "$build_dir/native_speech_runtime_integration_tests"

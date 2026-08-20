@@ -60,8 +60,26 @@ nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
 nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
     let configuration: QwenRealtimeResidentBrainConfiguration
 
-    func initialSessionUpdate(instructions: String) throws -> String {
-        try encode([
+    func initialSessionUpdate(
+        instructions: String,
+        tools: [RealtimeBrainToolAdvertisement]
+    ) throws -> String {
+        let toolObjects: [[String: Any]] = try tools.map { tool in
+            guard let object = try? JSONSerialization.jsonObject(
+                with: tool.parametersJSON
+            ), let parameters = object as? [String: Any] else {
+                throw RealtimeResidentBrainError.invalidEvent
+            }
+            return [
+                "type": "function",
+                "function": [
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": parameters
+                ]
+            ]
+        }
+        return try encode([
             "event_id": eventID(),
             "type": "session.update",
             "session": [
@@ -80,7 +98,8 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
                     "create_response": true,
                     "interrupt_response": false
                 ],
-                "enable_search": false
+                "enable_search": false,
+                "tools": toolObjects
             ]
         ])
     }
@@ -478,6 +497,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private var outputAudioSequence: UInt64 = 0
     private var outputAudioSampleFrames: UInt64 = 0
     private var contextSectionsByScope: [String: String] = [:]
+    private var runtimeTools: [RealtimeBrainToolAdvertisement] = []
 
     private var turnsByWireItemID:
         [String: TurnBinding] = [:]
@@ -522,6 +542,7 @@ actor QwenRealtimeResidentBrainAdapter:
         contextRevision = 0
         terminalError = nil
         resetSessionState()
+        runtimeTools = command.tools
 
         do {
             let credential = try readCredential()
@@ -538,7 +559,8 @@ actor QwenRealtimeResidentBrainAdapter:
                 throw RealtimeResidentBrainError.invalidEvent
             }
             try await send(codec.initialSessionUpdate(
-                instructions: "Runtime context bootstrap pending."
+                instructions: "Runtime context bootstrap pending.",
+                tools: runtimeTools
             ))
             guard case .sessionUpdated = try await receiveHandshakeEvent()
             else {
@@ -844,7 +866,8 @@ actor QwenRealtimeResidentBrainAdapter:
             }
             try requireOwnedGenerationTransition(expectedIdentity)
             try await send(codec.initialSessionUpdate(
-                instructions: Self.instructions(from: contextSectionsByScope)
+                instructions: Self.instructions(from: contextSectionsByScope),
+                tools: runtimeTools
             ))
             guard case .sessionUpdated = try await receiveHandshakeEvent()
             else {
@@ -1084,7 +1107,9 @@ actor QwenRealtimeResidentBrainAdapter:
                   let response = activeResponse else { return }
             let eventIdentity = makeEventIdentity(for: response)
             let runtimeCallID = RealtimeBrainToolCallID(rawValue: callID)
-            pendingToolCalls[runtimeCallID] = eventIdentity
+            if pendingToolCalls[runtimeCallID] == nil {
+                pendingToolCalls[runtimeCallID] = eventIdentity
+            }
             enqueue(
                 kind: .toolCall(RealtimeBrainToolCallCandidate(
                     identity: eventIdentity,
@@ -1535,6 +1560,7 @@ actor QwenRealtimeResidentBrainAdapter:
         resetGenerationStatePreservingTombstones()
         resetWireTombstones()
         contextSectionsByScope.removeAll(keepingCapacity: true)
+        runtimeTools.removeAll(keepingCapacity: true)
     }
 
     private func resetWireTombstones() {

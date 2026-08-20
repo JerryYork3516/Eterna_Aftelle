@@ -10,11 +10,11 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:R0–R4 累计审核修复 — PASS / FROZEN
-- **上一步刚完成**:R1 Text settlement、R3 物理连接 generation fence / 有界队列与 R4 Relationship confirmation gate 收口
+- **现在在做**:R5 Tool / Permission Bridge — PASS / FROZEN
+- **上一步刚完成**:唯一 RuntimeTool 内核、Realtime candidate / permission / execution / result 回传与取消失效收口
 - **当前卡在**:无
-- **下一步**:只允许在新任务中进入 R5 Tool / Permission Bridge
-- **本轮范围**:只修复 R0–R4 累计审核发现的 Single-Brain、stale wire correlation 与 confirmation 边界；不实现真实 Tool execution、Voice Binding、Host full-duplex、turn-taking、fallback 或 R5～R10
+- **下一步**:只允许在新任务中进入 R6 Studio Voice Binding
+- **本轮范围**:只完成 R5 Runtime-owned Tool / Permission Bridge；不实现 Text Tool calling、Voice Binding、Host full-duplex、turn-taking、fallback 或 R6～R10
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
 > - **上一步刚完成**:Stage 7.1.5 DR Loader 读取 / 浅校验 / 加载边界已正规化
@@ -131,6 +131,7 @@
 - 2026-08-20 — R3 First Realtime Provider Adapter 冻结 — 新增内部 `QwenRealtimeResidentBrainAdapter`，以既有 Keychain credential reader、单一 ProviderRouter 与 URLSession WebSocket transport 接入 `qwen3.5-omni-plus-realtime`；Qwen wire / workspace / model / temporary Provider voice / session ID 均留在 Adapter / composition 私有边界。全部 R2 command / event 已映射，completed `response.done` 是唯一 `residentSemanticFinal` 来源，Provider speech activity 只提交 interruption proposal，cancel / interrupt 在 Runtime generation 前进前等待 input clear ACK。R3 离线 Fake wire 10 cases / 110 checks、A7 17 个顶层 suite / 20 个入口 / 3827 项断言、macOS clean build、architecture guard、secret guard、diff 与仓库无污染检查均通过；真实 Qwen WebSocket 为 `NOT_RUN / HUMAN_GATE`。已观察 wire ID 的 stale fence 已冻结；此前未观察旧 `response.created` 跨 clear ACK 的厂商顺序仍为 `NOT_PROVEN_REAL_WIRE`，未声称自动化已证明。未改公共 Runtime contract、DR / Store schema、Memory / History ownership、Host Audio / AEC、Voice Binding 或平台 target，未进入 R4～R10。
 - 2026-08-20 — R4 Context / Canonical Turn / Memory Bridge 冻结 — RuntimeCore Compiler 新增 provider-eligible、有界且确定性的 Realtime context snapshot，Session open 发送 bootstrap，后续只在 stable boundary 发送单调 revision delta。统一 `CanonicalResidentTurn` 绑定 resident / Runtime Session / Brain lease / route epoch / generation / turn / response；Text / Realtime 以 semantic completion，Cascaded / Native 以既有 playback / delivery completion 进入 RuntimeCore-only History / Memory / Relationship 评估。Provider Memory / Relationship / Growth 均只是带 identity 的 candidate；Growth 本轮只记录 ephemeral deferred decision。duplicate、stale、late、out-of-order、terminal callback、reconnect 与 buffer overflow 均确定性处理；去重仅承诺当前 Runtime Session，不改 DR / Store schema，不声称 crash-durable exactly-once。R4 4 cases / 81 checks、R2 8 cases / 261 checks、R3 12 cases / 115 checks、A7 18 个顶层 suite / 21 个入口 / 3975 项断言、macOS clean build、architecture guard、secret guard 与仓库无污染检查通过；真实 Qwen WebSocket 仍为 `NOT_RUN / HUMAN_GATE`。P0 / P1 / P2 均为 0，未进入 R5～R10。
 - 2026-08-20 — R0–R4 累计审核修复 — 普通文本请求纳入 R1 Provider in-flight settlement；旧请求未收口时，同 Session 文本替换、Session replacement、cancel / interrupt 均不得放行第二 Brain。R3 generation transition 改为旧物理 WebSocket definitive close + receiver settlement + 新 session/context ACK 后才切 Runtime identity，interruption reason 保持 provider-neutral，pending event queue 有界且 overflow 主动关闭 transport但不释放 Runtime lease。R4 `requiresUserConfirmation` Relationship candidate 在确认前不写 evidence。R1 140 checks、R2 8 cases / 261 checks、R3 15 cases / 134 checks、R4 4 cases / 81 checks、Runtime expression 234 checks 与 A7 18 suites / 21 entrypoints / 4038 assertions 全部通过；macOS clean build、architecture / secret guard、diff 与仓库无污染检查 PASS。真实 Qwen WebSocket 仍为 `NOT_RUN / HUMAN_GATE`，未进入 R5～R10。
+- 2026-08-20 — R5 Tool / Permission Bridge 冻结 — 将既有 NativeSpeech-only Tool definition / schema validation / permission resolver / executor / audit 泛化为唯一 `RuntimeTool*` 内核，并把 Realtime `ToolCallCandidate` 接入相同路径；RuntimeCore 继续是唯一 Tool、Permission、Execution 与 Audit owner。Realtime Session 只向 Provider 广告定义快照，Qwen 私有 wire 映射 function schema 并在 generation reconnect 重放；Provider 不获得 permission policy、executor 或 secret。执行成功、失败、timeout 以原 call / turn / response / lease / epoch / generation identity 经既有 submit result seam 回传，duplicate / stale / late / interrupt 后结果 fail-closed。R5 独立测试 7 cases / 120 checks，R2 8 cases / 263 checks，Qwen R3/R5 16 cases / 149 checks，NativeSpeech integration 545 checks，A7 19 suites / 22 entrypoints / 4175 assertions；macOS clean build、architecture guard、secret guard 与仓库无污染检查 PASS。真实 Qwen Tool wire 仍为 `NOT_RUN / HUMAN_GATE`。未改 DR / Store schema，未实现 Text Tool calling 或 R6～R10。
 
 ---
 

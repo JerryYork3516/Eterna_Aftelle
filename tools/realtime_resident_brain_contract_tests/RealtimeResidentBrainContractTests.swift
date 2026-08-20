@@ -451,6 +451,15 @@ private struct R2RuntimeStack {
     let textTransport: R2TextTransport
 }
 
+private actor R2SuspendingRuntimeToolExecutor: RuntimeToolExecuting {
+    func execute(
+        _ request: RuntimeToolExecutionRequest
+    ) async throws -> String {
+        try await Task.sleep(for: .seconds(300))
+        return "{}"
+    }
+}
+
 @main
 @MainActor
 private struct RealtimeResidentBrainContractTests {
@@ -1175,6 +1184,20 @@ private struct RealtimeResidentBrainContractTests {
     ) async throws {
         cases += 1
         let stack = configuredStack(fixture: fixture)
+        expect(
+            stack.runtime.configureRuntimeTools(
+                definitions: [RuntimeToolDefinition(
+                    name: "weather.lookup",
+                    description: "R2 contract fixture.",
+                    parametersJSON: Data(
+                        #"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#.utf8
+                    ),
+                    permission: .permissionFree
+                )],
+                executor: R2SuspendingRuntimeToolExecutor()
+            ),
+            "R2 fixture advertises its candidate through the shared Runtime Tool kernel"
+        )
         let identity = try realtimeIdentity(
             await stack.runtime.openRealtimeResidentBrainSession()
         )
@@ -2431,6 +2454,18 @@ private struct RealtimeResidentBrainContractTests {
         )
 
         let toolFailure = configuredStack(fixture: fixture)
+        expect(
+            toolFailure.runtime.configureRuntimeTools(
+                definitions: [RuntimeToolDefinition(
+                    name: "test.tool",
+                    description: "R2 Tool-result failure fixture.",
+                    parametersJSON: Data(#"{"type":"object"}"#.utf8),
+                    permission: .permissionFree
+                )],
+                executor: R2SuspendingRuntimeToolExecutor()
+            ),
+            "Tool-result failure fixture uses the shared Runtime Tool kernel"
+        )
         let toolFailureIdentity = try realtimeIdentity(
             await toolFailure.runtime.openRealtimeResidentBrainSession()
         )
@@ -2451,7 +2486,7 @@ private struct RealtimeResidentBrainContractTests {
                 identity: toolEventIdentity,
                 callID: toolFailureCallID,
                 toolName: "test.tool",
-                arguments: Data()
+                arguments: Data("{}".utf8)
             ))
         )
         await toolFailure.provider.enqueue(toolFailureEvent)
