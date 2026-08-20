@@ -1,4 +1,4 @@
-# Realtime Resident Brain Architecture · R0–R5 Freeze
+# Realtime Resident Brain Architecture · R0–R6 Freeze
 
 > 状态：`PASS / FROZEN`
 >
@@ -50,7 +50,7 @@ Realtime Resident Brain Route 冻结以下目标体验：
 - 用户插话时 resident speech 可立即停止并继续听；
 - 不要求每轮重新点击；
 - 体验目标接近 GPT-Live 类实时自然对话；
-- 使用 Studio 输出的居民专属音色。
+- R6 当前通过 Runtime Voice Binding 使用所选 Realtime Provider 的默认音色；未来再由 Studio VoiceProfile 提供居民专属音色来源。
 
 本路线仍是用户主动启动的前台交互，不包含 always-on 麦克风、未授权后台监听、唤醒词或声纹识别。
 
@@ -116,9 +116,10 @@ Realtime Brain 可以拥有实时语音理解、当前 conversational reasoning�
                       ↑                 ↓
 Capture → Shared Audio Host / AEC3     Runtime Voice Binding
                                               ↑
-                                    Studio VoiceProfile
+                                current: providerDefault
+                                future: Studio VoiceProfile
                                               ↓
-                              Provider voice / Voice Renderer
+                         Provider-private voice resolution
                                               ↓
                                       Shared Playback Host
                                               ↓
@@ -234,9 +235,21 @@ R5 冻结以下实现边界：
 
 当前代码没有独立的 Text LLM Tool-calling 实现。R5 没有为满足“统一”口径而复制一套 Text Tool；未来 Text Tool 如进入实现，必须接入同一 `RuntimeTool*` 内核。
 
-## 10. Studio Voice
+## 10. Runtime Voice Binding / Future Studio VoiceProfile
 
-正式链路：
+R6 当前链路：
+
+```text
+Resident / Runtime Session
+        ↓
+Runtime Voice Binding
+        ↓
+providerDefault
+        ↓
+Provider-private voice resolution
+```
+
+未来兼容扩展：
 
 ```text
 Studio VoiceProfile
@@ -250,8 +263,14 @@ Realtime resident speech
 
 边界：
 
-- Studio VoiceProfile 是长期、provider-neutral 的居民声音资产；
-- RuntimeCore 按 resident identity、DR revision、VoiceProfile identity 和当前 Provider 解析 Runtime Voice Binding；
+- R6 只启用 `providerDefault`，不依赖 Studio 当前产出 VoiceProfile；
+- Provider 默认音色是运行时 fallback / default configuration，不是居民永久声音资产；
+- Runtime Voice Binding 只决定使用哪个声音，不生成第二份回答、不改写 canonical semantic content，也不拥有 Runtime、Session、Memory、Tool 或 Permission；
+- binding 复用现有 ActiveBrainLease、route epoch、generation 与 Runtime Session identity，不建立第二套 voice generation identity；
+- 具体 Provider voice identifier 只存在于 Adapter、Provider configuration 或 Runtime binding private state，不进入 provider-neutral contract、DR、Memory 或 Dialogue History；
+- 缺少 VoiceProfile 或未来 VoiceProfile 不受当前 Provider 支持时，按冻结策略回退 `providerDefault`；binding 解析失败只返回明确错误，不自行切换 Cascaded Route；
+- 未来 Studio VoiceProfile 是长期、provider-neutral 的居民声音资产来源；
+- 未来 RuntimeCore 按 resident identity、DR revision、VoiceProfile identity 和当前 Provider 解析 Runtime Voice Binding；
 - Provider `voice_id`、cloned voice reference 或供应商专用配置不得成为 DR 永久身份；
 - Provider secret 继续只通过 `key_ref` / Keychain 获取；
 - Provider 原生支持 custom/cloned voice 时优先使用原生输出；
@@ -357,7 +376,7 @@ R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
 R3 First Realtime Provider Adapter — PASS / FROZEN
 R4 Context / Canonical Turn / Memory Bridge — PASS / FROZEN
 R5 Tool / Permission Bridge — PASS / FROZEN
-R6 Studio Voice Binding
+R6 Realtime Voice Binding Foundation — PASS / FROZEN
 R7 Full-duplex Audio Integration
 R8 Interruption / Turn-taking
 R9 Cascaded Fallback + Regression
@@ -390,9 +409,15 @@ R5 的执行 attempt 使用 Runtime-owned start gate、worker / timeout 双任�
 
 R5 未实现 Text LLM Tool calling、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；后续能力仍留在 R6～R10。真实 Qwen Tool wire 仍为 `NOT_RUN / HUMAN_GATE`。
 
+R6 建立 provider-neutral `RuntimeVoiceBinding` 基础层；`RuntimeVoiceProviderIdentity`、`RuntimeVoiceBindingMode` 与 `RuntimeVoiceBindingFallback` 能表达当前 Provider、未来 binding mode、可选 opaque Provider reference 与明确 fallback，但当前只启用 `providerDefault`。RuntimeCore 在既有 lease admission 后创建 binding，binding 直接复用 resident、Runtime Session、lease、route epoch 与 generation identity；generation 前进只允许在同 resident / Session / lease / epoch 上 rebound。Provider Adapter 只在私有边界把 default binding 解析为运行时 voice configuration，具体 Qwen voice identifier 不进入 provider-neutral contract、DR、Memory、Dialogue History 或居民永久身份。
+
+未来 Studio VoiceProfile 只替换 binding source，并通过 stable VoiceProfile identity 进入同一解析路径；不需要重构 Realtime Resident Brain、ActiveBrainLease、Runtime Session、Memory、Tool、canonical turn 或 Audio Host。Voice Binding 不具有认知权，不改写 `residentSemanticFinal` / `CanonicalResidentTurn`，也不创建第二 Brain、Runtime 或 resident response。
+
+R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、正式 Capture / Playback 全双工主链、自然 interruption / turn-taking、Cascaded 自动 fallback 或真机长会话；这些能力仍分别留在后续节点，下一节点只允许进入 R7。
+
 ---
 
-## R0–R5 Freeze Result
+## R0–R6 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -401,6 +426,7 @@ R2 = PASS / FROZEN
 R3 = PASS / FROZEN
 R4 = PASS / FROZEN
 R5 = PASS / FROZEN
+R6 = PASS / FROZEN
 
 Single Runtime authority: RuntimeCore
 Max active Brain per Runtime Session: 1
@@ -417,7 +443,7 @@ R2 contract: RealtimeResidentBrainProvider with provider-neutral commands, event
 R2 routing seam: existing RuntimeCore → ExecutionEngine → ProviderRouter only
 R2 network dependency: zero; Fake Provider only
 R3 adapter: internal QwenRealtimeResidentBrainAdapter; Qwen wire stays private
-R3/R5 Qwen verification: 16 cases / 149 checks / zero-network fixtures; real WebSocket HUMAN_GATE
+R3/R5/R6 Qwen verification: 16 cases / 150 checks / zero-network fixtures; real WebSocket HUMAN_GATE
 R3 remaining wire risk: production URLSessionWebSocketTask callback / close completion requires Human Gate evidence
 R4 context: RuntimeCore-compiled provider-eligible bootstrap + monotonic delta at stable boundaries
 R4 canonical turn: one provider-neutral identity; semantic completion for Text / Realtime, delivery completion for Cascaded / Native
@@ -426,5 +452,9 @@ R4 verification: 4 cases / 81 checks; R2 8 cases / 261 checks; A7 18 suites / 21
 R5 Tool kernel: one RuntimeTool registry / permission / executor / audit shared by NativeSpeech and Realtime; no Text Tool implementation was invented
 R5 result path: original candidate identity + Runtime-owned sequence through existing submitToolResult seam; duplicate / stale / late results fail closed
 R5 verification: 7 cases / 120 checks / zero network; R2 8 cases / 263 checks; NativeSpeech integration 545 checks; A7 19 suites / 22 entrypoints / 4175 assertions
-Next allowed node: R6 Studio Voice Binding
+R6 binding: current providerDefault only; Provider-private resolution never becomes resident identity or durable data
+R6 future source: Studio VoiceProfile may replace the binding source without changing the Realtime Brain / RuntimeCore main path
+R6 scope: no Studio VoiceProfile production, voice cloning, full-duplex Host audio, interruption, route fallback or real-device claim
+R6 verification: 6 cases / 62 checks / zero network; A7 20 suites / 23 entrypoints / 4238 assertions; macOS clean build and architecture / secret guards PASS
+Next allowed node: R7 Full-duplex Audio Integration
 ```

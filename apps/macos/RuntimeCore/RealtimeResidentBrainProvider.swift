@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated enum RealtimeResidentBrainError: Error, Sendable, Equatable {
     case unavailable
+    case voiceBindingUnavailable
     case invalidIdentity
     case invalidContextRevision
     case invalidAudioFrame
@@ -47,8 +48,78 @@ nonisolated struct RealtimeBrainToolAdvertisement: Sendable, Equatable {
     let parametersJSON: Data
 }
 
+nonisolated struct RuntimeVoiceProviderIdentity:
+    RawRepresentable,
+    Hashable,
+    Sendable {
+    static let activeRealtimeProvider = Self(
+        rawValue: "active-realtime-provider"
+    )
+
+    let rawValue: String
+
+    init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+}
+
+nonisolated enum RuntimeVoiceBindingMode: String, Sendable, Equatable {
+    case providerDefault
+    case providerBuiltIn
+    case providerCustom
+    case providerCloned
+}
+
+nonisolated enum RuntimeVoiceBindingFallback: String, Sendable, Equatable {
+    case providerDefault
+    case failClosed
+}
+
+nonisolated struct RuntimeVoiceBinding: Sendable, Equatable {
+    let identity: RealtimeBrainSessionIdentity
+    let providerIdentity: RuntimeVoiceProviderIdentity
+    let mode: RuntimeVoiceBindingMode
+    let voiceProfileID: String?
+    let providerPrivateVoiceReference: String?
+    let fallback: RuntimeVoiceBindingFallback
+
+    static func providerDefault(
+        identity: RealtimeBrainSessionIdentity
+    ) -> Self {
+        Self(
+            identity: identity,
+            providerIdentity: .activeRealtimeProvider,
+            mode: .providerDefault,
+            voiceProfileID: nil,
+            providerPrivateVoiceReference: nil,
+            fallback: .providerDefault
+        )
+    }
+
+    func rebound(
+        to nextIdentity: RealtimeBrainSessionIdentity
+    ) -> Self? {
+        guard identity.residentID == nextIdentity.residentID,
+              identity.runtimeSessionID == nextIdentity.runtimeSessionID,
+              identity.brainLeaseID == nextIdentity.brainLeaseID,
+              identity.routeEpoch == nextIdentity.routeEpoch,
+              nextIdentity.generation > identity.generation else {
+            return nil
+        }
+        return Self(
+            identity: nextIdentity,
+            providerIdentity: providerIdentity,
+            mode: mode,
+            voiceProfileID: voiceProfileID,
+            providerPrivateVoiceReference: providerPrivateVoiceReference,
+            fallback: fallback
+        )
+    }
+}
+
 nonisolated struct RealtimeBrainOpenSessionCommand: Sendable, Equatable {
     let identity: RealtimeBrainSessionIdentity
+    let voiceBinding: RuntimeVoiceBinding
     let tools: [RealtimeBrainToolAdvertisement]
 
     init(
@@ -56,6 +127,17 @@ nonisolated struct RealtimeBrainOpenSessionCommand: Sendable, Equatable {
         tools: [RealtimeBrainToolAdvertisement] = []
     ) {
         self.identity = identity
+        voiceBinding = .providerDefault(identity: identity)
+        self.tools = tools
+    }
+
+    init(
+        identity: RealtimeBrainSessionIdentity,
+        voiceBinding: RuntimeVoiceBinding,
+        tools: [RealtimeBrainToolAdvertisement] = []
+    ) {
+        self.identity = identity
+        self.voiceBinding = voiceBinding
         self.tools = tools
     }
 }

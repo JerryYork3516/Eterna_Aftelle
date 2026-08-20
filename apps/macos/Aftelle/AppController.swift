@@ -71,7 +71,8 @@ nonisolated private enum StageR3QwenRealtimeBrainConfiguration {
         endpoint: URL(
             string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
         )!,
-        keyRef: ProviderKeychainStore.qwenKeyRef
+        keyRef: ProviderKeychainStore.qwenKeyRef,
+        defaultProviderVoiceID: "Tina"
     )
 }
 

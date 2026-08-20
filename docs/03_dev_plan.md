@@ -352,7 +352,7 @@ R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
 R3 First Realtime Provider Adapter — PASS / FROZEN
 R4 Context / Canonical Turn / Memory Bridge — PASS / FROZEN
 R5 Tool / Permission Bridge — PASS / FROZEN
-R6 Studio Voice Binding
+R6 Realtime Voice Binding Foundation — PASS / FROZEN
 R7 Full-duplex Audio Integration
 R8 Interruption / Turn-taking
 R9 Cascaded Fallback + Regression
@@ -368,6 +368,8 @@ R3 已冻结：内部 `QwenRealtimeResidentBrainAdapter` 通过既有 credential
 R4 已冻结：RuntimeCore Compiler 生成 provider-eligible、有界且确定性的 Realtime bootstrap，并只在 stable boundary 发送单调 `contextRevision` delta。统一 `CanonicalResidentTurn` 绑定 resident / Runtime Session / Brain lease / route epoch / generation / turn / response；Text / Realtime 按 semantic completion，Cascaded / Native 按既有 playback / delivery completion 进入 RuntimeCore-only History / Memory / Relationship 评估。Provider 只提交 Memory / Relationship / Growth candidate，不拥有写权限；`requiresUserConfirmation` 的 Relationship candidate 在确认前不写 evidence，Growth 在 R4 仅作 ephemeral deferred decision。去重只承诺当前 Runtime Session 内 fail-closed，不改 DR / Store schema，也不声称 crash-durable exactly-once。R4 独立测试 4 cases / 81 checks，A7 为 18 suites / 21 entrypoints / 4038 assertions；未进入 R5～R10，下一轮只允许进入 R5。
 
 R5 已冻结：既有 NativeSpeech Tool registry / validation / permission / executor / audit 被泛化为唯一 `RuntimeTool*` 内核，Realtime `ToolCallCandidate` 只能经 RuntimeCore identity / schema / permission gate 后执行，并以原 call / turn / response / lease / epoch / generation identity 经既有 submit result seam 回传。Provider 只接收 Tool 定义广告快照与 result transport，Qwen 私有 wire 在 generation reconnect 重放同一快照，不拥有权限或执行能力。取消、打断、终止与 Session replacement 会失效 pending permission / execution / result delivery；同一 Runtime Session 内 duplicate / stale / late result fail-closed，不宣称 crash-durable exactly-once或外部副作用回滚。当前没有 Text LLM Tool-calling 实现，R5 未复制第二套 Text / Speech / Realtime Tool 系统。R5 独立测试 7 cases / 120 checks，R2 8 cases / 263 checks，Qwen R3/R5 16 cases / 149 checks，NativeSpeech integration 545 checks，A7 19 suites / 22 entrypoints / 4175 assertions；真实 Qwen Tool wire 仍为 Human Gate。未进入 R6～R10，下一轮只允许进入 R6。
+
+R6 已冻结：建立 provider-neutral `RuntimeVoiceBinding` 基础层，当前只启用 `providerDefault`。binding 与 resident、Runtime Session、当前 Provider 及既有 ActiveBrainLease / route epoch / generation identity 关联；具体 Qwen voice identifier 只由 Adapter / Provider configuration / Runtime binding private state 解析，不进入 provider-neutral contract、DR、Memory、Dialogue History 或居民永久身份。Voice Binding 只决定使用哪个声音，不改写 `residentSemanticFinal` / `CanonicalResidentTurn`，不拥有 Runtime、Session、Memory、Tool 或 Permission，也不创建第二 Brain、Runtime 或 resident response。未来 Studio VoiceProfile 只替换 binding source，不要求重构 Realtime Brain 或 RuntimeCore 主链。R6 独立测试 6 cases / 62 checks，Qwen R3/R5/R6 16 cases / 150 checks，A7 20 suites / 23 entrypoints / 4238 assertions，macOS clean build、architecture guard、secret guard 与仓库无污染检查 PASS；真实 Qwen WebSocket 仍为 Human Gate。R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、正式 Capture / Playback 全双工链、自然 interruption / turn-taking、Cascaded 自动 fallback 或真机长会话；下一轮只允许进入 R7。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 

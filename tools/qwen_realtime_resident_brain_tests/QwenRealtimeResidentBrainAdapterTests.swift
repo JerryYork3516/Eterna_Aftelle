@@ -152,7 +152,10 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             initialSession?["modalities"] as? [String] == ["text", "audio"],
             "Qwen session requests text and audio"
         )
-        expect(initialSession?["voice"] as? String == "Tina", "R3 uses temporary adapter-private voice")
+        expect(
+            initialSession?["voice"] as? String == "R6FixtureVoice",
+            "Qwen resolves the neutral binding to its private default voice"
+        )
         expect(
             initialSession?["input_audio_format"] as? String == "pcm"
                 && initialSession?["output_audio_format"] as? String == "pcm",
@@ -859,6 +862,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             initialTools.count == tools.count
                 && replayedToolsJSON == initialToolsJSON,
             "fresh WebSocket replays the identical Runtime Tool snapshot"
+        )
+        expect(
+            initialSession["voice"] as? String == "R6FixtureVoice"
+                && replayedSession["voice"] as? String
+                    == initialSession["voice"] as? String,
+            "fresh WebSocket replays the same private Provider default voice"
         )
         let replayedInstructions = replayedSession["instructions"] as? String
         expect(
@@ -1774,6 +1783,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                         string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
                     )!,
                     keyRef: "keychain://test/qwen",
+                    defaultProviderVoiceID: "R6FixtureVoice",
                     acknowledgementTimeout: .seconds(1)
                 )
             ),

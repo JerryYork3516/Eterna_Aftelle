@@ -2411,6 +2411,7 @@ public final class RuntimeCore {
             try await executionEngine.openRealtimeResidentBrainSession(
                 RealtimeBrainOpenSessionCommand(
                     identity: identity,
+                    voiceBinding: .providerDefault(identity: identity),
                     tools: runtimeToolDefinitions.map {
                         RealtimeBrainToolAdvertisement(
                             name: $0.name,

@@ -8,22 +8,28 @@ nonisolated struct QwenRealtimeResidentBrainConfiguration:
     let endpoint: URL
     let modelID: String
     let keyRef: String
-    let temporaryProviderVoiceID: String
+    let defaultProviderVoiceID: String
     let acknowledgementTimeout: Duration
 
     init(
         endpoint: URL,
         modelID: String = Self.supportedModelID,
         keyRef: String,
-        temporaryProviderVoiceID: String = "Tina",
+        defaultProviderVoiceID: String,
         acknowledgementTimeout: Duration = .seconds(5)
     ) {
         self.endpoint = endpoint
         self.modelID = modelID
         self.keyRef = keyRef
-        self.temporaryProviderVoiceID = temporaryProviderVoiceID
+        self.defaultProviderVoiceID = defaultProviderVoiceID
         self.acknowledgementTimeout = acknowledgementTimeout
     }
+}
+
+nonisolated private struct QwenResolvedRealtimeVoice:
+    Sendable,
+    Equatable {
+    let voiceID: String
 }
 
 nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
@@ -58,11 +64,10 @@ nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
 }
 
 nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
-    let configuration: QwenRealtimeResidentBrainConfiguration
-
     func initialSessionUpdate(
         instructions: String,
-        tools: [RealtimeBrainToolAdvertisement]
+        tools: [RealtimeBrainToolAdvertisement],
+        voice: QwenResolvedRealtimeVoice
     ) throws -> String {
         let toolObjects: [[String: Any]] = try tools.map { tool in
             guard let object = try? JSONSerialization.jsonObject(
@@ -84,7 +89,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
             "type": "session.update",
             "session": [
                 "modalities": ["text", "audio"],
-                "voice": configuration.temporaryProviderVoiceID,
+                "voice": voice.voiceID,
                 "input_audio_format": "pcm",
                 "output_audio_format": "pcm",
                 "instructions": instructions,
@@ -472,7 +477,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
     private let configuration: QwenRealtimeResidentBrainConfiguration
-    private let codec: QwenRealtimeResidentBrainCodec
+    private let codec = QwenRealtimeResidentBrainCodec()
 
     private var lifecycle = Lifecycle.closed
     private var identity: RealtimeBrainSessionIdentity?
@@ -498,6 +503,8 @@ actor QwenRealtimeResidentBrainAdapter:
     private var outputAudioSampleFrames: UInt64 = 0
     private var contextSectionsByScope: [String: String] = [:]
     private var runtimeTools: [RealtimeBrainToolAdvertisement] = []
+    private var runtimeVoiceBinding: RuntimeVoiceBinding?
+    private var resolvedVoice: QwenResolvedRealtimeVoice?
 
     private var turnsByWireItemID:
         [String: TurnBinding] = [:]
@@ -521,7 +528,6 @@ actor QwenRealtimeResidentBrainAdapter:
         self.credentialReader = credentialReader
         self.transport = transport
         self.configuration = configuration
-        codec = QwenRealtimeResidentBrainCodec(configuration: configuration)
     }
 
     func openSession(
@@ -532,10 +538,13 @@ actor QwenRealtimeResidentBrainAdapter:
               terminalTransportCloseTask == nil,
               configuration.modelID
                 == QwenRealtimeResidentBrainConfiguration.supportedModelID,
-              !configuration.keyRef.isEmpty,
-              !configuration.temporaryProviderVoiceID.isEmpty else {
+              !configuration.keyRef.isEmpty else {
             throw RealtimeResidentBrainError.unavailable
         }
+        let resolvedVoice = try resolveVoiceBinding(
+            command.voiceBinding,
+            expectedIdentity: command.identity
+        )
         lifecycle = .opening
         identity = command.identity
         closedSessionIdentity = nil
@@ -543,6 +552,8 @@ actor QwenRealtimeResidentBrainAdapter:
         terminalError = nil
         resetSessionState()
         runtimeTools = command.tools
+        runtimeVoiceBinding = command.voiceBinding
+        self.resolvedVoice = resolvedVoice
 
         do {
             let credential = try readCredential()
@@ -560,7 +571,8 @@ actor QwenRealtimeResidentBrainAdapter:
             }
             try await send(codec.initialSessionUpdate(
                 instructions: "Runtime context bootstrap pending.",
-                tools: runtimeTools
+                tools: runtimeTools,
+                voice: resolvedVoice
             ))
             guard case .sessionUpdated = try await receiveHandshakeEvent()
             else {
@@ -784,7 +796,10 @@ actor QwenRealtimeResidentBrainAdapter:
         clearInput: Bool
     ) async throws {
         guard let current = identity,
-              next.generation > current.generation else {
+              next.generation > current.generation,
+              let nextVoiceBinding = runtimeVoiceBinding?.rebound(
+                to: next
+              ) else {
             throw RealtimeResidentBrainError.invalidIdentity
         }
         guard activeMutationOperations.isEmpty else {
@@ -817,6 +832,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 reason: reason
             )
             identity = next
+            runtimeVoiceBinding = nextVoiceBinding
             resetGenerationStatePreservingTombstones()
             resetWireTombstones()
             connectionToken = nextConnectionToken
@@ -865,9 +881,13 @@ actor QwenRealtimeResidentBrainAdapter:
                 throw RealtimeResidentBrainError.invalidEvent
             }
             try requireOwnedGenerationTransition(expectedIdentity)
+            guard let resolvedVoice else {
+                throw RealtimeResidentBrainError.voiceBindingUnavailable
+            }
             try await send(codec.initialSessionUpdate(
                 instructions: Self.instructions(from: contextSectionsByScope),
-                tools: runtimeTools
+                tools: runtimeTools,
+                voice: resolvedVoice
             ))
             guard case .sessionUpdated = try await receiveHandshakeEvent()
             else {
@@ -1561,6 +1581,8 @@ actor QwenRealtimeResidentBrainAdapter:
         resetWireTombstones()
         contextSectionsByScope.removeAll(keepingCapacity: true)
         runtimeTools.removeAll(keepingCapacity: true)
+        runtimeVoiceBinding = nil
+        resolvedVoice = nil
     }
 
     private func resetWireTombstones() {
@@ -1625,6 +1647,35 @@ actor QwenRealtimeResidentBrainAdapter:
             && lhs.runtimeSessionID == rhs.runtimeSessionID
             && lhs.brainLeaseID == rhs.brainLeaseID
             && lhs.routeEpoch == rhs.routeEpoch
+    }
+
+    private func resolveVoiceBinding(
+        _ binding: RuntimeVoiceBinding,
+        expectedIdentity: RealtimeBrainSessionIdentity
+    ) throws -> QwenResolvedRealtimeVoice {
+        guard binding.identity == expectedIdentity else {
+            throw RealtimeResidentBrainError.invalidIdentity
+        }
+        guard binding.providerIdentity == .activeRealtimeProvider else {
+            throw RealtimeResidentBrainError.voiceBindingUnavailable
+        }
+        let defaultVoiceID = configuration.defaultProviderVoiceID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !defaultVoiceID.isEmpty else {
+            throw RealtimeResidentBrainError.voiceBindingUnavailable
+        }
+        switch binding.mode {
+        case .providerDefault:
+            guard binding.voiceProfileID == nil,
+                  binding.providerPrivateVoiceReference == nil else {
+                throw RealtimeResidentBrainError.voiceBindingUnavailable
+            }
+        case .providerBuiltIn, .providerCustom, .providerCloned:
+            guard binding.fallback == .providerDefault else {
+                throw RealtimeResidentBrainError.voiceBindingUnavailable
+            }
+        }
+        return QwenResolvedRealtimeVoice(voiceID: defaultVoiceID)
     }
 
     private static func map(
