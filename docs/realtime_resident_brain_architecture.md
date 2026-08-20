@@ -1,4 +1,4 @@
-# Realtime Resident Brain Architecture · R0 Freeze
+# Realtime Resident Brain Architecture · R0–R4 Freeze
 
 > 状态：`PASS / FROZEN`
 >
@@ -344,7 +344,7 @@ R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
 R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
 R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
 R3 First Realtime Provider Adapter — PASS / FROZEN
-R4 Context / Canonical Turn / Memory Bridge
+R4 Context / Canonical Turn / Memory Bridge — PASS / FROZEN
 R5 Tool / Permission Bridge
 R6 Studio Voice Binding
 R7 Full-duplex Audio Integration
@@ -363,19 +363,26 @@ R2 仅在既有 RuntimeCore → ExecutionEngine → ProviderRouter 链增加一�
 
 R3 在冻结的 R2 契约后实现内部 `QwenRealtimeResidentBrainAdapter`，以 `qwen3.5-omni-plus-realtime`、既有 Keychain credential reader 和 URLSession WebSocket transport 完成首个真实 Adapter 接缝。Qwen wire 类型、workspace、model、Provider voice 与 session ID 均留在 Adapter / composition 私有边界；RuntimeCore、ExecutionEngine 与 ProviderRouter 的 provider-neutral contract 不变，AppController 不获得 Brain ownership。
 
-Adapter 将 Runtime context、PCM audio、Tool result、cancel / interrupt 与 close 映射到 Qwen wire，并把 transcript、resident text / audio、speaking lifecycle、Tool candidate、interruption proposal、cancel / error 与 completed `response.done` 映射回 R2 event。`residentSemanticFinal` 只来自 completed `response.done`；cancel / interrupt 必须在 generation 前进前等待 `input_audio_buffer.cleared`。离线 Fake wire 套件为 10 cases / 110 checks / zero network；真实 Qwen WebSocket 为 `NOT_RUN / HUMAN_GATE`。已观察 wire ID 会跨 generation tombstone；阿里文档未保证 `input_audio_buffer.cleared` 排空此前未观察到的旧 `response.created`，该极端顺序保持 `NOT_PROVEN_REAL_WIRE`，不得表述为自动化已证明。
+Adapter 将 Runtime context、PCM audio、Tool result、cancel / interrupt 与 close 映射到 Qwen wire，并把 transcript、resident text / audio、speaking lifecycle、Tool candidate、interruption proposal、cancel / error 与 completed `response.done` 映射回 R2 event。`residentSemanticFinal` 只来自 completed `response.done`；cancel / interrupt 必须在 generation 前进前等待 `input_audio_buffer.cleared`。当前离线 Fake wire 套件为 12 cases / 115 checks / zero network；真实 Qwen WebSocket 为 `NOT_RUN / HUMAN_GATE`。已观察 wire ID 会跨 generation tombstone；阿里文档未保证 `input_audio_buffer.cleared` 排空此前未观察到的旧 `response.created`，该极端顺序保持 `NOT_PROVEN_REAL_WIRE`，不得表述为自动化已证明。
 
-R3 未实现完整十三层 continuous projection、durable Memory / History、真实 Tool execution、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；这些能力仍分别留在 R4～R10。
+R4 冻结 RuntimeCore-owned Realtime context bridge：RuntimeCore Compiler 只投影 provider-eligible 十三层 section，以有界、确定性的 bootstrap snapshot 打开 Session，并只在 stable boundary 发送单调 `contextRevision` delta。Provider 不读取 DR、SessionStore 或 Memory Store；Qwen Adapter 只缓存已由 Provider ACK 的私有 context slots，省略 scope 保留、空 scope 清除、显式 scope 替换。
+
+R4 同时冻结 provider-neutral `CanonicalResidentTurn`。其 identity 绑定 resident、Runtime Session、Brain lease、route epoch、generation、turn 与 response；普通文本和 Realtime 在 accepted semantic completion 后提交，Cascaded 与 Native 继续等待既有本地 playback / delivery completion gate。Realtime `residentSemanticFinal` 只证明语义完成，不证明本地音频已播放；后者仍属于 R7。
+
+Narrative Memory、Relationship 与 Growth 只由 Provider 产生带完整 event identity 的 candidate。RuntimeCore 在 canonical claim 成功后才把 Memory / Relationship candidate 映射到既有评估路径；candidate confidence 不是写权限。Growth 在 R4 仅记录 ephemeral `deferred` 决策，不写长期状态。History / Memory persistence 仍只有 RuntimeCore 可触发；同一 Runtime Session 内按 stable turn / response key fail-closed 去重，未修改 Store schema，因此不宣称 crash / restart 后的 durable exactly-once。
+
+R4 未实现真实 Tool execution / Permission、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；这些能力仍分别留在 R5～R10。
 
 ---
 
-## R0–R3 Freeze Result
+## R0–R4 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
 R1 = PASS / FROZEN
 R2 = PASS / FROZEN
 R3 = PASS / FROZEN
+R4 = PASS / FROZEN
 
 Single Runtime authority: RuntimeCore
 Max active Brain per Runtime Session: 1
@@ -391,7 +398,11 @@ R2 contract: RealtimeResidentBrainProvider with provider-neutral commands, event
 R2 routing seam: existing RuntimeCore → ExecutionEngine → ProviderRouter only
 R2 network dependency: zero; Fake Provider only
 R3 adapter: internal QwenRealtimeResidentBrainAdapter; Qwen wire stays private
-R3 verification: 10 cases / 110 checks / zero-network fixtures; real WebSocket HUMAN_GATE
+R3 verification: 12 cases / 115 checks / zero-network fixtures; real WebSocket HUMAN_GATE
 R3 known wire risk: unseen-old response.created ordering is NOT_PROVEN_REAL_WIRE
-Next allowed node: R4 Context / Canonical Turn / Memory Bridge
+R4 context: RuntimeCore-compiled provider-eligible bootstrap + monotonic delta at stable boundaries
+R4 canonical turn: one provider-neutral identity; semantic completion for Text / Realtime, delivery completion for Cascaded / Native
+R4 persistence: RuntimeCore-only History / Memory / Relationship evaluation; runtime-session-local dedupe; no Store schema change
+R4 verification: 4 cases / 81 checks; R2 8 cases / 261 checks; A7 18 suites / 21 entrypoints / 3975 assertions
+Next allowed node: R5 Tool / Permission Bridge
 ```

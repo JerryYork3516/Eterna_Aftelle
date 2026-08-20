@@ -968,14 +968,14 @@ nonisolated enum NativeSpeechEventDisposition: Equatable {
     case rejectedOutOfOrder
 }
 
-nonisolated enum RuntimeBrainRoute: String, Sendable, Equatable {
+nonisolated enum RuntimeBrainRoute: String, Sendable, Hashable {
     case textConversation
     case cascadedSpeech
     case nativeSpeech
     case realtimeResidentBrain
 }
 
-nonisolated enum RuntimeBrainGeneration: Sendable, Equatable {
+nonisolated enum RuntimeBrainGeneration: Sendable, Hashable {
     case textRequest(UUID)
     case speechRoute(UInt64)
     case nativeInteraction(NativeSpeechInteractionID)
@@ -995,6 +995,34 @@ nonisolated struct ActiveBrainLease: Sendable, Equatable {
     let routeEpoch: UInt64
     let generation: RuntimeBrainGeneration
     let state: RuntimeBrainLeaseState
+}
+
+nonisolated enum CanonicalResidentTurnCompletionState:
+    String,
+    Sendable,
+    Equatable {
+    case semanticCompleted
+    case deliveryCompleted
+}
+
+nonisolated struct CanonicalResidentTurnIdentity: Sendable, Hashable {
+    let residentID: String
+    let runtimeSessionID: String
+    let brainLeaseID: UUID
+    let route: RuntimeBrainRoute
+    let routeEpoch: UInt64
+    let generation: RuntimeBrainGeneration
+    let turnID: String
+    let responseID: String
+}
+
+nonisolated struct CanonicalResidentTurn: Sendable, Equatable {
+    let identity: CanonicalResidentTurnIdentity
+    let userInputReference: String
+    let residentResponseText: String
+    let completionState: CanonicalResidentTurnCompletionState
+    let contextRevision: UInt64?
+    let providerEventSequence: UInt64?
 }
 
 nonisolated final class RuntimeActiveBrainLeaseGate:
@@ -1422,6 +1450,40 @@ public final class RuntimeCore {
         let reply: RuntimeResidentReply
         let session: RuntimeSessionContext
         let interactionID: UUID?
+        let canonicalTurnID: String
+        let canonicalResponseID: String
+    }
+
+    private struct RealtimeBrainContextBridgeState {
+        var identity: RealtimeBrainSessionIdentity
+        var contextRevision: UInt64
+        var sectionsByScope: [RealtimeBrainContextScope: String]
+        var sourceRevision: UInt64
+        var currentUserInput: String
+    }
+
+    private struct RealtimeBrainPendingTurnKey: Hashable {
+        let session: RealtimeBrainSessionIdentity
+        let turnID: RealtimeBrainTurnID
+    }
+
+    private struct CanonicalResidentResponseKey: Hashable {
+        let residentID: String
+        let runtimeSessionID: String
+        let turnID: String
+        let responseID: String
+    }
+
+    private enum CanonicalResidentTurnCommitOutcome {
+        case committed
+        case persistenceFailed
+    }
+
+    private struct RuntimeRealtimeGrowthObservationDecision: Equatable {
+        let observation: String
+        let confidence: Double
+        let decision: String
+        let reason: String
     }
 
     private struct NativeSpeechTurnCommitIdentity: Equatable {
@@ -1506,6 +1568,18 @@ public final class RuntimeCore {
         RuntimeRealtimeBrainSessionGate()
     private var runtimeSessionReplacementCleanupTask: Task<Void, Never>?
     private var realtimeBrainGeneration: UInt64 = 0
+    private var realtimeBrainContextBridgeState:
+        RealtimeBrainContextBridgeState?
+    private var realtimeBrainPendingUserInputs:
+        [RealtimeBrainPendingTurnKey: String] = [:]
+    private var canonicalTurnCommitSessionID: String?
+    private var canonicalResponseCommitClaims:
+        Set<CanonicalResidentResponseKey> = []
+    private var canonicalResponseCommitOutcomes:
+        [CanonicalResidentResponseKey:
+            CanonicalResidentTurnCommitOutcome] = [:]
+    private var lastRealtimeGrowthObservationDecisions:
+        [RuntimeRealtimeGrowthObservationDecision] = []
     private var speechRouteGeneration: UInt64 = 0
     private var speechRouteASRFinalState: SpeechRouteASRFinalState?
     private var speechRoutePendingTurn: SpeechRoutePendingTurn?
@@ -1660,6 +1734,105 @@ public final class RuntimeCore {
             routeEpoch: lease.routeEpoch,
             generation: generation
         )
+    }
+
+    private func canonicalResidentTurn(
+        lease: ActiveBrainLease,
+        turnID: String,
+        responseID: String,
+        userInputReference: String,
+        residentResponseText: String,
+        completionState: CanonicalResidentTurnCompletionState,
+        contextRevision: UInt64? = nil,
+        providerEventSequence: UInt64? = nil
+    ) -> CanonicalResidentTurn {
+        CanonicalResidentTurn(
+            identity: CanonicalResidentTurnIdentity(
+                residentID: lease.residentID,
+                runtimeSessionID: lease.runtimeSessionID,
+                brainLeaseID: lease.brainLeaseID,
+                route: lease.route,
+                routeEpoch: lease.routeEpoch,
+                generation: lease.generation,
+                turnID: turnID,
+                responseID: responseID
+            ),
+            userInputReference: userInputReference,
+            residentResponseText: residentResponseText,
+            completionState: completionState,
+            contextRevision: contextRevision,
+            providerEventSequence: providerEventSequence
+        )
+    }
+
+    private func resetCanonicalTurnCommitState(
+        for runtimeSessionID: String?
+    ) {
+        guard canonicalTurnCommitSessionID != runtimeSessionID else {
+            return
+        }
+        canonicalTurnCommitSessionID = runtimeSessionID
+        canonicalResponseCommitClaims.removeAll(keepingCapacity: true)
+        canonicalResponseCommitOutcomes.removeAll(keepingCapacity: true)
+    }
+
+    @discardableResult
+    private func commitCanonicalResidentTurn(
+        _ turn: CanonicalResidentTurn,
+        lease: ActiveBrainLease,
+        session: RuntimeSessionContext,
+        lastActivity: String? = nil,
+        avatarState: AvatarState? = nil
+    ) -> Bool {
+        let userInput = turn.userInputReference.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let residentResponse = turn.residentResponseText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !userInput.isEmpty,
+              !residentResponse.isEmpty,
+              sessionContext == session,
+              session.residentID == turn.identity.residentID,
+              session.sessionID.rawValue == turn.identity.runtimeSessionID,
+              turn.identity.brainLeaseID == lease.brainLeaseID,
+              turn.identity.route == lease.route,
+              turn.identity.routeEpoch == lease.routeEpoch,
+              turn.identity.generation == lease.generation,
+              activeBrainLeaseGate.isCurrent(lease) else {
+            return false
+        }
+        resetCanonicalTurnCommitState(
+            for: session.sessionID.rawValue
+        )
+        let responseKey = CanonicalResidentResponseKey(
+            residentID: turn.identity.residentID,
+            runtimeSessionID: turn.identity.runtimeSessionID,
+            turnID: turn.identity.turnID,
+            responseID: turn.identity.responseID
+        )
+        guard canonicalResponseCommitOutcomes[responseKey] == nil,
+              !canonicalResponseCommitClaims.contains(responseKey) else {
+            return false
+        }
+        canonicalResponseCommitClaims.insert(responseKey)
+        defer {
+            canonicalResponseCommitClaims.remove(responseKey)
+        }
+        let persisted = persistResidentDialogueExchange(
+            userInput: userInput,
+            residentReply: residentResponse,
+            session: session,
+            lastActivity: lastActivity,
+            avatarState: avatarState
+        )
+        let outcome: CanonicalResidentTurnCommitOutcome = persisted
+            ? .committed : .persistenceFailed
+        canonicalResponseCommitOutcomes[responseKey] = outcome
+        guard persisted else {
+            return false
+        }
+        realtimeSpeechContextSourceRevision &+= 1
+        return true
     }
 
     private func releaseNativeSpeechBrainLease(
@@ -1852,6 +2025,214 @@ public final class RuntimeCore {
     }
 
     #endif
+
+    private static let realtimeBrainContextScopeOrder:
+        [RealtimeBrainContextScope] = [
+            .stableResident,
+            .dynamicSession,
+            .memoryDelta,
+            .relationshipDelta
+        ]
+
+    private func resetRealtimeBrainRuntimeBridge() {
+        realtimeBrainContextBridgeState = nil
+        realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        lastRealtimeGrowthObservationDecisions.removeAll(
+            keepingCapacity: true
+        )
+    }
+
+    private func latestRealtimeBrainContextInput() -> String {
+        recentDialogueMessages(limit: Self.recentDialogueMessageLimit)
+            .last(where: { $0.role == "user" })?.text ?? ""
+    }
+
+    private func compileRealtimeBrainContextScopes(
+        currentUserInput: String,
+        includesDynamicContent: Bool
+    ) throws -> [RealtimeBrainContextScope: String] {
+        guard let session = sessionContext,
+              let compiledContext = compiledResidentDialogueContext(
+                currentUserInput: currentUserInput
+              ) else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        let snapshot = try realtimeSpeechContextCompiler
+            .compileProviderContext(
+                context: compiledContext.context,
+                residentID: session.residentID,
+                runtimeSessionID: session.sessionID.rawValue,
+                includesDynamicContent: includesDynamicContent
+            )
+        guard snapshot.isBound(
+            residentID: session.residentID,
+            runtimeSessionID: session.sessionID.rawValue
+        ) else {
+            throw RealtimeResidentBrainError.invalidIdentity
+        }
+        var grouped = Dictionary(
+            uniqueKeysWithValues: Self.realtimeBrainContextScopeOrder.map {
+                ($0, [RealtimeSpeechContextSection]())
+            }
+        )
+        for section in snapshot.sections {
+            let scope: RealtimeBrainContextScope
+            switch section.source {
+            case .recentDialogue:
+                scope = .dynamicSession
+            case .residentLayer(let layer):
+                guard RealtimeSpeechContextContract.policy(for: layer)
+                    .providerEligible else {
+                    continue
+                }
+                switch layer {
+                case .memory:
+                    scope = .memoryDelta
+                case .relationship:
+                    scope = .relationshipDelta
+                default:
+                    scope = section.scope == .sessionBase
+                        ? .stableResident : .dynamicSession
+                }
+            }
+            grouped[scope, default: []].append(section)
+        }
+        return Dictionary(uniqueKeysWithValues:
+            Self.realtimeBrainContextScopeOrder.map { scope in
+                let content = grouped[scope, default: []].map {
+                    "[\($0.id)]\n\($0.text)"
+                }.joined(separator: "\n\n")
+                return (scope, content)
+            }
+        )
+    }
+
+    private func realtimeBrainContextUpdateSections(
+        scopes: [RealtimeBrainContextScope: String],
+        previous: [RealtimeBrainContextScope: String]?
+    ) -> [RealtimeBrainContextSection] {
+        Self.realtimeBrainContextScopeOrder.compactMap { scope in
+            let content = scopes[scope] ?? ""
+            guard previous == nil || previous?[scope] != content else {
+                return nil
+            }
+            return RealtimeBrainContextSection(
+                scope: scope,
+                content: content
+            )
+        }
+    }
+
+    @MainActor
+    func startRealtimeResidentBrainSession() async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        let opened = await openRealtimeResidentBrainSession()
+        guard case .success(let identity) = opened else { return opened }
+        let currentUserInput = latestRealtimeBrainContextInput()
+        let scopes: [RealtimeBrainContextScope: String]
+        do {
+            scopes = try compileRealtimeBrainContextScopes(
+                currentUserInput: currentUserInput,
+                includesDynamicContent: !currentUserInput
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
+            )
+        } catch let error as RealtimeResidentBrainError {
+            _ = await closeRealtimeResidentBrainSession(identity: identity)
+            return .failure(error)
+        } catch {
+            _ = await closeRealtimeResidentBrainSession(identity: identity)
+            return .failure(.providerFailure)
+        }
+        let update = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .bootstrap,
+            contextRevision: 1,
+            sections: realtimeBrainContextUpdateSections(
+                scopes: scopes,
+                previous: nil
+            )
+        )
+        switch await updateRealtimeResidentBrainContext(update) {
+        case .failure(let error):
+            if currentRealtimeBrainLease(identity: identity) == nil {
+                realtimeBrainContextBridgeState = nil
+            }
+            return .failure(error)
+        case .success:
+            realtimeBrainContextBridgeState =
+                RealtimeBrainContextBridgeState(
+                    identity: identity,
+                    contextRevision: 1,
+                    sectionsByScope: scopes,
+                    sourceRevision: realtimeSpeechContextSourceRevision,
+                    currentUserInput: currentUserInput
+                )
+            return .success(identity)
+        }
+    }
+
+    @MainActor
+    func refreshRealtimeResidentBrainContext(
+        identity: RealtimeBrainSessionIdentity,
+        currentUserInput: String
+    ) async -> Result<UInt64, RealtimeResidentBrainError> {
+        guard var bridge = realtimeBrainContextBridgeState,
+              bridge.identity == identity,
+              currentRealtimeBrainLease(identity: identity) != nil else {
+            return .failure(.invalidIdentity)
+        }
+        if bridge.sourceRevision == realtimeSpeechContextSourceRevision,
+           bridge.currentUserInput == currentUserInput {
+            return .success(bridge.contextRevision)
+        }
+        let scopes: [RealtimeBrainContextScope: String]
+        do {
+            scopes = try compileRealtimeBrainContextScopes(
+                currentUserInput: currentUserInput,
+                includesDynamicContent: !currentUserInput
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
+            )
+        } catch let error as RealtimeResidentBrainError {
+            return .failure(error)
+        } catch {
+            return .failure(.providerFailure)
+        }
+        let changedSections = realtimeBrainContextUpdateSections(
+            scopes: scopes,
+            previous: bridge.sectionsByScope
+        )
+        guard !changedSections.isEmpty else {
+            bridge.sourceRevision = realtimeSpeechContextSourceRevision
+            bridge.currentUserInput = currentUserInput
+            realtimeBrainContextBridgeState = bridge
+            return .success(bridge.contextRevision)
+        }
+        let nextRevision = bridge.contextRevision &+ 1
+        let update = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .delta,
+            contextRevision: nextRevision,
+            sections: changedSections
+        )
+        switch await updateRealtimeResidentBrainContext(update) {
+        case .failure(let error):
+            if currentRealtimeBrainLease(identity: identity) == nil {
+                realtimeBrainContextBridgeState = nil
+            }
+            return .failure(error)
+        case .success:
+            bridge.contextRevision = nextRevision
+            bridge.sectionsByScope = scopes
+            bridge.sourceRevision = realtimeSpeechContextSourceRevision
+            bridge.currentUserInput = currentUserInput
+            realtimeBrainContextBridgeState = bridge
+            return .success(nextRevision)
+        }
+    }
 
     @MainActor
     func openRealtimeResidentBrainSession() async -> Result<
@@ -2271,6 +2652,9 @@ public final class RuntimeCore {
             return .failure(.transportFailure)
         }
         activeBrainLeaseGate.release(terminalLease)
+        if realtimeBrainContextBridgeState?.identity == identity {
+            resetRealtimeBrainRuntimeBridge()
+        }
         return .success(())
     }
 
@@ -2280,8 +2664,52 @@ public final class RuntimeCore {
         identity: RealtimeBrainSessionIdentity,
         lease: ActiveBrainLease
     ) async -> RealtimeBrainEventDisposition {
-        guard case .accepted(let event) = disposition,
-              event.kind == .sessionClosed else {
+        if disposition == .rejectedBufferOverflow {
+            await settleFailedRealtimeBrainSession(
+                identity: identity,
+                lease: lease
+            )
+            return disposition
+        }
+        guard case .accepted(let event) = disposition else {
+            return disposition
+        }
+        switch event.kind {
+        case .userTranscriptFinal(let transcript):
+            if let turnID = event.identity.turnID {
+                let key = RealtimeBrainPendingTurnKey(
+                    session: event.identity.session,
+                    turnID: turnID
+                )
+                if realtimeBrainPendingUserInputs[key] == nil {
+                    realtimeBrainPendingUserInputs[key] = transcript
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+            return disposition
+        case .residentSemanticFinal(let output):
+            await acceptRealtimeCanonicalResidentTurn(
+                event: event,
+                output: output,
+                identity: identity,
+                lease: lease
+            )
+            return disposition
+        case .error:
+            removeRealtimePendingTurn(for: event.identity)
+            return disposition
+        case .cancelled:
+            if event.identity.turnID == nil {
+                realtimeBrainPendingUserInputs.removeAll(
+                    keepingCapacity: true
+                )
+            } else {
+                removeRealtimePendingTurn(for: event.identity)
+            }
+            return disposition
+        case .sessionClosed:
+            realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        default:
             return disposition
         }
         guard let terminalLease = activeBrainLeaseGate.beginSettlement(
@@ -2310,7 +2738,117 @@ public final class RuntimeCore {
             )
         }
         activeBrainLeaseGate.release(terminalLease)
+        if realtimeBrainContextBridgeState?.identity == identity {
+            resetRealtimeBrainRuntimeBridge()
+        }
         return disposition
+    }
+
+    private func removeRealtimePendingTurn(
+        for identity: RealtimeBrainEventIdentity
+    ) {
+        guard let turnID = identity.turnID else { return }
+        realtimeBrainPendingUserInputs.removeValue(
+            forKey: RealtimeBrainPendingTurnKey(
+                session: identity.session,
+                turnID: turnID
+            )
+        )
+    }
+
+    @MainActor
+    private func acceptRealtimeCanonicalResidentTurn(
+        event: RealtimeResidentBrainEvent,
+        output: RealtimeBrainSemanticOutput,
+        identity: RealtimeBrainSessionIdentity,
+        lease: ActiveBrainLease
+    ) async {
+        guard let turnID = event.identity.turnID,
+              let responseID = event.identity.responseID,
+              let session = sessionContext,
+              event.identity.session == identity,
+              let userInput = realtimeBrainPendingUserInputs.removeValue(
+                forKey: RealtimeBrainPendingTurnKey(
+                    session: identity,
+                    turnID: turnID
+                )
+              ) else {
+            return
+        }
+        let turn = canonicalResidentTurn(
+            lease: lease,
+            turnID: turnID.rawValue.uuidString.lowercased(),
+            responseID: responseID.rawValue.uuidString.lowercased(),
+            userInputReference: userInput,
+            residentResponseText: output.canonicalText,
+            completionState: .semanticCompleted,
+            contextRevision: event.identity.contextRevision,
+            providerEventSequence: event.sequence
+        )
+        guard commitCanonicalResidentTurn(
+            turn,
+            lease: lease,
+            session: session
+        ) else {
+            return
+        }
+
+        let relationshipControl = relationshipUserControl(for: userInput)
+        if relationshipControl != nil {
+            _ = applyRelationshipUserControl(relationshipControl)
+        } else {
+            _ = evaluateRelationshipEvidence(
+                output.relationshipEvidenceCandidates.map {
+                    ProviderRelationshipEvidenceCandidate(
+                        evidenceType: $0.evidenceType,
+                        evidenceDetected: $0.evidenceDetected,
+                        evidenceSource: $0.evidenceSource,
+                        requiresUserConfirmation:
+                            $0.requiresUserConfirmation
+                    )
+                }
+            )
+        }
+        let memoryControl = narrativeMemoryUserControl(for: userInput)
+        _ = applyNarrativeMemoryUserControl(
+            memoryControl,
+            input: userInput,
+            residentID: session.residentID
+        )
+        _ = evaluateNarrativeMemoryCandidates(
+            output.narrativeMemoryCandidates.map {
+                ProviderNarrativeMemoryCandidate(
+                    candidateID: $0.candidateID,
+                    memoryType: $0.memoryType,
+                    summary: $0.summary,
+                    sourceTurnIDs: [
+                        turnID.rawValue.uuidString.lowercased()
+                    ],
+                    consentSignal: $0.consentSignal,
+                    sensitivityFlags: $0.sensitivityFlags,
+                    evidenceSource: $0.evidenceSource,
+                    inputClassification: $0.inputClassification
+                )
+            },
+            session: session,
+            userControl: memoryControl
+        )
+        lastRealtimeGrowthObservationDecisions =
+            output.growthObservationCandidates.map {
+                RuntimeRealtimeGrowthObservationDecision(
+                    observation: $0.observation,
+                    confidence: $0.confidence,
+                    decision: "deferred",
+                    reason: "growth_algorithm_outside_r4"
+                )
+            }
+
+        if realtimeBrainContextBridgeState?.identity == identity {
+            _ = await refreshRealtimeResidentBrainContext(
+                identity: identity,
+                currentUserInput: userInput
+            )
+        }
     }
 
     @MainActor
@@ -2340,6 +2878,9 @@ public final class RuntimeCore {
             sessionGate: realtimeBrainSessionGate
         ) == .closed {
             activeBrainLeaseGate.release(terminalLease)
+            if realtimeBrainContextBridgeState?.identity == identity {
+                resetRealtimeBrainRuntimeBridge()
+            }
         }
     }
 
@@ -2371,6 +2912,12 @@ public final class RuntimeCore {
         ) else {
             return .failure(.cancelled)
         }
+        if var bridge = realtimeBrainContextBridgeState,
+           bridge.identity == identity {
+            bridge.identity = nextIdentity
+            realtimeBrainContextBridgeState = bridge
+        }
+        realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
         realtimeBrainGeneration = nextIdentity.generation
         return .success(nextIdentity)
     }
@@ -2555,7 +3102,9 @@ public final class RuntimeCore {
                 inputText: inputText,
                 reply: reply,
                 session: sessionContext,
-                interactionID: interactionID
+                interactionID: interactionID,
+                canonicalTurnID: UUID().uuidString.lowercased(),
+                canonicalResponseID: UUID().uuidString.lowercased()
             )
             return .success(SpeechRouteTurnResult(
                 generation: event.generation,
@@ -2694,6 +3243,25 @@ public final class RuntimeCore {
         }
         speechRoutePendingTurn = nil
 
+        guard commitCanonicalResidentTurn(
+            canonicalResidentTurn(
+                lease: brainLease,
+                turnID: pendingTurn.canonicalTurnID,
+                responseID: pendingTurn.canonicalResponseID,
+                userInputReference: pendingTurn.inputText,
+                residentResponseText: pendingTurn.reply.replyText,
+                completionState: .deliveryCompleted
+            ),
+            lease: brainLease,
+            session: pendingTurn.session
+        ) else {
+            completeSpeechRoutePersistence(
+                interactionID: pendingTurn.interactionID,
+                succeeded: false
+            )
+            activeBrainLeaseGate.release(brainLease)
+            return .failure(.transportFailure)
+        }
         let relationshipControl = relationshipUserControl(
             for: pendingTurn.inputText
         )
@@ -2721,17 +3289,6 @@ public final class RuntimeCore {
             pendingTurn.reply.expression,
             expectedSession: pendingTurn.session
         )
-        guard persistResidentDialogueExchange(
-            userInput: pendingTurn.inputText,
-            residentReply: pendingTurn.reply.replyText,
-            session: pendingTurn.session
-        ) else {
-            completeSpeechRoutePersistence(
-                interactionID: pendingTurn.interactionID,
-                succeeded: false
-            )
-            return .failure(.transportFailure)
-        }
         completeSpeechRoutePersistence(
             interactionID: pendingTurn.interactionID,
             succeeded: true
@@ -2976,6 +3533,7 @@ public final class RuntimeCore {
             }
 
             beginRuntimeSessionReplacement()
+            resetRealtimeBrainRuntimeBridge()
             let sessionID = RuntimeSessionID.make()
             let identityProjection = RuntimeResidentIdentityProjection(loadedDR: loadedDR)
             let memoryPolicyProjection = RuntimeMemoryPolicyProjection(loadedDR: loadedDR)
@@ -2992,6 +3550,7 @@ public final class RuntimeCore {
             resetRealtimeSpeechState()
             realtimeSpeechContextSourceRevision &+= 1
             sessionContext = RuntimeSessionContext(residentID: loadedDR.residentID, sessionID: sessionID)
+            resetCanonicalTurnCommitState(for: sessionID.rawValue)
             activeExpressionRequestID = nil
             invalidateNativeSpeechInput()
             cancellationState = .none
@@ -3109,12 +3668,14 @@ public final class RuntimeCore {
         let avatarActivityHint = displayCache?.avatarActivityHint ?? ""
         let avatarParticleHint = displayCache?.avatarParticleHint ?? ""
         beginRuntimeSessionReplacement()
+        resetRealtimeBrainRuntimeBridge()
         nativeSpeechInteractionGate.clear()
         resetRealtimeSpeechState()
         sessionContext = RuntimeSessionContext(
             residentID: record.residentID,
             sessionID: RuntimeSessionID(rawValue: record.sessionID)
         )
+        resetCanonicalTurnCommitState(for: record.sessionID)
         activeExpressionRequestID = nil
         invalidateNativeSpeechInput()
         cancellationState = .none
@@ -3288,11 +3849,12 @@ public final class RuntimeCore {
             residentID: request.residentID,
             sessionID: sessionID
         )
+        let requestID = UUID()
         guard let brainLease = activeBrainLeaseGate.acquire(
             residentID: session.residentID,
             runtimeSessionID: session.sessionID.rawValue,
             route: .textConversation,
-            generation: .textRequest(UUID()),
+            generation: .textRequest(requestID),
             replacingCurrentRoute: true
         ) else {
             return executionEngine.step(
@@ -3312,17 +3874,24 @@ public final class RuntimeCore {
             cancellationState: pendingCancellation
         )
         sessionContext = session
+        resetCanonicalTurnCommitState(for: sessionID.rawValue)
         response.residentState.sessionID = sessionID.rawValue
-        markSessionUnclean(
-            lastUserInput: request.inputText,
-            lastResidentOutput: response.outputText,
-            lastActivity: response.residentState.lastActivitySummary,
-            avatarState: response.avatarState,
-            dialogueEntries: [
-                RuntimeDialogueEntryState(role: "user", text: request.inputText, timestamp: response.residentState.lastUpdatedAt),
-                RuntimeDialogueEntryState(role: "resident", text: response.outputText, timestamp: response.residentState.lastUpdatedAt)
-            ]
-        )
+        if !response.cancellationState.isCancelled {
+            _ = commitCanonicalResidentTurn(
+                canonicalResidentTurn(
+                    lease: brainLease,
+                    turnID: requestID.uuidString.lowercased(),
+                    responseID: UUID().uuidString.lowercased(),
+                    userInputReference: request.inputText,
+                    residentResponseText: response.outputText,
+                    completionState: .semanticCompleted
+                ),
+                lease: brainLease,
+                session: session,
+                lastActivity: response.residentState.lastActivitySummary,
+                avatarState: response.avatarState
+            )
+        }
         return response
     }
 
@@ -5568,9 +6137,9 @@ public final class RuntimeCore {
               let session = sessionContext,
               session.residentID == interaction.residentID,
               session.sessionID.rawValue == interaction.sessionID,
-              currentNativeSpeechBrainLease(
+              let brainLease = currentNativeSpeechBrainLease(
                 interaction: interaction
-              ) != nil else {
+              ) else {
             return
         }
         let identity = NativeSpeechTurnCommitIdentity(
@@ -5581,11 +6150,25 @@ public final class RuntimeCore {
         guard lastCommittedNativeSpeechTurn != identity else { return }
         lastCommittedNativeSpeechTurn = identity
 
-        _ = persistResidentDialogueExchange(
-            userInput: userFinal,
-            residentReply: residentFinal,
+        let nativeTurnID = [
+            interaction.id.rawValue.uuidString.lowercased(),
+            String(completed.turnNumber),
+            String(completed.turnGeneration)
+        ].joined(separator: ":")
+        guard commitCanonicalResidentTurn(
+            canonicalResidentTurn(
+                lease: brainLease,
+                turnID: nativeTurnID,
+                responseID: "\(nativeTurnID):response",
+                userInputReference: userFinal,
+                residentResponseText: residentFinal,
+                completionState: .deliveryCompleted
+            ),
+            lease: brainLease,
             session: session
-        )
+        ) else {
+            return
+        }
         let toolIdentity = NativeSpeechToolTurnIdentity(
             interactionID: identity.interactionID,
             turnNumber: identity.turnNumber,
@@ -5601,7 +6184,6 @@ public final class RuntimeCore {
             )
         }
         pruneCompletedNativeSpeechToolCallHistory(toolIdentity)
-        realtimeSpeechContextSourceRevision &+= 1
     }
 
     private func pruneCompletedNativeSpeechToolCallHistory(
@@ -6967,6 +7549,7 @@ public final class RuntimeCore {
         }
 
         let expressionRequestID = UUID()
+        let residentResponseID = UUID()
         let brainLease: ActiveBrainLease
         let ownsBrainLease: Bool
         if let inheritedBrainLease {
@@ -7164,26 +7747,36 @@ public final class RuntimeCore {
         #endif
         if case .success(let reply) = result,
            !defersSuccessfulCommit {
-            _ = commitExpressionResult(
-                reply.expression,
-                expectedSession: sessionAtStart
+            let canonicalTurn = canonicalResidentTurn(
+                lease: brainLease,
+                turnID: expressionRequestID.uuidString.lowercased(),
+                responseID: residentResponseID.uuidString.lowercased(),
+                userInputReference: inputText,
+                residentResponseText: reply.replyText,
+                completionState: .semanticCompleted
             )
-            if relationshipControl == nil {
-                relationshipDecision = evaluateRelationshipEvidence(
-                    reply.relationshipEvidenceCandidates
-                )
-            }
-            narrativeMemoryDecisions =
-                evaluateNarrativeMemoryCandidates(
-                    reply.narrativeMemoryCandidates,
-                    session: sessionAtStart,
-                    userControl: narrativeMemoryControl
-                )
-            sessionWriteSucceeded = persistResidentDialogueExchange(
-                userInput: inputText,
-                residentReply: reply.replyText,
+            sessionWriteSucceeded = commitCanonicalResidentTurn(
+                canonicalTurn,
+                lease: brainLease,
                 session: sessionAtStart
             )
+            if sessionWriteSucceeded {
+                _ = commitExpressionResult(
+                    reply.expression,
+                    expectedSession: sessionAtStart
+                )
+                if relationshipControl == nil {
+                    relationshipDecision = evaluateRelationshipEvidence(
+                        reply.relationshipEvidenceCandidates
+                    )
+                }
+                narrativeMemoryDecisions =
+                    evaluateNarrativeMemoryCandidates(
+                        reply.narrativeMemoryCandidates,
+                        session: sessionAtStart,
+                        userControl: narrativeMemoryControl
+                    )
+            }
         }
         let providerSucceeded: Bool
         if case .success = result {
@@ -7267,13 +7860,17 @@ public final class RuntimeCore {
     private func persistResidentDialogueExchange(
         userInput: String,
         residentReply: String,
-        session: RuntimeSessionContext
+        session: RuntimeSessionContext,
+        lastActivity activityOverride: String? = nil,
+        avatarState: AvatarState? = nil
     ) -> Bool {
         guard sessionContext == session else { return false }
         var writeSucceeded = true
         let now = Date()
         let existingRecord = try? sessionStore.load(sessionID: session.sessionID.rawValue)
-        let lastActivity = existingRecord?.lastActivity ?? ""
+        let lastActivity = activityOverride
+            ?? existingRecord?.lastActivity
+            ?? ""
         let record = SessionStoreRecord(
             schemaVersion: existingRecord?.schemaVersion ?? SessionStore.schemaVersion,
             residentID: session.residentID,
@@ -7320,11 +7917,21 @@ public final class RuntimeCore {
                 lastUserInput: userInput,
                 lastResidentOutput: residentReply,
                 lastActivity: lastActivity,
-                avatarMode: displayCache?.avatarMode ?? "idle",
-                avatarPresence: displayCache?.avatarPresence ?? "unknown",
-                avatarMoodHint: displayCache?.avatarMoodHint ?? "",
-                avatarActivityHint: displayCache?.avatarActivityHint ?? "",
-                avatarParticleHint: displayCache?.avatarParticleHint ?? "",
+                avatarMode: avatarState?.mode
+                    ?? displayCache?.avatarMode
+                    ?? "idle",
+                avatarPresence: avatarState?.presence
+                    ?? displayCache?.avatarPresence
+                    ?? "unknown",
+                avatarMoodHint: avatarState?.moodHint
+                    ?? displayCache?.avatarMoodHint
+                    ?? "",
+                avatarActivityHint: avatarState?.activityHint
+                    ?? displayCache?.avatarActivityHint
+                    ?? "",
+                avatarParticleHint: avatarState?.particleHint
+                    ?? displayCache?.avatarParticleHint
+                    ?? "",
                 shutdownState: record.shutdownState,
                 recoveryRequired: record.recoveryRequired,
                 recoveredAt: record.recoveredAt,
@@ -7392,6 +7999,15 @@ public final class RuntimeCore {
 
     func realtimeSpeechContextSourceRevisionForTesting() -> UInt64 {
         realtimeSpeechContextSourceRevision
+    }
+
+    func realtimeGrowthObservationDecisionCountForTesting() -> Int {
+        lastRealtimeGrowthObservationDecisions.count
+    }
+
+    func realtimeGrowthObservationDecisionReasonsForTesting()
+        -> [String] {
+        lastRealtimeGrowthObservationDecisions.map(\.reason)
     }
 
     func useRelationshipStateStoreForTesting(
@@ -7489,6 +8105,7 @@ public final class RuntimeCore {
 
     func clearDialogueTestData() throws -> String? {
         beginRuntimeSessionReplacement()
+        resetRealtimeBrainRuntimeBridge()
         let residentID = currentResidentIdentity?.residentID
         activeExpressionRequestID = nil
         try sessionStore.clearDialogueTestData(
@@ -7497,12 +8114,14 @@ public final class RuntimeCore {
         )
         guard let residentID, !residentID.isEmpty else {
             sessionContext = nil
+            resetCanonicalTurnCommitState(for: nil)
             cancellationState = .none
             return nil
         }
 
         let sessionID = RuntimeSessionID.make()
         sessionContext = RuntimeSessionContext(residentID: residentID, sessionID: sessionID)
+        resetCanonicalTurnCommitState(for: sessionID.rawValue)
         currentExpressionResult = .neutral(
             source: currentVisualExpressionMapping.source,
             fallbackOccurred:

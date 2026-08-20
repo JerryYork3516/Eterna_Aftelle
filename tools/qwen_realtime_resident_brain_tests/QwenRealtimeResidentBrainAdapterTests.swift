@@ -57,7 +57,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         try await testHandshakeAndBootstrap()
+        try await testContextScopeReplacement()
         try await testAudioAndEventMapping()
+        try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
         try await testToolFixture()
         try await testFailureAndCloseLifecycle()
@@ -184,6 +186,101 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         let closeCount = await stack.transport.closeCount()
         expect(closeCount == 1, "close is idempotent")
+    }
+
+    private static func testContextScopeReplacement() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 2)
+        try await stack.adapter.openSession(
+            RealtimeBrainOpenSessionCommand(identity: identity)
+        )
+        try await stack.adapter.updateRuntimeContext(
+            RealtimeBrainRuntimeContextUpdate(
+                identity: identity,
+                kind: .bootstrap,
+                contextRevision: 1,
+                sections: [
+                    RealtimeBrainContextSection(
+                        scope: .relationshipDelta,
+                        content: "relationship v1"
+                    ),
+                    RealtimeBrainContextSection(
+                        scope: .toolResultContext,
+                        content: "tool context v1"
+                    ),
+                    RealtimeBrainContextSection(
+                        scope: .memoryDelta,
+                        content: "memory v1"
+                    ),
+                    RealtimeBrainContextSection(
+                        scope: .dynamicSession,
+                        content: "dynamic v1"
+                    ),
+                    RealtimeBrainContextSection(
+                        scope: .stableResident,
+                        content: "stable v1"
+                    )
+                ]
+            )
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+
+        try await stack.adapter.updateRuntimeContext(
+            RealtimeBrainRuntimeContextUpdate(
+                identity: identity,
+                kind: .delta,
+                contextRevision: 2,
+                sections: [
+                    RealtimeBrainContextSection(
+                        scope: .relationshipDelta,
+                        content: "relationship v2"
+                    ),
+                    RealtimeBrainContextSection(
+                        scope: .memoryDelta,
+                        content: ""
+                    ),
+                    RealtimeBrainContextSection(
+                        scope: .dynamicSession,
+                        content: "dynamic v2"
+                    )
+                ]
+            )
+        )
+
+        let objects = try await sentObjects(stack.transport)
+        let updates = objects.filter {
+            $0["type"] as? String == "session.update"
+        }
+        guard let instructions = (updates.last?["session"]
+            as? [String: Any])?["instructions"] as? String else {
+            fatalError("delta context instructions expected")
+        }
+        expect(
+            instructions == """
+            [stableResident]
+            stable v1
+
+            [dynamicSession]
+            dynamic v2
+
+            [relationshipDelta]
+            relationship v2
+
+            [toolResultContext]
+            tool context v1
+            """,
+            "delta replaces supplied scopes, retains omitted scopes, clears empty scopes, and renders deterministically"
+        )
+        expect(
+            !instructions.contains("memory v1")
+                && !instructions.contains("dynamic v1"),
+            "replaced and cleared context never leaks into the full Qwen instructions"
+        )
+
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
     }
 
     private static func testAudioAndEventMapping() async throws {
@@ -399,6 +496,77 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 bytes: Data([0, 0])
             ))
         }
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testGenerationGlobalOutputAudioClock() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 17)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"audio-turn-1"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"audio-response-1","status":"in_progress"}}"#
+        )
+        let firstBytes = Data([1, 0, 2, 0])
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.delta","response_id":"audio-response-1","delta":"\#(firstBytes.base64EncodedString())"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        let firstAudioEvent = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        guard case .residentAudioDelta(let firstAudio) = firstAudioEvent.kind
+        else {
+            fatalError("first response audio expected")
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.done","response_id":"audio-response-1"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"audio-response-1","status":"completed","output":[{"type":"message","content":[{"type":"audio","transcript":"first"}]}]}}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        _ = try await stack.adapter.receiveEvent(session: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"audio-turn-2"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"audio-response-2","status":"in_progress"}}"#
+        )
+        let secondBytes = Data([3, 0])
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.delta","response_id":"audio-response-2","delta":"\#(secondBytes.base64EncodedString())"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        let secondAudioEvent = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        guard case .residentAudioDelta(let secondAudio) = secondAudioEvent.kind
+        else {
+            fatalError("second response audio expected")
+        }
+
+        expect(
+            firstAudio.sequence == 1
+                && firstAudio.timestampNanoseconds == 0,
+            "first response starts the generation output audio clock"
+        )
+        expect(
+            secondAudio.sequence == 2
+                && secondAudio.timestampNanoseconds == 83_333,
+            "second response continues the same generation output audio clock"
+        )
+
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: identity)
         )

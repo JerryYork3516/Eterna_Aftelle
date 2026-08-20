@@ -350,7 +350,7 @@ R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
 R1 ActiveBrainLease / Route Epoch / Single-Brain Enforcement — PASS / FROZEN
 R2 Provider-neutral Realtime Brain Contract — PASS / FROZEN
 R3 First Realtime Provider Adapter — PASS / FROZEN
-R4 Context / Canonical Turn / Memory Bridge
+R4 Context / Canonical Turn / Memory Bridge — PASS / FROZEN
 R5 Tool / Permission Bridge
 R6 Studio Voice Binding
 R7 Full-duplex Audio Integration
@@ -361,7 +361,9 @@ R10 Real-device / Long-session Freeze
 
 R2 已冻结：`RealtimeResidentBrainProvider` 使用 R1 resident / Runtime Session / Brain lease / route epoch / generation identity，经既有 RuntimeCore → ExecutionEngine → ProviderRouter 接缝承载 provider-neutral command、event、canonical semantic final、context revision、Tool candidate / result、interruption proposal 与 PCM frame。
 
-R3 已冻结：内部 `QwenRealtimeResidentBrainAdapter` 通过既有 credential reader、单一 ProviderRouter 与 URLSession WebSocket transport 接入 `qwen3.5-omni-plus-realtime`，Qwen wire / workspace / model / voice / session ID 不进入公共 Runtime contract。completed `response.done` 是唯一 `residentSemanticFinal` 来源；cancel / interrupt 在 generation 前进前等待 Provider input clear ACK。离线 Fake wire 为 10 cases / 110 checks / zero network；真实 WebSocket 仍为 Human Gate，未证明此前未观察旧 `response.created` 跨 clear ACK 的极端顺序。未实现 R4～R10；下一轮只允许进入 R4。
+R3 已冻结：内部 `QwenRealtimeResidentBrainAdapter` 通过既有 credential reader、单一 ProviderRouter 与 URLSession WebSocket transport 接入 `qwen3.5-omni-plus-realtime`，Qwen wire / workspace / model / voice / session ID 不进入公共 Runtime contract。completed `response.done` 是唯一 `residentSemanticFinal` 来源；cancel / interrupt 在 generation 前进前等待 Provider input clear ACK。当前离线 Fake wire 为 12 cases / 115 checks / zero network；真实 WebSocket 仍为 Human Gate，未证明此前未观察旧 `response.created` 跨 clear ACK 的极端顺序。
+
+R4 已冻结：RuntimeCore Compiler 生成 provider-eligible、有界且确定性的 Realtime bootstrap，并只在 stable boundary 发送单调 `contextRevision` delta。统一 `CanonicalResidentTurn` 绑定 resident / Runtime Session / Brain lease / route epoch / generation / turn / response；Text / Realtime 按 semantic completion，Cascaded / Native 按既有 playback / delivery completion 进入 RuntimeCore-only History / Memory / Relationship 评估。Provider 只提交 Memory / Relationship / Growth candidate，不拥有写权限；Growth 在 R4 仅作 ephemeral deferred decision。去重只承诺当前 Runtime Session 内 fail-closed，不改 DR / Store schema，也不声称 crash-durable exactly-once。R4 独立测试 4 cases / 81 checks，A7 为 18 suites / 21 entrypoints / 3975 assertions；未进入 R5～R10，下一轮只允许进入 R5。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 

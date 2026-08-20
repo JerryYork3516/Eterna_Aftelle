@@ -172,8 +172,15 @@ if [[ "$allow_dr_color_changes" == "1" ]]; then
 fi
 
 if git -C "$repo_root" diff --name-only \
-  | rg -q 'apps/macos/RuntimeCore/(DRLoader|ProviderRouter|ExecutionEngine|RuntimeCore|VisualStateMapper)\.swift$'; then
+  | rg -q 'apps/macos/RuntimeCore/(DRLoader|ProviderRouter|ExecutionEngine|VisualStateMapper)\.swift$'; then
   printf 'particle-expression-tests: forbidden Runtime/A1 file changed\n' >&2
+  exit 1
+fi
+
+if [[ "${AFTELLE_ALLOW_RUNTIME_CORE_CHANGES:-0}" != "1" ]] \
+  && git -C "$repo_root" diff --name-only \
+  | rg -q 'apps/macos/RuntimeCore/RuntimeCore\.swift$'; then
+  printf 'particle-expression-tests: RuntimeCore changed outside aggregate regression\n' >&2
   exit 1
 fi
 

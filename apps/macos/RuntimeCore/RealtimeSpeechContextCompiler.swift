@@ -3,6 +3,12 @@ import Foundation
 nonisolated struct RealtimeSpeechContextCompiler {
     static let initialMaximumInstructionsUTF8Bytes = 24_576
 
+    private struct BoundedCompilation {
+        let sections: [RealtimeSpeechContextSection]
+        let instructions: String
+        let budget: RealtimeSpeechContextBudget
+    }
+
     let maximumInstructionsUTF8Bytes: Int
 
     init(
@@ -16,13 +22,64 @@ nonisolated struct RealtimeSpeechContextCompiler {
         interaction: NativeSpeechInteraction,
         refreshReason: RealtimeSpeechContextRefreshReason
     ) throws -> RealtimeSpeechContextProjection {
-        let sections = makeSections(
+        let compiled = try compileProviderEligibleSections(
             context: context,
             includesDynamicContent: refreshReason != .interactionStarted
                 && !context.currentUserInput.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 ).isEmpty
         )
+        let versionSeed = [
+            interaction.residentID,
+            interaction.sessionID,
+            interaction.id.rawValue.uuidString.lowercased(),
+            compiled.instructions
+        ].joined(separator: "\u{1F}")
+        return RealtimeSpeechContextProjection(
+            residentID: interaction.residentID,
+            sessionID: interaction.sessionID,
+            interactionID: interaction.id,
+            sections: compiled.sections,
+            instructions: compiled.instructions,
+            budget: compiled.budget,
+            refreshReason: refreshReason,
+            compilationVersion: "realtime-context-v1-\(Self.stableDigest(versionSeed))"
+        )
+    }
+
+    func compileProviderContext(
+        context: ResidentDialogueContext,
+        residentID: String,
+        runtimeSessionID: String,
+        includesDynamicContent: Bool
+    ) throws -> RealtimeSpeechProviderContextSnapshot {
+        let compiled = try compileProviderEligibleSections(
+            context: context,
+            includesDynamicContent: includesDynamicContent
+        )
+        let versionSeed = [
+            residentID,
+            runtimeSessionID,
+            compiled.instructions
+        ].joined(separator: "\u{1F}")
+        return RealtimeSpeechProviderContextSnapshot(
+            residentID: residentID,
+            runtimeSessionID: runtimeSessionID,
+            sections: compiled.sections,
+            instructions: compiled.instructions,
+            budget: compiled.budget,
+            compilationVersion: "realtime-provider-context-v1-\(Self.stableDigest(versionSeed))"
+        )
+    }
+
+    private func compileProviderEligibleSections(
+        context: ResidentDialogueContext,
+        includesDynamicContent: Bool
+    ) throws -> BoundedCompilation {
+        let sections = makeSections(
+            context: context,
+            includesDynamicContent: includesDynamicContent
+        ).filter(Self.isProviderEligible)
         let untrimmedInstructions = Self.render(sections)
         let requiredSections = sections.filter { !$0.allowsTrimming }
         let requiredByteCount = Self.render(requiredSections).utf8.count
@@ -50,16 +107,7 @@ nonisolated struct RealtimeSpeechContextCompiler {
         }
 
         let instructions = Self.render(keptSections)
-        let versionSeed = [
-            interaction.residentID,
-            interaction.sessionID,
-            interaction.id.rawValue.uuidString.lowercased(),
-            instructions
-        ].joined(separator: "\u{1F}")
-        return RealtimeSpeechContextProjection(
-            residentID: interaction.residentID,
-            sessionID: interaction.sessionID,
-            interactionID: interaction.id,
+        return BoundedCompilation(
             sections: keptSections,
             instructions: instructions,
             budget: RealtimeSpeechContextBudget(
@@ -67,9 +115,7 @@ nonisolated struct RealtimeSpeechContextCompiler {
                 untrimmedUTF8Bytes: untrimmedInstructions.utf8.count,
                 finalUTF8Bytes: instructions.utf8.count,
                 removedSectionIDs: removedSectionIDs
-            ),
-            refreshReason: refreshReason,
-            compilationVersion: "realtime-context-v1-\(Self.stableDigest(versionSeed))"
+            )
         )
     }
 
@@ -408,6 +454,18 @@ nonisolated struct RealtimeSpeechContextCompiler {
         sections.map { section in
             "[\(section.id)]\n\(section.text)"
         }.joined(separator: "\n\n")
+    }
+
+    private static func isProviderEligible(
+        _ section: RealtimeSpeechContextSection
+    ) -> Bool {
+        switch section.source {
+        case .residentLayer(let layer):
+            return RealtimeSpeechContextContract.policy(for: layer)
+                .providerEligible
+        case .recentDialogue:
+            return true
+        }
     }
 
     private static func isRelevant(

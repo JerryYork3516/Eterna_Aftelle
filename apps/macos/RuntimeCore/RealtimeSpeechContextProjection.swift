@@ -143,6 +143,23 @@ nonisolated struct RealtimeSpeechContextProjection: Sendable, Equatable {
     }
 }
 
+nonisolated struct RealtimeSpeechProviderContextSnapshot: Sendable, Equatable {
+    let residentID: String
+    let runtimeSessionID: String
+    let sections: [RealtimeSpeechContextSection]
+    let instructions: String
+    let budget: RealtimeSpeechContextBudget
+    let compilationVersion: String
+
+    func isBound(
+        residentID: String,
+        runtimeSessionID: String
+    ) -> Bool {
+        self.residentID == residentID
+            && self.runtimeSessionID == runtimeSessionID
+    }
+}
+
 nonisolated struct RealtimeSpeechContextCompilationKey: Sendable, Equatable {
     let interactionID: NativeSpeechInteractionID
     let refreshReason: RealtimeSpeechContextRefreshReason

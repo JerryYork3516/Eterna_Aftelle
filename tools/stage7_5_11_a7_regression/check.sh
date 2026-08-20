@@ -27,6 +27,8 @@ run_suite realtime_brain_contract \
   "$repo_root/tools/realtime_resident_brain_contract_tests/check.sh"
 run_suite qwen_realtime_brain \
   "$repo_root/tools/qwen_realtime_resident_brain_tests/check.sh"
+run_suite realtime_brain_context \
+  "$repo_root/tools/realtime_resident_brain_context_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \
@@ -52,6 +54,7 @@ run_suite relationship_progression \
 run_suite runtime_expression \
   "$repo_root/tools/runtime_expression_tests/check.sh" "$fixture"
 run_suite particle_expression \
+  env AFTELLE_ALLOW_RUNTIME_CORE_CHANGES=1 \
   "$repo_root/tools/particle_expression_tests/check.sh" "$fixture"
 
 if rg -n 'LanguageModelProvider' \
@@ -93,7 +96,7 @@ assertion_count="$({
 } | awk '{ total += $1 } END { print total + 0 }')"
 
 printf 'a7_regression_top_level_suites=%d\n' "$suite_count"
-printf 'a7_regression_test_entrypoints=20\n'
+printf 'a7_regression_test_entrypoints=21\n'
 printf 'a7_regression_assertions=%s\n' "$assertion_count"
 printf 'a7_repository_mutation=PASS\n'
 printf 'a7_clean_build=PASS\n'

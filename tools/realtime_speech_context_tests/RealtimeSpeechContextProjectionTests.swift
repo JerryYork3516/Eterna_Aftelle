@@ -38,6 +38,13 @@ private struct RealtimeSpeechContextProjectionTests {
         )
         testBaseSnapshot(base, interaction: interaction)
         testConversationPacingPolicy(base)
+        try testProviderNeutralCompilation(
+            source: source,
+            baseContext: baseContext,
+            nativeBase: base,
+            interaction: interaction,
+            compiler: compiler
+        )
 
         let repeated = try compiler.compile(
             context: baseContext,
@@ -219,6 +226,93 @@ private struct RealtimeSpeechContextProjectionTests {
                 "conversation pacing freezes required behavior"
             )
         }
+    }
+
+    private static func testProviderNeutralCompilation(
+        source: ResidentDialogueContextSource,
+        baseContext: ResidentDialogueContext,
+        nativeBase: RealtimeSpeechContextProjection,
+        interaction: NativeSpeechInteraction,
+        compiler: RealtimeSpeechContextCompiler
+    ) throws {
+        let base = try compiler.compileProviderContext(
+            context: baseContext,
+            residentID: interaction.residentID,
+            runtimeSessionID: interaction.sessionID,
+            includesDynamicContent: false
+        )
+        expect(
+            base.isBound(
+                residentID: interaction.residentID,
+                runtimeSessionID: interaction.sessionID
+            ),
+            "Provider snapshot binds Runtime identity without Native interaction"
+        )
+        expect(
+            base.sections == nativeBase.sections,
+            "Provider base reuses Native section selection and order"
+        )
+        expect(
+            base.instructions == nativeBase.instructions,
+            "Provider base reuses Native deterministic rendering"
+        )
+        expect(
+            base.budget == nativeBase.budget,
+            "Provider base reuses Native budget accounting"
+        )
+        expect(
+            base.sections.allSatisfy(isProviderEligible),
+            "Provider snapshot contains only Provider-eligible layers"
+        )
+
+        let repeated = try compiler.compileProviderContext(
+            context: baseContext,
+            residentID: interaction.residentID,
+            runtimeSessionID: interaction.sessionID,
+            includesDynamicContent: false
+        )
+        expect(repeated == base, "Provider compilation is deterministic")
+        let otherSession = try compiler.compileProviderContext(
+            context: baseContext,
+            residentID: interaction.residentID,
+            runtimeSessionID: interaction.sessionID + "-other",
+            includesDynamicContent: false
+        )
+        expect(
+            otherSession.compilationVersion != base.compilationVersion,
+            "Provider digest binds Runtime session identity"
+        )
+
+        guard let focus = baseContext.identity.domainFocus.first else {
+            fatalError("FAILED: fixed resident domain focus unavailable")
+        }
+        let dynamicContext = source.compile(
+            currentUserInput: focus,
+            recentMessages: [],
+            recentMessageLimit: 8,
+            fewShotLimit: 4,
+            relationshipProgression: baseContext.relationshipProgression
+        )
+        let dynamicExcluded = try compiler.compileProviderContext(
+            context: dynamicContext,
+            residentID: interaction.residentID,
+            runtimeSessionID: interaction.sessionID,
+            includesDynamicContent: false
+        )
+        let dynamicIncluded = try compiler.compileProviderContext(
+            context: dynamicContext,
+            residentID: interaction.residentID,
+            runtimeSessionID: interaction.sessionID,
+            includesDynamicContent: true
+        )
+        expect(
+            !containsLayer(.knowledge, in: dynamicExcluded.sections),
+            "Provider caller can defer dynamic context"
+        )
+        expect(
+            containsLayer(.knowledge, in: dynamicIncluded.sections),
+            "Provider caller can request relevant dynamic context"
+        )
     }
 
     private static func testOnDemandProjection(
@@ -475,6 +569,25 @@ private struct RealtimeSpeechContextProjectionTests {
     ) -> Bool {
         projection.sections.contains {
             $0.source == .residentLayer(layer)
+        }
+    }
+
+    private static func containsLayer(
+        _ layer: RealtimeSpeechContextLayer,
+        in sections: [RealtimeSpeechContextSection]
+    ) -> Bool {
+        sections.contains { $0.source == .residentLayer(layer) }
+    }
+
+    private static func isProviderEligible(
+        _ section: RealtimeSpeechContextSection
+    ) -> Bool {
+        switch section.source {
+        case .residentLayer(let layer):
+            return RealtimeSpeechContextContract.policy(for: layer)
+                .providerEligible
+        case .recentDialogue:
+            return true
         }
     }
 

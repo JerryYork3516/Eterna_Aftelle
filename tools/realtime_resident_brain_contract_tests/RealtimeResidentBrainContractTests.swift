@@ -468,8 +468,10 @@ private struct RealtimeResidentBrainContractTests {
         try await testSessionAndSingleBrain(fixture: fixture)
         try await testCommandsAndEvents(fixture: fixture)
         try await testIdentityOrderingAndLateCallbacks(fixture: fixture)
+        try await testDeferredCapacityFailsClosed(fixture: fixture)
         try await testConcurrentTransitions(fixture: fixture)
         try await testProviderFailureAndRecovery(fixture: fixture)
+        testTurnBoundarySequenceAndSemanticCandidates()
         await testCloseWaiterRetention()
 
         print("realtime_resident_brain_contract_cases=\(cases)")
@@ -537,6 +539,511 @@ private struct RealtimeResidentBrainContractTests {
             identity: secondIdentity,
             attemptID: retryAttempt,
             outcome: .closed
+        )
+    }
+
+    private static func testDeferredCapacityFailsClosed(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        let stack = configuredStack(fixture: fixture)
+        let identity = try realtimeIdentity(
+            await stack.runtime.openRealtimeResidentBrainSession()
+        )
+        try await bootstrap(stack, identity: identity)
+        let eventIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: RealtimeBrainTurnID(),
+            responseID: nil,
+            contextRevision: 1
+        )
+        for sequence in UInt64(2)...UInt64(17) {
+            await stack.provider.enqueue(RealtimeResidentBrainEvent(
+                identity: eventIdentity,
+                sequence: sequence,
+                kind: .userTranscriptPartial("future \(sequence)")
+            ))
+            expect(
+                try await stack.runtime
+                    .receiveRealtimeResidentBrainEvent(session: identity)
+                    == .deferredOutOfOrder,
+                "bounded future event \(sequence) is deferred"
+            )
+        }
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity,
+            sequence: 18,
+            kind: .userTranscriptPartial("overflow")
+        ))
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedBufferOverflow,
+            "deferred capacity overflow is explicit"
+        )
+        expect(await stack.provider.closeCount() == 1,
+               "buffer overflow definitively closes the Provider")
+        expect(stack.runtime.activeBrainLeaseForTesting() == nil,
+               "buffer overflow releases admission only after close")
+    }
+
+    private static func testTurnBoundarySequenceAndSemanticCandidates() {
+        cases += 1
+        let gate = RuntimeRealtimeBrainSessionGate()
+        let identity = RealtimeBrainSessionIdentity(
+            residentID: "resident",
+            runtimeSessionID: "turn-boundary",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        expect(gate.reserve(identity), "turn gate reserves the session")
+        expect(gate.activate(identity), "turn gate awaits bootstrap")
+        let bootstrap = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .bootstrap,
+            contextRevision: 1,
+            sections: [RealtimeBrainContextSection(
+                scope: .stableResident,
+                content: "stable"
+            )]
+        )
+        guard let bootstrapToken = gate.beginContextUpdate(bootstrap) else {
+            fatalError("FAILED: turn gate begins bootstrap")
+        }
+        expect(
+            gate.finishContextUpdate(
+                token: bootstrapToken,
+                update: bootstrap,
+                succeeded: true
+            ),
+            "turn gate commits bootstrap"
+        )
+        let duplicateScopeUpdate = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .delta,
+            contextRevision: 2,
+            sections: [
+                RealtimeBrainContextSection(
+                    scope: .dynamicSession,
+                    content: "first"
+                ),
+                RealtimeBrainContextSection(
+                    scope: .dynamicSession,
+                    content: "second"
+                )
+            ]
+        )
+        expect(
+            gate.beginContextUpdate(duplicateScopeUpdate) == nil,
+            "one context update cannot replace the same scope twice"
+        )
+
+        let turnID = RealtimeBrainTurnID()
+        let responseID = RealtimeBrainResponseID()
+        let userIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let residentIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: 1
+        )
+        let userFinal = RealtimeResidentBrainEvent(
+            identity: userIdentity,
+            sequence: 1,
+            kind: .userTranscriptFinal("remember this")
+        )
+        expectAccepted(
+            acceptDirect(userFinal, gate: gate, session: identity),
+            equals: userFinal,
+            "user final opens a realtime turn"
+        )
+        let boundaryDelta = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .delta,
+            contextRevision: 2,
+            sections: [RealtimeBrainContextSection(
+                scope: .dynamicSession,
+                content: "next boundary"
+            )]
+        )
+        expect(
+            gate.beginContextUpdate(boundaryDelta) == nil,
+            "context cannot advance while a turn is open"
+        )
+
+        let memoryCandidate = RealtimeBrainNarrativeMemoryCandidate(
+            identity: residentIdentity,
+            candidateID: "memory-1",
+            memoryType: "preference",
+            summary: "The user asked the resident to remember this.",
+            sourceTurnIDs: [turnID.rawValue.uuidString],
+            consentSignal: "explicit",
+            sensitivityFlags: [],
+            evidenceSource: "user_transcript",
+            inputClassification: "explicit_memory_request",
+            confidence: 0.95
+        )
+        let relationshipCandidate =
+            RealtimeBrainRelationshipEvidenceCandidate(
+                identity: residentIdentity,
+                evidenceType: "trust_signal",
+                evidenceDetected: true,
+                evidenceSource: "user_transcript",
+                requiresUserConfirmation: false,
+                confidence: 0.8
+            )
+        let growthCandidate = RealtimeBrainGrowthObservationCandidate(
+            identity: residentIdentity,
+            observation: "The resident explained the answer more clearly.",
+            confidence: 0.7
+        )
+        let validSemantic = RealtimeBrainSemanticOutput(
+            canonicalText: "I will remember that.",
+            narrativeMemoryCandidates: [memoryCandidate],
+            relationshipEvidenceCandidates: [relationshipCandidate],
+            growthObservationCandidates: [growthCandidate]
+        )
+        let wrongCandidateIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let invalidIdentitySemantic = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 2,
+            kind: .residentSemanticFinal(RealtimeBrainSemanticOutput(
+                canonicalText: "invalid nested identity",
+                narrativeMemoryCandidates: [
+                    RealtimeBrainNarrativeMemoryCandidate(
+                        identity: wrongCandidateIdentity,
+                        candidateID: "memory-wrong-response",
+                        memoryType: "preference",
+                        summary: "Wrong response binding.",
+                        sourceTurnIDs: [turnID.rawValue.uuidString],
+                        consentSignal: "explicit",
+                        sensitivityFlags: [],
+                        evidenceSource: "user_transcript",
+                        inputClassification: "explicit_memory_request",
+                        confidence: 0.9
+                    )
+                ]
+            ))
+        )
+        expect(
+            acceptDirect(
+                invalidIdentitySemantic,
+                gate: gate,
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "semantic candidates must bind the outer response identity"
+        )
+        let correctedSameSequence = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 2,
+            kind: .residentSemanticFinal(validSemantic)
+        )
+        expect(
+            acceptDirect(
+                correctedSameSequence,
+                gate: gate,
+                session: identity
+            ) == .rejectedDuplicate,
+            "an invalid current event still consumes its outer sequence"
+        )
+        let nextSequence = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 3,
+            kind: .residentTextFinal("I will remember that.")
+        )
+        expectAccepted(
+            acceptDirect(nextSequence, gate: gate, session: identity),
+            equals: nextSequence,
+            "the next outer sequence continues after an invalid event"
+        )
+        let invalidMemoryConfidence = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 4,
+            kind: .residentSemanticFinal(RealtimeBrainSemanticOutput(
+                canonicalText: "invalid memory confidence",
+                narrativeMemoryCandidates: [
+                    RealtimeBrainNarrativeMemoryCandidate(
+                        identity: residentIdentity,
+                        candidateID: "memory-nan",
+                        memoryType: "preference",
+                        summary: "Invalid confidence.",
+                        sourceTurnIDs: [turnID.rawValue.uuidString],
+                        consentSignal: "explicit",
+                        sensitivityFlags: [],
+                        evidenceSource: "user_transcript",
+                        inputClassification: "explicit_memory_request",
+                        confidence: .nan
+                    )
+                ]
+            ))
+        )
+        expect(
+            acceptDirect(
+                invalidMemoryConfidence,
+                gate: gate,
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "memory candidate confidence must be finite"
+        )
+        let invalidRelationshipConfidence = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 5,
+            kind: .residentSemanticFinal(RealtimeBrainSemanticOutput(
+                canonicalText: "invalid relationship confidence",
+                relationshipEvidenceCandidates: [
+                    RealtimeBrainRelationshipEvidenceCandidate(
+                        identity: residentIdentity,
+                        evidenceType: "trust_signal",
+                        evidenceDetected: true,
+                        evidenceSource: "user_transcript",
+                        requiresUserConfirmation: false,
+                        confidence: 1.1
+                    )
+                ]
+            ))
+        )
+        expect(
+            acceptDirect(
+                invalidRelationshipConfidence,
+                gate: gate,
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "relationship candidate confidence stays within zero and one"
+        )
+        let invalidGrowthConfidence = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 6,
+            kind: .residentSemanticFinal(RealtimeBrainSemanticOutput(
+                canonicalText: "invalid growth confidence",
+                growthObservationCandidates: [
+                    RealtimeBrainGrowthObservationCandidate(
+                        identity: residentIdentity,
+                        observation: "Invalid confidence.",
+                        confidence: -0.1
+                    )
+                ]
+            ))
+        )
+        expect(
+            acceptDirect(
+                invalidGrowthConfidence,
+                gate: gate,
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "growth observation confidence stays within zero and one"
+        )
+        let semanticFinal = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 7,
+            kind: .residentSemanticFinal(validSemantic)
+        )
+        expectAccepted(
+            acceptDirect(semanticFinal, gate: gate, session: identity),
+            equals: semanticFinal,
+            "valid semantic candidates remain metadata on semantic final"
+        )
+        guard let boundaryToken = gate.beginContextUpdate(boundaryDelta) else {
+            fatalError("FAILED: semantic final closes the context boundary")
+        }
+        expect(
+            gate.finishContextUpdate(
+                token: boundaryToken,
+                update: boundaryDelta,
+                succeeded: true
+            ),
+            "semantic final permits the next context revision"
+        )
+
+        let errorTurnID = RealtimeBrainTurnID()
+        let errorResponseID = RealtimeBrainResponseID()
+        let errorUserIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: errorTurnID,
+            responseID: nil,
+            contextRevision: 2
+        )
+        let errorResponseIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: errorTurnID,
+            responseID: errorResponseID,
+            contextRevision: 2
+        )
+        let speechStarted = RealtimeResidentBrainEvent(
+            identity: errorUserIdentity,
+            sequence: 8,
+            kind: .userSpeechStarted
+        )
+        expectAccepted(
+            acceptDirect(speechStarted, gate: gate, session: identity),
+            equals: speechStarted,
+            "speech start opens a turn"
+        )
+        let responseDelta = RealtimeResidentBrainEvent(
+            identity: errorResponseIdentity,
+            sequence: 9,
+            kind: .residentTextDelta("partial")
+        )
+        expectAccepted(
+            acceptDirect(responseDelta, gate: gate, session: identity),
+            equals: responseDelta,
+            "resident output opens a response"
+        )
+        let responseError = RealtimeResidentBrainEvent(
+            identity: errorResponseIdentity,
+            sequence: 10,
+            kind: .error(.providerFailure)
+        )
+        expectAccepted(
+            acceptDirect(responseError, gate: gate, session: identity),
+            equals: responseError,
+            "response error terminates the open turn and response"
+        )
+        let afterErrorDelta = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .delta,
+            contextRevision: 3,
+            sections: [RealtimeBrainContextSection(
+                scope: .dynamicSession,
+                content: "after error"
+            )]
+        )
+        guard let afterErrorToken = gate.beginContextUpdate(
+            afterErrorDelta
+        ) else {
+            fatalError("FAILED: response error closes context boundary")
+        }
+        expect(
+            gate.finishContextUpdate(
+                token: afterErrorToken,
+                update: afterErrorDelta,
+                succeeded: true
+            ),
+            "response error permits the next context revision"
+        )
+
+        let cancelledTurnID = RealtimeBrainTurnID()
+        let cancelledUserIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: cancelledTurnID,
+            responseID: nil,
+            contextRevision: 3
+        )
+        let partial = RealtimeResidentBrainEvent(
+            identity: cancelledUserIdentity,
+            sequence: 11,
+            kind: .userTranscriptPartial("cancel")
+        )
+        expectAccepted(
+            acceptDirect(partial, gate: gate, session: identity),
+            equals: partial,
+            "partial transcript opens a turn"
+        )
+        let cancelled = RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: identity,
+                turnID: nil,
+                responseID: nil,
+                contextRevision: 3
+            ),
+            sequence: 12,
+            kind: .cancelled(.runtimeDecision)
+        )
+        expectAccepted(
+            acceptDirect(cancelled, gate: gate, session: identity),
+            equals: cancelled,
+            "session-scoped cancellation terminates open work"
+        )
+        let afterCancelDelta = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .delta,
+            contextRevision: 4,
+            sections: [RealtimeBrainContextSection(
+                scope: .dynamicSession,
+                content: "after cancel"
+            )]
+        )
+        guard let afterCancelToken = gate.beginContextUpdate(
+            afterCancelDelta
+        ) else {
+            fatalError("FAILED: cancellation closes context boundary")
+        }
+        expect(
+            gate.finishContextUpdate(
+                token: afterCancelToken,
+                update: afterCancelDelta,
+                succeeded: true
+            ),
+            "cancellation permits the next context revision"
+        )
+
+        let resetTurn = RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: identity,
+                turnID: RealtimeBrainTurnID(),
+                responseID: nil,
+                contextRevision: 4
+            ),
+            sequence: 13,
+            kind: .userSpeechStarted
+        )
+        expectAccepted(
+            acceptDirect(resetTurn, gate: gate, session: identity),
+            equals: resetTurn,
+            "generation reset fixture opens a turn"
+        )
+        let nextIdentity = RealtimeBrainSessionIdentity(
+            residentID: identity.residentID,
+            runtimeSessionID: identity.runtimeSessionID,
+            brainLeaseID: identity.brainLeaseID,
+            routeEpoch: identity.routeEpoch,
+            generation: identity.generation + 1
+        )
+        guard let generationToken = gate.beginGenerationTransition(
+            from: identity,
+            to: nextIdentity
+        ) else {
+            fatalError("FAILED: generation transition begins")
+        }
+        expect(
+            gate.commitGenerationTransition(
+                token: generationToken,
+                from: identity,
+                to: nextIdentity
+            ),
+            "generation transition resets open turn and response ledgers"
+        )
+        let afterResetDelta = RealtimeBrainRuntimeContextUpdate(
+            identity: nextIdentity,
+            kind: .delta,
+            contextRevision: 5,
+            sections: [RealtimeBrainContextSection(
+                scope: .dynamicSession,
+                content: "after generation reset"
+            )]
+        )
+        guard let afterResetToken = gate.beginContextUpdate(
+            afterResetDelta
+        ) else {
+            fatalError("FAILED: generation reset opens context boundary")
+        }
+        expect(
+            gate.finishContextUpdate(
+                token: afterResetToken,
+                update: afterResetDelta,
+                succeeded: true
+            ),
+            "generation reset permits a context delta"
         )
     }
 
@@ -777,6 +1284,23 @@ private struct RealtimeResidentBrainContractTests {
             await stack.provider.audioCount() == 1,
             "Fake Provider receives audio without a network dependency"
         )
+        let contextDuringUnsettledAudio =
+            RealtimeBrainRuntimeContextUpdate(
+                identity: identity,
+                kind: .delta,
+                contextRevision: 2,
+                sections: [RealtimeBrainContextSection(
+                    scope: .dynamicSession,
+                    content: "must wait for the audio turn boundary"
+                )]
+            )
+        expectRealtimeFailure(
+            await stack.runtime.updateRealtimeResidentBrainContext(
+                contextDuringUnsettledAudio
+            ),
+            equals: .invalidContextRevision,
+            "context delta cannot cross submitted audio before a terminal event"
+        )
         let misalignedInput = RealtimeBrainAudioFrame(
             identity: identity,
             sequence: 2,
@@ -824,8 +1348,8 @@ private struct RealtimeResidentBrainContractTests {
         )
         let callID = RealtimeBrainToolCallID(rawValue: "call-weather")
         let audioDelta = RealtimeBrainAudioDelta(
-            sequence: 1,
-            timestampNanoseconds: 30,
+            sequence: 3,
+            timestampNanoseconds: 50,
             format: RealtimeBrainAudioFormat(
                 encoding: .pcm16LittleEndian,
                 sampleRate: 32_000,
@@ -844,6 +1368,18 @@ private struct RealtimeResidentBrainContractTests {
             identity: eventIdentity,
             reason: "near-end semantic evidence"
         )
+        let errorIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: RealtimeBrainTurnID(),
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let cancelledEventIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: RealtimeBrainTurnID(),
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
         let semantic = RealtimeBrainSemanticOutput(
             canonicalText: "The final resident meaning."
         )
@@ -857,18 +1393,18 @@ private struct RealtimeResidentBrainContractTests {
             (eventIdentity, .residentAudioDelta(audioDelta)),
             (eventIdentity, .residentSpeakingStarted),
             (eventIdentity, .residentSpeakingStopped),
-            (eventIdentity, .residentSemanticFinal(semantic)),
             (eventIdentity, .toolCall(toolCandidate)),
             (eventIdentity, .interruptionProposed(interruption)),
-            (eventIdentity, .error(.providerFailure)),
-            (eventIdentity, .cancelled(.runtimeDecision))
+            (eventIdentity, .residentSemanticFinal(semantic)),
+            (errorIdentity, .error(.providerFailure)),
+            (cancelledEventIdentity, .cancelled(.runtimeDecision))
         ]
+        var nextEventSequence: UInt64 = 2
         for (offset, item) in eventKinds.enumerated() {
             if offset == 6 {
-                let eventSequence = UInt64(offset + 2)
                 let wrongProvenance = RealtimeResidentBrainEvent(
                     identity: eventIdentity,
-                    sequence: eventSequence,
+                    sequence: nextEventSequence,
                     kind: .residentAudioDelta(
                         RealtimeBrainAudioDelta(
                             sequence: 1,
@@ -887,13 +1423,14 @@ private struct RealtimeResidentBrainContractTests {
                         ) == .rejectedInvalidEvent,
                     "resident audio requires provider-generated provenance"
                 )
+                nextEventSequence += 1
                 let misalignedOutput = RealtimeResidentBrainEvent(
                     identity: eventIdentity,
-                    sequence: eventSequence,
+                    sequence: nextEventSequence,
                     kind: .residentAudioDelta(
                         RealtimeBrainAudioDelta(
-                            sequence: 1,
-                            timestampNanoseconds: 30,
+                            sequence: 2,
+                            timestampNanoseconds: 40,
                             format: audioDelta.format,
                             provenance: .providerGenerated,
                             bytes: Data([6])
@@ -908,12 +1445,12 @@ private struct RealtimeResidentBrainContractTests {
                         ) == .rejectedInvalidEvent,
                     "resident PCM16 output must align to channel frames"
                 )
+                nextEventSequence += 1
             }
-            if offset == 9 {
-                let eventSequence = UInt64(offset + 2)
+            if offset == 11 {
                 let emptySemantic = RealtimeResidentBrainEvent(
                     identity: eventIdentity,
-                    sequence: eventSequence,
+                    sequence: nextEventSequence,
                     kind: .residentSemanticFinal(
                         RealtimeBrainSemanticOutput(canonicalText: "   ")
                     )
@@ -926,9 +1463,10 @@ private struct RealtimeResidentBrainContractTests {
                         ) == .rejectedInvalidEvent,
                     "canonical semantic final cannot be empty"
                 )
+                nextEventSequence += 1
                 let missingResponse = RealtimeResidentBrainEvent(
                     identity: userIdentity,
-                    sequence: eventSequence,
+                    sequence: nextEventSequence,
                     kind: .residentSemanticFinal(semantic)
                 )
                 await stack.provider.enqueue(missingResponse)
@@ -939,11 +1477,12 @@ private struct RealtimeResidentBrainContractTests {
                         ) == .rejectedInvalidIdentity,
                     "semantic final requires turn and response identity"
                 )
+                nextEventSequence += 1
             }
-            if offset == 10 {
+            if offset == 12 {
                 let duplicateSemantic = RealtimeResidentBrainEvent(
                     identity: eventIdentity,
-                    sequence: UInt64(offset + 2),
+                    sequence: nextEventSequence,
                     kind: .residentSemanticFinal(semantic)
                 )
                 await stack.provider.enqueue(duplicateSemantic)
@@ -954,11 +1493,12 @@ private struct RealtimeResidentBrainContractTests {
                         ) == .rejectedInvalidEvent,
                     "one response accepts one canonical semantic final"
                 )
+                nextEventSequence += 1
             }
             if offset == 12 {
                 let unscopedError = RealtimeResidentBrainEvent(
                     identity: readyIdentity,
-                    sequence: UInt64(offset + 2),
+                    sequence: nextEventSequence,
                     kind: .error(.providerFailure)
                 )
                 await stack.provider.enqueue(unscopedError)
@@ -969,10 +1509,11 @@ private struct RealtimeResidentBrainContractTests {
                         ) == .rejectedInvalidIdentity,
                     "recoverable error requires turn and response identity"
                 )
+                nextEventSequence += 1
             }
             let event = RealtimeResidentBrainEvent(
                 identity: item.0,
-                sequence: UInt64(offset + 2),
+                sequence: nextEventSequence,
                 kind: item.1
             )
             await stack.provider.enqueue(event)
@@ -981,9 +1522,36 @@ private struct RealtimeResidentBrainContractTests {
                     session: identity
                 ),
                 equals: event,
-                "typed Realtime event \(offset + 2) is accepted"
+                "typed Realtime event \(nextEventSequence) is accepted"
             )
+            nextEventSequence += 1
         }
+        let lateText = RealtimeResidentBrainEvent(
+            identity: eventIdentity,
+            sequence: nextEventSequence,
+            kind: .residentTextDelta("late after semantic final")
+        )
+        await stack.provider.enqueue(lateText)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "a terminal response rejects late resident callbacks"
+        )
+        nextEventSequence += 1
+        let lateCancellation = RealtimeResidentBrainEvent(
+            identity: eventIdentity,
+            sequence: nextEventSequence,
+            kind: .cancelled(.runtimeDecision)
+        )
+        await stack.provider.enqueue(lateCancellation)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "a terminal response rejects a late cancellation"
+        )
+        nextEventSequence += 1
         expect(
             stack.runtime.activeBrainLeaseForTesting()?.generation
                 == .realtimeResidentBrain(identity.generation),
@@ -1062,7 +1630,7 @@ private struct RealtimeResidentBrainContractTests {
                 responseID: responseID,
                 contextRevision: 2
             ),
-            sequence: 16,
+            sequence: nextEventSequence,
             kind: .residentSemanticFinal(semantic)
         )
         await stack.provider.enqueue(repeatedSemanticAcrossRevision)
@@ -1288,7 +1856,7 @@ private struct RealtimeResidentBrainContractTests {
         )
         let deferredTool = RealtimeResidentBrainEvent(
             identity: residentIdentity,
-            sequence: 7,
+            sequence: 8,
             kind: .toolCall(RealtimeBrainToolCallCandidate(
                 identity: residentIdentity,
                 callID: duplicateCallID,
@@ -1305,7 +1873,7 @@ private struct RealtimeResidentBrainContractTests {
         )
         let currentTool = RealtimeResidentBrainEvent(
             identity: residentIdentity,
-            sequence: 5,
+            sequence: 6,
             kind: .toolCall(RealtimeBrainToolCallCandidate(
                 identity: residentIdentity,
                 callID: duplicateCallID,
@@ -1323,8 +1891,8 @@ private struct RealtimeResidentBrainContractTests {
         )
         let filler = RealtimeResidentBrainEvent(
             identity: userIdentity,
-            sequence: 6,
-            kind: .userTranscriptFinal("six")
+            sequence: 7,
+            kind: .userTranscriptFinal("seven")
         )
         await stack.provider.enqueue(filler)
         expectAccepted(
@@ -1339,6 +1907,63 @@ private struct RealtimeResidentBrainContractTests {
                 session: identity
             ) == .rejectedInvalidEvent,
             "deferred Tool candidate is revalidated for duplicate callID"
+        )
+
+        let malformedFutureAudio = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 10,
+            kind: .residentAudioDelta(RealtimeBrainAudioDelta(
+                sequence: 2,
+                timestampNanoseconds: 50,
+                format: audioFormat,
+                provenance: .voiceProcessed,
+                bytes: Data([4, 5])
+            ))
+        )
+        await stack.provider.enqueue(malformedFutureAudio)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .deferredOutOfOrder,
+            "a future ordinal is deferred before payload validation"
+        )
+        let sequenceNine = RealtimeResidentBrainEvent(
+            identity: userIdentity,
+            sequence: 9,
+            kind: .userTranscriptFinal("nine")
+        )
+        await stack.provider.enqueue(sequenceNine)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: sequenceNine,
+            "the missing ordinal remains acceptable"
+        )
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "the malformed future payload is rejected when current"
+        )
+        let validAfterMalformedAudio = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 11,
+            kind: .residentAudioDelta(RealtimeBrainAudioDelta(
+                sequence: 3,
+                timestampNanoseconds: 250,
+                format: audioFormat,
+                provenance: .providerGenerated,
+                bytes: Data([6, 7])
+            ))
+        )
+        await stack.provider.enqueue(validAfterMalformedAudio)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: validAfterMalformedAudio,
+            "outer and audio ordering recover after malformed payload"
         )
 
         let receiveCount = await stack.provider.receiveCount()
@@ -1369,7 +1994,7 @@ private struct RealtimeResidentBrainContractTests {
                     responseID: nil,
                     contextRevision: 1
                 ),
-                sequence: 7,
+                sequence: 9,
                 kind: .userTranscriptFinal("stale callback")
             )
             await stack.provider.enqueue(staleCallback)
@@ -1383,7 +2008,7 @@ private struct RealtimeResidentBrainContractTests {
 
         let late = RealtimeResidentBrainEvent(
             identity: userIdentity,
-            sequence: 7,
+            sequence: 9,
             kind: .userTranscriptFinal("late")
         )
         await stack.provider.enqueue(late)
@@ -2195,6 +2820,17 @@ private struct RealtimeResidentBrainContractTests {
         default:
             fatalError("FAILED: \(message): \(disposition)")
         }
+    }
+
+    private static func acceptDirect(
+        _ event: RealtimeResidentBrainEvent,
+        gate: RuntimeRealtimeBrainSessionGate,
+        session: RealtimeBrainSessionIdentity
+    ) -> RealtimeBrainEventDisposition {
+        guard case .provider(let token) = gate.beginReceiving(session) else {
+            fatalError("FAILED: direct gate receive begins")
+        }
+        return gate.accept(event, expected: session, token: token)
     }
 
     private static func expectRealtimeSuccess(

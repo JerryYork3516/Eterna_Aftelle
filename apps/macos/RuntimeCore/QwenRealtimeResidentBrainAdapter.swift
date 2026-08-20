@@ -433,8 +433,6 @@ actor QwenRealtimeResidentBrainAdapter:
         var finalText: String?
         var didEmitTextFinal = false
         var isSpeaking = false
-        var audioSequence: UInt64 = 0
-        var audioSampleFrames: UInt64 = 0
         var hasToolCall = false
     }
 
@@ -474,6 +472,9 @@ actor QwenRealtimeResidentBrainAdapter:
     private var pendingEvents: [RealtimeResidentBrainEvent] = []
     private var eventWaiter: EventWaiter?
     private var nextEventSequence: UInt64 = 0
+    private var outputAudioSequence: UInt64 = 0
+    private var outputAudioSampleFrames: UInt64 = 0
+    private var contextSectionsByScope: [String: String] = [:]
 
     private var turnsByWireItemID:
         [String: TurnBinding] = [:]
@@ -570,12 +571,17 @@ actor QwenRealtimeResidentBrainAdapter:
         defer { finishMutationOperation(operationID) }
         let acknowledgement = nextSessionUpdateAcknowledgement()
         expectedSessionUpdate = acknowledgement
+        let nextContextSections = Self.applying(
+            update,
+            to: contextSectionsByScope
+        )
         do {
             try await send(codec.contextUpdate(
-                instructions: Self.instructions(from: update.sections)
+                instructions: Self.instructions(from: nextContextSections)
             ))
             try await waitForAcknowledgement(acknowledgement)
             expectedSessionUpdate = nil
+            contextSectionsByScope = nextContextSections
             contextRevision = update.contextRevision
             if update.kind == .bootstrap {
                 lifecycle = .active
@@ -938,14 +944,14 @@ actor QwenRealtimeResidentBrainAdapter:
                     identity: makeEventIdentity(for: response)
                 )
             }
-            response.audioSequence &+= 1
-            let timestamp = response.audioSampleFrames
+            outputAudioSequence &+= 1
+            let timestamp = outputAudioSampleFrames
                 * 1_000_000_000 / 24_000
-            response.audioSampleFrames &+= UInt64(bytes.count / 2)
+            outputAudioSampleFrames &+= UInt64(bytes.count / 2)
             activeResponse = response
             enqueue(
                 kind: .residentAudioDelta(RealtimeBrainAudioDelta(
-                    sequence: response.audioSequence,
+                    sequence: outputAudioSequence,
                     timestampNanoseconds: timestamp,
                     format: RealtimeBrainAudioFormat(
                         encoding: .pcm16LittleEndian,
@@ -1390,6 +1396,8 @@ actor QwenRealtimeResidentBrainAdapter:
     private func resetGenerationStatePreservingTombstones() {
         pendingEvents.removeAll(keepingCapacity: true)
         nextEventSequence = 0
+        outputAudioSequence = 0
+        outputAudioSampleFrames = 0
         turnsByWireItemID.removeAll(keepingCapacity: true)
         latestTurnBinding = nil
         lastUserTranscriptPreviewByItemID.removeAll(keepingCapacity: true)
@@ -1408,13 +1416,40 @@ actor QwenRealtimeResidentBrainAdapter:
         retiredItemOrder.removeAll(keepingCapacity: true)
         retiredResponseIDs.removeAll(keepingCapacity: true)
         retiredResponseOrder.removeAll(keepingCapacity: true)
+        contextSectionsByScope.removeAll(keepingCapacity: true)
+    }
+
+    private static let contextScopeOrder: [RealtimeBrainContextScope] = [
+        .stableResident,
+        .dynamicSession,
+        .memoryDelta,
+        .relationshipDelta,
+        .toolResultContext
+    ]
+
+    private static func applying(
+        _ update: RealtimeBrainRuntimeContextUpdate,
+        to current: [String: String]
+    ) -> [String: String] {
+        var result = update.kind == .bootstrap ? [:] : current
+        for section in update.sections {
+            if section.content.isEmpty {
+                result.removeValue(forKey: section.scope.rawValue)
+            } else {
+                result[section.scope.rawValue] = section.content
+            }
+        }
+        return result
     }
 
     private static func instructions(
-        from sections: [RealtimeBrainContextSection]
+        from sectionsByScope: [String: String]
     ) -> String {
-        sections.map { section in
-            "[\(section.scope.rawValue)]\n\(section.content)"
+        contextScopeOrder.compactMap { scope in
+            guard let content = sectionsByScope[scope.rawValue] else {
+                return nil
+            }
+            return "[\(scope.rawValue)]\n\(content)"
         }.joined(separator: "\n\n")
     }
 

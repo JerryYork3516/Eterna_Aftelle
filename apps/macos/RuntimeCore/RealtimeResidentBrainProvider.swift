@@ -53,7 +53,10 @@ nonisolated enum RealtimeBrainContextUpdateKind:
     case delta
 }
 
-nonisolated enum RealtimeBrainContextScope: String, Sendable, Equatable {
+nonisolated enum RealtimeBrainContextScope:
+    String,
+    Hashable,
+    Sendable {
     case stableResident
     case dynamicSession
     case memoryDelta
@@ -119,8 +122,64 @@ nonisolated struct RealtimeBrainEventIdentity: Hashable, Sendable {
     let contextRevision: UInt64
 }
 
+nonisolated struct RealtimeBrainNarrativeMemoryCandidate:
+    Sendable,
+    Equatable {
+    let identity: RealtimeBrainEventIdentity
+    let candidateID: String
+    let memoryType: String
+    let summary: String
+    let sourceTurnIDs: [String]
+    let consentSignal: String
+    let sensitivityFlags: [String]
+    let evidenceSource: String
+    let inputClassification: String
+    let confidence: Double
+}
+
+nonisolated struct RealtimeBrainRelationshipEvidenceCandidate:
+    Sendable,
+    Equatable {
+    let identity: RealtimeBrainEventIdentity
+    let evidenceType: String
+    let evidenceDetected: Bool
+    let evidenceSource: String
+    let requiresUserConfirmation: Bool
+    let confidence: Double
+}
+
+nonisolated struct RealtimeBrainGrowthObservationCandidate:
+    Sendable,
+    Equatable {
+    let identity: RealtimeBrainEventIdentity
+    let observation: String
+    let confidence: Double
+}
+
 nonisolated struct RealtimeBrainSemanticOutput: Sendable, Equatable {
     let canonicalText: String
+    let narrativeMemoryCandidates:
+        [RealtimeBrainNarrativeMemoryCandidate]
+    let relationshipEvidenceCandidates:
+        [RealtimeBrainRelationshipEvidenceCandidate]
+    let growthObservationCandidates:
+        [RealtimeBrainGrowthObservationCandidate]
+
+    init(
+        canonicalText: String,
+        narrativeMemoryCandidates:
+            [RealtimeBrainNarrativeMemoryCandidate] = [],
+        relationshipEvidenceCandidates:
+            [RealtimeBrainRelationshipEvidenceCandidate] = [],
+        growthObservationCandidates:
+            [RealtimeBrainGrowthObservationCandidate] = []
+    ) {
+        self.canonicalText = canonicalText
+        self.narrativeMemoryCandidates = narrativeMemoryCandidates
+        self.relationshipEvidenceCandidates =
+            relationshipEvidenceCandidates
+        self.growthObservationCandidates = growthObservationCandidates
+    }
 }
 
 nonisolated struct RealtimeBrainToolCallCandidate: Sendable, Equatable {
@@ -237,6 +296,7 @@ nonisolated enum RealtimeBrainEventDisposition: Sendable, Equatable {
     case rejectedStale
     case rejectedDuplicate
     case rejectedOutOfOrder
+    case rejectedBufferOverflow
     case deferredOutOfOrder
     case rejectedClosed
     case rejectedInvalidIdentity
@@ -352,9 +412,16 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     private var pendingAudioInput: RealtimeBrainAudioFrame?
     private var lastAudioInputSequence: UInt64 = 0
     private var lastAudioInputTimestamp: UInt64 = 0
+    private var audioInputSinceStableBoundary = false
     private var lastAudioOutputSequence: UInt64 = 0
     private var lastAudioOutputTimestamp: UInt64 = 0
     private var semanticFinals:
+        Set<RuntimeRealtimeBrainSemanticFinalKey> = []
+    private var activeTurnIDs: Set<RealtimeBrainTurnID> = []
+    private var activeResponseIDs:
+        Set<RuntimeRealtimeBrainSemanticFinalKey> = []
+    private var terminalTurnIDs: Set<RealtimeBrainTurnID> = []
+    private var terminalResponseIDs:
         Set<RuntimeRealtimeBrainSemanticFinalKey> = []
     private var toolResultToken: UUID?
     private var pendingToolResult: RealtimeBrainToolResultCommand?
@@ -417,10 +484,14 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   contextUpdateToken == nil,
                   receiveToken == nil,
                   audioInputToken == nil,
+                  !audioInputSinceStableBoundary,
                   toolResultToken == nil,
                   toolCandidates.isEmpty,
+                  activeTurnIDs.isEmpty,
+                  activeResponseIDs.isEmpty,
                   deferredEvents.isEmpty,
                   generationTransitionToken == nil,
+                  Self.hasUniqueContextScopes(update.sections),
                   update.contextRevision > contextRevision else {
                 return nil
             }
@@ -511,6 +582,7 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   isReadyLocked(frame.identity) else { return false }
             lastAudioInputSequence = frame.sequence
             lastAudioInputTimestamp = frame.timestampNanoseconds
+            audioInputSinceStableBoundary = true
             return true
         }
     }
@@ -554,6 +626,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             lastToolResultSequence = command.sequence
             toolCandidates.removeValue(forKey: command.callID)
             completedToolCalls.insert(command.callID)
+            if let key = Self.semanticFinalKey(for: command.identity) {
+                activeResponseIDs.remove(key)
+            }
             return true
         }
     }
@@ -626,10 +701,12 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                 guard event.identity.session == identity,
                       event.identity.contextRevision == contextRevision,
                       Self.hasRequiredIdentity(event) else {
+                    consumeRejectedSequenceLocked(event)
                     return .rejected(.rejectedInvalidIdentity)
                 }
                 guard Self.hasStructurallyValidPayload(event),
                       hasStatefullyValidPayloadLocked(event) else {
+                    consumeRejectedSequenceLocked(event)
                     return .rejected(.rejectedInvalidEvent)
                 }
                 commitEventLocked(event)
@@ -669,26 +746,30 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                 return closedIdentity == identity
                     ? .rejectedClosed : .rejectedStale
             }
-            guard event.identity.contextRevision == contextRevision,
-                  Self.hasRequiredIdentity(event) else {
-                return .rejectedInvalidIdentity
-            }
-            guard Self.hasStructurallyValidPayload(event) else {
-                return .rejectedInvalidEvent
-            }
             if event.sequence <= lastAcceptedEventSequence
                 || deferredEvents[event.sequence] != nil {
                 return .rejectedDuplicate
             }
-            guard event.sequence == lastAcceptedEventSequence &+ 1 else {
+            let expectedSequence = lastAcceptedEventSequence &+ 1
+            if event.sequence != expectedSequence {
                 guard deferredEvents.count
                         < Self.deferredEventCapacity else {
-                    return .rejectedOutOfOrder
+                    return .rejectedBufferOverflow
                 }
                 deferredEvents[event.sequence] = event
                 return .deferredOutOfOrder
             }
+            guard event.identity.contextRevision == contextRevision,
+                  Self.hasRequiredIdentity(event) else {
+                consumeRejectedSequenceLocked(event)
+                return .rejectedInvalidIdentity
+            }
+            guard Self.hasStructurallyValidPayload(event) else {
+                consumeRejectedSequenceLocked(event)
+                return .rejectedInvalidEvent
+            }
             guard hasStatefullyValidPayloadLocked(event) else {
+                consumeRejectedSequenceLocked(event)
                 return .rejectedInvalidEvent
             }
             commitEventLocked(event)
@@ -838,6 +919,7 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
 
     private func commitEventLocked(_ event: RealtimeResidentBrainEvent) {
         lastAcceptedEventSequence = event.sequence
+        updateOpenTurnLedgerLocked(event)
         switch event.kind {
         case .residentAudioDelta(let audio):
             lastAudioOutputSequence = audio.sequence
@@ -853,9 +935,99 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         }
     }
 
+    private func consumeRejectedSequenceLocked(
+        _ event: RealtimeResidentBrainEvent
+    ) {
+        guard event.sequence == lastAcceptedEventSequence &+ 1 else {
+            return
+        }
+        lastAcceptedEventSequence = event.sequence
+        if case .residentAudioDelta(let audio) = event.kind,
+           audio.sequence == lastAudioOutputSequence &+ 1 {
+            lastAudioOutputSequence = audio.sequence
+            if Self.hasStructurallyValidPayload(event),
+               audio.timestampNanoseconds >= lastAudioOutputTimestamp {
+                lastAudioOutputTimestamp = audio.timestampNanoseconds
+            }
+        }
+    }
+
+    private func updateOpenTurnLedgerLocked(
+        _ event: RealtimeResidentBrainEvent
+    ) {
+        switch event.kind {
+        case .sessionReady:
+            break
+        case .sessionClosed:
+            audioInputSinceStableBoundary = false
+            terminalTurnIDs.formUnion(activeTurnIDs)
+            terminalResponseIDs.formUnion(activeResponseIDs)
+            activeTurnIDs.removeAll(keepingCapacity: true)
+            activeResponseIDs.removeAll(keepingCapacity: true)
+        case .error, .residentSemanticFinal:
+            audioInputSinceStableBoundary = false
+            markTurnTerminalLocked(event.identity)
+        case .cancelled:
+            audioInputSinceStableBoundary = false
+            if event.identity.turnID != nil {
+                markTurnTerminalLocked(event.identity)
+            } else {
+                terminalTurnIDs.formUnion(activeTurnIDs)
+                terminalResponseIDs.formUnion(activeResponseIDs)
+                activeTurnIDs.removeAll(keepingCapacity: true)
+                activeResponseIDs.removeAll(keepingCapacity: true)
+            }
+        case .userSpeechStarted, .userSpeechStopped,
+             .userTranscriptPartial, .userTranscriptFinal:
+            if let turnID = event.identity.turnID {
+                activeTurnIDs.insert(turnID)
+            }
+        case .residentTextDelta, .residentTextFinal,
+             .residentAudioDelta, .residentSpeakingStarted,
+             .residentSpeakingStopped, .toolCall,
+             .interruptionProposed:
+            if let turnID = event.identity.turnID {
+                activeTurnIDs.insert(turnID)
+            }
+            if let responseID = Self.semanticFinalKey(
+                for: event.identity
+            ) {
+                activeResponseIDs.insert(responseID)
+            }
+        }
+    }
+
+    private func markTurnTerminalLocked(
+        _ identity: RealtimeBrainEventIdentity
+    ) {
+        if let turnID = identity.turnID {
+            terminalTurnIDs.insert(turnID)
+        }
+        if let responseID = Self.semanticFinalKey(for: identity) {
+            terminalResponseIDs.insert(responseID)
+        }
+        closeTurnLocked(identity.turnID)
+    }
+
+    private func closeTurnLocked(_ turnID: RealtimeBrainTurnID?) {
+        guard let turnID else { return }
+        activeTurnIDs.remove(turnID)
+        activeResponseIDs = Set(
+            activeResponseIDs.filter { $0.turnID != turnID }
+        )
+    }
+
     private func hasStatefullyValidPayloadLocked(
         _ event: RealtimeResidentBrainEvent
     ) -> Bool {
+        if let turnID = event.identity.turnID,
+           terminalTurnIDs.contains(turnID) {
+            return false
+        }
+        if let responseID = Self.semanticFinalKey(for: event.identity),
+           terminalResponseIDs.contains(responseID) {
+            return false
+        }
         switch event.kind {
         case .residentAudioDelta(let audio):
             return audio.sequence == lastAudioOutputSequence &+ 1
@@ -894,9 +1066,10 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             return audio.provenance == .providerGenerated
                 && Self.isValidPCM(audio.format, bytes: audio.bytes)
         case .residentSemanticFinal(let output):
-            return !output.canonicalText.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            ).isEmpty
+            return Self.hasValidSemanticOutput(
+                output,
+                identity: event.identity
+            )
         case .toolCall(let candidate):
             return candidate.identity == event.identity
                 && !candidate.callID.rawValue.isEmpty
@@ -921,6 +1094,63 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
               !bytes.isEmpty else { return false }
         let bytesPerFrame = 2 * format.channelCount
         return bytes.count.isMultiple(of: bytesPerFrame)
+    }
+
+    private static func hasUniqueContextScopes(
+        _ sections: [RealtimeBrainContextSection]
+    ) -> Bool {
+        Set(sections.map(\.scope)).count == sections.count
+    }
+
+    private static func hasValidSemanticOutput(
+        _ output: RealtimeBrainSemanticOutput,
+        identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        guard !output.canonicalText.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ).isEmpty,
+              Set(output.narrativeMemoryCandidates.map(\.candidateID))
+                .count == output.narrativeMemoryCandidates.count else {
+            return false
+        }
+        let memoriesAreValid = output.narrativeMemoryCandidates.allSatisfy {
+            candidate in
+            candidate.identity == identity
+                && hasText(candidate.candidateID)
+                && hasText(candidate.memoryType)
+                && hasText(candidate.summary)
+                && !candidate.sourceTurnIDs.isEmpty
+                && candidate.sourceTurnIDs.allSatisfy(hasText)
+                && hasText(candidate.consentSignal)
+                && candidate.sensitivityFlags.allSatisfy(hasText)
+                && hasText(candidate.evidenceSource)
+                && hasText(candidate.inputClassification)
+                && hasValidConfidence(candidate.confidence)
+        }
+        let relationshipsAreValid =
+            output.relationshipEvidenceCandidates.allSatisfy { candidate in
+                candidate.identity == identity
+                    && hasText(candidate.evidenceType)
+                    && hasText(candidate.evidenceSource)
+                    && hasValidConfidence(candidate.confidence)
+            }
+        let growthObservationsAreValid =
+            output.growthObservationCandidates.allSatisfy { candidate in
+                candidate.identity == identity
+                    && hasText(candidate.observation)
+                    && hasValidConfidence(candidate.confidence)
+            }
+        return memoriesAreValid
+            && relationshipsAreValid
+            && growthObservationsAreValid
+    }
+
+    private static func hasText(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func hasValidConfidence(_ confidence: Double) -> Bool {
+        confidence.isFinite && (0...1).contains(confidence)
     }
 
     private static func semanticFinalKey(
@@ -962,11 +1192,16 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         receiveToken = nil
         lastAudioInputSequence = 0
         lastAudioInputTimestamp = 0
+        audioInputSinceStableBoundary = false
         audioInputToken = nil
         pendingAudioInput = nil
         lastAudioOutputSequence = 0
         lastAudioOutputTimestamp = 0
         semanticFinals.removeAll(keepingCapacity: true)
+        activeTurnIDs.removeAll(keepingCapacity: true)
+        activeResponseIDs.removeAll(keepingCapacity: true)
+        terminalTurnIDs.removeAll(keepingCapacity: true)
+        terminalResponseIDs.removeAll(keepingCapacity: true)
         toolResultToken = nil
         pendingToolResult = nil
         lastToolResultSequence = 0
