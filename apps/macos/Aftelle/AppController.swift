@@ -441,6 +441,20 @@ final class AppController: ObservableObject {
             )
         }
     )
+    #if DEBUG
+    private lazy var realtimeBrainInputBridge = MacSpeechRealtimeBrainInputBridge(
+        source: speechAudioHost,
+        sendFrame: { [orchestrationKernel] frame in
+            await orchestrationKernel.sendRealtimeResidentBrainAudio(frame)
+        },
+        stopInput: { [weak self] binding in
+            guard let self else { return }
+            await orchestrationKernel.stopRealtimeResidentBrainInput(
+                binding: binding
+            )
+        }
+    )
+    #endif
     private lazy var speechOutputBridge = MacSpeechNativeOutputBridge(
         receiveEvent: { [orchestrationKernel] interactionID in
             await orchestrationKernel.receiveNativeSpeechEvent(

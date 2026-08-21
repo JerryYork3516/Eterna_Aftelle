@@ -36,6 +36,7 @@ private struct MacSpeechAudioOutputHostTests {
         await testCloseCanReprepare()
         await testDefaultOutputChangeFailsAndCanRecover()
         await testUnavailableOutputFailsBeforePrepare()
+        await testPendingSinkEventsCapacityLimit()
         print("speech_audio_output_checks=\(checks)")
     }
 
@@ -926,5 +927,48 @@ private struct MacSpeechAudioOutputHostTests {
     private static func expect(_ condition: Bool, _ label: String) {
         guard condition else { fatalError("FAILED: \(label)") }
         checks += 1
+    }
+
+    private static func testPendingSinkEventsCapacityLimit() async {
+        let player = FakeMacSpeechAudioOutputPlayer()
+        let monitor = FakeMacSpeechOutputDeviceMonitor()
+        let host = MacSpeechAudioOutputHost(
+            player: player,
+            deviceMonitor: monitor
+        )
+        final class EventCollector: @unchecked Sendable {
+            private let lock = NSLock()
+            private var events: [MacSpeechAudioOutputEvent] = []
+            func append(_ event: MacSpeechAudioOutputEvent) {
+                lock.withLock { events.append(event) }
+            }
+            var count: Int { lock.withLock { events.count } }
+        }
+        let collector = EventCollector()
+
+        await host.setEventSink { event in
+            collector.append(event)
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+
+        let prepared = await host.prepare()
+        expect(prepared.state == .prepared, "host prepares successfully")
+
+        for i in 0..<40 {
+            await host.appendEvent(.chunkPlayed, sequence: UInt64(i))
+        }
+
+        expect(await host.pendingSinkEventCount == 32,
+               "pending sink queue is capped at capacity 32")
+
+        await waitUntil(attempts: 500) {
+            collector.count >= 32
+        }
+        expect(collector.count == 32 || collector.count == 33,
+               "one in-flight plus the retained 32 are delivered")
+
+        let snapshot = await host.currentSnapshot()
+        expect(snapshot.recentEvents.count == 16,
+               "recent events ring stays limited to 16")
     }
 }

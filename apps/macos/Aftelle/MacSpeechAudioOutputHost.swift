@@ -111,7 +111,9 @@ actor MacSpeechAudioOutputHost {
     private var eventOrdinal: UInt64 = 0
     private var eventSink: EventSink?
     private var pendingSinkEvents: [MacSpeechAudioOutputEvent] = []
+    private let pendingSinkEventCapacity = 32
     private var eventDeliveryTask: Task<Void, Never>?
+    var pendingSinkEventCount: Int { pendingSinkEvents.count }
     private var isMonitoringDeviceRoute = false
     private var providerResponseFinished = false
     private var pendingFadeIn: MacSpeechPCMOutputFadeIn?
@@ -612,7 +614,7 @@ actor MacSpeechAudioOutputHost {
         queue.reset(generation: generation)
     }
 
-    private func appendEvent(
+    func appendEvent(
         _ kind: MacSpeechAudioOutputEventKind,
         sequence: UInt64? = nil,
         error: MacSpeechAudioOutputHostError? = nil
@@ -635,6 +637,9 @@ actor MacSpeechAudioOutputHost {
         )
         if eventSink != nil,
            let event = recentEvents.last {
+            if pendingSinkEvents.count >= pendingSinkEventCapacity {
+                pendingSinkEvents.removeFirst()
+            }
             pendingSinkEvents.append(event)
             startEventDeliveryIfNeeded()
         }

@@ -1754,6 +1754,35 @@ public final class OrchestrationKernel {
         }
     }
 
+    #if DEBUG
+    func startRealtimeResidentBrainInput(
+        session: RealtimeBrainSessionIdentity,
+        captureGeneration: UInt64
+    ) async -> Result<MacSpeechRealtimeBrainInputBinding, RealtimeResidentBrainError> {
+        .success(
+            MacSpeechRealtimeBrainInputBinding(
+                session: session,
+                captureGeneration: captureGeneration
+            )
+        )
+    }
+
+    nonisolated func sendRealtimeResidentBrainAudio(
+        _ frame: RealtimeBrainAudioFrame
+    ) async -> Result<Void, RealtimeResidentBrainError> {
+        await runtimeCore.appendRealtimeResidentBrainAudio(frame)
+    }
+
+    nonisolated func stopRealtimeResidentBrainInput(
+        binding: MacSpeechRealtimeBrainInputBinding
+    ) async {
+        _ = await runtimeCore.cancelRealtimeResidentBrainGeneration(
+            identity: binding.session,
+            reason: .runtimeDecision
+        )
+    }
+    #endif
+
     func testResidentReply(
         inputText: String,
         interactionID: UUID? = nil
