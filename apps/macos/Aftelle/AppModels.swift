@@ -1802,6 +1802,12 @@ public final class OrchestrationKernel {
         )
     }
 
+    func observeRealtimeResidentBrainAcoustics(
+        _ observation: RealtimeAcousticObservation
+    ) -> RealtimeAcousticObservationDisposition {
+        runtimeCore.observeRealtimeResidentBrainAcoustics(observation)
+    }
+
     func claimRealtimeResidentBrainInterruptionDecision(
         for event: RealtimeResidentBrainEvent
     ) async -> Result<

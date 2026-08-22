@@ -1466,12 +1466,35 @@ nonisolated struct RuntimeToolAuditRecord: Sendable, Equatable {
     let generation: UInt64
 }
 
+nonisolated struct RealtimeAcousticObservationTraceRecord:
+    Sendable,
+    Equatable {
+    let observation: RealtimeAcousticObservation
+    let disposition: RealtimeAcousticObservationDisposition
+    let receivedAtNanoseconds: UInt64
+}
+
+#if DEBUG
+nonisolated struct RealtimeAcousticObservationDebugSnapshot:
+    Sendable,
+    Equatable {
+    let capacity: Int
+    let records: [RealtimeAcousticObservationTraceRecord]
+    let droppedRecordCount: UInt64
+    let activeSession: RealtimeBrainSessionIdentity?
+    let lastSequence: UInt64
+}
+#endif
+
 public final class RuntimeCore {
     private static let runtimeToolExecutionCapacity = 8
     private static let runtimeToolAuditCapacity = 256
     private static let realtimeInterruptionEvidenceWindowNanoseconds:
         UInt64 = 2_000_000_000
     private static let realtimeInterruptionProposalDecisionCapacity = 8
+    private static let realtimeAcousticObservationCapacity = 32
+    private static let realtimeAcousticObservationFreshnessNanoseconds:
+        UInt64 = 500_000_000
 
     private struct SpeechRouteASRFinalState {
         let generation: UInt64
@@ -1521,6 +1544,12 @@ public final class RuntimeCore {
         let responseID: RealtimeBrainResponseID
         let contextRevision: UInt64
         let sequence: UInt64
+    }
+
+    private struct RealtimeAcousticObservationLedger {
+        let session: RealtimeBrainSessionIdentity
+        var lastSequence: UInt64
+        var lastTimestampNanoseconds: UInt64
     }
 
     private struct RealtimeBrainGenerationTransition {
@@ -1744,6 +1773,11 @@ public final class RuntimeCore {
     private var realtimeInterruptionProposalDecisionOrder:
         [RealtimeInterruptionProposalKey] = []
     private var pendingRealtimeInterruption: PendingRealtimeInterruption?
+    private var realtimeAcousticObservationLedger:
+        RealtimeAcousticObservationLedger?
+    private var realtimeAcousticObservationTrace:
+        [RealtimeAcousticObservationTraceRecord] = []
+    private var realtimeAcousticObservationDroppedRecordCount: UInt64 = 0
     private var canonicalTurnCommitSessionID: String?
     private var canonicalResponseCommitClaims:
         Set<CanonicalResidentResponseKey> = []
@@ -2225,6 +2259,7 @@ public final class RuntimeCore {
     private func resetRealtimeBrainRuntimeBridge() {
         realtimeBrainContextBridgeState = nil
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         realtimeInterruptionProposalDecisions.removeAll(keepingCapacity: true)
         realtimeInterruptionProposalDecisionOrder.removeAll(
@@ -2233,6 +2268,12 @@ public final class RuntimeCore {
         lastRealtimeGrowthObservationDecisions.removeAll(
             keepingCapacity: true
         )
+    }
+
+    private func resetRealtimeAcousticObservationState() {
+        realtimeAcousticObservationLedger = nil
+        realtimeAcousticObservationTrace.removeAll(keepingCapacity: true)
+        realtimeAcousticObservationDroppedRecordCount = 0
     }
 
     private func latestRealtimeBrainContextInput() -> String {
@@ -2455,6 +2496,7 @@ public final class RuntimeCore {
         resetRuntimeToolState(route: .realtimeResidentBrain)
         realtimeBrainGeneration = generation
         realtimeBrainToolResultSequence = 0
+        resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         realtimeInterruptionProposalDecisions.removeAll(keepingCapacity: true)
         realtimeInterruptionProposalDecisionOrder.removeAll(
@@ -2914,6 +2956,135 @@ public final class RuntimeCore {
     }
 
     @MainActor
+    func observeRealtimeResidentBrainAcoustics(
+        _ observation: RealtimeAcousticObservation
+    ) -> RealtimeAcousticObservationDisposition {
+        let receivedAt = DispatchTime.now().uptimeNanoseconds
+        let identity = observation.identity
+        guard currentRealtimeBrainLease(identity: identity.session) != nil,
+              realtimeBrainSessionGate.isActive(identity.session) else {
+            return .ignored(.staleIdentity)
+        }
+        guard identity.captureGeneration > 0,
+              identity.sequence > 0,
+              identity.timestampNanoseconds > 0,
+              identity.timestampNanoseconds <= receivedAt,
+              receivedAt - identity.timestampNanoseconds
+                <= Self.realtimeAcousticObservationFreshnessNanoseconds,
+              Self.realtimeAcousticMetricsAreValid(observation.metrics),
+              RealtimeAcousticClassifier.classify(
+                  metrics: observation.metrics,
+                  observationTimestampNanoseconds:
+                      identity.timestampNanoseconds
+              ) == observation.classification else {
+            let disposition = RealtimeAcousticObservationDisposition
+                .ignored(.invalidObservation)
+            appendRealtimeAcousticObservationTrace(
+                observation,
+                disposition: disposition,
+                receivedAtNanoseconds: receivedAt
+            )
+            return disposition
+        }
+
+        var ledger = realtimeAcousticObservationLedger
+            ?? RealtimeAcousticObservationLedger(
+                session: identity.session,
+                lastSequence: 0,
+                lastTimestampNanoseconds: 0
+            )
+        guard ledger.session == identity.session else {
+            return .ignored(.staleIdentity)
+        }
+        let disposition: RealtimeAcousticObservationDisposition
+        if identity.sequence == ledger.lastSequence {
+            disposition = .ignored(.duplicateObservation)
+        } else if identity.sequence < ledger.lastSequence
+                    || identity.timestampNanoseconds
+                        < ledger.lastTimestampNanoseconds {
+            disposition = .ignored(.staleObservation)
+        } else {
+            ledger.lastSequence = identity.sequence
+            ledger.lastTimestampNanoseconds = identity.timestampNanoseconds
+            realtimeAcousticObservationLedger = ledger
+            disposition = .observed
+        }
+        appendRealtimeAcousticObservationTrace(
+            observation,
+            disposition: disposition,
+            receivedAtNanoseconds: receivedAt
+        )
+        return disposition
+    }
+
+    private func appendRealtimeAcousticObservationTrace(
+        _ observation: RealtimeAcousticObservation,
+        disposition: RealtimeAcousticObservationDisposition,
+        receivedAtNanoseconds: UInt64
+    ) {
+        if realtimeAcousticObservationTrace.count
+            == Self.realtimeAcousticObservationCapacity {
+            realtimeAcousticObservationTrace.removeFirst()
+            realtimeAcousticObservationDroppedRecordCount &+= 1
+        }
+        realtimeAcousticObservationTrace.append(
+            RealtimeAcousticObservationTraceRecord(
+                observation: observation,
+                disposition: disposition,
+                receivedAtNanoseconds: receivedAtNanoseconds
+            )
+        )
+    }
+
+    private static func realtimeAcousticMetricsAreValid(
+        _ metrics: RealtimeAcousticMetrics
+    ) -> Bool {
+        let nonnegativeValues = [
+            metrics.renderReferenceRMS,
+            metrics.rawCaptureRMS,
+            metrics.aecOutputRMS,
+            metrics.linearAECOutputRMS
+        ]
+        guard nonnegativeValues.allSatisfy({ value in
+            value.map { $0.isFinite && $0 >= 0 } ?? true
+        }) else { return false }
+        let correlations = [
+            metrics.renderCaptureCorrelation,
+            metrics.residualRenderCorrelation,
+            metrics.linearRenderCorrelation
+        ]
+        guard correlations.allSatisfy({ value in
+            value.map { $0.isFinite && (0 ... 1).contains($0) } ?? true
+        }),
+        [metrics.erlDecibels, metrics.erleDecibels].allSatisfy({ value in
+            value.map { $0.isFinite } ?? true
+        }),
+        metrics.captureTimestampNanoseconds.map({ $0 > 0 }) ?? true,
+        metrics.renderTimestampNanoseconds.map({ $0 > 0 }) ?? true,
+        metrics.sourceAlignmentDelayMilliseconds.map({ $0 >= 0 }) ?? true,
+        metrics.estimatedDelayMilliseconds.map({ $0 >= 0 }) ?? true else {
+            return false
+        }
+        return true
+    }
+
+    #if DEBUG
+    @MainActor
+    func realtimeAcousticObservationDebugSnapshot()
+        -> RealtimeAcousticObservationDebugSnapshot {
+        RealtimeAcousticObservationDebugSnapshot(
+            capacity: Self.realtimeAcousticObservationCapacity,
+            records: realtimeAcousticObservationTrace,
+            droppedRecordCount:
+                realtimeAcousticObservationDroppedRecordCount,
+            activeSession: realtimeAcousticObservationLedger?.session,
+            lastSequence:
+                realtimeAcousticObservationLedger?.lastSequence ?? 0
+        )
+    }
+    #endif
+
+    @MainActor
     func submitRealtimeResidentBrainAcousticEvidence(
         _ evidence: RealtimeInterruptionEvidence
     ) async -> Result<
@@ -3229,6 +3400,7 @@ public final class RuntimeCore {
             return .failure(.transportFailure)
         }
         activeBrainLeaseGate.release(terminalLease)
+        resetRealtimeAcousticObservationState()
         if realtimeBrainContextBridgeState?.identity == identity {
             resetRealtimeBrainRuntimeBridge()
         }
@@ -3543,6 +3715,7 @@ public final class RuntimeCore {
             sessionGate: realtimeBrainSessionGate
         ) == .closed {
             activeBrainLeaseGate.release(terminalLease)
+            resetRealtimeAcousticObservationState()
             if realtimeBrainContextBridgeState?.identity == identity {
                 resetRealtimeBrainRuntimeBridge()
             }
@@ -3583,6 +3756,7 @@ public final class RuntimeCore {
             realtimeBrainContextBridgeState = bridge
         }
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         realtimeBrainGeneration = nextIdentity.generation
         realtimeBrainToolResultSequence = 0

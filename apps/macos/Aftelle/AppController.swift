@@ -474,6 +474,10 @@ final class AppController: ObservableObject {
                 session: binding.session
             )
         },
+        observeResidentAcoustics: { [weak self] observation in
+            await self?.observeRealtimeResidentBrainAcoustics(observation)
+                ?? .ignored(.staleIdentity)
+        },
         consumeAcousticObservation: { [weak self] observation in
             await self?.consumeRealtimeResidentBrainAcousticObservation(
                 observation
@@ -2308,6 +2312,25 @@ final class AppController: ObservableObject {
         ) {
             refreshParticleDebugSnapshot()
         }
+    }
+
+    private func observeRealtimeResidentBrainAcoustics(
+        _ observation: RealtimeAcousticObservation
+    ) async -> RealtimeAcousticObservationDisposition {
+        guard let attemptID = realtimeBrainRouteAttemptID,
+              let binding = realtimeBrainInputBinding,
+              observation.identity.session == binding.session,
+              observation.identity.captureGeneration
+                == binding.captureGeneration,
+              realtimeBrainGenerationTransitionID == nil,
+              isCurrentRealtimeBrainRoute(
+                  attemptID: attemptID,
+                  session: binding.session
+              ) else {
+            return .ignored(.staleIdentity)
+        }
+        return orchestrationKernel
+            .observeRealtimeResidentBrainAcoustics(observation)
     }
 
     private func consumeRealtimeResidentBrainAcousticObservation(

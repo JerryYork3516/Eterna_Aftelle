@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.1 Freeze
+# Realtime Resident Brain Architecture · R0–R8.2.1 Freeze
 
-> 状态：`R0–R8.1 PASS / FROZEN`；下一节点只允许进入 R8.2
+> 状态：`R0–R8.2.1 PASS / FROZEN`；下一节点只允许进入 R8.2.2
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -379,7 +379,9 @@ R5 Tool / Permission Bridge — PASS / FROZEN
 R6 Realtime Voice Binding Foundation — PASS / FROZEN
 R7 Full-duplex Audio Integration — PASS / FROZEN
 R8.1 Interruption Evidence / Runtime Decision Authority — PASS / FROZEN
-R8.2 Resident-only Zero Self-interrupt
+R8.2.1 Resident-only Acoustic Observation / Classification — PASS / FROZEN
+R8.2.2 Residual Echo / Far-end Exclusion & Self-interrupt Gate
+R8.2.3 Resident-only Zero Self-interrupt Freeze
 R8.3 User Barge-in Tuning
 R8.4 Double-talk / Turn-taking / Backchannel
 R8.5 Interruption Final Verification
@@ -429,13 +431,23 @@ R8.1 冻结 provider-neutral interruption evidence 与 RuntimeCore 唯一决策�
 
 Qwen 继续保持 `interrupt_response=false`，并将 `create_response` 设为 false。普通 resident response 只能由 RuntimeCore 接受的非空 `userTranscriptFinal` 生成 exact、一次性的 provider-neutral create-response command，再经 ExecutionEngine → ProviderRouter → Adapter 映射为私有 `response.create`；speech started / stopped / proposal 不得自行创建 response。Tool continuation 仍由 Runtime 已接受的 Tool result 间接授权，同一旧 response 的多个 Tool result 只创建一个 continuation。未授权或 overlapping `response.created`、空 completed response、failed / incomplete Tool response 与 late Tool result 均 fail-closed。confirmed interruption 使用同一 Qwen WebSocket 完成 response cancel、input clear 与 generation fence；已知旧 response / item callback 由 tombstone 拒绝，不因 R8.1 coordinator 每轮重建 Session、Capture、lease 或 WebSocket。
 
-R8.1 独立测试为 18 cases / 127 checks；R2 contract 为 10 cases / 291 checks，Qwen Adapter 为 21 cases / 175 checks，Tool bridge 为 7 cases / 131 checks，正式 Realtime Host 为 12 cases / 101 checks，NativeSpeech legacy duplex 为 359 checks。A7 aggregate 为 22 suites / 25 entrypoints / 4549 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。NativeSpeech 只作为旧路回归，不作为正式 Realtime interruption ownership 证据。真实 Qwen WebSocket、真实麦克风 / 扬声器、USB / Bluetooth / AirPods、长时间真机 full-duplex、Release 启用以及 R8.2～R8.5 的最终声学 / 自然体验仍为 `NOT_RUN / HUMAN_GATE` 或未实现。
+R8.1 独立测试为 18 cases / 127 checks；R2 contract 为 10 cases / 291 checks，Qwen Adapter 为 21 cases / 175 checks，Tool bridge 为 7 cases / 131 checks，正式 Realtime Host 为 12 cases / 101 checks，NativeSpeech legacy duplex 为 359 checks。A7 aggregate 为 22 suites / 25 entrypoints / 4549 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。NativeSpeech 只作为旧路回归，不作为正式 Realtime interruption ownership 证据。真实 Qwen WebSocket、真实麦克风 / 扬声器、USB / Bluetooth / AirPods、长时间真机 full-duplex、Release 启用以及 R8.2.2～R8.5 的最终声学 / 自然体验仍为 `NOT_RUN / HUMAN_GATE` 或未实现。
 
 R8.1 保留四项非阻断 P2：快速 Provider ACK 与 Host clear 之间没有额外的严格 happens-before 证明，但 Runtime command 顺序与 held-settlement pre-clear 已覆盖；Provider failure 已自闭后 pending decision 引用可留到下一次 open 清理，但没有 lease / Session / WebSocket 泄漏；Tool continuation 极端调度下旧 response 尾部字幕或 speaking-stopped 可能在新 response claim 前被 stale gate 拒绝；overlap pending transcript 的清理通过 context stable-boundary 间接证明，未增加 DEBUG-only 私有 pending-map observer。R8.1 不把这些边界写成自然插话体验已完成。
 
+R8.2.1 冻结 provider-neutral、observer-only 的 resident-only 声学 observation。真实事实复用共享播放链最终 player-node render reference 的 RMS / host timestamp，以及 AEC Host 已有的 raw capture、processed capture、linear AEC output、render / capture correlations、source assessment、source-gate open state、AEC active / alignment lock、aligned delay、backend delay estimate、ERL / ERLE、frame skew / drift diagnostic 和 route / input-output availability。`RealtimeAcousticObservationIdentity` 复用完整 resident / Runtime Session / Brain lease / route epoch / generation identity，并增加 capture generation、独立 sequence 与 monotonic timestamp。RuntimeCore 再做完整 active lease / Session gate、500 ms freshness、非零、去重且不倒退的 sequence / timestamp 和 classification 重算；sequence 不要求连续。结果只写入容量 32 的 bounded in-memory trace，只有 snapshot accessor 是 DEBUG-only。
+
+最小分类固定为 `silenceOrNoise`、`farEndDominant`、`residualEchoLikely`、`nearEndCandidate` 与 `indeterminate`。静音 / activity RMS、render correlation、residual correlation、ERLE、500 ms render delay 与 30 ms alignment error 都是集中、可测试的物理阈值；route / device 不可用、AEC / render / alignment 不完整或明显错位时必须返回 `indeterminate`。`nearEndCandidate` 仅说明现有 far-end / residual evidence 不能充分解释近端能量，不是 double-talk、用户 turn 或 confirmed interruption。设备 transport kind 与真实 clock drift / AEC convergence 没有被伪造为当前可靠事实；USB / Bluetooth 不做专项阈值。
+
+R8.2.1 observation 使用独立于 R8.1 fusion 的 Host → AppController → RuntimeCore observer 接缝；五种分类都不能提交 R8.1 interruption evidence、调用 Provider、bump generation 或清 Playback。Bridge 最多每 10 ms 读取一次标量 snapshot，相邻投递至少间隔 10 个 AEC capture frame（约至多 10 Hz），保持单一 pending task并对 overflow 执行 drop-new；batch / 调度跳帧时允许更疏。Stop / suspend / resume / terminal 会取消并清理 observation 状态。音频发送不等待 MainActor observer，不保存历史 PCM，也不在 audio callback 做网络或磁盘 I/O。
+
+R8.2.1 独立测试为 15 cases / 425 checks，覆盖 A～E、production AEC Host / AudioHost fact wiring、fallback 无 PCM observation、完整 identity / freshness / sequence fence、慢 observer / cadence / single-pending / Stop cleanup，以及 320 次 resident-only stress。压力结果为 Provider interrupt 0、Provider cancel 0、generation change 0，ActiveBrainLease 保持；Runtime / AppModels / AppController authority guards 证明 observation 无 confirmed / Playback clear 入口。A7 aggregate 为 23 suites / 26 entrypoints / 4974 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
+
+R8.2.1 保留五项非阻断 P2：fallback 非整 480-sample callback 的 frame index / cadence 是近似值；10 ms throttle 后的标量 actor hop / queue read 尚无真机时延测量；fallback Host → AudioHost → Bridge 由相邻测试覆盖但没有单一端到端 fixture；快速 capture restart 可能把 freshness window 内的上一份声学 snapshot 附到新 capture generation，但 observer-only identity / freshness fence 不赋予控制权；第一层 stale Session / lease / route epoch / generation 会 fail-closed 返回而不写 accepted-observation trace，因此 rejected trace 不是全量审计日志。真实 Qwen、真实麦克风 / 扬声器、internal / external / USB / Bluetooth / AirPods、长时间运行与 Release 仍为 `NOT_RUN / HUMAN_GATE`。Residual echo / far-end 最终排除 gate、resident-only 零 self-interrupt、double-talk、natural turn-taking 均未实现。
+
 ---
 
-## R0–R8.1 Freeze Result
+## R0–R8.2.1 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -447,6 +459,7 @@ R5 = PASS / FROZEN
 R6 = PASS / FROZEN
 R7 = PASS / FROZEN
 R8.1 = PASS / FROZEN
+R8.2.1 = PASS / FROZEN
 
 Single Runtime authority: RuntimeCore
 Max active Brain per Runtime Session: 1
@@ -486,5 +499,9 @@ R8.1 authority: RuntimeCore alone confirms interruption, invalidates generation,
 R8.1 response authority: Qwen create_response=false and interrupt_response=false; Runtime-accepted user final is the only ordinary response.create authorization
 R8.1 verification: 18 cases / 127 checks; R2 10 cases / 291 checks; Qwen 21 cases / 175 checks; Tool 7 cases / 131 checks; Realtime Host 12 cases / 101 checks; A7 22 suites / 25 entrypoints / 4549 assertions
 R8.1 Human Gate: live Qwen WebSocket, real microphone / speaker, USB / Bluetooth / AirPods, long-duration full-duplex and Release activation remain NOT_RUN
-Next allowed node: R8.2 Resident-only Zero Self-interrupt
+R8.2.1 observation: actual render/capture/AEC scalar facts with full lease/route/generation/capture identity; five provider-neutral classifications remain observer-only
+R8.2.1 performance: at least 10 capture frames between deliveries, one pending task with drop-new overflow, 32-record Runtime trace, 500 ms freshness and Stop cleanup
+R8.2.1 verification: 15 cases / 425 checks; 320 stress observations with 0 Provider interrupt, 0 Provider cancel and no generation change; A7 23 suites / 26 entrypoints / 4974 assertions
+R8.2.1 Human Gate: real device acoustic thresholds, transport-specific behavior, long-duration performance and Release activation remain NOT_RUN
+Next allowed node: R8.2.2 Residual Echo / Far-end Exclusion & Self-interrupt Gate
 ```

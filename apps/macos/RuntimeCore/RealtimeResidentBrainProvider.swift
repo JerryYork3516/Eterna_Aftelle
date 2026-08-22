@@ -293,6 +293,223 @@ nonisolated struct RealtimeBrainInterruptionProposal:
     let reason: String
 }
 
+nonisolated enum RealtimeAcousticClassification:
+    String,
+    Sendable,
+    Equatable {
+    case silenceOrNoise = "silence_or_noise"
+    case farEndDominant = "far_end_dominant"
+    case residualEchoLikely = "residual_echo_likely"
+    case nearEndCandidate = "near_end_candidate"
+    case indeterminate
+}
+
+nonisolated enum RealtimeAcousticSourceAssessment:
+    String,
+    Sendable,
+    Equatable {
+    case echoOnly = "echo_only"
+    case nearEndSpeech = "near_end_speech"
+    case doubleTalk = "double_talk"
+    case uncertain
+}
+
+nonisolated enum RealtimeAcousticDriftState:
+    String,
+    Sendable,
+    Equatable {
+    case stable
+    case renderAhead = "render_ahead"
+    case captureAhead = "capture_ahead"
+    case unknown
+}
+
+nonisolated struct RealtimeAcousticMetrics: Sendable, Equatable {
+    let residentPlaybackActive: Bool
+    let renderReferenceAvailable: Bool
+    let renderReferenceRMS: Double?
+    let rawCaptureRMS: Double?
+    let aecOutputRMS: Double?
+    let linearAECOutputRMS: Double?
+    let renderCaptureCorrelation: Double?
+    let residualRenderCorrelation: Double?
+    let linearRenderCorrelation: Double?
+    let captureTimestampNanoseconds: UInt64?
+    let renderTimestampNanoseconds: UInt64?
+    let sourceAlignmentDelayMilliseconds: Int?
+    let estimatedDelayMilliseconds: Int?
+    let erlDecibels: Double?
+    let erleDecibels: Double?
+    let renderCaptureSkewFrames: Int64?
+    let driftState: RealtimeAcousticDriftState
+    let sourceAssessment: RealtimeAcousticSourceAssessment
+    let sourceGateOpen: Bool
+    let aecActive: Bool
+    let sourceAlignmentLocked: Bool
+    let routeStable: Bool
+    let inputDeviceAvailable: Bool
+    let outputDeviceAvailable: Bool
+}
+
+nonisolated struct RealtimeAcousticObservationIdentity:
+    Sendable,
+    Equatable {
+    let session: RealtimeBrainSessionIdentity
+    let captureGeneration: UInt64
+    let sequence: UInt64
+    let timestampNanoseconds: UInt64
+}
+
+nonisolated struct RealtimeAcousticObservation: Sendable, Equatable {
+    let identity: RealtimeAcousticObservationIdentity
+    let metrics: RealtimeAcousticMetrics
+    let classification: RealtimeAcousticClassification
+}
+
+nonisolated enum RealtimeAcousticObservationIgnoreReason:
+    String,
+    Sendable,
+    Equatable {
+    case invalidObservation = "invalid_observation"
+    case staleIdentity = "stale_identity"
+    case staleObservation = "stale_observation"
+    case duplicateObservation = "duplicate_observation"
+}
+
+nonisolated enum RealtimeAcousticObservationDisposition:
+    Sendable,
+    Equatable {
+    case ignored(RealtimeAcousticObservationIgnoreReason)
+    case observed
+}
+
+nonisolated enum RealtimeAcousticClassifier {
+    static let silenceRMS = 0.005
+    static let activityRMS = 0.012
+    static let minimumTimingCorrelation = 0.35
+    static let residualEchoCorrelation = 0.55
+    static let reliableERLEDecibels = 3.0
+    static let maximumRenderDelayMilliseconds = 500
+    static let maximumAlignmentErrorMilliseconds = 30
+
+    static func classify(
+        metrics: RealtimeAcousticMetrics,
+        observationTimestampNanoseconds: UInt64
+    ) -> RealtimeAcousticClassification {
+        guard metrics.routeStable,
+              metrics.inputDeviceAvailable,
+              metrics.outputDeviceAvailable,
+              let rawCaptureRMS = finiteNonnegative(
+                  metrics.rawCaptureRMS
+              ),
+              let aecOutputRMS = finiteNonnegative(
+                  metrics.aecOutputRMS
+              ),
+              let linearAECOutputRMS = finiteNonnegative(
+                  metrics.linearAECOutputRMS
+              ) else {
+            return .indeterminate
+        }
+
+        let outputRMS = max(aecOutputRMS, linearAECOutputRMS)
+        if !metrics.residentPlaybackActive {
+            return max(rawCaptureRMS, outputRMS) < activityRMS
+                ? .silenceOrNoise : .nearEndCandidate
+        }
+
+        guard metrics.aecActive,
+              metrics.renderReferenceAvailable,
+              metrics.sourceAlignmentLocked,
+              let renderRMS = finiteNonnegative(
+                  metrics.renderReferenceRMS
+              ),
+              timingIsAligned(
+                  metrics: metrics,
+                  observationTimestampNanoseconds:
+                      observationTimestampNanoseconds
+              ) else {
+            return .indeterminate
+        }
+
+        if renderRMS < silenceRMS {
+            if max(rawCaptureRMS, outputRMS) < activityRMS {
+                return .silenceOrNoise
+            }
+            switch metrics.sourceAssessment {
+            case .nearEndSpeech, .doubleTalk:
+                return .nearEndCandidate
+            case .echoOnly, .uncertain:
+                return .indeterminate
+            }
+        }
+
+        switch metrics.sourceAssessment {
+        case .nearEndSpeech, .doubleTalk:
+            return .nearEndCandidate
+        case .uncertain:
+            return .indeterminate
+        case .echoOnly:
+            let residualCorrelation = max(
+                finiteUnit(metrics.residualRenderCorrelation) ?? 0,
+                finiteUnit(metrics.linearRenderCorrelation) ?? 0
+            )
+            if outputRMS >= activityRMS,
+               residualCorrelation >= residualEchoCorrelation {
+                return .residualEchoLikely
+            }
+            let rawCorrelation = finiteUnit(
+                metrics.renderCaptureCorrelation
+            ) ?? 0
+            let erleIsReliable = finiteValue(metrics.erleDecibels).map {
+                $0 >= reliableERLEDecibels
+            } ?? false
+            if rawCorrelation >= minimumTimingCorrelation,
+               outputRMS < activityRMS || erleIsReliable {
+                return .farEndDominant
+            }
+            return .indeterminate
+        }
+    }
+
+    private static func timingIsAligned(
+        metrics: RealtimeAcousticMetrics,
+        observationTimestampNanoseconds: UInt64
+    ) -> Bool {
+        guard observationTimestampNanoseconds > 0,
+              let captureTimestamp = metrics.captureTimestampNanoseconds,
+              let renderTimestamp = metrics.renderTimestampNanoseconds,
+              captureTimestamp == observationTimestampNanoseconds,
+              captureTimestamp >= renderTimestamp,
+              let alignedDelay = metrics.sourceAlignmentDelayMilliseconds,
+              alignedDelay >= 0 else {
+            return false
+        }
+        let measuredDelay = Int((
+            Double(captureTimestamp - renderTimestamp) / 1_000_000
+        ).rounded())
+        return measuredDelay <= maximumRenderDelayMilliseconds
+            && abs(measuredDelay - alignedDelay)
+                <= maximumAlignmentErrorMilliseconds
+    }
+
+    private static func finiteNonnegative(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+
+    private static func finiteUnit(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, (0 ... 1).contains(value) else {
+            return nil
+        }
+        return value
+    }
+
+    private static func finiteValue(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+}
+
 nonisolated struct RealtimeInterruptionEvidenceIdentity:
     Sendable,
     Equatable {

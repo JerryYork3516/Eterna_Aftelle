@@ -164,6 +164,35 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let isPlaybackActive: Bool
 }
 
+nonisolated struct MacSpeechAcousticObservationSnapshot:
+    Sendable,
+    Equatable {
+    let captureFrameIndex: UInt64
+    let captureHostTimeNanoseconds: UInt64?
+    let playbackSequence: UInt64
+    let isPlaybackActive: Bool
+    let renderReferenceAvailable: Bool
+    let renderReferenceRMS: Double?
+    let renderHostTimeNanoseconds: UInt64?
+    let rawCaptureRMS: Double
+    let processedCaptureRMS: Double
+    let linearAECOutputRMS: Double
+    let renderCaptureCorrelation: Double
+    let residualRenderCorrelation: Double
+    let linearRenderCorrelation: Double
+    let inputClassification: MacSpeechAcousticInputClassification
+    let sourceGateOpen: Bool
+    let aecEnabled: Bool
+    let aecActive: Bool
+    let sourceAlignmentLocked: Bool
+    let sourceAlignmentDelayMilliseconds: Int?
+    let estimatedDelayMilliseconds: Int
+    let erlDecibels: Double
+    let erleDecibels: Double
+    let renderCaptureSkewFrames: Int64
+    let driftTrend: String
+}
+
 nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     static let sampleRate = 48_000
     static let frameSampleCount = 480
@@ -223,6 +252,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var presentationDelayMilliseconds = 0
     private var alignedDelayMilliseconds: Double?
     private var captureProcessingMilliseconds = 0.0
+    private var latestCaptureHostTimeNanoseconds: UInt64?
+    private var latestRenderHostTimeNanoseconds: UInt64?
+    private var latestRenderReferenceRMS = 0.0
+    private var matchedRenderHostTimeNanoseconds: UInt64?
+    private var matchedRenderReferenceRMS = 0.0
     private var rawCaptureRMS = 0.0
     private var processedCaptureRMS = 0.0
     private var renderCaptureCorrelation = 0.0
@@ -406,9 +440,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         return queue.sync {
             if mode == .halfDuplexFallback {
                 captureFIFO.removeAll(keepingCapacity: true)
+                recordUnavailableCaptureObservation(
+                    samples,
+                    hostTimeNanoseconds: hostTimeNanoseconds
+                )
                 return isPlaybackActive || isRouteRebuilding ? [] : samples
             }
             guard mode == .webRTCAEC3, let backend else {
+                recordUnavailableCaptureObservation(
+                    samples,
+                    hostTimeNanoseconds: hostTimeNanoseconds
+                )
                 return samples
             }
             var output: [Float] = []
@@ -438,6 +480,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         rawCapture: frame,
                         processedCapture: processedFrame,
                         linearAECOutput: captureResult.linearOutputSamples,
+                        captureHostTimeNanoseconds:
+                            frameHostTimeNanoseconds,
                         timingMatch: timingMatch
                     )
                     output.append(contentsOf: gatedCaptureFrame(
@@ -463,6 +507,29 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     && (isPlaybackActive || isRouteRebuilding)
                 ? [] : output
         }
+    }
+
+    private func recordUnavailableCaptureObservation(
+        _ samples: [Float],
+        hostTimeNanoseconds: UInt64?
+    ) {
+        let frameCount = max(
+            1,
+            (samples.count + Self.frameSampleCount - 1)
+                / Self.frameSampleCount
+        )
+        latestCaptureHostTimeNanoseconds = hostTimeNanoseconds.map {
+            $0 &+ UInt64(frameCount - 1) * 10_000_000
+        }
+        rawCaptureRMS = signalRMS(samples)
+        processedCaptureRMS = isPlaybackActive ? 0 : rawCaptureRMS
+        linearAECOutputRMS = 0
+        renderCaptureCorrelation = 0
+        residualRenderCorrelation = 0
+        linearRenderCorrelation = 0
+        inputClassification = .uncertain
+        captureFrameCount &+= UInt64(frameCount)
+        updateDrift()
     }
 
     func updateDelay(
@@ -594,6 +661,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         queue.sync { makeSnapshot() }
     }
 
+    func acousticObservationSnapshot()
+        -> MacSpeechAcousticObservationSnapshot {
+        queue.sync { makeAcousticObservationSnapshot() }
+    }
+
     func resetDiagnostics() {
         queue.sync {
             let gateWasOpen = sourceGateOpen
@@ -616,6 +688,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private struct TimingMatch {
         let renderSamples: [Float]
+        let renderHostTimeNanoseconds: UInt64
+        let renderRMS: Double
         let delayMilliseconds: Double
         let correlation: Double
     }
@@ -711,11 +785,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         if renderTimingHistory.count == Self.timingHistoryFrameCapacity {
             renderTimingHistory.removeFirst()
         }
-        renderTimingHistory.append(TimedRenderFrame(
+        let frame = TimedRenderFrame(
             hostTimeNanoseconds: hostTimeNanoseconds,
             samples: samples,
             rms: signalRMS(samples)
-        ))
+        )
+        renderTimingHistory.append(frame)
+        latestRenderHostTimeNanoseconds = frame.hostTimeNanoseconds
+        latestRenderReferenceRMS = frame.rms
     }
 
     private func timingMatch(
@@ -752,6 +829,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 || correlation >= (bestMatch?.correlation ?? 0) {
                 bestMatch = TimingMatch(
                     renderSamples: renderFrame.samples,
+                    renderHostTimeNanoseconds:
+                        renderFrame.hostTimeNanoseconds,
+                    renderRMS: renderFrame.rms,
                     delayMilliseconds: delayMilliseconds,
                     correlation: correlation
                 )
@@ -1386,8 +1466,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         rawCapture: [Float],
         processedCapture: [Float],
         linearAECOutput: [Float],
+        captureHostTimeNanoseconds: UInt64?,
         timingMatch: TimingMatch?
     ) {
+        latestCaptureHostTimeNanoseconds = captureHostTimeNanoseconds
         rawCaptureRMS = signalRMS(rawCapture)
         processedCaptureRMS = signalRMS(processedCapture)
         linearAECOutputRMS = signalRMS(linearAECOutput)
@@ -1396,6 +1478,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             linearAECOutput
         )
         if let timingMatch {
+            matchedRenderHostTimeNanoseconds =
+                timingMatch.renderHostTimeNanoseconds
+            matchedRenderReferenceRMS = timingMatch.renderRMS
             renderCaptureCorrelation = timingMatch.correlation
             residualRenderCorrelation = normalizedCorrelation(
                 processedCapture,
@@ -1406,6 +1491,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 downsampleToSixteenKilohertz(timingMatch.renderSamples)
             )
         } else {
+            matchedRenderHostTimeNanoseconds = nil
+            matchedRenderReferenceRMS = 0
             renderCaptureCorrelation = 0
             residualRenderCorrelation = 0
             linearRenderCorrelation = 0
@@ -1544,6 +1631,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private func clearTimingHistory() {
         renderTimingHistory.removeAll(keepingCapacity: true)
+        latestRenderHostTimeNanoseconds = nil
+        latestRenderReferenceRMS = 0
+        matchedRenderHostTimeNanoseconds = nil
+        matchedRenderReferenceRMS = 0
         timingLockCandidateMilliseconds = nil
         timingLockCandidateFrameCount = 0
         timingLockedDelayMilliseconds = nil
@@ -1551,6 +1642,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private func resetSignalDiagnostics() {
+        latestCaptureHostTimeNanoseconds = nil
+        matchedRenderHostTimeNanoseconds = nil
+        matchedRenderReferenceRMS = 0
         rawCaptureRMS = 0
         processedCaptureRMS = 0
         renderCaptureCorrelation = 0
@@ -1734,6 +1828,44 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             routeResetCount: routeResetCount,
             fallbackReason: fallbackReason,
             isPlaybackActive: isPlaybackActive
+        )
+    }
+
+    private func makeAcousticObservationSnapshot()
+        -> MacSpeechAcousticObservationSnapshot {
+        MacSpeechAcousticObservationSnapshot(
+            captureFrameIndex: captureFrameCount,
+            captureHostTimeNanoseconds:
+                latestCaptureHostTimeNanoseconds,
+            playbackSequence: playbackSequence,
+            isPlaybackActive: isPlaybackActive,
+            renderReferenceAvailable:
+                latestRenderHostTimeNanoseconds != nil,
+            renderReferenceRMS: matchedRenderHostTimeNanoseconds == nil
+                ? latestRenderReferenceRMS : matchedRenderReferenceRMS,
+            renderHostTimeNanoseconds:
+                matchedRenderHostTimeNanoseconds,
+            rawCaptureRMS: rawCaptureRMS,
+            processedCaptureRMS: processedCaptureRMS,
+            linearAECOutputRMS: linearAECOutputRMS,
+            renderCaptureCorrelation: renderCaptureCorrelation,
+            residualRenderCorrelation: residualRenderCorrelation,
+            linearRenderCorrelation: linearRenderCorrelation,
+            inputClassification: inputClassification,
+            sourceGateOpen: sourceGateOpen,
+            aecEnabled: backendStats.enabled,
+            aecActive: backendStats.active,
+            sourceAlignmentLocked:
+                timingLockedDelayMilliseconds != nil,
+            sourceAlignmentDelayMilliseconds:
+                roundedSourceAlignmentDelay,
+            estimatedDelayMilliseconds:
+                backendStats.estimatedDelayMilliseconds,
+            erlDecibels: backendStats.erlDecibels,
+            erleDecibels: backendStats.erleDecibels,
+            renderCaptureSkewFrames:
+                Int64(renderFrameCount) - Int64(captureFrameCount),
+            driftTrend: driftTrend
         )
     }
 

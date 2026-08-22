@@ -154,6 +154,54 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         )
     }
 
+    func residentAcousticSnapshot() async
+        -> MacSpeechResidentAcousticSnapshot? {
+        guard isCapturing,
+              generation > 0,
+              let acoustic = capture.acousticObservationSnapshot() else {
+            return nil
+        }
+        return MacSpeechResidentAcousticSnapshot(
+            captureGeneration: generation,
+            captureFrameIndex: acoustic.captureFrameIndex,
+            captureHostTimeNanoseconds:
+                acoustic.captureHostTimeNanoseconds,
+            playbackSequence: acoustic.playbackSequence,
+            residentPlaybackActive: acoustic.isPlaybackActive,
+            renderReferenceAvailable:
+                acoustic.renderReferenceAvailable,
+            renderReferenceRMS: acoustic.renderReferenceRMS,
+            renderHostTimeNanoseconds:
+                acoustic.renderHostTimeNanoseconds,
+            rawCaptureRMS: acoustic.rawCaptureRMS,
+            processedCaptureRMS: acoustic.processedCaptureRMS,
+            linearAECOutputRMS: acoustic.linearAECOutputRMS,
+            renderCaptureCorrelation:
+                acoustic.renderCaptureCorrelation,
+            residualRenderCorrelation:
+                acoustic.residualRenderCorrelation,
+            linearRenderCorrelation:
+                acoustic.linearRenderCorrelation,
+            inputClassification: acoustic.inputClassification,
+            sourceGateOpen: acoustic.sourceGateOpen,
+            aecEnabled: acoustic.aecEnabled,
+            aecActive: acoustic.aecActive,
+            sourceAlignmentLocked: acoustic.sourceAlignmentLocked,
+            sourceAlignmentDelayMilliseconds:
+                acoustic.sourceAlignmentDelayMilliseconds,
+            estimatedDelayMilliseconds:
+                acoustic.estimatedDelayMilliseconds,
+            erlDecibels: acoustic.erlDecibels,
+            erleDecibels: acoustic.erleDecibels,
+            renderCaptureSkewFrames:
+                acoustic.renderCaptureSkewFrames,
+            driftTrend: acoustic.driftTrend,
+            routeStable: state == .capturing && lastError == nil,
+            inputDeviceAvailable: route.input.isAvailable,
+            outputDeviceAvailable: route.output.isAvailable
+        )
+    }
+
     nonisolated func currentAcousticEchoSnapshot()
         -> MacSpeechAcousticEchoSnapshot? {
         capture.acousticEchoSnapshot()

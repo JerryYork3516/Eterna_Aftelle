@@ -21,11 +21,15 @@ nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
     func drainFrames(maxCount: Int) async -> [MacSpeechAudioFrame]
     func interruptionAcousticSnapshot() async
         -> MacSpeechInterruptionAcousticSnapshot?
+    func residentAcousticSnapshot() async
+        -> MacSpeechResidentAcousticSnapshot?
 }
 
 nonisolated extension MacSpeechAudioFrameSourcing {
     func interruptionAcousticSnapshot() async
         -> MacSpeechInterruptionAcousticSnapshot? { nil }
+    func residentAcousticSnapshot() async
+        -> MacSpeechResidentAcousticSnapshot? { nil }
 }
 
 nonisolated struct MacSpeechInterruptionAcousticSnapshot:
@@ -36,6 +40,39 @@ nonisolated struct MacSpeechInterruptionAcousticSnapshot:
     let farEndActive: Bool
     let sourceGateOpen: Bool
     let renderReferenceConfidence: Double
+    let routeStable: Bool
+    let inputDeviceAvailable: Bool
+    let outputDeviceAvailable: Bool
+}
+
+nonisolated struct MacSpeechResidentAcousticSnapshot:
+    Sendable,
+    Equatable {
+    let captureGeneration: UInt64
+    let captureFrameIndex: UInt64
+    let captureHostTimeNanoseconds: UInt64?
+    let playbackSequence: UInt64
+    let residentPlaybackActive: Bool
+    let renderReferenceAvailable: Bool
+    let renderReferenceRMS: Double?
+    let renderHostTimeNanoseconds: UInt64?
+    let rawCaptureRMS: Double
+    let processedCaptureRMS: Double
+    let linearAECOutputRMS: Double
+    let renderCaptureCorrelation: Double
+    let residualRenderCorrelation: Double
+    let linearRenderCorrelation: Double
+    let inputClassification: MacSpeechAcousticInputClassification
+    let sourceGateOpen: Bool
+    let aecEnabled: Bool
+    let aecActive: Bool
+    let sourceAlignmentLocked: Bool
+    let sourceAlignmentDelayMilliseconds: Int?
+    let estimatedDelayMilliseconds: Int
+    let erlDecibels: Double
+    let erleDecibels: Double
+    let renderCaptureSkewFrames: Int64
+    let driftTrend: String
     let routeStable: Bool
     let inputDeviceAvailable: Bool
     let outputDeviceAvailable: Bool
@@ -240,6 +277,8 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
     func routeWillRebuild()
     func routeDidRebuild()
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot?
+    func acousticObservationSnapshot()
+        -> MacSpeechAcousticObservationSnapshot?
     func resetAcousticEchoDiagnostics()
 }
 
@@ -247,6 +286,8 @@ nonisolated extension MacSpeechAudioCapturing {
     func routeWillRebuild() {}
     func routeDidRebuild() {}
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? { nil }
+    func acousticObservationSnapshot()
+        -> MacSpeechAcousticObservationSnapshot? { nil }
     func resetAcousticEchoDiagnostics() {}
 }
 
@@ -753,6 +794,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         acousticEchoHost.snapshot()
     }
 
+    func acousticObservationSnapshot()
+        -> MacSpeechAcousticObservationSnapshot {
+        acousticEchoHost.acousticObservationSnapshot()
+    }
+
     func resetAcousticEchoDiagnostics() {
         acousticEchoHost.resetDiagnostics()
     }
@@ -943,6 +989,11 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? {
         audioEngine.acousticEchoSnapshot()
+    }
+
+    func acousticObservationSnapshot()
+        -> MacSpeechAcousticObservationSnapshot? {
+        audioEngine.acousticObservationSnapshot()
     }
 
     func resetAcousticEchoDiagnostics() {
