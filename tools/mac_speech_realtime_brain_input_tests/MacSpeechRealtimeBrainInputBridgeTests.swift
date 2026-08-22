@@ -393,6 +393,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testBridgeStopsOnError()
         await testBridgeRejectsStaleFrames()
         await testBridgeForwardsAcousticEvidenceEdges()
+        testControllerSourceGateEpochFence()
         await testBridgeSnapshot()
         await testAudioFrameConversion()
         await testStopFailsClosedAndRetries()
@@ -686,6 +687,137 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             inputClassification: nearEnd ? .nearEndSpeech : .echoOnly,
             sourceGateOpen: nearEnd,
             sourceGateEpoch: nearEnd ? 1 : 0,
+            aecEnabled: true,
+            aecActive: true,
+            sourceAlignmentLocked: true,
+            sourceAlignmentDelayMilliseconds: 80,
+            estimatedDelayMilliseconds: 80,
+            erlDecibels: 12,
+            erleDecibels: 10,
+            renderCaptureSkewFrames: 0,
+            driftTrend: "stable",
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+    }
+
+    private static func testControllerSourceGateEpochFence() {
+        cases += 1
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "controller-fence",
+            runtimeSessionID: "controller-fence-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let observation = MacSpeechRealtimeBrainAcousticObservation(
+            observation: RealtimeAcousticObservation(
+                identity: RealtimeAcousticObservationIdentity(
+                    session: session,
+                    captureGeneration: 700,
+                    sequence: 1,
+                    timestampNanoseconds:
+                        DispatchTime.now().uptimeNanoseconds
+                ),
+                metrics: controllerFenceMetrics(sourceGateEpoch: 9),
+                classification: .nearEndCandidate
+            ),
+            facts: RealtimeInterruptionAcousticFacts(
+                sourceGateEpoch: 9,
+                nearEndDetected: true,
+                farEndActive: true,
+                sourceGateOpen: true,
+                renderReferenceConfidence: 1,
+                routeStable: true,
+                inputDeviceAvailable: true,
+                outputDeviceAvailable: true
+            )
+        )
+        expect(
+            !observation.matchesCurrentPlayback(controllerFenceSnapshot(
+                sourceGateOpen: false,
+                sourceGateEpoch: 9
+            )),
+            "Case A Controller rejects evidence after source gate closes"
+        )
+        expect(
+            !observation.matchesCurrentPlayback(controllerFenceSnapshot(
+                sourceGateOpen: true,
+                sourceGateEpoch: 10
+            )),
+            "Case B Controller rejects old evidence after gate reopens"
+        )
+        expect(
+            observation.matchesCurrentPlayback(controllerFenceSnapshot(
+                sourceGateOpen: true,
+                sourceGateEpoch: 9
+            )),
+            "Case C Controller accepts evidence in the same open epoch"
+        )
+    }
+
+    private static func controllerFenceMetrics(
+        sourceGateEpoch: UInt64
+    ) -> RealtimeAcousticMetrics {
+        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        return RealtimeAcousticMetrics(
+            residentPlaybackSequence: 3,
+            residentPlaybackActive: true,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                captureTimestamp - 80_000_000,
+            renderReferenceAvailable: true,
+            renderReferenceRMS: 0.2,
+            rawCaptureRMS: 0.2,
+            aecOutputRMS: 0.2,
+            linearAECOutputRMS: 0.2,
+            renderCaptureCorrelation: 0.1,
+            residualRenderCorrelation: 0.1,
+            linearRenderCorrelation: 0.1,
+            captureTimestampNanoseconds: captureTimestamp,
+            renderTimestampNanoseconds: captureTimestamp - 80_000_000,
+            sourceAlignmentDelayMilliseconds: 80,
+            estimatedDelayMilliseconds: 80,
+            erlDecibels: 12,
+            erleDecibels: 10,
+            renderCaptureSkewFrames: 0,
+            driftState: .stable,
+            sourceAssessment: .nearEndSpeech,
+            sourceGateOpen: true,
+            sourceGateEpoch: sourceGateEpoch,
+            aecActive: true,
+            sourceAlignmentLocked: true,
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+    }
+
+    private static func controllerFenceSnapshot(
+        sourceGateOpen: Bool,
+        sourceGateEpoch: UInt64
+    ) -> MacSpeechResidentAcousticSnapshot {
+        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        return MacSpeechResidentAcousticSnapshot(
+            captureGeneration: 700,
+            captureFrameIndex: 2,
+            captureHostTimeNanoseconds: captureTimestamp,
+            playbackSequence: 3,
+            residentPlaybackActive: true,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                captureTimestamp - 80_000_000,
+            renderReferenceAvailable: true,
+            renderReferenceRMS: 0.2,
+            renderHostTimeNanoseconds: captureTimestamp - 80_000_000,
+            rawCaptureRMS: 0.2,
+            processedCaptureRMS: 0.2,
+            linearAECOutputRMS: 0.2,
+            renderCaptureCorrelation: 0.1,
+            residualRenderCorrelation: 0.1,
+            linearRenderCorrelation: 0.1,
+            inputClassification: .nearEndSpeech,
+            sourceGateOpen: sourceGateOpen,
+            sourceGateEpoch: sourceGateEpoch,
             aecEnabled: true,
             aecActive: true,
             sourceAlignmentLocked: true,

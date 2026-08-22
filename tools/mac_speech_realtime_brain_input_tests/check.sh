@@ -71,6 +71,10 @@ echo "realtime_brain_formal_host_route=PASS"
 
 rg -q 'submitRealtimeResidentBrainEligibleAcousticEvidence' \
   "$models" "$controller"
+rg -q 'observation\.matchesCurrentPlayback\(currentAcousticSnapshot\)' \
+  "$controller"
+rg -q 'snapshot\.sourceGateOpen' "$bridge"
+rg -q 'snapshot\.sourceGateEpoch == sourceGateEpoch' "$bridge"
 rg -q 'claimRealtimeResidentBrainInterruptionDecision' "$models" "$controller"
 if rg -q 'cancelRealtimeResidentBrainGeneration' "$models" "$controller"; then
   echo "realtime_brain_runtime_decision_authority=FAIL"

@@ -39,6 +39,8 @@ nonisolated struct MacSpeechRealtimeBrainAcousticObservation:
         snapshot.captureGeneration == captureGeneration
             && snapshot.playbackSequence == playbackSequence
             && snapshot.residentPlaybackActive
+            && snapshot.sourceGateOpen
+            && snapshot.sourceGateEpoch == sourceGateEpoch
     }
 }
 
