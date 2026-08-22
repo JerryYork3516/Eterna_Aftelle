@@ -2340,10 +2340,23 @@ final class AppController: ObservableObject {
               let binding = realtimeBrainInputBinding,
               let playbackIdentity = realtimeBrainPlaybackEventIdentity,
               observation.session == binding.session,
+              observation.captureGeneration == binding.captureGeneration,
               playbackIdentity.session == binding.session,
               playbackIdentity.responseID == realtimeBrainPlaybackResponseID,
               playbackIdentity.turnID != nil,
               playbackIdentity.responseID != nil,
+              realtimeBrainGenerationTransitionID == nil,
+              isCurrentRealtimeBrainRoute(
+                  attemptID: attemptID,
+                  session: binding.session
+              ) else { return }
+        guard let currentAcousticSnapshot = await speechAudioHost
+            .residentAcousticSnapshot(),
+              observation.matchesCurrentPlayback(currentAcousticSnapshot),
+              realtimeBrainRouteAttemptID == attemptID,
+              realtimeBrainInputBinding == binding,
+              realtimeBrainPlaybackEventIdentity == playbackIdentity,
+              realtimeBrainPlaybackResponseID == playbackIdentity.responseID,
               realtimeBrainGenerationTransitionID == nil,
               isCurrentRealtimeBrainRoute(
                   attemptID: attemptID,
@@ -2362,7 +2375,10 @@ final class AppController: ObservableObject {
         )
         await consumeRealtimeResidentBrainInterruptionDecision(
             await orchestrationKernel
-                .submitRealtimeResidentBrainAcousticEvidence(evidence),
+                .submitRealtimeResidentBrainEligibleAcousticEvidence(
+                    observation: observation.observation,
+                    evidence: evidence
+                ),
             attemptID: attemptID,
             expectedSession: binding.session
         )

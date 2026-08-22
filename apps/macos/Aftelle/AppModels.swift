@@ -1791,14 +1791,16 @@ public final class OrchestrationKernel {
         )
     }
 
-    func submitRealtimeResidentBrainAcousticEvidence(
-        _ evidence: RealtimeInterruptionEvidence
+    func submitRealtimeResidentBrainEligibleAcousticEvidence(
+        observation: RealtimeAcousticObservation,
+        evidence: RealtimeInterruptionEvidence
     ) async -> Result<
         RealtimeInterruptionDecision,
         RealtimeResidentBrainError
     > {
-        await runtimeCore.submitRealtimeResidentBrainAcousticEvidence(
-            evidence
+        await runtimeCore.submitRealtimeResidentBrainEligibleAcousticEvidence(
+            observation: observation,
+            evidence: evidence
         )
     }
 

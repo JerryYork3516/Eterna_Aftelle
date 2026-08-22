@@ -168,6 +168,8 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
                 acoustic.captureHostTimeNanoseconds,
             playbackSequence: acoustic.playbackSequence,
             residentPlaybackActive: acoustic.isPlaybackActive,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                acoustic.lastAudibleRenderHostTimeNanoseconds,
             renderReferenceAvailable:
                 acoustic.renderReferenceAvailable,
             renderReferenceRMS: acoustic.renderReferenceRMS,

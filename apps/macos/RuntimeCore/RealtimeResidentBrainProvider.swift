@@ -325,7 +325,9 @@ nonisolated enum RealtimeAcousticDriftState:
 }
 
 nonisolated struct RealtimeAcousticMetrics: Sendable, Equatable {
+    let residentPlaybackSequence: UInt64
     let residentPlaybackActive: Bool
+    let lastAudibleResidentRenderTimestampNanoseconds: UInt64?
     let renderReferenceAvailable: Bool
     let renderReferenceRMS: Double?
     let rawCaptureRMS: Double?
@@ -349,6 +351,31 @@ nonisolated struct RealtimeAcousticMetrics: Sendable, Equatable {
     let routeStable: Bool
     let inputDeviceAvailable: Bool
     let outputDeviceAvailable: Bool
+}
+
+nonisolated enum RealtimeAcousticEligibilitySuppressionReason:
+    String,
+    Sendable,
+    Equatable {
+    case invalidObservation = "invalid_observation"
+    case staleIdentity = "stale_identity"
+    case staleObservation = "stale_observation"
+    case duplicateObservation = "duplicate_observation"
+    case silenceOrNoise = "silence_or_noise"
+    case farEndDominant = "far_end_dominant"
+    case residualEchoLikely = "residual_echo_likely"
+    case indeterminate
+    case playbackTail = "playback_tail"
+    case residentPlaybackInactive = "resident_playback_inactive"
+    case unstableNearEnd = "unstable_near_end"
+    case alreadyEligible = "already_eligible"
+}
+
+nonisolated enum RealtimeAcousticEligibilityDisposition:
+    Sendable,
+    Equatable {
+    case suppressed(RealtimeAcousticEligibilitySuppressionReason)
+    case eligible
 }
 
 nonisolated struct RealtimeAcousticObservationIdentity:
@@ -508,6 +535,162 @@ nonisolated enum RealtimeAcousticClassifier {
         guard let value, value.isFinite else { return nil }
         return value
     }
+}
+
+nonisolated struct RealtimeAcousticInterruptionEligibilityGate: Sendable {
+    static let minimumConsecutiveNearEndObservations: UInt64 = 1
+    static let observationFreshnessNanoseconds: UInt64 = 500_000_000
+    static let residualTailWindowNanoseconds: UInt64 = 500_000_000
+
+    private let session: RealtimeBrainSessionIdentity
+    private let captureGeneration: UInt64
+    private var lastSequence: UInt64 = 0
+    private var lastTimestampNanoseconds: UInt64 = 0
+    private var lastPlaybackSequence: UInt64 = 0
+    private var lastAudibleRenderTimestampNanoseconds: UInt64 = 0
+    private var consecutiveNearEndObservations: UInt64 = 0
+    private var eligibilityIssued = false
+
+    init(
+        session: RealtimeBrainSessionIdentity,
+        captureGeneration: UInt64
+    ) {
+        self.session = session
+        self.captureGeneration = captureGeneration
+    }
+
+    mutating func evaluate(
+        _ observation: RealtimeAcousticObservation,
+        receivedAtNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> RealtimeAcousticEligibilityDisposition {
+        let identity = observation.identity
+        guard identity.session == session,
+              identity.captureGeneration == captureGeneration else {
+            return .suppressed(.staleIdentity)
+        }
+        guard identity.sequence > 0,
+              identity.timestampNanoseconds > 0,
+              identity.timestampNanoseconds <= receivedAtNanoseconds,
+              receivedAtNanoseconds - identity.timestampNanoseconds
+                <= Self.observationFreshnessNanoseconds,
+              observation.classification == RealtimeAcousticClassifier
+                .classify(
+                    metrics: observation.metrics,
+                    observationTimestampNanoseconds:
+                        identity.timestampNanoseconds
+                ),
+              !observation.metrics.residentPlaybackActive
+                || observation.metrics.residentPlaybackSequence > 0 else {
+            resetCandidateStability()
+            return .suppressed(.invalidObservation)
+        }
+        if identity.sequence == lastSequence {
+            return .suppressed(.duplicateObservation)
+        }
+        guard identity.sequence > lastSequence,
+              identity.timestampNanoseconds >= lastTimestampNanoseconds,
+              observation.metrics.residentPlaybackSequence
+                >= lastPlaybackSequence else {
+            resetCandidateStability()
+            return .suppressed(.staleObservation)
+        }
+
+        let metrics = observation.metrics
+        let beginsNewPlayback = metrics.residentPlaybackSequence
+            > lastPlaybackSequence
+        let captureTimestamp = metrics.captureTimestampNanoseconds
+        if let audibleRenderTimestamp = metrics
+            .lastAudibleResidentRenderTimestampNanoseconds {
+            guard audibleRenderTimestamp > 0,
+                  captureTimestamp.map({
+                      audibleRenderTimestamp <= $0
+                  }) ?? !metrics.residentPlaybackActive,
+                  beginsNewPlayback
+                    || audibleRenderTimestamp
+                        >= lastAudibleRenderTimestampNanoseconds else {
+                resetCandidateStability()
+                return .suppressed(.staleObservation)
+            }
+        }
+
+        lastSequence = identity.sequence
+        lastTimestampNanoseconds = identity.timestampNanoseconds
+        if metrics.residentPlaybackSequence > lastPlaybackSequence {
+            lastPlaybackSequence = metrics.residentPlaybackSequence
+            lastAudibleRenderTimestampNanoseconds = 0
+            resetEligibilityEpoch()
+        }
+        if let audibleRenderTimestamp = metrics
+            .lastAudibleResidentRenderTimestampNanoseconds {
+            lastAudibleRenderTimestampNanoseconds = audibleRenderTimestamp
+        }
+
+        guard metrics.residentPlaybackActive else {
+            resetEligibilityEpoch()
+            if lastAudibleRenderTimestampNanoseconds > 0,
+               captureTimestamp == nil {
+                return .suppressed(.indeterminate)
+            }
+            if let captureTimestamp,
+               lastAudibleRenderTimestampNanoseconds > 0,
+               captureTimestamp >= lastAudibleRenderTimestampNanoseconds,
+               captureTimestamp - lastAudibleRenderTimestampNanoseconds
+                    < Self.residualTailWindowNanoseconds {
+                return .suppressed(.playbackTail)
+            }
+            return .suppressed(.residentPlaybackInactive)
+        }
+
+        switch observation.classification {
+        case .silenceOrNoise:
+            resetForSuppressedObservation(metrics)
+            return .suppressed(.silenceOrNoise)
+        case .farEndDominant:
+            resetForSuppressedObservation(metrics)
+            return .suppressed(.farEndDominant)
+        case .residualEchoLikely:
+            resetForSuppressedObservation(metrics)
+            return .suppressed(.residualEchoLikely)
+        case .indeterminate:
+            resetForSuppressedObservation(metrics)
+            return .suppressed(.indeterminate)
+        case .nearEndCandidate:
+            consecutiveNearEndObservations &+= 1
+            guard metrics.sourceGateOpen else {
+                resetEligibilityEpoch()
+                return .suppressed(.unstableNearEnd)
+            }
+            guard consecutiveNearEndObservations
+                    >= Self.minimumConsecutiveNearEndObservations else {
+                return .suppressed(.unstableNearEnd)
+            }
+            guard !eligibilityIssued else {
+                return .suppressed(.alreadyEligible)
+            }
+            eligibilityIssued = true
+            return .eligible
+        }
+    }
+
+    private mutating func resetForSuppressedObservation(
+        _ metrics: RealtimeAcousticMetrics
+    ) {
+        if metrics.sourceGateOpen {
+            resetCandidateStability()
+        } else {
+            resetEligibilityEpoch()
+        }
+    }
+
+    private mutating func resetCandidateStability() {
+        consecutiveNearEndObservations = 0
+    }
+
+    private mutating func resetEligibilityEpoch() {
+        resetCandidateStability()
+        eligibilityIssued = false
+    }
+
 }
 
 nonisolated struct RealtimeInterruptionEvidenceIdentity:

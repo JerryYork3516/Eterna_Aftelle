@@ -45,8 +45,11 @@ swiftc \
 
 runtime_home="$build_dir/runtime-home"
 mkdir -p "$runtime_home"
+output="$build_dir/output.log"
 CFFIXED_USER_HOME="$runtime_home" \
-  "$build_dir/realtime_interruption_evidence_tests" "$fixture"
+  "$build_dir/realtime_interruption_evidence_tests" "$fixture" \
+  | tee "$output"
+rg -qx 'r81_acoustic_only_playback_clears=0' "$output"
 
 contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
@@ -56,9 +59,14 @@ models="$repo_root/apps/macos/Aftelle/AppModels.swift"
 
 rg -q 'RealtimeInterruptionEvidenceIdentity' "$contract"
 rg -q 'isActiveInterruptionTarget' "$contract" "$runtime"
-rg -q 'submitRealtimeResidentBrainAcousticEvidence' "$runtime"
-rg -q 'submitRealtimeResidentBrainAcousticEvidence' "$models"
-rg -q 'submitRealtimeResidentBrainAcousticEvidence' "$controller"
+rg -q 'submitRealtimeResidentBrainEligibleAcousticEvidence' \
+  "$runtime" "$models" "$controller"
+rg -q 'submitRealtimeResidentBrainAcousticEvidenceForTesting' "$runtime"
+if rg -q 'submitRealtimeResidentBrainAcousticEvidenceForTesting' \
+  "$models" "$controller"; then
+  echo "realtime_interruption_raw_acoustic_bypass=FAIL"
+  exit 1
+fi
 rg -q 'claimRealtimeResidentBrainInterruptionDecision' "$runtime"
 rg -q 'claimRealtimeResidentBrainInterruptionDecision' "$models"
 rg -q 'claimRealtimeResidentBrainInterruptionDecision' "$controller"

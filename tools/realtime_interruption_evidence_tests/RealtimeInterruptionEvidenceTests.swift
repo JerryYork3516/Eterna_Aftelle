@@ -112,6 +112,11 @@ private final class R81AudioCapture:
         acousticEchoHost.snapshot()
     }
 
+    func acousticObservationSnapshot()
+        -> MacSpeechAcousticObservationSnapshot? {
+        acousticEchoHost.acousticObservationSnapshot()
+    }
+
     func resetAcousticEchoDiagnostics() {
         acousticEchoHost.resetDiagnostics()
     }
@@ -385,6 +390,7 @@ private struct R81ControllerStack {
 private struct RealtimeInterruptionEvidenceTests {
     private static var cases = 0
     private static var checks = 0
+    private static var acousticOnlyPlaybackClearCount = -1
 
     static func main() async throws {
         guard CommandLine.arguments.count == 2 else {
@@ -398,7 +404,7 @@ private struct RealtimeInterruptionEvidenceTests {
         cases += 1
         expectDecision(
             await primary.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     acoustic(primary.target, sequence: 0)
                 ),
             equals: .ignored(.invalidEvidence),
@@ -407,7 +413,7 @@ private struct RealtimeInterruptionEvidenceTests {
         for wrongSession in wrongSessions(for: primary.target.session) {
             expectDecision(
                 await primary.runtime
-                    .submitRealtimeResidentBrainAcousticEvidence(
+                    .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                         acoustic(
                             R81Target(
                                 session: wrongSession,
@@ -426,7 +432,7 @@ private struct RealtimeInterruptionEvidenceTests {
         let expiredTimestamp = now > 3_000_000_000
             ? now - 3_000_000_000 : 1
         expectDecision(
-            await primary.runtime.submitRealtimeResidentBrainAcousticEvidence(
+            await primary.runtime.submitRealtimeResidentBrainAcousticEvidenceForTesting(
                 acoustic(
                     primary.target,
                     sequence: 1,
@@ -437,14 +443,14 @@ private struct RealtimeInterruptionEvidenceTests {
             "expired acoustic evidence is rejected by the fixed freshness fence"
         )
         expectDecision(
-            await primary.runtime.submitRealtimeResidentBrainAcousticEvidence(
+            await primary.runtime.submitRealtimeResidentBrainAcousticEvidenceForTesting(
                 semantic(primary.target, sequence: 4)
             ),
             equals: .ignored(.invalidEvidence),
             "Host cannot forge Realtime Brain semantic evidence"
         )
         expectDecision(
-            await primary.runtime.submitRealtimeResidentBrainAcousticEvidence(
+            await primary.runtime.submitRealtimeResidentBrainAcousticEvidenceForTesting(
                 acoustic(primary.target, sequence: 1, confidence: 0)
             ),
             equals: .ignored(.invalidEvidence),
@@ -458,7 +464,7 @@ private struct RealtimeInterruptionEvidenceTests {
         let primaryAcoustic = acoustic(primary.target, sequence: 2)
         expectDecision(
             await primary.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     primaryAcoustic
                 ),
             equals: .observed,
@@ -469,7 +475,7 @@ private struct RealtimeInterruptionEvidenceTests {
                "acoustic evidence alone cannot interrupt")
         expectDecision(
             await primary.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     primaryAcoustic
                 ),
             equals: .ignored(.duplicateEvidence),
@@ -477,7 +483,7 @@ private struct RealtimeInterruptionEvidenceTests {
         )
         expectDecision(
             await primary.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     acoustic(primary.target, sequence: 1)
                 ),
             equals: .ignored(.staleEvidence),
@@ -493,7 +499,7 @@ private struct RealtimeInterruptionEvidenceTests {
         )
         expectDecision(
             await primary.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     acoustic(wrongTarget, sequence: 3)
                 ),
             equals: .ignored(.staleEvidence),
@@ -507,7 +513,7 @@ private struct RealtimeInterruptionEvidenceTests {
         )
         expectDecision(
             await primary.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     acoustic(wrongContext, sequence: 3)
                 ),
             equals: .ignored(.staleEvidence),
@@ -714,7 +720,7 @@ private struct RealtimeInterruptionEvidenceTests {
         cases += 1
         expectDecision(
             await primary.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     primaryAcoustic
                 ),
             equals: .ignored(.staleIdentity),
@@ -737,7 +743,7 @@ private struct RealtimeInterruptionEvidenceTests {
             "semantic-first fusion waits for acoustic evidence"
         )
         let reverseDecision = await reverse.runtime
-            .submitRealtimeResidentBrainAcousticEvidence(
+            .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                 acoustic(reverse.target, sequence: 2)
             )
         let reverseConfirmation = confirmedDecision(
@@ -780,7 +786,7 @@ private struct RealtimeInterruptionEvidenceTests {
         )
         let mutationDecision = confirmedDecision(
             await mutationRace.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     acoustic(mutationRace.target, sequence: 2)
                 ),
             message: "in-flight audio cannot block Runtime confirmation"
@@ -831,14 +837,14 @@ private struct RealtimeInterruptionEvidenceTests {
         let firstSubmission = Task { @MainActor in
             await duplicateBarrier.wait()
             return await race.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     duplicateAcoustic
                 )
         }
         let secondSubmission = Task { @MainActor in
             await duplicateBarrier.wait()
             return await race.runtime
-                .submitRealtimeResidentBrainAcousticEvidence(
+                .submitRealtimeResidentBrainAcousticEvidenceForTesting(
                     duplicateAcoustic
                 )
         }
@@ -899,7 +905,7 @@ private struct RealtimeInterruptionEvidenceTests {
 
         cases += 1
         expectDecision(
-            await race.runtime.submitRealtimeResidentBrainAcousticEvidence(
+            await race.runtime.submitRealtimeResidentBrainAcousticEvidenceForTesting(
                 acoustic(race.target, sequence: 2)
             ),
             equals: .ignored(.staleIdentity),
@@ -1077,6 +1083,7 @@ private struct RealtimeInterruptionEvidenceTests {
 
         print("realtime_interruption_evidence_cases=\(cases)")
         print("realtime_interruption_evidence_checks=\(checks)")
+        print("r81_acoustic_only_playback_clears=\(acousticOnlyPlaybackClearCount)")
     }
 
     private static func testControllerSemanticFirstInterruption(
@@ -1110,7 +1117,7 @@ private struct RealtimeInterruptionEvidenceTests {
         )
 
         await stack.provider.holdInterrupt()
-        await emitNearEndEvidence(stack, marker: 0x31, expectedAudioCount: 1)
+        await emitNearEndEvidence(stack, marker: 0x31, expectedAudioCount: 3)
         await waitUntil("Host clear before held Provider settlement") {
             await stack.provider.isInterruptHeld()
                 && stack.outputPlayer.clearScheduledPlaybackCount == 1
@@ -1141,7 +1148,7 @@ private struct RealtimeInterruptionEvidenceTests {
         expect(stack.capture.emit(0x41),
                "persistent Capture submits the next-generation frame")
         await waitUntil("next-generation input reaches Provider") {
-            await stack.provider.audioCount() == 2
+            await stack.provider.audioCount() == 4
         }
         let nextInput = await stack.provider.lastAudioFrame()
         expect(
@@ -1208,7 +1215,7 @@ private struct RealtimeInterruptionEvidenceTests {
     ) async throws {
         cases += 1
         let stack = try await makeControllerStack(fixture: fixture)
-        await emitNearEndEvidence(stack, marker: 0x51, expectedAudioCount: 1)
+        await emitNearEndEvidence(stack, marker: 0x51, expectedAudioCount: 3)
         let acousticOnlyInterruptCount = await stack.provider.interruptCount()
         expect(
             acousticOnlyInterruptCount == 0
@@ -1217,6 +1224,8 @@ private struct RealtimeInterruptionEvidenceTests {
                     == .speaking,
             "Host acoustic evidence alone cannot clear Playback or interrupt"
         )
+        acousticOnlyPlaybackClearCount =
+            stack.outputPlayer.clearScheduledPlaybackCount
 
         await stack.provider.enqueue(RealtimeResidentBrainEvent(
             identity: eventIdentity(stack.target),
@@ -1277,7 +1286,7 @@ private struct RealtimeInterruptionEvidenceTests {
         cases += 1
         let stack = try await makeControllerStack(fixture: fixture)
         await stack.provider.failNextInterrupt(.transportFailure)
-        await emitNearEndEvidence(stack, marker: 0x61, expectedAudioCount: 1)
+        await emitNearEndEvidence(stack, marker: 0x61, expectedAudioCount: 3)
         await stack.provider.enqueue(proposalEvent(stack.target, sequence: 4))
         await waitUntil("failed Provider interruption settles Host route") {
             let closeCount = await stack.provider.closeCount()
@@ -1438,35 +1447,49 @@ private struct RealtimeInterruptionEvidenceTests {
         stack.acousticEchoHost.playbackStarted()
         let render = signal(seed: 2, amplitude: 0.3)
         let nearEnd = signal(seed: 3, amplitude: 0.25)
+        let baseTimestamp = monotonicNow() - 120_000_000
         stack.aecBackend.setCaptureOutput(nearEnd)
         for index in 0 ..< 3 {
             stack.acousticEchoHost.processRender(
                 render,
                 hostTimeNanoseconds:
-                    2_000_000_000 + UInt64(index * 10_000_000)
+                    baseTimestamp + UInt64(index * 10_000_000)
             )
             _ = stack.acousticEchoHost.processCapture(
                 render,
                 hostTimeNanoseconds:
-                    2_080_000_000 + UInt64(index * 10_000_000)
+                    baseTimestamp + 80_000_000
+                        + UInt64(index * 10_000_000)
             )
+            try? await Task.sleep(for: .milliseconds(12))
+            expect(
+                stack.capture.emit(marker &+ UInt8(index)),
+                "identity-bound near-end frame enters the Realtime pump"
+            )
+            await waitUntil("acoustic frame reaches Provider") {
+                await stack.provider.audioCount()
+                    == expectedAudioCount - 2 + index
+            }
         }
         let acoustic = stack.acousticEchoHost.snapshot()
         expect(
             acoustic.sourceAlignmentLocked && acoustic.sourceGateOpen,
             "valid aligned near-end evidence opens the existing source gate"
         )
-        expect(stack.capture.emit(marker),
-               "identity-bound near-end frame enters the Realtime pump")
-        await waitUntil("acoustic frame reaches Provider") {
-            await stack.provider.audioCount() == expectedAudioCount
+        for _ in 0 ..< 400 {
+            await stack.controller.refreshMicrophoneAuthorization()
+            if stack.controller.realtimeBrainInputBridgeSnapshot
+                .acousticEvidenceCount == 1 {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(5))
         }
-        try? await Task.sleep(for: .milliseconds(20))
         await stack.controller.refreshMicrophoneAuthorization()
+        let bridgeSnapshot = stack.controller
+            .realtimeBrainInputBridgeSnapshot
         expect(
-            stack.controller.realtimeBrainInputBridgeSnapshot
-                .acousticEvidenceCount == 1,
-            "Host forwards one source-gate acoustic evidence edge"
+            bridgeSnapshot.acousticEvidenceCount == 1,
+            "Host forwards one source-gate acoustic evidence edge; sends=\(bridgeSnapshot.sendOperationCount), forwarded=\(bridgeSnapshot.forwardedFrameCount)"
         )
     }
 
@@ -1799,9 +1822,9 @@ private struct RealtimeInterruptionEvidenceTests {
         _ label: String,
         condition: @escaping () async -> Bool
     ) async {
-        for _ in 0 ..< 10_000 {
+        for _ in 0 ..< 400 {
             if await condition() { return }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
         }
         fatalError("timed out: \(label)")
     }

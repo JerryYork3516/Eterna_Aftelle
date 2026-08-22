@@ -54,7 +54,7 @@ echo "realtime_acoustic_identity_trace=PASS"
 
 runtime_observer_block="$build_dir/runtime-observer.txt"
 awk \
-  '/func observeRealtimeResidentBrainAcoustics/ { active = 1 } /func submitRealtimeResidentBrainAcousticEvidence/ { active = 0 } active' \
+  '/func observeRealtimeResidentBrainAcoustics/ { active = 1 } /func submitRealtimeResidentBrainEligibleAcousticEvidence|func submitRealtimeResidentBrainAcousticEvidence/ { active = 0 } active' \
   "$runtime" > "$runtime_observer_block"
 if rg -q \
   'consumeRealtimeResidentBrainInterruptionEvidence|beginRealtimeBrainGenerationTransition|executionEngine|pendingRealtimeInterruption|cancelRealtimeResidentBrain|interruptRealtimeResidentBrain|clearPlayback|confirmed' \

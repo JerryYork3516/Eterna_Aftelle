@@ -53,6 +53,7 @@ nonisolated struct MacSpeechResidentAcousticSnapshot:
     let captureHostTimeNanoseconds: UInt64?
     let playbackSequence: UInt64
     let residentPlaybackActive: Bool
+    let lastAudibleResidentRenderTimestampNanoseconds: UInt64?
     let renderReferenceAvailable: Bool
     let renderReferenceRMS: Double?
     let renderHostTimeNanoseconds: UInt64?

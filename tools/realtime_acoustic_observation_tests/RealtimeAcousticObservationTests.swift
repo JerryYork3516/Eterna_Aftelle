@@ -1347,7 +1347,10 @@ private struct RealtimeAcousticObservationTests {
         let renderTimestamp = timestamp > UInt64(measured) * 1_000_000
             ? timestamp - UInt64(measured) * 1_000_000 : 1
         return RealtimeAcousticMetrics(
+            residentPlaybackSequence: playbackActive ? 1 : 0,
             residentPlaybackActive: playbackActive,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                playbackActive ? renderTimestamp : nil,
             renderReferenceAvailable: renderReferenceAvailable,
             renderReferenceRMS: renderRMS,
             rawCaptureRMS: rawRMS,
@@ -1409,6 +1412,8 @@ private struct RealtimeAcousticObservationTests {
             captureHostTimeNanoseconds: timestamp,
             playbackSequence: playbackActive ? 1 : 0,
             residentPlaybackActive: playbackActive,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                playbackActive ? renderTimestamp : nil,
             renderReferenceAvailable: renderReferenceAvailable,
             renderReferenceRMS: renderReferenceAvailable ? 0.2 : nil,
             renderHostTimeNanoseconds: renderTimestamp,

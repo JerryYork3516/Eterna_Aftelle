@@ -171,6 +171,7 @@ nonisolated struct MacSpeechAcousticObservationSnapshot:
     let captureHostTimeNanoseconds: UInt64?
     let playbackSequence: UInt64
     let isPlaybackActive: Bool
+    let lastAudibleRenderHostTimeNanoseconds: UInt64?
     let renderReferenceAvailable: Bool
     let renderReferenceRMS: Double?
     let renderHostTimeNanoseconds: UInt64?
@@ -319,6 +320,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var routeResetCount: UInt64 = 0
     private var fallbackReason: MacSpeechAECFallbackReason?
     private var isPlaybackActive = false
+    private var lastAudibleRenderHostTimeNanoseconds: UInt64?
     private var isRouteRebuilding = false
     private var hasReliableEchoCancellation = false
     private var poorResidualEchoFrameCount: UInt64 = 0
@@ -361,6 +363,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             resetTimingState()
             resetDiagnosticCounters()
             isRouteRebuilding = false
+            lastAudibleRenderHostTimeNanoseconds = nil
             lastDriftSkew = 0
             driftTrend = "stable"
             fallbackReason = nil
@@ -569,6 +572,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         queue.sync {
             playbackSequence &+= 1
             isPlaybackActive = true
+            lastAudibleRenderHostTimeNanoseconds = nil
             clearTimingHistory()
             alignedDelayMilliseconds = nil
             resetSignalDiagnostics()
@@ -618,6 +622,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     func routeWillRebuild() {
         queue.sync {
             routeResetCount &+= 1
+            lastAudibleRenderHostTimeNanoseconds = nil
             isRouteRebuilding = true
             hasReliableEchoCancellation = false
             poorResidualEchoFrameCount = 0
@@ -793,6 +798,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         renderTimingHistory.append(frame)
         latestRenderHostTimeNanoseconds = frame.hostTimeNanoseconds
         latestRenderReferenceRMS = frame.rms
+        if frame.rms >= Self.minimumTimingRMS {
+            lastAudibleRenderHostTimeNanoseconds = max(
+                lastAudibleRenderHostTimeNanoseconds ?? 0,
+                frame.hostTimeNanoseconds
+            )
+        }
     }
 
     private func timingMatch(
@@ -1839,6 +1850,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 latestCaptureHostTimeNanoseconds,
             playbackSequence: playbackSequence,
             isPlaybackActive: isPlaybackActive,
+            lastAudibleRenderHostTimeNanoseconds:
+                lastAudibleRenderHostTimeNanoseconds,
             renderReferenceAvailable:
                 latestRenderHostTimeNanoseconds != nil,
             renderReferenceRMS: matchedRenderHostTimeNanoseconds == nil

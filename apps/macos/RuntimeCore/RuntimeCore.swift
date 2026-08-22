@@ -1548,8 +1548,10 @@ public final class RuntimeCore {
 
     private struct RealtimeAcousticObservationLedger {
         let session: RealtimeBrainSessionIdentity
+        let captureGeneration: UInt64
         var lastSequence: UInt64
         var lastTimestampNanoseconds: UInt64
+        var lastObservation: RealtimeAcousticObservation?
     }
 
     private struct RealtimeBrainGenerationTransition {
@@ -2959,7 +2961,19 @@ public final class RuntimeCore {
     func observeRealtimeResidentBrainAcoustics(
         _ observation: RealtimeAcousticObservation
     ) -> RealtimeAcousticObservationDisposition {
-        let receivedAt = DispatchTime.now().uptimeNanoseconds
+        acceptRealtimeAcousticObservation(
+            observation,
+            receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            allowExactReplay: false
+        )
+    }
+
+    @MainActor
+    private func acceptRealtimeAcousticObservation(
+        _ observation: RealtimeAcousticObservation,
+        receivedAtNanoseconds receivedAt: UInt64,
+        allowExactReplay: Bool
+    ) -> RealtimeAcousticObservationDisposition {
         let identity = observation.identity
         guard currentRealtimeBrainLease(identity: identity.session) != nil,
               realtimeBrainSessionGate.isActive(identity.session) else {
@@ -2971,7 +2985,11 @@ public final class RuntimeCore {
               identity.timestampNanoseconds <= receivedAt,
               receivedAt - identity.timestampNanoseconds
                 <= Self.realtimeAcousticObservationFreshnessNanoseconds,
-              Self.realtimeAcousticMetricsAreValid(observation.metrics),
+              Self.realtimeAcousticMetricsAreValid(
+                  observation.metrics,
+                  observationTimestampNanoseconds:
+                      identity.timestampNanoseconds
+              ),
               RealtimeAcousticClassifier.classify(
                   metrics: observation.metrics,
                   observationTimestampNanoseconds:
@@ -2990,14 +3008,21 @@ public final class RuntimeCore {
         var ledger = realtimeAcousticObservationLedger
             ?? RealtimeAcousticObservationLedger(
                 session: identity.session,
+                captureGeneration: identity.captureGeneration,
                 lastSequence: 0,
-                lastTimestampNanoseconds: 0
+                lastTimestampNanoseconds: 0,
+                lastObservation: nil
             )
-        guard ledger.session == identity.session else {
+        guard ledger.session == identity.session,
+              ledger.captureGeneration == identity.captureGeneration else {
             return .ignored(.staleIdentity)
         }
         let disposition: RealtimeAcousticObservationDisposition
         if identity.sequence == ledger.lastSequence {
+            if allowExactReplay,
+               ledger.lastObservation == observation {
+                return .observed
+            }
             disposition = .ignored(.duplicateObservation)
         } else if identity.sequence < ledger.lastSequence
                     || identity.timestampNanoseconds
@@ -3006,6 +3031,7 @@ public final class RuntimeCore {
         } else {
             ledger.lastSequence = identity.sequence
             ledger.lastTimestampNanoseconds = identity.timestampNanoseconds
+            ledger.lastObservation = observation
             realtimeAcousticObservationLedger = ledger
             disposition = .observed
         }
@@ -3037,7 +3063,8 @@ public final class RuntimeCore {
     }
 
     private static func realtimeAcousticMetricsAreValid(
-        _ metrics: RealtimeAcousticMetrics
+        _ metrics: RealtimeAcousticMetrics,
+        observationTimestampNanoseconds: UInt64
     ) -> Bool {
         let nonnegativeValues = [
             metrics.renderReferenceRMS,
@@ -3059,6 +3086,11 @@ public final class RuntimeCore {
         [metrics.erlDecibels, metrics.erleDecibels].allSatisfy({ value in
             value.map { $0.isFinite } ?? true
         }),
+        (!metrics.residentPlaybackActive
+            || metrics.residentPlaybackSequence > 0),
+        metrics.lastAudibleResidentRenderTimestampNanoseconds.map({
+            $0 > 0 && $0 <= observationTimestampNanoseconds
+        }) ?? true,
         metrics.captureTimestampNanoseconds.map({ $0 > 0 }) ?? true,
         metrics.renderTimestampNanoseconds.map({ $0 > 0 }) ?? true,
         metrics.sourceAlignmentDelayMilliseconds.map({ $0 >= 0 }) ?? true,
@@ -3085,7 +3117,66 @@ public final class RuntimeCore {
     #endif
 
     @MainActor
-    func submitRealtimeResidentBrainAcousticEvidence(
+    func submitRealtimeResidentBrainEligibleAcousticEvidence(
+        observation: RealtimeAcousticObservation,
+        evidence: RealtimeInterruptionEvidence
+    ) async -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        let receivedAt = DispatchTime.now().uptimeNanoseconds
+        let observationIdentity = observation.identity
+        let sourceAssessment = observation.metrics.sourceAssessment
+        let hasNearEndAssessment = sourceAssessment == .nearEndSpeech
+            || sourceAssessment == .doubleTalk
+        guard case .acousticHost(let facts) = evidence.source,
+              observationIdentity.session == evidence.identity.session,
+              observationIdentity.sequence == evidence.identity.sequence,
+              observationIdentity.timestampNanoseconds
+                == evidence.identity.timestampNanoseconds,
+              observation.classification == .nearEndCandidate,
+              observation.metrics.residentPlaybackActive,
+              observation.metrics.residentPlaybackSequence > 0,
+              observation.metrics.sourceGateOpen,
+              hasNearEndAssessment,
+              facts.nearEndDetected,
+              facts.farEndActive
+                == observation.metrics.residentPlaybackActive,
+              facts.sourceGateOpen == observation.metrics.sourceGateOpen,
+              facts.renderReferenceConfidence
+                == (observation.metrics.sourceAlignmentLocked ? 1 : 0),
+              facts.routeStable == observation.metrics.routeStable,
+              facts.inputDeviceAvailable
+                == observation.metrics.inputDeviceAvailable,
+              facts.outputDeviceAvailable
+                == observation.metrics.outputDeviceAvailable else {
+            return .success(.ignored(.invalidEvidence))
+        }
+        switch acceptRealtimeAcousticObservation(
+            observation,
+            receivedAtNanoseconds: receivedAt,
+            allowExactReplay: true
+        ) {
+        case .observed:
+            break
+        case .ignored(.invalidObservation):
+            return .success(.ignored(.invalidEvidence))
+        case .ignored(.staleIdentity):
+            return .success(.ignored(.staleIdentity))
+        case .ignored(.staleObservation):
+            return .success(.ignored(.staleEvidence))
+        case .ignored(.duplicateObservation):
+            return .success(.ignored(.duplicateEvidence))
+        }
+        return consumeRealtimeResidentBrainInterruptionEvidence(
+            evidence,
+            receivedAtNanoseconds: receivedAt
+        )
+    }
+
+    #if DEBUG
+    @MainActor
+    func submitRealtimeResidentBrainAcousticEvidenceForTesting(
         _ evidence: RealtimeInterruptionEvidence
     ) async -> Result<
         RealtimeInterruptionDecision,
@@ -3099,6 +3190,7 @@ public final class RuntimeCore {
             receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
         )
     }
+    #endif
 
     @MainActor
     func claimRealtimeResidentBrainInterruptionDecision(
@@ -3217,6 +3309,8 @@ public final class RuntimeCore {
               let semantic = state.semantic,
               acoustic.identity.turnID == semantic.identity.turnID,
               acoustic.identity.responseID == semantic.identity.responseID,
+              acoustic.identity.contextRevision
+                == semantic.identity.contextRevision,
               Self.timestampsAreCorrelated(
                 acoustic.identity.timestampNanoseconds,
                 semantic.identity.timestampNanoseconds

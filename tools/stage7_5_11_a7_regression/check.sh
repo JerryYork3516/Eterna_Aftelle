@@ -39,6 +39,8 @@ run_suite realtime_interruption_evidence \
   "$repo_root/tools/realtime_interruption_evidence_tests/check.sh"
 run_suite realtime_acoustic_observation \
   "$repo_root/tools/realtime_acoustic_observation_tests/check.sh"
+run_suite realtime_acoustic_eligibility \
+  "$repo_root/tools/realtime_acoustic_eligibility_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \
