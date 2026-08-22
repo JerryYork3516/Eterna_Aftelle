@@ -780,7 +780,6 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let baselineGeneration = baselineLease?.generation
         let framesPerObservation = 32
         let observationTotal = 120
-        longStressObservations = observationTotal
         let matrixObservationsBefore = matrixObservations
         let scenariosBefore = matrixScenarios
 

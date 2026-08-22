@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.2.2 Freeze
+# Realtime Resident Brain Architecture · R0–R8.2.3 Freeze
 
-> 状态：`R0–R8.2.2 PASS / FROZEN`；下一节点只允许进入 R8.2.3
+> 状态：`R0–R8.2.3 PASS / FROZEN`；下一节点只允许进入 R8.3
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -453,11 +453,11 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话、Release、最终 resident-only 零 self-interrupt freeze、用户真实插话、double-talk 与 natural turn-taking 均未完成；下一节点只允许进入 R8.2.3。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话、Release、用户真实插话、double-talk 与 natural turn-taking 均未完成；R8.2.3 PASS 后下一节点只允许进入 R8.3。
 
 ---
 
-## R0–R8.2.2 Freeze Result
+## R0–R8.2.3 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -471,53 +471,31 @@ R7 = PASS / FROZEN
 R8.1 = PASS / FROZEN
 R8.2.1 = PASS / FROZEN
 R8.2.2 = PASS / FROZEN
+R8.2.3 = PASS / FROZEN
+```
 
-Single Runtime authority: RuntimeCore
-Max active Brain per Runtime Session: 1
-Second Runtime / Session / Memory / History: forbidden
-Tool / Permission bypass: forbidden
-Provider-private voice identity in DR: forbidden
-Cascaded Route: retained as fallback / voice message / low-cost compatibility route
-First implementation: Qwen Omni Realtime behind provider-neutral boundaries
-R1 implementation: RuntimeCore-owned lease gate with existing route identities
-R1 second-Brain policy: deterministic rejection; no automatic fallback
-R1 lifecycle: Text / Speech Provider work is registered before start; release only after request, completed delivery or definitive close settlement; Session replacement waits before new Brain admission
-R1 verification: 140 checks with product-aligned MainActor isolation
-R2 contract: RealtimeResidentBrainProvider with provider-neutral commands, events, identity, semantic final, context, Tool candidate, interruption proposal and PCM frames
-R2 routing seam: existing RuntimeCore → ExecutionEngine → ProviderRouter only
-R2 network dependency: zero; Fake Provider only
-R3 adapter: internal QwenRealtimeResidentBrainAdapter; Qwen wire stays private
-R3/R5/R6 Qwen verification: 16 cases / 150 checks / zero-network fixtures; real WebSocket HUMAN_GATE
-R3 remaining wire risk: production URLSessionWebSocketTask callback / close completion requires Human Gate evidence
-R4 context: RuntimeCore-compiled provider-eligible bootstrap + monotonic delta at stable boundaries
-R4 canonical turn: one provider-neutral identity; semantic completion for Text / Realtime, delivery completion for Cascaded / Native
-R4 persistence: RuntimeCore-only History / Memory / Relationship evaluation; runtime-session-local dedupe; no Store schema change
-R4 verification: 4 cases / 81 checks; R2 8 cases / 261 checks; A7 18 suites / 21 entrypoints / 4038 assertions
-R5 Tool kernel: one RuntimeTool registry / permission / executor / audit shared by NativeSpeech and Realtime; no Text Tool implementation was invented
-R5 result path: original candidate identity + Runtime-owned sequence through existing submitToolResult seam; duplicate / stale / late results fail closed
-R5 verification: 7 cases / 120 checks / zero network; R2 8 cases / 263 checks; NativeSpeech integration 545 checks; A7 19 suites / 22 entrypoints / 4175 assertions
-R6 binding: current providerDefault only; Provider-private resolution never becomes resident identity or durable data
-R6 future source: Studio VoiceProfile may replace the binding source without changing the Realtime Brain / RuntimeCore main path
-R6 scope: no Studio VoiceProfile production, voice cloning, full-duplex Host audio, interruption, route fallback or real-device claim
-R6 verification: 6 cases / 62 checks / zero network; A7 20 suites / 23 entrypoints / 4238 assertions; macOS clean build and architecture / secret guards PASS
-R7 input: one persistent AEC-processed Capture pump with contiguous submitted-frame sequence through RuntimeCore to the selected Realtime Provider
-R7 output: Runtime-accepted residentAudioDelta only, through the existing shared Audio Output Host; final local playback PCM remains the sole AEC render reference
-R7 session: one Start supports two or more turns under one Provider Session and ActiveBrainLease; response completion returns to listening; User Stop performs full settlement
-R7 verification: 11 cases / 96 checks / zero network; NativeSpeech duplex 359 checks; shared Audio Output 163 checks; AEC 990 checks; A7 21 suites / 24 entrypoints / 4353 assertions; clean build and guards PASS
-R7 Human Gate: live Qwen WebSocket, real microphone / speaker, USB / Bluetooth / AirPods, long-duration full-duplex and Release activation outside the current DEBUG Host remain NOT_RUN
-R8.1 evidence: AEC / Host acoustic evidence + Realtime Brain semantic proposal; evidence is never the decision
-R8.1 authority: RuntimeCore alone confirms interruption, invalidates generation, commands Provider interrupt and authorizes Host pre-clear
-R8.1 response authority: Qwen create_response=false and interrupt_response=false; Runtime-accepted user final is the only ordinary response.create authorization
-R8.1 verification: 18 cases / 127 checks; R2 10 cases / 291 checks; Qwen 21 cases / 175 checks; Tool 7 cases / 131 checks; Realtime Host 12 cases / 101 checks; A7 22 suites / 25 entrypoints / 4549 assertions
-R8.1 Human Gate: live Qwen WebSocket, real microphone / speaker, USB / Bluetooth / AirPods, long-duration full-duplex and Release activation remain NOT_RUN
-R8.2.1 observation: actual render/capture/AEC scalar facts with full lease/route/generation/capture identity; five provider-neutral classifications remain observer-only
-R8.2.1 performance: at least 10 capture frames between deliveries, one pending task with drop-new overflow, 32-record Runtime trace, 500 ms freshness and Stop cleanup
-R8.2.1 verification: 15 cases / 425 checks; 320 stress observations with 0 Provider interrupt, 0 Provider cancel and no generation change; A7 23 suites / 26 entrypoints / 4974 assertions
-R8.2.1 Human Gate: real device acoustic thresholds, transport-specific behavior, long-duration performance and Release activation remain NOT_RUN
-R8.2.2 gate: far-end, residual echo, silence/noise and indeterminate stay diagnostic-only; source-gate-confirmed current near-end alone may become acoustic evidence
-R8.2.2 tail: last audible render timestamp with a bounded 500 ms window; route/generation/playback identity reset; no infinite hangover
-R8.2.2 authority: Gate and Host have no final interruption, Provider, generation or Playback-clear authority; RuntimeCore remains the sole final owner
-R8.2.2 verification: 8 cases / 70 checks; 320 resident-only observations with 0 eligible evidence, 0 confirmed interruption, 0 Provider interrupt/cancel, 0 Runtime clear decision and no generation change; R8.1 actual Host clear 0; A7 24 suites / 27 entrypoints / 5051 assertions
-R8.2.2 Human Gate: real-device residual tail and thresholds, USB/Bluetooth/AirPods, long sessions and Release remain NOT_RUN
-Next allowed node: R8.2.3 Resident-only Zero Self-interrupt Freeze
+R8.2.3 未修改任何生产代码。R8.2.3 Human Gate: 真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 NOT_RUN。
+
+R8.2.3 verification: 12 cases / 90 checks; resident-only 5 scenarios with 740 observations and 0 eligible evidence, 0 confirmed interruption, 0 Provider interrupt/cancel, 0 Runtime clear decision, 0 generation change, 0 lease change, 0 false turn; long stress 240 observations 0/0/0; positive control produces 1 eligible evidence 0 confirmed; A7 25 suites / 28 entrypoints / 5150 assertions
+
+R8.2.3 Human Gate: real device, real speaker/room reverb, USB/Bluetooth/AirPods, real Qwen WebSocket, long-duration live and Release remain NOT_RUN
+
+Next allowed node: R8.3 User Barge-in Tuning
+```
+
+----
+
+### R8.2.3 Resident-only Zero Self-interrupt Automated Freeze
+
+R8.2.3 对 R8.2.1 / R8.2.2 已完成机制进行系统化 resident-only 压力验收。目标：在自动化可覆盖范围内，resident speaking + user silent + far-end / residual echo / tail / timing / route 波动 = 0 self-interrupt。
+
+R8.2.3 覆盖 12 个场景：A) clean far-end；B) loud playback；C) residual echo；D) playback tail 0–500 ms；E) playback level changes；F) timing jitter；G) source-gate epoch flap（bridge + gate 双层验证）；H) slow-send race；I) stop/restart isolation；J) long stress（240 observations）；正向 near-end control（证明 eligibility 路径未被封死）；K) history/memory safety。
+
+指标：resident-only eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-decision 0、Host playback clear 0、generation change 0、lease change 0、false user turn 0、false history/memory write 0。正向控制产生 1 条 eligible evidence 但 0 confirmed（证明插话路径保留）。
+
+生产链验证：测试经过 AEC Host facts → RealtimeAcousticObservation → Production Classifier → Eligibility Gate → Input Bridge → AppController current Host fence → RuntimeCore atomic ingest，确认测试的是正式 Realtime Route。
+
+R8.2.3 独立测试为 12 cases / 90 checks。R8.2.3 未修改任何生产代码。
+
+R8.2.3 保留非阻断 P2：正向控制采用 R8.2.2 已知 production chain observation 构造（而非真实 AEC timingLock），因为 timingLock 需要 correlation ≥ 0.35 但 nearEndSpeech 需要 correlation ≤ 0.25，两者互斥。真实生产链的 near-end 走完全部 chain 需要真实声学特征。真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 NOT_RUN；用户真实插话 latency、double-talk 最终识别与 natural turn-taking 属于 R8.3。
 ```

@@ -359,7 +359,7 @@ R7 Full-duplex Audio Integration — PASS / FROZEN
 R8.1 Interruption Evidence / Runtime Decision Authority — PASS / FROZEN
 R8.2.1 Resident-only Acoustic Observation / Classification — PASS / FROZEN
 R8.2.2 Residual Echo / Far-end Exclusion & Self-interrupt Gate — PASS / FROZEN
-R8.2.3 Resident-only Zero Self-interrupt Freeze
+R8.2.3 Resident-only Zero Self-interrupt Freeze — PASS / FROZEN
 R8.3 User Barge-in Tuning
 R8.4 Double-talk / Turn-taking / Backchannel
 R8.5 Interruption Final Verification
