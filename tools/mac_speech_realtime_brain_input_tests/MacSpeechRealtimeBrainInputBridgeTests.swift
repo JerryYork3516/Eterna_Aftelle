@@ -10,6 +10,7 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
     private var activeGeneration: UInt64?
     private var frames: [MacSpeechAudioFrame] = []
     private var nextSequence: UInt64 = 0
+    private var acousticSnapshot: MacSpeechInterruptionAcousticSnapshot?
 
     func activeCaptureGeneration() async -> UInt64? {
         lock.withLock { activeGeneration }
@@ -29,8 +30,19 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
         }
     }
 
+    func interruptionAcousticSnapshot() async
+        -> MacSpeechInterruptionAcousticSnapshot? {
+        lock.withLock { acousticSnapshot }
+    }
+
     func setActiveGeneration(_ generation: UInt64) {
         lock.withLock { activeGeneration = generation }
+    }
+
+    func setAcousticSnapshot(
+        _ snapshot: MacSpeechInterruptionAcousticSnapshot?
+    ) {
+        lock.withLock { acousticSnapshot = snapshot }
     }
 
     func appendFrame(
@@ -121,6 +133,10 @@ private actor FakeRealtimeResidentBrainProvider: RealtimeResidentBrainProvider {
 
     func submitToolResult(
         _ command: RealtimeBrainToolResultCommand
+    ) async throws {}
+
+    func createResponse(
+        _ command: RealtimeBrainCreateResponseCommand
     ) async throws {}
 
     func cancelGeneration(
@@ -332,6 +348,18 @@ private actor R7DispositionSource {
     }
 }
 
+private actor R81AcousticObservationSink {
+    private var observations: [MacSpeechRealtimeBrainAcousticObservation] = []
+
+    func consume(_ observation: MacSpeechRealtimeBrainAcousticObservation) {
+        observations.append(observation)
+    }
+
+    func values() -> [MacSpeechRealtimeBrainAcousticObservation] {
+        observations
+    }
+}
+
 @MainActor
 private final class R7OutputBridgeHolder {
     var bridge: MacSpeechRealtimeBrainOutputBridge?
@@ -351,6 +379,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testBridgeForwardsFrames()
         await testBridgeStopsOnError()
         await testBridgeRejectsStaleFrames()
+        await testBridgeForwardsAcousticEvidenceEdges()
         await testBridgeSnapshot()
         await testAudioFrameConversion()
         await testStopFailsClosedAndRetries()
@@ -526,6 +555,90 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         expect(await provider.audioCount() == 0, "provider receives no stale frames")
 
         _ = await bridge.stop()
+    }
+
+    private static func testBridgeForwardsAcousticEvidenceEdges() async {
+        cases += 1
+        let source = FakeMacSpeechAudioFrameSource()
+        let provider = FakeRealtimeResidentBrainProvider()
+        let sink = R81AcousticObservationSink()
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "test-resident",
+            runtimeSessionID: "test-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 350
+        source.setActiveGeneration(captureGeneration)
+        source.setAcousticSnapshot(acousticSnapshot(sequence: 1))
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { frame in
+                do {
+                    try await provider.appendAudio(frame)
+                    return .success(())
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.providerFailure)
+                }
+            },
+            stopInput: { _ in .success(()) },
+            consumeAcousticObservation: { observation in
+                await sink.consume(observation)
+            }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        source.appendFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration
+        )
+        await waitUntil { await sink.values().count == 1 }
+        let first = await sink.values()[0]
+        expect(first.session == session,
+               "acoustic evidence carries the exact Runtime session identity")
+        expect(first.sequence == 1 && first.timestampNanoseconds > 0,
+               "acoustic evidence carries submitted sequence and monotonic time")
+        expect(first.facts.nearEndDetected && first.facts.farEndActive,
+               "acoustic evidence preserves near-end and render facts")
+
+        source.appendFrame(
+            pcm16Bytes: Data(repeating: 2, count: 960),
+            generation: captureGeneration
+        )
+        await waitUntil { await provider.audioCount() == 2 }
+        expect(await sink.values().count == 1,
+               "one source-gate edge emits only one acoustic fact")
+
+        source.setAcousticSnapshot(acousticSnapshot(sequence: 2))
+        source.appendFrame(
+            pcm16Bytes: Data(repeating: 3, count: 960),
+            generation: captureGeneration
+        )
+        await waitUntil { await sink.values().count == 2 }
+        let snapshot = await bridge.currentSnapshot()
+        expect(snapshot.acousticEvidenceCount == 2,
+               "bridge reports bounded acoustic evidence count")
+        _ = await bridge.stop()
+    }
+
+    private static func acousticSnapshot(
+        sequence: UInt64
+    ) -> MacSpeechInterruptionAcousticSnapshot {
+        MacSpeechInterruptionAcousticSnapshot(
+            sourceGateSequence: sequence,
+            nearEndDetected: true,
+            farEndActive: true,
+            sourceGateOpen: true,
+            renderReferenceConfidence: 1,
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
     }
 
     private static func testBridgeSnapshot() async {
@@ -1203,7 +1316,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             sequenceNumber: 50
         )
         guard case .success(let nextSession) =
-                await runtime.cancelRealtimeResidentBrainGeneration(
+                await runtime.cancelRealtimeResidentBrainGenerationForTesting(
                     identity: firstSession,
                     reason: .runtimeDecision
                 ) else {

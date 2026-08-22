@@ -35,6 +35,8 @@ run_suite realtime_voice_binding \
   "$repo_root/tools/realtime_voice_binding_tests/check.sh"
 run_suite realtime_brain_audio_host \
   "$repo_root/tools/mac_speech_realtime_brain_input_tests/check.sh"
+run_suite realtime_interruption_evidence \
+  "$repo_root/tools/realtime_interruption_evidence_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \
@@ -102,7 +104,7 @@ assertion_count="$({
 } | awk '{ total += $1 } END { print total + 0 }')"
 
 printf 'a7_regression_top_level_suites=%d\n' "$suite_count"
-printf 'a7_regression_test_entrypoints=24\n'
+printf 'a7_regression_test_entrypoints=25\n'
 printf 'a7_regression_assertions=%s\n' "$assertion_count"
 printf 'a7_repository_mutation=PASS\n'
 printf 'a7_clean_build=PASS\n'

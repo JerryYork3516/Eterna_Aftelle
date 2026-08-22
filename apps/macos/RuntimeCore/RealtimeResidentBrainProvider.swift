@@ -293,12 +293,96 @@ nonisolated struct RealtimeBrainInterruptionProposal:
     let reason: String
 }
 
+nonisolated struct RealtimeInterruptionEvidenceIdentity:
+    Sendable,
+    Equatable {
+    let session: RealtimeBrainSessionIdentity
+    let turnID: RealtimeBrainTurnID?
+    let responseID: RealtimeBrainResponseID?
+    let contextRevision: UInt64
+    let sequence: UInt64
+    let timestampNanoseconds: UInt64
+}
+
+nonisolated struct RealtimeInterruptionAcousticFacts:
+    Sendable,
+    Equatable {
+    let nearEndDetected: Bool
+    let farEndActive: Bool
+    let sourceGateOpen: Bool
+    let renderReferenceConfidence: Double
+    let routeStable: Bool
+    let inputDeviceAvailable: Bool
+    let outputDeviceAvailable: Bool
+}
+
+nonisolated struct RealtimeInterruptionSemanticFacts:
+    Sendable,
+    Equatable {
+    let reason: String
+}
+
+nonisolated enum RealtimeInterruptionEvidenceSource:
+    Sendable,
+    Equatable {
+    case acousticHost(RealtimeInterruptionAcousticFacts)
+    case realtimeBrain(RealtimeInterruptionSemanticFacts)
+}
+
+nonisolated struct RealtimeInterruptionEvidence:
+    Sendable,
+    Equatable {
+    let identity: RealtimeInterruptionEvidenceIdentity
+    let source: RealtimeInterruptionEvidenceSource
+}
+
+nonisolated enum RealtimeInterruptionIgnoreReason:
+    String,
+    Sendable,
+    Equatable {
+    case invalidEvidence
+    case staleIdentity
+    case staleEvidence
+    case duplicateEvidence
+}
+
+nonisolated enum RealtimeInterruptionHostCommand:
+    String,
+    Sendable,
+    Equatable {
+    case clearPlayback
+}
+
+nonisolated struct RealtimeConfirmedInterruption:
+    Sendable,
+    Equatable {
+    let decisionID: UUID
+    let interruptedIdentity: RealtimeBrainSessionIdentity
+    let nextIdentity: RealtimeBrainSessionIdentity
+    let turnID: RealtimeBrainTurnID
+    let responseID: RealtimeBrainResponseID
+    let hostCommand: RealtimeInterruptionHostCommand
+}
+
+nonisolated enum RealtimeInterruptionDecision:
+    Sendable,
+    Equatable {
+    case ignored(RealtimeInterruptionIgnoreReason)
+    case observed
+    case confirmed(RealtimeConfirmedInterruption)
+}
+
 nonisolated struct RealtimeBrainToolResultCommand: Sendable, Equatable {
     let identity: RealtimeBrainEventIdentity
     let sequence: UInt64
     let callID: RealtimeBrainToolCallID
     let output: String
     let isError: Bool
+}
+
+nonisolated struct RealtimeBrainCreateResponseCommand: Sendable, Equatable {
+    let identity: RealtimeBrainEventIdentity
+    let sourceEventSequence: UInt64
 }
 
 nonisolated enum RealtimeBrainCancellationReason:
@@ -376,6 +460,9 @@ nonisolated protocol RealtimeResidentBrainProvider: Sendable {
     func submitToolResult(
         _ command: RealtimeBrainToolResultCommand
     ) async throws
+    func createResponse(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) async throws
     func cancelGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
     ) async throws
@@ -437,6 +524,15 @@ nonisolated enum RuntimeRealtimeBrainAudioInputStart:
     case invalid
 }
 
+nonisolated enum RuntimeRealtimeBrainResponseCreateStart:
+    Sendable,
+    Equatable {
+    case accepted(UUID)
+    case droppedOverlap(RealtimeBrainTurnID)
+    case alreadyAuthorized(RealtimeBrainTurnID)
+    case invalid
+}
+
 nonisolated enum RuntimeRealtimeBrainReceiveStart:
     Sendable,
     Equatable {
@@ -454,9 +550,14 @@ nonisolated struct RuntimeRealtimeBrainSemanticFinalKey:
 
 nonisolated final class RuntimeRealtimeBrainProviderOperationGate:
     @unchecked Sendable {
+    private struct Waiter {
+        let excludedToken: UUID?
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
     private let lock = NSLock()
     private var tokens: Set<UUID> = []
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     func begin(_ token: UUID) {
         lock.withLock {
@@ -465,28 +566,48 @@ nonisolated final class RuntimeRealtimeBrainProviderOperationGate:
     }
 
     func finish(_ token: UUID) {
-        let continuations: [CheckedContinuation<Void, Never>] =
-            lock.withLock {
-                guard tokens.remove(token) != nil,
-                      tokens.isEmpty else { return [] }
-                let continuations = waiters
-                waiters.removeAll(keepingCapacity: true)
-                return continuations
+        let continuations: [CheckedContinuation<Void, Never>] = lock.withLock {
+            guard tokens.remove(token) != nil else { return [] }
+            var ready: [CheckedContinuation<Void, Never>] = []
+            waiters.removeAll { waiter in
+                let isReady = isSatisfied(
+                    excluding: waiter.excludedToken
+                )
+                if isReady { ready.append(waiter.continuation) }
+                return isReady
             }
+            return ready
+        }
         continuations.forEach { $0.resume() }
     }
 
     func waitForAll() async {
+        await waitForAll(excluding: nil)
+    }
+
+    func waitForAll(excluding token: UUID) async {
+        await waitForAll(excluding: Optional(token))
+    }
+
+    private func waitForAll(excluding token: UUID?) async {
         await withCheckedContinuation { continuation in
             let resumesImmediately = lock.withLock {
-                guard !tokens.isEmpty else { return true }
-                waiters.append(continuation)
+                guard !isSatisfied(excluding: token) else { return true }
+                waiters.append(Waiter(
+                    excludedToken: token,
+                    continuation: continuation
+                ))
                 return false
             }
             if resumesImmediately {
                 continuation.resume()
             }
         }
+    }
+
+    private func isSatisfied(excluding token: UUID?) -> Bool {
+        guard let token else { return tokens.isEmpty }
+        return tokens.allSatisfy { $0 == token }
     }
 }
 
@@ -526,6 +647,14 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     private var toolCandidates:
         [RealtimeBrainToolCallID: RealtimeBrainEventIdentity] = [:]
     private var completedToolCalls: Set<RealtimeBrainToolCallID> = []
+    private var responseCreateToken: UUID?
+    private var pendingResponseCreate: RealtimeBrainCreateResponseCommand?
+    private var responseAuthorizationCandidates:
+        [RealtimeBrainTurnID: UInt64] = [:]
+    private var consumedResponseAuthorizationTurns:
+        Set<RealtimeBrainTurnID> = []
+    private var awaitingResponseTurn: RealtimeBrainTurnID?
+    private var awaitingResponseExcludedID: RealtimeBrainResponseID?
     private var generationTransitionToken: UUID?
     private var pendingGenerationIdentity: RealtimeBrainSessionIdentity?
     private var closeIdentityCandidates: [RealtimeBrainSessionIdentity] = []
@@ -573,6 +702,21 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         }
     }
 
+    func isActiveInterruptionTarget(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        lock.withLock {
+            guard isReadyLocked(identity.session),
+                  contextRevision == identity.contextRevision,
+                  let turnID = identity.turnID,
+                  let responseID = Self.semanticFinalKey(
+                    for: identity
+                  ) else { return false }
+            return activeTurnIDs.contains(turnID)
+                && activeResponseIDs.contains(responseID)
+        }
+    }
+
     func beginContextUpdate(
         _ update: RealtimeBrainRuntimeContextUpdate
     ) -> UUID? {
@@ -583,6 +727,8 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   audioInputToken == nil,
                   !audioInputSinceStableBoundary,
                   toolResultToken == nil,
+                  responseCreateToken == nil,
+                  awaitingResponseTurn == nil,
                   toolCandidates.isEmpty,
                   activeTurnIDs.isEmpty,
                   activeResponseIDs.isEmpty,
@@ -691,6 +837,10 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             guard isReadyLocked(command.identity.session),
                   contextRevision == command.identity.contextRevision,
                   toolResultToken == nil,
+                  let turnID = command.identity.turnID,
+                  !terminalTurnIDs.contains(turnID),
+                  awaitingResponseTurn == nil
+                    || awaitingResponseTurn == turnID,
                   command.sequence == lastToolResultSequence &+ 1,
                   toolCandidates[command.callID] == command.identity,
                   !completedToolCalls.contains(command.callID) else {
@@ -699,6 +849,8 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             let token = UUID()
             toolResultToken = token
             pendingToolResult = command
+            awaitingResponseTurn = turnID
+            awaitingResponseExcludedID = command.identity.responseID
             providerOperations.begin(token)
             return token
         }
@@ -715,9 +867,15 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   pendingToolResult == command else { return false }
             toolResultToken = nil
             pendingToolResult = nil
+            let turnID = command.identity.turnID
+            if !succeeded, awaitingResponseTurn == turnID {
+                awaitingResponseTurn = nil
+                awaitingResponseExcludedID = nil
+            }
             guard succeeded,
                   isReadyLocked(command.identity.session),
-                  contextRevision == command.identity.contextRevision else {
+                  contextRevision == command.identity.contextRevision,
+                  let turnID else {
                 return false
             }
             lastToolResultSequence = command.sequence
@@ -726,7 +884,64 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             if let key = Self.semanticFinalKey(for: command.identity) {
                 activeResponseIDs.remove(key)
             }
-            return true
+            return hasAuthorizedResponseProgressLocked(for: turnID)
+        }
+    }
+
+    func beginResponseCreate(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) -> RuntimeRealtimeBrainResponseCreateStart {
+        lock.withLock {
+            guard isReadyLocked(command.identity.session),
+                  contextRevision == command.identity.contextRevision,
+                  command.identity.responseID == nil,
+                  let turnID = command.identity.turnID else { return .invalid }
+            if consumedResponseAuthorizationTurns.contains(turnID) {
+                return .alreadyAuthorized(turnID)
+            }
+            guard responseAuthorizationCandidates[turnID]
+                    == command.sourceEventSequence else { return .invalid }
+            responseAuthorizationCandidates.removeValue(forKey: turnID)
+            consumedResponseAuthorizationTurns.insert(turnID)
+            guard responseCreateToken == nil,
+                  awaitingResponseTurn == nil,
+                  activeResponseIDs.isEmpty,
+                  toolResultToken == nil else {
+                terminalTurnIDs.insert(turnID)
+                closeTurnLocked(turnID)
+                return .droppedOverlap(turnID)
+            }
+            let token = UUID()
+            responseCreateToken = token
+            pendingResponseCreate = command
+            awaitingResponseTurn = turnID
+            awaitingResponseExcludedID = nil
+            providerOperations.begin(token)
+            return .accepted(token)
+        }
+    }
+
+    func finishResponseCreate(
+        token: UUID,
+        command: RealtimeBrainCreateResponseCommand,
+        succeeded: Bool
+    ) -> Bool {
+        defer { providerOperations.finish(token) }
+        return lock.withLock {
+            guard responseCreateToken == token,
+                  pendingResponseCreate == command else { return false }
+            responseCreateToken = nil
+            pendingResponseCreate = nil
+            let turnID = command.identity.turnID
+            if !succeeded, awaitingResponseTurn == turnID {
+                awaitingResponseTurn = nil
+                awaitingResponseExcludedID = nil
+            }
+            guard succeeded,
+                  isReadyLocked(command.identity.session),
+                  contextRevision == command.identity.contextRevision,
+                  let turnID else { return false }
+            return hasAuthorizedResponseProgressLocked(for: turnID)
         }
     }
 
@@ -976,6 +1191,12 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         await providerOperations.waitForAll()
     }
 
+    func waitForProviderOperationsToFinish(
+        excludingGenerationTransition token: UUID
+    ) async {
+        await providerOperations.waitForAll(excluding: token)
+    }
+
     private func receptionRejectionLocked(
         for identity: RealtimeBrainSessionIdentity
     ) -> RealtimeBrainEventDisposition? {
@@ -1018,6 +1239,12 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         lastAcceptedEventSequence = event.sequence
         updateOpenTurnLedgerLocked(event)
         switch event.kind {
+        case .userTranscriptFinal:
+            if let turnID = event.identity.turnID,
+               !consumedResponseAuthorizationTurns.contains(turnID),
+               responseAuthorizationCandidates[turnID] == nil {
+                responseAuthorizationCandidates[turnID] = event.sequence
+            }
         case .residentAudioDelta(let audio):
             lastAudioOutputSequence = audio.sequence
             lastAudioOutputTimestamp = audio.timestampNanoseconds
@@ -1061,6 +1288,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             terminalResponseIDs.formUnion(activeResponseIDs)
             activeTurnIDs.removeAll(keepingCapacity: true)
             activeResponseIDs.removeAll(keepingCapacity: true)
+            responseAuthorizationCandidates.removeAll(keepingCapacity: true)
+            awaitingResponseTurn = nil
+            awaitingResponseExcludedID = nil
         case .error, .residentSemanticFinal:
             audioInputSinceStableBoundary = false
             markTurnTerminalLocked(event.identity)
@@ -1073,6 +1303,11 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                 terminalResponseIDs.formUnion(activeResponseIDs)
                 activeTurnIDs.removeAll(keepingCapacity: true)
                 activeResponseIDs.removeAll(keepingCapacity: true)
+                responseAuthorizationCandidates.removeAll(
+                    keepingCapacity: true
+                )
+                awaitingResponseTurn = nil
+                awaitingResponseExcludedID = nil
             }
         case .userSpeechStarted, .userSpeechStopped,
              .userTranscriptPartial, .userTranscriptFinal:
@@ -1085,6 +1320,10 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
              .interruptionProposed:
             if let turnID = event.identity.turnID {
                 activeTurnIDs.insert(turnID)
+                if claimsAwaitingResponseLocked(event.identity) {
+                    awaitingResponseTurn = nil
+                    awaitingResponseExcludedID = nil
+                }
             }
             if let responseID = Self.semanticFinalKey(
                 for: event.identity
@@ -1099,6 +1338,11 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     ) {
         if let turnID = identity.turnID {
             terminalTurnIDs.insert(turnID)
+            responseAuthorizationCandidates.removeValue(forKey: turnID)
+            if awaitingResponseTurn == turnID {
+                awaitingResponseTurn = nil
+                awaitingResponseExcludedID = nil
+            }
         }
         if let responseID = Self.semanticFinalKey(for: identity) {
             terminalResponseIDs.insert(responseID)
@@ -1112,6 +1356,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         activeResponseIDs = Set(
             activeResponseIDs.filter { $0.turnID != turnID }
         )
+        toolCandidates = toolCandidates.filter {
+            $0.value.turnID != turnID
+        }
     }
 
     private func hasStatefullyValidPayloadLocked(
@@ -1127,7 +1374,8 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         }
         switch event.kind {
         case .residentAudioDelta(let audio):
-            return audio.sequence == lastAudioOutputSequence &+ 1
+            return isAuthorizedResponseEventLocked(event.identity)
+                && audio.sequence == lastAudioOutputSequence &+ 1
                 && (lastAudioOutputSequence == 0
                     || audio.timestampNanoseconds
                         >= lastAudioOutputTimestamp)
@@ -1135,13 +1383,53 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             guard let key = Self.semanticFinalKey(
                 for: event.identity
             ) else { return false }
-            return !semanticFinals.contains(key)
+            return isAuthorizedResponseEventLocked(event.identity)
+                && !semanticFinals.contains(key)
         case .toolCall(let candidate):
-            return toolCandidates[candidate.callID] == nil
+            return isAuthorizedResponseEventLocked(event.identity)
+                && toolCandidates[candidate.callID] == nil
                 && !completedToolCalls.contains(candidate.callID)
+        case .error, .residentTextDelta, .residentTextFinal,
+             .residentSpeakingStarted, .residentSpeakingStopped:
+            return isAuthorizedResponseEventLocked(event.identity)
+        case .interruptionProposed:
+            guard let turnID = event.identity.turnID,
+                  let responseID = Self.semanticFinalKey(
+                    for: event.identity
+                  ) else { return false }
+            return activeTurnIDs.contains(turnID)
+                && (activeResponseIDs.contains(responseID)
+                    || claimsAwaitingResponseLocked(event.identity))
         default:
             return true
         }
+    }
+
+    private func isAuthorizedResponseEventLocked(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        guard let responseID = Self.semanticFinalKey(for: identity) else {
+            return false
+        }
+        return activeResponseIDs.contains(responseID)
+            || claimsAwaitingResponseLocked(identity)
+    }
+
+    private func claimsAwaitingResponseLocked(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        guard let turnID = identity.turnID,
+              let responseID = identity.responseID,
+              awaitingResponseTurn == turnID else { return false }
+        return responseID != awaitingResponseExcludedID
+    }
+
+    private func hasAuthorizedResponseProgressLocked(
+        for turnID: RealtimeBrainTurnID
+    ) -> Bool {
+        awaitingResponseTurn == turnID
+            || activeResponseIDs.contains { $0.turnID == turnID }
+            || terminalTurnIDs.contains(turnID)
     }
 
     private static func hasStructurallyValidPayload(
@@ -1281,6 +1569,8 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         pendingAudioInput = nil
         toolResultToken = nil
         pendingToolResult = nil
+        responseCreateToken = nil
+        pendingResponseCreate = nil
     }
 
     private func resetGenerationStateLocked() {
@@ -1304,6 +1594,12 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         lastToolResultSequence = 0
         toolCandidates.removeAll(keepingCapacity: true)
         completedToolCalls.removeAll(keepingCapacity: true)
+        responseCreateToken = nil
+        pendingResponseCreate = nil
+        responseAuthorizationCandidates.removeAll(keepingCapacity: true)
+        consumedResponseAuthorizationTurns.removeAll(keepingCapacity: true)
+        awaitingResponseTurn = nil
+        awaitingResponseExcludedID = nil
     }
 
     private func resetSessionStateLocked() {

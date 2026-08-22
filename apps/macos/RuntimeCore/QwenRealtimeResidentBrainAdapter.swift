@@ -100,7 +100,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
                     "type": "semantic_vad",
                     "threshold": 0.5,
                     "silence_duration_ms": 800,
-                    "create_response": true,
+                    "create_response": false,
                     "interrupt_response": false
                 ],
                 "enable_search": false,
@@ -462,10 +462,21 @@ actor QwenRealtimeResidentBrainAdapter:
         var hasToolCall = false
     }
 
-    private struct TurnBinding {
+    private struct TurnBinding: Equatable {
         let runtimeID: RealtimeBrainTurnID
         let sessionIdentity: RealtimeBrainSessionIdentity
         let contextRevision: UInt64
+    }
+
+    private enum ResponseAuthorizationKind: Equatable {
+        case runtime(sourceEventSequence: UInt64)
+        case toolContinuation(callID: RealtimeBrainToolCallID)
+    }
+
+    private struct PendingResponseAuthorization: Equatable {
+        let acknowledgement: Acknowledgement
+        let turn: TurnBinding
+        let kind: ResponseAuthorizationKind
     }
 
     private struct EventWaiter {
@@ -491,9 +502,9 @@ actor QwenRealtimeResidentBrainAdapter:
     private var acknowledgementSerial: UInt64 = 0
     private var expectedSessionUpdate: Acknowledgement?
     private var expectedInputClear: Acknowledgement?
-    private var expectedResponseCreation: Acknowledgement?
+    private var pendingResponseAuthorization: PendingResponseAuthorization?
     private var acknowledgementWaiters:
-        [Acknowledgement: CheckedContinuation<Void, any Error>] = [:]
+        [Acknowledgement: [CheckedContinuation<Void, any Error>]] = [:]
     private var deliveredAcknowledgements: Set<Acknowledgement> = []
 
     private var pendingEvents: [RealtimeResidentBrainEvent] = []
@@ -648,33 +659,62 @@ actor QwenRealtimeResidentBrainAdapter:
         }
     }
 
-    func submitToolResult(
-        _ command: RealtimeBrainToolResultCommand
+    func createResponse(
+        _ command: RealtimeBrainCreateResponseCommand
     ) async throws {
         try requireActive(command.identity.session)
-        guard command.identity.contextRevision == contextRevision,
-              pendingToolCalls[command.callID] == command.identity else {
+        guard command.identity.responseID == nil,
+              command.sourceEventSequence > 0,
+              let turn = exactTurnBinding(for: command.identity) else {
             throw RealtimeResidentBrainError.invalidIdentity
         }
         let operationID = beginMutationOperation()
         defer { finishMutationOperation(operationID) }
         do {
+            try await requestResponse(
+                for: turn,
+                kind: .runtime(
+                    sourceEventSequence: command.sourceEventSequence
+                )
+            )
+        } catch {
+            lifecycle = .failed
+            throw Self.map(error)
+        }
+    }
+
+    func submitToolResult(
+        _ command: RealtimeBrainToolResultCommand
+    ) async throws {
+        try requireActive(command.identity.session)
+        guard command.identity.contextRevision == contextRevision,
+              pendingToolCalls[command.callID] == command.identity,
+              let turn = exactTurnBinding(for: command.identity) else {
+            throw RealtimeResidentBrainError.invalidIdentity
+        }
+        let operationID = beginMutationOperation()
+        defer { finishMutationOperation(operationID) }
+        do {
+            if let response = activeResponse,
+               makeEventIdentity(for: response) == command.identity {
+                try await waitForAcknowledgement(
+                    .responseDone(response.wireID)
+                )
+            }
             try await send(codec.toolOutput(
                 callID: command.callID.rawValue,
                 output: command.output,
                 isError: command.isError
             ))
-            acknowledgementSerial &+= 1
-            let responseAcknowledgement = Acknowledgement.responseCreated(
-                acknowledgementSerial
-            )
-            expectedResponseCreation = responseAcknowledgement
-            try await send(codec.responseCreate())
-            try await waitForAcknowledgement(responseAcknowledgement)
-            expectedResponseCreation = nil
             pendingToolCalls.removeValue(forKey: command.callID)
+            if !pendingToolCalls.values.contains(command.identity) {
+                try await requestResponse(
+                    for: turn,
+                    kind: .toolContinuation(callID: command.callID)
+                )
+            }
         } catch {
-            expectedResponseCreation = nil
+            pendingResponseAuthorization = nil
             lifecycle = .failed
             throw Self.map(error)
         }
@@ -691,7 +731,8 @@ actor QwenRealtimeResidentBrainAdapter:
         try await transitionGeneration(
             to: next,
             reason: command.reason,
-            clearInput: true
+            clearInput: true,
+            reconnect: true
         )
     }
 
@@ -704,7 +745,8 @@ actor QwenRealtimeResidentBrainAdapter:
         try await transitionGeneration(
             to: next,
             reason: .interrupted,
-            clearInput: true
+            clearInput: true,
+            reconnect: false
         )
     }
 
@@ -739,6 +781,14 @@ actor QwenRealtimeResidentBrainAdapter:
     ) -> String? {
         guard identity == session else { return nil }
         return activeResponse?.wireID
+    }
+
+    func isWaitingForResponseDoneForTesting(
+        _ responseID: String,
+        session: RealtimeBrainSessionIdentity
+    ) -> Bool {
+        guard identity == session else { return false }
+        return acknowledgementWaiters[.responseDone(responseID)] != nil
     }
 
     func terminalErrorForTesting(
@@ -793,7 +843,8 @@ actor QwenRealtimeResidentBrainAdapter:
     private func transitionGeneration(
         to next: RealtimeBrainSessionIdentity,
         reason: RealtimeBrainCancellationReason,
-        clearInput: Bool
+        clearInput: Bool,
+        reconnect: Bool
     ) async throws {
         guard let current = identity,
               next.generation > current.generation,
@@ -824,9 +875,14 @@ actor QwenRealtimeResidentBrainAdapter:
                 expectedInputClear = nil
             }
             retireCurrentGenerationWireState()
-            let nextConnectionToken = try await reconnectForGeneration(
-                expectedIdentity: current
-            )
+            let nextConnectionToken: UUID?
+            if reconnect {
+                nextConnectionToken = try await reconnectForGeneration(
+                    expectedIdentity: current
+                )
+            } else {
+                nextConnectionToken = nil
+            }
             resumeStaleEventWaiter(
                 expected: current,
                 reason: reason
@@ -834,11 +890,15 @@ actor QwenRealtimeResidentBrainAdapter:
             identity = next
             runtimeVoiceBinding = nextVoiceBinding
             resetGenerationStatePreservingTombstones()
-            resetWireTombstones()
-            connectionToken = nextConnectionToken
+            if let nextConnectionToken {
+                resetWireTombstones()
+                connectionToken = nextConnectionToken
+            }
             lifecycle = .active
-            startReceiver(connectionToken: nextConnectionToken)
-            enqueue(kind: .cancelled(reason))
+            if let nextConnectionToken {
+                startReceiver(connectionToken: nextConnectionToken)
+                enqueue(kind: .cancelled(reason))
+            }
         } catch {
             expectedInputClear = nil
             locallyCancellingResponseID = nil
@@ -1024,15 +1084,18 @@ actor QwenRealtimeResidentBrainAdapter:
                   ) != nil else { return }
             throw RealtimeResidentBrainError.providerFailure
         case .responseCreated(let responseID):
-            guard lifecycle == .active,
-                  !retiredResponseIDs.contains(responseID),
-                  activeResponse?.wireID != responseID,
-                  let turn = latestTurnBinding,
-                  turn.sessionIdentity == identity,
-                  turn.contextRevision == contextRevision else { return }
-            if let activeResponse, activeResponse.wireID != responseID {
-                retire(responseID: activeResponse.wireID)
+            guard lifecycle == .active else { return }
+            if retiredResponseIDs.contains(responseID)
+                || activeResponse?.wireID == responseID {
+                return
             }
+            guard activeResponse == nil,
+                  let authorization = pendingResponseAuthorization,
+                  authorization.turn.sessionIdentity == identity,
+                  authorization.turn.contextRevision == contextRevision else {
+                throw RealtimeResidentBrainError.invalidEvent
+            }
+            let turn = authorization.turn
             activeResponse = ActiveResponse(
                 wireID: responseID,
                 runtimeID: RealtimeBrainResponseID(),
@@ -1040,9 +1103,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 sessionIdentity: turn.sessionIdentity,
                 contextRevision: turn.contextRevision
             )
-            if let acknowledgement = expectedResponseCreation {
-                deliver(acknowledgement)
-            }
+            deliver(authorization.acknowledgement)
         case .responseTextDelta(let responseID, let delta),
              .responseAudioTranscriptDelta(let responseID, let delta):
             guard lifecycle == .active,
@@ -1187,10 +1248,15 @@ actor QwenRealtimeResidentBrainAdapter:
                         ),
                         identity: makeEventIdentity(for: response)
                     )
+                } else if !response.hasToolCall {
+                    enqueue(
+                        kind: .error(.providerFailure),
+                        identity: makeEventIdentity(for: response)
+                    )
                 }
             } else if status == "incomplete" {
                 enqueue(
-                    kind: .cancelled(.interrupted),
+                    kind: .error(.providerFailure),
                     identity: makeEventIdentity(for: response)
                 )
             } else {
@@ -1199,8 +1265,22 @@ actor QwenRealtimeResidentBrainAdapter:
                     identity: makeEventIdentity(for: response)
                 )
             }
+            if status != "completed" {
+                let failedIdentity = makeEventIdentity(for: response)
+                pendingToolCalls = pendingToolCalls.filter {
+                    $0.value != failedIdentity
+                }
+            }
             activeResponse = response
             finishActiveResponse(responseID)
+            if status == "completed" {
+                deliverIfWaiting(.responseDone(responseID))
+            } else {
+                failIfWaiting(
+                    .responseDone(responseID),
+                    with: .providerFailure
+                )
+            }
         case .providerError:
             throw RealtimeResidentBrainError.providerFailure
         case .other:
@@ -1266,7 +1346,8 @@ actor QwenRealtimeResidentBrainAdapter:
         let token = connectionToken
         let timeout = configuration.acknowledgementTimeout
         try await withCheckedThrowingContinuation { continuation in
-            acknowledgementWaiters[acknowledgement] = continuation
+            acknowledgementWaiters[acknowledgement, default: []]
+                .append(continuation)
             Task { [weak self] in
                 do {
                     try await Task.sleep(for: timeout)
@@ -1287,20 +1368,39 @@ actor QwenRealtimeResidentBrainAdapter:
         connectionToken token: UUID?
     ) {
         guard connectionToken == token,
-              let waiter = acknowledgementWaiters.removeValue(
+              let waiters = acknowledgementWaiters.removeValue(
                 forKey: acknowledgement
               ) else { return }
-        waiter.resume(throwing: RealtimeResidentBrainError.timedOut)
+        waiters.forEach {
+            $0.resume(throwing: RealtimeResidentBrainError.timedOut)
+        }
     }
 
     private func deliver(_ acknowledgement: Acknowledgement) {
-        if let waiter = acknowledgementWaiters.removeValue(
+        if let waiters = acknowledgementWaiters.removeValue(
             forKey: acknowledgement
         ) {
-            waiter.resume()
+            waiters.forEach { $0.resume() }
         } else {
             deliveredAcknowledgements.insert(acknowledgement)
         }
+    }
+
+    private func deliverIfWaiting(_ acknowledgement: Acknowledgement) {
+        guard let waiters = acknowledgementWaiters.removeValue(
+            forKey: acknowledgement
+        ) else { return }
+        waiters.forEach { $0.resume() }
+    }
+
+    private func failIfWaiting(
+        _ acknowledgement: Acknowledgement,
+        with error: RealtimeResidentBrainError
+    ) {
+        guard let waiters = acknowledgementWaiters.removeValue(
+            forKey: acknowledgement
+        ) else { return }
+        waiters.forEach { $0.resume(throwing: error) }
     }
 
     private func nextSessionUpdateAcknowledgement() -> Acknowledgement {
@@ -1394,6 +1494,52 @@ actor QwenRealtimeResidentBrainAdapter:
             responseID: response.runtimeID,
             contextRevision: response.contextRevision
         )
+    }
+
+    private func requestResponse(
+        for turn: TurnBinding,
+        kind: ResponseAuthorizationKind
+    ) async throws {
+        guard lifecycle == .active,
+              turn.sessionIdentity == identity,
+              turn.contextRevision == contextRevision,
+              activeResponse == nil,
+              pendingResponseAuthorization == nil else {
+            throw RealtimeResidentBrainError.invalidEvent
+        }
+        acknowledgementSerial &+= 1
+        let authorization = PendingResponseAuthorization(
+            acknowledgement: .responseCreated(acknowledgementSerial),
+            turn: turn,
+            kind: kind
+        )
+        pendingResponseAuthorization = authorization
+        do {
+            try await send(codec.responseCreate())
+            try await waitForAcknowledgement(
+                authorization.acknowledgement
+            )
+            guard pendingResponseAuthorization == authorization else {
+                throw RealtimeResidentBrainError.cancelled
+            }
+            pendingResponseAuthorization = nil
+        } catch {
+            if pendingResponseAuthorization == authorization {
+                pendingResponseAuthorization = nil
+            }
+            throw error
+        }
+    }
+
+    private func exactTurnBinding(
+        for eventIdentity: RealtimeBrainEventIdentity
+    ) -> TurnBinding? {
+        guard let turnID = eventIdentity.turnID else { return nil }
+        return turnsByWireItemID.values.first { turn in
+            turn.runtimeID == turnID
+                && turn.sessionIdentity == eventIdentity.session
+                && turn.contextRevision == eventIdentity.contextRevision
+        }
     }
 
     private func turnBinding(
@@ -1553,7 +1699,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private func failAcknowledgementWaiters(
         with error: RealtimeResidentBrainError
     ) {
-        let continuations = acknowledgementWaiters.values
+        let continuations = acknowledgementWaiters.values.flatMap { $0 }
         acknowledgementWaiters.removeAll(keepingCapacity: true)
         deliveredAcknowledgements.removeAll(keepingCapacity: true)
         continuations.forEach { $0.resume(throwing: error) }
@@ -1572,7 +1718,7 @@ actor QwenRealtimeResidentBrainAdapter:
         locallyCancellingResponseID = nil
         expectedSessionUpdate = nil
         expectedInputClear = nil
-        expectedResponseCreation = nil
+        pendingResponseAuthorization = nil
         deliveredAcknowledgements.removeAll(keepingCapacity: true)
     }
 

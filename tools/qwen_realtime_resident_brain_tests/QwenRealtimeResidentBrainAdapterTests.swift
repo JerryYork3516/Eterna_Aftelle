@@ -71,8 +71,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testAudioAndEventMapping()
         try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
+        try await testUnauthorizedResponseFailsClosed()
+        try await testOverlappingResponseFailsClosed()
         try await testGenerationReconnectRejectsUnseenOldResponse()
         try await testCloseWinsGenerationReconnect()
+        try await testFastToolResultWaitsForResponseDone()
+        try await testMultipleToolResultsCreateOneContinuation()
+        try await testFailedToolResponseCannotContinue()
         try await testToolFixture()
         try await testFailureAndCloseLifecycle()
         try await testPendingEventBufferFailsClosed()
@@ -168,9 +173,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "Qwen3.5 semantic VAD is configured"
         )
         expect(
-            turnDetection?["create_response"] as? Bool == true
+            turnDetection?["create_response"] as? Bool == false
                 && turnDetection?["interrupt_response"] as? Bool == false,
-            "Qwen may create responses but Runtime retains interruption authority"
+            "Qwen VAD cannot create or interrupt responses without Runtime authority"
         )
         expect(
             (initialSession?["input_audio_transcription"]
@@ -518,9 +523,18 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let speechStopped = try await stack.adapter.receiveEvent(session: identity)
         expect(speechStopped.kind == .userSpeechStopped, "speech_stopped maps to user lifecycle")
         expect(speechStopped.identity.turnID == turnID, "user item keeps a stable Runtime turn ID")
+        let responseCreatesBeforeAuthorization = try await sentTypes(
+            stack.transport
+        ).filter { $0 == "response.create" }
+        expect(
+            responseCreatesBeforeAuthorization.isEmpty,
+            "speech lifecycle and transcript events cannot create a response"
+        )
 
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"response-1","status":"in_progress"}}"#
+        try await authorizeResponse(
+            stack,
+            from: userFinal,
+            responseID: "response-1"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.audio_transcript.delta","response_id":"response-1","delta":"你"}"#
@@ -611,9 +625,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"audio-turn-1"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"audio-response-1","status":"in_progress"}}"#
+        let firstSpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: firstSpeech,
+            responseID: "audio-response-1"
         )
         let firstBytes = Data([1, 0, 2, 0])
         await stack.transport.enqueueText(
@@ -640,9 +658,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"audio-turn-2"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"audio-response-2","status":"in_progress"}}"#
+        let secondSpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: secondSpeech,
+            responseID: "audio-response-2"
         )
         let secondBytes = Data([3, 0])
         await stack.transport.enqueueText(
@@ -682,9 +704,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"user-a"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"response-interrupt","status":"in_progress"}}"#
+        let initialSpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: initialSpeech,
+            responseID: "response-interrupt"
         )
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"user-b"}"#
@@ -706,6 +732,10 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             typesBeforeInterrupt.filter { $0 == "response.cancel" }.isEmpty,
             "Provider evidence does not autonomously send response.cancel"
         )
+        expect(
+            typesBeforeInterrupt.filter { $0 == "response.create" }.count == 1,
+            "interruption proposal cannot create an overlapping response"
+        )
 
         let nextIdentity = sessionIdentity(
             generation: 4,
@@ -716,6 +746,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             try await stack.adapter.receiveEvent(session: identity)
         }
         await waitUntilPendingReceive(stack.adapter, session: identity)
+        let connectionCountBeforeInterrupt = await stack.transport.connectCount()
+        let closeCountBeforeInterrupt = await stack.transport.closeCount()
         try await stack.adapter.interrupt(RealtimeBrainInterruptCommand(
             identity: identity,
             nextGeneration: nextIdentity.generation,
@@ -723,17 +755,16 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         ))
         let staleWake = try await oldReceive.value
         expect(
-            staleWake.identity.session == identity,
-            "an old receive is woken with old identity at the generation fence"
+            staleWake.identity.session == identity
+                && staleWake.kind == .cancelled(.interrupted),
+            "an old receive is woken only on the retired generation fence"
         )
-        let cancelled = try await stack.adapter.receiveEvent(
-            session: nextIdentity
-        )
-        expect(cancelled.kind == .cancelled(.interrupted), "Runtime interrupt produces a new-generation cancellation event")
+        let connectionCountAfterInterrupt = await stack.transport.connectCount()
+        let closeCountAfterInterrupt = await stack.transport.closeCount()
         expect(
-            cancelled.identity.session == nextIdentity
-                && cancelled.sequence == 1,
-            "Runtime generation transition resets only provider event sequence"
+            connectionCountAfterInterrupt == connectionCountBeforeInterrupt
+                && closeCountAfterInterrupt == closeCountBeforeInterrupt,
+            "Runtime-confirmed interruption preserves the Provider WebSocket"
         )
         let sent = try await sentObjects(stack.transport)
         guard let cancel = sent.last(where: {
@@ -758,6 +789,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             #"{"type":"response.audio.delta","response_id":"response-interrupt","delta":"AA=="}"#
         )
         await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"response-interrupt","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"late old final"}]}]}}"#
+        )
+        await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"user-current"}"#
         )
         let currentSpeech = try await stack.adapter.receiveEvent(
@@ -765,11 +799,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         expect(
             currentSpeech.kind == .userSpeechStarted
-                && currentSpeech.sequence == 2,
+                && currentSpeech.sequence == 1,
             "late old item and response callbacks do not create a sequence gap"
         )
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"response-current","status":"in_progress"}}"#
+        try await authorizeResponse(
+            stack,
+            from: currentSpeech,
+            responseID: "response-current"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.text.done","response_id":"response-current","text":"current generation"}"#
@@ -782,9 +818,99 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 && currentText.identity.session == nextIdentity,
             "new wire IDs remain usable after old callbacks are tombstoned"
         )
+        let connectionCountAfterLateCallbacks = await stack.transport
+            .connectCount()
+        let closeCountAfterLateCallbacks = await stack.transport.closeCount()
+        expect(
+            connectionCountAfterLateCallbacks == connectionCountAfterInterrupt
+                && closeCountAfterLateCallbacks == closeCountAfterInterrupt,
+            "late same-socket callbacks cannot reconnect or close the session"
+        )
 
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: nextIdentity)
+        )
+    }
+
+    private static func testUnauthorizedResponseFailsClosed() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 4)
+        try await openAndBootstrap(stack, identity: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"unauthorized-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        let sentBefore = try await sentTypes(stack.transport)
+        expect(
+            sentBefore.filter { $0 == "response.create" }.isEmpty,
+            "Provider speech evidence alone has no response authorization"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"unauthorized-response","status":"in_progress"}}"#
+        )
+        await waitUntilTerminalError(
+            stack.adapter,
+            session: identity,
+            expected: .invalidEvent
+        )
+        let activeResponse = await stack.adapter
+            .activeWireResponseIDForTesting(session: identity)
+        expect(
+            activeResponse == nil,
+            "unexpected response.created cannot acquire a Runtime response identity"
+        )
+        try? await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testOverlappingResponseFailsClosed() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 5)
+        try await openAndBootstrap(stack, identity: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"overlap-user"}"#
+        )
+        let speech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: speech,
+            responseID: "response-owned"
+        )
+        for _ in 0 ..< 10_000 {
+            if await stack.adapter.activeWireResponseIDForTesting(
+                session: identity
+            ) == "response-owned" { break }
+            await Task.yield()
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"response.created","response":{"id":"response-overlap","status":"in_progress"}}"#
+        )
+        await waitUntilTerminalError(
+            stack.adapter,
+            session: identity,
+            expected: .invalidEvent
+        )
+        let activeResponseID = await stack.adapter
+            .activeWireResponseIDForTesting(session: identity)
+        expect(
+            activeResponseID == "response-owned",
+            "Provider overlap cannot replace the Runtime-owned active response"
+        )
+        let overlapSentTypes = try await sentTypes(stack.transport)
+        expect(
+            overlapSentTypes.filter {
+                $0 == "response.cancel"
+            }.isEmpty,
+            "overlapping response evidence cannot cancel the active response"
+        )
+        await expectRealtimeError(.invalidEvent) {
+            _ = try await stack.adapter.receiveEvent(session: identity)
+        }
+        try? await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
         )
     }
 
@@ -803,9 +929,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"reused-user"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"reused-response","status":"in_progress"}}"#
+        let oldSpeech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: oldSpeech,
+            responseID: "reused-response"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.text.delta","response_id":"reused-response","delta":"old"}"#
@@ -921,17 +1049,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "unseen old response is never relabeled with the new generation"
         )
 
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"reused-response","status":"in_progress"}}"#
+        try await authorizeResponse(
+            stack,
+            from: reusedTranscript,
+            responseID: "reused-response"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.text.done","response_id":"reused-response","text":"reused response"}"#
-        )
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"fallback-response","status":"in_progress"}}"#
-        )
-        await stack.transport.enqueueText(
-            #"{"type":"response.text.done","response_id":"fallback-response","text":"fallback response"}"#
         )
         let currentText = try await stack.adapter.receiveEvent(
             session: nextIdentity
@@ -1000,9 +1124,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"tool-user"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"tool-response","status":"in_progress"}}"#
+        let toolSpeech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: toolSpeech,
+            responseID: "tool-response"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.function_call_arguments.done","response_id":"tool-response","item_id":"tool-item","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
@@ -1024,7 +1150,15 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             #"{"type":"response.done","response":{"id":"tool-response","status":"completed","output":[{"type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}]}}"#
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"tool-collision-response","status":"in_progress"}}"#
+            #"{"type":"input_audio_buffer.speech_started","item_id":"tool-collision-user"}"#
+        )
+        let collisionSpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: collisionSpeech,
+            responseID: "tool-collision-response"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.function_call_arguments.done","response_id":"tool-collision-response","item_id":"tool-collision-item","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}"#
@@ -1044,6 +1178,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             #"{"type":"response.done","response":{"id":"tool-collision-response","status":"completed","output":[{"type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}]}}"#
         )
         await stack.transport.holdResponseCreationAcknowledgements()
+        await stack.transport.useNextResponseID("response-tool-1")
         let toolResultCommand = RealtimeBrainToolResultCommand(
                 identity: toolEvent.identity,
                 sequence: 1,
@@ -1124,6 +1259,333 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
+    private static func testFastToolResultWaitsForResponseDone() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 12)
+        try await openAndBootstrap(
+            stack,
+            identity: identity,
+            tools: runtimeToolAdvertisements()
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"fast-tool-user"}"#
+        )
+        let speech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: speech,
+            responseID: "fast-tool-response"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.function_call_arguments.done","response_id":"fast-tool-response","item_id":"fast-tool-item","call_id":"fast-tool-call","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
+        )
+        let toolEvent = try await stack.adapter.receiveEvent(session: identity)
+        guard case .toolCall(let candidate) = toolEvent.kind else {
+            fatalError("fast tool candidate expected")
+        }
+
+        await stack.transport.holdResponseCreationAcknowledgements()
+        await stack.transport.useNextResponseID("fast-tool-continuation")
+        let before = try await sentTypes(stack.transport)
+        let resultTask = Task {
+            try await stack.adapter.submitToolResult(
+                RealtimeBrainToolResultCommand(
+                    identity: toolEvent.identity,
+                    sequence: 1,
+                    callID: candidate.callID,
+                    output: #"{"temperature":25}"#,
+                    isError: false
+                )
+            )
+        }
+        await waitUntilResponseDoneWaiter(
+            stack.adapter,
+            responseID: "fast-tool-response",
+            session: identity
+        )
+        let whileOldResponseActive = try await sentTypes(stack.transport)
+        expect(
+            whileOldResponseActive.filter { $0 == "conversation.item.create" }
+                .count
+                == before.filter { $0 == "conversation.item.create" }.count
+                && whileOldResponseActive.filter { $0 == "response.create" }
+                    .count
+                    == before.filter { $0 == "response.create" }.count,
+            "tool continuation waits for the old response.done barrier"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"fast-tool-response","status":"completed","output":[{"type":"function_call","call_id":"fast-tool-call","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}]}}"#
+        )
+        await stack.transport.waitUntilSent(type: "conversation.item.create")
+        await stack.transport.waitUntilSent(type: "response.create", count: 2)
+        let afterBarrier = try await sentTypes(stack.transport)
+        expect(
+            afterBarrier.filter { $0 == "conversation.item.create" }.count
+                == before.filter { $0 == "conversation.item.create" }.count + 1
+                && afterBarrier.filter { $0 == "response.create" }.count
+                    == before.filter { $0 == "response.create" }.count + 1,
+            "one tool output and one continuation are sent after response.done"
+        )
+        await stack.transport.releaseResponseCreationAcknowledgements()
+        try await resultTask.value
+
+        await stack.transport.enqueueText(
+            #"{"type":"response.text.done","response_id":"fast-tool-continuation","text":"杭州现在 25 度。"}"#
+        )
+        let finalText = try await stack.adapter.receiveEvent(session: identity)
+        expect(
+            finalText.kind == .residentTextFinal("杭州现在 25 度。"),
+            "fast tool continuation remains bound to the original Runtime turn"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"fast-tool-continuation","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"杭州现在 25 度。"}]}]}}"#
+        )
+        let semantic = try await stack.adapter.receiveEvent(session: identity)
+        expect(
+            semantic.kind == .residentSemanticFinal(
+                RealtimeBrainSemanticOutput(canonicalText: "杭州现在 25 度。")
+            ),
+            "fast tool continuation can finish semantically"
+        )
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testMultipleToolResultsCreateOneContinuation()
+        async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 13)
+        try await openAndBootstrap(
+            stack,
+            identity: identity,
+            tools: runtimeToolAdvertisements()
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"multi-tool-user"}"#
+        )
+        let speech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: speech,
+            responseID: "multi-tool-response"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.function_call_arguments.done","response_id":"multi-tool-response","item_id":"multi-tool-item-1","call_id":"multi-tool-call-1","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.function_call_arguments.done","response_id":"multi-tool-response","item_id":"multi-tool-item-2","call_id":"multi-tool-call-2","name":"weather_lookup","arguments":"{\"city\":\"Shanghai\"}"}"#
+        )
+        let firstEvent = try await stack.adapter.receiveEvent(session: identity)
+        let secondEvent = try await stack.adapter.receiveEvent(session: identity)
+        guard case .toolCall(let firstCandidate) = firstEvent.kind,
+              case .toolCall(let secondCandidate) = secondEvent.kind else {
+            fatalError("two tool candidates expected")
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"multi-tool-response","status":"completed","output":[{"type":"function_call","call_id":"multi-tool-call-1","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"},{"type":"function_call","call_id":"multi-tool-call-2","name":"weather_lookup","arguments":"{\"city\":\"Shanghai\"}"}]}}"#
+        )
+
+        let before = try await sentTypes(stack.transport)
+        try await stack.adapter.submitToolResult(
+            RealtimeBrainToolResultCommand(
+                identity: firstEvent.identity,
+                sequence: 1,
+                callID: firstCandidate.callID,
+                output: #"{"temperature":25}"#,
+                isError: false
+            )
+        )
+        let afterFirst = try await sentTypes(stack.transport)
+        expect(
+            afterFirst.filter { $0 == "conversation.item.create" }.count
+                == before.filter { $0 == "conversation.item.create" }.count + 1
+                && afterFirst.filter { $0 == "response.create" }.count
+                    == before.filter { $0 == "response.create" }.count,
+            "a non-final tool result submits output without opening a continuation"
+        )
+
+        await stack.transport.holdResponseCreationAcknowledgements()
+        await stack.transport.useNextResponseID("multi-tool-continuation")
+        let secondResult = Task {
+            try await stack.adapter.submitToolResult(
+                RealtimeBrainToolResultCommand(
+                    identity: secondEvent.identity,
+                    sequence: 2,
+                    callID: secondCandidate.callID,
+                    output: #"{"temperature":26}"#,
+                    isError: false
+                )
+            )
+        }
+        await stack.transport.waitUntilSent(
+            type: "response.create",
+            count: before.filter { $0 == "response.create" }.count + 1
+        )
+        let afterLast = try await sentTypes(stack.transport)
+        expect(
+            afterLast.filter { $0 == "conversation.item.create" }.count
+                == before.filter { $0 == "conversation.item.create" }.count + 2
+                && afterLast.filter { $0 == "response.create" }.count
+                    == before.filter { $0 == "response.create" }.count + 1,
+            "the final tool result opens exactly one continuation"
+        )
+        await stack.transport.releaseResponseCreationAcknowledgements()
+        try await secondResult.value
+
+        await stack.transport.enqueueText(
+            #"{"type":"response.text.done","response_id":"multi-tool-continuation","text":"两座城市都已查询。"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"multi-tool-continuation","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"两座城市都已查询。"}]}]}}"#
+        )
+        let semantic = try await stack.adapter.receiveEvent(session: identity)
+        expect(
+            semantic.kind == .residentSemanticFinal(
+                RealtimeBrainSemanticOutput(canonicalText: "两座城市都已查询。")
+            ),
+            "one multi-tool continuation reaches a semantic final"
+        )
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testFailedToolResponseCannotContinue() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 14)
+        try await openAndBootstrap(
+            stack,
+            identity: identity,
+            tools: runtimeToolAdvertisements()
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"failed-tool-user"}"#
+        )
+        let speech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: speech,
+            responseID: "failed-tool-response"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.function_call_arguments.done","response_id":"failed-tool-response","item_id":"failed-tool-item","call_id":"failed-tool-call","name":"weather_lookup","arguments":"{}"}"#
+        )
+        let toolEvent = try await stack.adapter.receiveEvent(session: identity)
+        guard case .toolCall(let candidate) = toolEvent.kind else {
+            fatalError("failed tool candidate expected")
+        }
+        let before = try await sentTypes(stack.transport)
+        let resultTask = Task { () -> RealtimeResidentBrainError? in
+            do {
+                try await stack.adapter.submitToolResult(
+                    RealtimeBrainToolResultCommand(
+                        identity: toolEvent.identity,
+                        sequence: 1,
+                        callID: candidate.callID,
+                        output: "{}",
+                        isError: false
+                    )
+                )
+                return nil
+            } catch let error as RealtimeResidentBrainError {
+                return error
+            } catch {
+                return .transportFailure
+            }
+        }
+        await waitUntilResponseDoneWaiter(
+            stack.adapter,
+            responseID: "failed-tool-response",
+            session: identity
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"failed-tool-response","status":"failed","output":[]}}"#
+        )
+        let resultError = await resultTask.value
+        expect(
+            resultError == .providerFailure,
+            "failed tool response rejects its pending continuation"
+        )
+        let after = try await sentTypes(stack.transport)
+        expect(
+            after.filter { $0 == "conversation.item.create" }.count
+                == before.filter { $0 == "conversation.item.create" }.count
+                && after.filter { $0 == "response.create" }.count
+                    == before.filter { $0 == "response.create" }.count,
+            "failed tool response cannot emit tool output or response.create"
+        )
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+
+        let lateStack = try makeStack()
+        let lateIdentity = sessionIdentity(generation: 15)
+        try await openAndBootstrap(
+            lateStack,
+            identity: lateIdentity,
+            tools: runtimeToolAdvertisements()
+        )
+        await lateStack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"late-failed-tool-user"}"#
+        )
+        let lateSpeech = try await lateStack.adapter.receiveEvent(
+            session: lateIdentity
+        )
+        try await authorizeResponse(
+            lateStack,
+            from: lateSpeech,
+            responseID: "late-failed-tool-response"
+        )
+        await lateStack.transport.enqueueText(
+            #"{"type":"response.function_call_arguments.done","response_id":"late-failed-tool-response","item_id":"late-failed-tool-item","call_id":"late-failed-tool-call","name":"weather_lookup","arguments":"{}"}"#
+        )
+        let lateToolEvent = try await lateStack.adapter.receiveEvent(
+            session: lateIdentity
+        )
+        guard case .toolCall(let lateCandidate) = lateToolEvent.kind else {
+            fatalError("late failed tool candidate expected")
+        }
+        await lateStack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"late-failed-tool-response","status":"failed","output":[]}}"#
+        )
+        let lateFailure = try await lateStack.adapter.receiveEvent(
+            session: lateIdentity
+        )
+        expect(
+            lateFailure.kind == .error(.providerFailure),
+            "failed response terminalizes tool correlation before a late result"
+        )
+        let lateBefore = try await sentTypes(lateStack.transport)
+        await expectRealtimeError(.invalidIdentity) {
+            try await lateStack.adapter.submitToolResult(
+                RealtimeBrainToolResultCommand(
+                    identity: lateToolEvent.identity,
+                    sequence: 1,
+                    callID: lateCandidate.callID,
+                    output: "{}",
+                    isError: false
+                )
+            )
+        }
+        let lateAfter = try await sentTypes(lateStack.transport)
+        expect(
+            lateAfter.filter { $0 == "conversation.item.create" }.count
+                == lateBefore.filter { $0 == "conversation.item.create" }.count
+                && lateAfter.filter { $0 == "response.create" }.count
+                    == lateBefore.filter { $0 == "response.create" }.count,
+            "late tool result cannot revive a failed response"
+        )
+        try await lateStack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: lateIdentity)
+        )
+    }
+
     private static func testFailureAndCloseLifecycle() async throws {
         cases += 1
         let stack = try makeStack()
@@ -1132,9 +1594,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"failure-user"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"response-incomplete","status":"in_progress"}}"#
+        let firstSpeech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: firstSpeech,
+            responseID: "response-incomplete"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.audio.done","response_id":"response-incomplete"}"#
@@ -1142,12 +1606,46 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"response.done","response":{"id":"response-incomplete","status":"incomplete","output":[]}}"#
         )
-        let cancelled = try await stack.adapter.receiveEvent(session: identity)
-        expect(cancelled.kind == .cancelled(.interrupted), "incomplete response is terminal but never semantic final")
+        let incomplete = try await stack.adapter.receiveEvent(session: identity)
+        expect(
+            incomplete.kind == .error(.providerFailure),
+            "incomplete response is a neutral Provider failure, not an interruption decision"
+        )
 
         await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"response-error","status":"in_progress"}}"#
+            #"{"type":"input_audio_buffer.speech_started","item_id":"empty-completed-user"}"#
         )
+        let emptySpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: emptySpeech,
+            responseID: "response-empty-completed"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"response-empty-completed","status":"completed","output":[]}}"#
+        )
+        let emptyCompleted = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            emptyCompleted.kind == .error(.providerFailure),
+            "completed response without semantic output is terminal, not an orphaned active response"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"failure-user-2"}"#
+        )
+        let secondSpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: secondSpeech,
+            responseID: "response-error"
+        )
+
         await stack.transport.enqueueText(
             #"{"type":"response.done","response":{"id":"response-error","status":"failed","output":[]}}"#
         )
@@ -1269,9 +1767,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"buffer-user"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"buffer-response","status":"in_progress"}}"#
+        let speech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: speech,
+            responseID: "buffer-response"
         )
         await stack.transport.holdNextCloseCompletion()
         for _ in 0 ... 256 {
@@ -1328,9 +1828,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"cancel-error-user"}"#
         )
-        _ = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"cancel-error-response","status":"in_progress"}}"#
+        let speech = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(
+            stack,
+            from: speech,
+            responseID: "cancel-error-response"
         )
         await stack.transport.enqueueText(
             #"{"type":"response.text.delta","response_id":"cancel-error-response","delta":"x"}"#
@@ -1406,9 +1908,19 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         _ = try await runtime.receiveRealtimeResidentBrainEvent(
             session: identity
         )
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"runtime-tool-response","status":"in_progress"}}"#
+        let userFinal = try await receiveRuntimeTranscriptAndAuthorizeResponse(
+            stack,
+            runtime: runtime,
+            identity: identity,
+            itemID: "runtime-tool-user",
+            transcript: "use the fixture tool",
+            responseID: "runtime-tool-response"
         )
+        guard case .accepted(let acceptedUserFinal) = userFinal,
+              acceptedUserFinal.kind
+                == .userTranscriptFinal("use the fixture tool") else {
+            fatalError("Runtime-authorized user final expected")
+        }
         await stack.transport.enqueueText(
             #"{"type":"response.function_call_arguments.done","response_id":"runtime-tool-response","item_id":"runtime-tool-item","call_id":"runtime-tool-call","name":"fixture_tool","arguments":"{}"}"#
         )
@@ -1434,20 +1946,16 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         await stack.transport.waitUntilSent(type: "response.create")
         let cancelTask = Task {
-            await runtime.cancelRealtimeResidentBrainGeneration(
+            await runtime.cancelRealtimeResidentBrainGenerationForTesting(
                 identity: identity,
                 reason: .runtimeDecision
             )
         }
-        for _ in 0 ..< 10_000 {
-            if runtime.activeBrainLeaseForTesting()?.state == .settling {
-                break
-            }
-            await Task.yield()
-        }
+        for _ in 0 ..< 100 { await Task.yield() }
+        let sentWhileToolHeld = try await sentTypes(stack.transport)
         expect(
-            runtime.activeBrainLeaseForTesting()?.state == .settling,
-            "Runtime settlement is in flight before the Tool ACK is released"
+            sentWhileToolHeld.filter { $0 == "response.cancel" }.isEmpty,
+            "generation transition waits for the authorized Tool continuation"
         )
         await stack.transport.releaseResponseCreationAcknowledgements()
         expectRealtimeFailure(
@@ -1455,22 +1963,22 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             equals: .cancelled,
             "Runtime invalidates the old Tool result without losing its continuation"
         )
-        expectRealtimeFailure(
-            await cancelTask.value,
-            equals: .operationInFlight,
-            "generation transition fails closed while a Provider mutation is in flight"
-        )
-        let closeCount = await stack.transport.closeCount()
+        let nextIdentity = try realtimeIdentity(await cancelTask.value)
         expect(
-            closeCount == 1 && runtime.activeBrainLeaseForTesting() == nil,
-            "Runtime closes definitively before releasing the in-flight Brain lease"
+            nextIdentity.generation == identity.generation + 1
+                && nextIdentity.brainLeaseID == identity.brainLeaseID,
+            "generation transition drains the mutation and preserves the Brain lease"
         )
-        let reopened = try realtimeIdentity(
-            await runtime.openRealtimeResidentBrainSession()
+        let connectCount = await stack.transport.connectCount()
+        expect(
+            connectCount == 2,
+            "definitive generation cancel reconnects only after the mutation drains"
         )
         expectRealtimeSuccess(
-            await runtime.closeRealtimeResidentBrainSession(identity: reopened),
-            "a new Brain can open only after definitive recovery"
+            await runtime.closeRealtimeResidentBrainSession(
+                identity: nextIdentity
+            ),
+            "drained generation transition remains definitively closeable"
         )
     }
 
@@ -1513,9 +2021,19 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         _ = try await runtime.receiveRealtimeResidentBrainEvent(
             session: identity
         )
-        await stack.transport.enqueueText(
-            #"{"type":"response.created","response":{"id":"runtime-old-response","status":"in_progress"}}"#
+        let userFinal = try await receiveRuntimeTranscriptAndAuthorizeResponse(
+            stack,
+            runtime: runtime,
+            identity: identity,
+            itemID: "runtime-old-user",
+            transcript: "old generation turn",
+            responseID: "runtime-old-response"
         )
+        guard case .accepted(let acceptedUserFinal) = userFinal,
+              acceptedUserFinal.kind
+                == .userTranscriptFinal("old generation turn") else {
+            fatalError("Runtime-authorized generation turn expected")
+        }
         await stack.transport.enqueueText(
             #"{"type":"response.text.delta","response_id":"runtime-old-response","delta":"old"}"#
         )
@@ -1529,7 +2047,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         await waitUntilPendingReceive(stack.adapter, session: identity)
         let nextIdentity = try realtimeIdentity(
-            await runtime.interruptRealtimeResidentBrain(
+            await runtime.interruptRealtimeResidentBrainForTesting(
                 identity: identity,
                 reason: .runtimeDecision
             )
@@ -1538,13 +2056,6 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(
             staleDisposition == .rejectedStale,
             "Runtime rejects the explicitly woken old-generation receive"
-        )
-        expectAccepted(
-            try await runtime.receiveRealtimeResidentBrainEvent(
-                session: nextIdentity
-            ),
-            kind: .cancelled(.interrupted),
-            "new generation retains its cancellation event"
         )
         await stack.transport.enqueueText(
             #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"runtime-old-user","transcript":"late"}"#
@@ -1568,7 +2079,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         expect(
             currentEvent.kind == .userSpeechStarted
-                && currentEvent.sequence == 2
+                && currentEvent.sequence == 1
                 && currentEvent.identity.session == nextIdentity,
             "late wire callbacks cannot be relabeled into the new generation"
         )
@@ -1636,7 +2147,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.holdInputClearAcknowledgements()
         await stack.transport.holdSessionUpdateAcknowledgements()
         let cancelTask = Task {
-            await runtime.cancelRealtimeResidentBrainGeneration(
+            await runtime.cancelRealtimeResidentBrainGenerationForTesting(
                 identity: identity,
                 reason: .runtimeDecision
             )
@@ -1827,6 +2338,43 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(ready.kind == .sessionReady, "fixture session becomes ready")
     }
 
+    private static func authorizeResponse(
+        _ stack: (
+            adapter: QwenRealtimeResidentBrainAdapter,
+            transport: R3FakeRealtimeWebSocketTransport
+        ),
+        from event: RealtimeResidentBrainEvent,
+        responseID: String
+    ) async throws {
+        await stack.transport.useNextResponseID(responseID)
+        try await stack.adapter.createResponse(
+            RealtimeBrainCreateResponseCommand(
+                identity: event.identity,
+                sourceEventSequence: event.sequence
+            )
+        )
+    }
+
+    private static func receiveRuntimeTranscriptAndAuthorizeResponse(
+        _ stack: (
+            adapter: QwenRealtimeResidentBrainAdapter,
+            transport: R3FakeRealtimeWebSocketTransport
+        ),
+        runtime: RuntimeCore,
+        identity: RealtimeBrainSessionIdentity,
+        itemID: String,
+        transcript: String,
+        responseID: String
+    ) async throws -> RealtimeBrainEventDisposition {
+        await stack.transport.useNextResponseID(responseID)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(itemID)","transcript":"\#(transcript)"}"#
+        )
+        return try await runtime.receiveRealtimeResidentBrainEvent(
+            session: identity
+        )
+    }
+
     private static func runtimeToolAdvertisements()
         -> [RealtimeBrainToolAdvertisement] {
         [RealtimeBrainToolAdvertisement(
@@ -1885,6 +2433,23 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             await Task.yield()
         }
         fatalError("event receive did not enter the Adapter waiter")
+    }
+
+    private static func waitUntilResponseDoneWaiter(
+        _ adapter: QwenRealtimeResidentBrainAdapter,
+        responseID: String,
+        session: RealtimeBrainSessionIdentity
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if await adapter.isWaitingForResponseDoneForTesting(
+                responseID,
+                session: session
+            ) {
+                return
+            }
+            await Task.yield()
+        }
+        fatalError("tool result did not wait for response.done")
     }
 
     private static func waitUntilTerminalError(

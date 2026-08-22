@@ -1791,17 +1791,35 @@ public final class OrchestrationKernel {
         )
     }
 
-    func cancelRealtimeResidentBrainGeneration(
-        session: RealtimeBrainSessionIdentity,
-        reason: RealtimeBrainCancellationReason
+    func submitRealtimeResidentBrainAcousticEvidence(
+        _ evidence: RealtimeInterruptionEvidence
+    ) async -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        await runtimeCore.submitRealtimeResidentBrainAcousticEvidence(
+            evidence
+        )
+    }
+
+    func claimRealtimeResidentBrainInterruptionDecision(
+        for event: RealtimeResidentBrainEvent
+    ) async -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        await runtimeCore.claimRealtimeResidentBrainInterruptionDecision(
+            for: event
+        )
+    }
+
+    func completeRealtimeResidentBrainInterruption(
+        _ decision: RealtimeConfirmedInterruption
     ) async -> Result<
         RealtimeBrainSessionIdentity,
         RealtimeResidentBrainError
     > {
-        await runtimeCore.cancelRealtimeResidentBrainGeneration(
-            identity: session,
-            reason: reason
-        )
+        await runtimeCore.completeRealtimeResidentBrainInterruption(decision)
     }
 
     func testResidentReply(

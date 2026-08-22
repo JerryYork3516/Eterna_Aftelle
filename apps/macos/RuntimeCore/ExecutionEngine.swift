@@ -157,6 +157,12 @@ public final class ExecutionEngine {
         try await providerRouter.submitRealtimeResidentBrainToolResult(command)
     }
 
+    func createRealtimeResidentBrainResponse(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) async throws {
+        try await providerRouter.createRealtimeResidentBrainResponse(command)
+    }
+
     func cancelRealtimeResidentBrainGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
     ) async throws {

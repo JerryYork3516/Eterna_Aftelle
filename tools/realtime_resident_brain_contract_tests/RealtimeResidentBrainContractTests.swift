@@ -79,6 +79,8 @@ private actor FakeRealtimeResidentBrainProvider:
     private(set) var contextUpdates: [RealtimeBrainRuntimeContextUpdate] = []
     private(set) var audioFrames: [RealtimeBrainAudioFrame] = []
     private(set) var toolResults: [RealtimeBrainToolResultCommand] = []
+    private(set) var responseCreateCommands:
+        [RealtimeBrainCreateResponseCommand] = []
     private(set) var cancelCommands: [RealtimeBrainCancelGenerationCommand] = []
     private(set) var interruptCommands: [RealtimeBrainInterruptCommand] = []
     private(set) var closeCommands: [RealtimeBrainCloseSessionCommand] = []
@@ -107,6 +109,10 @@ private actor FakeRealtimeResidentBrainProvider:
     private var shouldHoldNextAudio = false
     private var heldAudio: CheckedContinuation<Void, Never>?
     private var heldAudioWaiters: [CheckedContinuation<Void, Never>] = []
+    private var shouldHoldNextResponseCreate = false
+    private var heldResponseCreate: CheckedContinuation<Void, Never>?
+    private var heldResponseCreateWaiters:
+        [CheckedContinuation<Void, Never>] = []
     private var shouldHoldNextReceive = false
     private var heldReceive: CheckedContinuation<Void, Never>?
     private var heldReceiveWaiters: [CheckedContinuation<Void, Never>] = []
@@ -177,6 +183,21 @@ private actor FakeRealtimeResidentBrainProvider:
         if let error = nextToolResultError {
             nextToolResultError = nil
             throw error
+        }
+    }
+
+    func createResponse(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) async throws {
+        responseCreateCommands.append(command)
+        if shouldHoldNextResponseCreate {
+            shouldHoldNextResponseCreate = false
+            await withCheckedContinuation { continuation in
+                heldResponseCreate = continuation
+                let waiters = heldResponseCreateWaiters
+                heldResponseCreateWaiters.removeAll(keepingCapacity: true)
+                waiters.forEach { $0.resume() }
+            }
         }
     }
 
@@ -380,6 +401,25 @@ private actor FakeRealtimeResidentBrainProvider:
         continuation?.resume()
     }
 
+    func holdNextResponseCreate() {
+        shouldHoldNextResponseCreate = true
+    }
+
+    func waitForHeldResponseCreate() async {
+        if heldResponseCreate != nil {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            heldResponseCreateWaiters.append(continuation)
+        }
+    }
+
+    func resumeHeldResponseCreate() {
+        let continuation = heldResponseCreate
+        heldResponseCreate = nil
+        continuation?.resume()
+    }
+
     func requireClose(generation: UInt64) {
         requiredCloseGeneration = generation
     }
@@ -480,6 +520,8 @@ private struct RealtimeResidentBrainContractTests {
         try await testDeferredCapacityFailsClosed(fixture: fixture)
         try await testConcurrentTransitions(fixture: fixture)
         try await testProviderFailureAndRecovery(fixture: fixture)
+        try await testRuntimeEagerResponseAuthorization(fixture: fixture)
+        testEagerResponseAuthorization()
         testTurnBoundarySequenceAndSemanticCandidates()
         await testCloseWaiterRetention()
 
@@ -671,6 +713,34 @@ private struct RealtimeResidentBrainContractTests {
             acceptDirect(userFinal, gate: gate, session: identity),
             equals: userFinal,
             "user final opens a realtime turn"
+        )
+        expect(
+            gate.beginResponseCreate(RealtimeBrainCreateResponseCommand(
+                identity: userIdentity,
+                sourceEventSequence: 2
+            )) == .invalid,
+            "response creation requires the exact accepted final sequence"
+        )
+        let responseCreate = RealtimeBrainCreateResponseCommand(
+            identity: userIdentity,
+            sourceEventSequence: userFinal.sequence
+        )
+        guard case .accepted(let responseCreateToken) =
+                gate.beginResponseCreate(responseCreate) else {
+            fatalError("FAILED: exact user final authorizes response creation")
+        }
+        expect(
+            gate.finishResponseCreate(
+                token: responseCreateToken,
+                command: responseCreate,
+                succeeded: true
+            ),
+            "response authorization commits before resident output"
+        )
+        expect(
+            gate.beginResponseCreate(responseCreate)
+                == .alreadyAuthorized(turnID),
+            "one accepted final cannot authorize response creation twice"
         )
         let boundaryDelta = RealtimeBrainRuntimeContextUpdate(
             identity: identity,
@@ -898,9 +968,35 @@ private struct RealtimeResidentBrainContractTests {
             equals: speechStarted,
             "speech start opens a turn"
         )
+        let errorUserFinal = RealtimeResidentBrainEvent(
+            identity: errorUserIdentity,
+            sequence: 9,
+            kind: .userTranscriptFinal("authorize error response")
+        )
+        expectAccepted(
+            acceptDirect(errorUserFinal, gate: gate, session: identity),
+            equals: errorUserFinal,
+            "user final authorizes the error response"
+        )
+        let errorResponseCreate = RealtimeBrainCreateResponseCommand(
+            identity: errorUserIdentity,
+            sourceEventSequence: errorUserFinal.sequence
+        )
+        guard case .accepted(let errorResponseCreateToken) =
+                gate.beginResponseCreate(errorResponseCreate) else {
+            fatalError("FAILED: error response creation begins")
+        }
+        expect(
+            gate.finishResponseCreate(
+                token: errorResponseCreateToken,
+                command: errorResponseCreate,
+                succeeded: true
+            ),
+            "error response authorization commits"
+        )
         let responseDelta = RealtimeResidentBrainEvent(
             identity: errorResponseIdentity,
-            sequence: 9,
+            sequence: 10,
             kind: .residentTextDelta("partial")
         )
         expectAccepted(
@@ -910,7 +1006,7 @@ private struct RealtimeResidentBrainContractTests {
         )
         let responseError = RealtimeResidentBrainEvent(
             identity: errorResponseIdentity,
-            sequence: 10,
+            sequence: 11,
             kind: .error(.providerFailure)
         )
         expectAccepted(
@@ -950,7 +1046,7 @@ private struct RealtimeResidentBrainContractTests {
         )
         let partial = RealtimeResidentBrainEvent(
             identity: cancelledUserIdentity,
-            sequence: 11,
+            sequence: 12,
             kind: .userTranscriptPartial("cancel")
         )
         expectAccepted(
@@ -965,7 +1061,7 @@ private struct RealtimeResidentBrainContractTests {
                 responseID: nil,
                 contextRevision: 3
             ),
-            sequence: 12,
+            sequence: 13,
             kind: .cancelled(.runtimeDecision)
         )
         expectAccepted(
@@ -1003,7 +1099,7 @@ private struct RealtimeResidentBrainContractTests {
                 responseID: nil,
                 contextRevision: 4
             ),
-            sequence: 13,
+            sequence: 14,
             kind: .userSpeechStarted
         )
         expectAccepted(
@@ -1053,6 +1149,274 @@ private struct RealtimeResidentBrainContractTests {
                 succeeded: true
             ),
             "generation reset permits a context delta"
+        )
+    }
+
+    private static func testEagerResponseAuthorization() {
+        cases += 1
+        let gate = RuntimeRealtimeBrainSessionGate()
+        let identity = RealtimeBrainSessionIdentity(
+            residentID: "resident",
+            runtimeSessionID: "eager-response-authorization",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        expect(gate.reserve(identity), "eager gate reserves the session")
+        expect(gate.activate(identity), "eager gate awaits bootstrap")
+        let bootstrap = RealtimeBrainRuntimeContextUpdate(
+            identity: identity,
+            kind: .bootstrap,
+            contextRevision: 1,
+            sections: [RealtimeBrainContextSection(
+                scope: .stableResident,
+                content: "stable"
+            )]
+        )
+        guard let bootstrapToken = gate.beginContextUpdate(bootstrap) else {
+            fatalError("FAILED: eager gate begins bootstrap")
+        }
+        expect(
+            gate.finishContextUpdate(
+                token: bootstrapToken,
+                update: bootstrap,
+                succeeded: true
+            ),
+            "eager gate commits bootstrap"
+        )
+
+        let turnID = RealtimeBrainTurnID()
+        let userIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let userFinal = RealtimeResidentBrainEvent(
+            identity: userIdentity,
+            sequence: 1,
+            kind: .userTranscriptFinal("run the tool")
+        )
+        expectAccepted(
+            acceptDirect(userFinal, gate: gate, session: identity),
+            equals: userFinal,
+            "eager fixture accepts the exact user final"
+        )
+        let responseCreate = RealtimeBrainCreateResponseCommand(
+            identity: userIdentity,
+            sourceEventSequence: userFinal.sequence
+        )
+        guard case .accepted(let responseCreateToken) =
+                gate.beginResponseCreate(responseCreate) else {
+            fatalError("FAILED: eager response authorization begins")
+        }
+        let oldResponseID = RealtimeBrainResponseID()
+        let oldResponseIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: oldResponseID,
+            contextRevision: 1
+        )
+        let firstResidentEvent = RealtimeResidentBrainEvent(
+            identity: oldResponseIdentity,
+            sequence: 2,
+            kind: .interruptionProposed(
+                RealtimeBrainInterruptionProposal(
+                    identity: oldResponseIdentity,
+                    reason: "first response-bound semantic evidence"
+                )
+            )
+        )
+        expectAccepted(
+            acceptDirect(firstResidentEvent, gate: gate, session: identity),
+            equals: firstResidentEvent,
+            "first interruption proposal may claim eager authorization before Provider return"
+        )
+        expect(
+            gate.finishResponseCreate(
+                token: responseCreateToken,
+                command: responseCreate,
+                succeeded: true
+            ),
+            "response authorization finishes after the first event claim"
+        )
+
+        let callID = RealtimeBrainToolCallID(rawValue: "eager-tool")
+        let toolEvent = RealtimeResidentBrainEvent(
+            identity: oldResponseIdentity,
+            sequence: 3,
+            kind: .toolCall(RealtimeBrainToolCallCandidate(
+                identity: oldResponseIdentity,
+                callID: callID,
+                toolName: "fixture_tool",
+                arguments: Data("{}".utf8)
+            ))
+        )
+        expectAccepted(
+            acceptDirect(toolEvent, gate: gate, session: identity),
+            equals: toolEvent,
+            "eager fixture accepts the tool candidate"
+        )
+        let toolResult = RealtimeBrainToolResultCommand(
+            identity: oldResponseIdentity,
+            sequence: 1,
+            callID: callID,
+            output: "{}",
+            isError: false
+        )
+        guard let toolToken = gate.beginToolResult(toolResult) else {
+            fatalError("FAILED: eager tool continuation begins")
+        }
+        let oldTail = RealtimeResidentBrainEvent(
+            identity: oldResponseIdentity,
+            sequence: 4,
+            kind: .residentTextDelta("old tail")
+        )
+        expectAccepted(
+            acceptDirect(oldTail, gate: gate, session: identity),
+            equals: oldTail,
+            "old response tail cannot consume tool continuation authorization"
+        )
+        let continuationIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let continuationEvent = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: 5,
+            kind: .residentTextDelta("tool continuation")
+        )
+        expectAccepted(
+            acceptDirect(continuationEvent, gate: gate, session: identity),
+            equals: continuationEvent,
+            "new response may claim tool authorization before Provider return"
+        )
+        expect(
+            gate.finishToolResult(
+                token: toolToken,
+                command: toolResult,
+                succeeded: true
+            ),
+            "tool authorization finishes after the new response claim"
+        )
+
+        let lateCallID = RealtimeBrainToolCallID(rawValue: "late-tool")
+        let lateToolEvent = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: 6,
+            kind: .toolCall(RealtimeBrainToolCallCandidate(
+                identity: continuationIdentity,
+                callID: lateCallID,
+                toolName: "fixture_tool",
+                arguments: Data("{}".utf8)
+            ))
+        )
+        expectAccepted(
+            acceptDirect(lateToolEvent, gate: gate, session: identity),
+            equals: lateToolEvent,
+            "terminal cleanup fixture records a pending tool candidate"
+        )
+        let terminalError = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: 7,
+            kind: .error(.providerFailure)
+        )
+        expectAccepted(
+            acceptDirect(terminalError, gate: gate, session: identity),
+            equals: terminalError,
+            "response error terminalizes the tool turn"
+        )
+        expect(
+            gate.beginToolResult(RealtimeBrainToolResultCommand(
+                identity: continuationIdentity,
+                sequence: 2,
+                callID: lateCallID,
+                output: "{}",
+                isError: false
+            )) == nil,
+            "late tool result cannot revive a terminal turn"
+        )
+    }
+
+    private static func testRuntimeEagerResponseAuthorization(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        let stack = configuredStack(fixture: fixture)
+        let identity = try realtimeIdentity(
+            await stack.runtime.openRealtimeResidentBrainSession()
+        )
+        try await bootstrap(stack, identity: identity)
+        let turnID = RealtimeBrainTurnID()
+        let responseID = RealtimeBrainResponseID()
+        let userIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let responseIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: 1
+        )
+        let userFinal = RealtimeResidentBrainEvent(
+            identity: userIdentity,
+            sequence: 1,
+            kind: .userTranscriptFinal("authorize while Provider is held")
+        )
+        await stack.provider.holdNextResponseCreate()
+        await stack.provider.enqueue(userFinal)
+        let userFinalTask = Task { @MainActor in
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            )
+        }
+        await stack.provider.waitForHeldResponseCreate()
+
+        let firstProposal = RealtimeResidentBrainEvent(
+            identity: responseIdentity,
+            sequence: 2,
+            kind: .interruptionProposed(
+                RealtimeBrainInterruptionProposal(
+                    identity: responseIdentity,
+                    reason: "proposal before createResponse returns"
+                )
+            )
+        )
+        await stack.provider.enqueue(firstProposal)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: firstProposal,
+            "Runtime accepts a response-bound proposal while createResponse is held"
+        )
+        await stack.provider.resumeHeldResponseCreate()
+        expectAccepted(
+            try await userFinalTask.value,
+            equals: userFinal,
+            "user final finishes after its eager authorization was claimed"
+        )
+        let responseCreateCommands = await stack.provider
+            .responseCreateCommands
+        expect(
+            responseCreateCommands == [
+                RealtimeBrainCreateResponseCommand(
+                    identity: userIdentity,
+                    sourceEventSequence: userFinal.sequence
+                )
+            ],
+            "Runtime sends one exact createResponse command across the race"
+        )
+        expectRealtimeSuccess(
+            await stack.runtime.closeRealtimeResidentBrainSession(
+                identity: identity
+            ),
+            "eager Runtime fixture closes cleanly"
         )
     }
 
@@ -1417,10 +1781,7 @@ private struct RealtimeResidentBrainContractTests {
             (eventIdentity, .residentSpeakingStarted),
             (eventIdentity, .residentSpeakingStopped),
             (eventIdentity, .toolCall(toolCandidate)),
-            (eventIdentity, .interruptionProposed(interruption)),
-            (eventIdentity, .residentSemanticFinal(semantic)),
-            (errorIdentity, .error(.providerFailure)),
-            (cancelledEventIdentity, .cancelled(.runtimeDecision))
+            (eventIdentity, .interruptionProposed(interruption))
         ]
         var nextEventSequence: UInt64 = 2
         for (offset, item) in eventKinds.enumerated() {
@@ -1470,70 +1831,6 @@ private struct RealtimeResidentBrainContractTests {
                 )
                 nextEventSequence += 1
             }
-            if offset == 11 {
-                let emptySemantic = RealtimeResidentBrainEvent(
-                    identity: eventIdentity,
-                    sequence: nextEventSequence,
-                    kind: .residentSemanticFinal(
-                        RealtimeBrainSemanticOutput(canonicalText: "   ")
-                    )
-                )
-                await stack.provider.enqueue(emptySemantic)
-                expect(
-                    try await stack.runtime
-                        .receiveRealtimeResidentBrainEvent(
-                            session: identity
-                        ) == .rejectedInvalidEvent,
-                    "canonical semantic final cannot be empty"
-                )
-                nextEventSequence += 1
-                let missingResponse = RealtimeResidentBrainEvent(
-                    identity: userIdentity,
-                    sequence: nextEventSequence,
-                    kind: .residentSemanticFinal(semantic)
-                )
-                await stack.provider.enqueue(missingResponse)
-                expect(
-                    try await stack.runtime
-                        .receiveRealtimeResidentBrainEvent(
-                            session: identity
-                        ) == .rejectedInvalidIdentity,
-                    "semantic final requires turn and response identity"
-                )
-                nextEventSequence += 1
-            }
-            if offset == 12 {
-                let duplicateSemantic = RealtimeResidentBrainEvent(
-                    identity: eventIdentity,
-                    sequence: nextEventSequence,
-                    kind: .residentSemanticFinal(semantic)
-                )
-                await stack.provider.enqueue(duplicateSemantic)
-                expect(
-                    try await stack.runtime
-                        .receiveRealtimeResidentBrainEvent(
-                            session: identity
-                        ) == .rejectedInvalidEvent,
-                    "one response accepts one canonical semantic final"
-                )
-                nextEventSequence += 1
-            }
-            if offset == 12 {
-                let unscopedError = RealtimeResidentBrainEvent(
-                    identity: readyIdentity,
-                    sequence: nextEventSequence,
-                    kind: .error(.providerFailure)
-                )
-                await stack.provider.enqueue(unscopedError)
-                expect(
-                    try await stack.runtime
-                        .receiveRealtimeResidentBrainEvent(
-                            session: identity
-                        ) == .rejectedInvalidIdentity,
-                    "recoverable error requires turn and response identity"
-                )
-                nextEventSequence += 1
-            }
             let event = RealtimeResidentBrainEvent(
                 identity: item.0,
                 sequence: nextEventSequence,
@@ -1549,32 +1846,6 @@ private struct RealtimeResidentBrainContractTests {
             )
             nextEventSequence += 1
         }
-        let lateText = RealtimeResidentBrainEvent(
-            identity: eventIdentity,
-            sequence: nextEventSequence,
-            kind: .residentTextDelta("late after semantic final")
-        )
-        await stack.provider.enqueue(lateText)
-        expect(
-            try await stack.runtime.receiveRealtimeResidentBrainEvent(
-                session: identity
-            ) == .rejectedInvalidEvent,
-            "a terminal response rejects late resident callbacks"
-        )
-        nextEventSequence += 1
-        let lateCancellation = RealtimeResidentBrainEvent(
-            identity: eventIdentity,
-            sequence: nextEventSequence,
-            kind: .cancelled(.runtimeDecision)
-        )
-        await stack.provider.enqueue(lateCancellation)
-        expect(
-            try await stack.runtime.receiveRealtimeResidentBrainEvent(
-                session: identity
-            ) == .rejectedInvalidEvent,
-            "a terminal response rejects a late cancellation"
-        )
-        nextEventSequence += 1
         expect(
             stack.runtime.activeBrainLeaseForTesting()?.generation
                 == .realtimeResidentBrain(identity.generation),
@@ -1640,6 +1911,157 @@ private struct RealtimeResidentBrainContractTests {
             await stack.provider.toolResultCount() == 1,
             "invalid Tool results never reach Provider"
         )
+
+        let continuationIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let emptySemantic = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: nextEventSequence,
+            kind: .residentSemanticFinal(
+                RealtimeBrainSemanticOutput(canonicalText: "   ")
+            )
+        )
+        await stack.provider.enqueue(emptySemantic)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "canonical semantic final cannot be empty"
+        )
+        nextEventSequence += 1
+        let missingResponse = RealtimeResidentBrainEvent(
+            identity: userIdentity,
+            sequence: nextEventSequence,
+            kind: .residentSemanticFinal(semantic)
+        )
+        await stack.provider.enqueue(missingResponse)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidIdentity,
+            "semantic final requires turn and response identity"
+        )
+        nextEventSequence += 1
+        let continuationSemantic = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: nextEventSequence,
+            kind: .residentSemanticFinal(semantic)
+        )
+        await stack.provider.enqueue(continuationSemantic)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: continuationSemantic,
+            "Tool continuation semantic final is accepted"
+        )
+        nextEventSequence += 1
+        let duplicateSemantic = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: nextEventSequence,
+            kind: .residentSemanticFinal(semantic)
+        )
+        await stack.provider.enqueue(duplicateSemantic)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "one response accepts one canonical semantic final"
+        )
+        nextEventSequence += 1
+        let lateText = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: nextEventSequence,
+            kind: .residentTextDelta("late after semantic final")
+        )
+        await stack.provider.enqueue(lateText)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "a terminal response rejects late resident callbacks"
+        )
+        nextEventSequence += 1
+        let lateCancellation = RealtimeResidentBrainEvent(
+            identity: continuationIdentity,
+            sequence: nextEventSequence,
+            kind: .cancelled(.runtimeDecision)
+        )
+        await stack.provider.enqueue(lateCancellation)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidEvent,
+            "a terminal response rejects a late cancellation"
+        )
+        nextEventSequence += 1
+
+        let unscopedError = RealtimeResidentBrainEvent(
+            identity: readyIdentity,
+            sequence: nextEventSequence,
+            kind: .error(.providerFailure)
+        )
+        await stack.provider.enqueue(unscopedError)
+        expect(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ) == .rejectedInvalidIdentity,
+            "recoverable error requires turn and response identity"
+        )
+        nextEventSequence += 1
+        let errorTurnIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: errorIdentity.turnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let errorTurn = RealtimeResidentBrainEvent(
+            identity: errorTurnIdentity,
+            sequence: nextEventSequence,
+            kind: .userTranscriptFinal("authorized error turn")
+        )
+        await stack.provider.enqueue(errorTurn)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: errorTurn,
+            "response-scoped error turn is Runtime-authorized"
+        )
+        nextEventSequence += 1
+        let errorEvent = RealtimeResidentBrainEvent(
+            identity: errorIdentity,
+            sequence: nextEventSequence,
+            kind: .error(.providerFailure)
+        )
+        await stack.provider.enqueue(errorEvent)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: errorEvent,
+            "typed response-scoped error is accepted"
+        )
+        nextEventSequence += 1
+        let cancelledEvent = RealtimeResidentBrainEvent(
+            identity: cancelledEventIdentity,
+            sequence: nextEventSequence,
+            kind: .cancelled(.runtimeDecision)
+        )
+        await stack.provider.enqueue(cancelledEvent)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: cancelledEvent,
+            "typed cancellation is accepted"
+        )
+        nextEventSequence += 1
+
         expectRealtimeSuccess(
             await stack.runtime.updateRealtimeResidentBrainContext(
                 contextWhileToolPending
@@ -1665,7 +2087,7 @@ private struct RealtimeResidentBrainContractTests {
         )
 
         let cancelledIdentity = try realtimeIdentity(
-            await stack.runtime.cancelRealtimeResidentBrainGeneration(
+            await stack.runtime.cancelRealtimeResidentBrainGenerationForTesting(
                 identity: identity,
                 reason: .runtimeDecision
             )
@@ -1688,7 +2110,7 @@ private struct RealtimeResidentBrainContractTests {
         )
 
         let interruptedIdentity = try realtimeIdentity(
-            await stack.runtime.interruptRealtimeResidentBrain(
+            await stack.runtime.interruptRealtimeResidentBrainForTesting(
                 identity: cancelledIdentity,
                 reason: .runtimeDecision
             )
@@ -1724,7 +2146,7 @@ private struct RealtimeResidentBrainContractTests {
             "sessionClosed releases the R1 Brain lease"
         )
         expectRealtimeFailure(
-            await stack.runtime.cancelRealtimeResidentBrainGeneration(
+            await stack.runtime.cancelRealtimeResidentBrainGenerationForTesting(
                 identity: interruptedIdentity,
                 reason: .runtimeDecision
             ),
@@ -1912,6 +2334,14 @@ private struct RealtimeResidentBrainContractTests {
             equals: currentTool,
             "current Tool candidate establishes the call ledger"
         )
+        for _ in 0..<10_000 {
+            if await stack.provider.toolResultCount() == 1 { break }
+            await Task.yield()
+        }
+        expect(
+            await stack.provider.toolResultCount() == 1,
+            "Tool result authorizes one continuation response"
+        )
         let filler = RealtimeResidentBrainEvent(
             identity: userIdentity,
             sequence: 7,
@@ -1969,8 +2399,14 @@ private struct RealtimeResidentBrainContractTests {
             ) == .rejectedInvalidEvent,
             "the malformed future payload is rejected when current"
         )
+        let continuationResidentIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: turnID,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
         let validAfterMalformedAudio = RealtimeResidentBrainEvent(
-            identity: residentIdentity,
+            identity: continuationResidentIdentity,
             sequence: 11,
             kind: .residentAudioDelta(RealtimeBrainAudioDelta(
                 sequence: 3,
@@ -2200,7 +2636,7 @@ private struct RealtimeResidentBrainContractTests {
 
         await stack.provider.holdNextCancel()
         let pendingCancel = Task {
-            await stack.runtime.cancelRealtimeResidentBrainGeneration(
+            await stack.runtime.cancelRealtimeResidentBrainGenerationForTesting(
                 identity: identity,
                 reason: .runtimeDecision
             )
@@ -2213,7 +2649,7 @@ private struct RealtimeResidentBrainContractTests {
             "generation transition invalidates old events before Provider await"
         )
         expectRealtimeFailure(
-            await stack.runtime.interruptRealtimeResidentBrain(
+            await stack.runtime.interruptRealtimeResidentBrainForTesting(
                 identity: identity,
                 reason: .runtimeDecision
             ),
@@ -2285,7 +2721,8 @@ private struct RealtimeResidentBrainContractTests {
         try await bootstrap(closeRace, identity: closeRaceIdentity)
         await closeRace.provider.holdNextCancel()
         let inFlightCancel = Task {
-            await closeRace.runtime.cancelRealtimeResidentBrainGeneration(
+            await closeRace.runtime
+                .cancelRealtimeResidentBrainGenerationForTesting(
                 identity: closeRaceIdentity,
                 reason: .runtimeDecision
             )
@@ -2479,9 +2916,27 @@ private struct RealtimeResidentBrainContractTests {
         let toolFailureCallID = RealtimeBrainToolCallID(
             rawValue: "ambiguous-tool"
         )
+        let toolFailureTurn = RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: toolFailureIdentity,
+                turnID: toolEventIdentity.turnID,
+                responseID: nil,
+                contextRevision: 1
+            ),
+            sequence: 1,
+            kind: .userTranscriptFinal("authorized Tool failure turn")
+        )
+        await toolFailure.provider.enqueue(toolFailureTurn)
+        expectAccepted(
+            try await toolFailure.runtime.receiveRealtimeResidentBrainEvent(
+                session: toolFailureIdentity
+            ),
+            equals: toolFailureTurn,
+            "Tool failure response is Runtime-authorized"
+        )
         let toolFailureEvent = RealtimeResidentBrainEvent(
             identity: toolEventIdentity,
-            sequence: 1,
+            sequence: 2,
             kind: .toolCall(RealtimeBrainToolCallCandidate(
                 identity: toolEventIdentity,
                 callID: toolFailureCallID,
@@ -2554,7 +3009,7 @@ private struct RealtimeResidentBrainContractTests {
         )
         expectRealtimeFailure(
             await ambiguousCancel.runtime
-                .cancelRealtimeResidentBrainGeneration(
+                .cancelRealtimeResidentBrainGenerationForTesting(
                     identity: cancelIdentity,
                     reason: .runtimeDecision
                 ),
@@ -2587,7 +3042,8 @@ private struct RealtimeResidentBrainContractTests {
             generation: interruptIdentity.generation + 1
         )
         expectRealtimeFailure(
-            await ambiguousInterrupt.runtime.interruptRealtimeResidentBrain(
+            await ambiguousInterrupt.runtime
+                .interruptRealtimeResidentBrainForTesting(
                 identity: interruptIdentity,
                 reason: .runtimeDecision
             ),
@@ -2618,7 +3074,7 @@ private struct RealtimeResidentBrainContractTests {
         )
         expectRealtimeFailure(
             await allCandidates.runtime
-                .cancelRealtimeResidentBrainGeneration(
+                .cancelRealtimeResidentBrainGenerationForTesting(
                     identity: allCandidatesIdentity,
                     reason: .runtimeDecision
                 ),

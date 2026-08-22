@@ -38,6 +38,10 @@ private actor ContextBridgeFakeProvider: RealtimeResidentBrainProvider {
         toolResults.append(command)
     }
 
+    func createResponse(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) async throws {}
+
     func cancelGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
     ) async throws {

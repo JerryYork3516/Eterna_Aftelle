@@ -69,7 +69,12 @@ rg -q 'residentAudioDelta' "$controller"
 rg -q 'speechAudioOutputHost\.enqueue' "$controller"
 echo "realtime_brain_formal_host_route=PASS"
 
-rg -q 'cancelRealtimeResidentBrainGeneration' "$models" "$controller"
+rg -q 'submitRealtimeResidentBrainAcousticEvidence' "$models" "$controller"
+rg -q 'claimRealtimeResidentBrainInterruptionDecision' "$models" "$controller"
+if rg -q 'cancelRealtimeResidentBrainGeneration' "$models" "$controller"; then
+  echo "realtime_brain_runtime_decision_authority=FAIL"
+  exit 1
+fi
 rg -q 'suspendForGenerationTransition' "$bridge" "$output_bridge"
 rg -q 'resumeAfterGenerationTransition' "$bridge" "$output_bridge"
 rg -q 'realtimeBrainRouteAttemptID' "$controller"

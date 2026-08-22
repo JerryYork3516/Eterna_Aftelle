@@ -135,6 +135,25 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         makeSnapshot()
     }
 
+    func interruptionAcousticSnapshot() async
+        -> MacSpeechInterruptionAcousticSnapshot? {
+        guard let acoustic = capture.acousticEchoSnapshot() else {
+            return nil
+        }
+        return MacSpeechInterruptionAcousticSnapshot(
+            sourceGateSequence: acoustic.sourceGateOpenCount,
+            nearEndDetected: acoustic.inputClassification == .nearEndSpeech
+                || acoustic.inputClassification == .doubleTalk,
+            farEndActive: acoustic.isPlaybackActive,
+            sourceGateOpen: acoustic.sourceGateOpen,
+            renderReferenceConfidence:
+                acoustic.sourceAlignmentLocked ? 1 : 0,
+            routeStable: state == .capturing && lastError == nil,
+            inputDeviceAvailable: route.input.isAvailable,
+            outputDeviceAvailable: route.output.isAvailable
+        )
+    }
+
     nonisolated func currentAcousticEchoSnapshot()
         -> MacSpeechAcousticEchoSnapshot? {
         capture.acousticEchoSnapshot()

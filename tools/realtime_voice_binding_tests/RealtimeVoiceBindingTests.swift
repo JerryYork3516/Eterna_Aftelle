@@ -122,6 +122,10 @@ private actor R6RuntimeProvider: RealtimeResidentBrainProvider {
         _ command: RealtimeBrainToolResultCommand
     ) async throws {}
 
+    func createResponse(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) async throws {}
+
     func cancelGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
     ) async throws {}

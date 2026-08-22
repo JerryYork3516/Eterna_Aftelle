@@ -19,6 +19,26 @@ nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
     func activeCaptureGeneration() async -> UInt64?
     func isCaptureGenerationActive(_ generation: UInt64) async -> Bool
     func drainFrames(maxCount: Int) async -> [MacSpeechAudioFrame]
+    func interruptionAcousticSnapshot() async
+        -> MacSpeechInterruptionAcousticSnapshot?
+}
+
+nonisolated extension MacSpeechAudioFrameSourcing {
+    func interruptionAcousticSnapshot() async
+        -> MacSpeechInterruptionAcousticSnapshot? { nil }
+}
+
+nonisolated struct MacSpeechInterruptionAcousticSnapshot:
+    Sendable,
+    Equatable {
+    let sourceGateSequence: UInt64
+    let nearEndDetected: Bool
+    let farEndActive: Bool
+    let sourceGateOpen: Bool
+    let renderReferenceConfidence: Double
+    let routeStable: Bool
+    let inputDeviceAvailable: Bool
+    let outputDeviceAvailable: Bool
 }
 
 nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {

@@ -1469,6 +1469,9 @@ nonisolated struct RuntimeToolAuditRecord: Sendable, Equatable {
 public final class RuntimeCore {
     private static let runtimeToolExecutionCapacity = 8
     private static let runtimeToolAuditCapacity = 256
+    private static let realtimeInterruptionEvidenceWindowNanoseconds:
+        UInt64 = 2_000_000_000
+    private static let realtimeInterruptionProposalDecisionCapacity = 8
 
     private struct SpeechRouteASRFinalState {
         let generation: UInt64
@@ -1498,6 +1501,41 @@ public final class RuntimeCore {
     private struct RealtimeBrainPendingTurnKey: Hashable {
         let session: RealtimeBrainSessionIdentity
         let turnID: RealtimeBrainTurnID
+    }
+
+    private struct RealtimeInterruptionEvidenceState {
+        let session: RealtimeBrainSessionIdentity
+        var acoustic: RealtimeInterruptionEvidence?
+        var semantic: RealtimeInterruptionEvidence?
+        var acousticReceivedAtNanoseconds: UInt64 = 0
+        var semanticReceivedAtNanoseconds: UInt64 = 0
+        var lastAcousticSequence: UInt64 = 0
+        var lastAcousticTimestamp: UInt64 = 0
+        var lastSemanticSequence: UInt64 = 0
+        var lastSemanticTimestamp: UInt64 = 0
+    }
+
+    private struct RealtimeInterruptionProposalKey: Hashable {
+        let session: RealtimeBrainSessionIdentity
+        let turnID: RealtimeBrainTurnID
+        let responseID: RealtimeBrainResponseID
+        let contextRevision: UInt64
+        let sequence: UInt64
+    }
+
+    private struct RealtimeBrainGenerationTransition {
+        let identity: RealtimeBrainSessionIdentity
+        let lease: ActiveBrainLease
+        let nextIdentity: RealtimeBrainSessionIdentity
+        let token: UUID
+    }
+
+    private struct PendingRealtimeInterruption {
+        let decision: RealtimeConfirmedInterruption
+        let task: Task<
+            Result<RealtimeBrainSessionIdentity, RealtimeResidentBrainError>,
+            Never
+        >
     }
 
     private struct CanonicalResidentResponseKey: Hashable {
@@ -1697,6 +1735,15 @@ public final class RuntimeCore {
         RealtimeBrainContextBridgeState?
     private var realtimeBrainPendingUserInputs:
         [RealtimeBrainPendingTurnKey: String] = [:]
+    private var realtimeInterruptionEvidenceState:
+        RealtimeInterruptionEvidenceState?
+    private var realtimeInterruptionProposalDecisions: [
+        RealtimeInterruptionProposalKey:
+            Result<RealtimeInterruptionDecision, RealtimeResidentBrainError>
+    ] = [:]
+    private var realtimeInterruptionProposalDecisionOrder:
+        [RealtimeInterruptionProposalKey] = []
+    private var pendingRealtimeInterruption: PendingRealtimeInterruption?
     private var canonicalTurnCommitSessionID: String?
     private var canonicalResponseCommitClaims:
         Set<CanonicalResidentResponseKey> = []
@@ -2178,6 +2225,11 @@ public final class RuntimeCore {
     private func resetRealtimeBrainRuntimeBridge() {
         realtimeBrainContextBridgeState = nil
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        realtimeInterruptionEvidenceState = nil
+        realtimeInterruptionProposalDecisions.removeAll(keepingCapacity: true)
+        realtimeInterruptionProposalDecisionOrder.removeAll(
+            keepingCapacity: true
+        )
         lastRealtimeGrowthObservationDecisions.removeAll(
             keepingCapacity: true
         )
@@ -2403,6 +2455,12 @@ public final class RuntimeCore {
         resetRuntimeToolState(route: .realtimeResidentBrain)
         realtimeBrainGeneration = generation
         realtimeBrainToolResultSequence = 0
+        realtimeInterruptionEvidenceState = nil
+        realtimeInterruptionProposalDecisions.removeAll(keepingCapacity: true)
+        realtimeInterruptionProposalDecisionOrder.removeAll(
+            keepingCapacity: true
+        )
+        pendingRealtimeInterruption = nil
         guard activeBrainLeaseGate.beginProviderStart(for: brainLease) else {
             return .failure(.cancelled)
         }
@@ -2602,67 +2660,144 @@ public final class RuntimeCore {
     }
 
     @MainActor
-    func cancelRealtimeResidentBrainGeneration(
+    private func createRealtimeResidentBrainResponseIfEligible(
+        for event: RealtimeResidentBrainEvent,
+        lease: ActiveBrainLease
+    ) async -> Bool {
+        let command = RealtimeBrainCreateResponseCommand(
+            identity: event.identity,
+            sourceEventSequence: event.sequence
+        )
+        let token: UUID
+        switch realtimeBrainSessionGate.beginResponseCreate(command) {
+        case .accepted(let acceptedToken):
+            token = acceptedToken
+        case .droppedOverlap(let turnID):
+            realtimeBrainPendingUserInputs.removeValue(
+                forKey: RealtimeBrainPendingTurnKey(
+                    session: event.identity.session,
+                    turnID: turnID
+                )
+            )
+            return true
+        case .alreadyAuthorized:
+            return true
+        case .invalid:
+            if let turnID = event.identity.turnID {
+                realtimeBrainPendingUserInputs.removeValue(
+                    forKey: RealtimeBrainPendingTurnKey(
+                        session: event.identity.session,
+                        turnID: turnID
+                    )
+                )
+            }
+            return false
+        }
+        do {
+            try await executionEngine.createRealtimeResidentBrainResponse(
+                command
+            )
+        } catch {
+            _ = realtimeBrainSessionGate.finishResponseCreate(
+                token: token,
+                command: command,
+                succeeded: false
+            )
+            await settleFailedRealtimeBrainSession(
+                identity: event.identity.session,
+                lease: lease
+            )
+            return false
+        }
+        guard activeBrainLeaseGate.isCurrent(lease),
+              realtimeBrainSessionGate.finishResponseCreate(
+                token: token,
+                command: command,
+                succeeded: true
+              ) else {
+            _ = realtimeBrainSessionGate.finishResponseCreate(
+                token: token,
+                command: command,
+                succeeded: false
+            )
+            return true
+        }
+        return true
+    }
+
+    @MainActor
+    private func cancelRealtimeResidentBrainGeneration(
         identity: RealtimeBrainSessionIdentity,
         reason: RealtimeBrainCancellationReason
     ) async -> Result<
         RealtimeBrainSessionIdentity,
         RealtimeResidentBrainError
     > {
-        guard let brainLease = currentRealtimeBrainLease(
-            identity: identity
-        ), realtimeBrainSessionGate.isActive(identity) else {
-            return .failure(.invalidIdentity)
-        }
-        let nextGeneration = realtimeBrainGeneration &+ 1
-        let nextIdentity = RealtimeBrainSessionIdentity(
-            residentID: identity.residentID,
-            runtimeSessionID: identity.runtimeSessionID,
-            brainLeaseID: identity.brainLeaseID,
-            routeEpoch: identity.routeEpoch,
-            generation: nextGeneration
-        )
-        guard let transitionToken = realtimeBrainSessionGate
-            .beginGenerationTransition(
-                from: identity,
-                to: nextIdentity
-            ) else {
-            return .failure(.cancelled)
-        }
-        resetRuntimeToolState(route: .realtimeResidentBrain)
-        do {
-            try await executionEngine.cancelRealtimeResidentBrainGeneration(
-                RealtimeBrainCancelGenerationCommand(
-                    identity: identity,
-                    nextGeneration: nextGeneration,
-                    reason: reason
-                )
+        switch beginRealtimeBrainGenerationTransition(from: identity) {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let transition):
+            return await finishRealtimeBrainGenerationCancellation(
+                transition,
+                reason: reason
             )
-        } catch {
-            let mappedError = Self.realtimeBrainError(error)
-            realtimeBrainSessionGate.cancelGenerationTransition(
-                token: transitionToken
-            )
-            await settleFailedRealtimeBrainSession(
-                identity: identity,
-                lease: brainLease
-            )
-            return .failure(mappedError)
         }
-        return advanceRealtimeBrainGeneration(
-            from: identity,
-            lease: brainLease,
-            to: nextIdentity,
-            transitionToken: transitionToken
-        )
     }
 
     @MainActor
-    func interruptRealtimeResidentBrain(
+    private func interruptRealtimeResidentBrain(
         identity: RealtimeBrainSessionIdentity,
         reason: RealtimeBrainInterruptReason
     ) async -> Result<
         RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        switch beginRealtimeBrainGenerationTransition(from: identity) {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let transition):
+            return await finishRealtimeBrainGenerationInterruption(
+                transition,
+                reason: reason
+            )
+        }
+    }
+
+    #if DEBUG
+    @MainActor
+    func cancelRealtimeResidentBrainGenerationForTesting(
+        identity: RealtimeBrainSessionIdentity,
+        reason: RealtimeBrainCancellationReason
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        await cancelRealtimeResidentBrainGeneration(
+            identity: identity,
+            reason: reason
+        )
+    }
+
+    @MainActor
+    func interruptRealtimeResidentBrainForTesting(
+        identity: RealtimeBrainSessionIdentity,
+        reason: RealtimeBrainInterruptReason
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        await interruptRealtimeResidentBrain(
+            identity: identity,
+            reason: reason
+        )
+    }
+    #endif
+
+    @MainActor
+    private func beginRealtimeBrainGenerationTransition(
+        from identity: RealtimeBrainSessionIdentity
+    ) -> Result<
+        RealtimeBrainGenerationTransition,
         RealtimeResidentBrainError
     > {
         guard let brainLease = currentRealtimeBrainLease(
@@ -2670,13 +2805,12 @@ public final class RuntimeCore {
         ), realtimeBrainSessionGate.isActive(identity) else {
             return .failure(.invalidIdentity)
         }
-        let nextGeneration = realtimeBrainGeneration &+ 1
         let nextIdentity = RealtimeBrainSessionIdentity(
             residentID: identity.residentID,
             runtimeSessionID: identity.runtimeSessionID,
             brainLeaseID: identity.brainLeaseID,
             routeEpoch: identity.routeEpoch,
-            generation: nextGeneration
+            generation: realtimeBrainGeneration &+ 1
         )
         guard let transitionToken = realtimeBrainSessionGate
             .beginGenerationTransition(
@@ -2686,31 +2820,293 @@ public final class RuntimeCore {
             return .failure(.cancelled)
         }
         resetRuntimeToolState(route: .realtimeResidentBrain)
+        return .success(RealtimeBrainGenerationTransition(
+            identity: identity,
+            lease: brainLease,
+            nextIdentity: nextIdentity,
+            token: transitionToken
+        ))
+    }
+
+    @MainActor
+    private func finishRealtimeBrainGenerationCancellation(
+        _ transition: RealtimeBrainGenerationTransition,
+        reason: RealtimeBrainCancellationReason
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        await realtimeBrainSessionGate.waitForProviderOperationsToFinish(
+            excludingGenerationTransition: transition.token
+        )
         do {
-            try await executionEngine.interruptRealtimeResidentBrain(
-                RealtimeBrainInterruptCommand(
-                    identity: identity,
-                    nextGeneration: nextGeneration,
+            try await executionEngine.cancelRealtimeResidentBrainGeneration(
+                RealtimeBrainCancelGenerationCommand(
+                    identity: transition.identity,
+                    nextGeneration: transition.nextIdentity.generation,
                     reason: reason
                 )
             )
         } catch {
-            let mappedError = Self.realtimeBrainError(error)
-            realtimeBrainSessionGate.cancelGenerationTransition(
-                token: transitionToken
+            return await failRealtimeBrainGenerationTransition(
+                transition,
+                error: error
             )
-            await settleFailedRealtimeBrainSession(
-                identity: identity,
-                lease: brainLease
-            )
-            return .failure(mappedError)
         }
         return advanceRealtimeBrainGeneration(
-            from: identity,
-            lease: brainLease,
-            to: nextIdentity,
-            transitionToken: transitionToken
+            from: transition.identity,
+            lease: transition.lease,
+            to: transition.nextIdentity,
+            transitionToken: transition.token
         )
+    }
+
+    @MainActor
+    private func finishRealtimeBrainGenerationInterruption(
+        _ transition: RealtimeBrainGenerationTransition,
+        reason: RealtimeBrainInterruptReason
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        await realtimeBrainSessionGate.waitForProviderOperationsToFinish(
+            excludingGenerationTransition: transition.token
+        )
+        do {
+            try await executionEngine.interruptRealtimeResidentBrain(
+                RealtimeBrainInterruptCommand(
+                    identity: transition.identity,
+                    nextGeneration: transition.nextIdentity.generation,
+                    reason: reason
+                )
+            )
+        } catch {
+            return await failRealtimeBrainGenerationTransition(
+                transition,
+                error: error
+            )
+        }
+        return advanceRealtimeBrainGeneration(
+            from: transition.identity,
+            lease: transition.lease,
+            to: transition.nextIdentity,
+            transitionToken: transition.token
+        )
+    }
+
+    @MainActor
+    private func failRealtimeBrainGenerationTransition(
+        _ transition: RealtimeBrainGenerationTransition,
+        error: Error
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        let mappedError = Self.realtimeBrainError(error)
+        realtimeBrainSessionGate.cancelGenerationTransition(
+            token: transition.token
+        )
+        await settleFailedRealtimeBrainSession(
+            identity: transition.identity,
+            lease: transition.lease
+        )
+        return .failure(mappedError)
+    }
+
+    @MainActor
+    func submitRealtimeResidentBrainAcousticEvidence(
+        _ evidence: RealtimeInterruptionEvidence
+    ) async -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        guard case .acousticHost = evidence.source else {
+            return .success(.ignored(.invalidEvidence))
+        }
+        return consumeRealtimeResidentBrainInterruptionEvidence(
+            evidence,
+            receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
+    }
+
+    @MainActor
+    func claimRealtimeResidentBrainInterruptionDecision(
+        for event: RealtimeResidentBrainEvent
+    ) async -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        guard let key = Self.realtimeInterruptionProposalKey(for: event),
+              let decision = realtimeInterruptionProposalDecisions
+                .removeValue(forKey: key) else {
+            return .success(.ignored(.staleEvidence))
+        }
+        realtimeInterruptionProposalDecisionOrder.removeAll { $0 == key }
+        return decision
+    }
+
+    @MainActor
+    func completeRealtimeResidentBrainInterruption(
+        _ decision: RealtimeConfirmedInterruption
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        guard let pendingRealtimeInterruption,
+              pendingRealtimeInterruption.decision == decision else {
+            return .failure(.invalidIdentity)
+        }
+        return await pendingRealtimeInterruption.task.value
+    }
+
+    @MainActor
+    private func consumeRealtimeResidentBrainInterruptionEvidence(
+        _ evidence: RealtimeInterruptionEvidence,
+        receivedAtNanoseconds: UInt64
+    ) -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        let session = evidence.identity.session
+        guard currentRealtimeBrainLease(identity: session) != nil,
+              realtimeBrainSessionGate.isActive(session) else {
+            return .success(.ignored(.staleIdentity))
+        }
+        guard evidence.identity.sequence > 0,
+              evidence.identity.timestampNanoseconds > 0,
+              evidence.identity.timestampNanoseconds <= receivedAtNanoseconds,
+              receivedAtNanoseconds
+                - evidence.identity.timestampNanoseconds
+                <= Self.realtimeInterruptionEvidenceWindowNanoseconds else {
+            return .success(.ignored(.invalidEvidence))
+        }
+        let targetIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: evidence.identity.turnID,
+            responseID: evidence.identity.responseID,
+            contextRevision: evidence.identity.contextRevision
+        )
+        guard realtimeBrainSessionGate.isActiveInterruptionTarget(
+            targetIdentity
+        ) else {
+            return .success(.ignored(.staleEvidence))
+        }
+
+        var state = realtimeInterruptionEvidenceState
+            ?? RealtimeInterruptionEvidenceState(session: session)
+        guard state.session == session else {
+            return .success(.ignored(.staleIdentity))
+        }
+
+        switch evidence.source {
+        case .acousticHost(let facts):
+            guard facts.renderReferenceConfidence.isFinite,
+                  facts.renderReferenceConfidence > 0,
+                  facts.renderReferenceConfidence <= 1 else {
+                return .success(.ignored(.invalidEvidence))
+            }
+            if evidence.identity.sequence == state.lastAcousticSequence {
+                return .success(.ignored(.duplicateEvidence))
+            }
+            guard evidence.identity.sequence > state.lastAcousticSequence,
+                  evidence.identity.timestampNanoseconds
+                    >= state.lastAcousticTimestamp else {
+                return .success(.ignored(.staleEvidence))
+            }
+            state.acoustic = evidence
+            state.acousticReceivedAtNanoseconds = receivedAtNanoseconds
+            state.lastAcousticSequence = evidence.identity.sequence
+            state.lastAcousticTimestamp =
+                evidence.identity.timestampNanoseconds
+        case .realtimeBrain(let facts):
+            guard evidence.identity.turnID != nil,
+                  evidence.identity.responseID != nil,
+                  !facts.reason.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                  ).isEmpty else {
+                return .success(.ignored(.invalidEvidence))
+            }
+            if evidence.identity.sequence == state.lastSemanticSequence {
+                return .success(.ignored(.duplicateEvidence))
+            }
+            guard evidence.identity.sequence > state.lastSemanticSequence,
+                  evidence.identity.timestampNanoseconds
+                    >= state.lastSemanticTimestamp else {
+                return .success(.ignored(.staleEvidence))
+            }
+            state.semantic = evidence
+            state.semanticReceivedAtNanoseconds = receivedAtNanoseconds
+            state.lastSemanticSequence = evidence.identity.sequence
+            state.lastSemanticTimestamp =
+                evidence.identity.timestampNanoseconds
+        }
+        realtimeInterruptionEvidenceState = state
+
+        guard let acoustic = state.acoustic,
+              let semantic = state.semantic,
+              acoustic.identity.turnID == semantic.identity.turnID,
+              acoustic.identity.responseID == semantic.identity.responseID,
+              Self.timestampsAreCorrelated(
+                acoustic.identity.timestampNanoseconds,
+                semantic.identity.timestampNanoseconds
+              ),
+              Self.timestampsAreCorrelated(
+                state.acousticReceivedAtNanoseconds,
+                state.semanticReceivedAtNanoseconds
+              ),
+              let turnID = semantic.identity.turnID,
+              let responseID = semantic.identity.responseID,
+              case .acousticHost(let acousticFacts) = acoustic.source,
+              acousticFacts.nearEndDetected,
+              acousticFacts.farEndActive,
+              acousticFacts.sourceGateOpen,
+              acousticFacts.routeStable,
+              acousticFacts.inputDeviceAvailable,
+              acousticFacts.outputDeviceAvailable else {
+            return .success(.observed)
+        }
+
+        realtimeInterruptionEvidenceState = nil
+        let transition: RealtimeBrainGenerationTransition
+        switch beginRealtimeBrainGenerationTransition(from: session) {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let value):
+            transition = value
+        }
+        let decision = RealtimeConfirmedInterruption(
+            decisionID: UUID(),
+            interruptedIdentity: session,
+            nextIdentity: transition.nextIdentity,
+            turnID: turnID,
+            responseID: responseID,
+            hostCommand: .clearPlayback
+        )
+        let task = Task { @MainActor [weak self] in
+            guard let self else {
+                return Result<
+                    RealtimeBrainSessionIdentity,
+                    RealtimeResidentBrainError
+                >.failure(.unavailable)
+            }
+            return await self.finishRealtimeBrainGenerationInterruption(
+                transition,
+                reason: .runtimeDecision
+            )
+        }
+        pendingRealtimeInterruption = PendingRealtimeInterruption(
+            decision: decision,
+            task: task
+        )
+        return .success(.confirmed(decision))
+    }
+
+    private static func timestampsAreCorrelated(
+        _ lhs: UInt64,
+        _ rhs: UInt64
+    ) -> Bool {
+        let delta = lhs >= rhs ? lhs - rhs : rhs - lhs
+        return delta <= realtimeInterruptionEvidenceWindowNanoseconds
     }
 
     @MainActor
@@ -2774,6 +3170,31 @@ public final class RuntimeCore {
     ) async -> Result<Void, RealtimeResidentBrainError> {
         if realtimeBrainSessionGate.isClosed(identity) {
             return .success(())
+        }
+        if let pendingRealtimeInterruption,
+           pendingRealtimeInterruption.decision.interruptedIdentity == identity
+                || pendingRealtimeInterruption.decision.nextIdentity
+                    == identity {
+            let result = await pendingRealtimeInterruption.task.value
+            if self.pendingRealtimeInterruption?.decision
+                == pendingRealtimeInterruption.decision {
+                self.pendingRealtimeInterruption = nil
+            }
+            switch result {
+            case .failure:
+                let interruptedIdentity = pendingRealtimeInterruption
+                    .decision.interruptedIdentity
+                if realtimeBrainSessionGate.isClosed(interruptedIdentity) {
+                    return .success(())
+                }
+                return await closeRealtimeResidentBrainSession(
+                    identity: interruptedIdentity
+                )
+            case .success(let nextIdentity):
+                return await closeRealtimeResidentBrainSession(
+                    identity: nextIdentity
+                )
+            }
         }
         guard let brainLease = currentRealtimeBrainLease(
             identity: identity,
@@ -2842,7 +3263,10 @@ public final class RuntimeCore {
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
-            return disposition
+            return await createRealtimeResidentBrainResponseIfEligible(
+                for: event,
+                lease: lease
+            ) ? disposition : .rejectedStale
         case .residentSemanticFinal(let output):
             await acceptRealtimeCanonicalResidentTurn(
                 event: event,
@@ -2866,6 +3290,31 @@ public final class RuntimeCore {
             }
             await handleRuntimeToolCall(
                 .realtimeResidentBrain(candidate)
+            )
+            return disposition
+        case .interruptionProposed(let proposal):
+            let receivedAt = DispatchTime.now().uptimeNanoseconds
+            let decision = consumeRealtimeResidentBrainInterruptionEvidence(
+                RealtimeInterruptionEvidence(
+                    identity: RealtimeInterruptionEvidenceIdentity(
+                        session: event.identity.session,
+                        turnID: event.identity.turnID,
+                        responseID: event.identity.responseID,
+                        contextRevision: event.identity.contextRevision,
+                        sequence: event.sequence,
+                        timestampNanoseconds: receivedAt
+                    ),
+                    source: .realtimeBrain(
+                        RealtimeInterruptionSemanticFacts(
+                            reason: proposal.reason
+                        )
+                    )
+                ),
+                receivedAtNanoseconds: receivedAt
+            )
+            recordRealtimeInterruptionProposalDecision(
+                decision,
+                for: event
             )
             return disposition
         case .error:
@@ -2929,6 +3378,45 @@ public final class RuntimeCore {
                 session: identity.session,
                 turnID: turnID
             )
+        )
+    }
+
+    private func recordRealtimeInterruptionProposalDecision(
+        _ decision: Result<
+            RealtimeInterruptionDecision,
+            RealtimeResidentBrainError
+        >,
+        for event: RealtimeResidentBrainEvent
+    ) {
+        guard let key = Self.realtimeInterruptionProposalKey(for: event) else {
+            return
+        }
+        if realtimeInterruptionProposalDecisions[key] != nil {
+            realtimeInterruptionProposalDecisionOrder.removeAll { $0 == key }
+        }
+        realtimeInterruptionProposalDecisions[key] = decision
+        realtimeInterruptionProposalDecisionOrder.append(key)
+        while realtimeInterruptionProposalDecisionOrder.count
+                > Self.realtimeInterruptionProposalDecisionCapacity {
+            let retired = realtimeInterruptionProposalDecisionOrder
+                .removeFirst()
+            realtimeInterruptionProposalDecisions.removeValue(forKey: retired)
+        }
+    }
+
+    private static func realtimeInterruptionProposalKey(
+        for event: RealtimeResidentBrainEvent
+    ) -> RealtimeInterruptionProposalKey? {
+        guard case .interruptionProposed(let proposal) = event.kind,
+              proposal.identity == event.identity,
+              let turnID = event.identity.turnID,
+              let responseID = event.identity.responseID else { return nil }
+        return RealtimeInterruptionProposalKey(
+            session: event.identity.session,
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: event.identity.contextRevision,
+            sequence: event.sequence
         )
     }
 
@@ -3095,6 +3583,7 @@ public final class RuntimeCore {
             realtimeBrainContextBridgeState = bridge
         }
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        realtimeInterruptionEvidenceState = nil
         realtimeBrainGeneration = nextIdentity.generation
         realtimeBrainToolResultSequence = 0
         return .success(nextIdentity)

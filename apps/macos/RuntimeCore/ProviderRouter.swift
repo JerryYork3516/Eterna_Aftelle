@@ -1146,6 +1146,15 @@ public final class ProviderRouter {
         try await realtimeResidentBrainProvider.submitToolResult(command)
     }
 
+    func createRealtimeResidentBrainResponse(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) async throws {
+        guard let realtimeResidentBrainProvider else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        try await realtimeResidentBrainProvider.createResponse(command)
+    }
+
     func cancelRealtimeResidentBrainGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
     ) async throws {

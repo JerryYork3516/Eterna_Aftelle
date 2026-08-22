@@ -34,6 +34,10 @@ private actor R5RealtimeProvider: RealtimeResidentBrainProvider {
         resumeResultWaiters()
     }
 
+    func createResponse(
+        _ command: RealtimeBrainCreateResponseCommand
+    ) async throws {}
+
     func cancelGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
     ) async throws {}
@@ -349,9 +353,14 @@ private struct RealtimeResidentBrainToolTests {
             callID: callID
         )
         let identity = eventIdentity(session: stack.identity)
-        let event = toolEvent(
+        try await authorizeResponse(
             identity: identity,
             sequence: 1,
+            stack: stack
+        )
+        let event = toolEvent(
+            identity: identity,
+            sequence: 2,
             callID: callID,
             toolName: "lookup_test_value",
             arguments: #"{"key":"alpha"}"#
@@ -422,10 +431,22 @@ private struct RealtimeResidentBrainToolTests {
             ("call-no-permission", "permission_test_action", #"{}"#,
              "permission_unavailable")
         ]
+        let invalidIdentity = eventIdentity(session: stack.identity)
+        try await authorizeResponse(
+            identity: invalidIdentity,
+            sequence: 1,
+            stack: stack
+        )
         for (offset, item) in invalidCalls.enumerated() {
+            let responseIdentity = RealtimeBrainEventIdentity(
+                session: stack.identity,
+                turnID: invalidIdentity.turnID,
+                responseID: RealtimeBrainResponseID(),
+                contextRevision: invalidIdentity.contextRevision
+            )
             let event = toolEvent(
-                identity: eventIdentity(session: stack.identity),
-                sequence: UInt64(offset + 1),
+                identity: responseIdentity,
+                sequence: UInt64(offset + 2),
                 callID: item.0,
                 toolName: item.1,
                 arguments: item.2
@@ -574,9 +595,14 @@ private struct RealtimeResidentBrainToolTests {
             permissionResolver: approvedResolver
         )
         let approvedIdentity = eventIdentity(session: approved.identity)
-        let approvedEvent = toolEvent(
+        try await authorizeResponse(
             identity: approvedIdentity,
             sequence: 1,
+            stack: approved
+        )
+        let approvedEvent = toolEvent(
+            identity: approvedIdentity,
+            sequence: 2,
             callID: "call-permission-approved",
             toolName: "permission_test_action",
             arguments: #"{}"#
@@ -621,9 +647,15 @@ private struct RealtimeResidentBrainToolTests {
             fixture: fixture,
             permissionResolver: deniedResolver
         )
-        let deniedEvent = toolEvent(
-            identity: eventIdentity(session: denied.identity),
+        let deniedIdentity = eventIdentity(session: denied.identity)
+        try await authorizeResponse(
+            identity: deniedIdentity,
             sequence: 1,
+            stack: denied
+        )
+        let deniedEvent = toolEvent(
+            identity: deniedIdentity,
+            sequence: 2,
             callID: "call-permission-denied",
             toolName: "permission_test_action",
             arguments: #"{}"#
@@ -657,9 +689,15 @@ private struct RealtimeResidentBrainToolTests {
             permissionResolver: R5PermissionResolver()
         )
         await failed.executor.setBehavior(.failure, callID: "call-failed")
-        let failedEvent = toolEvent(
-            identity: eventIdentity(session: failed.identity),
+        let failedIdentity = eventIdentity(session: failed.identity)
+        try await authorizeResponse(
+            identity: failedIdentity,
             sequence: 1,
+            stack: failed
+        )
+        let failedEvent = toolEvent(
+            identity: failedIdentity,
+            sequence: 2,
             callID: "call-failed",
             toolName: "lookup_test_value",
             arguments: #"{"key":"failure"}"#
@@ -686,9 +724,15 @@ private struct RealtimeResidentBrainToolTests {
             .held(#"{"late":true}"#),
             callID: "call-timeout"
         )
-        let timeoutEvent = toolEvent(
-            identity: eventIdentity(session: timedOut.identity),
+        let timeoutIdentity = eventIdentity(session: timedOut.identity)
+        try await authorizeResponse(
+            identity: timeoutIdentity,
             sequence: 1,
+            stack: timedOut
+        )
+        let timeoutEvent = toolEvent(
+            identity: timeoutIdentity,
+            sequence: 2,
             callID: "call-timeout",
             toolName: "timeout_test_value",
             arguments: #"{"key":"timeout"}"#
@@ -733,9 +777,14 @@ private struct RealtimeResidentBrainToolTests {
             callID: "call-duplicate"
         )
         let duplicateIdentity = eventIdentity(session: duplicate.identity)
-        let first = toolEvent(
+        try await authorizeResponse(
             identity: duplicateIdentity,
             sequence: 1,
+            stack: duplicate
+        )
+        let first = toolEvent(
+            identity: duplicateIdentity,
+            sequence: 2,
             callID: "call-duplicate",
             toolName: "lookup_test_value",
             arguments: #"{"key":"once"}"#
@@ -748,7 +797,7 @@ private struct RealtimeResidentBrainToolTests {
         await duplicate.executor.waitUntilRequestCount(1)
         let replay = toolEvent(
             identity: duplicateIdentity,
-            sequence: 2,
+            sequence: 3,
             callID: "call-duplicate",
             toolName: "lookup_test_value",
             arguments: #"{"key":"once"}"#
@@ -791,16 +840,21 @@ private struct RealtimeResidentBrainToolTests {
             callID: "call-B"
         )
         let identity = eventIdentity(session: stack.identity)
-        let first = toolEvent(
+        try await authorizeResponse(
             identity: identity,
             sequence: 1,
+            stack: stack
+        )
+        let first = toolEvent(
+            identity: identity,
+            sequence: 2,
             callID: "call-A",
             toolName: "lookup_test_value",
             arguments: #"{"key":"A"}"#
         )
         let second = toolEvent(
             identity: identity,
-            sequence: 2,
+            sequence: 3,
             callID: "call-B",
             toolName: "lookup_test_value",
             arguments: #"{"key":"B"}"#
@@ -845,9 +899,14 @@ private struct RealtimeResidentBrainToolTests {
             callID: "call-correlation"
         )
         let identity = eventIdentity(session: stack.identity)
-        let event = toolEvent(
+        try await authorizeResponse(
             identity: identity,
             sequence: 1,
+            stack: stack
+        )
+        let event = toolEvent(
+            identity: identity,
+            sequence: 2,
             callID: "call-correlation",
             toolName: "lookup_test_value",
             arguments: #"{"key":"correlation"}"#
@@ -946,9 +1005,17 @@ private struct RealtimeResidentBrainToolTests {
             fixture: fixture,
             permissionResolver: permissionResolver
         )
-        let permissionEvent = toolEvent(
-            identity: eventIdentity(session: pendingPermission.identity),
+        let permissionIdentity = eventIdentity(
+            session: pendingPermission.identity
+        )
+        try await authorizeResponse(
+            identity: permissionIdentity,
             sequence: 1,
+            stack: pendingPermission
+        )
+        let permissionEvent = toolEvent(
+            identity: permissionIdentity,
+            sequence: 2,
             callID: "call-interrupt-permission",
             toolName: "permission_test_action",
             arguments: #"{}"#
@@ -960,7 +1027,8 @@ private struct RealtimeResidentBrainToolTests {
         )
         await permissionResolver.waitUntilRequestCount(1)
         let nextPermissionIdentity = realtimeValue(
-            await pendingPermission.runtime.interruptRealtimeResidentBrain(
+            await pendingPermission.runtime
+                .interruptRealtimeResidentBrainForTesting(
                 identity: pendingPermission.identity,
                 reason: .runtimeDecision
             ),
@@ -1004,9 +1072,14 @@ private struct RealtimeResidentBrainToolTests {
             callID: "call-interrupt-execution"
         )
         let oldIdentity = eventIdentity(session: pendingExecution.identity)
-        let executionEvent = toolEvent(
+        try await authorizeResponse(
             identity: oldIdentity,
             sequence: 1,
+            stack: pendingExecution
+        )
+        let executionEvent = toolEvent(
+            identity: oldIdentity,
+            sequence: 2,
             callID: "call-interrupt-execution",
             toolName: "lookup_test_value",
             arguments: #"{"key":"late"}"#
@@ -1018,7 +1091,8 @@ private struct RealtimeResidentBrainToolTests {
         )
         await pendingExecution.executor.waitUntilRequestCount(1)
         let nextExecutionIdentity = realtimeValue(
-            await pendingExecution.runtime.interruptRealtimeResidentBrain(
+            await pendingExecution.runtime
+                .interruptRealtimeResidentBrainForTesting(
                 identity: pendingExecution.identity,
                 reason: .runtimeDecision
             ),
@@ -1179,6 +1253,28 @@ private struct RealtimeResidentBrainToolTests {
         await stack.provider.enqueue(event)
         return try await stack.runtime.receiveRealtimeResidentBrainEvent(
             session: stack.identity
+        )
+    }
+
+    private static func authorizeResponse(
+        identity: RealtimeBrainEventIdentity,
+        sequence: UInt64,
+        stack: R5Stack
+    ) async throws {
+        let event = RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: identity.session,
+                turnID: identity.turnID,
+                responseID: nil,
+                contextRevision: identity.contextRevision
+            ),
+            sequence: sequence,
+            kind: .userTranscriptFinal("authorize Runtime Tool response")
+        )
+        expectAccepted(
+            try await receive(event, stack: stack),
+            equals: event,
+            "Runtime authorizes the Tool-bearing response"
         )
     }
 

@@ -5,6 +5,15 @@ nonisolated struct MacSpeechRealtimeBrainInputBinding: Sendable, Equatable {
     let captureGeneration: UInt64
 }
 
+nonisolated struct MacSpeechRealtimeBrainAcousticObservation:
+    Sendable,
+    Equatable {
+    let session: RealtimeBrainSessionIdentity
+    let sequence: UInt64
+    let timestampNanoseconds: UInt64
+    let facts: RealtimeInterruptionAcousticFacts
+}
+
 nonisolated enum MacSpeechRealtimeBrainInputBridgeState: String, Sendable, Equatable {
     case idle
     case running
@@ -16,6 +25,7 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
     let state: MacSpeechRealtimeBrainInputBridgeState
     let sessionShortID: String?
     let forwardedFrameCount: UInt64
+    let acousticEvidenceCount: UInt64
     let runtimeRejectedFrameCount: UInt64
     let sendOperationCount: UInt64
     let averageSendDurationMilliseconds: UInt64
@@ -27,6 +37,7 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
         state: .idle,
         sessionShortID: nil,
         forwardedFrameCount: 0,
+        acousticEvidenceCount: 0,
         runtimeRejectedFrameCount: 0,
         sendOperationCount: 0,
         averageSendDurationMilliseconds: 0,
@@ -50,9 +61,14 @@ actor MacSpeechRealtimeBrainInputBridge {
         MacSpeechRealtimeBrainInputBinding
     ) async -> Result<Void, RealtimeResidentBrainError>
 
+    typealias ConsumeAcousticObservation = @MainActor @Sendable (
+        MacSpeechRealtimeBrainAcousticObservation
+    ) async -> Void
+
     private let source: any MacSpeechAudioFrameSourcing
     private let sendFrame: SendFrame
     private let stopInput: StopInput
+    private let consumeAcousticObservation: ConsumeAcousticObservation?
     private var pumpTask: Task<Void, Never>?
     private var activePumpID: UUID?
     private var activeBinding: MacSpeechRealtimeBrainInputBinding?
@@ -64,21 +80,25 @@ actor MacSpeechRealtimeBrainInputBridge {
     private var closeAttemptID: UUID?
     private var state = MacSpeechRealtimeBrainInputBridgeState.idle
     private var forwardedFrameCount: UInt64 = 0
+    private var acousticEvidenceCount: UInt64 = 0
     private var runtimeRejectedFrameCount: UInt64 = 0
     private var sendOperationCount: UInt64 = 0
     private var totalSendDurationMilliseconds: UInt64 = 0
     private var maximumSendDurationMilliseconds: UInt64 = 0
     private var nextSubmittedSequence: UInt64 = 1
+    private var lastSourceGateSequence: UInt64 = 0
     private var lastError: String?
 
     init(
         source: any MacSpeechAudioFrameSourcing,
         sendFrame: @escaping SendFrame,
-        stopInput: @escaping StopInput
+        stopInput: @escaping StopInput,
+        consumeAcousticObservation: ConsumeAcousticObservation? = nil
     ) {
         self.source = source
         self.sendFrame = sendFrame
         self.stopInput = stopInput
+        self.consumeAcousticObservation = consumeAcousticObservation
     }
 
     func start(
@@ -92,11 +112,13 @@ actor MacSpeechRealtimeBrainInputBridge {
         activeBinding = binding
         state = .running
         forwardedFrameCount = 0
+        acousticEvidenceCount = 0
         runtimeRejectedFrameCount = 0
         sendOperationCount = 0
         totalSendDurationMilliseconds = 0
         maximumSendDurationMilliseconds = 0
         nextSubmittedSequence = 1
+        lastSourceGateSequence = 0
         lastError = nil
         let pumpID = UUID()
         activePumpID = pumpID
@@ -317,6 +339,13 @@ actor MacSpeechRealtimeBrainInputBridge {
                 case .success:
                     forwardedFrameCount &+= 1
                     nextSubmittedSequence &+= 1
+                    await forwardAcousticObservation(
+                        frame: realtimeFrame,
+                        binding: binding,
+                        pumpID: pumpID
+                    )
+                case .failure(.invalidIdentity), .failure(.cancelled):
+                    runtimeRejectedFrameCount &+= 1
                 case .failure(let error):
                     await finish(
                         binding: binding,
@@ -328,6 +357,43 @@ actor MacSpeechRealtimeBrainInputBridge {
                 }
             }
         }
+    }
+
+    private func forwardAcousticObservation(
+        frame: RealtimeBrainAudioFrame,
+        binding: MacSpeechRealtimeBrainInputBinding,
+        pumpID: UUID
+    ) async {
+        guard let consumeAcousticObservation,
+              let snapshot = await source.interruptionAcousticSnapshot(),
+              activeBinding == binding,
+              activePumpID == pumpID else { return }
+        if snapshot.sourceGateSequence < lastSourceGateSequence {
+            lastSourceGateSequence = 0
+        }
+        guard snapshot.sourceGateSequence > lastSourceGateSequence,
+              snapshot.nearEndDetected,
+              snapshot.farEndActive,
+              snapshot.sourceGateOpen else { return }
+        lastSourceGateSequence = snapshot.sourceGateSequence
+        acousticEvidenceCount &+= 1
+        await consumeAcousticObservation(
+            MacSpeechRealtimeBrainAcousticObservation(
+                session: binding.session,
+                sequence: frame.sequence,
+                timestampNanoseconds: frame.timestampNanoseconds,
+                facts: RealtimeInterruptionAcousticFacts(
+                    nearEndDetected: snapshot.nearEndDetected,
+                    farEndActive: snapshot.farEndActive,
+                    sourceGateOpen: snapshot.sourceGateOpen,
+                    renderReferenceConfidence:
+                        snapshot.renderReferenceConfidence,
+                    routeStable: snapshot.routeStable,
+                    inputDeviceAvailable: snapshot.inputDeviceAvailable,
+                    outputDeviceAvailable: snapshot.outputDeviceAvailable
+                )
+            )
+        )
     }
 
     private func finish(
@@ -359,6 +425,7 @@ actor MacSpeechRealtimeBrainInputBridge {
                 String($0.session.brainLeaseID.uuidString.prefix(8))
             },
             forwardedFrameCount: forwardedFrameCount,
+            acousticEvidenceCount: acousticEvidenceCount,
             runtimeRejectedFrameCount: runtimeRejectedFrameCount,
             sendOperationCount: sendOperationCount,
             averageSendDurationMilliseconds: sendOperationCount == 0

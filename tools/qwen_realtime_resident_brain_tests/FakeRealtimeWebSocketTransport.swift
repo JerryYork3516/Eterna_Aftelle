@@ -13,6 +13,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var currentConnectionNumber: Int?
     private var activeResponseID: String?
     private var generatedResponseIndex = 0
+    private var nextResponseID: String?
     private var holdsResponseCreation = false
     private var heldResponseCreatedFrames: [String] = []
     private var holdsInputClear = false
@@ -52,7 +53,9 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
             break
         case "response.create":
             generatedResponseIndex += 1
-            let responseID = "response-tool-\(generatedResponseIndex)"
+            let responseID = nextResponseID
+                ?? "response-tool-\(generatedResponseIndex)"
+            nextResponseID = nil
             let event =
                 #"{"type":"response.created","response":{"id":"\#(responseID)","status":"in_progress"}}"#
             if holdsResponseCreation {
@@ -139,6 +142,10 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
             guard case .text(let text) = frame else { return nil }
             return text
         }
+    }
+
+    func useNextResponseID(_ responseID: String) {
+        nextResponseID = responseID
     }
 
     func holdResponseCreationAcknowledgements() {
