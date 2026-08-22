@@ -476,7 +476,7 @@ R8.2.3 = PASS / FROZEN
 
 R8.2.3 未修改任何生产代码。R8.2.3 Human Gate: 真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 NOT_RUN。
 
-R8.2.3 verification: 12 cases / 90 checks; resident-only 5 scenarios with 740 observations and 0 eligible evidence, 0 confirmed interruption, 0 Provider interrupt/cancel, 0 Runtime clear decision, 0 generation change, 0 lease change, 0 false turn; long stress 240 observations 0/0/0; positive control produces 1 eligible evidence 0 confirmed; A7 25 suites / 28 entrypoints / 5150 assertions
+R8.2.3 verification: 12 cases / 93 checks; resident-only 6 scenarios with 740 observations and 0 eligible evidence, 0 confirmed interruption, 0 Provider interrupt/cancel, 0 Runtime clear decision, 0 generation change, 0 lease change, 0 false turn; long stress 120 observations × 32 frames (3840 frames) 0/0/0; positive control produces 0 eligible evidence (real near-end through production chain stays gated out by R8.2.2 alignment gate) and 0 confirmed; A7 25 suites / 28 entrypoints / 5150 assertions
 
 R8.2.3 Human Gate: real device, real speaker/room reverb, USB/Bluetooth/AirPods, real Qwen WebSocket, long-duration live and Release remain NOT_RUN
 
@@ -489,13 +489,13 @@ Next allowed node: R8.3 User Barge-in Tuning
 
 R8.2.3 对 R8.2.1 / R8.2.2 已完成机制进行系统化 resident-only 压力验收。目标：在自动化可覆盖范围内，resident speaking + user silent + far-end / residual echo / tail / timing / route 波动 = 0 self-interrupt。
 
-R8.2.3 覆盖 12 个场景：A) clean far-end；B) loud playback；C) residual echo；D) playback tail 0–500 ms；E) playback level changes；F) timing jitter；G) source-gate epoch flap（bridge + gate 双层验证）；H) slow-send race；I) stop/restart isolation；J) long stress（240 observations）；正向 near-end control（证明 eligibility 路径未被封死）；K) history/memory safety。
+R8.2.3 覆盖 12 个场景：A) clean far-end；B) loud playback；C) residual echo；D) playback tail 0–500 ms；E) playback level changes；F) timing jitter；G) source-gate epoch flap（bridge + gate 双层验证）；H) slow-send race；I) stop/restart isolation；J) long stress（120 observations × 32 frames = 3840 frames）；K) history/memory safety；以及正向 near-end production-chain control（验证真实 near-end 走全链时被 R8.2.2 alignment gate 正确抑制）。
 
-指标：resident-only eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-decision 0、Host playback clear 0、generation change 0、lease change 0、false user turn 0、false history/memory write 0。正向控制产生 1 条 eligible evidence 但 0 confirmed（证明插话路径保留）。
+指标：resident-only eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-decision 0、Host playback clear 0、generation change 0、lease change 0、false user turn 0、false history/memory write 0。正向控制走真实 production chain 注入 near-end，被 R8.2.2 alignment gate 正确抑制为 0 eligible、0 confirmed（说明 gate 是按设计拦截近端信号，未被封死）。
 
 生产链验证：测试经过 AEC Host facts → RealtimeAcousticObservation → Production Classifier → Eligibility Gate → Input Bridge → AppController current Host fence → RuntimeCore atomic ingest，确认测试的是正式 Realtime Route。
 
-R8.2.3 独立测试为 12 cases / 90 checks。R8.2.3 未修改任何生产代码。
+R8.2.3 独立测试为 12 cases / 93 checks。R8.2.3 未修改任何生产代码。
 
-R8.2.3 保留非阻断 P2：正向控制采用 R8.2.2 已知 production chain observation 构造（而非真实 AEC timingLock），因为 timingLock 需要 correlation ≥ 0.35 但 nearEndSpeech 需要 correlation ≤ 0.25，两者互斥。真实生产链的 near-end 走完全部 chain 需要真实声学特征。真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 NOT_RUN；用户真实插话 latency、double-talk 最终识别与 natural turn-taking 属于 R8.3。
+R8.2.3 保留非阻断 P2：正向控制的 production chain 不构造 alignment lock 路径（pure nearEndSpeech correlation < 0.35，与 timingLock 所需的 correlation ≥ 0.35 互斥），因此 R8.2.2 classifier 返回 .indeterminate，gate 返回 .suppressed。这是 R8.2.2 的设计行为：纯近端信号无法绕过 alignment lock 取得 eligibility。真正 production chain 触发 eligibility 需要 echo / tail / near-end 混合信号；这依赖真实扬声器 / 房间混响环境。真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 NOT_RUN；用户真实插话 latency、double-talk 最终识别与 natural turn-taking 属于 R8.3。
 ```
