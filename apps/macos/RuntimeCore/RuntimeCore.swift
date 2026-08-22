@@ -3143,6 +3143,9 @@ public final class RuntimeCore {
               facts.farEndActive
                 == observation.metrics.residentPlaybackActive,
               facts.sourceGateOpen == observation.metrics.sourceGateOpen,
+              facts.sourceGateEpoch == observation.metrics.sourceGateEpoch,
+              observation.metrics.sourceGateOpen,
+              observation.metrics.sourceGateEpoch > 0,
               facts.renderReferenceConfidence
                 == (observation.metrics.sourceAlignmentLocked ? 1 : 0),
               facts.routeStable == observation.metrics.routeStable,

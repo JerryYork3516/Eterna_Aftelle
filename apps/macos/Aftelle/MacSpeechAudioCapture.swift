@@ -65,6 +65,7 @@ nonisolated struct MacSpeechResidentAcousticSnapshot:
     let linearRenderCorrelation: Double
     let inputClassification: MacSpeechAcousticInputClassification
     let sourceGateOpen: Bool
+    let sourceGateEpoch: UInt64
     let aecEnabled: Bool
     let aecActive: Bool
     let sourceAlignmentLocked: Bool

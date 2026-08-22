@@ -37,8 +37,8 @@ CFFIXED_USER_HOME="$runtime_home" \
   60 "$build_dir/realtime_acoustic_eligibility_tests" "$fixture" \
   | tee "$output"
 
-rg -qx 'realtime_acoustic_eligibility_cases=8' "$output"
-rg -qx 'realtime_acoustic_eligibility_checks=70' "$output"
+rg -qx 'realtime_acoustic_eligibility_cases=9' "$output"
+rg -qx 'realtime_acoustic_eligibility_checks=76' "$output"
 rg -qx 'r822_resident_stress_observations=320' "$output"
 rg -qx 'r822_resident_stress_eligible_acoustic_evidence=0' "$output"
 rg -qx 'r822_resident_stress_confirmed_interruptions=0' "$output"
@@ -138,7 +138,12 @@ awk '
   }
   END { if (!forwarded) exit 1 }
 ' "$post_send_block"
+rg -q 'currentSnapshot = await source\.residentAcousticSnapshot' "$bridge"
+rg -q 'currentSnapshot\.sourceGateOpen' "$bridge"
+rg -q 'currentSnapshot\.sourceGateEpoch == eligibilityEpoch' "$bridge"
+rg -q 'facts\.sourceGateEpoch == observation\.metrics\.sourceGateEpoch' "$runtime"
 echo "r822_post_send_identity_guard=PASS"
+echo "r822_source_gate_epoch_fence=PASS"
 if rg -q 'RealtimeAcoustic|Eligibility' "$provider_router"; then
   echo "r822_provider_specific_acoustics=FAIL" >&2
   exit 1

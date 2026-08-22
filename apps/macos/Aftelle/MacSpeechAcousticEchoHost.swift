@@ -183,6 +183,7 @@ nonisolated struct MacSpeechAcousticObservationSnapshot:
     let linearRenderCorrelation: Double
     let inputClassification: MacSpeechAcousticInputClassification
     let sourceGateOpen: Bool
+    let sourceGateEpoch: UInt64
     let aecEnabled: Bool
     let aecActive: Bool
     let sourceAlignmentLocked: Bool
@@ -1866,6 +1867,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             linearRenderCorrelation: linearRenderCorrelation,
             inputClassification: inputClassification,
             sourceGateOpen: sourceGateOpen,
+            sourceGateEpoch: sourceGateEpochSequence,
             aecEnabled: backendStats.enabled,
             aecActive: backendStats.active,
             sourceAlignmentLocked:

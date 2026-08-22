@@ -276,6 +276,7 @@ private struct RealtimeAcousticEligibilityTests {
         try await testNearEndWithSemantic(fixture: fixture)
         testPlaybackTailAndRecovery()
         try await testFreshnessAndIdentity(fixture: fixture)
+        await testSourceGateEpochSendRaces()
         await testSlowSendRolloverAndStop()
 
         print("realtime_acoustic_eligibility_cases=\(cases)")
@@ -899,6 +900,141 @@ private struct RealtimeAcousticEligibilityTests {
         )
     }
 
+    private static func testSourceGateEpochSendRaces() async {
+        cases += 1
+        await runSourceGateEpochRace(
+            label: "Case A close",
+            currentSnapshot: residentSnapshot(
+                captureGeneration: 31,
+                frameIndex: 2,
+                playbackSequence: 1,
+                sourceGateEpoch: 1,
+                sourceGateOpen: false
+            ),
+            expectedEvidenceCount: 0
+        )
+        await runSourceGateEpochRace(
+            label: "Case B reopen",
+            currentSnapshot: residentSnapshot(
+                captureGeneration: 31,
+                frameIndex: 2,
+                playbackSequence: 1,
+                sourceGateEpoch: 2,
+                sourceGateOpen: true
+            ),
+            expectedEvidenceCount: 0
+        )
+        await runSourceGateEpochRace(
+            label: "Case C same epoch",
+            currentSnapshot: residentSnapshot(
+                captureGeneration: 31,
+                frameIndex: 2,
+                playbackSequence: 1,
+                sourceGateEpoch: 1,
+                sourceGateOpen: true
+            ),
+            expectedEvidenceCount: 1
+        )
+        await runRejectedSendEpochCase(error: .invalidIdentity)
+        await runRejectedSendEpochCase(error: .cancelled)
+    }
+
+    private static func runSourceGateEpochRace(
+        label: String,
+        currentSnapshot: MacSpeechResidentAcousticSnapshot,
+        expectedEvidenceCount: Int
+    ) async {
+        let generation: UInt64 = 31
+        let session = sessionIdentity(seed: label, generation: 1)
+        let source = R822AudioSource()
+        let barrier = R822SendBarrier()
+        let recorder = R822CarrierRecorder()
+        source.activate(generation: generation)
+        source.setSnapshot(residentSnapshot(
+            captureGeneration: generation,
+            frameIndex: 1,
+            playbackSequence: 1,
+            sourceGateEpoch: 1,
+            sourceGateOpen: true
+        ))
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { _ in
+                await barrier.hold()
+                await barrier.markReturned()
+                return .success(())
+            },
+            stopInput: { _ in .success(()) },
+            consumeAcousticObservation: { value in
+                await recorder.record(value)
+            }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: generation
+        ))
+        source.appendFrame(generation: generation)
+        await waitUntil("\(label) send entered") { await barrier.hasEntered() }
+        source.setSnapshot(currentSnapshot)
+        await barrier.release()
+        await waitUntil("\(label) send returned") { await barrier.hasReturned() }
+        try? await Task.sleep(for: .milliseconds(20))
+        expect(
+            await recorder.snapshot().count == expectedEvidenceCount,
+            "\(label) fences the exact source-gate epoch"
+        )
+        _ = await bridge.stop(expectedSession: session)
+    }
+
+    private static func runRejectedSendEpochCase(
+        error: RealtimeResidentBrainError
+    ) async {
+        let generation: UInt64 = error == .invalidIdentity ? 41 : 42
+        let session = sessionIdentity(
+            seed: "rejected-\(generation)",
+            generation: 1
+        )
+        let source = R822AudioSource()
+        let recorder = R822CarrierRecorder()
+        source.activate(generation: generation)
+        source.setSnapshot(residentSnapshot(
+            captureGeneration: generation,
+            frameIndex: 1,
+            playbackSequence: 1,
+            sourceGateEpoch: 1,
+            sourceGateOpen: true
+        ))
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { _ in .failure(error) },
+            stopInput: { _ in .success(()) },
+            consumeAcousticObservation: { value in
+                await recorder.record(value)
+            }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: generation
+        ))
+        source.appendFrame(generation: generation)
+        await waitUntil("rejected send settled") {
+            await bridge.currentSnapshot().sendOperationCount == 1
+        }
+        source.setSnapshot(residentSnapshot(
+            captureGeneration: generation,
+            frameIndex: 2,
+            playbackSequence: 1,
+            sourceGateEpoch: 2,
+            sourceGateOpen: true
+        ))
+        try? await Task.sleep(for: .milliseconds(20))
+        expect(await recorder.snapshot().isEmpty,
+               "\(error) cannot rearm old epoch eligibility")
+        expect(await bridge.currentSnapshot().acousticEvidenceCount == 0,
+               "\(error) cannot account old epoch evidence")
+        _ = await bridge.stop(expectedSession: session)
+    }
+
     private static func testSlowSendRolloverAndStop() async {
         cases += 1
         let session = sessionIdentity(seed: "slow-send", generation: 1)
@@ -945,16 +1081,9 @@ private struct RealtimeAcousticEligibilityTests {
         await waitUntil("slow send returned") {
             await barrier.hasReturned()
         }
-        await waitUntil("old carrier delivered") {
-            await recorder.snapshot().count == 1
-        }
-        guard let oldCarrier = await recorder.snapshot().first else {
-            fatalError("slow-send carrier missing")
-        }
-        expect(oldCarrier.playbackSequence == 1,
-               "eligible carrier freezes the observed playback sequence")
-        expect(!oldCarrier.matchesCurrentPlayback(nextSnapshot),
-               "old playback carrier cannot attach to the next target")
+        try? await Task.sleep(for: .milliseconds(20))
+        expect(await recorder.snapshot().isEmpty,
+               "old playback eligibility is discarded after send")
         let suspended = await bridge.suspendForGenerationTransition(
             session: session
         )
@@ -971,7 +1100,7 @@ private struct RealtimeAcousticEligibilityTests {
         try? await Task.sleep(for: .milliseconds(15))
         source.appendFrame(generation: generation)
         await waitUntil("rebound carrier delivered") {
-            await recorder.snapshot().count == 2
+            await recorder.snapshot().count == 1
         }
         let reboundCarriers = await recorder.snapshot()
         expect(
@@ -1144,6 +1273,7 @@ private struct RealtimeAcousticEligibilityTests {
                     observation.identity.timestampNanoseconds
             ),
             source: .acousticHost(RealtimeInterruptionAcousticFacts(
+                sourceGateEpoch: metrics.sourceGateEpoch,
                 nearEndDetected:
                     observation.classification == .nearEndCandidate,
                 farEndActive: metrics.residentPlaybackActive,
@@ -1257,6 +1387,7 @@ private struct RealtimeAcousticEligibilityTests {
             sourceAssessment: source,
             sourceGateOpen: sourceGateOpen
                 ?? (fixture == .nearEndCandidate),
+            sourceGateEpoch: 1,
             aecActive: true,
             sourceAlignmentLocked: renderReferenceAvailable,
             routeStable: routeStable,
@@ -1311,6 +1442,7 @@ private struct RealtimeAcousticEligibilityTests {
             driftState: snapshot.driftTrend == "stable" ? .stable : .unknown,
             sourceAssessment: source,
             sourceGateOpen: snapshot.sourceGateOpen,
+            sourceGateEpoch: snapshot.sourceGateEpoch,
             aecActive: snapshot.aecActive,
             sourceAlignmentLocked: snapshot.sourceAlignmentLocked,
             routeStable: true,
@@ -1354,6 +1486,22 @@ private struct RealtimeAcousticEligibilityTests {
         playbackSequence: UInt64,
         nearEnd: Bool
     ) -> MacSpeechResidentAcousticSnapshot {
+        residentSnapshot(
+            captureGeneration: captureGeneration,
+            frameIndex: frameIndex,
+            playbackSequence: playbackSequence,
+            sourceGateEpoch: nearEnd ? 1 : 0,
+            sourceGateOpen: nearEnd
+        )
+    }
+
+    private static func residentSnapshot(
+        captureGeneration: UInt64,
+        frameIndex: UInt64,
+        playbackSequence: UInt64,
+        sourceGateEpoch: UInt64,
+        sourceGateOpen: Bool
+    ) -> MacSpeechResidentAcousticSnapshot {
         let captureTimestamp = monotonicNow() - 5_000_000
         let renderTimestamp = captureTimestamp - 80_000_000
         return MacSpeechResidentAcousticSnapshot(
@@ -1367,13 +1515,14 @@ private struct RealtimeAcousticEligibilityTests {
             renderReferenceRMS: 0.2,
             renderHostTimeNanoseconds: renderTimestamp,
             rawCaptureRMS: 0.2,
-            processedCaptureRMS: nearEnd ? 0.2 : 0.002,
-            linearAECOutputRMS: nearEnd ? 0.2 : 0.002,
-            renderCaptureCorrelation: nearEnd ? 0.1 : 0.8,
+            processedCaptureRMS: sourceGateOpen ? 0.2 : 0.002,
+            linearAECOutputRMS: sourceGateOpen ? 0.2 : 0.002,
+            renderCaptureCorrelation: sourceGateOpen ? 0.1 : 0.8,
             residualRenderCorrelation: 0.1,
             linearRenderCorrelation: 0.1,
-            inputClassification: nearEnd ? .nearEndSpeech : .echoOnly,
-            sourceGateOpen: nearEnd,
+            inputClassification: sourceGateOpen ? .nearEndSpeech : .echoOnly,
+            sourceGateOpen: sourceGateOpen,
+            sourceGateEpoch: sourceGateEpoch,
             aecEnabled: true,
             aecActive: true,
             sourceAlignmentLocked: true,

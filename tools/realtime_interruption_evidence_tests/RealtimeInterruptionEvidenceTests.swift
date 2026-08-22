@@ -1604,6 +1604,7 @@ private struct RealtimeInterruptionEvidenceTests {
                 timestampNanoseconds: timestamp ?? monotonicNow()
             ),
             source: .acousticHost(RealtimeInterruptionAcousticFacts(
+                sourceGateEpoch: 1,
                 nearEndDetected: true,
                 farEndActive: true,
                 sourceGateOpen: true,

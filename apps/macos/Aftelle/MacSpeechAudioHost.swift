@@ -186,6 +186,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
                 acoustic.linearRenderCorrelation,
             inputClassification: acoustic.inputClassification,
             sourceGateOpen: acoustic.sourceGateOpen,
+            sourceGateEpoch: acoustic.sourceGateEpoch,
             aecEnabled: acoustic.aecEnabled,
             aecActive: acoustic.aecActive,
             sourceAlignmentLocked: acoustic.sourceAlignmentLocked,

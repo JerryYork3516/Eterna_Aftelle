@@ -685,6 +685,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             linearRenderCorrelation: 0.1,
             inputClassification: nearEnd ? .nearEndSpeech : .echoOnly,
             sourceGateOpen: nearEnd,
+            sourceGateEpoch: nearEnd ? 1 : 0,
             aecEnabled: true,
             aecActive: true,
             sourceAlignmentLocked: true,

@@ -346,6 +346,7 @@ nonisolated struct RealtimeAcousticMetrics: Sendable, Equatable {
     let driftState: RealtimeAcousticDriftState
     let sourceAssessment: RealtimeAcousticSourceAssessment
     let sourceGateOpen: Bool
+    let sourceGateEpoch: UInt64
     let aecActive: Bool
     let sourceAlignmentLocked: Bool
     let routeStable: Bool
@@ -707,6 +708,7 @@ nonisolated struct RealtimeInterruptionEvidenceIdentity:
 nonisolated struct RealtimeInterruptionAcousticFacts:
     Sendable,
     Equatable {
+    let sourceGateEpoch: UInt64
     let nearEndDetected: Bool
     let farEndActive: Bool
     let sourceGateOpen: Bool

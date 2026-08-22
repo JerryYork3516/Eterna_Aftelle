@@ -1371,6 +1371,7 @@ private struct RealtimeAcousticObservationTests {
             sourceAssessment: source,
             sourceGateOpen: source == .nearEndSpeech
                 || source == .doubleTalk,
+            sourceGateEpoch: 1,
             aecActive: aecActive,
             sourceAlignmentLocked: renderTimestampAvailable,
             routeStable: routeStable,
@@ -1430,6 +1431,7 @@ private struct RealtimeAcousticObservationTests {
                 classification == .residualEchoLikely ? 0.8 : 0.1,
             inputClassification: source,
             sourceGateOpen: classification == .nearEndCandidate,
+            sourceGateEpoch: classification == .nearEndCandidate ? 1 : 0,
             aecEnabled: aecActive,
             aecActive: aecActive,
             sourceAlignmentLocked: renderTimestamp != nil,

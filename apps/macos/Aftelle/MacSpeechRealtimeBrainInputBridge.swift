@@ -23,6 +23,10 @@ nonisolated struct MacSpeechRealtimeBrainAcousticObservation:
         observation.metrics.residentPlaybackSequence
     }
 
+    var sourceGateEpoch: UInt64 {
+        observation.metrics.sourceGateEpoch
+    }
+
     var sequence: UInt64 { observation.identity.sequence }
 
     var timestampNanoseconds: UInt64 {
@@ -136,6 +140,7 @@ actor MacSpeechRealtimeBrainInputBridge {
         RealtimeAcousticInterruptionEligibilityGate?
     private var pendingEligibleAcousticObservation:
         RealtimeAcousticObservation?
+    private var pendingEligibilitySourceGateEpoch: UInt64?
     private var acousticEligibilityForwarded = false
     private var lastError: String?
 
@@ -419,6 +424,7 @@ actor MacSpeechRealtimeBrainInputBridge {
                     )
                 case .failure(.invalidIdentity), .failure(.cancelled):
                     pendingEligibleAcousticObservation = nil
+                    pendingEligibilitySourceGateEpoch = nil
                     acousticEligibilityForwarded = false
                     acousticEligibilityGate =
                         RealtimeAcousticInterruptionEligibilityGate(
@@ -492,6 +498,7 @@ actor MacSpeechRealtimeBrainInputBridge {
                 snapshot.inputClassification
             ),
             sourceGateOpen: snapshot.sourceGateOpen,
+            sourceGateEpoch: snapshot.sourceGateEpoch,
             aecActive: snapshot.aecActive,
             sourceAlignmentLocked: snapshot.sourceAlignmentLocked,
             routeStable: snapshot.routeStable,
@@ -520,12 +527,15 @@ actor MacSpeechRealtimeBrainInputBridge {
             switch disposition {
             case .eligible:
                 pendingEligibleAcousticObservation = observation
+                pendingEligibilitySourceGateEpoch =
+                    observation.metrics.sourceGateEpoch
                 acousticEligibilityForwarded = false
                 isEligibleCandidate = true
             case .suppressed(.alreadyEligible):
                 break
             case .suppressed:
                 pendingEligibleAcousticObservation = nil
+                pendingEligibilitySourceGateEpoch = nil
             }
         }
 
@@ -582,12 +592,26 @@ actor MacSpeechRealtimeBrainInputBridge {
         guard let consumeAcousticObservation,
               !acousticEligibilityForwarded,
               let observation = pendingEligibleAcousticObservation,
+              let eligibilityEpoch = pendingEligibilitySourceGateEpoch,
               observation.identity.session == binding.session,
               observation.identity.captureGeneration
                 == binding.captureGeneration,
               activeBinding == binding,
               activePumpID == pumpID else { return }
+        guard let currentSnapshot = await source.residentAcousticSnapshot(),
+              currentSnapshot.captureGeneration == binding.captureGeneration,
+              currentSnapshot.playbackSequence
+                == observation.metrics.residentPlaybackSequence,
+              currentSnapshot.residentPlaybackActive,
+              currentSnapshot.sourceGateOpen,
+              currentSnapshot.sourceGateEpoch == eligibilityEpoch else {
+            pendingEligibleAcousticObservation = nil
+            pendingEligibilitySourceGateEpoch = nil
+            acousticEligibilityForwarded = false
+            return
+        }
         pendingEligibleAcousticObservation = nil
+        pendingEligibilitySourceGateEpoch = nil
         acousticEligibilityForwarded = true
         let metrics = observation.metrics
         acousticEvidenceCount &+= 1
@@ -595,6 +619,7 @@ actor MacSpeechRealtimeBrainInputBridge {
             MacSpeechRealtimeBrainAcousticObservation(
                 observation: observation,
                 facts: RealtimeInterruptionAcousticFacts(
+                    sourceGateEpoch: metrics.sourceGateEpoch,
                     nearEndDetected:
                         observation.classification == .nearEndCandidate,
                     farEndActive: metrics.residentPlaybackActive,
@@ -674,6 +699,7 @@ actor MacSpeechRealtimeBrainInputBridge {
             )
         }
         pendingEligibleAcousticObservation = nil
+        pendingEligibilitySourceGateEpoch = nil
         acousticEligibilityForwarded = false
         nextResidentAcousticObservationSequence = 1
         nextResidentAcousticSnapshotPollNanoseconds = 0
