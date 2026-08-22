@@ -22,11 +22,6 @@ nonisolated struct RealtimeBrainSessionIdentity: Hashable, Sendable {
     let generation: UInt64
 }
 
-nonisolated struct MacSpeechRealtimeBrainInputBinding: Sendable, Equatable {
-    let session: RealtimeBrainSessionIdentity
-    let captureGeneration: UInt64
-}
-
 nonisolated struct RealtimeBrainTurnID: Hashable, Sendable {
     let rawValue: UUID
 

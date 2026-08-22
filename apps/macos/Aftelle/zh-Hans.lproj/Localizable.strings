@@ -119,6 +119,7 @@
 "particleDebug.audioHost.lastError" = "最近错误";
 "particleDebug.audioHost.startCapture" = "开始采集";
 "particleDebug.audioHost.startBridge" = "启动正式语音";
+"particleDebug.audioHost.startRealtimeBrain" = "启动实时大脑";
 "particleDebug.audioHost.stopCapture" = "停止采集";
 "particleDebug.audioHost.inputBridge" = "输入桥";
 "particleDebug.audioHost.inputBridge.idle" = "空闲";

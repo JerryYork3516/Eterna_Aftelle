@@ -1,6 +1,6 @@
 # Realtime Resident Brain Architecture · R0–R7 Freeze
 
-> 状态：`R0–R6 PASS / FROZEN`；R7 回归测试已就绪，等待实施
+> 状态：`R0–R7 PASS / FROZEN`；下一节点只允许进入 R8
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -377,7 +377,7 @@ R3 First Realtime Provider Adapter — PASS / FROZEN
 R4 Context / Canonical Turn / Memory Bridge — PASS / FROZEN
 R5 Tool / Permission Bridge — PASS / FROZEN
 R6 Realtime Voice Binding Foundation — PASS / FROZEN
-R7 Full-duplex Audio Integration
+R7 Full-duplex Audio Integration — PASS / FROZEN
 R8 Interruption / Turn-taking
 R9 Cascaded Fallback + Regression
 R10 Real-device / Long-session Freeze
@@ -415,6 +415,12 @@ R6 建立 provider-neutral `RuntimeVoiceBinding` 基础层；`RuntimeVoiceProvid
 
 R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、正式 Capture / Playback 全双工主链、自然 interruption / turn-taking、Cascaded 自动 fallback 或真机长会话；这些能力仍分别留在后续节点，下一节点只允许进入 R7。
 
+R7 将既有 `MacSpeechAudioCapture` 的 WebRTC AEC3 后 PCM 通过单一 `MacSpeechRealtimeBrainInputBridge` 送入 RuntimeCore；Bridge 使用独立、连续的 submitted-frame sequence，Capture drop-oldest 不会把序列缺口带入严格的 Realtime Provider gate。Provider-neutral `residentAudioDelta` 只有在 RuntimeCore 完成 lease / route epoch / generation / turn / response identity fence 后，才由单一 `MacSpeechRealtimeBrainOutputBridge` 交给既有 `MacSpeechAudioOutputHost`。格式重采样仍只发生在 Adapter 或共享 Audio Output 边界；AEC render reference 继续来自共享物理播放链最终送入 player node 的 PCM，不直接使用网络 PCM，也不新增 Realtime 专用播放器或第二 AEC Host。
+
+一次 Start 会同时建立一个持续 Capture、一个 Realtime Provider Session、一条 ActiveBrainLease 与一个 Runtime event receive loop；`response.done` / `residentSemanticFinal`、Provider audio done、共享播放队列 drained 与物理 `playbackCompleted` 保持不同语义。一轮物理播放完成后仅回到 listening，不关闭 Capture、Provider Session 或 lease；User Stop 会先失效 route attempt、停止 receive / capture 并清空共享 playback，再等待 Runtime / Provider close。close 失败时 Host 保留当前 identity 供同一 Stop 重试，不释放失败收口的 lease。generation cancel 只在同一 lease / route epoch 下重绑输入输出 Bridge、清旧 PCM 并把 submitted sequence 归一为 1，不重开 Provider Session。输入 Capture queue、Provider event queue、共享 playback PCM queue、enqueue waiter 与 Host sink backlog 均有界；audio done 后同 response late delta、cancel / stop / route replacement 的旧 identity 与旧 PCM 均 fail-closed。
+
+R7 独立零网络正式 Host 测试为 11 cases / 96 checks，真实贯穿 RuntimeCore → ExecutionEngine → ProviderRouter → Fake Realtime Provider，并自动验证同一 Session / lease 下两轮 input/output、generation rebind、旧代 PCM 拒绝、audio-done late delta、Stop 自回调安全与 close failure retry。A7 为 21 suites / 24 entrypoints / 4353 assertions；NativeSpeech duplex 359 checks、shared Audio Output 163 checks、AEC 990 checks、Cascaded speech route 47 checks、macOS clean build、architecture guard、secret guard 与仓库无污染检查均 PASS。真实 Qwen WebSocket、真实麦克风 / 扬声器、USB / Bluetooth / AirPods、长时间真机 full-duplex，以及当前 DEBUG Host 之外的 Release 启用仍为 `NOT_RUN / HUMAN_GATE`；R7 未实现 R8 的自然 interruption、turn-taking、double-talk 或 source-gate 策略。
+
 ---
 
 ## R0–R7 Freeze Result
@@ -427,6 +433,7 @@ R3 = PASS / FROZEN
 R4 = PASS / FROZEN
 R5 = PASS / FROZEN
 R6 = PASS / FROZEN
+R7 = PASS / FROZEN
 
 Single Runtime authority: RuntimeCore
 Max active Brain per Runtime Session: 1
@@ -456,5 +463,10 @@ R6 binding: current providerDefault only; Provider-private resolution never beco
 R6 future source: Studio VoiceProfile may replace the binding source without changing the Realtime Brain / RuntimeCore main path
 R6 scope: no Studio VoiceProfile production, voice cloning, full-duplex Host audio, interruption, route fallback or real-device claim
 R6 verification: 6 cases / 62 checks / zero network; A7 20 suites / 23 entrypoints / 4238 assertions; macOS clean build and architecture / secret guards PASS
-Next allowed node: R7 Full-duplex Audio Integration
+R7 input: one persistent AEC-processed Capture pump with contiguous submitted-frame sequence through RuntimeCore to the selected Realtime Provider
+R7 output: Runtime-accepted residentAudioDelta only, through the existing shared Audio Output Host; final local playback PCM remains the sole AEC render reference
+R7 session: one Start supports two or more turns under one Provider Session and ActiveBrainLease; response completion returns to listening; User Stop performs full settlement
+R7 verification: 11 cases / 96 checks / zero network; NativeSpeech duplex 359 checks; shared Audio Output 163 checks; AEC 990 checks; A7 21 suites / 24 entrypoints / 4353 assertions; clean build and guards PASS
+R7 Human Gate: live Qwen WebSocket, real microphone / speaker, USB / Bluetooth / AirPods, long-duration full-duplex and Release activation outside the current DEBUG Host remain NOT_RUN
+Next allowed node: R8 Interruption / Turn-taking
 ```

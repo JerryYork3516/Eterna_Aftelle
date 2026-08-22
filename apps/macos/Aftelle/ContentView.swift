@@ -606,6 +606,8 @@ struct ParticleDebugWindow: View {
                 controller.startSpeechAudioCapture,
             startNativeSpeechInputBridge:
                 controller.startFormalSpeechRoute,
+            startRealtimeResidentBrainRoute:
+                controller.startRealtimeResidentBrainRoute,
             stopSpeechAudioCapture:
                 controller.stopSpeechAudioCapture,
             exportRealtimeSpeechDiagnostics:
@@ -779,6 +781,7 @@ private struct ParticleDebugPanel: View {
     let requestMicrophoneAuthorization: () async -> Void
     let startSpeechAudioCapture: () async -> Void
     let startNativeSpeechInputBridge: () async -> Void
+    let startRealtimeResidentBrainRoute: () async -> Void
     let stopSpeechAudioCapture: () async -> Void
     let exportRealtimeSpeechDiagnostics: () -> Void
     let clearRealtimeSpeechDiagnostics: () -> Void
@@ -1041,6 +1044,8 @@ private struct ParticleDebugPanel: View {
                                 startCapture: startSpeechAudioCapture,
                                 startNativeSpeechBridge:
                                     startNativeSpeechInputBridge,
+                                startRealtimeBrain:
+                                    startRealtimeResidentBrainRoute,
                                 stopCapture: stopSpeechAudioCapture,
                                 exportDiagnostics:
                                     exportRealtimeSpeechDiagnostics,
@@ -2073,6 +2078,7 @@ private struct SpeechAudioHostDebugView: View {
     let requestAuthorization: () async -> Void
     let startCapture: () async -> Void
     let startNativeSpeechBridge: () async -> Void
+    let startRealtimeBrain: () async -> Void
     let stopCapture: () async -> Void
     let exportDiagnostics: () -> Void
     let clearDiagnostics: () -> Void
@@ -2470,6 +2476,27 @@ private struct SpeechAudioHostDebugView: View {
                             || formalRouteSnapshot.phase.isActive
                             || bridgeSnapshot.hasActivePump
                             || outputBridgeSnapshot.hasActiveReceiveLoop
+                            || (formalRouteSnapshot.phase == .failed
+                                && formalRouteSnapshot.generation != nil)
+                    )
+                    Button(
+                        String(
+                            localized:
+                                "particleDebug.audioHost.startRealtimeBrain"
+                        )
+                    ) {
+                        Task {
+                            await startRealtimeBrain()
+                        }
+                    }
+                    .disabled(
+                        snapshot.authorization != .authorized
+                            || !snapshot.inputDevice.isAvailable
+                            || formalRouteSnapshot.phase.isActive
+                            || bridgeSnapshot.hasActivePump
+                            || outputBridgeSnapshot.hasActiveReceiveLoop
+                            || (formalRouteSnapshot.phase == .failed
+                                && formalRouteSnapshot.generation != nil)
                     )
                     Button(
                         String(localized: "particleDebug.audioHost.stopCapture")
@@ -2478,7 +2505,11 @@ private struct SpeechAudioHostDebugView: View {
                             await stopCapture()
                         }
                     }
-                    .disabled(!snapshot.isCapturing)
+                    .disabled(
+                        !snapshot.isCapturing
+                            && !(formalRouteSnapshot.phase == .failed
+                                && formalRouteSnapshot.generation != nil)
+                    )
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {

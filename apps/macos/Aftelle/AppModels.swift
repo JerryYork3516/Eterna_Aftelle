@@ -1754,17 +1754,11 @@ public final class OrchestrationKernel {
         }
     }
 
-    #if DEBUG
-    func startRealtimeResidentBrainInput(
-        session: RealtimeBrainSessionIdentity,
-        captureGeneration: UInt64
-    ) async -> Result<MacSpeechRealtimeBrainInputBinding, RealtimeResidentBrainError> {
-        .success(
-            MacSpeechRealtimeBrainInputBinding(
-                session: session,
-                captureGeneration: captureGeneration
-            )
-        )
+    func startRealtimeResidentBrainInput() async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        await runtimeCore.startRealtimeResidentBrainSession()
     }
 
     nonisolated func sendRealtimeResidentBrainAudio(
@@ -1773,15 +1767,42 @@ public final class OrchestrationKernel {
         await runtimeCore.appendRealtimeResidentBrainAudio(frame)
     }
 
+    nonisolated func receiveRealtimeResidentBrainEvent(
+        session: RealtimeBrainSessionIdentity
+    ) async -> Result<RealtimeBrainEventDisposition, RealtimeResidentBrainError> {
+        do {
+            return .success(
+                try await runtimeCore.receiveRealtimeResidentBrainEvent(
+                    session: session
+                )
+            )
+        } catch let error as RealtimeResidentBrainError {
+            return .failure(error)
+        } catch {
+            return .failure(.transportFailure)
+        }
+    }
+
     nonisolated func stopRealtimeResidentBrainInput(
-        binding: MacSpeechRealtimeBrainInputBinding
-    ) async {
-        _ = await runtimeCore.cancelRealtimeResidentBrainGeneration(
-            identity: binding.session,
-            reason: .runtimeDecision
+        session: RealtimeBrainSessionIdentity
+    ) async -> Result<Void, RealtimeResidentBrainError> {
+        await runtimeCore.closeRealtimeResidentBrainSession(
+            identity: session
         )
     }
-    #endif
+
+    func cancelRealtimeResidentBrainGeneration(
+        session: RealtimeBrainSessionIdentity,
+        reason: RealtimeBrainCancellationReason
+    ) async -> Result<
+        RealtimeBrainSessionIdentity,
+        RealtimeResidentBrainError
+    > {
+        await runtimeCore.cancelRealtimeResidentBrainGeneration(
+            identity: session,
+            reason: reason
+        )
+    }
 
     func testResidentReply(
         inputText: String,

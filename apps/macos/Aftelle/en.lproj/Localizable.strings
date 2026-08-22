@@ -119,6 +119,7 @@
 "particleDebug.audioHost.lastError" = "Last Error";
 "particleDebug.audioHost.startCapture" = "Start Capture";
 "particleDebug.audioHost.startBridge" = "Start formal speech";
+"particleDebug.audioHost.startRealtimeBrain" = "Start realtime brain";
 "particleDebug.audioHost.stopCapture" = "Stop Capture";
 "particleDebug.audioHost.inputBridge" = "Input Bridge";
 "particleDebug.audioHost.inputBridge.idle" = "Idle";

@@ -943,6 +943,9 @@ private struct MacSpeechAudioOutputHostTests {
                 lock.withLock { events.append(event) }
             }
             var count: Int { lock.withLock { events.count } }
+            func contains(_ kind: MacSpeechAudioOutputEventKind) -> Bool {
+                lock.withLock { events.contains(where: { $0.kind == kind }) }
+            }
         }
         let collector = EventCollector()
 
@@ -957,15 +960,20 @@ private struct MacSpeechAudioOutputHostTests {
         for i in 0..<40 {
             await host.appendEvent(.chunkPlayed, sequence: UInt64(i))
         }
+        await host.appendEvent(.playbackCompleted)
 
         expect(await host.pendingSinkEventCount == 32,
                "pending sink queue is capped at capacity 32")
 
         await waitUntil(attempts: 500) {
-            collector.count >= 32
+            collector.contains(.playbackCompleted)
         }
-        expect(collector.count == 32 || collector.count == 33,
-               "one in-flight plus the retained 32 are delivered")
+        expect(collector.contains(.playbackCompleted),
+               "bounded sink pressure preserves playback completion")
+
+        _ = await host.clear()
+        expect(await host.pendingSinkEventCount == 0,
+               "clear removes stale pending sink events")
 
         let snapshot = await host.currentSnapshot()
         expect(snapshot.recentEvents.count == 16,

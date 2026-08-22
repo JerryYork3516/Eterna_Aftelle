@@ -95,7 +95,7 @@ actor MacSpeechAudioOutputHost {
     private var localFormat = "current default output / not prepared"
     private var queue: MacSpeechPCMPlaybackBuffer
     private var inFlightByteCounts: [UInt64: Int] = [:]
-    private var waitingEnqueueContinuations: [CheckedContinuation<Void, Never>] = []
+    private var waitingEnqueueContinuation: CheckedContinuation<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var enqueuedChunkCount = 0
     private var enqueuedByteCount = 0
@@ -113,6 +113,7 @@ actor MacSpeechAudioOutputHost {
     private var pendingSinkEvents: [MacSpeechAudioOutputEvent] = []
     private let pendingSinkEventCapacity = 32
     private var eventDeliveryTask: Task<Void, Never>?
+    private var eventDeliveryAttemptID: UUID?
     var pendingSinkEventCount: Int { pendingSinkEvents.count }
     private var isMonitoringDeviceRoute = false
     private var providerResponseFinished = false
@@ -135,6 +136,7 @@ actor MacSpeechAudioOutputHost {
     }
 
     func setEventSink(_ sink: @escaping EventSink) {
+        resetEventDelivery()
         eventSink = sink
     }
 
@@ -198,8 +200,15 @@ actor MacSpeechAudioOutputHost {
             }
             pressureWaitCount += 1
             appendEvent(.bufferPressure, sequence: sequence)
+            guard waitingEnqueueContinuation == nil else {
+                return fail(.queueFull)
+            }
             await withCheckedContinuation { continuation in
-                waitingEnqueueContinuations.append(continuation)
+                if queue.count < configuration.capacity {
+                    continuation.resume()
+                } else {
+                    waitingEnqueueContinuation = continuation
+                }
             }
             guard expectedGeneration == generation else {
                 lastError = .staleGeneration
@@ -519,14 +528,15 @@ actor MacSpeechAudioOutputHost {
     }
 
     private func resumeOneWaitingEnqueue() {
-        guard !waitingEnqueueContinuations.isEmpty else { return }
-        waitingEnqueueContinuations.removeFirst().resume()
+        guard let continuation = waitingEnqueueContinuation else { return }
+        waitingEnqueueContinuation = nil
+        continuation.resume()
     }
 
     private func resumeWaitingEnqueues() {
-        let continuations = waitingEnqueueContinuations
-        waitingEnqueueContinuations.removeAll(keepingCapacity: true)
-        continuations.forEach { $0.resume() }
+        let continuation = waitingEnqueueContinuation
+        waitingEnqueueContinuation = nil
+        continuation?.resume()
     }
 
     @discardableResult
@@ -543,6 +553,7 @@ actor MacSpeechAudioOutputHost {
         pendingFadeIn = nil
         state = .failed
         lastError = error
+        resetEventDelivery()
         appendEvent(.failed, error: error)
         return snapshot()
     }
@@ -550,6 +561,7 @@ actor MacSpeechAudioOutputHost {
     private func invalidatePlayback(
         keepsEngineRunning: Bool = false
     ) {
+        resetEventDelivery()
         timeoutTask?.cancel()
         timeoutTask = nil
         if keepsEngineRunning {
@@ -609,6 +621,7 @@ actor MacSpeechAudioOutputHost {
         localFormat = "current default output / not prepared"
         state = .failed
         lastError = .outputDeviceChanged
+        resetEventDelivery()
         appendEvent(.failed, error: .outputDeviceChanged)
         advancePlaybackGeneration()
         queue.reset(generation: generation)
@@ -637,8 +650,25 @@ actor MacSpeechAudioOutputHost {
         )
         if eventSink != nil,
            let event = recentEvents.last {
+            if Self.isTerminalSinkEvent(event),
+               pendingSinkEvents.contains(where: {
+                   $0.generation == event.generation
+                       && $0.kind == event.kind
+               }) {
+                return
+            }
             if pendingSinkEvents.count >= pendingSinkEventCapacity {
-                pendingSinkEvents.removeFirst()
+                if let removable = pendingSinkEvents.firstIndex(
+                    where: { !Self.isTerminalSinkEvent($0) }
+                ) {
+                    pendingSinkEvents.remove(at: removable)
+                } else if let stale = pendingSinkEvents.firstIndex(
+                    where: { $0.generation != event.generation }
+                ) {
+                    pendingSinkEvents.remove(at: stale)
+                } else {
+                    return
+                }
             }
             pendingSinkEvents.append(event)
             startEventDeliveryIfNeeded()
@@ -647,22 +677,50 @@ actor MacSpeechAudioOutputHost {
 
     private func startEventDeliveryIfNeeded() {
         guard eventDeliveryTask == nil else { return }
+        let attemptID = UUID()
+        eventDeliveryAttemptID = attemptID
         eventDeliveryTask = Task { [weak self] in
-            await self?.deliverPendingEvents()
+            await self?.deliverPendingEvents(attemptID: attemptID)
         }
     }
 
-    private func deliverPendingEvents() async {
-        while !pendingSinkEvents.isEmpty {
+    private func deliverPendingEvents(attemptID: UUID) async {
+        while !Task.isCancelled,
+              eventDeliveryAttemptID == attemptID,
+              !pendingSinkEvents.isEmpty {
             let event = pendingSinkEvents.removeFirst()
             guard let eventSink else {
                 pendingSinkEvents.removeAll(keepingCapacity: true)
-                eventDeliveryTask = nil
+                finishEventDelivery(attemptID: attemptID)
                 return
             }
             await eventSink(event)
         }
+        finishEventDelivery(attemptID: attemptID)
+    }
+
+    private func finishEventDelivery(attemptID: UUID) {
+        guard eventDeliveryAttemptID == attemptID else { return }
+        eventDeliveryAttemptID = nil
         eventDeliveryTask = nil
+    }
+
+    private func resetEventDelivery() {
+        eventDeliveryAttemptID = nil
+        eventDeliveryTask?.cancel()
+        eventDeliveryTask = nil
+        pendingSinkEvents.removeAll(keepingCapacity: true)
+    }
+
+    private nonisolated static func isTerminalSinkEvent(
+        _ event: MacSpeechAudioOutputEvent
+    ) -> Bool {
+        switch event.kind {
+        case .playbackCompleted, .stopped, .failed, .closed:
+            return true
+        default:
+            return false
+        }
     }
 
     private func snapshot() -> MacSpeechAudioOutputHostSnapshot {

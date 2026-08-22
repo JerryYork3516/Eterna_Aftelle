@@ -94,10 +94,13 @@ rg -q 'clearForAcceptedSpeechStart' "$host"
 rg -q 'clearScheduledPlayback' "$player"
 rg -q 'scheduleAvailableChunks' "$host"
 rg -q 'withCheckedContinuation' "$host"
-if rg -q 'return fail\(\.queueFull\)' "$host"; then
+rg -q 'waitingEnqueueContinuation: CheckedContinuation' "$host"
+if rg -q 'waitingEnqueueContinuations: \[' "$host"; then
   echo "speech_audio_output_pressure=FAIL"
   exit 1
 fi
+rg -q 'isTerminalSinkEvent' "$host"
+rg -q 'resetEventDelivery' "$host"
 rg -q 'func finishProviderResponse\(' "$host"
 rg -q 'generation expectedGeneration: UInt64' "$host"
 rg -q 'providerResponseFinished' "$host"

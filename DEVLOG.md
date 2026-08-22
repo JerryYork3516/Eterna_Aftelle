@@ -10,11 +10,11 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:R7 Full-duplex Audio Integration — regression patching
-- **上一步刚完成**:R6 Runtime Voice Binding 基础层与 Realtime 主链冻结收口
+- **现在在做**:R7 Full-duplex Audio Integration — PASS / FROZEN
+- **上一步刚完成**:R7 Realtime Capture / Playback / AEC render-reference 主链与两轮持续 Session 收口
 - **当前卡在**:无
-- **下一步**:只补 R7 回归与文档，不回头改 R0–R6 冻结事实
-- **本轮范围**:只补 R7 最小回归入口；不改 Provider 语义、不改 Runtime API、不改 DR schema、不新增平台 target
+- **下一步**:只允许进入 R8 Interruption / Turn-taking；真机与 live Qwen 仍走 Human Gate
+- **本轮范围**:R0–R7 已冻结；不回头改冻结事实，不提前实现 R8～R10
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
 > - **上一步刚完成**:Stage 7.1.5 DR Loader 读取 / 浅校验 / 加载边界已正规化
@@ -133,6 +133,7 @@
 - 2026-08-20 — R0–R4 累计审核修复 — 普通文本请求纳入 R1 Provider in-flight settlement；旧请求未收口时，同 Session 文本替换、Session replacement、cancel / interrupt 均不得放行第二 Brain。R3 generation transition 改为旧物理 WebSocket definitive close + receiver settlement + 新 session/context ACK 后才切 Runtime identity，interruption reason 保持 provider-neutral，pending event queue 有界且 overflow 主动关闭 transport但不释放 Runtime lease。R4 `requiresUserConfirmation` Relationship candidate 在确认前不写 evidence。R1 140 checks、R2 8 cases / 261 checks、R3 15 cases / 134 checks、R4 4 cases / 81 checks、Runtime expression 234 checks 与 A7 18 suites / 21 entrypoints / 4038 assertions 全部通过；macOS clean build、architecture / secret guard、diff 与仓库无污染检查 PASS。真实 Qwen WebSocket 仍为 `NOT_RUN / HUMAN_GATE`，未进入 R5～R10。
 - 2026-08-20 — R5 Tool / Permission Bridge 冻结 — 将既有 NativeSpeech-only Tool definition / schema validation / permission resolver / executor / audit 泛化为唯一 `RuntimeTool*` 内核，并把 Realtime `ToolCallCandidate` 接入相同路径；RuntimeCore 继续是唯一 Tool、Permission、Execution 与 Audit owner。Realtime Session 只向 Provider 广告定义快照，Qwen 私有 wire 映射 function schema 并在 generation reconnect 重放；Provider 不获得 permission policy、executor 或 secret。执行成功、失败、timeout 以原 call / turn / response / lease / epoch / generation identity 经既有 submit result seam 回传，duplicate / stale / late / interrupt 后结果 fail-closed。R5 独立测试 7 cases / 120 checks，R2 8 cases / 263 checks，Qwen R3/R5 16 cases / 149 checks，NativeSpeech integration 545 checks，A7 19 suites / 22 entrypoints / 4175 assertions；macOS clean build、architecture guard、secret guard 与仓库无污染检查 PASS。真实 Qwen Tool wire 仍为 `NOT_RUN / HUMAN_GATE`。未改 DR / Store schema，未实现 Text Tool calling 或 R6～R10。
 - 2026-08-20 — R6 Realtime Voice Binding Foundation 冻结 — 新增 provider-neutral `RuntimeVoiceProviderIdentity`、`RuntimeVoiceBindingMode`、`RuntimeVoiceBindingFallback` 与 `RuntimeVoiceBinding`，当前只启用 `providerDefault`；RuntimeCore 在既有 lease admission 后创建 binding，generation rebound 复用 resident / Runtime Session / lease / route epoch identity。Qwen Adapter 将 binding 私下解析为显式 Provider runtime default voice，并在 generation reconnect 重放同一结果；unsupported mode 可按冻结策略回退 default 或以 `voiceBindingUnavailable` fail-closed。具体 Provider voice identifier 不进入 provider-neutral contract、DR、Memory、Dialogue History 或居民永久身份。Voice Binding 不具有认知权，不改写 canonical semantic content，不创建第二 Brain / Runtime / response；未来 Studio VoiceProfile 只替换 binding source，不重构 Realtime 主链。R6 独立测试 6 cases / 62 checks，Qwen R3/R5/R6 16 cases / 150 checks，A7 20 suites / 23 entrypoints / 4238 assertions；macOS clean build、architecture guard、secret guard 与仓库无污染检查 PASS。真实 Qwen WebSocket 仍为 `NOT_RUN / HUMAN_GATE`。本轮未实现 Studio VoiceProfile 生产、声音复刻、正式全双工 Audio Host、自然 interruption / turn-taking、Cascaded 自动 fallback 或真机音频验收，未进入 R7～R10。
+- 2026-08-21 — R7 Full-duplex Audio Integration 冻结 — 正式 Host 链接通 `MacSpeechAudioCapture` AEC 后 PCM → RuntimeCore → ExecutionEngine → ProviderRouter → Realtime Provider，并将 Runtime-accepted `residentAudioDelta` 经单一 output bridge 送入既有 `MacSpeechAudioOutputHost`；最终 player-node 播放 PCM 继续是唯一 AEC render reference。一次 Start 保持 Capture、Provider Session、Runtime receive loop 与 ActiveBrainLease 跨轮存在，物理 playback completion 只回 listening。User Stop 先失效 route attempt 并停止本地 receive / capture / playback，再等待 Provider close；close 失败保留 identity 供重试。generation cancel 只重绑同 lease / epoch 的 Host 输入输出，audio-done 后 late delta 与旧代 PCM 均 fail-closed。输入使用独立连续 submitted sequence，Capture drop 不破坏 Provider strict sequence；PCM、sink backlog 与 enqueue waiter均有界。独立正式 Host 11 cases / 96 checks 验证同一 Session / lease 两轮、generation rebind、late PCM、Stop 自回调与 close retry；NativeSpeech duplex 359 checks、Audio Output 163 checks、AEC 990 checks、Cascaded route 47 checks、A7 21 suites / 24 entrypoints / 4353 assertions、macOS clean build、architecture / secret guard 与仓库无污染检查 PASS。真实 Qwen WebSocket、真实麦克风 / 扬声器、USB / Bluetooth / AirPods、长时间真机 full-duplex 与当前 DEBUG Host 之外的 Release 启用保持 `NOT_RUN / HUMAN_GATE`；未实现 R8 自然 interruption / turn-taking / double-talk，下一轮只允许进入 R8。
 
 ---
 
