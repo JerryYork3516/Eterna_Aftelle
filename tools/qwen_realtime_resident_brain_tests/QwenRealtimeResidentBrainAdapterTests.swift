@@ -44,15 +44,6 @@ private actor R3ASRProvider: ASRProvider {
     func startCount() -> Int { starts }
 }
 
-private actor R3SuspendingRuntimeToolExecutor: RuntimeToolExecuting {
-    func execute(
-        _ request: RuntimeToolExecutionRequest
-    ) async throws -> String {
-        try await Task.sleep(for: .seconds(300))
-        return "{}"
-    }
-}
-
 @main
 private struct QwenRealtimeResidentBrainAdapterTests {
     private static var checks = 0
@@ -84,7 +75,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testGenericErrorDuringTransition()
         try await testRuntimeCancelInputFence(fixture: fixture)
         try await testRuntimeGenerationFence(fixture: fixture)
-        try await testRuntimeOperationFence(fixture: fixture)
+        try await testRuntimeAcousticActivityAdmissionFence(fixture: fixture)
         try await testRuntimeAdmission(fixture: fixture)
         print("qwen_realtime_resident_brain_cases=\(cases)")
         print("qwen_realtime_resident_brain_checks=\(checks)")
@@ -1856,12 +1847,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
-    private static func testRuntimeOperationFence(fixture: Data) async throws {
+    private static func testRuntimeAcousticActivityAdmissionFence(
+        fixture: Data
+    ) async throws {
         cases += 1
         let stack = try makeStack()
-        let reader = try credentialReader()
         let router = ProviderRouter(
-            credentialReader: reader,
+            credentialReader: try credentialReader(),
             realtimeResidentBrainProvider: stack.adapter
         )
         let runtime = RuntimeCore(
@@ -1869,19 +1861,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             providerRouter: router,
             sessionStore: SessionStore()
         )
-        expect(runtime.loadDR(from: fixture).isLoaded, "operation fixture resident loads")
-        expect(
-            runtime.configureRuntimeTools(
-                definitions: [RuntimeToolDefinition(
-                    name: "fixture_tool",
-                    description: "Operation-fence fixture.",
-                    parametersJSON: Data(#"{"type":"object"}"#.utf8),
-                    permission: .permissionFree
-                )],
-                executor: R3SuspendingRuntimeToolExecutor()
-            ),
-            "operation fixture configures the shared Runtime Tool kernel"
-        )
+        expect(runtime.loadDR(from: fixture).isLoaded,
+               "turn-completion fixture resident loads")
         let identity = try realtimeIdentity(
             await runtime.openRealtimeResidentBrainSession()
         )
@@ -1893,92 +1874,61 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                     contextRevision: 1,
                     sections: [RealtimeBrainContextSection(
                         scope: .stableResident,
-                        content: "operation fence"
+                        content: "acoustic activity admission fence"
                     )]
                 )
             ),
-            "Runtime operation fixture bootstraps"
+            "Runtime acoustic-activity fixture bootstraps"
         )
         _ = try await runtime.receiveRealtimeResidentBrainEvent(
             session: identity
         )
         await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_started","item_id":"runtime-tool-user"}"#
+            #"{"type":"input_audio_buffer.speech_started","item_id":"runtime-completion-user"}"#
         )
-        _ = try await runtime.receiveRealtimeResidentBrainEvent(
-            session: identity
+        let speechStart = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        guard case .accepted(let pendingStart) = speechStart,
+              pendingStart.kind == .userSpeechStarted else {
+            fatalError("Runtime pending speech-start expected")
+        }
+        let uncorrelatedActivity = runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(
+            uncorrelatedActivity.phase == .idle
+                && uncorrelatedActivity.claimedAcousticSequence == 0,
+            "Provider VAD without Runtime acoustic eligibility fails closed"
         )
-        let userFinal = try await receiveRuntimeTranscriptAndAuthorizeResponse(
+        expect(
+            runtime
+                .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+                    pendingStart.identity
+                ),
+            "pending exact turn is fenced before acoustic authorization"
+        )
+        let userFinal = try await receiveRuntimeTranscript(
             stack,
             runtime: runtime,
             identity: identity,
-            itemID: "runtime-tool-user",
-            transcript: "use the fixture tool",
-            responseID: "runtime-tool-response"
+            itemID: "runtime-completion-user",
+            transcript: "wait for utterance completion"
         )
         guard case .accepted(let acceptedUserFinal) = userFinal,
               acceptedUserFinal.kind
-                == .userTranscriptFinal("use the fixture tool") else {
-            fatalError("Runtime-authorized user final expected")
+                == .userTranscriptFinal("wait for utterance completion")
+        else {
+            fatalError("Runtime pending user final expected")
         }
-        await stack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"runtime-tool-response","item_id":"runtime-tool-item","call_id":"runtime-tool-call","name":"fixture_tool","arguments":"{}"}"#
-        )
-        let toolDisposition = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: identity)
-        guard case .accepted(let toolEvent) = toolDisposition,
-              case .toolCall(let candidate) = toolEvent.kind else {
-            fatalError("Runtime tool candidate expected")
-        }
-        await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"runtime-tool-response","status":"completed","output":[{"type":"function_call","call_id":"runtime-tool-call","name":"fixture_tool","arguments":"{}"}]}}"#
-        )
-        await stack.transport.holdResponseCreationAcknowledgements()
-        let command = RealtimeBrainToolResultCommand(
-            identity: toolEvent.identity,
-            sequence: 1,
-            callID: candidate.callID,
-            output: "fixture result",
-            isError: false
-        )
-        let toolTask = Task {
-            await runtime.submitRealtimeResidentBrainToolResult(command)
-        }
-        await stack.transport.waitUntilSent(type: "response.create")
-        let cancelTask = Task {
-            await runtime.cancelRealtimeResidentBrainGenerationForTesting(
-                identity: identity,
-                reason: .runtimeDecision
-            )
-        }
-        for _ in 0 ..< 100 { await Task.yield() }
-        let sentWhileToolHeld = try await sentTypes(stack.transport)
+        let sentAfterFinal = try await sentTypes(stack.transport)
         expect(
-            sentWhileToolHeld.filter { $0 == "response.cancel" }.isEmpty,
-            "generation transition waits for the authorized Tool continuation"
-        )
-        await stack.transport.releaseResponseCreationAcknowledgements()
-        expectRealtimeFailure(
-            await toolTask.value,
-            equals: .cancelled,
-            "Runtime invalidates the old Tool result without losing its continuation"
-        )
-        let nextIdentity = try realtimeIdentity(await cancelTask.value)
-        expect(
-            nextIdentity.generation == identity.generation + 1
-                && nextIdentity.brainLeaseID == identity.brainLeaseID,
-            "generation transition drains the mutation and preserves the Brain lease"
-        )
-        let connectCount = await stack.transport.connectCount()
-        expect(
-            connectCount == 2,
-            "definitive generation cancel reconnects only after the mutation drains"
+            sentAfterFinal.filter { $0 == "response.create" }.isEmpty,
+            "pending exact-turn transcript final cannot create a response"
         )
         expectRealtimeSuccess(
             await runtime.closeRealtimeResidentBrainSession(
-                identity: nextIdentity
+                identity: identity
             ),
-            "drained generation transition remains definitively closeable"
+            "pending-activity session remains definitively closeable"
         )
     }
 
@@ -2021,19 +1971,23 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         _ = try await runtime.receiveRealtimeResidentBrainEvent(
             session: identity
         )
-        let userFinal = try await receiveRuntimeTranscriptAndAuthorizeResponse(
+        let userFinal = try await receiveRuntimeTranscript(
             stack,
             runtime: runtime,
             identity: identity,
             itemID: "runtime-old-user",
-            transcript: "old generation turn",
-            responseID: "runtime-old-response"
+            transcript: "old generation turn"
         )
         guard case .accepted(let acceptedUserFinal) = userFinal,
               acceptedUserFinal.kind
                 == .userTranscriptFinal("old generation turn") else {
-            fatalError("Runtime-authorized generation turn expected")
+            fatalError("Runtime-tracked generation turn expected")
         }
+        try await authorizeResponse(
+            stack,
+            from: acceptedUserFinal,
+            responseID: "runtime-old-response"
+        )
         await stack.transport.enqueueText(
             #"{"type":"response.text.delta","response_id":"runtime-old-response","delta":"old"}"#
         )
@@ -2355,7 +2309,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
-    private static func receiveRuntimeTranscriptAndAuthorizeResponse(
+    private static func receiveRuntimeTranscript(
         _ stack: (
             adapter: QwenRealtimeResidentBrainAdapter,
             transport: R3FakeRealtimeWebSocketTransport
@@ -2363,10 +2317,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         runtime: RuntimeCore,
         identity: RealtimeBrainSessionIdentity,
         itemID: String,
-        transcript: String,
-        responseID: String
+        transcript: String
     ) async throws -> RealtimeBrainEventDisposition {
-        await stack.transport.useNextResponseID(responseID)
         await stack.transport.enqueueText(
             #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(itemID)","transcript":"\#(transcript)"}"#
         )

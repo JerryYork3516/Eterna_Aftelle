@@ -10,10 +10,16 @@ private actor R5RealtimeProvider: RealtimeResidentBrainProvider {
     private var events: [RealtimeResidentBrainEvent] = []
     private var openCommands: [RealtimeBrainOpenSessionCommand] = []
     private var toolResults: [RealtimeBrainToolResultCommand] = []
+    private var cancelCommands: [RealtimeBrainCancelGenerationCommand] = []
     private var interruptCommands: [RealtimeBrainInterruptCommand] = []
     private var closeCommands: [RealtimeBrainCloseSessionCommand] = []
     private var resultWaiters:
         [Int: [CheckedContinuation<Void, Never>]] = [:]
+    private var holdsToolResultSubmission = false
+    private var heldToolResultContinuation:
+        CheckedContinuation<Void, Never>?
+    private var heldToolResultWaiters:
+        [CheckedContinuation<Void, Never>] = []
 
     func openSession(
         _ command: RealtimeBrainOpenSessionCommand
@@ -32,6 +38,14 @@ private actor R5RealtimeProvider: RealtimeResidentBrainProvider {
     ) async throws {
         toolResults.append(command)
         resumeResultWaiters()
+        if holdsToolResultSubmission {
+            await withCheckedContinuation { continuation in
+                heldToolResultContinuation = continuation
+                let waiters = heldToolResultWaiters
+                heldToolResultWaiters.removeAll(keepingCapacity: true)
+                waiters.forEach { $0.resume() }
+            }
+        }
     }
 
     func createResponse(
@@ -40,7 +54,9 @@ private actor R5RealtimeProvider: RealtimeResidentBrainProvider {
 
     func cancelGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
-    ) async throws {}
+    ) async throws {
+        cancelCommands.append(command)
+    }
 
     func interrupt(
         _ command: RealtimeBrainInterruptCommand
@@ -88,6 +104,32 @@ private actor R5RealtimeProvider: RealtimeResidentBrainProvider {
 
     func interruptCount() -> Int {
         interruptCommands.count
+    }
+
+    func cancelCount() -> Int {
+        cancelCommands.count
+    }
+
+    func holdToolResultSubmission() {
+        holdsToolResultSubmission = true
+    }
+
+    func waitUntilToolResultSubmissionIsHeld() async {
+        guard heldToolResultContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            if heldToolResultContinuation != nil {
+                continuation.resume()
+            } else {
+                heldToolResultWaiters.append(continuation)
+            }
+        }
+    }
+
+    func releaseToolResultSubmission() {
+        holdsToolResultSubmission = false
+        let continuation = heldToolResultContinuation
+        heldToolResultContinuation = nil
+        continuation?.resume()
     }
 
     private func resumeResultWaiters() {
@@ -1132,6 +1174,103 @@ private struct RealtimeResidentBrainToolTests {
         try await close(
             pendingExecution.runtime,
             identity: nextExecutionIdentity
+        )
+
+        let pendingProviderMutation = try await configuredStack(
+            fixture: fixture,
+            permissionResolver: R5PermissionResolver()
+        )
+        await pendingProviderMutation.executor.setBehavior(
+            .held(#"{"late":"executor"}"#),
+            callID: "call-transition-delivery"
+        )
+        let mutationIdentity = eventIdentity(
+            session: pendingProviderMutation.identity
+        )
+        try await authorizeResponse(
+            identity: mutationIdentity,
+            sequence: 1,
+            stack: pendingProviderMutation
+        )
+        let mutationEvent = toolEvent(
+            identity: mutationIdentity,
+            sequence: 2,
+            callID: "call-transition-delivery",
+            toolName: "lookup_test_value",
+            arguments: #"{"key":"transition"}"#
+        )
+        expectAccepted(
+            try await receive(
+                mutationEvent,
+                stack: pendingProviderMutation
+            ),
+            equals: mutationEvent,
+            "provider-mutation fixture accepts the candidate"
+        )
+        await pendingProviderMutation.executor.waitUntilRequestCount(1)
+        await pendingProviderMutation.provider.holdToolResultSubmission()
+        let command = RealtimeBrainToolResultCommand(
+            identity: mutationIdentity,
+            sequence: 1,
+            callID: RealtimeBrainToolCallID(
+                rawValue: "call-transition-delivery"
+            ),
+            output: #"{"manual":true}"#,
+            isError: false
+        )
+        let mutationTask = Task {
+            await pendingProviderMutation.runtime
+                .submitRealtimeResidentBrainToolResult(command)
+        }
+        await pendingProviderMutation.provider
+            .waitUntilToolResultSubmissionIsHeld()
+        let cancellationTask = Task {
+            await pendingProviderMutation.runtime
+                .cancelRealtimeResidentBrainGenerationForTesting(
+                    identity: pendingProviderMutation.identity,
+                    reason: .runtimeDecision
+                )
+        }
+        for _ in 0 ..< 100 { await Task.yield() }
+        let cancellationCountWhileHeld = await pendingProviderMutation
+            .provider.cancelCount()
+        expect(
+            cancellationCountWhileHeld == 0,
+            "generation transition waits for the in-flight Provider mutation"
+        )
+        await pendingProviderMutation.provider.releaseToolResultSubmission()
+        expectRealtimeFailure(
+            await mutationTask.value,
+            "drained old-generation Tool result settles as cancelled"
+        )
+        let nextMutationIdentity = realtimeValue(
+            await cancellationTask.value,
+            "generation transition completes after Provider mutation drain"
+        )
+        let cancellationCountAfterDrain = await pendingProviderMutation
+            .provider.cancelCount()
+        expect(
+            nextMutationIdentity.generation
+                == pendingProviderMutation.identity.generation &+ 1
+                && nextMutationIdentity.brainLeaseID
+                    == pendingProviderMutation.identity.brainLeaseID
+                && cancellationCountAfterDrain == 1,
+            "Provider mutation drains before one same-lease generation cancel"
+        )
+        await pendingProviderMutation.executor.resume(
+            callID: "call-transition-delivery"
+        )
+        await pendingProviderMutation.executor.waitUntilCompletedCount(1)
+        await Task.yield()
+        let drainedResultCount = await pendingProviderMutation.provider
+            .recordedToolResults().count
+        expect(
+            drainedResultCount == 1,
+            "late executor completion cannot duplicate the drained result"
+        )
+        try await close(
+            pendingProviderMutation.runtime,
+            identity: nextMutationIdentity
         )
     }
 

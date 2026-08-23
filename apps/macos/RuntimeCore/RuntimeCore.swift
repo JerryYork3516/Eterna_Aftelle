@@ -1503,6 +1503,36 @@ nonisolated struct RealtimeInterruptionTimingDebugSnapshot:
     let interruptedIdentity: RealtimeBrainSessionIdentity
     let confirmedAtNanoseconds: UInt64
 }
+
+nonisolated enum RealtimeUtteranceCompletionDebugPhase:
+    String,
+    Sendable,
+    Equatable {
+    case idle
+    case speaking
+    case candidatePause = "candidate_pause"
+    case completionCandidate = "completion_candidate"
+}
+
+nonisolated struct RealtimeUtteranceCompletionDebugSnapshot:
+    Sendable,
+    Equatable {
+    let phase: RealtimeUtteranceCompletionDebugPhase
+    let session: RealtimeBrainSessionIdentity?
+    let turnID: RealtimeBrainTurnID?
+    let sourceTurnID: RealtimeBrainTurnID?
+    let contextRevision: UInt64?
+    let completionWindowNanoseconds: UInt64
+    let speechStartedAtNanoseconds: UInt64
+    let pauseStartedAtNanoseconds: UInt64
+    let stoppedEventSequence: UInt64
+    let completionCandidateAtNanoseconds: UInt64
+    let completionCandidateCount: UInt64
+    let resumedPauseCount: UInt64
+    let claimedAcousticSequence: UInt64
+    let pendingStartTurnID: RealtimeBrainTurnID?
+    let pendingStartAtNanoseconds: UInt64
+}
 #endif
 
 public final class RuntimeCore {
@@ -1514,6 +1544,10 @@ public final class RuntimeCore {
     private static let realtimeAcousticObservationCapacity = 32
     private static let realtimeAcousticObservationFreshnessNanoseconds:
         UInt64 = 500_000_000
+    // Twice the 200 ms source-gate hangover: gate close remains an acoustic
+    // fact, while Runtime owns the additional provider-neutral turn window.
+    private static let realtimeUtteranceCompletionWindowNanoseconds:
+        UInt64 = 400_000_000
 
     private struct SpeechRouteASRFinalState {
         let generation: UInt64
@@ -1543,6 +1577,79 @@ public final class RuntimeCore {
     private struct RealtimeBrainPendingTurnKey: Hashable {
         let session: RealtimeBrainSessionIdentity
         let turnID: RealtimeBrainTurnID
+    }
+
+    private struct RealtimeUtteranceCompletionKey: Hashable {
+        let session: RealtimeBrainSessionIdentity
+        let turnID: RealtimeBrainTurnID
+        let contextRevision: UInt64
+    }
+
+    private enum RealtimeUtteranceCompletionPhase: Equatable {
+        case speaking
+        case candidatePause
+        case completionCandidate
+    }
+
+    private struct RealtimeUtteranceCompletionCandidate {
+        let stoppedEventSequence: UInt64
+        let speechStartedAtNanoseconds: UInt64
+        let pauseStartedAtNanoseconds: UInt64
+        let completedAtNanoseconds: UInt64
+    }
+
+    private struct RealtimeUtteranceCompletionState {
+        let key: RealtimeUtteranceCompletionKey
+        var sourceTurnID: RealtimeBrainTurnID
+        var sourceTurnIDs: Set<RealtimeBrainTurnID>
+        var phase: RealtimeUtteranceCompletionPhase
+        let speechStartedAtNanoseconds: UInt64
+        var pauseStartedAtNanoseconds: UInt64 = 0
+        var pauseAudioInputSequence: UInt64 = 0
+        var stoppedEventSequence: UInt64 = 0
+        var resumePauseStartedAtNanoseconds: UInt64 = 0
+        var resumeReceivedAtNanoseconds: UInt64 = 0
+        var resumeSourceGateEpoch: UInt64 = 0
+        var awaitsResumeAcousticAuthorization = false
+        var completionCandidate:
+            RealtimeUtteranceCompletionCandidate?
+    }
+
+    private struct RealtimeUtterancePendingStart {
+        let event: RealtimeResidentBrainEvent
+        let receivedAtNanoseconds: UInt64
+        var sourceStartEvent: RealtimeResidentBrainEvent?
+        var sourceStartedAtNanoseconds: UInt64 = 0
+        var sourceTurnIDs: Set<RealtimeBrainTurnID> = []
+        var resumeAfterStoppedEvent: RealtimeResidentBrainEvent?
+        var resumeAfterStoppedAtNanoseconds: UInt64 = 0
+        var resumeAfterAudioInputSequence: UInt64 = 0
+        var stoppedEvent: RealtimeResidentBrainEvent?
+        var stoppedAtNanoseconds: UInt64 = 0
+        var stoppedAudioInputSequence: UInt64 = 0
+
+        var sourceTurnID: RealtimeBrainTurnID? {
+            sourceStartEvent?.identity.turnID ?? event.identity.turnID
+        }
+    }
+
+    private struct RealtimeUtterancePendingResume {
+        let key: RealtimeUtteranceCompletionKey
+        let event: RealtimeResidentBrainEvent
+        let receivedAtNanoseconds: UInt64
+        var stoppedEvent: RealtimeResidentBrainEvent?
+        var stoppedAtNanoseconds: UInt64 = 0
+        var stoppedAudioInputSequence: UInt64 = 0
+    }
+
+    private struct RealtimeUtteranceAcousticAuthorization {
+        let session: RealtimeBrainSessionIdentity
+        var claimedThroughSequence: UInt64
+    }
+
+    private struct RealtimeUtteranceEligibleAcousticMarker {
+        let evidence: RealtimeInterruptionEvidence
+        let receivedAtNanoseconds: UInt64
     }
 
     private struct RealtimeInterruptionEvidenceState {
@@ -1785,6 +1892,18 @@ public final class RuntimeCore {
         RealtimeBrainContextBridgeState?
     private var realtimeBrainPendingUserInputs:
         [RealtimeBrainPendingTurnKey: String] = [:]
+    private var realtimeUtteranceCompletionState:
+        RealtimeUtteranceCompletionState?
+    private var realtimeUtterancePendingStart:
+        RealtimeUtterancePendingStart?
+    private var realtimeUtterancePendingResume:
+        RealtimeUtterancePendingResume?
+    private var realtimeUtteranceCompletionTask: Task<Void, Never>?
+    private var realtimeUtteranceCompletionToken: UUID?
+    private var realtimeUtteranceAcousticAuthorization:
+        RealtimeUtteranceAcousticAuthorization?
+    private var realtimeUtteranceEligibleAcousticMarker:
+        RealtimeUtteranceEligibleAcousticMarker?
     private var realtimeInterruptionEvidenceState:
         RealtimeInterruptionEvidenceState?
     private var realtimeInterruptionProposalDecisions: [
@@ -1797,6 +1916,8 @@ public final class RuntimeCore {
     #if DEBUG
     private var realtimeInterruptionTimingDebugSnapshot:
         RealtimeInterruptionTimingDebugSnapshot?
+    private var realtimeUtteranceCompletionCandidateCount: UInt64 = 0
+    private var realtimeUtteranceResumedPauseCount: UInt64 = 0
     #endif
     private var realtimeAcousticObservationLedger:
         RealtimeAcousticObservationLedger?
@@ -2284,6 +2405,9 @@ public final class RuntimeCore {
     private func resetRealtimeBrainRuntimeBridge() {
         realtimeBrainContextBridgeState = nil
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        resetRealtimeUtteranceCompletionState()
+        realtimeUtteranceAcousticAuthorization = nil
+        realtimeUtteranceEligibleAcousticMarker = nil
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         #if DEBUG
@@ -2296,6 +2420,643 @@ public final class RuntimeCore {
         lastRealtimeGrowthObservationDecisions.removeAll(
             keepingCapacity: true
         )
+    }
+
+    private func resetRealtimeUtteranceCompletionState(
+        matching identity: RealtimeBrainSessionIdentity? = nil
+    ) {
+        if identity == nil
+            || realtimeUtteranceCompletionState?.key.session == identity {
+            realtimeUtteranceCompletionTask?.cancel()
+            realtimeUtteranceCompletionTask = nil
+            realtimeUtteranceCompletionToken = nil
+            realtimeUtteranceCompletionState = nil
+        }
+        if identity == nil
+            || realtimeUtterancePendingStart?.event.identity.session
+                == identity {
+            realtimeUtterancePendingStart = nil
+        }
+        if identity == nil
+            || realtimeUtterancePendingResume?.key.session == identity {
+            realtimeUtterancePendingResume = nil
+        }
+    }
+
+    private func resetRealtimeUtteranceAcousticAuthorization(
+        matching identity: RealtimeBrainSessionIdentity? = nil
+    ) {
+        guard let identity else {
+            realtimeUtteranceAcousticAuthorization = nil
+            realtimeUtteranceEligibleAcousticMarker = nil
+            return
+        }
+        if realtimeUtteranceAcousticAuthorization?.session == identity {
+            realtimeUtteranceAcousticAuthorization = nil
+        }
+        if realtimeUtteranceEligibleAcousticMarker?.evidence.identity.session
+            == identity {
+            realtimeUtteranceEligibleAcousticMarker = nil
+        }
+    }
+
+    private func resetRealtimeUtteranceCompletionState(
+        matching eventIdentity: RealtimeBrainEventIdentity
+    ) {
+        if let state = realtimeUtteranceCompletionState,
+           state.key.session == eventIdentity.session,
+           state.key.contextRevision == eventIdentity.contextRevision,
+           Self.realtimeUtteranceTurnMatches(
+                eventIdentity.turnID,
+                logicalTurnID: state.key.turnID,
+                sourceTurnIDs: state.sourceTurnIDs
+           ) {
+            realtimeUtteranceCompletionTask?.cancel()
+            realtimeUtteranceCompletionTask = nil
+            realtimeUtteranceCompletionToken = nil
+            realtimeUtteranceCompletionState = nil
+        }
+        if let pending = realtimeUtterancePendingStart,
+           pending.event.identity.session == eventIdentity.session,
+           pending.event.identity.contextRevision
+                == eventIdentity.contextRevision,
+           Self.realtimeUtteranceTurnMatches(
+                eventIdentity.turnID,
+                logicalTurnID: pending.event.identity.turnID,
+                sourceTurnIDs: pending.sourceTurnIDs
+           ) {
+            realtimeUtterancePendingStart = nil
+        }
+        if let pendingResume = realtimeUtterancePendingResume,
+           pendingResume.key.session == eventIdentity.session,
+           pendingResume.key.contextRevision
+                == eventIdentity.contextRevision,
+           eventIdentity.turnID == nil
+                || eventIdentity.turnID == pendingResume.key.turnID
+                || eventIdentity.turnID
+                    == pendingResume.event.identity.turnID {
+            realtimeUtterancePendingResume = nil
+        }
+    }
+
+    private static func realtimeUtteranceTurnMatches(
+        _ turnID: RealtimeBrainTurnID?,
+        logicalTurnID: RealtimeBrainTurnID?,
+        sourceTurnIDs: Set<RealtimeBrainTurnID>
+    ) -> Bool {
+        guard let turnID else { return true }
+        return logicalTurnID == turnID || sourceTurnIDs.contains(turnID)
+    }
+
+    private func realtimeUtteranceCompletionTracksTranscriptFinal(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        guard let finalTurnID = identity.turnID else { return false }
+        if let state = realtimeUtteranceCompletionState,
+           state.key.session == identity.session,
+           state.key.contextRevision == identity.contextRevision,
+           finalTurnID == state.key.turnID
+                || state.sourceTurnIDs.contains(finalTurnID) {
+            return true
+        }
+        if let pendingResume = realtimeUtterancePendingResume,
+           pendingResume.key.session == identity.session,
+           pendingResume.key.contextRevision == identity.contextRevision,
+           finalTurnID == pendingResume.key.turnID
+                || finalTurnID
+                    == pendingResume.event.identity.turnID {
+            return true
+        }
+        guard let pending = realtimeUtterancePendingStart else {
+            return false
+        }
+        return pending.event.identity.session == identity.session
+            && pending.event.identity.contextRevision
+                == identity.contextRevision
+            && (pending.event.identity.turnID == finalTurnID
+                || pending.sourceTurnIDs.contains(finalTurnID))
+    }
+
+    @MainActor
+    private func claimRealtimeUtteranceAcousticAuthorization(
+        for event: RealtimeResidentBrainEvent,
+        receivedAtNanoseconds: UInt64
+    ) -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard let marker = realtimeUtteranceEligibleAcousticMarker else {
+            return false
+        }
+        let acoustic = marker.evidence
+        if let state = realtimeUtteranceCompletionState,
+           state.key.session == event.identity.session,
+           state.key.contextRevision == event.identity.contextRevision,
+           state.phase != .speaking,
+           acoustic.identity.timestampNanoseconds
+                <= state.pauseStartedAtNanoseconds {
+            return false
+        }
+        guard
+              acoustic.identity.session == event.identity.session,
+              acoustic.identity.contextRevision
+                == event.identity.contextRevision,
+              marker.receivedAtNanoseconds > 0,
+              now >= receivedAtNanoseconds,
+              now - receivedAtNanoseconds
+                    <= Self.realtimeInterruptionEvidenceWindowNanoseconds,
+              now >= marker.receivedAtNanoseconds,
+              now - marker.receivedAtNanoseconds
+                    <= Self.realtimeInterruptionEvidenceWindowNanoseconds,
+              acoustic.identity.timestampNanoseconds
+                <= receivedAtNanoseconds,
+              receivedAtNanoseconds
+                - acoustic.identity.timestampNanoseconds
+                    <= Self.realtimeInterruptionEvidenceWindowNanoseconds,
+              case .acousticHost(let facts) = acoustic.source,
+              facts.nearEndDetected,
+              facts.farEndActive,
+              facts.sourceGateOpen,
+              facts.routeStable,
+              facts.inputDeviceAvailable,
+              facts.outputDeviceAvailable else {
+            return false
+        }
+        var authorization = realtimeUtteranceAcousticAuthorization
+            ?? RealtimeUtteranceAcousticAuthorization(
+                session: event.identity.session,
+                claimedThroughSequence: 0
+            )
+        guard authorization.session == event.identity.session,
+              acoustic.identity.sequence
+                > authorization.claimedThroughSequence else {
+            return false
+        }
+        authorization.claimedThroughSequence = acoustic.identity.sequence
+        realtimeUtteranceAcousticAuthorization = authorization
+        return true
+    }
+
+    private func consumeRealtimeUtteranceAcousticAuthorization(
+        forActiveState evidence: RealtimeInterruptionEvidence
+    ) {
+        guard var state = realtimeUtteranceCompletionState,
+              state.key.session == evidence.identity.session,
+              state.key.contextRevision
+                == evidence.identity.contextRevision,
+              case .acousticHost(let facts) = evidence.source,
+              facts.nearEndDetected,
+              facts.farEndActive,
+              facts.sourceGateOpen,
+              facts.routeStable,
+              facts.inputDeviceAvailable,
+              facts.outputDeviceAvailable,
+              (state.phase == .candidatePause
+                && evidence.identity.timestampNanoseconds
+                    > state.pauseStartedAtNanoseconds)
+                || (state.awaitsResumeAcousticAuthorization
+                    && facts.sourceGateEpoch
+                        == state.resumeSourceGateEpoch
+                    && evidence.identity.timestampNanoseconds
+                        > state.resumePauseStartedAtNanoseconds
+                    && evidence.identity.timestampNanoseconds
+                        <= state.resumeReceivedAtNanoseconds),
+              var authorization =
+                realtimeUtteranceAcousticAuthorization,
+              authorization.session == evidence.identity.session,
+              evidence.identity.sequence
+                > authorization.claimedThroughSequence else { return }
+        authorization.claimedThroughSequence = evidence.identity.sequence
+        realtimeUtteranceAcousticAuthorization = authorization
+        state.awaitsResumeAcousticAuthorization = false
+        realtimeUtteranceCompletionState = state
+    }
+
+    private func installRealtimeUtteranceSpeakingState(
+        event: RealtimeResidentBrainEvent,
+        receivedAtNanoseconds: UInt64
+    ) {
+        guard let turnID = event.identity.turnID else { return }
+        resetRealtimeUtteranceCompletionState()
+        realtimeUtteranceCompletionState =
+            RealtimeUtteranceCompletionState(
+                key: RealtimeUtteranceCompletionKey(
+                    session: event.identity.session,
+                    turnID: turnID,
+                    contextRevision: event.identity.contextRevision
+                ),
+                sourceTurnID: turnID,
+                sourceTurnIDs: [turnID],
+                phase: .speaking,
+                speechStartedAtNanoseconds: receivedAtNanoseconds
+            )
+    }
+
+    @MainActor
+    private func beginRealtimeUtterancePause(
+        event: RealtimeResidentBrainEvent,
+        receivedAtNanoseconds: UInt64,
+        audioSequenceAtStop: UInt64? = nil
+    ) {
+        guard let turnID = event.identity.turnID,
+              var state = realtimeUtteranceCompletionState,
+              state.key.session == event.identity.session,
+              state.key.contextRevision
+                == event.identity.contextRevision,
+              state.sourceTurnID == turnID,
+              state.phase == .speaking,
+              let audioSequence = audioSequenceAtStop
+                ?? realtimeBrainSessionGate.acceptedAudioInputSequence(
+                    for: event.identity.session
+                ) else { return }
+        let token = UUID()
+        realtimeUtterancePendingResume = nil
+        state.phase = .candidatePause
+        state.pauseStartedAtNanoseconds = receivedAtNanoseconds
+        state.pauseAudioInputSequence = audioSequence
+        state.stoppedEventSequence = event.sequence
+        if !state.awaitsResumeAcousticAuthorization {
+            state.resumePauseStartedAtNanoseconds = 0
+            state.resumeReceivedAtNanoseconds = 0
+            state.resumeSourceGateEpoch = 0
+        }
+        let completionKey = state.key
+        realtimeUtteranceCompletionState = state
+        realtimeUtteranceCompletionToken = token
+        realtimeUtteranceCompletionTask?.cancel()
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now >= receivedAtNanoseconds
+            ? now - receivedAtNanoseconds : 0
+        let remaining = elapsed
+            >= Self.realtimeUtteranceCompletionWindowNanoseconds
+            ? 0
+            : Self.realtimeUtteranceCompletionWindowNanoseconds - elapsed
+        guard remaining > 0 else {
+            finishRealtimeUtteranceCompletionWindow(
+                key: completionKey,
+                token: token
+            )
+            return
+        }
+        realtimeUtteranceCompletionTask = Task {
+            @MainActor [weak self] in
+            do {
+                try await Task.sleep(
+                    for: .nanoseconds(Int64(remaining))
+                )
+            } catch {
+                return
+            }
+            self?.finishRealtimeUtteranceCompletionWindow(
+                key: completionKey,
+                token: token
+            )
+        }
+    }
+
+    @MainActor
+    private func promotePendingRealtimeUtteranceStartIfEligible() {
+        guard let pending = realtimeUtterancePendingStart,
+              let logicalTurnID = pending.event.identity.turnID,
+              currentRealtimeBrainLease(
+                identity: pending.event.identity.session
+              ) != nil,
+              realtimeBrainSessionGate.isCurrent(
+                pending.event.identity
+              ) else { return }
+        if !claimRealtimeUtteranceAcousticAuthorization(
+                for: pending.event,
+                receivedAtNanoseconds: pending.receivedAtNanoseconds
+        ) {
+            guard let sourceStartEvent = pending.sourceStartEvent,
+                  claimRealtimeUtteranceAcousticAuthorization(
+                    for: sourceStartEvent,
+                    receivedAtNanoseconds:
+                        pending.sourceStartedAtNanoseconds
+                  ) else { return }
+            installRealtimeUtteranceSpeakingState(
+                event: sourceStartEvent,
+                receivedAtNanoseconds:
+                    pending.sourceStartedAtNanoseconds
+            )
+            if let stoppedEvent = pending.stoppedEvent {
+                beginRealtimeUtterancePause(
+                    event: stoppedEvent,
+                    receivedAtNanoseconds:
+                        pending.stoppedAtNanoseconds,
+                    audioSequenceAtStop:
+                        pending.stoppedAudioInputSequence
+                )
+            }
+            return
+        }
+        installRealtimeUtteranceSpeakingState(
+            event: pending.event,
+            receivedAtNanoseconds: pending.receivedAtNanoseconds
+        )
+        if let resumeAfterStoppedEvent = pending.resumeAfterStoppedEvent,
+           let sourceStartEvent = pending.sourceStartEvent {
+            beginRealtimeUtterancePause(
+                event: resumeAfterStoppedEvent,
+                receivedAtNanoseconds:
+                    pending.resumeAfterStoppedAtNanoseconds,
+                audioSequenceAtStop:
+                    pending.resumeAfterAudioInputSequence
+            )
+            realtimeUtterancePendingResume =
+                RealtimeUtterancePendingResume(
+                    key: RealtimeUtteranceCompletionKey(
+                        session: pending.event.identity.session,
+                        turnID: logicalTurnID,
+                        contextRevision:
+                            pending.event.identity.contextRevision
+                    ),
+                    event: sourceStartEvent,
+                    receivedAtNanoseconds:
+                        pending.sourceStartedAtNanoseconds,
+                    stoppedEvent: pending.stoppedEvent,
+                    stoppedAtNanoseconds:
+                        pending.stoppedAtNanoseconds,
+                    stoppedAudioInputSequence:
+                        pending.stoppedAudioInputSequence
+                )
+            reconcilePendingRealtimeUtteranceResume()
+        } else if let stoppedEvent = pending.stoppedEvent {
+            beginRealtimeUtterancePause(
+                event: stoppedEvent,
+                receivedAtNanoseconds: pending.stoppedAtNanoseconds,
+                audioSequenceAtStop: pending.stoppedAudioInputSequence
+            )
+        }
+    }
+
+    @MainActor
+    private func reconcilePendingRealtimeUtteranceResume(
+        matching session: RealtimeBrainSessionIdentity? = nil
+    ) {
+        guard let pending = realtimeUtterancePendingResume,
+              session == nil || pending.key.session == session,
+              let state = realtimeUtteranceCompletionState,
+              state.key == pending.key,
+              state.phase == .candidatePause,
+              resumeRealtimeUtteranceIfAudioAdvanced(
+                event: pending.event,
+                receivedAtNanoseconds: pending.receivedAtNanoseconds
+              ) else { return }
+        realtimeUtterancePendingResume = nil
+        if let stoppedEvent = pending.stoppedEvent {
+            beginRealtimeUtterancePause(
+                event: stoppedEvent,
+                receivedAtNanoseconds: pending.stoppedAtNanoseconds,
+                audioSequenceAtStop: pending.stoppedAudioInputSequence
+            )
+        }
+    }
+
+    @MainActor
+    private func resumeRealtimeUtteranceIfAudioAdvanced(
+        event: RealtimeResidentBrainEvent,
+        receivedAtNanoseconds: UInt64
+    ) -> Bool {
+        guard let turnID = event.identity.turnID,
+              var state = realtimeUtteranceCompletionState,
+              state.key.session == event.identity.session,
+              state.key.contextRevision
+                == event.identity.contextRevision,
+              state.phase == .candidatePause,
+              currentRealtimeBrainLease(
+                identity: event.identity.session
+              ) != nil,
+              realtimeBrainSessionGate.isCurrent(event.identity),
+              let audioBoundary = realtimeBrainSessionGate
+                .acceptedAudioInputBoundary(
+                    for: event.identity.session
+                ),
+              audioBoundary.lastUserActivitySequence
+                > state.pauseAudioInputSequence,
+              audioBoundary.lastUserActivityTimestampNanoseconds
+                > state.pauseStartedAtNanoseconds,
+              audioBoundary.lastUserActivityTimestampNanoseconds
+                <= receivedAtNanoseconds,
+              audioBoundary.lastUserActivitySourceGateEpoch > 0,
+              receivedAtNanoseconds >= state.pauseStartedAtNanoseconds,
+              receivedAtNanoseconds - state.pauseStartedAtNanoseconds
+                < Self.realtimeUtteranceCompletionWindowNanoseconds
+              else { return false }
+        realtimeUtteranceCompletionTask?.cancel()
+        realtimeUtteranceCompletionTask = nil
+        realtimeUtteranceCompletionToken = nil
+        realtimeUtterancePendingStart = nil
+        let pauseStartedAtNanoseconds = state.pauseStartedAtNanoseconds
+        state.sourceTurnID = turnID
+        state.sourceTurnIDs.insert(turnID)
+        state.phase = .speaking
+        state.pauseStartedAtNanoseconds = 0
+        state.pauseAudioInputSequence = 0
+        state.stoppedEventSequence = 0
+        state.resumePauseStartedAtNanoseconds =
+            pauseStartedAtNanoseconds
+        state.resumeReceivedAtNanoseconds = receivedAtNanoseconds
+        state.resumeSourceGateEpoch =
+            audioBoundary.lastUserActivitySourceGateEpoch
+        state.awaitsResumeAcousticAuthorization = true
+        state.completionCandidate = nil
+        realtimeUtteranceCompletionState = state
+        #if DEBUG
+        realtimeUtteranceResumedPauseCount &+= 1
+        #endif
+        return true
+    }
+
+    @MainActor
+    private func consumeRealtimeUtteranceActivity(
+        _ event: RealtimeResidentBrainEvent,
+        receivedAtNanoseconds: UInt64
+    ) {
+        guard let turnID = event.identity.turnID,
+              event.identity.responseID == nil else { return }
+        let key = RealtimeUtteranceCompletionKey(
+            session: event.identity.session,
+            turnID: turnID,
+            contextRevision: event.identity.contextRevision
+        )
+
+        switch event.kind {
+        case .userSpeechStarted:
+            if let state = realtimeUtteranceCompletionState,
+               state.key.session == key.session,
+               state.key.contextRevision == key.contextRevision {
+                if state.phase == .candidatePause {
+                    if receivedAtNanoseconds
+                            >= state.pauseStartedAtNanoseconds,
+                       receivedAtNanoseconds
+                            - state.pauseStartedAtNanoseconds
+                            < Self
+                                .realtimeUtteranceCompletionWindowNanoseconds {
+                        realtimeUtterancePendingResume =
+                            RealtimeUtterancePendingResume(
+                                key: state.key,
+                                event: event,
+                                receivedAtNanoseconds:
+                                    receivedAtNanoseconds
+                            )
+                        reconcilePendingRealtimeUtteranceResume()
+                        return
+                    }
+                    if let token = realtimeUtteranceCompletionToken {
+                        finishRealtimeUtteranceCompletionWindow(
+                            key: state.key,
+                            token: token
+                        )
+                    }
+                }
+                if state.phase == .speaking {
+                    if Self.realtimeUtteranceTurnMatches(
+                        turnID,
+                        logicalTurnID: state.key.turnID,
+                        sourceTurnIDs: state.sourceTurnIDs
+                    ) {
+                        return
+                    }
+                }
+            }
+            guard claimRealtimeUtteranceAcousticAuthorization(
+                for: event,
+                receivedAtNanoseconds: receivedAtNanoseconds
+            ) else {
+                if var pending = realtimeUtterancePendingStart,
+                   pending.event.identity.session == key.session,
+                   pending.event.identity.contextRevision
+                        == key.contextRevision {
+                    let expiryAnchor = pending.stoppedAtNanoseconds > 0
+                        ? pending.stoppedAtNanoseconds
+                        : pending.receivedAtNanoseconds
+                    if receivedAtNanoseconds >= expiryAnchor,
+                       receivedAtNanoseconds - expiryAnchor
+                        >= Self.realtimeUtteranceCompletionWindowNanoseconds {
+                        realtimeUtterancePendingStart =
+                            RealtimeUtterancePendingStart(
+                                event: event,
+                                receivedAtNanoseconds:
+                                    receivedAtNanoseconds
+                            )
+                        return
+                    }
+                    if pending.stoppedEvent != nil {
+                        pending.resumeAfterStoppedEvent =
+                            pending.stoppedEvent
+                        pending.resumeAfterStoppedAtNanoseconds =
+                            pending.stoppedAtNanoseconds
+                        pending.resumeAfterAudioInputSequence =
+                            pending.stoppedAudioInputSequence
+                        pending.stoppedEvent = nil
+                        pending.stoppedAtNanoseconds = 0
+                        pending.stoppedAudioInputSequence = 0
+                        pending.sourceStartEvent = event
+                        pending.sourceStartedAtNanoseconds =
+                            receivedAtNanoseconds
+                        pending.sourceTurnIDs.insert(turnID)
+                        realtimeUtterancePendingStart = pending
+                        return
+                    }
+                    if pending.event.identity.turnID == turnID
+                        || pending.sourceTurnID == turnID {
+                        return
+                    }
+                    pending.sourceStartEvent = event
+                    pending.sourceStartedAtNanoseconds =
+                        receivedAtNanoseconds
+                    pending.sourceTurnIDs.insert(turnID)
+                    realtimeUtterancePendingStart = pending
+                    return
+                }
+                realtimeUtterancePendingStart =
+                    RealtimeUtterancePendingStart(
+                        event: event,
+                        receivedAtNanoseconds: receivedAtNanoseconds
+                    )
+                return
+            }
+            installRealtimeUtteranceSpeakingState(
+                event: event,
+                receivedAtNanoseconds: receivedAtNanoseconds
+            )
+        case .userSpeechStopped:
+            if var pendingResume = realtimeUtterancePendingResume,
+               pendingResume.key.session == key.session,
+               pendingResume.key.contextRevision == key.contextRevision,
+               pendingResume.event.identity.turnID == turnID,
+               pendingResume.stoppedEvent == nil {
+                pendingResume.stoppedEvent = event
+                pendingResume.stoppedAtNanoseconds =
+                    receivedAtNanoseconds
+                pendingResume.stoppedAudioInputSequence =
+                    realtimeBrainSessionGate.acceptedAudioInputSequence(
+                        for: event.identity.session
+                    ) ?? 0
+                realtimeUtterancePendingResume = pendingResume
+                return
+            }
+            if var pending = realtimeUtterancePendingStart,
+               pending.event.identity.session == key.session,
+               pending.event.identity.contextRevision
+                    == key.contextRevision,
+               pending.sourceTurnID == turnID,
+               pending.stoppedEvent == nil {
+                pending.stoppedEvent = event
+                pending.stoppedAtNanoseconds = receivedAtNanoseconds
+                pending.stoppedAudioInputSequence =
+                    realtimeBrainSessionGate.acceptedAudioInputSequence(
+                        for: event.identity.session
+                    ) ?? 0
+                realtimeUtterancePendingStart = pending
+                return
+            }
+            beginRealtimeUtterancePause(
+                event: event,
+                receivedAtNanoseconds: receivedAtNanoseconds
+            )
+        default:
+            return
+        }
+    }
+
+    @MainActor
+    private func finishRealtimeUtteranceCompletionWindow(
+        key: RealtimeUtteranceCompletionKey,
+        token: UUID
+    ) {
+        guard realtimeUtteranceCompletionToken == token,
+              var state = realtimeUtteranceCompletionState,
+              state.key == key,
+              state.phase == .candidatePause,
+              currentRealtimeBrainLease(identity: key.session) != nil,
+              realtimeBrainSessionGate.isCurrent(
+                RealtimeBrainEventIdentity(
+                    session: key.session,
+                    turnID: key.turnID,
+                    responseID: nil,
+                    contextRevision: key.contextRevision
+                )
+              ) else {
+            if realtimeUtteranceCompletionToken == token {
+                resetRealtimeUtteranceCompletionState()
+            }
+            return
+        }
+        let completedAt = DispatchTime.now().uptimeNanoseconds
+        state.phase = .completionCandidate
+        realtimeUtterancePendingResume = nil
+        state.completionCandidate = RealtimeUtteranceCompletionCandidate(
+            stoppedEventSequence: state.stoppedEventSequence,
+            speechStartedAtNanoseconds: state.speechStartedAtNanoseconds,
+            pauseStartedAtNanoseconds: state.pauseStartedAtNanoseconds,
+            completedAtNanoseconds: completedAt
+        )
+        realtimeUtteranceCompletionState = state
+        realtimeUtteranceCompletionTask = nil
+        realtimeUtteranceCompletionToken = nil
+        #if DEBUG
+        realtimeUtteranceCompletionCandidateCount &+= 1
+        #endif
     }
 
     private func resetRealtimeAcousticObservationState() {
@@ -2524,6 +3285,8 @@ public final class RuntimeCore {
         resetRuntimeToolState(route: .realtimeResidentBrain)
         realtimeBrainGeneration = generation
         realtimeBrainToolResultSequence = 0
+        resetRealtimeUtteranceCompletionState()
+        resetRealtimeUtteranceAcousticAuthorization()
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         #if DEBUG
@@ -2633,14 +3396,20 @@ public final class RuntimeCore {
     }
 
     nonisolated func appendRealtimeResidentBrainAudio(
-        _ frame: RealtimeBrainAudioFrame
+        _ frame: RealtimeBrainAudioFrame,
+        sourceGateEpoch: UInt64 = 0,
+        userActivityEvidence: Bool = false
     ) async -> Result<Void, RealtimeResidentBrainError> {
         guard let brainLease = currentRealtimeBrainLease(
             identity: frame.identity
         ), realtimeBrainSessionGate.isActive(frame.identity) else {
             return .failure(.invalidIdentity)
         }
-        let audioStart = realtimeBrainSessionGate.beginAudioInput(frame)
+        let audioStart = realtimeBrainSessionGate.beginAudioInput(
+            frame,
+            sourceGateEpoch: sourceGateEpoch,
+            userActivityEvidence: userActivityEvidence
+        )
         let token: UUID
         switch audioStart {
         case .accepted(let acceptedToken):
@@ -2657,6 +3426,8 @@ public final class RuntimeCore {
             _ = realtimeBrainSessionGate.finishAudioInput(
                 token: token,
                 frame: frame,
+                sourceGateEpoch: sourceGateEpoch,
+                userActivityEvidence: userActivityEvidence,
                 succeeded: false
             )
             await settleFailedRealtimeBrainSession(
@@ -2669,15 +3440,22 @@ public final class RuntimeCore {
               realtimeBrainSessionGate.finishAudioInput(
                 token: token,
                 frame: frame,
+                sourceGateEpoch: sourceGateEpoch,
+                userActivityEvidence: userActivityEvidence,
                 succeeded: true
               ) else {
             _ = realtimeBrainSessionGate.finishAudioInput(
                 token: token,
                 frame: frame,
+                sourceGateEpoch: sourceGateEpoch,
+                userActivityEvidence: userActivityEvidence,
                 succeeded: false
             )
             return .failure(.cancelled)
         }
+        await reconcilePendingRealtimeUtteranceResume(
+            matching: frame.identity
+        )
         return .success(())
     }
 
@@ -2893,6 +3671,8 @@ public final class RuntimeCore {
             return .failure(.cancelled)
         }
         resetRuntimeToolState(route: .realtimeResidentBrain)
+        resetRealtimeUtteranceCompletionState(matching: identity)
+        resetRealtimeUtteranceAcousticAuthorization(matching: identity)
         return .success(RealtimeBrainGenerationTransition(
             identity: identity,
             lease: brainLease,
@@ -2990,11 +3770,17 @@ public final class RuntimeCore {
     func observeRealtimeResidentBrainAcoustics(
         _ observation: RealtimeAcousticObservation
     ) -> RealtimeAcousticObservationDisposition {
-        acceptRealtimeAcousticObservation(
+        let disposition = acceptRealtimeAcousticObservation(
             observation,
             receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
             allowExactReplay: false
         )
+        if disposition == .observed {
+            reconcilePendingRealtimeUtteranceResume(
+                matching: observation.identity.session
+            )
+        }
+        return disposition
     }
 
     @MainActor
@@ -3165,6 +3951,65 @@ public final class RuntimeCore {
         -> RealtimeInterruptionTimingDebugSnapshot? {
         realtimeInterruptionTimingDebugSnapshot
     }
+
+    @MainActor
+    func realtimeUtteranceCompletionDebugSnapshot()
+        -> RealtimeUtteranceCompletionDebugSnapshot {
+        let state = realtimeUtteranceCompletionState
+        let phase: RealtimeUtteranceCompletionDebugPhase
+        switch state?.phase {
+        case nil:
+            phase = .idle
+        case .speaking:
+            phase = .speaking
+        case .candidatePause:
+            phase = .candidatePause
+        case .completionCandidate:
+            phase = .completionCandidate
+        }
+        return RealtimeUtteranceCompletionDebugSnapshot(
+            phase: phase,
+            session: state?.key.session,
+            turnID: state?.key.turnID,
+            sourceTurnID: state?.sourceTurnID,
+            contextRevision: state?.key.contextRevision,
+            completionWindowNanoseconds:
+                Self.realtimeUtteranceCompletionWindowNanoseconds,
+            speechStartedAtNanoseconds:
+                state?.completionCandidate?
+                    .speechStartedAtNanoseconds
+                    ?? state?.speechStartedAtNanoseconds
+                    ?? 0,
+            pauseStartedAtNanoseconds:
+                state?.completionCandidate?
+                    .pauseStartedAtNanoseconds
+                    ?? state?.pauseStartedAtNanoseconds
+                    ?? 0,
+            stoppedEventSequence:
+                state?.completionCandidate?.stoppedEventSequence
+                    ?? state?.stoppedEventSequence
+                    ?? 0,
+            completionCandidateAtNanoseconds:
+                state?.completionCandidate?.completedAtNanoseconds ?? 0,
+            completionCandidateCount:
+                realtimeUtteranceCompletionCandidateCount,
+            resumedPauseCount: realtimeUtteranceResumedPauseCount,
+            claimedAcousticSequence:
+                realtimeUtteranceAcousticAuthorization?
+                    .claimedThroughSequence ?? 0,
+            pendingStartTurnID:
+                realtimeUtterancePendingStart?.event.identity.turnID,
+            pendingStartAtNanoseconds:
+                realtimeUtterancePendingStart?.receivedAtNanoseconds ?? 0
+        )
+    }
+
+    @MainActor
+    func realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        realtimeUtteranceCompletionTracksTranscriptFinal(identity)
+    }
     #endif
 
     @MainActor
@@ -3222,10 +4067,25 @@ public final class RuntimeCore {
         case .ignored(.duplicateObservation):
             return .success(.ignored(.duplicateEvidence))
         }
-        return consumeRealtimeResidentBrainInterruptionEvidence(
+        let decision = consumeRealtimeResidentBrainInterruptionEvidence(
             evidence,
             receivedAtNanoseconds: receivedAt
         )
+        if case .success(.observed) = decision {
+            realtimeUtteranceEligibleAcousticMarker =
+                RealtimeUtteranceEligibleAcousticMarker(
+                    evidence: evidence,
+                    receivedAtNanoseconds: receivedAt
+                )
+            consumeRealtimeUtteranceAcousticAuthorization(
+                forActiveState: evidence
+            )
+            reconcilePendingRealtimeUtteranceResume(
+                matching: evidence.identity.session
+            )
+            promotePendingRealtimeUtteranceStartIfEligible()
+        }
+        return decision
     }
 
     #if DEBUG
@@ -3499,6 +4359,8 @@ public final class RuntimeCore {
         if realtimeBrainSessionGate.isClosed(identity) {
             return .success(())
         }
+        resetRealtimeUtteranceCompletionState(matching: identity)
+        resetRealtimeUtteranceAcousticAuthorization(matching: identity)
         if let pendingRealtimeInterruption,
            pendingRealtimeInterruption.decision.interruptedIdentity == identity
                 || pendingRealtimeInterruption.decision.nextIdentity
@@ -3581,6 +4443,13 @@ public final class RuntimeCore {
             return disposition
         }
         switch event.kind {
+        case .userSpeechStarted, .userSpeechStopped:
+            consumeRealtimeUtteranceActivity(
+                event,
+                receivedAtNanoseconds:
+                    DispatchTime.now().uptimeNanoseconds
+            )
+            return disposition
         case .userTranscriptFinal(let transcript):
             if let turnID = event.identity.turnID {
                 let key = RealtimeBrainPendingTurnKey(
@@ -3592,11 +4461,22 @@ public final class RuntimeCore {
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
+            if realtimeUtteranceCompletionTracksTranscriptFinal(
+                event.identity
+            ) {
+                return disposition
+            }
+            resetRealtimeUtteranceCompletionState(
+                matching: event.identity
+            )
             return await createRealtimeResidentBrainResponseIfEligible(
                 for: event,
                 lease: lease
             ) ? disposition : .rejectedStale
         case .residentSemanticFinal(let output):
+            resetRealtimeUtteranceCompletionState(
+                matching: event.identity
+            )
             await acceptRealtimeCanonicalResidentTurn(
                 event: event,
                 output: output,
@@ -3648,10 +4528,22 @@ public final class RuntimeCore {
             return disposition
         case .error:
             resetRuntimeToolState(route: .realtimeResidentBrain)
+            resetRealtimeUtteranceCompletionState(
+                matching: event.identity
+            )
             removeRealtimePendingTurn(for: event.identity)
             return disposition
         case .cancelled:
             resetRuntimeToolState(route: .realtimeResidentBrain)
+            if event.identity.turnID == nil {
+                resetRealtimeUtteranceCompletionState(
+                    matching: event.identity.session
+                )
+            } else {
+                resetRealtimeUtteranceCompletionState(
+                    matching: event.identity
+                )
+            }
             if event.identity.turnID == nil {
                 realtimeBrainPendingUserInputs.removeAll(
                     keepingCapacity: true
@@ -3662,6 +4554,12 @@ public final class RuntimeCore {
             return disposition
         case .sessionClosed:
             resetRuntimeToolState(route: .realtimeResidentBrain)
+            resetRealtimeUtteranceCompletionState(
+                matching: event.identity.session
+            )
+            resetRealtimeUtteranceAcousticAuthorization(
+                matching: event.identity.session
+            )
             realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
         default:
             return disposition
@@ -3913,6 +4811,8 @@ public final class RuntimeCore {
             realtimeBrainContextBridgeState = bridge
         }
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        resetRealtimeUtteranceCompletionState(matching: identity)
+        resetRealtimeUtteranceAcousticAuthorization(matching: identity)
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         realtimeBrainGeneration = nextIdentity.generation

@@ -5,6 +5,13 @@ nonisolated struct MacSpeechRealtimeBrainInputBinding: Sendable, Equatable {
     let captureGeneration: UInt64
 }
 
+nonisolated struct MacSpeechRealtimeBrainInputActivity:
+    Sendable,
+    Equatable {
+    let sourceGateEpoch: UInt64
+    let userAcousticEvidence: Bool
+}
+
 nonisolated struct MacSpeechRealtimeBrainAcousticObservation:
     Sendable,
     Equatable {
@@ -99,6 +106,11 @@ actor MacSpeechRealtimeBrainInputBridge {
         RealtimeBrainAudioFrame
     ) async -> Result<Void, RealtimeResidentBrainError>
 
+    typealias SendFrameWithActivity = @Sendable (
+        RealtimeBrainAudioFrame,
+        MacSpeechRealtimeBrainInputActivity
+    ) async -> Result<Void, RealtimeResidentBrainError>
+
     typealias StopInput = @MainActor @Sendable (
         MacSpeechRealtimeBrainInputBinding
     ) async -> Result<Void, RealtimeResidentBrainError>
@@ -112,7 +124,7 @@ actor MacSpeechRealtimeBrainInputBridge {
     ) async -> RealtimeAcousticObservationDisposition
 
     private let source: any MacSpeechAudioFrameSourcing
-    private let sendFrame: SendFrame
+    private let sendFrame: SendFrameWithActivity
     private let stopInput: StopInput
     private let observeResidentAcoustics: ObserveResidentAcoustics?
     private let consumeAcousticObservation: ConsumeAcousticObservation?
@@ -160,7 +172,23 @@ actor MacSpeechRealtimeBrainInputBridge {
         consumeAcousticObservation: ConsumeAcousticObservation? = nil
     ) {
         self.source = source
-        self.sendFrame = sendFrame
+        self.sendFrame = { frame, _ in
+            await sendFrame(frame)
+        }
+        self.stopInput = stopInput
+        self.observeResidentAcoustics = observeResidentAcoustics
+        self.consumeAcousticObservation = consumeAcousticObservation
+    }
+
+    init(
+        source: any MacSpeechAudioFrameSourcing,
+        sendFrameWithActivity: @escaping SendFrameWithActivity,
+        stopInput: @escaping StopInput,
+        observeResidentAcoustics: ObserveResidentAcoustics? = nil,
+        consumeAcousticObservation: ConsumeAcousticObservation? = nil
+    ) {
+        self.source = source
+        self.sendFrame = sendFrameWithActivity
         self.stopInput = stopInput
         self.observeResidentAcoustics = observeResidentAcoustics
         self.consumeAcousticObservation = consumeAcousticObservation
@@ -400,6 +428,10 @@ actor MacSpeechRealtimeBrainInputBridge {
                     provenance: .acousticEchoProcessed,
                     bytes: frame.pcm16Bytes
                 )
+                let inputActivity = MacSpeechRealtimeBrainInputActivity(
+                    sourceGateEpoch: frame.sourceGateEpoch,
+                    userAcousticEvidence: frame.userAcousticEvidence
+                )
                 await observeResidentAcousticsIfNeeded(
                     fallbackTimestampNanoseconds:
                         realtimeFrame.timestampNanoseconds,
@@ -410,7 +442,10 @@ actor MacSpeechRealtimeBrainInputBridge {
                       activeBinding == binding,
                       activePumpID == pumpID else { return }
                 let sendStartedAt = DispatchTime.now().uptimeNanoseconds
-                let result = await sendFrame(realtimeFrame)
+                let result = await sendFrame(
+                    realtimeFrame,
+                    inputActivity
+                )
                 let sendDuration = (
                     DispatchTime.now().uptimeNanoseconds &- sendStartedAt
                 ) / 1_000_000

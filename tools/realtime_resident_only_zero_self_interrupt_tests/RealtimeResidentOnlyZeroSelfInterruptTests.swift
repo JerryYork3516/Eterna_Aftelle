@@ -99,6 +99,11 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
     private var returnedEvents: [RealtimeResidentBrainEvent] = []
     private var holdsInterrupt = false
     private var interruptContinuation: CheckedContinuation<Void, Never>?
+    private var heldAudioAppendTargetCount: UInt64?
+    private var heldAudioAppendContinuation:
+        CheckedContinuation<Void, Never>?
+    private var heldAudioAppendWaiters:
+        [CheckedContinuation<Void, Never>] = []
 
     func openSession(
         _ command: RealtimeBrainOpenSessionCommand
@@ -127,6 +132,15 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
     func appendAudio(_ frame: RealtimeBrainAudioFrame) async throws {
         audioCount &+= 1
         audioFrames.append(frame)
+        if heldAudioAppendTargetCount == audioCount {
+            heldAudioAppendTargetCount = nil
+            await withCheckedContinuation { continuation in
+                heldAudioAppendContinuation = continuation
+                let waiters = heldAudioAppendWaiters
+                heldAudioAppendWaiters.removeAll(keepingCapacity: true)
+                waiters.forEach { $0.resume() }
+            }
+        }
     }
 
     func submitToolResult(
@@ -234,6 +248,28 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
         interruptContinuation != nil
     }
 
+    func holdAudioAppend(afterAdditionalFrames count: UInt64) {
+        precondition(count > 0)
+        heldAudioAppendTargetCount = audioCount &+ count
+    }
+
+    func waitUntilAudioAppendIsHeld() async {
+        guard heldAudioAppendContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            if heldAudioAppendContinuation != nil {
+                continuation.resume()
+            } else {
+                heldAudioAppendWaiters.append(continuation)
+            }
+        }
+    }
+
+    func releaseAudioAppend() {
+        let continuation = heldAudioAppendContinuation
+        heldAudioAppendContinuation = nil
+        continuation?.resume()
+    }
+
     private func deliver(_ event: RealtimeResidentBrainEvent) {
         if let continuation = receiveContinuation {
             receiveContinuation = nil
@@ -309,6 +345,10 @@ private final class R823AudioCapture:
             samples: processedSamples
         )
         let packets = try outputConverter.convert(cleanedBuffer)
+        let acoustic = acousticEchoHost.acousticObservationSnapshot()
+        let userAcousticEvidence = acoustic.sourceGateOpen
+            && (acoustic.inputClassification == .nearEndSpeech
+                || acoustic.inputClassification == .doubleTalk)
         let target = lock.withLock { (started, frameBuffer, generation) }
         guard target.0,
               let frameBuffer = target.1,
@@ -319,7 +359,11 @@ private final class R823AudioCapture:
             if frameBuffer.append(
                 pcm16Bytes: packet.bytes,
                 activity: packet.activity,
-                generation: generation
+                generation: generation,
+                timestamp: acoustic.captureHostTimeNanoseconds
+                    ?? DispatchTime.now().uptimeNanoseconds,
+                sourceGateEpoch: acoustic.sourceGateEpoch,
+                userAcousticEvidence: userAcousticEvidence
             ) {
                 packetCount += 1
                 if packet.activity > 0.001 {
@@ -487,6 +531,23 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r841LeaseChanges = 0
     private static var r841SemanticProposals = 0
 
+    private static var r842ShortPauseCases = 0
+    private static var r842ShortPauseFalseCompletions = 0
+    private static var r842TrueEndCases = 0
+    private static var r842CompletionCandidates = 0
+    private static var r842DuplicateCompletions = 0
+    private static var r842ResidentOnlyFalseCompletions = 0
+    private static var r842StaleGenerationCompletions = 0
+    private static var r842OldTimerResurrections = 0
+    private static var r842ResponseCreates = 0
+    private static var r842ProviderInterrupts = 0
+    private static var r842ProviderCancels = 0
+    private static var r842HostPlaybackClears = 0
+    private static var r842ExtraGenerationAdvances = 0
+    private static var r842CompletionWindowNanoseconds: UInt64 = 0
+    private static var r842MaximumTrueEndLatencyNanoseconds: UInt64 = 0
+    private static var r842DoubleTalkCases = 0
+
     static func main() async throws {
         guard CommandLine.arguments.count == 2
                 || (CommandLine.arguments.count == 3
@@ -494,7 +555,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r831-positive-only",
                         "--r832-confirmed-only",
                         "--r833-latency-stale-only",
-                        "--r841-double-talk-only"
+                        "--r841-double-talk-only",
+                        "--r842-turn-completion-only"
                     ].contains(CommandLine.arguments[2])) else {
             fatalError("fixture path required")
         }
@@ -503,6 +565,33 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--r842-turn-completion-only" {
+                cases += 1
+                try await testR842PauseVsUtteranceCompletion(
+                    fixture: fixture
+                )
+                print("realtime_turn_completion_cases=\(cases)")
+                print("realtime_turn_completion_checks=\(checks)")
+                print("r842_completion_window_ns=\(r842CompletionWindowNanoseconds)")
+                print("r842_clock_source=monotonic_uptime")
+                print("r842_short_pause_cases=\(r842ShortPauseCases)")
+                print("r842_short_pause_false_completions=\(r842ShortPauseFalseCompletions)")
+                print("r842_true_end_cases=\(r842TrueEndCases)")
+                print("r842_utterance_completion_candidates=\(r842CompletionCandidates)")
+                print("r842_max_true_end_latency_ns=\(r842MaximumTrueEndLatencyNanoseconds)")
+                print("r842_duplicate_completions=\(r842DuplicateCompletions)")
+                print("r842_resident_only_false_completions=\(r842ResidentOnlyFalseCompletions)")
+                print("r842_stale_generation_completions=\(r842StaleGenerationCompletions)")
+                print("r842_old_timer_resurrections=\(r842OldTimerResurrections)")
+                print("r842_double_talk_cases=\(r842DoubleTalkCases)")
+                print("r842_response_creates=\(r842ResponseCreates)")
+                print("r842_provider_interrupts=\(r842ProviderInterrupts)")
+                print("r842_provider_cancels=\(r842ProviderCancels)")
+                print("r842_host_playback_clears=\(r842HostPlaybackClears)")
+                print("r842_extra_generation_advances=\(r842ExtraGenerationAdvances)")
+                print("r842_real_qwen_and_devices=NOT_RUN_HUMAN_GATE")
+                return
+            }
             if CommandLine.arguments[2] == "--r841-double-talk-only" {
                 cases += 1
                 try await testR841DoubleTalkAcousticDetermination(
@@ -1322,6 +1411,1569 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await close(stack)
     }
 
+    private static func testR842PauseVsUtteranceCompletion(
+        fixture: Data
+    ) async throws {
+        try await testR842ContinuousPauseAndTrueEnd(fixture: fixture)
+        try await testR842SourceTurnRebound(fixture: fixture)
+        try await testR842ProviderFirstExpiredPause(fixture: fixture)
+        try await testR842GateCloseEventFirstResume(fixture: fixture)
+        try await testR842FalsePendingAndFreshTurn(fixture: fixture)
+        try await testR842PreStopInFlightFrame(fixture: fixture)
+        try await testR842DoubleTalkPauseAndTrueEnd(fixture: fixture)
+        try await testR842ResidentOnlySafety(fixture: fixture)
+        try await testR842StaleTimerAndGeneration(fixture: fixture)
+        r842DuplicateCompletions = max(
+            0,
+            r842CompletionCandidates - r842TrueEndCases
+        )
+
+        expect(r842CompletionWindowNanoseconds == 400_000_000,
+               "R8.4.2 freezes one centralized 400 ms Runtime window")
+        expect(r842ShortPauseCases == 5,
+               "R8.4.2 covers five short-pause patterns")
+        expect(r842ShortPauseFalseCompletions == 0,
+               "R8.4.2 short pauses never complete")
+        expect(r842TrueEndCases == 11,
+               "R8.4.2 covers eleven true-end paths")
+        expect(r842CompletionCandidates == r842TrueEndCases,
+               "R8.4.2 emits exactly one candidate per true end")
+        expect(r842DuplicateCompletions == 0,
+               "R8.4.2 duplicate end facts stay idempotent")
+        expect(r842ResidentOnlyFalseCompletions == 0,
+               "R8.4.2 resident-only audio never creates a user completion")
+        expect(r842StaleGenerationCompletions == 0,
+               "R8.4.2 stale-generation events fail closed")
+        expect(r842OldTimerResurrections == 0,
+               "R8.4.2 old timers cannot resurrect after restart")
+        expect(r842ResponseCreates == 0,
+               "R8.4.2 activity-only evidence creates no response")
+        expect(r842ProviderInterrupts == 0 && r842ProviderCancels == 0,
+               "R8.4.2 never invokes Provider interruption APIs")
+        expect(r842HostPlaybackClears == 0,
+               "R8.4.2 never clears Playback")
+        expect(r842ExtraGenerationAdvances == 0,
+               "R8.4.2 has no generation advance beyond formal restart")
+        expect(r842DoubleTalkCases == 2,
+               "R8.4.2 covers double-talk pause and true end")
+    }
+
+    private static func testR842ContinuousPauseAndTrueEnd(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let generationBaseline = stack.session.generation
+        let leaseBaseline = stack.runtime.activeBrainLeaseForTesting()
+        let initial = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842CompletionWindowNanoseconds = initial
+            .completionWindowNanoseconds
+        var sequence: UInt64 = 4
+
+        let continuousTurn = RealtimeBrainTurnID()
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "continuous speech",
+            seed: 45_000
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: continuousTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: continuousTurn,
+            sequence: sequence,
+            kind: .userTranscriptPartial("still speaking")
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: continuousTurn,
+            sequence: sequence,
+            kind: .userTranscriptFinal("provider segment final")
+        )
+        sequence &+= 1
+        await waitUntilOnMainActor("R8.4.2 continuous speech state") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.turnID == continuousTurn
+        }
+        await waitBeyondR842CompletionWindow()
+        let continuous = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(continuous.phase == .speaking,
+               "R8.4.2 continuous speech remains speaking")
+        expect(continuous.completionCandidateCount == 0,
+               "R8.4.2 continuous speech never completes")
+        expect(
+            stack.runtime
+                .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+                    RealtimeBrainEventIdentity(
+                        session: stack.session,
+                        turnID: continuousTurn,
+                        responseID: nil,
+                        contextRevision: 1
+                    )
+                ),
+            "R8.4.2 matching transcript final stays on the tracked utterance"
+        )
+        expect(
+            !stack.runtime
+                .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+                    RealtimeBrainEventIdentity(
+                        session: stack.session,
+                        turnID: RealtimeBrainTurnID(),
+                        responseID: nil,
+                        contextRevision: 1
+                    )
+                ),
+            "R8.4.2 unrelated transcript final is outside the turn fence"
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: continuousTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let continuousStopSequence = sequence
+        sequence &+= 1
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: continuousTurn,
+            expectedStoppedSequence: continuousStopSequence,
+            label: "continuous speech eventual true end"
+        )
+        r842TrueEndCases += 1
+        let shortTurn = RealtimeBrainTurnID()
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "single short pause",
+            seed: 45_100
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        sequence &+= 1
+        await waitUntilOnMainActor("R8.4.2 short pause candidate") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause
+        }
+        let shortPauseCandidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        try? await Task.sleep(for: .milliseconds(120))
+        try await emitR842NearEndContinuation(
+            stack: stack,
+            seed: 45_101
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await waitUntilOnMainActor("R8.4.2 short pause resume") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.turnID == shortTurn
+                && snapshot.session == stack.session
+        }
+        await waitBeyondR842CompletionWindow()
+        let shortResume = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842ShortPauseCases += 1
+        r842ShortPauseFalseCompletions += Int(
+            shortResume.completionCandidateCount
+                - shortPauseCandidateBaseline
+        )
+        expect(shortResume.completionCandidateCount
+                == shortPauseCandidateBaseline,
+               "R8.4.2 short pause resumes without completion")
+        expect(shortResume.session?.generation == generationBaseline
+                && shortResume.turnID == shortTurn,
+               "R8.4.2 short pause resumes on the same generation and turn")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let shortStopSequence = sequence
+        sequence &+= 1
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 2,
+            expectedSession: stack.session,
+            expectedTurn: shortTurn,
+            expectedStoppedSequence: shortStopSequence,
+            label: "single short-pause eventual true end"
+        )
+        r842TrueEndCases += 1
+        let repeatedTurn = RealtimeBrainTurnID()
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "repeated short pauses",
+            seed: 45_200
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: repeatedTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        let repeatedCandidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        for pauseIndex in 0 ..< 3 {
+            await enqueueR842Activity(
+                stack: stack,
+                turnID: repeatedTurn,
+                sequence: sequence,
+                kind: .userSpeechStopped
+            )
+            sequence &+= 1
+            await waitUntilOnMainActor(
+                "R8.4.2 repeated pause \(pauseIndex)"
+            ) {
+                stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase
+                    == .candidatePause
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            try await emitR842NearEndContinuation(
+                stack: stack,
+                seed: UInt32(45_201 + pauseIndex)
+            )
+            await enqueueR842Activity(
+                stack: stack,
+                turnID: repeatedTurn,
+                sequence: sequence,
+                kind: .userSpeechStarted
+            )
+            sequence &+= 1
+            await waitUntilOnMainActor(
+                "R8.4.2 repeated resume \(pauseIndex)"
+            ) {
+                let snapshot = stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot()
+                return snapshot.phase == .speaking
+                    && snapshot.turnID == repeatedTurn
+            }
+        }
+        await waitBeyondR842CompletionWindow()
+        let repeatedResume = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842ShortPauseCases += 1
+        r842ShortPauseFalseCompletions += Int(
+            repeatedResume.completionCandidateCount
+                - repeatedCandidateBaseline
+        )
+        expect(repeatedResume.completionCandidateCount
+                == repeatedCandidateBaseline,
+               "R8.4.2 repeated short pauses never complete")
+        expect(repeatedResume.resumedPauseCount == 4,
+               "R8.4.2 records every same-turn pause resume")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: repeatedTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let repeatedStopSequence = sequence
+        sequence &+= 1
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 3,
+            expectedSession: stack.session,
+            expectedTurn: repeatedTurn,
+            expectedStoppedSequence: repeatedStopSequence,
+            label: "repeated-pause eventual true end"
+        )
+        r842TrueEndCases += 1
+        let trueEndTurn = RealtimeBrainTurnID()
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "true end",
+            seed: 45_300
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: trueEndTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: trueEndTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let trueEndSequence = sequence
+        sequence &+= 1
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 4,
+            expectedSession: stack.session,
+            expectedTurn: trueEndTurn,
+            expectedStoppedSequence: trueEndSequence,
+            label: "continuous-matrix true end"
+        )
+        r842TrueEndCases += 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: trueEndTurn,
+            sequence: sequence,
+            kind: .userTranscriptFinal("provider true-end final")
+        )
+        sequence &+= 1
+
+        let returnedBeforeDuplicates = await stack.provider
+            .returnedEventCount(eventSession: stack.session)
+        for _ in 0 ..< 3 {
+            await stack.provider.enqueue(r842ActivityEvent(
+                session: stack.session,
+                turnID: trueEndTurn,
+                sequence: sequence,
+                kind: .userSpeechStopped
+            ))
+            sequence &+= 1
+        }
+        await waitUntil("R8.4.2 duplicate stops returned") {
+            await stack.provider.returnedEventCount(
+                eventSession: stack.session
+            ) == returnedBeforeDuplicates + 3
+        }
+        try? await Task.sleep(for: .milliseconds(80))
+        let completed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(completed.completionCandidateCount == 4,
+               "R8.4.2 duplicate stops do not duplicate completion")
+        r842CompletionCandidates += Int(completed.completionCandidateCount)
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        expect(stack.runtime.activeBrainLeaseForTesting() == leaseBaseline,
+               "R8.4.2 activity matrix preserves the Brain lease")
+        expect(stack.session.generation == generationBaseline,
+               "R8.4.2 activity matrix preserves generation")
+        try await close(stack)
+    }
+
+    private static func testR842SourceTurnRebound(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let generationBaseline = stack.session.generation
+        let logicalTurn = RealtimeBrainTurnID()
+        let reboundSourceTurn = RealtimeBrainTurnID()
+        var sequence: UInt64 = 4
+
+        let sourceCaptureFrameBefore = stack.acousticEchoHost
+            .acousticObservationSnapshot().captureFrameIndex
+        await stack.provider.holdAudioAppend(afterAdditionalFrames: 1)
+        let acousticTask = Task {
+            try await establishR842AcousticAuthorization(
+                stack: stack,
+                label: "source-turn rebound",
+                seed: 45_400,
+                transition: .none
+            )
+        }
+        await stack.provider.waitUntilAudioAppendIsHeld()
+        await waitUntil("R8.4.2 held production gate opens") {
+            stack.acousticEchoHost.acousticObservationSnapshot()
+                .sourceGateOpen
+        }
+        await waitUntil("R8.4.2 held production capture settles") {
+            stack.acousticEchoHost.acousticObservationSnapshot()
+                .captureFrameIndex >= sourceCaptureFrameBefore + 18
+        }
+        await waitUntil("R8.4.2 held capture timestamp becomes current") {
+            guard let captureTimestamp = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+                .captureHostTimeNanoseconds else { return false }
+            return DispatchTime.now().uptimeNanoseconds
+                >= captureTimestamp
+        }
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: logicalTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        let pending = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(pending.phase == .idle
+                && pending.claimedAcousticSequence == 0,
+               "R8.4.2 Provider-first activity waits for acoustic authorization")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: logicalTurn,
+            sequence: sequence,
+            kind: .userTranscriptFinal("provider-first segment final")
+        )
+        sequence &+= 1
+        let createCountWhilePending = await stack.provider.createCount()
+        expect(createCountWhilePending == createBaseline,
+               "R8.4.2 pending exact-turn final creates no response")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: logicalTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        sequence &+= 1
+        await stack.provider.releaseAudioAppend()
+        try await acousticTask.value
+        let pendingAfterAcoustic = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        let evidenceAfterAcoustic = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        await waitUntilOnMainActor(
+            "R8.4.2 Provider-first acoustic reconciliation "
+                + "pending=\(pendingAfterAcoustic.pendingStartAtNanoseconds) "
+                + "acoustic=\(evidenceAfterAcoustic.lastAcousticTimestampNanoseconds) "
+                + "received=\(evidenceAfterAcoustic.acousticReceivedAtNanoseconds)"
+        ) {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .candidatePause
+                && snapshot.turnID == logicalTurn
+        }
+        try? await Task.sleep(for: .milliseconds(120))
+        try await emitR842NearEndContinuation(
+            stack: stack,
+            seed: 45_401
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: reboundSourceTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await waitUntilOnMainActor("R8.4.2 source-turn rebound") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.turnID == logicalTurn
+                && snapshot.sourceTurnID == reboundSourceTurn
+        }
+        await waitBeyondR842CompletionWindow()
+        let resumed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842ShortPauseCases += 1
+        r842ShortPauseFalseCompletions += Int(
+            resumed.completionCandidateCount
+        )
+        expect(resumed.completionCandidateCount == 0,
+               "R8.4.2 source-turn rebound does not complete")
+        expect(resumed.session?.generation == generationBaseline
+                && resumed.turnID == logicalTurn
+                && resumed.sourceTurnID == reboundSourceTurn,
+               "R8.4.2 source-turn rebound preserves one logical utterance")
+
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: reboundSourceTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let stoppedSequence = sequence
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: logicalTurn,
+            expectedStoppedSequence: stoppedSequence,
+            label: "source-turn rebound true end"
+        )
+        let completed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(completed.sourceTurnID == reboundSourceTurn,
+               "R8.4.2 rebound completion retains the active source turn")
+        r842TrueEndCases += 1
+        r842CompletionCandidates += Int(completed.completionCandidateCount)
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        try await close(stack)
+    }
+
+    private static func testR842ProviderFirstExpiredPause(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let turnID = RealtimeBrainTurnID()
+
+        let expiredCaptureFrameBefore = stack.acousticEchoHost
+            .acousticObservationSnapshot().captureFrameIndex
+        await stack.provider.holdAudioAppend(afterAdditionalFrames: 4)
+        let acousticTask = Task {
+            try await establishR842AcousticAuthorization(
+                stack: stack,
+                label: "expired Provider-first pause",
+                seed: 45_450,
+                transition: .none
+            )
+        }
+        await stack.provider.waitUntilAudioAppendIsHeld()
+        await waitUntil("R8.4.2 held expired gate opens") {
+            stack.acousticEchoHost.acousticObservationSnapshot()
+                .sourceGateOpen
+        }
+        await waitUntil("R8.4.2 held expired capture settles") {
+            stack.acousticEchoHost.acousticObservationSnapshot()
+                .captureFrameIndex >= expiredCaptureFrameBefore + 18
+        }
+        await waitUntil(
+            "R8.4.2 held expired capture timestamp becomes current"
+        ) {
+            guard let captureTimestamp = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+                .captureHostTimeNanoseconds else { return false }
+            return DispatchTime.now().uptimeNanoseconds
+                >= captureTimestamp
+        }
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userSpeechStarted
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 5,
+            kind: .userSpeechStopped
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 6,
+            kind: .userTranscriptFinal("expired Provider-first final")
+        )
+        try? await Task.sleep(
+            for: .nanoseconds(
+                Int64(r842CompletionWindowNanoseconds + 20_000_000)
+            )
+        )
+        let beforeAcoustic = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        let createBeforeAcoustic = await stack.provider.createCount()
+        expect(beforeAcoustic.phase == .idle
+                && beforeAcoustic.completionCandidateCount == 0
+                && createBeforeAcoustic == createBaseline,
+               "R8.4.2 Provider activity alone cannot complete or respond")
+
+        await stack.provider.releaseAudioAppend()
+        try await acousticTask.value
+        let afterExpiredAcoustic = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        let afterExpiredEvidence = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: 5,
+            label: "expired Provider-first true end "
+                + "phase=\(afterExpiredAcoustic.phase) "
+                + "pending=\(afterExpiredAcoustic.pendingStartAtNanoseconds) "
+                + "claimed=\(afterExpiredAcoustic.claimedAcousticSequence) "
+                + "acoustic=\(afterExpiredEvidence.lastAcousticTimestampNanoseconds)"
+        )
+        let completed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842TrueEndCases += 1
+        r842CompletionCandidates += Int(completed.completionCandidateCount)
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        try await close(stack)
+    }
+
+    private static func testR842GateCloseEventFirstResume(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let turnID = RealtimeBrainTurnID()
+        let falseTurnID = RealtimeBrainTurnID()
+        var sequence: UInt64 = 4
+
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "event-first gate-close base",
+            seed: 45_460,
+            transition: .none
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        let initialClaim = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .claimedAcousticSequence
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        sequence &+= 1
+        await waitUntilOnMainActor("R8.4.2 gate-close candidate") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause
+        }
+        try await closeR842SourceGateDuringPause(
+            stack: stack,
+            seed: 45_461,
+            frameIntervalMilliseconds: 8
+        )
+        expect(stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause,
+               "R8.4.2 gate closes before the pause window expires")
+
+        let captureFrameBefore = stack.acousticEchoHost
+            .acousticObservationSnapshot().captureFrameIndex
+        await stack.provider.holdAudioAppend(afterAdditionalFrames: 1)
+        let continuationTask = Task {
+            try await emitR842NearEndContinuation(
+                stack: stack,
+                seed: 45_462
+            )
+        }
+        await stack.provider.waitUntilAudioAppendIsHeld()
+        await waitUntil("R8.4.2 event-first reopen capture settles") {
+            stack.acousticEchoHost.acousticObservationSnapshot()
+                .captureFrameIndex >= captureFrameBefore + 6
+        }
+        await waitUntil("R8.4.2 event-first reopen timestamp is current") {
+            guard let captureTimestamp = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+                .captureHostTimeNanoseconds else { return false }
+            return DispatchTime.now().uptimeNanoseconds
+                >= captureTimestamp
+        }
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userTranscriptFinal("event-first resumed segment")
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let resumedStopSequence = sequence
+        sequence &+= 1
+        await stack.provider.releaseAudioAppend()
+        try await continuationTask.value
+        await waitUntilOnMainActor(
+            "R8.4.2 delayed reopen eligibility is consumed"
+        ) {
+            let completion = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let evidence = stack.runtime
+                .realtimeInterruptionEvidenceDebugSnapshot()
+            return completion.claimedAcousticSequence
+                    == evidence.lastAcousticSequence
+                && completion.claimedAcousticSequence > initialClaim
+        }
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: resumedStopSequence,
+            label: "event-first gate-close true end"
+        )
+        let completed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(completed.resumedPauseCount == 1,
+               "R8.4.2 event-first audio resumes the original pause once")
+        let claimedAfterCompletion = completed.claimedAcousticSequence
+        let evidenceAfterCompletion = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+            .lastAcousticSequence
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: falseTurnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        try? await Task.sleep(for: .milliseconds(40))
+        let afterFalseStart = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(afterFalseStart.turnID == turnID
+                && afterFalseStart.completionCandidateCount == 1,
+               "R8.4.2 no-evidence next start cannot replace the completed turn")
+        expect(afterFalseStart.claimedAcousticSequence
+                == claimedAfterCompletion
+                && evidenceAfterCompletion == claimedAfterCompletion,
+               "R8.4.2 delayed resume eligibility is one-shot")
+        r842ShortPauseCases += 1
+        r842TrueEndCases += 1
+        r842CompletionCandidates += Int(
+            afterFalseStart.completionCandidateCount
+        )
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        try await close(stack)
+    }
+
+    private static func testR842FalsePendingAndFreshTurn(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let falseTurnID = RealtimeBrainTurnID()
+        let trueTurnID = RealtimeBrainTurnID()
+        let replacementTurnID = RealtimeBrainTurnID()
+        var sequence: UInt64 = 4
+
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: falseTurnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        expect(stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .idle,
+               "R8.4.2 unmatched false Provider VAD cannot open a turn")
+
+        let captureFrameBefore = stack.acousticEchoHost
+            .acousticObservationSnapshot().captureFrameIndex
+        await stack.provider.holdAudioAppend(afterAdditionalFrames: 1)
+        let acousticTask = Task {
+            try await establishR842AcousticAuthorization(
+                stack: stack,
+                label: "false A then true B",
+                seed: 45_470,
+                transition: .none
+            )
+        }
+        await stack.provider.waitUntilAudioAppendIsHeld()
+        await waitUntil("R8.4.2 true B production capture settles") {
+            stack.acousticEchoHost.acousticObservationSnapshot()
+                .captureFrameIndex >= captureFrameBefore + 18
+        }
+        await waitUntil("R8.4.2 true B capture timestamp is current") {
+            guard let captureTimestamp = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+                .captureHostTimeNanoseconds else { return false }
+            return DispatchTime.now().uptimeNanoseconds
+                >= captureTimestamp
+        }
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: trueTurnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await stack.provider.releaseAudioAppend()
+        try await acousticTask.value
+        await waitUntilOnMainActor("R8.4.2 true B replaces false A") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.turnID == trueTurnID
+                && snapshot.sourceTurnID == trueTurnID
+                && snapshot.claimedAcousticSequence > 0
+        }
+
+        try await closeR842SourceGateDuringPause(
+            stack: stack,
+            seed: 45_471
+        )
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "fresh speaking-turn replacement",
+            seed: 45_472,
+            transition: .none
+        )
+        let claimBeforeReplacement = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .claimedAcousticSequence
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: replacementTurnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        let replacement = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(replacement.phase == .speaking
+                && replacement.turnID == replacementTurnID,
+               "R8.4.2 fresh eligible turn replaces a different speaking turn")
+        expect(replacement.claimedAcousticSequence
+                > claimBeforeReplacement,
+               "R8.4.2 speaking replacement consumes a fresh one-shot marker")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: replacementTurnID,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let stoppedSequence = sequence
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: replacementTurnID,
+            expectedStoppedSequence: stoppedSequence,
+            label: "fresh speaking replacement true end"
+        )
+        let completed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842TrueEndCases += 1
+        r842CompletionCandidates += Int(completed.completionCandidateCount)
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        try await close(stack)
+    }
+
+    private static func testR842PreStopInFlightFrame(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let turnID = RealtimeBrainTurnID()
+        let falseTurnID = RealtimeBrainTurnID()
+        var sequence: UInt64 = 4
+
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "pre-stop in-flight base",
+            seed: 45_480,
+            transition: .none
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        let initialClaim = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .claimedAcousticSequence
+        try await closeR842SourceGateDuringPause(
+            stack: stack,
+            seed: 45_481
+        )
+
+        let captureFrameBefore = stack.acousticEchoHost
+            .acousticObservationSnapshot().captureFrameIndex
+        await stack.provider.holdAudioAppend(afterAdditionalFrames: 1)
+        let continuationTask = Task {
+            try await emitR842NearEndContinuation(
+                stack: stack,
+                seed: 45_482
+            )
+        }
+        await stack.provider.waitUntilAudioAppendIsHeld()
+        await waitUntil("R8.4.2 pre-stop capture settles") {
+            stack.acousticEchoHost.acousticObservationSnapshot()
+                .captureFrameIndex >= captureFrameBefore + 6
+        }
+        await waitUntil("R8.4.2 pre-stop capture timestamp is current") {
+            guard let captureTimestamp = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+                .captureHostTimeNanoseconds else { return false }
+            return DispatchTime.now().uptimeNanoseconds
+                >= captureTimestamp
+        }
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let stoppedSequence = sequence
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await stack.provider.releaseAudioAppend()
+        try await continuationTask.value
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: stoppedSequence,
+            label: "pre-stop in-flight frame true end"
+        )
+        let completed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        let staleEvidenceSequence = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+            .lastAcousticSequence
+        expect(completed.resumedPauseCount == 0,
+               "R8.4.2 pre-stop in-flight PCM cannot resume the pause")
+        expect(completed.claimedAcousticSequence == initialClaim
+                && staleEvidenceSequence > initialClaim,
+               "R8.4.2 pre-stop eligibility remains unclaimed")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: falseTurnID,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        let afterFalseStart = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(afterFalseStart.turnID == turnID
+                && afterFalseStart.claimedAcousticSequence == initialClaim,
+               "R8.4.2 stale pre-stop marker cannot open a later turn")
+        r842TrueEndCases += 1
+        r842CompletionCandidates += Int(
+            afterFalseStart.completionCandidateCount
+        )
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        try await close(stack)
+    }
+
+    private static func testR842DoubleTalkPauseAndTrueEnd(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        var sequence: UInt64 = 4
+
+        let shortAcoustic = try await
+            submitR841DoubleTalkThroughProductionChain(
+                stack: stack,
+                scenario: R841DoubleTalkScenario(
+                    label: "R8.4.2 double-talk short pause",
+                    renderAmplitude: 0.30,
+                    echoGain: 0.80,
+                    nearEndAmplitude: 0.20,
+                    doubleTalkFrames: 12,
+                    transition: .nearEndOnly
+                ),
+                seed: 42_000
+            )
+        expect(shortAcoustic.detected && shortAcoustic.sourceGateOpened,
+               "R8.4.2 short-pause double-talk is production detected")
+        expect(shortAcoustic.acousticEligibility == 1,
+               "R8.4.2 short-pause double-talk reaches eligibility")
+        r842DoubleTalkCases += 1
+
+        let shortTurn = RealtimeBrainTurnID()
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        sequence &+= 1
+        await waitUntilOnMainActor("R8.4.2 double-talk short pause") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause
+        }
+        try? await Task.sleep(for: .milliseconds(140))
+        try await emitR842NearEndContinuation(
+            stack: stack,
+            seed: 42_001
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await waitBeyondR842CompletionWindow()
+        let resumed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842ShortPauseCases += 1
+        r842ShortPauseFalseCompletions += Int(
+            resumed.completionCandidateCount
+        )
+        expect(resumed.phase == .speaking
+                && resumed.turnID == shortTurn,
+               "R8.4.2 double-talk pause resumes as the same turn")
+        expect(resumed.completionCandidateCount == 0,
+               "R8.4.2 double-talk short pause does not complete")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: shortTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let resumedStopSequence = sequence
+        sequence &+= 1
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: shortTurn,
+            expectedStoppedSequence: resumedStopSequence,
+            label: "double-talk short-pause eventual true end"
+        )
+        r842TrueEndCases += 1
+        let trueEndAcoustic = try await
+            submitR841DoubleTalkThroughProductionChain(
+                stack: stack,
+                scenario: R841DoubleTalkScenario(
+                    label: "R8.4.2 double-talk true end",
+                    renderAmplitude: 0.35,
+                    echoGain: 0.85,
+                    nearEndAmplitude: 0.18,
+                    doubleTalkFrames: 12,
+                    transition: .farEndOnly
+                ),
+                seed: 43_000
+            )
+        expect(trueEndAcoustic.detected
+                && trueEndAcoustic.sourceGateOpened,
+               "R8.4.2 true-end double-talk is production detected")
+        expect(trueEndAcoustic.acousticEligibility == 1,
+               "R8.4.2 true-end double-talk reaches eligibility")
+        r842DoubleTalkCases += 1
+
+        let trueEndTurn = RealtimeBrainTurnID()
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: trueEndTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: trueEndTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        let trueEndSequence = sequence
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 2,
+            expectedSession: stack.session,
+            expectedTurn: trueEndTurn,
+            expectedStoppedSequence: trueEndSequence,
+            label: "double-talk true end"
+        )
+        r842TrueEndCases += 1
+        let completed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842CompletionCandidates += Int(completed.completionCandidateCount)
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        try await close(stack)
+    }
+
+    private static func testR842ResidentOnlySafety(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let candidatesBefore = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        var sequence: UInt64 = 4
+        let negatives = [
+            R841NegativeScenario(
+                label: "R8.4.2 clean far-end",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                residualGain: 0,
+                delayMilliseconds: [80],
+                bucket: .farEnd
+            ),
+            R841NegativeScenario(
+                label: "R8.4.2 residual echo",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                residualGain: 0.15,
+                delayMilliseconds: [80],
+                bucket: .residualEcho
+            )
+        ]
+        for (index, scenario) in negatives.enumerated() {
+            let result = try await submitR841ResidentOnlyThroughProductionChain(
+                stack: stack,
+                scenario: scenario,
+                seed: UInt32(44_000 + index)
+            )
+            expect(result.falseDoubleTalk == 0
+                    && result.acousticEligibility == 0,
+                   "R8.4.2 \(scenario.label) stays user-negative")
+            let falseTurn = RealtimeBrainTurnID()
+            await enqueueR842Activity(
+                stack: stack,
+                turnID: falseTurn,
+                sequence: sequence,
+                kind: .userSpeechStarted
+            )
+            sequence &+= 1
+            await enqueueR842Activity(
+                stack: stack,
+                turnID: falseTurn,
+                sequence: sequence,
+                kind: .userSpeechStopped
+            )
+            sequence &+= 1
+            await waitBeyondR842CompletionWindow()
+            expect(
+                stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                    .phase == .idle,
+                "R8.4.2 \(scenario.label) Provider VAD cannot open a user turn"
+            )
+        }
+        let tail = try await submitR841PlaybackTailThroughProductionChain(
+            stack: stack
+        )
+        expect(tail.falseDoubleTalk == 0 && tail.acousticEligibility == 0,
+               "R8.4.2 residual playback tail stays user-negative")
+        let tailTurn = RealtimeBrainTurnID()
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: tailTurn,
+            sequence: sequence,
+            kind: .userSpeechStarted
+        )
+        sequence &+= 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: tailTurn,
+            sequence: sequence,
+            kind: .userSpeechStopped
+        )
+        await waitBeyondR842CompletionWindow()
+        let candidatesAfter = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        r842ResidentOnlyFalseCompletions += Int(
+            candidatesAfter - candidatesBefore
+        )
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        expect(candidatesAfter == candidatesBefore,
+               "R8.4.2 resident-only matrix creates no completion")
+        expect(
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .claimedAcousticSequence == 0,
+            "R8.4.2 resident-only Provider VAD claims no acoustic authorization"
+        )
+        try await close(stack)
+    }
+
+    private static func testR842StaleTimerAndGeneration(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        r842CompletionWindowNanoseconds = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionWindowNanoseconds
+        try await establishR842AcousticAuthorization(
+            stack: stack,
+            label: "stop-restart timer",
+            seed: 45_500
+        )
+        let oldTurn = RealtimeBrainTurnID()
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: oldTurn,
+            sequence: 4,
+            kind: .userSpeechStarted
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: oldTurn,
+            sequence: 5,
+            kind: .userSpeechStopped
+        )
+        expect(stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause,
+               "R8.4.2 old generation owns one pending pause timer")
+
+        await stack.controller.stopSpeechAudioCapture()
+        await waitUntilOnMainActor("R8.4.2 formal route stops") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle
+        }
+        await stack.controller.startRealtimeResidentBrainRoute()
+        await waitUntil("R8.4.2 formal route restarts") {
+            guard let nextSession = await stack.provider.lastSession() else {
+                return false
+            }
+            let phase = await stack.controller
+                .formalSpeechRouteDebugSnapshot.phase
+            return nextSession != stack.session
+                && phase == .listening
+        }
+        guard let nextSession = await stack.provider.lastSession() else {
+            fatalError("R8.4.2 restarted session missing")
+        }
+        expect(nextSession.generation == stack.session.generation + 1,
+               "R8.4.2 formal restart advances exactly to N+1")
+        r842ExtraGenerationAdvances += max(
+            0,
+            Int(nextSession.generation - stack.session.generation) - 1
+        )
+
+        let staleReturnedBaseline = await stack.provider
+            .returnedEventCount(eventSession: stack.session)
+        await stack.provider.enqueue(r842ActivityEvent(
+            session: stack.session,
+            turnID: oldTurn,
+            sequence: 6,
+            kind: .userSpeechStopped
+        ))
+        await waitUntil("R8.4.2 stale N activity returns") {
+            await stack.provider.returnedEventCount(
+                eventSession: stack.session
+            ) == staleReturnedBaseline + 1
+        }
+        await waitBeyondR842CompletionWindow()
+        let afterOldDeadline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842OldTimerResurrections += Int(
+            afterOldDeadline.completionCandidateCount
+        )
+        r842StaleGenerationCompletions += Int(
+            afterOldDeadline.completionCandidateCount
+        )
+        expect(afterOldDeadline.phase == .idle
+                && afterOldDeadline.completionCandidateCount == 0,
+               "R8.4.2 old timer cannot complete or bind N+1")
+        expect(afterOldDeadline.session == nil
+                && afterOldDeadline.claimedAcousticSequence == 0,
+               "R8.4.2 N+1 cannot inherit N turn or acoustic authorization")
+        expect(nextSession.runtimeSessionID == stack.session.runtimeSessionID,
+               "R8.4.2 stop/restart preserves the Runtime session identity")
+        r842ResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        r842ProviderInterrupts += await stack.provider.interruptCount()
+            - interruptBaseline
+        r842ProviderCancels += await stack.provider.cancelCount()
+            - cancelBaseline
+        r842HostPlaybackClears += stack.outputPlayer
+            .clearScheduledPlaybackCount - clearBaseline
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func establishR842AcousticAuthorization(
+        stack: R823ControllerStack,
+        label: String,
+        seed: UInt32,
+        transition: R841DoubleTalkTransition = .farEndOnly
+    ) async throws {
+        let result = try await submitR841DoubleTalkThroughProductionChain(
+            stack: stack,
+            scenario: R841DoubleTalkScenario(
+                label: "R8.4.2 \(label)",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.20,
+                doubleTalkFrames: 12,
+                transition: transition
+            ),
+            seed: seed
+        )
+        expect(result.detected && result.sourceGateOpened,
+               "R8.4.2 \(label) is production-acoustic user evidence")
+        expect(result.acousticEligibility == 1,
+               "R8.4.2 \(label) obtains one acoustic authorization")
+    }
+
+    private static func emitR842NearEndContinuation(
+        stack: R823ControllerStack,
+        seed: UInt32
+    ) async throws {
+        let audioBefore = await stack.provider.audioFrameCount()
+        stack.acousticEchoHost.playbackStarted()
+        let render = signal(seed: seed, amplitude: 0.30)
+        let nearEnd = signal(seed: seed + 1, amplitude: 0.20)
+        let capture = zip(render, nearEnd).map {
+            $0.0 * 0.80 + $0.1
+        }
+        let processed = zip(render, nearEnd).map {
+            $0.0 * 0.05 + $0.1
+        }
+        for _ in 0 ..< 6 {
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(processed)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let output = stack.acousticEchoHost.processCapture(
+                capture,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            _ = try stack.capture.emit(processedSamples: output)
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await waitUntil("R8.4.2 near-end continuation reaches Provider") {
+            await stack.provider.audioFrameCount() > audioBefore
+        }
+        let snapshot = stack.acousticEchoHost.acousticObservationSnapshot()
+        expect(snapshot.sourceGateOpen
+                && (snapshot.inputClassification == .nearEndSpeech
+                    || snapshot.inputClassification == .doubleTalk),
+               "R8.4.2 resumed audio remains production user-positive")
+    }
+
+    private static func closeR842SourceGateDuringPause(
+        stack: R823ControllerStack,
+        seed: UInt32,
+        frameIntervalMilliseconds: Int = 12
+    ) async throws {
+        let hostBefore = stack.acousticEchoHost.snapshot()
+        let bridgeEvidenceBefore = await bridgeEvidenceCount(stack)
+        let render = signal(seed: seed, amplitude: 0.30)
+        let capture = render.map { $0 * 0.80 }
+        let processed = render.map { _ in Float.zero }
+        for _ in 0 ..< 22 {
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(processed)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let output = stack.acousticEchoHost.processCapture(
+                capture,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            _ = try stack.capture.emit(processedSamples: output)
+            try? await Task.sleep(
+                for: .milliseconds(frameIntervalMilliseconds)
+            )
+        }
+        let observation = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+        let hostAfter = stack.acousticEchoHost.snapshot()
+        expect(hostAfter.captureFrameCount
+                == hostBefore.captureFrameCount + 22,
+               "R8.4.2 pause gate-close executes 22 production frames")
+        expect(observation.inputClassification == .echoOnly
+                && !observation.sourceGateOpen,
+               "R8.4.2 pause far-end hangover closes the source gate")
+        expect(hostAfter.sourceGateCloseCount
+                == hostBefore.sourceGateCloseCount + 1,
+               "R8.4.2 pause closes exactly one source-gate epoch")
+        expect(hostAfter.lastSourceGateCloseReason == .nonUserHangover,
+               "R8.4.2 pause gate closes only by non-user hangover")
+        let bridgeEvidenceAfter = await bridgeEvidenceCount(stack)
+        expect(bridgeEvidenceAfter == bridgeEvidenceBefore,
+               "R8.4.2 pause far-end frames create no eligibility")
+    }
+
+    private static func enqueueR842Activity(
+        stack: R823ControllerStack,
+        turnID: RealtimeBrainTurnID,
+        sequence: UInt64,
+        kind: RealtimeResidentBrainEventKind
+    ) async {
+        let returnedBefore = await stack.provider.returnedEventCount(
+            eventSession: stack.session
+        )
+        await stack.provider.enqueue(r842ActivityEvent(
+            session: stack.session,
+            turnID: turnID,
+            sequence: sequence,
+            kind: kind
+        ))
+        await waitUntil("R8.4.2 provider activity \(sequence)") {
+            await stack.provider.returnedEventCount(
+                eventSession: stack.session
+            ) == returnedBefore + 1
+        }
+    }
+
+    private static func r842ActivityEvent(
+        session: RealtimeBrainSessionIdentity,
+        turnID: RealtimeBrainTurnID,
+        sequence: UInt64,
+        kind: RealtimeResidentBrainEventKind
+    ) -> RealtimeResidentBrainEvent {
+        RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: session,
+                turnID: turnID,
+                responseID: nil,
+                contextRevision: 1
+            ),
+            sequence: sequence,
+            kind: kind
+        )
+    }
+
+    private static func waitBeyondR842CompletionWindow() async {
+        let delay = r842CompletionWindowNanoseconds + 80_000_000
+        try? await Task.sleep(for: .nanoseconds(Int64(delay)))
+    }
+
+    private static func waitForR842Completion(
+        runtime: RuntimeCore,
+        expectedCount: UInt64,
+        expectedSession: RealtimeBrainSessionIdentity,
+        expectedTurn: RealtimeBrainTurnID,
+        expectedStoppedSequence: UInt64,
+        label: String
+    ) async {
+        await waitUntilOnMainActor("R8.4.2 \(label)") {
+            runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .completionCandidateCount == expectedCount
+        }
+        let snapshot = runtime.realtimeUtteranceCompletionDebugSnapshot()
+        expect(snapshot.phase == .completionCandidate,
+               "R8.4.2 \(label) reaches completion candidate")
+        expect(snapshot.session == expectedSession
+                && snapshot.turnID == expectedTurn
+                && snapshot.contextRevision == 1,
+               "R8.4.2 \(label) preserves exact identity")
+        expect(snapshot.stoppedEventSequence == expectedStoppedSequence,
+               "R8.4.2 \(label) binds the formal stop sequence")
+        expect(snapshot.speechStartedAtNanoseconds > 0
+                && snapshot.pauseStartedAtNanoseconds
+                    >= snapshot.speechStartedAtNanoseconds
+                && snapshot.completionCandidateAtNanoseconds
+                    >= snapshot.pauseStartedAtNanoseconds,
+               "R8.4.2 \(label) has monotonic timing evidence")
+        let latency = snapshot.completionCandidateAtNanoseconds
+            - snapshot.pauseStartedAtNanoseconds
+        expect(latency >= snapshot.completionWindowNanoseconds,
+               "R8.4.2 \(label) cannot complete before the window")
+        expect(latency <= 1_200_000_000,
+               "R8.4.2 \(label) completion latency stays bounded")
+        r842MaximumTrueEndLatencyNanoseconds = max(
+            r842MaximumTrueEndLatencyNanoseconds,
+            latency
+        )
+    }
+
     private enum R841DoubleTalkTransition {
         case none
         case nearEndOnly
@@ -1812,8 +3464,22 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 break
             }
             if monotonicNow() >= pendingDeadline {
+                let bridge = stack.controller
+                    .realtimeBrainInputBridgeSnapshot
+                let acoustic = stack.acousticEchoHost
+                    .acousticObservationSnapshot()
+                let eligibility = bridge
+                    .lastAcousticEligibilityDisposition ?? "nil"
+                let forward = bridge
+                    .lastAcousticEvidenceForwardDisposition ?? "nil"
                 fatalError(
-                    "timeout: R8.4.1 \(scenario.label) gate observation"
+                    "timeout: R8.4.1 \(scenario.label) gate observation "
+                        + "evidence=\(bridge.acousticEvidenceCount)/\(evidenceBefore) "
+                        + "eligibility=\(eligibility) "
+                        + "forward=\(forward) "
+                        + "classification=\(acoustic.inputClassification) "
+                        + "gate=\(acoustic.sourceGateOpen) "
+                        + "epoch=\(acoustic.sourceGateEpoch)"
                 )
             }
             try? await Task.sleep(for: .milliseconds(5))

@@ -1720,6 +1720,7 @@ private struct RealtimeResidentBrainContractTests {
         )
 
         let turnID = RealtimeBrainTurnID()
+        let activityTurnID = RealtimeBrainTurnID()
         let responseID = RealtimeBrainResponseID()
         let eventIdentity = RealtimeBrainEventIdentity(
             session: identity,
@@ -1728,6 +1729,12 @@ private struct RealtimeResidentBrainContractTests {
             contextRevision: 1
         )
         let userIdentity = RealtimeBrainEventIdentity(
+            session: identity,
+            turnID: activityTurnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let responseAuthorizationIdentity = RealtimeBrainEventIdentity(
             session: identity,
             turnID: turnID,
             responseID: nil,
@@ -1761,12 +1768,7 @@ private struct RealtimeResidentBrainContractTests {
             responseID: RealtimeBrainResponseID(),
             contextRevision: 1
         )
-        let cancelledEventIdentity = RealtimeBrainEventIdentity(
-            session: identity,
-            turnID: RealtimeBrainTurnID(),
-            responseID: RealtimeBrainResponseID(),
-            contextRevision: 1
-        )
+        let cancelledEventIdentity = userIdentity
         let semantic = RealtimeBrainSemanticOutput(
             canonicalText: "The final resident meaning."
         )
@@ -1774,7 +1776,7 @@ private struct RealtimeResidentBrainContractTests {
             (userIdentity, .userSpeechStarted),
             (userIdentity, .userSpeechStopped),
             (userIdentity, .userTranscriptPartial("hel")),
-            (userIdentity, .userTranscriptFinal("hello")),
+            (responseAuthorizationIdentity, .userTranscriptFinal("hello")),
             (eventIdentity, .residentTextDelta("The final")),
             (eventIdentity, .residentTextFinal("The final resident meaning.")),
             (eventIdentity, .residentAudioDelta(audioDelta)),
@@ -2013,6 +2015,20 @@ private struct RealtimeResidentBrainContractTests {
             "recoverable error requires turn and response identity"
         )
         nextEventSequence += 1
+        let cancelledEvent = RealtimeResidentBrainEvent(
+            identity: cancelledEventIdentity,
+            sequence: nextEventSequence,
+            kind: .cancelled(.runtimeDecision)
+        )
+        await stack.provider.enqueue(cancelledEvent)
+        expectAccepted(
+            try await stack.runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            equals: cancelledEvent,
+            "typed cancellation is accepted"
+        )
+        nextEventSequence += 1
         let errorTurnIdentity = RealtimeBrainEventIdentity(
             session: identity,
             turnID: errorIdentity.turnID,
@@ -2045,20 +2061,6 @@ private struct RealtimeResidentBrainContractTests {
             ),
             equals: errorEvent,
             "typed response-scoped error is accepted"
-        )
-        nextEventSequence += 1
-        let cancelledEvent = RealtimeResidentBrainEvent(
-            identity: cancelledEventIdentity,
-            sequence: nextEventSequence,
-            kind: .cancelled(.runtimeDecision)
-        )
-        await stack.provider.enqueue(cancelledEvent)
-        expectAccepted(
-            try await stack.runtime.receiveRealtimeResidentBrainEvent(
-                session: identity
-            ),
-            equals: cancelledEvent,
-            "typed cancellation is accepted"
         )
         nextEventSequence += 1
 

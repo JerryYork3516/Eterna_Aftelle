@@ -120,6 +120,21 @@ if rg -q 'Acoustic|Eligibility|clearPlayback' "$provider_protocol"; then
   echo "r822_provider_neutrality=FAIL" >&2
   exit 1
 fi
+provider_audio_frame="$build_dir/provider-audio-frame.txt"
+awk \
+  '/struct RealtimeBrainAudioFrame/ { active = 1 } /struct RealtimeBrainAudioDelta/ { active = 0 } active' \
+  "$contract" > "$provider_audio_frame"
+if rg -q 'sourceGate|userActivity|Acoustic|Eligibility' \
+  "$provider_audio_frame"; then
+  echo "r822_provider_audio_frame_neutrality=FAIL" >&2
+  exit 1
+fi
+echo "r822_provider_audio_frame_neutrality=PASS"
+if ! rg -q 'sendFrameWithActivity:' "$controller"; then
+  echo "r822_production_activity_sidecar=FAIL" >&2
+  exit 1
+fi
+echo "r822_production_activity_sidecar=PASS"
 if rg -q 'interruptionAcousticSnapshot|lastSourceGateSequence' "$bridge"; then
   echo "r822_legacy_source_gate_bypass=FAIL" >&2
   exit 1

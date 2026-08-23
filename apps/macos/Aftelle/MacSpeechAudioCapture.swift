@@ -86,6 +86,27 @@ nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
     let monotonicTimestampNanoseconds: UInt64
     let pcm16Bytes: Data
     let activity: Float
+    let sourceGateEpoch: UInt64
+    let userAcousticEvidence: Bool
+
+    init(
+        captureGeneration: UInt64,
+        sequenceNumber: UInt64,
+        monotonicTimestampNanoseconds: UInt64,
+        pcm16Bytes: Data,
+        activity: Float,
+        sourceGateEpoch: UInt64 = 0,
+        userAcousticEvidence: Bool = false
+    ) {
+        self.captureGeneration = captureGeneration
+        self.sequenceNumber = sequenceNumber
+        self.monotonicTimestampNanoseconds =
+            monotonicTimestampNanoseconds
+        self.pcm16Bytes = pcm16Bytes
+        self.activity = activity
+        self.sourceGateEpoch = sourceGateEpoch
+        self.userAcousticEvidence = userAcousticEvidence
+    }
 }
 
 nonisolated struct MacSpeechAudioFrameBufferStats: Sendable, Equatable {
@@ -140,7 +161,9 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
         pcm16Bytes: Data,
         activity: Float,
         generation: UInt64,
-        timestamp: UInt64 = DispatchTime.now().uptimeNanoseconds
+        timestamp: UInt64 = DispatchTime.now().uptimeNanoseconds,
+        sourceGateEpoch: UInt64 = 0,
+        userAcousticEvidence: Bool = false
     ) -> Bool {
         lock.withLock {
             guard activeGeneration == generation, !pcm16Bytes.isEmpty else {
@@ -165,7 +188,9 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
                     sequenceNumber: nextSequence,
                     monotonicTimestampNanoseconds: monotonicTimestamp,
                     pcm16Bytes: pcm16Bytes,
-                    activity: latestActivity
+                    activity: latestActivity,
+                    sourceGateEpoch: sourceGateEpoch,
+                    userAcousticEvidence: userAcousticEvidence
                 )
             )
             generatedCount &+= 1
@@ -824,6 +849,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             inputSamples,
             hostTimeNanoseconds: hostTimeNanoseconds
         )
+        let acoustic = acousticEchoHost.acousticObservationSnapshot()
+        let userAcousticEvidence = acoustic.sourceGateOpen
+            && (acoustic.inputClassification == .nearEndSpeech
+                || acoustic.inputClassification == .doubleTalk)
         if !cleanedSamples.isEmpty,
            let cleanedBuffer = try? MacSpeechFloatMono48kConverter.makeBuffer(
             samples: cleanedSamples
@@ -833,7 +862,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 frameBuffer.append(
                     pcm16Bytes: packet.bytes,
                     activity: packet.activity,
-                    generation: generation
+                    generation: generation,
+                    timestamp: acoustic.captureHostTimeNanoseconds
+                        ?? DispatchTime.now().uptimeNanoseconds,
+                    sourceGateEpoch: acoustic.sourceGateEpoch,
+                    userAcousticEvidence: userAcousticEvidence
                 )
             }
         }

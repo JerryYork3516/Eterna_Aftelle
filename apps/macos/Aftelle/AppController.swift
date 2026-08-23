@@ -466,8 +466,12 @@ final class AppController: ObservableObject {
     )
     private lazy var realtimeBrainInputBridge = MacSpeechRealtimeBrainInputBridge(
         source: speechAudioHost,
-        sendFrame: { [orchestrationKernel] frame in
-            await orchestrationKernel.sendRealtimeResidentBrainAudio(frame)
+        sendFrameWithActivity: { [orchestrationKernel] frame, activity in
+            await orchestrationKernel.sendRealtimeResidentBrainAudio(
+                frame,
+                sourceGateEpoch: activity.sourceGateEpoch,
+                userActivityEvidence: activity.userAcousticEvidence
+            )
         },
         stopInput: { [orchestrationKernel] binding in
             await orchestrationKernel.stopRealtimeResidentBrainInput(

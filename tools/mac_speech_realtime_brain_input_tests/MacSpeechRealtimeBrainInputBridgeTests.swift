@@ -1384,7 +1384,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             provider: provider,
             session: session,
             turnIndex: 2,
-            firstEventSequence: 8,
+            firstEventSequence: 6,
             audioSequence: 2,
             contextRevision: secondTurnContextRevision,
             includesSessionReady: false
@@ -1722,18 +1722,12 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             responseID: responseID,
             contextRevision: contextRevision
         )
-        for kind in [
-            RealtimeResidentBrainEventKind.userSpeechStarted,
-            .userSpeechStopped,
-            .userTranscriptFinal("turn \(turnIndex)")
-        ] {
-            await provider.enqueue(RealtimeResidentBrainEvent(
-                identity: userIdentity,
-                sequence: sequence,
-                kind: kind
-            ))
-            sequence &+= 1
-        }
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: userIdentity,
+            sequence: sequence,
+            kind: .userTranscriptFinal("turn \(turnIndex)")
+        ))
+        sequence &+= 1
         await provider.enqueue(RealtimeResidentBrainEvent(
             identity: residentIdentity,
             sequence: sequence,

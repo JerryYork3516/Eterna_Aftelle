@@ -1030,8 +1030,15 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     private var pendingContextUpdate: RealtimeBrainRuntimeContextUpdate?
     private var audioInputToken: UUID?
     private var pendingAudioInput: RealtimeBrainAudioFrame?
+    private var pendingAudioInputSourceGateEpoch: UInt64 = 0
+    private var pendingAudioInputUserActivityEvidence = false
     private var lastAudioInputSequence: UInt64 = 0
     private var lastAudioInputTimestamp: UInt64 = 0
+    private var lastAudioInputSourceGateEpoch: UInt64 = 0
+    private var lastAudioInputUserActivityEvidence = false
+    private var lastUserActivityInputSequence: UInt64 = 0
+    private var lastUserActivityInputTimestamp: UInt64 = 0
+    private var lastUserActivityInputSourceGateEpoch: UInt64 = 0
     private var audioInputSinceStableBoundary = false
     private var lastAudioOutputSequence: UInt64 = 0
     private var lastAudioOutputTimestamp: UInt64 = 0
@@ -1102,6 +1109,41 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             isReadyLocked(identity.session)
                 && contextRevision == identity.contextRevision
         }
+    }
+
+    func acceptedAudioInputBoundary(
+        for identity: RealtimeBrainSessionIdentity
+    ) -> (
+        sequence: UInt64,
+        timestampNanoseconds: UInt64,
+        sourceGateEpoch: UInt64,
+        userActivityEvidence: Bool,
+        lastUserActivitySequence: UInt64,
+        lastUserActivityTimestampNanoseconds: UInt64,
+        lastUserActivitySourceGateEpoch: UInt64
+    )? {
+        lock.withLock {
+            guard isReadyLocked(identity) else { return nil }
+            return (
+                sequence: lastAudioInputSequence,
+                timestampNanoseconds: lastAudioInputTimestamp,
+                sourceGateEpoch: lastAudioInputSourceGateEpoch,
+                userActivityEvidence:
+                    lastAudioInputUserActivityEvidence,
+                lastUserActivitySequence:
+                    lastUserActivityInputSequence,
+                lastUserActivityTimestampNanoseconds:
+                    lastUserActivityInputTimestamp,
+                lastUserActivitySourceGateEpoch:
+                    lastUserActivityInputSourceGateEpoch
+            )
+        }
+    }
+
+    func acceptedAudioInputSequence(
+        for identity: RealtimeBrainSessionIdentity
+    ) -> UInt64? {
+        acceptedAudioInputBoundary(for: identity)?.sequence
     }
 
     func isActiveInterruptionTarget(
@@ -1191,7 +1233,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     }
 
     func beginAudioInput(
-        _ frame: RealtimeBrainAudioFrame
+        _ frame: RealtimeBrainAudioFrame,
+        sourceGateEpoch: UInt64,
+        userActivityEvidence: Bool
     ) -> RuntimeRealtimeBrainAudioInputStart {
         lock.withLock {
             guard isReadyLocked(frame.identity) else { return .invalid }
@@ -1200,6 +1244,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   lastAudioInputSequence == 0
                     || frame.timestampNanoseconds
                         >= lastAudioInputTimestamp,
+                  !userActivityEvidence
+                    || (frame.provenance == .acousticEchoProcessed
+                        && sourceGateEpoch > 0),
                   Self.isValidPCM(frame.format, bytes: frame.bytes),
                   Self.isInputProvenance(frame.provenance) else {
                 return .invalid
@@ -1207,6 +1254,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             let token = UUID()
             audioInputToken = token
             pendingAudioInput = frame
+            pendingAudioInputSourceGateEpoch = sourceGateEpoch
+            pendingAudioInputUserActivityEvidence =
+                userActivityEvidence
             providerOperations.begin(token)
             return .accepted(token)
         }
@@ -1215,18 +1265,35 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     func finishAudioInput(
         token: UUID,
         frame: RealtimeBrainAudioFrame,
+        sourceGateEpoch: UInt64,
+        userActivityEvidence: Bool,
         succeeded: Bool
     ) -> Bool {
         defer { providerOperations.finish(token) }
         return lock.withLock {
             guard audioInputToken == token,
-                  pendingAudioInput == frame else { return false }
+                  pendingAudioInput == frame,
+                  pendingAudioInputSourceGateEpoch == sourceGateEpoch,
+                  pendingAudioInputUserActivityEvidence
+                    == userActivityEvidence else { return false }
             audioInputToken = nil
             pendingAudioInput = nil
+            pendingAudioInputSourceGateEpoch = 0
+            pendingAudioInputUserActivityEvidence = false
             guard succeeded,
                   isReadyLocked(frame.identity) else { return false }
             lastAudioInputSequence = frame.sequence
             lastAudioInputTimestamp = frame.timestampNanoseconds
+            lastAudioInputSourceGateEpoch = sourceGateEpoch
+            lastAudioInputUserActivityEvidence =
+                userActivityEvidence
+            if userActivityEvidence {
+                lastUserActivityInputSequence = frame.sequence
+                lastUserActivityInputTimestamp =
+                    frame.timestampNanoseconds
+                lastUserActivityInputSourceGateEpoch =
+                    sourceGateEpoch
+            }
             audioInputSinceStableBoundary = true
             return true
         }
@@ -1969,6 +2036,8 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         pendingContextUpdate = nil
         audioInputToken = nil
         pendingAudioInput = nil
+        pendingAudioInputSourceGateEpoch = 0
+        pendingAudioInputUserActivityEvidence = false
         toolResultToken = nil
         pendingToolResult = nil
         responseCreateToken = nil
@@ -1981,9 +2050,16 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         receiveToken = nil
         lastAudioInputSequence = 0
         lastAudioInputTimestamp = 0
+        lastAudioInputSourceGateEpoch = 0
+        lastAudioInputUserActivityEvidence = false
+        lastUserActivityInputSequence = 0
+        lastUserActivityInputTimestamp = 0
+        lastUserActivityInputSourceGateEpoch = 0
         audioInputSinceStableBoundary = false
         audioInputToken = nil
         pendingAudioInput = nil
+        pendingAudioInputSourceGateEpoch = 0
+        pendingAudioInputUserActivityEvidence = false
         lastAudioOutputSequence = 0
         lastAudioOutputTimestamp = 0
         semanticFinals.removeAll(keepingCapacity: true)

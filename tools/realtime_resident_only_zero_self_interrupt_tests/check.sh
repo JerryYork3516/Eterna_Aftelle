@@ -27,7 +27,8 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r831-positive-only" ] \
     && [ "$test_mode" != "r832-confirmed-only" ] \
     && [ "$test_mode" != "r833-latency-stale-only" ] \
-    && [ "$test_mode" != "r841-double-talk-only" ]; then
+    && [ "$test_mode" != "r841-double-talk-only" ] \
+    && [ "$test_mode" != "r842-turn-completion-only" ]; then
   echo "unsupported test mode: $test_mode" >&2
   exit 2
 fi
@@ -82,6 +83,8 @@ elif [ "$test_mode" = "r833-latency-stale-only" ]; then
   runner_arguments+=("--r833-latency-stale-only")
 elif [ "$test_mode" = "r841-double-talk-only" ]; then
   runner_arguments+=("--r841-double-talk-only")
+elif [ "$test_mode" = "r842-turn-completion-only" ]; then
+  runner_arguments+=("--r842-turn-completion-only")
 fi
 CFFIXED_USER_HOME="$runtime_home" \
   /usr/bin/perl -e '$seconds = shift; alarm $seconds; exec @ARGV' \
@@ -89,7 +92,61 @@ CFFIXED_USER_HOME="$runtime_home" \
   "${runner_arguments[@]}" \
   | tee "$output"
 
-if [ "$test_mode" = "r841-double-talk-only" ]; then
+if [ "$test_mode" = "r842-turn-completion-only" ]; then
+  rg -qx 'realtime_turn_completion_cases=1' "$output"
+  rg -qx 'realtime_turn_completion_checks=251' "$output"
+  rg -qx 'r842_completion_window_ns=400000000' "$output"
+  rg -qx 'r842_clock_source=monotonic_uptime' "$output"
+  rg -qx 'r842_short_pause_cases=5' "$output"
+  rg -qx 'r842_short_pause_false_completions=0' "$output"
+  rg -qx 'r842_true_end_cases=11' "$output"
+  rg -qx 'r842_utterance_completion_candidates=11' "$output"
+  max_true_end_latency="$({
+    awk -F= '/^r842_max_true_end_latency_ns=/ { print $2 }' "$output"
+  })"
+  [ "$max_true_end_latency" -ge 400000000 ]
+  [ "$max_true_end_latency" -le 1200000000 ]
+  rg -qx 'r842_duplicate_completions=0' "$output"
+  rg -qx 'r842_resident_only_false_completions=0' "$output"
+  rg -qx 'r842_stale_generation_completions=0' "$output"
+  rg -qx 'r842_old_timer_resurrections=0' "$output"
+  rg -qx 'r842_double_talk_cases=2' "$output"
+  rg -qx 'r842_response_creates=0' "$output"
+  rg -qx 'r842_provider_interrupts=0' "$output"
+  rg -qx 'r842_provider_cancels=0' "$output"
+  rg -qx 'r842_host_playback_clears=0' "$output"
+  rg -qx 'r842_extra_generation_advances=0' "$output"
+  rg -qx 'r842_real_qwen_and_devices=NOT_RUN_HUMAN_GATE' "$output"
+
+  r842_source="$({
+    awk '/private static func testR842PauseVsUtteranceCompletion/ { active = 1 }
+         /private enum R841DoubleTalkTransition/ { active = 0 }
+         active' "$test_source"
+  })"
+  if rg -q \
+      'interruptionProposed|submitSemanticProposal|createRealtimeResidentBrainResponseIfEligible|beginResponseCreate|finishResponseCreate|cancelRealtimeResidentBrainGenerationForTesting|interruptRealtimeResidentBrainForTesting|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(' \
+      <<< "$r842_source"; then
+    echo "r842_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  rg -q 'submitR841DoubleTalkThroughProductionChain' <<< "$r842_source"
+  rg -q 'submitR841ResidentOnlyThroughProductionChain' <<< "$r842_source"
+  rg -q 'submitR841PlaybackTailThroughProductionChain' <<< "$r842_source"
+  rg -q 'kind: \.userSpeechStarted' <<< "$r842_source"
+  rg -q 'kind: \.userSpeechStopped' <<< "$r842_source"
+  rg -q 'kind: \.userTranscriptPartial' <<< "$r842_source"
+  rg -q 'kind: \.userTranscriptFinal' <<< "$r842_source"
+  rg -q 'DispatchTime\.now\(\)\.uptimeNanoseconds' \
+    "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+  rg -q 'realtimeUtteranceCompletionWindowNanoseconds' \
+    "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+  rg -q 'UInt64 = 400_000_000' \
+    "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
+  git -C "$repo_root" diff --exit-code HEAD -- \
+    apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift
+  echo "r842_formal_activity_fixture=PASS"
+  echo "r842_runtime_single_owner=PASS"
+elif [ "$test_mode" = "r841-double-talk-only" ]; then
   rg -qx 'realtime_double_talk_acoustic_cases=1' "$output"
   rg -qx 'realtime_double_talk_acoustic_checks=163' "$output"
   rg -qx 'r841_positive_scenarios=11' "$output"
@@ -460,6 +517,8 @@ elif [ "$test_mode" = "r833-latency-stale-only" ]; then
   echo "realtime_barge_in_latency_stale_audio=PASS"
 elif [ "$test_mode" = "r841-double-talk-only" ]; then
   echo "realtime_double_talk_acoustic=PASS"
+elif [ "$test_mode" = "r842-turn-completion-only" ]; then
+  echo "realtime_turn_completion=PASS"
 else
   echo "realtime_resident_only_zero_self_interrupt_freeze=PASS"
 fi

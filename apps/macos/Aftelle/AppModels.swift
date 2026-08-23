@@ -1762,9 +1762,15 @@ public final class OrchestrationKernel {
     }
 
     nonisolated func sendRealtimeResidentBrainAudio(
-        _ frame: RealtimeBrainAudioFrame
+        _ frame: RealtimeBrainAudioFrame,
+        sourceGateEpoch: UInt64 = 0,
+        userActivityEvidence: Bool = false
     ) async -> Result<Void, RealtimeResidentBrainError> {
-        await runtimeCore.appendRealtimeResidentBrainAudio(frame)
+        await runtimeCore.appendRealtimeResidentBrainAudio(
+            frame,
+            sourceGateEpoch: sourceGateEpoch,
+            userActivityEvidence: userActivityEvidence
+        )
     }
 
     nonisolated func receiveRealtimeResidentBrainEvent(
