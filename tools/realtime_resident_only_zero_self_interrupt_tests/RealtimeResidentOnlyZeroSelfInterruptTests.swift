@@ -459,13 +459,42 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r833NPlusOnePlayback = 0
     private static var r833NPlusOneListening = 0
 
+    private static var r841PositiveScenarios = 0
+    private static var r841DetectedScenarios = 0
+    private static var r841SourceGateOpenScenarios = 0
+    private static var r841AcousticEligibility = 0
+    private static var r841DoubleTalkFrames = 0
+    private static var r841ActivePCMPackets = 0
+    private static var r841AdaptiveScenarios = 0
+    private static var r841TransitionToNearEnd = 0
+    private static var r841TransitionToFarEnd = 0
+    private static var r841NegativeScenarios = 0
+    private static var r841NegativeObservations = 0
+    private static var r841NegativeFrames = 0
+    private static var r841StressFrames = 0
+    private static var r841FalseDoubleTalk = 0
+    private static var r841FarEndFalseDoubleTalk = 0
+    private static var r841ResidualEchoFalseDoubleTalk = 0
+    private static var r841PlaybackTailFalseDoubleTalk = 0
+    private static var r841TimingJitterFalseDoubleTalk = 0
+    private static var r841StressFalseDoubleTalk = 0
+    private static var r841ResidentOnlyEligibility = 0
+    private static var r841ConfirmedInterruptions = 0
+    private static var r841ProviderInterrupts = 0
+    private static var r841ProviderCancels = 0
+    private static var r841HostPlaybackClears = 0
+    private static var r841GenerationChanges = 0
+    private static var r841LeaseChanges = 0
+    private static var r841SemanticProposals = 0
+
     static func main() async throws {
         guard CommandLine.arguments.count == 2
                 || (CommandLine.arguments.count == 3
                     && [
                         "--r831-positive-only",
                         "--r832-confirmed-only",
-                        "--r833-latency-stale-only"
+                        "--r833-latency-stale-only",
+                        "--r841-double-talk-only"
                     ].contains(CommandLine.arguments[2])) else {
             fatalError("fixture path required")
         }
@@ -474,6 +503,44 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--r841-double-talk-only" {
+                cases += 1
+                try await testR841DoubleTalkAcousticDetermination(
+                    fixture: fixture
+                )
+                print("realtime_double_talk_acoustic_cases=\(cases)")
+                print("realtime_double_talk_acoustic_checks=\(checks)")
+                print("r841_positive_scenarios=\(r841PositiveScenarios)")
+                print("r841_double_talk_detected_scenarios=\(r841DetectedScenarios)")
+                print("r841_source_gate_open_scenarios=\(r841SourceGateOpenScenarios)")
+                print("r841_acoustic_eligibility=\(r841AcousticEligibility)")
+                print("r841_double_talk_frames=\(r841DoubleTalkFrames)")
+                print("r841_active_pcm_packets=\(r841ActivePCMPackets)")
+                print("r841_adaptive_scenarios=\(r841AdaptiveScenarios)")
+                print("r841_transition_to_near_end=\(r841TransitionToNearEnd)")
+                print("r841_transition_to_far_end=\(r841TransitionToFarEnd)")
+                print("r841_negative_scenarios=\(r841NegativeScenarios)")
+                print("r841_negative_observations=\(r841NegativeObservations)")
+                print("r841_negative_frames=\(r841NegativeFrames)")
+                print("r841_stress_frames=\(r841StressFrames)")
+                print("r841_false_double_talk=\(r841FalseDoubleTalk)")
+                print("r841_far_end_false_double_talk=\(r841FarEndFalseDoubleTalk)")
+                print("r841_residual_echo_false_double_talk=\(r841ResidualEchoFalseDoubleTalk)")
+                print("r841_playback_tail_false_double_talk=\(r841PlaybackTailFalseDoubleTalk)")
+                print("r841_timing_jitter_false_double_talk=\(r841TimingJitterFalseDoubleTalk)")
+                print("r841_stress_false_double_talk=\(r841StressFalseDoubleTalk)")
+                print("r841_resident_only_eligibility=\(r841ResidentOnlyEligibility)")
+                print("r841_confirmed_interruptions=\(r841ConfirmedInterruptions)")
+                print("r841_provider_interrupts=\(r841ProviderInterrupts)")
+                print("r841_provider_cancels=\(r841ProviderCancels)")
+                print("r841_host_playback_clears=\(r841HostPlaybackClears)")
+                print("r841_generation_changes=\(r841GenerationChanges)")
+                print("r841_lease_changes=\(r841LeaseChanges)")
+                print("r841_semantic_proposals=\(r841SemanticProposals)")
+                print("r841_acoustic_threshold_changes=0")
+                print("r841_real_room_and_devices=NOT_RUN_HUMAN_GATE")
+                return
+            }
             if CommandLine.arguments[2] == "--r833-latency-stale-only" {
                 cases += 1
                 try await testR833BargeInLatencyAndStaleClosure(
@@ -1253,6 +1320,801 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         expect(matrixObservations - matrixObservationsBefore >= observationTotal,
                "J: long resident-only stress evaluates the full observation count")
         try await close(stack)
+    }
+
+    private enum R841DoubleTalkTransition {
+        case none
+        case nearEndOnly
+        case farEndOnly
+    }
+
+    private struct R841DoubleTalkScenario {
+        let label: String
+        let renderAmplitude: Float
+        let echoGain: Float
+        let nearEndAmplitude: Float
+        let residualGain: Float
+        let doubleTalkFrames: Int
+        let delayMilliseconds: [Int]
+        let expectsAdaptiveEvidence: Bool
+        let transition: R841DoubleTalkTransition
+
+        init(
+            label: String,
+            renderAmplitude: Float,
+            echoGain: Float,
+            nearEndAmplitude: Float,
+            residualGain: Float = 0,
+            doubleTalkFrames: Int = 4,
+            delayMilliseconds: [Int] = [80],
+            expectsAdaptiveEvidence: Bool = false,
+            transition: R841DoubleTalkTransition = .none
+        ) {
+            self.label = label
+            self.renderAmplitude = renderAmplitude
+            self.echoGain = echoGain
+            self.nearEndAmplitude = nearEndAmplitude
+            self.residualGain = residualGain
+            self.doubleTalkFrames = doubleTalkFrames
+            self.delayMilliseconds = delayMilliseconds
+            self.expectsAdaptiveEvidence = expectsAdaptiveEvidence
+            self.transition = transition
+        }
+    }
+
+    private struct R841DoubleTalkResult {
+        let detected: Bool
+        let sourceGateOpened: Bool
+        let acousticEligibility: Int
+        let doubleTalkFrames: Int
+        let activePCMPackets: Int
+        let adaptiveEvidence: Bool
+        let runtimeObservedDoubleTalk: Bool
+        let runtimeSummary: String
+        let transitionPassed: Bool
+    }
+
+    private enum R841NegativeBucket {
+        case farEnd
+        case residualEcho
+        case timingJitter
+    }
+
+    private struct R841NegativeScenario {
+        let label: String
+        let renderAmplitude: Float
+        let echoGain: Float
+        let residualGain: Float
+        let delayMilliseconds: [Int]
+        let bucket: R841NegativeBucket
+    }
+
+    private struct R841NegativeResult {
+        let falseDoubleTalk: Int
+        let acousticEligibility: Int
+        let frames: Int
+    }
+
+    private static func testR841DoubleTalkAcousticDetermination(
+        fixture: Data
+    ) async throws {
+        let positiveStack = try await makeControllerStack(fixture: fixture)
+        let positiveBaselineLease = positiveStack.runtime
+            .activeBrainLeaseForTesting()
+        let positiveEvidenceBaseline = await bridgeEvidenceCount(positiveStack)
+        let positiveInterruptBaseline = await positiveStack.provider
+            .interruptCount()
+        let positiveCancelBaseline = await positiveStack.provider.cancelCount()
+        let positiveClearBaseline = positiveStack.outputPlayer
+            .clearScheduledPlaybackCount
+        let positiveSemanticBaseline = await positiveStack.provider
+            .enqueuedEventCount(eventSession: positiveStack.session)
+        let scenarios = [
+            R841DoubleTalkScenario(
+                label: "medium resident + medium near-end",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.20
+            ),
+            R841DoubleTalkScenario(
+                label: "loud resident + near-end",
+                renderAmplitude: 0.60,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.22
+            ),
+            R841DoubleTalkScenario(
+                label: "weak near-end",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.05
+            ),
+            R841DoubleTalkScenario(
+                label: "strong near-end",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.40
+            ),
+            R841DoubleTalkScenario(
+                label: "low echo to near-end ratio",
+                renderAmplitude: 0.20,
+                echoGain: 0.50,
+                nearEndAmplitude: 0.14
+            ),
+            R841DoubleTalkScenario(
+                label: "high echo to near-end ratio",
+                renderAmplitude: 0.55,
+                echoGain: 0.95,
+                nearEndAmplitude: 0.08
+            ),
+            R841DoubleTalkScenario(
+                label: "bounded timing jitter",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.20,
+                delayMilliseconds: [70, 90, 80, 100]
+            ),
+            R841DoubleTalkScenario(
+                label: "residual echo + near-end",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.10,
+                residualGain: 0.18,
+                expectsAdaptiveEvidence: true
+            ),
+            R841DoubleTalkScenario(
+                label: "sustained double-talk",
+                renderAmplitude: 0.35,
+                echoGain: 0.85,
+                nearEndAmplitude: 0.18,
+                doubleTalkFrames: 12
+            ),
+            R841DoubleTalkScenario(
+                label: "double-talk to near-end only",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.20,
+                transition: .nearEndOnly
+            ),
+            R841DoubleTalkScenario(
+                label: "double-talk to far-end only",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                nearEndAmplitude: 0.20,
+                transition: .farEndOnly
+            )
+        ]
+
+        for (index, scenario) in scenarios.enumerated() {
+            let result = try await submitR841DoubleTalkThroughProductionChain(
+                stack: positiveStack,
+                scenario: scenario,
+                seed: UInt32(8_000 + index * 20)
+            )
+            r841PositiveScenarios += 1
+            if result.detected && result.runtimeObservedDoubleTalk {
+                r841DetectedScenarios += 1
+            }
+            if result.sourceGateOpened {
+                r841SourceGateOpenScenarios += 1
+            }
+            r841AcousticEligibility += result.acousticEligibility
+            r841DoubleTalkFrames += result.doubleTalkFrames
+            r841ActivePCMPackets += result.activePCMPackets
+            if result.adaptiveEvidence { r841AdaptiveScenarios += 1 }
+            expect(result.detected,
+                   "R8.4.1 \(scenario.label) is production double-talk")
+            expect(result.sourceGateOpened,
+                   "R8.4.1 \(scenario.label) opens the source gate")
+            expect(result.acousticEligibility == 1,
+                   "R8.4.1 \(scenario.label) emits one eligibility")
+            expect(result.doubleTalkFrames >= scenario.doubleTalkFrames,
+                   "R8.4.1 \(scenario.label) sustains double-talk frames")
+            expect(result.activePCMPackets > 0,
+                   "R8.4.1 \(scenario.label) emits active production PCM")
+            expect(result.runtimeObservedDoubleTalk,
+                   "R8.4.1 \(scenario.label) reaches Runtime as double-talk "
+                    + result.runtimeSummary)
+            expect(result.transitionPassed,
+                   "R8.4.1 \(scenario.label) preserves transition behavior")
+            if scenario.expectsAdaptiveEvidence {
+                expect(result.adaptiveEvidence,
+                       "R8.4.1 residual case uses learned echo baseline")
+            }
+            switch scenario.transition {
+            case .nearEndOnly:
+                r841TransitionToNearEnd = result.transitionPassed ? 1 : 0
+            case .farEndOnly:
+                r841TransitionToFarEnd = result.transitionPassed ? 1 : 0
+            case .none:
+                break
+            }
+        }
+
+        let positiveLeaseAfter = positiveStack.runtime
+            .activeBrainLeaseForTesting()
+        let positiveInterrupts = await positiveStack.provider.interruptCount()
+            - positiveInterruptBaseline
+        let positiveCancels = await positiveStack.provider.cancelCount()
+            - positiveCancelBaseline
+        let positiveClears = positiveStack.outputPlayer
+            .clearScheduledPlaybackCount - positiveClearBaseline
+        let positiveSemanticEvents = await positiveStack.provider
+            .enqueuedEventCount(eventSession: positiveStack.session)
+            - positiveSemanticBaseline
+        let positiveGenerationChanged = positiveLeaseAfter?.generation
+            != positiveBaselineLease?.generation
+        let positiveLeaseChanged = positiveLeaseAfter != positiveBaselineLease
+        expect(r841PositiveScenarios == scenarios.count,
+               "R8.4.1 runs the complete positive matrix")
+        expect(r841DetectedScenarios == scenarios.count,
+               "R8.4.1 every positive is low-level double-talk")
+        expect(r841SourceGateOpenScenarios == scenarios.count,
+               "R8.4.1 every positive opens the production gate")
+        expect(r841AcousticEligibility == scenarios.count,
+               "R8.4.1 every positive reaches high-level eligibility once")
+        expect(r841AdaptiveScenarios == 1,
+               "R8.4.1 covers one adaptive residual-echo case")
+        expect(r841TransitionToNearEnd == 1
+                && r841TransitionToFarEnd == 1,
+               "R8.4.1 covers both required transitions")
+        expect(positiveInterrupts == 0 && positiveCancels == 0,
+               "R8.4.1 acoustic-only positives do not interrupt Provider")
+        expect(positiveClears == 0,
+               "R8.4.1 acoustic-only positives do not clear Playback")
+        expect(!positiveGenerationChanged && !positiveLeaseChanged,
+               "R8.4.1 acoustic-only positives preserve generation and lease")
+        expect(positiveSemanticEvents == 0,
+               "R8.4.1 positive matrix injects no semantic proposal")
+        expect(await bridgeEvidenceCount(positiveStack)
+                - positiveEvidenceBaseline == UInt64(scenarios.count),
+               "R8.4.1 positive matrix forwards one eligibility per epoch")
+        try await close(positiveStack)
+
+        let negativeStack = try await makeControllerStack(fixture: fixture)
+        let negativeBaselineLease = negativeStack.runtime
+            .activeBrainLeaseForTesting()
+        let negativeEvidenceBaseline = await bridgeEvidenceCount(negativeStack)
+        let negativeInterruptBaseline = await negativeStack.provider
+            .interruptCount()
+        let negativeCancelBaseline = await negativeStack.provider.cancelCount()
+        let negativeClearBaseline = negativeStack.outputPlayer
+            .clearScheduledPlaybackCount
+        let negativeSemanticBaseline = await negativeStack.provider
+            .enqueuedEventCount(eventSession: negativeStack.session)
+        let negativeScenarios = [
+            R841NegativeScenario(
+                label: "clean far-end",
+                renderAmplitude: 0.30,
+                echoGain: 0.80,
+                residualGain: 0,
+                delayMilliseconds: [80],
+                bucket: .farEnd
+            ),
+            R841NegativeScenario(
+                label: "loud playback",
+                renderAmplitude: 0.60,
+                echoGain: 0.95,
+                residualGain: 0.08,
+                delayMilliseconds: [80],
+                bucket: .farEnd
+            ),
+            R841NegativeScenario(
+                label: "residual echo",
+                renderAmplitude: 0.30,
+                echoGain: 0.85,
+                residualGain: 0.22,
+                delayMilliseconds: [80],
+                bucket: .residualEcho
+            ),
+            R841NegativeScenario(
+                label: "timing jitter",
+                renderAmplitude: 0.30,
+                echoGain: 0.85,
+                residualGain: 0.03,
+                delayMilliseconds: [70, 90, 80, 100],
+                bucket: .timingJitter
+            )
+        ]
+        for (index, scenario) in negativeScenarios.enumerated() {
+            let result = try await submitR841ResidentOnlyThroughProductionChain(
+                stack: negativeStack,
+                scenario: scenario,
+                seed: UInt32(12_000 + index * 20)
+            )
+            r841NegativeScenarios += 1
+            r841NegativeObservations += result.frames
+            r841NegativeFrames += result.frames
+            r841FalseDoubleTalk += result.falseDoubleTalk
+            switch scenario.bucket {
+            case .farEnd:
+                r841FarEndFalseDoubleTalk += result.falseDoubleTalk
+            case .residualEcho:
+                r841ResidualEchoFalseDoubleTalk += result.falseDoubleTalk
+            case .timingJitter:
+                r841TimingJitterFalseDoubleTalk += result.falseDoubleTalk
+            }
+            expect(result.falseDoubleTalk == 0,
+                   "R8.4.1 \(scenario.label) has zero false double-talk")
+            expect(result.acousticEligibility == 0,
+                   "R8.4.1 \(scenario.label) has zero eligibility")
+        }
+
+        let tailResult = try await submitR841PlaybackTailThroughProductionChain(
+            stack: negativeStack
+        )
+        r841NegativeScenarios += 1
+        r841NegativeObservations += tailResult.frames
+        r841NegativeFrames += tailResult.frames
+        r841FalseDoubleTalk += tailResult.falseDoubleTalk
+        r841PlaybackTailFalseDoubleTalk = tailResult.falseDoubleTalk
+        expect(tailResult.falseDoubleTalk == 0,
+               "R8.4.1 playback tail has zero false double-talk")
+        expect(tailResult.acousticEligibility == 0,
+               "R8.4.1 playback tail has zero eligibility")
+
+        let stressResult = try await submitR841LongResidentStress(
+            stack: negativeStack
+        )
+        r841NegativeScenarios += 1
+        r841NegativeObservations += 120
+        r841NegativeFrames += stressResult.frames
+        r841StressFrames = stressResult.frames
+        r841FalseDoubleTalk += stressResult.falseDoubleTalk
+        r841StressFalseDoubleTalk = stressResult.falseDoubleTalk
+        expect(stressResult.falseDoubleTalk == 0,
+               "R8.4.1 long resident-only stress has zero double-talk")
+        expect(stressResult.acousticEligibility == 0,
+               "R8.4.1 long resident-only stress has zero eligibility")
+
+        let negativeLeaseAfter = negativeStack.runtime
+            .activeBrainLeaseForTesting()
+        let negativeEvidenceAfter = await bridgeEvidenceCount(negativeStack)
+        r841ResidentOnlyEligibility = Int(
+            negativeEvidenceAfter - negativeEvidenceBaseline
+        )
+        let negativeInterrupts = await negativeStack.provider.interruptCount()
+            - negativeInterruptBaseline
+        let negativeCancels = await negativeStack.provider.cancelCount()
+            - negativeCancelBaseline
+        let negativeClears = negativeStack.outputPlayer
+            .clearScheduledPlaybackCount - negativeClearBaseline
+        let negativeSemanticEvents = await negativeStack.provider
+            .enqueuedEventCount(eventSession: negativeStack.session)
+            - negativeSemanticBaseline
+        let negativeGenerationChanged = negativeLeaseAfter?.generation
+            != negativeBaselineLease?.generation
+        let negativeLeaseChanged = negativeLeaseAfter != negativeBaselineLease
+
+        r841ProviderInterrupts = positiveInterrupts + negativeInterrupts
+        r841ProviderCancels = positiveCancels + negativeCancels
+        r841HostPlaybackClears = positiveClears + negativeClears
+        r841GenerationChanges = (positiveGenerationChanged ? 1 : 0)
+            + (negativeGenerationChanged ? 1 : 0)
+        r841LeaseChanges = (positiveLeaseChanged ? 1 : 0)
+            + (negativeLeaseChanged ? 1 : 0)
+        r841ConfirmedInterruptions = r841GenerationChanges
+        r841SemanticProposals = positiveSemanticEvents
+            + negativeSemanticEvents
+
+        expect(r841NegativeScenarios == 6,
+               "R8.4.1 runs all six resident-only negative scenarios")
+        expect(r841NegativeObservations == 176
+                && r841NegativeFrames == 3_896
+                && r841StressFrames == 3_840,
+               "R8.4.1 freezes 120 x 32 long-stress frames")
+        expect(r841FalseDoubleTalk == 0,
+               "R8.4.1 negative matrix has zero false double-talk")
+        expect(r841ResidentOnlyEligibility == 0,
+               "R8.4.1 resident-only eligibility remains zero")
+        expect(r841ConfirmedInterruptions == 0,
+               "R8.4.1 acoustic-only run confirms no interruption")
+        expect(r841ProviderInterrupts == 0
+                && r841ProviderCancels == 0,
+               "R8.4.1 leaves Provider interruption APIs untouched")
+        expect(r841HostPlaybackClears == 0,
+               "R8.4.1 never clears Playback")
+        expect(r841GenerationChanges == 0 && r841LeaseChanges == 0,
+               "R8.4.1 preserves Runtime generation and lease")
+        expect(r841SemanticProposals == 0,
+               "R8.4.1 injects no semantic proposal")
+        try await close(negativeStack)
+    }
+
+    private static func submitR841DoubleTalkThroughProductionChain(
+        stack: R823ControllerStack,
+        scenario: R841DoubleTalkScenario,
+        seed: UInt32
+    ) async throws -> R841DoubleTalkResult {
+        let snapshotBefore = stack.acousticEchoHost.snapshot()
+        let evidenceBefore = await bridgeEvidenceCount(stack)
+        let runtimeRecordBefore = stack.runtime
+            .realtimeAcousticObservationDebugSnapshot().records.count
+        stack.acousticEchoHost.playbackStarted()
+        let render = signal(seed: seed, amplitude: scenario.renderAmplitude)
+        let nearEnd = signal(
+            seed: seed + 1,
+            amplitude: scenario.nearEndAmplitude
+        )
+        let warmupCapture = render.map { $0 * scenario.echoGain }
+        let warmupOutput = render.map { $0 * scenario.residualGain }
+
+        for index in 0 ..< 6 {
+            let delay = scenario.delayMilliseconds[
+                index % scenario.delayMilliseconds.count
+            ]
+            let captureTimestamp = monotonicNow()
+            let renderTimestamp = captureTimestamp
+                - UInt64(delay) * 1_000_000
+            stack.aecBackend.setCaptureOutput(warmupOutput)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: renderTimestamp
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                warmupCapture,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            _ = try stack.capture.emit(processedSamples: processed)
+            try? await Task.sleep(for: .milliseconds(12))
+        }
+        let warmup = stack.acousticEchoHost.acousticObservationSnapshot()
+        expect(warmup.sourceAlignmentLocked,
+               "R8.4.1 \(scenario.label) warm-up locks alignment")
+        expect(warmup.inputClassification == .echoOnly,
+               "R8.4.1 \(scenario.label) warm-up is echo-only")
+        expect(!warmup.sourceGateOpen,
+               "R8.4.1 \(scenario.label) warm-up keeps gate closed")
+
+        let mixedCapture = zip(render, nearEnd).map { sample in
+            sample.0 * scenario.echoGain + sample.1
+        }
+        let processedDoubleTalk = zip(render, nearEnd).map { sample in
+            sample.0 * scenario.residualGain + sample.1
+        }
+        var activePCMPackets = 0
+        for index in 0 ..< scenario.doubleTalkFrames {
+            let delay = scenario.delayMilliseconds[
+                (index + 6) % scenario.delayMilliseconds.count
+            ]
+            let captureTimestamp = monotonicNow()
+            let renderTimestamp = captureTimestamp
+                - UInt64(delay) * 1_000_000
+            stack.aecBackend.setCaptureOutput(processedDoubleTalk)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: renderTimestamp
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                mixedCapture,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            let emission = try stack.capture.emit(
+                processedSamples: processed
+            )
+            activePCMPackets += emission.activePacketCount
+            try? await Task.sleep(for: .milliseconds(12))
+        }
+
+        let opened = stack.acousticEchoHost.snapshot()
+        let openedObservation = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+        let detected = openedObservation.inputClassification == .doubleTalk
+        let gateOpened = openedObservation.sourceGateOpen
+            && openedObservation.sourceGateEpoch > 0
+            && openedObservation.sourceAlignmentLocked
+        let pendingDeadline = monotonicNow() + 3_000_000_000
+        while true {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let bridge = stack.controller.realtimeBrainInputBridgeSnapshot
+            if bridge.acousticEvidenceCount > evidenceBefore
+                || bridge.lastAcousticEvidenceForwardDisposition == "pending"
+            {
+                break
+            }
+            if monotonicNow() >= pendingDeadline {
+                fatalError(
+                    "timeout: R8.4.1 \(scenario.label) gate observation"
+                )
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        if await bridgeEvidenceCount(stack) == evidenceBefore {
+            for index in 0 ..< 2 {
+                let delay = scenario.delayMilliseconds[
+                    (index + scenario.doubleTalkFrames + 6)
+                        % scenario.delayMilliseconds.count
+                ]
+                let captureTimestamp = monotonicNow()
+                stack.aecBackend.setCaptureOutput(processedDoubleTalk)
+                stack.acousticEchoHost.processRender(
+                    render,
+                    hostTimeNanoseconds: captureTimestamp
+                        - UInt64(delay) * 1_000_000
+                )
+                let processed = stack.acousticEchoHost.processCapture(
+                    mixedCapture,
+                    hostTimeNanoseconds: captureTimestamp
+                )
+                let emission = try stack.capture.emit(
+                    processedSamples: processed
+                )
+                activePCMPackets += emission.activePacketCount
+                try? await Task.sleep(for: .milliseconds(12))
+            }
+        }
+        await waitUntil("R8.4.1 \(scenario.label) eligibility") {
+            await bridgeEvidenceCount(stack) >= evidenceBefore + 1
+        }
+        let evidenceAtOpen = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        let runtimeRecords = stack.runtime
+            .realtimeAcousticObservationDebugSnapshot()
+            .records.dropFirst(runtimeRecordBefore)
+        let runtimeObservedDoubleTalk = runtimeRecords.contains { record in
+            record.disposition == .observed
+                && record.observation.classification == .nearEndCandidate
+                && record.observation.metrics.sourceAssessment == .doubleTalk
+                && record.observation.identity.sequence
+                    == evidenceAtOpen.lastAcousticSequence
+                && record.observation.identity.timestampNanoseconds
+                    == evidenceAtOpen.lastAcousticTimestampNanoseconds
+        }
+        let runtimeSummary = "evidence="
+            + "\(evidenceAtOpen.lastAcousticSequence)/"
+            + "\(evidenceAtOpen.lastAcousticTimestampNanoseconds) records="
+            + runtimeRecords.map { record in
+                "\(record.observation.identity.sequence)/"
+                    + "\(record.observation.identity.timestampNanoseconds)/"
+                    + "\(record.observation.classification.rawValue)/"
+                    + "\(record.observation.metrics.sourceAssessment.rawValue)/"
+                    + "\(record.disposition)"
+            }.joined(separator: ",")
+
+        var transitionPassed = true
+        switch scenario.transition {
+        case .none:
+            break
+        case .nearEndOnly:
+            for index in 0 ..< 4 {
+                let delay = scenario.delayMilliseconds[
+                    index % scenario.delayMilliseconds.count
+                ]
+                let captureTimestamp = monotonicNow()
+                stack.aecBackend.setCaptureOutput(nearEnd)
+                stack.acousticEchoHost.processRender(
+                    render,
+                    hostTimeNanoseconds: captureTimestamp
+                        - UInt64(delay) * 1_000_000
+                )
+                let processed = stack.acousticEchoHost.processCapture(
+                    nearEnd,
+                    hostTimeNanoseconds: captureTimestamp
+                )
+                _ = try stack.capture.emit(processedSamples: processed)
+                try? await Task.sleep(for: .milliseconds(12))
+            }
+            let transitioned = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+            transitionPassed = transitioned.inputClassification
+                    == .nearEndSpeech
+                && transitioned.sourceGateOpen
+                && transitioned.sourceGateEpoch
+                    == openedObservation.sourceGateEpoch
+        case .farEndOnly:
+            for index in 0 ..< 20 {
+                let delay = scenario.delayMilliseconds[
+                    index % scenario.delayMilliseconds.count
+                ]
+                let captureTimestamp = monotonicNow()
+                stack.aecBackend.setCaptureOutput(warmupOutput)
+                stack.acousticEchoHost.processRender(
+                    render,
+                    hostTimeNanoseconds: captureTimestamp
+                        - UInt64(delay) * 1_000_000
+                )
+                let processed = stack.acousticEchoHost.processCapture(
+                    warmupCapture,
+                    hostTimeNanoseconds: captureTimestamp
+                )
+                _ = try stack.capture.emit(processedSamples: processed)
+                try? await Task.sleep(for: .milliseconds(12))
+            }
+            let transitioned = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+            transitionPassed = transitioned.inputClassification == .echoOnly
+                && !transitioned.sourceGateOpen
+        }
+
+        let eligibility = await settledBridgeEvidenceDelta(
+            stack,
+            baseline: evidenceBefore
+        )
+        return R841DoubleTalkResult(
+            detected: detected,
+            sourceGateOpened: gateOpened,
+            acousticEligibility: eligibility,
+            doubleTalkFrames: Int(
+                opened.doubleTalkFrameCount
+                    - snapshotBefore.doubleTalkFrameCount
+            ),
+            activePCMPackets: activePCMPackets,
+            adaptiveEvidence: opened.adaptiveDoubleTalkFrameCount
+                > snapshotBefore.adaptiveDoubleTalkFrameCount,
+            runtimeObservedDoubleTalk: runtimeObservedDoubleTalk,
+            runtimeSummary: runtimeSummary,
+            transitionPassed: transitionPassed && eligibility == 1
+        )
+    }
+
+    private static func submitR841ResidentOnlyThroughProductionChain(
+        stack: R823ControllerStack,
+        scenario: R841NegativeScenario,
+        seed: UInt32
+    ) async throws -> R841NegativeResult {
+        let snapshotBefore = stack.acousticEchoHost.snapshot()
+        let evidenceBefore = await bridgeEvidenceCount(stack)
+        stack.acousticEchoHost.playbackStarted()
+        let render = signal(seed: seed, amplitude: scenario.renderAmplitude)
+        let capture = render.map { $0 * scenario.echoGain }
+        let residual = render.map { $0 * scenario.residualGain }
+        let frames = 12
+        for index in 0 ..< frames {
+            let delay = scenario.delayMilliseconds[
+                index % scenario.delayMilliseconds.count
+            ]
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(residual)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: captureTimestamp
+                    - UInt64(delay) * 1_000_000
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                capture,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            _ = try stack.capture.emit(processedSamples: processed)
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        let snapshot = stack.acousticEchoHost.snapshot()
+        expect(snapshot.inputClassification == .echoOnly,
+               "R8.4.1 \(scenario.label) remains echo-only")
+        expect(!snapshot.sourceGateOpen,
+               "R8.4.1 \(scenario.label) keeps source gate closed")
+        return R841NegativeResult(
+            falseDoubleTalk: Int(
+                snapshot.doubleTalkFrameCount
+                    - snapshotBefore.doubleTalkFrameCount
+            ),
+            acousticEligibility: await settledBridgeEvidenceDelta(
+                stack,
+                baseline: evidenceBefore
+            ),
+            frames: frames
+        )
+    }
+
+    private static func submitR841PlaybackTailThroughProductionChain(
+        stack: R823ControllerStack
+    ) async throws -> R841NegativeResult {
+        let snapshotBefore = stack.acousticEchoHost.snapshot()
+        let evidenceBefore = await bridgeEvidenceCount(stack)
+        stack.acousticEchoHost.playbackStarted()
+        let render = signal(seed: 14_000, amplitude: 0.30)
+        let capture = render.map { $0 * 0.80 }
+        let silence = [Float](
+            repeating: 0,
+            count: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        for _ in 0 ..< 6 {
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(silence)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                capture,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            _ = try stack.capture.emit(processedSamples: processed)
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let audibleTimestamp = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+            .lastAudibleRenderHostTimeNanoseconds
+        stack.acousticEchoHost.playbackCompleted()
+        let residualTail = render.map { $0 * 0.15 }
+        let frames = 8
+        for _ in 0 ..< frames {
+            stack.aecBackend.setCaptureOutput(residualTail)
+            let processed = stack.acousticEchoHost.processCapture(
+                capture,
+                hostTimeNanoseconds: monotonicNow()
+            )
+            _ = try stack.capture.emit(processedSamples: processed)
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let tail = stack.acousticEchoHost.acousticObservationSnapshot()
+        let remainsWithinTail = audibleTimestamp.map { audible in
+            guard let captureTimestamp = tail.captureHostTimeNanoseconds,
+                  captureTimestamp >= audible else { return false }
+            return captureTimestamp - audible < 500_000_000
+        } ?? false
+        expect(remainsWithinTail,
+               "R8.4.1 residual playback tail stays inside 500 ms")
+        expect(!tail.isPlaybackActive
+                && tail.inputClassification == .nearEndSpeech,
+               "R8.4.1 inactive tail cannot be classified as double-talk")
+        return R841NegativeResult(
+            falseDoubleTalk: Int(
+                stack.acousticEchoHost.snapshot().doubleTalkFrameCount
+                    - snapshotBefore.doubleTalkFrameCount
+            ),
+            acousticEligibility: await settledBridgeEvidenceDelta(
+                stack,
+                baseline: evidenceBefore
+            ),
+            frames: frames
+        )
+    }
+
+    private static func submitR841LongResidentStress(
+        stack: R823ControllerStack
+    ) async throws -> R841NegativeResult {
+        let snapshotBefore = stack.acousticEchoHost.snapshot()
+        let evidenceBefore = await bridgeEvidenceCount(stack)
+        stack.acousticEchoHost.playbackStarted()
+        let observations = 120
+        let framesPerObservation = 32
+        for observation in 0 ..< observations {
+            let amplitudes: [Float] = [0.12, 0.30, 0.60, 0.22]
+            let echoGains: [Float] = [0.75, 0.90, 0.98, 0.82]
+            let residualGains: [Float] = [0, 0.04, 0.12, 0.22]
+            let render = signal(
+                seed: UInt32(16_000 + observation),
+                amplitude: amplitudes[observation % amplitudes.count]
+            )
+            let capture = render.map {
+                $0 * echoGains[observation % echoGains.count]
+            }
+            let residual = render.map {
+                $0 * residualGains[observation % residualGains.count]
+            }
+            for frame in 0 ..< framesPerObservation {
+                let jitter = [70, 90, 80, 100][frame % 4]
+                let captureTimestamp = monotonicNow()
+                stack.aecBackend.setCaptureOutput(residual)
+                stack.acousticEchoHost.processRender(
+                    render,
+                    hostTimeNanoseconds: captureTimestamp
+                        - UInt64(jitter) * 1_000_000
+                )
+                let processed = stack.acousticEchoHost.processCapture(
+                    capture,
+                    hostTimeNanoseconds: captureTimestamp
+                )
+                _ = try stack.capture.emit(processedSamples: processed)
+            }
+        }
+        let frames = observations * framesPerObservation
+        let snapshot = stack.acousticEchoHost.snapshot()
+        expect(snapshot.captureFrameCount
+                - snapshotBefore.captureFrameCount == UInt64(frames),
+               "R8.4.1 long stress processes all 3840 AEC frames")
+        expect(!snapshot.sourceGateOpen,
+               "R8.4.1 long resident-only stress keeps source gate closed")
+        return R841NegativeResult(
+            falseDoubleTalk: Int(
+                snapshot.doubleTalkFrameCount
+                    - snapshotBefore.doubleTalkFrameCount
+            ),
+            acousticEligibility: await settledBridgeEvidenceDelta(
+                stack,
+                baseline: evidenceBefore
+            ),
+            frames: frames
+        )
     }
 
     private static func testR833BargeInLatencyAndStaleClosure(

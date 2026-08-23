@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.3.3 Freeze
+# Realtime Resident Brain Architecture · R0–R8.4.1 Freeze
 
-> 状态：`R0–R8.3.3 PASS / FROZEN`；下一节点只允许进入 R8.4
+> 状态：`R0–R8.4.1 PASS / FROZEN`；下一节点只允许进入 R8.4.2 Turn Completion
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -385,7 +385,10 @@ R8.2.3 Resident-only Zero Self-interrupt Freeze — PASS / FROZEN
 R8.3.1 True Near-end Opening Detection — PASS / FROZEN
 R8.3.2 Confirmed Interrupt / Cancel / Playback Clear — PASS / FROZEN
 R8.3.3 User Barge-in Latency & Stale Audio Closure — PASS / FROZEN
-R8.4 Double-talk / Turn-taking / Backchannel
+R8.4.1 Double-talk Acoustic Determination — PASS / FROZEN
+R8.4.2 Turn Completion
+R8.4.3 Semantic Fusion
+R8.4.4 Backchannel
 R8.5 Interruption Final Verification
 R9 Cascaded Fallback + Regression
 R10 Real-device / Long-session Freeze
@@ -455,11 +458,11 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话、Release、double-talk 与 natural turn-taking 均未完成；R8.3.3 PASS 后下一节点只允许进入 R8.4。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，下一节点只允许进入 R8.4.2。
 
 ---
 
-## R0–R8.3.3 Freeze Result
+## R0–R8.4.1 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -477,6 +480,7 @@ R8.2.3 = PASS / FROZEN
 R8.3.1 = PASS / FROZEN
 R8.3.2 = PASS / FROZEN
 R8.3.3 = PASS / FROZEN
+R8.4.1 = PASS / FROZEN
 ```
 
 R8.3.1 没有修改 AEC / classifier / source gate / eligibility 的生产阈值或 decision authority；唯一生产目录改动是 `RuntimeCore` 的 DEBUG-only interruption evidence snapshot，用于证明 acoustic evidence 已被原子接收且 semantic evidence 仍为空。
@@ -499,7 +503,13 @@ R8.3.3 没有修改 acoustic threshold、500 ms tail、R8.2.3 gate、RuntimeCore
 
 R8.3.3 Human Gate: real device, real microphone/speaker/room reverb, USB/Bluetooth/AirPods, real Qwen semantic/network latency, long-duration live and Release remain NOT_RUN
 
-Next allowed node: R8.4 Double-talk / Turn-taking / Backchannel
+R8.4.1 production-chain automation drives resident playback, render-reference warm-up, timing alignment, mixed render + near-end capture, AEC Host classification, source gate, PCM conversion, Input Bridge and Runtime atomic acoustic evidence. The existing acoustic thresholds already identify double-talk correctly; the defect was an Input Bridge ordering race while an eligible observation waited for the next successful PCM send. A newer observer-only sequence could reach Runtime first and make the exact eligible sequence stale. The minimal fix holds observer-only delivery during that pending window and preserves every identity, source-gate, eligibility and Runtime authority fence.
+
+R8.4.1 verification: independent 1 case / 163 checks; all 11 positive scenarios reached production double-talk detection, source-gate open and acoustic eligibility, with 52 classified double-talk frames and active PCM packets > 0 (23 in the final A7 run). The matrix covers medium/loud/weak/strong ratios, bounded jitter, adaptive residual echo, sustained double-talk and transitions to near-end-only/far-end-only. Six negative scenarios covered 176 observations / 3896 frames, including 120 observations × 32 frames = 3840-frame resident-only stress; false double-talk, resident-only eligibility, confirmed interruption, Provider interrupt/cancel, Playback clear and generation/lease change were all 0. No acoustic threshold or 500 ms tail changed. R8.2.3 remained 12 cases / 126 checks with all resident-only safety metrics 0; R8.3.1–R8.3.3 all passed. A7 was 29 suites / 32 entrypoints / 5508 assertions, with macOS clean build and all guards PASS.
+
+R8.4.1 Human Gate: real room, real microphone/speaker, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN
+
+Next allowed node: R8.4.2 Turn Completion
 
 ----
 
@@ -542,3 +552,9 @@ R8.3.3 复用完整 production chain，并仅以 DEBUG-only monotonic snapshot �
 stale closure 从正式 confirmed decision 与 generation fence 进入，不直接调用 clear、generation bump 或内部 interruption seam。测试在 interruption 前真实预排 4 块 N 代 PCM，随后跨 ACK 前后及 N+1 rebound 交错送入 110 个旧代输出事件与 2 个旧 Playback callback；所有旧 audio / text / speaking / completion 都被现有 Runtime / Bridge / AppController / OutputHost identity fence 拒绝，且无额外 interrupt、clear 或 generation advance。N+1 的 production AEC input 与新 text / speaking / PCM output、Playback completion、Listening 均继续成功，排除了永久封死 Output 的假阳性。
 
 本节点未进入 double-talk、turn-taking 或 backchannel；这些能力只允许在 R8.4 处理。真实设备与真实 Qwen latency 继续为 `NOT_RUN / HUMAN_GATE`。
+
+### R8.4.1 Double-talk Acoustic Determination
+
+R8.4.1 不手工构造 `.doubleTalk` 或 high-level observation，而是让 render 与 near-end 混合 capture 真实经过 production AEC Host、timing/alignment、source classification、3-frame source gate、production PCM conversion、Input Bridge、AppController fence 与 RuntimeCore atomic ingest。既有 acoustic classifier 已能稳定产生 `.doubleTalk`；实际阻断点位于 Input Bridge 的异步顺序：eligible observation 等待下一次成功 PCM send 时，较新的 observer-only observation 可能先进入 Runtime，使 exact eligible sequence 被 `staleObservation` 拒绝。修复只在 pending eligibility 存在时暂停 observer-only delivery，随后仍由成功 PCM send 和全部现有 identity/epoch fence 原子转发。
+
+独立自动化为 1 case / 163 checks。11 个 production double-talk 场景全部 detected / source-gate open / eligible，累计 52 个 double-talk frames，active PCM packets > 0（最终 A7 实测 23）；6 个负向场景累计 176 observations / 3896 frames，其中 long resident-only stress 为 120 observations × 32 frames = 3840 frames，false double-talk、eligibility、confirmed、interrupt/cancel、clear 与 generation/lease change 全为 0。未注入 semantic proposal，未修改 acoustic threshold、500 ms tail、RuntimeCore authority、DR 或 Store schema，也未进入 turn completion、semantic fusion 或 backchannel。真实房间与设备继续为 `NOT_RUN / HUMAN_GATE`。

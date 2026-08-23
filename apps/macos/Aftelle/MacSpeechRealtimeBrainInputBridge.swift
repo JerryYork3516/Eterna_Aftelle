@@ -63,6 +63,8 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
     let sendOperationCount: UInt64
     let averageSendDurationMilliseconds: UInt64
     let maximumSendDurationMilliseconds: UInt64
+    let lastAcousticEligibilityDisposition: String?
+    let lastAcousticEvidenceForwardDisposition: String?
     let lastError: String?
     let hasActivePump: Bool
     let hasPendingResidentAcousticObservation: Bool
@@ -79,6 +81,8 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
         sendOperationCount: 0,
         averageSendDurationMilliseconds: 0,
         maximumSendDurationMilliseconds: 0,
+        lastAcousticEligibilityDisposition: nil,
+        lastAcousticEvidenceForwardDisposition: nil,
         lastError: nil,
         hasActivePump: false,
         hasPendingResidentAcousticObservation: false
@@ -144,6 +148,8 @@ actor MacSpeechRealtimeBrainInputBridge {
         RealtimeAcousticObservation?
     private var pendingEligibilitySourceGateEpoch: UInt64?
     private var acousticEligibilityForwarded = false
+    private var lastAcousticEligibilityDisposition: String?
+    private var lastAcousticEvidenceForwardDisposition: String?
     private var lastError: String?
 
     init(
@@ -526,6 +532,15 @@ actor MacSpeechRealtimeBrainInputBridge {
         if var gate = acousticEligibilityGate {
             let disposition = gate.evaluate(observation)
             acousticEligibilityGate = gate
+            #if DEBUG
+            switch disposition {
+            case .eligible:
+                lastAcousticEligibilityDisposition = "eligible"
+                lastAcousticEvidenceForwardDisposition = "pending"
+            case .suppressed(let reason):
+                lastAcousticEligibilityDisposition = reason.rawValue
+            }
+            #endif
             switch disposition {
             case .eligible:
                 pendingEligibleAcousticObservation = observation
@@ -542,6 +557,7 @@ actor MacSpeechRealtimeBrainInputBridge {
         }
 
         guard !isEligibleCandidate,
+              pendingEligibleAcousticObservation == nil,
               let observeResidentAcoustics else { return }
         let cadenceReached = lastResidentObservationFrameIndex == 0
             || snapshot.captureFrameIndex
@@ -607,6 +623,9 @@ actor MacSpeechRealtimeBrainInputBridge {
               currentSnapshot.residentPlaybackActive,
               currentSnapshot.sourceGateOpen,
               currentSnapshot.sourceGateEpoch == eligibilityEpoch else {
+            #if DEBUG
+            lastAcousticEvidenceForwardDisposition = "stale_fence"
+            #endif
             pendingEligibleAcousticObservation = nil
             pendingEligibilitySourceGateEpoch = nil
             acousticEligibilityForwarded = false
@@ -615,6 +634,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         pendingEligibleAcousticObservation = nil
         pendingEligibilitySourceGateEpoch = nil
         acousticEligibilityForwarded = true
+        #if DEBUG
+        lastAcousticEvidenceForwardDisposition = "forwarded"
+        #endif
         let metrics = observation.metrics
         acousticEvidenceCount &+= 1
         await consumeAcousticObservation(
@@ -679,6 +701,10 @@ actor MacSpeechRealtimeBrainInputBridge {
                 ? 0 : totalSendDurationMilliseconds / sendOperationCount,
             maximumSendDurationMilliseconds:
                 maximumSendDurationMilliseconds,
+            lastAcousticEligibilityDisposition:
+                lastAcousticEligibilityDisposition,
+            lastAcousticEvidenceForwardDisposition:
+                lastAcousticEvidenceForwardDisposition,
             lastError: lastError,
             hasActivePump: activeBinding != nil
                 && activePumpID != nil
@@ -707,6 +733,10 @@ actor MacSpeechRealtimeBrainInputBridge {
         nextResidentAcousticSnapshotPollNanoseconds = 0
         lastResidentCaptureFrameIndex = 0
         lastResidentObservationFrameIndex = 0
+        #if DEBUG
+        lastAcousticEligibilityDisposition = nil
+        lastAcousticEvidenceForwardDisposition = nil
+        #endif
     }
 
     private static func sourceAssessment(

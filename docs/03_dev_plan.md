@@ -360,8 +360,13 @@ R8.1 Interruption Evidence / Runtime Decision Authority — PASS / FROZEN
 R8.2.1 Resident-only Acoustic Observation / Classification — PASS / FROZEN
 R8.2.2 Residual Echo / Far-end Exclusion & Self-interrupt Gate — PASS / FROZEN
 R8.2.3 Resident-only Zero Self-interrupt Freeze — PASS / FROZEN
-R8.3 User Barge-in Tuning
-R8.4 Double-talk / Turn-taking / Backchannel
+R8.3.1 True Near-end Opening Detection — PASS / FROZEN
+R8.3.2 Confirmed Interrupt / Cancel / Playback Clear — PASS / FROZEN
+R8.3.3 User Barge-in Latency & Stale Audio Closure — PASS / FROZEN
+R8.4.1 Double-talk Acoustic Determination — PASS / FROZEN
+R8.4.2 Turn Completion
+R8.4.3 Semantic Fusion
+R8.4.4 Backchannel
 R8.5 Interruption Final Verification
 R9 Cascaded Fallback + Regression
 R10 Real-device / Long-session Freeze
@@ -386,6 +391,8 @@ R8.1 已冻结：AEC / Host 只有 acoustic evidence 权，Realtime Brain / Prov
 R8.2.1 已冻结：共享 player-node render reference 与现有 AEC Host 提供真实 render / raw capture / processed capture / linear AEC output RMS、相关性、source assessment、alignment、delay、ERL / ERLE、frame skew / drift diagnostic 和 route / device availability；RuntimeCore 以完整 resident / Session / lease / route epoch / generation / capture generation identity、500 ms freshness与独立 sequence 验证并重算 `silenceOrNoise`、`farEndDominant`、`residualEchoLikely`、`nearEndCandidate`、`indeterminate`。该 observation 使用独立 observer-only 链，不进入 R8.1 fusion；包括 `nearEndCandidate` 在内的任何分类都不能 confirmed interrupt、cancel Provider、clear Playback 或 bump generation。Bridge 相邻投递至少间隔 10 个 capture frame（约至多 10 Hz）、保持单一 pending task / drop-new；Runtime trace 容量 32，Stop 清理状态且不保存历史 PCM。独立测试 15 cases / 425 checks；320 次 stress 为 Provider interrupt 0、cancel 0、generation 不变；A7 23 suites / 26 entrypoints / 4974 assertions、macOS clean build与全部 guards PASS。R8.2.1 本身只冻结 classification；eligibility 由下述 R8.2.2 冻结，真实设备阈值、USB / Bluetooth、resident-only 最终冻结、double-talk 与 natural turn-taking 仍未实现。
 
 R8.2.2 已冻结：R8.2.1 五分类之后新增独立、provider-neutral eligibility gate。`silenceOrNoise`、`farEndDominant`、`residualEchoLikely` 与 `indeterminate` fail closed，只保留 diagnostics；`nearEndCandidate` 只有在当前 source classification 仍为 near-end、既有 AEC source gate 已完成 3 × 10 ms 稳定确认、完整 Session / lease / route epoch / generation / capture generation / playback sequence 与 500 ms freshness均有效时，才可提交一条 R8.1 acoustic evidence。同 gate epoch 只发一次，resident playback active 不做全禁。最后实际 audible render tap 以 RMS ≥ 0.005、单调 host timestamp 记录，completion 后只保留 500 ms bounded tail；缺 capture clock fail closed，新 playback / route / generation / Stop 重建状态。Gate / AEC / Host 不拥有 confirmed、Provider cancel、Playback clear 或 generation 权，RuntimeCore 仍以 acoustic + semantic fusion 作唯一最终裁决。独立测试 8 cases / 70 checks；320 次 resident-only stress 为 eligible 0、confirmed 0、Provider interrupt / cancel 0、Runtime clear decision 0、generation change 0，R8.1 full Host actual Playback clear 0；A7 24 suites / 27 entrypoints / 5051 assertions、macOS clean build与全部 guards PASS。真实设备 residual tail / USB / Bluetooth / AirPods、最终 resident-only 零 self-interrupt、用户真实插话、double-talk 与 natural turn-taking 未实现；下一轮只允许进入 R8.2.3。
+
+R8.4.1 已冻结：production AEC 的既有 `.doubleTalk` 判定和声学阈值本身有效；根因是 Input Bridge 在 eligible observation 等待下一包成功 PCM send 时仍可异步投递更新的 observer-only sequence，导致 exact eligible sequence 到达 Runtime 时被判 stale。最小修复在 pending eligibility 窗口暂停 observer-only delivery，不绕过 source gate、eligibility gate、identity fence 或 RuntimeCore 单一 interruption authority。独立 1 case / 163 checks 覆盖 11 个正向比例/强度/jitter/residual/持续/转移场景，detected、source-gate open、eligibility 均为 11；6 个负向场景共 176 observations / 3896 frames，false double-talk、resident-only eligibility、confirmed、interrupt/cancel、clear、generation/lease change均为 0。未修改 acoustic threshold 或 500 ms tail。R8.2.3 与 R8.3.1–R8.3.3 全部 PASS；A7 29 suites / 32 entrypoints / 5508 assertions、macOS clean build与全部 guards PASS。下一轮只允许进入 R8.4.2 Turn Completion；真实房间与设备仍为 Human Gate。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 

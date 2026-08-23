@@ -26,7 +26,8 @@ trap 'rm -rf "$build_dir"' EXIT
 if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r831-positive-only" ] \
     && [ "$test_mode" != "r832-confirmed-only" ] \
-    && [ "$test_mode" != "r833-latency-stale-only" ]; then
+    && [ "$test_mode" != "r833-latency-stale-only" ] \
+    && [ "$test_mode" != "r841-double-talk-only" ]; then
   echo "unsupported test mode: $test_mode" >&2
   exit 2
 fi
@@ -79,6 +80,8 @@ elif [ "$test_mode" = "r832-confirmed-only" ]; then
   runner_arguments+=("--r832-confirmed-only")
 elif [ "$test_mode" = "r833-latency-stale-only" ]; then
   runner_arguments+=("--r833-latency-stale-only")
+elif [ "$test_mode" = "r841-double-talk-only" ]; then
+  runner_arguments+=("--r841-double-talk-only")
 fi
 CFFIXED_USER_HOME="$runtime_home" \
   /usr/bin/perl -e '$seconds = shift; alarm $seconds; exec @ARGV' \
@@ -86,7 +89,71 @@ CFFIXED_USER_HOME="$runtime_home" \
   "${runner_arguments[@]}" \
   | tee "$output"
 
-if [ "$test_mode" = "r831-positive-only" ]; then
+if [ "$test_mode" = "r841-double-talk-only" ]; then
+  rg -qx 'realtime_double_talk_acoustic_cases=1' "$output"
+  rg -qx 'realtime_double_talk_acoustic_checks=163' "$output"
+  rg -qx 'r841_positive_scenarios=11' "$output"
+  rg -qx 'r841_double_talk_detected_scenarios=11' "$output"
+  rg -qx 'r841_source_gate_open_scenarios=11' "$output"
+  rg -qx 'r841_acoustic_eligibility=11' "$output"
+  double_talk_frames="$(
+    awk -F= '/^r841_double_talk_frames=/ { print $2 }' "$output"
+  )"
+  active_pcm_packets="$(
+    awk -F= '/^r841_active_pcm_packets=/ { print $2 }' "$output"
+  )"
+  [ "$double_talk_frames" -ge 52 ]
+  [ "$active_pcm_packets" -gt 0 ]
+  rg -qx 'r841_adaptive_scenarios=1' "$output"
+  rg -qx 'r841_transition_to_near_end=1' "$output"
+  rg -qx 'r841_transition_to_far_end=1' "$output"
+  rg -qx 'r841_negative_scenarios=6' "$output"
+  rg -qx 'r841_negative_observations=176' "$output"
+  rg -qx 'r841_negative_frames=3896' "$output"
+  rg -qx 'r841_stress_frames=3840' "$output"
+  rg -qx 'r841_false_double_talk=0' "$output"
+  rg -qx 'r841_far_end_false_double_talk=0' "$output"
+  rg -qx 'r841_residual_echo_false_double_talk=0' "$output"
+  rg -qx 'r841_playback_tail_false_double_talk=0' "$output"
+  rg -qx 'r841_timing_jitter_false_double_talk=0' "$output"
+  rg -qx 'r841_stress_false_double_talk=0' "$output"
+  rg -qx 'r841_resident_only_eligibility=0' "$output"
+  rg -qx 'r841_confirmed_interruptions=0' "$output"
+  rg -qx 'r841_provider_interrupts=0' "$output"
+  rg -qx 'r841_provider_cancels=0' "$output"
+  rg -qx 'r841_host_playback_clears=0' "$output"
+  rg -qx 'r841_generation_changes=0' "$output"
+  rg -qx 'r841_lease_changes=0' "$output"
+  rg -qx 'r841_semantic_proposals=0' "$output"
+  rg -qx 'r841_acoustic_threshold_changes=0' "$output"
+  rg -qx 'r841_real_room_and_devices=NOT_RUN_HUMAN_GATE' "$output"
+
+  r841_source="$({
+    awk '/private static func testR841DoubleTalkAcousticDetermination/ { active = 1 }
+         /private static func testR833BargeInLatencyAndStaleClosure/ { active = 0 }
+         active' "$test_source"
+    awk '/private static func submitR841DoubleTalkThroughProductionChain/ { active = 1 }
+         /private static func testR833BargeInLatencyAndStaleClosure/ { active = 0 }
+         active' "$test_source"
+  })"
+  if rg -q \
+      'RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|classification: \.(doubleTalk|nearEndCandidate)|submitSemanticProposal|kind: \.interruptionProposed|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|consumeRealtimeResidentBrainInterruptionEvidence|claimRealtimeResidentBrainInterruptionDecision|completeRealtimeResidentBrainInterruption|beginRealtimeBrainGenerationTransition|speechAudioOutputHost\.clear\(|clearScheduledPlayback\(|provider\.(interrupt|cancelGeneration)\(|frameBuffer\.append\(' \
+      <<< "$r841_source"; then
+    echo "r841_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  rg -q 'playbackStarted\(' <<< "$r841_source"
+  rg -q 'playbackCompleted\(' <<< "$r841_source"
+  rg -q 'processRender\(' <<< "$r841_source"
+  rg -q 'processCapture\(' <<< "$r841_source"
+  rg -q 'zip\(render, nearEnd\)' <<< "$r841_source"
+  rg -q 'processedSamples: processed' <<< "$r841_source"
+  rg -q 'sourceAssessment == \.doubleTalk' <<< "$r841_source"
+  rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
+  rg -q 'pendingEligibleAcousticObservation == nil' \
+    "$repo_root/apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift"
+  echo "r841_production_chain_fixture=PASS"
+elif [ "$test_mode" = "r831-positive-only" ]; then
   rg -qx 'realtime_true_near_end_opening_cases=1' "$output"
   rg -qx 'realtime_true_near_end_opening_checks=29' "$output"
   rg -qx 'r831_positive_control_acoustic_eligibility=1' "$output"
@@ -391,6 +458,8 @@ elif [ "$test_mode" = "r832-confirmed-only" ]; then
   echo "realtime_confirmed_interruption=PASS"
 elif [ "$test_mode" = "r833-latency-stale-only" ]; then
   echo "realtime_barge_in_latency_stale_audio=PASS"
+elif [ "$test_mode" = "r841-double-talk-only" ]; then
+  echo "realtime_double_talk_acoustic=PASS"
 else
   echo "realtime_resident_only_zero_self_interrupt_freeze=PASS"
 fi

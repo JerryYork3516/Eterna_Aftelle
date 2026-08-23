@@ -63,6 +63,8 @@ run_suite realtime_confirmed_interruption \
   "$repo_root/tools/realtime_confirmed_interruption_tests/check.sh"
 run_suite realtime_barge_in_latency_stale_audio \
   "$repo_root/tools/realtime_barge_in_latency_stale_audio_tests/check.sh"
+run_suite realtime_double_talk_acoustic \
+  "$repo_root/tools/realtime_double_talk_acoustic_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \
