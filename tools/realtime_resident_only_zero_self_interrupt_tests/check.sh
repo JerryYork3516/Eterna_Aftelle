@@ -24,7 +24,8 @@ branch_before="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
 trap 'rm -rf "$build_dir"' EXIT
 
 if [ "$test_mode" != "r823-full" ] \
-    && [ "$test_mode" != "r831-positive-only" ]; then
+    && [ "$test_mode" != "r831-positive-only" ] \
+    && [ "$test_mode" != "r832-confirmed-only" ]; then
   echo "unsupported test mode: $test_mode" >&2
   exit 2
 fi
@@ -73,6 +74,8 @@ mkdir -p "$runtime_home"
 runner_arguments=("$fixture")
 if [ "$test_mode" = "r831-positive-only" ]; then
   runner_arguments+=("--r831-positive-only")
+elif [ "$test_mode" = "r832-confirmed-only" ]; then
+  runner_arguments+=("--r832-confirmed-only")
 fi
 CFFIXED_USER_HOME="$runtime_home" \
   /usr/bin/perl -e '$seconds = shift; alarm $seconds; exec @ARGV' \
@@ -101,7 +104,7 @@ if [ "$test_mode" = "r831-positive-only" ]; then
          /private static func submitSemanticProposal/ { active = 0 }
          active' "$test_source"
     awk '/private static func submitTrueNearEndThroughProductionChain/ { active = 1 }
-         /private enum ResidentOnlyMixer/ { active = 0 }
+         /private static func submitPostInterruptionInputThroughProductionChain/ { active = 0 }
          active' "$test_source"
   })"
   if rg -q \
@@ -116,6 +119,89 @@ if [ "$test_mode" = "r831-positive-only" ]; then
   rg -q 'processedSamples: processed' <<< "$positive_source"
   rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
   echo "r831_production_chain_fixture=PASS"
+elif [ "$test_mode" = "r832-confirmed-only" ]; then
+  rg -qx 'realtime_confirmed_interruption_cases=1' "$output"
+  rg -qx 'realtime_confirmed_interruption_checks=62' "$output"
+  rg -qx 'r832_production_acoustic_eligibility=1' "$output"
+  rg -qx 'r832_runtime_near_end_observations=1' "$output"
+  rg -qx 'r832_runtime_acoustic_evidence=1' "$output"
+  rg -qx 'r832_formal_semantic_evidence=1' "$output"
+  rg -qx 'r832_confirmed_interruptions=1' "$output"
+  rg -qx 'r832_provider_interrupts=1' "$output"
+  rg -qx 'r832_provider_cancels=0' "$output"
+  rg -qx 'r832_host_playback_clears=1' "$output"
+  rg -qx 'r832_playback_generation_delta=1' "$output"
+  rg -qx 'r832_runtime_generation_delta=1' "$output"
+  rg -qx 'r832_generation_before=1' "$output"
+  rg -qx 'r832_generation_after=2' "$output"
+  rg -qx 'r832_resident_id_changes=0' "$output"
+  rg -qx 'r832_runtime_session_id_changes=0' "$output"
+  rg -qx 'r832_brain_lease_id_changes=0' "$output"
+  rg -qx 'r832_route_epoch_changes=0' "$output"
+  rg -qx 'r832_provider_reopens=0' "$output"
+  rg -qx 'r832_provider_closes=0' "$output"
+  rg -qx 'r832_response_creates=0' "$output"
+  rg -qx 'r832_input_bridge_rebound=1' "$output"
+  rg -qx 'r832_output_bridge_rebound=1' "$output"
+  rg -qx 'r832_route_listening=1' "$output"
+  rg -qx 'r832_capture_persistent=1' "$output"
+  rg -qx 'r832_injected_old_output_events_rejected=2' "$output"
+  rg -qx 'r832_old_playback_callbacks_rejected=1' "$output"
+  rg -qx 'r832_extra_interruptions=0' "$output"
+  rg -qx 'r832_extra_playback_clears=0' "$output"
+  rg -qx 'r832_false_user_turns=0' "$output"
+  rg -qx 'r832_false_history_writes=0' "$output"
+  rg -qx 'r832_false_memory_writes=0' "$output"
+  rg -qx 'r832_relationship_changes=0' "$output"
+
+  r832_case_source="$(
+    awk '/private static func testR832ConfirmedInterruptionProductionChain/ { active = 1 }
+         /private static func testPositiveNearEndControl/ { active = 0 }
+         active' "$test_source"
+  )"
+  r832_semantic_source="$(
+    awk '/private static func submitSemanticProposal/ { active = 1 }
+         /private static func testHistoryMemorySafety/ { active = 0 }
+         active' "$test_source"
+  )"
+  r832_acoustic_source="$(
+    awk '/private static func submitTrueNearEndThroughProductionChain/ { active = 1 }
+         /private static func submitPostInterruptionInputThroughProductionChain/ { active = 0 }
+         active' "$test_source"
+  )"
+  r832_rebound_source="$(
+    awk '/private static func submitPostInterruptionInputThroughProductionChain/ { active = 1 }
+         /private enum ResidentOnlyMixer/ { active = 0 }
+         active' "$test_source"
+  )"
+  r832_source="${r832_case_source}${r832_semantic_source}${r832_acoustic_source}${r832_rebound_source}"
+  if rg -q \
+      'RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|RealtimeConfirmedInterruption\(|RealtimeBrain(Interrupt|CancelGeneration)Command\(|classification: \.nearEndCandidate|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|consumeRealtimeResidentBrainInterruptionEvidence|receiveRealtimeResidentBrainEvent|claimRealtimeResidentBrainInterruptionDecision|completeRealtimeResidentBrainInterruption|cancelRealtimeResidentBrainGenerationForTesting|beginRealtimeBrainGenerationTransition|finishRealtimeBrainGenerationInterruption|speechAudioOutputHost\.clear\(|clearScheduledPlayback\(|provider\.(interrupt|cancelGeneration)\(|suspendForGenerationTransition|resumeAfterGenerationTransition|frameBuffer\.append\(|capture\.emit\(0x' \
+      <<< "$r832_source"; then
+    echo "r832_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  rg -q 'submitTrueNearEndThroughProductionChain' <<< "$r832_source"
+  rg -q 'submitPostInterruptionInputThroughProductionChain' \
+    <<< "$r832_source"
+  rg -q 'submitSemanticProposal\(stack: stack, sequence: 4\)' \
+    <<< "$r832_case_source"
+  rg -q 'await stack\.provider\.enqueue' <<< "$r832_semantic_source"
+  rg -q 'kind: \.interruptionProposed' <<< "$r832_semantic_source"
+  rg -q 'session: stack\.target\.session' <<< "$r832_semantic_source"
+  rg -q 'turnID: stack\.target\.turnID' <<< "$r832_semantic_source"
+  rg -q 'responseID: stack\.target\.responseID' <<< "$r832_semantic_source"
+  rg -q 'contextRevision: stack\.target\.contextRevision' \
+    <<< "$r832_semantic_source"
+  rg -q 'reason: "user_speech_started_during_resident_response"' \
+    <<< "$r832_semantic_source"
+  rg -q 'playbackStarted\(' <<< "$r832_source"
+  rg -q 'playbackStopped\(' <<< "$r832_rebound_source"
+  rg -q 'processRender\(' <<< "$r832_source"
+  rg -q 'processCapture\(' <<< "$r832_source"
+  rg -q 'processedSamples: processed' <<< "$r832_source"
+  rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
+  echo "r832_production_chain_fixture=PASS"
 else
   rg -qx 'realtime_resident_only_zero_self_interrupt_cases=12' "$output"
   rg -qx 'realtime_resident_only_zero_self_interrupt_checks=126' "$output"
@@ -205,6 +291,8 @@ fi
 echo "r823_repository_mutation=PASS"
 if [ "$test_mode" = "r831-positive-only" ]; then
   echo "realtime_true_near_end_opening=PASS"
+elif [ "$test_mode" = "r832-confirmed-only" ]; then
+  echo "realtime_confirmed_interruption=PASS"
 else
   echo "realtime_resident_only_zero_self_interrupt_freeze=PASS"
 fi

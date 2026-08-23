@@ -93,6 +93,10 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
     private var interruptCommands: [RealtimeBrainInterruptCommand] = []
     private var closeCommands: [RealtimeBrainCloseSessionCommand] = []
     private var audioCount: UInt64 = 0
+    private var audioFrames: [RealtimeBrainAudioFrame] = []
+    private var receiveSessions: [RealtimeBrainSessionIdentity] = []
+    private var holdsInterrupt = false
+    private var interruptContinuation: CheckedContinuation<Void, Never>?
 
     func openSession(
         _ command: RealtimeBrainOpenSessionCommand
@@ -120,6 +124,7 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
 
     func appendAudio(_ frame: RealtimeBrainAudioFrame) async throws {
         audioCount &+= 1
+        audioFrames.append(frame)
     }
 
     func submitToolResult(
@@ -142,11 +147,17 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
         _ command: RealtimeBrainInterruptCommand
     ) async throws {
         interruptCommands.append(command)
+        if holdsInterrupt {
+            await withCheckedContinuation { continuation in
+                interruptContinuation = continuation
+            }
+        }
     }
 
     func receiveEvent(
         session: RealtimeBrainSessionIdentity
     ) async throws -> RealtimeResidentBrainEvent {
+        receiveSessions.append(session)
         if !events.isEmpty { return events.removeFirst() }
         return try await withCheckedThrowingContinuation { continuation in
             precondition(receiveContinuation == nil)
@@ -173,11 +184,32 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
     func interruptCount() -> Int { interruptCommands.count }
     func closeCount() -> Int { closeCommands.count }
     func audioFrameCount() -> Int { Int(audioCount) }
+    func audioFrames(after index: Int) -> [RealtimeBrainAudioFrame] {
+        Array(audioFrames.dropFirst(index))
+    }
+    func receiveCount(session: RealtimeBrainSessionIdentity) -> Int {
+        receiveSessions.filter { $0 == session }.count
+    }
     func lastInterruptCommand() -> RealtimeBrainInterruptCommand? {
         interruptCommands.last
     }
     func lastSession() -> RealtimeBrainSessionIdentity? {
         openCommands.last?.identity
+    }
+
+    func holdInterrupt() {
+        holdsInterrupt = true
+    }
+
+    func releaseInterrupt() {
+        holdsInterrupt = false
+        let continuation = interruptContinuation
+        interruptContinuation = nil
+        continuation?.resume()
+    }
+
+    func isInterruptHeld() -> Bool {
+        interruptContinuation != nil
     }
 
     private func deliver(_ event: RealtimeResidentBrainEvent) {
@@ -351,11 +383,45 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var positiveControlMemoryWrites = 0
     private static var positiveControlRelationshipChanges = 0
 
+    private static var r832ProductionAcousticEligibility = 0
+    private static var r832RuntimeNearEndObservations = 0
+    private static var r832RuntimeAcousticEvidence = 0
+    private static var r832FormalSemanticEvidence = 0
+    private static var r832ConfirmedInterruptions = 0
+    private static var r832ProviderInterrupts = 0
+    private static var r832ProviderCancels = 0
+    private static var r832HostPlaybackClears = 0
+    private static var r832PlaybackGenerationDelta = 0
+    private static var r832GenerationDelta = 0
+    private static var r832GenerationBefore: UInt64 = 0
+    private static var r832GenerationAfter: UInt64 = 0
+    private static var r832ResidentIDChanges = 0
+    private static var r832RuntimeSessionIDChanges = 0
+    private static var r832BrainLeaseIDChanges = 0
+    private static var r832RouteEpochChanges = 0
+    private static var r832ProviderReopens = 0
+    private static var r832ProviderCloses = 0
+    private static var r832ResponseCreates = 0
+    private static var r832InputBridgeRebound = 0
+    private static var r832OutputBridgeRebound = 0
+    private static var r832RouteListening = 0
+    private static var r832CapturePersistent = 0
+    private static var r832InjectedOldOutputEventsRejected = 0
+    private static var r832OldPlaybackCallbacksRejected = 0
+    private static var r832ExtraInterruptions = 0
+    private static var r832ExtraPlaybackClears = 0
+    private static var r832FalseUserTurns = 0
+    private static var r832FalseHistoryWrites = 0
+    private static var r832FalseMemoryWrites = 0
+    private static var r832RelationshipChanges = 0
+
     static func main() async throws {
         guard CommandLine.arguments.count == 2
                 || (CommandLine.arguments.count == 3
-                    && CommandLine.arguments[2]
-                        == "--r831-positive-only") else {
+                    && [
+                        "--r831-positive-only",
+                        "--r832-confirmed-only"
+                    ].contains(CommandLine.arguments[2])) else {
             fatalError("fixture path required")
         }
         let fixture = try Data(
@@ -363,6 +429,46 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--r832-confirmed-only" {
+                cases += 1
+                try await testR832ConfirmedInterruptionProductionChain(
+                    fixture: fixture
+                )
+                print("realtime_confirmed_interruption_cases=\(cases)")
+                print("realtime_confirmed_interruption_checks=\(checks)")
+                print("r832_production_acoustic_eligibility=\(r832ProductionAcousticEligibility)")
+                print("r832_runtime_near_end_observations=\(r832RuntimeNearEndObservations)")
+                print("r832_runtime_acoustic_evidence=\(r832RuntimeAcousticEvidence)")
+                print("r832_formal_semantic_evidence=\(r832FormalSemanticEvidence)")
+                print("r832_confirmed_interruptions=\(r832ConfirmedInterruptions)")
+                print("r832_provider_interrupts=\(r832ProviderInterrupts)")
+                print("r832_provider_cancels=\(r832ProviderCancels)")
+                print("r832_host_playback_clears=\(r832HostPlaybackClears)")
+                print("r832_playback_generation_delta=\(r832PlaybackGenerationDelta)")
+                print("r832_runtime_generation_delta=\(r832GenerationDelta)")
+                print("r832_generation_before=\(r832GenerationBefore)")
+                print("r832_generation_after=\(r832GenerationAfter)")
+                print("r832_resident_id_changes=\(r832ResidentIDChanges)")
+                print("r832_runtime_session_id_changes=\(r832RuntimeSessionIDChanges)")
+                print("r832_brain_lease_id_changes=\(r832BrainLeaseIDChanges)")
+                print("r832_route_epoch_changes=\(r832RouteEpochChanges)")
+                print("r832_provider_reopens=\(r832ProviderReopens)")
+                print("r832_provider_closes=\(r832ProviderCloses)")
+                print("r832_response_creates=\(r832ResponseCreates)")
+                print("r832_input_bridge_rebound=\(r832InputBridgeRebound)")
+                print("r832_output_bridge_rebound=\(r832OutputBridgeRebound)")
+                print("r832_route_listening=\(r832RouteListening)")
+                print("r832_capture_persistent=\(r832CapturePersistent)")
+                print("r832_injected_old_output_events_rejected=\(r832InjectedOldOutputEventsRejected)")
+                print("r832_old_playback_callbacks_rejected=\(r832OldPlaybackCallbacksRejected)")
+                print("r832_extra_interruptions=\(r832ExtraInterruptions)")
+                print("r832_extra_playback_clears=\(r832ExtraPlaybackClears)")
+                print("r832_false_user_turns=\(r832FalseUserTurns)")
+                print("r832_false_history_writes=\(r832FalseHistoryWrites)")
+                print("r832_false_memory_writes=\(r832FalseMemoryWrites)")
+                print("r832_relationship_changes=\(r832RelationshipChanges)")
+                return
+            }
             cases += 1
             try await testPositiveNearEndControl(fixture: fixture)
             print("realtime_true_near_end_opening_cases=\(cases)")
@@ -1073,6 +1179,360 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await close(stack)
     }
 
+    private static func testR832ConfirmedInterruptionProductionChain(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        await stack.controller.refreshMicrophoneAuthorization()
+        guard let baselineLease = stack.runtime.activeBrainLeaseForTesting()
+        else {
+            fatalError("R8.3.2 active Brain lease missing")
+        }
+        let baselineIdentity = stack.session
+        let nextIdentity = RealtimeBrainSessionIdentity(
+            residentID: baselineIdentity.residentID,
+            runtimeSessionID: baselineIdentity.runtimeSessionID,
+            brainLeaseID: baselineIdentity.brainLeaseID,
+            routeEpoch: baselineIdentity.routeEpoch,
+            generation: baselineIdentity.generation + 1
+        )
+        let baselineInput = stack.controller.realtimeBrainInputBridgeSnapshot
+        let baselineOutput = stack.controller.realtimeBrainOutputBridgeSnapshot
+        let baselinePlayback = stack.controller.speechAudioOutputHostSnapshot
+        let baselineOpenCount = await stack.provider.openCount()
+        let baselineCloseCount = await stack.provider.closeCount()
+        let baselineCreateCount = await stack.provider.createCount()
+        let baselineInterruptCount = await stack.provider.interruptCount()
+        let baselineCancelCount = await stack.provider.cancelCount()
+        let baselineClearCount =
+            stack.outputPlayer.clearScheduledPlaybackCount
+        let baselinePlayerStartCount = stack.outputPlayer.startCount
+        let runtimeRecordCountBefore = stack.runtime
+            .realtimeAcousticObservationDebugSnapshot().records.count
+        let runtimeEvidenceBefore = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        let dialogueBefore = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
+
+        let emittedPacketCount = try await
+            submitTrueNearEndThroughProductionChain(stack: stack)
+        await waitUntil("R8.3.2 production near-end reaches Bridge") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainInputBridgeSnapshot
+                .forwardedFrameCount
+                >= baselineInput.forwardedFrameCount + emittedPacketCount
+        }
+        await waitUntilOnMainActor("R8.3.2 acoustic evidence is atomic") {
+            let evidence = stack.runtime
+                .realtimeInterruptionEvidenceDebugSnapshot()
+            return evidence.session == baselineIdentity
+                && evidence.hasAcousticEvidence
+                && !evidence.hasSemanticEvidence
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let acousticInput = stack.controller.realtimeBrainInputBridgeSnapshot
+        let acousticEligibility = Int(
+            acousticInput.acousticEvidenceCount
+                &- baselineInput.acousticEvidenceCount
+        )
+        let acceptedNearEndRecords = stack.runtime
+            .realtimeAcousticObservationDebugSnapshot()
+            .records.dropFirst(runtimeRecordCountBefore)
+            .filter { record in
+                record.observation.classification == .nearEndCandidate
+                    && record.disposition == .observed
+            }
+        let runtimeEvidenceAfterAcoustic = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        let runtimeNearEndObservations = acceptedNearEndRecords.filter {
+            record in
+            record.observation.identity.sequence
+                == runtimeEvidenceAfterAcoustic.lastAcousticSequence
+                && record.observation.identity.timestampNanoseconds
+                    == runtimeEvidenceAfterAcoustic
+                        .lastAcousticTimestampNanoseconds
+        }.count
+        let runtimeAcousticEvidence =
+            !runtimeEvidenceBefore.hasAcousticEvidence
+            && runtimeEvidenceAfterAcoustic.hasAcousticEvidence
+            && !runtimeEvidenceAfterAcoustic.hasSemanticEvidence
+            && runtimeEvidenceAfterAcoustic.session == baselineIdentity
+        expect(acousticEligibility == 1,
+               "R8.3.2 true near-end creates one production eligibility")
+        expect(runtimeNearEndObservations == 1,
+               "R8.3.2 Runtime observes one exact production near-end")
+        expect(runtimeAcousticEvidence,
+               "R8.3.2 Runtime records one exact acoustic evidence")
+        expect(await stack.provider.interruptCount() == baselineInterruptCount,
+               "R8.3.2 acoustic-only phase has no Provider interrupt")
+        expect(await stack.provider.cancelCount() == baselineCancelCount,
+               "R8.3.2 acoustic-only phase has no Provider cancel")
+        expect(
+            stack.outputPlayer.clearScheduledPlaybackCount
+                == baselineClearCount,
+            "R8.3.2 acoustic-only phase has no Playback clear"
+        )
+        expect(stack.runtime.activeBrainLeaseForTesting() == baselineLease,
+               "R8.3.2 acoustic-only phase preserves generation and lease")
+
+        await stack.provider.holdInterrupt()
+        try await submitSemanticProposal(stack: stack, sequence: 4)
+        await waitUntil("R8.3.2 clear precedes held Provider settlement") {
+            await stack.provider.isInterruptHeld()
+                && stack.outputPlayer.clearScheduledPlaybackCount
+                    == baselineClearCount + 1
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let heldInput = stack.controller.realtimeBrainInputBridgeSnapshot
+        let heldOutput = stack.controller.realtimeBrainOutputBridgeSnapshot
+        let heldPlayback = stack.controller.speechAudioOutputHostSnapshot
+        let semanticEvidence = Int(
+            heldOutput.acceptedEventCount
+                &- baselineOutput.acceptedEventCount
+        )
+        expect(semanticEvidence == 1,
+               "R8.3.2 formal Provider proposal is accepted exactly once")
+        expect(!heldInput.hasActivePump,
+               "R8.3.2 Input Bridge is fenced during confirmation")
+        expect(!heldOutput.hasActiveReceiveLoop,
+               "R8.3.2 Output Bridge is fenced during confirmation")
+        expect(heldPlayback.state == .prepared,
+               "R8.3.2 confirmed command clears old Playback")
+        expect(heldPlayback.queueDepth == 0
+                && heldPlayback.scheduledChunkCount == 0,
+               "R8.3.2 clear removes queued and scheduled old audio")
+        expect(heldPlayback.generation == baselinePlayback.generation + 1,
+               "R8.3.2 clear advances Playback generation once")
+        expect(
+            stack.controller.formalSpeechRouteDebugSnapshot.generation
+                == baselineIdentity.generation,
+            "R8.3.2 Host does not publish N+1 before Provider ACK"
+        )
+        expect(stack.runtime.activeBrainLeaseForTesting() == baselineLease,
+               "R8.3.2 Runtime does not settle N+1 before Provider ACK")
+        expect(stack.capture.isStarted,
+               "R8.3.2 confirmation keeps persistent Capture alive")
+        expect(await stack.provider.interruptCount()
+                == baselineInterruptCount + 1,
+               "R8.3.2 sends one canonical Provider interrupt")
+        expect(await stack.provider.cancelCount() == baselineCancelCount,
+               "R8.3.2 does not call the separate cancelGeneration API")
+
+        let injectedOldOutputEvents = [
+            semanticProposal(stack: stack, sequence: 4),
+            RealtimeResidentBrainEvent(
+                identity: eventIdentity(stack.target),
+                sequence: 5,
+                kind: .residentAudioDelta(audioDelta(sequence: 2))
+            )
+        ]
+        for event in injectedOldOutputEvents {
+            await stack.provider.enqueue(event)
+        }
+        await stack.provider.releaseInterrupt()
+
+        await waitUntilOnMainActor("R8.3.2 generation and Bridge rebound") {
+            let lease = stack.runtime.activeBrainLeaseForTesting()
+            let route = stack.controller.formalSpeechRouteDebugSnapshot
+            return lease?.generation
+                    == .realtimeResidentBrain(nextIdentity.generation)
+                && route.phase == .listening
+                && route.generation == nextIdentity.generation
+                && stack.controller.realtimeBrainInputBridgeSnapshot
+                    .hasActivePump
+                && stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+        }
+        await waitUntil("R8.3.2 Output Bridge receives on N+1") {
+            await stack.provider.receiveCount(session: nextIdentity) > 0
+        }
+        await waitUntil("R8.3.2 old generation events are rejected") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainOutputBridgeSnapshot
+                .rejectedEventCount >= heldOutput.rejectedEventCount + 2
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let settledOutput = stack.controller.realtimeBrainOutputBridgeSnapshot
+        let oldGenerationEventsRejected = Int(
+            settledOutput.rejectedEventCount
+                &- heldOutput.rejectedEventCount
+        )
+
+        let reboundAudioBaseline = await stack.provider.audioFrameCount()
+        let reboundPacketCount = try
+            submitPostInterruptionInputThroughProductionChain(stack: stack)
+        await waitUntil("R8.3.2 Input Bridge forwards on N+1") {
+            await stack.provider.audioFrameCount()
+                >= reboundAudioBaseline + reboundPacketCount
+        }
+        let reboundFrames = await stack.provider.audioFrames(
+            after: reboundAudioBaseline
+        )
+        expect(reboundFrames.count == reboundPacketCount,
+               "R8.3.2 rebound forwards only the new production PCM")
+        expect(reboundFrames.allSatisfy { $0.identity == nextIdentity },
+               "R8.3.2 rebound PCM carries exact generation N+1")
+        expect(reboundFrames.first?.sequence == 1
+                && reboundFrames.enumerated().allSatisfy { index, frame in
+                    frame.sequence == UInt64(index + 1)
+                },
+               "R8.3.2 rebound resets submitted PCM sequence at one")
+        expect(reboundFrames.allSatisfy {
+            $0.provenance == .acousticEchoProcessed
+        }, "R8.3.2 rebound PCM preserves production AEC provenance")
+
+        stack.outputPlayer.completeStoppedChunk()
+        await waitUntil("R8.3.2 old Playback callback is fenced") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.speechAudioOutputHostSnapshot
+                .rejectedCallbackCount
+                == baselinePlayback.rejectedCallbackCount + 1
+        }
+
+        await stack.controller.refreshMicrophoneAuthorization()
+        let finalInput = stack.controller.realtimeBrainInputBridgeSnapshot
+        let finalOutput = stack.controller.realtimeBrainOutputBridgeSnapshot
+        let finalPlayback = stack.controller.speechAudioOutputHostSnapshot
+        guard let finalLease = stack.runtime.activeBrainLeaseForTesting()
+        else {
+            fatalError("R8.3.2 settled Brain lease missing")
+        }
+        let interruptCommand = await stack.provider.lastInterruptCommand()
+        let providerInterrupts = await stack.provider.interruptCount()
+            - baselineInterruptCount
+        let providerCancels = await stack.provider.cancelCount()
+            - baselineCancelCount
+        let hostClears = stack.outputPlayer.clearScheduledPlaybackCount
+            - baselineClearCount
+        let providerReopens = await stack.provider.openCount()
+            - baselineOpenCount
+        let providerCloses = await stack.provider.closeCount()
+            - baselineCloseCount
+        let responseCreates = await stack.provider.createCount()
+            - baselineCreateCount
+        guard case .realtimeResidentBrain(let settledGeneration) =
+                finalLease.generation else {
+            fatalError("R8.3.2 settled route is not Realtime Resident Brain")
+        }
+        let generationDelta = Int(
+            settledGeneration - baselineIdentity.generation
+        )
+        let playbackGenerationDelta = Int(
+            finalPlayback.generation - baselinePlayback.generation
+        )
+        let dialogueAfter = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeAfter = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipAfter = stack.runtime.currentRelationshipState
+        let historyWrites = dialogueAfter == dialogueBefore ? 0 : 1
+        let memoryWrites = narrativeAfter == narrativeBefore ? 0 : 1
+        let relationshipChanges = relationshipAfter == relationshipBefore
+            ? 0 : 1
+        let nextReceiveCount = await stack.provider.receiveCount(
+            session: nextIdentity
+        )
+
+        r832ProductionAcousticEligibility = acousticEligibility
+        r832RuntimeNearEndObservations = runtimeNearEndObservations
+        r832RuntimeAcousticEvidence = runtimeAcousticEvidence ? 1 : 0
+        r832FormalSemanticEvidence = semanticEvidence
+        r832ConfirmedInterruptions = providerInterrupts == 1
+                && hostClears == 1 && generationDelta == 1 ? 1 : 0
+        r832ProviderInterrupts = providerInterrupts
+        r832ProviderCancels = providerCancels
+        r832HostPlaybackClears = hostClears
+        r832PlaybackGenerationDelta = playbackGenerationDelta
+        r832GenerationDelta = generationDelta
+        r832GenerationBefore = baselineIdentity.generation
+        r832GenerationAfter = settledGeneration
+        r832ResidentIDChanges = finalLease.residentID
+            == baselineLease.residentID ? 0 : 1
+        r832RuntimeSessionIDChanges = finalLease.runtimeSessionID
+            == baselineLease.runtimeSessionID ? 0 : 1
+        r832BrainLeaseIDChanges = finalLease.brainLeaseID
+            == baselineLease.brainLeaseID ? 0 : 1
+        r832RouteEpochChanges = finalLease.routeEpoch
+            == baselineLease.routeEpoch ? 0 : 1
+        r832ProviderReopens = providerReopens
+        r832ProviderCloses = providerCloses
+        r832ResponseCreates = responseCreates
+        r832InputBridgeRebound = finalInput.hasActivePump
+                && finalInput.lastError == nil
+                && reboundFrames.count == reboundPacketCount
+                && reboundFrames.allSatisfy { $0.identity == nextIdentity }
+                && reboundFrames.first?.sequence == 1
+            ? 1 : 0
+        r832OutputBridgeRebound = finalOutput.hasActiveReceiveLoop
+                && nextReceiveCount > 0
+            ? 1 : 0
+        r832RouteListening =
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                == .listening ? 1 : 0
+        r832CapturePersistent = stack.capture.isStarted ? 1 : 0
+        r832InjectedOldOutputEventsRejected = oldGenerationEventsRejected
+        r832OldPlaybackCallbacksRejected = finalPlayback
+            .rejectedCallbackCount - baselinePlayback.rejectedCallbackCount
+        r832ExtraInterruptions = max(0, providerInterrupts - 1)
+        r832ExtraPlaybackClears = max(0, hostClears - 1)
+        r832FalseUserTurns = responseCreates
+        r832FalseHistoryWrites = historyWrites
+        r832FalseMemoryWrites = memoryWrites
+        r832RelationshipChanges = relationshipChanges
+
+        expect(interruptCommand?.identity == baselineIdentity,
+               "R8.3.2 Provider interrupt targets generation N")
+        expect(interruptCommand?.nextGeneration == nextIdentity.generation,
+               "R8.3.2 Provider interrupt carries generation N+1")
+        expect(interruptCommand?.reason == .runtimeDecision,
+               "R8.3.2 Provider interrupt remains Runtime-authorized")
+        expect(providerInterrupts == 1,
+               "R8.3.2 canonical Provider interrupt is exactly once")
+        expect(providerCancels == 0,
+               "R8.3.2 separate Provider cancelGeneration remains zero")
+        expect(hostClears == 1,
+               "R8.3.2 Host Playback clear is exactly once")
+        expect(generationDelta == 1,
+               "R8.3.2 Runtime generation advances exactly N to N+1")
+        expect(playbackGenerationDelta == 1,
+               "R8.3.2 Playback generation advances exactly once")
+        expect(finalLease.residentID == baselineLease.residentID
+                && finalLease.runtimeSessionID
+                    == baselineLease.runtimeSessionID
+                && finalLease.brainLeaseID == baselineLease.brainLeaseID
+                && finalLease.routeEpoch == baselineLease.routeEpoch,
+               "R8.3.2 preserves resident, session, lease, and epoch")
+        expect(providerReopens == 0 && providerCloses == 0,
+               "R8.3.2 reuses the existing Provider session")
+        expect(responseCreates == 0,
+               "R8.3.2 proposal does not create a new response")
+        expect(r832InputBridgeRebound == 1,
+               "R8.3.2 Input Bridge is rebound before N+1 Listening")
+        expect(r832OutputBridgeRebound == 1,
+               "R8.3.2 Output Bridge receives on generation N+1")
+        expect(r832RouteListening == 1 && r832CapturePersistent == 1,
+               "R8.3.2 settles to Listening with persistent Capture")
+        expect(oldGenerationEventsRejected == injectedOldOutputEvents.count,
+               "R8.3.2 duplicate proposal and late audio stay stale")
+        expect(r832OldPlaybackCallbacksRejected == 1,
+               "R8.3.2 old Playback completion stays stale")
+        expect(finalOutput.acceptedEventCount
+                == baselineOutput.acceptedEventCount + 1,
+               "R8.3.2 stale old events never reach the Host consumer")
+        expect(stack.outputPlayer.startCount == baselinePlayerStartCount
+                && finalPlayback.enqueuedChunkCount
+                    == baselinePlayback.enqueuedChunkCount,
+               "R8.3.2 stale old audio never restarts Playback")
+        expect(r832ExtraInterruptions == 0
+                && r832ExtraPlaybackClears == 0,
+               "R8.3.2 duplicate and late events have zero side effects")
+        expect(historyWrites == 0 && memoryWrites == 0
+                && relationshipChanges == 0,
+               "R8.3.2 writes no History, Memory, or Relationship state")
+        try await close(stack)
+    }
+
     private static func testPositiveNearEndControl(
         fixture: Data
     ) async throws {
@@ -1218,13 +1678,23 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         stack: R823ControllerStack,
         sequence: UInt64
     ) async throws {
+        await stack.provider.enqueue(
+            semanticProposal(stack: stack, sequence: sequence)
+        )
+        try? await Task.sleep(for: .milliseconds(80))
+    }
+
+    private static func semanticProposal(
+        stack: R823ControllerStack,
+        sequence: UInt64
+    ) -> RealtimeResidentBrainEvent {
         let identity = RealtimeBrainEventIdentity(
             session: stack.target.session,
             turnID: stack.target.turnID,
             responseID: stack.target.responseID,
             contextRevision: stack.target.contextRevision
         )
-        let proposal = RealtimeResidentBrainEvent(
+        return RealtimeResidentBrainEvent(
             identity: identity,
             sequence: sequence,
             kind: .interruptionProposed(RealtimeBrainInterruptionProposal(
@@ -1232,8 +1702,6 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 reason: "user_speech_started_during_resident_response"
             ))
         )
-        await stack.provider.enqueue(proposal)
-        try? await Task.sleep(for: .milliseconds(80))
     }
 
     private static func testHistoryMemorySafety(
@@ -1381,6 +1849,41 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         expect(activePacketCount > 0,
                "Positive: emitted PCM contains opened near-end samples")
         return UInt64(emittedPacketCount)
+    }
+
+    private static func submitPostInterruptionInputThroughProductionChain(
+        stack: R823ControllerStack
+    ) throws -> Int {
+        // The real audio device closes AEC playback on clear; the fake player
+        // has no capture-device lifecycle hook, so mirror that device effect.
+        stack.acousticEchoHost.playbackStopped()
+        let nearEnd = signal(seed: 23, amplitude: 0.18)
+        stack.aecBackend.setCaptureOutput(nearEnd)
+        var processedFrameCount = 0
+        var packetCount = 0
+        var activePacketCount = 0
+        for _ in 0 ..< 4 {
+            let processed = stack.acousticEchoHost.processCapture(
+                nearEnd,
+                hostTimeNanoseconds: monotonicNow()
+            )
+            if processed.count
+                    == MacSpeechAcousticEchoHost.frameSampleCount {
+                processedFrameCount += 1
+            }
+            let emission = try stack.capture.emit(
+                processedSamples: processed
+            )
+            packetCount += emission.packetCount
+            activePacketCount += emission.activePacketCount
+        }
+        expect(processedFrameCount == 4,
+               "R8.3.2 rebound input passes through production AEC Host")
+        expect(packetCount > 0,
+               "R8.3.2 rebound input reaches production PCM conversion")
+        expect(activePacketCount > 0,
+               "R8.3.2 rebound production PCM remains active")
+        return packetCount
     }
 
     private enum ResidentOnlyMixer {

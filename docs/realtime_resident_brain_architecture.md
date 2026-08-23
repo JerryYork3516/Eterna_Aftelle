@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.3.1 Freeze
+# Realtime Resident Brain Architecture · R0–R8.3.2 Freeze
 
-> 状态：`R0–R8.3.1 PASS / FROZEN`；下一节点只允许进入 R8.3.2
+> 状态：`R0–R8.3.2 PASS / FROZEN`；下一节点只允许进入 R8.3.3
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -383,7 +383,7 @@ R8.2.1 Resident-only Acoustic Observation / Classification — PASS / FROZEN
 R8.2.2 Residual Echo / Far-end Exclusion & Self-interrupt Gate — PASS / FROZEN
 R8.2.3 Resident-only Zero Self-interrupt Freeze — PASS / FROZEN
 R8.3.1 True Near-end Opening Detection — PASS / FROZEN
-R8.3.2 Confirmed Interrupt / Cancel / Playback Clear
+R8.3.2 Confirmed Interrupt / Cancel / Playback Clear — PASS / FROZEN
 R8.3.3 User Barge-in Latency
 R8.4 Double-talk / Turn-taking / Backchannel
 R8.5 Interruption Final Verification
@@ -455,11 +455,11 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话、Release、double-talk 与 natural turn-taking 均未完成；R8.3.1 PASS 后下一节点只允许进入 R8.3.2。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话、Release、double-talk 与 natural turn-taking 均未完成；R8.3.2 PASS 后下一节点只允许进入 R8.3.3。
 
 ---
 
-## R0–R8.3.1 Freeze Result
+## R0–R8.3.2 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -475,15 +475,22 @@ R8.2.1 = PASS / FROZEN
 R8.2.2 = PASS / FROZEN
 R8.2.3 = PASS / FROZEN
 R8.3.1 = PASS / FROZEN
+R8.3.2 = PASS / FROZEN
 ```
 
 R8.3.1 没有修改 AEC / classifier / source gate / eligibility 的生产阈值或 decision authority；唯一生产目录改动是 `RuntimeCore` 的 DEBUG-only interruption evidence snapshot，用于证明 acoustic evidence 已被原子接收且 semantic evidence 仍为空。
 
 R8.3.1 verification: production-chain positive 1 case / 29 checks，acoustic eligibility 1、Runtime exact near-end observation 1、Runtime acoustic evidence 1；confirmed interruption、Provider interrupt/cancel、Host Playback clear、generation/lease change、false history/memory write 与 Relationship change 全为 0。R8.2.3 strengthened regression 为 12 cases / 126 checks；resident-only 6 scenarios / 740 observations、long stress 120 observations × 32 frames = 3840 frames，所有 eligibility / interruption / cancel / clear / generation / lease / false turn / history / memory / relationship 指标均为 0。A7 26 suites / 29 entrypoints / 5215 assertions，macOS clean build 与全部 guards PASS。
 
-R8.3.1 Human Gate: real device, real speaker/room reverb, USB/Bluetooth/AirPods, real Qwen WebSocket, long-duration live and Release remain NOT_RUN
+R8.3.2 没有修改生产代码。现有 R8.3.1 production acoustic evidence 与 R8.1 RuntimeCore interruption authority 已自然组成正式链；新增自动化只增强 Fake Provider 观测、held-interrupt settlement、N+1 Input / Output Bridge 功能性 rebound 与禁止测试旁路的 guards。
 
-Next allowed node: R8.3.2 Confirmed Interrupt / Cancel / Playback Clear
+R8.3.2 verification: production-chain positive 1 case / 62 checks，acoustic eligibility 1、Runtime exact near-end observation 1、Runtime acoustic evidence 1、formal semantic proposal 1、confirmed interruption 1、Provider canonical interrupt 1、separate `cancelGeneration` 0、Host Playback clear 1；Runtime generation 由 1 严格前进到 2，Playback generation delta 为 1。resident、Runtime Session、Brain lease、route epoch 与 Provider Session 均不变；Input Bridge 实际向 Provider 转发 exact N+1、sequence 从 1 连续、AEC-processed provenance 的 PCM，Output Bridge 实际以 N+1 receive，最终回到 Listening。明确注入的两条旧代 output event 与一个旧 Playback callback 全部 fail closed；额外 interrupt / clear、response create、false user turn、History / Memory / Relationship write 均为 0。
+
+R8.3.2 canonical cancellation 继续复用冻结契约：Runtime 发出一次 provider-neutral `interrupt` command；Qwen Adapter 私有边界负责 response cancel、input clear 与 generation fence，因此本链的正确计数是 Provider interrupt 1、独立 `cancelGeneration` 0，不新增第二 cancellation owner。acoustic-only 由 R8.3.1、semantic-only / wrong target / duplicate / late / failure race 由 R8.1、resident-only 由 R8.2.3 继续冻结。A7 为 27 suites / 30 entrypoints / 5277 assertions，macOS clean build 与 architecture / secret / repository mutation guards、`git diff --check`、Stage 7 forbidden checklist 全部 PASS。
+
+R8.3.2 Human Gate: real device, real microphone/speaker/room reverb, USB/Bluetooth/AirPods, real Qwen WebSocket, long-duration live and Release remain NOT_RUN
+
+Next allowed node: R8.3.3 User Barge-in Latency
 
 ----
 
@@ -507,6 +514,14 @@ R8.2.3 confirms the fail-closed resident-only zero-self-interrupt safety baselin
 
 完整正向链为 `resident playback → render/far-end warm-up → AEC Host timing lock → true near-end injection → source classification → source gate open → production 48 kHz-to-24 kHz PCM conversion → Input Bridge → AppController fence → RuntimeCore atomic acoustic evidence`。结果为 acoustic eligibility 1、Runtime exact near-end observation 1、Runtime acoustic evidence 1，且 semantic evidence 为空。
 
-本节点不提交 semantic proposal，因此 confirmed interruption、Provider interrupt/cancel、Host Playback clear、generation/lease change、Dialogue History、Narrative Memory 与 Relationship 全为 0；RuntimeCore interruption authority 不变，未进入 R8.3.2。
+本节点不提交 semantic proposal，因此 confirmed interruption、Provider interrupt/cancel、Host Playback clear、generation/lease change、Dialogue History、Narrative Memory 与 Relationship 全为 0；RuntimeCore interruption authority 不变。
 
-真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 `NOT_RUN / HUMAN_GATE`；实际停止居民、cancel / playback clear、用户真实插话 latency、double-talk 最终识别与 natural turn-taking 属于 R8.3.2 / R8.3.3 / R8.4。
+真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 `NOT_RUN / HUMAN_GATE`；用户真实插话 latency、double-talk 最终识别与 natural turn-taking 属于 R8.3.3 / R8.4。
+
+### R8.3.2 Confirmed Interrupt / Cancel / Playback Clear
+
+R8.3.2 证明冻结的 R8.3.1 production true-near-end acoustic evidence 与 R8.1 RuntimeCore fusion / decision authority 无需生产代码修改即可自然组成完整正式链：`resident playback → render/far-end warm-up → AEC timing/alignment → true near-end → source gate → production PCM conversion → Input Bridge → Runtime acoustic evidence + exact Provider interruption proposal → Runtime confirmed decision → old generation/output stale → canonical Provider interrupt → Runtime-issued one-shot Playback clear → N+1 settlement → Input/Output Bridge rebound → Listening`。
+
+held Provider settlement 证明 Host 在 Runtime confirmed 后、Provider ACK 前已经 clear 一次并暂停两条 Bridge，同时 Runtime / formal route 仍保持 N；ACK 后才在相同 resident、Runtime Session、Brain lease 与 route epoch 上严格前进到 N+1。Input rebound 不只检查状态：settlement 后的新 capture 继续经过 production AEC Host、PCM converter 与 frame buffer，Provider 收到的首帧 identity 为 N+1、submitted sequence 为 1 且 provenance 为 `acousticEchoProcessed`；Output receive loop 同样实际绑定 N+1。
+
+本节点没有创建第二 Provider Session、Brain、lease、response 或 interruption coordinator，没有直接 clear / bump generation / rebind Bridge，也没有调整任何 acoustic threshold、500 ms tail 或 eligibility gate。真实设备与真实 Qwen wire cancellation 仍为 `NOT_RUN / HUMAN_GATE`；R8.3.2 不包含 latency、double-talk、backchannel 或 natural turn-taking，下一节点只允许进入 R8.3.3。

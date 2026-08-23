@@ -59,6 +59,8 @@ run_suite realtime_resident_only_zero_self_interrupt \
   "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh"
 run_suite realtime_true_near_end_opening \
   "$repo_root/tools/realtime_true_near_end_opening_tests/check.sh"
+run_suite realtime_confirmed_interruption \
+  "$repo_root/tools/realtime_confirmed_interruption_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \
