@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 #if DEBUG
@@ -194,12 +195,22 @@ private final class R823AudioCapture:
     @unchecked Sendable {
     let acousticEchoHost: MacSpeechAcousticEchoHost
     private let lock = NSLock()
+    private let outputConverter: MacSpeechAudioConverter
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
 
-    init(acousticEchoHost: MacSpeechAcousticEchoHost) {
+    init(acousticEchoHost: MacSpeechAcousticEchoHost) throws {
+        guard let aecFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Double(MacSpeechAcousticEchoHost.sampleRate),
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw MacSpeechAudioCaptureError.invalidInputFormat
+        }
         self.acousticEchoHost = acousticEchoHost
+        outputConverter = try MacSpeechAudioConverter(inputFormat: aecFormat)
     }
 
     func start(
@@ -236,17 +247,33 @@ private final class R823AudioCapture:
 
     var isStarted: Bool { lock.withLock { started } }
 
-    @discardableResult
-    func emit(_ marker: UInt8) -> Bool {
+    func emit(
+        processedSamples: [Float]
+    ) throws -> (packetCount: Int, activePacketCount: Int) {
+        guard !processedSamples.isEmpty else { return (0, 0) }
+        let cleanedBuffer = try MacSpeechFloatMono48kConverter.makeBuffer(
+            samples: processedSamples
+        )
+        let packets = try outputConverter.convert(cleanedBuffer)
         let target = lock.withLock { (started, frameBuffer, generation) }
         guard target.0,
               let frameBuffer = target.1,
-              let generation = target.2 else { return false }
-        return frameBuffer.append(
-            pcm16Bytes: Data(repeating: marker, count: 960),
-            activity: 0.25,
-            generation: generation
-        )
+              let generation = target.2 else { return (0, 0) }
+        var packetCount = 0
+        var activePacketCount = 0
+        for packet in packets {
+            if frameBuffer.append(
+                pcm16Bytes: packet.bytes,
+                activity: packet.activity,
+                generation: generation
+            ) {
+                packetCount += 1
+                if packet.activity > 0.001 {
+                    activePacketCount += 1
+                }
+            }
+        }
+        return (packetCount, activePacketCount)
     }
 }
 
@@ -261,6 +288,7 @@ private struct R823Target {
 private struct R823ControllerStack {
     let controller: AppController
     let runtime: RuntimeCore
+    let sessionStore: SessionStore
     let provider: R823RealtimeProvider
     let aecBackend: R823AECBackend
     let acousticEchoHost: MacSpeechAcousticEchoHost
@@ -298,6 +326,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var residentOnlyGenerationChanges = 0
     private static var residentOnlyLeaseChanges = 0
     private static var residentOnlyFalseTurns = 0
+    private static var residentOnlyFalseHistoryWrites = 0
+    private static var residentOnlyFalseMemoryWrites = 0
+    private static var residentOnlyRelationshipChanges = 0
 
     private static var longStressObservations = 0
     private static var longStressFrames = 0
@@ -308,16 +339,48 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var longStressHostClears = 0
 
     private static var positiveControlEligible = 0
+    private static var positiveControlRuntimeObserved = 0
+    private static var positiveControlRuntimeAcousticEvidence = 0
     private static var positiveControlConfirmed = 0
     private static var positiveControlProviderInterrupts = 0
+    private static var positiveControlProviderCancels = 0
+    private static var positiveControlHostClears = 0
+    private static var positiveControlGenerationChanges = 0
+    private static var positiveControlLeaseChanges = 0
+    private static var positiveControlHistoryWrites = 0
+    private static var positiveControlMemoryWrites = 0
+    private static var positiveControlRelationshipChanges = 0
 
     static func main() async throws {
-        guard CommandLine.arguments.count == 2 else {
+        guard CommandLine.arguments.count == 2
+                || (CommandLine.arguments.count == 3
+                    && CommandLine.arguments[2]
+                        == "--r831-positive-only") else {
             fatalError("fixture path required")
         }
         let fixture = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+
+        if CommandLine.arguments.count == 3 {
+            cases += 1
+            try await testPositiveNearEndControl(fixture: fixture)
+            print("realtime_true_near_end_opening_cases=\(cases)")
+            print("realtime_true_near_end_opening_checks=\(checks)")
+            print("r831_positive_control_acoustic_eligibility=\(positiveControlEligible)")
+            print("r831_runtime_near_end_observations=\(positiveControlRuntimeObserved)")
+            print("r831_runtime_acoustic_evidence=\(positiveControlRuntimeAcousticEvidence)")
+            print("r831_confirmed_interruptions=\(positiveControlConfirmed)")
+            print("r831_provider_interrupts=\(positiveControlProviderInterrupts)")
+            print("r831_provider_cancels=\(positiveControlProviderCancels)")
+            print("r831_host_playback_clears=\(positiveControlHostClears)")
+            print("r831_generation_changes=\(positiveControlGenerationChanges)")
+            print("r831_lease_changes=\(positiveControlLeaseChanges)")
+            print("r831_false_history_writes=\(positiveControlHistoryWrites)")
+            print("r831_false_memory_writes=\(positiveControlMemoryWrites)")
+            print("r831_relationship_changes=\(positiveControlRelationshipChanges)")
+            return
+        }
 
         cases += 1
         try await testProductionChainCleanFarEnd(fixture: fixture)
@@ -344,11 +407,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         cases += 1
         try await testHistoryMemorySafety(fixture: fixture)
 
-        matrixEligibleEvidence = longStressEligible + positiveControlEligible
-        matrixConfirmedInterruptions =
-            longStressConfirmed + positiveControlConfirmed
-        matrixProviderInterrupts =
-            longStressProviderInterrupts + positiveControlProviderInterrupts
+        matrixEligibleEvidence = residentOnlyEligibleEvidence
+        matrixConfirmedInterruptions = residentOnlyConfirmedInterruptions
+        matrixProviderInterrupts = residentOnlyProviderInterrupts
 
         print("realtime_resident_only_zero_self_interrupt_cases=\(cases)")
         print("realtime_resident_only_zero_self_interrupt_checks=\(checks)")
@@ -364,6 +425,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         print("resident_only_generation_changes=\(residentOnlyGenerationChanges)")
         print("resident_only_lease_changes=\(residentOnlyLeaseChanges)")
         print("resident_only_false_turns=\(residentOnlyFalseTurns)")
+        print("resident_only_false_history_writes=\(residentOnlyFalseHistoryWrites)")
+        print("resident_only_false_memory_writes=\(residentOnlyFalseMemoryWrites)")
+        print("resident_only_relationship_changes=\(residentOnlyRelationshipChanges)")
         print("r823_long_stress_observations=\(longStressObservations)")
         print("r823_long_stress_frames=\(longStressFrames)")
         print("r823_long_stress_eligible=\(longStressEligible)")
@@ -372,8 +436,17 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         print("r823_long_stress_provider_cancels=\(longStressProviderCancels)")
         print("r823_long_stress_host_clears=\(longStressHostClears)")
         print("positive_control_eligible_evidence=\(positiveControlEligible)")
+        print("positive_control_runtime_observed=\(positiveControlRuntimeObserved)")
+        print("positive_control_runtime_acoustic_evidence=\(positiveControlRuntimeAcousticEvidence)")
         print("positive_control_confirmed_interruptions=\(positiveControlConfirmed)")
         print("positive_control_provider_interrupts=\(positiveControlProviderInterrupts)")
+        print("positive_control_provider_cancels=\(positiveControlProviderCancels)")
+        print("positive_control_host_playback_clears=\(positiveControlHostClears)")
+        print("positive_control_generation_changes=\(positiveControlGenerationChanges)")
+        print("positive_control_lease_changes=\(positiveControlLeaseChanges)")
+        print("positive_control_false_history_writes=\(positiveControlHistoryWrites)")
+        print("positive_control_false_memory_writes=\(positiveControlMemoryWrites)")
+        print("positive_control_relationship_changes=\(positiveControlRelationshipChanges)")
     }
 
     private static func testProductionChainCleanFarEnd(
@@ -383,13 +456,21 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let baselineLease = stack.runtime.activeBrainLeaseForTesting()
         let baselineGeneration = baselineLease?.generation
         let baselineClear = stack.outputPlayer.clearScheduledPlaybackCount
-        await driveResidentOnlyAcousticObservation(
+        let baselineEvidence = await bridgeEvidenceCount(stack)
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "A clean far-end",
             observationCount: 80,
             mixer: .cleanFarEnd
         )
+        let evidenceDelta = await settledBridgeEvidenceDelta(
+            stack,
+            baseline: baselineEvidence
+        )
+        residentOnlyEligibleEvidence += evidenceDelta
         matrixScenarios += 1
+        expect(evidenceDelta == 0,
+               "A: clean far-end produces zero acoustic eligibility")
         expect(await stack.provider.interruptCount() == 0,
                "A: Provider never interrupts for clean far-end resident-only")
         expect(await stack.provider.cancelCount() == 0,
@@ -409,13 +490,21 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     ) async throws {
         let stack = try await makeControllerStack(fixture: fixture)
         let baselineLease = stack.runtime.activeBrainLeaseForTesting()
-        await driveResidentOnlyAcousticObservation(
+        let baselineEvidence = await bridgeEvidenceCount(stack)
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "B loud playback",
             observationCount: 60,
             mixer: .loudPlayback
         )
+        let evidenceDelta = await settledBridgeEvidenceDelta(
+            stack,
+            baseline: baselineEvidence
+        )
+        residentOnlyEligibleEvidence += evidenceDelta
         matrixScenarios += 1
+        expect(evidenceDelta == 0,
+               "B: loud playback produces zero acoustic eligibility")
         expect(await stack.provider.interruptCount() == 0,
                "B: loud playback never elides to Provider interrupt")
         expect(await stack.provider.cancelCount() == 0,
@@ -432,13 +521,21 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     ) async throws {
         let stack = try await makeControllerStack(fixture: fixture)
         let baselineLease = stack.runtime.activeBrainLeaseForTesting()
-        await driveResidentOnlyAcousticObservation(
+        let baselineEvidence = await bridgeEvidenceCount(stack)
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "C residual echo",
             observationCount: 80,
             mixer: .residualEcho
         )
+        let evidenceDelta = await settledBridgeEvidenceDelta(
+            stack,
+            baseline: baselineEvidence
+        )
+        residentOnlyEligibleEvidence += evidenceDelta
         matrixScenarios += 1
+        expect(evidenceDelta == 0,
+               "C: residual echo produces zero acoustic eligibility")
         expect(await stack.provider.interruptCount() == 0,
                "C: residual echo cannot interrupt Provider")
         expect(await stack.provider.cancelCount() == 0,
@@ -518,15 +615,25 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     ) async throws {
         let stack = try await makeControllerStack(fixture: fixture)
         let baselineLease = stack.runtime.activeBrainLeaseForTesting()
-        await driveResidentOnlyAcousticObservation(
+        let baselineEvidence = await bridgeEvidenceCount(stack)
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "E level changes",
             observationCount: 60,
             mixer: .levelChanges
         )
+        let evidenceDelta = await settledBridgeEvidenceDelta(
+            stack,
+            baseline: baselineEvidence
+        )
+        residentOnlyEligibleEvidence += evidenceDelta
         matrixScenarios += 1
+        expect(evidenceDelta == 0,
+               "E: playback level changes produce zero acoustic eligibility")
         expect(await stack.provider.interruptCount() == 0,
                "E: render RMS jumps never interrupt Provider")
+        expect(await stack.provider.cancelCount() == 0,
+               "E: render RMS jumps never cancel Provider")
         expect(stack.outputPlayer.clearScheduledPlaybackCount == 0,
                "E: render RMS jumps never clear Playback")
         expect(stack.runtime.activeBrainLeaseForTesting() == baselineLease,
@@ -539,13 +646,21 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     ) async throws {
         let stack = try await makeControllerStack(fixture: fixture)
         let baselineLease = stack.runtime.activeBrainLeaseForTesting()
-        await driveResidentOnlyAcousticObservation(
+        let baselineEvidence = await bridgeEvidenceCount(stack)
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "F timing jitter",
             observationCount: 60,
             mixer: .timingJitter
         )
+        let evidenceDelta = await settledBridgeEvidenceDelta(
+            stack,
+            baseline: baselineEvidence
+        )
+        residentOnlyEligibleEvidence += evidenceDelta
         matrixScenarios += 1
+        expect(evidenceDelta == 0,
+               "F: timing jitter produces zero acoustic eligibility")
         expect(await stack.provider.interruptCount() == 0,
                "F: timing jitter never interrupts Provider")
         expect(await stack.provider.cancelCount() == 0,
@@ -750,14 +865,26 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     ) async throws {
         let firstStack = try await makeControllerStack(fixture: fixture)
         let firstLease = firstStack.runtime.activeBrainLeaseForTesting()
-        await driveResidentOnlyAcousticObservation(
+        let firstEvidenceBaseline = await bridgeEvidenceCount(firstStack)
+        try await driveResidentOnlyAcousticObservation(
             stack: firstStack,
             label: "I first run",
             observationCount: 40,
             mixer: .cleanFarEnd
         )
+        let firstEvidenceDelta = await settledBridgeEvidenceDelta(
+            firstStack,
+            baseline: firstEvidenceBaseline
+        )
+        residentOnlyEligibleEvidence += firstEvidenceDelta
+        expect(firstEvidenceDelta == 0,
+               "I: first session produces zero acoustic eligibility")
         expect(await firstStack.provider.interruptCount() == 0,
                "I: first session keeps Provider interrupts at zero")
+        expect(await firstStack.provider.cancelCount() == 0,
+               "I: first session keeps Provider cancels at zero")
+        expect(firstStack.outputPlayer.clearScheduledPlaybackCount == 0,
+               "I: first session never clears Playback")
         expect(firstStack.runtime.activeBrainLeaseForTesting() == firstLease,
                "I: first session keeps Brain lease stable")
 
@@ -766,19 +893,29 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
 
         let secondStack = try await makeControllerStack(fixture: fixture)
         let secondLease = secondStack.runtime.activeBrainLeaseForTesting()
+        let secondEvidenceBaseline = await bridgeEvidenceCount(secondStack)
         expect(secondStack.runtime.activeBrainLeaseForTesting()?.brainLeaseID
                 != firstLease?.brainLeaseID,
                "I: stop and restart produce a fresh Brain lease")
         expect(secondLease?.generation == firstLease?.generation,
                "I: restart re-acquires the original generation baseline")
-        await driveResidentOnlyAcousticObservation(
+        try await driveResidentOnlyAcousticObservation(
             stack: secondStack,
             label: "I second run",
             observationCount: 40,
             mixer: .residualEcho
         )
+        let secondEvidenceDelta = await settledBridgeEvidenceDelta(
+            secondStack,
+            baseline: secondEvidenceBaseline
+        )
+        residentOnlyEligibleEvidence += secondEvidenceDelta
+        expect(secondEvidenceDelta == 0,
+               "I: restarted session produces zero acoustic eligibility")
         expect(await secondStack.provider.interruptCount() == 0,
                "I: restarted session also keeps Provider interrupts at zero")
+        expect(await secondStack.provider.cancelCount() == 0,
+               "I: restarted session keeps Provider cancels at zero")
         expect(secondStack.outputPlayer.clearScheduledPlaybackCount == 0,
                "I: restarted session never clears Playback")
         expect(secondStack.runtime.activeBrainLeaseForTesting() == secondLease,
@@ -838,19 +975,18 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 captureMix = render
             }
             stack.aecBackend.setCaptureOutput(captureMix)
-            for frameIndex in 0 ..< framesPerObservation {
-                let renderTimestamp = monotonicNow()
-                    &+ UInt64(frameIndex * 10_000_000)
-                let captureTimestamp = renderTimestamp + 80_000_000
+            for _ in 0 ..< framesPerObservation {
+                let captureTimestamp = monotonicNow()
+                let renderTimestamp = captureTimestamp - 80_000_000
                 stack.acousticEchoHost.processRender(
                     render,
                     hostTimeNanoseconds: renderTimestamp
                 )
-                _ = stack.acousticEchoHost.processCapture(
+                let processed = stack.acousticEchoHost.processCapture(
                     captureMix,
                     hostTimeNanoseconds: captureTimestamp
                 )
-                _ = stack.capture.emit(0x20 &+ UInt8(frameIndex & 0x0F))
+                _ = try stack.capture.emit(processedSamples: processed)
             }
             matrixObservations += 1
             matrixAudioFrames += framesPerObservation
@@ -945,13 +1081,48 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let baselineGeneration = baselineLease?.generation
         let baselineEvidenceCount = stack.controller
             .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+        let baselineForwardedFrameCount = stack.controller
+            .realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+        let runtimeRecordCountBefore = stack.runtime
+            .realtimeAcousticObservationDebugSnapshot().records.count
+        let runtimeEvidenceBefore = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        let dialogueBefore = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
         let providerInterruptsBefore = await stack.provider.interruptCount()
         let providerCancelsBefore = await stack.provider.cancelCount()
         let clearCountBefore = stack.outputPlayer.clearScheduledPlaybackCount
 
-        try await submitSemanticProposal(stack: stack, sequence: 200)
-        await submitTrueNearEndThroughProductionChain(stack: stack)
-        try? await Task.sleep(for: .milliseconds(120))
+        let emittedPacketCount = try await
+            submitTrueNearEndThroughProductionChain(stack: stack)
+        await waitUntil("Bridge sends production-chain capture frames") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller
+                .realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+                >= baselineForwardedFrameCount + emittedPacketCount
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let bridgeAfterCapture = stack.controller
+            .realtimeBrainInputBridgeSnapshot
+        expect(
+            bridgeAfterCapture.acousticEvidenceCount > baselineEvidenceCount,
+            "Positive: Bridge forwards eligible near-end after "
+                + "\(bridgeAfterCapture.forwardedFrameCount) PCM frames; "
+                + "observed=\(bridgeAfterCapture.residentAcousticObservationCount) "
+                + "rejected=\(bridgeAfterCapture.rejectedResidentAcousticObservationCount) "
+                + "dropped=\(bridgeAfterCapture.droppedResidentAcousticObservationCount)"
+        )
+        await waitUntilOnMainActor("Runtime observes production-chain near-end") {
+            stack.runtime.realtimeAcousticObservationDebugSnapshot()
+                .records.dropFirst(runtimeRecordCountBefore)
+                .contains { record in
+                    record.observation.classification == .nearEndCandidate
+                        && record.disposition == .observed
+                }
+        }
+        try? await Task.sleep(for: .milliseconds(40))
 
         await stack.controller.refreshMicrophoneAuthorization()
         let afterEvidenceCount = stack.controller
@@ -968,27 +1139,62 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             &- clearCountBefore
         let generationChanged = afterLease?.generation != baselineGeneration
         let leaseChanged = afterLease != baselineLease
+        let acceptedNearEndRecords = stack.runtime
+            .realtimeAcousticObservationDebugSnapshot()
+            .records.dropFirst(runtimeRecordCountBefore)
+            .filter { record in
+                record.observation.classification == .nearEndCandidate
+                    && record.disposition == .observed
+            }
+        let runtimeEvidenceAfter = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        let runtimeObserved = acceptedNearEndRecords.filter { record in
+            record.observation.identity.sequence
+                == runtimeEvidenceAfter.lastAcousticSequence
+                && record.observation.identity.timestampNanoseconds
+                    == runtimeEvidenceAfter.lastAcousticTimestampNanoseconds
+        }.count
+        let runtimeAcousticEvidenceAccepted =
+            !runtimeEvidenceBefore.hasAcousticEvidence
+            && runtimeEvidenceAfter.hasAcousticEvidence
+            && !runtimeEvidenceAfter.hasSemanticEvidence
+            && runtimeEvidenceAfter.session == stack.session
+            && acceptedNearEndRecords.contains { record in
+                record.observation.identity.sequence
+                    == runtimeEvidenceAfter.lastAcousticSequence
+                    && record.observation.identity.timestampNanoseconds
+                        == runtimeEvidenceAfter
+                            .lastAcousticTimestampNanoseconds
+            }
+        let dialogueAfter = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeAfter = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipAfter = stack.runtime.currentRelationshipState
+        let historyWrites = dialogueAfter == dialogueBefore ? 0 : 1
+        let memoryWrites = narrativeAfter == narrativeBefore ? 0 : 1
+        let relationshipChanges = relationshipAfter == relationshipBefore
+            ? 0 : 1
 
         positiveControlEligible = bridgeEligibleDelta
+        positiveControlRuntimeObserved = runtimeObserved
+        positiveControlRuntimeAcousticEvidence =
+            runtimeAcousticEvidenceAccepted ? 1 : 0
         positiveControlConfirmed = generationChanged ? 1 : 0
         positiveControlProviderInterrupts = interruptCount
+        positiveControlProviderCancels = cancelCount
+        positiveControlHostClears = clearCount
+        positiveControlGenerationChanges = generationChanged ? 1 : 0
+        positiveControlLeaseChanges = leaseChanged ? 1 : 0
+        positiveControlHistoryWrites = historyWrites
+        positiveControlMemoryWrites = memoryWrites
+        positiveControlRelationshipChanges = relationshipChanges
 
-        // P1-2 production-chain positive control. The classifier requires
-        // `sourceAlignmentLocked=true` to mark an observation as
-        // `.nearEndCandidate`. With pure near-end (no echo to lock timing),
-        // alignment stays unlocked → classifier returns `.indeterminate`
-        // → the R8.2.2 gate suppresses the observation.
-        //
-        // Acceptable positive outcome: real near-end through production
-        // chain delivers ZERO eligibility (gate suppression is correct),
-        // and zero-self-interrupt metrics stay preserved.
-        //
-        // If future work makes the production chain deliver ≥1 eligibility
-        // from a near-end signal, this assertion will need to become
-        // >= 1 — and the rest of the assertions below will then prove
-        // that even eligible near-end still does not interrupt.
-        expect(bridgeEligibleDelta == 0,
-               "Positive: production chain near-end stays gated out (R8.2.2 alignment gate)")
+        expect(bridgeEligibleDelta == 1,
+               "Positive: production chain near-end produces acoustic eligibility")
+        expect(runtimeObserved == 1,
+               "Positive: Runtime observes the eligible near-end candidate")
+        expect(runtimeAcousticEvidenceAccepted,
+               "Positive: Runtime atomically records acoustic-only evidence")
         expect(generationChanged == false,
                "Positive: production chain near-end preserves Runtime generation")
         expect(leaseChanged == false,
@@ -999,6 +1205,12 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                "Positive: production chain near-end never cancels Provider")
         expect(clearCount == 0,
                "Positive: production chain near-end never authorises Playback clear")
+        expect(historyWrites == 0,
+               "Positive: acoustic-only near-end writes no Dialogue History")
+        expect(memoryWrites == 0,
+               "Positive: acoustic-only near-end writes no Narrative Memory")
+        expect(relationshipChanges == 0,
+               "Positive: acoustic-only near-end preserves Relationship")
         try await close(stack)
     }
 
@@ -1028,77 +1240,147 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         fixture: Data
     ) async throws {
         let stack = try await makeControllerStack(fixture: fixture)
-        let sessionStore = SessionStore()
-        let dialogueBefore = try sessionStore
+        let baselineLease = stack.runtime.activeBrainLeaseForTesting()
+        let baselineEvidence = await bridgeEvidenceCount(stack)
+        let dialogueBefore = try stack.sessionStore
             .loadMostRecentDialogueEntries()
         let narrativeBefore = stack.runtime
             .narrativeMemoryDebugSnapshot()
         let relationshipBefore = stack.runtime.currentRelationshipState
-        await driveResidentOnlyAcousticObservation(
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "K history safety",
             observationCount: 80,
             mixer: .residualEcho
         )
-        await driveResidentOnlyAcousticObservation(
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "K history safety loud",
             observationCount: 60,
             mixer: .loudPlayback
         )
-        await driveResidentOnlyAcousticObservation(
+        try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "K history safety level",
             observationCount: 60,
             mixer: .levelChanges
         )
-        matrixFalseTurns = 0
+        let evidenceDelta = await settledBridgeEvidenceDelta(
+            stack,
+            baseline: baselineEvidence
+        )
+        residentOnlyEligibleEvidence += evidenceDelta
+        expect(evidenceDelta == 0,
+               "K: history safety stress produces zero acoustic eligibility")
         expect(await stack.provider.interruptCount() == 0,
                "K: resident-only noise never authorises Provider interrupt")
-        let dialogueAfter = try sessionStore.loadMostRecentDialogueEntries()
+        expect(await stack.provider.cancelCount() == 0,
+               "K: resident-only noise never authorises Provider cancel")
+        let dialogueAfter = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
         let narrativeAfter = stack.runtime.narrativeMemoryDebugSnapshot()
-        expect(dialogueAfter.count == dialogueBefore.count,
+        let historyWrites = dialogueAfter == dialogueBefore ? 0 : 1
+        let memoryWrites = narrativeAfter == narrativeBefore ? 0 : 1
+        let relationshipChanges = stack.runtime.currentRelationshipState
+            == relationshipBefore ? 0 : 1
+        residentOnlyFalseTurns += historyWrites
+        residentOnlyFalseHistoryWrites += historyWrites
+        residentOnlyFalseMemoryWrites += memoryWrites
+        residentOnlyRelationshipChanges += relationshipChanges
+        matrixFalseTurns = residentOnlyFalseTurns
+        expect(historyWrites == 0,
                "K: resident-only activity does not append Dialogue History")
-        expect(narrativeAfter?.records.count == narrativeBefore?.records.count,
+        expect(memoryWrites == 0,
                "K: resident-only activity does not append Narrative Memory")
-        expect(stack.runtime.currentRelationshipState == relationshipBefore,
+        expect(relationshipChanges == 0,
                "K: resident-only activity does not advance Relationship")
         expect(stack.outputPlayer.clearScheduledPlaybackCount == 0,
                "K: resident-only activity never clears Playback")
+        expect(stack.runtime.activeBrainLeaseForTesting() == baselineLease,
+               "K: resident-only activity preserves the Brain lease")
         try await close(stack)
     }
 
     private static func submitTrueNearEndThroughProductionChain(
-        stack: R823ControllerStack,
-        frameMarkers: [UInt8] = Array(0 ..< 8)
-    ) async {
+        stack: R823ControllerStack
+    ) async throws -> UInt64 {
         stack.acousticEchoHost.playbackStarted()
         let render = signal(seed: 17, amplitude: 0.3)
         let nearEnd = signal(seed: 19, amplitude: 0.27)
-        let baseTimestamp = monotonicNow() &- 50_000_000
-        for marker in frameMarkers {
-            for index in 0 ..< 3 {
-                let frameOffset = (UInt64(marker) * 3 + UInt64(index))
-                    * 20_000_000
-                let renderTimestamp = baseTimestamp + frameOffset
-                let captureTimestamp = renderTimestamp + 80_000_000
-                stack.aecBackend.setCaptureOutput(nearEnd)
-                stack.acousticEchoHost.processRender(
-                    render,
-                    hostTimeNanoseconds: renderTimestamp
-                )
-                _ = stack.acousticEchoHost.processCapture(
-                    nearEnd,
-                    hostTimeNanoseconds: captureTimestamp
-                )
-                _ = stack.capture.emit(0x40 &+ marker &+ UInt8(index))
-            }
+        let cleanedFarEnd = [Float](
+            repeating: 0,
+            count: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        var emittedPacketCount = 0
+        var activePacketCount = 0
+        for _ in 0 ..< 3 {
+            let captureTimestamp = monotonicNow()
+            let renderTimestamp = captureTimestamp - 80_000_000
+            stack.aecBackend.setCaptureOutput(cleanedFarEnd)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: renderTimestamp
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                render,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            expect(
+                processed.count == MacSpeechAcousticEchoHost.frameSampleCount
+                    && processed.allSatisfy { abs($0) < 0.000_001 },
+                "Positive: far-end warm-up remains source-gated as silence"
+            )
+            let emission = try stack.capture.emit(
+                processedSamples: processed
+            )
+            emittedPacketCount += emission.packetCount
+            activePacketCount += emission.activePacketCount
+            try? await Task.sleep(for: .milliseconds(12))
         }
-        await waitUntil("production chain observes near-end candidate") {
-            stack.acousticEchoHost.acousticObservationSnapshot()
-                .sourceGateOpen == true
+        let warmup = stack.acousticEchoHost.acousticObservationSnapshot()
+        expect(warmup.sourceAlignmentLocked,
+               "Positive: far-end warm-up locks source alignment")
+        expect(warmup.sourceAlignmentDelayMilliseconds == 80,
+               "Positive: far-end warm-up locks the 80 ms delay")
+        expect(warmup.inputClassification == .echoOnly,
+               "Positive: far-end warm-up remains echo-only")
+        expect(!warmup.sourceGateOpen,
+               "Positive: far-end warm-up leaves source gate closed")
+
+        for _ in 0 ..< 4 {
+            let captureTimestamp = monotonicNow()
+            let renderTimestamp = captureTimestamp - 80_000_000
+            stack.aecBackend.setCaptureOutput(nearEnd)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: renderTimestamp
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                nearEnd,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            let emission = try stack.capture.emit(
+                processedSamples: processed
+            )
+            emittedPacketCount += emission.packetCount
+            activePacketCount += emission.activePacketCount
+            try? await Task.sleep(for: .milliseconds(12))
         }
-        try? await Task.sleep(for: .milliseconds(80))
+        let nearEndSnapshot = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+        expect(nearEndSnapshot.inputClassification == .nearEndSpeech,
+               "Positive: AEC Host classifies true near-end speech")
+        expect(nearEndSnapshot.sourceGateOpen,
+               "Positive: true near-end opens the production source gate")
+        expect(nearEndSnapshot.sourceGateEpoch > 0,
+               "Positive: true near-end creates a source-gate epoch")
+        expect(nearEndSnapshot.sourceAlignmentLocked,
+               "Positive: alignment remains locked through source-gate open")
+        expect(emittedPacketCount > 0,
+               "Positive: production output converter emits PCM packets")
+        expect(activePacketCount > 0,
+               "Positive: emitted PCM contains opened near-end samples")
+        return UInt64(emittedPacketCount)
     }
 
     private enum ResidentOnlyMixer {
@@ -1107,7 +1389,6 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         case residualEcho
         case levelChanges
         case timingJitter
-        case trueNearEnd
     }
 
     private static func driveResidentOnlyAcousticObservation(
@@ -1115,14 +1396,21 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         label: String,
         observationCount: Int,
         mixer: ResidentOnlyMixer
-    ) async {
+    ) async throws {
         stack.acousticEchoHost.playbackStarted()
-        let baseTimestamp = monotonicNow() - 200_000_000
         let render = signal(seed: 11, amplitude: 0.3)
         for index in 0 ..< observationCount {
-            let renderTimestamp = baseTimestamp
-                + UInt64(index) * 20_000_000
-            let captureTimestamp = renderTimestamp + 80_000_000
+            let captureTimestamp = monotonicNow()
+            let renderDelayNanoseconds: UInt64
+            if case .timingJitter = mixer {
+                let jitterMilliseconds = [70, 90, 80, 100][index % 4]
+                renderDelayNanoseconds = UInt64(jitterMilliseconds)
+                    * 1_000_000
+            } else {
+                renderDelayNanoseconds = 80_000_000
+            }
+            let renderTimestamp = captureTimestamp
+                - renderDelayNanoseconds
             let captureMix: [Float]
             switch mixer {
             case .cleanFarEnd:
@@ -1143,67 +1431,21 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                                     amplitude: amplitude)
             case .timingJitter:
                 captureMix = render
-            case .trueNearEnd:
-                captureMix = signal(seed: UInt32(9000 + index),
-                                    amplitude: 0.27)
             }
             stack.aecBackend.setCaptureOutput(captureMix)
             stack.acousticEchoHost.processRender(
                 render,
                 hostTimeNanoseconds: renderTimestamp
             )
-            _ = stack.acousticEchoHost.processCapture(
+            let processed = stack.acousticEchoHost.processCapture(
                 captureMix,
                 hostTimeNanoseconds: captureTimestamp
             )
-            _ = stack.capture.emit(0x10 &+ UInt8(index & 0x0F))
+            _ = try stack.capture.emit(processedSamples: processed)
             matrixObservations += 1
             try? await Task.sleep(for: .milliseconds(8))
         }
         _ = label
-    }
-
-    private static func observeResidentOnlyThroughBridge(
-        stack: R823ControllerStack,
-        mixer: ResidentOnlyMixer,
-        frameMarkers: [UInt8],
-        observationWindow: UInt64
-    ) async -> Int {
-        stack.acousticEchoHost.playbackStarted()
-        let render = signal(seed: 13, amplitude: 0.3)
-        let baseTimestamp = monotonicNow() - 50_000_000
-        for marker in frameMarkers {
-            for index in 0 ..< 3 {
-                let frameOffset = (UInt64(marker) * 3 + UInt64(index))
-                    * 20_000_000
-                let renderTimestamp = baseTimestamp + frameOffset
-                let captureTimestamp = renderTimestamp + 80_000_000
-                let captureMix: [Float]
-                switch mixer {
-                case .trueNearEnd:
-                    captureMix = signal(
-                        seed: UInt32(8000) &+ UInt32(marker),
-                        amplitude: 0.27
-                    )
-                default:
-                    captureMix = render
-                }
-                stack.aecBackend.setCaptureOutput(captureMix)
-                stack.acousticEchoHost.processRender(
-                    render,
-                    hostTimeNanoseconds: renderTimestamp
-                )
-                _ = stack.acousticEchoHost.processCapture(
-                    captureMix,
-                    hostTimeNanoseconds: captureTimestamp
-                )
-                _ = stack.capture.emit(marker &+ UInt8(index))
-            }
-        }
-        try? await Task.sleep(for: .nanoseconds(Int(observationWindow)))
-        await stack.controller.refreshMicrophoneAuthorization()
-        return Int(stack.controller.realtimeBrainInputBridgeSnapshot
-            .acousticEvidenceCount)
     }
 
     private static func makeControllerStack(
@@ -1214,10 +1456,11 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             credentialReader: R823CredentialReader(),
             realtimeResidentBrainProvider: provider
         )
+        let sessionStore = SessionStore()
         let runtime = RuntimeCore(
             executionEngine: ExecutionEngine(providerRouter: router),
             providerRouter: router,
-            sessionStore: SessionStore()
+            sessionStore: sessionStore
         )
         let aecBackend = R823AECBackend()
         let acousticEchoHost = MacSpeechAcousticEchoHost(
@@ -1226,7 +1469,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
         expect(acousticEchoHost.configure() == .webRTCAEC3,
                "production AEC Host configures for resident-only freeze")
-        let capture = R823AudioCapture(acousticEchoHost: acousticEchoHost)
+        let capture = try R823AudioCapture(
+            acousticEchoHost: acousticEchoHost
+        )
         let audioHost = MacSpeechAudioHost(
             authorizationProvider: R823AuthorizationProvider(),
             capture: capture,
@@ -1302,6 +1547,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         return R823ControllerStack(
             controller: controller,
             runtime: runtime,
+            sessionStore: sessionStore,
             provider: provider,
             aecBackend: aecBackend,
             acousticEchoHost: acousticEchoHost,
@@ -1532,6 +1778,23 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         }
     }
 
+    private static func bridgeEvidenceCount(
+        _ stack: R823ControllerStack
+    ) async -> UInt64 {
+        await stack.controller.refreshMicrophoneAuthorization()
+        return stack.controller.realtimeBrainInputBridgeSnapshot
+            .acousticEvidenceCount
+    }
+
+    private static func settledBridgeEvidenceDelta(
+        _ stack: R823ControllerStack,
+        baseline: UInt64
+    ) async -> Int {
+        try? await Task.sleep(for: .milliseconds(40))
+        let current = await bridgeEvidenceCount(stack)
+        return Int(current &- baseline)
+    }
+
     private static func close(
         _ stack: R823ControllerStack
     ) async throws {
@@ -1550,6 +1813,20 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     ) async {
         let deadline = monotonicNow() + timeoutNanoseconds
         while !(await condition()) {
+            if monotonicNow() >= deadline {
+                fatalError("timeout: \(label)")
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    private static func waitUntilOnMainActor(
+        _ label: String,
+        timeoutNanoseconds: UInt64 = 3_000_000_000,
+        condition: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = monotonicNow() + timeoutNanoseconds
+        while !condition() {
             if monotonicNow() >= deadline {
                 fatalError("timeout: \(label)")
             }

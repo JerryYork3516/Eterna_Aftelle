@@ -1484,6 +1484,16 @@ nonisolated struct RealtimeAcousticObservationDebugSnapshot:
     let activeSession: RealtimeBrainSessionIdentity?
     let lastSequence: UInt64
 }
+
+nonisolated struct RealtimeInterruptionEvidenceDebugSnapshot:
+    Sendable,
+    Equatable {
+    let session: RealtimeBrainSessionIdentity?
+    let hasAcousticEvidence: Bool
+    let hasSemanticEvidence: Bool
+    let lastAcousticSequence: UInt64
+    let lastAcousticTimestampNanoseconds: UInt64
+}
 #endif
 
 public final class RuntimeCore {
@@ -3112,6 +3122,20 @@ public final class RuntimeCore {
             activeSession: realtimeAcousticObservationLedger?.session,
             lastSequence:
                 realtimeAcousticObservationLedger?.lastSequence ?? 0
+        )
+    }
+
+    @MainActor
+    func realtimeInterruptionEvidenceDebugSnapshot()
+        -> RealtimeInterruptionEvidenceDebugSnapshot {
+        let state = realtimeInterruptionEvidenceState
+        return RealtimeInterruptionEvidenceDebugSnapshot(
+            session: state?.session,
+            hasAcousticEvidence: state?.acoustic != nil,
+            hasSemanticEvidence: state?.semantic != nil,
+            lastAcousticSequence: state?.lastAcousticSequence ?? 0,
+            lastAcousticTimestampNanoseconds:
+                state?.lastAcousticTimestamp ?? 0
         )
     }
     #endif

@@ -5,7 +5,21 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture="$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-a7-regression.XXXXXX")"
 suite_log="$work_dir/suites.log"
+
+worktree_fingerprint() {
+  {
+    git -C "$repo_root" diff --binary --no-ext-diff HEAD
+    while IFS= read -r -d '' untracked; do
+      printf '%s\0' "$untracked"
+      shasum -a 256 "$repo_root/$untracked"
+    done < <(git -C "$repo_root" ls-files --others --exclude-standard -z)
+  } | shasum -a 256 | awk '{print $1}'
+}
+
 status_before="$(git -C "$repo_root" status --porcelain=v1)"
+worktree_fingerprint_before="$(worktree_fingerprint)"
+head_before="$(git -C "$repo_root" rev-parse HEAD)"
+branch_before="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
 suite_count=0
 
 trap 'rm -rf "$work_dir"' EXIT
@@ -43,6 +57,8 @@ run_suite realtime_acoustic_eligibility \
   "$repo_root/tools/realtime_acoustic_eligibility_tests/check.sh"
 run_suite realtime_resident_only_zero_self_interrupt \
   "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh"
+run_suite realtime_true_near_end_opening \
+  "$repo_root/tools/realtime_true_near_end_opening_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \
@@ -97,7 +113,13 @@ xcodebuild \
   clean build
 
 status_after="$(git -C "$repo_root" status --porcelain=v1)"
-if [ "$status_before" != "$status_after" ]; then
+worktree_fingerprint_after="$(worktree_fingerprint)"
+head_after="$(git -C "$repo_root" rev-parse HEAD)"
+branch_after="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
+if [ "$status_before" != "$status_after" ] \
+    || [ "$worktree_fingerprint_before" != "$worktree_fingerprint_after" ] \
+    || [ "$head_before" != "$head_after" ] \
+    || [ "$branch_before" != "$branch_after" ]; then
   printf 'a7_repository_mutation=FAIL\n' >&2
   exit 1
 fi
