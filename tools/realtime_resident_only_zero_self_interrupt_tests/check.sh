@@ -25,7 +25,8 @@ trap 'rm -rf "$build_dir"' EXIT
 
 if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r831-positive-only" ] \
-    && [ "$test_mode" != "r832-confirmed-only" ]; then
+    && [ "$test_mode" != "r832-confirmed-only" ] \
+    && [ "$test_mode" != "r833-latency-stale-only" ]; then
   echo "unsupported test mode: $test_mode" >&2
   exit 2
 fi
@@ -76,6 +77,8 @@ if [ "$test_mode" = "r831-positive-only" ]; then
   runner_arguments+=("--r831-positive-only")
 elif [ "$test_mode" = "r832-confirmed-only" ]; then
   runner_arguments+=("--r832-confirmed-only")
+elif [ "$test_mode" = "r833-latency-stale-only" ]; then
+  runner_arguments+=("--r833-latency-stale-only")
 fi
 CFFIXED_USER_HOME="$runtime_home" \
   /usr/bin/perl -e '$seconds = shift; alarm $seconds; exec @ARGV' \
@@ -202,6 +205,99 @@ elif [ "$test_mode" = "r832-confirmed-only" ]; then
   rg -q 'processedSamples: processed' <<< "$r832_source"
   rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
   echo "r832_production_chain_fixture=PASS"
+elif [ "$test_mode" = "r833-latency-stale-only" ]; then
+  rg -qx 'realtime_barge_in_latency_stale_cases=1' "$output"
+  rg -qx 'realtime_barge_in_latency_stale_checks=68' "$output"
+  first_to_eligibility_ns="$(
+    awk -F= '/^r833_first_valid_near_end_to_acoustic_eligibility_ns=/ { print $2 }' "$output"
+  )"
+  confirmed_to_clear_ns="$(
+    awk -F= '/^r833_confirmed_to_playback_clear_ns=/ { print $2 }' "$output"
+  )"
+  first_to_clear_ns="$(
+    awk -F= '/^r833_first_valid_near_end_to_playback_clear_ns=/ { print $2 }' "$output"
+  )"
+  [ -n "$first_to_eligibility_ns" ]
+  [ -n "$confirmed_to_clear_ns" ]
+  [ -n "$first_to_clear_ns" ]
+  [ "$confirmed_to_clear_ns" -le 50000000 ]
+  [ "$first_to_clear_ns" -le 200000000 ]
+  [ "$first_to_eligibility_ns" -le "$first_to_clear_ns" ]
+  rg -qx 'r833_preclear_old_pcm=4' "$output"
+  rg -qx 'r833_preclear_queued_pcm=2' "$output"
+  rg -qx 'r833_preclear_scheduled_pcm=2' "$output"
+  rg -qx 'r833_stale_events_injected=110' "$output"
+  rg -qx 'r833_stale_events_returned=110' "$output"
+  rg -qx 'r833_old_generation_output_accepted_after_fence=0' "$output"
+  rg -qx 'r833_old_generation_audio_played=0' "$output"
+  rg -qx 'r833_old_playback_restarts=0' "$output"
+  rg -qx 'r833_old_text_or_subtitle_resurrections=0' "$output"
+  rg -qx 'r833_old_playback_callbacks_rejected=2' "$output"
+  rg -qx 'r833_extra_interruptions=0' "$output"
+  rg -qx 'r833_extra_playback_clears=0' "$output"
+  rg -qx 'r833_extra_generation_changes=0' "$output"
+  rg -qx 'r833_n_plus_one_input_rebound=1' "$output"
+  rg -qx 'r833_n_plus_one_output_rebound=1' "$output"
+  rg -qx 'r833_n_plus_one_playback=1' "$output"
+  rg -qx 'r833_n_plus_one_listening=1' "$output"
+  rg -qx 'r833_real_qwen_semantic_latency=NOT_RUN_HUMAN_GATE' "$output"
+  rg -qx 'r833_real_device_latency=NOT_RUN_HUMAN_GATE' "$output"
+
+  r833_case_source="$(
+    awk '/private static func testR833BargeInLatencyAndStaleClosure/ { active = 1 }
+         /private static func testR832ConfirmedInterruptionProductionChain/ { active = 0 }
+         active' "$test_source"
+  )"
+  r833_stale_source="$(
+    awk '/private static func oldGenerationOutputEvents/ { active = 1 }
+         /private static func testHistoryMemorySafety/ { active = 0 }
+         active' "$test_source"
+  )"
+  r833_acoustic_source="$(
+    awk '/private static func submitTrueNearEndThroughProductionChain/ { active = 1 }
+         /private static func submitPostInterruptionInputThroughProductionChain/ { active = 0 }
+         active' "$test_source"
+  )"
+  r833_rebound_source="$(
+    awk '/private static func submitPostInterruptionInputThroughProductionChain/ { active = 1 }
+         /private enum ResidentOnlyMixer/ { active = 0 }
+         active' "$test_source"
+  )"
+  r833_source="${r833_case_source}${r833_stale_source}${r833_acoustic_source}${r833_rebound_source}"
+  if rg -q \
+      'RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|RealtimeConfirmedInterruption\(|RealtimeBrain(Interrupt|CancelGeneration)Command\(|classification: \.nearEndCandidate|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|consumeRealtimeResidentBrainInterruptionEvidence|receiveRealtimeResidentBrainEvent|claimRealtimeResidentBrainInterruptionDecision|completeRealtimeResidentBrainInterruption|cancelRealtimeResidentBrainGenerationForTesting|beginRealtimeBrainGenerationTransition|finishRealtimeBrainGenerationInterruption|speechAudioOutputHost\.clear\(|clearScheduledPlayback\(|provider\.(interrupt|cancelGeneration)\(|suspendForGenerationTransition|resumeAfterGenerationTransition|frameBuffer\.append\(|capture\.emit\(0x|Date\(\)|Thread\.sleep|usleep' \
+      <<< "$r833_source"; then
+    echo "r833_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  if rg -q 'Task\.sleep' <<< "${r833_case_source}${r833_stale_source}"; then
+    echo "r833_latency_sleep=FAIL" >&2
+    exit 1
+  fi
+  rg -q 'submitTrueNearEndThroughProductionChain' <<< "$r833_case_source"
+  rg -q 'submitPostInterruptionInputThroughProductionChain' \
+    <<< "$r833_case_source"
+  rg -q 'realtimeInterruptionTimingForTesting' <<< "$r833_case_source"
+  rg -q 'acousticReceivedAtNanoseconds' <<< "$r833_case_source"
+  rg -q 'outputHost\.timingDebugSnapshot' <<< "$r833_case_source"
+  rg -q '50_000_000' <<< "$r833_case_source"
+  rg -q '200_000_000' <<< "$r833_case_source"
+  rg -q 'holdInterrupt\(' <<< "$r833_case_source"
+  rg -q 'releaseInterrupt\(' <<< "$r833_case_source"
+  rg -q 'kind: \.residentAudioDelta' <<< "$r833_stale_source"
+  rg -q 'kind: \.residentTextDelta' <<< "$r833_stale_source"
+  rg -q 'kind: \.residentTextFinal' <<< "$r833_stale_source"
+  rg -q 'kind: \.residentSpeakingStarted' <<< "$r833_stale_source"
+  rg -q 'kind: \.residentSpeakingStopped' <<< "$r833_stale_source"
+  rg -q 'kind: \.residentSemanticFinal' <<< "$r833_stale_source"
+  rg -q 'kind: \.cancelled' <<< "$r833_stale_source"
+  rg -q 'kind: \.sessionClosed' <<< "$r833_stale_source"
+  rg -q 'playbackStarted\(' <<< "$r833_acoustic_source"
+  rg -q 'processRender\(' <<< "$r833_acoustic_source"
+  rg -q 'processCapture\(' <<< "$r833_source"
+  rg -q 'processedSamples: processed' <<< "$r833_source"
+  rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
+  echo "r833_production_chain_fixture=PASS"
 else
   rg -qx 'realtime_resident_only_zero_self_interrupt_cases=12' "$output"
   rg -qx 'realtime_resident_only_zero_self_interrupt_checks=126' "$output"
@@ -293,6 +389,8 @@ if [ "$test_mode" = "r831-positive-only" ]; then
   echo "realtime_true_near_end_opening=PASS"
 elif [ "$test_mode" = "r832-confirmed-only" ]; then
   echo "realtime_confirmed_interruption=PASS"
+elif [ "$test_mode" = "r833-latency-stale-only" ]; then
+  echo "realtime_barge_in_latency_stale_audio=PASS"
 else
   echo "realtime_resident_only_zero_self_interrupt_freeze=PASS"
 fi

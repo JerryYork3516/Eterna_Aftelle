@@ -83,6 +83,16 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
     )
 }
 
+#if DEBUG
+nonisolated struct MacSpeechAudioOutputHostTimingDebugSnapshot:
+    Sendable,
+    Equatable {
+    let clearCompletionCount: UInt64
+    let lastClearCompletedAtNanoseconds: UInt64
+    let generation: UInt64
+}
+#endif
+
 actor MacSpeechAudioOutputHost {
     typealias EventSink = @Sendable (MacSpeechAudioOutputEvent) async -> Void
 
@@ -118,6 +128,10 @@ actor MacSpeechAudioOutputHost {
     private var isMonitoringDeviceRoute = false
     private var providerResponseFinished = false
     private var pendingFadeIn: MacSpeechPCMOutputFadeIn?
+    #if DEBUG
+    private var clearCompletionCount: UInt64 = 0
+    private var lastClearCompletedAtNanoseconds: UInt64 = 0
+    #endif
 
     init(
         player: MacSpeechAudioOutputPlaying =
@@ -332,8 +346,25 @@ actor MacSpeechAudioOutputHost {
         invalidatePlayback(keepsEngineRunning: true)
         state = .prepared
         lastError = nil
+        #if DEBUG
+        clearCompletionCount &+= 1
+        lastClearCompletedAtNanoseconds =
+            DispatchTime.now().uptimeNanoseconds
+        #endif
         return snapshot()
     }
+
+    #if DEBUG
+    func timingDebugSnapshot()
+        -> MacSpeechAudioOutputHostTimingDebugSnapshot {
+        MacSpeechAudioOutputHostTimingDebugSnapshot(
+            clearCompletionCount: clearCompletionCount,
+            lastClearCompletedAtNanoseconds:
+                lastClearCompletedAtNanoseconds,
+            generation: generation
+        )
+    }
+    #endif
 
     func close() -> MacSpeechAudioOutputHostSnapshot {
         if state == .closed { return snapshot() }

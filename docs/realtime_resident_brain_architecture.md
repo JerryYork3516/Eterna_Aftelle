@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.3.2 Freeze
+# Realtime Resident Brain Architecture · R0–R8.3.3 Freeze
 
-> 状态：`R0–R8.3.2 PASS / FROZEN`；下一节点只允许进入 R8.3.3
+> 状态：`R0–R8.3.3 PASS / FROZEN`；下一节点只允许进入 R8.4
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -384,7 +384,7 @@ R8.2.2 Residual Echo / Far-end Exclusion & Self-interrupt Gate — PASS / FROZEN
 R8.2.3 Resident-only Zero Self-interrupt Freeze — PASS / FROZEN
 R8.3.1 True Near-end Opening Detection — PASS / FROZEN
 R8.3.2 Confirmed Interrupt / Cancel / Playback Clear — PASS / FROZEN
-R8.3.3 User Barge-in Latency
+R8.3.3 User Barge-in Latency & Stale Audio Closure — PASS / FROZEN
 R8.4 Double-talk / Turn-taking / Backchannel
 R8.5 Interruption Final Verification
 R9 Cascaded Fallback + Regression
@@ -455,11 +455,11 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话、Release、double-talk 与 natural turn-taking 均未完成；R8.3.2 PASS 后下一节点只允许进入 R8.3.3。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话、Release、double-talk 与 natural turn-taking 均未完成；R8.3.3 PASS 后下一节点只允许进入 R8.4。
 
 ---
 
-## R0–R8.3.2 Freeze Result
+## R0–R8.3.3 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -476,6 +476,7 @@ R8.2.2 = PASS / FROZEN
 R8.2.3 = PASS / FROZEN
 R8.3.1 = PASS / FROZEN
 R8.3.2 = PASS / FROZEN
+R8.3.3 = PASS / FROZEN
 ```
 
 R8.3.1 没有修改 AEC / classifier / source gate / eligibility 的生产阈值或 decision authority；唯一生产目录改动是 `RuntimeCore` 的 DEBUG-only interruption evidence snapshot，用于证明 acoustic evidence 已被原子接收且 semantic evidence 仍为空。
@@ -490,7 +491,15 @@ R8.3.2 canonical cancellation 继续复用冻结契约：Runtime 发出一次 pr
 
 R8.3.2 Human Gate: real device, real microphone/speaker/room reverb, USB/Bluetooth/AirPods, real Qwen WebSocket, long-duration live and Release remain NOT_RUN
 
-Next allowed node: R8.3.3 User Barge-in Latency
+R8.3.3 通过 DEBUG-only monotonic timing snapshot 直接观测 eligible acoustic evidence、Runtime confirmed decision 与 Host Playback clear completion，不改变正式 interruption authority 或生产决策。独立 1 case / 68 checks 实测 first valid near-end → acoustic eligibility 17.186 ms、confirmed → clear 0.203 ms、first valid near-end → clear 28.757 ms；held Provider interrupt ACK 证明本地 clear 不等待网络 ACK。真实 Qwen semantic/network latency 不属于这些本地自动化数字，继续为 Human Gate。
+
+confirmed 前预排的 generation N PCM 为 4 块（2 queued / 2 scheduled）；confirmed 后在 ACK 前、ACK 后、N+1 rebound 后交错注入 110 个旧代 audio / text delta/final / speaking started/stopped / semantic final / error / cancelled / sessionClosed / duplicate proposal 事件，并令 2 个旧 Playback completion callback 延迟到达。结果为 old-generation output accepted / audio played / Playback restart / text or subtitle resurrection / extra interrupt / extra clear / extra generation advance 全为 0。N+1 production AEC input、formal response create、text / speaking / PCM output、Playback completion 与 Listening 均为 1。
+
+R8.3.3 没有修改 acoustic threshold、500 ms tail、R8.2.3 gate、RuntimeCore 单一 interruption authority、Provider 私有 cancellation 边界或 DR / Store schema；生产目录只增加 RuntimeCore confirmed 点与 Host clear 完成点的 DEBUG-only timing observability。R8.2.3 保持 12 cases / 126 checks，resident-only 6 scenarios / 740 observations、120 observations × 32 frames = 3840 frames 的 eligibility / confirmed / interrupt / clear / generation / lease / false write 全为 0。A7 为 28 suites / 31 entrypoints / 5345 assertions，macOS clean build 与 architecture / secret / repository mutation guards、`git diff --check`、Stage 7 forbidden checklist 全部 PASS。
+
+R8.3.3 Human Gate: real device, real microphone/speaker/room reverb, USB/Bluetooth/AirPods, real Qwen semantic/network latency, long-duration live and Release remain NOT_RUN
+
+Next allowed node: R8.4 Double-talk / Turn-taking / Backchannel
 
 ----
 
@@ -516,7 +525,7 @@ R8.2.3 confirms the fail-closed resident-only zero-self-interrupt safety baselin
 
 本节点不提交 semantic proposal，因此 confirmed interruption、Provider interrupt/cancel、Host Playback clear、generation/lease change、Dialogue History、Narrative Memory 与 Relationship 全为 0；RuntimeCore interruption authority 不变。
 
-真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 `NOT_RUN / HUMAN_GATE`；用户真实插话 latency、double-talk 最终识别与 natural turn-taking 属于 R8.3.3 / R8.4。
+真实设备、真实扬声器 / 房间混响、USB / Bluetooth / AirPods、真实 Qwen WebSocket、长时间真机与 Release 仍为 `NOT_RUN / HUMAN_GATE`；double-talk 最终识别与 natural turn-taking 属于 R8.4。
 
 ### R8.3.2 Confirmed Interrupt / Cancel / Playback Clear
 
@@ -524,4 +533,12 @@ R8.3.2 证明冻结的 R8.3.1 production true-near-end acoustic evidence 与 R8.
 
 held Provider settlement 证明 Host 在 Runtime confirmed 后、Provider ACK 前已经 clear 一次并暂停两条 Bridge，同时 Runtime / formal route 仍保持 N；ACK 后才在相同 resident、Runtime Session、Brain lease 与 route epoch 上严格前进到 N+1。Input rebound 不只检查状态：settlement 后的新 capture 继续经过 production AEC Host、PCM converter 与 frame buffer，Provider 收到的首帧 identity 为 N+1、submitted sequence 为 1 且 provenance 为 `acousticEchoProcessed`；Output receive loop 同样实际绑定 N+1。
 
-本节点没有创建第二 Provider Session、Brain、lease、response 或 interruption coordinator，没有直接 clear / bump generation / rebind Bridge，也没有调整任何 acoustic threshold、500 ms tail 或 eligibility gate。真实设备与真实 Qwen wire cancellation 仍为 `NOT_RUN / HUMAN_GATE`；R8.3.2 不包含 latency、double-talk、backchannel 或 natural turn-taking，下一节点只允许进入 R8.3.3。
+本节点没有创建第二 Provider Session、Brain、lease、response 或 interruption coordinator，没有直接 clear / bump generation / rebind Bridge，也没有调整任何 acoustic threshold、500 ms tail 或 eligibility gate。真实设备与真实 Qwen wire cancellation 仍为 `NOT_RUN / HUMAN_GATE`；R8.3.2 不包含 latency、double-talk、backchannel 或 natural turn-taking，R8.3.3 已于下节冻结。
+
+### R8.3.3 User Barge-in Latency & Stale Audio Closure
+
+R8.3.3 复用完整 production chain，并仅以 DEBUG-only monotonic snapshot 标记 eligible acoustic evidence、Runtime confirmed 与 Host clear 完成时刻。本轮未为 latency 通过新增 sleep；既有 production AEC fixture 保留 12 ms frame pacing，semantic → confirmed → clear 路径无人工等待。自动化严格冻结 `first valid near-end ≤ acoustic eligibility ≤ Runtime confirmed ≤ Host clear completion`；实测三段 latency 分别为 17.186 ms、0.203 ms 与 28.757 ms，且 Provider interrupt ACK 被刻意延迟时 Host 仍先完成唯一一次 clear。这里测量的是本地 AEC / Runtime / Host Fake Provider 控制链，不代表真实 Qwen semantic/network latency。
+
+stale closure 从正式 confirmed decision 与 generation fence 进入，不直接调用 clear、generation bump 或内部 interruption seam。测试在 interruption 前真实预排 4 块 N 代 PCM，随后跨 ACK 前后及 N+1 rebound 交错送入 110 个旧代输出事件与 2 个旧 Playback callback；所有旧 audio / text / speaking / completion 都被现有 Runtime / Bridge / AppController / OutputHost identity fence 拒绝，且无额外 interrupt、clear 或 generation advance。N+1 的 production AEC input 与新 text / speaking / PCM output、Playback completion、Listening 均继续成功，排除了永久封死 Output 的假阳性。
+
+本节点未进入 double-talk、turn-taking 或 backchannel；这些能力只允许在 R8.4 处理。真实设备与真实 Qwen latency 继续为 `NOT_RUN / HUMAN_GATE`。

@@ -1493,6 +1493,15 @@ nonisolated struct RealtimeInterruptionEvidenceDebugSnapshot:
     let hasSemanticEvidence: Bool
     let lastAcousticSequence: UInt64
     let lastAcousticTimestampNanoseconds: UInt64
+    let acousticReceivedAtNanoseconds: UInt64
+}
+
+nonisolated struct RealtimeInterruptionTimingDebugSnapshot:
+    Sendable,
+    Equatable {
+    let decisionID: UUID
+    let interruptedIdentity: RealtimeBrainSessionIdentity
+    let confirmedAtNanoseconds: UInt64
 }
 #endif
 
@@ -1785,6 +1794,10 @@ public final class RuntimeCore {
     private var realtimeInterruptionProposalDecisionOrder:
         [RealtimeInterruptionProposalKey] = []
     private var pendingRealtimeInterruption: PendingRealtimeInterruption?
+    #if DEBUG
+    private var realtimeInterruptionTimingDebugSnapshot:
+        RealtimeInterruptionTimingDebugSnapshot?
+    #endif
     private var realtimeAcousticObservationLedger:
         RealtimeAcousticObservationLedger?
     private var realtimeAcousticObservationTrace:
@@ -2273,6 +2286,9 @@ public final class RuntimeCore {
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
+        #if DEBUG
+        realtimeInterruptionTimingDebugSnapshot = nil
+        #endif
         realtimeInterruptionProposalDecisions.removeAll(keepingCapacity: true)
         realtimeInterruptionProposalDecisionOrder.removeAll(
             keepingCapacity: true
@@ -2510,6 +2526,9 @@ public final class RuntimeCore {
         realtimeBrainToolResultSequence = 0
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
+        #if DEBUG
+        realtimeInterruptionTimingDebugSnapshot = nil
+        #endif
         realtimeInterruptionProposalDecisions.removeAll(keepingCapacity: true)
         realtimeInterruptionProposalDecisionOrder.removeAll(
             keepingCapacity: true
@@ -3135,8 +3154,16 @@ public final class RuntimeCore {
             hasSemanticEvidence: state?.semantic != nil,
             lastAcousticSequence: state?.lastAcousticSequence ?? 0,
             lastAcousticTimestampNanoseconds:
-                state?.lastAcousticTimestamp ?? 0
+                state?.lastAcousticTimestamp ?? 0,
+            acousticReceivedAtNanoseconds:
+                state?.acousticReceivedAtNanoseconds ?? 0
         )
+    }
+
+    @MainActor
+    func realtimeInterruptionTimingForTesting()
+        -> RealtimeInterruptionTimingDebugSnapshot? {
+        realtimeInterruptionTimingDebugSnapshot
     }
     #endif
 
@@ -3390,6 +3417,15 @@ public final class RuntimeCore {
             decision: decision,
             task: task
         )
+        #if DEBUG
+        realtimeInterruptionTimingDebugSnapshot =
+            RealtimeInterruptionTimingDebugSnapshot(
+                decisionID: decision.decisionID,
+                interruptedIdentity: decision.interruptedIdentity,
+                confirmedAtNanoseconds:
+                    DispatchTime.now().uptimeNanoseconds
+            )
+        #endif
         return .success(.confirmed(decision))
     }
 
