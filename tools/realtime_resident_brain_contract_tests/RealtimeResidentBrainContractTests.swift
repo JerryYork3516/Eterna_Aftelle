@@ -523,6 +523,7 @@ private struct RealtimeResidentBrainContractTests {
         try await testRuntimeEagerResponseAuthorization(fixture: fixture)
         testEagerResponseAuthorization()
         testTurnBoundarySequenceAndSemanticCandidates()
+        testCrossSourceResponseExecutionFence()
         await testCloseWaiterRetention()
 
         print("realtime_resident_brain_contract_cases=\(cases)")
@@ -591,6 +592,285 @@ private struct RealtimeResidentBrainContractTests {
             attemptID: retryAttempt,
             outcome: .closed
         )
+    }
+
+    private static func testCrossSourceResponseExecutionFence() {
+        cases += 1
+
+        func activatedGate(
+            _ runtimeSessionID: String
+        ) -> (
+            gate: RuntimeRealtimeBrainSessionGate,
+            identity: RealtimeBrainSessionIdentity
+        ) {
+            let gate = RuntimeRealtimeBrainSessionGate()
+            let identity = RealtimeBrainSessionIdentity(
+                residentID: "resident",
+                runtimeSessionID: runtimeSessionID,
+                brainLeaseID: UUID(),
+                routeEpoch: 1,
+                generation: 1
+            )
+            expect(gate.reserve(identity),
+                   "cross-source gate reserves \(runtimeSessionID)")
+            expect(gate.activate(identity),
+                   "cross-source gate activates \(runtimeSessionID)")
+            let bootstrap = RealtimeBrainRuntimeContextUpdate(
+                identity: identity,
+                kind: .bootstrap,
+                contextRevision: 1,
+                sections: [RealtimeBrainContextSection(
+                    scope: .stableResident,
+                    content: "stable"
+                )]
+            )
+            guard let token = gate.beginContextUpdate(bootstrap) else {
+                fatalError("FAILED: cross-source gate begins bootstrap")
+            }
+            expect(gate.finishContextUpdate(
+                token: token,
+                update: bootstrap,
+                succeeded: true
+            ), "cross-source gate commits bootstrap")
+            return (gate, identity)
+        }
+
+        let terminalFixture = activatedGate("cross-source-terminal")
+        let terminalFirstTurn = RealtimeBrainTurnID()
+        let terminalResponseTurn = RealtimeBrainTurnID()
+        let terminalFirstIdentity = RealtimeBrainEventIdentity(
+            session: terminalFixture.identity,
+            turnID: terminalFirstTurn,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let terminalResponseIdentity = RealtimeBrainEventIdentity(
+            session: terminalFixture.identity,
+            turnID: terminalResponseTurn,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let terminalFirstFinal = RealtimeResidentBrainEvent(
+            identity: terminalFirstIdentity,
+            sequence: 1,
+            kind: .userTranscriptFinal("first segment")
+        )
+        let terminalResponseFinal = RealtimeResidentBrainEvent(
+            identity: terminalResponseIdentity,
+            sequence: 2,
+            kind: .userTranscriptFinal("second segment")
+        )
+        expectAccepted(
+            acceptDirect(
+                terminalFirstFinal,
+                gate: terminalFixture.gate,
+                session: terminalFixture.identity
+            ),
+            equals: terminalFirstFinal,
+            "cross-source terminal fixture accepts first final"
+        )
+        expectAccepted(
+            acceptDirect(
+                terminalResponseFinal,
+                gate: terminalFixture.gate,
+                session: terminalFixture.identity
+            ),
+            equals: terminalResponseFinal,
+            "cross-source terminal fixture accepts response final"
+        )
+        let terminalCommand = RealtimeBrainCreateResponseCommand(
+            identity: terminalResponseIdentity,
+            sourceEventSequence: terminalResponseFinal.sequence
+        )
+        let terminalSourceTurns: Set<RealtimeBrainTurnID> = [
+            terminalFirstTurn,
+            terminalResponseTurn
+        ]
+        guard case .accepted(let terminalToken) = terminalFixture.gate
+                .beginResponseCreate(
+                    terminalCommand,
+                    sourceTurnIDs: terminalSourceTurns
+                ) else {
+            fatalError("FAILED: cross-source terminal authorization begins")
+        }
+        let terminalEvent = RealtimeResidentBrainEvent(
+            identity: terminalFirstIdentity,
+            sequence: 3,
+            kind: .cancelled(.runtimeDecision)
+        )
+        expectAccepted(
+            acceptDirect(
+                terminalEvent,
+                gate: terminalFixture.gate,
+                session: terminalFixture.identity
+            ),
+            equals: terminalEvent,
+            "cross-source terminal fixture accepts alias failure"
+        )
+        expect(!terminalFixture.gate.claimResponseCreateExecution(
+            token: terminalToken,
+            command: terminalCommand,
+            sourceTurnIDs: terminalSourceTurns
+        ), "alias terminal atomically blocks Provider dispatch")
+        expect(terminalFixture.gate.retireUserActivityTurns(
+            terminalSourceTurns,
+            session: terminalFixture.identity,
+            contextRevision: 1,
+            afterCommittedTerminalEvent: true
+        ), "Runtime retirement closes the whole failed logical turn")
+        expect(!terminalFixture.gate.finishResponseCreate(
+            token: terminalToken,
+            command: terminalCommand,
+            succeeded: false
+        ), "failed cross-source authorization has no response progress")
+        let terminalBoundary = RealtimeBrainRuntimeContextUpdate(
+            identity: terminalFixture.identity,
+            kind: .delta,
+            contextRevision: 2,
+            sections: [RealtimeBrainContextSection(
+                scope: .dynamicSession,
+                content: "terminal boundary"
+            )]
+        )
+        expect(terminalFixture.gate.beginContextUpdate(terminalBoundary) != nil,
+               "failed logical aliases do not leak an active turn")
+
+        let successFixture = activatedGate("cross-source-success")
+        let successFirstTurn = RealtimeBrainTurnID()
+        let successResponseTurn = RealtimeBrainTurnID()
+        let successFirstIdentity = RealtimeBrainEventIdentity(
+            session: successFixture.identity,
+            turnID: successFirstTurn,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let successResponseIdentity = RealtimeBrainEventIdentity(
+            session: successFixture.identity,
+            turnID: successResponseTurn,
+            responseID: nil,
+            contextRevision: 1
+        )
+        let successFirstFinal = RealtimeResidentBrainEvent(
+            identity: successFirstIdentity,
+            sequence: 1,
+            kind: .userTranscriptFinal("first segment")
+        )
+        let successResponseFinal = RealtimeResidentBrainEvent(
+            identity: successResponseIdentity,
+            sequence: 2,
+            kind: .userTranscriptFinal("second segment")
+        )
+        expectAccepted(
+            acceptDirect(
+                successFirstFinal,
+                gate: successFixture.gate,
+                session: successFixture.identity
+            ),
+            equals: successFirstFinal,
+            "cross-source success fixture accepts first final"
+        )
+        expectAccepted(
+            acceptDirect(
+                successResponseFinal,
+                gate: successFixture.gate,
+                session: successFixture.identity
+            ),
+            equals: successResponseFinal,
+            "cross-source success fixture accepts response final"
+        )
+        let successCommand = RealtimeBrainCreateResponseCommand(
+            identity: successResponseIdentity,
+            sourceEventSequence: successResponseFinal.sequence
+        )
+        let successSourceTurns: Set<RealtimeBrainTurnID> = [
+            successFirstTurn,
+            successResponseTurn
+        ]
+        guard case .accepted(let successToken) = successFixture.gate
+                .beginResponseCreate(
+                    successCommand,
+                    sourceTurnIDs: successSourceTurns
+                ) else {
+            fatalError("FAILED: cross-source success authorization begins")
+        }
+        expect(!successFixture.gate.retireUserActivityTurns(
+            [successResponseTurn],
+            session: successFixture.identity,
+            contextRevision: 1
+        ), "generic semantic cleanup cannot retire an awaiting response")
+        expect(successFixture.gate.claimResponseCreateExecution(
+            token: successToken,
+            command: successCommand,
+            sourceTurnIDs: successSourceTurns
+        ), "all live source turns atomically claim response execution")
+        let lateAlias = RealtimeResidentBrainEvent(
+            identity: successFirstIdentity,
+            sequence: 3,
+            kind: .userTranscriptPartial("late alias")
+        )
+        expect(acceptDirect(
+            lateAlias,
+            gate: successFixture.gate,
+            session: successFixture.identity
+        ) == .rejectedInvalidEvent,
+        "successful execution closes non-response aliases")
+        expect(successFixture.gate.finishResponseCreate(
+            token: successToken,
+            command: successCommand,
+            succeeded: true
+        ), "cross-source response authorization commits")
+        let residentIdentity = RealtimeBrainEventIdentity(
+            session: successFixture.identity,
+            turnID: successResponseTurn,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let residentText = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 4,
+            kind: .residentTextDelta("in progress")
+        )
+        expectAccepted(
+            acceptDirect(
+                residentText,
+                gate: successFixture.gate,
+                session: successFixture.identity
+            ),
+            equals: residentText,
+            "response output opens the active resident response"
+        )
+        expect(!successFixture.gate.retireUserActivityTurns(
+            [successResponseTurn],
+            session: successFixture.identity,
+            contextRevision: 1
+        ), "generic semantic cleanup cannot retire an active response")
+        let residentFinal = RealtimeResidentBrainEvent(
+            identity: residentIdentity,
+            sequence: 5,
+            kind: .residentSemanticFinal(
+                RealtimeBrainSemanticOutput(canonicalText: "complete")
+            )
+        )
+        expectAccepted(
+            acceptDirect(
+                residentFinal,
+                gate: successFixture.gate,
+                session: successFixture.identity
+            ),
+            equals: residentFinal,
+            "response completion closes the response source turn"
+        )
+        let successBoundary = RealtimeBrainRuntimeContextUpdate(
+            identity: successFixture.identity,
+            kind: .delta,
+            contextRevision: 2,
+            sections: [RealtimeBrainContextSection(
+                scope: .dynamicSession,
+                content: "success boundary"
+            )]
+        )
+        expect(successFixture.gate.beginContextUpdate(successBoundary) != nil,
+               "successful logical aliases do not leak an active turn")
     }
 
     private static func testDeferredCapacityFailsClosed(
@@ -1773,10 +2053,10 @@ private struct RealtimeResidentBrainContractTests {
             canonicalText: "The final resident meaning."
         )
         let eventKinds: [(RealtimeBrainEventIdentity, RealtimeResidentBrainEventKind)] = [
+            (responseAuthorizationIdentity, .userTranscriptFinal("hello")),
             (userIdentity, .userSpeechStarted),
             (userIdentity, .userSpeechStopped),
             (userIdentity, .userTranscriptPartial("hel")),
-            (responseAuthorizationIdentity, .userTranscriptFinal("hello")),
             (eventIdentity, .residentTextDelta("The final")),
             (eventIdentity, .residentTextFinal("The final resident meaning.")),
             (eventIdentity, .residentAudioDelta(audioDelta)),

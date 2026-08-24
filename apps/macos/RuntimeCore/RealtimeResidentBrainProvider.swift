@@ -1111,6 +1111,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     private var completedToolCalls: Set<RealtimeBrainToolCallID> = []
     private var responseCreateToken: UUID?
     private var pendingResponseCreate: RealtimeBrainCreateResponseCommand?
+    private var pendingResponseCreateSourceTurnIDs:
+        Set<RealtimeBrainTurnID> = []
+    private var responseCreateExecutionClaimed = false
     private var responseAuthorizationCandidates:
         [RealtimeBrainTurnID: UInt64] = [:]
     private var consumedResponseAuthorizationTurns:
@@ -1434,16 +1437,26 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
     }
 
     func beginResponseCreate(
-        _ command: RealtimeBrainCreateResponseCommand
+        _ command: RealtimeBrainCreateResponseCommand,
+        sourceTurnIDs: Set<RealtimeBrainTurnID>? = nil
     ) -> RuntimeRealtimeBrainResponseCreateStart {
         lock.withLock {
             guard isReadyLocked(command.identity.session),
                   contextRevision == command.identity.contextRevision,
                   command.identity.responseID == nil,
                   let turnID = command.identity.turnID else { return .invalid }
+            let authorizedSourceTurnIDs = sourceTurnIDs ?? [turnID]
+            guard !authorizedSourceTurnIDs.isEmpty,
+                  authorizedSourceTurnIDs.contains(turnID) else {
+                return .invalid
+            }
             if consumedResponseAuthorizationTurns.contains(turnID) {
                 return .alreadyAuthorized(turnID)
             }
+            guard authorizedSourceTurnIDs.allSatisfy({
+                activeTurnIDs.contains($0)
+                    && !terminalTurnIDs.contains($0)
+            }) else { return .invalid }
             guard responseAuthorizationCandidates[turnID]
                     == command.sourceEventSequence else { return .invalid }
             responseAuthorizationCandidates.removeValue(forKey: turnID)
@@ -1452,17 +1465,77 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   awaitingResponseTurn == nil,
                   activeResponseIDs.isEmpty,
                   toolResultToken == nil else {
-                terminalTurnIDs.insert(turnID)
-                closeTurnLocked(turnID)
+                retireUserActivityTurnsLocked(authorizedSourceTurnIDs)
                 return .droppedOverlap(turnID)
             }
             let token = UUID()
             responseCreateToken = token
             pendingResponseCreate = command
+            pendingResponseCreateSourceTurnIDs = authorizedSourceTurnIDs
+            responseCreateExecutionClaimed = false
             awaitingResponseTurn = turnID
             awaitingResponseExcludedID = nil
             providerOperations.begin(token)
             return .accepted(token)
+        }
+    }
+
+    func claimResponseCreateExecution(
+        token: UUID,
+        command: RealtimeBrainCreateResponseCommand,
+        sourceTurnIDs: Set<RealtimeBrainTurnID>
+    ) -> Bool {
+        lock.withLock {
+            guard responseCreateToken == token,
+                  pendingResponseCreate == command,
+                  pendingResponseCreateSourceTurnIDs == sourceTurnIDs,
+                  !responseCreateExecutionClaimed,
+                  isReadyLocked(command.identity.session),
+                  contextRevision == command.identity.contextRevision,
+                  let turnID = command.identity.turnID,
+                  !sourceTurnIDs.isEmpty,
+                  sourceTurnIDs.contains(turnID),
+                  sourceTurnIDs.allSatisfy({
+                    activeTurnIDs.contains($0)
+                        && !terminalTurnIDs.contains($0)
+                  }),
+                  awaitingResponseTurn == turnID,
+                  !terminalTurnIDs.contains(turnID) else {
+                return false
+            }
+            retireUserActivityTurnsLocked(sourceTurnIDs.subtracting([turnID]))
+            responseCreateExecutionClaimed = true
+            return true
+        }
+    }
+
+    func retireUserActivityTurns(
+        _ turnIDs: Set<RealtimeBrainTurnID>,
+        session: RealtimeBrainSessionIdentity,
+        contextRevision: UInt64,
+        afterCommittedTerminalEvent: Bool = false
+    ) -> Bool {
+        lock.withLock {
+            guard isReadyLocked(session),
+                  self.contextRevision == contextRevision else {
+                return false
+            }
+            if afterCommittedTerminalEvent {
+                guard !turnIDs.isDisjoint(with: terminalTurnIDs) else {
+                    return false
+                }
+            } else {
+                guard awaitingResponseTurn.map({
+                    !turnIDs.contains($0)
+                }) ?? true,
+                activeResponseIDs.allSatisfy({
+                    !turnIDs.contains($0.turnID)
+                }) else {
+                    return false
+                }
+            }
+            retireUserActivityTurnsLocked(turnIDs)
+            return true
         }
     }
 
@@ -1477,6 +1550,10 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   pendingResponseCreate == command else { return false }
             responseCreateToken = nil
             pendingResponseCreate = nil
+            pendingResponseCreateSourceTurnIDs.removeAll(
+                keepingCapacity: true
+            )
+            responseCreateExecutionClaimed = false
             let turnID = command.identity.turnID
             if !succeeded, awaitingResponseTurn == turnID {
                 awaitingResponseTurn = nil
@@ -1906,6 +1983,22 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         }
     }
 
+    private func retireUserActivityTurnsLocked(
+        _ turnIDs: Set<RealtimeBrainTurnID>
+    ) {
+        for turnID in turnIDs {
+            terminalTurnIDs.insert(turnID)
+            responseAuthorizationCandidates.removeValue(forKey: turnID)
+            consumedResponseAuthorizationTurns.insert(turnID)
+            closeTurnLocked(turnID)
+        }
+        if let awaitingResponseTurn,
+           turnIDs.contains(awaitingResponseTurn) {
+            self.awaitingResponseTurn = nil
+            awaitingResponseExcludedID = nil
+        }
+    }
+
     private func hasStatefullyValidPayloadLocked(
         _ event: RealtimeResidentBrainEvent
     ) -> Bool {
@@ -2167,6 +2260,8 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         pendingToolResult = nil
         responseCreateToken = nil
         pendingResponseCreate = nil
+        pendingResponseCreateSourceTurnIDs.removeAll(keepingCapacity: true)
+        responseCreateExecutionClaimed = false
     }
 
     private func resetGenerationStateLocked() {
@@ -2201,6 +2296,8 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         completedToolCalls.removeAll(keepingCapacity: true)
         responseCreateToken = nil
         pendingResponseCreate = nil
+        pendingResponseCreateSourceTurnIDs.removeAll(keepingCapacity: true)
+        responseCreateExecutionClaimed = false
         responseAuthorizationCandidates.removeAll(keepingCapacity: true)
         consumedResponseAuthorizationTurns.removeAll(keepingCapacity: true)
         awaitingResponseTurn = nil
@@ -2240,7 +2337,7 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             return hasTurn && hasResponse
         case .userSpeechStarted, .userSpeechStopped,
              .userTranscriptPartial, .userTranscriptFinal:
-            return hasTurn
+            return hasTurn && !hasResponse
         case .residentTextDelta, .residentTextFinal,
              .residentAudioDelta, .residentSpeakingStarted,
              .residentSpeakingStopped, .residentSemanticFinal:

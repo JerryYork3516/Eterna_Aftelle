@@ -67,6 +67,8 @@ run_suite realtime_double_talk_acoustic \
   "$repo_root/tools/realtime_double_talk_acoustic_tests/check.sh"
 run_suite realtime_turn_completion \
   "$repo_root/tools/realtime_turn_completion_tests/check.sh"
+run_suite realtime_semantic_turn_taking \
+  "$repo_root/tools/realtime_semantic_turn_taking_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \

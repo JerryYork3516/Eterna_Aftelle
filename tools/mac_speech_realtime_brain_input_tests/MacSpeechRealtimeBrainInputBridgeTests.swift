@@ -1678,7 +1678,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await provider.enqueue(RealtimeResidentBrainEvent(
             identity: identity,
             sequence: 4,
-            kind: .userTranscriptFinal("normal Listening turn")
+            kind: .userTranscriptPartial("normal Listening turn")
         ))
         await waitUntil(label: "normal Listening completion candidate") {
             await MainActor.run {
@@ -1691,12 +1691,12 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         expect(completion.phase == .completionCandidate
                 && completion.session == session
                 && completion.turnID == turnID,
-               "R7 formal Listening start-stop-final reaches one candidate")
+               "R7 formal Listening start-stop-partial reaches one candidate")
         expect(runtime
                 .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
                     identity
                 ),
-               "R7 normal Listening final stays on the tracked turn")
+               "R7 normal Listening turn identity stays tracked")
         _ = await input.stop()
         _ = await output.stop()
         await waitUntil(label: "normal Listening session close") {

@@ -29,7 +29,8 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r833-latency-stale-only" ] \
     && [ "$test_mode" != "r841-double-talk-only" ] \
     && [ "$test_mode" != "r842-listening-only" ] \
-    && [ "$test_mode" != "r842-turn-completion-only" ]; then
+    && [ "$test_mode" != "r842-turn-completion-only" ] \
+    && [ "$test_mode" != "r843-semantic-fusion-only" ]; then
   echo "unsupported test mode: $test_mode" >&2
   exit 2
 fi
@@ -88,6 +89,8 @@ elif [ "$test_mode" = "r842-listening-only" ]; then
   runner_arguments+=("--r842-listening-only")
 elif [ "$test_mode" = "r842-turn-completion-only" ]; then
   runner_arguments+=("--r842-turn-completion-only")
+elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
+  runner_arguments+=("--r843-semantic-fusion-only")
 fi
 CFFIXED_USER_HOME="$runtime_home" \
   /usr/bin/perl -e '$seconds = shift; alarm $seconds; exec @ARGV' \
@@ -95,7 +98,80 @@ CFFIXED_USER_HOME="$runtime_home" \
   "${runner_arguments[@]}" \
   | tee "$output"
 
-if [ "$test_mode" = "r842-listening-only" ]; then
+if [ "$test_mode" = "r843-semantic-fusion-only" ]; then
+  rg -qx 'realtime_semantic_turn_taking_cases=13' "$output"
+  r843_checks="$({
+    awk -F= '/^realtime_semantic_turn_taking_checks=/ { print $2 }' \
+      "$output"
+  })"
+  [ -n "$r843_checks" ]
+  [ "$r843_checks" -gt 0 ]
+  rg -qx 'r843_final_before_completion_cases=1' "$output"
+  rg -qx 'r843_completion_before_final_cases=1' "$output"
+  rg -qx 'r843_cross_source_turn_cases=1' "$output"
+  rg -qx 'r843_valid_completed_semantic_turns=6' "$output"
+  rg -qx 'r843_valid_turn_response_creates=6' "$output"
+  rg -qx 'r843_completion_only_response_creates=0' "$output"
+  rg -qx 'r843_semantic_only_response_creates=0' "$output"
+  rg -qx 'r843_provider_only_response_creates=0' "$output"
+  rg -qx 'r843_empty_final_response_creates=0' "$output"
+  rg -qx 'r843_wrong_identity_response_creates=0' "$output"
+  rg -qx 'r843_stale_generation_response_creates=0' "$output"
+  rg -qx 'r843_duplicate_response_creates=0' "$output"
+  rg -qx 'r843_extra_interrupts=0' "$output"
+  rg -qx 'r843_extra_playback_clears=0' "$output"
+  rg -qx 'r843_extra_generation_advances=0' "$output"
+  rg -qx 'r843_real_qwen_and_devices=NOT_RUN_HUMAN_GATE' "$output"
+
+  r843_source="$({
+    awk '/private static func testR843SemanticTurnTakingFusion/ { active = 1 }
+         /private static func testR842PauseVsUtteranceCompletion/ { active = 0 }
+         active' "$test_source"
+    awk '/private static func emitR842ListeningSamples/ { active = 1 }
+         /private static func assertR842ListeningHasNoDecisionSideEffects/ { active = 0 }
+         active' "$test_source"
+  })"
+  capture_activity_source="$({
+    awk '/private final class R823AudioCapture/ { active = 1 }
+         /private struct R823ControllerStack/ { active = 0 }
+         active' "$test_source"
+  })"
+  if rg -q \
+      'provider\.createResponse\(|RealtimeBrainCreateResponseCommand\(|createRealtimeResidentBrainResponseIfEligible|beginResponseCreate|finishResponseCreate|finishRealtimeUtteranceCompletionWindow|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|cancelRealtimeResidentBrainGenerationForTesting|interruptRealtimeResidentBrainForTesting|beginRealtimeBrainGenerationTransition|finishRealtimeBrainGenerationInterruption|frameBuffer\.append\(' \
+      <<< "$r843_source"; then
+    echo "r843_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  rg -q 'MacSpeechAudioActivityEvidenceKind\.classify' \
+    <<< "$capture_activity_source"
+  rg -q 'emitR842ListeningSamples' <<< "$r843_source"
+  rg -q 'processCapture\(' <<< "$r843_source"
+  rg -q 'processedSamples: processed' <<< "$r843_source"
+  rg -q 'kind: \.userSpeechStarted' <<< "$r843_source"
+  rg -q 'kind: \.userSpeechStopped' <<< "$r843_source"
+  rg -q 'kind: \.userTranscriptPartial' <<< "$r843_source"
+  rg -q 'kind: \.userTranscriptFinal' <<< "$r843_source"
+  rg -q 'testR832ConfirmedInterruptionProductionChain' <<< "$r843_source"
+  rg -q 'stack\.provider\.createCount' <<< "$r843_source"
+  rg -q 'stack\.provider\.lastCreateCommand' <<< "$r843_source"
+
+  provider_audio_frame="$build_dir/provider-audio-frame.txt"
+  awk \
+    '/struct RealtimeBrainAudioFrame/ { active = 1 }
+     active { print }
+     active && /^}/ { exit }' \
+    "$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift" \
+    > "$provider_audio_frame"
+  if rg -q \
+      'sourceGate|userActivity|nearEnd|playback|turn|completion|[Aa]coustic|[Ee]ligibility' \
+      "$provider_audio_frame"; then
+    echo "r843_provider_pcm_contract=FAIL" >&2
+    exit 1
+  fi
+  echo "r843_production_chain_fixture=PASS"
+  echo "r843_runtime_single_response_owner=PASS"
+  echo "r843_provider_pcm_contract=PASS"
+elif [ "$test_mode" = "r842-listening-only" ]; then
   rg -qx 'realtime_turn_completion_listening_cases=1' "$output"
   rg -qx 'realtime_turn_completion_listening_checks=139' "$output"
   rg -qx 'r842_listening_continuous_cases=1' "$output"
@@ -597,6 +673,8 @@ elif [ "$test_mode" = "r842-listening-only" ]; then
   echo "realtime_turn_completion_listening_admission=PASS"
 elif [ "$test_mode" = "r842-turn-completion-only" ]; then
   echo "realtime_turn_completion=PASS"
+elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
+  echo "realtime_semantic_turn_taking=PASS"
 else
   echo "realtime_resident_only_zero_self_interrupt_freeze=PASS"
 fi

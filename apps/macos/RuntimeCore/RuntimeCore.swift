@@ -1577,6 +1577,12 @@ public final class RuntimeCore {
     private struct RealtimeBrainPendingTurnKey: Hashable {
         let session: RealtimeBrainSessionIdentity
         let turnID: RealtimeBrainTurnID
+        let contextRevision: UInt64
+    }
+
+    private struct RealtimeBrainPendingUserInput {
+        let transcript: String
+        let event: RealtimeResidentBrainEvent
     }
 
     private struct RealtimeUtteranceCompletionKey: Hashable {
@@ -1613,6 +1619,27 @@ public final class RuntimeCore {
         var awaitsResumeAcousticAuthorization = false
         var completionCandidate:
             RealtimeUtteranceCompletionCandidate?
+        var responseAuthorizationToken: UUID? = nil
+    }
+
+    private struct RealtimeUtteranceSemanticFusionClaim {
+        let completionKey: RealtimeUtteranceCompletionKey
+        let token: UUID
+        let event: RealtimeResidentBrainEvent
+        let lease: ActiveBrainLease
+        let responseAuthorization:
+            RealtimeBrainResponseCreateAuthorization
+        let semanticInputKeys: [RealtimeBrainPendingTurnKey]
+        let responseInputKey: RealtimeBrainPendingTurnKey
+    }
+
+    private enum RealtimeBrainResponseCreateAuthorization {
+        case provider(
+            RealtimeBrainCreateResponseCommand,
+            UUID,
+            Set<RealtimeBrainTurnID>
+        )
+        case completed
     }
 
     private struct RealtimeUtterancePendingStart {
@@ -1896,7 +1923,11 @@ public final class RuntimeCore {
     private var realtimeBrainContextBridgeState:
         RealtimeBrainContextBridgeState?
     private var realtimeBrainPendingUserInputs:
-        [RealtimeBrainPendingTurnKey: String] = [:]
+        [RealtimeBrainPendingTurnKey: RealtimeBrainPendingUserInput] = [:]
+    private var realtimeUtteranceConsumedSemanticTurns:
+        Set<RealtimeBrainPendingTurnKey> = []
+    private var realtimeUtteranceTrackedSemanticTurns:
+        Set<RealtimeBrainPendingTurnKey> = []
     private var realtimeUtteranceCompletionState:
         RealtimeUtteranceCompletionState?
     private var realtimeUtterancePendingStart:
@@ -2412,6 +2443,12 @@ public final class RuntimeCore {
     private func resetRealtimeBrainRuntimeBridge() {
         realtimeBrainContextBridgeState = nil
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        realtimeUtteranceConsumedSemanticTurns.removeAll(
+            keepingCapacity: true
+        )
+        realtimeUtteranceTrackedSemanticTurns.removeAll(
+            keepingCapacity: true
+        )
         resetRealtimeUtteranceCompletionState()
         realtimeUtteranceAcousticAuthorization = nil
         realtimeUtteranceListeningAuthorization = nil
@@ -2511,6 +2548,94 @@ public final class RuntimeCore {
         }
     }
 
+    private func retireRealtimeUtteranceSemanticKeys(
+        _ keys: Set<RealtimeBrainPendingTurnKey>,
+        session: RealtimeBrainSessionIdentity,
+        contextRevision: UInt64,
+        afterCommittedTerminalEvent: Bool = false
+    ) {
+        guard !keys.isEmpty else { return }
+        guard realtimeBrainSessionGate.retireUserActivityTurns(
+            Set(keys.map { $0.turnID }),
+            session: session,
+            contextRevision: contextRevision,
+            afterCommittedTerminalEvent: afterCommittedTerminalEvent
+        ) else { return }
+        realtimeUtteranceConsumedSemanticTurns.formUnion(keys)
+        keys.forEach {
+            realtimeBrainPendingUserInputs.removeValue(forKey: $0)
+        }
+    }
+
+    private func retireRealtimeUtteranceSemanticTurns(
+        matching eventIdentity: RealtimeBrainEventIdentity
+    ) {
+        var keys: Set<RealtimeBrainPendingTurnKey> = []
+        var completionResetIdentity = eventIdentity
+        func insert(_ turnID: RealtimeBrainTurnID) {
+            keys.insert(RealtimeBrainPendingTurnKey(
+                session: eventIdentity.session,
+                turnID: turnID,
+                contextRevision: eventIdentity.contextRevision
+            ))
+        }
+        if let state = realtimeUtteranceCompletionState,
+           state.key.session == eventIdentity.session,
+           state.key.contextRevision == eventIdentity.contextRevision,
+           Self.realtimeUtteranceTurnMatches(
+                eventIdentity.turnID,
+                logicalTurnID: state.key.turnID,
+                sourceTurnIDs: state.sourceTurnIDs
+           ) {
+            insert(state.key.turnID)
+            state.sourceTurnIDs.forEach(insert)
+        }
+        if let pending = realtimeUtterancePendingStart,
+           pending.event.identity.session == eventIdentity.session,
+           pending.event.identity.contextRevision
+                == eventIdentity.contextRevision,
+           Self.realtimeUtteranceTurnMatches(
+                eventIdentity.turnID,
+                logicalTurnID: pending.event.identity.turnID,
+                sourceTurnIDs: pending.sourceTurnIDs
+           ) {
+            if let turnID = pending.event.identity.turnID {
+                insert(turnID)
+            }
+            pending.sourceTurnIDs.forEach(insert)
+        }
+        if let pending = realtimeUtterancePendingResume,
+           pending.key.session == eventIdentity.session,
+           pending.key.contextRevision == eventIdentity.contextRevision,
+           eventIdentity.turnID == nil
+                || eventIdentity.turnID == pending.key.turnID
+                || eventIdentity.turnID
+                    == pending.event.identity.turnID {
+            insert(pending.key.turnID)
+            if let turnID = pending.event.identity.turnID {
+                insert(turnID)
+            }
+            completionResetIdentity = RealtimeBrainEventIdentity(
+                session: pending.key.session,
+                turnID: pending.key.turnID,
+                responseID: nil,
+                contextRevision: pending.key.contextRevision
+            )
+        }
+        if keys.isEmpty, let turnID = eventIdentity.turnID {
+            insert(turnID)
+        }
+        retireRealtimeUtteranceSemanticKeys(
+            keys,
+            session: eventIdentity.session,
+            contextRevision: eventIdentity.contextRevision,
+            afterCommittedTerminalEvent: true
+        )
+        resetRealtimeUtteranceCompletionState(
+            matching: completionResetIdentity
+        )
+    }
+
     private static func realtimeUtteranceTurnMatches(
         _ turnID: RealtimeBrainTurnID?,
         logicalTurnID: RealtimeBrainTurnID?,
@@ -2547,6 +2672,27 @@ public final class RuntimeCore {
                 == identity.contextRevision
             && (pending.event.identity.turnID == finalTurnID
                 || pending.sourceTurnIDs.contains(finalTurnID))
+    }
+
+    private func realtimeUtteranceHasTrackingContext(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        if let state = realtimeUtteranceCompletionState,
+           state.key.session == identity.session,
+           state.key.contextRevision == identity.contextRevision {
+            return true
+        }
+        if let pendingResume = realtimeUtterancePendingResume,
+           pendingResume.key.session == identity.session,
+           pendingResume.key.contextRevision == identity.contextRevision {
+            return true
+        }
+        guard let pending = realtimeUtterancePendingStart else {
+            return false
+        }
+        return pending.event.identity.session == identity.session
+            && pending.event.identity.contextRevision
+                == identity.contextRevision
     }
 
     @MainActor
@@ -3029,6 +3175,13 @@ public final class RuntimeCore {
             turnID: turnID,
             contextRevision: event.identity.contextRevision
         )
+        realtimeUtteranceTrackedSemanticTurns.insert(
+            RealtimeBrainPendingTurnKey(
+                session: key.session,
+                turnID: turnID,
+                contextRevision: key.contextRevision
+            )
+        )
 
         switch event.kind {
         case .userSpeechStarted:
@@ -3068,6 +3221,14 @@ public final class RuntimeCore {
                         return
                     }
                 }
+                if state.phase == .completionCandidate,
+                   Self.realtimeUtteranceTurnMatches(
+                       turnID,
+                       logicalTurnID: state.key.turnID,
+                       sourceTurnIDs: state.sourceTurnIDs
+                   ) {
+                    return
+                }
             }
             guard claimRealtimeUtteranceAdmission(
                 for: event,
@@ -3083,6 +3244,36 @@ public final class RuntimeCore {
                     if receivedAtNanoseconds >= expiryAnchor,
                        receivedAtNanoseconds - expiryAnchor
                         >= Self.realtimeUtteranceCompletionWindowNanoseconds {
+                        var abandonedTurnIDs = pending.sourceTurnIDs
+                        if let pendingTurnID =
+                            pending.event.identity.turnID {
+                            abandonedTurnIDs.insert(pendingTurnID)
+                        }
+                        if let sourceTurnID =
+                            pending.sourceStartEvent?.identity.turnID {
+                            abandonedTurnIDs.insert(sourceTurnID)
+                        }
+                        if let state = realtimeUtteranceCompletionState,
+                           state.key.session == key.session,
+                           state.key.contextRevision
+                                == key.contextRevision {
+                            abandonedTurnIDs.remove(state.key.turnID)
+                            abandonedTurnIDs.subtract(
+                                state.sourceTurnIDs
+                            )
+                        }
+                        abandonedTurnIDs.remove(turnID)
+                        retireRealtimeUtteranceSemanticKeys(
+                            Set(abandonedTurnIDs.map {
+                                RealtimeBrainPendingTurnKey(
+                                    session: key.session,
+                                    turnID: $0,
+                                    contextRevision: key.contextRevision
+                                )
+                            }),
+                            session: key.session,
+                            contextRevision: key.contextRevision
+                        )
                         realtimeUtterancePendingStart =
                             RealtimeUtterancePendingStart(
                                 event: event,
@@ -3195,6 +3386,22 @@ public final class RuntimeCore {
         }
         let completedAt = DispatchTime.now().uptimeNanoseconds
         state.phase = .completionCandidate
+        if let pendingResume = realtimeUtterancePendingResume,
+           let pendingTurnID = pendingResume.event.identity.turnID,
+           !state.sourceTurnIDs.contains(pendingTurnID) {
+            let pendingKey = RealtimeBrainPendingTurnKey(
+                session: state.key.session,
+                turnID: pendingTurnID,
+                contextRevision: state.key.contextRevision
+            )
+            realtimeUtteranceConsumedSemanticTurns.insert(pendingKey)
+            realtimeBrainPendingUserInputs.removeValue(forKey: pendingKey)
+            _ = realtimeBrainSessionGate.retireUserActivityTurns(
+                [pendingTurnID],
+                session: state.key.session,
+                contextRevision: state.key.contextRevision
+            )
+        }
         realtimeUtterancePendingResume = nil
         state.completionCandidate = RealtimeUtteranceCompletionCandidate(
             stoppedEventSequence: state.stoppedEventSequence,
@@ -3208,6 +3415,114 @@ public final class RuntimeCore {
         #if DEBUG
         realtimeUtteranceCompletionCandidateCount &+= 1
         #endif
+        scheduleRealtimeUtteranceSemanticFusionIfReady()
+    }
+
+    @MainActor
+    private func claimRealtimeUtteranceSemanticFusion()
+        -> RealtimeUtteranceSemanticFusionClaim? {
+        guard var state = realtimeUtteranceCompletionState,
+              state.phase == .completionCandidate,
+              state.completionCandidate != nil,
+              state.responseAuthorizationToken == nil,
+              let lease = currentRealtimeBrainLease(
+                identity: state.key.session
+              ) else { return nil }
+        let semanticInputs: [(
+            key: RealtimeBrainPendingTurnKey,
+            input: RealtimeBrainPendingUserInput
+        )] = state.sourceTurnIDs.compactMap { turnID in
+            let key = RealtimeBrainPendingTurnKey(
+                session: state.key.session,
+                turnID: turnID,
+                contextRevision: state.key.contextRevision
+            )
+            guard let input = realtimeBrainPendingUserInputs[key] else {
+                return nil
+            }
+            return (key, input)
+        }.sorted { lhs, rhs in
+            lhs.input.event.sequence < rhs.input.event.sequence
+        }
+        guard let responseInput = semanticInputs.last else { return nil }
+        let transcript = semanticInputs
+            .map { $0.input.transcript }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let event = responseInput.input.event
+        guard !transcript.isEmpty,
+              event.identity.session == state.key.session,
+              event.identity.contextRevision == state.key.contextRevision,
+              event.identity.responseID == nil,
+              let eventTurnID = event.identity.turnID,
+              state.sourceTurnIDs.contains(eventTurnID),
+              realtimeBrainSessionGate.isCurrent(event.identity) else {
+            return nil
+        }
+        realtimeBrainPendingUserInputs[responseInput.key] =
+            RealtimeBrainPendingUserInput(
+                transcript: transcript,
+                event: event
+            )
+        guard let responseAuthorization =
+                authorizeRealtimeResidentBrainResponseIfEligible(
+                    for: event,
+                    sourceTurnIDs: state.sourceTurnIDs
+                ) else {
+            return nil
+        }
+        let token = UUID()
+        state.responseAuthorizationToken = token
+        realtimeUtteranceCompletionState = state
+        realtimeUtteranceConsumedSemanticTurns.formUnion(
+            state.sourceTurnIDs.map { turnID in
+                RealtimeBrainPendingTurnKey(
+                    session: state.key.session,
+                    turnID: turnID,
+                    contextRevision: state.key.contextRevision
+                )
+            }
+        )
+        return RealtimeUtteranceSemanticFusionClaim(
+            completionKey: state.key,
+            token: token,
+            event: event,
+            lease: lease,
+            responseAuthorization: responseAuthorization,
+            semanticInputKeys: semanticInputs.map { $0.key },
+            responseInputKey: responseInput.key
+        )
+    }
+
+    @MainActor
+    private func completeRealtimeUtteranceSemanticFusion(
+        _ claim: RealtimeUtteranceSemanticFusionClaim
+    ) async -> Bool {
+        let created = await performRealtimeResidentBrainResponseCreation(
+            claim.responseAuthorization,
+            for: claim.event,
+            lease: claim.lease
+        )
+        for key in claim.semanticInputKeys
+        where !created || key != claim.responseInputKey {
+            realtimeBrainPendingUserInputs.removeValue(forKey: key)
+        }
+        if let current = realtimeUtteranceCompletionState,
+           current.key == claim.completionKey,
+           current.responseAuthorizationToken == claim.token {
+            resetRealtimeUtteranceCompletionState()
+        }
+        return created
+    }
+
+    @MainActor
+    private func scheduleRealtimeUtteranceSemanticFusionIfReady() {
+        guard let claim = claimRealtimeUtteranceSemanticFusion() else {
+            return
+        }
+        Task { @MainActor in
+            _ = await self.completeRealtimeUtteranceSemanticFusion(claim)
+        }
     }
 
     private func resetRealtimeAcousticObservationState() {
@@ -3404,6 +3719,14 @@ public final class RuntimeCore {
             bridge.sourceRevision = realtimeSpeechContextSourceRevision
             bridge.currentUserInput = currentUserInput
             realtimeBrainContextBridgeState = bridge
+            realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+            realtimeUtteranceConsumedSemanticTurns.removeAll(
+                keepingCapacity: true
+            )
+            realtimeUtteranceTrackedSemanticTurns.removeAll(
+                keepingCapacity: true
+            )
+            resetRealtimeUtteranceCompletionState(matching: identity)
             return .success(nextRevision)
         }
     }
@@ -3436,6 +3759,13 @@ public final class RuntimeCore {
         resetRuntimeToolState(route: .realtimeResidentBrain)
         realtimeBrainGeneration = generation
         realtimeBrainToolResultSequence = 0
+        realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        realtimeUtteranceConsumedSemanticTurns.removeAll(
+            keepingCapacity: true
+        )
+        realtimeUtteranceTrackedSemanticTurns.removeAll(
+            keepingCapacity: true
+        )
         resetRealtimeUtteranceCompletionState()
         resetRealtimeUtteranceAcousticAuthorization()
         resetRealtimeAcousticObservationState()
@@ -3688,37 +4018,75 @@ public final class RuntimeCore {
     }
 
     @MainActor
-    private func createRealtimeResidentBrainResponseIfEligible(
+    private func authorizeRealtimeResidentBrainResponseIfEligible(
         for event: RealtimeResidentBrainEvent,
-        lease: ActiveBrainLease
-    ) async -> Bool {
+        sourceTurnIDs: Set<RealtimeBrainTurnID>? = nil
+    ) -> RealtimeBrainResponseCreateAuthorization? {
+        guard let turnID = event.identity.turnID else { return nil }
+        let authorizedSourceTurnIDs = sourceTurnIDs ?? [turnID]
         let command = RealtimeBrainCreateResponseCommand(
             identity: event.identity,
             sourceEventSequence: event.sequence
         )
-        let token: UUID
-        switch realtimeBrainSessionGate.beginResponseCreate(command) {
+        switch realtimeBrainSessionGate.beginResponseCreate(
+            command,
+            sourceTurnIDs: authorizedSourceTurnIDs
+        ) {
         case .accepted(let acceptedToken):
-            token = acceptedToken
+            return .provider(
+                command,
+                acceptedToken,
+                authorizedSourceTurnIDs
+            )
         case .droppedOverlap(let turnID):
             realtimeBrainPendingUserInputs.removeValue(
                 forKey: RealtimeBrainPendingTurnKey(
                     session: event.identity.session,
-                    turnID: turnID
+                    turnID: turnID,
+                    contextRevision: event.identity.contextRevision
                 )
             )
-            return true
+            return .completed
         case .alreadyAuthorized:
-            return true
+            return .completed
         case .invalid:
             if let turnID = event.identity.turnID {
                 realtimeBrainPendingUserInputs.removeValue(
                     forKey: RealtimeBrainPendingTurnKey(
                         session: event.identity.session,
-                        turnID: turnID
+                        turnID: turnID,
+                        contextRevision: event.identity.contextRevision
                     )
                 )
             }
+            return nil
+        }
+    }
+
+    @MainActor
+    private func performRealtimeResidentBrainResponseCreation(
+        _ authorization: RealtimeBrainResponseCreateAuthorization,
+        for event: RealtimeResidentBrainEvent,
+        lease: ActiveBrainLease
+    ) async -> Bool {
+        guard case .provider(
+            let command,
+            let token,
+            let sourceTurnIDs
+        ) = authorization else {
+            return true
+        }
+        guard activeBrainLeaseGate.isCurrent(lease),
+              realtimeBrainSessionGate.claimResponseCreateExecution(
+                token: token,
+                command: command,
+                sourceTurnIDs: sourceTurnIDs
+              ) else {
+            _ = realtimeBrainSessionGate.finishResponseCreate(
+                token: token,
+                command: command,
+                succeeded: false
+            )
             return false
         }
         do {
@@ -3751,6 +4119,24 @@ public final class RuntimeCore {
             return true
         }
         return true
+    }
+
+    @MainActor
+    private func createRealtimeResidentBrainResponseIfEligible(
+        for event: RealtimeResidentBrainEvent,
+        lease: ActiveBrainLease
+    ) async -> Bool {
+        guard let authorization =
+                authorizeRealtimeResidentBrainResponseIfEligible(
+                    for: event
+                ) else {
+            return false
+        }
+        return await performRealtimeResidentBrainResponseCreation(
+            authorization,
+            for: event,
+            lease: lease
+        )
     }
 
     @MainActor
@@ -4186,6 +4572,20 @@ public final class RuntimeCore {
         _ identity: RealtimeBrainEventIdentity
     ) -> Bool {
         realtimeUtteranceCompletionTracksTranscriptFinal(identity)
+    }
+
+    @MainActor
+    func realtimePendingUserInputForTesting(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> String? {
+        guard let turnID = identity.turnID else { return nil }
+        return realtimeBrainPendingUserInputs[
+            RealtimeBrainPendingTurnKey(
+                session: identity.session,
+                turnID: turnID,
+                contextRevision: identity.contextRevision
+            )
+        ]?.transcript
     }
     #endif
 
@@ -4628,20 +5028,54 @@ public final class RuntimeCore {
             )
             return disposition
         case .userTranscriptFinal(let transcript):
-            if let turnID = event.identity.turnID {
-                let key = RealtimeBrainPendingTurnKey(
-                    session: event.identity.session,
-                    turnID: turnID
-                )
-                if realtimeBrainPendingUserInputs[key] == nil {
-                    realtimeBrainPendingUserInputs[key] = transcript
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                }
+            guard let turnID = event.identity.turnID else {
+                return .rejectedInvalidIdentity
+            }
+            let key = RealtimeBrainPendingTurnKey(
+                session: event.identity.session,
+                turnID: turnID,
+                contextRevision: event.identity.contextRevision
+            )
+            let input = RealtimeBrainPendingUserInput(
+                transcript: transcript.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ),
+                event: event
+            )
+            if realtimeUtteranceConsumedSemanticTurns.contains(key) {
+                return disposition
             }
             if realtimeUtteranceCompletionTracksTranscriptFinal(
                 event.identity
             ) {
+                if realtimeBrainPendingUserInputs[key] == nil {
+                    realtimeBrainPendingUserInputs[key] = input
+                }
+                if let claim = claimRealtimeUtteranceSemanticFusion() {
+                    return await completeRealtimeUtteranceSemanticFusion(
+                        claim
+                    ) ? disposition : .rejectedStale
+                }
                 return disposition
+            }
+            if realtimeUtteranceTrackedSemanticTurns.contains(key) {
+                retireRealtimeUtteranceSemanticKeys(
+                    [key],
+                    session: key.session,
+                    contextRevision: key.contextRevision
+                )
+                return .rejectedStale
+            }
+            if realtimeUtteranceHasTrackingContext(event.identity) {
+                retireRealtimeUtteranceSemanticKeys(
+                    [key],
+                    session: key.session,
+                    contextRevision: key.contextRevision
+                )
+                return .rejectedStale
+            }
+            if realtimeBrainPendingUserInputs[key] == nil {
+                realtimeBrainPendingUserInputs[key] = input
             }
             resetRealtimeUtteranceCompletionState(
                 matching: event.identity
@@ -4705,10 +5139,9 @@ public final class RuntimeCore {
             return disposition
         case .error:
             resetRuntimeToolState(route: .realtimeResidentBrain)
-            resetRealtimeUtteranceCompletionState(
+            retireRealtimeUtteranceSemanticTurns(
                 matching: event.identity
             )
-            removeRealtimePendingTurn(for: event.identity)
             return disposition
         case .cancelled:
             resetRuntimeToolState(route: .realtimeResidentBrain)
@@ -4717,7 +5150,7 @@ public final class RuntimeCore {
                     matching: event.identity.session
                 )
             } else {
-                resetRealtimeUtteranceCompletionState(
+                retireRealtimeUtteranceSemanticTurns(
                     matching: event.identity
                 )
             }
@@ -4725,8 +5158,12 @@ public final class RuntimeCore {
                 realtimeBrainPendingUserInputs.removeAll(
                     keepingCapacity: true
                 )
-            } else {
-                removeRealtimePendingTurn(for: event.identity)
+                realtimeUtteranceConsumedSemanticTurns.removeAll(
+                    keepingCapacity: true
+                )
+                realtimeUtteranceTrackedSemanticTurns.removeAll(
+                    keepingCapacity: true
+                )
             }
             return disposition
         case .sessionClosed:
@@ -4738,6 +5175,12 @@ public final class RuntimeCore {
                 matching: event.identity.session
             )
             realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+            realtimeUtteranceConsumedSemanticTurns.removeAll(
+                keepingCapacity: true
+            )
+            realtimeUtteranceTrackedSemanticTurns.removeAll(
+                keepingCapacity: true
+            )
         default:
             return disposition
         }
@@ -4771,18 +5214,6 @@ public final class RuntimeCore {
             resetRealtimeBrainRuntimeBridge()
         }
         return disposition
-    }
-
-    private func removeRealtimePendingTurn(
-        for identity: RealtimeBrainEventIdentity
-    ) {
-        guard let turnID = identity.turnID else { return }
-        realtimeBrainPendingUserInputs.removeValue(
-            forKey: RealtimeBrainPendingTurnKey(
-                session: identity.session,
-                turnID: turnID
-            )
-        )
     }
 
     private func recordRealtimeInterruptionProposalDecision(
@@ -4838,7 +5269,8 @@ public final class RuntimeCore {
               let userInput = realtimeBrainPendingUserInputs.removeValue(
                 forKey: RealtimeBrainPendingTurnKey(
                     session: identity,
-                    turnID: turnID
+                    turnID: turnID,
+                    contextRevision: event.identity.contextRevision
                 )
               ) else {
             return
@@ -4847,7 +5279,7 @@ public final class RuntimeCore {
             lease: lease,
             turnID: turnID.rawValue.uuidString.lowercased(),
             responseID: responseID.rawValue.uuidString.lowercased(),
-            userInputReference: userInput,
+            userInputReference: userInput.transcript,
             residentResponseText: output.canonicalText,
             completionState: .semanticCompleted,
             contextRevision: event.identity.contextRevision,
@@ -4861,7 +5293,9 @@ public final class RuntimeCore {
             return
         }
 
-        let relationshipControl = relationshipUserControl(for: userInput)
+        let relationshipControl = relationshipUserControl(
+            for: userInput.transcript
+        )
         if relationshipControl != nil {
             _ = applyRelationshipUserControl(relationshipControl)
         } else {
@@ -4877,10 +5311,12 @@ public final class RuntimeCore {
                 }
             )
         }
-        let memoryControl = narrativeMemoryUserControl(for: userInput)
+        let memoryControl = narrativeMemoryUserControl(
+            for: userInput.transcript
+        )
         _ = applyNarrativeMemoryUserControl(
             memoryControl,
-            input: userInput,
+            input: userInput.transcript,
             residentID: session.residentID
         )
         _ = evaluateNarrativeMemoryCandidates(
@@ -4914,7 +5350,7 @@ public final class RuntimeCore {
         if realtimeBrainContextBridgeState?.identity == identity {
             _ = await refreshRealtimeResidentBrainContext(
                 identity: identity,
-                currentUserInput: userInput
+                currentUserInput: userInput.transcript
             )
         }
     }
@@ -4988,6 +5424,12 @@ public final class RuntimeCore {
             realtimeBrainContextBridgeState = bridge
         }
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
+        realtimeUtteranceConsumedSemanticTurns.removeAll(
+            keepingCapacity: true
+        )
+        realtimeUtteranceTrackedSemanticTurns.removeAll(
+            keepingCapacity: true
+        )
         resetRealtimeUtteranceCompletionState(matching: identity)
         resetRealtimeUtteranceAcousticAuthorization(matching: identity)
         resetRealtimeAcousticObservationState()

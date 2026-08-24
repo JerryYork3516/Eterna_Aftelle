@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.4.2 Freeze
+# Realtime Resident Brain Architecture · R0–R8.4.3 Freeze
 
-> 状态：`R0–R8.4.2 PASS / FROZEN`；下一节点只允许进入 R8.4.3 Semantic Fusion
+> 状态：`R0–R8.4.3 PASS / FROZEN`；下一节点只允许进入 R8.4.4 Backchannel & Natural Response
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -387,7 +387,7 @@ R8.3.2 Confirmed Interrupt / Cancel / Playback Clear — PASS / FROZEN
 R8.3.3 User Barge-in Latency & Stale Audio Closure — PASS / FROZEN
 R8.4.1 Double-talk Acoustic Determination — PASS / FROZEN
 R8.4.2 Pause vs Utterance Complete — PASS / FROZEN
-R8.4.3 Semantic Fusion
+R8.4.3 Semantic Fusion — PASS / FROZEN
 R8.4.4 Backchannel
 R8.5 Interruption Final Verification
 R9 Cascaded Fallback + Regression
@@ -458,11 +458,11 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已冻结 provider-neutral temporal completion evidence，下一节点只允许进入 R8.4.3。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已冻结 provider-neutral temporal completion evidence，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，下一节点只允许进入 R8.4.4。
 
 ---
 
-## R0–R8.4.2 Freeze Result
+## R0–R8.4.3 Freeze Result
 
 ```text
 R0 = PASS / FROZEN
@@ -482,6 +482,7 @@ R8.3.2 = PASS / FROZEN
 R8.3.3 = PASS / FROZEN
 R8.4.1 = PASS / FROZEN
 R8.4.2 = PASS / FROZEN
+R8.4.3 = PASS / FROZEN
 ```
 
 R8.3.1 没有修改 AEC / classifier / source gate / eligibility 的生产阈值或 decision authority；唯一生产目录改动是 `RuntimeCore` 的 DEBUG-only interruption evidence snapshot，用于证明 acoustic evidence 已被原子接收且 semantic evidence 仍为空。
@@ -524,7 +525,15 @@ The repaired production matrix added continuous Listening speech, short-pause/re
 
 R8.4.2 repair regressions retained R8.4.1 at 163 checks with 11/11 production double-talk positives and every negative side effect 0; R8.2.3 at 126 checks with 3840 resident-only stress frames and every safety metric 0; R8.3.1/R8.3.2/R8.3.3 at 29/62/68 checks; R8.2.2 at 76 checks; R7 Host/Input/Output at 131/111/163 checks; AEC at 992 checks; Runtime contract/Qwen/Tool at 291/173/143 checks. Real Qwen, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN / HUMAN_GATE.
 
-Next allowed node: R8.4.3 Semantic Fusion
+R8.4.3 keeps semantic turn-taking ownership in RuntimeCore. A response authorization requires one current logical utterance with production acoustic admission, an R8.4.2 temporal completion candidate and at least one accepted, tracked, non-empty final transcript belonging to the same logical/source utterance set. Final-before-completion and completion-before-final are symmetric; multiple final segments across Provider wire source turns are ordered by accepted event sequence and aggregated into one canonical input. Provider activity or transcript alone cannot authorize a response, and the Provider/Host never decides that the user turn is complete.
+
+Before asynchronous Provider dispatch, Runtime issues a one-shot authorization token and the provider-neutral Gate atomically revalidates the exact complete source-turn set. Successful claim consumes all aliases once. Session, lease, route epoch, generation, context revision, logical turn, source turns, event identity and token are fenced; terminal/error/cancel, Stop/restart, stale generation, old timers and duplicate or late events fail closed. Generic user-activity cleanup cannot retire an awaiting or active resident response, while committed terminal cleanup retires the exact semantic aliases and Gate state without reopening old work.
+
+R8.4.3 verification: independent 13 cases / 306 checks. Six valid completed semantic turns produced exactly six response creates; final-before-completion, completion-before-final and cross-source aggregation each produced one authorized response. Completion-only, semantic-only, Provider-only, empty-final, wrong/stale-generation and duplicate paths produced 0 response creates. Extra Provider interrupt, Playback clear and generation advance were all 0. Runtime contract passed 11 cases / 314 checks; Qwen passed 21/173 with zero network; R8.4.2 Listening/full passed 139/390; R8.4.1 passed 163; R8.3.1/R8.3.2/R8.3.3 passed 29/62/68; R8.2.3 passed 126 with 3840 resident-only frames and every safety metric 0; R8.2.2 passed 76; R7 Host/Input/Output passed 131/111/163; Tool passed 143. Final A7 was 31 suites / 34 entrypoints / 6251 assertions, with macOS clean build and all guards PASS. Three independent final reviews found P0=0 / P1=0.
+
+R8.4.3 Human Gate: real Qwen timing/order, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN / HUMAN_GATE.
+
+Next allowed node: R8.4.4 Backchannel & Natural Response
 
 ----
 
@@ -581,3 +590,11 @@ R8.4.2 在 RuntimeCore 内复用正式 provider-neutral speech activity 事件�
 tracked transcript final 只作为 temporal evidence 缓存，不等同最终 turn-taking decision，也不会调用 `createResponse`；无 activity tracking 的 frozen legacy final-only contract 继续保持兼容。本节点没有调整 acoustic threshold、source gate、500 ms tail、interruption authority、DR 或 Store schema，也没有进入 semantic fusion 或 backchannel。
 
 独立自动化为 1 case / 251 checks：short pause 5 cases / false completion 0；true end 11 cases / completion candidate 11；duplicate、resident-only false、stale-generation 与 old-timer resurrection 均为 0。矩阵覆盖 delayed authorization、Provider-first、source-gate close/reopen、pre-stop in-flight PCM、false-start/false-stop replacement、重复短停顿、double-talk 与 Stop/restart。double-talk 两类时序从 production AEC/source gate/Input Bridge 进入；resident-only、residual echo 与 playback tail 不产生 completion。response create、Provider interrupt/cancel、Playback clear 与额外 generation advance 全为 0。真实 Qwen 与真实设备继续为 `NOT_RUN / HUMAN_GATE`。
+
+### R8.4.3 Semantic Turn-taking Fusion
+
+R8.4.3 仍由 RuntimeCore 独占最终 turn-taking 与 response authorization。合法 response 必须同时具备当前 generation 的 production acoustic admission、同一 logical utterance 的 R8.4.2 completion candidate，以及属于该 logical/source utterance 集合的至少一条 tracked formal non-empty final transcript。final 先到或 completion 先到均可；一个 logical utterance 横跨多个 Provider wire source turn 时，所有 accepted final segment 按 event sequence 聚合为一份 canonical input。Provider activity/transcript 本身、Host、Qwen Adapter 均不能直接决定用户已说完或触发 response。
+
+Runtime 在 async Provider dispatch 前签发一次性 authorization token；provider-neutral Gate 原子重验完整 source-turn set，并在成功 claim 时消费全部 alias。Session / lease / route epoch / generation / context revision / logical turn / source turn / exact event / token 任一错位均 fail closed。terminal/error/cancel、Stop/restart、旧 generation、旧 timer、duplicate 与 late event 不得复活旧用户 turn；generic cleanup 也不得退休 awaiting/active resident response。冻结的 legacy final-only contract 只保持未被 formal activity tracking 的兼容路径，任何 tracked formal utterance 都必须满足本节点完整 fusion。
+
+独立自动化为 13 cases / 306 checks：6 个合法 completed semantic turns 产生 response create 6；final-before-completion 1、completion-before-final 1、cross-source aggregation 1；completion-only、semantic-only、Provider-only、empty final、wrong/stale generation 与 duplicate create 全为 0，额外 interrupt、Playback clear、generation advance 全为 0。R8.4.2 Listening/full、R8.4.1、R8.3、R8.2.3、R8.2.2、Runtime contract、Qwen、R7 Host/Input/Output 与 Tool regressions 全部 PASS。真实 Qwen timing/order 与真实设备继续为 `NOT_RUN / HUMAN_GATE`；未进入 backchannel。

@@ -582,6 +582,22 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r842StalePCMAdmissions = 0
     private static var r842OldGenerationCompletions = 0
 
+    private static var r843FinalBeforeCompletionCases = 0
+    private static var r843CompletionBeforeFinalCases = 0
+    private static var r843CrossSourceTurnCases = 0
+    private static var r843ValidCompletedSemanticTurns = 0
+    private static var r843ValidTurnResponseCreates = 0
+    private static var r843CompletionOnlyResponseCreates = 0
+    private static var r843SemanticOnlyResponseCreates = 0
+    private static var r843ProviderOnlyResponseCreates = 0
+    private static var r843EmptyFinalResponseCreates = 0
+    private static var r843WrongIdentityResponseCreates = 0
+    private static var r843StaleGenerationResponseCreates = 0
+    private static var r843DuplicateResponseCreates = 0
+    private static var r843ExtraInterrupts = 0
+    private static var r843ExtraPlaybackClears = 0
+    private static var r843ExtraGenerationAdvances = 0
+
     static func main() async throws {
         guard CommandLine.arguments.count == 2
                 || (CommandLine.arguments.count == 3
@@ -591,7 +607,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r833-latency-stale-only",
                         "--r841-double-talk-only",
                         "--r842-listening-only",
-                        "--r842-turn-completion-only"
+                        "--r842-turn-completion-only",
+                        "--r843-semantic-fusion-only"
                     ].contains(CommandLine.arguments[2])) else {
             fatalError("fixture path required")
         }
@@ -600,6 +617,16 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--r843-semantic-fusion-only" {
+                try await testR843SemanticTurnTakingFusion(
+                    fixture: fixture
+                )
+                print("realtime_semantic_turn_taking_cases=\(cases)")
+                print("realtime_semantic_turn_taking_checks=\(checks)")
+                printR843Metrics()
+                print("r843_real_qwen_and_devices=NOT_RUN_HUMAN_GATE")
+                return
+            }
             if CommandLine.arguments[2] == "--r842-listening-only" {
                 cases += 1
                 try await testR842NormalListeningAdmission(
@@ -1457,6 +1484,1179 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await close(stack)
     }
 
+    private static func testR843SemanticTurnTakingFusion(
+        fixture: Data
+    ) async throws {
+        try await testR843FinalBeforeCompletion(fixture: fixture)
+        cases += 1
+        try await testR843CompletionBeforeFinal(fixture: fixture)
+        cases += 1
+        try await testR843CancelledPendingResume(fixture: fixture)
+        cases += 1
+        try await testR843DuplicateStartAfterCompletion(fixture: fixture)
+        cases += 1
+        try await testR843CrossSourceTurn(fixture: fixture)
+        cases += 1
+        try await testR843CompletionOnly(fixture: fixture)
+        cases += 1
+        try await testR843SemanticOnly(fixture: fixture)
+        cases += 1
+        try await testR843ProviderOnly(fixture: fixture)
+        cases += 1
+        try await testR843DuplicateEvidence(fixture: fixture)
+        cases += 1
+        try await testR843EmptySemantic(fixture: fixture)
+        cases += 1
+        try await testR843WrongIdentity(fixture: fixture)
+        cases += 1
+        try await testR843GenerationFence(fixture: fixture)
+        cases += 1
+        try await testR843InterruptionRegression(fixture: fixture)
+        cases += 1
+
+        expect(r843FinalBeforeCompletionCases == 1,
+               "R8.4.3 covers final before completion")
+        expect(r843CompletionBeforeFinalCases == 1,
+               "R8.4.3 covers completion before final")
+        expect(r843CrossSourceTurnCases == 1,
+               "R8.4.3 covers one cross-source logical utterance")
+        expect(r843ValidTurnResponseCreates
+                == r843ValidCompletedSemanticTurns,
+               "R8.4.3 creates exactly one response per valid fused turn")
+        expect(r843CompletionOnlyResponseCreates == 0,
+               "R8.4.3 completion alone cannot create a response")
+        expect(r843SemanticOnlyResponseCreates == 0,
+               "R8.4.3 tracked semantic final alone cannot respond")
+        expect(r843ProviderOnlyResponseCreates == 0,
+               "R8.4.3 Provider-only activity has no response authority")
+        expect(r843EmptyFinalResponseCreates == 0,
+               "R8.4.3 empty semantic finals fail closed")
+        expect(r843WrongIdentityResponseCreates == 0,
+               "R8.4.3 wrong identities cannot authorize a response")
+        expect(r843StaleGenerationResponseCreates == 0,
+               "R8.4.3 stale generation evidence cannot authorize N+1")
+        expect(r843DuplicateResponseCreates == 0,
+               "R8.4.3 duplicate evidence cannot duplicate responses")
+        expect(r843ExtraInterrupts == 0
+                && r843ExtraPlaybackClears == 0
+                && r843ExtraGenerationAdvances == 0,
+               "R8.4.3 does not expand interruption authority")
+    }
+
+    private static func testR843FinalBeforeCompletion(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        let generation = stack.session.generation
+        let lease = stack.runtime.activeBrainLeaseForTesting()
+
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 47_000,
+            label: "final-before-completion"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userTranscriptPartial("semantic opening"),
+            label: "final-before-completion partial"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userTranscriptFinal("semantic final"),
+            label: "final-before-completion final"
+        )
+        expect(await stack.provider.createCount() == createBaseline,
+               "R8.4.3 final cannot answer before completion")
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 5,
+            kind: .userSpeechStopped,
+            label: "final-before-completion stop"
+        )
+        await waitForR843Response(
+            stack: stack,
+            createBaseline: createBaseline,
+            candidateBaseline: candidateBaseline,
+            expectedTurnID: turnID,
+            expectedSemanticSequence: 4,
+            label: "final-before-completion fusion"
+        )
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == generation
+                && stack.runtime.activeBrainLeaseForTesting() == lease,
+               "R8.4.3 final-first fusion preserves generation and lease")
+        r843FinalBeforeCompletionCases += 1
+        r843ValidCompletedSemanticTurns += 1
+        r843ValidTurnResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843CompletionBeforeFinal(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 47_100,
+            label: "completion-before-final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userSpeechStopped,
+            label: "completion-before-final stop"
+        )
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: candidateBaseline + 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: 3,
+            label: "R8.4.3 completion-before-final candidate"
+        )
+        expect(await stack.provider.createCount() == createBaseline,
+               "R8.4.3 completion cannot answer without semantic final")
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userTranscriptFinal("late semantic final"),
+            label: "completion-before-final final"
+        )
+        await waitForR843Response(
+            stack: stack,
+            createBaseline: createBaseline,
+            candidateBaseline: candidateBaseline,
+            expectedTurnID: turnID,
+            expectedSemanticSequence: 4,
+            label: "completion-before-final fusion"
+        )
+        r843CompletionBeforeFinalCases += 1
+        r843ValidCompletedSemanticTurns += 1
+        r843ValidTurnResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843CrossSourceTurn(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let logicalTurnID = RealtimeBrainTurnID()
+        let reboundSourceTurnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: logicalTurnID,
+            sequence: 2,
+            seed: 47_200,
+            label: "cross-source first segment"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: logicalTurnID,
+            sequence: 3,
+            kind: .userTranscriptFinal("first source segment"),
+            label: "cross-source first final"
+        )
+        expect(await stack.provider.createCount() == createBaseline,
+               "R8.4.3 first segment final cannot answer early")
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: logicalTurnID,
+            sequence: 4,
+            kind: .userSpeechStopped,
+            label: "cross-source short stop"
+        )
+        try? await Task.sleep(for: .milliseconds(140))
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: 47_201, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "R8.4.3 cross-source continuation"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: reboundSourceTurnID,
+            sequence: 5,
+            kind: .userSpeechStarted,
+            label: "cross-source resumed start"
+        )
+        await waitUntilOnMainActor("R8.4.3 cross-source logical rebound") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.turnID == logicalTurnID
+                && snapshot.sourceTurnID == reboundSourceTurnID
+        }
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: reboundSourceTurnID,
+            sequence: 6,
+            kind: .userTranscriptFinal("second source segment"),
+            label: "cross-source second final"
+        )
+        let firstIdentity = r843EventIdentity(
+            session: stack.session,
+            turnID: logicalTurnID,
+            contextRevision: 1
+        )
+        let secondIdentity = r843EventIdentity(
+            session: stack.session,
+            turnID: reboundSourceTurnID,
+            contextRevision: 1
+        )
+        expect(stack.runtime
+                .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+                    firstIdentity
+                )
+                && stack.runtime
+                    .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+                        secondIdentity
+                    ),
+               "R8.4.3 both source finals belong to one logical utterance")
+        await waitBeyondR842CompletionWindow()
+        let resumed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(resumed.phase == .speaking
+                && resumed.completionCandidateCount == candidateBaseline,
+               "R8.4.3 cross-source speech does not complete during resume")
+        expect(await stack.provider.createCount() == createBaseline,
+               "R8.4.3 cross-source finals cannot answer before true end")
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: reboundSourceTurnID,
+            sequence: 7,
+            kind: .userSpeechStopped,
+            label: "cross-source true stop"
+        )
+        await waitForR843Response(
+            stack: stack,
+            createBaseline: createBaseline,
+            candidateBaseline: candidateBaseline,
+            expectedTurnID: reboundSourceTurnID,
+            expectedSemanticSequence: 6,
+            label: "cross-source fusion"
+        )
+        expect(stack.runtime.realtimePendingUserInputForTesting(
+            secondIdentity
+        ) == "first source segment second source segment",
+               "R8.4.3 preserves every accepted source segment in canonical input")
+        r843CrossSourceTurnCases += 1
+        r843ValidCompletedSemanticTurns += 1
+        r843ValidTurnResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843CancelledPendingResume(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let logicalTurnID = RealtimeBrainTurnID()
+        let pendingResumeTurnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: logicalTurnID,
+            sequence: 2,
+            seed: 47_250,
+            label: "cancelled-pending-resume base"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: logicalTurnID,
+            sequence: 3,
+            kind: .userSpeechStopped,
+            label: "cancelled-pending-resume stop"
+        )
+        await waitUntilOnMainActor("R8.4.3 pending-resume pause") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .candidatePause
+                && snapshot.turnID == logicalTurnID
+        }
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: pendingResumeTurnID,
+            sequence: 4,
+            kind: .userSpeechStarted,
+            label: "cancelled-pending-resume start"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: pendingResumeTurnID,
+            sequence: 5,
+            kind: .cancelled(.runtimeDecision),
+            label: "cancelled-pending-resume terminal"
+        )
+        await waitUntilOnMainActor("R8.4.3 pending-resume reset") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .idle
+        }
+        await waitBeyondR842CompletionWindow()
+        let snapshot = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(snapshot.phase == .idle
+                && snapshot.completionCandidateCount == candidateBaseline,
+               "R8.4.3 cancelled pending resume cannot resurrect its old timer")
+        expect(await stack.provider.createCount() == createBaseline,
+               "R8.4.3 cancelled pending resume creates no response")
+        let interruptCount = await stack.provider.interruptCount()
+        let cancelCount = await stack.provider.cancelCount()
+        expect(interruptCount == 0 && cancelCount == 0,
+               "R8.4.3 turn terminal invokes no Provider interruption API")
+        expect(stack.outputPlayer.clearScheduledPlaybackCount == 0,
+               "R8.4.3 turn terminal does not clear Playback")
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                != stack.session.generation &+ 1,
+               "R8.4.3 turn terminal cannot advance the formal generation")
+        try await close(stack)
+    }
+
+    private static func testR843DuplicateStartAfterCompletion(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let unrelatedTurnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 47_260,
+            label: "duplicate-start completion base"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userSpeechStopped,
+            label: "duplicate-start completion stop"
+        )
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: candidateBaseline + 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: 3,
+            label: "R8.4.3 duplicate-start completion candidate"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userSpeechStarted,
+            label: "duplicate start after completion"
+        )
+        await waitBeyondR842CompletionWindow()
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: unrelatedTurnID,
+            sequence: 5,
+            kind: .userSpeechStarted,
+            label: "unrelated start after duplicate expiry"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 6,
+            kind: .userTranscriptFinal("late valid semantic final"),
+            label: "late final after duplicate start"
+        )
+        await waitForR843Response(
+            stack: stack,
+            createBaseline: createBaseline,
+            candidateBaseline: candidateBaseline,
+            expectedTurnID: turnID,
+            expectedSemanticSequence: 6,
+            label: "duplicate-start late-final fusion"
+        )
+        r843ValidCompletedSemanticTurns += 1
+        r843ValidTurnResponseCreates += await stack.provider.createCount()
+            - createBaseline
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843CompletionOnly(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 47_300,
+            label: "completion-only"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userSpeechStopped,
+            label: "completion-only stop"
+        )
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: candidateBaseline + 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: 3,
+            label: "R8.4.3 completion-only candidate"
+        )
+        r843CompletionOnlyResponseCreates +=
+            await stack.provider.createCount() - createBaseline
+        expect(r843CompletionOnlyResponseCreates == 0,
+               "R8.4.3 completion-only case stays response-free")
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843SemanticOnly(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 47_400,
+            label: "semantic-only"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userTranscriptFinal("tracked semantic only"),
+            label: "semantic-only final"
+        )
+        await waitBeyondR842CompletionWindow()
+        let snapshot = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r843SemanticOnlyResponseCreates +=
+            await stack.provider.createCount() - createBaseline
+        expect(snapshot.phase == .speaking
+                && snapshot.completionCandidateCount == candidateBaseline
+                && r843SemanticOnlyResponseCreates == 0,
+               "R8.4.3 tracked final without completion cannot respond")
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843ProviderOnly(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 2,
+            kind: .userSpeechStarted,
+            label: "Provider-only start"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userSpeechStopped,
+            label: "Provider-only stop"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userTranscriptFinal("Provider-only final"),
+            label: "Provider-only final"
+        )
+        await waitBeyondR842CompletionWindow()
+        let snapshot = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r843ProviderOnlyResponseCreates +=
+            await stack.provider.createCount() - createBaseline
+        expect(snapshot.phase == .idle
+                && snapshot.completionCandidateCount == 0
+                && r843ProviderOnlyResponseCreates == 0,
+               "R8.4.3 Provider-only evidence cannot create a user turn")
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843DuplicateEvidence(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 47_500,
+            label: "duplicate evidence"
+        )
+        for sequence in UInt64(3) ... 4 {
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: sequence,
+                kind: .userTranscriptFinal("duplicate semantic final"),
+                label: "duplicate final \(sequence)"
+            )
+        }
+        for sequence in UInt64(5) ... 6 {
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: sequence,
+                kind: .userSpeechStopped,
+                label: "duplicate stop \(sequence)"
+            )
+        }
+        await waitForR843Response(
+            stack: stack,
+            createBaseline: createBaseline,
+            candidateBaseline: candidateBaseline,
+            expectedTurnID: turnID,
+            expectedSemanticSequence: 3,
+            label: "duplicate fusion"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 7,
+            kind: .userTranscriptFinal("late duplicate final"),
+            label: "late duplicate final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 8,
+            kind: .userSpeechStopped,
+            label: "late duplicate stop"
+        )
+        try? await Task.sleep(for: .milliseconds(80))
+        let createDelta = await stack.provider.createCount() - createBaseline
+        r843DuplicateResponseCreates += max(0, createDelta - 1)
+        r843ValidCompletedSemanticTurns += 1
+        r843ValidTurnResponseCreates += createDelta
+        expect(createDelta == 1,
+               "R8.4.3 duplicate evidence authorizes exactly once")
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR843EmptySemantic(
+        fixture: Data
+    ) async throws {
+        let finals = ["", "  \n\t  "]
+        for (index, transcript) in finals.enumerated() {
+            let stack = try await makeControllerStack(
+                fixture: fixture,
+                startsResidentPlayback: false
+            )
+            let turnID = RealtimeBrainTurnID()
+            let createBaseline = await stack.provider.createCount()
+            let candidateBaseline = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+                .completionCandidateCount
+            try await admitR843ListeningTurn(
+                stack: stack,
+                sourceTurnID: turnID,
+                sequence: 2,
+                seed: UInt32(47_600 + index),
+                label: "empty semantic \(index)"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 3,
+                kind: .userTranscriptFinal(transcript),
+                label: "empty final \(index)"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 4,
+                kind: .userSpeechStopped,
+                label: "empty semantic stop \(index)"
+            )
+            await waitForR842Completion(
+                runtime: stack.runtime,
+                expectedCount: candidateBaseline + 1,
+                expectedSession: stack.session,
+                expectedTurn: turnID,
+                expectedStoppedSequence: 4,
+                label: "R8.4.3 empty semantic \(index)"
+            )
+            r843EmptyFinalResponseCreates +=
+                await stack.provider.createCount() - createBaseline
+            expect(await stack.provider.createCount() == createBaseline,
+                   "R8.4.3 empty final \(index) cannot authorize")
+            await assertR843NoInterruptionSideEffects(
+                stack,
+                expectedGeneration: stack.session.generation
+            )
+            try await close(stack)
+        }
+    }
+
+    private static func testR843WrongIdentity(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let unknownTurnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        try await admitR843ListeningTurn(
+            stack: stack,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 47_700,
+            label: "wrong identity control"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            responseID: RealtimeBrainResponseID(),
+            sequence: 3,
+            kind: .userTranscriptFinal("wrong response identity"),
+            label: "wrong response identity final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            contextRevision: 2,
+            sequence: 4,
+            kind: .userTranscriptFinal("wrong context"),
+            label: "wrong context final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: unknownTurnID,
+            sequence: 5,
+            kind: .userTranscriptFinal("unknown source"),
+            label: "unknown source final"
+        )
+        let futureSession = RealtimeBrainSessionIdentity(
+            residentID: stack.session.residentID,
+            runtimeSessionID: stack.session.runtimeSessionID,
+            brainLeaseID: stack.session.brainLeaseID,
+            routeEpoch: stack.session.routeEpoch,
+            generation: stack.session.generation + 1
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: futureSession,
+            turnID: turnID,
+            sequence: 1,
+            kind: .userTranscriptFinal("wrong generation"),
+            label: "wrong generation final"
+        )
+        try? await Task.sleep(for: .milliseconds(40))
+        expect(await stack.provider.createCount() == createBaseline,
+               "R8.4.3 wrong context/source/generation create nothing")
+
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 6,
+            kind: .userTranscriptFinal("valid identity control"),
+            label: "valid identity control final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 7,
+            kind: .userSpeechStopped,
+            label: "valid identity control stop"
+        )
+        await waitForR843Response(
+            stack: stack,
+            createBaseline: createBaseline,
+            candidateBaseline: candidateBaseline,
+            expectedTurnID: turnID,
+            expectedSemanticSequence: 6,
+            label: "wrong identity valid control"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 8,
+            kind: .userTranscriptFinal("stale logical turn"),
+            label: "stale logical final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 9,
+            kind: .userSpeechStopped,
+            label: "stale logical stop"
+        )
+        try? await Task.sleep(for: .milliseconds(40))
+        let nextSession = await restartR843Route(
+            stack: stack,
+            label: "wrong identity old Session"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 10,
+            kind: .userTranscriptFinal("old Session final"),
+            label: "old Session final"
+        )
+        try? await Task.sleep(for: .milliseconds(40))
+        let createDelta = await stack.provider.createCount() - createBaseline
+        r843WrongIdentityResponseCreates += max(0, createDelta - 1)
+        r843ValidCompletedSemanticTurns += 1
+        r843ValidTurnResponseCreates += min(1, createDelta)
+        expect(createDelta == 1,
+               "R8.4.3 wrong identities add zero responses")
+        expect(nextSession.generation == stack.session.generation + 1,
+               "R8.4.3 old-Session test uses a formal N to N+1 restart")
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: nextSession.generation
+        )
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testR843GenerationFence(
+        fixture: Data
+    ) async throws {
+        do {
+            let stack = try await makeControllerStack(
+                fixture: fixture,
+                startsResidentPlayback: false
+            )
+            let turnID = RealtimeBrainTurnID()
+            let createBaseline = await stack.provider.createCount()
+            let candidateBaseline = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+                .completionCandidateCount
+            try await admitR843ListeningTurn(
+                stack: stack,
+                sourceTurnID: turnID,
+                sequence: 2,
+                seed: 47_800,
+                label: "completion-N final-N+1"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 3,
+                kind: .userSpeechStopped,
+                label: "completion-N stop"
+            )
+            await waitForR842Completion(
+                runtime: stack.runtime,
+                expectedCount: candidateBaseline + 1,
+                expectedSession: stack.session,
+                expectedTurn: turnID,
+                expectedStoppedSequence: 3,
+                label: "R8.4.3 completion in N"
+            )
+            let nextSession = await restartR843Route(
+                stack: stack,
+                label: "completion-N final-N+1"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 4,
+                kind: .userTranscriptFinal("late N final"),
+                label: "late N final after restart"
+            )
+            try? await Task.sleep(for: .milliseconds(80))
+            let createCount = await stack.provider.createCount()
+            r843StaleGenerationResponseCreates += createCount - createBaseline
+            expect(nextSession.generation == stack.session.generation + 1
+                    && createCount == createBaseline,
+                   "R8.4.3 N completion cannot combine with late N final")
+            await assertR843NoInterruptionSideEffects(
+                stack,
+                expectedGeneration: nextSession.generation
+            )
+            await stack.controller.stopSpeechAudioCapture()
+        }
+
+        do {
+            let stack = try await makeControllerStack(
+                fixture: fixture,
+                startsResidentPlayback: false
+            )
+            let turnID = RealtimeBrainTurnID()
+            let createBaseline = await stack.provider.createCount()
+            try await admitR843ListeningTurn(
+                stack: stack,
+                sourceTurnID: turnID,
+                sequence: 2,
+                seed: 47_900,
+                label: "final-N timer-N+1"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 3,
+                kind: .userTranscriptFinal("semantic final in N"),
+                label: "final in N"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 4,
+                kind: .userSpeechStopped,
+                label: "pending timer in N"
+            )
+            let pending = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let pendingCreateCount = await stack.provider.createCount()
+            expect(pending.phase == .candidatePause
+                    && pendingCreateCount == createBaseline,
+                   "R8.4.3 final in N waits for its completion timer")
+            let nextSession = await restartR843Route(
+                stack: stack,
+                label: "final-N timer-N+1"
+            )
+            await waitBeyondR842CompletionWindow()
+            let createCount = await stack.provider.createCount()
+            r843StaleGenerationResponseCreates += createCount - createBaseline
+            expect(nextSession.generation == stack.session.generation + 1
+                    && createCount == createBaseline,
+                   "R8.4.3 old N timer cannot authorize N+1")
+            await assertR843NoInterruptionSideEffects(
+                stack,
+                expectedGeneration: nextSession.generation
+            )
+            await stack.controller.stopSpeechAudioCapture()
+        }
+    }
+
+    private static func testR843InterruptionRegression(
+        fixture: Data
+    ) async throws {
+        try await testR832ConfirmedInterruptionProductionChain(
+            fixture: fixture
+        )
+        r843ExtraInterrupts = r832ExtraInterruptions
+        r843ExtraPlaybackClears = r832ExtraPlaybackClears
+        r843ExtraGenerationAdvances = max(0, r832GenerationDelta - 1)
+        expect(r832ProviderInterrupts == 1
+                && r832HostPlaybackClears == 1
+                && r832GenerationDelta == 1,
+               "R8.4.3 preserves the frozen confirmed interruption chain")
+        expect(r832ResponseCreates == 0,
+               "R8.4.3 interruption evidence does not create a response")
+    }
+
+    private static func admitR843ListeningTurn(
+        stack: R823ControllerStack,
+        sourceTurnID: RealtimeBrainTurnID,
+        sequence: UInt64,
+        seed: UInt32,
+        label: String
+    ) async throws {
+        r842CompletionWindowNanoseconds = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionWindowNanoseconds
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: seed, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "R8.4.3 \(label) production near-end"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: sourceTurnID,
+            sequence: sequence,
+            kind: .userSpeechStarted,
+            label: "\(label) speech start"
+        )
+        await waitUntilOnMainActor("R8.4.3 \(label) admission") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.session == stack.session
+                && snapshot.sourceTurnID == sourceTurnID
+        }
+    }
+
+    private static func enqueueR843Activity(
+        stack: R823ControllerStack,
+        session: RealtimeBrainSessionIdentity,
+        turnID: RealtimeBrainTurnID,
+        responseID: RealtimeBrainResponseID? = nil,
+        contextRevision: UInt64 = 1,
+        sequence: UInt64,
+        kind: RealtimeResidentBrainEventKind,
+        label: String
+    ) async {
+        let returnedBefore = await stack.provider.returnedEventCount(
+            eventSession: session
+        )
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: r843EventIdentity(
+                session: session,
+                turnID: turnID,
+                responseID: responseID,
+                contextRevision: contextRevision
+            ),
+            sequence: sequence,
+            kind: kind
+        ))
+        await waitUntil("R8.4.3 \(label)") {
+            await stack.provider.returnedEventCount(eventSession: session)
+                == returnedBefore + 1
+        }
+    }
+
+    private static func r843EventIdentity(
+        session: RealtimeBrainSessionIdentity,
+        turnID: RealtimeBrainTurnID,
+        responseID: RealtimeBrainResponseID? = nil,
+        contextRevision: UInt64
+    ) -> RealtimeBrainEventIdentity {
+        RealtimeBrainEventIdentity(
+            session: session,
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: contextRevision
+        )
+    }
+
+    private static func waitForR843Response(
+        stack: R823ControllerStack,
+        createBaseline: Int,
+        candidateBaseline: UInt64,
+        expectedTurnID: RealtimeBrainTurnID,
+        expectedSemanticSequence: UInt64,
+        label: String
+    ) async {
+        await waitUntil("R8.4.3 \(label) Provider create") {
+            await stack.provider.createCount() == createBaseline + 1
+        }
+        let snapshot = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        let command = await stack.provider.lastCreateCommand()
+        expect(snapshot.completionCandidateCount == candidateBaseline + 1,
+               "R8.4.3 \(label) requires one completion candidate")
+        expect(command?.identity.session == stack.session
+                && command?.identity.turnID == expectedTurnID
+                && command?.identity.responseID == nil
+                && command?.identity.contextRevision == 1,
+               "R8.4.3 \(label) preserves exact response identity")
+        expect(command?.sourceEventSequence == expectedSemanticSequence,
+               "R8.4.3 \(label) binds the accepted semantic final")
+    }
+
+    private static func restartR843Route(
+        stack: R823ControllerStack,
+        label: String
+    ) async -> RealtimeBrainSessionIdentity {
+        await stack.controller.stopSpeechAudioCapture()
+        await waitUntilOnMainActor("R8.4.3 \(label) stop") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle
+        }
+        await stack.controller.startRealtimeResidentBrainRoute()
+        await waitUntil("R8.4.3 \(label) restart") {
+            guard let session = await stack.provider.lastSession() else {
+                return false
+            }
+            let route = await stack.controller.formalSpeechRouteDebugSnapshot
+            return session != stack.session
+                && route.phase == .listening
+                && route.generation == session.generation
+        }
+        guard let session = await stack.provider.lastSession() else {
+            fatalError("R8.4.3 \(label) restarted session missing")
+        }
+        return session
+    }
+
+    private static func assertR843NoInterruptionSideEffects(
+        _ stack: R823ControllerStack,
+        expectedGeneration: UInt64
+    ) async {
+        let interruptCount = await stack.provider.interruptCount()
+        let cancelCount = await stack.provider.cancelCount()
+        expect(interruptCount == 0 && cancelCount == 0,
+               "R8.4.3 semantic fusion never interrupts or cancels Provider")
+        expect(stack.outputPlayer.clearScheduledPlaybackCount == 0,
+               "R8.4.3 semantic fusion never clears Playback")
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                == expectedGeneration,
+               "R8.4.3 preserves the expected formal generation")
+    }
+
+    private static func printR843Metrics() {
+        print("r843_final_before_completion_cases=\(r843FinalBeforeCompletionCases)")
+        print("r843_completion_before_final_cases=\(r843CompletionBeforeFinalCases)")
+        print("r843_cross_source_turn_cases=\(r843CrossSourceTurnCases)")
+        print("r843_valid_completed_semantic_turns=\(r843ValidCompletedSemanticTurns)")
+        print("r843_valid_turn_response_creates=\(r843ValidTurnResponseCreates)")
+        print("r843_completion_only_response_creates=\(r843CompletionOnlyResponseCreates)")
+        print("r843_semantic_only_response_creates=\(r843SemanticOnlyResponseCreates)")
+        print("r843_provider_only_response_creates=\(r843ProviderOnlyResponseCreates)")
+        print("r843_empty_final_response_creates=\(r843EmptyFinalResponseCreates)")
+        print("r843_wrong_identity_response_creates=\(r843WrongIdentityResponseCreates)")
+        print("r843_stale_generation_response_creates=\(r843StaleGenerationResponseCreates)")
+        print("r843_duplicate_response_creates=\(r843DuplicateResponseCreates)")
+        print("r843_extra_interrupts=\(r843ExtraInterrupts)")
+        print("r843_extra_playback_clears=\(r843ExtraPlaybackClears)")
+        print("r843_extra_generation_advances=\(r843ExtraGenerationAdvances)")
+    }
+
     private static func testR842PauseVsUtteranceCompletion(
         fixture: Data
     ) async throws {
@@ -1581,7 +2781,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: turnID,
             sequence: 4,
-            kind: .userTranscriptFinal("normal listening speech final")
+            kind: .userTranscriptPartial("normal listening speech continued")
         )
         expect(stack.runtime
                 .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
@@ -1592,7 +2792,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         contextRevision: 1
                     )
                 ),
-               "R8.4.2 Listening final remains tracked evidence")
+               "R8.4.2 Listening transcript remains tracked evidence")
         await enqueueR842Activity(
             stack: stack,
             turnID: turnID,
@@ -1741,7 +2941,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: turnID,
             sequence: 3,
-            kind: .userTranscriptFinal("Provider-first normal speech")
+            kind: .userTranscriptPartial("Provider-first normal speech")
         )
         await enqueueR842Activity(
             stack: stack,
@@ -2110,7 +3310,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: continuousTurn,
             sequence: sequence,
-            kind: .userTranscriptFinal("provider segment final")
+            kind: .userTranscriptPartial("provider segment partial")
         )
         sequence &+= 1
         await waitUntilOnMainActor("R8.4.2 continuous speech state") {
@@ -2136,7 +3336,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         contextRevision: 1
                     )
                 ),
-            "R8.4.2 matching transcript final stays on the tracked utterance"
+            "R8.4.2 matching transcript stays on the tracked utterance"
         )
         expect(
             !stack.runtime
@@ -2360,7 +3560,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: trueEndTurn,
             sequence: sequence,
-            kind: .userTranscriptFinal("provider true-end final")
+            kind: .userTranscriptPartial("provider true-end partial")
         )
         sequence &+= 1
 
@@ -2457,12 +3657,12 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: logicalTurn,
             sequence: sequence,
-            kind: .userTranscriptFinal("provider-first segment final")
+            kind: .userTranscriptPartial("provider-first segment partial")
         )
         sequence &+= 1
         let createCountWhilePending = await stack.provider.createCount()
         expect(createCountWhilePending == createBaseline,
-               "R8.4.2 pending exact-turn final creates no response")
+               "R8.4.2 pending exact-turn transcript creates no response")
         await enqueueR842Activity(
             stack: stack,
             turnID: logicalTurn,
@@ -2607,7 +3807,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: turnID,
             sequence: 6,
-            kind: .userTranscriptFinal("expired Provider-first final")
+            kind: .userTranscriptPartial("expired Provider-first partial")
         )
         try? await Task.sleep(
             for: .nanoseconds(
@@ -2735,7 +3935,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: turnID,
             sequence: sequence,
-            kind: .userTranscriptFinal("event-first resumed segment")
+            kind: .userTranscriptPartial("event-first resumed segment")
         )
         sequence &+= 1
         await enqueueR842Activity(
