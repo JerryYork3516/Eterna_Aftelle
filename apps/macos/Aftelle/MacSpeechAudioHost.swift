@@ -389,6 +389,10 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         frameBuffer.drain(maxCount: maxCount)
     }
 
+    func discardPendingAudioForGenerationTransition() {
+        capture.discardPendingAudioForGenerationTransition()
+    }
+
     func activeCaptureGeneration() -> UInt64? {
         isCapturing ? generation : nil
     }

@@ -469,9 +469,16 @@ final class AppController: ObservableObject {
         sendFrameWithActivity: { [orchestrationKernel] frame, activity in
             await orchestrationKernel.sendRealtimeResidentBrainAudio(
                 frame,
-                sourceGateEpoch: activity.sourceGateEpoch,
-                userActivityEvidence: activity.userAcousticEvidence
+                activity: activity.localActivity
             )
+        },
+        confirmAcceptedLocalActivity: {
+            [orchestrationKernel] frame, activity in
+            await orchestrationKernel
+                .confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
+                    frame: frame,
+                    activity: activity.localActivity
+                )
         },
         stopInput: { [orchestrationKernel] binding in
             await orchestrationKernel.stopRealtimeResidentBrainInput(

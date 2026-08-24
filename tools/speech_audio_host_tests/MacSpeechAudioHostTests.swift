@@ -554,6 +554,32 @@ private struct MacSpeechAudioHostTests {
             samples: Array(repeating: 0, count: 317)
         )
         expect(final.count == 1, "remainder is preserved across callbacks")
+
+        var transitionPacketizer = MacSpeechPCM16Packetizer()
+        expect(transitionPacketizer.append(
+            samples: Array(repeating: 0.75, count: 240)
+        ).isEmpty, "pre-transition half packet remains pending")
+        transitionPacketizer.reset()
+        expect(transitionPacketizer.append(
+            samples: Array(repeating: -0.75, count: 240)
+        ).isEmpty, "generation fence discards the old half packet")
+        let rebound = transitionPacketizer.append(
+            samples: Array(repeating: -0.75, count: 240)
+        )
+        expect(rebound.count == 1
+                && decodePCM16(rebound[0].bytes).allSatisfy { $0 < 0 },
+               "N+1 packet contains only post-fence samples")
+
+        var captureFence = MacSpeechCaptureGenerationFence()
+        expect(captureFence.accepts(hostTimeNanoseconds: nil),
+               "initial capture generation accepts the live callback")
+        captureFence.advance(to: 1_000)
+        expect(!captureFence.accepts(hostTimeNanoseconds: nil)
+                && !captureFence.accepts(hostTimeNanoseconds: 999),
+               "generation fence rejects untimed and pre-fence callbacks")
+        expect(captureFence.accepts(hostTimeNanoseconds: 1_000)
+                && captureFence.accepts(hostTimeNanoseconds: 1_001),
+               "generation fence accepts current callbacks")
     }
 
     private static func testBoundedFrameBuffer() {

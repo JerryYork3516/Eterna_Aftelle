@@ -322,6 +322,10 @@ private final class R823AudioCapture:
         lock.withLock { started = false }
     }
 
+    func discardPendingAudioForGenerationTransition() {
+        outputConverter.resetForGenerationTransition()
+    }
+
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? {
         acousticEchoHost.snapshot()
     }
@@ -338,7 +342,8 @@ private final class R823AudioCapture:
     var isStarted: Bool { lock.withLock { started } }
 
     func emit(
-        processedSamples: [Float]
+        processedSamples: [Float],
+        acousticBefore: MacSpeechAcousticObservationSnapshot? = nil
     ) throws -> (packetCount: Int, activePacketCount: Int) {
         guard !processedSamples.isEmpty else { return (0, 0) }
         let cleanedBuffer = try MacSpeechFloatMono48kConverter.makeBuffer(
@@ -346,9 +351,21 @@ private final class R823AudioCapture:
         )
         let packets = try outputConverter.convert(cleanedBuffer)
         let acoustic = acousticEchoHost.acousticObservationSnapshot()
-        let userAcousticEvidence = acoustic.sourceGateOpen
-            && (acoustic.inputClassification == .nearEndSpeech
-                || acoustic.inputClassification == .doubleTalk)
+        let activityEvidenceKind: MacSpeechAudioActivityEvidenceKind
+        if let acousticBefore {
+            activityEvidenceKind =
+                MacSpeechAudioActivityEvidenceKind.classify(
+                    before: acousticBefore,
+                    after: acoustic
+                )
+        } else {
+            activityEvidenceKind = acoustic.isPlaybackActive
+                    && acoustic.sourceGateOpen
+                    && acoustic.sourceGateEpoch > 0
+                    && (acoustic.inputClassification == .nearEndSpeech
+                        || acoustic.inputClassification == .doubleTalk)
+                ? .sourceGatedNearEnd : .none
+        }
         let target = lock.withLock { (started, frameBuffer, generation) }
         guard target.0,
               let frameBuffer = target.1,
@@ -362,8 +379,14 @@ private final class R823AudioCapture:
                 generation: generation,
                 timestamp: acoustic.captureHostTimeNanoseconds
                     ?? DispatchTime.now().uptimeNanoseconds,
-                sourceGateEpoch: acoustic.sourceGateEpoch,
-                userAcousticEvidence: userAcousticEvidence
+                activityEvidenceKind: activityEvidenceKind,
+                residentPlaybackSequence: acoustic.playbackSequence,
+                residentPlaybackActive: acoustic.isPlaybackActive,
+                lastAudibleResidentRenderTimestampNanoseconds:
+                    acoustic.lastAudibleRenderHostTimeNanoseconds,
+                sourceGateEpoch: activityEvidenceKind
+                    == .sourceGatedNearEnd
+                    ? acoustic.sourceGateEpoch : 0
             ) {
                 packetCount += 1
                 if packet.activity > 0.001 {
@@ -547,6 +570,17 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r842CompletionWindowNanoseconds: UInt64 = 0
     private static var r842MaximumTrueEndLatencyNanoseconds: UInt64 = 0
     private static var r842DoubleTalkCases = 0
+    private static var r842ListeningContinuousCases = 0
+    private static var r842ListeningShortPauseCases = 0
+    private static var r842ListeningSpeakingAdmissions = 0
+    private static var r842ListeningTrueEndCandidates = 0
+    private static var r842ListeningFalseCompletions = 0
+    private static var r842ProviderOnlyFalseAdmissions = 0
+    private static var r842ProviderOnlyFalseCompletions = 0
+    private static var r842ListeningNegativeFalseAdmissions = 0
+    private static var r842ListeningNegativeFalseCompletions = 0
+    private static var r842StalePCMAdmissions = 0
+    private static var r842OldGenerationCompletions = 0
 
     static func main() async throws {
         guard CommandLine.arguments.count == 2
@@ -556,6 +590,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r832-confirmed-only",
                         "--r833-latency-stale-only",
                         "--r841-double-talk-only",
+                        "--r842-listening-only",
                         "--r842-turn-completion-only"
                     ].contains(CommandLine.arguments[2])) else {
             fatalError("fixture path required")
@@ -565,6 +600,16 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--r842-listening-only" {
+                cases += 1
+                try await testR842NormalListeningAdmission(
+                    fixture: fixture
+                )
+                print("realtime_turn_completion_listening_cases=\(cases)")
+                print("realtime_turn_completion_listening_checks=\(checks)")
+                printR842ListeningMetrics()
+                return
+            }
             if CommandLine.arguments[2] == "--r842-turn-completion-only" {
                 cases += 1
                 try await testR842PauseVsUtteranceCompletion(
@@ -589,6 +634,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 print("r842_provider_cancels=\(r842ProviderCancels)")
                 print("r842_host_playback_clears=\(r842HostPlaybackClears)")
                 print("r842_extra_generation_advances=\(r842ExtraGenerationAdvances)")
+                printR842ListeningMetrics()
                 print("r842_real_qwen_and_devices=NOT_RUN_HUMAN_GATE")
                 return
             }
@@ -1414,6 +1460,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static func testR842PauseVsUtteranceCompletion(
         fixture: Data
     ) async throws {
+        try await testR842NormalListeningAdmission(fixture: fixture)
         try await testR842ContinuousPauseAndTrueEnd(fixture: fixture)
         try await testR842SourceTurnRebound(fixture: fixture)
         try await testR842ProviderFirstExpiredPause(fixture: fixture)
@@ -1456,6 +1503,571 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                "R8.4.2 has no generation advance beyond formal restart")
         expect(r842DoubleTalkCases == 2,
                "R8.4.2 covers double-talk pause and true end")
+    }
+
+    private static func testR842NormalListeningAdmission(
+        fixture: Data
+    ) async throws {
+        try await testR842ListeningContinuousSpeech(fixture: fixture)
+        try await testR842ListeningShortPause(fixture: fixture)
+        try await testR842ListeningProviderFirst(fixture: fixture)
+        try await testR842ListeningProviderOnly(fixture: fixture)
+        try await testR842ListeningNegativeMatrix(fixture: fixture)
+        try await testR842ListeningStopRestart(fixture: fixture)
+
+        expect(r842ListeningContinuousCases == 1,
+               "R8.4.2 repair covers normal Listening continuous speech")
+        expect(r842ListeningShortPauseCases == 1,
+               "R8.4.2 repair covers normal Listening short pause")
+        expect(r842ListeningSpeakingAdmissions == 4,
+               "R8.4.2 repair admits four production Listening starts")
+        expect(r842ListeningTrueEndCandidates == 3,
+               "R8.4.2 repair completes three true Listening ends")
+        expect(r842ListeningFalseCompletions == 0,
+               "R8.4.2 repair has no Listening false completion")
+        expect(r842ProviderOnlyFalseAdmissions == 0
+                && r842ProviderOnlyFalseCompletions == 0,
+               "R8.4.2 Provider-only activity has no authority")
+        expect(r842ListeningNegativeFalseAdmissions == 0
+                && r842ListeningNegativeFalseCompletions == 0,
+               "R8.4.2 silence, noise, tail, and ordinary PCM fail closed")
+        expect(r842StalePCMAdmissions == 0,
+               "R8.4.2 old-generation PCM cannot admit N+1")
+        expect(r842OldGenerationCompletions == 0,
+               "R8.4.2 old Listening timers cannot complete N+1")
+    }
+
+    private static func testR842ListeningContinuousSpeech(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let generation = stack.session.generation
+        let lease = stack.runtime.activeBrainLeaseForTesting()
+        r842CompletionWindowNanoseconds = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionWindowNanoseconds
+        let turnID = RealtimeBrainTurnID()
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: 46_000, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "continuous production near-end"
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 2,
+            kind: .userSpeechStarted
+        )
+        await waitUntilOnMainActor("R8.4.2 Listening continuous speaking") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.session == stack.session
+                && snapshot.turnID == turnID
+        }
+        r842ListeningContinuousCases += 1
+        r842ListeningSpeakingAdmissions += 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userTranscriptPartial("normal listening speech")
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userTranscriptFinal("normal listening speech final")
+        )
+        expect(stack.runtime
+                .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+                    RealtimeBrainEventIdentity(
+                        session: stack.session,
+                        turnID: turnID,
+                        responseID: nil,
+                        contextRevision: 1
+                    )
+                ),
+               "R8.4.2 Listening final remains tracked evidence")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 5,
+            kind: .userSpeechStopped
+        )
+        await waitUntilOnMainActor("R8.4.2 Listening continuous pause") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause
+        }
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: 5,
+            label: "normal Listening continuous true end"
+        )
+        r842ListeningTrueEndCandidates += 1
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == generation
+                && stack.runtime.activeBrainLeaseForTesting() == lease,
+               "R8.4.2 Listening continuous keeps generation and lease")
+        await assertR842ListeningHasNoDecisionSideEffects(stack)
+        try await close(stack)
+    }
+
+    private static func testR842ListeningShortPause(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: 46_100, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "short-pause opening"
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 2,
+            kind: .userSpeechStarted
+        )
+        await waitUntilOnMainActor("R8.4.2 Listening short-pause speaking") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .speaking
+        }
+        r842ListeningSpeakingAdmissions += 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userSpeechStopped
+        )
+        await waitUntilOnMainActor("R8.4.2 Listening short-pause candidate") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause
+        }
+        try? await Task.sleep(for: .milliseconds(140))
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: 46_101, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "short-pause continuation"
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userSpeechStarted
+        )
+        await waitUntilOnMainActor("R8.4.2 Listening short-pause resume") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.turnID == turnID
+                && snapshot.session == stack.session
+        }
+        await waitBeyondR842CompletionWindow()
+        let resumed = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842ListeningShortPauseCases += 1
+        r842ListeningFalseCompletions += Int(
+            resumed.completionCandidateCount
+        )
+        expect(resumed.completionCandidateCount == 0,
+               "R8.4.2 normal Listening short pause does not complete")
+        expect(resumed.resumedPauseCount == 1,
+               "R8.4.2 normal Listening resumes the same logical turn")
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 5,
+            kind: .userSpeechStopped
+        )
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: 5,
+            label: "normal Listening short-pause true end"
+        )
+        r842ListeningTrueEndCandidates += 1
+        await assertR842ListeningHasNoDecisionSideEffects(stack)
+        try await close(stack)
+    }
+
+    private static func testR842ListeningProviderFirst(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 2,
+            kind: .userSpeechStarted
+        )
+        let beforePCM = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(beforePCM.phase == .idle
+                && beforePCM.pendingStartTurnID == turnID,
+               "R8.4.2 Provider-first event waits for production PCM")
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: 46_200, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "Provider-first delayed production near-end"
+        )
+        await waitUntilOnMainActor("R8.4.2 Provider-first admission") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.turnID == turnID
+        }
+        r842ListeningSpeakingAdmissions += 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userTranscriptFinal("Provider-first normal speech")
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userSpeechStopped
+        )
+        await waitForR842Completion(
+            runtime: stack.runtime,
+            expectedCount: 1,
+            expectedSession: stack.session,
+            expectedTurn: turnID,
+            expectedStoppedSequence: 4,
+            label: "Provider-first normal Listening true end"
+        )
+        r842ListeningTrueEndCandidates += 1
+        await assertR842ListeningHasNoDecisionSideEffects(stack)
+        try await close(stack)
+    }
+
+    private static func testR842ListeningProviderOnly(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 2,
+            kind: .userSpeechStarted
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userSpeechStopped
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userTranscriptFinal("Provider-only fake")
+        )
+        await waitBeyondR842CompletionWindow()
+        let snapshot = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842ProviderOnlyFalseAdmissions += snapshot.phase == .idle ? 0 : 1
+        r842ProviderOnlyFalseCompletions += Int(
+            snapshot.completionCandidateCount
+        )
+        expect(snapshot.phase == .idle
+                && snapshot.completionCandidateCount == 0,
+               "R8.4.2 Provider activity alone cannot create a user turn")
+        await assertR842ListeningHasNoDecisionSideEffects(stack)
+        try await close(stack)
+    }
+
+    private static func testR842ListeningNegativeMatrix(
+        fixture: Data
+    ) async throws {
+        let cases: [(String, [Float], Bool)] = [
+            ("silence", Array(repeating: 0, count: 480), false),
+            ("noise", signal(seed: 46_300, amplitude: 0.004), false),
+            ("ordinary PCM", signal(seed: 46_301, amplitude: 0.008), false),
+            ("residual tail", signal(seed: 46_302, amplitude: 0.18), true)
+        ]
+        for (index, fixtureCase) in cases.enumerated() {
+            let stack = try await makeControllerStack(
+                fixture: fixture,
+                startsResidentPlayback: false
+            )
+            if fixtureCase.2 {
+                let render = signal(seed: 46_350, amplitude: 0.25)
+                stack.acousticEchoHost.playbackStarted()
+                stack.acousticEchoHost.processRender(
+                    render,
+                    hostTimeNanoseconds: monotonicNow()
+                )
+                stack.acousticEchoHost.playbackCompleted()
+                let observation = stack.acousticEchoHost
+                    .acousticObservationSnapshot()
+                expect(!observation.isPlaybackActive
+                        && observation
+                            .lastAudibleRenderHostTimeNanoseconds != nil,
+                       "R8.4.2 residual-tail fixture closes playback with an audible fence")
+            }
+            try await emitR842ListeningSamples(
+                stack: stack,
+                samples: fixtureCase.1,
+                expectedClassification: fixtureCase.2
+                    ? .nearEndCandidate : .silenceOrNoise,
+                label: fixtureCase.0
+            )
+            let turnID = RealtimeBrainTurnID()
+            let sequence = UInt64(2)
+            await enqueueR842Activity(
+                stack: stack,
+                turnID: turnID,
+                sequence: sequence,
+                kind: .userSpeechStarted
+            )
+            await enqueueR842Activity(
+                stack: stack,
+                turnID: turnID,
+                sequence: sequence + 1,
+                kind: .userSpeechStopped
+            )
+            await enqueueR842Activity(
+                stack: stack,
+                turnID: turnID,
+                sequence: sequence + 2,
+                kind: .userTranscriptFinal("negative \(index)")
+            )
+            await waitBeyondR842CompletionWindow()
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            r842ListeningNegativeFalseAdmissions +=
+                snapshot.phase == .idle ? 0 : 1
+            r842ListeningNegativeFalseCompletions += Int(
+                snapshot.completionCandidateCount
+            )
+            expect(snapshot.phase == .idle
+                    && snapshot.completionCandidateCount == 0,
+                   "R8.4.2 \(fixtureCase.0) cannot admit Provider activity")
+            await assertR842ListeningHasNoDecisionSideEffects(stack)
+            try await close(stack)
+        }
+    }
+
+    private static func testR842ListeningStopRestart(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let oldTurnID = RealtimeBrainTurnID()
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: 46_400, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "stop-restart old generation"
+        )
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: oldTurnID,
+            sequence: 2,
+            kind: .userSpeechStarted
+        )
+        await waitUntilOnMainActor("R8.4.2 Listening old generation speaking") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .speaking
+        }
+        r842ListeningSpeakingAdmissions += 1
+        await enqueueR842Activity(
+            stack: stack,
+            turnID: oldTurnID,
+            sequence: 3,
+            kind: .userSpeechStopped
+        )
+        await waitUntilOnMainActor("R8.4.2 Listening old timer pending") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                .phase == .candidatePause
+        }
+        await stack.controller.stopSpeechAudioCapture()
+        await waitUntilOnMainActor("R8.4.2 Listening route stops") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle
+        }
+        await stack.controller.startRealtimeResidentBrainRoute()
+        await waitUntil("R8.4.2 Listening route restarts") {
+            guard let session = await stack.provider.lastSession() else {
+                return false
+            }
+            let phase = await stack.controller
+                .formalSpeechRouteDebugSnapshot.phase
+            return session != stack.session && phase == .listening
+        }
+        guard let nextSession = await stack.provider.lastSession() else {
+            fatalError("R8.4.2 Listening restarted session missing")
+        }
+        expect(nextSession.generation == stack.session.generation + 1,
+               "R8.4.2 Listening restart advances exactly to N+1")
+        await stack.provider.enqueue(r842ActivityEvent(
+            session: stack.session,
+            turnID: oldTurnID,
+            sequence: 4,
+            kind: .userTranscriptFinal("stale N transcript")
+        ))
+        let nextTurnID = RealtimeBrainTurnID()
+        await stack.provider.enqueue(r842ActivityEvent(
+            session: nextSession,
+            turnID: nextTurnID,
+            sequence: 2,
+            kind: .userSpeechStarted
+        ))
+        await waitUntil("R8.4.2 Listening stale and N+1 events return") {
+            let oldCount = await stack.provider.returnedEventCount(
+                eventSession: stack.session
+            )
+            let nextCount = await stack.provider.returnedEventCount(
+                eventSession: nextSession
+            )
+            return oldCount >= 4 && nextCount >= 2
+        }
+        await waitBeyondR842CompletionWindow()
+        let snapshot = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        r842StalePCMAdmissions += snapshot.phase == .idle ? 0 : 1
+        r842OldGenerationCompletions += Int(
+            snapshot.completionCandidateCount
+        )
+        expect(snapshot.phase == .idle
+                && snapshot.completionCandidateCount == 0,
+               "R8.4.2 old PCM, activity, and timer cannot bind N+1")
+        await assertR842ListeningHasNoDecisionSideEffects(stack)
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func emitR842ListeningSamples(
+        stack: R823ControllerStack,
+        samples: [Float],
+        expectedClassification: RealtimeAcousticClassification,
+        label: String
+    ) async throws {
+        let audioBefore = await stack.provider.audioFrameCount()
+        expect(!stack.acousticEchoHost.acousticObservationSnapshot()
+                .isPlaybackActive,
+               "R8.4.2 \(label) starts without resident playback")
+        var emittedPackets = 0
+        for _ in 0 ..< 4 {
+            let before = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(samples)
+            let processed = stack.acousticEchoHost.processCapture(
+                samples,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            let emission = try stack.capture.emit(
+                processedSamples: processed,
+                acousticBefore: before
+            )
+            emittedPackets += emission.packetCount
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await waitUntil("R8.4.2 \(label) reaches Provider") {
+            await stack.provider.audioFrameCount() > audioBefore
+        }
+        let acoustic = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+        let metrics = RealtimeAcousticMetrics(
+            residentPlaybackSequence: acoustic.playbackSequence,
+            residentPlaybackActive: acoustic.isPlaybackActive,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                acoustic.lastAudibleRenderHostTimeNanoseconds,
+            renderReferenceAvailable: acoustic.renderReferenceAvailable,
+            renderReferenceRMS: acoustic.renderReferenceRMS,
+            rawCaptureRMS: acoustic.rawCaptureRMS,
+            aecOutputRMS: acoustic.processedCaptureRMS,
+            linearAECOutputRMS: acoustic.linearAECOutputRMS,
+            renderCaptureCorrelation: acoustic.renderCaptureCorrelation,
+            residualRenderCorrelation: acoustic.residualRenderCorrelation,
+            linearRenderCorrelation: acoustic.linearRenderCorrelation,
+            captureTimestampNanoseconds:
+                acoustic.captureHostTimeNanoseconds,
+            renderTimestampNanoseconds: acoustic.renderHostTimeNanoseconds,
+            sourceAlignmentDelayMilliseconds:
+                acoustic.sourceAlignmentDelayMilliseconds,
+            estimatedDelayMilliseconds:
+                acoustic.estimatedDelayMilliseconds,
+            erlDecibels: acoustic.erlDecibels,
+            erleDecibels: acoustic.erleDecibels,
+            renderCaptureSkewFrames: acoustic.renderCaptureSkewFrames,
+            driftState: .stable,
+            sourceAssessment: .nearEndSpeech,
+            sourceGateOpen: acoustic.sourceGateOpen,
+            sourceGateEpoch: acoustic.sourceGateEpoch,
+            aecActive: acoustic.aecActive,
+            sourceAlignmentLocked: acoustic.sourceAlignmentLocked,
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+        let classification = RealtimeAcousticClassifier.classify(
+            metrics: metrics,
+            observationTimestampNanoseconds:
+                acoustic.captureHostTimeNanoseconds ?? monotonicNow()
+        )
+        expect(emittedPackets > 0,
+               "R8.4.2 \(label) crosses production PCM conversion")
+        expect(!acoustic.isPlaybackActive && !acoustic.sourceGateOpen,
+               "R8.4.2 \(label) does not fake playback or source gate")
+        expect(classification == expectedClassification,
+               "R8.4.2 \(label) uses production Listening classification")
+    }
+
+    private static func assertR842ListeningHasNoDecisionSideEffects(
+        _ stack: R823ControllerStack
+    ) async {
+        let createCount = await stack.provider.createCount()
+        let interruptCount = await stack.provider.interruptCount()
+        let cancelCount = await stack.provider.cancelCount()
+        expect(createCount == 0,
+               "R8.4.2 Listening never creates a response")
+        expect(interruptCount == 0 && cancelCount == 0,
+               "R8.4.2 Listening never interrupts or cancels Provider")
+        expect(stack.outputPlayer.startCount == 0
+                && stack.outputPlayer.clearScheduledPlaybackCount == 0,
+               "R8.4.2 Listening never starts or clears Playback")
+    }
+
+    private static func printR842ListeningMetrics() {
+        print("r842_listening_continuous_cases=\(r842ListeningContinuousCases)")
+        print("r842_listening_short_pause_cases=\(r842ListeningShortPauseCases)")
+        print("r842_listening_speaking_admissions=\(r842ListeningSpeakingAdmissions)")
+        print("r842_listening_true_end_candidates=\(r842ListeningTrueEndCandidates)")
+        print("r842_listening_false_completions=\(r842ListeningFalseCompletions)")
+        print("r842_provider_only_false_admissions=\(r842ProviderOnlyFalseAdmissions)")
+        print("r842_provider_only_false_completions=\(r842ProviderOnlyFalseCompletions)")
+        print("r842_listening_negative_false_admissions=\(r842ListeningNegativeFalseAdmissions)")
+        print("r842_listening_negative_false_completions=\(r842ListeningNegativeFalseCompletions)")
+        print("r842_stale_pcm_admissions=\(r842StalePCMAdmissions)")
+        print("r842_old_generation_completions=\(r842OldGenerationCompletions)")
     }
 
     private static func testR842ContinuousPauseAndTrueEnd(
@@ -5143,7 +5755,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     }
 
     private static func makeControllerStack(
-        fixture: Data
+        fixture: Data,
+        startsResidentPlayback: Bool = true
     ) async throws -> R823ControllerStack {
         let provider = R823RealtimeProvider()
         let router = ProviderRouter(
@@ -5214,30 +5827,40 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             responseID: RealtimeBrainResponseID(),
             contextRevision: 1
         )
-        let userFinal = RealtimeResidentBrainEvent(
-            identity: RealtimeBrainEventIdentity(
-                session: session,
-                turnID: target.turnID,
-                responseID: nil,
-                contextRevision: 1
-            ),
-            sequence: 2,
-            kind: .userTranscriptFinal("R8.2.3 resident-only")
-        )
-        await provider.enqueue(userFinal)
-        await provider.enqueue(RealtimeResidentBrainEvent(
-            identity: eventIdentity(target),
-            sequence: 3,
-            kind: .residentAudioDelta(audioDelta(sequence: 1))
-        ))
-        await waitUntil("resident playback speaking") {
-            outputPlayer.startCount == 1
+        if startsResidentPlayback {
+            let userFinal = RealtimeResidentBrainEvent(
+                identity: RealtimeBrainEventIdentity(
+                    session: session,
+                    turnID: target.turnID,
+                    responseID: nil,
+                    contextRevision: 1
+                ),
+                sequence: 2,
+                kind: .userTranscriptFinal("R8.2.3 resident-only")
+            )
+            await provider.enqueue(userFinal)
+            await provider.enqueue(RealtimeResidentBrainEvent(
+                identity: eventIdentity(target),
+                sequence: 3,
+                kind: .residentAudioDelta(audioDelta(sequence: 1))
+            ))
+            await waitUntil("resident playback speaking") {
+                outputPlayer.startCount == 1
+            }
+            let routePhase = controller.formalSpeechRouteDebugSnapshot.phase
+            expect(routePhase == .speaking,
+                   "resident route phase is speaking after response audio")
+            expect(outputPlayer.clearScheduledPlaybackCount == 0,
+                   "resident Playback is intact before resident-only stress")
+        } else {
+            expect(controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening,
+                   "normal Listening fixture starts in Runtime Listening")
+            expect(outputPlayer.startCount == 0
+                    && !acousticEchoHost.acousticObservationSnapshot()
+                        .isPlaybackActive,
+                   "normal Listening fixture has no resident playback")
         }
-        let routePhase = controller.formalSpeechRouteDebugSnapshot.phase
-        expect(routePhase == .speaking,
-               "resident route phase is speaking after response audio")
-        expect(outputPlayer.clearScheduledPlaybackCount == 0,
-               "resident Playback is intact before resident-only stress")
         return R823ControllerStack(
             controller: controller,
             runtime: runtime,

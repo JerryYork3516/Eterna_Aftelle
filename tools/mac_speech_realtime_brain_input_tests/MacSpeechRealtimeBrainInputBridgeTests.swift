@@ -11,6 +11,7 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
     private var frames: [MacSpeechAudioFrame] = []
     private var nextSequence: UInt64 = 0
     private var residentSnapshot: MacSpeechResidentAcousticSnapshot?
+    private var generationBoundaryDiscardCount = 0
 
     func activeCaptureGeneration() async -> UInt64? {
         lock.withLock { activeGeneration }
@@ -28,6 +29,14 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
             frames.removeFirst(count)
             return drained
         }
+    }
+
+    func discardPendingAudioForGenerationTransition() async {
+        lock.withLock { generationBoundaryDiscardCount += 1 }
+    }
+
+    func discardedGenerationBoundaryCount() -> Int {
+        lock.withLock { generationBoundaryDiscardCount }
     }
 
     func residentAcousticSnapshot() async
@@ -94,6 +103,27 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
                     sequenceNumber * 20_000_000,
                 pcm16Bytes: pcm16Bytes,
                 activity: 0
+            ))
+        }
+    }
+
+    func appendListeningNearEndFrame(
+        pcm16Bytes: Data,
+        generation: UInt64,
+        timestampNanoseconds: UInt64
+    ) {
+        lock.withLock {
+            guard activeGeneration == generation else { return }
+            nextSequence &+= 1
+            frames.append(MacSpeechAudioFrame(
+                captureGeneration: generation,
+                sequenceNumber: nextSequence,
+                monotonicTimestampNanoseconds: timestampNanoseconds,
+                pcm16Bytes: pcm16Bytes,
+                activity: 0.18,
+                activityEvidenceKind: .listeningNearEnd,
+                residentPlaybackSequence: 0,
+                residentPlaybackActive: false
             ))
         }
     }
@@ -310,6 +340,17 @@ private actor R7HeldAudioSend {
     }
 }
 
+private actor R7LocalActivityConfirmationRecorder {
+    private var confirmationCount = 0
+
+    func confirm() -> Result<Void, RealtimeResidentBrainError> {
+        confirmationCount += 1
+        return .success(())
+    }
+
+    func count() -> Int { confirmationCount }
+}
+
 private actor R7CloseSequence {
     private var results: [Result<Void, RealtimeResidentBrainError>]
     private var callCount = 0
@@ -402,6 +443,8 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testFormalRuntimeRouteRemainsActiveForTwoTurns(
             fixture: fixture
         )
+        await testListeningActivityRevalidatesAfterProviderAppend()
+        await testFormalNormalListeningSpeechAdmission(fixture: fixture)
         await testGenerationTransitionRebindsHost(
             fixture: fixture
         )
@@ -1427,6 +1470,240 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         )
     }
 
+    private static func testListeningActivityRevalidatesAfterProviderAppend()
+        async {
+        cases += 1
+        let source = FakeMacSpeechAudioFrameSource()
+        let heldSend = R7HeldAudioSend()
+        let confirmations = R7LocalActivityConfirmationRecorder()
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "listening-fence-resident",
+            runtimeSessionID: "listening-fence-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 725
+        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(listeningSnapshot(
+            generation: captureGeneration,
+            timestampNanoseconds: captureTimestamp
+        ))
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrameWithActivity: { frame, _ in
+                await heldSend.send(frame)
+            },
+            confirmAcceptedLocalActivity: { _, _ in
+                await confirmations.confirm()
+            },
+            stopInput: { _ in .success(()) }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        source.appendListeningNearEndFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration,
+            timestampNanoseconds: captureTimestamp
+        )
+        await heldSend.waitUntilStarted()
+        source.setResidentSnapshot(nil)
+        await heldSend.resume(.success(()))
+        await waitUntil(label: "Listening post-append lifecycle fence") {
+            await bridge.currentSnapshot().forwardedFrameCount == 1
+        }
+        expect(await confirmations.count() == 0,
+               "Listening activity is not committed after Host lifecycle loss")
+        _ = await bridge.stop()
+    }
+
+    private static func listeningSnapshot(
+        generation: UInt64,
+        timestampNanoseconds: UInt64
+    ) -> MacSpeechResidentAcousticSnapshot {
+        MacSpeechResidentAcousticSnapshot(
+            captureGeneration: generation,
+            captureFrameIndex: 1,
+            captureHostTimeNanoseconds: timestampNanoseconds,
+            playbackSequence: 0,
+            residentPlaybackActive: false,
+            lastAudibleResidentRenderTimestampNanoseconds: nil,
+            renderReferenceAvailable: false,
+            renderReferenceRMS: nil,
+            renderHostTimeNanoseconds: nil,
+            rawCaptureRMS: 0.18,
+            processedCaptureRMS: 0.18,
+            linearAECOutputRMS: 0.18,
+            renderCaptureCorrelation: 0,
+            residualRenderCorrelation: 0,
+            linearRenderCorrelation: 0,
+            inputClassification: .nearEndSpeech,
+            sourceGateOpen: false,
+            sourceGateEpoch: 0,
+            aecEnabled: true,
+            aecActive: true,
+            sourceAlignmentLocked: false,
+            sourceAlignmentDelayMilliseconds: nil,
+            estimatedDelayMilliseconds: 80,
+            erlDecibels: 0,
+            erleDecibels: 0,
+            renderCaptureSkewFrames: 0,
+            driftTrend: "stable",
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+    }
+
+    private static func testFormalNormalListeningSpeechAdmission(
+        fixture: Data
+    ) async {
+        cases += 1
+        let provider = FakeRealtimeResidentBrainProvider()
+        let router = ProviderRouter(
+            credentialReader: R7CredentialReader(),
+            realtimeResidentBrainProvider: provider
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixture).isLoaded,
+               "normal Listening regression resident loads")
+        guard case .success(let session) =
+                await runtime.startRealtimeResidentBrainSession() else {
+            fatalError("FAILED: normal Listening session did not start")
+        }
+        let captureGeneration: UInt64 = 750
+        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        let source = FakeMacSpeechAudioFrameSource()
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(listeningSnapshot(
+            generation: captureGeneration,
+            timestampNanoseconds: captureTimestamp
+        ))
+        let binding = MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        )
+        let input = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrameWithActivity: { frame, activity in
+                await runtime.appendRealtimeResidentBrainAudio(
+                    frame,
+                    activity: activity.localActivity
+                )
+            },
+            confirmAcceptedLocalActivity: { frame, activity in
+                await runtime
+                    .confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
+                        frame: frame,
+                        activity: activity.localActivity
+                    )
+            },
+            stopInput: { binding in
+                await runtime.closeRealtimeResidentBrainSession(
+                    identity: binding.session
+                )
+            }
+        )
+        let sink = R7EventSink()
+        let output = MacSpeechRealtimeBrainOutputBridge(
+            receiveEvent: { session in
+                do {
+                    let disposition = try await runtime
+                        .receiveRealtimeResidentBrainEvent(session: session)
+                    await sink.observe(disposition)
+                    return .success(disposition)
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.transportFailure)
+                }
+            },
+            consumeEvent: { event in await sink.consume(event) }
+        )
+        _ = await input.start(binding: binding)
+        _ = await output.start(session: session)
+        source.appendListeningNearEndFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration,
+            timestampNanoseconds: captureTimestamp
+        )
+        await waitUntil(label: "normal Listening accepted PCM") {
+            await provider.audioCount() == 1
+        }
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: session,
+                turnID: nil,
+                responseID: nil,
+                contextRevision: 1
+            ),
+            sequence: 1,
+            kind: .sessionReady
+        ))
+        let turnID = RealtimeBrainTurnID()
+        let identity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: turnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: identity,
+            sequence: 2,
+            kind: .userSpeechStarted
+        ))
+        await waitUntil(label: "normal Listening speaking admission") {
+            await MainActor.run {
+                let snapshot = runtime
+                    .realtimeUtteranceCompletionDebugSnapshot()
+                return snapshot.phase == .speaking
+                    && snapshot.turnID == turnID
+            }
+        }
+        expect(runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .speaking,
+               "R7 formal route admits normal Listening speech activity")
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: identity,
+            sequence: 3,
+            kind: .userSpeechStopped
+        ))
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: identity,
+            sequence: 4,
+            kind: .userTranscriptFinal("normal Listening turn")
+        ))
+        await waitUntil(label: "normal Listening completion candidate") {
+            await MainActor.run {
+                runtime.realtimeUtteranceCompletionDebugSnapshot()
+                    .completionCandidateCount == 1
+            }
+        }
+        let completion = runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(completion.phase == .completionCandidate
+                && completion.session == session
+                && completion.turnID == turnID,
+               "R7 formal Listening start-stop-final reaches one candidate")
+        expect(runtime
+                .realtimeUtteranceCompletionTracksTranscriptFinalForTesting(
+                    identity
+                ),
+               "R7 normal Listening final stays on the tracked turn")
+        _ = await input.stop()
+        _ = await output.stop()
+        await waitUntil(label: "normal Listening session close") {
+            await provider.closeCount() == 1
+        }
+    }
+
     private static func testGenerationTransitionRebindsHost(
         fixture: Data
     ) async {
@@ -1543,6 +1820,8 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         )
         expect(reboundOutput.hasActiveReceiveLoop, "new output generation resumes")
         expect(reboundInput.hasActivePump, "new input generation resumes")
+        expect(source.discardedGenerationBoundaryCount() == 1,
+               "generation transition discards pending pre-fence audio")
 
         let oldTurn = RealtimeBrainTurnID()
         let oldResponse = RealtimeBrainResponseID()

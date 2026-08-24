@@ -114,7 +114,9 @@ echo "r822_host_playback_clear_authority=PASS"
 
 provider_protocol="$build_dir/provider-protocol.txt"
 awk \
-  '/protocol RealtimeResidentBrainProvider/ { active = 1 } /extension RealtimeResidentBrainProvider/ { active = 0 } active' \
+  '/protocol RealtimeResidentBrainProvider/ { active = 1 }
+   active { print }
+   active && /^}/ { exit }' \
   "$contract" > "$provider_protocol"
 if rg -q 'Acoustic|Eligibility|clearPlayback' "$provider_protocol"; then
   echo "r822_provider_neutrality=FAIL" >&2
@@ -122,9 +124,12 @@ if rg -q 'Acoustic|Eligibility|clearPlayback' "$provider_protocol"; then
 fi
 provider_audio_frame="$build_dir/provider-audio-frame.txt"
 awk \
-  '/struct RealtimeBrainAudioFrame/ { active = 1 } /struct RealtimeBrainAudioDelta/ { active = 0 } active' \
+  '/struct RealtimeBrainAudioFrame/ { active = 1 }
+   active { print }
+   active && /^}/ { exit }' \
   "$contract" > "$provider_audio_frame"
-if rg -q 'sourceGate|userActivity|Acoustic|Eligibility' \
+if rg -q \
+  'sourceGate|userActivity|nearEnd|playback|turn|completion|[Aa]coustic|[Ee]ligibility' \
   "$provider_audio_frame"; then
   echo "r822_provider_audio_frame_neutrality=FAIL" >&2
   exit 1

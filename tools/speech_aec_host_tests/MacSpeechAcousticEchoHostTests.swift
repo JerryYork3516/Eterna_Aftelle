@@ -228,11 +228,19 @@ private struct MacSpeechAcousticEchoHostTests {
                "complete capture frames are emitted immediately")
         expect(host.snapshot().captureFIFOSampleCount == 1,
                "only one capture remainder sample is retained")
+        host.discardPendingCaptureForGenerationTransition()
+        expect(host.snapshot().captureFIFOSampleCount == 0,
+               "generation fence clears the old capture remainder")
         let second = host.processCapture(
             [Float](repeating: 0.5, count: 479)
         )
-        expect(second.count == 480,
-               "remainder completes the next frame")
+        expect(second.isEmpty,
+               "post-fence samples cannot complete an old capture frame")
+        let third = host.processCapture(
+            [Float](repeating: 0.5, count: 1)
+        )
+        expect(third.count == 480,
+               "post-fence remainder completes only with current samples")
         let snapshot = host.snapshot()
         expect(snapshot.captureFIFOSampleCount < 480,
                "capture remainder stays below one frame")

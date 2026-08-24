@@ -15,10 +15,63 @@ nonisolated enum MacSpeechAudioInputFormat {
     }
 }
 
+nonisolated enum MacSpeechAudioActivityEvidenceKind:
+    String,
+    Sendable,
+    Equatable {
+    case none
+    case listeningNearEnd = "listening_near_end"
+    case sourceGatedNearEnd = "source_gated_near_end"
+
+    static func classify(
+        before: MacSpeechAcousticObservationSnapshot,
+        after: MacSpeechAcousticObservationSnapshot
+    ) -> Self {
+        guard after.captureFrameIndex > before.captureFrameIndex,
+              after.playbackSequence == before.playbackSequence,
+              after.isPlaybackActive == before.isPlaybackActive,
+              after.aecEnabled,
+              after.aecActive else { return .none }
+        if after.isPlaybackActive {
+            return after.sourceGateOpen
+                    && after.sourceGateEpoch > 0
+                    && (after.inputClassification == .nearEndSpeech
+                        || after.inputClassification == .doubleTalk)
+                ? .sourceGatedNearEnd : .none
+        }
+        let outputRMS = max(
+            after.processedCaptureRMS,
+            after.linearAECOutputRMS
+        )
+        return after.inputClassification == .nearEndSpeech
+                && max(after.rawCaptureRMS, outputRMS)
+                    >= MacSpeechAcousticEchoHost.minimumNearEndRMS
+            ? .listeningNearEnd : .none
+    }
+}
+
+nonisolated struct MacSpeechCaptureGenerationFence: Sendable {
+    private(set) var minimumHostTimeNanoseconds: UInt64 = 0
+
+    mutating func advance(to timestampNanoseconds: UInt64) {
+        minimumHostTimeNanoseconds = max(
+            minimumHostTimeNanoseconds,
+            timestampNanoseconds
+        )
+    }
+
+    func accepts(hostTimeNanoseconds: UInt64?) -> Bool {
+        guard minimumHostTimeNanoseconds > 0 else { return true }
+        guard let hostTimeNanoseconds else { return false }
+        return hostTimeNanoseconds >= minimumHostTimeNanoseconds
+    }
+}
+
 nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
     func activeCaptureGeneration() async -> UInt64?
     func isCaptureGenerationActive(_ generation: UInt64) async -> Bool
     func drainFrames(maxCount: Int) async -> [MacSpeechAudioFrame]
+    func discardPendingAudioForGenerationTransition() async
     func interruptionAcousticSnapshot() async
         -> MacSpeechInterruptionAcousticSnapshot?
     func residentAcousticSnapshot() async
@@ -26,6 +79,7 @@ nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
 }
 
 nonisolated extension MacSpeechAudioFrameSourcing {
+    func discardPendingAudioForGenerationTransition() async {}
     func interruptionAcousticSnapshot() async
         -> MacSpeechInterruptionAcousticSnapshot? { nil }
     func residentAcousticSnapshot() async
@@ -86,8 +140,11 @@ nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
     let monotonicTimestampNanoseconds: UInt64
     let pcm16Bytes: Data
     let activity: Float
+    let activityEvidenceKind: MacSpeechAudioActivityEvidenceKind
+    let residentPlaybackSequence: UInt64
+    let residentPlaybackActive: Bool
+    let lastAudibleResidentRenderTimestampNanoseconds: UInt64?
     let sourceGateEpoch: UInt64
-    let userAcousticEvidence: Bool
 
     init(
         captureGeneration: UInt64,
@@ -95,8 +152,11 @@ nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
         monotonicTimestampNanoseconds: UInt64,
         pcm16Bytes: Data,
         activity: Float,
-        sourceGateEpoch: UInt64 = 0,
-        userAcousticEvidence: Bool = false
+        activityEvidenceKind: MacSpeechAudioActivityEvidenceKind = .none,
+        residentPlaybackSequence: UInt64 = 0,
+        residentPlaybackActive: Bool = false,
+        lastAudibleResidentRenderTimestampNanoseconds: UInt64? = nil,
+        sourceGateEpoch: UInt64 = 0
     ) {
         self.captureGeneration = captureGeneration
         self.sequenceNumber = sequenceNumber
@@ -104,8 +164,12 @@ nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
             monotonicTimestampNanoseconds
         self.pcm16Bytes = pcm16Bytes
         self.activity = activity
+        self.activityEvidenceKind = activityEvidenceKind
+        self.residentPlaybackSequence = residentPlaybackSequence
+        self.residentPlaybackActive = residentPlaybackActive
+        self.lastAudibleResidentRenderTimestampNanoseconds =
+            lastAudibleResidentRenderTimestampNanoseconds
         self.sourceGateEpoch = sourceGateEpoch
-        self.userAcousticEvidence = userAcousticEvidence
     }
 }
 
@@ -162,8 +226,11 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
         activity: Float,
         generation: UInt64,
         timestamp: UInt64 = DispatchTime.now().uptimeNanoseconds,
-        sourceGateEpoch: UInt64 = 0,
-        userAcousticEvidence: Bool = false
+        activityEvidenceKind: MacSpeechAudioActivityEvidenceKind = .none,
+        residentPlaybackSequence: UInt64 = 0,
+        residentPlaybackActive: Bool = false,
+        lastAudibleResidentRenderTimestampNanoseconds: UInt64? = nil,
+        sourceGateEpoch: UInt64 = 0
     ) -> Bool {
         lock.withLock {
             guard activeGeneration == generation, !pcm16Bytes.isEmpty else {
@@ -189,8 +256,12 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
                     monotonicTimestampNanoseconds: monotonicTimestamp,
                     pcm16Bytes: pcm16Bytes,
                     activity: latestActivity,
-                    sourceGateEpoch: sourceGateEpoch,
-                    userAcousticEvidence: userAcousticEvidence
+                    activityEvidenceKind: activityEvidenceKind,
+                    residentPlaybackSequence: residentPlaybackSequence,
+                    residentPlaybackActive: residentPlaybackActive,
+                    lastAudibleResidentRenderTimestampNanoseconds:
+                        lastAudibleResidentRenderTimestampNanoseconds,
+                    sourceGateEpoch: sourceGateEpoch
                 )
             )
             generatedCount &+= 1
@@ -271,6 +342,10 @@ nonisolated struct MacSpeechPCM16Packetizer: Sendable {
         return packets
     }
 
+    mutating func reset() {
+        pendingSamples.removeAll(keepingCapacity: true)
+    }
+
     private static func activity(samples: [Float]) -> Float {
         guard !samples.isEmpty else { return 0 }
         let finiteSquares = samples.reduce(Float.zero) { partial, value in
@@ -301,6 +376,7 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
         frameBuffer: MacSpeechAudioFrameBuffer
     ) throws -> MacSpeechNativeInputFormat
     func stop()
+    func discardPendingAudioForGenerationTransition()
     func routeWillRebuild()
     func routeDidRebuild()
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot?
@@ -310,6 +386,7 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
 }
 
 nonisolated extension MacSpeechAudioCapturing {
+    func discardPendingAudioForGenerationTransition() {}
     func routeWillRebuild() {}
     func routeDidRebuild() {}
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? { nil }
@@ -389,6 +466,13 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
             let count = Int(outputBuffer.frameLength)
             let values = Array(UnsafeBufferPointer(start: samples, count: count))
             return packetizer.append(samples: values)
+        }
+    }
+
+    func resetForGenerationTransition() {
+        lock.withLock {
+            converter.reset()
+            packetizer.reset()
         }
     }
 }
@@ -483,12 +567,17 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
             ))
         }
     }
+
+    func resetForGenerationTransition() {
+        lock.withLock { converter.reset() }
+    }
 }
 
 nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     @unchecked Sendable
 {
     private let lock = NSLock()
+    private let captureProcessingLock = NSLock()
     private let renderConverterLock = NSLock()
     private let audioProcessingMode: MacSpeechAudioProcessingMode
     private let acousticEchoHost: MacSpeechAcousticEchoHost
@@ -505,6 +594,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var isRenderReferenceTapInstalled = false
     private var outputFormat: AVAudioFormat?
     private var routeRebuildWasConfigured = false
+    private var captureGenerationFence =
+        MacSpeechCaptureGenerationFence()
 
     init(
         audioProcessingMode: MacSpeechAudioProcessingMode = .webRTCAEC3,
@@ -591,6 +682,20 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             engine.inputNode.removeTap(onBus: 0)
             isCaptureActive = false
             tearDownIfIdle()
+        }
+    }
+
+    func discardPendingAudioForGenerationTransition() {
+        captureProcessingLock.withLock {
+            captureGenerationFence.advance(
+                to: DispatchTime.now().uptimeNanoseconds
+            )
+            let converters = lock.withLock {
+                (captureAECConverter, captureOutputConverter)
+            }
+            converters.0?.resetForGenerationTransition()
+            converters.1?.resetForGenerationTransition()
+            acousticEchoHost.discardPendingCaptureForGenerationTransition()
         }
     }
 
@@ -836,6 +941,25 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) {
+        captureProcessingLock.withLock {
+            guard captureGenerationFence.accepts(
+                hostTimeNanoseconds: hostTimeNanoseconds
+            ) else { return }
+            processCaptureLocked(
+                buffer,
+                hostTimeNanoseconds: hostTimeNanoseconds,
+                generation: generation,
+                frameBuffer: frameBuffer
+            )
+        }
+    }
+
+    private func processCaptureLocked(
+        _ buffer: AVAudioPCMBuffer,
+        hostTimeNanoseconds: UInt64?,
+        generation: UInt64,
+        frameBuffer: MacSpeechAudioFrameBuffer
+    ) {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let converters = lock.withLock {
             (captureAECConverter, captureOutputConverter)
@@ -845,14 +969,17 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
               let inputSamples = try? inputConverter.convert(buffer) else {
             return
         }
+        let acousticBefore = acousticEchoHost.acousticObservationSnapshot()
         let cleanedSamples = acousticEchoHost.processCapture(
             inputSamples,
             hostTimeNanoseconds: hostTimeNanoseconds
         )
         let acoustic = acousticEchoHost.acousticObservationSnapshot()
-        let userAcousticEvidence = acoustic.sourceGateOpen
-            && (acoustic.inputClassification == .nearEndSpeech
-                || acoustic.inputClassification == .doubleTalk)
+        let activityEvidenceKind =
+            MacSpeechAudioActivityEvidenceKind.classify(
+                before: acousticBefore,
+                after: acoustic
+            )
         if !cleanedSamples.isEmpty,
            let cleanedBuffer = try? MacSpeechFloatMono48kConverter.makeBuffer(
             samples: cleanedSamples
@@ -865,8 +992,14 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     generation: generation,
                     timestamp: acoustic.captureHostTimeNanoseconds
                         ?? DispatchTime.now().uptimeNanoseconds,
-                    sourceGateEpoch: acoustic.sourceGateEpoch,
-                    userAcousticEvidence: userAcousticEvidence
+                    activityEvidenceKind: activityEvidenceKind,
+                    residentPlaybackSequence: acoustic.playbackSequence,
+                    residentPlaybackActive: acoustic.isPlaybackActive,
+                    lastAudibleResidentRenderTimestampNanoseconds:
+                        acoustic.lastAudibleRenderHostTimeNanoseconds,
+                    sourceGateEpoch: activityEvidenceKind
+                        == .sourceGatedNearEnd
+                        ? acoustic.sourceGateEpoch : 0
                 )
             }
         }
@@ -1012,6 +1145,10 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
     func stop() {
         audioEngine.stopCapture()
+    }
+
+    func discardPendingAudioForGenerationTransition() {
+        audioEngine.discardPendingAudioForGenerationTransition()
     }
 
     func routeWillRebuild() {

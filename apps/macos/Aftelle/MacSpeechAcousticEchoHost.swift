@@ -207,7 +207,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         maximumDelayMilliseconds / frameDurationMilliseconds
     private static let minimumTimingCorrelation = 0.35
     private static let minimumTimingRMS = 0.005
-    private static let minimumNearEndRMS = 0.012
+    static let minimumNearEndRMS = 0.012
     private static let maximumNearEndCorrelation = 0.25
     private static let maximumDoubleTalkResidualCorrelation = 0.25
     private static let maximumAdaptiveDoubleTalkResidualCorrelation = 0.65
@@ -617,6 +617,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             clearTimingHistory()
             resetSourceGate(closeReason: .playbackLifecycle)
             poorResidualEchoFrameCount = 0
+        }
+    }
+
+    func discardPendingCaptureForGenerationTransition() {
+        queue.sync {
+            captureFIFO.removeAll(keepingCapacity: true)
+            captureRemainderHostTimeNanoseconds = nil
         }
     }
 

@@ -1647,6 +1647,11 @@ public final class RuntimeCore {
         var claimedThroughSequence: UInt64
     }
 
+    private struct RealtimeUtteranceListeningAuthorization {
+        let session: RealtimeBrainSessionIdentity
+        var claimedThroughAudioSequence: UInt64
+    }
+
     private struct RealtimeUtteranceEligibleAcousticMarker {
         let evidence: RealtimeInterruptionEvidence
         let receivedAtNanoseconds: UInt64
@@ -1902,6 +1907,8 @@ public final class RuntimeCore {
     private var realtimeUtteranceCompletionToken: UUID?
     private var realtimeUtteranceAcousticAuthorization:
         RealtimeUtteranceAcousticAuthorization?
+    private var realtimeUtteranceListeningAuthorization:
+        RealtimeUtteranceListeningAuthorization?
     private var realtimeUtteranceEligibleAcousticMarker:
         RealtimeUtteranceEligibleAcousticMarker?
     private var realtimeInterruptionEvidenceState:
@@ -2407,6 +2414,7 @@ public final class RuntimeCore {
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
         resetRealtimeUtteranceCompletionState()
         realtimeUtteranceAcousticAuthorization = nil
+        realtimeUtteranceListeningAuthorization = nil
         realtimeUtteranceEligibleAcousticMarker = nil
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
@@ -2448,11 +2456,15 @@ public final class RuntimeCore {
     ) {
         guard let identity else {
             realtimeUtteranceAcousticAuthorization = nil
+            realtimeUtteranceListeningAuthorization = nil
             realtimeUtteranceEligibleAcousticMarker = nil
             return
         }
         if realtimeUtteranceAcousticAuthorization?.session == identity {
             realtimeUtteranceAcousticAuthorization = nil
+        }
+        if realtimeUtteranceListeningAuthorization?.session == identity {
+            realtimeUtteranceListeningAuthorization = nil
         }
         if realtimeUtteranceEligibleAcousticMarker?.evidence.identity.session
             == identity {
@@ -2595,6 +2607,90 @@ public final class RuntimeCore {
         return true
     }
 
+    @MainActor
+    private func claimRealtimeUtteranceListeningAuthorization(
+        for event: RealtimeResidentBrainEvent,
+        receivedAtNanoseconds: UInt64,
+        allowsAudioAfterEvent: Bool,
+        maximumAudioTimestampNanoseconds: UInt64? = nil
+    ) -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now >= receivedAtNanoseconds,
+              now - receivedAtNanoseconds
+                <= Self.realtimeInterruptionEvidenceWindowNanoseconds,
+              let boundary = realtimeBrainSessionGate
+                .acceptedAudioInputBoundary(
+                    for: event.identity.session
+                ),
+              boundary.contextRevision == event.identity.contextRevision,
+              boundary.lastUserActivitySequence > 0,
+              boundary.lastUserActivityTimestampNanoseconds > 0,
+              boundary.lastUserActivityContextRevision
+                == event.identity.contextRevision,
+              boundary.lastUserActivity.kind == .listeningNearEnd,
+              !boundary.lastUserActivity.residentPlaybackActive,
+              !boundary.activity.residentPlaybackActive,
+              boundary.activity.residentPlaybackSequence
+                == boundary.lastUserActivity.residentPlaybackSequence,
+              boundary.activity.routeStable,
+              boundary.activity.inputDeviceAvailable,
+              boundary.activity.outputDeviceAvailable,
+              now >= boundary.lastUserActivityTimestampNanoseconds,
+              now - boundary.lastUserActivityTimestampNanoseconds
+                <= Self.realtimeInterruptionEvidenceWindowNanoseconds else {
+            return false
+        }
+        let audioTimestamp = boundary
+            .lastUserActivityTimestampNanoseconds
+        if audioTimestamp > receivedAtNanoseconds {
+            guard allowsAudioAfterEvent,
+                  audioTimestamp - receivedAtNanoseconds
+                    <= Self.realtimeInterruptionEvidenceWindowNanoseconds else {
+                return false
+            }
+        } else if receivedAtNanoseconds - audioTimestamp
+                    > Self.realtimeInterruptionEvidenceWindowNanoseconds {
+            return false
+        }
+        if let maximumAudioTimestampNanoseconds,
+           audioTimestamp > maximumAudioTimestampNanoseconds {
+            return false
+        }
+        var authorization = realtimeUtteranceListeningAuthorization
+            ?? RealtimeUtteranceListeningAuthorization(
+                session: event.identity.session,
+                claimedThroughAudioSequence: 0
+            )
+        guard authorization.session == event.identity.session,
+              boundary.lastUserActivitySequence
+                > authorization.claimedThroughAudioSequence else {
+            return false
+        }
+        authorization.claimedThroughAudioSequence =
+            boundary.lastUserActivitySequence
+        realtimeUtteranceListeningAuthorization = authorization
+        return true
+    }
+
+    @MainActor
+    private func claimRealtimeUtteranceAdmission(
+        for event: RealtimeResidentBrainEvent,
+        receivedAtNanoseconds: UInt64,
+        allowsListeningAudioAfterEvent: Bool = false,
+        maximumListeningAudioTimestampNanoseconds: UInt64? = nil
+    ) -> Bool {
+        claimRealtimeUtteranceAcousticAuthorization(
+            for: event,
+            receivedAtNanoseconds: receivedAtNanoseconds
+        ) || claimRealtimeUtteranceListeningAuthorization(
+            for: event,
+            receivedAtNanoseconds: receivedAtNanoseconds,
+            allowsAudioAfterEvent: allowsListeningAudioAfterEvent,
+            maximumAudioTimestampNanoseconds:
+                maximumListeningAudioTimestampNanoseconds
+        )
+    }
+
     private func consumeRealtimeUtteranceAcousticAuthorization(
         forActiveState evidence: RealtimeInterruptionEvidence
     ) {
@@ -2713,8 +2809,12 @@ public final class RuntimeCore {
     }
 
     @MainActor
-    private func promotePendingRealtimeUtteranceStartIfEligible() {
+    private func promotePendingRealtimeUtteranceStartIfEligible(
+        matching session: RealtimeBrainSessionIdentity? = nil
+    ) {
         guard let pending = realtimeUtterancePendingStart,
+              session == nil
+                || pending.event.identity.session == session,
               let logicalTurnID = pending.event.identity.turnID,
               currentRealtimeBrainLease(
                 identity: pending.event.identity.session
@@ -2722,15 +2822,23 @@ public final class RuntimeCore {
               realtimeBrainSessionGate.isCurrent(
                 pending.event.identity
               ) else { return }
-        if !claimRealtimeUtteranceAcousticAuthorization(
+        let maximumAudioTimestamp = pending.stoppedAtNanoseconds > 0
+            ? pending.stoppedAtNanoseconds : nil
+        if !claimRealtimeUtteranceAdmission(
                 for: pending.event,
-                receivedAtNanoseconds: pending.receivedAtNanoseconds
+                receivedAtNanoseconds: pending.receivedAtNanoseconds,
+                allowsListeningAudioAfterEvent: true,
+                maximumListeningAudioTimestampNanoseconds:
+                    maximumAudioTimestamp
         ) {
             guard let sourceStartEvent = pending.sourceStartEvent,
-                  claimRealtimeUtteranceAcousticAuthorization(
+                  claimRealtimeUtteranceAdmission(
                     for: sourceStartEvent,
                     receivedAtNanoseconds:
-                        pending.sourceStartedAtNanoseconds
+                        pending.sourceStartedAtNanoseconds,
+                    allowsListeningAudioAfterEvent: true,
+                    maximumListeningAudioTimestampNanoseconds:
+                        maximumAudioTimestamp
                   ) else { return }
             installRealtimeUtteranceSpeakingState(
                 event: sourceStartEvent,
@@ -2799,7 +2907,10 @@ public final class RuntimeCore {
               state.phase == .candidatePause,
               resumeRealtimeUtteranceIfAudioAdvanced(
                 event: pending.event,
-                receivedAtNanoseconds: pending.receivedAtNanoseconds
+                receivedAtNanoseconds: pending.receivedAtNanoseconds,
+                maximumAudioTimestampNanoseconds:
+                    pending.stoppedAtNanoseconds > 0
+                        ? pending.stoppedAtNanoseconds : nil
               ) else { return }
         realtimeUtterancePendingResume = nil
         if let stoppedEvent = pending.stoppedEvent {
@@ -2814,7 +2925,8 @@ public final class RuntimeCore {
     @MainActor
     private func resumeRealtimeUtteranceIfAudioAdvanced(
         event: RealtimeResidentBrainEvent,
-        receivedAtNanoseconds: UInt64
+        receivedAtNanoseconds: UInt64,
+        maximumAudioTimestampNanoseconds: UInt64? = nil
     ) -> Bool {
         guard let turnID = event.identity.turnID,
               var state = realtimeUtteranceCompletionState,
@@ -2830,17 +2942,55 @@ public final class RuntimeCore {
                 .acceptedAudioInputBoundary(
                     for: event.identity.session
                 ),
+              audioBoundary.contextRevision
+                == event.identity.contextRevision,
+              audioBoundary.lastUserActivityContextRevision
+                == event.identity.contextRevision,
               audioBoundary.lastUserActivitySequence
                 > state.pauseAudioInputSequence,
               audioBoundary.lastUserActivityTimestampNanoseconds
                 > state.pauseStartedAtNanoseconds,
-              audioBoundary.lastUserActivityTimestampNanoseconds
-                <= receivedAtNanoseconds,
-              audioBoundary.lastUserActivitySourceGateEpoch > 0,
               receivedAtNanoseconds >= state.pauseStartedAtNanoseconds,
               receivedAtNanoseconds - state.pauseStartedAtNanoseconds
+                < Self.realtimeUtteranceCompletionWindowNanoseconds,
+              audioBoundary.lastUserActivityTimestampNanoseconds
+                    - state.pauseStartedAtNanoseconds
                 < Self.realtimeUtteranceCompletionWindowNanoseconds
               else { return false }
+        let audioTimestamp = audioBoundary
+            .lastUserActivityTimestampNanoseconds
+        let eventAudioDistance = audioTimestamp > receivedAtNanoseconds
+            ? audioTimestamp - receivedAtNanoseconds
+            : receivedAtNanoseconds - audioTimestamp
+        let precedesMaximumTimestamp =
+            maximumAudioTimestampNanoseconds.map {
+                audioTimestamp <= $0
+            } ?? true
+        guard eventAudioDistance
+                <= Self.realtimeInterruptionEvidenceWindowNanoseconds,
+              precedesMaximumTimestamp else { return false }
+        let activity = audioBoundary.lastUserActivity
+        let requiresInterruptionAuthorization: Bool
+        switch activity.kind {
+        case .none:
+            return false
+        case .listeningNearEnd:
+            guard !audioBoundary.activity.residentPlaybackActive,
+                  audioBoundary.activity.residentPlaybackSequence
+                    == activity.residentPlaybackSequence,
+                  audioBoundary.activity.routeStable,
+                  audioBoundary.activity.inputDeviceAvailable,
+                  audioBoundary.activity.outputDeviceAvailable else {
+                return false
+            }
+            requiresInterruptionAuthorization = false
+        case .sourceGatedNearEnd:
+            guard activity.sourceGateEpoch > 0,
+                  audioTimestamp <= receivedAtNanoseconds else {
+                return false
+            }
+            requiresInterruptionAuthorization = true
+        }
         realtimeUtteranceCompletionTask?.cancel()
         realtimeUtteranceCompletionTask = nil
         realtimeUtteranceCompletionToken = nil
@@ -2855,9 +3005,10 @@ public final class RuntimeCore {
         state.resumePauseStartedAtNanoseconds =
             pauseStartedAtNanoseconds
         state.resumeReceivedAtNanoseconds = receivedAtNanoseconds
-        state.resumeSourceGateEpoch =
-            audioBoundary.lastUserActivitySourceGateEpoch
-        state.awaitsResumeAcousticAuthorization = true
+        state.resumeSourceGateEpoch = requiresInterruptionAuthorization
+            ? activity.sourceGateEpoch : 0
+        state.awaitsResumeAcousticAuthorization =
+            requiresInterruptionAuthorization
         state.completionCandidate = nil
         realtimeUtteranceCompletionState = state
         #if DEBUG
@@ -2918,7 +3069,7 @@ public final class RuntimeCore {
                     }
                 }
             }
-            guard claimRealtimeUtteranceAcousticAuthorization(
+            guard claimRealtimeUtteranceAdmission(
                 for: event,
                 receivedAtNanoseconds: receivedAtNanoseconds
             ) else {
@@ -3397,8 +3548,7 @@ public final class RuntimeCore {
 
     nonisolated func appendRealtimeResidentBrainAudio(
         _ frame: RealtimeBrainAudioFrame,
-        sourceGateEpoch: UInt64 = 0,
-        userActivityEvidence: Bool = false
+        activity: RealtimeBrainLocalAudioActivity = .none
     ) async -> Result<Void, RealtimeResidentBrainError> {
         guard let brainLease = currentRealtimeBrainLease(
             identity: frame.identity
@@ -3407,8 +3557,7 @@ public final class RuntimeCore {
         }
         let audioStart = realtimeBrainSessionGate.beginAudioInput(
             frame,
-            sourceGateEpoch: sourceGateEpoch,
-            userActivityEvidence: userActivityEvidence
+            activity: activity
         )
         let token: UUID
         switch audioStart {
@@ -3426,8 +3575,7 @@ public final class RuntimeCore {
             _ = realtimeBrainSessionGate.finishAudioInput(
                 token: token,
                 frame: frame,
-                sourceGateEpoch: sourceGateEpoch,
-                userActivityEvidence: userActivityEvidence,
+                activity: activity,
                 succeeded: false
             )
             await settleFailedRealtimeBrainSession(
@@ -3440,20 +3588,49 @@ public final class RuntimeCore {
               realtimeBrainSessionGate.finishAudioInput(
                 token: token,
                 frame: frame,
-                sourceGateEpoch: sourceGateEpoch,
-                userActivityEvidence: userActivityEvidence,
+                activity: activity,
                 succeeded: true
               ) else {
             _ = realtimeBrainSessionGate.finishAudioInput(
                 token: token,
                 frame: frame,
-                sourceGateEpoch: sourceGateEpoch,
-                userActivityEvidence: userActivityEvidence,
+                activity: activity,
                 succeeded: false
             )
             return .failure(.cancelled)
         }
         await reconcilePendingRealtimeUtteranceResume(
+            matching: frame.identity
+        )
+        await promotePendingRealtimeUtteranceStartIfEligible(
+            matching: frame.identity
+        )
+        return .success(())
+    }
+
+    nonisolated func confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
+        frame: RealtimeBrainAudioFrame,
+        activity: RealtimeBrainLocalAudioActivity
+    ) async -> Result<Void, RealtimeResidentBrainError> {
+        guard activity.kind == .listeningNearEnd,
+              let brainLease = currentRealtimeBrainLease(
+                identity: frame.identity
+              ),
+              realtimeBrainSessionGate.isActive(frame.identity) else {
+            return .failure(.invalidIdentity)
+        }
+        guard realtimeBrainSessionGate.confirmListeningAudioInput(
+                frame: frame,
+                activity: activity
+              ),
+              activeBrainLeaseGate.isCurrent(brainLease),
+              realtimeBrainSessionGate.isActive(frame.identity) else {
+            return .failure(.cancelled)
+        }
+        await reconcilePendingRealtimeUtteranceResume(
+            matching: frame.identity
+        )
+        await promotePendingRealtimeUtteranceStartIfEligible(
             matching: frame.identity
         )
         return .success(())

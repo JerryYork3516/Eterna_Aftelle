@@ -516,6 +516,14 @@ R8.4.2 verification: independent 1 case / 251 checks; five short-pause cases pro
 
 R8.4.2 Human Gate: real Qwen speech-activity timing, real room, real microphone/speaker, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN
 
+R8.4.2 Normal Listening Admission Repair — PASS / FROZEN
+
+Independent review found one P1 in the frozen temporal-completion path: a new logical utterance could only claim interruption acoustic eligibility, so playback-inactive ordinary near-end PCM could reach the Provider while Runtime never admitted the corresponding user utterance. The repair keeps two explicit, mutually constrained paths. Playback-active input still requires the existing R8.4.1/R8.3 source-gated near-end or double-talk eligibility. Playback-inactive input may produce Host-local Listening activity only from production AEC output and an accepted PCM frame; after Provider append succeeds, Input Bridge re-reads the current Host lifecycle and Runtime revalidates the exact Session, Brain lease, generation, context revision, frame, activity, route and devices before committing the evidence. Provider speech activity remains evidence only, Provider gains no admission/completion authority, and `RealtimeBrainAudioFrame` remains a pure PCM/identity/format/provenance contract.
+
+The repaired production matrix added continuous Listening speech, short-pause/resume, Provider-first ordering, Provider-only negative cases, silence/noise/ordinary non-speech PCM, residual-tail rejection, stale generation and Stop/restart. The dedicated Listening path passed 139 checks: one continuous case and one short-pause case yielded four speaking admissions and exactly three true-end completion candidates; Provider-only admission/completion, negative PCM admission/completion, stale PCM admission/completion and old-generation completion were all 0. The full R8.4.2 suite passed 390 checks while preserving the original five short-pause cases with 0 false completions and eleven true-end cases with exactly eleven candidates. It still produced 0 response creates, Provider interrupts/cancels, Playback clears or extra generation advances. A monotonic capture-host-time generation fence also discards pre-fence queued capture callbacks and resets capture converters, packetization and AEC capture remainder so N PCM cannot be admitted into N+1.
+
+R8.4.2 repair regressions retained R8.4.1 at 163 checks with 11/11 production double-talk positives and every negative side effect 0; R8.2.3 at 126 checks with 3840 resident-only stress frames and every safety metric 0; R8.3.1/R8.3.2/R8.3.3 at 29/62/68 checks; R8.2.2 at 76 checks; R7 Host/Input/Output at 131/111/163 checks; AEC at 992 checks; Runtime contract/Qwen/Tool at 291/173/143 checks. Real Qwen, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN / HUMAN_GATE.
+
 Next allowed node: R8.4.3 Semantic Fusion
 
 ----
