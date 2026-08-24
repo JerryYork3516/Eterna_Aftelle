@@ -1533,7 +1533,31 @@ nonisolated struct RealtimeUtteranceCompletionDebugSnapshot:
     let pendingStartTurnID: RealtimeBrainTurnID?
     let pendingStartAtNanoseconds: UInt64
 }
+
+nonisolated struct RealtimeUserTurnDispositionDebugSnapshot:
+    Sendable,
+    Equatable {
+    let passiveBackchannelCount: UInt64
+    let substantiveCount: UInt64
+    let lastCanonicalTranscript: String?
+    let lastDisposition: String?
+}
 #endif
+
+nonisolated struct RealtimePassiveBackchannelPresentation:
+    Sendable,
+    Equatable {
+    let session: RealtimeBrainSessionIdentity
+    let contextRevision: UInt64
+    let turnIDs: Set<RealtimeBrainTurnID>
+
+    func contains(_ identity: RealtimeBrainEventIdentity) -> Bool {
+        guard identity.session == session,
+              identity.contextRevision == contextRevision,
+              let turnID = identity.turnID else { return false }
+        return turnIDs.contains(turnID)
+    }
+}
 
 public final class RuntimeCore {
     private static let runtimeToolExecutionCapacity = 8
@@ -1631,6 +1655,11 @@ public final class RuntimeCore {
             RealtimeBrainResponseCreateAuthorization
         let semanticInputKeys: [RealtimeBrainPendingTurnKey]
         let responseInputKey: RealtimeBrainPendingTurnKey
+    }
+
+    private enum RealtimeUserTurnDisposition: String {
+        case substantive
+        case passiveBackchannel = "passive_backchannel"
     }
 
     private enum RealtimeBrainResponseCreateAuthorization {
@@ -1951,11 +1980,18 @@ public final class RuntimeCore {
     private var realtimeInterruptionProposalDecisionOrder:
         [RealtimeInterruptionProposalKey] = []
     private var pendingRealtimeInterruption: PendingRealtimeInterruption?
+    private var realtimePassiveBackchannelHandler: (
+        @MainActor @Sendable (RealtimePassiveBackchannelPresentation) -> Void
+    )?
     #if DEBUG
     private var realtimeInterruptionTimingDebugSnapshot:
         RealtimeInterruptionTimingDebugSnapshot?
     private var realtimeUtteranceCompletionCandidateCount: UInt64 = 0
     private var realtimeUtteranceResumedPauseCount: UInt64 = 0
+    private var realtimePassiveBackchannelDispositionCount: UInt64 = 0
+    private var realtimeSubstantiveDispositionCount: UInt64 = 0
+    private var realtimeLastCanonicalTranscript: String?
+    private var realtimeLastUserTurnDisposition: String?
     #endif
     private var realtimeAcousticObservationLedger:
         RealtimeAcousticObservationLedger?
@@ -2046,6 +2082,17 @@ public final class RuntimeCore {
         self.hostEnv = hostEnv
         self.sessionStore = sessionStore
         self.memoryController = memoryController
+    }
+
+    @MainActor
+    func setRealtimePassiveBackchannelHandler(
+        _ handler: (
+            @MainActor @Sendable (
+                RealtimePassiveBackchannelPresentation
+            ) -> Void
+        )?
+    ) {
+        realtimePassiveBackchannelHandler = handler
     }
 
     convenience init(providerCredentialReader: ProviderCredentialReading) {
@@ -2548,23 +2595,25 @@ public final class RuntimeCore {
         }
     }
 
+    @discardableResult
     private func retireRealtimeUtteranceSemanticKeys(
         _ keys: Set<RealtimeBrainPendingTurnKey>,
         session: RealtimeBrainSessionIdentity,
         contextRevision: UInt64,
         afterCommittedTerminalEvent: Bool = false
-    ) {
-        guard !keys.isEmpty else { return }
+    ) -> Bool {
+        guard !keys.isEmpty else { return false }
         guard realtimeBrainSessionGate.retireUserActivityTurns(
             Set(keys.map { $0.turnID }),
             session: session,
             contextRevision: contextRevision,
             afterCommittedTerminalEvent: afterCommittedTerminalEvent
-        ) else { return }
+        ) else { return false }
         realtimeUtteranceConsumedSemanticTurns.formUnion(keys)
         keys.forEach {
             realtimeBrainPendingUserInputs.removeValue(forKey: $0)
         }
+        return true
     }
 
     private func retireRealtimeUtteranceSemanticTurns(
@@ -3419,6 +3468,40 @@ public final class RuntimeCore {
     }
 
     @MainActor
+    private static func realtimeUserTurnDisposition(
+        for transcript: String
+    ) -> RealtimeUserTurnDisposition {
+        guard !transcript.contains("?"),
+              !transcript.contains("？") else {
+            return .substantive
+        }
+        var normalized = transcript
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        let trailingPunctuation: Set<Character> = [
+            ".", ",", "!", "。", "，", "！"
+        ]
+        while let last = normalized.last,
+              trailingPunctuation.contains(last) {
+            normalized.removeLast()
+        }
+        normalized = normalized.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalized.isEmpty else { return .substantive }
+
+        let passiveTranscripts: Set<String> = [
+            "嗯", "嗯嗯", "嗯 嗯嗯", "唔", "唔嗯", "哦", "哦哦",
+            "mhm", "mm", "mm-hmm", "uh-huh", "uh huh"
+        ]
+        return passiveTranscripts.contains(normalized)
+            ? .passiveBackchannel
+            : .substantive
+    }
+
+    @MainActor
     private func claimRealtimeUtteranceSemanticFusion()
         -> RealtimeUtteranceSemanticFusionClaim? {
         guard var state = realtimeUtteranceCompletionState,
@@ -3444,7 +3527,8 @@ public final class RuntimeCore {
         }.sorted { lhs, rhs in
             lhs.input.event.sequence < rhs.input.event.sequence
         }
-        guard let responseInput = semanticInputs.last else { return nil }
+        guard semanticInputs.count == state.sourceTurnIDs.count,
+              let responseInput = semanticInputs.last else { return nil }
         let transcript = semanticInputs
             .map { $0.input.transcript }
             .joined(separator: " ")
@@ -3459,6 +3543,51 @@ public final class RuntimeCore {
               realtimeBrainSessionGate.isCurrent(event.identity) else {
             return nil
         }
+        let disposition = Self.realtimeUserTurnDisposition(
+            for: transcript
+        )
+        if disposition == .passiveBackchannel {
+            let presentationTurnIDs = state.sourceTurnIDs.union([
+                state.key.turnID
+            ])
+            let semanticKeys = Set(
+                presentationTurnIDs.map { turnID in
+                    RealtimeBrainPendingTurnKey(
+                        session: state.key.session,
+                        turnID: turnID,
+                        contextRevision: state.key.contextRevision
+                    )
+                }
+            )
+            if retireRealtimeUtteranceSemanticKeys(
+                semanticKeys,
+                session: state.key.session,
+                contextRevision: state.key.contextRevision
+            ) {
+                #if DEBUG
+                realtimePassiveBackchannelDispositionCount &+= 1
+                realtimeLastCanonicalTranscript = transcript
+                realtimeLastUserTurnDisposition = disposition.rawValue
+                #endif
+                resetRealtimeUtteranceCompletionState(
+                    matching: event.identity
+                )
+                realtimePassiveBackchannelHandler?(
+                    RealtimePassiveBackchannelPresentation(
+                        session: state.key.session,
+                        contextRevision: state.key.contextRevision,
+                        turnIDs: presentationTurnIDs
+                    )
+                )
+                return nil
+            }
+        }
+        #if DEBUG
+        realtimeSubstantiveDispositionCount &+= 1
+        realtimeLastCanonicalTranscript = transcript
+        realtimeLastUserTurnDisposition =
+            RealtimeUserTurnDisposition.substantive.rawValue
+        #endif
         realtimeBrainPendingUserInputs[responseInput.key] =
             RealtimeBrainPendingUserInput(
                 transcript: transcript,
@@ -4564,6 +4693,25 @@ public final class RuntimeCore {
                 realtimeUtterancePendingStart?.event.identity.turnID,
             pendingStartAtNanoseconds:
                 realtimeUtterancePendingStart?.receivedAtNanoseconds ?? 0
+        )
+    }
+
+    @MainActor
+    static func realtimeUserTurnDispositionForTesting(
+        _ transcript: String
+    ) -> String {
+        realtimeUserTurnDisposition(for: transcript).rawValue
+    }
+
+    @MainActor
+    func realtimeUserTurnDispositionDebugSnapshot()
+        -> RealtimeUserTurnDispositionDebugSnapshot {
+        RealtimeUserTurnDispositionDebugSnapshot(
+            passiveBackchannelCount:
+                realtimePassiveBackchannelDispositionCount,
+            substantiveCount: realtimeSubstantiveDispositionCount,
+            lastCanonicalTranscript: realtimeLastCanonicalTranscript,
+            lastDisposition: realtimeLastUserTurnDisposition
         )
     }
 

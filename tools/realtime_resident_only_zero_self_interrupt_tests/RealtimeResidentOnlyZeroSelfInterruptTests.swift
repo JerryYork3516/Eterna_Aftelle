@@ -598,6 +598,31 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r843ExtraPlaybackClears = 0
     private static var r843ExtraGenerationAdvances = 0
 
+    private static var r844ClassifierPassiveCases = 0
+    private static var r844ClassifierSubstantiveCases = 0
+    private static var r844ClassifierFalsePassive = 0
+    private static var r844ClassifierFalseSubstantive = 0
+    private static var r844PassiveBackchannelCases = 0
+    private static var r844PassiveBackchannelDispositions = 0
+    private static var r844PassiveBackchannelResponseCreates = 0
+    private static var r844SubstantiveCases = 0
+    private static var r844SubstantiveDispositions = 0
+    private static var r844SubstantiveResponseCreates = 0
+    private static var r844CrossSourceMixedResponseCreates = 0
+    private static var r844CrossSourcePassiveResponseCreates = 0
+    private static var r844DuplicateResponseCreates = 0
+    private static var r844ProviderOnlyResponseCreates = 0
+    private static var r844ProviderOnlyDispositions = 0
+    private static var r844StaleGenerationResponseCreates = 0
+    private static var r844NPlusOneSubstantiveResponseCreates = 0
+    private static var r844FalseHistoryWrites = 0
+    private static var r844FalseMemoryWrites = 0
+    private static var r844RelationshipChanges = 0
+    private static var r844GrowthWrites = 0
+    private static var r844ExtraInterrupts = 0
+    private static var r844ExtraPlaybackClears = 0
+    private static var r844ExtraGenerationAdvances = 0
+
     static func main() async throws {
         guard CommandLine.arguments.count == 2
                 || (CommandLine.arguments.count == 3
@@ -608,7 +633,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r841-double-talk-only",
                         "--r842-listening-only",
                         "--r842-turn-completion-only",
-                        "--r843-semantic-fusion-only"
+                        "--r843-semantic-fusion-only",
+                        "--r844-classifier-only",
+                        "--r844-response-policy-only"
                     ].contains(CommandLine.arguments[2])) else {
             fatalError("fixture path required")
         }
@@ -617,6 +644,23 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--r844-classifier-only" {
+                testR844BackchannelClassifier()
+                print("realtime_backchannel_classifier_cases=\(cases)")
+                print("realtime_backchannel_classifier_checks=\(checks)")
+                printR844ClassifierMetrics()
+                return
+            }
+            if CommandLine.arguments[2] == "--r844-response-policy-only" {
+                try await testR844BackchannelResponsePolicy(
+                    fixture: fixture
+                )
+                print("realtime_backchannel_response_policy_cases=\(cases)")
+                print("realtime_backchannel_response_policy_checks=\(checks)")
+                printR844ResponsePolicyMetrics()
+                print("r844_real_qwen_and_devices=NOT_RUN_HUMAN_GATE")
+                return
+            }
             if CommandLine.arguments[2] == "--r843-semantic-fusion-only" {
                 try await testR843SemanticTurnTakingFusion(
                     fixture: fixture
@@ -1482,6 +1526,1227 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         expect(matrixObservations - matrixObservationsBefore >= observationTotal,
                "J: long resident-only stress evaluates the full observation count")
         try await close(stack)
+    }
+
+    private enum R844SemanticEventOrder {
+        case finalBeforeCompletion
+        case completionBeforeFinal
+    }
+
+    private static func testR844BackchannelClassifier() {
+        let passive = [
+            "嗯", "嗯嗯", "唔", "唔嗯", "哦", "哦哦",
+            "mhm", "mm", "mm-hmm", "uh-huh", "uh huh",
+            "  嗯  ", "\n嗯嗯\t", "MHM", "Mhm.", "嗯。",
+            "嗯！", "uh   huh", "嗯 嗯嗯"
+        ]
+        let substantive = [
+            "好", "好的", "可以", "行", "对", "是", "是的",
+            "yes", "yeah", "okay", "ok", "继续", "然后呢",
+            "为什么", "why", "嗯？", "嗯?", "嗯？为什么",
+            "嗯，我觉得还是第二个", "mhm but I disagree",
+            "嗯 我还有一个问题", "", "！", "uh"
+        ]
+        for transcript in passive {
+            cases += 1
+            let disposition = RuntimeCore
+                .realtimeUserTurnDispositionForTesting(transcript)
+            if disposition != "passive_backchannel" {
+                r844ClassifierFalseSubstantive += 1
+            }
+            expect(disposition == "passive_backchannel",
+                   "R8.4.4 classifier keeps a high-confidence passive set")
+            r844ClassifierPassiveCases += 1
+        }
+        for transcript in substantive {
+            cases += 1
+            let disposition = RuntimeCore
+                .realtimeUserTurnDispositionForTesting(transcript)
+            if disposition != "substantive" {
+                r844ClassifierFalsePassive += 1
+            }
+            expect(disposition == "substantive",
+                   "R8.4.4 classifier fails open for semantic input")
+            r844ClassifierSubstantiveCases += 1
+        }
+        expect(r844ClassifierPassiveCases == 19,
+               "R8.4.4 classifier covers the fixed passive matrix")
+        expect(r844ClassifierSubstantiveCases == 24,
+               "R8.4.4 classifier covers the fail-open matrix")
+        expect(r844ClassifierFalsePassive == 0
+                && r844ClassifierFalseSubstantive == 0,
+               "R8.4.4 classifier has zero disposition errors")
+    }
+
+    private static func printR844ClassifierMetrics() {
+        print("r844_classifier_passive_cases=\(r844ClassifierPassiveCases)")
+        print("r844_classifier_substantive_cases=\(r844ClassifierSubstantiveCases)")
+        print("r844_classifier_false_passive=\(r844ClassifierFalsePassive)")
+        print("r844_classifier_false_substantive=\(r844ClassifierFalseSubstantive)")
+    }
+
+    private static func testR844BackchannelResponsePolicy(
+        fixture: Data
+    ) async throws {
+        try await testR844ChinesePassiveBackchannel(fixture: fixture)
+        cases += 1
+        try await testR844FinalAfterCompletion(fixture: fixture)
+        cases += 1
+        try await testR844EnglishBackchannel(fixture: fixture)
+        cases += 1
+        try await testR844PunctuationNormalization(fixture: fixture)
+        cases += 1
+        try await testR844ShortSubstantive(fixture: fixture)
+        cases += 1
+        try await testR844BackchannelWithSubstantive(fixture: fixture)
+        cases += 1
+        try await testR844CrossSourceMixed(fixture: fixture)
+        cases += 1
+        try await testR844CrossSourcePassive(fixture: fixture)
+        cases += 1
+        try await testR844DuplicateSuppressionClosure(fixture: fixture)
+        cases += 1
+        try await testR844ProviderOnly(fixture: fixture)
+        cases += 1
+        try await testR844StaleGenerationClosure(fixture: fixture)
+        cases += 1
+        try await testR844NormalSubstantiveRegression(fixture: fixture)
+        cases += 1
+        try await testR844InterruptionRegression(fixture: fixture)
+        cases += 1
+
+        expect(r844PassiveBackchannelCases == 11
+                && r844PassiveBackchannelDispositions == 11,
+               "R8.4.4 executes every passive production disposition")
+        expect(r844PassiveBackchannelResponseCreates == 0,
+               "R8.4.4 passive backchannels create zero responses")
+        expect(r844SubstantiveCases == 12
+                && r844SubstantiveDispositions == 12,
+               "R8.4.4 executes every substantive production disposition")
+        expect(r844SubstantiveResponseCreates == r844SubstantiveCases,
+               "R8.4.4 substantive turns preserve exactly-once response")
+        expect(r844CrossSourceMixedResponseCreates == 1
+                && r844CrossSourcePassiveResponseCreates == 0,
+               "R8.4.4 classifies only final canonical aggregation")
+        expect(r844DuplicateResponseCreates == 0
+                && r844ProviderOnlyResponseCreates == 0
+                && r844ProviderOnlyDispositions == 0
+                && r844StaleGenerationResponseCreates == 0,
+               "R8.4.4 closes duplicate, Provider-only, and stale paths")
+        expect(r844NPlusOneSubstantiveResponseCreates == 1,
+               "R8.4.4 preserves N+1 substantive response creation")
+        expect(r844FalseHistoryWrites == 0
+                && r844FalseMemoryWrites == 0
+                && r844RelationshipChanges == 0
+                && r844GrowthWrites == 0,
+               "R8.4.4 passive turns remain ephemeral")
+        expect(r844ExtraInterrupts == 0
+                && r844ExtraPlaybackClears == 0
+                && r844ExtraGenerationAdvances == 0,
+               "R8.4.4 adds no interruption or generation authority")
+    }
+
+    private static func testR844ChinesePassiveBackchannel(
+        fixture: Data
+    ) async throws {
+        try await runR844SingleTurn(
+            fixture: fixture,
+            transcript: "嗯",
+            order: .finalBeforeCompletion,
+            expectedDisposition: "passive_backchannel",
+            seed: 48_100,
+            label: "Chinese passive"
+        )
+    }
+
+    private static func testR844FinalAfterCompletion(
+        fixture: Data
+    ) async throws {
+        try await runR844SingleTurn(
+            fixture: fixture,
+            transcript: "嗯嗯",
+            order: .completionBeforeFinal,
+            expectedDisposition: "passive_backchannel",
+            seed: 48_200,
+            label: "late final passive"
+        )
+    }
+
+    private static func testR844EnglishBackchannel(
+        fixture: Data
+    ) async throws {
+        for (index, transcript) in ["mhm", "uh-huh"].enumerated() {
+            try await runR844SingleTurn(
+                fixture: fixture,
+                transcript: transcript,
+                order: .finalBeforeCompletion,
+                expectedDisposition: "passive_backchannel",
+                seed: 48_300 + UInt32(index),
+                label: "English passive \(index)"
+            )
+        }
+    }
+
+    private static func testR844PunctuationNormalization(
+        fixture: Data
+    ) async throws {
+        for (index, transcript) in ["嗯。", "嗯！", "Mhm."].enumerated() {
+            try await runR844SingleTurn(
+                fixture: fixture,
+                transcript: transcript,
+                order: .finalBeforeCompletion,
+                expectedDisposition: "passive_backchannel",
+                seed: 48_400 + UInt32(index),
+                label: "punctuated passive \(index)"
+            )
+        }
+        try await runR844SingleTurn(
+            fixture: fixture,
+            transcript: "嗯？",
+            order: .finalBeforeCompletion,
+            expectedDisposition: "substantive",
+            seed: 48_410,
+            label: "question mark fail-open"
+        )
+    }
+
+    private static func testR844ShortSubstantive(
+        fixture: Data
+    ) async throws {
+        let transcripts = [
+            "好", "对", "继续", "为什么", "why", "yes", "okay"
+        ]
+        for (index, transcript) in transcripts.enumerated() {
+            try await runR844SingleTurn(
+                fixture: fixture,
+                transcript: transcript,
+                order: .finalBeforeCompletion,
+                expectedDisposition: "substantive",
+                seed: 48_500 + UInt32(index),
+                label: "short substantive \(index)"
+            )
+        }
+    }
+
+    private static func testR844BackchannelWithSubstantive(
+        fixture: Data
+    ) async throws {
+        try await runR844SingleTurn(
+            fixture: fixture,
+            transcript: "嗯，但是我不同意",
+            order: .finalBeforeCompletion,
+            expectedDisposition: "substantive",
+            seed: 48_600,
+            label: "backchannel plus substantive"
+        )
+    }
+
+    private static func testR844NormalSubstantiveRegression(
+        fixture: Data
+    ) async throws {
+        try await runR844SingleTurn(
+            fixture: fixture,
+            transcript: "今天晚上我们聊什么？",
+            order: .finalBeforeCompletion,
+            expectedDisposition: "substantive",
+            seed: 49_200,
+            label: "normal substantive regression"
+        )
+    }
+
+    private static func runR844SingleTurn(
+        fixture: Data,
+        transcript: String,
+        order: R844SemanticEventOrder,
+        expectedDisposition: String,
+        seed: UInt32,
+        label: String
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let openBaseline = await stack.provider.openCount()
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        let dispositionBaseline = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let generation = stack.session.generation
+        let lease = stack.runtime.activeBrainLeaseForTesting()
+        let dialogueBefore = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
+        let growthBefore = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+
+        try await admitR844ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: seed,
+            label: label
+        )
+        switch order {
+        case .finalBeforeCompletion:
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 3,
+                kind: .userTranscriptFinal(transcript),
+                label: "R8.4.4 \(label) final"
+            )
+            let identity = r843EventIdentity(
+                session: stack.session,
+                turnID: turnID,
+                contextRevision: 1
+            )
+            await waitUntilOnMainActor(
+                "R8.4.4 \(label) final tracked before completion"
+            ) {
+                stack.runtime.realtimePendingUserInputForTesting(identity)
+                        == transcript
+                    && stack.runtime
+                        .realtimeUtteranceCompletionDebugSnapshot()
+                        .completionCandidateCount == candidateBaseline
+                    && stack.runtime
+                        .realtimeUserTurnDispositionDebugSnapshot()
+                        == dispositionBaseline
+            }
+            expect(await stack.provider.createCount() == createBaseline,
+                   "R8.4.4 final cannot bypass completion")
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 4,
+                kind: .userSpeechStopped,
+                label: "R8.4.4 \(label) stop"
+            )
+        case .completionBeforeFinal:
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 3,
+                kind: .userSpeechStopped,
+                label: "R8.4.4 \(label) stop"
+            )
+            await waitForR842Completion(
+                runtime: stack.runtime,
+                expectedCount: candidateBaseline + 1,
+                expectedSession: stack.session,
+                expectedTurn: turnID,
+                expectedStoppedSequence: 3,
+                label: "R8.4.4 \(label) completion before final"
+            )
+            expect(await stack.provider.createCount() == createBaseline,
+                   "R8.4.4 completion alone cannot create a response")
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: turnID,
+                sequence: 4,
+                kind: .userTranscriptFinal(transcript),
+                label: "R8.4.4 \(label) late final"
+            )
+        }
+
+        let expectsPassive = expectedDisposition == "passive_backchannel"
+        await waitUntilOnMainActor("R8.4.4 \(label) disposition") {
+            let completion = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let disposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            let dispositionReached = expectsPassive
+                ? disposition.passiveBackchannelCount
+                    == dispositionBaseline.passiveBackchannelCount + 1
+                : disposition.substantiveCount
+                    == dispositionBaseline.substantiveCount + 1
+            return completion.completionCandidateCount
+                    == candidateBaseline + 1
+                && dispositionReached
+        }
+        if !expectsPassive {
+            await waitUntil("R8.4.4 \(label) response create") {
+                await stack.provider.createCount() == createBaseline + 1
+            }
+        }
+        await waitUntilOnMainActor("R8.4.4 \(label) settles route state") {
+            let expectedRoutePhase: FormalSpeechRoutePhase = expectsPassive
+                ? .listening : .processing
+            return stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase == .idle
+                && stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == expectedRoutePhase
+        }
+
+        let disposition = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let createDelta = await stack.provider.createCount() - createBaseline
+        let passiveDelta = Int(
+            disposition.passiveBackchannelCount
+                - dispositionBaseline.passiveBackchannelCount
+        )
+        let substantiveDelta = Int(
+            disposition.substantiveCount
+                - dispositionBaseline.substantiveCount
+        )
+        expect(disposition.lastCanonicalTranscript == transcript
+                && disposition.lastDisposition == expectedDisposition,
+               "R8.4.4 disposition uses the final canonical transcript")
+        expect(passiveDelta == (expectsPassive ? 1 : 0)
+                && substantiveDelta == (expectsPassive ? 0 : 1),
+               "R8.4.4 executes exactly one effective disposition")
+        expect(createDelta == (expectsPassive ? 0 : 1),
+               "R8.4.4 response creation follows Runtime disposition")
+        let openCount = await stack.provider.openCount()
+        let lastSession = await stack.provider.lastSession()
+        expect(openCount == openBaseline && lastSession == stack.session,
+               "R8.4.4 keeps one Session and Brain route")
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == generation
+                && stack.runtime.activeBrainLeaseForTesting() == lease,
+               "R8.4.4 preserves generation and Brain lease")
+
+        let interruptDelta = await stack.provider.interruptCount()
+            - interruptBaseline
+        let cancelDelta = await stack.provider.cancelCount() - cancelBaseline
+        let clearDelta = stack.outputPlayer.clearScheduledPlaybackCount
+            - clearBaseline
+        r844ExtraInterrupts += interruptDelta + cancelDelta
+        r844ExtraPlaybackClears += clearDelta
+        expect(interruptDelta == 0 && cancelDelta == 0 && clearDelta == 0,
+               "R8.4.4 response policy has no interruption side effects")
+
+        if expectsPassive {
+            let identity = r843EventIdentity(
+                session: stack.session,
+                turnID: turnID,
+                contextRevision: 1
+            )
+            let dialogueAfter = try stack.sessionStore
+                .loadMostRecentDialogueEntries()
+            let narrativeAfter = stack.runtime
+                .narrativeMemoryDebugSnapshot()
+            let relationshipAfter = stack.runtime.currentRelationshipState
+            let growthAfter = stack.runtime
+                .realtimeGrowthObservationDecisionCountForTesting()
+            let historyWrites = dialogueAfter == dialogueBefore ? 0 : 1
+            let memoryWrites = narrativeAfter == narrativeBefore ? 0 : 1
+            let relationshipChanges = relationshipAfter == relationshipBefore
+                ? 0 : 1
+            let growthWrites = growthAfter == growthBefore ? 0 : 1
+            r844FalseHistoryWrites += historyWrites
+            r844FalseMemoryWrites += memoryWrites
+            r844RelationshipChanges += relationshipChanges
+            r844GrowthWrites += growthWrites
+            expect(stack.runtime.realtimePendingUserInputForTesting(identity)
+                    == nil,
+                   "R8.4.4 passive semantic pending input is retired")
+            expect(historyWrites == 0 && memoryWrites == 0
+                    && relationshipChanges == 0 && growthWrites == 0,
+                   "R8.4.4 passive backchannel stays ephemeral")
+            r844PassiveBackchannelCases += 1
+            r844PassiveBackchannelDispositions += passiveDelta
+            r844PassiveBackchannelResponseCreates += createDelta
+        } else {
+            r844SubstantiveCases += 1
+            r844SubstantiveDispositions += substantiveDelta
+            r844SubstantiveResponseCreates += createDelta
+        }
+        try await close(stack)
+    }
+
+    private static func testR844CrossSourceMixed(
+        fixture: Data
+    ) async throws {
+        r844CrossSourceMixedResponseCreates = try await
+            runR844CrossSourceTurn(
+                fixture: fixture,
+                firstTranscript: "嗯",
+                secondTranscript: "我还有一个问题",
+                expectedDisposition: "substantive",
+                secondFinalAfterCompletion: true,
+                seed: 48_700,
+                label: "cross-source mixed"
+            )
+    }
+
+    private static func testR844CrossSourcePassive(
+        fixture: Data
+    ) async throws {
+        let chineseResponseCreates = try await
+            runR844CrossSourceTurn(
+                fixture: fixture,
+                firstTranscript: "嗯",
+                secondTranscript: "嗯嗯",
+                expectedDisposition: "passive_backchannel",
+                seed: 48_800,
+                label: "cross-source Chinese passive"
+            )
+        let segmentedEnglishResponseCreates = try await
+            runR844CrossSourceTurn(
+                fixture: fixture,
+                firstTranscript: "uh",
+                secondTranscript: "huh",
+                expectedDisposition: "passive_backchannel",
+                seed: 48_850,
+                label: "cross-source segmented uh huh"
+            )
+        r844CrossSourcePassiveResponseCreates =
+            chineseResponseCreates + segmentedEnglishResponseCreates
+    }
+
+    private static func runR844CrossSourceTurn(
+        fixture: Data,
+        firstTranscript: String,
+        secondTranscript: String,
+        expectedDisposition: String,
+        secondFinalAfterCompletion: Bool = false,
+        seed: UInt32,
+        label: String
+    ) async throws -> Int {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let logicalTurnID = RealtimeBrainTurnID()
+        let reboundTurnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let candidateBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        let dispositionBaseline = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let generation = stack.session.generation
+        let lease = stack.runtime.activeBrainLeaseForTesting()
+        let dialogueBefore = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
+        let growthBefore = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+
+        try await admitR844ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            sourceTurnID: logicalTurnID,
+            sequence: 2,
+            seed: seed,
+            label: "\(label) first segment"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: logicalTurnID,
+            sequence: 3,
+            kind: .userTranscriptFinal(firstTranscript),
+            label: "R8.4.4 \(label) first final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: logicalTurnID,
+            sequence: 4,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 \(label) short stop"
+        )
+        try? await Task.sleep(for: .milliseconds(140))
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: seed + 1, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "R8.4.4 \(label) continuation"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: reboundTurnID,
+            sequence: 5,
+            kind: .userSpeechStarted,
+            label: "R8.4.4 \(label) resumed start"
+        )
+        await waitUntilOnMainActor("R8.4.4 \(label) logical rebound") {
+            let completion = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return completion.phase == .speaking
+                && completion.turnID == logicalTurnID
+                && completion.sourceTurnID == reboundTurnID
+        }
+        if !secondFinalAfterCompletion {
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: reboundTurnID,
+                sequence: 6,
+                kind: .userTranscriptFinal(secondTranscript),
+                label: "R8.4.4 \(label) second final"
+            )
+        }
+        await waitBeyondR842CompletionWindow()
+        expect(stack.runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .speaking,
+               "R8.4.4 cross-source pause remains one logical utterance")
+        expect(await stack.provider.createCount() == createBaseline,
+               "R8.4.4 does not classify an incomplete aggregation")
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: reboundTurnID,
+            sequence: secondFinalAfterCompletion ? 6 : 7,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 \(label) true stop"
+        )
+
+        if secondFinalAfterCompletion {
+            await waitUntilOnMainActor(
+                "R8.4.4 \(label) awaits complete aggregation"
+            ) {
+                let completion = stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot()
+                return completion.completionCandidateCount
+                    == candidateBaseline + 1
+            }
+            let awaitingCompletion = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let awaitingDisposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            let awaitingCreateCount = await stack.provider.createCount()
+            expect(awaitingCompletion.phase == .completionCandidate
+                    && awaitingDisposition == dispositionBaseline
+                    && awaitingCreateCount == createBaseline,
+                   "R8.4.4 incomplete cross-source aggregation stays pending")
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: reboundTurnID,
+                sequence: 7,
+                kind: .userTranscriptFinal(secondTranscript),
+                label: "R8.4.4 \(label) late second final"
+            )
+        }
+
+        let expectsPassive = expectedDisposition == "passive_backchannel"
+        await waitUntilOnMainActor("R8.4.4 \(label) disposition") {
+            let completion = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let disposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            let dispositionReached = expectsPassive
+                ? disposition.passiveBackchannelCount
+                    == dispositionBaseline.passiveBackchannelCount + 1
+                : disposition.substantiveCount
+                    == dispositionBaseline.substantiveCount + 1
+            return completion.completionCandidateCount
+                    == candidateBaseline + 1
+                && dispositionReached
+        }
+        if !expectsPassive {
+            await waitUntil("R8.4.4 \(label) response create") {
+                await stack.provider.createCount() == createBaseline + 1
+            }
+        }
+        await waitUntilOnMainActor("R8.4.4 \(label) idle") {
+            let expectedRoutePhase: FormalSpeechRoutePhase = expectsPassive
+                ? .listening : .processing
+            return stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase == .idle
+                && stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == expectedRoutePhase
+        }
+
+        let expectedCanonical = "\(firstTranscript) \(secondTranscript)"
+        let disposition = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let createDelta = await stack.provider.createCount() - createBaseline
+        let passiveDelta = Int(
+            disposition.passiveBackchannelCount
+                - dispositionBaseline.passiveBackchannelCount
+        )
+        let substantiveDelta = Int(
+            disposition.substantiveCount
+                - dispositionBaseline.substantiveCount
+        )
+        expect(disposition.lastCanonicalTranscript == expectedCanonical
+                && disposition.lastDisposition == expectedDisposition,
+               "R8.4.4 cross-source policy uses final canonical aggregation")
+        expect(passiveDelta == (expectsPassive ? 1 : 0)
+                && substantiveDelta == (expectsPassive ? 0 : 1)
+                && createDelta == (expectsPassive ? 0 : 1),
+               "R8.4.4 cross-source disposition controls response once")
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == generation
+                && stack.runtime.activeBrainLeaseForTesting() == lease,
+               "R8.4.4 cross-source disposition preserves identity")
+
+        let interruptDelta = await stack.provider.interruptCount()
+            - interruptBaseline
+        let cancelDelta = await stack.provider.cancelCount() - cancelBaseline
+        let clearDelta = stack.outputPlayer.clearScheduledPlaybackCount
+            - clearBaseline
+        r844ExtraInterrupts += interruptDelta + cancelDelta
+        r844ExtraPlaybackClears += clearDelta
+        expect(interruptDelta == 0 && cancelDelta == 0 && clearDelta == 0,
+               "R8.4.4 cross-source policy has no decision side effects")
+
+        let firstIdentity = r843EventIdentity(
+            session: stack.session,
+            turnID: logicalTurnID,
+            contextRevision: 1
+        )
+        let secondIdentity = r843EventIdentity(
+            session: stack.session,
+            turnID: reboundTurnID,
+            contextRevision: 1
+        )
+        if expectsPassive {
+            let dialogueAfter = try stack.sessionStore
+                .loadMostRecentDialogueEntries()
+            let historyWrites = dialogueAfter == dialogueBefore ? 0 : 1
+            let memoryWrites = stack.runtime.narrativeMemoryDebugSnapshot()
+                == narrativeBefore ? 0 : 1
+            let relationshipChanges = stack.runtime.currentRelationshipState
+                == relationshipBefore ? 0 : 1
+            let growthWrites = stack.runtime
+                .realtimeGrowthObservationDecisionCountForTesting()
+                == growthBefore ? 0 : 1
+            r844FalseHistoryWrites += historyWrites
+            r844FalseMemoryWrites += memoryWrites
+            r844RelationshipChanges += relationshipChanges
+            r844GrowthWrites += growthWrites
+            expect(stack.runtime.realtimePendingUserInputForTesting(
+                        firstIdentity
+                    ) == nil
+                    && stack.runtime.realtimePendingUserInputForTesting(
+                        secondIdentity
+                    ) == nil,
+                   "R8.4.4 retires every passive source alias")
+            expect(historyWrites == 0 && memoryWrites == 0
+                    && relationshipChanges == 0 && growthWrites == 0,
+                   "R8.4.4 cross-source passive remains ephemeral")
+            let settledDisposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            let settledCreateCount = await stack.provider.createCount()
+            for (sequence, turnID, kind) in [
+                (UInt64(8), logicalTurnID,
+                 RealtimeResidentBrainEventKind
+                    .userTranscriptFinal(firstTranscript)),
+                (UInt64(9), logicalTurnID,
+                 RealtimeResidentBrainEventKind.userSpeechStopped),
+                (UInt64(10), reboundTurnID,
+                 RealtimeResidentBrainEventKind
+                    .userTranscriptFinal(secondTranscript)),
+                (UInt64(11), reboundTurnID,
+                 RealtimeResidentBrainEventKind.userSpeechStopped)
+            ] {
+                await enqueueR843Activity(
+                    stack: stack,
+                    session: stack.session,
+                    turnID: turnID,
+                    sequence: sequence,
+                    kind: kind,
+                    label: "R8.4.4 \(label) retired alias \(sequence)"
+                )
+            }
+            await waitBeyondR842CompletionWindow()
+            let replayCreateCount = await stack.provider.createCount()
+            expect(stack.runtime
+                    .realtimeUserTurnDispositionDebugSnapshot()
+                        == settledDisposition
+                    && replayCreateCount == settledCreateCount
+                    && stack.runtime.realtimePendingUserInputForTesting(
+                        firstIdentity
+                    ) == nil
+                    && stack.runtime.realtimePendingUserInputForTesting(
+                        secondIdentity
+                    ) == nil
+                    && stack.controller
+                        .formalSpeechRouteDebugSnapshot.phase == .listening
+                    && stack.controller
+                        .formalSpeechRouteDebugSnapshot.generation == generation
+                    && stack.runtime.activeBrainLeaseForTesting() == lease,
+                   "R8.4.4 every passive source alias stays retired")
+            r844PassiveBackchannelCases += 1
+            r844PassiveBackchannelDispositions += passiveDelta
+            r844PassiveBackchannelResponseCreates += createDelta
+        } else {
+            expect(stack.runtime.realtimePendingUserInputForTesting(
+                        secondIdentity
+                    ) == expectedCanonical,
+                   "R8.4.4 substantive aggregation reaches R8.4.3 unchanged")
+            r844SubstantiveCases += 1
+            r844SubstantiveDispositions += substantiveDelta
+            r844SubstantiveResponseCreates += createDelta
+        }
+        try await close(stack)
+        return createDelta
+    }
+
+    private static func testR844DuplicateSuppressionClosure(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let dispositionBaseline = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let dialogueBefore = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
+        let growthBefore = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+
+        try await admitR844ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 48_900,
+            label: "duplicate suppression"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userTranscriptFinal("唔"),
+            label: "R8.4.4 duplicate initial final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 duplicate initial stop"
+        )
+        await waitUntilOnMainActor("R8.4.4 duplicate initial suppress") {
+            let disposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            return disposition.passiveBackchannelCount
+                    == dispositionBaseline.passiveBackchannelCount + 1
+                && stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase == .idle
+        }
+        let suppressedDisposition = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let nextTurnID = RealtimeBrainTurnID()
+        try await admitR844ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            sourceTurnID: nextTurnID,
+            sequence: 5,
+            seed: 48_901,
+            label: "duplicate suppression next utterance"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: nextTurnID,
+            sequence: 6,
+            kind: .userTranscriptFinal("哦"),
+            label: "R8.4.4 next passive final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: nextTurnID,
+            sequence: 7,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 next passive stop"
+        )
+        await waitUntilOnMainActor("R8.4.4 next passive suppress") {
+            let disposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            return disposition.passiveBackchannelCount
+                    == dispositionBaseline.passiveBackchannelCount + 2
+                && stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase == .idle
+                && stack.controller
+                    .formalSpeechRouteDebugSnapshot.phase == .listening
+        }
+        let settledDisposition = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        for (sequence, replayTurnID, kind) in [
+            (UInt64(8), turnID, RealtimeResidentBrainEventKind
+                .userTranscriptFinal("唔")),
+            (UInt64(9), turnID,
+             RealtimeResidentBrainEventKind.userSpeechStopped),
+            (UInt64(10), nextTurnID, RealtimeResidentBrainEventKind
+                .userTranscriptFinal("哦")),
+            (UInt64(11), nextTurnID,
+             RealtimeResidentBrainEventKind.userSpeechStopped)
+        ] {
+            await enqueueR843Activity(
+                stack: stack,
+                session: stack.session,
+                turnID: replayTurnID,
+                sequence: sequence,
+                kind: kind,
+                label: "R8.4.4 duplicate late evidence \(sequence)"
+            )
+        }
+        await waitBeyondR842CompletionWindow()
+
+        let finalDisposition = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let createDelta = await stack.provider.createCount() - createBaseline
+        r844DuplicateResponseCreates = createDelta
+        r844PassiveBackchannelCases += 2
+        r844PassiveBackchannelDispositions += Int(
+            finalDisposition.passiveBackchannelCount
+                - dispositionBaseline.passiveBackchannelCount
+        )
+        r844PassiveBackchannelResponseCreates += createDelta
+        expect(createDelta == 0
+                && settledDisposition.passiveBackchannelCount
+                    == suppressedDisposition.passiveBackchannelCount + 1
+                && finalDisposition == settledDisposition
+                && stack.controller
+                    .formalSpeechRouteDebugSnapshot.phase == .listening,
+               "R8.4.4 duplicate final/stop cannot reclassify or respond")
+        let identity = r843EventIdentity(
+            session: stack.session,
+            turnID: turnID,
+            contextRevision: 1
+        )
+        expect(stack.runtime.realtimePendingUserInputForTesting(identity)
+                == nil
+                && stack.runtime.realtimePendingUserInputForTesting(
+                    r843EventIdentity(
+                        session: stack.session,
+                        turnID: nextTurnID,
+                        contextRevision: 1
+                    )
+                ) == nil,
+               "R8.4.4 duplicate evidence cannot resurrect pending input")
+
+        let dialogueAfter = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let historyWrites = dialogueAfter == dialogueBefore ? 0 : 1
+        let memoryWrites = stack.runtime.narrativeMemoryDebugSnapshot()
+            == narrativeBefore ? 0 : 1
+        let relationshipChanges = stack.runtime.currentRelationshipState
+            == relationshipBefore ? 0 : 1
+        let growthWrites = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+            == growthBefore ? 0 : 1
+        r844FalseHistoryWrites += historyWrites
+        r844FalseMemoryWrites += memoryWrites
+        r844RelationshipChanges += relationshipChanges
+        r844GrowthWrites += growthWrites
+        expect(historyWrites == 0 && memoryWrites == 0
+                && relationshipChanges == 0 && growthWrites == 0,
+               "R8.4.4 duplicate passive evidence remains ephemeral")
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR844ProviderOnly(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let dispositionBaseline = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let dialogueBefore = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
+        let growthBefore = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 2,
+            kind: .userSpeechStarted,
+            label: "R8.4.4 Provider-only start"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 Provider-only stop"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userTranscriptFinal("嗯"),
+            label: "R8.4.4 Provider-only final"
+        )
+        await waitBeyondR842CompletionWindow()
+
+        let disposition = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        r844ProviderOnlyResponseCreates = await stack.provider.createCount()
+            - createBaseline
+        r844ProviderOnlyDispositions = Int(
+            disposition.passiveBackchannelCount
+                - dispositionBaseline.passiveBackchannelCount
+                + disposition.substantiveCount
+                - dispositionBaseline.substantiveCount
+        )
+        expect(r844ProviderOnlyResponseCreates == 0
+                && r844ProviderOnlyDispositions == 0
+                && stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase == .idle,
+               "R8.4.4 Provider-only evidence has no policy authority")
+        let dialogueAfter = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let historyWrites = dialogueAfter == dialogueBefore ? 0 : 1
+        let memoryWrites = stack.runtime.narrativeMemoryDebugSnapshot()
+            == narrativeBefore ? 0 : 1
+        let relationshipChanges = stack.runtime.currentRelationshipState
+            == relationshipBefore ? 0 : 1
+        let growthWrites = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+            == growthBefore ? 0 : 1
+        r844FalseHistoryWrites += historyWrites
+        r844FalseMemoryWrites += memoryWrites
+        r844RelationshipChanges += relationshipChanges
+        r844GrowthWrites += growthWrites
+        expect(historyWrites == 0 && memoryWrites == 0
+                && relationshipChanges == 0 && growthWrites == 0,
+               "R8.4.4 Provider-only backchannel writes no persistence")
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: stack.session.generation
+        )
+        try await close(stack)
+    }
+
+    private static func testR844StaleGenerationClosure(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let oldTurnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let dispositionBaseline = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        try await admitR844ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            sourceTurnID: oldTurnID,
+            sequence: 2,
+            seed: 49_000,
+            label: "stale generation N"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: oldTurnID,
+            sequence: 3,
+            kind: .userTranscriptFinal("嗯"),
+            label: "R8.4.4 stale N final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: oldTurnID,
+            sequence: 4,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 stale N stop"
+        )
+        let nextSession = await restartR843Route(
+            stack: stack,
+            label: "R8.4.4 stale N timer"
+        )
+        await waitBeyondR842CompletionWindow()
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: oldTurnID,
+            sequence: 5,
+            kind: .userTranscriptFinal("嗯"),
+            label: "R8.4.4 late N final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: oldTurnID,
+            sequence: 6,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 late N stop"
+        )
+        let nextTurnID = RealtimeBrainTurnID()
+        try await admitR844ListeningTurn(
+            stack: stack,
+            session: nextSession,
+            sourceTurnID: nextTurnID,
+            sequence: 2,
+            seed: 49_001,
+            label: "N+1 substantive"
+        )
+        let afterOld = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        r844StaleGenerationResponseCreates = await stack.provider
+            .createCount() - createBaseline
+        expect(nextSession.generation == stack.session.generation + 1
+                && afterOld == dispositionBaseline
+                && afterOld.passiveBackchannelCount
+                    == dispositionBaseline.passiveBackchannelCount
+                && r844StaleGenerationResponseCreates == 0,
+               "R8.4.4 stale N evidence cannot classify or respond in N+1")
+        await enqueueR843Activity(
+            stack: stack,
+            session: nextSession,
+            turnID: nextTurnID,
+            sequence: 3,
+            kind: .userTranscriptFinal("N+1 正常问题"),
+            label: "R8.4.4 N+1 substantive final"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: nextSession,
+            turnID: nextTurnID,
+            sequence: 4,
+            kind: .userSpeechStopped,
+            label: "R8.4.4 N+1 substantive stop"
+        )
+        await waitUntil("R8.4.4 N+1 substantive create") {
+            await stack.provider.createCount() == createBaseline + 1
+        }
+        await waitUntilOnMainActor("R8.4.4 N+1 substantive disposition") {
+            let disposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            return disposition.substantiveCount
+                    == dispositionBaseline.substantiveCount + 1
+                && stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase == .idle
+        }
+        let finalDisposition = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let command = await stack.provider.lastCreateCommand()
+        let createDelta = await stack.provider.createCount() - createBaseline
+        let substantiveDelta = Int(
+            finalDisposition.substantiveCount
+                - dispositionBaseline.substantiveCount
+        )
+        expect(finalDisposition.lastCanonicalTranscript == "N+1 正常问题"
+                && finalDisposition.lastDisposition == "substantive"
+                && finalDisposition.passiveBackchannelCount
+                    == dispositionBaseline.passiveBackchannelCount
+                && command?.identity.session == nextSession,
+               "R8.4.4 N+1 substantive turn is independent of stale N")
+        expect(createDelta == 1 && substantiveDelta == 1,
+               "R8.4.4 N+1 substantive response remains exactly once")
+        r844NPlusOneSubstantiveResponseCreates = createDelta
+        r844SubstantiveCases += 1
+        r844SubstantiveDispositions += substantiveDelta
+        r844SubstantiveResponseCreates += createDelta
+        await assertR843NoInterruptionSideEffects(
+            stack,
+            expectedGeneration: nextSession.generation
+        )
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testR844InterruptionRegression(
+        fixture: Data
+    ) async throws {
+        try await testR832ConfirmedInterruptionProductionChain(
+            fixture: fixture
+        )
+        r844ExtraInterrupts += r832ExtraInterruptions
+        r844ExtraPlaybackClears += r832ExtraPlaybackClears
+        r844ExtraGenerationAdvances += max(0, r832GenerationDelta - 1)
+        expect(r832ProviderInterrupts == 1
+                && r832ProviderCancels == 0
+                && r832HostPlaybackClears == 1
+                && r832GenerationDelta == 1,
+               "R8.4.4 preserves the frozen R8.3 interruption chain")
+        expect(r832ResponseCreates == 0,
+               "R8.4.4 interruption path does not create a response")
+    }
+
+    private static func admitR844ListeningTurn(
+        stack: R823ControllerStack,
+        session: RealtimeBrainSessionIdentity,
+        sourceTurnID: RealtimeBrainTurnID,
+        sequence: UInt64,
+        seed: UInt32,
+        label: String
+    ) async throws {
+        r842CompletionWindowNanoseconds = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionWindowNanoseconds
+        try await emitR842ListeningSamples(
+            stack: stack,
+            samples: signal(seed: seed, amplitude: 0.18),
+            expectedClassification: .nearEndCandidate,
+            label: "R8.4.4 \(label) production near-end"
+        )
+        await enqueueR843Activity(
+            stack: stack,
+            session: session,
+            turnID: sourceTurnID,
+            sequence: sequence,
+            kind: .userSpeechStarted,
+            label: "R8.4.4 \(label) speech start"
+        )
+        await waitUntilOnMainActor("R8.4.4 \(label) admission") {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .speaking
+                && snapshot.session == session
+                && snapshot.sourceTurnID == sourceTurnID
+        }
+    }
+
+    private static func printR844ResponsePolicyMetrics() {
+        print("r844_passive_backchannel_cases=\(r844PassiveBackchannelCases)")
+        print("r844_passive_backchannel_dispositions=\(r844PassiveBackchannelDispositions)")
+        print("r844_passive_backchannel_response_creates=\(r844PassiveBackchannelResponseCreates)")
+        print("r844_substantive_cases=\(r844SubstantiveCases)")
+        print("r844_substantive_dispositions=\(r844SubstantiveDispositions)")
+        print("r844_substantive_response_creates=\(r844SubstantiveResponseCreates)")
+        print("r844_response_creates=\(r844SubstantiveResponseCreates + r844PassiveBackchannelResponseCreates)")
+        print("r844_cross_source_mixed_response_creates=\(r844CrossSourceMixedResponseCreates)")
+        print("r844_cross_source_passive_response_creates=\(r844CrossSourcePassiveResponseCreates)")
+        print("r844_duplicate_response_creates=\(r844DuplicateResponseCreates)")
+        print("r844_provider_only_response_creates=\(r844ProviderOnlyResponseCreates)")
+        print("r844_provider_only_dispositions=\(r844ProviderOnlyDispositions)")
+        print("r844_stale_generation_response_creates=\(r844StaleGenerationResponseCreates)")
+        print("r844_n_plus_one_substantive_response_creates=\(r844NPlusOneSubstantiveResponseCreates)")
+        print("r844_false_history_writes=\(r844FalseHistoryWrites)")
+        print("r844_false_memory_writes=\(r844FalseMemoryWrites)")
+        print("r844_relationship_changes=\(r844RelationshipChanges)")
+        print("r844_growth_writes=\(r844GrowthWrites)")
+        print("r844_extra_interrupts=\(r844ExtraInterrupts)")
+        print("r844_extra_playback_clears=\(r844ExtraPlaybackClears)")
+        print("r844_extra_generation_advances=\(r844ExtraGenerationAdvances)")
     }
 
     private static func testR843SemanticTurnTakingFusion(

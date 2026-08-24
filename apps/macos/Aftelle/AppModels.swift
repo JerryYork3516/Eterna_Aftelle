@@ -1761,6 +1761,16 @@ public final class OrchestrationKernel {
         await runtimeCore.startRealtimeResidentBrainSession()
     }
 
+    func setRealtimePassiveBackchannelHandler(
+        _ handler: (
+            @MainActor @Sendable (
+                RealtimePassiveBackchannelPresentation
+            ) -> Void
+        )?
+    ) {
+        runtimeCore.setRealtimePassiveBackchannelHandler(handler)
+    }
+
     nonisolated func sendRealtimeResidentBrainAudio(
         _ frame: RealtimeBrainAudioFrame,
         activity: RealtimeBrainLocalAudioActivity = .none

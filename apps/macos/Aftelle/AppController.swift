@@ -448,6 +448,8 @@ final class AppController: ObservableObject {
         Never
     >?
     private var realtimeBrainStopping = false
+    private var realtimePassiveBackchannelPresentation:
+        RealtimePassiveBackchannelPresentation?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
         sendFrame: { [orchestrationKernel] payload, context in
@@ -2088,6 +2090,13 @@ final class AppController: ObservableObject {
 
         let attemptID = UUID()
         realtimeBrainRouteAttemptID = attemptID
+        realtimePassiveBackchannelPresentation = nil
+        orchestrationKernel.setRealtimePassiveBackchannelHandler {
+            [weak self] presentation in
+            self?.consumeRealtimePassiveBackchannelPresentation(
+                presentation
+            )
+        }
         realtimeBrainStartInFlight = true
         defer { realtimeBrainStartInFlight = false }
         speechHostLifecycleOperationCount += 1
@@ -2256,7 +2265,11 @@ final class AppController: ObservableObject {
                 lastErrorCode: nil
             )
         case .userTranscriptFinal:
-            if realtimeBrainPlaybackResponseID == nil,
+            if realtimePassiveBackchannelPresentation?.contains(
+                event.identity
+            ) == true {
+                break
+            } else if realtimeBrainPlaybackResponseID == nil,
                realtimeBrainGenerationTransitionID == nil {
                 formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
                     phase: .processing,
@@ -2311,8 +2324,8 @@ final class AppController: ObservableObject {
             )
         case .sessionClosed, .cancelled:
             break
-        case .userSpeechStarted, .userSpeechStopped,
-             .userTranscriptPartial, .residentTextDelta, .residentTextFinal,
+        case .userSpeechStarted, .userSpeechStopped, .userTranscriptPartial,
+             .residentTextDelta, .residentTextFinal,
              .residentSpeakingStarted, .residentSemanticFinal,
              .toolCall:
             break
@@ -2323,6 +2336,42 @@ final class AppController: ObservableObject {
         ) {
             refreshParticleDebugSnapshot()
         }
+    }
+
+    private func consumeRealtimePassiveBackchannelPresentation(
+        _ presentation: RealtimePassiveBackchannelPresentation
+    ) {
+        guard let attemptID = realtimeBrainRouteAttemptID,
+              let binding = realtimeBrainInputBinding,
+              presentation.session == binding.session,
+              isCurrentRealtimeBrainRoute(
+                  attemptID: attemptID,
+                  session: binding.session
+              ) else { return }
+        if let current = realtimePassiveBackchannelPresentation,
+           current.session == presentation.session,
+           current.contextRevision == presentation.contextRevision {
+            realtimePassiveBackchannelPresentation =
+                RealtimePassiveBackchannelPresentation(
+                    session: presentation.session,
+                    contextRevision: presentation.contextRevision,
+                    turnIDs: current.turnIDs.union(presentation.turnIDs)
+                )
+        } else {
+            realtimePassiveBackchannelPresentation = presentation
+        }
+        guard realtimeBrainPlaybackResponseID == nil,
+              realtimeBrainGenerationTransitionID == nil else { return }
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: .listening,
+            generation: binding.session.generation,
+            lastErrorCode: nil
+        )
+        residentSpeechSignal = .ended
+        refreshResidentVisualIntent(
+            visualStateMode: ResidentVisualIntent.listening.rawValue
+        )
+        refreshParticleDebugSnapshot()
     }
 
     private func observeRealtimeResidentBrainAcoustics(
@@ -2859,6 +2908,7 @@ final class AppController: ObservableObject {
         }
         realtimeBrainGenerationTransitionID = nil
         realtimeBrainGenerationTransitionTask = nil
+        realtimePassiveBackchannelPresentation = nil
         formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
             phase: .listening,
             generation: nextIdentity.generation,
@@ -2896,6 +2946,7 @@ final class AppController: ObservableObject {
         realtimeBrainPlaybackEventIdentity = nil
         realtimeBrainPlaybackProviderFinishedResponseID = nil
         realtimeBrainPlaybackGeneration = nil
+        realtimePassiveBackchannelPresentation = nil
         resumeRealtimeBrainPlaybackDrainWaiter()
 
         realtimeBrainInputBridgeSnapshot = await realtimeBrainInputBridge

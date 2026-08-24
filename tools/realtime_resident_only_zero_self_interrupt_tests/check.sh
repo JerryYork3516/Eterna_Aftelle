@@ -30,7 +30,9 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r841-double-talk-only" ] \
     && [ "$test_mode" != "r842-listening-only" ] \
     && [ "$test_mode" != "r842-turn-completion-only" ] \
-    && [ "$test_mode" != "r843-semantic-fusion-only" ]; then
+    && [ "$test_mode" != "r843-semantic-fusion-only" ] \
+    && [ "$test_mode" != "r844-classifier-only" ] \
+    && [ "$test_mode" != "r844-response-policy-only" ]; then
   echo "unsupported test mode: $test_mode" >&2
   exit 2
 fi
@@ -91,6 +93,10 @@ elif [ "$test_mode" = "r842-turn-completion-only" ]; then
   runner_arguments+=("--r842-turn-completion-only")
 elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
   runner_arguments+=("--r843-semantic-fusion-only")
+elif [ "$test_mode" = "r844-classifier-only" ]; then
+  runner_arguments+=("--r844-classifier-only")
+elif [ "$test_mode" = "r844-response-policy-only" ]; then
+  runner_arguments+=("--r844-response-policy-only")
 fi
 CFFIXED_USER_HOME="$runtime_home" \
   /usr/bin/perl -e '$seconds = shift; alarm $seconds; exec @ARGV' \
@@ -98,7 +104,112 @@ CFFIXED_USER_HOME="$runtime_home" \
   "${runner_arguments[@]}" \
   | tee "$output"
 
-if [ "$test_mode" = "r843-semantic-fusion-only" ]; then
+if [ "$test_mode" = "r844-classifier-only" ]; then
+  rg -qx 'realtime_backchannel_classifier_cases=43' "$output"
+  rg -qx 'realtime_backchannel_classifier_checks=46' "$output"
+  rg -qx 'r844_classifier_passive_cases=19' "$output"
+  rg -qx 'r844_classifier_substantive_cases=24' "$output"
+  rg -qx 'r844_classifier_false_passive=0' "$output"
+  rg -qx 'r844_classifier_false_substantive=0' "$output"
+  classifier_source="$({
+    awk '/private static func testR844BackchannelClassifier/ { active = 1 }
+         /private static func testR844BackchannelResponsePolicy/ { active = 0 }
+         active' "$test_source"
+  })"
+  rg -q 'realtimeUserTurnDispositionForTesting' <<< "$classifier_source"
+  rg -q '"嗯", "嗯嗯", "唔", "唔嗯", "哦", "哦哦"' \
+    <<< "$classifier_source"
+  rg -q '"好", "好的", "可以", "行", "对", "是", "是的"' \
+    <<< "$classifier_source"
+  rg -q '"继续"' <<< "$classifier_source"
+  rg -q '"嗯？"' <<< "$classifier_source"
+  echo "r844_classifier_fixed_set=PASS"
+  echo "r844_classifier_fail_open=PASS"
+elif [ "$test_mode" = "r844-response-policy-only" ]; then
+  rg -qx 'realtime_backchannel_response_policy_cases=13' "$output"
+  rg -qx 'realtime_backchannel_response_policy_checks=455' "$output"
+  rg -qx 'r844_passive_backchannel_cases=11' "$output"
+  rg -qx 'r844_passive_backchannel_dispositions=11' "$output"
+  rg -qx 'r844_passive_backchannel_response_creates=0' "$output"
+  rg -qx 'r844_substantive_cases=12' "$output"
+  rg -qx 'r844_substantive_dispositions=12' "$output"
+  rg -qx 'r844_substantive_response_creates=12' "$output"
+  rg -qx 'r844_response_creates=12' "$output"
+  rg -qx 'r844_cross_source_mixed_response_creates=1' "$output"
+  rg -qx 'r844_cross_source_passive_response_creates=0' "$output"
+  rg -qx 'r844_duplicate_response_creates=0' "$output"
+  rg -qx 'r844_provider_only_response_creates=0' "$output"
+  rg -qx 'r844_provider_only_dispositions=0' "$output"
+  rg -qx 'r844_stale_generation_response_creates=0' "$output"
+  rg -qx 'r844_n_plus_one_substantive_response_creates=1' "$output"
+  rg -qx 'r844_false_history_writes=0' "$output"
+  rg -qx 'r844_false_memory_writes=0' "$output"
+  rg -qx 'r844_relationship_changes=0' "$output"
+  rg -qx 'r844_growth_writes=0' "$output"
+  rg -qx 'r844_extra_interrupts=0' "$output"
+  rg -qx 'r844_extra_playback_clears=0' "$output"
+  rg -qx 'r844_extra_generation_advances=0' "$output"
+  rg -qx 'r844_real_qwen_and_devices=NOT_RUN_HUMAN_GATE' "$output"
+
+  r844_source="$({
+    awk '/private static func testR844BackchannelResponsePolicy/ { active = 1 }
+         /private static func testR843SemanticTurnTakingFusion/ { active = 0 }
+         active' "$test_source"
+    awk '/private static func emitR842ListeningSamples/ { active = 1 }
+         /private static func assertR842ListeningHasNoDecisionSideEffects/ { active = 0 }
+         active' "$test_source"
+  })"
+  capture_activity_source="$({
+    awk '/private final class R823AudioCapture/ { active = 1 }
+         /private struct R823ControllerStack/ { active = 0 }
+         active' "$test_source"
+  })"
+  if rg -q \
+      'realtimeUserTurnDispositionForTesting|provider\.createResponse\(|RealtimeBrainCreateResponseCommand\(|createRealtimeResidentBrainResponseIfEligible|authorizeRealtimeResidentBrainResponseIfEligible|beginResponseCreate|claimResponseCreateExecution|retireRealtimeUtterance|finishRealtimeUtteranceCompletionWindow|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|cancelRealtimeResidentBrainGenerationForTesting|interruptRealtimeResidentBrainForTesting|beginRealtimeBrainGenerationTransition|finishRealtimeBrainGenerationInterruption|frameBuffer\.append\(' \
+      <<< "$r844_source"; then
+    echo "r844_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  rg -q 'MacSpeechAudioActivityEvidenceKind\.classify' \
+    <<< "$capture_activity_source"
+  rg -q 'emitR842ListeningSamples' <<< "$r844_source"
+  rg -q 'processCapture\(' <<< "$r844_source"
+  rg -q 'processedSamples: processed' <<< "$r844_source"
+  rg -q 'kind: \.userSpeechStarted' <<< "$r844_source"
+  rg -q 'kind: \.userSpeechStopped' <<< "$r844_source"
+  rg -q 'kind: \.userTranscriptFinal' <<< "$r844_source"
+  rg -q 'waitForR842Completion' <<< "$r844_source"
+  rg -q 'stack\.provider\.createCount' <<< "$r844_source"
+  rg -q 'stack\.provider\.lastCreateCommand' <<< "$r844_source"
+  rg -q 'loadMostRecentDialogueEntries' <<< "$r844_source"
+  rg -q 'narrativeMemoryDebugSnapshot' <<< "$r844_source"
+  rg -q 'currentRelationshipState' <<< "$r844_source"
+  rg -q 'realtimeGrowthObservationDecisionCountForTesting' \
+    <<< "$r844_source"
+  rg -q 'restartR843Route' <<< "$r844_source"
+  rg -q 'testR832ConfirmedInterruptionProductionChain' <<< "$r844_source"
+  rg -q 'firstTranscript: "嗯"' <<< "$r844_source"
+  rg -q 'secondTranscript: "我还有一个问题"' <<< "$r844_source"
+  rg -q 'secondTranscript: "嗯嗯"' <<< "$r844_source"
+
+  provider_audio_frame="$build_dir/provider-audio-frame.txt"
+  awk \
+    '/struct RealtimeBrainAudioFrame/ { active = 1 }
+     active { print }
+     active && /^}/ { exit }' \
+    "$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift" \
+    > "$provider_audio_frame"
+  if rg -q \
+      'sourceGate|userActivity|nearEnd|playback|turn|completion|[Aa]coustic|[Ee]ligibility|backchannel|semantic|disposition' \
+      "$provider_audio_frame"; then
+    echo "r844_provider_pcm_contract=FAIL" >&2
+    exit 1
+  fi
+  echo "r844_production_chain_fixture=PASS"
+  echo "r844_runtime_single_response_owner=PASS"
+  echo "r844_provider_pcm_contract=PASS"
+  echo "r844_passive_persistence=PASS"
+elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
   rg -qx 'realtime_semantic_turn_taking_cases=13' "$output"
   r843_checks="$({
     awk -F= '/^realtime_semantic_turn_taking_checks=/ { print $2 }' \
@@ -673,6 +784,10 @@ elif [ "$test_mode" = "r842-listening-only" ]; then
   echo "realtime_turn_completion_listening_admission=PASS"
 elif [ "$test_mode" = "r842-turn-completion-only" ]; then
   echo "realtime_turn_completion=PASS"
+elif [ "$test_mode" = "r844-classifier-only" ]; then
+  echo "realtime_backchannel_classifier=PASS"
+elif [ "$test_mode" = "r844-response-policy-only" ]; then
+  echo "realtime_backchannel_response_policy=PASS"
 elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
   echo "realtime_semantic_turn_taking=PASS"
 else
