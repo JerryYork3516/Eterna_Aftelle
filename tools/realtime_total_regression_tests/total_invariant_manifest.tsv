@@ -1,0 +1,12 @@
+ID	Invariant	Executable evidence
+A1	RuntimeCore is the sole interruption authority	realtime_interruption_evidence + R851 zero unauthorized interrupt/clear
+A2	RuntimeCore is the sole completion, semantic-fusion, and backchannel-policy owner	R842 + R843 + R844 exact counters
+A3	ActiveBrainLease is the sole current Brain; Provider cannot decide or independently advance generation; Host cannot create responses	R851 lease/generation drift = 0 + provider-neutral static guard
+B1	Resident-only eligibility, confirmed, self-interrupt, Provider interrupt/cancel, Playback clear, and generation change are all zero	R823 3840-frame executable stress
+C1	Listening production near-end admits one user turn; speaking near-end/double-talk yields acoustic eligibility; acoustic-only never confirms	R842 Listening + R841 + R831
+D1	Matching acoustic and semantic evidence confirms once, interrupts once, clears once, and advances generation once	R832 + R851 repeated interruption cycles
+E1	Short pause never completes; true end creates exactly one completion candidate	R842 + R851 short-pause scenario
+F1	Completion-only and semantic-only create zero responses; valid fusion creates exactly one	R843 + R851 delayed ordering
+G1	Passive backchannel creates zero responses; substantive input creates exactly one	R844 + R851 rapid alternating turns
+H1	Stale, resident-only, and passive paths write zero false History, Memory, Relationship, or Growth state	R823 + R833 + R844 + R851 false persistence
+I1	Generation N audio, text, timer, final, callback, Tool result, and semantic evidence have zero accepted N+1 side effects	R833 + R851 stale closure + existing Tool regression

@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture="$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-a7-regression.XXXXXX")"
 suite_log="$work_dir/suites.log"
+timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
 
 worktree_fingerprint() {
   {
@@ -27,8 +28,34 @@ trap 'rm -rf "$work_dir"' EXIT
 run_suite() {
   local name="$1"
   shift
+  local timeout_seconds=300
+  if [ "$name" = "realtime_total_regression" ]; then
+    timeout_seconds=1800
+  fi
   printf 'a7_suite_start=%s\n' "$name"
-  "$@" 2>&1 | tee -a "$suite_log"
+  printf 'a7_suite_timeout_seconds=%s:%s\n' \
+    "$name" "$timeout_seconds"
+  set +e
+  /usr/bin/perl "$timeout_runner" \
+    "$timeout_seconds" "$@" 2>&1 | tee -a "$suite_log"
+  local pipeline_status=("${PIPESTATUS[@]}")
+  local command_status="${pipeline_status[0]}"
+  local tee_status="${pipeline_status[1]}"
+  set -e
+  if [ "$command_status" -eq 124 ]; then
+    printf 'a7_suite_timeout=%s\n' "$name" >&2
+    return 124
+  fi
+  if [ "$command_status" -ne 0 ]; then
+    printf 'a7_suite_fail=%s exit=%s\n' \
+      "$name" "$command_status" >&2
+    return "$command_status"
+  fi
+  if [ "$tee_status" -ne 0 ]; then
+    printf 'a7_suite_log_fail=%s exit=%s\n' \
+      "$name" "$tee_status" >&2
+    return "$tee_status"
+  fi
   suite_count=$((suite_count + 1))
   printf 'a7_suite_pass=%s\n' "$name"
 }
@@ -71,6 +98,8 @@ run_suite realtime_semantic_turn_taking \
   "$repo_root/tools/realtime_semantic_turn_taking_tests/check.sh"
 run_suite realtime_backchannel_response_policy \
   "$repo_root/tools/realtime_backchannel_response_policy_tests/check.sh"
+run_suite realtime_total_regression \
+  "$repo_root/tools/realtime_total_regression_tests/check.sh"
 run_suite qwen_asr \
   "$repo_root/tools/qwen_asr_tests/check.sh"
 run_suite qwen_tts \

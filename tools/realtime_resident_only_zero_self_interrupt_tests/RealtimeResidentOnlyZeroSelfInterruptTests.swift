@@ -232,6 +232,34 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
     func lastSession() -> RealtimeBrainSessionIdentity? {
         openCommands.last?.identity
     }
+    func contextRevision(
+        for session: RealtimeBrainSessionIdentity
+    ) -> UInt64? {
+        contextUpdates.last { $0.identity == session }?.contextRevision
+    }
+    func carriedContextRevision(
+        for session: RealtimeBrainSessionIdentity
+    ) -> UInt64? {
+        contextUpdates.last { update in
+            update.identity.residentID == session.residentID
+                && update.identity.runtimeSessionID
+                    == session.runtimeSessionID
+                && update.identity.brainLeaseID == session.brainLeaseID
+                && update.identity.routeEpoch == session.routeEpoch
+        }?.contextRevision
+    }
+    func nextResidentAudioSequence(
+        for session: RealtimeBrainSessionIdentity
+    ) -> UInt64 {
+        let maximum = enqueuedEvents.compactMap { event -> UInt64? in
+            guard event.identity.session == session,
+                  case .residentAudioDelta(let audio) = event.kind else {
+                return nil
+            }
+            return audio.sequence
+        }.max() ?? 0
+        return maximum + 1
+    }
 
     func holdInterrupt() {
         holdsInterrupt = true
@@ -451,6 +479,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var residentOnlyFalseHistoryWrites = 0
     private static var residentOnlyFalseMemoryWrites = 0
     private static var residentOnlyRelationshipChanges = 0
+    private static var residentOnlyGrowthWrites = 0
 
     private static var longStressObservations = 0
     private static var longStressFrames = 0
@@ -623,6 +652,34 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r844ExtraPlaybackClears = 0
     private static var r844ExtraGenerationAdvances = 0
 
+    private static var r851CrossNodeScenarios = 0
+    private static var r851RapidTurns = 0
+    private static var r851RepeatedInterruptionCycles = 0
+    private static var r851StopRestartPoints = 0
+    private static var r851DelayedOrderingCases = 0
+    private static var r851DuplicateResponses = 0
+    private static var r851DuplicateInterrupts = 0
+    private static var r851DuplicateClears = 0
+    private static var r851StaleSideEffects = 0
+    private static var r851FalseSelfInterrupts = 0
+    private static var r851FalsePersistence = 0
+    private static var r851FalseHistoryWrites = 0
+    private static var r851FalseMemoryWrites = 0
+    private static var r851FalseRelationshipChanges = 0
+    private static var r851FalseGrowthWrites = 0
+    private static var r851GenerationDrift = 0
+    private static var r851LeaseDrift = 0
+    private static var r851RandomizedIterations = 0
+    private static var r851RandomizedFailures = 0
+    private static var r851RandomizedExpectedGenerationTransitions = 0
+    private static var r851RandomizedObservedGenerationTransitions = 0
+    private static var r851RandomizedFinalBeforeStop = 0
+    private static var r851RandomizedCompletionBeforeFinal = 0
+    private static var r851RandomizedPartialFinalStop = 0
+    private static var r851RandomizedShortPauseResume = 0
+    private static var r851RandomizedProviderFirstStart = 0
+    private static let r851RandomSeed: UInt64 = 0x8515_11A7
+
     static func main() async throws {
         guard CommandLine.arguments.count == 2
                 || (CommandLine.arguments.count == 3
@@ -635,7 +692,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r842-turn-completion-only",
                         "--r843-semantic-fusion-only",
                         "--r844-classifier-only",
-                        "--r844-response-policy-only"
+                        "--r844-response-policy-only",
+                        "--r851-cross-node-only",
+                        "--r851-randomized-only"
                     ].contains(CommandLine.arguments[2])) else {
             fatalError("fixture path required")
         }
@@ -644,6 +703,22 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--r851-cross-node-only" {
+                try await testR851CrossNodeTotalRegression(fixture: fixture)
+                print("realtime_total_cross_node_cases=\(r851CrossNodeScenarios)")
+                print("realtime_total_cross_node_checks=\(checks)")
+                printR851CrossNodeMetrics()
+                return
+            }
+            if CommandLine.arguments[2] == "--r851-randomized-only" {
+                try await testR851DeterministicRandomizedOrdering(
+                    fixture: fixture
+                )
+                print("realtime_total_randomized_cases=1")
+                print("realtime_total_randomized_checks=\(checks)")
+                printR851RandomizedMetrics()
+                return
+            }
             if CommandLine.arguments[2] == "--r844-classifier-only" {
                 testR844BackchannelClassifier()
                 print("realtime_backchannel_classifier_cases=\(cases)")
@@ -902,6 +977,1452 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         print("positive_control_false_history_writes=\(positiveControlHistoryWrites)")
         print("positive_control_false_memory_writes=\(positiveControlMemoryWrites)")
         print("positive_control_relationship_changes=\(positiveControlRelationshipChanges)")
+    }
+
+    private enum R851TurnOrder {
+        case finalBeforeStop
+        case completionBeforeFinal
+        case partialFinalStop
+        case shortPauseResume
+        case providerFirstStart
+    }
+
+    private enum R851OutputMode {
+        case none
+        case complete
+    }
+
+    private struct R851TurnResult {
+        let turnID: RealtimeBrainTurnID
+        let responseID: RealtimeBrainResponseID?
+        let contextRevision: UInt64
+        let nextSequence: UInt64
+        let createDelta: Int
+    }
+
+    private struct R851DeterministicGenerator {
+        private(set) var state: UInt64
+
+        mutating func next() -> UInt64 {
+            state = state &* 6_364_136_223_846_793_005 &+ 1
+            return state
+        }
+    }
+
+    private static func testR851CrossNodeTotalRegression(
+        fixture: Data
+    ) async throws {
+        try await testR851NormalListeningSubstantive(fixture: fixture)
+        r851CrossNodeScenarios += 1
+
+        try await testR851NormalListeningPassive(fixture: fixture)
+        r851CrossNodeScenarios += 1
+
+        try await testLongResidentOnlyStress(fixture: fixture)
+        try await testHistoryMemorySafety(fixture: fixture)
+        expect(longStressFrames == 3_840
+                && longStressEligible == 0
+                && longStressConfirmed == 0
+                && longStressProviderInterrupts == 0
+                && longStressProviderCancels == 0
+                && longStressHostClears == 0,
+               "R8.5.1 preserves the 3840-frame resident-only invariant")
+        expect(residentOnlyFalseHistoryWrites == 0
+                && residentOnlyFalseMemoryWrites == 0
+                && residentOnlyRelationshipChanges == 0
+                && residentOnlyGrowthWrites == 0,
+               "R8.5.1 resident-only stress has zero false persistence")
+        r851FalseSelfInterrupts += longStressConfirmed
+            + longStressProviderInterrupts + longStressProviderCancels
+            + longStressHostClears
+        r851FalsePersistence += residentOnlyFalseHistoryWrites
+            + residentOnlyFalseMemoryWrites + residentOnlyRelationshipChanges
+        r851FalseHistoryWrites += residentOnlyFalseHistoryWrites
+        r851FalseMemoryWrites += residentOnlyFalseMemoryWrites
+        r851FalseRelationshipChanges += residentOnlyRelationshipChanges
+        r851FalseGrowthWrites += residentOnlyGrowthWrites
+        r851CrossNodeScenarios += 1
+
+        try await testR832ConfirmedInterruptionProductionChain(
+            fixture: fixture
+        ) { stack, nextSession in
+            stack.acousticEchoHost.playbackStopped()
+            try await settleR851ListeningSilence(
+                stack: stack,
+                expectedSession: nextSession,
+                frameCount: 24,
+                label: "post-interruption N+1 boundary"
+            )
+            let result = try await runR851ListeningTurn(
+                stack: stack,
+                session: nextSession,
+                transcript: "打断后继续正常说话",
+                expectsPassive: false,
+                order: .finalBeforeStop,
+                outputMode: .complete,
+                sequenceBase: 1,
+                seed: 85_105,
+                label: "post-interruption N+1 substantive",
+                allowsContextRevisionCarry: true
+            )
+            expect(result.createDelta == 1
+                    && stack.controller.formalSpeechRouteDebugSnapshot.phase
+                        == .listening,
+                   "R8.5.1 N+1 completes a production substantive turn")
+        }
+        expect(r832ConfirmedInterruptions == 1
+                && r832ProviderInterrupts == 1
+                && r832HostPlaybackClears == 1
+                && r832GenerationDelta == 1,
+               "R8.5.1 true interruption advances exactly once")
+        r851DuplicateInterrupts += max(0, r832ProviderInterrupts - 1)
+        r851DuplicateClears += max(0, r832HostPlaybackClears - 1)
+        r851CrossNodeScenarios += 2
+
+        try await testR843CrossSourceTurn(fixture: fixture)
+        expect(r843CrossSourceTurnCases >= 1,
+               "R8.5.1 cross-source short pause fuses one utterance")
+        r851CrossNodeScenarios += 1
+
+        try await testR844CrossSourceMixed(fixture: fixture)
+        expect(r844CrossSourceMixedResponseCreates == 1,
+               "R8.5.1 mixed backchannel remains substantive")
+        r851CrossNodeScenarios += 1
+
+        try await testR851RapidAlternatingTurns(fixture: fixture)
+        r851CrossNodeScenarios += 1
+
+        try await testR851RepeatedInterruptions(fixture: fixture)
+        r851CrossNodeScenarios += 1
+
+        try await testR851StopRestartMatrix(fixture: fixture)
+        r851CrossNodeScenarios += 1
+
+        try await testR851DelayedProviderOrdering(fixture: fixture)
+        r851CrossNodeScenarios += 1
+
+        expect(r851CrossNodeScenarios == 11,
+               "R8.5.1 executable covers eleven non-Tool scenarios")
+        expect(r851DuplicateResponses == 0
+                && r851DuplicateInterrupts == 0
+                && r851DuplicateClears == 0
+                && r851StaleSideEffects == 0
+                && r851FalseSelfInterrupts == 0
+                && r851FalsePersistence == 0
+                && r851GenerationDrift == 0
+                && r851LeaseDrift == 0,
+               "R8.5.1 cross-node safety counters remain zero")
+    }
+
+    private static func testR851NormalListeningSubstantive(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let result = try await runR851ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            transcript: "我们继续刚才的话题",
+            expectsPassive: false,
+            order: .shortPauseResume,
+            outputMode: .complete,
+            sequenceBase: 2,
+            seed: 85_101,
+            label: "normal Listening substantive"
+        )
+        expect(result.createDelta == 1
+                && stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening,
+               "R8.5.1 normal substantive completes output and Playback")
+        try await close(stack)
+    }
+
+    private static func testR851NormalListeningPassive(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let result = try await runR851ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            transcript: "嗯",
+            expectsPassive: true,
+            order: .finalBeforeStop,
+            outputMode: .none,
+            sequenceBase: 2,
+            seed: 85_102,
+            label: "normal Listening passive"
+        )
+        expect(result.createDelta == 0
+                && stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening,
+               "R8.5.1 passive backchannel returns directly to Listening")
+        try await close(stack)
+    }
+
+    private static func testR851RapidAlternatingTurns(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let lease = stack.runtime.activeBrainLeaseForTesting()
+        let generation = stack.session.generation
+        var sequenceBase: UInt64 = 2
+        for index in 0 ..< 20 {
+            let expectsPassive = index.isMultiple(of: 2)
+            let result = try await runR851ListeningTurn(
+                stack: stack,
+                session: stack.session,
+                transcript: expectsPassive ? "嗯" : "连续问题 \(index)",
+                expectsPassive: expectsPassive,
+                order: index.isMultiple(of: 3)
+                    ? .completionBeforeFinal : .finalBeforeStop,
+                outputMode: expectsPassive ? .none : .complete,
+                sequenceBase: sequenceBase,
+                seed: UInt32(85_200 + index),
+                label: "rapid alternating turn \(index)"
+            )
+            expect(result.createDelta == (expectsPassive ? 0 : 1),
+                   "R8.5.1 rapid turn has exactly one expected disposition")
+            sequenceBase = result.nextSequence
+            r851RapidTurns += 1
+        }
+        let finalLease = stack.runtime.activeBrainLeaseForTesting()
+        let route = stack.controller.formalSpeechRouteDebugSnapshot
+        r851GenerationDrift += route.generation == generation ? 0 : 1
+        r851LeaseDrift += finalLease == lease ? 0 : 1
+        expect(r851RapidTurns == 20
+                && route.phase == .listening
+                && route.generation == generation
+                && finalLease == lease,
+               "R8.5.1 rapid turns keep one generation and Brain lease")
+        try await close(stack)
+    }
+
+    private static func testR851RepeatedInterruptions(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        guard let baselineLease = stack.runtime.activeBrainLeaseForTesting()
+        else { fatalError("R8.5.1 repeated interruption lease missing") }
+        var session = stack.session
+        var turnID = stack.target.turnID
+        var responseID = stack.target.responseID
+        var proposalSequence: UInt64 = 4
+        let interruptBaseline = await stack.provider.interruptCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+
+        for cycle in 0 ..< 10 {
+            session = try await performR851InterruptionCycle(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                responseID: responseID,
+                proposalSequence: proposalSequence,
+                label: "repeated interruption \(cycle)"
+            )
+            r851RepeatedInterruptionCycles += 1
+            if cycle < 9 {
+                let turn = await prepareR851ResidentResponseForInterruption(
+                    stack: stack,
+                    session: session,
+                    label: "prepare interruption \(cycle + 1)"
+                )
+                turnID = turn.turnID
+                responseID = turn.responseID
+                proposalSequence = turn.nextSequence
+            }
+        }
+
+        guard let finalLease = stack.runtime.activeBrainLeaseForTesting(),
+              case .realtimeResidentBrain(let finalGeneration) =
+                finalLease.generation else {
+            fatalError("R8.5.1 repeated interruption final lease missing")
+        }
+        let interrupts = await stack.provider.interruptCount()
+            - interruptBaseline
+        let clears = stack.outputPlayer.clearScheduledPlaybackCount
+            - clearBaseline
+        r851DuplicateInterrupts += max(0, interrupts - 10)
+        r851DuplicateClears += max(0, clears - 10)
+        expect(r851RepeatedInterruptionCycles == 10
+                && interrupts == 10 && clears == 10
+                && finalGeneration == stack.session.generation + 10,
+               "R8.5.1 ten interruption cycles advance exactly ten times")
+        expect(finalLease.residentID == baselineLease.residentID
+                && finalLease.runtimeSessionID
+                    == baselineLease.runtimeSessionID
+                && finalLease.brainLeaseID == baselineLease.brainLeaseID
+                && finalLease.routeEpoch == baselineLease.routeEpoch,
+               "R8.5.1 repeated interruption preserves lease identity")
+        r851GenerationDrift += finalGeneration
+            == stack.session.generation + 10 ? 0 : 1
+        r851LeaseDrift += finalLease.brainLeaseID
+            == baselineLease.brainLeaseID ? 0 : 1
+        try await close(stack)
+    }
+
+    private static func prepareR851ResidentResponseForInterruption(
+        stack: R823ControllerStack,
+        session: RealtimeBrainSessionIdentity,
+        label: String
+    ) async -> (
+        turnID: RealtimeBrainTurnID,
+        responseID: RealtimeBrainResponseID,
+        nextSequence: UInt64
+    ) {
+        let turnID = RealtimeBrainTurnID()
+        let contextRevision = await r851ContextRevision(
+            stack: stack,
+            session: session,
+            label: label,
+            allowsGenerationCarry: true
+        )
+        let createBaseline = await stack.provider.createCount()
+        await enqueueR843Activity(
+            stack: stack,
+            session: session,
+            turnID: turnID,
+            contextRevision: contextRevision,
+            sequence: 1,
+            kind: .userTranscriptFinal("R8.5.1 repeated interruption"),
+            label: "\(label) response authorization"
+        )
+        await waitUntil("R8.5.1 \(label) response create") {
+            await stack.provider.createCount() == createBaseline + 1
+        }
+        let output = await emitR851ResidentOutput(
+            stack: stack,
+            session: session,
+            turnID: turnID,
+            contextRevision: contextRevision,
+            sequenceBase: 2,
+            completePlayback: false,
+            label: label
+        )
+        let createDelta = await stack.provider.createCount() - createBaseline
+        let createCommand = await stack.provider.lastCreateCommand()
+        r851DuplicateResponses += max(0, createDelta - 1)
+        expect(createDelta == 1
+                && createCommand?.identity.session == session
+                && createCommand?.identity.turnID == turnID
+                && createCommand?.identity.responseID == nil
+                && createCommand?.identity.contextRevision == contextRevision
+                && createCommand?.sourceEventSequence == 1,
+               "R8.5.1 repeated cycle authorizes one resident response")
+        return (turnID, output.responseID, output.nextSequence)
+    }
+
+    private static func testR851StopRestartMatrix(
+        fixture: Data
+    ) async throws {
+        try await testR842ListeningStopRestart(fixture: fixture)
+        r851StopRestartPoints += 1
+
+        try await testR843GenerationFence(fixture: fixture)
+        r851StopRestartPoints += 2
+
+        try await testStopRestartIsolation(fixture: fixture)
+        r851StopRestartPoints += 1
+
+        try await testR851InterruptionPendingStopRestart(fixture: fixture)
+        r851StopRestartPoints += 1
+
+        expect(r851StopRestartPoints == 5,
+               "R8.5.1 covers five formal Stop/restart points")
+    }
+
+    private static func testR851DelayedProviderOrdering(
+        fixture: Data
+    ) async throws {
+        try await testR843FinalBeforeCompletion(fixture: fixture)
+        r851DelayedOrderingCases += 1
+        try await testR843CompletionBeforeFinal(fixture: fixture)
+        r851DelayedOrderingCases += 1
+        try await testR842ListeningProviderFirst(fixture: fixture)
+        r851DelayedOrderingCases += 1
+        try await testR844FinalAfterCompletion(fixture: fixture)
+        r851DelayedOrderingCases += 1
+        try await testR843DuplicateEvidence(fixture: fixture)
+        r851DelayedOrderingCases += 1
+        try await testR843CrossSourceTurn(fixture: fixture)
+        r851DelayedOrderingCases += 1
+        expect(r851DelayedOrderingCases == 6,
+               "R8.5.1 executes every delayed Provider ordering")
+    }
+
+    private static func testR851DeterministicRandomizedOrdering(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        var generator = R851DeterministicGenerator(state: r851RandomSeed)
+        var session = stack.session
+        var sequenceBase: UInt64 = 2
+        var expectedGeneration = session.generation
+        let initialInterrupts = await stack.provider.interruptCount()
+        let initialCancels = await stack.provider.cancelCount()
+        let initialClears = stack.outputPlayer.clearScheduledPlaybackCount
+
+        for iteration in 0 ..< 100 {
+            if iteration > 0 && iteration.isMultiple(of: 10) {
+                let previous = session
+                session = await restartR851Route(
+                    stack: stack,
+                    previousSession: previous,
+                    label: "random transition \(iteration)"
+                )
+                expectedGeneration += 1
+                r851RandomizedExpectedGenerationTransitions += 1
+                r851RandomizedObservedGenerationTransitions += Int(
+                    session.generation - previous.generation
+                )
+                sequenceBase = 2
+            }
+
+            let random = generator.next()
+            let expectsPassive = (random & 1) == 0
+            let order: R851TurnOrder
+            if iteration.isMultiple(of: 10) {
+                order = .providerFirstStart
+            } else {
+                switch Int((random >> 8) % 4) {
+                case 0: order = .finalBeforeStop
+                case 1: order = .completionBeforeFinal
+                case 2: order = .partialFinalStop
+                default: order = .shortPauseResume
+                }
+            }
+            switch order {
+            case .finalBeforeStop:
+                r851RandomizedFinalBeforeStop += 1
+            case .completionBeforeFinal:
+                r851RandomizedCompletionBeforeFinal += 1
+            case .partialFinalStop:
+                r851RandomizedPartialFinalStop += 1
+            case .shortPauseResume:
+                r851RandomizedShortPauseResume += 1
+            case .providerFirstStart:
+                r851RandomizedProviderFirstStart += 1
+            }
+            let result = try await runR851ListeningTurn(
+                stack: stack,
+                session: session,
+                transcript: expectsPassive
+                    ? ((random & 2) == 0 ? "嗯" : "mhm")
+                    : "确定性随机问题 \(iteration)",
+                expectsPassive: expectsPassive,
+                order: order,
+                outputMode: expectsPassive ? .none : .complete,
+                sequenceBase: sequenceBase,
+                seed: UInt32(truncatingIfNeeded: random),
+                label: "deterministic ordering \(iteration)"
+            )
+            let createBeforeDuplicate = await stack.provider.createCount()
+            let dispositionBeforeDuplicate = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            let dialogueBeforeDuplicate = try stack.sessionStore
+                .loadMostRecentDialogueEntries()
+            let narrativeBeforeDuplicate = stack.runtime
+                .narrativeMemoryDebugSnapshot()
+            let relationshipBeforeDuplicate = stack.runtime
+                .currentRelationshipState
+            let growthBeforeDuplicate = stack.runtime
+                .realtimeGrowthObservationDecisionCountForTesting()
+            let completionBeforeDuplicate = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let duplicateIdentity = r843EventIdentity(
+                session: session,
+                turnID: result.turnID,
+                contextRevision: result.contextRevision
+            )
+            let leaseBeforeDuplicate = stack.runtime
+                .activeBrainLeaseForTesting()
+            await stack.controller.refreshMicrophoneAuthorization()
+            let outputBeforeDuplicate = stack.controller
+                .realtimeBrainOutputBridgeSnapshot
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: result.turnID,
+                contextRevision: result.contextRevision,
+                sequence: result.nextSequence,
+                kind: .userTranscriptFinal("late duplicate"),
+                label: "deterministic late duplicate \(iteration)"
+            )
+            await waitUntil(
+                "R8.5.1 deterministic late duplicate \(iteration) processed"
+            ) {
+                await stack.controller.refreshMicrophoneAuthorization()
+                let output = await stack.controller
+                    .realtimeBrainOutputBridgeSnapshot
+                return output.acceptedEventCount
+                        + output.rejectedEventCount
+                    == outputBeforeDuplicate.acceptedEventCount
+                        + outputBeforeDuplicate.rejectedEventCount + 1
+            }
+            let createAfterDuplicate = await stack.provider.createCount()
+            let dispositionAfterDuplicate = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            let historyWrites = try stack.sessionStore
+                .loadMostRecentDialogueEntries()
+                == dialogueBeforeDuplicate ? 0 : 1
+            let memoryWrites = stack.runtime.narrativeMemoryDebugSnapshot()
+                == narrativeBeforeDuplicate ? 0 : 1
+            let relationshipChanges = stack.runtime.currentRelationshipState
+                == relationshipBeforeDuplicate ? 0 : 1
+            let growthWrites = stack.runtime
+                .realtimeGrowthObservationDecisionCountForTesting()
+                == growthBeforeDuplicate ? 0 : 1
+            let completionAfterDuplicate = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let pendingInputAfterDuplicate = stack.runtime
+                .realtimePendingUserInputForTesting(duplicateIdentity)
+            let leaseAfterDuplicate = stack.runtime
+                .activeBrainLeaseForTesting()
+            let routeAfterDuplicate = stack.controller
+                .formalSpeechRouteDebugSnapshot
+            let duplicateCreates = createAfterDuplicate
+                - createBeforeDuplicate
+            r851DuplicateResponses += duplicateCreates
+            r851FalsePersistence += historyWrites + memoryWrites
+                + relationshipChanges + growthWrites
+            r851FalseHistoryWrites += historyWrites
+            r851FalseMemoryWrites += memoryWrites
+            r851FalseRelationshipChanges += relationshipChanges
+            r851FalseGrowthWrites += growthWrites
+            r851GenerationDrift += routeAfterDuplicate.generation
+                == expectedGeneration ? 0 : 1
+            let leaseUnchanged = leaseAfterDuplicate == leaseBeforeDuplicate
+                && r851LeaseMatches(leaseAfterDuplicate, session: session)
+            r851LeaseDrift += leaseUnchanged ? 0 : 1
+            expect(duplicateCreates == 0
+                    && dispositionAfterDuplicate
+                        == dispositionBeforeDuplicate
+                    && historyWrites == 0 && memoryWrites == 0
+                    && relationshipChanges == 0 && growthWrites == 0
+                    && completionAfterDuplicate
+                        == completionBeforeDuplicate
+                    && pendingInputAfterDuplicate == nil
+                    && routeAfterDuplicate.generation
+                        == expectedGeneration
+                    && leaseUnchanged,
+                   "R8.5.1 randomized late duplicate is a no-op")
+            let completion = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let route = stack.controller.formalSpeechRouteDebugSnapshot
+            expect(completion.phase == .idle
+                    && route.phase == .listening
+                    && route.generation == expectedGeneration,
+                   "R8.5.1 randomized iteration fully settles")
+            r851RandomizedIterations += 1
+            sequenceBase = result.nextSequence + 1
+        }
+
+        let interruptDelta = await stack.provider.interruptCount()
+            - initialInterrupts
+        let cancelDelta = await stack.provider.cancelCount()
+            - initialCancels
+        let clearDelta = stack.outputPlayer.clearScheduledPlaybackCount
+            - initialClears
+        r851FalseSelfInterrupts += interruptDelta + cancelDelta + clearDelta
+        r851GenerationDrift += session.generation == expectedGeneration
+            ? 0 : 1
+        expect(r851RandomizedIterations == 100
+                && r851RandomizedExpectedGenerationTransitions == 9
+                && r851RandomizedObservedGenerationTransitions == 9,
+               "R8.5.1 randomized stress executes 100 fixed-seed iterations")
+        expect(r851RandomizedFinalBeforeStop > 0
+                && r851RandomizedCompletionBeforeFinal > 0
+                && r851RandomizedPartialFinalStop > 0
+                && r851RandomizedShortPauseResume > 0
+                && r851RandomizedProviderFirstStart > 0,
+               "R8.5.1 fixed seed executes every legal ordering template")
+        expect(interruptDelta == 0 && cancelDelta == 0 && clearDelta == 0
+                && r851DuplicateResponses == 0
+                && r851FalsePersistence == 0
+                && r851GenerationDrift == 0
+                && r851LeaseDrift == 0,
+               "R8.5.1 randomized ordering has zero unsafe side effects")
+        try await close(stack)
+    }
+
+    private static func runR851ListeningTurn(
+        stack: R823ControllerStack,
+        session: RealtimeBrainSessionIdentity,
+        transcript: String,
+        expectsPassive: Bool,
+        order: R851TurnOrder,
+        outputMode: R851OutputMode,
+        sequenceBase: UInt64,
+        seed: UInt32,
+        label: String,
+        allowsContextRevisionCarry: Bool = false
+    ) async throws -> R851TurnResult {
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let completionBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+            .completionCandidateCount
+        let dispositionBaseline = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        let leaseBaseline = stack.runtime.activeBrainLeaseForTesting()
+        let dialogueBefore = try stack.sessionStore
+            .loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
+        let growthBefore = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+        let contextRevision = await r851ContextRevision(
+            stack: stack,
+            session: session,
+            label: label,
+            allowsGenerationCarry: allowsContextRevisionCarry
+        )
+        var nextSequence = sequenceBase
+        var finalSequence: UInt64?
+
+        if order == .providerFirstStart {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let outputBeforeProviderStart = stack.controller
+                .realtimeBrainOutputBridgeSnapshot
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userSpeechStarted,
+                label: "\(label) Provider-first start"
+            )
+            nextSequence += 1
+            await waitUntil("R8.5.1 \(label) Provider-first processed") {
+                await stack.controller.refreshMicrophoneAuthorization()
+                let output = await stack.controller
+                    .realtimeBrainOutputBridgeSnapshot
+                return output.acceptedEventCount
+                        + output.rejectedEventCount
+                    == outputBeforeProviderStart.acceptedEventCount
+                        + outputBeforeProviderStart.rejectedEventCount + 1
+            }
+            expect(stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                    .phase == .idle,
+                   "R8.5.1 Provider-first start has no admission authority")
+            try await emitR842ListeningSamples(
+                stack: stack,
+                samples: signal(seed: seed, amplitude: 0.18),
+                expectedClassification: .nearEndCandidate,
+                label: "R8.5.1 \(label) Provider-first production audio"
+            )
+            await waitUntilOnMainActor("R8.5.1 \(label) admission") {
+                let snapshot = stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot()
+                return snapshot.phase == .speaking
+                    && snapshot.session == session
+                    && snapshot.sourceTurnID == turnID
+            }
+        } else {
+            try await admitR844ListeningTurn(
+                stack: stack,
+                session: session,
+                sourceTurnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                seed: seed,
+                label: "R8.5.1 \(label)"
+            )
+            nextSequence += 1
+        }
+
+        switch order {
+        case .completionBeforeFinal:
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userSpeechStopped,
+                label: "\(label) stop before final"
+            )
+            nextSequence += 1
+            await waitForR842Completion(
+                runtime: stack.runtime,
+                expectedCount: completionBaseline + 1,
+                expectedSession: session,
+                expectedTurn: turnID,
+                expectedContextRevision: contextRevision,
+                expectedStoppedSequence: nextSequence - 1,
+                label: "R8.5.1 \(label) completion before final"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userTranscriptFinal(transcript),
+                label: "\(label) late final"
+            )
+            finalSequence = nextSequence
+            nextSequence += 1
+        case .shortPauseResume:
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userSpeechStopped,
+                label: "\(label) short pause"
+            )
+            nextSequence += 1
+            await waitUntilOnMainActor("R8.5.1 \(label) candidate pause") {
+                stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                    .phase == .candidatePause
+            }
+            try? await Task.sleep(for: .milliseconds(120))
+            try await emitR842ListeningSamples(
+                stack: stack,
+                samples: signal(seed: seed &+ 1, amplitude: 0.18),
+                expectedClassification: .nearEndCandidate,
+                label: "R8.5.1 \(label) resume audio"
+            )
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userSpeechStarted,
+                label: "\(label) resume"
+            )
+            nextSequence += 1
+            await waitUntilOnMainActor("R8.5.1 \(label) resumed") {
+                stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                    .phase == .speaking
+            }
+            fallthrough
+        case .finalBeforeStop, .providerFirstStart:
+            finalSequence = nextSequence
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userTranscriptFinal(transcript),
+                label: "\(label) final"
+            )
+            nextSequence += 1
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userSpeechStopped,
+                label: "\(label) true stop"
+            )
+            nextSequence += 1
+        case .partialFinalStop:
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userTranscriptPartial("partial"),
+                label: "\(label) partial"
+            )
+            nextSequence += 1
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userTranscriptFinal(transcript),
+                label: "\(label) final"
+            )
+            finalSequence = nextSequence
+            nextSequence += 1
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequence: nextSequence,
+                kind: .userSpeechStopped,
+                label: "\(label) stop"
+            )
+            nextSequence += 1
+        }
+
+        await waitUntilOnMainActor("R8.5.1 \(label) disposition") {
+            let completion = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            let disposition = stack.runtime
+                .realtimeUserTurnDispositionDebugSnapshot()
+            return completion.completionCandidateCount
+                    == completionBaseline + 1
+                && disposition.passiveBackchannelCount
+                    == dispositionBaseline.passiveBackchannelCount
+                        + (expectsPassive ? 1 : 0)
+                && disposition.substantiveCount
+                    == dispositionBaseline.substantiveCount
+                        + (expectsPassive ? 0 : 1)
+        }
+        if !expectsPassive {
+            await waitUntil("R8.5.1 \(label) response create") {
+                await stack.provider.createCount() == createBaseline + 1
+            }
+        }
+        let createDelta = await stack.provider.createCount()
+            - createBaseline
+        let expectedCreates = expectsPassive ? 0 : 1
+        r851DuplicateResponses += max(0, createDelta - expectedCreates)
+        expect(createDelta == expectedCreates,
+               "R8.5.1 response policy creates exactly the expected count")
+        if !expectsPassive {
+            guard let finalSequence,
+                  let command = await stack.provider.lastCreateCommand()
+            else {
+                fatalError("R8.5.1 \(label) response identity missing")
+            }
+            expect(command.identity.session == session
+                    && command.identity.turnID == turnID
+                    && command.identity.responseID == nil
+                    && command.identity.contextRevision == contextRevision
+                    && command.sourceEventSequence == finalSequence,
+                   "R8.5.1 response binds the exact accepted final identity")
+        }
+
+        var responseID: RealtimeBrainResponseID?
+        if !expectsPassive && outputMode != .none {
+            let result = await emitR851ResidentOutput(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                contextRevision: contextRevision,
+                sequenceBase: nextSequence,
+                completePlayback: outputMode == .complete,
+                label: label
+            )
+            responseID = result.responseID
+            nextSequence = result.nextSequence
+        }
+
+        let interruptDelta = await stack.provider.interruptCount()
+            - interruptBaseline
+        let cancelDelta = await stack.provider.cancelCount()
+            - cancelBaseline
+        let clearDelta = stack.outputPlayer.clearScheduledPlaybackCount
+            - clearBaseline
+        r851FalseSelfInterrupts += interruptDelta + cancelDelta + clearDelta
+        let route = stack.controller.formalSpeechRouteDebugSnapshot
+        r851GenerationDrift += route.generation == session.generation ? 0 : 1
+        r851LeaseDrift += stack.runtime.activeBrainLeaseForTesting()
+            == leaseBaseline ? 0 : 1
+        expect(interruptDelta == 0 && cancelDelta == 0 && clearDelta == 0,
+               "R8.5.1 ordinary user turn has no interruption side effects")
+        expect(route.generation == session.generation
+                && stack.runtime.activeBrainLeaseForTesting()
+                    == leaseBaseline,
+               "R8.5.1 ordinary turn preserves generation and lease")
+
+        let identity = r843EventIdentity(
+            session: session,
+            turnID: turnID,
+            contextRevision: contextRevision
+        )
+        if expectsPassive {
+            let historyWrites = try stack.sessionStore
+                .loadMostRecentDialogueEntries() == dialogueBefore ? 0 : 1
+            let memoryWrites = stack.runtime.narrativeMemoryDebugSnapshot()
+                == narrativeBefore ? 0 : 1
+            let relationshipChanges = stack.runtime.currentRelationshipState
+                == relationshipBefore ? 0 : 1
+            let growthWrites = stack.runtime
+                .realtimeGrowthObservationDecisionCountForTesting()
+                == growthBefore ? 0 : 1
+            r851FalsePersistence += historyWrites + memoryWrites
+                + relationshipChanges + growthWrites
+            r851FalseHistoryWrites += historyWrites
+            r851FalseMemoryWrites += memoryWrites
+            r851FalseRelationshipChanges += relationshipChanges
+            r851FalseGrowthWrites += growthWrites
+            expect(historyWrites == 0 && memoryWrites == 0
+                    && relationshipChanges == 0 && growthWrites == 0
+                    && stack.runtime
+                        .realtimePendingUserInputForTesting(identity) == nil,
+                   "R8.5.1 passive turn is ephemeral and fully retired")
+        } else if outputMode == .complete {
+            expect(stack.runtime.realtimePendingUserInputForTesting(identity)
+                    == nil,
+                   "R8.5.1 completed substantive output retires user input")
+        }
+        return R851TurnResult(
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: contextRevision,
+            nextSequence: nextSequence,
+            createDelta: createDelta
+        )
+    }
+
+    private static func emitR851ResidentOutput(
+        stack: R823ControllerStack,
+        session: RealtimeBrainSessionIdentity,
+        turnID: RealtimeBrainTurnID,
+        contextRevision: UInt64,
+        sequenceBase: UInt64,
+        completePlayback: Bool,
+        label: String
+    ) async -> (
+        responseID: RealtimeBrainResponseID,
+        nextSequence: UInt64
+    ) {
+        await stack.controller.refreshMicrophoneAuthorization()
+        let responseID = RealtimeBrainResponseID()
+        let startBaseline = stack.outputPlayer.startCount
+        let playbackBaseline = stack.controller.speechAudioOutputHostSnapshot
+        let outputBaseline = stack.controller
+            .realtimeBrainOutputBridgeSnapshot
+        let audioSequence = await stack.provider.nextResidentAudioSequence(
+            for: session
+        )
+        var sequence = sequenceBase
+        let prefixEvents: [RealtimeResidentBrainEventKind] = [
+            .residentTextDelta("R8.5.1 response"),
+            .residentSpeakingStarted,
+            .residentAudioDelta(audioDelta(sequence: audioSequence))
+        ]
+        for event in prefixEvents {
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                responseID: responseID,
+                contextRevision: contextRevision,
+                sequence: sequence,
+                kind: event,
+                label: "\(label) resident output \(sequence)"
+            )
+            sequence += 1
+        }
+        await waitUntil("R8.5.1 \(label) Playback starts") {
+            stack.outputPlayer.startCount == startBaseline + 1
+        }
+        if completePlayback {
+            let suffixEvents: [RealtimeResidentBrainEventKind] = [
+                .residentTextFinal("R8.5.1 response complete"),
+                .residentSpeakingStopped
+            ]
+            for event in suffixEvents {
+                await enqueueR843Activity(
+                    stack: stack,
+                    session: session,
+                    turnID: turnID,
+                    responseID: responseID,
+                    contextRevision: contextRevision,
+                    sequence: sequence,
+                    kind: event,
+                    label: "\(label) resident completion \(sequence)"
+                )
+                sequence += 1
+            }
+            await waitUntil(
+                "R8.5.1 \(label) resident response completes"
+            ) {
+                await stack.controller.refreshMicrophoneAuthorization()
+                let output = await stack.controller
+                    .realtimeBrainOutputBridgeSnapshot
+                return output.completedResponseCount
+                    == outputBaseline.completedResponseCount + 1
+            }
+            await enqueueR843Activity(
+                stack: stack,
+                session: session,
+                turnID: turnID,
+                responseID: responseID,
+                contextRevision: contextRevision,
+                sequence: sequence,
+                kind: .residentSemanticFinal(
+                    RealtimeBrainSemanticOutput(
+                        canonicalText: "R8.5.1 response complete"
+                    )
+                ),
+                label: "\(label) resident semantic completion"
+            )
+            sequence += 1
+            await waitUntil("R8.5.1 \(label) semantic output accepted") {
+                await stack.controller.refreshMicrophoneAuthorization()
+                let output = await stack.controller
+                    .realtimeBrainOutputBridgeSnapshot
+                return output.acceptedEventCount
+                    == outputBaseline.acceptedEventCount + 6
+            }
+            await waitUntilOnMainActor(
+                "R8.5.1 \(label) semantic completion settles"
+            ) {
+                stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
+                    .phase == .idle
+            }
+            stack.outputPlayer.completeScheduledChunk()
+            await waitUntil("R8.5.1 \(label) Listening") {
+                let playback = await stack.outputHost.currentSnapshot()
+                let route = await stack.controller
+                    .formalSpeechRouteDebugSnapshot
+                return playback.playbackCompletedCount
+                        == playbackBaseline.playbackCompletedCount + 1
+                    && route.phase == .listening
+            }
+        } else {
+            await waitUntilOnMainActor("R8.5.1 \(label) resident speaking") {
+                stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .speaking
+            }
+        }
+        return (responseID, sequence)
+    }
+
+    private static func settleR851ListeningSilence(
+        stack: R823ControllerStack,
+        expectedSession: RealtimeBrainSessionIdentity,
+        frameCount: Int,
+        label: String
+    ) async throws {
+        let silence = [Float](
+            repeating: 0,
+            count: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        let audioBaseline = await stack.provider.audioFrameCount()
+        let createBaseline = await stack.provider.createCount()
+        let completionBaseline = stack.runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        let dispositionBaseline = stack.runtime
+            .realtimeUserTurnDispositionDebugSnapshot()
+        var emittedPacketCount = 0
+        for _ in 0 ..< frameCount {
+            let before = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+            stack.aecBackend.setCaptureOutput(silence)
+            let processed = stack.acousticEchoHost.processCapture(
+                silence,
+                hostTimeNanoseconds: monotonicNow()
+            )
+            let emission = try stack.capture.emit(
+                processedSamples: processed,
+                acousticBefore: before
+            )
+            emittedPacketCount += emission.packetCount
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let expectedPacketCount = emittedPacketCount
+        await waitUntil("R8.5.1 \(label) reaches N+1 Provider") {
+            await stack.provider.audioFrameCount()
+                >= audioBaseline + expectedPacketCount
+        }
+        let frames = await stack.provider.audioFrames(after: audioBaseline)
+        let createAfterSilence = await stack.provider.createCount()
+        let observation = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+        expect(emittedPacketCount > 0
+                && frames.count == emittedPacketCount
+                && frames.allSatisfy { $0.identity == expectedSession }
+                && !observation.isPlaybackActive
+                && !observation.sourceGateOpen
+                && observation.rawCaptureRMS < 0.000_001
+                && observation.processedCaptureRMS < 0.000_001
+                && observation.linearAECOutputRMS < 0.000_001
+                && createAfterSilence == createBaseline
+                && stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot()
+                    == completionBaseline
+                && stack.runtime
+                    .realtimeUserTurnDispositionDebugSnapshot()
+                    == dispositionBaseline,
+               "R8.5.1 \(label) settles through production silence")
+    }
+
+    private static func performR851InterruptionCycle(
+        stack: R823ControllerStack,
+        session: RealtimeBrainSessionIdentity,
+        turnID: RealtimeBrainTurnID,
+        responseID: RealtimeBrainResponseID,
+        proposalSequence: UInt64,
+        label: String
+    ) async throws -> RealtimeBrainSessionIdentity {
+        let nextSession = RealtimeBrainSessionIdentity(
+            residentID: session.residentID,
+            runtimeSessionID: session.runtimeSessionID,
+            brainLeaseID: session.brainLeaseID,
+            routeEpoch: session.routeEpoch,
+            generation: session.generation + 1
+        )
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let startBaseline = stack.outputPlayer.startCount
+        await stack.controller.refreshMicrophoneAuthorization()
+        let playbackBaseline = stack.controller
+            .speechAudioOutputHostSnapshot
+        let subtitleAfterResidentOutput = stack.controller
+            .realtimeSpeechSubtitleSnapshot
+        let acousticBaseline = stack.controller
+            .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+        await stack.provider.holdInterrupt()
+        _ = try await submitTrueNearEndThroughProductionChain(stack: stack)
+        await waitUntil("R8.5.1 \(label) acoustic Bridge refresh") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainInputBridgeSnapshot
+                .acousticEvidenceCount == acousticBaseline + 1
+        }
+        await waitUntilOnMainActor("R8.5.1 \(label) acoustic evidence") {
+            let evidence = stack.runtime
+                .realtimeInterruptionEvidenceDebugSnapshot()
+            return evidence.session == session
+                && evidence.hasAcousticEvidence
+                && !evidence.hasSemanticEvidence
+        }
+        let contextRevision = await r851ContextRevision(
+            stack: stack,
+            session: session,
+            label: label,
+            allowsGenerationCarry: true
+        )
+        let proposalIdentity = r843EventIdentity(
+            session: session,
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: contextRevision
+        )
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: proposalIdentity,
+            sequence: proposalSequence,
+            kind: .interruptionProposed(RealtimeBrainInterruptionProposal(
+                identity: proposalIdentity,
+                reason: "user_speech_started_during_resident_response"
+            ))
+        ))
+        await waitUntil("R8.5.1 \(label) clear before ACK") {
+            await stack.provider.isInterruptHeld()
+                && stack.outputPlayer.clearScheduledPlaybackCount
+                    == clearBaseline + 1
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let acceptedBaseline = stack.controller
+            .realtimeBrainOutputBridgeSnapshot.acceptedEventCount
+        let rejectedBaseline = stack.controller
+            .realtimeBrainOutputBridgeSnapshot.rejectedEventCount
+        let returnedBaseline = await stack.provider.returnedEventCount(
+            eventSession: session
+        )
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: proposalIdentity,
+            sequence: proposalSequence + 1,
+            kind: .residentTextDelta("stale R8.5.1 output")
+        ))
+        await stack.provider.releaseInterrupt()
+        await waitUntilOnMainActor("R8.5.1 \(label) N+1 generation") {
+            guard let lease = stack.runtime.activeBrainLeaseForTesting()
+            else { return false }
+            return lease.generation
+                    == .realtimeResidentBrain(nextSession.generation)
+                && stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+        }
+        await waitUntil("R8.5.1 \(label) N+1 Bridges rebound") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let input = await stack.controller
+                .realtimeBrainInputBridgeSnapshot
+            let output = await stack.controller
+                .realtimeBrainOutputBridgeSnapshot
+            return input.hasActivePump && output.hasActiveReceiveLoop
+        }
+        await waitUntil("R8.5.1 \(label) stale output returns") {
+            await stack.provider.returnedEventCount(eventSession: session)
+                == returnedBaseline + 1
+        }
+        await waitUntil("R8.5.1 \(label) stale output rejected") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainOutputBridgeSnapshot
+                .rejectedEventCount == rejectedBaseline + 1
+        }
+        let reboundBaseline = await stack.provider.audioFrameCount()
+        let reboundPacketCount = try
+            submitPostInterruptionInputThroughProductionChain(stack: stack)
+        await waitUntil("R8.5.1 \(label) N+1 PCM rebound") {
+            await stack.provider.audioFrameCount()
+                >= reboundBaseline + reboundPacketCount
+        }
+        let reboundFrames = await stack.provider.audioFrames(
+            after: reboundBaseline
+        )
+        expect(reboundFrames.count == reboundPacketCount
+                && reboundFrames.allSatisfy { $0.identity == nextSession },
+               "R8.5.1 interruption cycle rebounds exact N+1 PCM")
+        stack.outputPlayer.completeStoppedChunk()
+        await waitUntil("R8.5.1 \(label) old callback rejected") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.speechAudioOutputHostSnapshot
+                .rejectedCallbackCount
+                == playbackBaseline.rejectedCallbackCount + 1
+        }
+        let interruptDelta = await stack.provider.interruptCount()
+            - interruptBaseline
+        let cancelDelta = await stack.provider.cancelCount() - cancelBaseline
+        let clearDelta = stack.outputPlayer.clearScheduledPlaybackCount
+            - clearBaseline
+        await stack.controller.refreshMicrophoneAuthorization()
+        let finalOutput = stack.controller.realtimeBrainOutputBridgeSnapshot
+        let staleAccepted = Int(finalOutput.acceptedEventCount
+            - acceptedBaseline)
+        let staleResurrection = stack.outputPlayer.startCount
+                    == startBaseline
+                && stack.controller.realtimeSpeechSubtitleSnapshot
+                    == subtitleAfterResidentOutput ? 0 : 1
+        r851StaleSideEffects += staleAccepted + staleResurrection
+        expect(interruptDelta == 1 && cancelDelta == 0 && clearDelta == 1,
+               "R8.5.1 interruption cycle owns one interrupt and clear")
+        expect(staleAccepted == 0 && staleResurrection == 0,
+               "R8.5.1 old output and callback remain stale after N+1")
+        stack.acousticEchoHost.playbackStopped()
+        try await settleR851ListeningSilence(
+            stack: stack,
+            expectedSession: nextSession,
+            frameCount: 24,
+            label: "\(label) N+1 listening boundary"
+        )
+        return nextSession
+    }
+
+    private static func testR851InterruptionPendingStopRestart(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let oldSession = stack.session
+        let startBaseline = stack.outputPlayer.startCount
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        await stack.provider.holdInterrupt()
+        _ = try await submitTrueNearEndThroughProductionChain(stack: stack)
+        let proposal = semanticProposal(stack: stack, sequence: 4)
+        await stack.provider.enqueue(proposal)
+        await waitUntil("R8.5.1 interruption-pending clear") {
+            await stack.provider.isInterruptHeld()
+                && stack.outputPlayer.clearScheduledPlaybackCount
+                    == clearBaseline + 1
+        }
+        let stopTask = Task { @MainActor in
+            await stack.controller.stopSpeechAudioCapture()
+        }
+        await stack.provider.releaseInterrupt()
+        await stopTask.value
+        await waitUntilOnMainActor("R8.5.1 interruption-pending stop") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle
+        }
+        await stack.controller.startRealtimeResidentBrainRoute()
+        await waitUntil("R8.5.1 interruption-pending restart") {
+            guard let current = await stack.provider.lastSession() else {
+                return false
+            }
+            let route = await stack.controller.formalSpeechRouteDebugSnapshot
+            return current.generation == oldSession.generation + 2
+                && current.residentID == oldSession.residentID
+                && current.runtimeSessionID == oldSession.runtimeSessionID
+                && current.brainLeaseID != oldSession.brainLeaseID
+                && current.routeEpoch == oldSession.routeEpoch + 1
+                && route.phase == .listening
+                && route.generation == current.generation
+        }
+        guard let restarted = await stack.provider.lastSession() else {
+            fatalError("R8.5.1 interruption-pending restart missing")
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let outputBaseline = stack.controller
+            .realtimeBrainOutputBridgeSnapshot
+        let returnedBaseline = await stack.provider.returnedEventCount(
+            eventSession: oldSession
+        )
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 5,
+            kind: .residentAudioDelta(audioDelta(sequence: 2))
+        ))
+        await waitUntil("R8.5.1 interruption-pending stale return") {
+            await stack.provider.returnedEventCount(eventSession: oldSession)
+                == returnedBaseline + 1
+        }
+        await waitUntil("R8.5.1 interruption-pending stale rejection") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let output = await stack.controller
+                .realtimeBrainOutputBridgeSnapshot
+            return output.acceptedEventCount
+                    == outputBaseline.acceptedEventCount
+                && output.rejectedEventCount
+                    == outputBaseline.rejectedEventCount + 1
+        }
+        let finalOutput = stack.controller.realtimeBrainOutputBridgeSnapshot
+        let staleAccepted = Int(finalOutput.acceptedEventCount
+            - outputBaseline.acceptedEventCount)
+        let staleRejected = Int(finalOutput.rejectedEventCount
+            - outputBaseline.rejectedEventCount)
+        let route = stack.controller.formalSpeechRouteDebugSnapshot
+        let interruptDelta = await stack.provider.interruptCount()
+            - interruptBaseline
+        let cancelDelta = await stack.provider.cancelCount() - cancelBaseline
+        let clearDelta = stack.outputPlayer.clearScheduledPlaybackCount
+            - clearBaseline
+        r851DuplicateInterrupts += max(0, interruptDelta - 1)
+        r851DuplicateClears += max(0, clearDelta - 1)
+        r851StaleSideEffects += staleAccepted
+        expect(restarted.generation == oldSession.generation + 2,
+               "R8.5.1 confirmed interruption and restart advance twice")
+        expect(route.phase == .listening
+                && route.generation == restarted.generation,
+               "R8.5.1 restart publishes the exact active generation")
+        let leaseMatchesRestart = r851LeaseMatches(
+            stack.runtime.activeBrainLeaseForTesting(),
+            session: restarted
+        )
+        r851LeaseDrift += leaseMatchesRestart ? 0 : 1
+        expect(leaseMatchesRestart,
+               "R8.5.1 restart preserves the exact active Brain lease")
+        expect(stack.outputPlayer.startCount == startBaseline,
+               "R8.5.1 stale audio cannot restart Playback")
+        expect(interruptDelta == 1 && cancelDelta == 0 && clearDelta == 1,
+               "R8.5.1 interruption-pending Stop has one interrupt and clear")
+        expect(staleAccepted == 0 && staleRejected == 1,
+               "R8.5.1 interruption-pending Stop rejects old generation")
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func r851ContextRevision(
+        stack: R823ControllerStack,
+        session: RealtimeBrainSessionIdentity,
+        label: String,
+        allowsGenerationCarry: Bool = false
+    ) async -> UInt64 {
+        if let revision = await stack.provider.contextRevision(for: session) {
+            return revision
+        }
+        guard allowsGenerationCarry,
+              let revision = await stack.provider.carriedContextRevision(
+                for: session
+              ) else {
+            fatalError("R8.5.1 \(label) formal context revision missing")
+        }
+        return revision
+    }
+
+    private static func restartR851Route(
+        stack: R823ControllerStack,
+        previousSession: RealtimeBrainSessionIdentity,
+        label: String
+    ) async -> RealtimeBrainSessionIdentity {
+        await stack.controller.stopSpeechAudioCapture()
+        await waitUntilOnMainActor("R8.5.1 \(label) stop") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle
+        }
+        await stack.controller.startRealtimeResidentBrainRoute()
+        await waitUntil("R8.5.1 \(label) restart") {
+            guard let session = await stack.provider.lastSession() else {
+                return false
+            }
+            let route = await stack.controller.formalSpeechRouteDebugSnapshot
+            return session != previousSession
+                && session.generation == previousSession.generation + 1
+                && session.residentID == previousSession.residentID
+                && session.runtimeSessionID
+                    == previousSession.runtimeSessionID
+                && session.brainLeaseID != previousSession.brainLeaseID
+                && session.routeEpoch == previousSession.routeEpoch + 1
+                && route.phase == .listening
+                && route.generation == session.generation
+        }
+        guard let session = await stack.provider.lastSession() else {
+            fatalError("R8.5.1 \(label) restarted session missing")
+        }
+        let leaseMatchesRestart = r851LeaseMatches(
+            stack.runtime.activeBrainLeaseForTesting(),
+            session: session
+        )
+        r851LeaseDrift += leaseMatchesRestart ? 0 : 1
+        expect(leaseMatchesRestart,
+               "R8.5.1 \(label) restart preserves the active Brain lease")
+        return session
+    }
+
+    private static func r851LeaseMatches(
+        _ lease: ActiveBrainLease?,
+        session: RealtimeBrainSessionIdentity
+    ) -> Bool {
+        guard let lease,
+              case .realtimeResidentBrain(let generation) = lease.generation
+        else { return false }
+        return lease.state == .active
+            && lease.route == .realtimeResidentBrain
+            && lease.residentID == session.residentID
+            && lease.runtimeSessionID == session.runtimeSessionID
+            && lease.brainLeaseID == session.brainLeaseID
+            && lease.routeEpoch == session.routeEpoch
+            && generation == session.generation
+    }
+
+    private static func printR851CrossNodeMetrics() {
+        print("r851_cross_node_executable_scenarios=\(r851CrossNodeScenarios)")
+        print("r851_cross_node_failures=0")
+        print("r851_rapid_consecutive_turns=\(r851RapidTurns)")
+        print("r851_repeated_interruption_cycles=\(r851RepeatedInterruptionCycles)")
+        print("r851_stop_restart_points=\(r851StopRestartPoints)")
+        print("r851_delayed_provider_ordering_cases=\(r851DelayedOrderingCases)")
+        print("r851_duplicate_response_creates=\(r851DuplicateResponses)")
+        print("r851_duplicate_interrupts=\(r851DuplicateInterrupts)")
+        print("r851_duplicate_clears=\(r851DuplicateClears)")
+        print("r851_stale_generation_side_effects=\(r851StaleSideEffects)")
+        print("r851_false_self_interrupts=\(r851FalseSelfInterrupts)")
+        print("r851_false_persistence_writes=\(r851FalsePersistence)")
+        print("r851_false_history_writes=\(r851FalseHistoryWrites)")
+        print("r851_false_memory_writes=\(r851FalseMemoryWrites)")
+        print("r851_false_relationship_changes=\(r851FalseRelationshipChanges)")
+        print("r851_false_growth_writes=\(r851FalseGrowthWrites)")
+        print("r851_generation_drift=\(r851GenerationDrift)")
+        print("r851_lease_drift=\(r851LeaseDrift)")
+    }
+
+    private static func printR851RandomizedMetrics() {
+        print(String(
+            format: "r851_randomized_seed=0x%llX",
+            r851RandomSeed
+        ))
+        print("r851_randomized_race_iterations=\(r851RandomizedIterations)")
+        print("r851_randomized_race_failures=\(r851RandomizedFailures)")
+        print("r851_randomized_generation_transitions_expected=\(r851RandomizedExpectedGenerationTransitions)")
+        print("r851_randomized_generation_transitions_observed=\(r851RandomizedObservedGenerationTransitions)")
+        print("r851_randomized_final_before_stop=\(r851RandomizedFinalBeforeStop)")
+        print("r851_randomized_completion_before_final=\(r851RandomizedCompletionBeforeFinal)")
+        print("r851_randomized_partial_final_stop=\(r851RandomizedPartialFinalStop)")
+        print("r851_randomized_short_pause_resume=\(r851RandomizedShortPauseResume)")
+        print("r851_randomized_provider_first_start=\(r851RandomizedProviderFirstStart)")
+        print("r851_randomized_duplicate_response_creates=\(r851DuplicateResponses)")
+        print("r851_randomized_false_self_interrupts=\(r851FalseSelfInterrupts)")
+        print("r851_randomized_false_persistence_writes=\(r851FalsePersistence)")
+        print("r851_randomized_generation_drift=\(r851GenerationDrift)")
+        print("r851_randomized_lease_drift=\(r851LeaseDrift)")
     }
 
     private static func testProductionChainCleanFarEnd(
@@ -2695,6 +4216,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         stack: R823ControllerStack,
         session: RealtimeBrainSessionIdentity,
         sourceTurnID: RealtimeBrainTurnID,
+        contextRevision: UInt64 = 1,
         sequence: UInt64,
         seed: UInt32,
         label: String
@@ -2712,6 +4234,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             session: session,
             turnID: sourceTurnID,
+            contextRevision: contextRevision,
             sequence: sequence,
             kind: .userSpeechStarted,
             label: "R8.4.4 \(label) speech start"
@@ -6017,6 +7540,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         expectedCount: UInt64,
         expectedSession: RealtimeBrainSessionIdentity,
         expectedTurn: RealtimeBrainTurnID,
+        expectedContextRevision: UInt64 = 1,
         expectedStoppedSequence: UInt64,
         label: String
     ) async {
@@ -6029,7 +7553,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                "R8.4.2 \(label) reaches completion candidate")
         expect(snapshot.session == expectedSession
                 && snapshot.turnID == expectedTurn
-                && snapshot.contextRevision == 1,
+                && snapshot.contextRevision == expectedContextRevision,
                "R8.4.2 \(label) preserves exact identity")
         expect(snapshot.stoppedEventSequence == expectedStoppedSequence,
                "R8.4.2 \(label) binds the formal stop sequence")
@@ -7382,7 +8906,11 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     }
 
     private static func testR832ConfirmedInterruptionProductionChain(
-        fixture: Data
+        fixture: Data,
+        afterRebound: ((
+            R823ControllerStack,
+            RealtimeBrainSessionIdentity
+        ) async throws -> Void)? = nil
     ) async throws {
         let stack = try await makeControllerStack(fixture: fixture)
         await stack.controller.refreshMicrophoneAuthorization()
@@ -7732,6 +9260,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         expect(historyWrites == 0 && memoryWrites == 0
                 && relationshipChanges == 0,
                "R8.3.2 writes no History, Memory, or Relationship state")
+        if let afterRebound {
+            try await afterRebound(stack, nextIdentity)
+        }
         try await close(stack)
     }
 
@@ -7983,6 +9514,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let narrativeBefore = stack.runtime
             .narrativeMemoryDebugSnapshot()
         let relationshipBefore = stack.runtime.currentRelationshipState
+        let growthBefore = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
         try await driveResidentOnlyAcousticObservation(
             stack: stack,
             label: "K history safety",
@@ -8019,10 +9552,14 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let memoryWrites = narrativeAfter == narrativeBefore ? 0 : 1
         let relationshipChanges = stack.runtime.currentRelationshipState
             == relationshipBefore ? 0 : 1
+        let growthWrites = stack.runtime
+            .realtimeGrowthObservationDecisionCountForTesting()
+            == growthBefore ? 0 : 1
         residentOnlyFalseTurns += historyWrites
         residentOnlyFalseHistoryWrites += historyWrites
         residentOnlyFalseMemoryWrites += memoryWrites
         residentOnlyRelationshipChanges += relationshipChanges
+        residentOnlyGrowthWrites += growthWrites
         matrixFalseTurns = residentOnlyFalseTurns
         expect(historyWrites == 0,
                "K: resident-only activity does not append Dialogue History")

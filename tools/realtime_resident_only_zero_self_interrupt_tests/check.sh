@@ -6,6 +6,7 @@ test_mode="${1:-r823-full}"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-r823-freeze.XXXXXX")"
 fixture="$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident"
 test_source="$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/RealtimeResidentOnlyZeroSelfInterruptTests.swift"
+timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
 
 worktree_fingerprint() {
   {
@@ -32,7 +33,10 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r842-turn-completion-only" ] \
     && [ "$test_mode" != "r843-semantic-fusion-only" ] \
     && [ "$test_mode" != "r844-classifier-only" ] \
-    && [ "$test_mode" != "r844-response-policy-only" ]; then
+    && [ "$test_mode" != "r844-response-policy-only" ] \
+    && [ "$test_mode" != "r851-cross-node-only" ] \
+    && [ "$test_mode" != "r851-randomized-only" ] \
+    && [ "$test_mode" != "r851-key-repeat" ]; then
   echo "unsupported test mode: $test_mode" >&2
   exit 2
 fi
@@ -78,6 +82,42 @@ swiftc \
 output="$build_dir/output.log"
 runtime_home="$build_dir/runtime-home"
 mkdir -p "$runtime_home"
+
+run_bounded_binary() {
+  local name="$1"
+  local timeout_seconds="$2"
+  local log_file="$3"
+  shift 3
+  local run_home="$runtime_home/$name"
+  mkdir -p "$run_home"
+  printf 'r851_subprocess_start=%s\n' "$name"
+  set +e
+  CFFIXED_USER_HOME="$run_home" \
+    /usr/bin/perl "$timeout_runner" \
+    "$timeout_seconds" \
+    "$build_dir/realtime_resident_only_zero_self_interrupt_tests" \
+    "$@" 2>&1 | tee "$log_file"
+  local pipeline_status=("${PIPESTATUS[@]}")
+  local command_status="${pipeline_status[0]}"
+  local tee_status="${pipeline_status[1]}"
+  set -e
+  if [ "$command_status" -eq 124 ]; then
+    printf 'r851_subprocess_timeout=%s\n' "$name" >&2
+    return 124
+  fi
+  if [ "$command_status" -ne 0 ]; then
+    printf 'r851_subprocess_fail=%s exit=%s\n' \
+      "$name" "$command_status" >&2
+    return "$command_status"
+  fi
+  if [ "$tee_status" -ne 0 ]; then
+    printf 'r851_subprocess_log_fail=%s exit=%s\n' \
+      "$name" "$tee_status" >&2
+    return "$tee_status"
+  fi
+  printf 'r851_subprocess_pass=%s\n' "$name"
+}
+
 runner_arguments=("$fixture")
 if [ "$test_mode" = "r831-positive-only" ]; then
   runner_arguments+=("--r831-positive-only")
@@ -97,14 +137,164 @@ elif [ "$test_mode" = "r844-classifier-only" ]; then
   runner_arguments+=("--r844-classifier-only")
 elif [ "$test_mode" = "r844-response-policy-only" ]; then
   runner_arguments+=("--r844-response-policy-only")
+elif [ "$test_mode" = "r851-cross-node-only" ]; then
+  runner_arguments+=("--r851-cross-node-only")
+elif [ "$test_mode" = "r851-randomized-only" ]; then
+  runner_arguments+=("--r851-randomized-only")
 fi
-CFFIXED_USER_HOME="$runtime_home" \
-  /usr/bin/perl -e '$seconds = shift; alarm $seconds; exec @ARGV' \
-  120 "$build_dir/realtime_resident_only_zero_self_interrupt_tests" \
-  "${runner_arguments[@]}" \
-  | tee "$output"
 
-if [ "$test_mode" = "r844-classifier-only" ]; then
+if [ "$test_mode" = "r851-key-repeat" ]; then
+  repeat_runs=0
+  repeat_subprocesses=0
+  for repetition in 1 2 3; do
+    for suite in r842-listening r843-semantic r832-confirmed r833-stale; do
+      case "$suite" in
+        r842-listening) argument="--r842-listening-only" ;;
+        r843-semantic) argument="--r843-semantic-fusion-only" ;;
+        r832-confirmed) argument="--r832-confirmed-only" ;;
+        r833-stale) argument="--r833-latency-stale-only" ;;
+      esac
+      run_log="$build_dir/${suite}-${repetition}.log"
+      run_bounded_binary \
+        "${suite}-${repetition}" 120 "$run_log" \
+        "$fixture" "$argument"
+      repeat_subprocesses=$((repeat_subprocesses + 1))
+      normalized="$build_dir/${suite}-${repetition}.normalized"
+      rg '^(realtime_|r8)[a-zA-Z0-9_]*=' "$run_log" \
+        | rg -v '^r833_(first_valid_near_end_to_|confirmed_to_)' \
+        | LC_ALL=C sort \
+        > "$normalized"
+      if [ "$repetition" -eq 1 ]; then
+        cp "$normalized" "$build_dir/${suite}-expected.normalized"
+      elif ! cmp -s \
+          "$build_dir/${suite}-expected.normalized" "$normalized"; then
+        printf 'r851_repeat_counter_mismatch=%s-%s\n' \
+          "$suite" "$repetition" >&2
+        diff -u "$build_dir/${suite}-expected.normalized" \
+          "$normalized" >&2 || true
+        exit 1
+      fi
+      repeat_runs=$((repeat_runs + 1))
+    done
+
+    classifier_log="$build_dir/r844-classifier-${repetition}.log"
+    policy_log="$build_dir/r844-policy-${repetition}.log"
+    run_bounded_binary \
+      "r844-classifier-${repetition}" 120 "$classifier_log" \
+      "$fixture" --r844-classifier-only
+    run_bounded_binary \
+      "r844-policy-${repetition}" 120 "$policy_log" \
+      "$fixture" --r844-response-policy-only
+    repeat_subprocesses=$((repeat_subprocesses + 2))
+    normalized="$build_dir/r844-${repetition}.normalized"
+    rg '^(realtime_|r844_)[a-zA-Z0-9_]*=' \
+      "$classifier_log" "$policy_log" \
+      | sed 's|^[^:]*:||' \
+      | LC_ALL=C sort > "$normalized"
+    if [ "$repetition" -eq 1 ]; then
+      cp "$normalized" "$build_dir/r844-expected.normalized"
+    elif ! cmp -s \
+        "$build_dir/r844-expected.normalized" "$normalized"; then
+      printf 'r851_repeat_counter_mismatch=r844-%s\n' \
+        "$repetition" >&2
+      diff -u "$build_dir/r844-expected.normalized" \
+        "$normalized" >&2 || true
+      exit 1
+    fi
+    repeat_runs=$((repeat_runs + 1))
+  done
+
+  rg -qx 'realtime_turn_completion_listening_checks=139' \
+    "$build_dir/r842-listening-1.log"
+  rg -qx 'realtime_turn_completion_listening_cases=1' \
+    "$build_dir/r842-listening-1.log"
+  rg -qx 'realtime_semantic_turn_taking_checks=306' \
+    "$build_dir/r843-semantic-1.log"
+  rg -qx 'realtime_semantic_turn_taking_cases=13' \
+    "$build_dir/r843-semantic-1.log"
+  rg -qx 'realtime_backchannel_classifier_checks=46' \
+    "$build_dir/r844-classifier-1.log"
+  rg -qx 'realtime_backchannel_classifier_cases=43' \
+    "$build_dir/r844-classifier-1.log"
+  rg -qx 'realtime_backchannel_response_policy_checks=455' \
+    "$build_dir/r844-policy-1.log"
+  rg -qx 'realtime_backchannel_response_policy_cases=13' \
+    "$build_dir/r844-policy-1.log"
+  rg -qx 'realtime_confirmed_interruption_checks=62' \
+    "$build_dir/r832-confirmed-1.log"
+  rg -qx 'realtime_confirmed_interruption_cases=1' \
+    "$build_dir/r832-confirmed-1.log"
+  rg -qx 'realtime_barge_in_latency_stale_checks=68' \
+    "$build_dir/r833-stale-1.log"
+  rg -qx 'realtime_barge_in_latency_stale_cases=1' \
+    "$build_dir/r833-stale-1.log"
+  printf 'r851_key_suite_repeat_runs=%d\n' "$repeat_runs" | tee "$output"
+  printf 'r851_key_suite_repeat_subprocesses=%d\n' \
+    "$repeat_subprocesses" | tee -a "$output"
+  printf 'r851_key_suite_repeat_failures=0\n' | tee -a "$output"
+else
+  run_bounded_binary \
+    "$test_mode" 120 "$output" "${runner_arguments[@]}"
+fi
+
+if [ "$test_mode" = "r851-key-repeat" ]; then
+  rg -qx 'r851_key_suite_repeat_runs=15' "$output"
+  rg -qx 'r851_key_suite_repeat_subprocesses=18' "$output"
+  rg -qx 'r851_key_suite_repeat_failures=0' "$output"
+elif [ "$test_mode" = "r851-cross-node-only" ]; then
+  rg -qx 'realtime_total_cross_node_cases=11' "$output"
+  cross_node_checks="$(
+    awk -F= '/^realtime_total_cross_node_checks=/ { print $2 }' "$output"
+  )"
+  [ -n "$cross_node_checks" ]
+  [ "$cross_node_checks" -gt 0 ]
+  rg -qx 'r851_cross_node_executable_scenarios=11' "$output"
+  rg -qx 'r851_cross_node_failures=0' "$output"
+  rg -qx 'r851_rapid_consecutive_turns=20' "$output"
+  rg -qx 'r851_repeated_interruption_cycles=10' "$output"
+  rg -qx 'r851_stop_restart_points=5' "$output"
+  rg -qx 'r851_delayed_provider_ordering_cases=6' "$output"
+  rg -qx 'r851_duplicate_response_creates=0' "$output"
+  rg -qx 'r851_duplicate_interrupts=0' "$output"
+  rg -qx 'r851_duplicate_clears=0' "$output"
+  rg -qx 'r851_stale_generation_side_effects=0' "$output"
+  rg -qx 'r851_false_self_interrupts=0' "$output"
+  rg -qx 'r851_false_persistence_writes=0' "$output"
+  rg -qx 'r851_false_history_writes=0' "$output"
+  rg -qx 'r851_false_memory_writes=0' "$output"
+  rg -qx 'r851_false_relationship_changes=0' "$output"
+  rg -qx 'r851_false_growth_writes=0' "$output"
+  rg -qx 'r851_generation_drift=0' "$output"
+  rg -qx 'r851_lease_drift=0' "$output"
+elif [ "$test_mode" = "r851-randomized-only" ]; then
+  rg -qx 'realtime_total_randomized_cases=1' "$output"
+  randomized_checks="$(
+    awk -F= '/^realtime_total_randomized_checks=/ { print $2 }' "$output"
+  )"
+  [ -n "$randomized_checks" ]
+  [ "$randomized_checks" -gt 0 ]
+  rg -qx 'r851_randomized_seed=0x851511A7' "$output"
+  rg -qx 'r851_randomized_race_iterations=100' "$output"
+  rg -qx 'r851_randomized_race_failures=0' "$output"
+  rg -qx 'r851_randomized_generation_transitions_expected=9' "$output"
+  rg -qx 'r851_randomized_generation_transitions_observed=9' "$output"
+  for ordering_counter in \
+    r851_randomized_final_before_stop \
+    r851_randomized_completion_before_final \
+    r851_randomized_partial_final_stop \
+    r851_randomized_short_pause_resume \
+    r851_randomized_provider_first_start; do
+    ordering_count="$(awk -F= -v key="$ordering_counter" \
+      '$1 == key { print $2 }' "$output")"
+    [ -n "$ordering_count" ]
+    [ "$ordering_count" -gt 0 ]
+  done
+  rg -qx 'r851_randomized_duplicate_response_creates=0' "$output"
+  rg -qx 'r851_randomized_false_self_interrupts=0' "$output"
+  rg -qx 'r851_randomized_false_persistence_writes=0' "$output"
+  rg -qx 'r851_randomized_generation_drift=0' "$output"
+  rg -qx 'r851_randomized_lease_drift=0' "$output"
+elif [ "$test_mode" = "r844-classifier-only" ]; then
   rg -qx 'realtime_backchannel_classifier_cases=43' "$output"
   rg -qx 'realtime_backchannel_classifier_checks=46' "$output"
   rg -qx 'r844_classifier_passive_cases=19' "$output"
@@ -790,6 +980,12 @@ elif [ "$test_mode" = "r844-response-policy-only" ]; then
   echo "realtime_backchannel_response_policy=PASS"
 elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
   echo "realtime_semantic_turn_taking=PASS"
+elif [ "$test_mode" = "r851-cross-node-only" ]; then
+  echo "realtime_total_cross_node=PASS"
+elif [ "$test_mode" = "r851-randomized-only" ]; then
+  echo "realtime_total_randomized=PASS"
+elif [ "$test_mode" = "r851-key-repeat" ]; then
+  echo "realtime_total_key_repeat=PASS"
 else
   echo "realtime_resident_only_zero_self_interrupt_freeze=PASS"
 fi
