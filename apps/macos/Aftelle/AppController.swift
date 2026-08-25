@@ -21,6 +21,16 @@ private enum DefaultTextProviderConfiguration {
     )
 }
 
+nonisolated private enum ProductionQwenRealtimeBrainConfiguration {
+    static let value = QwenRealtimeResidentBrainConfiguration(
+        endpoint: URL(
+            string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
+        )!,
+        keyRef: ProviderKeychainStore.qwenKeyRef,
+        defaultProviderVoiceID: "Tina"
+    )
+}
+
 #if DEBUG
 nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
     case flash = "qwen3.5-omni-flash-realtime"
@@ -63,16 +73,6 @@ nonisolated private enum Stage7511QwenASRConfiguration {
         )!,
         modelID: "qwen3-asr-flash-realtime",
         keyRef: ProviderKeychainStore.qwenKeyRef
-    )
-}
-
-nonisolated private enum StageR3QwenRealtimeBrainConfiguration {
-    static let value = QwenRealtimeResidentBrainConfiguration(
-        endpoint: URL(
-            string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
-        )!,
-        keyRef: ProviderKeychainStore.qwenKeyRef,
-        defaultProviderVoiceID: "Tina"
     )
 }
 
@@ -342,23 +342,35 @@ final class AppController: ObservableObject {
     @Published private(set) var providerDebugState = ProviderDebugViewState(
         profile: DefaultTextProviderConfiguration.profile
     )
+    @Published private(set) var realtimeFullDuplexSpeechStatus =
+        RealtimeFullDuplexSpeechStatus.idle
     #if DEBUG
-    @Published private(set) var nativeSpeechProviderDebugState =
-        NativeSpeechProviderDebugViewState(
-            profile: Stage75NativeSpeechConfiguration.profile
-        )
     @Published private(set) var speechAudioHostSnapshot =
         MacSpeechAudioHostSnapshot.initial
-    @Published private(set) var speechInputBridgeSnapshot =
-        MacSpeechNativeInputBridgeSnapshot.initial
-    @Published private(set) var speechOutputBridgeSnapshot =
-        MacSpeechNativeOutputBridgeSnapshot.initial
     @Published private(set) var realtimeBrainInputBridgeSnapshot =
         MacSpeechRealtimeBrainInputBridgeSnapshot.initial
     @Published private(set) var realtimeBrainOutputBridgeSnapshot =
         MacSpeechRealtimeBrainOutputBridgeSnapshot.initial
     @Published private(set) var speechAudioOutputHostSnapshot =
         MacSpeechAudioOutputHostSnapshot.initial
+    #else
+    private var speechAudioHostSnapshot = MacSpeechAudioHostSnapshot.initial
+    private var realtimeBrainInputBridgeSnapshot =
+        MacSpeechRealtimeBrainInputBridgeSnapshot.initial
+    private var realtimeBrainOutputBridgeSnapshot =
+        MacSpeechRealtimeBrainOutputBridgeSnapshot.initial
+    private var speechAudioOutputHostSnapshot =
+        MacSpeechAudioOutputHostSnapshot.initial
+    #endif
+    #if DEBUG
+    @Published private(set) var nativeSpeechProviderDebugState =
+        NativeSpeechProviderDebugViewState(
+            profile: Stage75NativeSpeechConfiguration.profile
+        )
+    @Published private(set) var speechInputBridgeSnapshot =
+        MacSpeechNativeInputBridgeSnapshot.initial
+    @Published private(set) var speechOutputBridgeSnapshot =
+        MacSpeechNativeOutputBridgeSnapshot.initial
     @Published private(set) var nativeSpeechPlaybackDebugSnapshot =
         NativeSpeechPlaybackDebugSnapshot.initial
     @Published private(set) var realtimeSpeechStateSnapshot =
@@ -392,43 +404,12 @@ final class AppController: ObservableObject {
         Task<Result<RuntimeResidentReply, ProviderRequestError>, Never>?
     private var residentTextPresentationID: UUID?
     private var providerConfigurationGeneration = 0
-    #if DEBUG
     private let speechAudioHost: MacSpeechAudioHost
     private let speechAudioOutputHost: MacSpeechAudioOutputHost
-    private let nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer
-    private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
-    private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
-    private var formalSpeechRouteGeneration: UInt64?
-    private var formalSpeechCaptureGeneration: UInt64?
-    private var formalSpeechPlaybackGeneration: UInt64?
-    private var formalSpeechInteractionID: UUID?
-    private var formalSpeechUserFinal: String?
-    private var formalSpeechCanonicalResponse: String?
-    private var formalSpeechInputTask: Task<Void, Never>?
-    private var formalSpeechRouteTask: Task<Void, Never>?
-    private var formalSpeechPlaybackCommitted = false
-    private var formalSpeechASRAcceptsAudio = false
-    private var formalSpeechFailingGeneration: UInt64?
-    private var formalSpeechObservedSourceGateOpenCount: UInt64 = 0
-    private var formalSpeechInterruptingGeneration: UInt64?
-    private var projectedNativeSpeechDialogueHistoryIdentities:
-        Set<NativeSpeechDialogueHistoryIdentity> = []
-    private var realtimeSpeechPlaybackSubtitleSynchronizer =
-        RealtimeSpeechPlaybackSubtitleSynchronizer()
-    private var lastRealtimeSpeechSubtitleProjection:
-        RealtimeSpeechSubtitleProjection?
-    private var lastPlaybackEventOrdinal: UInt64 = 0
-    private var playbackInterruptClearCount: UInt64 = 0
-    private var playbackStopClearCount: UInt64 = 0
-    private var rejectedPlaybackEventCount: UInt64 = 0
-    private var lastDiagnosticAggregateNanoseconds: UInt64 = 0
-    private var lastDiagnosticInputForwardedCount: UInt64 = 0
-    private var lastDiagnosticInputRejectedCount: UInt64 = 0
-    private var lastDiagnosticCaptureGeneratedCount: UInt64 = 0
-    private var lastDiagnosticCaptureDroppedCount: UInt64 = 0
-    private var lastDiagnosticPCMEndSample: Int16?
-    private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
     private var speechHostLifecycleOperationCount = 0
+    private var speechAudioHostShutdownOperation:
+        (id: UUID, task: Task<Void, Never>)?
+    private var speechAudioHostShutdownCompleted = false
     private var realtimeBrainInputBinding:
         MacSpeechRealtimeBrainInputBinding?
     private var realtimeBrainPlaybackResponseID: RealtimeBrainResponseID?
@@ -450,22 +431,6 @@ final class AppController: ObservableObject {
     private var realtimeBrainStopping = false
     private var realtimePassiveBackchannelPresentation:
         RealtimePassiveBackchannelPresentation?
-    private lazy var speechInputBridge = MacSpeechNativeInputBridge(
-        source: speechAudioHost,
-        sendFrame: { [orchestrationKernel] payload, context in
-            return await orchestrationKernel.sendNativeSpeechInput(
-                payload,
-                context: context
-            )
-        },
-        stopInput: { [weak self] binding, reason in
-            guard let self else { return .success(()) }
-            return await orchestrationKernel.stopNativeSpeechInput(
-                binding: binding,
-                reason: reason
-            )
-        }
-    )
     private lazy var realtimeBrainInputBridge = MacSpeechRealtimeBrainInputBridge(
         source: speechAudioHost,
         sendFrameWithActivity: { [orchestrationKernel] frame, activity in
@@ -514,6 +479,56 @@ final class AppController: ObservableObject {
                 )
             }
         )
+    #if DEBUG
+    private let nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer
+    private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
+    private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
+    private var formalSpeechRouteGeneration: UInt64?
+    private var formalSpeechCaptureGeneration: UInt64?
+    private var formalSpeechPlaybackGeneration: UInt64?
+    private var formalSpeechInteractionID: UUID?
+    private var formalSpeechUserFinal: String?
+    private var formalSpeechCanonicalResponse: String?
+    private var formalSpeechInputTask: Task<Void, Never>?
+    private var formalSpeechRouteTask: Task<Void, Never>?
+    private var formalSpeechPlaybackCommitted = false
+    private var formalSpeechASRAcceptsAudio = false
+    private var formalSpeechFailingGeneration: UInt64?
+    private var formalSpeechObservedSourceGateOpenCount: UInt64 = 0
+    private var formalSpeechInterruptingGeneration: UInt64?
+    private var projectedNativeSpeechDialogueHistoryIdentities:
+        Set<NativeSpeechDialogueHistoryIdentity> = []
+    private var realtimeSpeechPlaybackSubtitleSynchronizer =
+        RealtimeSpeechPlaybackSubtitleSynchronizer()
+    private var lastRealtimeSpeechSubtitleProjection:
+        RealtimeSpeechSubtitleProjection?
+    private var lastPlaybackEventOrdinal: UInt64 = 0
+    private var playbackInterruptClearCount: UInt64 = 0
+    private var playbackStopClearCount: UInt64 = 0
+    private var rejectedPlaybackEventCount: UInt64 = 0
+    private var lastDiagnosticAggregateNanoseconds: UInt64 = 0
+    private var lastDiagnosticInputForwardedCount: UInt64 = 0
+    private var lastDiagnosticInputRejectedCount: UInt64 = 0
+    private var lastDiagnosticCaptureGeneratedCount: UInt64 = 0
+    private var lastDiagnosticCaptureDroppedCount: UInt64 = 0
+    private var lastDiagnosticPCMEndSample: Int16?
+    private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
+    private lazy var speechInputBridge = MacSpeechNativeInputBridge(
+        source: speechAudioHost,
+        sendFrame: { [orchestrationKernel] payload, context in
+            return await orchestrationKernel.sendNativeSpeechInput(
+                payload,
+                context: context
+            )
+        },
+        stopInput: { [weak self] binding, reason in
+            guard let self else { return .success(()) }
+            return await orchestrationKernel.stopNativeSpeechInput(
+                binding: binding,
+                reason: reason
+            )
+        }
+    )
     private lazy var speechOutputBridge = MacSpeechNativeOutputBridge(
         receiveEvent: { [orchestrationKernel] interactionID in
             await orchestrationKernel.receiveNativeSpeechEvent(
@@ -561,8 +576,6 @@ final class AppController: ObservableObject {
     init() {
         let credentialStore = ProviderKeychainStore()
         let runtimeCore: RuntimeCore
-        #if DEBUG
-        let speechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
         speechAudioHost = MacSpeechAudioHost(
             capture: SystemMacSpeechAudioCapture(
@@ -574,17 +587,23 @@ final class AppController: ObservableObject {
                 audioEngine: speechAudioEngine
             )
         )
+        #if DEBUG
+        let speechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         nativeSpeechDiagnosticBuffer = speechDiagnosticBuffer
-        runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
+        runtimeCore = QwenRealtimeRuntimeComposition.makeDebugRuntimeCore(
             credentialReader: credentialStore,
             diagnosticBuffer: speechDiagnosticBuffer,
             realtimeBrainConfiguration:
-                StageR3QwenRealtimeBrainConfiguration.value,
+                ProductionQwenRealtimeBrainConfiguration.value,
             asrConfiguration: Stage7511QwenASRConfiguration.value,
             ttsConfiguration: Stage7511QwenTTSConfiguration.value
         )
         #else
-        runtimeCore = RuntimeCore(providerCredentialReader: credentialStore)
+        runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
+            credentialReader: credentialStore,
+            realtimeBrainConfiguration:
+                ProductionQwenRealtimeBrainConfiguration.value
+        )
         #endif
         providerKeychainStore = credentialStore
         orchestrationKernel = OrchestrationKernel(
@@ -599,7 +618,6 @@ final class AppController: ObservableObject {
     init(orchestrationKernel: OrchestrationKernel) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
-        #if DEBUG
         let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
         speechAudioHost = MacSpeechAudioHost(
             capture: SystemMacSpeechAudioCapture(
@@ -611,6 +629,7 @@ final class AppController: ObservableObject {
                 audioEngine: speechAudioEngine
             )
         )
+        #if DEBUG
         nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         #endif
         restoreProviderConfiguration()
@@ -739,6 +758,34 @@ final class AppController: ObservableObject {
 
     var isResidentTextInputAvailable: Bool {
         !loadedResidentID.isEmpty && !loadedSessionID.isEmpty
+    }
+
+    var canStartRealtimeFullDuplexSpeech: Bool {
+        isResidentTextInputAvailable
+            && realtimeBrainInputBinding == nil
+            && realtimeBrainRouteAttemptID == nil
+            && !realtimeBrainStartInFlight
+            && !realtimeBrainStopping
+            && !hasActiveAlternateSpeechRoute
+            && speechAudioHostShutdownOperation == nil
+            && speechHostLifecycleOperationCount == 0
+    }
+
+    var canStopRealtimeFullDuplexSpeech: Bool {
+        !realtimeBrainStopping
+            && (realtimeBrainInputBinding != nil
+                || realtimeBrainRouteAttemptID != nil
+                || realtimeBrainPreparedCaptureGeneration != nil)
+    }
+
+    private var hasActiveAlternateSpeechRoute: Bool {
+        #if DEBUG
+        formalSpeechRouteGeneration != nil
+            || speechInputBridgeSnapshot.hasActivePump
+            || speechOutputBridgeSnapshot.hasActiveReceiveLoop
+        #else
+        false
+        #endif
     }
 
     @discardableResult
@@ -1961,6 +2008,7 @@ final class AppController: ObservableObject {
     }
 
     func refreshMicrophoneAuthorization() async {
+        speechAudioHostShutdownCompleted = false
         speechAudioHostSnapshot =
             await speechAudioHost.refreshAuthorization()
         speechInputBridgeSnapshot =
@@ -1978,11 +2026,13 @@ final class AppController: ObservableObject {
     }
 
     func requestMicrophoneAuthorization() async {
+        speechAudioHostShutdownCompleted = false
         speechAudioHostSnapshot =
             await speechAudioHost.requestMicrophoneAuthorization()
     }
 
     func startSpeechAudioCapture() async {
+        speechAudioHostShutdownCompleted = false
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
         speechAudioHostSnapshot = await speechAudioHost.startCapture()
@@ -2048,27 +2098,56 @@ final class AppController: ObservableObject {
             stateAfter: realtimeSpeechStateSnapshot.state.rawValue
         )
     }
+    #endif
 
     func shutdownSpeechAudioHost() async {
+        guard !speechAudioHostShutdownCompleted else { return }
+        if let operation = speechAudioHostShutdownOperation {
+            await operation.task.value
+            return
+        }
+        let operationID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await performSpeechAudioHostShutdown()
+        }
+        speechAudioHostShutdownOperation = (operationID, task)
+        await task.value
+        if speechAudioHostShutdownOperation?.id == operationID {
+            speechAudioHostShutdownOperation = nil
+            speechAudioHostShutdownCompleted = true
+            objectWillChange.send()
+        }
+    }
+
+    private func performSpeechAudioHostShutdown() async {
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
-        await cancelFormalSpeechRoute()
         await stopRealtimeResidentBrainRoute()
+        #if DEBUG
+        await cancelFormalSpeechRoute()
         if nativeSpeechPlaybackBinding != nil {
             playbackStopClearCount &+= 1
         }
         nativeSpeechPlaybackBinding = nil
+        #endif
         speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+        #if DEBUG
         realtimeSpeechPlaybackSubtitleSynchronizer.resetForTerminal(
             canonicalCompleted:
                 realtimeSpeechSubtitleSnapshot.lastCompleted
         )
         speechOutputBridgeSnapshot = await speechOutputBridge.stop()
         speechInputBridgeSnapshot = await speechInputBridge.stop()
-        await speechAudioHost.shutdown()
-        speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
         syncRealtimeSpeechPresentation()
         refreshNativeSpeechPlaybackDebugSnapshot()
+        #endif
+        await speechAudioHost.shutdown()
+        speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+    }
+
+    func startRealtimeFullDuplexSpeech() async {
+        await startRealtimeResidentBrainRoute()
     }
 
     func startRealtimeResidentBrainRoute() async {
@@ -2076,9 +2155,8 @@ final class AppController: ObservableObject {
               realtimeBrainRouteAttemptID == nil,
               !realtimeBrainStartInFlight,
               !realtimeBrainStopping,
-              formalSpeechRouteGeneration == nil,
-              !speechInputBridgeSnapshot.hasActivePump,
-              !speechOutputBridgeSnapshot.hasActiveReceiveLoop,
+              !hasActiveAlternateSpeechRoute,
+              speechAudioHostShutdownOperation == nil,
               speechHostLifecycleOperationCount == 0 else {
             publishRealtimeResidentBrainRouteFailure("speech_input_busy")
             return
@@ -2087,6 +2165,7 @@ final class AppController: ObservableObject {
             publishRealtimeResidentBrainRouteFailure("resident_unavailable")
             return
         }
+        speechAudioHostShutdownCompleted = false
 
         let attemptID = UUID()
         realtimeBrainRouteAttemptID = attemptID
@@ -2098,11 +2177,14 @@ final class AppController: ObservableObject {
             )
         }
         realtimeBrainStartInFlight = true
-        defer { realtimeBrainStartInFlight = false }
+        defer {
+            realtimeBrainStartInFlight = false
+            objectWillChange.send()
+        }
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
-        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-            phase: .starting,
+        updateRealtimeFullDuplexSpeechStatus(
+            .starting,
             generation: nil,
             lastErrorCode: nil
         )
@@ -2209,18 +2291,24 @@ final class AppController: ObservableObject {
             return
         }
 
-        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-            phase: .listening,
+        updateRealtimeFullDuplexSpeechStatus(
+            .listening,
             generation: binding.session.generation,
             lastErrorCode: nil
         )
+        #if DEBUG
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "realtime_brain_route_listening",
             turnGeneration: binding.session.generation,
             stateAfter: FormalSpeechRoutePhase.listening.rawValue
         )
+        #endif
         refreshParticleDebugSnapshot()
+    }
+
+    func stopRealtimeFullDuplexSpeech() async {
+        await stopRealtimeResidentBrainRoute()
     }
 
     private func settleAbandonedRealtimeBrainStart(
@@ -2259,8 +2347,8 @@ final class AppController: ObservableObject {
               event.identity.session == binding.session else { return }
         switch event.kind {
         case .sessionReady:
-            formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-                phase: .listening,
+            updateRealtimeFullDuplexSpeechStatus(
+                .listening,
                 generation: binding.session.generation,
                 lastErrorCode: nil
             )
@@ -2271,8 +2359,8 @@ final class AppController: ObservableObject {
                 break
             } else if realtimeBrainPlaybackResponseID == nil,
                realtimeBrainGenerationTransitionID == nil {
-                formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-                    phase: .processing,
+                updateRealtimeFullDuplexSpeechStatus(
+                    .processing,
                     generation: binding.session.generation,
                     lastErrorCode: nil
                 )
@@ -2304,8 +2392,8 @@ final class AppController: ObservableObject {
             realtimeBrainPlaybackEventIdentity = nil
             realtimeBrainPlaybackProviderFinishedResponseID = nil
             realtimeBrainPlaybackGeneration = nil
-            formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-                phase: .listening,
+            updateRealtimeFullDuplexSpeechStatus(
+                .listening,
                 generation: binding.session.generation,
                 lastErrorCode: nil
             )
@@ -2362,8 +2450,8 @@ final class AppController: ObservableObject {
         }
         guard realtimeBrainPlaybackResponseID == nil,
               realtimeBrainGenerationTransitionID == nil else { return }
-        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-            phase: .listening,
+        updateRealtimeFullDuplexSpeechStatus(
+            .listening,
             generation: binding.session.generation,
             lastErrorCode: nil
         )
@@ -2665,8 +2753,8 @@ final class AppController: ObservableObject {
         }
         switch event.kind {
         case .playbackStarted:
-            formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-                phase: .speaking,
+            updateRealtimeFullDuplexSpeechStatus(
+                .speaking,
                 generation: realtimeBrainInputBinding?.session.generation,
                 lastErrorCode: nil
             )
@@ -2683,8 +2771,8 @@ final class AppController: ObservableObject {
             realtimeBrainPlaybackProviderFinishedResponseID = nil
             realtimeBrainPlaybackGeneration = nil
             resumeRealtimeBrainPlaybackDrainWaiter(completed: true)
-            formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-                phase: .listening,
+            updateRealtimeFullDuplexSpeechStatus(
+                .listening,
                 generation: realtimeBrainInputBinding?.session.generation,
                 lastErrorCode: nil
             )
@@ -2909,8 +2997,8 @@ final class AppController: ObservableObject {
         realtimeBrainGenerationTransitionID = nil
         realtimeBrainGenerationTransitionTask = nil
         realtimePassiveBackchannelPresentation = nil
-        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-            phase: .listening,
+        updateRealtimeFullDuplexSpeechStatus(
+            .listening,
             generation: nextIdentity.generation,
             lastErrorCode: nil
         )
@@ -2941,6 +3029,11 @@ final class AppController: ObservableObject {
 
         realtimeBrainRouteAttemptID = nil
         realtimeBrainStopping = true
+        updateRealtimeFullDuplexSpeechStatus(
+            .stopping,
+            generation: binding?.session.generation,
+            lastErrorCode: nil
+        )
         realtimeBrainPreparedCaptureGeneration = nil
         realtimeBrainPlaybackResponseID = nil
         realtimeBrainPlaybackEventIdentity = nil
@@ -2999,8 +3092,10 @@ final class AppController: ObservableObject {
         let finalErrorCode = closeError.map(
             Self.realtimeResidentBrainErrorCode
         ) ?? errorCode
-        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-            phase: finalErrorCode == nil ? .idle : .failed,
+        let finalPhase: RealtimeFullDuplexSpeechPhase =
+            finalErrorCode == nil ? .idle : .failed
+        updateRealtimeFullDuplexSpeechStatus(
+            finalPhase,
             generation: closeError == nil
                 ? nil : closeIdentity?.generation,
             lastErrorCode: finalErrorCode
@@ -3008,16 +3103,19 @@ final class AppController: ObservableObject {
         residentSpeechSignal = .ended
         runtimeState = closeError == nil ? .idle : .cancelled
         refreshResidentVisualIntent()
+        #if DEBUG
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: finalErrorCode == nil
                 ? "realtime_brain_route_stopped"
                 : "realtime_brain_route_failed",
             turnGeneration: closeIdentity?.generation,
-            stateAfter: formalSpeechRouteDebugSnapshot.phase.rawValue,
+            stateAfter: finalPhase.rawValue,
             errorCode: finalErrorCode
         )
+        #endif
         realtimeBrainStopping = false
+        objectWillChange.send()
         refreshParticleDebugSnapshot()
     }
 
@@ -3036,19 +3134,58 @@ final class AppController: ObservableObject {
     private func publishRealtimeResidentBrainRouteFailure(
         _ errorCode: String
     ) {
-        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
-            phase: .failed,
+        updateRealtimeFullDuplexSpeechStatus(
+            .failed,
             generation: realtimeBrainInputBinding?.session.generation,
             lastErrorCode: errorCode
         )
+        #if DEBUG
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "realtime_brain_route_start_failed",
             stateAfter: FormalSpeechRoutePhase.failed.rawValue,
             errorCode: errorCode
         )
+        #endif
     }
 
+    private func updateRealtimeFullDuplexSpeechStatus(
+        _ phase: RealtimeFullDuplexSpeechPhase,
+        generation: UInt64?,
+        lastErrorCode: String?
+    ) {
+        realtimeFullDuplexSpeechStatus = RealtimeFullDuplexSpeechStatus(
+            phase: phase,
+            lastErrorCode: lastErrorCode
+        )
+        #if DEBUG
+        formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
+            phase: phase,
+            generation: generation,
+            lastErrorCode: lastErrorCode
+        )
+        #endif
+    }
+
+    private static func realtimeResidentBrainErrorCode(
+        _ error: RealtimeResidentBrainError
+    ) -> String {
+        switch error {
+        case .unavailable: "unavailable"
+        case .voiceBindingUnavailable: "voice_binding_unavailable"
+        case .invalidIdentity: "invalid_identity"
+        case .invalidContextRevision: "invalid_context_revision"
+        case .invalidAudioFrame: "invalid_audio_frame"
+        case .operationInFlight: "operation_in_flight"
+        case .invalidEvent: "invalid_event"
+        case .timedOut: "timed_out"
+        case .cancelled: "cancelled"
+        case .transportFailure: "transport_failure"
+        case .providerFailure: "provider_failure"
+        }
+    }
+
+    #if DEBUG
     func startFormalSpeechRoute() async {
         guard formalSpeechRouteGeneration == nil else { return }
         guard speechHostLifecycleOperationCount == 0 else {
@@ -3064,6 +3201,7 @@ final class AppController: ObservableObject {
             publishFormalSpeechRouteFailure("resident_unavailable")
             return
         }
+        speechAudioHostShutdownCompleted = false
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
         formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
@@ -3739,24 +3877,6 @@ final class AppController: ObservableObject {
         return formalSpeechErrorCode(error)
     }
 
-    private static func realtimeResidentBrainErrorCode(
-        _ error: RealtimeResidentBrainError
-    ) -> String {
-        switch error {
-        case .unavailable: "unavailable"
-        case .voiceBindingUnavailable: "voice_binding_unavailable"
-        case .invalidIdentity: "invalid_identity"
-        case .invalidContextRevision: "invalid_context_revision"
-        case .invalidAudioFrame: "invalid_audio_frame"
-        case .operationInFlight: "operation_in_flight"
-        case .invalidEvent: "invalid_event"
-        case .timedOut: "timed_out"
-        case .cancelled: "cancelled"
-        case .transportFailure: "transport_failure"
-        case .providerFailure: "provider_failure"
-        }
-    }
-
     private static func formalSpeechErrorCode(
         _ error: SpeechRouteError
     ) -> String {
@@ -3800,6 +3920,7 @@ final class AppController: ObservableObject {
             )
             return
         }
+        speechAudioHostShutdownCompleted = false
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
         guard let captureGeneration =

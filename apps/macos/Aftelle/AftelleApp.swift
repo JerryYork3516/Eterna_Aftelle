@@ -1,29 +1,52 @@
+import AppKit
 import SwiftUI
+
+@MainActor
+private final class AftelleApplicationDelegate: NSObject,
+    NSApplicationDelegate {
+    weak var controller: AppController?
+    private var terminationInFlight = false
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard let controller else { return .terminateNow }
+        guard !terminationInFlight else { return .terminateLater }
+        terminationInFlight = true
+        Task { @MainActor [weak self, weak controller] in
+            guard let self, let controller else {
+                sender.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            await controller.shutdownSpeechAudioHost()
+            controller.persistForNormalTerminationIfPossible()
+            sender.reply(toApplicationShouldTerminate: true)
+            self.terminationInFlight = false
+        }
+        return .terminateLater
+    }
+}
 
 @main
 struct AftelleApp: App {
+    @NSApplicationDelegateAdaptor(AftelleApplicationDelegate.self)
+    private var appDelegate
     @StateObject private var controller = AppController()
     @StateObject private var presentationSettings = ParticlePresentationSettings()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
-        WindowGroup("Aftelle") {
+        Window("Aftelle", id: "main-window") {
             ContentView(controller: controller, presentationSettings: presentationSettings)
+                .onAppear {
+                    appDelegate.controller = controller
+                }
         }
         .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .appTermination) {
                 Button(String(localized: "app.menu.quit")) {
-                    #if DEBUG
-                    Task { @MainActor in
-                        await controller.shutdownSpeechAudioHost()
-                        controller.persistForNormalTerminationIfPossible()
-                        NSApplication.shared.terminate(nil)
-                    }
-                    #else
-                    controller.persistForNormalTerminationIfPossible()
                     NSApplication.shared.terminate(nil)
-                    #endif
                 }
             }
             #if DEBUG

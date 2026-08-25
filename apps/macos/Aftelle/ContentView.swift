@@ -151,6 +151,17 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 Spacer()
                 ParticleSubtitleOverlay(state: controller.particleSubtitleState)
+                RealtimeFullDuplexSpeechControlBar(
+                    status: controller.realtimeFullDuplexSpeechStatus,
+                    isResidentAvailable:
+                        controller.isResidentTextInputAvailable,
+                    canStart:
+                        controller.canStartRealtimeFullDuplexSpeech,
+                    canStop:
+                        controller.canStopRealtimeFullDuplexSpeech,
+                    start: controller.startRealtimeFullDuplexSpeech,
+                    stop: controller.stopRealtimeFullDuplexSpeech
+                )
                 ResidentTextInputBar(
                     text: $residentInputText,
                     state: controller.residentTextInputState,
@@ -185,12 +196,6 @@ struct ContentView: View {
         .onAppear {
             installDebugSubtitleKeyMonitor()
         }
-        .onDisappear {
-            removeDebugSubtitleKeyMonitor()
-            Task {
-                await controller.shutdownSpeechAudioHost()
-            }
-        }
         .onChange(of: controller.isParticleDebugPanelPresented) { _, isPresented in
             if isPresented {
                 openWindow(id: ParticleDebugWindow.sceneID)
@@ -199,6 +204,14 @@ struct ContentView: View {
             }
         }
         #endif
+        .onDisappear {
+            #if DEBUG
+            removeDebugSubtitleKeyMonitor()
+            #endif
+            Task {
+                await controller.shutdownSpeechAudioHost()
+            }
+        }
     }
 
     private var effectiveViewOrientationHandler:
@@ -312,6 +325,95 @@ private struct ParticleSubtitleOverlay: View {
             .opacity(state.phase == .fading ? 0 : 1)
             .transition(.opacity)
             .animation(.easeInOut(duration: 0.28), value: state)
+        }
+    }
+}
+
+private struct RealtimeFullDuplexSpeechControlBar: View {
+    let status: RealtimeFullDuplexSpeechStatus
+    let isResidentAvailable: Bool
+    let canStart: Bool
+    let canStop: Bool
+    let start: () async -> Void
+    let stop: () async -> Void
+
+    @State private var isStartPending = false
+    @State private var isStopPending = false
+    @State private var isCancellingPendingStart = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "waveform")
+                .foregroundStyle(.white.opacity(0.72))
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(localized: "realtimeSpeech.title"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.88))
+                Text(localizedStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.62))
+            }
+
+            Spacer(minLength: 12)
+
+            Button(actionTitle, action: performAction)
+                .disabled(isActionDisabled)
+        }
+        .frame(maxWidth: 560)
+        .padding(.horizontal, 28)
+    }
+
+    private var shouldStop: Bool {
+        canStop || status.phase.isActive
+    }
+
+    private var actionTitle: String {
+        String(
+            localized: shouldStop
+                ? "realtimeSpeech.stop"
+                : "realtimeSpeech.start"
+        )
+    }
+
+    private var isActionDisabled: Bool {
+        if shouldStop {
+            return isStopPending || !canStop
+        }
+        return isStartPending || isStopPending || !canStart
+    }
+
+    private var localizedStatus: String {
+        let key: String
+        if isCancellingPendingStart && status.phase == .idle {
+            key = "realtimeSpeech.status.stopping"
+        } else if !isResidentAvailable && status.phase == .idle {
+            key = "realtimeSpeech.status.unavailable"
+        } else {
+            key = "realtimeSpeech.status.\(status.phase.rawValue)"
+        }
+        return String(localized: String.LocalizationValue(key))
+    }
+
+    private func performAction() {
+        guard !isActionDisabled else { return }
+        let stopping = shouldStop
+        if stopping {
+            isCancellingPendingStart = isStartPending
+            isStopPending = true
+        } else {
+            isStartPending = true
+        }
+        Task { @MainActor in
+            if stopping {
+                await stop()
+                isStopPending = false
+            } else {
+                await start()
+                isStartPending = false
+                isCancellingPendingStart = false
+            }
         }
     }
 }

@@ -900,11 +900,28 @@ R8.5.5 只准备长时间真实会话、生命周期 / 资源稳定性、Release
 现有边界与 gap 必须保留：
 
 - formal Realtime identity、Bridge 与多数 lifecycle snapshots 属于 DEBUG-only evidence；Release 不要求也不能借用这些 snapshot。
-- 当前 AppController 的 Realtime Host 组合、Qwen Realtime composition 与 ContentView 正式入口均受 `#if DEBUG` 保护，因此当前标准 Release app 不具备同一正式 Route 的执行入口。统一 Gate 仍必须以实际 Release artifact 复核；若此前没有另行授权的 production 修复，Release Gate 记 `FAIL / P1`，其语义一致性 subcase 记 `NOT_EXECUTABLE`，不得把 Debug build 改名或冒充 Release。实际 Release artifact 的 secret / package subcase 仍须独立执行并保存结果。本 preparation 不修复该 gap。
-- Release 只使用用户实际行为 / 听感、existing release-safe OSLog、实际 artifact 当时确实暴露的非 DEBUG app lifecycle outcome、process / crash evidence 与人工表；当前针对正式链的 source audit 只确认 AEC 存在 release-safe OSLog，且当前标准 Release composition 不实例化正式 Realtime Host。缺少某项 DEBUG evidence 本身不判失败，但也不能据此写 PASS。
+- R8.5.5 preparation 当时识别出的 Release executability gap 已由独立节点 R8.5.5-R1 做 source-level repair：标准 Release 现在实例化正式 Realtime Host / Qwen Realtime composition，并暴露最小 Start / Stop / lifecycle status。该修复只把现有正式 Route 从 DEBUG 编译边界中解耦，不改变 RuntimeCore authority、Provider contract、AEC、DR、Store 或 Speech Route 边界。
+- Release 只使用用户实际行为 / 听感、existing release-safe OSLog、实际 artifact 暴露的最小非 DEBUG lifecycle outcome、process / crash evidence 与人工表；不得要求或借用 DEBUG-only snapshot。source-level availability 与 Release clean build 只证明 Gate 可执行，不能替代 55-D 真人结果。
 - Runtime Session / lease / route epoch、formal Realtime Bridge、Provider lifecycle、response create / completion 与完整 Store write delta 未形成统一可导出的 Human Gate surface；Debug 通过现有 debugger / Logpoint 与前后只读对比派生，Release 缺失时只记录 observability gap，不能虚构精确计数。
 - transport internal diagnostics 与 App timeline 都是 30,000 条有界 ring。首个 substantive turn 结束前使用最长 15 秒的保守 hard-cap cadence 导出；T+30s 只作 early safety export，若此时首个 turn 尚未结束，不得用 idle / 低流量窗口放宽 cadence。首个 substantive turn 结束后立即强制导出并用该 active window 校准；若 observed event rate 为 0 或未定义，继续使用 15 秒 hard cap。此后以全部已保存窗口中的历史最高 observed event rate 计算额外 rollover cadence，使每个保存窗口预计新增事件不超过 15,000（容量 50%），并且 cadence 只可缩短；固定 checkpoints 仍全部导出。所有文件保留重叠窗口，要求 internal diagnostic overflow = 0，并以 event ID / monotonic timestamp / wire 或 audio sequence 证明相邻文件连续。App timeline 的累计 dropped count 只表示已持久化旧窗口后的 ring eviction 时，不单独判 transport loss；若没有重叠证据、出现 internal overflow 或未保存的 gap，则本 Gate 证据失败，之后缩短 cadence 也不能抹掉该失败。长会话中不反复 clear diagnostics，以免重置 AEC window counters；单一 End export 不足以证明整场 Session。
 - 每个关键字段都标记 `DIRECT_JSON / DIRECT_UI / AEC_OSLOG / LLDB_OR_LOGPOINT / DERIVED_PRE_POST / MANUAL` provenance。thread / Swift Task count 无法从现有系统方式安全取得时只记录 gap；不得新增 production logging。
+
+#### R8.5.5-R1 — Release Realtime Route Availability Repair
+
+R8.5.5-R1 将正式 production composition 与 DEBUG observability 分离：Release 只构造 `RuntimeCore → ProviderRouter → QwenRealtimeResidentBrainAdapter`，沿用 `qwen3.5-omni-plus-realtime` endpoint、`ProviderKeychainStore.qwenKeyRef` 与 Tina voice；Debug 才额外构造 Native / ASR / TTS adapters、diagnostic buffer、raw snapshots 与 Debug Panel。Capture 与 Playback 继续共享同一个 `SystemMacSpeechVoiceProcessingEngine`，保住 WebRTC AEC3 render reference；AppController 仍统一拥有 session / attempt / generation、Input / Output Bridge、interruption、Playback 与 stale fences。Release UI 仅投影 Start / Stop 与 `idle / starting / listening / processing / speaking / stopping / failed`，不直接操作 Host、Provider、Bridge 或 Runtime decision。
+
+App termination 由 AppDelegate `applicationShouldTerminate` 返回 `terminateLater`，await Controller 关闭 Route / Provider / Playback / Capture 并持久化后再 reply；主 View disappearance 调用相同的合并、幂等 shutdown。未建立第二 lifecycle owner、第二 Runtime / Brain 或 Realtime→Cascaded fallback。
+
+冻结证据：Release source-structure guard PASS；Debug / Release clean build PASS；Release build conditions 为 `AFTELLE_WEBRTC_AEC3` 且不含 `DEBUG`；artifact 为 `Aftelle.app`、bundle `com.eterna.aftelle.Aftelle`、arm64 Mach-O，binary SHA-256 为 `8f56db00e30122c807e8342e65fc821e6f38aa11025dd3126f748a29dd702329`。该 `CODE_SIGNING_ALLOWED=NO` 自动化 artifact 仅为 linker ad-hoc signed 的 source / build 证据，不是 55-D 签名真机 artifact。旧 production digest 下全部 invariant PASS，唯一 mismatch 为预期 source change；新 canonical digest 为 `9764d333d6be42a3ed954c6a8cecde935ebefa84fc7943909adba97824eda0ba`。最终 A7 为 34 suites / 37 entrypoints / 12231 assertions，repository mutation、architecture / secret guards 与双配置 clean build 均为 PASS。
+
+本节点未执行 Real Qwen、真人麦克风 / 扬声器、长会话或 Release Human Gate：
+
+```text
+R8.5.5-R1 = IMPLEMENTED / REVIEW_REQUIRED
+Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
+55-D = NOT_RUN
+Real-device P0 / P1 / P2 = NOT_ASSESSED
+```
 
 #### R8.5.5 Gate A — Long-session Baseline
 
@@ -955,9 +972,9 @@ Stop
 
 #### R8.5.5 Gate D — Release Build Human Gate
 
-本 preparation 不构建或执行 Release Gate。统一 Gate 必须使用真实 macOS Release artifact、Real Qwen 与真实音频设备，依序覆盖：App 启动、运行时加载正式测试居民、启动 Realtime Full-Duplex Speech、Listening、5 个 substantive turns、至少 2 次自然 barge-in、至少 2 个 passive backchannel、Stop / Restart ×2、Restart 后正常 turn、正常 Stop 与 App exit。
+R8.5.5-R1 已完成自动化 Debug / Release clean build 与 source-level executability repair，但没有执行 Release Human Gate。统一 Gate 仍必须使用真实 macOS Release artifact、Real Qwen 与真实音频设备，依序覆盖：App 启动、运行时加载正式测试居民、启动 Realtime Full-Duplex Speech、Listening、5 个 substantive turns、至少 2 次自然 barge-in、至少 2 个 passive backchannel、Stop / Restart ×2、Restart 后正常 turn、正常 Stop 与 App exit。
 
-未来要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection 与 wrong durable write 全为 0。Release build / Human Gate 当前结果固定为 `NOT_RUN`；Debug PASS 不能替代 Release 实测。
+未来要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection 与 wrong durable write 全为 0。Release clean build 为 `PASS`；55-D Release Human Gate 仍为 `NOT_RUN`，Debug PASS 不能替代 Release 实测。
 
 #### R8.5.5 Gate E — Debug / Release Semantic Consistency
 
@@ -979,9 +996,10 @@ R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
+R8.5.5-R1 = IMPLEMENTED / REVIEW_REQUIRED
 Unified Human Gate = READY / NOT_RUN
 Real-device P0 / P1 / P2 = NOT_ASSESSED
-Production code changes = 0
+Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
 Next = R8.5.2–R8.5.5 Unified Real-device Human Gate Execution
 ```
 

@@ -85,9 +85,9 @@ R8.5.3 使用的现有 Logpoint 集固定为：`R853_GATE_OPEN`、`R853_ELIGIBLE
 | Build | 允许证据 | 禁止替代 |
 |---|---|---|
 | Debug | diagnostics JSON、AEC OSLog、Xcode Console、现有 DEBUG actor / Runtime snapshot、LLDB、auto-continue Logpoint、人工表、process evidence | 不得把 legacy NativeSpeech Bridge/profile 字段当 formal Realtime / Real Qwen 证据 |
-| Release | 用户实际行为 / 听感、existing release-safe OSLog（当前正式链只确认 AEC）、实际 artifact 当时确实暴露的非 DEBUG app lifecycle outcome、process / crash evidence、人工表、实际 bundle / binary / resources 检查 | 当前标准 Release composition 无正式 Realtime Host；不得要求或借用 DEBUG-only snapshot，不得用 Debug PASS 代替 Release |
+| Release | 用户实际行为 / 听感、existing release-safe OSLog、最小非 DEBUG lifecycle status、process / crash evidence、人工表、实际 bundle / binary / resources 检查 | 不得要求或借用 DEBUG-only snapshot；source/build PASS 不得替代 Release Human Gate |
 
-Preparation audit 已确认当前 AppController Realtime Host 组合、Qwen Realtime composition 与 ContentView 入口受 `#if DEBUG` 保护，当前标准 Release app 不具备同一正式 Route 的执行入口。实际执行仍以当时的 Release artifact 为准：若此前没有另行授权的 production 修复，`55-D` 记录 `FAIL / P1`，`55-E` 的语义一致性 subcase 记录 `NOT_EXECUTABLE`；实际 Release artifact 的 secret / package subcase 仍必须独立执行。不得把 Debug build 改名或冒充 Release，也不得在 Human Gate 中临时改 production code。
+Preparation audit 识别出的 Release source blocker 已由 R8.5.5-R1 修复：正式 Realtime Host / Qwen composition / AppController lifecycle 与最小 Start / Stop / status 现在可在标准 Release 编译并进入同一 Route。当前口径为 `EXECUTABLE / HUMAN_GATE_NOT_RUN`，不是 `PASS / FROZEN`。实际执行仍以统一 Gate 当时取得的 Release artifact 为准；不得把 Debug build 改名或冒充 Release，也不得把 source guard、自动化或 clean build 当作 55-D 真人证据。
 
 ## 3. Phase 0 — Preflight（不计入 25 Gates）
 
@@ -117,7 +117,7 @@ Preparation audit 已确认当前 AppController Realtime Host 组合、Qwen Real
 Release decision boundary：
 
 - 尚未实际检查 Release artifact：55-D / 55-E 保持 `NOT_RUN`；
-- 有合法 Release artifact、能够启动，且执行到正式 Realtime entry 步骤后确认产品缺少入口：`55-D = FAIL / P1`；
+- 有合法 Release artifact、能够启动，但执行到正式 Realtime entry 时仍缺少入口或正式 Route 无法使用：`55-D = FAIL / P1`；
 - 无法构建 / 取得合法 Release artifact，或在 55-D 开始前缺少其他安全前置：`55-D = NOT_EXECUTABLE / P1`，R8.5.5 保持 BLOCKED；
 - 55-D 无法完成时，55-E 语义一致性 subcase 为 `NOT_EXECUTABLE`，但实际 Release artifact 存在时，secret / package subcase 仍须执行。
 
@@ -397,7 +397,7 @@ Stop → settle → Restart → Listening
 9. Restart 后再次完成正常 turn；
 10. 正常 Stop 与 App exit。
 
-要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection、wrong durable write = 0。当前结果保持 `NOT_RUN`，Debug 结果不得复制到本 Gate。
+要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection、wrong durable write = 0。R8.5.5-R1 只把 source precondition 修复为 `EXECUTABLE / HUMAN_GATE_NOT_RUN`；55-D 当前结果仍为 `NOT_RUN`，Debug / source / build 结果不得复制到本 Gate。
 
 ### 55-E — Debug / Release Consistency
 
@@ -413,7 +413,7 @@ Stop → settle → Restart → Listening
 - 不应公开的 Provider credential；
 - Human Gate diagnostics / evidence artifact。
 
-只允许 Keychain ref、provider-neutral config 与合法 runtime metadata。Repository `secret guard` 不能替代本项真实 bundle / binary 检查。即使 55-D 无正式 Realtime 入口，本 subcase 仍须对实际 Release artifact 执行并单独保存 `PASS / FAIL`；它不能让 55-E 的语义一致性 subcase 自动 PASS。
+只允许 Keychain ref、provider-neutral config 与合法 runtime metadata。Repository `secret guard` 不能替代本项真实 bundle / binary 检查。即使 55-D 失败，本 subcase 仍须对实际 Release artifact 执行并单独保存 `PASS / FAIL`；它不能让 55-E 的语义一致性 subcase 自动 PASS。
 
 ## 8. 25-Gate Scorecard
 
@@ -505,8 +505,9 @@ R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
+R8.5.5-R1 = IMPLEMENTED / REVIEW_REQUIRED
 Unified Human Gate = READY / NOT_RUN
 Real-device P0 / P1 / P2 = NOT_ASSESSED
-Production code changes = 0
+Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
 Next = User executes this unified real-device checklist
 ```

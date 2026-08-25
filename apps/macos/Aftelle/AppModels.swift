@@ -485,7 +485,38 @@ public struct AppDialogueEntryState: Equatable, Identifiable {
     }
 }
 
+enum RealtimeFullDuplexSpeechPhase: String, Equatable, Sendable {
+    case idle
+    case starting
+    case listening
+    case processing
+    case speaking
+    case stopping
+    case failed
+
+    var isActive: Bool {
+        switch self {
+        case .starting, .listening, .processing, .speaking, .stopping:
+            true
+        case .idle, .failed:
+            false
+        }
+    }
+}
+
+struct RealtimeFullDuplexSpeechStatus: Equatable, Sendable {
+    let phase: RealtimeFullDuplexSpeechPhase
+    let lastErrorCode: String?
+
+    static let idle = RealtimeFullDuplexSpeechStatus(
+        phase: .idle,
+        lastErrorCode: nil
+    )
+}
+
 #if DEBUG
+typealias FormalSpeechRoutePhase = RealtimeFullDuplexSpeechPhase
+
 struct RelationshipProgressionDebugViewState: Equatable {
     var isAvailable = false
     var stageID: String?
@@ -1010,24 +1041,6 @@ struct RealtimeSpeechDiagnosticViewState: Equatable, Sendable {
         self.eventCount = eventCount
         self.droppedEventCount = droppedEventCount
         self.visibleEvents = visibleEvents
-    }
-}
-
-enum FormalSpeechRoutePhase: String, Equatable, Sendable {
-    case idle
-    case starting
-    case listening
-    case processing
-    case speaking
-    case failed
-
-    var isActive: Bool {
-        switch self {
-        case .starting, .listening, .processing, .speaking:
-            true
-        case .idle, .failed:
-            false
-        }
     }
 }
 

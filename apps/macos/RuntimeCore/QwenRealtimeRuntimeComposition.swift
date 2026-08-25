@@ -1,12 +1,28 @@
 import Foundation
 
-#if DEBUG
 enum QwenRealtimeRuntimeComposition {
     static func makeRuntimeCore(
         credentialReader: ProviderCredentialReading,
+        realtimeBrainConfiguration: QwenRealtimeResidentBrainConfiguration
+    ) -> RuntimeCore {
+        let realtimeResidentBrainProvider =
+            QwenRealtimeResidentBrainAdapter(
+                credentialReader: credentialReader,
+                transport: URLSessionRealtimeWebSocketTransport(),
+                configuration: realtimeBrainConfiguration
+            )
+        let router = ProviderRouter(
+            credentialReader: credentialReader,
+            realtimeResidentBrainProvider: realtimeResidentBrainProvider
+        )
+        return makeRuntimeCore(router: router)
+    }
+
+    #if DEBUG
+    static func makeDebugRuntimeCore(
+        credentialReader: ProviderCredentialReading,
         diagnosticBuffer: NativeSpeechDiagnosticBuffer,
-        realtimeBrainConfiguration:
-            QwenRealtimeResidentBrainConfiguration,
+        realtimeBrainConfiguration: QwenRealtimeResidentBrainConfiguration,
         asrConfiguration: QwenRealtimeASRConfiguration,
         ttsConfiguration: QwenRealtimeTTSConfiguration
     ) -> RuntimeCore {
@@ -48,12 +64,19 @@ enum QwenRealtimeRuntimeComposition {
             realtimeResidentBrainProvider:
                 realtimeResidentBrainProvider
         )
+        let runtime = makeRuntimeCore(router: router)
+        runtime.attachNativeSpeechDiagnosticBuffer(diagnosticBuffer)
+        return runtime
+    }
+    #endif
+
+    private static func makeRuntimeCore(
+        router: ProviderRouter
+    ) -> RuntimeCore {
         let runtime = RuntimeCore(
             executionEngine: ExecutionEngine(providerRouter: router),
             providerRouter: router
         )
-        runtime.attachNativeSpeechDiagnosticBuffer(diagnosticBuffer)
         return runtime
     }
 }
-#endif

@@ -554,6 +554,7 @@
 "particleDebug.formalSpeech.phase.listening" = "聆听中";
 "particleDebug.formalSpeech.phase.processing" = "处理中";
 "particleDebug.formalSpeech.phase.speaking" = "播放中";
+"particleDebug.formalSpeech.phase.stopping" = "停止中";
 "particleDebug.formalSpeech.phase.failed" = "启动/运行失败";
 "particleDebug.realtimeSpeech.turn" = "当前轮次";
 "particleDebug.realtimeSpeech.interaction" = "当前 Interaction";
@@ -586,3 +587,14 @@
 "particleDebug.realtimeDiagnostics.chooseLocation" = "导出实时语音脱敏诊断";
 "particleDebug.realtimeDiagnostics.status.exported" = "诊断已导出。";
 "particleDebug.realtimeDiagnostics.status.exportFailed" = "诊断导出失败。";
+"realtimeSpeech.title" = "实时全双工语音";
+"realtimeSpeech.start" = "开始";
+"realtimeSpeech.stop" = "停止";
+"realtimeSpeech.status.idle" = "已就绪";
+"realtimeSpeech.status.starting" = "启动中";
+"realtimeSpeech.status.listening" = "聆听中";
+"realtimeSpeech.status.processing" = "处理中";
+"realtimeSpeech.status.speaking" = "发声中";
+"realtimeSpeech.status.stopping" = "停止中";
+"realtimeSpeech.status.failed" = "语音出错";
+"realtimeSpeech.status.unavailable" = "请先加载数字居民";

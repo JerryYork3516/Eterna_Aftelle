@@ -62,6 +62,8 @@ run_suite() {
 
 run_suite speech_route \
   "$repo_root/tools/speech_route_tests/check.sh"
+run_suite realtime_release_route_guard \
+  "$repo_root/tools/realtime_release_route_guard/check.sh"
 run_suite active_brain_lease \
   "$repo_root/tools/active_brain_lease_tests/check.sh"
 run_suite realtime_brain_contract \
@@ -153,6 +155,14 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   clean build
 
+xcodebuild \
+  -project "$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj" \
+  -scheme Aftelle \
+  -configuration Release \
+  -derivedDataPath "$work_dir/derived-data-release" \
+  CODE_SIGNING_ALLOWED=NO \
+  clean build
+
 status_after="$(git -C "$repo_root" status --porcelain=v1)"
 worktree_fingerprint_after="$(worktree_fingerprint)"
 head_after="$(git -C "$repo_root" rev-parse HEAD)"
@@ -176,5 +186,6 @@ printf 'a7_regression_top_level_suites=%d\n' "$suite_count"
 printf 'a7_regression_test_entrypoints=%d\n' "$((suite_count + 3))"
 printf 'a7_regression_assertions=%s\n' "$assertion_count"
 printf 'a7_repository_mutation=PASS\n'
-printf 'a7_clean_build=PASS\n'
+printf 'a7_debug_clean_build=PASS\n'
+printf 'a7_release_clean_build=PASS\n'
 printf 'stage7_5_11_a7_regression=PASS\n'

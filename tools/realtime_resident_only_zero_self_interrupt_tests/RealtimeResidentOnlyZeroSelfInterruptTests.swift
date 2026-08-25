@@ -6552,7 +6552,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
 
         let expiredCaptureFrameBefore = stack.acousticEchoHost
             .acousticObservationSnapshot().captureFrameIndex
-        await stack.provider.holdAudioAppend(afterAdditionalFrames: 4)
+        await stack.provider.holdAudioAppend(afterAdditionalFrames: 1)
         let acousticTask = Task {
             try await establishR842AcousticAuthorization(
                 stack: stack,
@@ -6597,6 +6597,14 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             sequence: 6,
             kind: .userTranscriptPartial("expired Provider-first partial")
         )
+        await waitUntilOnMainActor(
+            "R8.4.2 Provider-only activity reaches Runtime pending state"
+        ) {
+            let snapshot = stack.runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            return snapshot.phase == .idle
+                && snapshot.pendingStartTurnID == turnID
+        }
         try? await Task.sleep(
             for: .nanoseconds(
                 Int64(r842CompletionWindowNanoseconds + 20_000_000)

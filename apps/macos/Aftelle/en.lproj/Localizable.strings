@@ -554,6 +554,7 @@
 "particleDebug.formalSpeech.phase.listening" = "Listening";
 "particleDebug.formalSpeech.phase.processing" = "Processing";
 "particleDebug.formalSpeech.phase.speaking" = "Speaking";
+"particleDebug.formalSpeech.phase.stopping" = "Stopping";
 "particleDebug.formalSpeech.phase.failed" = "Start/runtime failed";
 "particleDebug.realtimeSpeech.turn" = "Current turn";
 "particleDebug.realtimeSpeech.interaction" = "Current interaction";
@@ -586,3 +587,14 @@
 "particleDebug.realtimeDiagnostics.chooseLocation" = "Export redacted realtime diagnostics";
 "particleDebug.realtimeDiagnostics.status.exported" = "Diagnostics exported.";
 "particleDebug.realtimeDiagnostics.status.exportFailed" = "Diagnostics export failed.";
+"realtimeSpeech.title" = "Realtime full-duplex speech";
+"realtimeSpeech.start" = "Start";
+"realtimeSpeech.stop" = "Stop";
+"realtimeSpeech.status.idle" = "Ready";
+"realtimeSpeech.status.starting" = "Starting";
+"realtimeSpeech.status.listening" = "Listening";
+"realtimeSpeech.status.processing" = "Processing";
+"realtimeSpeech.status.speaking" = "Speaking";
+"realtimeSpeech.status.stopping" = "Stopping";
+"realtimeSpeech.status.failed" = "Speech failed";
+"realtimeSpeech.status.unavailable" = "Load a resident to begin";
