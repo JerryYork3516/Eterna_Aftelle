@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.5.2–R8.5.4 Preparation
+# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.5.2–R8.5.5 Preparation
 
-> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.4 = PREPARED / HUMAN_GATE_WAITING`；真实上机测试为 `NOT_RUN`，下一节点只允许进入 R8.5.5 preparation
+> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.5 = PREPARED / HUMAN_GATE_WAITING`；Unified Human Gate 为 `READY / NOT_RUN`，下一步只允许执行 R8.5.2–R8.5.5 Unified Real-device Human Gate
 >
 > 性质：Realtime Full-Duplex Speech Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -387,7 +387,7 @@ R8.5.1 Automated Total Regression — PASS / FROZEN
 R8.5.2 Real Qwen Basic Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.3 Acoustic & Interruption Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.4 Device & Network Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
-R8.5.5 Long-session & Release Human Gate Preparation
+R8.5.5 Long-session & Release Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R9 Independent Speech Route Boundary Regression
 R10 Realtime Full-Duplex Speech Final Freeze
 ```
@@ -458,7 +458,7 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已冻结 provider-neutral temporal completion evidence，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归；R8.5.2–R8.5.3 仅完成 Human Gate preparation，真实测试统一延后。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已冻结 provider-neutral temporal completion evidence，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归；R8.5.2–R8.5.5 仅完成 Human Gate preparation，真实测试统一延后。
 
 ---
 
@@ -493,6 +493,8 @@ R8.5.1 = PASS / FROZEN
 R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
+R8.5.5 = PREPARED / HUMAN_GATE_WAITING
+Unified Human Gate = READY / NOT_RUN
 Real-device Human Gate = NOT_RUN
 P0 / P1 / P2 real-device = NOT_ASSESSED
 Production code modifications = 0
@@ -560,7 +562,7 @@ R8.5.1 verification: cross-node 12 / failures 0, randomized 100 / failures 0, re
 
 R8.5.1 Human Gate: real Qwen timing/order/network, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration real session and Release remain NOT_RUN / HUMAN_GATE.
 
-Current next allowed node: R8.5.4 Device & Network Human Gate Preparation
+Current next allowed node: R8.5.2–R8.5.5 Unified Real-device Human Gate Execution
 
 ----
 
@@ -881,17 +883,106 @@ P0 / P1 / P2 real-device = NOT_ASSESSED
 Production code changes = 0
 ```
 
-R8.5.2–R8.5.5 preparation 全部完成后，才输出一份统一 Real-device Human Gate 总清单并集中执行；之后依据真实证据分别判定 `PASS / BLOCKED`。当前不判 `PASS / FROZEN`，下一节点只允许进入 R8.5.5 preparation。
+R8.5.4 preparation 不判 `PASS / FROZEN`；其设备、切换与 Real Qwen 网络异常真实结果继续为 `NOT_RUN`，只在统一 Gate 现场根据真实证据判定。
+
+### R8.5.5 Long-session & Release Human Gate Preparation
+
+R8.5.5 只准备长时间真实会话、生命周期 / 资源稳定性、Release 真机、统一证据表与判定规则。Production code 全程只读；本节点不执行真人、模拟音频、网络模拟、Release Human Gate 或 A7，也不新增 production instrumentation。
+
+只读 production audit 确认现有 Debug 观测可覆盖本节点所需主要证据：
+
+- Runtime Realtime identity 绑定 Runtime Session、ActiveBrainLease、route epoch 与 generation；AppController 可直接显示 / 导出 formal route phase 与 generation。Realtime Input / Output Bridge actor 内部存在 lifecycle / counter snapshot，但不在当前 Debug UI / JSON 连续导出，必须通过现有 LLDB / Logpoint 在状态边界取样。
+- Capture snapshot 可观察 state、device、sample rate / channel、generated / dropped / rejected-stale / queued frames；Playback snapshot可观察 state、generation、queue depth、scheduled / in-flight chunks、played / completed / underrun 与 rejected callback counters。
+- AEC snapshot 与现有 OSLog 可观察 mode / enabled / active、render / capture progress、fallback count / reason 与 `routeResetCount`；稳定环境最终必须保持或恢复 `.webRTCAEC3` 且 active。
+- Runtime 现有 DEBUG-only acoustic / interruption / completion / disposition snapshots、diagnostics、LLDB / auto-continue Logpoint 与前后 Store / audit 对比可派生 response create / completion、stale rejection、History / Memory / Relationship false-write 证据；这些不是统一直出 counters。
+- RSS、CPU 与 session duration 使用 Activity Monitor、Instruments、`ps` 等系统级证据；thread count 只在系统方式可安全取得时记录，Swift Task count 没有现成一等指标时记 gap。不得为资源采样修改产品代码。
+
+现有边界与 gap 必须保留：
+
+- formal Realtime identity、Bridge 与多数 lifecycle snapshots 属于 DEBUG-only evidence；Release 不要求也不能借用这些 snapshot。
+- 当前 AppController 的 Realtime Host 组合、Qwen Realtime composition 与 ContentView 正式入口均受 `#if DEBUG` 保护，因此当前标准 Release app 不具备同一正式 Route 的执行入口。统一 Gate 仍必须以实际 Release artifact 复核；若此前没有另行授权的 production 修复，Release Gate 记 `FAIL / P1`，其语义一致性 subcase 记 `NOT_EXECUTABLE`，不得把 Debug build 改名或冒充 Release。实际 Release artifact 的 secret / package subcase 仍须独立执行并保存结果。本 preparation 不修复该 gap。
+- Release 只使用用户实际行为 / 听感、existing release-safe OSLog、实际 artifact 当时确实暴露的非 DEBUG app lifecycle outcome、process / crash evidence 与人工表；当前针对正式链的 source audit 只确认 AEC 存在 release-safe OSLog，且当前标准 Release composition 不实例化正式 Realtime Host。缺少某项 DEBUG evidence 本身不判失败，但也不能据此写 PASS。
+- Runtime Session / lease / route epoch、formal Realtime Bridge、Provider lifecycle、response create / completion 与完整 Store write delta 未形成统一可导出的 Human Gate surface；Debug 通过现有 debugger / Logpoint 与前后只读对比派生，Release 缺失时只记录 observability gap，不能虚构精确计数。
+- transport internal diagnostics 与 App timeline 都是 30,000 条有界 ring。首个 substantive turn 结束前使用最长 15 秒的保守 hard-cap cadence 导出；T+30s 只作 early safety export，若此时首个 turn 尚未结束，不得用 idle / 低流量窗口放宽 cadence。首个 substantive turn 结束后立即强制导出并用该 active window 校准；若 observed event rate 为 0 或未定义，继续使用 15 秒 hard cap。此后以全部已保存窗口中的历史最高 observed event rate 计算额外 rollover cadence，使每个保存窗口预计新增事件不超过 15,000（容量 50%），并且 cadence 只可缩短；固定 checkpoints 仍全部导出。所有文件保留重叠窗口，要求 internal diagnostic overflow = 0，并以 event ID / monotonic timestamp / wire 或 audio sequence 证明相邻文件连续。App timeline 的累计 dropped count 只表示已持久化旧窗口后的 ring eviction 时，不单独判 transport loss；若没有重叠证据、出现 internal overflow 或未保存的 gap，则本 Gate 证据失败，之后缩短 cadence 也不能抹掉该失败。长会话中不反复 clear diagnostics，以免重置 AEC window counters；单一 End export 不足以证明整场 Session。
+- 每个关键字段都标记 `DIRECT_JSON / DIRECT_UI / AEC_OSLOG / LLDB_OR_LOGPOINT / DERIVED_PRE_POST / MANUAL` provenance。thread / Swift Task count 无法从现有系统方式安全取得时只记录 gap；不得新增 production logging。
+
+#### R8.5.5 Gate A — Long-session Baseline
+
+统一 Gate 执行一次真实 Debug、Real Qwen、正式 Realtime Full-Duplex Speech、稳定真实麦克风 / 扬声器与稳定网络的前台 Session：
+
+```text
+30 minutes = required minimum
+about 45 minutes = recommended target
+60 minutes = optional extension
+Current result = NOT_RUN
+```
+
+这是一场可延长的 Session，不是三场独立必测。过程模拟自然使用：自然对话与沉默、短 pause、长句、正常 substantive turns、少量 passive backchannel 与正常 resident playback；不主动制造设备或网络故障。
+
+固定 checkpoints 为：`T0 / T+5m / T+10m / T+20m / T+30m / optional T+45m / optional T+60m / End`。每点记录：
+
+- Runtime Session、Brain lease、route epoch、generation、route phase；
+- Capture、formal Realtime Input Bridge、formal Realtime Output Bridge；
+- AEC mode / active / fallback reason / fallback count / `routeResetCount`；
+- Playback state / generation / queue depth / scheduled / in-flight / rejected callback；
+- Provider Session / lifecycle / error / close；
+- accepted turns、response create / completion、duplicate / stale events；
+- History count delta、Memory / Relationship false-write evidence；
+- RSS、CPU、session duration，以及仅在安全可得时的 thread / task count。
+
+未来稳定性要求：crash、duplicate answer、stale output resurrection、wrong generation / lease、permanent Listening loss、permanent Speaking / Processing、Playback queue runaway、Capture duplicate start、Provider duplicate active Session 与 false History / Memory / Relationship write 全为 0。AEC 在正常稳定环境中不得长期异常退化，最终应保持或恢复 `.webRTCAEC3` 且 active。
+
+RSS / CPU 不设置虚构的绝对硬门槛。允许启动和 warm-up 后上升；重点判断随后是否持续、明显、不可回落地单调增长，以及是否伴随实时语音功能退化。有限且稳定的增长作为趋势记录；明显无界增长并影响交流为 P1，最终 crash / OOM / 数据损坏为 P0。
+
+#### R8.5.5 Gate B — Long-session Interruption
+
+在 Gate A 长会话中穿插至少 3 次自然 barge-in，不重跑 R8.5.3 完整 stress matrix。每次要求 confirmed interrupt exactly once、Playback clear exactly once、old generation stale、N+1 rebound，并能继续下一正常 turn，用于证明冻结的 R8.5.3 能力在长期运行后未退化。
+
+#### R8.5.5 Gate C — Long-session Stop / Restart
+
+长会话结束时执行：
+
+```text
+Stop
+→ wait for settle
+→ Restart
+→ Listening
+→ 3 substantive turns
+→ Stop
+```
+
+保存 old / new Runtime Session、Brain lease、route epoch 与 generation。旧长 Session callback、Provider event 与 Playback resurrection 均为 0；duplicate response 为 0；新 Capture、Provider、Input / Output Bridge 与 Playback 必须正常。
+
+#### R8.5.5 Gate D — Release Build Human Gate
+
+本 preparation 不构建或执行 Release Gate。统一 Gate 必须使用真实 macOS Release artifact、Real Qwen 与真实音频设备，依序覆盖：App 启动、运行时加载正式测试居民、启动 Realtime Full-Duplex Speech、Listening、5 个 substantive turns、至少 2 次自然 barge-in、至少 2 个 passive backchannel、Stop / Restart ×2、Restart 后正常 turn、正常 Stop 与 App exit。
+
+未来要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection 与 wrong durable write 全为 0。Release build / Human Gate 当前结果固定为 `NOT_RUN`；Debug PASS 不能替代 Release 实测。
+
+#### R8.5.5 Gate E — Debug / Release Semantic Consistency
+
+Debug 与 Release 不要求相同的时序数字或 observability surface，但必须在 Single Brain、Runtime authority、exactly-one response、turn-taking、interruption、stale fence、Playback clear、Stop / Restart 与 History / Memory policy 上语义一致。Release 异常单独保存证据，不能被 Debug 结果覆盖。
+
+Release secret / package 检查覆盖实际 `.app` bundle、binary、resources / embedded artifacts 与 release-safe logs。API Key、workspace secret、明文 credential、测试私人完整 transcript、完整真实 DR、非公开 Provider credential与 Human Gate evidence artifact 均不得进入包或日志；只允许 Keychain ref、provider-neutral config 与合法 runtime metadata。正式测试居民必须运行时加载，不得打入 Release 包。Repository `secret guard` 仅是本轮自动化证据，不能冒充未来 bundle / binary 的真实检查；当前 package 检查为 `NOT_RUN`。
+
+R8.5.5 的 P0 / P1 / P2 preparation 标准为：
+
+- P0：crash / OOM / 数据损坏、双 Brain / 双回答、stale old output 真正复活、wrong durable History / Memory write、Release 绕过 Runtime authority、一个 Speech Route 错误启动另一个 Route、secret 暴露，或资源泄漏最终导致进程崩溃。
+- P1：30+ 分钟无法稳定维持 Session、长会话后永久失声、AEC 长期无法恢复、Playback / Capture queue runaway、generation / lease drift、Stop / Restart 无法恢复、Release Realtime Full-Duplex Speech 无法使用、Debug / Release 出现关键 lifecycle / authority 差异，或明显持续资源泄漏并影响交流。
+- P2：长会话后轻微延迟增加、RSS warm-up 后有限增长但稳定、Release 启动稍慢、非阻断主观体验问题，或不影响正确性的 observability gap。
+
+统一执行文件固定为 `docs/r8_5_unified_human_gate_checklist.md`。它按一次 Preflight 后连续执行 Phase 1–4，冻结 25 个 Gate item 与 1 个不计入 Gate 总数的 Preflight item；每个 Gate item 都必须填写 `Node / Gate / Run ID / Expected / Observed / Evidence / Result / Severity / Notes`。重复 turn、barge-in 或 switch 属于 item 内 attempts，不增加 Gate count。
 
 ```text
 R0–R8.5.1 = PASS / FROZEN
 R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
-Real-device results = NOT_RUN
-P0 / P1 / P2 real-device = NOT_ASSESSED
+R8.5.5 = PREPARED / HUMAN_GATE_WAITING
+Unified Human Gate = READY / NOT_RUN
+Real-device P0 / P1 / P2 = NOT_ASSESSED
 Production code changes = 0
-Next = R8.5.5 Long-session & Release Human Gate Preparation
+Next = R8.5.2–R8.5.5 Unified Real-device Human Gate Execution
 ```
 
 ### R8.5+ Terminology
