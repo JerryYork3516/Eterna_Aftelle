@@ -2,7 +2,7 @@
 
 > 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.3 = PREPARED / HUMAN_GATE_WAITING`；真实上机测试为 `NOT_RUN`，下一节点只允许进入 R8.5.4 preparation
 >
-> 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
+> 性质：Realtime Full-Duplex Speech Route 的正式、provider-neutral 架构冻结文档。
 >
 > 边界：本文件不替代 `aftelle_runtime_boundary.md`、不修改现有 Stage 编号，也不定义 Qwen 专用 Runtime。实现必须继续遵守 `02_architecture.md`、`04_code_standards.md` 与 Stage 7 Forbidden Checklist。
 
@@ -10,7 +10,7 @@
 
 ## 1. 背景与路线关系
 
-Stage 7.5.11 A0～A8 已冻结现有 Cascaded Speech Route：
+Stage 7.5.11 A0～A8 已冻结现有 Cascaded Voice Message Route：
 
 ```text
 Capture
@@ -26,20 +26,19 @@ Capture
 
 - Voice Message；
 - Low-cost Speech；
-- Compatibility Route；
-- Realtime Provider 不可用或不适合时的 fallback。
+- Compatibility Route。
 
-Cascaded Speech Route 不再承担 GPT-Live 类 continuous full-duplex、持续听说、自然 turn-taking 或播放中实时语义插话目标，也不得通过继续修改其 VAD、AEC、source gate 或 lifecycle 强行逼近这些体验。
+Cascaded Voice Message Route 不再承担 GPT-Live 类 continuous full-duplex、持续听说、自然 turn-taking 或播放中实时语义插话目标，也不得通过继续修改其 VAD、AEC、source gate 或 lifecycle 强行逼近这些体验。
 
 新的体验优先正式方向为：
 
-`Realtime Resident Brain Route`
+`Realtime Full-Duplex Speech Route`
 
-两条路线共用同一个 RuntimeCore、Runtime Session、resident identity、Memory、Tool/Permission 与 Dialogue History；差异仅是当前获得居民回答生成权的 Brain Provider。
+Realtime Full-Duplex Speech Route 与 Cascaded Voice Message Route 是两套独立语音交互系统。它们共用同一个 RuntimeCore、resident identity、十三层、Memory、Relationship、Tool / Permission、Dialogue History 与统一 Brain ownership，但拥有独立入口和 lifecycle，不自动互相切换，也不得在同一个用户交互中同时生成两个回答。
 
 ## 2. 产品目标
 
-Realtime Resident Brain Route 冻结以下目标体验：
+Realtime Full-Duplex Speech Route 冻结以下目标体验：
 
 - 用户点击一次后进入持续前台会话；
 - continuous listening 与 continuous speaking；
@@ -58,7 +57,7 @@ Realtime Resident Brain Route 冻结以下目标体验：
 
 > 一个 Runtime Session 在任何时刻只能存在一个获得居民回答生成权的 Brain Provider。
 
-Realtime Route 激活期间：
+Realtime Full-Duplex Speech Route 激活期间：
 
 ```text
 Realtime Resident Brain
@@ -268,7 +267,7 @@ Realtime resident speech
 - Runtime Voice Binding 只决定使用哪个声音，不生成第二份回答、不改写 canonical semantic content，也不拥有 Runtime、Session、Memory、Tool 或 Permission；
 - binding 复用现有 ActiveBrainLease、route epoch、generation 与 Runtime Session identity，不建立第二套 voice generation identity；
 - 具体 Provider voice identifier 只存在于 Adapter、Provider configuration 或 Runtime binding private state，不进入 provider-neutral contract、DR、Memory 或 Dialogue History；
-- 缺少 VoiceProfile 或未来 VoiceProfile 不受当前 Provider 支持时，按冻结策略回退 `providerDefault`；binding 解析失败只返回明确错误，不自行切换 Cascaded Route；
+- 缺少 VoiceProfile 或未来 VoiceProfile 不受当前 Provider 支持时，按冻结策略回退 `providerDefault`；binding 解析失败只返回明确错误，不改变当前 Speech Route；
 - 未来 Studio VoiceProfile 是长期、provider-neutral 的居民声音资产来源；
 - 未来 RuntimeCore 按 resident identity、DR revision、VoiceProfile identity 和当前 Provider 解析 Runtime Voice Binding；
 - Provider `voice_id`、cloned voice reference 或供应商专用配置不得成为 DR 永久身份；
@@ -307,39 +306,34 @@ Host acoustic evidence
 
 Host 不得仅凭 diagnostics counter 成为最终 interrupt owner；Provider 的 `speech_started` 也不得直接取得 generation authority。RuntimeCore 作废 generation 后，Host 与 Provider 才执行实际停止，旧 event/callback 必须因 lease、epoch 或 generation 不匹配而被拒绝。
 
-## 12. Dual Route / Fallback
+## 12. Independent Speech Route Boundary
 
 ```text
-Primary:
-Realtime Resident Brain Route
-
-Fallback:
-Cascaded Speech Route
+Realtime Full-Duplex Speech Route
++
+Cascaded Voice Message Route
+→ two independent speech interaction entrypoints
 ```
 
-两条 Route：
+两条 Route 长期共存，并共享同一数字居民核心：
 
-- 共用 Runtime Session；
-- 共用 resident identity；
+- 共用 Resident Identity；
+- 共用 RuntimeCore 与十三层；
 - 共用 Memory / Relationship；
 - 共用 Tool / Permission；
 - 共用 Dialogue History；
-- 不得同时获得 Brain lease。
+- 共用唯一 Brain ownership。
 
-Route 切换必须经过：
+边界固定为：
 
-```text
-invalidate old generation
-→ cancel old Brain
-→ settle playback / tool state
-→ close old lease
-→ increment routeEpoch
-→ acquire new Brain lease
-```
+- 不自动互相切换；
+- 不建立第二 Runtime、第二居民大脑或第二 Memory / Relationship；
+- 同一个用户交互不得由两条 Route 同时生成两个回答；
+- 一条 Route 的 lifecycle 不得错误接管另一条 Route；
+- Provider、Host 与 Adapter 不得自行改变 Route；
+- 用户显式结束一条 Route 后再启动另一独立入口时，仍须先完成旧 lifecycle settlement，再由 RuntimeCore / ActiveBrainLease 正常 admission。
 
-R1 只建立 lease、epoch 与 deterministic rejection，不实现自动 fallback。后续 fallback 不得在有未决 Tool side effect 或已交付 resident output 时重放同一回答。恢复 Realtime 只允许在稳定 turn boundary 重新 acquire 新 lease，并重新 bootstrap 当前 Runtime context。
-
-Route decision 归 RuntimeCore；Orchestration / AppController 只能请求，Provider 不得自行 fallback 或 upgrade。
+`Fallback` 只描述某一 Route 自己内部明确存在的技术降级，例如 Voice Binding default 或 AEC safe mode；不能描述这两套语音交互系统之间的关系。
 
 ## 13. 第一 Provider 候选
 
@@ -359,7 +353,7 @@ Qwen Omni Realtime 可以作为第一实现候选，但正式架构不得 Qwen-s
 - Provider-owned Session / Memory / History；
 - Qwen-specific public Runtime contract；
 - 硬编码 voice；
-- Provider 绕过 RuntimeCore 的 Tool、fallback 或 interrupt；
+- Provider 绕过 RuntimeCore 的 Tool、route admission 或 interrupt；
 - AppController 作为 Brain ownership authority；
 - Realtime Omni 与 Text LLM 并行回答。
 
@@ -367,7 +361,7 @@ Qwen Omni Realtime 可以作为第一实现候选，但正式架构不得 Qwen-s
 
 ## 14. 实施路线
 
-R 序列是 Realtime Resident Brain Route 的独立实施序列，不改变现有 Stage 7.5.11 或 7.5.1～7.5.28 编号。
+R 序列是 Realtime Full-Duplex Speech Route 的独立实施序列，不改变现有 Stage 7.5.11 或 7.5.1～7.5.28 编号。
 
 ```text
 R0 Realtime Resident Brain Architecture Freeze — PASS / FROZEN
@@ -392,17 +386,21 @@ R8.4.4 Backchannel & Natural Response — PASS / FROZEN
 R8.5.1 Automated Total Regression — PASS / FROZEN
 R8.5.2 Real Qwen Basic Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.3 Acoustic & Interruption Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
-R9 Cascaded Fallback + Regression
-R10 Real-device / Long-session Freeze
+R8.5.4 Device & Network Human Gate Preparation
+R8.5.5 Long-session & Release Human Gate Preparation
+R9 Independent Speech Route Boundary Regression
+R10 Realtime Full-Duplex Speech Final Freeze
 ```
 
 依赖顺序不可倒置。每个节点必须小步、可验收、可回滚；未完成前一节点时不得提前把后一节点能力混入实现。
+
+R8.5.2–R8.5.5 preparation 全部完成后，先输出一份统一 Real-device Human Gate 总清单，由用户集中上机测试，再根据真实证据分别判定 `PASS / BLOCKED`。Preparation 不得冒充 Human Gate PASS；真实问题统一收口后，才允许进入 R9 boundary regression 与 R10 final freeze。
 
 R2 冻结 `RealtimeResidentBrainProvider` 及其 open、context update、audio append、Tool result、cancel、interrupt、event receive 与 close 命令。命令和事件统一绑定 resident、Runtime Session、R1 Brain lease、route epoch 与 generation；turn / response、context revision 与 sequence 在相关事件和 Tool result 中继续显式关联。
 
 `residentSemanticFinal` 是 Provider 提交给 RuntimeCore 的最终居民语义候选，绑定 turn / response 与 canonical text，但不是 History / Memory commit。Runtime context 只接受 bootstrap 与单调 revision delta；Tool 只产生 candidate 并接收 Runtime 已处理的 result；interruption 只产生 proposal，generation advance 仍归 RuntimeCore。Audio contract 只冻结 PCM encoding、sample rate、channels、sequence、timestamp 与 provenance，不冻结任何厂商 wire format。
 
-R2 仅在既有 RuntimeCore → ExecutionEngine → ProviderRouter 链增加一个可注入接缝，并复用 R1 唯一 lease gate。Fake Provider 以零网络覆盖完整 lifecycle、全部事件族及 stale / duplicate / out-of-order / late / error 路径。本轮未实现真实 Provider Adapter、WebSocket、十三层 continuous projection、Tool execution、Voice Binding、full-duplex、turn-taking 或 fallback。
+R2 仅在既有 RuntimeCore → ExecutionEngine → ProviderRouter 链增加一个可注入接缝，并复用 R1 唯一 lease gate。Fake Provider 以零网络覆盖完整 lifecycle、全部事件族及 stale / duplicate / out-of-order / late / error 路径。本轮未实现真实 Provider Adapter、WebSocket、十三层 continuous projection、Tool execution、Voice Binding、full-duplex 或 turn-taking。
 
 R3 在冻结的 R2 契约后实现内部 `QwenRealtimeResidentBrainAdapter`，以 `qwen3.5-omni-plus-realtime`、既有 Keychain credential reader 和 URLSession WebSocket transport 完成首个真实 Adapter 接缝。Qwen wire 类型、workspace、model、Provider voice 与 session ID 均留在 Adapter / composition 私有边界；RuntimeCore、ExecutionEngine 与 ProviderRouter 的 provider-neutral contract 不变，AppController 不获得 Brain ownership。
 
@@ -414,25 +412,25 @@ R4 同时冻结 provider-neutral `CanonicalResidentTurn`。其 identity 绑定 r
 
 Narrative Memory、Relationship 与 Growth 只由 Provider 产生带完整 event identity 的 candidate。RuntimeCore 在 canonical claim 成功后才把 Memory / Relationship candidate 映射到既有评估路径；candidate confidence 不是写权限，标记 `requiresUserConfirmation` 的 Relationship candidate 在确认前不得写入 evidence 或推动关系状态。Growth 在 R4 仅记录 ephemeral `deferred` 决策，不写长期状态。History / Memory persistence 仍只有 RuntimeCore 可触发；同一 Runtime Session 内按 stable turn / response key fail-closed 去重，未修改 Store schema，因此不宣称 crash / restart 后的 durable exactly-once。
 
-R4 未实现真实 Tool execution / Permission、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；这些能力仍分别留在 R5～R10。
+R4 未实现真实 Tool execution / Permission、Studio Voice Binding、Host full-duplex audio、语义 turn-taking 或真机长会话；这些能力仍分别留在 R5～R10。
 
 R5 将既有 NativeSpeech-only Tool registry / validation / permission / executor / audit 内核泛化为唯一 `RuntimeTool*` 内核，并把 R2 `toolCall` candidate 接入该内核。Realtime result 继续只经 RuntimeCore → ExecutionEngine → ProviderRouter → Provider Adapter 回传；Qwen 仅在私有 session wire 广告 Runtime 定义快照并在 generation reconnect 重放，不获得执行或权限能力。
 
 R5 的执行 attempt 使用 Runtime-owned start gate、worker / timeout 双任务和 attempt identity 做 first-settlement；路由级与 Session replacement 清理只失效目标 route，旧任务的迟到 completion 和旧 result delivery 均被丢弃。同一 Runtime Session 内提供 fail-closed、at-most-once result acceptance，不声称 crash-durable exactly-once，也不声称 cancellation 可回滚外部副作用。
 
-R5 未实现 Text LLM Tool calling、Studio Voice Binding、Host full-duplex audio、语义 turn-taking、fallback 或真机长会话；后续能力仍留在 R6～R10。真实 Qwen Tool wire 仍为 `NOT_RUN / HUMAN_GATE`。
+R5 未实现 Text LLM Tool calling、Studio Voice Binding、Host full-duplex audio、语义 turn-taking 或真机长会话；后续能力仍留在 R6～R10。真实 Qwen Tool wire 仍为 `NOT_RUN / HUMAN_GATE`。
 
 R6 建立 provider-neutral `RuntimeVoiceBinding` 基础层；`RuntimeVoiceProviderIdentity`、`RuntimeVoiceBindingMode` 与 `RuntimeVoiceBindingFallback` 能表达当前 Provider、未来 binding mode、可选 opaque Provider reference 与明确 fallback，但当前只启用 `providerDefault`。RuntimeCore 在既有 lease admission 后创建 binding，binding 直接复用 resident、Runtime Session、lease、route epoch 与 generation identity；generation 前进只允许在同 resident / Session / lease / epoch 上 rebound。Provider Adapter 只在私有边界把 default binding 解析为运行时 voice configuration，具体 Qwen voice identifier 不进入 provider-neutral contract、DR、Memory、Dialogue History 或居民永久身份。
 
 未来 Studio VoiceProfile 只替换 binding source，并通过 stable VoiceProfile identity 进入同一解析路径；不需要重构 Realtime Resident Brain、ActiveBrainLease、Runtime Session、Memory、Tool、canonical turn 或 Audio Host。Voice Binding 不具有认知权，不改写 `residentSemanticFinal` / `CanonicalResidentTurn`，也不创建第二 Brain、Runtime 或 resident response。
 
-R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、正式 Capture / Playback 全双工主链、自然 interruption / turn-taking、Cascaded 自动 fallback 或真机长会话；这些能力仍分别留在后续节点，下一节点只允许进入 R7。
+R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、正式 Capture / Playback 全双工主链、自然 interruption / turn-taking 或真机长会话；这些能力仍分别留在后续节点，下一节点只允许进入 R7。
 
 R7 将既有 `MacSpeechAudioCapture` 的 WebRTC AEC3 后 PCM 通过单一 `MacSpeechRealtimeBrainInputBridge` 送入 RuntimeCore；Bridge 使用独立、连续的 submitted-frame sequence，Capture drop-oldest 不会把序列缺口带入严格的 Realtime Provider gate。Provider-neutral `residentAudioDelta` 只有在 RuntimeCore 完成 lease / route epoch / generation / turn / response identity fence 后，才由单一 `MacSpeechRealtimeBrainOutputBridge` 交给既有 `MacSpeechAudioOutputHost`。格式重采样仍只发生在 Adapter 或共享 Audio Output 边界；AEC render reference 继续来自共享物理播放链最终送入 player node 的 PCM，不直接使用网络 PCM，也不新增 Realtime 专用播放器或第二 AEC Host。
 
 一次 Start 会同时建立一个持续 Capture、一个 Realtime Provider Session、一条 ActiveBrainLease 与一个 Runtime event receive loop；`response.done` / `residentSemanticFinal`、Provider audio done、共享播放队列 drained 与物理 `playbackCompleted` 保持不同语义。一轮物理播放完成后仅回到 listening，不关闭 Capture、Provider Session 或 lease；User Stop 会先失效 route attempt、停止 receive / capture 并清空共享 playback，再等待 Runtime / Provider close。close 失败时 Host 保留当前 identity 供同一 Stop 重试，不释放失败收口的 lease。generation cancel 只在同一 lease / route epoch 下重绑输入输出 Bridge、清旧 PCM 并把 submitted sequence 归一为 1，不重开 Provider Session。输入 Capture queue、Provider event queue、共享 playback PCM queue、enqueue waiter 与 Host sink backlog 均有界；audio done 后同 response late delta、cancel / stop / route replacement 的旧 identity 与旧 PCM 均 fail-closed。
 
-R7 独立零网络正式 Host 测试为 11 cases / 96 checks，真实贯穿 RuntimeCore → ExecutionEngine → ProviderRouter → Fake Realtime Provider，并自动验证同一 Session / lease 下两轮 input/output、generation rebind、旧代 PCM 拒绝、audio-done late delta、Stop 自回调安全与 close failure retry。A7 为 21 suites / 24 entrypoints / 4353 assertions；NativeSpeech duplex 359 checks、shared Audio Output 163 checks、AEC 990 checks、Cascaded speech route 47 checks、macOS clean build、architecture guard、secret guard 与仓库无污染检查均 PASS。真实 Qwen WebSocket、真实麦克风 / 扬声器、USB / Bluetooth / AirPods、长时间真机 full-duplex，以及当前 DEBUG Host 之外的 Release 启用仍为 `NOT_RUN / HUMAN_GATE`；R7 未实现 R8 的自然 interruption、turn-taking、double-talk 或 source-gate 策略。
+R7 独立零网络正式 Host 测试为 11 cases / 96 checks，真实贯穿 RuntimeCore → ExecutionEngine → ProviderRouter → Fake Realtime Provider，并自动验证同一 Session / lease 下两轮 input/output、generation rebind、旧代 PCM 拒绝、audio-done late delta、Stop 自回调安全与 close failure retry。A7 为 21 suites / 24 entrypoints / 4353 assertions；NativeSpeech duplex 359 checks、shared Audio Output 163 checks、AEC 990 checks、Cascaded Voice Message 47 checks、macOS clean build、architecture guard、secret guard 与仓库无污染检查均 PASS。真实 Qwen WebSocket、真实麦克风 / 扬声器、USB / Bluetooth / AirPods、长时间真机 full-duplex，以及当前 DEBUG Host 之外的 Release 启用仍为 `NOT_RUN / HUMAN_GATE`；R7 未实现 R8 的自然 interruption、turn-taking、double-talk 或 source-gate 策略。
 
 R8.1 冻结 provider-neutral interruption evidence 与 RuntimeCore 唯一决策链。AEC / Host 只能提交绑定 resident、Runtime Session、Brain lease、route epoch、generation、turn、response、context revision、source sequence 与单调时间的 acoustic evidence；Realtime Brain / Provider 只能提交 Runtime 已接受的 exact `interruptionProposed` semantic evidence。RuntimeCore 以固定 2 秒 freshness / correlation window 和最小 acoustic + semantic fusion 作可替换的自动化 policy；证据本身不得 bump generation、cancel Provider、清 Playback 或释放 lease。只有 RuntimeCore confirmed 后，才先使旧 generation / output identity stale，启动一次 Provider interrupt，再把一次性 playback clear command 交给 Host；AppController 只执行 confirmed command、完成 Runtime transition，并把现有 input / output Bridge 必达重绑到 next identity。
 
@@ -560,7 +558,7 @@ R8.5.1 verification: cross-node 12 / failures 0, randomized 100 / failures 0, re
 
 R8.5.1 Human Gate: real Qwen timing/order/network, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration real session and Release remain NOT_RUN / HUMAN_GATE.
 
-Next allowed node: R8.5.2 Real-device Human Gate
+Current next allowed node: R8.5.4 Device & Network Human Gate Preparation
 
 ----
 
@@ -572,7 +570,7 @@ R8.2.3 覆盖 12 个场景：A) clean far-end；B) loud playback；C) residual e
 
 R8.3.1 对同一 safety runner 做 strengthened regression：resident-only eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-decision 0、Host playback clear 0、generation change 0、lease change 0、false user turn 0、false history/memory/relationship write 0；正向控制则得到 1 eligible / 0 confirmed。
 
-生产链验证：测试经过 AEC Host facts → RealtimeAcousticObservation → Production Classifier → Eligibility Gate → Input Bridge → AppController current Host fence → RuntimeCore atomic ingest，确认测试的是正式 Realtime Route。
+生产链验证：测试经过 AEC Host facts → RealtimeAcousticObservation → Production Classifier → Eligibility Gate → Input Bridge → AppController current Host fence → RuntimeCore atomic ingest，确认测试的是正式 Realtime Full-Duplex Speech Route。
 
 当前 R8.2.3 strengthened regression 为 12 cases / 126 checks；R8.2.3 原始冻结未修改任何生产代码。
 
@@ -644,29 +642,78 @@ R8.5.1 不新增产品行为，复用 A7 作为唯一 top aggregate，并以 A�
 
 ### R8.5.2 Real Qwen Basic Human Gate Preparation
 
-R8.5.2 preparation complete。Human Gate 延后至 R8.5.2–R8.5.5 preparation 全部完成后的统一 real-device validation；production code unchanged，当前真实测试状态为 `NOT_RUN`。
+R8.5.2 只准备 Real Qwen Basic Human Gate 的环境、diagnostics、测试清单、证据采集与判定标准。统一真实测试使用 macOS 真机、Debug build、Real Qwen Realtime、当前正式 Realtime Full-Duplex Speech Route、稳定真实麦克风、稳定真实扬声器、普通安静房间与稳定网络。Mac mini 无内置麦克风不构成 `BLOCKED`；实际测试必须记录精确 Input Device 与 Output Device 名称。当前全部真实结果均为 `NOT_RUN / NOT_ASSESSED`。
+
+准备好的 Gate 当前均未执行：
+
+#### Gate A — Normal Conversation
+
+- 完成 10 个自然 substantive turns；
+- 每个合法 turn exactly-one response；
+- 每轮结束后自动恢复 Listening；
+- duplicate response、stuck lifecycle 与 stale output 均为 0。
+
+#### Gate B — Natural Pause
+
+- 分别覆盖 150–250 ms、300 ms 与接近但不达到冻结 400 ms completion window 的自然短 pause，pause 后继续讲话仍属于同一 utterance；
+- 单独覆盖满足 completion window 的 true completion；
+- 覆盖 10–20 秒连续讲话；
+- false early response = 0；
+- missed completion = 0。
+
+#### Gate C — Backchannel
+
+Passive：
+
+`嗯 / 嗯嗯 / mhm / uh-huh`
+
+必须保持 response create = 0。
+
+Substantive：
+
+`好 / 对 / 继续 / 为什么 / 嗯，但是我不同意`
+
+每个合法 utterance 必须 exactly-one response。
+
+#### Gate D — Stop / Restart
+
+至少执行 3 次：
+
+`Stop → idle → Restart → Listening → 正常新 turn`
+
+要求：
+
+- old output resurrection = 0；
+- permanent mute = 0；
+- duplicate response = 0；
+- generation / lease anomaly = 0。
+
+每个 Gate 保存必要的 Runtime Session / ActiveBrainLease / route epoch / generation、Provider Session / response lifecycle、Input / Output Bridge、Playback / Listening、response create、duplicate / stale rejection 与 error diagnostics。正式链仍只经 RuntimeCore → ExecutionEngine → ProviderRouter → Provider Adapter；不得记录 API Key、secret、完整 transcript 或 DR 内容。Human Gate 延后至 R8.5.2–R8.5.5 preparation 全部完成后的统一 Real-device validation；preparation 不得冒充 Human Gate PASS。
 
 ```text
 R8.5.2 = PREPARED / HUMAN_GATE_WAITING
-Real-device test = NOT_RUN
+Real-device results = NOT_RUN
+P0 / P1 / P2 real-device = NOT_ASSESSED
 Production code unchanged
 ```
 
 ### R8.5.3 Acoustic & Interruption Human Gate Preparation
 
-R8.5.3 只准备测试环境、diagnostics、清单与判定标准。统一 Gate 使用 Debug build、formal Realtime Resident Brain Route、真实 Qwen、固定且稳定的真实麦克风 / 扬声器、安静房间与稳定网络；每轮记录精确 Input / Output Device、扬声器音量、用户距离、route phase、Runtime Session、Brain lease、generation 与 Provider Session。不得使用生成或模拟音频代替真人声音，不在本节点测试设备切换、AirPods / Bluetooth / USB 专项兼容或 long-session / Release。
+R8.5.3 只准备测试环境、diagnostics、清单与判定标准。统一 Gate 使用 Debug build、当前正式 Realtime Full-Duplex Speech Route、Real Qwen、固定且稳定的真实麦克风 / 扬声器、安静房间与稳定网络；每轮记录精确 Input / Output Device、扬声器音量、用户距离、route phase、Runtime Session、Brain lease、generation 与 Provider Session。不得使用生成或模拟音频代替真人声音，不在本节点测试设备切换、AirPods / Bluetooth / USB 专项兼容或 long-session / Release。
 
 未来真实声学链的取证顺序固定为：
 
 ```text
 real near-end + resident render
-→ production AEC timing / alignment
-→ acoustic classification / double-talk
-→ source gate epoch
-→ formal Input Bridge acoustic evidence
-→ Runtime confirmed decision
-→ Provider interrupt + Host Playback clear
-→ generation N stale fence
+→ production AEC
+→ nearEndSpeech / doubleTalk user evidence
+→ source gate
+→ formal acoustic evidence
+→ Runtime semantic fusion
+→ confirmed interruption
+→ Provider interrupt
+→ Playback clear
+→ generation N stale
 → N+1 Input / Output / Playback rebound
 ```
 
@@ -677,17 +724,101 @@ real near-end + resident render
 统一 Gate 的 R8.5.3 清单准备如下，当前均未执行：
 
 1. Resident-only 负控 5 个完整播放周期：正常音量 2 次、较高但不削波音量 2 次、完整播放后继续观察 1 秒的 0–500 ms tail 1 次；用户全程静音，同时覆盖 clean far-end 与真实房间 residual echo。
-2. True near-end / double-talk 10 次：在居民已发声后的早 / 中 / 接近末段自然中文实质性插话，覆盖弱 / 中 / 强自然音量，至少 3 次持续 overlap 超过 1 秒；最后 3 次在同一 Session 内连续完成，不 Stop / Restart。
-3. 每个有效 overlap 尝试要求 `.doubleTalk >= 1`、source-gate epoch 严格前进，eligibility / formal forward / Runtime acoustic / semantic / confirmed / Provider interrupt / Host clear 各严格增加 1；Runtime Session、Brain lease 与 route epoch 不变。
+2. 普通真实插话 / Barge-in 共 10 次：在居民已发声后的早 / 中 / 接近末段，以弱 / 中 / 强自然音量进行自然中文实质性插话。每个有效尝试允许 production AEC 分类为 `.nearEndSpeech` 或 `.doubleTalk`；只要 source gate 合法打开，并完整形成 formal acoustic eligibility → Runtime semantic fusion → confirmed interruption，即不得因分类为 `.nearEndSpeech` 判失败。每次 source-gate epoch 严格前进，eligibility / formal forward / Runtime acoustic / semantic / confirmed / Provider interrupt / Host clear 各严格增加 1；Runtime Session、Brain lease 与 route epoch 不变。
+3. 在上述 10 次中明确指定至少 3 次专门 Double-talk 场景：Resident 正在发声、用户以正常可识别语音持续重叠超过 1 秒。这 3 次分别要求 `doubleTalkFrameCount >= 1`，用于证明 production double-talk classifier 在真机有效；该条件不外推到其余普通 barge-in 尝试。最后 3 次在同一 Session 内连续完成，不 Stop / Restart。
 4. confirmed 后检查 generation N 立即失效、旧 audio / text / callback 不复活，以及 N+1 Input / Output / Playback / Listening 正常 rebound，再开始下一次。
 5. 每个失败保存 diagnostics export、monotonic event timeline、设备 / 房间条件与可重复步骤；不得重跑后丢弃失败样本。单次 run 不超过 10 次 gate open，避免累计 AEC epoch ring 覆盖早期证据。
 
-未来判定标准为：所有有效正向尝试均产生 source-gated user acoustic evidence，并 exactly once confirmed / Provider interrupt / Playback clear / generation advance / N+1 rebound；本地 `confirmed → clear <= 50 ms`，只使用内部 monotonic 时间。`first valid near-end → clear` 必须报告真实上机实测值与三段分解，但不把 R8.3.3 Fake Provider 自动化的 `<= 200 ms` 直接冒充 Real Qwen 门槛。旧代 audio replay / Playback restart / text resurrection、duplicate interrupt / clear / generation advance 全部为 0；全部负向场景的 false double-talk、source-gate open、eligibility、confirmed、interrupt、clear、generation / lease change 与 false user turn 全部为 0。全局要求 AEC mode 为 `webRTCAEC3`，AEC fallback、diagnostic dropped event、route error 与 crash 均为 0。任一 authority 越界、resident-only self-interrupt、旧代内容复活或数据损坏记 P0；稳定可复现的漏插话、误打断、clear / rebound 失败、duplicate side effect 或无法取得客观证据记 P1；不影响正确性的轻微体验 / diagnostics 问题记 P2。真实结果出来前 P0 / P1 / P2 均为 `NOT_ASSESSED`。
+未来判定标准为：普通真实插话允许 `.nearEndSpeech` 或 `.doubleTalk`，只要完整声学、semantic fusion、confirmed、interrupt、clear、stale fence 与 N+1 rebound 链成立即满足该分类条件；不得因为 `.nearEndSpeech` 判失败。仅指定的 3 次 sustained Double-talk 场景要求 `doubleTalkFrameCount >= 1`。所有有效正向尝试均 exactly once confirmed / Provider interrupt / Playback clear / generation advance / N+1 rebound；本地 `confirmed → clear <= 50 ms`，必须使用真实本地 monotonic evidence。Real Qwen 总延迟分别报告 `near-end → eligibility`、`eligibility → semantic confirmed`、`confirmed → clear`，不得把 R8.3.3 Fake Provider 自动化的 `first near-end → clear <= 200 ms` 当作 Real Qwen Human Gate 硬门槛。旧代 audio replay / Playback restart / text resurrection、duplicate interrupt / clear / generation advance 全部为 0；全部 resident-only 负控的 false double-talk、source-gate false open、eligibility、confirmed、interrupt、clear、generation / lease change 与 false user turn 全部为 0。全局要求 AEC mode 为 `webRTCAEC3`，AEC fallback、diagnostic dropped event、route error 与 crash 均为 0。任一 authority 越界、resident-only self-interrupt、旧代内容复活或数据损坏记 P0；稳定可复现的漏插话、误打断、clear / rebound 失败、duplicate side effect 或无法取得客观证据记 P1；不影响正确性的轻微体验 / diagnostics 问题记 P2。真实结果出来前 P0 / P1 / P2 均为 `NOT_ASSESSED`。
 
 ```text
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
-Real-device test = NOT_RUN
+Real-device results = NOT_RUN
+P0 / P1 / P2 real-device = NOT_ASSESSED
 Production code unchanged
 ```
 
 R8.5.2–R8.5.5 preparation 全部完成后，才输出一份统一 Real-device Human Gate 总清单并集中执行；之后依据真实证据分别判定 `PASS / BLOCKED`。当前不判 `PASS / FROZEN`，下一节点只允许进入 R8.5.4 preparation。
+
+```text
+R0–R8.5.1 = PASS / FROZEN
+R8.5.2 = PREPARED / HUMAN_GATE_WAITING
+R8.5.3 = PREPARED / HUMAN_GATE_WAITING
+Real-device results = NOT_RUN
+P0 / P1 / P2 real-device = NOT_ASSESSED
+Production code changes = 0
+Next = R8.5.4 Device & Network Human Gate Preparation
+```
+
+### R8.5+ Terminology
+
+后续正式文档统一使用：
+
+- `Realtime Full-Duplex Speech` / 实时全双工语音；
+- `Cascaded Voice Message` / 级联语音消息。
+
+两者是独立语音交互系统，不存在主备或自动替换关系。`Fallback` 只能描述某个 Route 自己内部明确存在的技术降级。
+
+## R9 Independent Speech Route Boundary Regression
+
+R9 是轻量边界回归，不是新语音架构开发。本轮只冻结规划定义，未进入 R9 实现。
+
+目标是验证 Realtime Full-Duplex Speech Route 与 Cascaded Voice Message Route 作为两个独立入口长期共存。它们共享同一数字居民核心：Resident Identity、RuntimeCore、十三层、Memory、Relationship、Tool / Permission、Dialogue History 与统一 Brain ownership。
+
+R9 必须证明：
+
+- 两条 Route 不自动互相切换；
+- 不建立第二 Runtime 或第二居民大脑；
+- 不建立第二 Memory / Relationship；
+- 同一个用户交互不得由两条 Route 同时生成两个回答；
+- 一条 Route 的 lifecycle 不得错误接管另一条 Route。
+
+R9 只做：
+
+- boundary regression；
+- ownership regression；
+- state isolation；
+- shared RuntimeCore 验证；
+- duplicate answer 防护；
+- route lifecycle independence。
+
+R9 不优化 Cascaded Voice Message 的 ASR、Text LLM、TTS、延迟、UI、音色或体验。级联语音消息的专项优化以后另开独立节点。
+
+## R10 Realtime Full-Duplex Speech Final Freeze
+
+R10 前置条件：
+
+```text
+R8.5.2–R8.5.5 Unified Human Gate 完成
++
+R9 Independent Speech Route Boundary Regression PASS
+```
+
+R10 不新增实时语音功能，只做最终集成冻结：
+
+1. 汇总全部 Real-device Human Gate 结果；
+2. 收口所有已接受 P2；
+3. 确认 P0 = 0 / P1 = 0；
+4. Realtime Full-Duplex Speech 全链最终 regression；
+5. R9 独立 Route boundary regression；
+6. 最终 A7；
+7. macOS Debug / Release build；
+8. production digest；
+9. architecture / secret / repository guards；
+10. Git clean；
+11. 最终架构文档冻结。
+
+最终冻结对象：
+
+```text
+Capture
+→ WebRTC AEC3
+→ Realtime Resident Brain
+→ RuntimeCore
+→ Turn-taking / Interruption
+→ Tool / Permission
+→ Runtime Voice Binding
+→ Playback / Subtitle / Particle / History
+```
+
+R10 PASS 后，Realtime Full-Duplex Speech Route 正式完成本阶段工程冻结。Cascaded Voice Message Route 继续存在，但不在 R10 做专项优化。
