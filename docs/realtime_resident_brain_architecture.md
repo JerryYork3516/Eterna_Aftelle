@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.5.2–R8.5.3 Preparation
+# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.5.2–R8.5.4 Preparation
 
-> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.3 = PREPARED / HUMAN_GATE_WAITING`；真实上机测试为 `NOT_RUN`，下一节点只允许进入 R8.5.4 preparation
+> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.4 = PREPARED / HUMAN_GATE_WAITING`；真实上机测试为 `NOT_RUN`，下一节点只允许进入 R8.5.5 preparation
 >
 > 性质：Realtime Full-Duplex Speech Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -386,7 +386,7 @@ R8.4.4 Backchannel & Natural Response — PASS / FROZEN
 R8.5.1 Automated Total Regression — PASS / FROZEN
 R8.5.2 Real Qwen Basic Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.3 Acoustic & Interruption Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
-R8.5.4 Device & Network Human Gate Preparation
+R8.5.4 Device & Network Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.5 Long-session & Release Human Gate Preparation
 R9 Independent Speech Route Boundary Regression
 R10 Realtime Full-Duplex Speech Final Freeze
@@ -492,7 +492,9 @@ R8.5.1 = PASS / FROZEN
 ```text
 R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
+R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 Real-device Human Gate = NOT_RUN
+P0 / P1 / P2 real-device = NOT_ASSESSED
 Production code modifications = 0
 ```
 
@@ -738,16 +740,158 @@ P0 / P1 / P2 real-device = NOT_ASSESSED
 Production code unchanged
 ```
 
-R8.5.2–R8.5.5 preparation 全部完成后，才输出一份统一 Real-device Human Gate 总清单并集中执行；之后依据真实证据分别判定 `PASS / BLOCKED`。当前不判 `PASS / FROZEN`，下一节点只允许进入 R8.5.4 preparation。
+### R8.5.4 Device & Network Human Gate Preparation
+
+R8.5.4 只准备真实音频设备矩阵、设备切换、route rebuild / AEC 恢复、Real Qwen 网络异常、stale / duplicate / fail-closed 的测试清单、diagnostics、证据字段与判定标准。Production code 全程只读；本节点不执行真人测试、不使用模拟音频或模拟网络替代真实 Human Gate，也不判 `PASS / FROZEN`。
+
+只读 production audit 已确认：
+
+- `MacSpeechDeviceMonitor` 可取得当前默认 Input / Output 的 identifier、name 与 availability；`MacSpeechAudioHost` snapshot 可取得 Capture state、设备、sample rate / channel、generated / dropped / rejected-stale / queued frames 与 error。
+- active Capture 遇到 Input 或 Output identifier 变化时，Audio Host 会调用 AEC `routeWillRebuild` / `routeDidRebuild`，并以 `audio_route_changed` 或 `input_device_unavailable` 停止当前 Capture；Input Bridge 随后发现 Capture generation 不再 active，并 fail closed 收口当前 Provider Session。当前源码不承诺 active route 内自动 Capture rebound，因此统一 Gate 必须把“自动恢复”与“用户显式 Stop / Restart 后恢复”分开记录，后者不得冒充前者。
+- Output Device 改变时，Playback Host 会清空 queued / scheduled / in-flight PCM，以 `output_device_changed` fail closed，推进 Playback generation；正式 Route 接收该失败后停止，旧 Playback callback 由 generation / session fence 拒绝。
+- AEC snapshot 与 diagnostics JSON 已包含 mode / enabled / active、delay / ERL / ERLE、classification / source gate、alignment、FIFO / skew / drift、fallback count / reason 与 `routeResetCount`。一次合法 route rebuild 会短暂进入 `.routeRebuild` safe fallback，再尝试恢复 `.webRTCAEC3`；`routeResetCount` 不会随 diagnostics clear 归零，因此每轮必须保存 pre-run baseline 并按 delta 判定。
+- 当前 Real Qwen 网络故障没有自动 reconnect / retry / backoff contract。唯一 reconnect 是 Runtime 授权的 `cancelGeneration` 内部单次 generation reconnect；confirmed interruption 明确保留同一 WebSocket。receiver / Provider / transport terminal error 会 fail closed、settle Realtime Brain Provider Session 并停止 Realtime Route，不会启动 Cascaded Voice Message。发生 terminal failure 时，正式恢复语义固定为 `failed / stopped → 用户显式 Stop（如仍需收口）→ Restart → 新 Provider Session → Listening`。
+
+现有 observability 足以完成 preparation，但存在必须显式记录的 gaps：
+
+- diagnostics JSON 的 AEC 段可直接作为正式链证据；Debug UI 可取得设备、Capture 与 Playback 状态，正式 Realtime Input / Output Bridge 只能从现有 AppController / actor snapshot、LLDB 或 Logpoint 取得。
+- JSON 顶层 Input / Output counters 与 Debug UI 的 Bridge rows 仍来自 legacy NativeSpeech Bridge，provider / model / voice 顶层字段也来自 legacy NativeSpeech profile；不得把这些字段当成正式 Realtime Full-Duplex Speech / Real Qwen 证据。
+- 正式 Realtime Bridge snapshot、完整 Runtime Session / Brain lease / route epoch / Capture generation、old → new device identifier、设备 transport kind、route-change monotonic timestamp、Qwen handshake / connection token 未直接导出。
+- 证据方案固定为：每轮先清空 diagnostics 并打开 Debug panel 执行一次现有 Refresh；同时保存 diagnostics JSON、AEC OSLog、Xcode Console、现有 DEBUG actor / binding snapshot、auto-continue Logpoint 与人工测试表。Logpoint 只放在既有 device route change、AEC route will/did rebuild、Capture / Bridge end、Playback device failure、Qwen receiver failure、Route stopped / failed、Restart Listening 状态边界，不进入逐帧或 audio-delta 热路径，不修改 production code。
+- diagnostics buffer 为共享缓冲；每轮只运行一条语音 Route，禁止同时启动 Cascaded Voice Message。证据不得记录 API Key、workspace secret、完整 DR 或不必要的完整私人 transcript。
+
+统一 Human Gate 的设备矩阵按实际拥有情况执行：
+
+- 基础组合：必须选择一个稳定真实麦克风与一个稳定真实扬声器，并记录精确 Input / Output Device；Mac mini 无内置麦克风不构成 `BLOCKED`。
+- AirPods：实际可用时必须单独测试。
+- 其他 Bluetooth：有设备则测试，没有则记录 `NOT_AVAILABLE`。
+- USB Audio：有设备则测试，没有则记录 `NOT_AVAILABLE`。
+- `NOT_RUN` 表示设备 / 组合可用但真实 Gate 尚未执行；`NOT_AVAILABLE` 表示统一 Gate 现场没有该硬件或 macOS 无法枚举该组合，必须记录原因与时间，且不得写成 `PASS / BLOCKED`；`NOT_ASSESSED` 表示没有真实证据可分级 P0 / P1 / P2。不得用模拟设备替代缺失硬件。
+
+#### R8.5.4 Gate A — Single-device Baseline
+
+对每个实际可测试的设备组合执行：
+
+```text
+connect
+→ Start Realtime Full-Duplex Speech
+→ Listening
+→ 3 substantive turns
+→ Stop
+→ Restart
+→ Listening
+→ 1 normal turn
+```
+
+每行记录 Input / Output Device、sample rate / channel / route facts、Capture active、AEC mode / active、Runtime Session、Brain lease、route epoch、generation、route phase、Provider Session 与 Playback。未来判定要求 duplicate response、permanent mute、stale output 与 crash 全为 0。
+
+#### R8.5.4 Gate B — Device Switch while Listening
+
+从稳定 Listening 的设备 A 切换到设备 B，至少覆盖实际可用的基础组合 ↔ AirPods；有条件时增加基础组合 ↔ USB 与基础组合 ↔ 其他 Bluetooth。取证顺序固定为：
+
+```text
+old Input / Output route
+→ device route change
+→ Audio Host detects identifier transition
+→ AEC routeWillRebuild
+→ temporary safe fallback
+→ active Capture stop / fail closed
+→ AEC routeDidRebuild
+→ Capture rebound 或明确未自动 rebound
+→ current Input / Output Bridge identity
+→ Listening 或明确 failed / stopped
+```
+
+必须继续记录显式 Stop / Restart 后的新 Capture、Provider Session、Bridge identity 与 Listening，但不得以该恢复替代前一段自动 rebound 结果。未来判定要求 App 不 crash、不永久 mute、route 最终稳定、AEC 最终恢复正式模式、old-device audio 不复活、stale callback 不接管新设备，且新设备可完成下一正常 turn。
+
+#### R8.5.4 Gate C — Device Switch during Resident Playback
+
+Resident 正在真实 Playback 时切换设备，专门验证物理 route rebuild / output lifecycle，不作为 R8.5.3 barge-in。允许旧 Playback fail closed / 被终止，不要求旧 response 无缝续播；但 old PCM 不得在新 route 复活，不得 duplicate answer、second Playback 或非法 generation resurrection。先记录切换后的 automatic route / Capture / Bridge / Listening 结果；若正式链进入 failed / stopped，再显式 Stop / Restart 验证新 route 可回 Listening 且下一 user turn 正常，后者不得冒充 automatic rebound。每轮保存 old Playback event identity、old / new route、queued / scheduled / in-flight PCM、Playback generation、Runtime generation、lease、stale rejection 与 late callback 结果。
+
+AEC route rebuild 的正式判定为：
+
+```text
+routeWillRebuild
+→ temporary .routeRebuild safe fallback is allowed
+→ routeDidRebuild
+→ warm-up
+→ mode = webRTCAEC3
+→ enabled = true
+→ active = true
+```
+
+保存切换前后 `routeResetCount` / `fallbackCount` 与 delta、current / last fallback reason、由 Logpoint / 人工事件表派生的 rebuild error count，以及 render / capture frame progress。瞬态 `.routeRebuild` 不判失败；稳定后长期为 `halfDuplexFallback`、AEC inactive、rebuild error count > 0 或 permanent fallback 则记 P1。
+
+#### R8.5.4 Gate D — Repeated Device Switches
+
+准备至少 5 次连续 switch operation，例如 `A → B → A → B → A → B`，每次稳定后再继续。逐次记录实际观察到的 Input / Output identifier transition，并要求 `routeResetCount` delta 可与这些 transition 对应和解释，不把一次人工操作机械等同于一次系统 route-reset callback。每次先保存 automatic route / Capture / Bridge / Listening 结果；若进入 failed / stopped，则显式 Stop / Restart 后再继续，手动恢复不得冒充 automatic rebound。同时冻结无 infinite rebuild、duplicate Capture start、Input / Output Bridge leak、Playback queue 单调增长、generation drift、lease drift，且每轮最终可回 Listening。记录每轮 Capture / Bridge start-stop、queue depth 与按采样派生的 high-water mark、route phase。
+
+#### R8.5.4 Gate E — Real Qwen Stable-network Baseline
+
+稳定网络下建立 Real Qwen Session 并完成至少 5 个正常 substantive turns。保存 WebSocket connect、Qwen session ready、event receive、response create、audio output、Listening rebound 与 normal close；exactly-one response，duplicate / stale / Provider error 为 0。该 baseline 是 Gate F–I 的对照，不得复用未执行的 R8.5.2 结果冒充。
+
+#### R8.5.4 Gate F — Short Network Loss
+
+在稳定 Realtime Session 中短暂断网数秒后恢复。当前正式架构不承诺网络故障自动 reconnect：若现有 WebSocket 在短暂异常后仍保持同一 Session 可用，记录为 existing-session continuity，不得称为 reconnect；若产生 Provider / transport terminal error，则 old event 必须 fail closed，Realtime Route 进入 failed / stopped，并由用户显式 Stop / Restart 进入 Gate G。不得期待后台自动恢复，也不得触发 Realtime → Cascaded Voice Message 切换。保存 old Provider Session、pending response / Tool、Playback、route phase、error / close 与 History / Memory counters。
+
+#### R8.5.4 Gate G — Network Recovery
+
+当 Gate F 已产生 terminal failure 时执行：
+
+```text
+network restored
+→ Stop（仅在旧 close 仍需收口时）
+→ Restart
+→ new formal Provider Session
+→ Listening
+→ 1 normal turn
+```
+
+旧 Provider Session 的 callback、audio、text、completion 与 Tool result 全部不得污染新 Session / generation；新 route 必须保持 exactly-one Brain，context bootstrap identity 正确，并正常完成下一 turn。若 Gate F 的 existing socket 幸存且未产生 terminal failure，只记录同一 Session continuity，不制造伪 reconnect / recovery 事件。若未来 production contract 另行正式增加自动恢复，必须另按该 contract 取证；R8.5.4 preparation 不新增该需求。
+
+#### R8.5.4 Gate H — Network Jitter / High Latency
+
+从稳定网络切换到明显较差但仍可联网的真实网络条件，完成若干自然 turns。只记录 event ordering、duplicate response、response lifecycle、stale event、timeout / error handling 与主观延迟，不设置假的绝对网络延迟门槛。主观等级沿用给定的 `A 自然 / B 可感知但可用 / C 明显等待 / D 严重影响交流 / F 不可用` 五档，不使用 E；慢网络本身不等于 Runtime P1，但因此出现 duplicate answer、wrong generation、stale resurrection、永久 speaking 或永久 processing 则记 P1。
+
+#### R8.5.4 Gate I — Stop / Restart during Network Failure
+
+执行 `network failure / Provider pending → Stop → network restored → Restart → Listening → 1 normal turn`。要求 old session event accepted = 0、old audio resurrection = 0、duplicate createResponse = 0、duplicate Playback = 0；新 route 的 Capture、Input、Output、Provider、Playback 与 Listening 必须恢复。旧 callback 不得跨 Stop lifecycle，close failure 必须保持 identity fail closed，不能放行第二 Brain。
+
+设备 × 网络不做爆炸式全排列，只保留两个高价值组合：
+
+1. AirPods 或主要无线设备 + 正常网络 + 一次设备切换；
+2. 主要稳定设备 + 一次短暂网络异常 + Stop / Restart。
+
+每个真实 run 统一保存：timestamp 与 monotonic timeline、run / Gate / cycle ID、Git SHA / macOS / Debug build、Input / Output Device、network condition、Runtime Session、Brain lease、route epoch、generation、route phase、AEC mode / active / fallback reason / pre-post reset delta、Capture、Input / Output Bridge、Playback queue / generation / events、Qwen Provider lifecycle、error / close、duplicate / stale / History / Memory / Tool counters，以及 diagnostics JSON、Xcode Console 与人工结果表。所有结果必须按当前 identity 与前后 delta 解释，不得用 legacy profile / Bridge 字段替代正式 Realtime 证据。
+
+统一 Gate 的 P0 / P1 / P2 准备标准为：
+
+- P0：双 Brain / 双回答、stale old output 真正复活、错误 durable History / Memory write、crash / 数据损坏、一个 Route 错误启动另一个 Route，或 Provider / Host 绕过 Runtime authority。
+- P1：主要设备切换后永久失声；实际可用的 AirPods 在正式 Route 完全不可使用；route rebuild 后 AEC 永久无法恢复；old PCM / callback 跨设备复活；网络异常导致 duplicate response；网络恢复后旧 Session 污染新 Session；Stop / Restart 无法恢复；generation / lease 明显漂移。
+- P2：某个非主要 USB / Bluetooth 设备兼容不佳、route rebuild 有轻微可感知停顿、网络恢复需要符合当前正式架构的用户手动 Restart（按本节点给定口径记录为体验限制），或主观 latency 可继续优化。
+
+当前真实分级仍为 `P0 / P1 / P2 = NOT_ASSESSED`；AirPods / Bluetooth / USB、device switching、Real Qwen network abnormal 均未实际运行。
+
+```text
+R8.5.4 = PREPARED / HUMAN_GATE_WAITING
+Device matrix / switching = NOT_RUN
+Real Qwen network abnormal = NOT_RUN
+Unavailable hardware cases = NOT_AVAILABLE only when confirmed at the unified Gate
+P0 / P1 / P2 real-device = NOT_ASSESSED
+Production code changes = 0
+```
+
+R8.5.2–R8.5.5 preparation 全部完成后，才输出一份统一 Real-device Human Gate 总清单并集中执行；之后依据真实证据分别判定 `PASS / BLOCKED`。当前不判 `PASS / FROZEN`，下一节点只允许进入 R8.5.5 preparation。
 
 ```text
 R0–R8.5.1 = PASS / FROZEN
 R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
+R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 Real-device results = NOT_RUN
 P0 / P1 / P2 real-device = NOT_ASSESSED
 Production code changes = 0
-Next = R8.5.4 Device & Network Human Gate Preparation
+Next = R8.5.5 Long-session & Release Human Gate Preparation
 ```
 
 ### R8.5+ Terminology
