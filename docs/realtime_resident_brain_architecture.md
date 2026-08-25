@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze
+# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.5.2–R8.5.3 Preparation
 
-> 状态：`R0–R8.5.1 PASS / FROZEN`；下一节点只允许进入 R8.5.2 Real-device Human Gate
+> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.3 = PREPARED / HUMAN_GATE_WAITING`；真实上机测试为 `NOT_RUN`，下一节点只允许进入 R8.5.4 preparation
 >
 > 性质：Realtime Resident Brain Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -390,7 +390,8 @@ R8.4.2 Pause vs Utterance Complete — PASS / FROZEN
 R8.4.3 Semantic Fusion — PASS / FROZEN
 R8.4.4 Backchannel & Natural Response — PASS / FROZEN
 R8.5.1 Automated Total Regression — PASS / FROZEN
-R8.5.2 Real-device Human Gate
+R8.5.2 Real Qwen Basic Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
+R8.5.3 Acoustic & Interruption Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R9 Cascaded Fallback + Regression
 R10 Real-device / Long-session Freeze
 ```
@@ -459,7 +460,7 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已冻结 provider-neutral temporal completion evidence，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归，下一节点只允许进入 R8.5.2。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已冻结 provider-neutral temporal completion evidence，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归；R8.5.2–R8.5.3 仅完成 Human Gate preparation，真实测试统一延后。
 
 ---
 
@@ -486,6 +487,15 @@ R8.4.2 = PASS / FROZEN
 R8.4.3 = PASS / FROZEN
 R8.4.4 = PASS / FROZEN
 R8.5.1 = PASS / FROZEN
+```
+
+当前 Human Gate preparation 状态与冻结结果分开记录：
+
+```text
+R8.5.2 = PREPARED / HUMAN_GATE_WAITING
+R8.5.3 = PREPARED / HUMAN_GATE_WAITING
+Real-device Human Gate = NOT_RUN
+Production code modifications = 0
 ```
 
 R8.3.1 没有修改 AEC / classifier / source gate / eligibility 的生产阈值或 decision authority；唯一生产目录改动是 `RuntimeCore` 的 DEBUG-only interruption evidence snapshot，用于证明 acoustic evidence 已被原子接收且 semantic evidence 仍为空。
@@ -630,4 +640,54 @@ R8.5.1 不新增产品行为，复用 A7 作为唯一 top aggregate，并以 A�
 
 自动化包含 12 个 cross-node 场景（11 个 Swift 场景 + 既有 Tool regression）、固定 seed `0x851511A7` 的 100 次合法 ordering race，以及 R8.4.2 Listening、R8.4.3、R8.4.4、R8.3.2、R8.3.3 各 3 次的 15 个逻辑重复运行。结果为 cross-node 12/0、randomized 100/0、repeat 15/0；normal Listening substantive、passive backchannel、confirmed interruption、N+1 Input/Output/Playback rebound 全部通过。duplicate response / interrupt / clear、stale side effect、self-interrupt、false History / Memory / Relationship / Growth、generation / lease drift、timeout 与 production mutation 全为 0。R8.2.3 保持 12/126、740 observations、3840 resident-only stress frames 的全部危险指标 0。最终 A7 为 33 suites / 36 entrypoints / 12231 assertions；production code 0 修改，canonical digest 前后均为 `c43d7ee937f2bccaa9f50669ec8ed743cb4ae228ba6f7869dbdd85785330256e`，clean Debug build 与全部 guards PASS，P0/P1/P2 均为 0。
 
-真实 Qwen timing/order/network、真实房间 / 麦克风 / 扬声器、USB / Bluetooth / AirPods、long-duration real session 与 Release 仍为 `NOT_RUN / HUMAN_GATE`；下一唯一节点为 R8.5.2 Real-device Human Gate。
+真实 Qwen timing/order/network、真实房间 / 麦克风 / 扬声器、USB / Bluetooth / AirPods、long-duration real session 与 Release 仍为 `NOT_RUN / HUMAN_GATE`；R8.5.2–R8.5.5 的真实上机 Gate 统一延后到四个 preparation 节点全部完成后。
+
+### R8.5.2 Real Qwen Basic Human Gate Preparation
+
+R8.5.2 preparation complete。Human Gate 延后至 R8.5.2–R8.5.5 preparation 全部完成后的统一 real-device validation；production code unchanged，当前真实测试状态为 `NOT_RUN`。
+
+```text
+R8.5.2 = PREPARED / HUMAN_GATE_WAITING
+Real-device test = NOT_RUN
+Production code unchanged
+```
+
+### R8.5.3 Acoustic & Interruption Human Gate Preparation
+
+R8.5.3 只准备测试环境、diagnostics、清单与判定标准。统一 Gate 使用 Debug build、formal Realtime Resident Brain Route、真实 Qwen、固定且稳定的真实麦克风 / 扬声器、安静房间与稳定网络；每轮记录精确 Input / Output Device、扬声器音量、用户距离、route phase、Runtime Session、Brain lease、generation 与 Provider Session。不得使用生成或模拟音频代替真人声音，不在本节点测试设备切换、AirPods / Bluetooth / USB 专项兼容或 long-session / Release。
+
+未来真实声学链的取证顺序固定为：
+
+```text
+real near-end + resident render
+→ production AEC timing / alignment
+→ acoustic classification / double-talk
+→ source gate epoch
+→ formal Input Bridge acoustic evidence
+→ Runtime confirmed decision
+→ Provider interrupt + Host Playback clear
+→ generation N stale fence
+→ N+1 Input / Output / Playback rebound
+```
+
+内部 monotonic snapshot 分别采集 first valid near-end、acoustic eligibility、Runtime confirmed 与 Host clear completion。`first valid near-end → clear` 拆为本地 `near-end → eligibility`、包含真实 Qwen semantic / network 的 `eligibility → confirmed`，以及本地 `confirmed → clear`，三段分别记录，不把 Provider 网络时间冒充本地 AEC / Runtime / Host latency。正式 JSON 未直接导出的 acoustic evidence、Session / lease 与 clear timing 使用既有 DEBUG snapshot 的 Xcode auto-continue logpoint 采集，Host / Provider 不获得 decision authority。
+
+准备好的自动继续 Logpoint 只落在状态边界，不落在逐帧 / audio-delta 热路径：`R853_GATE_OPEN`、`R853_ELIGIBLE`、`R853_ACOUSTIC_FORWARDED`、`R853_RUNTIME_ACOUSTIC`、`R853_QWEN_SEMANTIC_PROPOSAL`、`R853_RUNTIME_SEMANTIC`、`R853_CONFIRMED`、`R853_HOST_CLEAR_BEGIN/DONE`、`R853_PROVIDER_INTERRUPT`、`R853_RESPONSE_CANCEL_SEND/ACK`、`R853_INPUT_CLEAR_SEND/ACK`、`R853_N_PLUS_ONE_LISTENING` 与 `R853_PLAYBACK_STARTED`。每个独立 run 前清空 diagnostics，结束后同时保存 JSON、Xcode Console 与人工事件表；不得记录 API Key、完整 transcript 或 DR 内容。
+
+统一 Gate 的 R8.5.3 清单准备如下，当前均未执行：
+
+1. Resident-only 负控 5 个完整播放周期：正常音量 2 次、较高但不削波音量 2 次、完整播放后继续观察 1 秒的 0–500 ms tail 1 次；用户全程静音，同时覆盖 clean far-end 与真实房间 residual echo。
+2. True near-end / double-talk 10 次：在居民已发声后的早 / 中 / 接近末段自然中文实质性插话，覆盖弱 / 中 / 强自然音量，至少 3 次持续 overlap 超过 1 秒；最后 3 次在同一 Session 内连续完成，不 Stop / Restart。
+3. 每个有效 overlap 尝试要求 `.doubleTalk >= 1`、source-gate epoch 严格前进，eligibility / formal forward / Runtime acoustic / semantic / confirmed / Provider interrupt / Host clear 各严格增加 1；Runtime Session、Brain lease 与 route epoch 不变。
+4. confirmed 后检查 generation N 立即失效、旧 audio / text / callback 不复活，以及 N+1 Input / Output / Playback / Listening 正常 rebound，再开始下一次。
+5. 每个失败保存 diagnostics export、monotonic event timeline、设备 / 房间条件与可重复步骤；不得重跑后丢弃失败样本。单次 run 不超过 10 次 gate open，避免累计 AEC epoch ring 覆盖早期证据。
+
+未来判定标准为：所有有效正向尝试均产生 source-gated user acoustic evidence，并 exactly once confirmed / Provider interrupt / Playback clear / generation advance / N+1 rebound；本地 `confirmed → clear <= 50 ms`，只使用内部 monotonic 时间。`first valid near-end → clear` 必须报告真实上机实测值与三段分解，但不把 R8.3.3 Fake Provider 自动化的 `<= 200 ms` 直接冒充 Real Qwen 门槛。旧代 audio replay / Playback restart / text resurrection、duplicate interrupt / clear / generation advance 全部为 0；全部负向场景的 false double-talk、source-gate open、eligibility、confirmed、interrupt、clear、generation / lease change 与 false user turn 全部为 0。全局要求 AEC mode 为 `webRTCAEC3`，AEC fallback、diagnostic dropped event、route error 与 crash 均为 0。任一 authority 越界、resident-only self-interrupt、旧代内容复活或数据损坏记 P0；稳定可复现的漏插话、误打断、clear / rebound 失败、duplicate side effect 或无法取得客观证据记 P1；不影响正确性的轻微体验 / diagnostics 问题记 P2。真实结果出来前 P0 / P1 / P2 均为 `NOT_ASSESSED`。
+
+```text
+R8.5.3 = PREPARED / HUMAN_GATE_WAITING
+Real-device test = NOT_RUN
+Production code unchanged
+```
+
+R8.5.2–R8.5.5 preparation 全部完成后，才输出一份统一 Real-device Human Gate 总清单并集中执行；之后依据真实证据分别判定 `PASS / BLOCKED`。当前不判 `PASS / FROZEN`，下一节点只允许进入 R8.5.4 preparation。
