@@ -14,9 +14,61 @@ private struct R81AuthorizationProvider: MicrophoneAuthorizationProviding {
     }
 }
 
+private actor R855MicrophoneAuthorizationProvider:
+    MicrophoneAuthorizationProviding {
+    private var authorization: MicrophoneAuthorizationState
+    private var requestedAuthorization: MicrophoneAuthorizationState
+    private var holdsRequest: Bool
+    private var requestContinuation: CheckedContinuation<Void, Never>?
+    private var queries = 0
+    private var requests = 0
+
+    init(
+        authorization: MicrophoneAuthorizationState,
+        requestedAuthorization: MicrophoneAuthorizationState = .authorized,
+        holdsRequest: Bool = false
+    ) {
+        self.authorization = authorization
+        self.requestedAuthorization = requestedAuthorization
+        self.holdsRequest = holdsRequest
+    }
+
+    func currentAuthorization() async throws -> MicrophoneAuthorizationState {
+        queries += 1
+        return authorization
+    }
+
+    func requestAuthorization() async throws -> MicrophoneAuthorizationState {
+        requests += 1
+        if holdsRequest {
+            await withCheckedContinuation { continuation in
+                requestContinuation = continuation
+            }
+        }
+        authorization = requestedAuthorization
+        return authorization
+    }
+
+    func releaseRequest(as authorization: MicrophoneAuthorizationState) {
+        requestedAuthorization = authorization
+        holdsRequest = false
+        let continuation = requestContinuation
+        requestContinuation = nil
+        continuation?.resume()
+    }
+
+    func isRequestPending() -> Bool {
+        requestContinuation != nil
+    }
+
+    func requestCount() -> Int { requests }
+    func queryCount() -> Int { queries }
+}
+
 private final class R81DeviceMonitor:
     MacSpeechDeviceRouteMonitoring,
     @unchecked Sendable {
+    private let lock = NSLock()
     private let route = MacSpeechDeviceRoute(
         input: MacSpeechAudioDevice(
             identifier: "r81-input",
@@ -29,10 +81,29 @@ private final class R81DeviceMonitor:
             isAvailable: true
         )
     )
+    private var monitoring = false
+    private var starts = 0
+    private var stops = 0
 
     func currentRoute() -> MacSpeechDeviceRoute { route }
-    func start(onChange: @escaping @Sendable () -> Void) {}
-    func stop() {}
+    func start(onChange: @escaping @Sendable () -> Void) {
+        lock.withLock {
+            guard !monitoring else { return }
+            monitoring = true
+            starts += 1
+        }
+    }
+    func stop() {
+        lock.withLock {
+            guard monitoring else { return }
+            monitoring = false
+            stops += 1
+        }
+    }
+
+    var isMonitoring: Bool { lock.withLock { monitoring } }
+    var startCount: Int { lock.withLock { starts } }
+    var stopCount: Int { lock.withLock { stops } }
 }
 
 private final class R81AECBackend: MacSpeechAECBackend, @unchecked Sendable {
@@ -83,6 +154,8 @@ private final class R81AudioCapture:
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
+    private var starts = 0
+    private var stops = 0
     let acousticEchoHost: MacSpeechAcousticEchoHost
 
     init(acousticEchoHost: MacSpeechAcousticEchoHost) {
@@ -95,6 +168,7 @@ private final class R81AudioCapture:
     ) throws -> MacSpeechNativeInputFormat {
         lock.withLock {
             started = true
+            starts += 1
             self.generation = generation
             self.frameBuffer = frameBuffer
         }
@@ -105,7 +179,11 @@ private final class R81AudioCapture:
     }
 
     func stop() {
-        lock.withLock { started = false }
+        lock.withLock {
+            guard started else { return }
+            started = false
+            stops += 1
+        }
     }
 
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? {
@@ -122,6 +200,8 @@ private final class R81AudioCapture:
     }
 
     var isStarted: Bool { lock.withLock { started } }
+    var startCount: Int { lock.withLock { starts } }
+    var stopCount: Int { lock.withLock { stops } }
 
     @discardableResult
     func emit(_ marker: UInt8) -> Bool {
@@ -386,11 +466,28 @@ private struct R81ControllerStack {
 }
 
 @MainActor
+private struct R855PermissionControllerStack {
+    let controller: AppController
+    let runtime: RuntimeCore
+    let provider: R81RealtimeProvider
+    let authorizationProvider: R855MicrophoneAuthorizationProvider
+    let capture: R81AudioCapture
+    let deviceMonitor: R81DeviceMonitor
+    let outputPlayer: FakeMacSpeechAudioOutputPlayer
+}
+
+@MainActor
 @main
 private struct RealtimeInterruptionEvidenceTests {
     private static var cases = 0
     private static var checks = 0
     private static var acousticOnlyPlaybackClearCount = -1
+    private static var microphoneAuthorizationCases = 0
+    private static var permissionFailClosedProviderSessions = -1
+    private static var stalePermissionProviderSessions = -1
+    private static var stalePermissionPrepareCalls = -1
+    private static var duplicateStartPermissionRequests = -1
+    private static var duplicateStartProviderSessions = -1
 
     static func main() async throws {
         guard CommandLine.arguments.count == 2 else {
@@ -1036,6 +1133,7 @@ private struct RealtimeInterruptionEvidenceTests {
             "memory control session closes"
         )
 
+        try await testControllerMicrophoneAuthorization(fixture: fixture)
         try await testControllerSemanticFirstInterruption(fixture: fixture)
         try await testControllerPlaybackCompletionAndStopRace(fixture: fixture)
         try await testControllerInterruptFailureCanRestart(fixture: fixture)
@@ -1084,6 +1182,351 @@ private struct RealtimeInterruptionEvidenceTests {
         print("realtime_interruption_evidence_cases=\(cases)")
         print("realtime_interruption_evidence_checks=\(checks)")
         print("r81_acoustic_only_playback_clears=\(acousticOnlyPlaybackClearCount)")
+        print("r855r1r1_microphone_authorization_cases=\(microphoneAuthorizationCases)")
+        print("r855r1r1_permission_fail_closed_provider_sessions=\(permissionFailClosedProviderSessions)")
+        print("r855r1r1_stale_permission_provider_sessions=\(stalePermissionProviderSessions)")
+        print("r855r1r1_stale_permission_prepare_calls=\(stalePermissionPrepareCalls)")
+        print("r855r1r1_duplicate_start_permission_requests=\(duplicateStartPermissionRequests)")
+        print("r855r1r1_duplicate_start_provider_sessions=\(duplicateStartProviderSessions)")
+    }
+
+    private static func testControllerMicrophoneAuthorization(
+        fixture: Data
+    ) async throws {
+        try await testAuthorizedMicrophoneStartsWithoutRequest(fixture: fixture)
+        try await testFirstRunMicrophoneGrantContinuesStart(fixture: fixture)
+        try await testFirstRunMicrophoneDenialFailsClosed(fixture: fixture)
+        try await testUnavailableMicrophoneFailsClosed(fixture: fixture)
+        try await testPendingMicrophoneRequestCancellation(fixture: fixture)
+        try await testDuplicateStartRequestsMicrophoneOnce(fixture: fixture)
+    }
+
+    private static func testAuthorizedMicrophoneStartsWithoutRequest(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        microphoneAuthorizationCases += 1
+        let stack = try makePermissionControllerStack(
+            fixture: fixture,
+            authorization: .authorized
+        )
+
+        await stack.controller.startRealtimeFullDuplexSpeech()
+        await waitUntil("authorized microphone route listens") {
+            await stack.provider.openCount() == 1
+                && stack.capture.isStarted
+                && stack.controller.realtimeFullDuplexSpeechStatus.phase
+                    == .listening
+        }
+        let requestCount = await stack.authorizationProvider.requestCount()
+        let queryCount = await stack.authorizationProvider.queryCount()
+        expect(
+            requestCount == 0,
+            "authorized microphone does not request permission again"
+        )
+        expect(
+            queryCount == 2,
+            "authorized Start refreshes permission before capture preparation"
+        )
+        expect(
+            stack.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+                && stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop,
+            "authorized microphone continues through both formal Bridges"
+        )
+        await stopPermissionRouteAndExpectClean(
+            stack,
+            label: "authorized microphone"
+        )
+    }
+
+    private static func testFirstRunMicrophoneGrantContinuesStart(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        microphoneAuthorizationCases += 1
+        let stack = try makePermissionControllerStack(
+            fixture: fixture,
+            authorization: .notDetermined,
+            requestedAuthorization: .authorized
+        )
+
+        await stack.controller.startRealtimeFullDuplexSpeech()
+        await waitUntil("first-run microphone grant reaches Listening") {
+            await stack.provider.openCount() == 1
+                && stack.capture.isStarted
+                && stack.controller.realtimeFullDuplexSpeechStatus.phase
+                    == .listening
+        }
+        let requestCount = await stack.authorizationProvider.requestCount()
+        let queryCount = await stack.authorizationProvider.queryCount()
+        expect(
+            requestCount == 1,
+            "first-run microphone permission is requested exactly once"
+        )
+        expect(
+            queryCount == 3,
+            "granted first-run Start prepares capture only after permission"
+        )
+        expect(
+            stack.runtime.activeBrainLeaseForTesting() != nil,
+            "granted first-run permission admits exactly one formal Brain"
+        )
+        await stopPermissionRouteAndExpectClean(
+            stack,
+            label: "first-run microphone grant"
+        )
+    }
+
+    private static func testFirstRunMicrophoneDenialFailsClosed(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        microphoneAuthorizationCases += 1
+        let stack = try makePermissionControllerStack(
+            fixture: fixture,
+            authorization: .notDetermined,
+            requestedAuthorization: .denied
+        )
+
+        await stack.controller.startRealtimeFullDuplexSpeech()
+        let requestCount = await stack.authorizationProvider.requestCount()
+        let queryCount = await stack.authorizationProvider.queryCount()
+        expect(
+            requestCount == 1,
+            "first-run denial follows one system permission request"
+        )
+        expect(
+            queryCount == 2,
+            "first-run denial never reaches capture preparation"
+        )
+        await expectPermissionStartDidNotReachRoute(
+            stack,
+            errorCode: "microphone_permission_denied",
+            label: "first-run denial"
+        )
+        permissionFailClosedProviderSessions = await stack.provider.openCount()
+    }
+
+    private static func testUnavailableMicrophoneFailsClosed(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        microphoneAuthorizationCases += 1
+        let cases: [(MicrophoneAuthorizationState, String)] = [
+            (.denied, "microphone_permission_denied"),
+            (.restricted, "microphone_permission_unavailable"),
+            (.failed, "microphone_permission_unavailable")
+        ]
+        var providerSessions = 0
+        for (authorization, errorCode) in cases {
+            let stack = try makePermissionControllerStack(
+                fixture: fixture,
+                authorization: authorization
+            )
+            await stack.controller.startRealtimeFullDuplexSpeech()
+            let requestCount = await stack.authorizationProvider.requestCount()
+            let queryCount = await stack.authorizationProvider.queryCount()
+            expect(
+                requestCount == 0,
+                "existing \(authorization.rawValue) permission does not request again"
+            )
+            expect(
+                queryCount == 1,
+                "existing \(authorization.rawValue) permission never prepares capture"
+            )
+            await expectPermissionStartDidNotReachRoute(
+                stack,
+                errorCode: errorCode,
+                label: "existing \(authorization.rawValue) permission"
+            )
+            providerSessions += await stack.provider.openCount()
+        }
+        permissionFailClosedProviderSessions += providerSessions
+    }
+
+    private static func testPendingMicrophoneRequestCancellation(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        microphoneAuthorizationCases += 1
+        var providerSessions = 0
+
+        let stopStack = try makePermissionControllerStack(
+            fixture: fixture,
+            authorization: .notDetermined,
+            holdsRequest: true
+        )
+        let stoppedStart = Task { @MainActor in
+            await stopStack.controller.startRealtimeFullDuplexSpeech()
+        }
+        await waitUntil("permission request waits before Stop") {
+            await stopStack.authorizationProvider.isRequestPending()
+        }
+        await stopStack.controller.stopRealtimeFullDuplexSpeech()
+        await stopStack.authorizationProvider.releaseRequest(as: .authorized)
+        await stoppedStart.value
+        let stopQueryCount = await stopStack.authorizationProvider.queryCount()
+        expect(
+            stopQueryCount == 2,
+            "permission Stop cancellation never prepares capture"
+        )
+        await expectPermissionStartDidNotReachRoute(
+            stopStack,
+            errorCode: nil,
+            label: "permission Stop cancellation"
+        )
+        providerSessions += await stopStack.provider.openCount()
+
+        let shutdownStack = try makePermissionControllerStack(
+            fixture: fixture,
+            authorization: .notDetermined,
+            holdsRequest: true
+        )
+        let shutdownStart = Task { @MainActor in
+            await shutdownStack.controller.startRealtimeFullDuplexSpeech()
+        }
+        await waitUntil("permission request waits before shutdown") {
+            await shutdownStack.authorizationProvider.isRequestPending()
+        }
+        await shutdownStack.controller.shutdownSpeechAudioHost()
+        await shutdownStack.authorizationProvider.releaseRequest(as: .authorized)
+        await shutdownStart.value
+        let shutdownQueryCount =
+            await shutdownStack.authorizationProvider.queryCount()
+        expect(
+            shutdownQueryCount == 2,
+            "permission lifecycle cancellation never prepares capture"
+        )
+        expect(
+            !shutdownStack.deviceMonitor.isMonitoring
+                && shutdownStack.deviceMonitor.startCount
+                    == shutdownStack.deviceMonitor.stopCount,
+            "late permission completion cannot resurrect route monitoring after shutdown"
+        )
+        await expectPermissionStartDidNotReachRoute(
+            shutdownStack,
+            errorCode: nil,
+            label: "permission lifecycle cancellation"
+        )
+        providerSessions += await shutdownStack.provider.openCount()
+        stalePermissionProviderSessions = providerSessions
+        stalePermissionPrepareCalls = stopQueryCount == 2
+            && shutdownQueryCount == 2 ? 0 : 1
+    }
+
+    private static func testDuplicateStartRequestsMicrophoneOnce(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        microphoneAuthorizationCases += 1
+        let stack = try makePermissionControllerStack(
+            fixture: fixture,
+            authorization: .notDetermined,
+            holdsRequest: true
+        )
+        let firstStart = Task { @MainActor in
+            await stack.controller.startRealtimeFullDuplexSpeech()
+        }
+        await waitUntil("first Start waits for permission") {
+            await stack.authorizationProvider.isRequestPending()
+        }
+        await stack.controller.startRealtimeFullDuplexSpeech()
+        expect(
+            stack.controller.realtimeFullDuplexSpeechStatus.phase == .starting,
+            "duplicate Start leaves the pending lifecycle in starting"
+        )
+        await stack.authorizationProvider.releaseRequest(as: .authorized)
+        await firstStart.value
+        await waitUntil("duplicate Start settles one route") {
+            await stack.provider.openCount() == 1
+                && stack.capture.isStarted
+                && stack.controller.realtimeFullDuplexSpeechStatus.phase
+                    == .listening
+        }
+        duplicateStartPermissionRequests =
+            await stack.authorizationProvider.requestCount()
+        duplicateStartProviderSessions = await stack.provider.openCount()
+        let queryCount = await stack.authorizationProvider.queryCount()
+        expect(
+            duplicateStartPermissionRequests == 1,
+            "duplicate Start requests microphone permission exactly once"
+        )
+        expect(
+            duplicateStartProviderSessions == 1
+                && stack.runtime.activeBrainLeaseForTesting() != nil,
+            "duplicate Start admits exactly one formal Brain"
+        )
+        expect(
+            queryCount == 3,
+            "duplicate Start prepares capture exactly once after permission"
+        )
+        await stopPermissionRouteAndExpectClean(
+            stack,
+            label: "duplicate Start"
+        )
+    }
+
+    private static func expectPermissionStartDidNotReachRoute(
+        _ stack: R855PermissionControllerStack,
+        errorCode: String?,
+        label: String
+    ) async {
+        let providerOpenCount = await stack.provider.openCount()
+        expect(
+            providerOpenCount == 0,
+            "\(label) creates no Provider Session"
+        )
+        expect(
+            !stack.capture.isStarted
+                && stack.capture.startCount == 0
+                && !stack.controller.realtimeBrainInputBridgeSnapshot
+                    .hasActivePump
+                && !stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+                && stack.outputPlayer.startCount == 0,
+            "\(label) starts no Capture, Bridge, or Playback"
+        )
+        expect(
+            stack.runtime.activeBrainLeaseForTesting() == nil,
+            "\(label) acquires no Brain lease"
+        )
+        if let errorCode {
+            expect(
+                stack.controller.realtimeFullDuplexSpeechStatus.phase == .failed
+                    && stack.controller.realtimeFullDuplexSpeechStatus
+                        .lastErrorCode == errorCode,
+                "\(label) publishes the explicit failed status"
+            )
+        } else {
+            expect(
+                stack.controller.realtimeFullDuplexSpeechStatus.phase == .idle,
+                "\(label) leaves the cancelled lifecycle idle"
+            )
+        }
+    }
+
+    private static func stopPermissionRouteAndExpectClean(
+        _ stack: R855PermissionControllerStack,
+        label: String
+    ) async {
+        await stack.controller.stopRealtimeFullDuplexSpeech()
+        let providerCloseCount = await stack.provider.closeCount()
+        expect(
+            providerCloseCount == 1
+                && stack.capture.startCount == 1
+                && stack.capture.stopCount == 1
+                && !stack.capture.isStarted,
+            "\(label) Stop closes Provider and Capture exactly once"
+        )
+        expect(
+            !stack.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+                && !stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+                && stack.runtime.activeBrainLeaseForTesting() == nil
+                && stack.controller.realtimeFullDuplexSpeechStatus.phase == .idle,
+            "\(label) Stop leaves Bridges, lease, and lifecycle clean"
+        )
     }
 
     private static func testControllerSemanticFirstInterruption(
@@ -1327,6 +1770,82 @@ private struct RealtimeInterruptionEvidenceTests {
             "failed transition leaves no closed binding that blocks restart"
         )
         await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func makePermissionControllerStack(
+        fixture: Data,
+        authorization: MicrophoneAuthorizationState,
+        requestedAuthorization: MicrophoneAuthorizationState = .authorized,
+        holdsRequest: Bool = false
+    ) throws -> R855PermissionControllerStack {
+        let provider = R81RealtimeProvider()
+        let router = ProviderRouter(
+            credentialReader: R81CredentialReader(),
+            realtimeResidentBrainProvider: provider
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        let authorizationProvider = R855MicrophoneAuthorizationProvider(
+            authorization: authorization,
+            requestedAuthorization: requestedAuthorization,
+            holdsRequest: holdsRequest
+        )
+        let acousticEchoHost = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: R81AECBackend()
+        )
+        expect(
+            acousticEchoHost.configure() == .webRTCAEC3,
+            "permission test configures the formal AEC Host"
+        )
+        let capture = R81AudioCapture(acousticEchoHost: acousticEchoHost)
+        let deviceMonitor = R81DeviceMonitor()
+        let audioHost = MacSpeechAudioHost(
+            authorizationProvider: authorizationProvider,
+            capture: capture,
+            deviceMonitor: deviceMonitor
+        )
+        let outputPlayer = FakeMacSpeechAudioOutputPlayer()
+        let outputHost = MacSpeechAudioOutputHost(
+            player: outputPlayer,
+            deviceMonitor: FakeMacSpeechOutputDeviceMonitor(),
+            configuration: MacSpeechPCMPlaybackConfiguration(
+                capacity: 4,
+                lowWatermark: 1,
+                consumerTimeoutNanoseconds: 2_000_000_000,
+                startupBufferCount: 1,
+                startupBufferDurationNanoseconds: 0,
+                scheduleAheadCount: 2
+            )
+        )
+        let controller = AppController(
+            orchestrationKernel: OrchestrationKernel(runtimeCore: runtime),
+            speechAudioHost: audioHost,
+            speechAudioOutputHost: outputHost
+        )
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "r855-permission-\(UUID().uuidString).digital_resident"
+            )
+        try fixture.write(to: fixtureURL, options: .atomic)
+        controller.debugImportResident(from: fixtureURL)
+        try? FileManager.default.removeItem(at: fixtureURL)
+        expect(
+            controller.isResidentTextInputAvailable,
+            "permission test loads the formal resident fixture"
+        )
+        return R855PermissionControllerStack(
+            controller: controller,
+            runtime: runtime,
+            provider: provider,
+            authorizationProvider: authorizationProvider,
+            capture: capture,
+            deviceMonitor: deviceMonitor,
+            outputPlayer: outputPlayer
+        )
     }
 
     private static func makeControllerStack(

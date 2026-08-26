@@ -2027,8 +2027,7 @@ final class AppController: ObservableObject {
 
     func requestMicrophoneAuthorization() async {
         speechAudioHostShutdownCompleted = false
-        speechAudioHostSnapshot =
-            await speechAudioHost.requestMicrophoneAuthorization()
+        _ = await ensureRealtimeMicrophoneAuthorization()
     }
 
     func startSpeechAudioCapture() async {
@@ -2151,9 +2150,10 @@ final class AppController: ObservableObject {
     }
 
     func startRealtimeResidentBrainRoute() async {
+        if realtimeBrainRouteAttemptID != nil || realtimeBrainStartInFlight {
+            return
+        }
         guard realtimeBrainInputBinding == nil,
-              realtimeBrainRouteAttemptID == nil,
-              !realtimeBrainStartInFlight,
               !realtimeBrainStopping,
               !hasActiveAlternateSpeechRoute,
               speechAudioHostShutdownOperation == nil,
@@ -2188,6 +2188,41 @@ final class AppController: ObservableObject {
             generation: nil,
             lastErrorCode: nil
         )
+        let microphoneAuthorization =
+            await ensureRealtimeMicrophoneAuthorization()
+        guard realtimeBrainRouteAttemptID == attemptID,
+              speechAudioHostShutdownOperation == nil,
+              !speechAudioHostShutdownCompleted else {
+            if speechAudioHostShutdownOperation != nil
+                || speechAudioHostShutdownCompleted {
+                await speechAudioHost.shutdown()
+                speechAudioHostSnapshot =
+                    await speechAudioHost.currentSnapshot()
+            }
+            return
+        }
+        switch microphoneAuthorization {
+        case .authorized:
+            break
+        case .notDetermined:
+            realtimeBrainRouteAttemptID = nil
+            publishRealtimeResidentBrainRouteFailure(
+                "microphone_permission_required"
+            )
+            return
+        case .denied:
+            realtimeBrainRouteAttemptID = nil
+            publishRealtimeResidentBrainRouteFailure(
+                "microphone_permission_denied"
+            )
+            return
+        case .restricted, .failed:
+            realtimeBrainRouteAttemptID = nil
+            publishRealtimeResidentBrainRouteFailure(
+                "microphone_permission_unavailable"
+            )
+            return
+        }
         let preparedCaptureGeneration =
             await speechAudioHost.prepareCaptureGeneration()
         guard realtimeBrainRouteAttemptID == attemptID else {
@@ -2305,6 +2340,16 @@ final class AppController: ObservableObject {
         )
         #endif
         refreshParticleDebugSnapshot()
+    }
+
+    private func ensureRealtimeMicrophoneAuthorization() async
+        -> MicrophoneAuthorizationState {
+        speechAudioHostSnapshot = await speechAudioHost.refreshAuthorization()
+        if speechAudioHostSnapshot.authorization == .notDetermined {
+            speechAudioHostSnapshot =
+                await speechAudioHost.requestMicrophoneAuthorization()
+        }
+        return speechAudioHostSnapshot.authorization
     }
 
     func stopRealtimeFullDuplexSpeech() async {

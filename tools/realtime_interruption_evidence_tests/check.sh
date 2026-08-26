@@ -50,6 +50,12 @@ CFFIXED_USER_HOME="$runtime_home" \
   "$build_dir/realtime_interruption_evidence_tests" "$fixture" \
   | tee "$output"
 rg -qx 'r81_acoustic_only_playback_clears=0' "$output"
+rg -qx 'r855r1r1_microphone_authorization_cases=6' "$output"
+rg -qx 'r855r1r1_permission_fail_closed_provider_sessions=0' "$output"
+rg -qx 'r855r1r1_stale_permission_provider_sessions=0' "$output"
+rg -qx 'r855r1r1_stale_permission_prepare_calls=0' "$output"
+rg -qx 'r855r1r1_duplicate_start_permission_requests=1' "$output"
+rg -qx 'r855r1r1_duplicate_start_provider_sessions=1' "$output"
 
 contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 runtime="$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"

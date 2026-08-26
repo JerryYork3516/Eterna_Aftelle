@@ -87,7 +87,7 @@ R8.5.3 使用的现有 Logpoint 集固定为：`R853_GATE_OPEN`、`R853_ELIGIBLE
 | Debug | diagnostics JSON、AEC OSLog、Xcode Console、现有 DEBUG actor / Runtime snapshot、LLDB、auto-continue Logpoint、人工表、process evidence | 不得把 legacy NativeSpeech Bridge/profile 字段当 formal Realtime / Real Qwen 证据 |
 | Release | 用户实际行为 / 听感、existing release-safe OSLog、最小非 DEBUG lifecycle status、process / crash evidence、人工表、实际 bundle / binary / resources 检查 | 不得要求或借用 DEBUG-only snapshot；source/build PASS 不得替代 Release Human Gate |
 
-Preparation audit 识别出的 Release source blocker 已由 R8.5.5-R1 修复：正式 Realtime Host / Qwen composition / AppController lifecycle 与最小 Start / Stop / status 现在可在标准 Release 编译并进入同一 Route。当前口径为 `EXECUTABLE / HUMAN_GATE_NOT_RUN`，不是 `PASS / FROZEN`。实际执行仍以统一 Gate 当时取得的 Release artifact 为准；不得把 Debug build 改名或冒充 Release，也不得把 source guard、自动化或 clean build 当作 55-D 真人证据。
+Preparation audit 识别出的 Release source blocker 已由 R8.5.5-R1 修复：正式 Realtime Host / Qwen composition / AppController lifecycle 与最小 Start / Stop / status 现在可在标准 Release 编译并进入同一 Route。R1 independent review 识别出的首次 `.notDetermined` 麦克风授权缺口已由 R8.5.5-R1-R1 修复：正式 Start 在 Capture prepare / Provider / Bridge 前请求一次系统授权，并在授权 await 后重验 Stop / termination fence。当前口径仍为 `EXECUTABLE / HUMAN_GATE_NOT_RUN`，不是 `PASS / FROZEN`。实际执行仍以统一 Gate 当时取得的 Release artifact 为准；不得把 Debug build 改名或冒充 Release，也不得把 source guard、自动化或 clean build 当作 55-D 真人证据。
 
 ## 3. Phase 0 — Preflight（不计入 25 Gates）
 
@@ -388,7 +388,7 @@ Stop → settle → Restart → Listening
 
 1. App 正常启动；
 2. 运行时加载正式测试居民；
-3. 启动 Realtime Full-Duplex Speech；
+3. 启动 Realtime Full-Duplex Speech；在同一 Gate 下保存两条独立 attempt / evidence rows，并记录 fresh macOS TCC permission state 的取得方式。Grant attempt：权限为 `.notDetermined` 时系统授权框恰好出现一次，允许后同一次 Start 进入 Listening。Deny attempt：以另一独立 fresh permission state 拒绝授权，Capture / Provider / Bridge 均不得启动。两次都不得预先借用 DEBUG 授权入口；
 4. Listening 正常；
 5. 完成 5 个 substantive turns；
 6. 至少 2 次自然 barge-in；
@@ -397,7 +397,7 @@ Stop → settle → Restart → Listening
 9. Restart 后再次完成正常 turn；
 10. 正常 Stop 与 App exit。
 
-要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection、wrong durable write = 0。R8.5.5-R1 只把 source precondition 修复为 `EXECUTABLE / HUMAN_GATE_NOT_RUN`；55-D 当前结果仍为 `NOT_RUN`，Debug / source / build 结果不得复制到本 Gate。
+要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection、wrong durable write = 0。R8.5.5-R1 与 R8.5.5-R1-R1 只把 source / first-run permission precondition 修复为 `EXECUTABLE / HUMAN_GATE_NOT_RUN`；55-D 当前结果仍为 `NOT_RUN`，Debug / source / build 结果不得复制到本 Gate。
 
 ### 55-E — Debug / Release Consistency
 
@@ -505,9 +505,12 @@ R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
-R8.5.5-R1 = IMPLEMENTED / REVIEW_REQUIRED
+R8.5.5-R1 initial closeout = IMPLEMENTED / REVIEW_REQUIRED
+R8.5.5-R1 independent review = BLOCKED / REWORK_REQUIRED
+R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED
 Unified Human Gate = READY / NOT_RUN
+55-D = NOT_RUN
 Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
-Next = User executes this unified real-device checklist
+Next = R8.5.5-R1-R1 independent review; Unified Human Gate remains waiting
 ```

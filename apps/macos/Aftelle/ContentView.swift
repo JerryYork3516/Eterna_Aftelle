@@ -390,6 +390,17 @@ private struct RealtimeFullDuplexSpeechControlBar: View {
             key = "realtimeSpeech.status.stopping"
         } else if !isResidentAvailable && status.phase == .idle {
             key = "realtimeSpeech.status.unavailable"
+        } else if status.phase == .failed {
+            switch status.lastErrorCode {
+            case "microphone_permission_required":
+                key = "realtimeSpeech.status.microphonePermissionRequired"
+            case "microphone_permission_denied":
+                key = "realtimeSpeech.status.microphonePermissionDenied"
+            case "microphone_permission_unavailable":
+                key = "realtimeSpeech.status.microphonePermissionUnavailable"
+            default:
+                key = "realtimeSpeech.status.failed"
+            }
         } else {
             key = "realtimeSpeech.status.\(status.phase.rawValue)"
         }

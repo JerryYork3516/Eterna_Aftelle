@@ -1,6 +1,6 @@
 # Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.5.2–R8.5.5 Preparation
 
-> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.5 = PREPARED / HUMAN_GATE_WAITING`；Unified Human Gate 为 `READY / NOT_RUN`，下一步只允许执行 R8.5.2–R8.5.5 Unified Real-device Human Gate
+> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.5 = PREPARED / HUMAN_GATE_WAITING`；`R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED`；Unified Human Gate 为 `READY / NOT_RUN`，下一步只允许进行 R1-R1 independent review
 >
 > 性质：Realtime Full-Duplex Speech Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -497,7 +497,7 @@ R8.5.5 = PREPARED / HUMAN_GATE_WAITING
 Unified Human Gate = READY / NOT_RUN
 Real-device Human Gate = NOT_RUN
 P0 / P1 / P2 real-device = NOT_ASSESSED
-Production code modifications = 0
+R8.5.2–R8.5.5 preparation-only production code modifications = 0
 ```
 
 R8.3.1 没有修改 AEC / classifier / source gate / eligibility 的生产阈值或 decision authority；唯一生产目录改动是 `RuntimeCore` 的 DEBUG-only interruption evidence snapshot，用于证明 acoustic evidence 已被原子接收且 semantic evidence 仍为空。
@@ -562,7 +562,7 @@ R8.5.1 verification: cross-node 12 / failures 0, randomized 100 / failures 0, re
 
 R8.5.1 Human Gate: real Qwen timing/order/network, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration real session and Release remain NOT_RUN / HUMAN_GATE.
 
-Current next allowed node: R8.5.2–R8.5.5 Unified Real-device Human Gate Execution
+Current next allowed node: R8.5.5-R1-R1 Independent Review
 
 ----
 
@@ -900,7 +900,7 @@ R8.5.5 只准备长时间真实会话、生命周期 / 资源稳定性、Release
 现有边界与 gap 必须保留：
 
 - formal Realtime identity、Bridge 与多数 lifecycle snapshots 属于 DEBUG-only evidence；Release 不要求也不能借用这些 snapshot。
-- R8.5.5 preparation 当时识别出的 Release executability gap 已由独立节点 R8.5.5-R1 做 source-level repair：标准 Release 现在实例化正式 Realtime Host / Qwen Realtime composition，并暴露最小 Start / Stop / lifecycle status。该修复只把现有正式 Route 从 DEBUG 编译边界中解耦，不改变 RuntimeCore authority、Provider contract、AEC、DR、Store 或 Speech Route 边界。
+- R8.5.5 preparation 当时识别出的 Release executability gap 已由独立节点 R8.5.5-R1 做 source-level repair；R1 independent review 识别出的首次 `.notDetermined` 麦克风授权缺口已由 R8.5.5-R1-R1 修复。标准 Release 现在实例化正式 Realtime Host / Qwen Realtime composition、暴露最小 Start / Stop / lifecycle status，并能在同一次首次 Start 中请求系统麦克风授权。两次修复都不改变 RuntimeCore authority、Provider contract、AEC、DR、Store 或 Speech Route 边界。
 - Release 只使用用户实际行为 / 听感、existing release-safe OSLog、实际 artifact 暴露的最小非 DEBUG lifecycle outcome、process / crash evidence 与人工表；不得要求或借用 DEBUG-only snapshot。source-level availability 与 Release clean build 只证明 Gate 可执行，不能替代 55-D 真人结果。
 - Runtime Session / lease / route epoch、formal Realtime Bridge、Provider lifecycle、response create / completion 与完整 Store write delta 未形成统一可导出的 Human Gate surface；Debug 通过现有 debugger / Logpoint 与前后只读对比派生，Release 缺失时只记录 observability gap，不能虚构精确计数。
 - transport internal diagnostics 与 App timeline 都是 30,000 条有界 ring。首个 substantive turn 结束前使用最长 15 秒的保守 hard-cap cadence 导出；T+30s 只作 early safety export，若此时首个 turn 尚未结束，不得用 idle / 低流量窗口放宽 cadence。首个 substantive turn 结束后立即强制导出并用该 active window 校准；若 observed event rate 为 0 或未定义，继续使用 15 秒 hard cap。此后以全部已保存窗口中的历史最高 observed event rate 计算额外 rollover cadence，使每个保存窗口预计新增事件不超过 15,000（容量 50%），并且 cadence 只可缩短；固定 checkpoints 仍全部导出。所有文件保留重叠窗口，要求 internal diagnostic overflow = 0，并以 event ID / monotonic timestamp / wire 或 audio sequence 证明相邻文件连续。App timeline 的累计 dropped count 只表示已持久化旧窗口后的 ring eviction 时，不单独判 transport loss；若没有重叠证据、出现 internal overflow 或未保存的 gap，则本 Gate 证据失败，之后缩短 cadence 也不能抹掉该失败。长会话中不反复 clear diagnostics，以免重置 AEC window counters；单一 End export 不足以证明整场 Session。
@@ -918,6 +918,26 @@ App termination 由 AppDelegate `applicationShouldTerminate` 返回 `terminateLa
 
 ```text
 R8.5.5-R1 = IMPLEMENTED / REVIEW_REQUIRED
+Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
+55-D = NOT_RUN
+Real-device P0 / P1 / P2 = NOT_ASSESSED
+```
+
+#### R8.5.5-R1-R1 — Release First-run Microphone Authorization Repair
+
+R8.5.5-R1 independent review 发现的 P1 位于正式 Start 的授权前置：`MacSpeechAudioHost.prepareCaptureGeneration()` 只读取当前授权并在非 `.authorized` 时失败，原有 `requestMicrophoneAuthorization()` 又只存在于 DEBUG，因此首次 Release 安装处于 `.notDetermined` 时不会出现系统授权框，也无法在同一次 Start 继续正式 Route。
+
+R1-R1 在 AppController 增加单一私有 production helper `ensureRealtimeMicrophoneAuthorization()`。`.authorized` 直接返回；只有 `.notDetermined` 才请求一次系统授权并返回刷新后的真实状态；permission request 后最终仍为 `.notDetermined`，或最终为 `.denied / .restricted / .failed` 时，均在 Capture prepare、Provider Session、Brain lease、formal Input / Output Bridge 之前 fail closed。现有 DEBUG 授权动作只复用该 helper，不建立第二套授权或 lifecycle owner；Release UI 仅把 required / denied / unavailable 错误投影为本地化文本。
+
+授权请求的 async 边界继续受同一 Start attempt 与 shutdown authority 约束：授权返回后必须重新验证 attempt、shutdown operation 与 shutdown-completed fence；等待期间发生 Stop / termination 时，late grant 不得启动设备监听、Capture、Provider 或 Bridge。重复 Start 复用首个 `.starting` attempt，不重复请求授权，也不创建第二 Provider Session。授权 helper 不操作 Provider、RuntimeCore、Brain lease、Bridge、Playback 或 interruption decision。
+
+自动化覆盖已授权、首次授权并继续、首次拒绝、既有 denied / restricted / failed、授权等待期间 Stop / termination late grant，以及 duplicate Start，共 6 类；完整 interruption evidence suite 为 24 cases / 202 checks。fail-closed Provider Session、stale permission Provider Session 与 stale permission prepare call 均为 0；duplicate Start permission requests 与 Provider Sessions 均为 1。Release source guard 冻结授权条件、request 顺序、permission-before-prepare / Provider、post-await shutdown fences、UI error mapping 与 DEBUG isolation。旧 canonical production digest `9764d333d6be42a3ed954c6a8cecde935ebefa84fc7943909adba97824eda0ba` 下所有 invariant 通过且唯一差异为预期 production source change；新 digest 为 `77bcd7cc491ac1ee04bc78856bd2810b1502e481d3db623ae73f8b17665e7049`。最终 A7 为 34 suites / 37 entrypoints / 12300 assertions，repository mutation、architecture / secret guards 与 Debug / Release clean build 均为 PASS。
+
+本节点未执行真人麦克风授权、Real Qwen 或 Release Human Gate，不能判定 Human Gate PASS：
+
+```text
+R8.5.5-R1 independent review = BLOCKED / REWORK_REQUIRED
+R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
 55-D = NOT_RUN
 Real-device P0 / P1 / P2 = NOT_ASSESSED
@@ -972,7 +992,7 @@ Stop
 
 #### R8.5.5 Gate D — Release Build Human Gate
 
-R8.5.5-R1 已完成自动化 Debug / Release clean build 与 source-level executability repair，但没有执行 Release Human Gate。统一 Gate 仍必须使用真实 macOS Release artifact、Real Qwen 与真实音频设备，依序覆盖：App 启动、运行时加载正式测试居民、启动 Realtime Full-Duplex Speech、Listening、5 个 substantive turns、至少 2 次自然 barge-in、至少 2 个 passive backchannel、Stop / Restart ×2、Restart 后正常 turn、正常 Stop 与 App exit。
+R8.5.5-R1 已完成自动化 Debug / Release clean build 与 source-level executability repair，R8.5.5-R1-R1 已补齐首次 `.notDetermined` 麦克风授权路径，但两者都没有执行 Release Human Gate。统一 Gate 仍必须使用真实 macOS Release artifact、Real Qwen 与真实音频设备，依序覆盖：App 启动、运行时加载正式测试居民、首次 Start 的系统麦克风授权、Listening、5 个 substantive turns、至少 2 次自然 barge-in、至少 2 个 passive backchannel、Stop / Restart ×2、Restart 后正常 turn、正常 Stop 与 App exit。
 
 未来要求 crash、duplicate response、stale output、self-interrupt、stuck lifecycle、old Session resurrection 与 wrong durable write 全为 0。Release clean build 为 `PASS`；55-D Release Human Gate 仍为 `NOT_RUN`，Debug PASS 不能替代 Release 实测。
 
@@ -996,11 +1016,13 @@ R8.5.2 = PREPARED / HUMAN_GATE_WAITING
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
-R8.5.5-R1 = IMPLEMENTED / REVIEW_REQUIRED
+R8.5.5-R1 initial closeout = IMPLEMENTED / REVIEW_REQUIRED
+R8.5.5-R1 independent review = BLOCKED / REWORK_REQUIRED
+R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED
 Unified Human Gate = READY / NOT_RUN
 Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
-Next = R8.5.2–R8.5.5 Unified Real-device Human Gate Execution
+Next = R8.5.5-R1-R1 Independent Review
 ```
 
 ### R8.5+ Terminology

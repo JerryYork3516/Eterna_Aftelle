@@ -598,3 +598,6 @@
 "realtimeSpeech.status.stopping" = "停止中";
 "realtimeSpeech.status.failed" = "语音出错";
 "realtimeSpeech.status.unavailable" = "请先加载数字居民";
+"realtimeSpeech.status.microphonePermissionRequired" = "需要麦克风权限";
+"realtimeSpeech.status.microphonePermissionDenied" = "麦克风权限已被拒绝";
+"realtimeSpeech.status.microphonePermissionUnavailable" = "麦克风当前不可用";

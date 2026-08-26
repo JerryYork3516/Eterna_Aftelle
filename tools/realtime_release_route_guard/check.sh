@@ -104,6 +104,29 @@ dump_ast() {
   xcrun swiftc -frontend -dump-parse "$@" "$source" > "$output"
 }
 
+extract_swift_function() {
+  local signature="$1"
+  local source="$2"
+  local output="$3"
+  awk -v signature="$signature" '
+    !active && index($0, signature) { active = 1 }
+    active {
+      print
+      line = $0
+      opens = gsub(/\{/, "{", line)
+      closes = gsub(/\}/, "}", line)
+      if (opens > 0) seen_open = 1
+      depth += opens - closes
+      if (seen_open && depth == 0) exit
+    }
+  ' "$source" > "$output"
+  if [ ! -s "$output" ]; then
+    printf 'realtime_release_route_guard_missing=%s\n' \
+      "function_$signature" >&2
+    exit 1
+  fi
+}
+
 assert_has() {
   local pattern="$1"
   local file="$2"
@@ -124,6 +147,24 @@ assert_lacks() {
   fi
 }
 
+assert_exact_count() {
+  local pattern="$1"
+  local expected="$2"
+  local file="$3"
+  local label="$4"
+  local actual
+  actual="$(
+    (rg -F -o -- "$pattern" "$file" || true) \
+      | wc -l \
+      | tr -d ' '
+  )"
+  if [ "$actual" -ne "$expected" ]; then
+    printf 'realtime_release_route_guard_count=%s expected=%s actual=%s\n' \
+      "$label" "$expected" "$actual" >&2
+    exit 1
+  fi
+}
+
 release_conditions=(-D AFTELLE_WEBRTC_AEC3)
 project_release_source \
   "$app_controller" "$work_dir/AppController.release.swift"
@@ -132,6 +173,23 @@ project_release_source "$content_view" "$work_dir/ContentView.release.swift"
 project_release_source "$app_entry" "$work_dir/AftelleApp.release.swift"
 project_release_source \
   "$composition" "$work_dir/QwenRealtimeRuntimeComposition.release.swift"
+
+extract_swift_function \
+  'func startRealtimeResidentBrainRoute() async' \
+  "$work_dir/AppController.release.swift" \
+  "$work_dir/realtime-route-start.swift"
+extract_swift_function \
+  'private func ensureRealtimeMicrophoneAuthorization() async' \
+  "$work_dir/AppController.release.swift" \
+  "$work_dir/realtime-permission-helper.swift"
+extract_swift_function \
+  'if speechAudioHostSnapshot.authorization == .notDetermined {' \
+  "$work_dir/realtime-permission-helper.swift" \
+  "$work_dir/realtime-permission-request-block.swift"
+extract_swift_function \
+  'func requestMicrophoneAuthorization() async' \
+  "$app_controller" \
+  "$work_dir/debug-permission-wrapper.swift"
 
 dump_ast \
   "$work_dir/AppController.release.swift" \
@@ -159,6 +217,10 @@ assert_has '"startRealtimeResidentBrainRoute()"' \
   "$work_dir/app-controller-release.ast" formal_route_start
 assert_has 'name="startRealtimeResidentBrainRoute"' \
   "$work_dir/app-controller-release.ast" start_call_edge
+assert_has '"ensureRealtimeMicrophoneAuthorization()"' \
+  "$work_dir/app-controller-release.ast" microphone_permission_helper
+assert_has 'field="requestMicrophoneAuthorization"' \
+  "$work_dir/app-controller-release.ast" microphone_permission_request
 assert_has '"stopRealtimeFullDuplexSpeech()"' \
   "$work_dir/app-controller-release.ast" stop_action
 assert_has 'name="stopRealtimeResidentBrainRoute"' \
@@ -191,6 +253,105 @@ assert_has 'name="MacSpeechRealtimeBrainInputBridge"' \
   "$work_dir/app-controller-release.ast" production_input_bridge
 assert_has 'name="MacSpeechRealtimeBrainOutputBridge"' \
   "$work_dir/app-controller-release.ast" production_output_bridge
+for permission_error in \
+  microphone_permission_required \
+  microphone_permission_denied \
+  microphone_permission_unavailable
+do
+  assert_has "$permission_error" \
+    "$work_dir/app-controller-release.ast" "$permission_error"
+done
+
+assert_exact_count 'ensureRealtimeMicrophoneAuthorization()' 1 \
+  "$work_dir/realtime-route-start.swift" start_permission_helper
+assert_exact_count 'prepareCaptureGeneration()' 1 \
+  "$work_dir/realtime-route-start.swift" start_capture_prepare
+assert_exact_count 'startRealtimeResidentBrainInput()' 1 \
+  "$work_dir/realtime-route-start.swift" start_provider_session
+assert_has 'realtimeBrainRouteAttemptID == attemptID' \
+  "$work_dir/realtime-route-start.swift" post_permission_attempt_fence
+assert_has 'speechAudioHostShutdownOperation == nil' \
+  "$work_dir/realtime-route-start.swift" post_permission_shutdown_operation_fence
+assert_has '!speechAudioHostShutdownCompleted' \
+  "$work_dir/realtime-route-start.swift" post_permission_shutdown_completion_fence
+assert_lacks '[Cc]ascaded|[Vv]oiceMessage|[Ff]allback' \
+  "$work_dir/realtime-route-start.swift" route_fallback
+
+permission_line="$(rg -n -F -m 1 \
+  'ensureRealtimeMicrophoneAuthorization()' \
+  "$work_dir/realtime-route-start.swift" | cut -d: -f1)"
+attempt_fence_line="$(rg -n -F -m 1 \
+  'realtimeBrainRouteAttemptID == attemptID' \
+  "$work_dir/realtime-route-start.swift" | cut -d: -f1)"
+prepare_line="$(rg -n -F -m 1 'prepareCaptureGeneration()' \
+  "$work_dir/realtime-route-start.swift" | cut -d: -f1)"
+provider_line="$(rg -n -F -m 1 'startRealtimeResidentBrainInput()' \
+  "$work_dir/realtime-route-start.swift" | cut -d: -f1)"
+if [ "$permission_line" -ge "$attempt_fence_line" ] \
+    || [ "$attempt_fence_line" -ge "$prepare_line" ] \
+    || [ "$prepare_line" -ge "$provider_line" ]; then
+  printf 'realtime_release_route_guard_order=permission_prepare_provider\n' \
+    >&2
+  exit 1
+fi
+awk -v first="$permission_line" -v last="$prepare_line" \
+  'NR > first && NR < last { print }' \
+  "$work_dir/realtime-route-start.swift" \
+  > "$work_dir/post-permission-fences.swift"
+assert_has 'realtimeBrainRouteAttemptID == attemptID' \
+  "$work_dir/post-permission-fences.swift" post_permission_attempt_fence
+assert_has 'speechAudioHostShutdownOperation == nil' \
+  "$work_dir/post-permission-fences.swift" post_permission_shutdown_operation_fence
+assert_has '!speechAudioHostShutdownCompleted' \
+  "$work_dir/post-permission-fences.swift" post_permission_shutdown_completion_fence
+for permission_error in \
+  microphone_permission_required \
+  microphone_permission_denied \
+  microphone_permission_unavailable
+do
+  error_line="$(rg -n -F -m 1 "$permission_error" \
+    "$work_dir/realtime-route-start.swift" | cut -d: -f1)"
+  if [ "$error_line" -ge "$prepare_line" ]; then
+    printf 'realtime_release_route_guard_order=%s_after_prepare\n' \
+      "$permission_error" >&2
+    exit 1
+  fi
+done
+
+assert_exact_count 'refreshAuthorization()' 1 \
+  "$work_dir/realtime-permission-helper.swift" permission_refresh
+assert_exact_count 'requestMicrophoneAuthorization()' 1 \
+  "$work_dir/realtime-permission-helper.swift" permission_request
+assert_exact_count 'requestMicrophoneAuthorization()' 1 \
+  "$work_dir/realtime-permission-request-block.swift" \
+  permission_request_in_not_determined_block
+assert_has 'authorization == .notDetermined' \
+  "$work_dir/realtime-permission-helper.swift" permission_request_condition
+assert_has 'return speechAudioHostSnapshot.authorization' \
+  "$work_dir/realtime-permission-helper.swift" permission_final_result
+refresh_line="$(rg -n -F -m 1 'refreshAuthorization()' \
+  "$work_dir/realtime-permission-helper.swift" | cut -d: -f1)"
+condition_line="$(rg -n -F -m 1 'authorization == .notDetermined' \
+  "$work_dir/realtime-permission-helper.swift" | cut -d: -f1)"
+request_line="$(rg -n -F -m 1 'requestMicrophoneAuthorization()' \
+  "$work_dir/realtime-permission-helper.swift" | cut -d: -f1)"
+return_line="$(rg -n -F -m 1 'return speechAudioHostSnapshot.authorization' \
+  "$work_dir/realtime-permission-helper.swift" | cut -d: -f1)"
+if [ "$refresh_line" -ge "$condition_line" ] \
+    || [ "$condition_line" -ge "$request_line" ] \
+    || [ "$request_line" -ge "$return_line" ]; then
+  printf 'realtime_release_route_guard_order=permission_helper\n' >&2
+  exit 1
+fi
+assert_lacks 'orchestrationKernel|Provider|Runtime|Bridge|nativeSpeech|Diagnostic|Debug|Fake|TestHook|[Cc]ascaded|[Vv]oiceMessage|[Ff]allback' \
+  "$work_dir/realtime-permission-helper.swift" permission_helper_authority
+
+assert_lacks 'func requestMicrophoneAuthorization\(\) async' \
+  "$work_dir/AppController.release.swift" debug_permission_wrapper
+assert_exact_count 'ensureRealtimeMicrophoneAuthorization()' 1 \
+  "$work_dir/debug-permission-wrapper.swift" debug_helper_reuse
+assert_lacks 'speechAudioHost.requestMicrophoneAuthorization' \
+  "$work_dir/debug-permission-wrapper.swift" duplicate_debug_permission_logic
 
 assert_has '"makeRuntimeCore(credentialReader:realtimeBrainConfiguration:)"' \
   "$work_dir/composition-release.ast" production_composition
@@ -219,6 +380,22 @@ assert_has 'field="startRealtimeFullDuplexSpeech"' \
   "$work_dir/content-view-release.ast" release_start_wiring
 assert_has 'field="stopRealtimeFullDuplexSpeech"' \
   "$work_dir/content-view-release.ast" release_stop_wiring
+for permission_status_key in \
+  realtimeSpeech.status.microphonePermissionRequired \
+  realtimeSpeech.status.microphonePermissionDenied \
+  realtimeSpeech.status.microphonePermissionUnavailable
+do
+  assert_has "$permission_status_key" \
+    "$work_dir/content-view-release.ast" "$permission_status_key"
+done
+for permission_error in \
+  microphone_permission_required \
+  microphone_permission_denied \
+  microphone_permission_unavailable
+do
+  assert_has "$permission_error" \
+    "$work_dir/content-view-release.ast" "content_view_$permission_error"
+done
 assert_has '"applicationShouldTerminate(_:)"' \
   "$work_dir/app-entry-release.ast" termination_fence
 assert_has 'field="shutdownSpeechAudioHost"' \
@@ -273,7 +450,10 @@ for localization_key in \
   realtimeSpeech.status.speaking \
   realtimeSpeech.status.stopping \
   realtimeSpeech.status.failed \
-  realtimeSpeech.status.unavailable
+  realtimeSpeech.status.unavailable \
+  realtimeSpeech.status.microphonePermissionRequired \
+  realtimeSpeech.status.microphonePermissionDenied \
+  realtimeSpeech.status.microphonePermissionUnavailable
 do
   assert_has "\"$localization_key\" =" \
     "$english_strings" "english_$localization_key"
@@ -283,6 +463,8 @@ done
 
 printf 'realtime_release_route_declarations=PASS\n'
 printf 'realtime_release_call_edges=PASS\n'
+printf 'realtime_release_microphone_authorization=PASS\n'
+printf 'realtime_release_permission_before_provider=PASS\n'
 printf 'realtime_release_ui_entrypoints=PASS\n'
 printf 'realtime_release_termination_fences=PASS\n'
 printf 'realtime_release_legacy_provider_symbols=0\n'

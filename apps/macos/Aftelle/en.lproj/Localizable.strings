@@ -598,3 +598,6 @@
 "realtimeSpeech.status.stopping" = "Stopping";
 "realtimeSpeech.status.failed" = "Speech failed";
 "realtimeSpeech.status.unavailable" = "Load a resident to begin";
+"realtimeSpeech.status.microphonePermissionRequired" = "Microphone permission is required";
+"realtimeSpeech.status.microphonePermissionDenied" = "Microphone permission was denied";
+"realtimeSpeech.status.microphonePermissionUnavailable" = "Microphone access is unavailable";
