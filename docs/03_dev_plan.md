@@ -1,11 +1,11 @@
 # Aftelle Desktop · 开发计划 · Stage 7 · v8
 
 > 7.1→7.12 的开发顺序与每阶段内容、验收。与02_architecture.md v8、04_code_standards.md、AGENTS.md 配套。
-> **Stage 7.5 当前唯一权威:**本文件「Stage 7.5 实时语音闭环 / Studio Next 1.0 / 真实资产联调」中的 7.5.1–7.5.28。7.5.11 的 Cascaded Speech Route 最终定位为语音消息、Realtime Speech 可靠 fallback 与低成本 / 高兼容语音链。Realtime Resident Brain Route 按 `realtime_resident_brain_architecture.md` 的独立 R0～R10 序列推进，不改变现有 Stage 编号。
+> **Stage 7.5 当前唯一权威:**本文件「Stage 7.5 实时语音闭环 / Studio Next 1.0 / 真实资产联调」中的 7.5.1–7.5.28。7.5.11 的 Cascaded Voice Message 最终定位为独立的级联语音消息与低成本 / 高兼容语音链。Realtime Full-Duplex Speech 按 `realtime_resident_brain_architecture.md` 的独立 R0～R10 序列推进；两条 Route 长期共存但不自动互相切换，不改变现有 Stage 编号。
 
 ## 主线顺序
 
-7.1–7.4 完成单居民 Runtime 基础闭环。Stage 7.5 按 7.5.1–7.5.28 依次完成原生全双工 STS 实验链验证与收口、ASR → RuntimeCore LLM → TTS Cascaded Speech Route、Studio Next 1.0 重构与真实资产联调。
+7.1–7.4 完成单居民 Runtime 基础闭环。Stage 7.5 按 7.5.1–7.5.28 依次完成原生全双工 STS 实验链验证与收口、ASR → RuntimeCore LLM → TTS Cascaded Voice Message、Studio Next 1.0 重构与真实资产联调。
 Live-state 功能卡的最小实现仍按 `feature_livestate.md` 控制;该文件不定义 Stage 7.5 的全部范围。
 
 **Stage 7 Extended Demo = 7.6–7.12。** 行业居民、双居民、屏幕指导、隔离验证、展示版体验打磨与 Demo Lock 每段单独 Gate,不作为 MVP 前提。
@@ -212,7 +212,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 
 ## Stage 7.5 实时语音闭环 / Studio Next 1.0 / 真实资产联调
 
-目标：先使用固定居民与固定语音资产完成并收口 Aftelle 原生实时语音实验底座，再建立 ASR → RuntimeCore LLM → TTS Cascaded Speech Route；随后暂停 Aftelle，完成 Studio Next 1.0、外观构建器、音色构建器、Layer 10 与迁移；最后恢复 Aftelle，使用 Studio 真实资产完成最终联调。
+目标：先使用固定居民与固定语音资产完成并收口 Aftelle 原生实时语音实验底座，再建立 ASR → RuntimeCore LLM → TTS Cascaded Voice Message；随后暂停 Aftelle，完成 Studio Next 1.0、外观构建器、音色构建器、Layer 10 与迁移；最后恢复 Aftelle，使用 Studio 真实资产完成最终联调。
 
 7.5.1 实时语音架构边界与固定测试资产
 7.5.2 NativeSpeechProvider 协议与首个 STS Adapter
@@ -224,7 +224,7 @@ App Controller 调 RuntimeCore 同进程接口,UI 不直连 Provider。
 7.5.8 流式语音播放、缓冲与异常恢复
 7.5.9 实时字幕与 ParticleCore 状态同步
 7.5.10 STS 前置稳定化与收口（CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE）
-Stage 7.5.11｜ASR → RuntimeCore LLM → TTS Cascaded Speech Route
+Stage 7.5.11｜ASR → RuntimeCore LLM → TTS Cascaded Voice Message
 
 Realtime Resident Brain Route 仍按 `docs/realtime_resident_brain_architecture.md` 的 R0–R10 序列独立推进；R7 仅允许补齐 full-duplex 音频集成与回归，不改变 7.5.11 的 Cascaded 主线定位。
 7.5.12 延迟、Trace、自动测试与 Stage 7.5-A 预验收
@@ -268,7 +268,7 @@ Realtime Resident Brain Route 仍按 `docs/realtime_resident_brain_architecture.
 - render / capture alignment；
 - AEC 完整真机矩阵与 30 分钟稳定性。
 
-A6 已保留相应声学、取消与诊断基础，但最终产品定位不再以这些项目证明 Cascaded Speech Route 达到 continuous full-duplex；未完成的外置设备矩阵不得表述为已通过。
+A6 已保留相应声学、取消与诊断基础，但最终产品定位不再以这些项目证明 Cascaded Voice Message 达到 continuous full-duplex；未完成的外置设备矩阵不得表述为已通过。
 
 7.5.11 的首个入口为：**7.5.11-A0｜架构冻结与 7.5.10 迁移收口**。A0 完成前不得创建 ASR / TTS Adapter 或修改现有语音执行链。
 
@@ -317,7 +317,7 @@ A6 已保留相应声学、取消与诊断基础，但最终产品定位不再�
 - 输出固定为 24 kHz / mono / signed PCM16 LE，映射 response.created / audio.delta / audio.done / error 为 started / streaming PCM / done / error；正常 close 走 session.finish / session.finished。
 - cancel 立即关闭 transport；RuntimeCore generation 失效后 Adapter 不再上送有效音频。A4 不启动真实 TTS 请求、不接 Playback / Subtitle / Particle / History，不进入 A5 或 A6。
 
-**7.5.11-A5｜Cascaded Speech Route 全链接线**
+**7.5.11-A5｜Cascaded Voice Message 全链接线**
 
 - 默认前台语音入口进入 provider-neutral Speech Route；Qwen Omni / `NativeSpeechProvider` 继续保留为实验 / 参考，不再作为默认选路。
 - Audio Host 将 AEC3 后 PCM 交给 ASR；ASR partial / final 投影用户字幕，只有锁定 final 经 RuntimeCore 正式 turn 取得 canonical resident response。
@@ -326,11 +326,11 @@ A6 已保留相应声学、取消与诊断基础，但最终产品定位不再�
 - cancel、stale、播放失败或未完成 generation 清除待提交轮次，不写正式 resident exchange；RuntimeCore 继续唯一拥有 Runtime / Session / Memory / generation / cancel decision。
 - A5 不修改 DR / Store schema、Runtime API、平台 target 或 AEC3 48 kHz / 10 ms 处理域；near-end / source-gate / double-talk / USB / Bluetooth 与声学调参仍属于 A6。
 
-**7.5.11-A6～A8｜Cascaded Speech Route 收口与冻结**
+**7.5.11-A6～A8｜Cascaded Voice Message 收口与冻结**
 
 - A6 的 AEC、near-end、source-gate、double-talk、cancel / stale 与诊断实现继续保留，不删除、不回退；A7 自动化总回归继续作为正式架构与实现回归门禁。
 - A8 最终产品验收按语音消息模式执行：用户每次主动启动并完成一段语音，ASR final 经 RuntimeCore 取得 canonical response，再由 TTS 返回一段居民语音；一条消息完成后结束本次前台语音交互，下一条消息由用户再次主动启动。
-- Cascaded Speech Route 同时承担 Realtime Speech 不可用或不适合时的可靠 fallback，以及低成本 / 高兼容语音链。
+- Cascaded Voice Message 是独立的低成本 / 高兼容语音交互系统；两条 Route 生命周期独立，不自动互相切换。
 - A0～A8 不再承担 GPT-Live 类 continuous full-duplex、持续听说、自然 turn-taking 或播放中实时语义插话目标；Cascaded 模式不以居民播放期间插话作为产品验收项。
 - 不继续通过修改 cascaded lifecycle、VAD、AEC、source gate 或插话阈值强行逼近上述体验。GPT-Live 类能力由独立 Realtime Resident Brain Route 承接；该路线使用 R 序列，不改变现有 Stage 编号，也不得跳过依赖顺序。
 - 最终冻结链路保持为 Capture → WebRTC AEC3 → ASR → RuntimeCore → 现有唯一 LLM → TTS → Playback / Subtitle / Particle / Dialogue History。RuntimeCore ownership、provider-neutral ASR / LLM / TTS、Studio VoiceProfile / Provider Binding 与 DR / Store schema 边界不变。
@@ -364,12 +364,12 @@ R8.3.1 True Near-end Opening Detection — PASS / FROZEN
 R8.3.2 Confirmed Interrupt / Cancel / Playback Clear — PASS / FROZEN
 R8.3.3 User Barge-in Latency & Stale Audio Closure — PASS / FROZEN
 R8.4.1 Double-talk Acoustic Determination — PASS / FROZEN
-R8.4.2 Pause vs Utterance Complete — PASS / FROZEN
+R8.4.2 Pause vs Utterance Complete — AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.4.3 Semantic Fusion
 R8.4.4 Backchannel
 R8.5 Interruption Final Verification
-R9 Cascaded Fallback + Regression
-R10 Real-device / Long-session Freeze
+R9 Independent Speech Route Boundary Regression
+R10 Realtime Full-Duplex Speech Final Freeze
 ```
 
 R2 已冻结：`RealtimeResidentBrainProvider` 使用 R1 resident / Runtime Session / Brain lease / route epoch / generation identity，经既有 RuntimeCore → ExecutionEngine → ProviderRouter 接缝承载 provider-neutral command、event、canonical semantic final、context revision、Tool candidate / result、interruption proposal 与 PCM frame。
@@ -382,7 +382,7 @@ R4 已冻结：RuntimeCore Compiler 生成 provider-eligible、有界且确定�
 
 R5 已冻结：既有 NativeSpeech Tool registry / validation / permission / executor / audit 被泛化为唯一 `RuntimeTool*` 内核，Realtime `ToolCallCandidate` 只能经 RuntimeCore identity / schema / permission gate 后执行，并以原 call / turn / response / lease / epoch / generation identity 经既有 submit result seam 回传。Provider 只接收 Tool 定义广告快照与 result transport，Qwen 私有 wire 在 generation reconnect 重放同一快照，不拥有权限或执行能力。取消、打断、终止与 Session replacement 会失效 pending permission / execution / result delivery；同一 Runtime Session 内 duplicate / stale / late result fail-closed，不宣称 crash-durable exactly-once或外部副作用回滚。当前没有 Text LLM Tool-calling 实现，R5 未复制第二套 Text / Speech / Realtime Tool 系统。R5 独立测试 7 cases / 120 checks，R2 8 cases / 263 checks，Qwen R3/R5 16 cases / 149 checks，NativeSpeech integration 545 checks，A7 19 suites / 22 entrypoints / 4175 assertions；真实 Qwen Tool wire 仍为 Human Gate。未进入 R6～R10，下一轮只允许进入 R6。
 
-R6 已冻结：建立 provider-neutral `RuntimeVoiceBinding` 基础层，当前只启用 `providerDefault`。binding 与 resident、Runtime Session、当前 Provider 及既有 ActiveBrainLease / route epoch / generation identity 关联；具体 Qwen voice identifier 只由 Adapter / Provider configuration / Runtime binding private state 解析，不进入 provider-neutral contract、DR、Memory、Dialogue History 或居民永久身份。Voice Binding 只决定使用哪个声音，不改写 `residentSemanticFinal` / `CanonicalResidentTurn`，不拥有 Runtime、Session、Memory、Tool 或 Permission，也不创建第二 Brain、Runtime 或 resident response。未来 Studio VoiceProfile 只替换 binding source，不要求重构 Realtime Brain 或 RuntimeCore 主链。R6 独立测试 6 cases / 62 checks，Qwen R3/R5/R6 16 cases / 150 checks，A7 20 suites / 23 entrypoints / 4238 assertions，macOS clean build、architecture guard、secret guard 与仓库无污染检查 PASS；真实 Qwen WebSocket 仍为 Human Gate。R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、正式 Capture / Playback 全双工链、自然 interruption / turn-taking、Cascaded 自动 fallback 或真机长会话；下一轮只允许进入 R7。
+R6 已冻结：建立 provider-neutral `RuntimeVoiceBinding` 基础层，当前只启用 `providerDefault`。binding 与 resident、Runtime Session、当前 Provider 及既有 ActiveBrainLease / route epoch / generation identity 关联；具体 Qwen voice identifier 只由 Adapter / Provider configuration / Runtime binding private state 解析，不进入 provider-neutral contract、DR、Memory、Dialogue History 或居民永久身份。Voice Binding 只决定使用哪个声音，不改写 `residentSemanticFinal` / `CanonicalResidentTurn`，不拥有 Runtime、Session、Memory、Tool 或 Permission，也不创建第二 Brain、Runtime 或 resident response。未来 Studio VoiceProfile 只替换 binding source，不要求重构 Realtime Brain 或 RuntimeCore 主链。R6 独立测试 6 cases / 62 checks，Qwen R3/R5/R6 16 cases / 150 checks，A7 20 suites / 23 entrypoints / 4238 assertions，macOS clean build、architecture guard、secret guard 与仓库无污染检查 PASS；真实 Qwen WebSocket 仍为 Human Gate。R6 未实现 Studio VoiceProfile 生产、声音复刻、Provider enrollment、正式 Capture / Playback 全双工链、自然 interruption / turn-taking、两条 Speech Route 自动互切或真机长会话；下一轮只允许进入 R7。
 
 R7 已冻结：一次 Start 建立并保持一个 AEC 后 Capture pump、一个 Realtime Provider Session、一个 ActiveBrainLease 与一个 Runtime event receive loop；每轮物理 playback completion 只回到 listening，不关闭 Session 或释放 lease。User Stop 先失效 route attempt、停止 receive / capture、清 shared playback，再等待 Provider close；close 失败保留 identity 供重试。generation cancel 只在同一 lease / route epoch 下重绑输入输出 Bridge，不重开 Provider Session。AEC3 继续保持既有 48 kHz / mono / 10 ms 内部处理域；共享 Capture 在 AEC 后按既有 24 kHz / mono / PCM16 / 20 ms packet contract 交付，输入 Bridge 只增加独立连续提交序列，Qwen 所需 16 kHz 转换仍只发生在 Adapter 边界。Runtime-accepted `residentAudioDelta` 经唯一 Realtime output bridge 进入既有 `MacSpeechAudioOutputHost`，最终实际播放 PCM 继续作为唯一 AEC render reference。Capture / Provider event / playback / sink backlog 与 enqueue waiter 均有界；旧 lease / epoch / generation / response 音频及 audio-done 后 late delta 在进入共享播放前 fail-closed。独立正式 Host 测试 11 cases / 96 checks 自动贯穿 RuntimeCore → ExecutionEngine → ProviderRouter → Fake Realtime Provider，并验证同一 Session / lease 两轮、generation rebind、late PCM、Stop 自回调与 close retry；NativeSpeech duplex 359 checks、Audio Output 163 checks、AEC 990 checks、Cascaded route 47 checks、A7 21 suites / 24 entrypoints / 4353 assertions、macOS clean build 与 architecture / secret guards 均 PASS。真实 Qwen WebSocket、真实麦克风 / 扬声器、USB / Bluetooth / AirPods、长时间真机 full-duplex 与当前 DEBUG Host 之外的 Release 启用仍为 Human Gate；未进入 R8 的自然 interruption / turn-taking / double-talk 策略，下一轮只允许进入 R8。
 
@@ -394,7 +394,7 @@ R8.2.2 已冻结：R8.2.1 五分类之后新增独立、provider-neutral eligibi
 
 R8.4.1 已冻结：production AEC 的既有 `.doubleTalk` 判定和声学阈值本身有效；根因是 Input Bridge 在 eligible observation 等待下一包成功 PCM send 时仍可异步投递更新的 observer-only sequence，导致 exact eligible sequence 到达 Runtime 时被判 stale。最小修复在 pending eligibility 窗口暂停 observer-only delivery，不绕过 source gate、eligibility gate、identity fence 或 RuntimeCore 单一 interruption authority。独立 1 case / 163 checks 覆盖 11 个正向比例/强度/jitter/residual/持续/转移场景，detected、source-gate open、eligibility 均为 11；6 个负向场景共 176 observations / 3896 frames，false double-talk、resident-only eligibility、confirmed、interrupt/cancel、clear、generation/lease change均为 0。未修改 acoustic threshold 或 500 ms tail。R8.2.3 与 R8.3.1–R8.3.3 全部 PASS；A7 29 suites / 32 entrypoints / 5508 assertions、macOS clean build与全部 guards PASS。下一轮只允许进入 R8.4.2 Turn Completion；真实房间与设备仍为 Human Gate。
 
-R8.4.2 已冻结：RuntimeCore 以正式 provider-neutral `userSpeechStarted` / `userSpeechStopped` 维护 `speaking → candidatePause → resumed/completionCandidate`。新 utterance 必须认领一次当前 generation 的正式 acoustic eligibility；短 pause 恢复可使用与同一 PCM 精确绑定、且仅在 Provider append 成功后提交的 Host-local user-activity sidecar，Provider audio frame 契约仍保持纯 PCM。集中 completion window 为 400 ms，即既有 200 ms source-gate hangover 的两倍；时钟使用 Runtime receive monotonic uptime，不依赖 observer-only cadence，延迟授权只使用原 stop 时刻的剩余窗口。timer 绑定 Session / lease / epoch / generation / context / logical turn / source turn / token，generation transition、Stop/restart 与 terminal event 均 fail closed。tracked transcript final 只缓存为证据，不直接 create response。独立 1 case / 251 checks：short pause 5 / false completion 0，true end 11 / candidate 11，duplicate / resident-only / stale generation / old timer completion 均为 0；response、interrupt/cancel、clear、generation advance 均为 0。R8.4.1、R8.2.3 与全量 A7 30 suites / 33 entrypoints / 5769 assertions、macOS clean build和全部 guards PASS。下一轮只允许进入 R8.4.3 Semantic Fusion；真实 Qwen speech activity、真实房间与设备仍为 Human Gate。
+R8.4.2 Human Gate rework：RuntimeCore 继续以正式 provider-neutral `userSpeechStarted` / `userSpeechStopped` 维护 `speaking → candidatePause → resumed/completionCandidate`，并独占 completion authority。52-B 首次真人尝试发现较长自然停顿会提前回答；最小修复只将独立 Runtime continuation grace 从 400 ms 调整为 800 ms，既有 200 ms source-gate hangover、Qwen 800 ms server VAD、500 ms residual tail、acoustic threshold、semantic policy 与全部 Session / lease / generation / turn fence 均不变。独立 1 case / 390 checks：short pause 5 / false completion 0，true end 11 / candidate 11，duplicate / resident-only / stale generation / old timer completion 均为 0；response、interrupt/cancel、clear、generation advance均为 0。A7 为 34 suites / 37 entrypoints / 12401 assertions，Debug / Release clean build和全部 guards PASS。当前为 `AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED`；下一步只复测 Real Qwen 1.0 / 1.3 / 1.5 秒 pause 与 true-end latency，不得把自动化冒充 Human Gate PASS。
 
 启动音效、粒子状态音效、导入音效和退出音效移至 Stage 7.11 产品体验打磨。
 
@@ -573,7 +573,7 @@ R8.4.2 已冻结：RuntimeCore 以正式 provider-neutral `userSpeechStarted` / 
 
 **区分两个标准,别都叫"Stage 7 成功":**
 
-- **Stage 7.5 成立标准**:在已有单居民 Runtime 闭环上,STS 实验链完成收口,ASR → RuntimeCore LLM → TTS Cascaded Speech Route 以语音消息 / fallback 定位冻结，流式播放与字幕、Runtime-owned Memory / Tool / Permission 路由、Studio Next 1.0 与真实资产联调按 7.5.1–7.5.28 分段验收；continuous full-duplex 与自然插话不属于该 Cascaded 链验收。
+- **Stage 7.5 成立标准**:在已有单居民 Runtime 闭环上,STS 实验链完成收口,ASR → RuntimeCore LLM → TTS Cascaded Voice Message 以独立级联语音消息定位冻结，流式播放与字幕、Runtime-owned Memory / Tool / Permission 路由、Studio Next 1.0 与真实资产联调按 7.5.1–7.5.28 分段验收；continuous full-duplex 与自然插话不属于该 Cascaded 链验收。
 
 - **Stage 7 Extended Demo 标准(7.6–7.12)**:行业居民、双居民、屏幕指导、隔离验证、展示版体验打磨、Demo Lock 与录屏展示按各段 Gate 单独评审。
 
@@ -591,6 +591,6 @@ Stage 7 只做 AR 铺垫。Stage 8 才开始:iOS / Android App、AR 相机、空
 
 ## 当前 Stage 7.5 口径
 
-Stage 7.5 已从早期录音转文字入口重排为原生全双工 STS 实验链收口 + ASR → RuntimeCore LLM → TTS Cascaded Speech Route + Studio Next 1.0 重构 + 真实资产联调。Stage 7.5.10 已以 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE` 收口，Qwen Omni 端到端 STS 不再作为正式默认主链。7.5.11 Cascaded Speech Route 最终承担语音消息、Realtime Speech 可靠 fallback 与低成本 / 高兼容语音链，不承担 GPT-Live 类 continuous full-duplex 体验。
+Stage 7.5 已从早期录音转文字入口重排为原生全双工 STS 实验链收口 + ASR → RuntimeCore LLM → TTS Cascaded Voice Message + Studio Next 1.0 重构 + 真实资产联调。Stage 7.5.10 已以 `CLOSED / SUPERSEDED AS PRIMARY SPEECH ROUTE` 收口，Qwen Omni 端到端 STS 不再作为正式默认主链。7.5.11 Cascaded Voice Message 最终承担独立级联语音消息与低成本 / 高兼容语音链，不承担 GPT-Live 类 continuous full-duplex 体验；两条 Route 生命周期独立，不自动互相切换。
 
 实时语音必须由 RuntimeCore 持有会话、Provider 路由、Memory、Tool / Permission 编排与取消语义。Stage 7.5 仍不做 always-on 麦克风、未授权后台监听、唤醒词、声纹识别、多设备并行主脑、精准 viseme 或真实口腔同步。本次口径对齐不改 Runtime API、DR schema 或 Store schema。

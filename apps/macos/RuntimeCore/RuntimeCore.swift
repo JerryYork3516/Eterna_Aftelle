@@ -1571,10 +1571,10 @@ public final class RuntimeCore {
     private static let realtimeAcousticObservationCapacity = 32
     private static let realtimeAcousticObservationFreshnessNanoseconds:
         UInt64 = 500_000_000
-    // Twice the 200 ms source-gate hangover: gate close remains an acoustic
-    // fact, while Runtime owns the additional provider-neutral turn window.
+    // The 200 ms source-gate hangover remains an acoustic fact. Runtime owns
+    // this separate provider-neutral continuation grace after a formal stop.
     private static let realtimeUtteranceCompletionWindowNanoseconds:
-        UInt64 = 400_000_000
+        UInt64 = 800_000_000
     private static let realtimeUtteranceMissingStopExpiryNanoseconds:
         UInt64 = 1_000_000_000
     private static let realtimeListeningProviderActivityMinimumFrameAdvance:

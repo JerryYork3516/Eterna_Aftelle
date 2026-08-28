@@ -579,7 +579,7 @@ elif [ "$test_mode" = "r842-listening-only" ]; then
 elif [ "$test_mode" = "r842-turn-completion-only" ]; then
   rg -qx 'realtime_turn_completion_cases=1' "$output"
   rg -qx 'realtime_turn_completion_checks=390' "$output"
-  rg -qx 'r842_completion_window_ns=400000000' "$output"
+  rg -qx 'r842_completion_window_ns=800000000' "$output"
   rg -qx 'r842_clock_source=monotonic_uptime' "$output"
   rg -qx 'r842_short_pause_cases=5' "$output"
   rg -qx 'r842_short_pause_false_completions=0' "$output"
@@ -588,8 +588,8 @@ elif [ "$test_mode" = "r842-turn-completion-only" ]; then
   max_true_end_latency="$({
     awk -F= '/^r842_max_true_end_latency_ns=/ { print $2 }' "$output"
   })"
-  [ "$max_true_end_latency" -ge 400000000 ]
-  [ "$max_true_end_latency" -le 1200000000 ]
+  [ "$max_true_end_latency" -ge 800000000 ]
+  [ "$max_true_end_latency" -le 1600000000 ]
   rg -qx 'r842_duplicate_completions=0' "$output"
   rg -qx 'r842_resident_only_false_completions=0' "$output"
   rg -qx 'r842_stale_generation_completions=0' "$output"
@@ -635,7 +635,7 @@ elif [ "$test_mode" = "r842-turn-completion-only" ]; then
     "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
   rg -q 'realtimeUtteranceCompletionWindowNanoseconds' \
     "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
-  rg -q 'UInt64 = 400_000_000' \
+  rg -q 'UInt64 = 800_000_000' \
     "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
   rg -q 'static let minimumNearEndRMS = 0.012' \
     "$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"

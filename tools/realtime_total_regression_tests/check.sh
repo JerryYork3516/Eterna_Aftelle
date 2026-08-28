@@ -8,7 +8,7 @@ shared_runner="$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests
 production_contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeResidentBrainAdapter.swift"
 timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
-expected_production_digest="cbe34a2d70934b96975adb654155ee4370453d9a489432fd807c85594b810dc7"
+expected_production_digest="5fddc9e81d7f3d4f2a03e9b504c09ac355c889dfea19744b14e05ce20e1dc063"
 expected_manifest_digest="6de2ef316f6bf03b393e14549e4cd3dd6f1b0c958ad1a75e1dcec6731ddb7780"
 trap 'rm -rf "$work_dir"' EXIT
 
@@ -218,7 +218,7 @@ rg -q 'static let minimumNearEndRMS = 0.012' \
 rg -q 'maximumSourceGateNonUserHangoverFrames = 20' \
   "$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
 rg -U -q \
-  'private static let realtimeUtteranceCompletionWindowNanoseconds:\n[[:space:]]*UInt64 = 400_000_000' \
+  'private static let realtimeUtteranceCompletionWindowNanoseconds:\n[[:space:]]*UInt64 = 800_000_000' \
   "$repo_root/apps/macos/RuntimeCore/RuntimeCore.swift"
 rg -q 'residualTailWindowNanoseconds: UInt64 = 500_000_000' \
   "$production_contract"

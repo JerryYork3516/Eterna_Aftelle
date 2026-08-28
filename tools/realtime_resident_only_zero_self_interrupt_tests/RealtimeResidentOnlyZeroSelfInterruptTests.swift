@@ -4818,7 +4818,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             kind: .userSpeechStopped,
             label: "cross-source short stop"
         )
-        try? await Task.sleep(for: .milliseconds(140))
+        try? await Task.sleep(for: .milliseconds(600))
         try await emitR842ListeningSamples(
             stack: stack,
             samples: signal(seed: 47_201, amplitude: 0.18),
@@ -5763,7 +5763,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await testR842NormalListeningAdmission(fixture: fixture)
         try await testR842ContinuousPauseAndTrueEnd(fixture: fixture)
         try await testR842SourceTurnRebound(fixture: fixture)
-        try await testR842ProviderFirstExpiredPause(fixture: fixture)
+        try await testR842ProviderFirstDelayedPause(fixture: fixture)
         try await testR842GateCloseEventFirstResume(fixture: fixture)
         try await testR842FalsePendingAndFreshTurn(fixture: fixture)
         try await testR842PreStopInFlightFrame(fixture: fixture)
@@ -5775,8 +5775,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             r842CompletionCandidates - r842TrueEndCases
         )
 
-        expect(r842CompletionWindowNanoseconds == 400_000_000,
-               "R8.4.2 freezes one centralized 400 ms Runtime window")
+        expect(r842CompletionWindowNanoseconds == 800_000_000,
+               "R8.4.2 freezes one centralized 800 ms Runtime window")
         expect(r842ShortPauseCases == 5,
                "R8.4.2 covers five short-pause patterns")
         expect(r842ShortPauseFalseCompletions == 0,
@@ -5955,7 +5955,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
                 .phase == .candidatePause
         }
-        try? await Task.sleep(for: .milliseconds(140))
+        try? await Task.sleep(for: .milliseconds(600))
         try await emitR842ListeningSamples(
             stack: stack,
             samples: signal(seed: 46_101, amplitude: 0.18),
@@ -6494,7 +6494,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let shortPauseCandidateBaseline = stack.runtime
             .realtimeUtteranceCompletionDebugSnapshot()
             .completionCandidateCount
-        try? await Task.sleep(for: .milliseconds(120))
+        try? await Task.sleep(for: .milliseconds(300))
         try await emitR842NearEndContinuation(
             stack: stack,
             seed: 45_101
@@ -6560,7 +6560,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let repeatedCandidateBaseline = stack.runtime
             .realtimeUtteranceCompletionDebugSnapshot()
             .completionCandidateCount
-        for pauseIndex in 0 ..< 3 {
+        let repeatedPauseMilliseconds = [300, 500, 600]
+        for (pauseIndex, pauseMilliseconds) in
+            repeatedPauseMilliseconds.enumerated() {
             await enqueueR842Activity(
                 stack: stack,
                 turnID: repeatedTurn,
@@ -6575,7 +6577,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                     .realtimeUtteranceCompletionDebugSnapshot().phase
                     == .candidatePause
             }
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(pauseMilliseconds))
             try await emitR842NearEndContinuation(
                 stack: stack,
                 seed: UInt32(45_201 + pauseIndex)
@@ -6787,7 +6789,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             return snapshot.phase == .candidatePause
                 && snapshot.turnID == logicalTurn
         }
-        try? await Task.sleep(for: .milliseconds(120))
+        try? await Task.sleep(for: .milliseconds(600))
         try await emitR842NearEndContinuation(
             stack: stack,
             seed: 45_401
@@ -6852,7 +6854,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await close(stack)
     }
 
-    private static func testR842ProviderFirstExpiredPause(
+    private static func testR842ProviderFirstDelayedPause(
         fixture: Data
     ) async throws {
         let stack = try await makeControllerStack(fixture: fixture)
@@ -6862,28 +6864,28 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
         let turnID = RealtimeBrainTurnID()
 
-        let expiredCaptureFrameBefore = stack.acousticEchoHost
+        let delayedCaptureFrameBefore = stack.acousticEchoHost
             .acousticObservationSnapshot().captureFrameIndex
         await stack.provider.holdAudioAppend(afterAdditionalFrames: 1)
         let acousticTask = Task {
             try await establishR842AcousticAuthorization(
                 stack: stack,
-                label: "expired Provider-first pause",
+                label: "delayed Provider-first pause",
                 seed: 45_450,
                 transition: .none
             )
         }
         await stack.provider.waitUntilAudioAppendIsHeld()
-        await waitUntil("R8.4.2 held expired gate opens") {
+        await waitUntil("R8.4.2 held delayed gate opens") {
             stack.acousticEchoHost.acousticObservationSnapshot()
                 .sourceGateOpen
         }
-        await waitUntil("R8.4.2 held expired capture settles") {
+        await waitUntil("R8.4.2 held delayed capture settles") {
             stack.acousticEchoHost.acousticObservationSnapshot()
-                .captureFrameIndex >= expiredCaptureFrameBefore + 18
+                .captureFrameIndex >= delayedCaptureFrameBefore + 18
         }
         await waitUntil(
-            "R8.4.2 held expired capture timestamp becomes current"
+            "R8.4.2 held delayed capture timestamp becomes current"
         ) {
             guard let captureTimestamp = stack.acousticEchoHost
                 .acousticObservationSnapshot()
@@ -6907,7 +6909,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack: stack,
             turnID: turnID,
             sequence: 6,
-            kind: .userTranscriptPartial("expired Provider-first partial")
+            kind: .userTranscriptPartial("delayed Provider-first partial")
         )
         await waitUntilOnMainActor(
             "R8.4.2 Provider-only activity reaches Runtime pending state"
@@ -6919,7 +6921,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         }
         try? await Task.sleep(
             for: .nanoseconds(
-                Int64(r842CompletionWindowNanoseconds + 20_000_000)
+                Int64(r842CompletionWindowNanoseconds / 2 + 20_000_000)
             )
         )
         let beforeAcoustic = stack.runtime
@@ -6932,9 +6934,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
 
         await stack.provider.releaseAudioAppend()
         try await acousticTask.value
-        let afterExpiredAcoustic = stack.runtime
+        let afterDelayedAcoustic = stack.runtime
             .realtimeUtteranceCompletionDebugSnapshot()
-        let afterExpiredEvidence = stack.runtime
+        let afterDelayedEvidence = stack.runtime
             .realtimeInterruptionEvidenceDebugSnapshot()
         await waitForR842Completion(
             runtime: stack.runtime,
@@ -6942,11 +6944,11 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             expectedSession: stack.session,
             expectedTurn: turnID,
             expectedStoppedSequence: 5,
-            label: "expired Provider-first true end "
-                + "phase=\(afterExpiredAcoustic.phase) "
-                + "pending=\(afterExpiredAcoustic.pendingStartAtNanoseconds) "
-                + "claimed=\(afterExpiredAcoustic.claimedAcousticSequence) "
-                + "acoustic=\(afterExpiredEvidence.lastAcousticTimestampNanoseconds)"
+            label: "delayed Provider-first true end "
+                + "phase=\(afterDelayedAcoustic.phase) "
+                + "pending=\(afterDelayedAcoustic.pendingStartAtNanoseconds) "
+                + "claimed=\(afterDelayedAcoustic.claimedAcousticSequence) "
+                + "acoustic=\(afterDelayedEvidence.lastAcousticTimestampNanoseconds)"
         )
         let completed = stack.runtime
             .realtimeUtteranceCompletionDebugSnapshot()
@@ -7401,7 +7403,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack.runtime.realtimeUtteranceCompletionDebugSnapshot()
                 .phase == .candidatePause
         }
-        try? await Task.sleep(for: .milliseconds(140))
+        try? await Task.sleep(for: .milliseconds(600))
         try await emitR842NearEndContinuation(
             stack: stack,
             seed: 42_001
@@ -7887,7 +7889,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             - snapshot.pauseStartedAtNanoseconds
         expect(latency >= snapshot.completionWindowNanoseconds,
                "R8.4.2 \(label) cannot complete before the window")
-        expect(latency <= 1_200_000_000,
+        expect(latency <= 1_600_000_000,
                "R8.4.2 \(label) completion latency stays bounded")
         r842MaximumTrueEndLatencyNanoseconds = max(
             r842MaximumTrueEndLatencyNanoseconds,

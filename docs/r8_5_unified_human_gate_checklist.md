@@ -2,7 +2,7 @@
 
 > 唯一执行入口：统一上机时只按本文件执行 R8.5.2–R8.5.5，不再分别翻阅各 preparation 章节。
 >
-> 当前状态：`READY / NOT_RUN`。本文件是执行清单，不是 PASS 记录。
+> 当前状态：`IN_PROGRESS / PARTIAL_RESULTS`。52-B 首次真人失败已保留，修复已通过自动化，真人复测仍未执行；本文件不是 PASS 记录。
 >
 > 范围：真实 macOS、Real Qwen Realtime、正式 Realtime Full-Duplex Speech Route、真实麦克风 / 扬声器与真实网络。禁止用模拟音频、模拟设备或网络模拟替代真人 / 真机证据。
 
@@ -112,7 +112,7 @@ Preparation audit 识别出的 Release source blocker 已由 R8.5.5-R1 修复：
 | Core / Debug Preflight result | | `PASS / FAIL`；失败不得开始依赖测试 |
 | Release Sub-preflight result | | `PASS / FAIL / NOT_EXECUTABLE`；不阻断独立 Debug Gates |
 
-执行期间始终只运行一条 Speech Route。Realtime Full-Duplex Speech 与 Cascaded Voice Message 不自动互相切换，后者不是前者的 fallback。
+执行期间始终只运行一条 Speech Route。Realtime Full-Duplex Speech 与 Cascaded Voice Message 独立运行，不自动互相切换。
 
 Release decision boundary：
 
@@ -140,11 +140,13 @@ Release decision boundary：
 
 - 150–250 ms pause 后继续讲话；
 - 300 ms pause 后继续讲话；
-- 接近但不达到冻结 400 ms completion window 的 pause 后继续讲话；
+- 1.0 秒 pause 后继续讲话；
+- 1.3 秒 pause 后继续讲话；
+- 1.5 秒 pause 后继续讲话；
 - 满足 completion window 的 true completion；
 - 10–20 秒连续讲话。
 
-短 pause 必须保持同一 utterance，false early response = 0；true completion 必须形成一次合法 completion 与 exactly-one response，missed completion = 0。
+continuation pause 必须保持同一 utterance，false early response = 0；true completion 必须形成一次合法 completion 与 exactly-one response，missed completion = 0。另记录真正结束后的主观等待与 diagnostics end-to-response latency；Runtime 自动化窗口不是 Real Qwen 总延迟硬门槛。
 
 ### 52-C — Backchannel
 
@@ -423,6 +425,7 @@ Stop → settle → Restart → Listening
 |---|---|---|---|---|---|---|---|---|
 | R8.5.2 | 52-A Normal Conversation | | 10 turns; exactly-one; Listening rebound | | | NOT_RUN | NOT_ASSESSED | |
 | R8.5.2 | 52-B Natural Pause | | short pause same utterance; true end once | | | NOT_RUN | NOT_ASSESSED | |
+| R8.5.2 | 52-B Natural Pause | 2026-08-28 wired-output-external-mic attempt | continuation pause remains same utterance | Longer natural pause triggered an early resident response | User observation + retained diagnostics | FAIL | P1 | First failure retained; repair applied; retest pending |
 | R8.5.2 | 52-C Backchannel | | passive 0 create; substantive exactly-one | | | NOT_RUN | NOT_ASSESSED | |
 | R8.5.2 | 52-D Stop / Restart | | 3 operations; no old lifecycle | | | NOT_RUN | NOT_ASSESSED | |
 | R8.5.3 | 53-A Resident-only | | 5 cycles; all dangerous counters 0 | | | NOT_RUN | NOT_ASSESSED | |
@@ -461,7 +464,7 @@ Result 只能是：
 
 节点聚合规则：
 
-- required Gate 必须有真实 `PASS`；任何 `FAIL` 都使所属节点 `BLOCKED`；其他 required Gate 的 `NOT_RUN / NOT_EXECUTABLE / NOT_AVAILABLE` 都不能形成节点 PASS。
+- required Gate 必须有真实 `PASS`；当前测试构建上的任何未修复 `FAIL` 都使所属节点 `BLOCKED / REWORK_REQUIRED`；其他 required Gate 的 `NOT_RUN / NOT_EXECUTABLE / NOT_AVAILABLE` 都不能形成节点 PASS。
 - 54-A 内 AirPods / 其他 Bluetooth / USB 的具体 subcase 在硬件确实不存在时可为 `NOT_AVAILABLE`；required 基础组合与全部实际可用组合通过后，54-A 主 Gate 可 PASS。
 - 54-X1 是唯一可因现场没有无线硬件而整体 `NOT_AVAILABLE` 且不阻断 R8.5.4 的顶层 Gate。
 - 54-G 只有在 54-F 未产生 terminal failure 时，才可整体 `NOT_EXECUTABLE / conditional prerequisite not reached` 且不阻断 R8.5.4；任何其他原因的 `NOT_EXECUTABLE` 都阻断所属节点。
@@ -473,9 +476,9 @@ Result 只能是：
 - P2：记录后继续；
 - P1：保存完整失败证据；安全 Stop / settle 后，可继续不依赖该失败状态的独立 Gate；所有依赖项记 `NOT_EXECUTABLE`；对应节点最终保持 BLOCKED；
 - P0：立即停止整个真实测试；
-- retry 必须新增 attempt 行，原失败永久保留；
+- retry 必须新增 attempt 行，原失败永久保留；修复后的新构建只有在受影响 required Gate 完整复测并全部通过后，才能形成新的当前 verdict；
 - manual Stop / Restart recovery 不能冒充 automatic rebound；
-- 后序 PASS 不得覆盖前序 FAIL，也不得覆盖另一个节点的失败。
+- 后序 PASS 不得覆盖或删除前序 FAIL，也不得覆盖另一个节点的失败；它只能作为明确 repair / retest 的新证据，与原失败共同留档。
 
 ## 10. Severity 口径
 
@@ -501,16 +504,18 @@ Human Gate 完成后分别判定：
 当前 preparation 收口状态：
 
 ```text
-R8.5.2 = PREPARED / HUMAN_GATE_WAITING
+R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5-R1 initial closeout = IMPLEMENTED / REVIEW_REQUIRED
 R8.5.5-R1 independent review = BLOCKED / REWORK_REQUIRED
 R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED
-Unified Human Gate = READY / NOT_RUN
+Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
+52-B first attempt = FAIL / P1
+52-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 55-D = NOT_RUN
-Real-device P0 / P1 / P2 = NOT_ASSESSED
+Other Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
-Next = R8.5.5-R1-R1 independent review; Unified Human Gate remains waiting
+Next = 52-B Real Qwen retest at 1.0 / 1.3 / 1.5 seconds plus true-end latency; other Unified Human Gates remain pending
 ```

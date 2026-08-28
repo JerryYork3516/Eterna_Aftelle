@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.5.2–R8.5.5 Preparation
+# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.4.2 Human Gate Rework
 
-> 状态：`R0–R8.5.1 PASS / FROZEN`；`R8.5.2–R8.5.5 = PREPARED / HUMAN_GATE_WAITING`；`R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED`；Unified Human Gate 为 `READY / NOT_RUN`，下一步只允许进行 R1-R1 independent review
+> 状态：既有自动化冻结节点回归保持 PASS；`R8.4.2 natural-pause rework = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED`；`R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED`；`R8.5.3–R8.5.5 = PREPARED / HUMAN_GATE_WAITING`；Unified Human Gate 为 `IN_PROGRESS / PARTIAL_RESULTS`
 >
 > 性质：Realtime Full-Duplex Speech Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -380,11 +380,11 @@ R8.3.1 True Near-end Opening Detection — PASS / FROZEN
 R8.3.2 Confirmed Interrupt / Cancel / Playback Clear — PASS / FROZEN
 R8.3.3 User Barge-in Latency & Stale Audio Closure — PASS / FROZEN
 R8.4.1 Double-talk Acoustic Determination — PASS / FROZEN
-R8.4.2 Pause vs Utterance Complete — PASS / FROZEN
+R8.4.2 Pause vs Utterance Complete — AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.4.3 Semantic Fusion — PASS / FROZEN
 R8.4.4 Backchannel & Natural Response — PASS / FROZEN
 R8.5.1 Automated Total Regression — PASS / FROZEN
-R8.5.2 Real Qwen Basic Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
+R8.5.2 Real Qwen Basic Human Gate — REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
 R8.5.3 Acoustic & Interruption Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.4 Device & Network Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.5 Long-session & Release Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
@@ -458,11 +458,11 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已冻结 provider-neutral temporal completion evidence，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归；R8.5.2–R8.5.5 仅完成 Human Gate preparation，真实测试统一延后。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已完成 natural-pause 自动化修复但等待真人复测，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归；R8.5.2 已进入部分真人执行并保留 52-B `FAIL / P1`，R8.5.3–R8.5.5 仍为 preparation waiting。
 
 ---
 
-## R0–R8.5.1 Freeze Result
+## R0–R8.5.1 Automated Baseline and Current Rework Status
 
 ```text
 R0 = PASS / FROZEN
@@ -481,7 +481,7 @@ R8.3.1 = PASS / FROZEN
 R8.3.2 = PASS / FROZEN
 R8.3.3 = PASS / FROZEN
 R8.4.1 = PASS / FROZEN
-R8.4.2 = PASS / FROZEN
+R8.4.2 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.4.3 = PASS / FROZEN
 R8.4.4 = PASS / FROZEN
 R8.5.1 = PASS / FROZEN
@@ -490,14 +490,14 @@ R8.5.1 = PASS / FROZEN
 当前 Human Gate preparation 状态与冻结结果分开记录：
 
 ```text
-R8.5.2 = PREPARED / HUMAN_GATE_WAITING
+R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
-Unified Human Gate = READY / NOT_RUN
-Real-device Human Gate = NOT_RUN
-P0 / P1 / P2 real-device = NOT_ASSESSED
-R8.5.2–R8.5.5 preparation-only production code modifications = 0
+Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
+52-B first real-device attempt = FAIL / P1
+52-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+Other required Real-device Human Gates = NOT_RUN
 ```
 
 R8.3.1 没有修改 AEC / classifier / source gate / eligibility 的生产阈值或 decision authority；唯一生产目录改动是 `RuntimeCore` 的 DEBUG-only interruption evidence snapshot，用于证明 acoustic evidence 已被原子接收且 semantic evidence 仍为空。
@@ -526,11 +526,11 @@ R8.4.1 verification: independent 1 case / 163 checks; all 11 positive scenarios 
 
 R8.4.1 Human Gate: real room, real microphone/speaker, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN
 
-R8.4.2 keeps pause-versus-completion ownership inside RuntimeCore. Accepted provider-neutral `userSpeechStarted` / `userSpeechStopped` activity drives one logical utterance through `speaking → candidatePause → resumed` or `completionCandidate`; a tracked transcript final is cached as evidence and cannot directly create a response. A new utterance must claim a one-shot formal acoustic eligibility sequence for the current generation. Resume during a candidate pause may use Host-local user activity bound to the exact accepted PCM frame; Runtime commits that sidecar only after Provider append succeeds and every Session/lease fence remains current, while the Provider audio-frame contract remains PCM-only. The centralized 400 ms window is twice the existing 200 ms acoustic source-gate hangover. Its origin is Runtime's monotonic receipt time for formal speech-stopped evidence; if acoustic authorization coordinates later, only the remaining part of the original window is used. Qwen's existing 800 ms server-VAD silence setting and network delivery remain separate Provider-side latency and are not represented by this local measurement. The one-shot timer is fenced by resident, Runtime Session, Brain lease, route epoch, generation, context revision, logical turn, source turn and cancellation token. Generation transition, Session close, Stop/restart and exact terminal events cancel the timer and revalidate all fences before a candidate can be emitted.
+R8.4.2 keeps pause-versus-completion ownership inside RuntimeCore. Accepted provider-neutral `userSpeechStarted` / `userSpeechStopped` activity drives one logical utterance through `speaking → candidatePause → resumed` or `completionCandidate`; a tracked transcript final is cached as evidence and cannot directly create a response. A new utterance must claim a one-shot formal acoustic eligibility sequence for the current generation. Resume during a candidate pause may use Host-local user activity bound to the exact accepted PCM frame; Runtime commits that sidecar only after Provider append succeeds and every Session/lease fence remains current, while the Provider audio-frame contract remains PCM-only. The centralized 800 ms Runtime continuation grace is independent of the unchanged 200 ms acoustic source-gate hangover. Its origin is Runtime's monotonic receipt time for formal speech-stopped evidence; if a still-fresh acoustic authorization coordinates later, only the remaining part of the original window is used. The unchanged 500 ms acoustic-observation freshness still fails closed and cannot retroactively authorize Provider-only activity after the full window. Qwen's existing 800 ms server-VAD silence setting and network delivery remain separate Provider-side latency and are not represented by this local measurement. The one-shot timer is fenced by resident, Runtime Session, Brain lease, route epoch, generation, context revision, logical turn, source turn and cancellation token. Generation transition, Session close, Stop/restart and exact terminal events cancel the timer and revalidate all fences before a candidate can be emitted.
 
-R8.4.2 verification: independent 1 case / 251 checks; five short-pause cases produced 0 false completions and resumed the same generation/logical turn, while eleven true-end cases produced exactly eleven completion candidates after the bounded 400 ms window. Duplicate completions, resident-only false completions, stale-generation completions and old-timer resurrections were all 0. The matrix includes delayed authorization, Provider-first activity, source-gate close/reopen, pre-stop in-flight PCM, false-start/false-stop replacement, repeated short pauses, double-talk and Stop/restart. Double-talk pause/resume and true stop use production AEC/source-gate/Input Bridge acoustic evidence; resident-only, residual echo and the 500 ms playback tail cannot open a user completion. The node created 0 responses, Provider interrupts/cancels, Playback clears or generation advances. R8.4.1 remained 1 case / 163 checks with 11/11 positive scenarios and 0 false double-talk; R8.2.3 remained 12 cases / 126 checks with 3840 resident-only frames and every safety metric 0. A7 was 30 suites / 33 entrypoints / 5769 assertions, with macOS clean build and all guards PASS.
+R8.4.2 verification: independent 1 case / 390 checks; five short-pause cases, including 300 / 500 / 600 ms continuation, produced 0 false completions and resumed the same generation/logical turn, while eleven true-end cases produced exactly eleven completion candidates after the bounded 800 ms window. Maximum measured true-end completion latency in final A7 was 803.640 ms. Duplicate completions, resident-only false completions, stale-generation completions and old-timer resurrections were all 0. The matrix includes delayed authorization, Provider-first activity, source-gate close/reopen, pre-stop in-flight PCM, false-start/false-stop replacement, repeated short pauses, double-talk and Stop/restart. Double-talk pause/resume and true stop use production AEC/source-gate/Input Bridge acoustic evidence; resident-only, residual echo and the 500 ms playback tail cannot open a user completion. The node created 0 responses, Provider interrupts/cancels, Playback clears or generation advances. R8.4.1 remained 1 case / 163 checks with 11/11 positive scenarios and 0 false double-talk; R8.2.3 remained 12 cases / 126 checks with 3840 resident-only frames and every safety metric 0. A7 was 34 suites / 37 entrypoints / 12401 assertions, with Debug / Release clean build and all guards PASS.
 
-R8.4.2 Human Gate: real Qwen speech-activity timing, real room, real microphone/speaker, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN
+R8.4.2 Human Gate: the first wired-output / external-microphone 52-B attempt observed an early response during a longer natural pause and remains recorded as `FAIL / P1`. The repair is automated-only; real Qwen pauses of 1.0 / 1.3 / 1.5 seconds plus true-end response latency remain `RETEST_REQUIRED`.
 
 R8.4.2 Normal Listening Admission Repair — PASS / FROZEN
 
@@ -539,6 +539,12 @@ Independent review found one P1 in the frozen temporal-completion path: a new lo
 The repaired production matrix added continuous Listening speech, short-pause/resume, Provider-first ordering, Provider-only negative cases, silence/noise/ordinary non-speech PCM, residual-tail rejection, stale generation and Stop/restart. The dedicated Listening path passed 139 checks: one continuous case and one short-pause case yielded four speaking admissions and exactly three true-end completion candidates; Provider-only admission/completion, negative PCM admission/completion, stale PCM admission/completion and old-generation completion were all 0. The full R8.4.2 suite passed 390 checks while preserving the original five short-pause cases with 0 false completions and eleven true-end cases with exactly eleven candidates. It still produced 0 response creates, Provider interrupts/cancels, Playback clears or extra generation advances. A monotonic capture-host-time generation fence also discards pre-fence queued capture callbacks and resets capture converters, packetization and AEC capture remainder so N PCM cannot be admitted into N+1.
 
 R8.4.2 repair regressions retained R8.4.1 at 163 checks with 11/11 production double-talk positives and every negative side effect 0; R8.2.3 at 126 checks with 3840 resident-only stress frames and every safety metric 0; R8.3.1/R8.3.2/R8.3.3 at 29/62/68 checks; R8.2.2 at 76 checks; R7 Host/Input/Output at 131/111/163 checks; AEC at 992 checks; Runtime contract/Qwen/Tool at 291/173/143 checks. Real Qwen, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN / HUMAN_GATE.
+
+R8.4.2 Natural Pause Human Gate Rework — AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+
+The first wired-output / external-microphone 52-B attempt showed that a longer natural pause could authorize a resident response before the user resumed. The formal chain already waited for Qwen's unchanged 800 ms server-VAD stop evidence, but Runtime then allowed only 400 ms of provider-neutral continuation grace. The minimum repair changes only that Runtime grace to 800 ms. It does not change Qwen VAD, the 200 ms source-gate hangover, the 500 ms residual playback tail, acoustic thresholds, semantic policy, response authority or any generation/lease fence. This increases true-end local completion latency by about 400 ms and does not claim that every pause longer than the new total boundary is protected.
+
+The repaired R8.4.2 / R8.4.3 / R8.4.4 suites and R8.5.1 total regression all pass. Final A7 is 34 suites / 37 entrypoints / 12401 assertions with Debug / Release clean build and repository mutation / architecture / secret guards PASS. The first Human Gate failure remains evidence; R8.5.2 cannot pass until 1.0 / 1.3 / 1.5 second continuation pauses and a true end are rerun on Real Qwen, with perceived and diagnostic end-to-response latency recorded.
 
 R8.4.3 keeps semantic turn-taking ownership in RuntimeCore. A response authorization requires one current logical utterance with production acoustic admission, an R8.4.2 temporal completion candidate and at least one accepted, tracked, non-empty final transcript belonging to the same logical/source utterance set. Final-before-completion and completion-before-final are symmetric; multiple final segments across Provider wire source turns are ordered by accepted event sequence and aggregated into one canonical input. Provider activity or transcript alone cannot authorize a response, and the Provider/Host never decides that the user turn is complete.
 
@@ -552,7 +558,7 @@ R8.4.4 keeps backchannel response-policy ownership inside RuntimeCore. Only afte
 
 Passive disposition first atomically retires the logical turn and every source alias in the provider-neutral Gate. Only after that succeeds does Runtime consume pending semantic inputs, reset completion state and emit a presentation-only callback. It creates no resident response, writes no dialogue/history/memory/relationship/growth state, advances no generation and owns no interruption/cancel/Playback-clear action. AppController only accumulates identities from Runtime's completed disposition and reflects Listening when playback/transition presentation fences allow it; matching late or duplicate finals are no-ops. Retirement failure falls through the frozen R8.4.3 substantive authorization path. Provider, Qwen Adapter and Host gain no response-policy authority.
 
-R8.4.4 verification: focused classifier 43 cases / 46 checks, with 19 passive, 24 substantive and 0 false dispositions. The independent production suite passed 13 cases / 455 checks through production AEC admission, accepted PCM, Provider activity/transcript, Runtime completion/fusion and response policy. Eleven passive utterances produced eleven passive dispositions and 0 response creates; twelve substantive utterances produced twelve dispositions and exactly twelve creates. Cross-source mixed created 1 response, cross-source passive created 0, duplicate/Provider-only/stale-N created 0 and N+1 substantive created 1. False History/Memory/Relationship/Growth writes, extra Provider interrupt, Playback clear and generation advance were all 0. Alias replay left both pending inputs empty and preserved Listening, generation and Brain lease. R8.4.3 passed 306 checks; R8.4.2 passed 390; R8.4.1 passed 163; R8.3.1/R8.3.2/R8.3.3 passed 29/62/68; R8.2.3 passed 126 with 740 resident-only observations and 3840 stress frames at every safety metric 0; R8.2.2/R8.2.1 passed 76/133; Runtime contract/Qwen/R7 Input/Tool passed 314/173/111/143. Final A7 was 32 suites / 35 entrypoints / 6752 assertions, with macOS clean build and all guards PASS. Final concentrated reviews found P0=0 / P1=0 / P2=0. The 400 ms completion window, 200 ms hangover, 0.012 minimum RMS, 500 ms residual tail, `RealtimeBrainAudioFrame`, DR and Store schemas did not change.
+R8.4.4 verification: focused classifier 43 cases / 46 checks, with 19 passive, 24 substantive and 0 false dispositions. The independent production suite passed 13 cases / 455 checks through production AEC admission, accepted PCM, Provider activity/transcript, Runtime completion/fusion and response policy. Eleven passive utterances produced eleven passive dispositions and 0 response creates; twelve substantive utterances produced twelve dispositions and exactly twelve creates. Cross-source mixed created 1 response, cross-source passive created 0, duplicate/Provider-only/stale-N created 0 and N+1 substantive created 1. False History/Memory/Relationship/Growth writes, extra Provider interrupt, Playback clear and generation advance were all 0. Alias replay left both pending inputs empty and preserved Listening, generation and Brain lease. R8.4.3 passed 306 checks; R8.4.2 passed 390; R8.4.1 passed 163; R8.3.1/R8.3.2/R8.3.3 passed 29/62/68; R8.2.3 passed 126 with 740 resident-only observations and 3840 stress frames at every safety metric 0; R8.2.2/R8.2.1 passed 76/133; Runtime contract/Qwen/R7 Input/Tool passed 314/173/111/143. Final A7 was 32 suites / 35 entrypoints / 6752 assertions, with macOS clean build and all guards PASS. Final concentrated reviews found P0=0 / P1=0 / P2=0. At that historical R8.4.4 freeze, the 400 ms completion window, 200 ms hangover, 0.012 minimum RMS, 500 ms residual tail, `RealtimeBrainAudioFrame`, DR and Store schemas did not change; the later 52-B rework is recorded separately below.
 
 R8.4.4 Human Gate: real Qwen timing/order, real microphone/speaker/room, USB/Bluetooth/AirPods, long-duration live and Release remain NOT_RUN / HUMAN_GATE.
 
@@ -614,11 +620,11 @@ R8.4.1 不手工构造 `.doubleTalk` 或 high-level observation，而是让 rend
 
 ### R8.4.2 Pause vs Utterance Complete
 
-R8.4.2 在 RuntimeCore 内复用正式 provider-neutral speech activity 事件，并以单一 logical utterance state 区分 `speaking`、`candidatePause`、`resumed` 与 `completionCandidate`。新 utterance 必须认领当前 generation 的一次性正式 acoustic eligibility；candidate pause 内的恢复可使用与同一已接受 PCM 精确绑定的 Host-local user activity，且 sidecar 只在 Provider append 成功并复核 Session / lease 后提交，Provider audio frame 契约仍保持纯 PCM。400 ms completion window 是既有 200 ms source-gate hangover 的两倍；起点使用 Runtime 收到正式 `userSpeechStopped` 时的 monotonic uptime，不依赖 observer-only observation cadence，若授权协调较晚则只使用原 stop 时刻的剩余窗口。Qwen Adapter 既有的 800 ms server-VAD silence 与网络投递属于 Provider 侧前置延迟，不计入本地 400 ms 自动化数字。Timer 同时绑定 resident、Runtime Session、Brain lease、route epoch、generation、context revision、logical turn、当前 source turn 与 cancellation token；generation / Session / Stop / terminal 变化都会取消或在到点时 fail closed。短 pause 内即使 Provider 换了 wire turn ID，新的正式 speech-start 仍恢复同一个 logical utterance。
+R8.4.2 在 RuntimeCore 内复用正式 provider-neutral speech activity 事件，并以单一 logical utterance state 区分 `speaking`、`candidatePause`、`resumed` 与 `completionCandidate`。新 utterance 必须认领当前 generation 的一次性正式 acoustic eligibility；candidate pause 内的恢复可使用与同一已接受 PCM 精确绑定的 Host-local user activity，且 sidecar 只在 Provider append 成功并复核 Session / lease 后提交，Provider audio frame 契约仍保持纯 PCM。800 ms Runtime completion window 是独立的 provider-neutral continuation grace；既有 200 ms source-gate hangover 仍只是 acoustic fact。起点使用 Runtime 收到正式 `userSpeechStopped` 时的 monotonic uptime，不依赖 observer-only observation cadence；仍在 500 ms freshness 内的延迟授权只使用原 stop 时刻的剩余窗口，超过 freshness 的旧 observation 继续 fail closed，不能在完整窗口后追认 Provider-only activity。Qwen Adapter 既有的 800 ms server-VAD silence 与网络投递属于 Provider 侧前置延迟，不计入本地 800 ms 自动化数字。Timer 同时绑定 resident、Runtime Session、Brain lease、route epoch、generation、context revision、logical turn、当前 source turn 与 cancellation token；generation / Session / Stop / terminal 变化都会取消或在到点时 fail closed。短 pause 内即使 Provider 换了 wire turn ID，新的正式 speech-start 仍恢复同一个 logical utterance。
 
 tracked transcript final 只作为 temporal evidence 缓存，不等同最终 turn-taking decision，也不会调用 `createResponse`；无 activity tracking 的 frozen legacy final-only contract 继续保持兼容。本节点没有调整 acoustic threshold、source gate、500 ms tail、interruption authority、DR 或 Store schema，也没有进入 semantic fusion 或 backchannel。
 
-独立自动化为 1 case / 251 checks：short pause 5 cases / false completion 0；true end 11 cases / completion candidate 11；duplicate、resident-only false、stale-generation 与 old-timer resurrection 均为 0。矩阵覆盖 delayed authorization、Provider-first、source-gate close/reopen、pre-stop in-flight PCM、false-start/false-stop replacement、重复短停顿、double-talk 与 Stop/restart。double-talk 两类时序从 production AEC/source gate/Input Bridge 进入；resident-only、residual echo 与 playback tail 不产生 completion。response create、Provider interrupt/cancel、Playback clear 与额外 generation advance 全为 0。真实 Qwen 与真实设备继续为 `NOT_RUN / HUMAN_GATE`。
+独立自动化为 1 case / 390 checks：short pause 5 cases / false completion 0，包含 300 / 500 / 600 ms continuation；true end 11 cases / completion candidate 11，最终 A7 最大本地 completion latency 为 803.640 ms；duplicate、resident-only false、stale-generation 与 old-timer resurrection 均为 0。矩阵覆盖 delayed authorization、Provider-first、source-gate close/reopen、pre-stop in-flight PCM、false-start/false-stop replacement、重复短停顿、double-talk 与 Stop/restart。double-talk 两类时序从 production AEC/source gate/Input Bridge 进入；resident-only、residual echo 与 playback tail 不产生 completion。response create、Provider interrupt/cancel、Playback clear 与额外 generation advance 全为 0。Real Qwen 1.0 / 1.3 / 1.5 秒自然 pause 与 true-end latency 为 `HUMAN_GATE_RETEST_REQUIRED`。
 
 ### R8.4.3 Semantic Turn-taking Fusion
 
@@ -646,9 +652,9 @@ R8.5.1 不新增产品行为，复用 A7 作为唯一 top aggregate，并以 A�
 
 ### R8.5.2 Real Qwen Basic Human Gate Preparation
 
-R8.5.2 只准备 Real Qwen Basic Human Gate 的环境、diagnostics、测试清单、证据采集与判定标准。统一真实测试使用 macOS 真机、Debug build、Real Qwen Realtime、当前正式 Realtime Full-Duplex Speech Route、稳定真实麦克风、稳定真实扬声器、普通安静房间与稳定网络。Mac mini 无内置麦克风不构成 `BLOCKED`；实际测试必须记录精确 Input Device 与 Output Device 名称。当前全部真实结果均为 `NOT_RUN / NOT_ASSESSED`。
+R8.5.2 preparation 原本只建立 Real Qwen Basic Human Gate 的环境、diagnostics、测试清单、证据采集与判定标准。统一真实测试使用 macOS 真机、Debug build、Real Qwen Realtime、当前正式 Realtime Full-Duplex Speech Route、稳定真实麦克风、稳定真实扬声器、普通安静房间与稳定网络。Mac mini 无内置麦克风不构成 `BLOCKED`；实际测试必须记录精确 Input Device 与 Output Device 名称。当前 52-B 已有首次真人失败与自动化修复，其余真实结果仍为 `NOT_RUN / NOT_ASSESSED`。
 
-准备好的 Gate 当前均未执行：
+52-B 已执行首次真人尝试并保留一条 `FAIL / P1`：较长自然 pause 导致居民提前回答。修复已完成自动化验证，其余 Gate 与 52-B 复测仍未执行：
 
 #### Gate A — Normal Conversation
 
@@ -659,11 +665,13 @@ R8.5.2 只准备 Real Qwen Basic Human Gate 的环境、diagnostics、测试清�
 
 #### Gate B — Natural Pause
 
-- 分别覆盖 150–250 ms、300 ms 与接近但不达到冻结 400 ms completion window 的自然短 pause，pause 后继续讲话仍属于同一 utterance；
+- 复测 150–250 ms 与 300 ms 短 pause；
+- 分别覆盖 1.0 / 1.3 / 1.5 秒自然 pause，pause 后继续讲话仍属于同一 utterance；
 - 单独覆盖满足 completion window 的 true completion；
 - 覆盖 10–20 秒连续讲话；
 - false early response = 0；
-- missed completion = 0。
+- missed completion = 0；
+- 单独记录真正结束后的主观等待与 diagnostics end-to-response latency。
 
 #### Gate C — Backchannel
 
@@ -692,13 +700,14 @@ Substantive：
 - duplicate response = 0；
 - generation / lease anomaly = 0。
 
-每个 Gate 保存必要的 Runtime Session / ActiveBrainLease / route epoch / generation、Provider Session / response lifecycle、Input / Output Bridge、Playback / Listening、response create、duplicate / stale rejection 与 error diagnostics。正式链仍只经 RuntimeCore → ExecutionEngine → ProviderRouter → Provider Adapter；不得记录 API Key、secret、完整 transcript 或 DR 内容。Human Gate 延后至 R8.5.2–R8.5.5 preparation 全部完成后的统一 Real-device validation；preparation 不得冒充 Human Gate PASS。
+每个 Gate 保存必要的 Runtime Session / ActiveBrainLease / route epoch / generation、Provider Session / response lifecycle、Input / Output Bridge、Playback / Listening、response create、duplicate / stale rejection 与 error diagnostics。正式链仍只经 RuntimeCore → ExecutionEngine → ProviderRouter → Provider Adapter；不得记录 API Key、secret、完整 transcript 或 DR 内容。Unified Real-device Human Gate 已开始执行；首次失败必须保留，自动化修复与 preparation 均不得冒充 Human Gate PASS。
 
 ```text
-R8.5.2 = PREPARED / HUMAN_GATE_WAITING
-Real-device results = NOT_RUN
-P0 / P1 / P2 real-device = NOT_ASSESSED
-Production code unchanged
+R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
+52-B first attempt = FAIL / P1
+52-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+Other Real-device results = NOT_RUN
+Production code change = RuntimeCore continuation grace only
 ```
 
 ### R8.5.3 Acoustic & Interruption Human Gate Preparation
@@ -910,7 +919,7 @@ R8.5.5 只准备长时间真实会话、生命周期 / 资源稳定性、Release
 
 R8.5.5-R1 将正式 production composition 与 DEBUG observability 分离：Release 只构造 `RuntimeCore → ProviderRouter → QwenRealtimeResidentBrainAdapter`，沿用 `qwen3.5-omni-plus-realtime` endpoint、`ProviderKeychainStore.qwenKeyRef` 与 Tina voice；Debug 才额外构造 Native / ASR / TTS adapters、diagnostic buffer、raw snapshots 与 Debug Panel。Capture 与 Playback 继续共享同一个 `SystemMacSpeechVoiceProcessingEngine`，保住 WebRTC AEC3 render reference；AppController 仍统一拥有 session / attempt / generation、Input / Output Bridge、interruption、Playback 与 stale fences。Release UI 仅投影 Start / Stop 与 `idle / starting / listening / processing / speaking / stopping / failed`，不直接操作 Host、Provider、Bridge 或 Runtime decision。
 
-App termination 由 AppDelegate `applicationShouldTerminate` 返回 `terminateLater`，await Controller 关闭 Route / Provider / Playback / Capture 并持久化后再 reply；主 View disappearance 调用相同的合并、幂等 shutdown。未建立第二 lifecycle owner、第二 Runtime / Brain 或 Realtime→Cascaded fallback。
+App termination 由 AppDelegate `applicationShouldTerminate` 返回 `terminateLater`，await Controller 关闭 Route / Provider / Playback / Capture 并持久化后再 reply；主 View disappearance 调用相同的合并、幂等 shutdown。未建立第二 lifecycle owner、第二 Runtime / Brain；两条 Speech Route 生命周期独立，不自动互相切换。
 
 冻结证据：Release source-structure guard PASS；Debug / Release clean build PASS；Release build conditions 为 `AFTELLE_WEBRTC_AEC3` 且不含 `DEBUG`；artifact 为 `Aftelle.app`、bundle `com.eterna.aftelle.Aftelle`、arm64 Mach-O，binary SHA-256 为 `8f56db00e30122c807e8342e65fc821e6f38aa11025dd3126f748a29dd702329`。该 `CODE_SIGNING_ALLOWED=NO` 自动化 artifact 仅为 linker ad-hoc signed 的 source / build 证据，不是 55-D 签名真机 artifact。旧 production digest 下全部 invariant PASS，唯一 mismatch 为预期 source change；新 canonical digest 为 `9764d333d6be42a3ed954c6a8cecde935ebefa84fc7943909adba97824eda0ba`。最终 A7 为 34 suites / 37 entrypoints / 12231 assertions，repository mutation、architecture / secret guards 与双配置 clean build 均为 PASS。
 
@@ -1011,18 +1020,21 @@ R8.5.5 的 P0 / P1 / P2 preparation 标准为：
 统一执行文件固定为 `docs/r8_5_unified_human_gate_checklist.md`。它按一次 Preflight 后连续执行 Phase 1–4，冻结 25 个 Gate item 与 1 个不计入 Gate 总数的 Preflight item；每个 Gate item 都必须填写 `Node / Gate / Run ID / Expected / Observed / Evidence / Result / Severity / Notes`。重复 turn、barge-in 或 switch 属于 item 内 attempts，不增加 Gate count。
 
 ```text
-R0–R8.5.1 = PASS / FROZEN
-R8.5.2 = PREPARED / HUMAN_GATE_WAITING
+Existing automated regression baseline = PASS
+R8.4.2 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
 R8.5.3 = PREPARED / HUMAN_GATE_WAITING
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5-R1 initial closeout = IMPLEMENTED / REVIEW_REQUIRED
 R8.5.5-R1 independent review = BLOCKED / REWORK_REQUIRED
 R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED
-Unified Human Gate = READY / NOT_RUN
-Real-device P0 / P1 / P2 = NOT_ASSESSED
+Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
+52-B first attempt = FAIL / P1
+52-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+Other Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
-Next = R8.5.5-R1-R1 Independent Review
+Next = 52-B Real Qwen retest at 1.0 / 1.3 / 1.5 seconds plus true-end latency
 ```
 
 ### R8.5+ Terminology
