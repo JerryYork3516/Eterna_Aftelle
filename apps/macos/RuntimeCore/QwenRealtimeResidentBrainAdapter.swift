@@ -449,6 +449,11 @@ actor QwenRealtimeResidentBrainAdapter:
         case responseCreated(UInt64)
     }
 
+    private enum ResidentTextWireSource {
+        case text
+        case audioTranscript
+    }
+
     private struct ActiveResponse {
         let wireID: String
         let runtimeID: RealtimeBrainResponseID
@@ -457,6 +462,7 @@ actor QwenRealtimeResidentBrainAdapter:
         let contextRevision: UInt64
         var text = ""
         var finalText: String?
+        var residentTextWireSource: ResidentTextWireSource?
         var didEmitTextFinal = false
         var isSpeaking = false
         var hasToolCall = false
@@ -1104,36 +1110,34 @@ actor QwenRealtimeResidentBrainAdapter:
                 contextRevision: turn.contextRevision
             )
             deliver(authorization.acknowledgement)
-        case .responseTextDelta(let responseID, let delta),
-             .responseAudioTranscriptDelta(let responseID, let delta):
-            guard lifecycle == .active,
-                  !delta.isEmpty,
-                  updateActiveResponse(responseID, { $0.text.append(delta) })
-            else { return }
-            guard let response = activeResponse else { return }
-            enqueue(
-                kind: .residentTextDelta(delta),
-                identity: makeEventIdentity(for: response)
+        case .responseTextDelta(let responseID, let delta):
+            acceptResidentText(
+                responseID: responseID,
+                source: .text,
+                text: delta,
+                isFinal: false
             )
-        case .responseTextDone(let responseID, let text),
-             .responseAudioTranscriptDone(let responseID, let text):
-            guard lifecycle == .active,
-                  !text.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                  ).isEmpty,
-                  updateActiveResponse(responseID, {
-                    $0.text = text
-                    $0.finalText = text
-                  }),
-                  var response = activeResponse else { return }
-            if !response.didEmitTextFinal {
-                response.didEmitTextFinal = true
-                activeResponse = response
-                enqueue(
-                    kind: .residentTextFinal(text),
-                    identity: makeEventIdentity(for: response)
-                )
-            }
+        case .responseAudioTranscriptDelta(let responseID, let delta):
+            acceptResidentText(
+                responseID: responseID,
+                source: .audioTranscript,
+                text: delta,
+                isFinal: false
+            )
+        case .responseTextDone(let responseID, let text):
+            acceptResidentText(
+                responseID: responseID,
+                source: .text,
+                text: text,
+                isFinal: true
+            )
+        case .responseAudioTranscriptDone(let responseID, let text):
+            acceptResidentText(
+                responseID: responseID,
+                source: .audioTranscript,
+                text: text,
+                isFinal: true
+            )
         case .responseAudioDelta(let responseID, let bytes):
             guard lifecycle == .active,
                   !bytes.isEmpty,
@@ -1575,6 +1579,52 @@ actor QwenRealtimeResidentBrainAdapter:
         update(&response)
         activeResponse = response
         return true
+    }
+
+    private func acceptResidentText(
+        responseID: String,
+        source: ResidentTextWireSource,
+        text: String,
+        isFinal: Bool
+    ) {
+        let hasVisibleText = !text.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty
+        guard var response = activeResponse,
+              lifecycle == .active,
+              !text.isEmpty,
+              (!isFinal || hasVisibleText),
+              (response.residentTextWireSource != nil || hasVisibleText),
+              response.wireID == responseID,
+              response.sessionIdentity == identity,
+              response.contextRevision == contextRevision,
+              !retiredResponseIDs.contains(responseID),
+              response.residentTextWireSource == nil
+                || response.residentTextWireSource == source else {
+            return
+        }
+        response.residentTextWireSource = source
+        if isFinal {
+            response.text = text
+            response.finalText = text
+            guard !response.didEmitTextFinal else {
+                activeResponse = response
+                return
+            }
+            response.didEmitTextFinal = true
+            activeResponse = response
+            enqueue(
+                kind: .residentTextFinal(text),
+                identity: makeEventIdentity(for: response)
+            )
+        } else {
+            response.text.append(text)
+            activeResponse = response
+            enqueue(
+                kind: .residentTextDelta(text),
+                identity: makeEventIdentity(for: response)
+            )
+        }
     }
 
     private func finishActiveResponse(_ responseID: String) {

@@ -127,6 +127,27 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
             ))
         }
     }
+
+    func appendRouteStableNoneFrame(
+        pcm16Bytes: Data,
+        generation: UInt64,
+        timestampNanoseconds: UInt64
+    ) {
+        lock.withLock {
+            guard activeGeneration == generation else { return }
+            nextSequence &+= 1
+            frames.append(MacSpeechAudioFrame(
+                captureGeneration: generation,
+                sequenceNumber: nextSequence,
+                monotonicTimestampNanoseconds: timestampNanoseconds,
+                pcm16Bytes: pcm16Bytes,
+                activity: 0.004,
+                activityEvidenceKind: .none,
+                residentPlaybackSequence: 0,
+                residentPlaybackActive: false
+            ))
+        }
+    }
 }
 
 private actor FakeRealtimeResidentBrainProvider: RealtimeResidentBrainProvider {
@@ -136,6 +157,7 @@ private actor FakeRealtimeResidentBrainProvider: RealtimeResidentBrainProvider {
         CheckedContinuation<RealtimeResidentBrainEvent, Error>?
     private var openCommands: [RealtimeBrainOpenSessionCommand] = []
     private var contextUpdates: [RealtimeBrainRuntimeContextUpdate] = []
+    private var responseCommands: [RealtimeBrainCreateResponseCommand] = []
     private var cancelCommands: [RealtimeBrainCancelGenerationCommand] = []
     private var closeCommands: [RealtimeBrainCloseSessionCommand] = []
     private var nextAudioError: RealtimeResidentBrainError?
@@ -167,7 +189,9 @@ private actor FakeRealtimeResidentBrainProvider: RealtimeResidentBrainProvider {
 
     func createResponse(
         _ command: RealtimeBrainCreateResponseCommand
-    ) async throws {}
+    ) async throws {
+        responseCommands.append(command)
+    }
 
     func cancelGeneration(
         _ command: RealtimeBrainCancelGenerationCommand
@@ -244,6 +268,8 @@ private actor FakeRealtimeResidentBrainProvider: RealtimeResidentBrainProvider {
     func openCount() -> Int { openCommands.count }
 
     func closeCount() -> Int { closeCommands.count }
+
+    func responseCreateCount() -> Int { responseCommands.count }
 
     func cancelCount() -> Int { cancelCommands.count }
 
@@ -351,6 +377,34 @@ private actor R7LocalActivityConfirmationRecorder {
     func count() -> Int { confirmationCount }
 }
 
+private nonisolated final class R7RuntimeBox: @unchecked Sendable {
+    let runtime: RuntimeCore
+
+    init(_ runtime: RuntimeCore) {
+        self.runtime = runtime
+    }
+}
+
+private nonisolated final class R7AppendResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<Void, RealtimeResidentBrainError>?
+
+    func store(_ result: Result<Void, RealtimeResidentBrainError>) {
+        lock.withLock { value = result }
+    }
+
+    func result() -> Result<Void, RealtimeResidentBrainError>? {
+        lock.withLock { value }
+    }
+
+    func waitForSignal(
+        _ semaphore: DispatchSemaphore,
+        timeout: DispatchTime
+    ) -> Bool {
+        semaphore.wait(timeout: timeout) == .success
+    }
+}
+
 private actor R7CloseSequence {
     private var results: [Result<Void, RealtimeResidentBrainError>]
     private var callCount = 0
@@ -443,8 +497,20 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testFormalRuntimeRouteRemainsActiveForTwoTurns(
             fixture: fixture
         )
+        await testFormalNoneActivityAppendDoesNotAwaitMainActor(
+            fixture: fixture
+        )
         await testListeningActivityRevalidatesAfterProviderAppend()
         await testFormalNormalListeningSpeechAdmission(fixture: fixture)
+        await testAdmittedSpeechFinalWithoutStopFailsClosed(
+            fixture: fixture
+        )
+        await testFormalProviderSpeechRequiresBoundedLocalPCM(
+            fixture: fixture
+        )
+        await testProviderSpeechIntervalFailsClosedForPlaybackAndTail(
+            fixture: fixture
+        )
         await testGenerationTransitionRebindsHost(
             fixture: fixture
         )
@@ -1520,6 +1586,93 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         _ = await bridge.stop()
     }
 
+    private static func testFormalNoneActivityAppendDoesNotAwaitMainActor(
+        fixture: Data
+    ) async {
+        cases += 1
+        let provider = FakeRealtimeResidentBrainProvider()
+        let router = ProviderRouter(
+            credentialReader: R7CredentialReader(),
+            realtimeResidentBrainProvider: provider
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixture).isLoaded,
+               "none-activity fast-path resident loads")
+        guard case .success(let session) =
+                await runtime.startRealtimeResidentBrainSession() else {
+            fatalError("FAILED: none-activity fast-path session did not start")
+        }
+        let frame = RealtimeBrainAudioFrame(
+            identity: session,
+            sequence: 1,
+            timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            format: RealtimeBrainAudioFormat(
+                encoding: .pcm16LittleEndian,
+                sampleRate: 24_000,
+                channelCount: 1
+            ),
+            provenance: .acousticEchoProcessed,
+            bytes: Data(repeating: 0, count: 960)
+        )
+        let runtimeBox = R7RuntimeBox(runtime)
+        let resultBox = R7AppendResultBox()
+        let mainActorOccupied = DispatchSemaphore(value: 0)
+        let releaseMainActor = DispatchSemaphore(value: 0)
+        let completed = DispatchSemaphore(value: 0)
+        let outcome = await Task.detached {
+            let mainActorBlocker = Task { @MainActor in
+                mainActorOccupied.signal()
+                _ = resultBox.waitForSignal(
+                    releaseMainActor,
+                    timeout: .now() + 2
+                )
+            }
+            let occupied = resultBox.waitForSignal(
+                mainActorOccupied,
+                timeout: .now() + 1
+            )
+            let appendTask = Task.detached {
+                let result = await runtimeBox.runtime
+                    .appendRealtimeResidentBrainAudio(
+                        frame,
+                        activity: .none
+                    )
+                resultBox.store(result)
+                completed.signal()
+            }
+            let finished = resultBox.waitForSignal(
+                completed,
+                timeout: .now() + 1
+            )
+            releaseMainActor.signal()
+            await mainActorBlocker.value
+            await appendTask.value
+            return (occupied, finished)
+        }.value
+        expect(outcome.0, "none-activity test occupies MainActor")
+        expect(outcome.1,
+               "none-activity PCM append does not wait on MainActor")
+        if case .success? = resultBox.result() {
+            expect(true, "none-activity fast-path append succeeds")
+        } else {
+            expect(false, "none-activity fast-path append succeeds")
+        }
+        expect(await provider.audioCount() == 1,
+               "none-activity fast-path reaches Provider exactly once")
+        let completion = runtime.realtimeUtteranceCompletionDebugSnapshot()
+        expect(completion.phase == .idle
+                && completion.pendingStartTurnID == nil
+                && completion.completionCandidateCount == 0,
+               "none-activity fast-path does not mutate turn completion")
+        _ = await runtime.closeRealtimeResidentBrainSession(
+            identity: session
+        )
+    }
+
     private static func listeningSnapshot(
         generation: UInt64,
         timestampNanoseconds: UInt64
@@ -1701,6 +1854,563 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         _ = await output.stop()
         await waitUntil(label: "normal Listening session close") {
             await provider.closeCount() == 1
+        }
+    }
+
+    private static func testAdmittedSpeechFinalWithoutStopFailsClosed(
+        fixture: Data
+    ) async {
+        cases += 1
+        let provider = FakeRealtimeResidentBrainProvider()
+        let router = ProviderRouter(
+            credentialReader: R7CredentialReader(),
+            realtimeResidentBrainProvider: provider
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixture).isLoaded,
+               "missing-stop admitted resident loads")
+        guard case .success(let session) =
+                await runtime.startRealtimeResidentBrainSession() else {
+            fatalError("FAILED: missing-stop admitted session did not start")
+        }
+        let timestamp = DispatchTime.now().uptimeNanoseconds
+        let frame = RealtimeBrainAudioFrame(
+            identity: session,
+            sequence: 1,
+            timestampNanoseconds: timestamp,
+            format: RealtimeBrainAudioFormat(
+                encoding: .pcm16LittleEndian,
+                sampleRate: 24_000,
+                channelCount: 1
+            ),
+            provenance: .acousticEchoProcessed,
+            bytes: Data(repeating: 1, count: 960)
+        )
+        let listening = RealtimeBrainLocalAudioActivity(
+            kind: .listeningNearEnd,
+            residentPlaybackSequence: 0,
+            residentPlaybackActive: false,
+            lastAudibleResidentRenderTimestampNanoseconds: nil,
+            sourceGateEpoch: 0,
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+        let appendResult = await runtime.appendRealtimeResidentBrainAudio(
+                frame,
+                activity: listening
+            )
+        if case .success = appendResult {
+            expect(true, "missing-stop admitted PCM append")
+        } else {
+            expect(false, "missing-stop admitted PCM append")
+        }
+        let confirmation = await runtime
+            .confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
+                frame: frame,
+                activity: listening
+            )
+        if case .success = confirmation {
+            expect(true, "missing-stop listening confirmation")
+        } else {
+            expect(false, "missing-stop listening confirmation")
+        }
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: session,
+                turnID: nil,
+                responseID: nil,
+                contextRevision: 1
+            ),
+            sequence: 1,
+            kind: .sessionReady
+        ))
+        _ = try? await runtime.receiveRealtimeResidentBrainEvent(
+            session: session
+        )
+        let turnID = RealtimeBrainTurnID()
+        let identity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: turnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: identity,
+            sequence: 2,
+            kind: .userSpeechStarted
+        ))
+        _ = try? await runtime.receiveRealtimeResidentBrainEvent(
+            session: session
+        )
+        expect(runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .speaking,
+               "missing-stop fixture reaches speaking")
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: identity,
+            sequence: 3,
+            kind: .userTranscriptFinal("缺少 speech stopped")
+        ))
+        let finalDisposition = try? await runtime
+            .receiveRealtimeResidentBrainEvent(session: session)
+        if case .some(.accepted) = finalDisposition {
+            expect(true,
+                   "admitted final allows bounded final-before-stop ordering")
+        } else {
+            expect(false,
+                   "admitted final allows bounded final-before-stop ordering")
+        }
+        try? await Task.sleep(for: .milliseconds(1_120))
+        let completion = runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(completion.phase == .idle
+                && completion.pendingStartTurnID == nil,
+               "admitted final without stop expires without a completion")
+        expect(await provider.responseCreateCount() == 0,
+               "admitted final without stop cannot create response")
+        _ = await runtime.closeRealtimeResidentBrainSession(
+            identity: session
+        )
+    }
+
+    private static func testFormalProviderSpeechRequiresBoundedLocalPCM(
+        fixture: Data
+    ) async {
+        cases += 1
+        let provider = FakeRealtimeResidentBrainProvider()
+        let router = ProviderRouter(
+            credentialReader: R7CredentialReader(),
+            realtimeResidentBrainProvider: provider
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixture).isLoaded,
+               "provider speech admission resident loads")
+        guard case .success(let session) =
+                await runtime.startRealtimeResidentBrainSession() else {
+            fatalError("FAILED: provider speech admission session did not start")
+        }
+        let captureGeneration: UInt64 = 775
+        let source = FakeMacSpeechAudioFrameSource()
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(listeningSnapshot(
+            generation: captureGeneration,
+            timestampNanoseconds: DispatchTime.now().uptimeNanoseconds
+        ))
+        let binding = MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        )
+        let input = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrameWithActivity: { frame, activity in
+                await runtime.appendRealtimeResidentBrainAudio(
+                    frame,
+                    activity: activity.localActivity
+                )
+            },
+            confirmAcceptedLocalActivity: { frame, activity in
+                await runtime
+                    .confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
+                        frame: frame,
+                        activity: activity.localActivity
+                    )
+            },
+            stopInput: { binding in
+                await runtime.closeRealtimeResidentBrainSession(
+                    identity: binding.session
+                )
+            }
+        )
+        let output = MacSpeechRealtimeBrainOutputBridge(
+            receiveEvent: { session in
+                do {
+                    return .success(
+                        try await runtime.receiveRealtimeResidentBrainEvent(
+                            session: session
+                        )
+                    )
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.transportFailure)
+                }
+            },
+            consumeEvent: { _ in }
+        )
+        _ = await input.start(binding: binding)
+        _ = await output.start(session: session)
+
+        let pcm = Data(repeating: 1, count: 960)
+        let captureBase = DispatchTime.now().uptimeNanoseconds
+            - 100_000_000
+        source.appendRouteStableNoneFrame(
+            pcm16Bytes: pcm,
+            generation: captureGeneration,
+            timestampNanoseconds: captureBase
+        )
+        await waitUntil(label: "provider speech baseline PCM") {
+            await provider.audioCount() == 1
+        }
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: session,
+                turnID: nil,
+                responseID: nil,
+                contextRevision: 1
+            ),
+            sequence: 1,
+            kind: .sessionReady
+        ))
+        let firstTurnID = RealtimeBrainTurnID()
+        let firstIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: firstTurnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: firstIdentity,
+            sequence: 2,
+            kind: .userSpeechStarted
+        ))
+        await waitUntil(label: "provider speech waits for local PCM") {
+            await MainActor.run {
+                let snapshot = runtime
+                    .realtimeUtteranceCompletionDebugSnapshot()
+                return snapshot.phase == .idle
+                    && snapshot.pendingStartTurnID == firstTurnID
+            }
+        }
+        for frameOffset in UInt64(1) ... 3 {
+            source.appendRouteStableNoneFrame(
+                pcm16Bytes: pcm,
+                generation: captureGeneration,
+                timestampNanoseconds:
+                    captureBase + frameOffset * 20_000_000
+            )
+        }
+        await waitUntil(label: "provider speech bounded local PCM") {
+            await provider.audioCount() == 4
+        }
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: firstIdentity,
+            sequence: 3,
+            kind: .userSpeechStopped
+        ))
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: firstIdentity,
+            sequence: 4,
+            kind: .userTranscriptFinal("真实有线麦克风第一段")
+        ))
+        expect(await provider.responseCreateCount() == 0,
+               "provider speech final does not bypass the completion window")
+        await waitUntil(label: "provider speech first pause candidate") {
+            await MainActor.run {
+                runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                    == .candidatePause
+            }
+        }
+
+        let secondTurnID = RealtimeBrainTurnID()
+        let secondIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: secondTurnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: secondIdentity,
+            sequence: 5,
+            kind: .userSpeechStarted
+        ))
+        for frameOffset in UInt64(4) ... 6 {
+            source.appendRouteStableNoneFrame(
+                pcm16Bytes: pcm,
+                generation: captureGeneration,
+                timestampNanoseconds:
+                    captureBase + frameOffset * 20_000_000
+            )
+        }
+        await waitUntil(label: "provider speech resumed local PCM") {
+            await provider.audioCount() == 7
+        }
+        try? await Task.sleep(for: .milliseconds(450))
+        expect(await provider.responseCreateCount() == 0,
+               "Provider-backed short pause does not respond early")
+        expect(runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .speaking,
+               "Provider-backed short pause resumes the same utterance")
+
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: secondIdentity,
+            sequence: 6,
+            kind: .userSpeechStopped
+        ))
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: secondIdentity,
+            sequence: 7,
+            kind: .userTranscriptFinal("真实有线麦克风第二段")
+        ))
+        await waitUntil(label: "provider speech second pause candidate") {
+            await MainActor.run {
+                runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                    == .candidatePause
+            }
+        }
+        for frameOffset in UInt64(7) ... 12 {
+            source.appendRouteStableNoneFrame(
+                pcm16Bytes: pcm,
+                generation: captureGeneration,
+                timestampNanoseconds:
+                    captureBase + frameOffset * 20_000_000
+            )
+        }
+        await waitUntil(label: "provider speech near-window pause PCM") {
+            await provider.audioCount() == 13
+        }
+        try? await Task.sleep(for: .milliseconds(320))
+
+        let thirdTurnID = RealtimeBrainTurnID()
+        let thirdIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: thirdTurnID,
+            responseID: nil,
+            contextRevision: 1
+        )
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: thirdIdentity,
+            sequence: 8,
+            kind: .userSpeechStarted
+        ))
+        await waitUntil(label: "provider speech near-window resume") {
+            await MainActor.run {
+                runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                    == .speaking
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(120))
+        expect(await provider.responseCreateCount() == 0,
+               "near-window Provider resume cancels the old completion")
+        for frameOffset in UInt64(13) ... 15 {
+            source.appendRouteStableNoneFrame(
+                pcm16Bytes: pcm,
+                generation: captureGeneration,
+                timestampNanoseconds:
+                    captureBase + frameOffset * 20_000_000
+            )
+        }
+        await waitUntil(label: "provider speech third segment PCM") {
+            await provider.audioCount() == 16
+        }
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: thirdIdentity,
+            sequence: 9,
+            kind: .userSpeechStopped
+        ))
+        await provider.enqueue(RealtimeResidentBrainEvent(
+            identity: thirdIdentity,
+            sequence: 10,
+            kind: .userTranscriptFinal("真实有线麦克风第三段")
+        ))
+        await waitUntil(
+            label: "provider speech exactly-one response",
+            attempts: 150
+        ) {
+            await provider.responseCreateCount() == 1
+        }
+        expect(await provider.responseCreateCount() == 1,
+               "Provider VAD plus advancing local PCM authorizes one response")
+        expect(runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .idle,
+               "completed provider speech turn returns Runtime to idle")
+
+        _ = await input.stop()
+        _ = await output.stop()
+        await waitUntil(label: "provider speech admission session close") {
+            await provider.closeCount() == 1
+        }
+    }
+
+    private static func testProviderSpeechIntervalFailsClosedForPlaybackAndTail(
+        fixture: Data
+    ) async {
+        let negativeCases: [(
+            label: String,
+            startPlaybackActive: Bool,
+            startTailAgeNanoseconds: UInt64?,
+            startPlaybackSequence: UInt64,
+            endPlaybackActive: Bool,
+            endTailAgeNanoseconds: UInt64?,
+            endPlaybackSequence: UInt64,
+            emitsSpeechStopped: Bool
+        )] = [
+            ("resident playback", true, nil, 1, true, nil, 1, true),
+            ("500 ms residual tail", false, 100_000_000, 1,
+             false, 100_000_000, 1, true),
+            ("playback start then post-tail stop", true, nil, 1,
+             false, 600_000_000, 2, true),
+            ("missing Provider speech stop", false, nil, 0,
+             false, nil, 0, false)
+        ]
+        for fixtureCase in negativeCases {
+            let label = fixtureCase.label
+            cases += 1
+            let provider = FakeRealtimeResidentBrainProvider()
+            let router = ProviderRouter(
+                credentialReader: R7CredentialReader(),
+                realtimeResidentBrainProvider: provider
+            )
+            let runtime = RuntimeCore(
+                executionEngine: ExecutionEngine(providerRouter: router),
+                providerRouter: router,
+                sessionStore: SessionStore()
+            )
+            expect(runtime.loadDR(from: fixture).isLoaded,
+                   "\(label) negative resident loads")
+            guard case .success(let session) =
+                    await runtime.startRealtimeResidentBrainSession() else {
+                fatalError("FAILED: \(label) negative session did not start")
+            }
+            await provider.enqueue(RealtimeResidentBrainEvent(
+                identity: RealtimeBrainEventIdentity(
+                    session: session,
+                    turnID: nil,
+                    responseID: nil,
+                    contextRevision: 1
+                ),
+                sequence: 1,
+                kind: .sessionReady
+            ))
+            _ = try? await runtime.receiveRealtimeResidentBrainEvent(
+                session: session
+            )
+
+            let captureBase = DispatchTime.now().uptimeNanoseconds
+                - 200_000_000
+            func appendFrame(
+                sequence: UInt64,
+                timestamp: UInt64,
+                playbackActive: Bool,
+                tailAgeNanoseconds: UInt64?,
+                playbackSequence: UInt64
+            ) async {
+                let lastAudible = tailAgeNanoseconds.map {
+                    timestamp - $0
+                }
+                let result = await runtime.appendRealtimeResidentBrainAudio(
+                    RealtimeBrainAudioFrame(
+                        identity: session,
+                        sequence: sequence,
+                        timestampNanoseconds: timestamp,
+                        format: RealtimeBrainAudioFormat(
+                            encoding: .pcm16LittleEndian,
+                            sampleRate: 24_000,
+                            channelCount: 1
+                        ),
+                        provenance: .acousticEchoProcessed,
+                        bytes: Data(repeating: 1, count: 960)
+                    ),
+                    activity: RealtimeBrainLocalAudioActivity(
+                        kind: .none,
+                        residentPlaybackSequence: playbackSequence,
+                        residentPlaybackActive: playbackActive,
+                        lastAudibleResidentRenderTimestampNanoseconds:
+                            lastAudible,
+                        sourceGateEpoch: 0,
+                        routeStable: true,
+                        inputDeviceAvailable: true,
+                        outputDeviceAvailable: true
+                    )
+                )
+                if case .success = result {
+                    expect(true, "\(label) local PCM reaches Runtime")
+                } else {
+                    expect(false, "\(label) local PCM reaches Runtime")
+                }
+            }
+
+            await appendFrame(
+                sequence: 1,
+                timestamp: captureBase,
+                playbackActive: fixtureCase.startPlaybackActive,
+                tailAgeNanoseconds:
+                    fixtureCase.startTailAgeNanoseconds,
+                playbackSequence: fixtureCase.startPlaybackSequence
+            )
+            let turnID = RealtimeBrainTurnID()
+            let identity = RealtimeBrainEventIdentity(
+                session: session,
+                turnID: turnID,
+                responseID: nil,
+                contextRevision: 1
+            )
+            await provider.enqueue(RealtimeResidentBrainEvent(
+                identity: identity,
+                sequence: 2,
+                kind: .userSpeechStarted
+            ))
+            _ = try? await runtime.receiveRealtimeResidentBrainEvent(
+                session: session
+            )
+            for sequence in 2 ... 4 {
+                await appendFrame(
+                    sequence: UInt64(sequence),
+                    timestamp: captureBase
+                        + UInt64(sequence - 1) * 20_000_000,
+                    playbackActive: fixtureCase.endPlaybackActive,
+                    tailAgeNanoseconds:
+                        fixtureCase.endTailAgeNanoseconds,
+                    playbackSequence: fixtureCase.endPlaybackSequence
+                )
+            }
+            if fixtureCase.emitsSpeechStopped {
+                await provider.enqueue(RealtimeResidentBrainEvent(
+                    identity: identity,
+                    sequence: 3,
+                    kind: .userSpeechStopped
+                ))
+                _ = try? await runtime.receiveRealtimeResidentBrainEvent(
+                    session: session
+                )
+            }
+            await provider.enqueue(RealtimeResidentBrainEvent(
+                identity: identity,
+                sequence: fixtureCase.emitsSpeechStopped ? 4 : 3,
+                kind: .userTranscriptFinal("negative \(label)")
+            ))
+            let finalDisposition = try? await runtime
+                .receiveRealtimeResidentBrainEvent(session: session)
+            if fixtureCase.emitsSpeechStopped {
+                expect(finalDisposition == .rejectedStale,
+                       "\(label) final fails closed without admission")
+            } else {
+                if case .some(.accepted) = finalDisposition {
+                    expect(true,
+                           "\(label) permits only the bounded missing-stop window")
+                } else {
+                    expect(false,
+                           "\(label) permits only the bounded missing-stop window")
+                }
+                try? await Task.sleep(for: .milliseconds(1_120))
+            }
+            expect(await provider.responseCreateCount() == 0,
+                   "\(label) cannot authorize response.create")
+            let completion = runtime
+                .realtimeUtteranceCompletionDebugSnapshot()
+            expect(completion.phase == .idle
+                    && completion.pendingStartTurnID == nil,
+                   "\(label) cannot leave Runtime stuck Thinking")
+            _ = await runtime.closeRealtimeResidentBrainSession(
+                identity: session
+            )
         }
     }
 

@@ -857,6 +857,7 @@ struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
     let elapsedMilliseconds: UInt64
     let source: RealtimeSpeechDiagnosticSource
     let category: String
+    let routeKind: String?
     let interactionShortID: String?
     let turnNumber: UInt64?
     let turnGeneration: UInt64?
@@ -912,6 +913,7 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
     mutating func append(
         source: RealtimeSpeechDiagnosticSource,
         category: String,
+        routeKind: String? = nil,
         interactionShortID: String? = nil,
         turnNumber: UInt64? = nil,
         turnGeneration: UInt64? = nil,
@@ -949,6 +951,7 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
                 (nowNanoseconds &- startedAtNanoseconds) / 1_000_000,
             source: source,
             category: category,
+            routeKind: routeKind,
             interactionShortID: interactionShortID,
             turnNumber: turnNumber,
             turnGeneration: turnGeneration,
@@ -1151,19 +1154,110 @@ struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var driftTrend = "stable"
 }
 
-struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
-    let schemaVersion: Int
-    let exportedAt: Date
-    let appVersion: String
-    let appBuild: String
+struct RealtimeSpeechFormalRouteDiagnosticExport: Encodable, Sendable {
+    let state: String
+    let generation: UInt64?
+    let lastTerminalError: String?
+    let recoverableResponseErrorCount: UInt64
+    let lastRecoverableResponseError: String?
+}
+
+struct RealtimeSpeechCaptureDiagnosticExport: Encodable, Sendable {
+    let authorization: String
+    let state: String
+    let isCapturing: Bool
+    let inputDeviceID: String
+    let inputDeviceName: String
+    let outputDeviceID: String
+    let outputDeviceName: String
+    let actualSampleRate: Double
+    let actualChannelCount: UInt32
+    let normalizedOutputFormat: String
+    let generatedFrameCount: UInt64
+    let droppedFrameCount: UInt64
+    let rejectedStaleFrameCount: UInt64
+    let queuedFrameCount: Int
+    let lastError: String?
+    let acousticEcho: RealtimeSpeechAcousticEchoDiagnosticExport
+}
+
+struct RealtimeBrainInputDiagnosticExport: Encodable, Sendable {
+    let state: String
+    let sessionShortID: String?
+    let forwardedFrameCount: UInt64
+    let runtimeRejectedFrameCount: UInt64
+    let sendOperationCount: UInt64
+    let noneActivityFrameCount: UInt64
+    let listeningNearEndFrameCount: UInt64
+    let sourceGatedNearEndFrameCount: UInt64
+    let listeningConfirmationAttemptCount: UInt64
+    let listeningConfirmationAcceptedCount: UInt64
+    let listeningConfirmationRejectedCount: UInt64
+    let listeningFreshnessRejectedCount: UInt64
+    let averageSendDurationMilliseconds: UInt64
+    let maximumSendDurationMilliseconds: UInt64
+    let acousticObservationCount: UInt64
+    let rejectedAcousticObservationCount: UInt64
+    let droppedAcousticObservationCount: UInt64
+    let acousticEvidenceCount: UInt64
+    let lastAcousticEligibilityDisposition: String?
+    let lastAcousticEvidenceForwardDisposition: String?
+    let lastError: String?
+    let hasActivePump: Bool
+}
+
+struct RealtimeBrainOutputDiagnosticExport: Encodable, Sendable {
+    let state: String
+    let sessionShortID: String?
+    let acceptedEventCount: UInt64
+    let rejectedEventCount: UInt64
+    let audioChunkCount: UInt64
+    let audioByteCount: UInt64
+    let completedResponseCount: UInt64
+    let lastError: String?
+    let hasActiveReceiveLoop: Bool
+}
+
+struct QwenRealtimeDiagnosticExport: Encodable, Sendable {
+    let providerID: String
+    let modelID: String
+    let voiceID: String
+    let writeWindowCapacity: Int
+    let pendingWriteCount: Int
+    let maximumPendingWriteCount: Int
+    let submittedAudioAppendCount: UInt64
+    let completedAudioAppendCount: UInt64
+    let submittedResponseCreateCount: UInt64
+    let completedResponseCreateCount: UInt64
+    let capacityWaitCount: UInt64
+    let capacityWaitTotalDurationMilliseconds: UInt64
+    let capacityWaitMaximumDurationMilliseconds: UInt64
+    let averageAudioAppendWriteDurationMilliseconds: UInt64
+    let maximumAudioAppendWriteDurationMilliseconds: UInt64
+}
+
+struct RealtimeTurnCompletionDiagnosticExport: Encodable, Sendable {
+    let phase: String
+    let sessionShortID: String?
+    let turnShortID: String?
+    let sourceTurnShortID: String?
+    let contextRevision: UInt64?
+    let completionCandidateCount: UInt64
+    let resumedPauseCount: UInt64
+    let claimedAcousticSequence: UInt64
+    let claimedListeningAudioSequence: UInt64
+    let providerListeningAuthorizationCount: UInt64
+    let responseAuthorizationCount: UInt64
+    let pendingStartTurnShortID: String?
+    let pendingStartAtNanoseconds: UInt64
+}
+
+struct NativeSpeechDiagnosticExport: Encodable, Sendable {
     let providerProfileID: String
     let providerID: String
     let modelID: String
     let voiceID: String
-    let formalRouteState: String
-    let formalRouteGeneration: UInt64?
-    let formalRouteLastError: String?
-    let finalState: String
+    let state: String
     let interactionShortID: String?
     let turnNumber: UInt64
     let turnGeneration: UInt64
@@ -1172,16 +1266,42 @@ struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let inputSendOperationCount: UInt64
     let inputAverageSendDurationMilliseconds: UInt64
     let inputMaximumSendDurationMilliseconds: UInt64
-    let captureGeneratedFrameCount: UInt64
-    let captureDroppedFrameCount: UInt64
-    let captureQueuedFrameCount: Int
     let outputAudioChunkCount: UInt64
     let outputAudioByteCount: UInt64
+    let outputRuntimeRejectedEventCount: UInt64
+}
+
+struct RealtimeSpeechPlaybackDiagnosticExport: Encodable, Sendable {
+    let state: String
+    let generation: UInt64
+    let outputDeviceID: String
+    let outputDeviceName: String
+    let queueDepth: Int
+    let scheduledChunkCount: Int
+    let enqueuedChunkCount: Int
+    let enqueuedByteCount: Int
+    let playedChunkCount: Int
+    let playedByteCount: Int
     let playbackStartedCount: Int
     let playbackCompletedCount: Int
-    let playbackRejectedCount: UInt64
-    let outputRuntimeRejectedEventCount: UInt64
-    let acousticEcho: RealtimeSpeechAcousticEchoDiagnosticExport
+    let rejectedCallbackCount: Int
+    let lastError: String?
+}
+
+struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
+    let schemaVersion: Int
+    let exportedAt: Date
+    let appVersion: String
+    let appBuild: String
+    let routeKind: String
+    let formalRoute: RealtimeSpeechFormalRouteDiagnosticExport
+    let captureAEC: RealtimeSpeechCaptureDiagnosticExport
+    let realtimeBrainInput: RealtimeBrainInputDiagnosticExport
+    let realtimeBrainOutput: RealtimeBrainOutputDiagnosticExport
+    let qwenRealtime: QwenRealtimeDiagnosticExport
+    let turnCompletion: RealtimeTurnCompletionDiagnosticExport
+    let nativeSpeech: NativeSpeechDiagnosticExport
+    let playbackShared: RealtimeSpeechPlaybackDiagnosticExport
     let droppedEventCount: UInt64
     let events: [RealtimeSpeechDiagnosticEvent]
 }
@@ -1559,6 +1679,11 @@ public final class OrchestrationKernel {
     func realtimeSpeechSubtitleSnapshot()
         -> RealtimeSpeechSubtitleSnapshot {
         runtimeCore.realtimeSpeechSubtitleSnapshot()
+    }
+
+    func realtimeUtteranceCompletionDebugSnapshot()
+        -> RealtimeUtteranceCompletionDebugSnapshot {
+        runtimeCore.realtimeUtteranceCompletionDebugSnapshot()
     }
 
     func testNativeSpeechConnectivity(

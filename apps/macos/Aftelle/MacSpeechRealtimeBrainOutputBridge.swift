@@ -18,6 +18,7 @@ nonisolated struct MacSpeechRealtimeBrainOutputBridgeSnapshot:
     let acceptedEventCount: UInt64
     let rejectedEventCount: UInt64
     let audioChunkCount: UInt64
+    let audioByteCount: UInt64
     let completedResponseCount: UInt64
     let lastError: String?
     let hasActiveReceiveLoop: Bool
@@ -28,6 +29,7 @@ nonisolated struct MacSpeechRealtimeBrainOutputBridgeSnapshot:
         acceptedEventCount: 0,
         rejectedEventCount: 0,
         audioChunkCount: 0,
+        audioByteCount: 0,
         completedResponseCount: 0,
         lastError: nil,
         hasActiveReceiveLoop: false
@@ -59,6 +61,7 @@ actor MacSpeechRealtimeBrainOutputBridge {
     private var acceptedEventCount: UInt64 = 0
     private var rejectedEventCount: UInt64 = 0
     private var audioChunkCount: UInt64 = 0
+    private var audioByteCount: UInt64 = 0
     private var completedResponseCount: UInt64 = 0
     private var lastError: String?
 
@@ -83,6 +86,7 @@ actor MacSpeechRealtimeBrainOutputBridge {
         acceptedEventCount = 0
         rejectedEventCount = 0
         audioChunkCount = 0
+        audioByteCount = 0
         completedResponseCount = 0
         finishedAudioResponseID = nil
         lastError = nil
@@ -192,7 +196,7 @@ actor MacSpeechRealtimeBrainOutputBridge {
                     return
                 }
                 switch event.kind {
-                case .residentAudioDelta:
+                case .residentAudioDelta(let audio):
                     guard let responseID = event.identity.responseID else {
                         rejectedEventCount &+= 1
                         await finish(
@@ -210,6 +214,7 @@ actor MacSpeechRealtimeBrainOutputBridge {
                         finishedAudioResponseID = nil
                     }
                     audioChunkCount &+= 1
+                    audioByteCount &+= UInt64(audio.bytes.count)
                 case .residentSpeakingStopped:
                     guard let responseID = event.identity.responseID else {
                         rejectedEventCount &+= 1
@@ -308,6 +313,7 @@ actor MacSpeechRealtimeBrainOutputBridge {
             acceptedEventCount: acceptedEventCount,
             rejectedEventCount: rejectedEventCount,
             audioChunkCount: audioChunkCount,
+            audioByteCount: audioByteCount,
             completedResponseCount: completedResponseCount,
             lastError: lastError,
             hasActiveReceiveLoop: activeSession != nil

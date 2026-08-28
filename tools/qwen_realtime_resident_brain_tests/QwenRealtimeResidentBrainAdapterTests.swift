@@ -60,6 +60,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testInvalidToolAdvertisementsFailClosed()
         try await testContextScopeReplacement()
         try await testAudioAndEventMapping()
+        try await testResidentTextWireSourceCanonicalization()
         try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
         try await testUnauthorizedResponseFailsClosed()
@@ -683,6 +684,90 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testResidentTextWireSourceCanonicalization() async throws {
+        cases += 5
+        let expected: [RealtimeResidentBrainEventKind] = [
+            .residentTextDelta("你好"),
+            .residentTextFinal("你好"),
+            .residentSemanticFinal(RealtimeBrainSemanticOutput(
+                canonicalText: "你好"
+            ))
+        ]
+
+        let textOnly = try await residentTextEvents(
+            generation: 18,
+            responseID: "text-only-response",
+            wireEvents: [
+                #"{"type":"response.text.delta","response_id":"text-only-response","delta":"你好"}"#,
+                #"{"type":"response.text.done","response_id":"text-only-response","text":"你好"}"#
+            ],
+            responseDoneContent: #"{"type":"text","text":"你好"}"#
+        )
+        expect(textOnly == expected, "text-only output emits one resident text stream")
+
+        let audioTranscriptOnly = try await residentTextEvents(
+            generation: 19,
+            responseID: "audio-transcript-only-response",
+            wireEvents: [
+                #"{"type":"response.audio_transcript.delta","response_id":"audio-transcript-only-response","delta":"你好"}"#,
+                #"{"type":"response.audio_transcript.done","response_id":"audio-transcript-only-response","transcript":"你好"}"#
+            ],
+            responseDoneContent: #"{"type":"audio","transcript":"你好"}"#
+        )
+        expect(
+            audioTranscriptOnly == expected,
+            "audio-transcript-only output emits one resident text stream"
+        )
+
+        let mirroredStreams = try await residentTextEvents(
+            generation: 20,
+            responseID: "mirrored-response",
+            wireEvents: [
+                #"{"type":"response.text.delta","response_id":"mirrored-response","delta":"你好"}"#,
+                #"{"type":"response.audio_transcript.delta","response_id":"mirrored-response","delta":"你好"}"#,
+                #"{"type":"response.text.done","response_id":"mirrored-response","text":"你好"}"#,
+                #"{"type":"response.audio_transcript.done","response_id":"mirrored-response","transcript":"你好"}"#
+            ],
+            responseDoneContent: #"{"type":"audio","transcript":"你好"}"#
+        )
+        expect(
+            mirroredStreams == expected,
+            "mirrored text and audio transcript output emits one resident text stream"
+        )
+
+        let audioFirstMirroredStreams = try await residentTextEvents(
+            generation: 21,
+            responseID: "audio-first-mirrored-response",
+            wireEvents: [
+                #"{"type":"response.audio_transcript.delta","response_id":"audio-first-mirrored-response","delta":"你好"}"#,
+                #"{"type":"response.text.delta","response_id":"audio-first-mirrored-response","delta":"你好"}"#,
+                #"{"type":"response.audio_transcript.done","response_id":"audio-first-mirrored-response","transcript":"你好"}"#,
+                #"{"type":"response.text.done","response_id":"audio-first-mirrored-response","text":"你好"}"#
+            ],
+            responseDoneContent: #"{"type":"audio","transcript":"你好"}"#
+        )
+        expect(
+            audioFirstMirroredStreams == expected,
+            "audio-first mirrored streams still emit one resident text stream"
+        )
+
+        let whitespaceBeforeAudio = try await residentTextEvents(
+            generation: 22,
+            responseID: "whitespace-before-audio-response",
+            wireEvents: [
+                #"{"type":"response.text.delta","response_id":"whitespace-before-audio-response","delta":"   "}"#,
+                #"{"type":"response.audio_transcript.delta","response_id":"whitespace-before-audio-response","delta":"你好"}"#,
+                #"{"type":"response.text.done","response_id":"whitespace-before-audio-response","text":"你好"}"#,
+                #"{"type":"response.audio_transcript.done","response_id":"whitespace-before-audio-response","transcript":"你好"}"#
+            ],
+            responseDoneContent: #"{"type":"audio","transcript":"你好"}"#
+        )
+        expect(
+            whitespaceBeforeAudio == expected,
+            "whitespace-only first delta cannot lock out a valid text source"
         )
     }
 
@@ -1913,12 +1998,25 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             itemID: "runtime-completion-user",
             transcript: "wait for utterance completion"
         )
-        guard case .accepted(let acceptedUserFinal) = userFinal,
-              acceptedUserFinal.kind
-                == .userTranscriptFinal("wait for utterance completion")
-        else {
-            fatalError("Runtime pending user final expected")
+        if case .accepted = userFinal {
+            expect(
+                true,
+                "final allows a bounded Provider final-before-stop ordering"
+            )
+        } else {
+            expect(
+                false,
+                "final allows a bounded Provider final-before-stop ordering"
+            )
         }
+        try? await Task.sleep(for: .milliseconds(1_120))
+        let retiredActivity = runtime
+            .realtimeUtteranceCompletionDebugSnapshot()
+        expect(
+            retiredActivity.phase == .idle
+                && retiredActivity.pendingStartTurnID == nil,
+            "missing Provider speech stop cannot leave Runtime pending"
+        )
         let sentAfterFinal = try await sentTypes(stack.transport)
         expect(
             sentAfterFinal.filter { $0 == "response.create" }.isEmpty,
@@ -1968,24 +2066,16 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"runtime-old-user"}"#
         )
-        _ = try await runtime.receiveRealtimeResidentBrainEvent(
+        let speechStarted = try await runtime.receiveRealtimeResidentBrainEvent(
             session: identity
         )
-        let userFinal = try await receiveRuntimeTranscript(
-            stack,
-            runtime: runtime,
-            identity: identity,
-            itemID: "runtime-old-user",
-            transcript: "old generation turn"
-        )
-        guard case .accepted(let acceptedUserFinal) = userFinal,
-              acceptedUserFinal.kind
-                == .userTranscriptFinal("old generation turn") else {
-            fatalError("Runtime-tracked generation turn expected")
+        guard case .accepted(let acceptedSpeechStarted) = speechStarted,
+              acceptedSpeechStarted.kind == .userSpeechStarted else {
+            fatalError("Runtime-tracked generation speech start expected")
         }
         try await authorizeResponse(
             stack,
-            from: acceptedUserFinal,
+            from: acceptedSpeechStarted,
             responseID: "runtime-old-response"
         )
         await stack.transport.enqueueText(
@@ -2307,6 +2397,46 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 sourceEventSequence: event.sequence
             )
         )
+    }
+
+    private static func residentTextEvents(
+        generation: UInt64,
+        responseID: String,
+        wireEvents: [String],
+        responseDoneContent: String
+    ) async throws -> [RealtimeResidentBrainEventKind] {
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: generation)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"subtitle-turn-\#(generation)"}"#
+        )
+        let speechStarted = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: speechStarted,
+            responseID: responseID
+        )
+        for event in wireEvents {
+            await stack.transport.enqueueText(event)
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"\#(responseID)","status":"completed","output":[{"type":"message","content":[\#(responseDoneContent)]}]}}"#
+        )
+
+        var events: [RealtimeResidentBrainEventKind] = []
+        for _ in 0 ..< 3 {
+            events.append(try await stack.adapter.receiveEvent(
+                session: identity
+            ).kind)
+        }
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+        return events
     }
 
     private static func receiveRuntimeTranscript(

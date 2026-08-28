@@ -11,6 +11,11 @@ actor BoundedRealtimeWebSocketWriteWindow {
         let maximumPendingWriteCount: Int
         let submittedWriteCount: UInt64
         let completedWriteCount: UInt64
+        let submittedWriteCountsByCategory: [String: UInt64]
+        let completedWriteCountsByCategory: [String: UInt64]
+        let capacityWaitCount: UInt64
+        let capacityWaitTotalDurationMilliseconds: UInt64
+        let capacityWaitMaximumDurationMilliseconds: UInt64
         let latchedError: NativeSpeechError?
     }
 
@@ -22,6 +27,8 @@ actor BoundedRealtimeWebSocketWriteWindow {
 
     private struct CapacityWaiter {
         let generation: UInt64
+        let category: String
+        let startedAtNanoseconds: UInt64
         let continuation: CheckedContinuation<Void, Error>
     }
 
@@ -32,10 +39,16 @@ actor BoundedRealtimeWebSocketWriteWindow {
 
     private let capacity: Int
     private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
+    private let diagnosticRouteKind: NativeSpeechDiagnosticRouteKind?
     private var generation: UInt64 = 0
     private var writeOrdinal: UInt64 = 0
     private var completedWriteCount: UInt64 = 0
     private var maximumPendingWriteCount = 0
+    private var submittedWriteCountsByCategory: [String: UInt64] = [:]
+    private var completedWriteCountsByCategory: [String: UInt64] = [:]
+    private var capacityWaitCount: UInt64 = 0
+    private var capacityWaitTotalDurationNanoseconds: UInt64 = 0
+    private var capacityWaitMaximumDurationNanoseconds: UInt64 = 0
     private var pendingWrites: [UInt64: PendingWrite] = [:]
     private var capacityWaiters: [CapacityWaiter] = []
     private var drainWaiters: [DrainWaiter] = []
@@ -45,11 +58,13 @@ actor BoundedRealtimeWebSocketWriteWindow {
 
     init(
         capacity: Int = 8,
-        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil,
+        diagnosticRouteKind: NativeSpeechDiagnosticRouteKind? = nil
     ) {
         precondition(capacity > 0)
         self.capacity = capacity
         self.diagnosticBuffer = diagnosticBuffer
+        self.diagnosticRouteKind = diagnosticRouteKind
     }
 
     func reset() {
@@ -63,6 +78,12 @@ actor BoundedRealtimeWebSocketWriteWindow {
         writeOrdinal = 0
         completedWriteCount = 0
         maximumPendingWriteCount = 0
+        submittedWriteCountsByCategory.removeAll(keepingCapacity: true)
+        completedWriteCountsByCategory.removeAll(keepingCapacity: true)
+        capacityWaitCount = 0
+        capacityWaitTotalDurationNanoseconds = 0
+        capacityWaitMaximumDurationNanoseconds = 0
+        record(category: "write_window_reset", pendingWriteCount: 0)
     }
 
     func enqueue(
@@ -74,15 +95,27 @@ actor BoundedRealtimeWebSocketWriteWindow {
         guard !isClosing else {
             throw NativeSpeechError.cancelled
         }
+        let category = Self.safeWriteCategory(frame)
+        let byteCount = Self.frameByteCount(frame)
 
         if pendingWrites.count >= capacity
             || !capacityWaiters.isEmpty
             || isAdmittingWaiter {
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            capacityWaitCount &+= 1
+            record(
+                category: "write_capacity_wait_started_\(category)",
+                byteCount: byteCount,
+                pendingWriteCount: pendingWrites.count,
+                nowNanoseconds: startedAt
+            )
             try await withCheckedThrowingContinuation {
                 continuation in
                 capacityWaiters.append(
                     CapacityWaiter(
                         generation: acceptedGeneration,
+                        category: category,
+                        startedAtNanoseconds: startedAt,
                         continuation: continuation
                     )
                 )
@@ -100,8 +133,6 @@ actor BoundedRealtimeWebSocketWriteWindow {
 
         writeOrdinal &+= 1
         let ordinal = writeOrdinal
-        let category = Self.safeWriteCategory(frame)
-        let byteCount = Self.frameByteCount(frame)
         let startedAt = DispatchTime.now().uptimeNanoseconds
         pendingWrites[ordinal] = PendingWrite(
             category: category,
@@ -112,6 +143,7 @@ actor BoundedRealtimeWebSocketWriteWindow {
             maximumPendingWriteCount,
             pendingWrites.count
         )
+        submittedWriteCountsByCategory[category, default: 0] &+= 1
         record(
             category: "write_submitted_\(category)",
             wireSequence: ordinal,
@@ -174,6 +206,7 @@ actor BoundedRealtimeWebSocketWriteWindow {
         isAdmittingWaiter = false
         isClosing = true
         latchedError = .cancelled
+        record(category: "write_window_closed", pendingWriteCount: 0)
     }
 
     func currentError() -> NativeSpeechError? {
@@ -186,6 +219,15 @@ actor BoundedRealtimeWebSocketWriteWindow {
             maximumPendingWriteCount: maximumPendingWriteCount,
             submittedWriteCount: writeOrdinal,
             completedWriteCount: completedWriteCount,
+            submittedWriteCountsByCategory:
+                submittedWriteCountsByCategory,
+            completedWriteCountsByCategory:
+                completedWriteCountsByCategory,
+            capacityWaitCount: capacityWaitCount,
+            capacityWaitTotalDurationMilliseconds:
+                capacityWaitTotalDurationNanoseconds / 1_000_000,
+            capacityWaitMaximumDurationMilliseconds:
+                capacityWaitMaximumDurationNanoseconds / 1_000_000,
             latchedError: latchedError
         )
     }
@@ -214,6 +256,11 @@ actor BoundedRealtimeWebSocketWriteWindow {
                 errorCode: Self.standardErrorName(error)
             )
             pendingWrites.removeAll(keepingCapacity: true)
+            record(
+                category: "write_window_failed",
+                pendingWriteCount: 0,
+                errorCode: Self.standardErrorName(error)
+            )
             resumeAllWaiters(throwing: error)
             resumeAllDrainWaiters(with: error)
             isAdmittingWaiter = false
@@ -221,6 +268,7 @@ actor BoundedRealtimeWebSocketWriteWindow {
         }
 
         completedWriteCount &+= 1
+        completedWriteCountsByCategory[pending.category, default: 0] &+= 1
         record(
             category: "write_completed_\(pending.category)",
             wireSequence: ordinal,
@@ -245,11 +293,13 @@ actor BoundedRealtimeWebSocketWriteWindow {
         }
         let waiter = capacityWaiters.removeFirst()
         guard waiter.generation == generation else {
+            resolveCapacityWait(waiter, error: .cancelled)
             waiter.continuation.resume(throwing: NativeSpeechError.cancelled)
             admitNextWaiterIfPossible()
             return
         }
         isAdmittingWaiter = true
+        resolveCapacityWait(waiter, error: nil)
         waiter.continuation.resume()
     }
 
@@ -257,8 +307,31 @@ actor BoundedRealtimeWebSocketWriteWindow {
         let waiters = capacityWaiters
         capacityWaiters.removeAll(keepingCapacity: true)
         for waiter in waiters {
+            resolveCapacityWait(waiter, error: error)
             waiter.continuation.resume(throwing: error)
         }
+    }
+
+    private func resolveCapacityWait(
+        _ waiter: CapacityWaiter,
+        error: NativeSpeechError?
+    ) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let duration = now &- waiter.startedAtNanoseconds
+        capacityWaitTotalDurationNanoseconds &+= duration
+        capacityWaitMaximumDurationNanoseconds = max(
+            capacityWaitMaximumDurationNanoseconds,
+            duration
+        )
+        record(
+            category: error == nil
+                ? "write_capacity_wait_completed_\(waiter.category)"
+                : "write_capacity_wait_cancelled_\(waiter.category)",
+            pendingWriteCount: pendingWrites.count,
+            durationMilliseconds: duration / 1_000_000,
+            errorCode: error.map(Self.standardErrorName),
+            nowNanoseconds: now
+        )
     }
 
     private func resumeAllDrainWaiters(with error: NativeSpeechError?) {
@@ -311,8 +384,10 @@ actor BoundedRealtimeWebSocketWriteWindow {
             NativeSpeechInternalDiagnosticEvent(
                 source: .transport,
                 category: category,
+                routeKind: diagnosticRouteKind,
                 wireSequence: wireSequence,
                 byteCount: byteCount,
+                writeWindowCapacity: capacity,
                 pendingWriteCount: pendingWriteCount,
                 durationMilliseconds: durationMilliseconds,
                 errorCode: errorCode,
@@ -334,6 +409,7 @@ actor BoundedRealtimeWebSocketWriteWindow {
         switch type {
         case "session.update": return "session_update"
         case "input_audio_buffer.append": return "audio_append"
+        case "response.create": return "response_create"
         case "response.cancel": return "response_cancel"
         default: return "other"
         }
@@ -367,9 +443,12 @@ actor BoundedRealtimeWebSocketWriteWindow {
 }
 
 actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
-    private static let maximumPendingWrites = 8
+    static let maximumPendingWrites =
+        NativeSpeechTransportWriteDiagnosticSnapshot
+            .defaultWebSocketWriteWindowCapacity
     private static let closeDrainTimeoutNanoseconds: UInt64 = 1_000_000_000
     private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
+    private let diagnosticRouteKind: NativeSpeechDiagnosticRouteKind?
     private let writeWindow: BoundedRealtimeWebSocketWriteWindow
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
@@ -377,11 +456,16 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var isConnecting = false
     private var isClosing = false
 
-    init(diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil) {
+    init(
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil,
+        diagnosticRouteKind: NativeSpeechDiagnosticRouteKind? = nil
+    ) {
         self.diagnosticBuffer = diagnosticBuffer
+        self.diagnosticRouteKind = diagnosticRouteKind
         writeWindow = BoundedRealtimeWebSocketWriteWindow(
             capacity: Self.maximumPendingWrites,
-            diagnosticBuffer: diagnosticBuffer
+            diagnosticBuffer: diagnosticBuffer,
+            diagnosticRouteKind: diagnosticRouteKind
         )
     }
 
@@ -553,6 +637,7 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
             NativeSpeechInternalDiagnosticEvent(
                 source: .transport,
                 category: category,
+                routeKind: diagnosticRouteKind,
                 wireSequence: wireSequence,
                 byteCount: byteCount,
                 pendingWriteCount: pendingWriteCount,

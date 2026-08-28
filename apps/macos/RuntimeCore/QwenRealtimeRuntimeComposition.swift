@@ -30,21 +30,24 @@ enum QwenRealtimeRuntimeComposition {
             QwenRealtimeResidentBrainAdapter(
                 credentialReader: credentialReader,
                 transport: URLSessionRealtimeWebSocketTransport(
-                    diagnosticBuffer: diagnosticBuffer
+                    diagnosticBuffer: diagnosticBuffer,
+                    diagnosticRouteKind: .realtimeBrain
                 ),
                 configuration: realtimeBrainConfiguration
             )
         let nativeSpeechProvider = QwenRealtimeAdapter(
             credentialReader: credentialReader,
             transport: URLSessionRealtimeWebSocketTransport(
-                diagnosticBuffer: diagnosticBuffer
+                diagnosticBuffer: diagnosticBuffer,
+                diagnosticRouteKind: .nativeSpeech
             ),
             diagnosticBuffer: diagnosticBuffer
         )
         let asrProvider = QwenRealtimeASRAdapter(
             credentialReader: credentialReader,
             transport: URLSessionRealtimeWebSocketTransport(
-                diagnosticBuffer: diagnosticBuffer
+                diagnosticBuffer: diagnosticBuffer,
+                diagnosticRouteKind: .cascadedASR
             ),
             configuration: asrConfiguration,
             diagnosticBuffer: diagnosticBuffer
@@ -52,7 +55,8 @@ enum QwenRealtimeRuntimeComposition {
         let ttsProvider = QwenRealtimeTTSAdapter(
             credentialReader: credentialReader,
             transport: URLSessionRealtimeWebSocketTransport(
-                diagnosticBuffer: diagnosticBuffer
+                diagnosticBuffer: diagnosticBuffer,
+                diagnosticRouteKind: .cascadedTTS
             ),
             configuration: ttsConfiguration
         )

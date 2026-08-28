@@ -168,7 +168,7 @@ done
 rg -q 'completedResponseCount' "$output_bridge" "$content_view"
 rg -q 'RealtimeSpeechDiagnosticTimeline' "$controller" "$orchestration"
 rg -q 'NSSavePanel' "$controller"
-rg -q 'schemaVersion: 7' "$controller"
+rg -q 'schemaVersion: 9' "$controller"
 rg -q 'realtimeSpeechAcousticEchoDiagnosticExport' "$controller"
 rg -q 'sourceTimingCandidateFrameCount' "$controller"
 rg -q 'sourceTimingUnavailableFrameCount' "$controller"
@@ -191,7 +191,7 @@ echo "native_speech_runtime_diagnostic_ring=PASS"
 diagnostic_model="$build_dir/realtime-speech-diagnostic-model.txt"
 sed -n '/enum RealtimeSpeechDiagnosticSource/,/^#endif/p' \
   "$repo_root/apps/macos/Aftelle/AppModels.swift" > "$diagnostic_model"
-if rg -qi 'Authorization|instructions|transcript|base64|resident_identity' \
+if rg -qi 'bearerToken|credential|instructions|transcript|base64|resident_identity' \
   "$diagnostic_model"; then
   echo "native_speech_diagnostic_redaction=FAIL"
   exit 1

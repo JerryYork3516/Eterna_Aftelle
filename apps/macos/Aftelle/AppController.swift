@@ -299,6 +299,78 @@ nonisolated struct NativeSpeechPlaybackDebugSnapshot: Sendable, Equatable {
 }
 #endif
 
+nonisolated struct RealtimeBrainSubtitlePresentation: Sendable, Equatable {
+    private static let retiredIdentityCapacity = 64
+
+    private(set) var identity: RealtimeBrainEventIdentity?
+    private(set) var text = ""
+    private var isFinal = false
+    private var retiredIdentities: Set<RealtimeBrainEventIdentity> = []
+    private var retiredIdentityOrder: [RealtimeBrainEventIdentity] = []
+
+    var displayText: String? {
+        let normalized = text.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    mutating func reset() {
+        retiredIdentities.removeAll(keepingCapacity: true)
+        retiredIdentityOrder.removeAll(keepingCapacity: true)
+        clearCurrent()
+    }
+
+    mutating func retire(
+        _ eventIdentity: RealtimeBrainEventIdentity? = nil
+    ) {
+        if let retiredIdentity = eventIdentity ?? identity,
+           retiredIdentities.insert(retiredIdentity).inserted {
+            retiredIdentityOrder.append(retiredIdentity)
+            if retiredIdentityOrder.count > Self.retiredIdentityCapacity {
+                retiredIdentities.remove(retiredIdentityOrder.removeFirst())
+            }
+        }
+        clearCurrent()
+    }
+
+    private mutating func clearCurrent() {
+        identity = nil
+        text = ""
+        isFinal = false
+    }
+
+    @discardableResult
+    mutating func consume(_ event: RealtimeResidentBrainEvent) -> Bool {
+        guard event.identity.turnID != nil,
+              event.identity.responseID != nil,
+              !retiredIdentities.contains(event.identity) else {
+            return false
+        }
+        if let identity {
+            guard identity == event.identity else { return false }
+        } else {
+            identity = event.identity
+        }
+
+        let previous = displayText
+        switch event.kind {
+        case .residentTextDelta(let delta):
+            guard !isFinal else { return false }
+            text.append(delta)
+        case .residentTextFinal(let final):
+            text = final
+            isFinal = true
+        case .residentSemanticFinal(let semantic):
+            text = semantic.canonicalText
+            isFinal = true
+        default:
+            return false
+        }
+        return displayText != previous
+    }
+}
+
 enum ParticleColorSource: String, CaseIterable, Identifiable {
     case digitalResident
     case systemDefault
@@ -309,6 +381,8 @@ enum ParticleColorSource: String, CaseIterable, Identifiable {
 @MainActor
 final class AppController: ObservableObject {
     private static let residentBookmarkKey = "aftelle.activeResidentBookmark.v1"
+    private static let realtimeBrainMissingSpeechStopPresentationDelay:
+        Duration = .milliseconds(1_100)
 
     @Published private(set) var startupState: AppStartupState = .idle
     @Published private(set) var runtimeStatus = "Runtime status: not loaded"
@@ -431,6 +505,14 @@ final class AppController: ObservableObject {
     private var realtimeBrainStopping = false
     private var realtimePassiveBackchannelPresentation:
         RealtimePassiveBackchannelPresentation?
+    private var realtimeBrainLatestSpeechStopIdentity:
+        RealtimeBrainEventIdentity?
+    private var realtimeBrainMissingSpeechStopPresentationIdentity:
+        RealtimeBrainEventIdentity?
+    private var realtimeBrainMissingSpeechStopPresentationTask:
+        Task<Void, Never>?
+    private var realtimeBrainSubtitlePresentation =
+        RealtimeBrainSubtitlePresentation()
     private lazy var realtimeBrainInputBridge = MacSpeechRealtimeBrainInputBridge(
         source: speechAudioHost,
         sendFrameWithActivity: { [orchestrationKernel] frame, activity in
@@ -512,6 +594,8 @@ final class AppController: ObservableObject {
     private var lastDiagnosticCaptureGeneratedCount: UInt64 = 0
     private var lastDiagnosticCaptureDroppedCount: UInt64 = 0
     private var lastDiagnosticPCMEndSample: Int16?
+    private var realtimeBrainRecoverableResponseErrorCount: UInt64 = 0
+    private var lastRealtimeBrainRecoverableResponseErrorCode: String?
     private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
@@ -1032,8 +1116,11 @@ final class AppController: ObservableObject {
     ) throws -> Data {
         drainNativeSpeechInternalDiagnostics()
         let bundle = Bundle.main
+        let qwenRealtime = qwenRealtimeDiagnosticExport()
+        let turnCompletion = orchestrationKernel
+            .realtimeUtteranceCompletionDebugSnapshot()
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 7,
+            schemaVersion: 9,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -1041,50 +1128,204 @@ final class AppController: ObservableObject {
             appBuild: bundle.object(
                 forInfoDictionaryKey: "CFBundleVersion"
             ) as? String ?? "-",
-            providerProfileID:
-                nativeSpeechProviderDebugState.profile.profileID,
-            providerID: nativeSpeechProviderDebugState.profile.providerID,
-            modelID: nativeSpeechProviderDebugState.profile.modelID,
-            voiceID: nativeSpeechProviderDebugState.profile.voiceID,
-            formalRouteState: formalSpeechRouteDebugSnapshot.phase.rawValue,
-            formalRouteGeneration: formalSpeechRouteDebugSnapshot.generation,
-            formalRouteLastError:
-                formalSpeechRouteDebugSnapshot.lastErrorCode,
-            finalState: realtimeSpeechStateSnapshot.state.rawValue,
-            interactionShortID:
-                realtimeSpeechStateSnapshot.interactionShortID,
-            turnNumber: realtimeSpeechStateSnapshot.currentTurnNumber,
-            turnGeneration:
-                realtimeSpeechSubtitleSnapshot.turnGeneration,
-            inputForwardedFrameCount:
-                speechInputBridgeSnapshot.forwardedFrameCount,
-            inputRejectedFrameCount:
-                speechInputBridgeSnapshot.runtimeRejectedFrameCount,
-            inputSendOperationCount:
-                speechInputBridgeSnapshot.sendOperationCount,
-            inputAverageSendDurationMilliseconds:
-                speechInputBridgeSnapshot.averageSendDurationMilliseconds,
-            inputMaximumSendDurationMilliseconds:
-                speechInputBridgeSnapshot.maximumSendDurationMilliseconds,
-            captureGeneratedFrameCount:
-                speechAudioHostSnapshot.generatedFrameCount,
-            captureDroppedFrameCount:
-                speechAudioHostSnapshot.droppedFrameCount,
-            captureQueuedFrameCount:
-                speechAudioHostSnapshot.queuedFrameCount,
-            outputAudioChunkCount:
-                speechOutputBridgeSnapshot.outputAudioChunkCount,
-            outputAudioByteCount:
-                speechOutputBridgeSnapshot.outputAudioByteCount,
-            playbackStartedCount:
-                speechAudioOutputHostSnapshot.playbackStartedCount,
-            playbackCompletedCount:
-                speechAudioOutputHostSnapshot.playbackCompletedCount,
-            playbackRejectedCount:
-                nativeSpeechPlaybackDebugSnapshot.rejectedEventCount,
-            outputRuntimeRejectedEventCount:
-                speechOutputBridgeSnapshot.runtimeRejectedEventCount,
-            acousticEcho: realtimeSpeechAcousticEchoDiagnosticExport(),
+            routeKind: NativeSpeechDiagnosticRouteKind.realtimeBrain.rawValue,
+            formalRoute: RealtimeSpeechFormalRouteDiagnosticExport(
+                state: realtimeFullDuplexSpeechStatus.phase.rawValue,
+                generation: realtimeBrainInputBinding?.session.generation,
+                lastTerminalError:
+                    realtimeFullDuplexSpeechStatus.lastErrorCode,
+                recoverableResponseErrorCount:
+                    realtimeBrainRecoverableResponseErrorCount,
+                lastRecoverableResponseError:
+                    lastRealtimeBrainRecoverableResponseErrorCode
+            ),
+            captureAEC: RealtimeSpeechCaptureDiagnosticExport(
+                authorization: speechAudioHostSnapshot.authorization.rawValue,
+                state: speechAudioHostSnapshot.state.rawValue,
+                isCapturing: speechAudioHostSnapshot.isCapturing,
+                inputDeviceID:
+                    speechAudioHostSnapshot.inputDevice.identifier,
+                inputDeviceName: speechAudioHostSnapshot.inputDevice.name,
+                outputDeviceID:
+                    speechAudioHostSnapshot.outputDevice.identifier,
+                outputDeviceName: speechAudioHostSnapshot.outputDevice.name,
+                actualSampleRate: speechAudioHostSnapshot.actualSampleRate,
+                actualChannelCount:
+                    speechAudioHostSnapshot.actualChannelCount,
+                normalizedOutputFormat:
+                    speechAudioHostSnapshot.normalizedOutputFormat,
+                generatedFrameCount:
+                    speechAudioHostSnapshot.generatedFrameCount,
+                droppedFrameCount:
+                    speechAudioHostSnapshot.droppedFrameCount,
+                rejectedStaleFrameCount:
+                    speechAudioHostSnapshot.rejectedStaleFrameCount,
+                queuedFrameCount: speechAudioHostSnapshot.queuedFrameCount,
+                lastError: speechAudioHostSnapshot.lastError,
+                acousticEcho: realtimeSpeechAcousticEchoDiagnosticExport()
+            ),
+            realtimeBrainInput: RealtimeBrainInputDiagnosticExport(
+                state: realtimeBrainInputBridgeSnapshot.state.rawValue,
+                sessionShortID:
+                    realtimeBrainInputBridgeSnapshot.sessionShortID,
+                forwardedFrameCount:
+                    realtimeBrainInputBridgeSnapshot.forwardedFrameCount,
+                runtimeRejectedFrameCount:
+                    realtimeBrainInputBridgeSnapshot.runtimeRejectedFrameCount,
+                sendOperationCount:
+                    realtimeBrainInputBridgeSnapshot.sendOperationCount,
+                noneActivityFrameCount:
+                    realtimeBrainInputBridgeSnapshot.noneActivityFrameCount,
+                listeningNearEndFrameCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .listeningNearEndFrameCount,
+                sourceGatedNearEndFrameCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .sourceGatedNearEndFrameCount,
+                listeningConfirmationAttemptCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .listeningConfirmationAttemptCount,
+                listeningConfirmationAcceptedCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .listeningConfirmationAcceptedCount,
+                listeningConfirmationRejectedCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .listeningConfirmationRejectedCount,
+                listeningFreshnessRejectedCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .listeningFreshnessRejectedCount,
+                averageSendDurationMilliseconds:
+                    realtimeBrainInputBridgeSnapshot
+                        .averageSendDurationMilliseconds,
+                maximumSendDurationMilliseconds:
+                    realtimeBrainInputBridgeSnapshot
+                        .maximumSendDurationMilliseconds,
+                acousticObservationCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .residentAcousticObservationCount,
+                rejectedAcousticObservationCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .rejectedResidentAcousticObservationCount,
+                droppedAcousticObservationCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .droppedResidentAcousticObservationCount,
+                acousticEvidenceCount:
+                    realtimeBrainInputBridgeSnapshot.acousticEvidenceCount,
+                lastAcousticEligibilityDisposition:
+                    realtimeBrainInputBridgeSnapshot
+                        .lastAcousticEligibilityDisposition,
+                lastAcousticEvidenceForwardDisposition:
+                    realtimeBrainInputBridgeSnapshot
+                        .lastAcousticEvidenceForwardDisposition,
+                lastError: realtimeBrainInputBridgeSnapshot.lastError,
+                hasActivePump:
+                    realtimeBrainInputBridgeSnapshot.hasActivePump
+            ),
+            realtimeBrainOutput: RealtimeBrainOutputDiagnosticExport(
+                state: realtimeBrainOutputBridgeSnapshot.state.rawValue,
+                sessionShortID:
+                    realtimeBrainOutputBridgeSnapshot.sessionShortID,
+                acceptedEventCount:
+                    realtimeBrainOutputBridgeSnapshot.acceptedEventCount,
+                rejectedEventCount:
+                    realtimeBrainOutputBridgeSnapshot.rejectedEventCount,
+                audioChunkCount:
+                    realtimeBrainOutputBridgeSnapshot.audioChunkCount,
+                audioByteCount:
+                    realtimeBrainOutputBridgeSnapshot.audioByteCount,
+                completedResponseCount:
+                    realtimeBrainOutputBridgeSnapshot.completedResponseCount,
+                lastError: realtimeBrainOutputBridgeSnapshot.lastError,
+                hasActiveReceiveLoop:
+                    realtimeBrainOutputBridgeSnapshot.hasActiveReceiveLoop
+            ),
+            qwenRealtime: qwenRealtime,
+            turnCompletion: RealtimeTurnCompletionDiagnosticExport(
+                phase: turnCompletion.phase.rawValue,
+                sessionShortID: turnCompletion.session.map {
+                    String($0.brainLeaseID.uuidString.prefix(8))
+                },
+                turnShortID: turnCompletion.turnID.map {
+                    String($0.rawValue.uuidString.prefix(8))
+                },
+                sourceTurnShortID: turnCompletion.sourceTurnID.map {
+                    String($0.rawValue.uuidString.prefix(8))
+                },
+                contextRevision: turnCompletion.contextRevision,
+                completionCandidateCount:
+                    turnCompletion.completionCandidateCount,
+                resumedPauseCount: turnCompletion.resumedPauseCount,
+                claimedAcousticSequence:
+                    turnCompletion.claimedAcousticSequence,
+                claimedListeningAudioSequence:
+                    turnCompletion.claimedListeningAudioSequence,
+                providerListeningAuthorizationCount:
+                    turnCompletion.providerListeningAuthorizationCount,
+                responseAuthorizationCount:
+                    turnCompletion.responseAuthorizationCount,
+                pendingStartTurnShortID:
+                    turnCompletion.pendingStartTurnID.map {
+                        String($0.rawValue.uuidString.prefix(8))
+                    },
+                pendingStartAtNanoseconds:
+                    turnCompletion.pendingStartAtNanoseconds
+            ),
+            nativeSpeech: NativeSpeechDiagnosticExport(
+                providerProfileID:
+                    nativeSpeechProviderDebugState.profile.profileID,
+                providerID:
+                    nativeSpeechProviderDebugState.profile.providerID,
+                modelID: nativeSpeechProviderDebugState.profile.modelID,
+                voiceID: nativeSpeechProviderDebugState.profile.voiceID,
+                state: realtimeSpeechStateSnapshot.state.rawValue,
+                interactionShortID:
+                    realtimeSpeechStateSnapshot.interactionShortID,
+                turnNumber: realtimeSpeechStateSnapshot.currentTurnNumber,
+                turnGeneration:
+                    realtimeSpeechSubtitleSnapshot.turnGeneration,
+                inputForwardedFrameCount:
+                    speechInputBridgeSnapshot.forwardedFrameCount,
+                inputRejectedFrameCount:
+                    speechInputBridgeSnapshot.runtimeRejectedFrameCount,
+                inputSendOperationCount:
+                    speechInputBridgeSnapshot.sendOperationCount,
+                inputAverageSendDurationMilliseconds:
+                    speechInputBridgeSnapshot.averageSendDurationMilliseconds,
+                inputMaximumSendDurationMilliseconds:
+                    speechInputBridgeSnapshot.maximumSendDurationMilliseconds,
+                outputAudioChunkCount:
+                    speechOutputBridgeSnapshot.outputAudioChunkCount,
+                outputAudioByteCount:
+                    speechOutputBridgeSnapshot.outputAudioByteCount,
+                outputRuntimeRejectedEventCount:
+                    speechOutputBridgeSnapshot.runtimeRejectedEventCount
+            ),
+            playbackShared: RealtimeSpeechPlaybackDiagnosticExport(
+                state: speechAudioOutputHostSnapshot.state.rawValue,
+                generation: speechAudioOutputHostSnapshot.generation,
+                outputDeviceID:
+                    speechAudioOutputHostSnapshot.outputDevice.identifier,
+                outputDeviceName:
+                    speechAudioOutputHostSnapshot.outputDevice.name,
+                queueDepth: speechAudioOutputHostSnapshot.queueDepth,
+                scheduledChunkCount:
+                    speechAudioOutputHostSnapshot.scheduledChunkCount,
+                enqueuedChunkCount:
+                    speechAudioOutputHostSnapshot.enqueuedChunkCount,
+                enqueuedByteCount:
+                    speechAudioOutputHostSnapshot.enqueuedByteCount,
+                playedChunkCount:
+                    speechAudioOutputHostSnapshot.playedChunkCount,
+                playedByteCount:
+                    speechAudioOutputHostSnapshot.playedByteCount,
+                playbackStartedCount:
+                    speechAudioOutputHostSnapshot.playbackStartedCount,
+                playbackCompletedCount:
+                    speechAudioOutputHostSnapshot.playbackCompletedCount,
+                rejectedCallbackCount:
+                    speechAudioOutputHostSnapshot.rejectedCallbackCount,
+                lastError: speechAudioOutputHostSnapshot.lastError
+            ),
             droppedEventCount:
                 realtimeSpeechDiagnosticTimeline.droppedEventCount,
             events: realtimeSpeechDiagnosticTimeline.events
@@ -1094,6 +1335,50 @@ final class AppController: ObservableObject {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(export)
+    }
+
+    private func qwenRealtimeDiagnosticExport()
+        -> QwenRealtimeDiagnosticExport {
+        let writeSnapshot = nativeSpeechDiagnosticBuffer
+            .transportWriteSnapshot(
+                for: .realtimeBrain
+            )
+        let averageWriteDuration =
+            writeSnapshot.completedAudioAppendCount == 0
+            ? 0
+            : writeSnapshot.audioAppendWriteTotalDurationMilliseconds
+                / writeSnapshot.completedAudioAppendCount
+        let configuration = ProductionQwenRealtimeBrainConfiguration.value
+        let writeWindowCapacity = writeSnapshot.writeWindowCapacity == 0
+            ? NativeSpeechTransportWriteDiagnosticSnapshot
+                .defaultWebSocketWriteWindowCapacity
+            : writeSnapshot.writeWindowCapacity
+        return QwenRealtimeDiagnosticExport(
+            providerID: "Qwen",
+            modelID: configuration.modelID,
+            voiceID: configuration.defaultProviderVoiceID,
+            writeWindowCapacity: writeWindowCapacity,
+            pendingWriteCount: writeSnapshot.pendingWriteCount,
+            maximumPendingWriteCount:
+                writeSnapshot.maximumPendingWriteCount,
+            submittedAudioAppendCount:
+                writeSnapshot.submittedAudioAppendCount,
+            completedAudioAppendCount:
+                writeSnapshot.completedAudioAppendCount,
+            submittedResponseCreateCount:
+                writeSnapshot.submittedResponseCreateCount,
+            completedResponseCreateCount:
+                writeSnapshot.completedResponseCreateCount,
+            capacityWaitCount: writeSnapshot.capacityWaitCount,
+            capacityWaitTotalDurationMilliseconds:
+                writeSnapshot.capacityWaitTotalDurationMilliseconds,
+            capacityWaitMaximumDurationMilliseconds:
+                writeSnapshot.capacityWaitMaximumDurationMilliseconds,
+            averageAudioAppendWriteDurationMilliseconds:
+                averageWriteDuration,
+            maximumAudioAppendWriteDurationMilliseconds:
+                writeSnapshot.audioAppendWriteMaximumDurationMilliseconds
+        )
     }
 
     func writeRealtimeSpeechDiagnostics(
@@ -2169,7 +2454,19 @@ final class AppController: ObservableObject {
 
         let attemptID = UUID()
         realtimeBrainRouteAttemptID = attemptID
+        resetRealtimeBrainMissingSpeechStopPresentation()
         realtimePassiveBackchannelPresentation = nil
+        realtimeBrainSubtitlePresentation.reset()
+        particleSubtitleState = .hidden
+        #if DEBUG
+        realtimeBrainRecoverableResponseErrorCount = 0
+        lastRealtimeBrainRecoverableResponseErrorCode = nil
+        lastDiagnosticAggregateNanoseconds = 0
+        lastDiagnosticInputForwardedCount = 0
+        lastDiagnosticInputRejectedCount = 0
+        lastDiagnosticCaptureGeneratedCount = 0
+        lastDiagnosticCaptureDroppedCount = 0
+        #endif
         orchestrationKernel.setRealtimePassiveBackchannelHandler {
             [weak self] presentation in
             self?.consumeRealtimePassiveBackchannelPresentation(
@@ -2335,6 +2632,7 @@ final class AppController: ObservableObject {
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "realtime_brain_route_listening",
+            routeKind: .realtimeBrain,
             turnGeneration: binding.session.generation,
             stateAfter: FormalSpeechRoutePhase.listening.rawValue
         )
@@ -2354,6 +2652,102 @@ final class AppController: ObservableObject {
 
     func stopRealtimeFullDuplexSpeech() async {
         await stopRealtimeResidentBrainRoute()
+    }
+
+    private func resetRealtimeBrainMissingSpeechStopPresentation() {
+        realtimeBrainMissingSpeechStopPresentationTask?.cancel()
+        realtimeBrainMissingSpeechStopPresentationTask = nil
+        realtimeBrainMissingSpeechStopPresentationIdentity = nil
+        realtimeBrainLatestSpeechStopIdentity = nil
+    }
+
+    private func cancelRealtimeBrainMissingSpeechStopPresentation() {
+        realtimeBrainMissingSpeechStopPresentationTask?.cancel()
+        realtimeBrainMissingSpeechStopPresentationTask = nil
+        realtimeBrainMissingSpeechStopPresentationIdentity = nil
+    }
+
+    private func observeRealtimeBrainUserSpeechStarted() {
+        realtimeBrainLatestSpeechStopIdentity = nil
+    }
+
+    private func observeRealtimeBrainUserSpeechStopped(
+        _ identity: RealtimeBrainEventIdentity
+    ) {
+        realtimeBrainLatestSpeechStopIdentity = identity
+        if realtimeBrainMissingSpeechStopPresentationIdentity == identity {
+            cancelRealtimeBrainMissingSpeechStopPresentation()
+        }
+    }
+
+    private func hasObservedRealtimeBrainUserSpeechStop(
+        matching identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        guard let stopped = realtimeBrainLatestSpeechStopIdentity else {
+            return false
+        }
+        return stopped == identity
+    }
+
+    private func scheduleRealtimeBrainMissingSpeechStopPresentationRecovery(
+        identity: RealtimeBrainEventIdentity,
+        attemptID: UUID
+    ) {
+        if hasObservedRealtimeBrainUserSpeechStop(matching: identity) {
+            return
+        }
+        if realtimeBrainMissingSpeechStopPresentationIdentity == identity,
+           realtimeBrainMissingSpeechStopPresentationTask != nil {
+            return
+        }
+        cancelRealtimeBrainMissingSpeechStopPresentation()
+        realtimeBrainMissingSpeechStopPresentationIdentity = identity
+        realtimeBrainMissingSpeechStopPresentationTask = Task {
+            @MainActor [weak self] in
+            do {
+                try await Task.sleep(
+                    for: Self
+                        .realtimeBrainMissingSpeechStopPresentationDelay
+                )
+            } catch {
+                return
+            }
+            guard let self,
+                  self.realtimeBrainMissingSpeechStopPresentationIdentity
+                    == identity,
+                  self.isCurrentRealtimeBrainRoute(
+                    attemptID: attemptID,
+                    session: identity.session
+                  ),
+                  self.realtimeFullDuplexSpeechStatus.phase == .processing,
+                  self.realtimeBrainPlaybackResponseID == nil,
+                  self.realtimeBrainGenerationTransitionID == nil,
+                  !self.hasObservedRealtimeBrainUserSpeechStop(
+                    matching: identity
+                  )
+            else { return }
+            self.realtimeBrainMissingSpeechStopPresentationTask = nil
+            self.realtimeBrainMissingSpeechStopPresentationIdentity = nil
+            self.updateRealtimeFullDuplexSpeechStatus(
+                .listening,
+                generation: identity.session.generation,
+                lastErrorCode: nil
+            )
+            self.residentSpeechSignal = .ended
+            self.refreshResidentVisualIntent(
+                visualStateMode: ResidentVisualIntent.listening.rawValue
+            )
+            #if DEBUG
+            self.recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "missing_speech_stop_presentation_recovered",
+                routeKind: .realtimeBrain,
+                turnGeneration: identity.session.generation,
+                stateAfter: FormalSpeechRoutePhase.listening.rawValue
+            )
+            #endif
+            self.refreshParticleDebugSnapshot()
+        }
     }
 
     private func settleAbandonedRealtimeBrainStart(
@@ -2390,8 +2784,27 @@ final class AppController: ObservableObject {
                   session: binding.session
               ),
               event.identity.session == binding.session else { return }
+        #if DEBUG
+        recordRealtimeSpeechDiagnostic(
+            source: .providerEvent,
+            category: Self.realtimeResidentBrainEventCategory(event.kind),
+            routeKind: .realtimeBrain,
+            interactionShortID: String(
+                binding.session.brainLeaseID.uuidString.prefix(8)
+            ),
+            turnGeneration: binding.session.generation,
+            disposition: "accepted",
+            responseCorrelationHash: event.identity.responseID.map {
+                String($0.rawValue.uuidString.prefix(8))
+            },
+            itemCorrelationHash: event.identity.turnID.map {
+                String($0.rawValue.uuidString.prefix(8))
+            }
+        )
+        #endif
         switch event.kind {
         case .sessionReady:
+            resetRealtimeBrainMissingSpeechStopPresentation()
             updateRealtimeFullDuplexSpeechStatus(
                 .listening,
                 generation: binding.session.generation,
@@ -2412,8 +2825,13 @@ final class AppController: ObservableObject {
                 refreshResidentVisualIntent(
                     visualStateMode: ResidentVisualIntent.thinking.rawValue
                 )
+                scheduleRealtimeBrainMissingSpeechStopPresentationRecovery(
+                    identity: event.identity,
+                    attemptID: attemptID
+                )
             }
         case .residentAudioDelta(let audio):
+            cancelRealtimeBrainMissingSpeechStopPresentation()
             await enqueueRealtimeResidentBrainAudio(
                 audio,
                 identity: event.identity,
@@ -2424,7 +2842,14 @@ final class AppController: ObservableObject {
                 identity: event.identity,
                 attemptID: attemptID
             )
-        case .error:
+        case .residentTextDelta, .residentTextFinal,
+             .residentSemanticFinal:
+            cancelRealtimeBrainMissingSpeechStopPresentation()
+            if realtimeBrainSubtitlePresentation.consume(event) {
+                syncRealtimeBrainSubtitlePresentation()
+            }
+        case .error(let error):
+            resetRealtimeBrainMissingSpeechStopPresentation()
             if realtimeBrainPlaybackGeneration != nil {
                 let snapshot = await speechAudioOutputHost.clear()
                 guard isCurrentRealtimeBrainRoute(
@@ -2433,10 +2858,30 @@ final class AppController: ObservableObject {
                 ) else { return }
                 speechAudioOutputHostSnapshot = snapshot
             }
+            realtimeBrainSubtitlePresentation.retire(
+                realtimeBrainPlaybackEventIdentity
+            )
+            syncRealtimeBrainSubtitlePresentation()
             realtimeBrainPlaybackResponseID = nil
             realtimeBrainPlaybackEventIdentity = nil
             realtimeBrainPlaybackProviderFinishedResponseID = nil
             realtimeBrainPlaybackGeneration = nil
+            #if DEBUG
+            let recoverableErrorCode = Self.realtimeResidentBrainErrorCode(
+                error
+            )
+            realtimeBrainRecoverableResponseErrorCount &+= 1
+            lastRealtimeBrainRecoverableResponseErrorCode =
+                recoverableErrorCode
+            recordRealtimeSpeechDiagnostic(
+                source: .providerEvent,
+                category: "recoverable_response_error",
+                routeKind: .realtimeBrain,
+                turnGeneration: binding.session.generation,
+                disposition: "returned_to_listening",
+                errorCode: recoverableErrorCode
+            )
+            #endif
             updateRealtimeFullDuplexSpeechStatus(
                 .listening,
                 generation: binding.session.generation,
@@ -2456,11 +2901,18 @@ final class AppController: ObservableObject {
                 expectedSession: binding.session
             )
         case .sessionClosed, .cancelled:
-            break
-        case .userSpeechStarted, .userSpeechStopped, .userTranscriptPartial,
-             .residentTextDelta, .residentTextFinal,
-             .residentSpeakingStarted, .residentSemanticFinal,
-             .toolCall:
+            resetRealtimeBrainMissingSpeechStopPresentation()
+            realtimeBrainSubtitlePresentation.retire(
+                realtimeBrainPlaybackEventIdentity
+            )
+            syncRealtimeBrainSubtitlePresentation()
+        case .userSpeechStarted:
+            observeRealtimeBrainUserSpeechStarted()
+        case .userSpeechStopped:
+            observeRealtimeBrainUserSpeechStopped(event.identity)
+        case .residentSpeakingStarted:
+            cancelRealtimeBrainMissingSpeechStopPresentation()
+        case .userTranscriptPartial, .toolCall:
             break
         }
         if isCurrentRealtimeBrainRoute(
@@ -2481,6 +2933,7 @@ final class AppController: ObservableObject {
                   attemptID: attemptID,
                   session: binding.session
               ) else { return }
+        cancelRealtimeBrainMissingSpeechStopPresentation()
         if let current = realtimePassiveBackchannelPresentation,
            current.session == presentation.session,
            current.contextRevision == presentation.contextRevision {
@@ -2811,6 +3264,10 @@ final class AppController: ObservableObject {
                 visualStateMode: ResidentVisualIntent.speaking.rawValue
             )
         case .playbackCompleted:
+            realtimeBrainSubtitlePresentation.retire(
+                realtimeBrainPlaybackEventIdentity
+            )
+            syncRealtimeBrainSubtitlePresentation()
             realtimeBrainPlaybackResponseID = nil
             realtimeBrainPlaybackEventIdentity = nil
             realtimeBrainPlaybackProviderFinishedResponseID = nil
@@ -2922,6 +3379,10 @@ final class AppController: ObservableObject {
 
         let transitionID = UUID()
         realtimeBrainGenerationTransitionID = transitionID
+        realtimeBrainSubtitlePresentation.retire(
+            realtimeBrainPlaybackEventIdentity
+        )
+        syncRealtimeBrainSubtitlePresentation()
 
         realtimeBrainInputBridgeSnapshot = await realtimeBrainInputBridge
             .suspendForGenerationTransition(session: binding.session)
@@ -3041,6 +3502,7 @@ final class AppController: ObservableObject {
         }
         realtimeBrainGenerationTransitionID = nil
         realtimeBrainGenerationTransitionTask = nil
+        resetRealtimeBrainMissingSpeechStopPresentation()
         realtimePassiveBackchannelPresentation = nil
         updateRealtimeFullDuplexSpeechStatus(
             .listening,
@@ -3074,6 +3536,7 @@ final class AppController: ObservableObject {
 
         realtimeBrainRouteAttemptID = nil
         realtimeBrainStopping = true
+        resetRealtimeBrainMissingSpeechStopPresentation()
         updateRealtimeFullDuplexSpeechStatus(
             .stopping,
             generation: binding?.session.generation,
@@ -3085,6 +3548,8 @@ final class AppController: ObservableObject {
         realtimeBrainPlaybackProviderFinishedResponseID = nil
         realtimeBrainPlaybackGeneration = nil
         realtimePassiveBackchannelPresentation = nil
+        realtimeBrainSubtitlePresentation.reset()
+        syncRealtimeBrainSubtitlePresentation()
         resumeRealtimeBrainPlaybackDrainWaiter()
 
         realtimeBrainInputBridgeSnapshot = await realtimeBrainInputBridge
@@ -3154,6 +3619,7 @@ final class AppController: ObservableObject {
             category: finalErrorCode == nil
                 ? "realtime_brain_route_stopped"
                 : "realtime_brain_route_failed",
+            routeKind: .realtimeBrain,
             turnGeneration: closeIdentity?.generation,
             stateAfter: finalPhase.rawValue,
             errorCode: finalErrorCode
@@ -3188,6 +3654,7 @@ final class AppController: ObservableObject {
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
             category: "realtime_brain_route_start_failed",
+            routeKind: .realtimeBrain,
             stateAfter: FormalSpeechRoutePhase.failed.rawValue,
             errorCode: errorCode
         )
@@ -3230,7 +3697,58 @@ final class AppController: ObservableObject {
         }
     }
 
+    private func syncRealtimeBrainSubtitlePresentation() {
+        let displayText = realtimeBrainSubtitlePresentation.displayText
+        let subtitleState = displayText.map {
+            ParticleSubtitleState(text: $0, phase: .showing)
+        } ?? .hidden
+        if particleSubtitleState != subtitleState {
+            particleSubtitleState = subtitleState
+            #if DEBUG
+            let identity = realtimeBrainSubtitlePresentation.identity
+            recordRealtimeSpeechDiagnostic(
+                source: .subtitle,
+                category: displayText == nil
+                    ? "formal_subtitle_hidden"
+                    : "formal_subtitle_presented",
+                routeKind: .realtimeBrain,
+                turnGeneration: identity?.session.generation
+                    ?? realtimeBrainInputBinding?.session.generation,
+                disposition: "accepted_formal_realtime_event",
+                responseCorrelationHash: identity?.responseID.map {
+                    String($0.rawValue.uuidString.prefix(8))
+                },
+                byteCount: displayText?.utf8.count
+            )
+            #endif
+        }
+        refreshParticleDebugSnapshot()
+    }
+
     #if DEBUG
+    private static func realtimeResidentBrainEventCategory(
+        _ kind: RealtimeResidentBrainEventKind
+    ) -> String {
+        switch kind {
+        case .sessionReady: "session_ready"
+        case .sessionClosed: "session_closed"
+        case .error: "response_error"
+        case .userSpeechStarted: "user_speech_started"
+        case .userSpeechStopped: "user_speech_stopped"
+        case .userTranscriptPartial: "user_transcript_partial"
+        case .userTranscriptFinal: "user_transcript_final"
+        case .residentTextDelta: "resident_text_delta"
+        case .residentTextFinal: "resident_text_final"
+        case .residentAudioDelta: "resident_audio_delta"
+        case .residentSpeakingStarted: "resident_speaking_started"
+        case .residentSpeakingStopped: "resident_speaking_stopped"
+        case .residentSemanticFinal: "resident_semantic_final"
+        case .toolCall: "tool_call"
+        case .interruptionProposed: "interruption_proposed"
+        case .cancelled: "cancelled"
+        }
+    }
+
     func startFormalSpeechRoute() async {
         guard formalSpeechRouteGeneration == nil else { return }
         guard speechHostLifecycleOperationCount == 0 else {
@@ -4599,6 +5117,11 @@ final class AppController: ObservableObject {
     }
 
     private func syncRealtimeSpeechPresentation() {
+        if realtimeBrainRouteAttemptID != nil
+            || realtimeBrainInputBinding != nil {
+            syncRealtimeBrainSubtitlePresentation()
+            return
+        }
         let previousState = realtimeSpeechStateSnapshot.state
         let stateSnapshot = orchestrationKernel
             .realtimeSpeechStateSnapshot()
@@ -4758,27 +5281,54 @@ final class AppController: ObservableObject {
                     >= 1_000_000_000 else {
             return
         }
-        let forwarded = speechInputBridgeSnapshot.forwardedFrameCount
-        let rejected = speechInputBridgeSnapshot.runtimeRejectedFrameCount
+        let isRealtimeBrainRoute =
+            realtimeFullDuplexSpeechStatus.phase.isActive
+                || realtimeBrainInputBinding != nil
+                || realtimeBrainRouteAttemptID != nil
+        let forwarded = isRealtimeBrainRoute
+            ? realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+            : speechInputBridgeSnapshot.forwardedFrameCount
+        let rejected = isRealtimeBrainRoute
+            ? realtimeBrainInputBridgeSnapshot.runtimeRejectedFrameCount
+            : speechInputBridgeSnapshot.runtimeRejectedFrameCount
         let generated = speechAudioHostSnapshot.generatedFrameCount
         let dropped = speechAudioHostSnapshot.droppedFrameCount
         recordRealtimeSpeechDiagnostic(
             source: .inputBridge,
             category: "one_second_aggregate",
-            interactionShortID:
-                speechInputBridgeSnapshot.interactionShortID,
-            turnNumber: realtimeSpeechStateSnapshot.currentTurnNumber,
-            turnGeneration: realtimeSpeechSubtitleSnapshot.turnGeneration,
+            routeKind: isRealtimeBrainRoute ? .realtimeBrain : .nativeSpeech,
+            interactionShortID: isRealtimeBrainRoute
+                ? realtimeBrainInputBridgeSnapshot.sessionShortID
+                : speechInputBridgeSnapshot.interactionShortID,
+            turnNumber: isRealtimeBrainRoute
+                ? nil : realtimeSpeechStateSnapshot.currentTurnNumber,
+            turnGeneration: isRealtimeBrainRoute
+                ? realtimeBrainInputBinding?.session.generation
+                : realtimeSpeechSubtitleSnapshot.turnGeneration,
             queueDepth: speechAudioHostSnapshot.queuedFrameCount,
             inputForwardedFrameDelta:
-                forwarded &- lastDiagnosticInputForwardedCount,
+                Self.diagnosticCounterDelta(
+                    forwarded,
+                    since: lastDiagnosticInputForwardedCount
+                ),
             inputRejectedFrameDelta:
-                rejected &- lastDiagnosticInputRejectedCount,
+                Self.diagnosticCounterDelta(
+                    rejected,
+                    since: lastDiagnosticInputRejectedCount
+                ),
             captureGeneratedFrameDelta:
-                generated &- lastDiagnosticCaptureGeneratedCount,
+                Self.diagnosticCounterDelta(
+                    generated,
+                    since: lastDiagnosticCaptureGeneratedCount
+                ),
             captureDroppedFrameDelta:
-                dropped &- lastDiagnosticCaptureDroppedCount,
-            errorCode: speechInputBridgeSnapshot.lastError,
+                Self.diagnosticCounterDelta(
+                    dropped,
+                    since: lastDiagnosticCaptureDroppedCount
+                ),
+            errorCode: isRealtimeBrainRoute
+                ? realtimeBrainInputBridgeSnapshot.lastError
+                : speechInputBridgeSnapshot.lastError,
             nowNanoseconds: now
         )
         lastDiagnosticAggregateNanoseconds = now
@@ -4788,9 +5338,17 @@ final class AppController: ObservableObject {
         lastDiagnosticCaptureDroppedCount = dropped
     }
 
+    private static func diagnosticCounterDelta(
+        _ current: UInt64,
+        since previous: UInt64
+    ) -> UInt64 {
+        current >= previous ? current - previous : current
+    }
+
     private func recordRealtimeSpeechDiagnostic(
         source: RealtimeSpeechDiagnosticSource,
         category: String,
+        routeKind: NativeSpeechDiagnosticRouteKind? = nil,
         interactionShortID: String? = nil,
         turnNumber: UInt64? = nil,
         turnGeneration: UInt64? = nil,
@@ -4823,6 +5381,7 @@ final class AppController: ObservableObject {
         realtimeSpeechDiagnosticTimeline.append(
             source: source,
             category: category,
+            routeKind: routeKind?.rawValue,
             interactionShortID: interactionShortID,
             turnNumber: turnNumber,
             turnGeneration: turnGeneration,
@@ -4873,6 +5432,7 @@ final class AppController: ObservableObject {
             realtimeSpeechDiagnosticTimeline.append(
                 source: source,
                 category: event.category,
+                routeKind: event.routeKind?.rawValue,
                 interactionShortID: event.interactionShortID,
                 turnNumber: event.turnNumber,
                 turnGeneration: event.turnGeneration,

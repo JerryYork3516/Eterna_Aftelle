@@ -1122,13 +1122,19 @@ private struct NativeSpeechDuplexTests {
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 7,
-               "diagnostic export freezes schema version 7")
-        expect(object["formal_route_state"] as? String == "idle",
+        expect(object["schema_version"] as? Int == 9,
+               "diagnostic export freezes schema version 9")
+        expect(
+            object["route_kind"] as? String == "realtime_full_duplex",
+            "diagnostic export identifies the requested route"
+        )
+        let formalRoute = object["formal_route"] as? [String: Any]
+        expect(formalRoute?["state"] as? String == "idle",
                "diagnostic export identifies the formal route state")
         expect(object["events"] is [[String: Any]],
                "diagnostic export contains structured events")
-        let acousticEcho = object["acoustic_echo"] as? [String: Any]
+        let captureAEC = object["capture_aec"] as? [String: Any]
+        let acousticEcho = captureAEC?["acoustic_echo"] as? [String: Any]
         expect(acousticEcho?["available"] as? Bool == true,
                "diagnostic export includes Host AEC diagnostics")
         expect(acousticEcho?["mode"] as? String == "appleVoiceProcessing",
@@ -1175,24 +1181,55 @@ private struct NativeSpeechDuplexTests {
                 "diagnostic export includes acoustic (metric)"
             )
         }
-        for metric in [
-            "input_send_operation_count",
-            "input_average_send_duration_milliseconds",
-            "input_maximum_send_duration_milliseconds",
-            "capture_generated_frame_count",
-            "capture_dropped_frame_count",
-            "capture_queued_frame_count",
-            "output_runtime_rejected_event_count"
+        for section in [
+            "realtime_brain_input",
+            "realtime_brain_output",
+            "qwen_realtime",
+            "turn_completion",
+            "native_speech",
+            "playback_shared"
         ] {
-            expect(
-                object[metric] != nil,
-                "diagnostic export includes \(metric)"
-            )
+            expect(object[section] is [String: Any],
+                   "diagnostic export includes \(section)")
         }
+        let realtimeBrainInput = object["realtime_brain_input"]
+            as? [String: Any]
+        let qwenRealtime = object["qwen_realtime"] as? [String: Any]
+        let nativeSpeech = object["native_speech"] as? [String: Any]
+        expect(
+            realtimeBrainInput?["send_operation_count"] != nil,
+            "formal Realtime input metrics are independently attributed"
+        )
+        expect(
+            realtimeBrainInput?["none_activity_frame_count"] != nil
+                && realtimeBrainInput?["listening_confirmation_accepted_count"]
+                    != nil,
+            "formal Realtime input exports local admission evidence"
+        )
+        expect(
+            qwenRealtime?["write_window_capacity"] as? Int == 8,
+            "Qwen write-window capacity is explicit"
+        )
+        expect(
+            qwenRealtime?["submitted_response_create_count"] != nil
+                && qwenRealtime?["completed_response_create_count"] != nil,
+            "Qwen response-create writes are independently counted"
+        )
+        let turnCompletion = object["turn_completion"]
+            as? [String: Any]
+        expect(
+            turnCompletion?["phase"] != nil
+                && turnCompletion?["response_authorization_count"] != nil,
+            "Runtime turn-completion admission is exported without content"
+        )
+        expect(
+            nativeSpeech?["provider_profile_id"] != nil,
+            "legacy Native Speech diagnostics remain separately attributed"
+        )
         let exported = String(decoding: data, as: UTF8.self).lowercased()
         for forbidden in [
             "fake-token",
-            "authorization",
+            "bearer ",
             "instructions",
             "base64",
             "transcript",

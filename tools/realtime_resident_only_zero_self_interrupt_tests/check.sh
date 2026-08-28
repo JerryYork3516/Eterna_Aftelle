@@ -34,6 +34,7 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r843-semantic-fusion-only" ] \
     && [ "$test_mode" != "r844-classifier-only" ] \
     && [ "$test_mode" != "r844-response-policy-only" ] \
+    && [ "$test_mode" != "r852-subtitle-diagnostics-only" ] \
     && [ "$test_mode" != "r851-cross-node-only" ] \
     && [ "$test_mode" != "r851-randomized-only" ] \
     && [ "$test_mode" != "r851-key-repeat" ]; then
@@ -137,6 +138,8 @@ elif [ "$test_mode" = "r844-classifier-only" ]; then
   runner_arguments+=("--r844-classifier-only")
 elif [ "$test_mode" = "r844-response-policy-only" ]; then
   runner_arguments+=("--r844-response-policy-only")
+elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
+  runner_arguments+=("--r852-subtitle-diagnostics-only")
 elif [ "$test_mode" = "r851-cross-node-only" ]; then
   runner_arguments+=("--r851-cross-node-only")
 elif [ "$test_mode" = "r851-randomized-only" ]; then
@@ -242,13 +245,13 @@ if [ "$test_mode" = "r851-key-repeat" ]; then
   rg -qx 'r851_key_suite_repeat_subprocesses=18' "$output"
   rg -qx 'r851_key_suite_repeat_failures=0' "$output"
 elif [ "$test_mode" = "r851-cross-node-only" ]; then
-  rg -qx 'realtime_total_cross_node_cases=11' "$output"
+  rg -qx 'realtime_total_cross_node_cases=12' "$output"
   cross_node_checks="$(
     awk -F= '/^realtime_total_cross_node_checks=/ { print $2 }' "$output"
   )"
   [ -n "$cross_node_checks" ]
   [ "$cross_node_checks" -gt 0 ]
-  rg -qx 'r851_cross_node_executable_scenarios=11' "$output"
+  rg -qx 'r851_cross_node_executable_scenarios=12' "$output"
   rg -qx 'r851_cross_node_failures=0' "$output"
   rg -qx 'r851_rapid_consecutive_turns=20' "$output"
   rg -qx 'r851_repeated_interruption_cycles=10' "$output"
@@ -294,6 +297,45 @@ elif [ "$test_mode" = "r851-randomized-only" ]; then
   rg -qx 'r851_randomized_false_persistence_writes=0' "$output"
   rg -qx 'r851_randomized_generation_drift=0' "$output"
   rg -qx 'r851_randomized_lease_drift=0' "$output"
+elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
+  rg -qx 'realtime_formal_subtitle_diagnostics_cases=4' "$output"
+  subtitle_checks="$(
+    awk -F= '/^realtime_formal_subtitle_diagnostics_checks=/ { print $2 }' \
+      "$output"
+  )"
+  [ -n "$subtitle_checks" ]
+  [ "$subtitle_checks" -gt 0 ]
+  rg -qx 'r852_subtitle_delta_presentations=2' "$output"
+  rg -qx 'r852_subtitle_final_presentations=1' "$output"
+  rg -qx 'r852_user_final_fallback_presentations=0' "$output"
+  rg -qx 'r852_playback_completion_resurrections=0' "$output"
+  rg -qx 'r852_audio_first_resurrections=0' "$output"
+  rg -qx 'r852_interruption_resurrections=0' "$output"
+  rg -qx 'r852_old_identity_resurrections=0' "$output"
+  rg -qx 'r852_recoverable_response_errors=1' "$output"
+  rg -qx 'r852_terminal_stops=0' "$output"
+  rg -qx 'r852_post_error_response_rebound=1' "$output"
+  rg -qx 'r852_provider_closes_on_response_error=0' "$output"
+
+  subtitle_source="$({
+    awk '/private static func testR852FormalRealtimeSubtitleAndDiagnostics/ { active = 1 }
+         /private static func testR833BargeInLatencyAndStaleClosure/ { active = 0 }
+         active' "$test_source"
+  })"
+  rg -q 'kind: \.residentTextDelta' <<< "$subtitle_source"
+  rg -q 'kind: \.residentTextFinal' <<< "$subtitle_source"
+  rg -q 'particleSubtitleState' <<< "$subtitle_source"
+  rg -q 'kind: \.error\(\.providerFailure\)' <<< "$subtitle_source"
+  rg -q 'recoverable_response_error' <<< "$subtitle_source"
+  rg -q 'submitTrueNearEndThroughProductionChain' <<< "$subtitle_source"
+  rg -q 'submitSemanticProposal' <<< "$subtitle_source"
+  if rg -q \
+      'syncRealtimeBrainSubtitlePresentation\(|syncRealtimeSpeechPresentation\(|consumeRealtimeResidentBrainEvent\(|speechAudioOutputHost\.clear\(|stopRealtimeResidentBrainRoute\(' \
+      <<< "$subtitle_source"; then
+    echo "r852_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  echo "r852_formal_production_fixture=PASS"
 elif [ "$test_mode" = "r844-classifier-only" ]; then
   rg -qx 'realtime_backchannel_classifier_cases=43' "$output"
   rg -qx 'realtime_backchannel_classifier_checks=46' "$output"
@@ -640,10 +682,10 @@ elif [ "$test_mode" = "r841-double-talk-only" ]; then
 
   r841_source="$({
     awk '/private static func testR841DoubleTalkAcousticDetermination/ { active = 1 }
-         /private static func testR833BargeInLatencyAndStaleClosure/ { active = 0 }
+         /private static func testR852FormalRealtimeSubtitleAndDiagnostics/ { active = 0 }
          active' "$test_source"
     awk '/private static func submitR841DoubleTalkThroughProductionChain/ { active = 1 }
-         /private static func testR833BargeInLatencyAndStaleClosure/ { active = 0 }
+         /private static func testR852FormalRealtimeSubtitleAndDiagnostics/ { active = 0 }
          active' "$test_source"
   })"
   if rg -q \
@@ -978,6 +1020,8 @@ elif [ "$test_mode" = "r844-classifier-only" ]; then
   echo "realtime_backchannel_classifier=PASS"
 elif [ "$test_mode" = "r844-response-policy-only" ]; then
   echo "realtime_backchannel_response_policy=PASS"
+elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
+  echo "realtime_formal_subtitle_diagnostics=PASS"
 elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
   echo "realtime_semantic_turn_taking=PASS"
 elif [ "$test_mode" = "r851-cross-node-only" ]; then

@@ -1,5 +1,8 @@
 @preconcurrency import AVFoundation
 import Foundation
+#if DEBUG
+import OSLog
+#endif
 
 nonisolated enum MacSpeechAudioInputFormat {
     static let sampleRate: Double = 24_000
@@ -594,8 +597,16 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var isRenderReferenceTapInstalled = false
     private var outputFormat: AVAudioFormat?
     private var routeRebuildWasConfigured = false
+    private var outputPresentationLatencySeconds = 0.0
+    private var capturePresentationLatencySeconds = 0.0
     private var captureGenerationFence =
         MacSpeechCaptureGenerationFence()
+    #if DEBUG
+    private static let audioUnitDiagnosticLogger = Logger(
+        subsystem: "com.eterna.aftelle",
+        category: "AudioUnitAttribution"
+    )
+    #endif
 
     init(
         audioProcessingMode: MacSpeechAudioProcessingMode = .webRTCAEC3,
@@ -656,6 +667,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     frameBuffer: frameBuffer
                 )
             }
+            logAudioUnitLifecycle("capture_tap_installed")
             do {
                 if !engine.isRunning {
                     engine.prepare()
@@ -666,6 +678,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 tearDownIfIdle()
                 throw MacSpeechAudioCaptureError.engineStartFailed
             }
+            refreshAcousticEchoPresentationLatencyLocked()
             if !isOutputPlaying,
                audioProcessingMode == .appleVoiceProcessing {
                 inputNode.isVoiceProcessingInputMuted = false
@@ -681,6 +694,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             guard isCaptureActive, let engine else { return }
             engine.inputNode.removeTap(onBus: 0)
             isCaptureActive = false
+            logAudioUnitLifecycle("capture_tap_removed")
             tearDownIfIdle()
         }
     }
@@ -748,6 +762,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 if !playerNode.isPlaying {
                     playerNode.play()
                 }
+                refreshAcousticEchoPresentationLatencyLocked()
             } catch {
                 isOutputPlaying = false
                 acousticEchoHost.playbackStopped()
@@ -861,6 +876,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         captureAECConverter = nil
         captureOutputConverter = nil
         renderConverterLock.withLock { renderAECConverter = nil }
+        resetAcousticEchoPresentationLatencyLocked()
         isConfigured = false
     }
 
@@ -878,10 +894,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             guard isConfigured else { return }
             routeRebuildWasConfigured = true
+            logAudioUnitLifecycle("route_will_rebuild")
             if let playerNode {
                 removeRenderReferenceTapLocked(playerNode: playerNode)
             }
             acousticEchoHost.routeWillRebuild()
+            resetAcousticEchoPresentationLatencyLocked()
             captureAECConverter = nil
             captureOutputConverter = nil
             renderConverterLock.withLock { renderAECConverter = nil }
@@ -909,10 +927,15 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     }
                 }
                 _ = acousticEchoHost.routeDidRebuild()
+                if let engine, engine.isRunning {
+                    refreshAcousticEchoPresentationLatencyLocked()
+                }
+                logAudioUnitLifecycle("route_did_rebuild")
             } catch {
                 captureAECConverter = nil
                 captureOutputConverter = nil
                 renderConverterLock.withLock { renderAECConverter = nil }
+                logAudioUnitLifecycle("route_rebuild_failed")
             }
         }
     }
@@ -1059,6 +1082,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             )
         }
         isRenderReferenceTapInstalled = true
+        logAudioUnitLifecycle("render_tap_installed")
     }
 
     private func removeRenderReferenceTapLocked(
@@ -1067,6 +1091,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         guard isRenderReferenceTapInstalled else { return }
         playerNode.removeTap(onBus: 0)
         isRenderReferenceTapInstalled = false
+        logAudioUnitLifecycle("render_tap_removed")
     }
 
     private func processRenderedOutput(
@@ -1089,13 +1114,58 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     private func updateAcousticEchoDelayLocked() {
-        guard let engine else { return }
         acousticEchoHost.updateDelay(
             outputPresentationLatencySeconds:
-                engine.outputNode.presentationLatency,
+                outputPresentationLatencySeconds,
             capturePresentationLatencySeconds:
-                engine.inputNode.presentationLatency
+                capturePresentationLatencySeconds
         )
+    }
+
+    private func refreshAcousticEchoPresentationLatencyLocked() {
+        guard let engine, engine.isRunning else { return }
+        #if DEBUG
+        let diagnosticTimestamp = DispatchTime.now().uptimeNanoseconds
+        Self.audioUnitDiagnosticLogger.debug(
+            "event=audio_unit_latency_read phase=output_will_read sample=\(diagnosticTimestamp)"
+        )
+        #endif
+        let outputPresentationLatency = engine.outputNode.presentationLatency
+        #if DEBUG
+        Self.audioUnitDiagnosticLogger.debug(
+            "event=audio_unit_latency_read phase=output_did_read sample=\(diagnosticTimestamp) value_ms=\(outputPresentationLatency * 1_000, format: .fixed(precision: 3))"
+        )
+        Self.audioUnitDiagnosticLogger.debug(
+            "event=audio_unit_latency_read phase=input_will_read sample=\(diagnosticTimestamp)"
+        )
+        #endif
+        let capturePresentationLatency = engine.inputNode.presentationLatency
+        outputPresentationLatencySeconds = outputPresentationLatency
+        capturePresentationLatencySeconds = capturePresentationLatency
+        #if DEBUG
+        Self.audioUnitDiagnosticLogger.debug(
+            "event=audio_unit_latency_read phase=input_did_read sample=\(diagnosticTimestamp) value_ms=\(capturePresentationLatency * 1_000, format: .fixed(precision: 3))"
+        )
+        #endif
+        acousticEchoHost.updateDelay(
+            outputPresentationLatencySeconds:
+                outputPresentationLatencySeconds,
+            capturePresentationLatencySeconds:
+                capturePresentationLatencySeconds
+        )
+    }
+
+    private func resetAcousticEchoPresentationLatencyLocked() {
+        outputPresentationLatencySeconds = 0
+        capturePresentationLatencySeconds = 0
+    }
+
+    private func logAudioUnitLifecycle(_ phase: String) {
+        #if DEBUG
+        Self.audioUnitDiagnosticLogger.debug(
+            "event=audio_unit_lifecycle phase=\(phase, privacy: .public) configured=\(self.isConfigured) capture_active=\(self.isCaptureActive) output_prepared=\(self.isOutputPrepared) output_playing=\(self.isOutputPlaying) render_tap=\(self.isRenderReferenceTapInstalled)"
+        )
+        #endif
     }
 
     private static func hostTimeNanoseconds(_ time: AVAudioTime) -> UInt64? {

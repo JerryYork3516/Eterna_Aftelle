@@ -652,6 +652,18 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r844ExtraPlaybackClears = 0
     private static var r844ExtraGenerationAdvances = 0
 
+    private static var r852SubtitleDeltaPresentations = 0
+    private static var r852SubtitleFinalPresentations = 0
+    private static var r852UserFinalFallbackPresentations = 0
+    private static var r852PlaybackCompletionResurrections = 0
+    private static var r852AudioFirstResurrections = 0
+    private static var r852InterruptionResurrections = 0
+    private static var r852OldIdentityResurrections = 0
+    private static var r852RecoverableResponseErrors = 0
+    private static var r852TerminalStops = 0
+    private static var r852PostErrorResponseRebound = 0
+    private static var r852ProviderClosesOnResponseError = 0
+
     private static var r851CrossNodeScenarios = 0
     private static var r851RapidTurns = 0
     private static var r851RepeatedInterruptionCycles = 0
@@ -693,6 +705,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r843-semantic-fusion-only",
                         "--r844-classifier-only",
                         "--r844-response-policy-only",
+                        "--r852-subtitle-diagnostics-only",
                         "--r851-cross-node-only",
                         "--r851-randomized-only"
                     ].contains(CommandLine.arguments[2])) else {
@@ -703,6 +716,26 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2]
+                    == "--r852-subtitle-diagnostics-only" {
+                try await testR852FormalRealtimeSubtitleAndDiagnostics(
+                    fixture: fixture
+                )
+                print("realtime_formal_subtitle_diagnostics_cases=\(cases)")
+                print("realtime_formal_subtitle_diagnostics_checks=\(checks)")
+                print("r852_subtitle_delta_presentations=\(r852SubtitleDeltaPresentations)")
+                print("r852_subtitle_final_presentations=\(r852SubtitleFinalPresentations)")
+                print("r852_user_final_fallback_presentations=\(r852UserFinalFallbackPresentations)")
+                print("r852_playback_completion_resurrections=\(r852PlaybackCompletionResurrections)")
+                print("r852_audio_first_resurrections=\(r852AudioFirstResurrections)")
+                print("r852_interruption_resurrections=\(r852InterruptionResurrections)")
+                print("r852_old_identity_resurrections=\(r852OldIdentityResurrections)")
+                print("r852_recoverable_response_errors=\(r852RecoverableResponseErrors)")
+                print("r852_terminal_stops=\(r852TerminalStops)")
+                print("r852_post_error_response_rebound=\(r852PostErrorResponseRebound)")
+                print("r852_provider_closes_on_response_error=\(r852ProviderClosesOnResponseError)")
+                return
+            }
             if CommandLine.arguments[2] == "--r851-cross-node-only" {
                 try await testR851CrossNodeTotalRegression(fixture: fixture)
                 print("realtime_total_cross_node_cases=\(r851CrossNodeScenarios)")
@@ -1015,6 +1048,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await testR851NormalListeningSubstantive(fixture: fixture)
         r851CrossNodeScenarios += 1
 
+        try await testR851MissingStopPresentationRecovery(fixture: fixture)
+        r851CrossNodeScenarios += 1
+
         try await testR851NormalListeningPassive(fixture: fixture)
         r851CrossNodeScenarios += 1
 
@@ -1101,8 +1137,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await testR851DelayedProviderOrdering(fixture: fixture)
         r851CrossNodeScenarios += 1
 
-        expect(r851CrossNodeScenarios == 11,
-               "R8.5.1 executable covers eleven non-Tool scenarios")
+        expect(r851CrossNodeScenarios == 12,
+               "R8.5.1 executable covers twelve non-Tool scenarios")
         expect(r851DuplicateResponses == 0
                 && r851DuplicateInterrupts == 0
                 && r851DuplicateClears == 0
@@ -1136,6 +1172,104 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 && stack.controller.formalSpeechRouteDebugSnapshot.phase
                     == .listening,
                "R8.5.1 normal substantive completes output and Playback")
+        try await close(stack)
+    }
+
+    private static func testR851MissingStopPresentationRecovery(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(
+            fixture: fixture,
+            startsResidentPlayback: false
+        )
+        let turnID = RealtimeBrainTurnID()
+        let createBaseline = await stack.provider.createCount()
+        let interruptBaseline = await stack.provider.interruptCount()
+        let cancelBaseline = await stack.provider.cancelCount()
+        let clearBaseline = stack.outputPlayer.clearScheduledPlaybackCount
+        let leaseBaseline = stack.runtime.activeBrainLeaseForTesting()
+        try await admitR844ListeningTurn(
+            stack: stack,
+            session: stack.session,
+            sourceTurnID: turnID,
+            sequence: 2,
+            seed: 85_106,
+            label: "missing-stop presentation recovery"
+        )
+        let firstFinalAt = monotonicNow()
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 3,
+            kind: .userTranscriptFinal("缺少 speech stopped"),
+            label: "missing-stop final"
+        )
+        await waitUntilOnMainActor("R8.5.1 missing-stop Thinking") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                == .processing
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        let duplicateStartAt = monotonicNow()
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 4,
+            kind: .userSpeechStarted,
+            label: "duplicate missing-stop start"
+        )
+        try? await Task.sleep(for: .milliseconds(200))
+        let mismatchedStopAt = monotonicNow()
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: RealtimeBrainTurnID(),
+            sequence: 5,
+            kind: .userSpeechStopped,
+            label: "mismatched missing-stop stop"
+        )
+        try? await Task.sleep(for: .milliseconds(300))
+        let duplicateFinalAt = monotonicNow()
+        await enqueueR843Activity(
+            stack: stack,
+            session: stack.session,
+            turnID: turnID,
+            sequence: 6,
+            kind: .userTranscriptFinal("缺少 speech stopped"),
+            label: "duplicate missing-stop final"
+        )
+        await waitUntilOnMainActor(
+            "R8.5.1 missing-stop recovery",
+            timeoutNanoseconds: 850_000_000
+        ) {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+                && stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot().phase
+                    == .idle
+        }
+        let recoveryLatency = monotonicNow() - firstFinalAt
+        expect(duplicateStartAt - firstFinalAt < 1_000_000_000
+                && mismatchedStopAt - firstFinalAt < 1_000_000_000
+                && duplicateFinalAt - firstFinalAt < 1_000_000_000,
+               "R8.5.1 duplicate activity arrives before Runtime expiry")
+        let createAfter = await stack.provider.createCount()
+        let interruptAfter = await stack.provider.interruptCount()
+        let cancelAfter = await stack.provider.cancelCount()
+        expect(createAfter == createBaseline
+                && interruptAfter == interruptBaseline
+                && cancelAfter == cancelBaseline
+                && stack.outputPlayer.clearScheduledPlaybackCount
+                    == clearBaseline,
+               "R8.5.1 missing-stop expiry has no response or interruption side effects")
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == stack.session.generation
+                && stack.runtime.activeBrainLeaseForTesting()
+                    == leaseBaseline,
+               "R8.5.1 missing-stop recovery preserves generation and lease")
+        expect(recoveryLatency < 1_550_000_000,
+               "R8.5.1 duplicate activity does not postpone missing-stop recovery")
         try await close(stack)
     }
 
@@ -2015,7 +2149,34 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let dispositionBaseline = stack.runtime
             .realtimeUserTurnDispositionDebugSnapshot()
         var emittedPacketCount = 0
-        for _ in 0 ..< frameCount {
+        var emittedFrameCount = 0
+        let tailDeadline = monotonicNow()
+            + RealtimeAcousticInterruptionEligibilityGate
+                .residualTailWindowNanoseconds
+            + 2_000_000_000
+        while true {
+            let observation = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+            let residualTailExpired: Bool
+            if let lastAudible = observation
+                    .lastAudibleRenderHostTimeNanoseconds,
+               let captureTimestamp = observation
+                    .captureHostTimeNanoseconds {
+                residualTailExpired = captureTimestamp >= lastAudible
+                    && captureTimestamp - lastAudible
+                        >= RealtimeAcousticInterruptionEligibilityGate
+                            .residualTailWindowNanoseconds
+            } else {
+                residualTailExpired = false
+            }
+            if emittedFrameCount >= frameCount && residualTailExpired {
+                break
+            }
+            guard monotonicNow() < tailDeadline else {
+                fatalError(
+                    "timeout: R8.5.1 \(label) residual playback tail"
+                )
+            }
             let before = stack.acousticEchoHost
                 .acousticObservationSnapshot()
             stack.aecBackend.setCaptureOutput(silence)
@@ -2028,6 +2189,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 acousticBefore: before
             )
             emittedPacketCount += emission.packetCount
+            emittedFrameCount += 1
             try? await Task.sleep(for: .milliseconds(10))
         }
         let expectedPacketCount = emittedPacketCount
@@ -2083,12 +2245,107 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             .realtimeSpeechSubtitleSnapshot
         let acousticBaseline = stack.controller
             .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+        let forwardedBaseline = stack.controller
+            .realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+        let rejectedFrameBaseline = stack.controller
+            .realtimeBrainInputBridgeSnapshot.runtimeRejectedFrameCount
+        let sendBaseline = stack.controller
+            .realtimeBrainInputBridgeSnapshot.sendOperationCount
         await stack.provider.holdInterrupt()
         _ = try await submitTrueNearEndThroughProductionChain(stack: stack)
-        await waitUntil("R8.5.1 \(label) acoustic Bridge refresh") {
+        let acousticDeadline = monotonicNow() + 3_000_000_000
+        let continuedRender = signal(seed: 17, amplitude: 0.3)
+        let continuedNearEnd = signal(seed: 19, amplitude: 0.27)
+        let continuedCapture = zip(
+            continuedRender,
+            continuedNearEnd
+        ).map { render, nearEnd in
+            render * 0.8 + nearEnd
+        }
+        let continuedProcessed = zip(
+            continuedRender,
+            continuedNearEnd
+        ).map { render, nearEnd in
+            render * 0.05 + nearEnd
+        }
+        while true {
             await stack.controller.refreshMicrophoneAuthorization()
-            return await stack.controller.realtimeBrainInputBridgeSnapshot
-                .acousticEvidenceCount == acousticBaseline + 1
+            let bridge = stack.controller
+                .realtimeBrainInputBridgeSnapshot
+            if bridge.acousticEvidenceCount == acousticBaseline + 1 {
+                break
+            }
+            if bridge.acousticEvidenceCount > acousticBaseline + 1 {
+                fatalError(
+                    "FAIL: R8.5.1 \(label) forwarded duplicate acoustic evidence"
+                )
+            }
+            if monotonicNow() >= acousticDeadline {
+                let acoustic = stack.acousticEchoHost
+                    .acousticObservationSnapshot()
+                let evidence = stack.runtime
+                    .realtimeInterruptionEvidenceDebugSnapshot()
+                let eligibility = bridge
+                    .lastAcousticEligibilityDisposition ?? "nil"
+                let forward = bridge
+                    .lastAcousticEvidenceForwardDisposition ?? "nil"
+                fatalError(
+                    "timeout: R8.5.1 \(label) acoustic Bridge refresh "
+                        + "baseline=\(acousticBaseline) "
+                        + "current=\(bridge.acousticEvidenceCount) "
+                        + "observed="
+                        + "\(bridge.residentAcousticObservationCount) "
+                        + "rejected="
+                        + "\(bridge.rejectedResidentAcousticObservationCount) "
+                        + "dropped="
+                        + "\(bridge.droppedResidentAcousticObservationCount) "
+                        + "eligibility=\(eligibility) "
+                        + "forward=\(forward) "
+                        + "forwarded_delta="
+                        + "\(bridge.forwardedFrameCount - forwardedBaseline) "
+                        + "send_delta="
+                        + "\(bridge.sendOperationCount - sendBaseline) "
+                        + "runtime_rejected_delta="
+                        + "\(bridge.runtimeRejectedFrameCount - rejectedFrameBaseline) "
+                        + "source_gated_frames="
+                        + "\(bridge.sourceGatedNearEndFrameCount) "
+                        + "classification="
+                        + "\(acoustic.inputClassification.rawValue) "
+                        + "playback=\(acoustic.isPlaybackActive) "
+                        + "source_gate=\(acoustic.sourceGateOpen) "
+                        + "source_epoch=\(acoustic.sourceGateEpoch) "
+                        + "raw_rms=\(acoustic.rawCaptureRMS) "
+                        + "processed_rms="
+                        + "\(acoustic.processedCaptureRMS) "
+                        + "aec_active=\(acoustic.aecActive) "
+                        + "render_available="
+                        + "\(acoustic.renderReferenceAvailable) "
+                        + "alignment_locked="
+                        + "\(acoustic.sourceAlignmentLocked) "
+                        + "alignment_delay="
+                        + "\(String(describing: acoustic.sourceAlignmentDelayMilliseconds)) "
+                        + "capture_timestamp="
+                        + "\(String(describing: acoustic.captureHostTimeNanoseconds)) "
+                        + "render_timestamp="
+                        + "\(String(describing: acoustic.renderHostTimeNanoseconds)) "
+                        + "runtime_session_match="
+                        + "\(evidence.session == session) "
+                        + "runtime_acoustic="
+                        + "\(evidence.hasAcousticEvidence)"
+                )
+            }
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(continuedProcessed)
+            stack.acousticEchoHost.processRender(
+                continuedRender,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                continuedCapture,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            _ = try stack.capture.emit(processedSamples: processed)
+            try? await Task.sleep(for: .milliseconds(12))
         }
         await waitUntilOnMainActor("R8.5.1 \(label) acoustic evidence") {
             let evidence = stack.runtime
@@ -4224,12 +4481,25 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         r842CompletionWindowNanoseconds = stack.runtime
             .realtimeUtteranceCompletionDebugSnapshot()
             .completionWindowNanoseconds
+        await stack.controller.refreshMicrophoneAuthorization()
+        let confirmationBaseline = stack.controller
+            .realtimeBrainInputBridgeSnapshot
+            .listeningConfirmationAcceptedCount
         try await emitR842ListeningSamples(
             stack: stack,
             samples: signal(seed: seed, amplitude: 0.18),
             expectedClassification: .nearEndCandidate,
             label: "R8.4.4 \(label) production near-end"
         )
+        await waitUntil(
+            "R8.4.4 \(label) accepted Listening activity"
+        ) {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller
+                .realtimeBrainInputBridgeSnapshot
+                .listeningConfirmationAcceptedCount
+                > confirmationBaseline
+        }
         await enqueueR843Activity(
             stack: stack,
             session: session,
@@ -4239,12 +4509,54 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             kind: .userSpeechStarted,
             label: "R8.4.4 \(label) speech start"
         )
-        await waitUntilOnMainActor("R8.4.4 \(label) admission") {
+        let admissionDeadline = monotonicNow() + 3_000_000_000
+        while true {
             let snapshot = stack.runtime
                 .realtimeUtteranceCompletionDebugSnapshot()
-            return snapshot.phase == .speaking
-                && snapshot.session == session
-                && snapshot.sourceTurnID == sourceTurnID
+            if snapshot.phase == .speaking,
+               snapshot.session == session,
+               snapshot.sourceTurnID == sourceTurnID {
+                break
+            }
+            if monotonicNow() >= admissionDeadline {
+                await stack.controller.refreshMicrophoneAuthorization()
+                let bridge = stack.controller
+                    .realtimeBrainInputBridgeSnapshot
+                let acoustic = stack.acousticEchoHost
+                    .acousticObservationSnapshot()
+                fatalError(
+                    "timeout: R8.4.4 \(label) admission "
+                        + "phase=\(snapshot.phase.rawValue) "
+                        + "session_match=\(snapshot.session == session) "
+                        + "source_turn_match="
+                        + "\(snapshot.sourceTurnID == sourceTurnID) "
+                        + "pending_turn_match="
+                        + "\(snapshot.pendingStartTurnID == sourceTurnID) "
+                        + "claimed_listening="
+                        + "\(snapshot.claimedListeningAudioSequence) "
+                        + "provider_authorizations="
+                        + "\(snapshot.providerListeningAuthorizationCount) "
+                        + "input_forwarded=\(bridge.forwardedFrameCount) "
+                        + "input_none=\(bridge.noneActivityFrameCount) "
+                        + "input_listening="
+                        + "\(bridge.listeningNearEndFrameCount) "
+                        + "confirm_attempts="
+                        + "\(bridge.listeningConfirmationAttemptCount) "
+                        + "confirm_accepted="
+                        + "\(bridge.listeningConfirmationAcceptedCount) "
+                        + "confirm_rejected="
+                        + "\(bridge.listeningConfirmationRejectedCount) "
+                        + "freshness_rejected="
+                        + "\(bridge.listeningFreshnessRejectedCount) "
+                        + "acoustic_playback="
+                        + "\(acoustic.isPlaybackActive) "
+                        + "acoustic_source_gate="
+                        + "\(acoustic.sourceGateOpen) "
+                        + "acoustic_classification="
+                        + "\(acoustic.inputClassification.rawValue)"
+                )
+            }
+            try? await Task.sleep(for: .milliseconds(5))
         }
     }
 
@@ -8390,6 +8702,331 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             ),
             frames: frames
         )
+    }
+
+    private static func testR852FormalRealtimeSubtitleAndDiagnostics(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        try await testR852RecoverableResponseError(fixture: fixture)
+        cases += 1
+        try await testR852SubtitleInterruptionFence(fixture: fixture)
+        cases += 1
+        try await testR852SubtitlePlaybackCompletion(fixture: fixture)
+        cases += 1
+        try await testR852AudioFirstCompletionFence(fixture: fixture)
+    }
+
+    private static func testR852AudioFirstCompletionFence(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        expect(stack.controller.particleSubtitleState == .hidden,
+               "R8.5.2 audio-first response starts without subtitle")
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 4,
+            kind: .residentSpeakingStopped
+        ))
+        await waitUntil("R8.5.2 audio-first Provider completion is accepted") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainOutputBridgeSnapshot
+                .completedResponseCount == 1
+        }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntilOnMainActor("R8.5.2 audio-first Playback completes") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+                && stack.controller.particleSubtitleState == .hidden
+        }
+
+        await stack.controller.refreshMicrophoneAuthorization()
+        let processedBefore = stack.controller
+            .realtimeBrainOutputBridgeSnapshot.acceptedEventCount
+            + stack.controller.realtimeBrainOutputBridgeSnapshot
+                .rejectedEventCount
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 5,
+            kind: .residentTextFinal("音频结束后的迟到首个字幕")
+        ))
+        await waitUntil("R8.5.2 audio-first response identity stays retired") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let snapshot = await stack.controller
+                .realtimeBrainOutputBridgeSnapshot
+            return snapshot.acceptedEventCount + snapshot.rejectedEventCount
+                == processedBefore + 1
+        }
+        r852AudioFirstResurrections +=
+            stack.controller.particleSubtitleState == .hidden ? 0 : 1
+        expect(stack.controller.particleSubtitleState == .hidden,
+               "R8.5.2 audio-first late text cannot resurrect subtitle")
+        try await close(stack)
+    }
+
+    private static func testR852SubtitlePlaybackCompletion(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        expect(stack.controller.particleSubtitleState == .hidden,
+               "R8.5.2 formal route never presents userFinal fallback")
+        r852UserFinalFallbackPresentations +=
+            stack.controller.particleSubtitleState == .hidden ? 0 : 1
+
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 4,
+            kind: .residentTextDelta("正式")
+        ))
+        await waitUntilOnMainActor("R8.5.2 first resident delta presents") {
+            stack.controller.particleSubtitleState == ParticleSubtitleState(
+                text: "正式",
+                phase: .showing
+            )
+        }
+        r852SubtitleDeltaPresentations += 1
+
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 5,
+            kind: .residentTextDelta("字幕")
+        ))
+        await waitUntilOnMainActor("R8.5.2 resident deltas accumulate") {
+            stack.controller.particleSubtitleState == ParticleSubtitleState(
+                text: "正式字幕",
+                phase: .showing
+            )
+        }
+        r852SubtitleDeltaPresentations += 1
+
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 6,
+            kind: .residentTextFinal("正式字幕完成")
+        ))
+        await waitUntilOnMainActor("R8.5.2 resident final presents") {
+            stack.controller.particleSubtitleState == ParticleSubtitleState(
+                text: "正式字幕完成",
+                phase: .showing
+            )
+        }
+        r852SubtitleFinalPresentations += 1
+
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 7,
+            kind: .residentSpeakingStopped
+        ))
+        await waitUntil("R8.5.2 Provider audio completion is accepted") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainOutputBridgeSnapshot
+                .completedResponseCount == 1
+        }
+        expect(stack.controller.particleSubtitleState.text
+                == "正式字幕完成",
+               "R8.5.2 subtitle remains visible until Playback completes")
+
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntilOnMainActor("R8.5.2 Playback completion hides subtitle") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+                && stack.controller.particleSubtitleState == .hidden
+        }
+        r852PlaybackCompletionResurrections +=
+            stack.controller.particleSubtitleState == .hidden ? 0 : 1
+
+        await stack.controller.refreshMicrophoneAuthorization()
+        let processedBefore = stack.controller
+            .realtimeBrainOutputBridgeSnapshot.acceptedEventCount
+            + stack.controller.realtimeBrainOutputBridgeSnapshot
+                .rejectedEventCount
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 8,
+            kind: .residentTextDelta("旧回答不得复活")
+        ))
+        await waitUntil("R8.5.2 completed response identity stays retired") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let snapshot = await stack.controller
+                .realtimeBrainOutputBridgeSnapshot
+            return snapshot.acceptedEventCount + snapshot.rejectedEventCount
+                == processedBefore + 1
+        }
+        r852OldIdentityResurrections +=
+            stack.controller.particleSubtitleState == .hidden ? 0 : 1
+        expect(stack.controller.particleSubtitleState == .hidden,
+               "R8.5.2 retired response text cannot resurrect subtitle")
+        try await close(stack)
+    }
+
+    private static func testR852SubtitleInterruptionFence(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 4,
+            kind: .residentTextFinal("插话前居民字幕")
+        ))
+        await waitUntilOnMainActor("R8.5.2 interruption subtitle presents") {
+            stack.controller.particleSubtitleState.text == "插话前居民字幕"
+        }
+
+        let evidenceBefore = stack.controller
+            .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+        _ = try await submitTrueNearEndThroughProductionChain(stack: stack)
+        await waitUntil("R8.5.2 interruption acoustic evidence arrives") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let evidenceCount = await stack.controller
+                .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+            return evidenceCount == evidenceBefore + 1
+        }
+
+        await stack.provider.holdInterrupt()
+        try await submitSemanticProposal(stack: stack, sequence: 5)
+        await waitUntilOnMainActor("R8.5.2 confirmed interruption hides subtitle") {
+            stack.controller.particleSubtitleState == .hidden
+                && stack.outputPlayer.clearScheduledPlaybackCount == 1
+        }
+        r852InterruptionResurrections +=
+            stack.controller.particleSubtitleState == .hidden ? 0 : 1
+
+        let returnedBefore = await stack.provider.returnedEventCount(
+            eventSession: stack.session
+        )
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 6,
+            kind: .residentTextFinal("旧 generation 字幕")
+        ))
+        await stack.provider.releaseInterrupt()
+        await waitUntilOnMainActor("R8.5.2 interruption rebounds to N+1") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+                && stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == stack.session.generation + 1
+                && stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+        }
+        await waitUntil("R8.5.2 old generation subtitle is fenced") {
+            await stack.provider.returnedEventCount(
+                eventSession: stack.session
+            ) == returnedBefore + 1
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        r852OldIdentityResurrections +=
+            stack.controller.particleSubtitleState == .hidden ? 0 : 1
+        expect(stack.controller.particleSubtitleState == .hidden,
+               "R8.5.2 interruption and stale generation stay subtitle-free")
+        try await close(stack)
+    }
+
+    private static func testR852RecoverableResponseError(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let baselineCloseCount = await stack.provider.closeCount()
+        let baselineCreateCount = await stack.provider.createCount()
+        let baselinePlayerStartCount = stack.outputPlayer.startCount
+
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 4,
+            kind: .residentTextDelta("失败前字幕")
+        ))
+        await waitUntilOnMainActor("R8.5.2 pre-error subtitle presents") {
+            stack.controller.particleSubtitleState.text == "失败前字幕"
+        }
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 5,
+            kind: .error(.providerFailure)
+        ))
+        await waitUntilOnMainActor("R8.5.2 response error remains recoverable") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+                && stack.controller.formalSpeechRouteDebugSnapshot
+                    .lastErrorCode == nil
+                && stack.controller.particleSubtitleState == .hidden
+                && stack.controller.realtimeBrainInputBridgeSnapshot
+                    .hasActivePump
+                && stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+        }
+
+        let diagnosticEvents = stack.controller
+            .realtimeSpeechDiagnosticTimeline.events.filter {
+                $0.routeKind
+                        == NativeSpeechDiagnosticRouteKind.realtimeBrain.rawValue
+                    && $0.source == .providerEvent
+                    && $0.category == "recoverable_response_error"
+                    && $0.disposition == "returned_to_listening"
+                    && $0.errorCode == "provider_failure"
+            }
+        r852RecoverableResponseErrors += diagnosticEvents.count
+        r852TerminalStops += stack.controller
+            .realtimeBrainOutputBridgeSnapshot.hasActiveReceiveLoop ? 0 : 1
+        r852ProviderClosesOnResponseError +=
+            await stack.provider.closeCount() - baselineCloseCount
+        expect(diagnosticEvents.count == 1,
+               "R8.5.2 diagnostics preserve one recoverable response error")
+        expect(r852TerminalStops == 0
+                && r852ProviderClosesOnResponseError == 0,
+               "R8.5.2 response error does not terminally stop Provider route")
+
+        stack.outputPlayer.completeStoppedChunk()
+        let nextTurnID = RealtimeBrainTurnID()
+        let nextResponseID = RealtimeBrainResponseID()
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: stack.session,
+                turnID: nextTurnID,
+                responseID: nil,
+                contextRevision: stack.target.contextRevision
+            ),
+            sequence: 6,
+            kind: .userTranscriptFinal("错误后新用户轮次")
+        ))
+        await waitUntil("R8.5.2 response create rebounds after error") {
+            await stack.provider.createCount() == baselineCreateCount + 1
+        }
+        expect(stack.controller.particleSubtitleState == .hidden,
+               "R8.5.2 post-error userFinal never becomes resident subtitle")
+
+        let nextIdentity = RealtimeBrainEventIdentity(
+            session: stack.session,
+            turnID: nextTurnID,
+            responseID: nextResponseID,
+            contextRevision: stack.target.contextRevision
+        )
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: nextIdentity,
+            sequence: 7,
+            kind: .residentTextFinal("错误后正常回复")
+        ))
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: nextIdentity,
+            sequence: 8,
+            kind: .residentAudioDelta(audioDelta(sequence: 2))
+        ))
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: nextIdentity,
+            sequence: 9,
+            kind: .residentSpeakingStopped
+        ))
+        await waitUntilOnMainActor("R8.5.2 output rebounds after error") {
+            stack.controller.particleSubtitleState.text == "错误后正常回复"
+                && stack.outputPlayer.startCount
+                    == baselinePlayerStartCount + 1
+        }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntilOnMainActor("R8.5.2 rebound Playback completes") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+                && stack.controller.particleSubtitleState == .hidden
+        }
+        r852PostErrorResponseRebound += 1
+        try await close(stack)
     }
 
     private static func testR833BargeInLatencyAndStaleClosure(

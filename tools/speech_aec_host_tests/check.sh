@@ -28,6 +28,13 @@ rg -q 'case halfDuplexFallback' "$aec_host"
 rg -q 'speech-aec-processing' "$aec_host"
 rg -q 'fifoSampleCapacity' "$aec_host"
 rg -q 'outputNode\.presentationLatency' "$capture"
+if sed -n '/private func processCaptureLocked(/,/private func rebuildAudioFormatsLocked(/p' \
+  "$capture" | rg -q 'presentationLatency'; then
+  echo "speech_aec_capture_callback_latency_read=FAIL"
+  exit 1
+fi
+rg -q 'refreshAcousticEchoPresentationLatencyLocked' "$capture"
+echo "speech_aec_capture_callback_latency_read=PASS"
 if rg -q 'playerNode\.outputPresentationLatency' "$capture"; then
   echo "speech_aec_hardware_delay=FAIL"
   exit 1

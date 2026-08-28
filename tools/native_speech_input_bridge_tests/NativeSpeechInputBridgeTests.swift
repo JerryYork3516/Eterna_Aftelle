@@ -192,6 +192,7 @@ private struct NativeSpeechInputBridgeTests {
         try await testRuntimeGenerationSessionAndSequenceGates()
         try await testSendFailureStopsSinglePump()
         try await testBoundedWriteWindowSustainsVirtualFiveMinutes()
+        try await testWriteWindowObservabilityIsProviderSafe()
         try await testWriteWindowFailureAndCloseAreBounded()
         try await testControlAndAudioFramesShareFIFO()
         print("native_speech_input_bridge_checks=\(checks)")
@@ -417,6 +418,153 @@ private struct NativeSpeechInputBridgeTests {
             timedOut.pendingWriteCount == 0
                 && timedOut.latchedError == .cancelled,
             "close invalidates late completion after a drain timeout"
+        )
+    }
+
+    private static func testWriteWindowObservabilityIsProviderSafe()
+        async throws
+    {
+        let diagnosticBuffer = NativeSpeechDiagnosticBuffer(capacity: 100)
+        let sink = ControlledWriteSink()
+        let window = BoundedRealtimeWebSocketWriteWindow(
+            capacity: 1,
+            diagnosticBuffer: diagnosticBuffer,
+            diagnosticRouteKind: .realtimeBrain
+        )
+        await window.reset()
+        let audioFrame = RealtimeWebSocketFrame.text(
+            #"{"type":"input_audio_buffer.append","audio":"secret-audio"}"#
+        )
+        try await window.enqueue(audioFrame) { frame, completion in
+            sink.submit(frame, completion: completion)
+        }
+        let blockedWrite = Task {
+            try await window.enqueue(audioFrame) { frame, completion in
+                sink.submit(frame, completion: completion)
+            }
+        }
+        await waitUntil {
+            await window.snapshot().capacityWaitCount == 1
+        }
+        try await Task.sleep(for: .milliseconds(5))
+        expect(sink.completeNext(), "capacity wait releases after completion")
+        try await blockedWrite.value
+        expect(sink.completeNext(), "second observable write completes")
+        await waitUntil {
+            await window.snapshot().completedWriteCount == 2
+        }
+        let responseCreateFrame = RealtimeWebSocketFrame.text(
+            #"{"type":"response.create","response":{"metadata":{"private":"secret-response"}}}"#
+        )
+        try await window.enqueue(responseCreateFrame) { frame, completion in
+            sink.submit(frame, completion: completion)
+        }
+        expect(sink.completeNext(), "observable response create completes")
+        await waitUntil {
+            await window.snapshot().completedWriteCount == 3
+        }
+
+        let snapshot = await window.snapshot()
+        expect(snapshot.pendingWriteCount == 0, "snapshot exposes current pending writes")
+        expect(
+            snapshot.maximumPendingWriteCount == 1,
+            "snapshot exposes maximum pending writes"
+        )
+        expect(
+            snapshot.submittedWriteCountsByCategory["audio_append"] == 2,
+            "snapshot aggregates safe audio append submissions"
+        )
+        expect(
+            snapshot.completedWriteCountsByCategory["audio_append"] == 2,
+            "snapshot aggregates safe audio append completions"
+        )
+        expect(
+            snapshot.submittedWriteCountsByCategory["response_create"] == 1
+                && snapshot.completedWriteCountsByCategory[
+                    "response_create"
+                ] == 1,
+            "snapshot explicitly classifies response create writes"
+        )
+        expect(snapshot.capacityWaitCount == 1, "snapshot counts capacity waits")
+        expect(
+            snapshot.capacityWaitTotalDurationMilliseconds >= 5,
+            "capacity wait uses monotonic elapsed time"
+        )
+        expect(
+            snapshot.capacityWaitMaximumDurationMilliseconds
+                <= snapshot.capacityWaitTotalDurationMilliseconds,
+            "capacity wait maximum is bounded by total wait time"
+        )
+
+        let events = diagnosticBuffer.drain().events
+        expect(
+            events.contains {
+                $0.category == "write_capacity_wait_started_audio_append"
+            },
+            "diagnostics mark a safe audio append capacity wait"
+        )
+        expect(
+            events.contains {
+                $0.category == "write_capacity_wait_completed_audio_append"
+                    && ($0.durationMilliseconds ?? 0) >= 5
+            },
+            "diagnostics expose monotonic capacity wait duration"
+        )
+        expect(
+            events.contains {
+                $0.category == "write_submitted_response_create"
+            } && events.contains {
+                $0.category == "write_completed_response_create"
+            },
+            "diagnostics expose response create submission and completion"
+        )
+        expect(
+            events.allSatisfy {
+                !$0.category.contains("secret-audio")
+                    && !$0.category.contains("secret-response")
+                    && $0.routeKind == .realtimeBrain
+                    && $0.responseCorrelationHash == nil
+                    && $0.itemCorrelationHash == nil
+            },
+            "write diagnostics never expose payload or correlation content"
+        )
+        let cumulative = diagnosticBuffer.transportWriteSnapshot(
+            for: .realtimeBrain
+        )
+        expect(
+            cumulative.submittedAudioAppendCount == 2
+                && cumulative.completedAudioAppendCount == 2
+                && cumulative.submittedResponseCreateCount == 1
+                && cumulative.completedResponseCreateCount == 1
+                && cumulative.capacityWaitCount == 1
+                && cumulative.pendingWriteCount == 0
+                && cumulative.maximumPendingWriteCount == 1,
+            "route write totals survive event-ring drain"
+        )
+        expect(
+            cumulative.capacityWaitTotalDurationMilliseconds >= 5
+                && cumulative.capacityWaitMaximumDurationMilliseconds >= 5
+                && cumulative.capacityWaitMaximumDurationMilliseconds
+                    <= cumulative.capacityWaitTotalDurationMilliseconds,
+            "route write totals retain monotonic duration evidence"
+        )
+
+        await window.reset()
+        let resetSnapshot = await window.snapshot()
+        expect(
+            resetSnapshot.pendingWriteCount == 0
+                && resetSnapshot.maximumPendingWriteCount == 0
+                && resetSnapshot.submittedWriteCount == 0
+                && resetSnapshot.completedWriteCount == 0
+                && resetSnapshot.capacityWaitCount == 0,
+            "write observability resets with the connection generation"
+        )
+        diagnosticBuffer.clear()
+        expect(
+            diagnosticBuffer.transportWriteSnapshot(
+                for: .realtimeBrain
+            ) == .zero,
+            "clearing diagnostics resets cumulative route write totals"
         )
     }
 

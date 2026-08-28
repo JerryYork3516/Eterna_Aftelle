@@ -8,7 +8,7 @@ shared_runner="$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests
 production_contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeResidentBrainAdapter.swift"
 timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
-expected_production_digest="77bcd7cc491ac1ee04bc78856bd2810b1502e481d3db623ae73f8b17665e7049"
+expected_production_digest="cbe34a2d70934b96975adb654155ee4370453d9a489432fd807c85594b810dc7"
 expected_manifest_digest="6de2ef316f6bf03b393e14549e4cd3dd6f1b0c958ad1a75e1dcec6731ddb7780"
 trap 'rm -rf "$work_dir"' EXIT
 
@@ -117,7 +117,7 @@ tool_scenarios="$(rg -c \
   '^realtime_resident_brain_tool_runtime_ownership=PASS$' "$tool_log")"
 cross_node_scenarios="$((swift_scenarios + tool_scenarios))"
 [ "$tool_scenarios" -eq 1 ]
-[ "$cross_node_scenarios" -eq 12 ]
+[ "$cross_node_scenarios" -eq 13 ]
 
 random_iterations="$(awk -F= \
   '/^r851_randomized_race_iterations=/ { print $2 }' "$random_log")"

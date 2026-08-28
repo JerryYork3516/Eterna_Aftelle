@@ -67,6 +67,13 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
     let acousticEvidenceCount: UInt64
     let runtimeRejectedFrameCount: UInt64
     let sendOperationCount: UInt64
+    let noneActivityFrameCount: UInt64
+    let listeningNearEndFrameCount: UInt64
+    let sourceGatedNearEndFrameCount: UInt64
+    let listeningConfirmationAttemptCount: UInt64
+    let listeningConfirmationAcceptedCount: UInt64
+    let listeningConfirmationRejectedCount: UInt64
+    let listeningFreshnessRejectedCount: UInt64
     let averageSendDurationMilliseconds: UInt64
     let maximumSendDurationMilliseconds: UInt64
     let lastAcousticEligibilityDisposition: String?
@@ -85,6 +92,13 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
         acousticEvidenceCount: 0,
         runtimeRejectedFrameCount: 0,
         sendOperationCount: 0,
+        noneActivityFrameCount: 0,
+        listeningNearEndFrameCount: 0,
+        sourceGatedNearEndFrameCount: 0,
+        listeningConfirmationAttemptCount: 0,
+        listeningConfirmationAcceptedCount: 0,
+        listeningConfirmationRejectedCount: 0,
+        listeningFreshnessRejectedCount: 0,
         averageSendDurationMilliseconds: 0,
         maximumSendDurationMilliseconds: 0,
         lastAcousticEligibilityDisposition: nil,
@@ -151,6 +165,13 @@ actor MacSpeechRealtimeBrainInputBridge {
     private var acousticEvidenceCount: UInt64 = 0
     private var runtimeRejectedFrameCount: UInt64 = 0
     private var sendOperationCount: UInt64 = 0
+    private var noneActivityFrameCount: UInt64 = 0
+    private var listeningNearEndFrameCount: UInt64 = 0
+    private var sourceGatedNearEndFrameCount: UInt64 = 0
+    private var listeningConfirmationAttemptCount: UInt64 = 0
+    private var listeningConfirmationAcceptedCount: UInt64 = 0
+    private var listeningConfirmationRejectedCount: UInt64 = 0
+    private var listeningFreshnessRejectedCount: UInt64 = 0
     private var totalSendDurationMilliseconds: UInt64 = 0
     private var maximumSendDurationMilliseconds: UInt64 = 0
     private var nextSubmittedSequence: UInt64 = 1
@@ -221,6 +242,13 @@ actor MacSpeechRealtimeBrainInputBridge {
         acousticEvidenceCount = 0
         runtimeRejectedFrameCount = 0
         sendOperationCount = 0
+        noneActivityFrameCount = 0
+        listeningNearEndFrameCount = 0
+        sourceGatedNearEndFrameCount = 0
+        listeningConfirmationAttemptCount = 0
+        listeningConfirmationAcceptedCount = 0
+        listeningConfirmationRejectedCount = 0
+        listeningFreshnessRejectedCount = 0
         totalSendDurationMilliseconds = 0
         maximumSendDurationMilliseconds = 0
         nextSubmittedSequence = 1
@@ -443,6 +471,14 @@ actor MacSpeechRealtimeBrainInputBridge {
                     for: frame,
                     binding: binding
                 )
+                switch inputActivity.localActivity.kind {
+                case .none:
+                    noneActivityFrameCount &+= 1
+                case .listeningNearEnd:
+                    listeningNearEndFrameCount &+= 1
+                case .sourceGatedNearEnd:
+                    sourceGatedNearEndFrameCount &+= 1
+                }
                 await observeResidentAcousticsIfNeeded(
                     fallbackTimestampNanoseconds:
                         realtimeFrame.timestampNanoseconds,
@@ -576,11 +612,21 @@ actor MacSpeechRealtimeBrainInputBridge {
         )
         guard currentActivity == activity,
               activeBinding == binding,
-              activePumpID == pumpID else { return }
-        _ = await confirmAcceptedLocalActivity(
+              activePumpID == pumpID else {
+            listeningFreshnessRejectedCount &+= 1
+            return
+        }
+        listeningConfirmationAttemptCount &+= 1
+        let result = await confirmAcceptedLocalActivity(
             realtimeFrame,
             activity
         )
+        switch result {
+        case .success:
+            listeningConfirmationAcceptedCount &+= 1
+        case .failure:
+            listeningConfirmationRejectedCount &+= 1
+        }
     }
 
     private func observeResidentAcousticsIfNeeded(
@@ -827,6 +873,17 @@ actor MacSpeechRealtimeBrainInputBridge {
             acousticEvidenceCount: acousticEvidenceCount,
             runtimeRejectedFrameCount: runtimeRejectedFrameCount,
             sendOperationCount: sendOperationCount,
+            noneActivityFrameCount: noneActivityFrameCount,
+            listeningNearEndFrameCount: listeningNearEndFrameCount,
+            sourceGatedNearEndFrameCount: sourceGatedNearEndFrameCount,
+            listeningConfirmationAttemptCount:
+                listeningConfirmationAttemptCount,
+            listeningConfirmationAcceptedCount:
+                listeningConfirmationAcceptedCount,
+            listeningConfirmationRejectedCount:
+                listeningConfirmationRejectedCount,
+            listeningFreshnessRejectedCount:
+                listeningFreshnessRejectedCount,
             averageSendDurationMilliseconds: sendOperationCount == 0
                 ? 0 : totalSendDurationMilliseconds / sendOperationCount,
             maximumSendDurationMilliseconds:
