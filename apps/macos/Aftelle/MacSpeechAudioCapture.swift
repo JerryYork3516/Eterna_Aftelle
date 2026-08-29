@@ -125,6 +125,7 @@ nonisolated struct MacSpeechResidentAcousticSnapshot:
     let sourceGateEpoch: UInt64
     let aecEnabled: Bool
     let aecActive: Bool
+    let renderCaptureIsolationEstablished: Bool
     let sourceAlignmentLocked: Bool
     let sourceAlignmentDelayMilliseconds: Int?
     let estimatedDelayMilliseconds: Int

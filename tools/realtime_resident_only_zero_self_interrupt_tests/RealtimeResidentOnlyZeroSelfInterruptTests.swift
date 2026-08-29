@@ -555,6 +555,12 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r833NPlusOnePlayback = 0
     private static var r833NPlusOneListening = 0
 
+    private static var r853IsolationWarmupFrames = 0
+    private static var r853IsolationEstablished = 0
+    private static var r853IsolationRevocations = 0
+    private static var r853GrayZoneCorrelation = 0.0
+    private static var r853SourceGateOpens = 0
+
     private static var r841PositiveScenarios = 0
     private static var r841DetectedScenarios = 0
     private static var r841SourceGateOpenScenarios = 0
@@ -700,6 +706,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r832-confirmed-only",
                         "--r833-latency-stale-only",
                         "--r841-double-talk-only",
+                        "--r853-isolated-barge-in-only",
                         "--r842-listening-only",
                         "--r842-turn-completion-only",
                         "--r843-semantic-fusion-only",
@@ -853,6 +860,30 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 print("r841_semantic_proposals=\(r841SemanticProposals)")
                 print("r841_acoustic_threshold_changes=0")
                 print("r841_real_room_and_devices=NOT_RUN_HUMAN_GATE")
+                return
+            }
+            if CommandLine.arguments[2]
+                    == "--r853-isolated-barge-in-only" {
+                cases += 1
+                try await testR832ConfirmedInterruptionProductionChain(
+                    fixture: fixture,
+                    usesRenderCaptureIsolation: true
+                )
+                print("realtime_isolated_barge_in_cases=\(cases)")
+                print("realtime_isolated_barge_in_checks=\(checks)")
+                print("r853_isolation_warmup_frames=\(r853IsolationWarmupFrames)")
+                print("r853_isolation_established=\(r853IsolationEstablished)")
+                print("r853_isolation_revocations=\(r853IsolationRevocations)")
+                print("r853_gray_zone_correlation=\(r853GrayZoneCorrelation)")
+                print("r853_source_gate_opens=\(r853SourceGateOpens)")
+                print("r853_acoustic_eligibility=\(r832ProductionAcousticEligibility)")
+                print("r853_confirmed_interruptions=\(r832ConfirmedInterruptions)")
+                print("r853_provider_interrupts=\(r832ProviderInterrupts)")
+                print("r853_provider_cancels=\(r832ProviderCancels)")
+                print("r853_host_playback_clears=\(r832HostPlaybackClears)")
+                print("r853_generation_delta=\(r832GenerationDelta)")
+                print("r853_n_plus_one_input=\(r832InputBridgeRebound)")
+                print("r853_n_plus_one_output=\(r832OutputBridgeRebound)")
                 return
             }
             if CommandLine.arguments[2] == "--r833-latency-stale-only" {
@@ -6323,6 +6354,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             sourceGateOpen: acoustic.sourceGateOpen,
             sourceGateEpoch: acoustic.sourceGateEpoch,
             aecActive: acoustic.aecActive,
+            renderCaptureIsolationEstablished:
+                acoustic.renderCaptureIsolationEstablished,
             sourceAlignmentLocked: acoustic.sourceAlignmentLocked,
             routeStable: true,
             inputDeviceAvailable: true,
@@ -9554,6 +9587,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
 
     private static func testR832ConfirmedInterruptionProductionChain(
         fixture: Data,
+        usesRenderCaptureIsolation: Bool = false,
         afterRebound: ((
             R823ControllerStack,
             RealtimeBrainSessionIdentity
@@ -9593,8 +9627,16 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
         let relationshipBefore = stack.runtime.currentRelationshipState
 
-        let emittedPacketCount = try await
-            submitTrueNearEndThroughProductionChain(stack: stack)
+        let emittedPacketCount: UInt64
+        if usesRenderCaptureIsolation {
+            emittedPacketCount = try await
+                submitRenderCaptureIsolatedNearEndThroughProductionChain(
+                    stack: stack
+                )
+        } else {
+            emittedPacketCount = try await
+                submitTrueNearEndThroughProductionChain(stack: stack)
+        }
         await waitUntil("R8.3.2 production near-end reaches Bridge") {
             await stack.controller.refreshMicrophoneAuthorization()
             return await stack.controller.realtimeBrainInputBridgeSnapshot
@@ -10221,6 +10263,127 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await close(stack)
     }
 
+    private static func submitRenderCaptureIsolatedNearEndThroughProductionChain(
+        stack: R823ControllerStack
+    ) async throws -> UInt64 {
+        let evidenceBefore = stack.controller
+            .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+        let forwardedBefore = stack.controller
+            .realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+        stack.acousticEchoHost.playbackStarted()
+        let silence = [Float](
+            repeating: 0,
+            count: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        var latestRender = [Float]()
+        var emittedPacketCount = 0
+        var activePacketCount = 0
+
+        for index in 0 ..< 50 {
+            latestRender = signal(
+                seed: UInt32(85_300 + index),
+                amplitude: 0.3
+            )
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(silence)
+            stack.acousticEchoHost.processRender(
+                latestRender,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                silence,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            let emission = try stack.capture.emit(
+                processedSamples: processed
+            )
+            emittedPacketCount += emission.packetCount
+            activePacketCount += emission.activePacketCount
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let warmupExpectedForwarded = forwardedBefore
+            &+ UInt64(emittedPacketCount)
+        await waitUntil("R8.5.3 isolation warm-up drains through Bridge") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainInputBridgeSnapshot
+                .forwardedFrameCount
+                >= warmupExpectedForwarded
+        }
+
+        var acoustic = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+        expect(acoustic.renderCaptureIsolationEstablished,
+               "R8.5.3 quiet warm-up establishes render isolation")
+        expect(!acoustic.sourceAlignmentLocked,
+               "R8.5.3 isolated route does not fake a timing lock")
+        expect(!acoustic.sourceGateOpen && activePacketCount == 0,
+               "R8.5.3 isolation warm-up cannot emit user PCM")
+        r853IsolationWarmupFrames = 50
+        r853IsolationEstablished = 1
+
+        let independent = signal(seed: 85_400, amplitude: 0.25)
+        let nearEnd = zip(latestRender, independent).map { sample in
+            sample.0 * 0.3 + sample.1
+        }
+        for _ in 0 ..< 8 {
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(nearEnd)
+            stack.acousticEchoHost.processRender(
+                latestRender,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                nearEnd,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            let emission = try stack.capture.emit(
+                processedSamples: processed
+            )
+            emittedPacketCount += emission.packetCount
+            activePacketCount += emission.activePacketCount
+            if emission.packetCount > 0 {
+                let expectedForwarded = forwardedBefore
+                    &+ UInt64(emittedPacketCount)
+                await waitUntil(
+                    "R8.5.3 near-end packet reaches Bridge"
+                ) {
+                    await stack.controller.refreshMicrophoneAuthorization()
+                    return await stack.controller
+                        .realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+                        >= expectedForwarded
+                }
+            }
+        }
+
+        acoustic = stack.acousticEchoHost.acousticObservationSnapshot()
+        expect(acoustic.renderCaptureCorrelation > 0.25
+                   && acoustic.renderCaptureCorrelation < 0.35,
+               "R8.5.3 fixture reproduces the wired-route gray zone")
+        expect(acoustic.renderCaptureIsolationEstablished,
+               "R8.5.3 independent speech preserves isolation evidence")
+        expect(acoustic.inputClassification == .nearEndSpeech,
+               "R8.5.3 production AEC recognizes isolated near-end")
+        expect(acoustic.sourceGateOpen && acoustic.sourceGateEpoch > 0,
+               "R8.5.3 existing source gate opens for isolated near-end")
+        expect(activePacketCount > 0,
+               "R8.5.3 opened near-end reaches production PCM conversion")
+        await waitUntil(
+            "R8.5.3 isolated evidence reaches Runtime",
+            timeoutNanoseconds: 3_000_000_000
+        ) {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainInputBridgeSnapshot
+                .acousticEvidenceCount > evidenceBefore
+        }
+        let snapshot = stack.acousticEchoHost.snapshot()
+        r853IsolationRevocations = Int(
+            snapshot.renderCaptureIsolationRevocationCount
+        )
+        r853GrayZoneCorrelation = acoustic.renderCaptureCorrelation
+        r853SourceGateOpens = Int(snapshot.sourceGateOpenCount)
+        return UInt64(emittedPacketCount)
+    }
+
     private static func submitTrueNearEndThroughProductionChain(
         stack: R823ControllerStack
     ) async throws -> UInt64 {
@@ -10671,6 +10834,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 ?? (fixture == .nearEndCandidate),
             sourceGateEpoch: sourceGateEpoch,
             aecActive: true,
+            renderCaptureIsolationEstablished: false,
             sourceAlignmentLocked: renderReferenceAvailable,
             routeStable: true,
             inputDeviceAvailable: true,
@@ -10720,6 +10884,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             sourceGateEpoch: sourceGateEpoch,
             aecEnabled: true,
             aecActive: true,
+            renderCaptureIsolationEstablished: false,
             sourceAlignmentLocked: true,
             sourceAlignmentDelayMilliseconds: 80,
             estimatedDelayMilliseconds: 80,

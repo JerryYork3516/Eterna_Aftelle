@@ -331,6 +331,7 @@ private struct RealtimeAcousticObservationTests {
         testResidualEchoClassification()
         testSilenceClassification()
         testNearEndCandidateClassification()
+        testIsolatedNearEndCandidateClassification()
         testIndeterminateClassification()
         await testActualHostAcousticFacts()
         testFallbackHostAcousticFacts()
@@ -453,6 +454,37 @@ private struct RealtimeAcousticObservationTests {
         )
         expect(classify(value, timestamp: timestamp) == .nearEndCandidate,
                "unexplained near-end energy is only a candidate")
+    }
+
+    private static func testIsolatedNearEndCandidateClassification() {
+        cases += 1
+        let timestamp = monotonicNow()
+        let value = metrics(
+            timestamp: timestamp,
+            renderRMS: 0.18,
+            rawRMS: 0.27,
+            outputRMS: 0.21,
+            rawCorrelation: 0.33,
+            erle: 0,
+            source: .nearEndSpeech,
+            renderCaptureIsolationEstablished: true,
+            sourceAlignmentLocked: false
+        )
+        expect(classify(value, timestamp: timestamp) == .nearEndCandidate,
+               "explicit render isolation replaces unavailable timing lock")
+
+        let unproven = metrics(
+            timestamp: timestamp,
+            renderRMS: 0.18,
+            rawRMS: 0.27,
+            outputRMS: 0.21,
+            rawCorrelation: 0.33,
+            erle: 0,
+            source: .nearEndSpeech,
+            sourceAlignmentLocked: false
+        )
+        expect(classify(unproven, timestamp: timestamp) == .indeterminate,
+               "missing alignment and isolation still fail closed")
     }
 
     private static func testIndeterminateClassification() {
@@ -1341,7 +1373,9 @@ private struct RealtimeAcousticObservationTests {
         renderTimestampAvailable: Bool = true,
         aecActive: Bool = true,
         routeStable: Bool = true,
-        outputDeviceAvailable: Bool = true
+        outputDeviceAvailable: Bool = true,
+        renderCaptureIsolationEstablished: Bool = false,
+        sourceAlignmentLocked: Bool? = nil
     ) -> RealtimeAcousticMetrics {
         let measured = max(0, measuredDelayMilliseconds)
         let renderTimestamp = timestamp > UInt64(measured) * 1_000_000
@@ -1373,7 +1407,10 @@ private struct RealtimeAcousticObservationTests {
                 || source == .doubleTalk,
             sourceGateEpoch: 1,
             aecActive: aecActive,
-            sourceAlignmentLocked: renderTimestampAvailable,
+            renderCaptureIsolationEstablished:
+                renderCaptureIsolationEstablished,
+            sourceAlignmentLocked:
+                sourceAlignmentLocked ?? renderTimestampAvailable,
             routeStable: routeStable,
             inputDeviceAvailable: true,
             outputDeviceAvailable: outputDeviceAvailable
@@ -1434,6 +1471,7 @@ private struct RealtimeAcousticObservationTests {
             sourceGateEpoch: classification == .nearEndCandidate ? 1 : 0,
             aecEnabled: aecActive,
             aecActive: aecActive,
+            renderCaptureIsolationEstablished: false,
             sourceAlignmentLocked: renderTimestamp != nil,
             sourceAlignmentDelayMilliseconds:
                 renderTimestamp == nil ? nil : 80,

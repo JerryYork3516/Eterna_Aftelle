@@ -5212,7 +5212,9 @@ public final class RuntimeCore {
               observation.metrics.sourceGateOpen,
               observation.metrics.sourceGateEpoch > 0,
               facts.renderReferenceConfidence
-                == (observation.metrics.sourceAlignmentLocked ? 1 : 0),
+                == ((observation.metrics.sourceAlignmentLocked
+                    || observation.metrics
+                        .renderCaptureIsolationEstablished) ? 1 : 0),
               facts.routeStable == observation.metrics.routeStable,
               facts.inputDeviceAvailable
                 == observation.metrics.inputDeviceAvailable,

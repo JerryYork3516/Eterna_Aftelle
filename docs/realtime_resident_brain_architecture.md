@@ -1,6 +1,6 @@
-# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.4.2 Human Gate Rework
+# Realtime Resident Brain Architecture · R0–R8.5.1 Freeze · R8.4.2 / R8.5.3 Human Gate Rework
 
-> 状态：既有自动化冻结节点回归保持 PASS；`R8.4.2 natural-pause rework = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED`；`R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED`；`R8.5.3–R8.5.5 = PREPARED / HUMAN_GATE_WAITING`；Unified Human Gate 为 `IN_PROGRESS / PARTIAL_RESULTS`
+> 状态：既有自动化冻结节点回归保持 PASS；`R8.4.2 natural-pause rework = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED`；`R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED`；`R8.5.3 wired-headset barge-in rework = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED`；`R8.5.4–R8.5.5 = PREPARED / HUMAN_GATE_WAITING`；Unified Human Gate 为 `IN_PROGRESS / PARTIAL_RESULTS`
 >
 > 性质：Realtime Full-Duplex Speech Route 的正式、provider-neutral 架构冻结文档。
 >
@@ -385,7 +385,7 @@ R8.4.3 Semantic Fusion — PASS / FROZEN
 R8.4.4 Backchannel & Natural Response — PASS / FROZEN
 R8.5.1 Automated Total Regression — PASS / FROZEN
 R8.5.2 Real Qwen Basic Human Gate — REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
-R8.5.3 Acoustic & Interruption Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
+R8.5.3 Acoustic & Interruption Human Gate Rework — AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.5.4 Device & Network Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R8.5.5 Long-session & Release Human Gate Preparation — PREPARED / HUMAN_GATE_WAITING
 R9 Independent Speech Route Boundary Regression
@@ -458,7 +458,7 @@ Playback tail 以共享 player-node render tap 中 RMS ≥ 0.005 的最后实际
 
 R8.2.2 独立测试为 8 cases / 70 checks。320 次带有效 semantic proposal 的 resident-only stress 覆盖 far-end dominant、residual echo、silence、indeterminate、能量与 timing 变化，结果为 eligible evidence 0、confirmed interruption 0、Provider interrupt 0、Provider cancel 0、Runtime clear-Playback decision 0、generation change 0；R8.1 full Host acoustic-only 回归的实际 Shared Playback clear 为 0。另有 production AEC 3 × 10 ms source-gate 正向、resident playback active 下 near-end eligibility、无 semantic 不 confirmed、同目标 semantic fusion、500 ms tail / 恢复、600 ms stale、真实 Runtime old-generation replay、Bridge generation rebind、slow-send target rollover 与 Stop late-completion fence。A7 aggregate 为 24 suites / 27 entrypoints / 5051 assertions，macOS clean build、architecture guard、secret guard、repository mutation guard、`git diff --check` 与 Stage 7 forbidden checklist 均 PASS。
 
-R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 alignment-lock 的 0 / 1 代理而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已完成 natural-pause 自动化修复但等待真人复测，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归；R8.5.2 已进入部分真人执行并保留 52-B `FAIL / P1`，R8.5.3–R8.5.5 仍为 preparation waiting。
+R8.2.2 保留非阻断 P2：500 ms tail 与 render-tap anchor 尚未由真实扬声器 / 房间混响 / USB / Bluetooth / AirPods 验证；`renderReferenceConfidence` 仍是 source alignment / explicit render-capture isolation 的 0 / 1 provider-neutral 证据，而非连续测量；invalid-identity / cancelled send 的错误恢复会重建同 binding gate，需继续保持异常路径回归；observer / atomic exact replay 可能产生一条 duplicate diagnostic，但不能绕过 authority。真实设备、长会话与 Release 仍未完成；R8.4.1 已冻结自动化 production double-talk，R8.4.2 已完成 natural-pause 自动化修复但等待真人复测，R8.4.3 已冻结 Runtime-owned semantic turn-taking fusion，R8.4.4 已冻结 Runtime-owned backchannel response policy，R8.5.1 已冻结自动化总回归；R8.5.2 已进入部分真人执行并保留 52-B `FAIL / P1`，R8.5.3 已保留 53-B wired-headset `FAIL / P1` 并完成自动化修复，R8.5.4–R8.5.5 仍为 preparation waiting。
 
 ---
 
@@ -491,12 +491,14 @@ R8.5.1 = PASS / FROZEN
 
 ```text
 R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
-R8.5.3 = PREPARED / HUMAN_GATE_WAITING
+R8.5.3 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
 Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 52-B first real-device attempt = FAIL / P1
 52-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B first wired-headset attempt = FAIL / P1
+53-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 Other required Real-device Human Gates = NOT_RUN
 ```
 
@@ -744,11 +746,18 @@ real near-end + resident render
 
 未来判定标准为：普通真实插话允许 `.nearEndSpeech` 或 `.doubleTalk`，只要完整声学、semantic fusion、confirmed、interrupt、clear、stale fence 与 N+1 rebound 链成立即满足该分类条件；不得因为 `.nearEndSpeech` 判失败。仅指定的 3 次 sustained Double-talk 场景要求 `doubleTalkFrameCount >= 1`。所有有效正向尝试均 exactly once confirmed / Provider interrupt / Playback clear / generation advance / N+1 rebound；本地 `confirmed → clear <= 50 ms`，必须使用真实本地 monotonic evidence。Real Qwen 总延迟分别报告 `near-end → eligibility`、`eligibility → semantic confirmed`、`confirmed → clear`，不得把 R8.3.3 Fake Provider 自动化的 `first near-end → clear <= 200 ms` 当作 Real Qwen Human Gate 硬门槛。旧代 audio replay / Playback restart / text resurrection、duplicate interrupt / clear / generation advance 全部为 0；全部 resident-only 负控的 false double-talk、source-gate false open、eligibility、confirmed、interrupt、clear、generation / lease change 与 false user turn 全部为 0。全局要求 AEC mode 为 `webRTCAEC3`，AEC fallback、diagnostic dropped event、route error 与 crash 均为 0。任一 authority 越界、resident-only self-interrupt、旧代内容复活或数据损坏记 P0；稳定可复现的漏插话、误打断、clear / rebound 失败、duplicate side effect 或无法取得客观证据记 P1；不影响正确性的轻微体验 / diagnostics 问题记 P2。真实结果出来前 P0 / P1 / P2 均为 `NOT_ASSESSED`。
 
+首次 53-B 使用有线耳机输出与外置麦克风时，居民持续处于 Speaking，用户插话没有可见反应。真人 diagnostics 显示正式 Provider transport 健康：audio append submitted / completed 为 2108 / 2108、pending write 最大 5 / 8、capacity wait 0、Capture drop 0；但插话高能帧 raw / residual correlation 为 0.343761 / 0.329645，production classification 为 `.uncertain`，source gate open 0、source forwarded 0 / suppressed 2961、formal acoustic evidence 0。准确阻断点因此是 AEC Host source classification / source gate，而不是 WebSocket backpressure、Provider semantic fusion或 Runtime confirmed authority。
+
+最小修复没有改变任何 RMS / correlation / ERLE 阈值、三帧 source-gate confirmation 或 500 ms residual tail。Production AEC 只在 resident playback、WebRTC AEC3 active、render reference audible、timing lock 不可得且 raw / processed / linear capture 连续 50 个 10 ms frame 均低于既有 near-end RMS 门槛时，建立 provider-neutral `renderCaptureIsolationEstablished` 证据。该证据只允许仍满足既有 RMS、低于既有 timing-correlation 门槛并具有 linear secondary near-end evidence 的 gray-zone frame 分类为 `.nearEndSpeech`；仍须经过原有三帧 source gate。高置信 resident echo 会立即撤销证据，Playback stop / restart 与 route timing reset 会清空证据。Host / Provider 仍只提交 evidence，RuntimeCore 仍是 semantic fusion、confirmed interruption、generation invalidation、Provider interrupt 与 Playback clear 的唯一 owner。
+
+新增 production-chain 自动化不直接构造 acoustic observation：resident playback → 50 帧 render / quiet-capture isolation warm-up → correlation 0.301224 gray-zone near-end → AEC Host → source gate → PCM conversion → Input Bridge → Runtime acoustic evidence → semantic fusion → confirmed → Provider interrupt → Playback clear → N+1 rebound。结果为 isolation establishment 1、revocation 0、source-gate open 1、eligibility 1、confirmed / interrupt / clear / generation delta 各 1、Provider cancel 0、N+1 Input / Output 各 1。旧 aligned R8.3.2、latency / stale R8.3.3、R8.4.1 double-talk、R8.2.3 resident-only safety 与 R8.5.1 total regression 均保持通过；自动化不能替代 Real Qwen 与真实有线设备复测。完整 A7 当前在 `realtime_brain_audio_host` 的 context-refresh 断言停止，且冻结 HEAD 的独立副本同样复现。Metal Toolchain 已安装但未被默认 `xcrun` 选择；使用 identifier `com.apple.dt.toolchain.Metal.32023.883` 显式选择后，Debug / Release clean build 均 PASS。
+
 ```text
-R8.5.3 = PREPARED / HUMAN_GATE_WAITING
-Real-device results = NOT_RUN
-P0 / P1 / P2 real-device = NOT_ASSESSED
-Production code unchanged
+R8.5.3 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
+53-B first wired-headset attempt = FAIL / P1
+53-B automated repair = PASS
+53-B Real Qwen wired-headset retest = NOT_RUN
+Human Gate PASS / FROZEN = NOT_ALLOWED_YET
 ```
 
 ### R8.5.4 Device & Network Human Gate Preparation
@@ -1023,7 +1032,7 @@ R8.5.5 的 P0 / P1 / P2 preparation 标准为：
 Existing automated regression baseline = PASS
 R8.4.2 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
-R8.5.3 = PREPARED / HUMAN_GATE_WAITING
+R8.5.3 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5-R1 initial closeout = IMPLEMENTED / REVIEW_REQUIRED
@@ -1032,6 +1041,8 @@ R8.5.5-R1-R1 = IMPLEMENTED / REVIEW_REQUIRED
 Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 52-B first attempt = FAIL / P1
 52-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B first wired-headset attempt = FAIL / P1
+53-B repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 Other Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
 Next = 52-B Real Qwen retest at 1.0 / 1.3 / 1.5 seconds plus true-end latency

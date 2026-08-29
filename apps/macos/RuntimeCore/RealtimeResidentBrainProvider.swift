@@ -381,6 +381,7 @@ nonisolated struct RealtimeAcousticMetrics: Sendable, Equatable {
     let sourceGateOpen: Bool
     let sourceGateEpoch: UInt64
     let aecActive: Bool
+    let renderCaptureIsolationEstablished: Bool
     let sourceAlignmentLocked: Bool
     let routeStable: Bool
     let inputDeviceAvailable: Bool
@@ -478,17 +479,20 @@ nonisolated enum RealtimeAcousticClassifier {
                 ? .silenceOrNoise : .nearEndCandidate
         }
 
+        let sourceSeparationEstablished =
+            metrics.renderCaptureIsolationEstablished
+            || (metrics.sourceAlignmentLocked
+                && timingIsAligned(
+                    metrics: metrics,
+                    observationTimestampNanoseconds:
+                        observationTimestampNanoseconds
+                ))
         guard metrics.aecActive,
               metrics.renderReferenceAvailable,
-              metrics.sourceAlignmentLocked,
               let renderRMS = finiteNonnegative(
                   metrics.renderReferenceRMS
               ),
-              timingIsAligned(
-                  metrics: metrics,
-                  observationTimestampNanoseconds:
-                      observationTimestampNanoseconds
-              ) else {
+              sourceSeparationEstablished else {
             return .indeterminate
         }
 

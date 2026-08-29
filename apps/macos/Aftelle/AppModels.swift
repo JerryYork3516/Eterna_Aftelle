@@ -1139,6 +1139,10 @@ struct RealtimeSpeechAcousticEchoDiagnosticExport: Encodable, Sendable {
     var maximumAdaptiveRawExcessRMS = 0.0
     var maximumAdaptiveResidualExcessRMS = 0.0
     var maximumAdaptiveLinearExcessRMS = 0.0
+    var renderCaptureIsolationEstablished = false
+    var renderCaptureIsolationQuietFrameCount = 0
+    var renderCaptureIsolationEstablishmentCount: UInt64 = 0
+    var renderCaptureIsolationRevocationCount: UInt64 = 0
     var sourceAlignmentLocked = false
     var sourceAlignmentAcquisitionFrameCount = 0
     var sourceAlignmentMissCount: UInt64 = 0

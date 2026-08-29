@@ -1472,6 +1472,14 @@ final class AppController: ObservableObject {
             snapshot.maximumAdaptiveResidualExcessRMS
         export.maximumAdaptiveLinearExcessRMS =
             snapshot.maximumAdaptiveLinearExcessRMS
+        export.renderCaptureIsolationEstablished =
+            snapshot.renderCaptureIsolationEstablished
+        export.renderCaptureIsolationQuietFrameCount =
+            snapshot.renderCaptureIsolationQuietFrameCount
+        export.renderCaptureIsolationEstablishmentCount =
+            snapshot.renderCaptureIsolationEstablishmentCount
+        export.renderCaptureIsolationRevocationCount =
+            snapshot.renderCaptureIsolationRevocationCount
         export.sourceAlignmentLocked = snapshot.sourceAlignmentLocked
         export.sourceAlignmentAcquisitionFrameCount =
             snapshot.sourceAlignmentAcquisitionFrameCount

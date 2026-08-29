@@ -684,6 +684,8 @@ actor MacSpeechRealtimeBrainInputBridge {
             sourceGateOpen: snapshot.sourceGateOpen,
             sourceGateEpoch: snapshot.sourceGateEpoch,
             aecActive: snapshot.aecActive,
+            renderCaptureIsolationEstablished:
+                snapshot.renderCaptureIsolationEstablished,
             sourceAlignmentLocked: snapshot.sourceAlignmentLocked,
             routeStable: snapshot.routeStable,
             inputDeviceAvailable: snapshot.inputDeviceAvailable,
@@ -825,7 +827,9 @@ actor MacSpeechRealtimeBrainInputBridge {
                     farEndActive: metrics.residentPlaybackActive,
                     sourceGateOpen: metrics.sourceGateOpen,
                     renderReferenceConfidence:
-                        metrics.sourceAlignmentLocked ? 1 : 0,
+                        (metrics.sourceAlignmentLocked
+                            || metrics.renderCaptureIsolationEstablished)
+                            ? 1 : 0,
                     routeStable: metrics.routeStable,
                     inputDeviceAvailable: metrics.inputDeviceAvailable,
                     outputDeviceAvailable: metrics.outputDeviceAvailable

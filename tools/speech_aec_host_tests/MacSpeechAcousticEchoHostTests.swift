@@ -126,6 +126,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testAdaptiveGateRejectsResidualEchoVariation()
         testMixedResidentRenderIsOneFarEndReference()
         testLongLoudEchoStaysSuppressed()
+        testRenderCaptureIsolationOpensOnlyForNearEnd()
         testUncertainSourceGateIsBoundedAndRecoverable()
         testAmbiguousSourceStaysGatedAndRecovers()
         testRenderConversionFailureFallback()
@@ -1171,6 +1172,124 @@ private struct MacSpeechAcousticEchoHostTests {
                "capture resumes normally outside resident playback")
         expect(snapshot.fallbackCount == 0,
                "recoverable alignment loss is not a hard fallback")
+    }
+
+    private static func testRenderCaptureIsolationOpensOnlyForNearEnd() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let baseTime: UInt64 = 60_000_000_000
+        let silence = [Float](repeating: 0, count: 480)
+        var latestRender = [Float]()
+
+        backend.setCaptureOutput(silence)
+        backend.setLinearOutput([Float](repeating: 0, count: 160))
+        for index in 0 ..< 50 {
+            latestRender = testSignal(
+                seed: UInt32(6_000 + index),
+                amplitude: 0.3
+            )
+            let renderTime = baseTime + UInt64(index) * 10_000_000
+            host.processRender(
+                latestRender,
+                hostTimeNanoseconds: renderTime
+            )
+            expect(isSilence(host.processCapture(
+                silence,
+                hostTimeNanoseconds: renderTime + 80_000_000
+            )), "isolated render warm-up remains source-gated")
+        }
+
+        var snapshot = host.snapshot()
+        expect(snapshot.renderCaptureIsolationEstablished,
+               "500 ms quiet capture establishes render isolation")
+        expect(snapshot.renderCaptureIsolationQuietFrameCount == 50
+                   && snapshot.renderCaptureIsolationEstablishmentCount == 1,
+               "render isolation warm-up is explicit and bounded")
+        expect(!snapshot.sourceGateOpen,
+               "render isolation evidence alone cannot open source gate")
+
+        let independent = testSignal(seed: 6_100, amplitude: 0.25)
+        let user = zip(latestRender, independent).map { sample in
+            sample.0 * 0.3 + sample.1
+        }
+        backend.setCaptureOutput(user)
+        backend.setLinearOutput([Float](repeating: 0, count: 160))
+        for index in 0 ..< 3 {
+            expect(isSilence(host.processCapture(
+                user,
+                hostTimeNanoseconds:
+                    baseTime + 580_000_000
+                        + UInt64(index) * 10_000_000
+            )), "gray-zone residual without linear evidence stays gated")
+        }
+        expect(!host.snapshot().sourceGateOpen,
+               "render isolation cannot replace secondary near-end evidence")
+
+        backend.setLinearOutput(linearOutput(user))
+        var opened: [Float] = []
+        for index in 0 ..< 3 {
+            opened = host.processCapture(
+                user,
+                hostTimeNanoseconds:
+                    baseTime + 610_000_000
+                        + UInt64(index) * 10_000_000
+            )
+        }
+        snapshot = host.snapshot()
+        expect(snapshot.renderCaptureCorrelation > 0.25
+                   && snapshot.renderCaptureCorrelation < 0.35,
+               "fixture reproduces the independent-speech gray zone")
+        expect(snapshot.inputClassification == .nearEndSpeech,
+               "isolated gray-zone speech is classified as near-end")
+        expect(snapshot.sourceGateOpen && opened.count == 3 * 480,
+               "isolated near-end speech still uses three-frame gate")
+
+        host.playbackStopped()
+        host.playbackStarted()
+        backend.setCaptureOutput(silence)
+        backend.setLinearOutput([Float](repeating: 0, count: 160))
+        for index in 0 ..< 50 {
+            latestRender = testSignal(
+                seed: UInt32(6_200 + index),
+                amplitude: 0.3
+            )
+            let renderTime = baseTime + 1_000_000_000
+                + UInt64(index) * 10_000_000
+            host.processRender(
+                latestRender,
+                hostTimeNanoseconds: renderTime
+            )
+            _ = host.processCapture(
+                silence,
+                hostTimeNanoseconds: renderTime + 80_000_000
+            )
+        }
+        expect(host.snapshot().renderCaptureIsolationEstablished,
+               "second playback independently re-establishes isolation")
+
+        backend.setCaptureOutput(silence)
+        backend.setLinearOutput([Float](repeating: 0, count: 160))
+        host.processRender(
+            latestRender,
+            hostTimeNanoseconds: baseTime + 1_500_000_000
+        )
+        let echo = host.processCapture(
+            latestRender,
+            hostTimeNanoseconds: baseTime + 1_580_000_000
+        )
+        snapshot = host.snapshot()
+        expect(isSilence(echo)
+                   && snapshot.inputClassification == .echoOnly
+                   && !snapshot.sourceGateOpen,
+               "late aligned echo stays suppressed after isolation warm-up")
+        expect(!snapshot.renderCaptureIsolationEstablished
+                   && snapshot.renderCaptureIsolationRevocationCount == 1,
+               "high-confidence resident echo revokes isolation evidence")
     }
 
     private static func testAmbiguousSourceStaysGatedAndRecovers() {

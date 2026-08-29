@@ -29,6 +29,7 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r832-confirmed-only" ] \
     && [ "$test_mode" != "r833-latency-stale-only" ] \
     && [ "$test_mode" != "r841-double-talk-only" ] \
+    && [ "$test_mode" != "r853-isolated-barge-in-only" ] \
     && [ "$test_mode" != "r842-listening-only" ] \
     && [ "$test_mode" != "r842-turn-completion-only" ] \
     && [ "$test_mode" != "r843-semantic-fusion-only" ] \
@@ -128,6 +129,8 @@ elif [ "$test_mode" = "r833-latency-stale-only" ]; then
   runner_arguments+=("--r833-latency-stale-only")
 elif [ "$test_mode" = "r841-double-talk-only" ]; then
   runner_arguments+=("--r841-double-talk-only")
+elif [ "$test_mode" = "r853-isolated-barge-in-only" ]; then
+  runner_arguments+=("--r853-isolated-barge-in-only")
 elif [ "$test_mode" = "r842-listening-only" ]; then
   runner_arguments+=("--r842-listening-only")
 elif [ "$test_mode" = "r842-turn-completion-only" ]; then
@@ -336,6 +339,47 @@ elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
     exit 1
   fi
   echo "r852_formal_production_fixture=PASS"
+elif [ "$test_mode" = "r853-isolated-barge-in-only" ]; then
+  rg -qx 'realtime_isolated_barge_in_cases=1' "$output"
+  isolated_checks="$({
+    awk -F= '/^realtime_isolated_barge_in_checks=/ { print $2 }' \
+      "$output"
+  })"
+  [ -n "$isolated_checks" ]
+  [ "$isolated_checks" -gt 0 ]
+  rg -qx 'r853_isolation_warmup_frames=50' "$output"
+  rg -qx 'r853_isolation_established=1' "$output"
+  rg -qx 'r853_isolation_revocations=0' "$output"
+  gray_zone_correlation="$({
+    awk -F= '/^r853_gray_zone_correlation=/ { print $2 }' "$output"
+  })"
+  awk -v value="$gray_zone_correlation" \
+    'BEGIN { exit !(value > 0.25 && value < 0.35) }'
+  rg -qx 'r853_source_gate_opens=1' "$output"
+  rg -qx 'r853_acoustic_eligibility=1' "$output"
+  rg -qx 'r853_confirmed_interruptions=1' "$output"
+  rg -qx 'r853_provider_interrupts=1' "$output"
+  rg -qx 'r853_provider_cancels=0' "$output"
+  rg -qx 'r853_host_playback_clears=1' "$output"
+  rg -qx 'r853_generation_delta=1' "$output"
+  rg -qx 'r853_n_plus_one_input=1' "$output"
+  rg -qx 'r853_n_plus_one_output=1' "$output"
+
+  isolated_source="$({
+    awk '/private static func submitRenderCaptureIsolatedNearEndThroughProductionChain/ { active = 1 }
+         /private static func submitTrueNearEndThroughProductionChain/ { active = 0 }
+         active' "$test_source"
+  })"
+  rg -q 'processRender\(' <<< "$isolated_source"
+  rg -q 'processCapture\(' <<< "$isolated_source"
+  rg -q 'processedSamples: processed' <<< "$isolated_source"
+  if rg -q \
+      'submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|interruptRealtimeResidentBrainForTesting|speechAudioOutputHost\.clear\(' \
+      <<< "$isolated_source"; then
+    echo "r853_test_seam_bypass=FAIL" >&2
+    exit 1
+  fi
+  echo "r853_production_chain_fixture=PASS"
 elif [ "$test_mode" = "r844-classifier-only" ]; then
   rg -qx 'realtime_backchannel_classifier_cases=43' "$output"
   rg -qx 'realtime_backchannel_classifier_checks=46' "$output"

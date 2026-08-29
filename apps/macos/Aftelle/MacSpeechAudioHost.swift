@@ -147,7 +147,8 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
             farEndActive: acoustic.isPlaybackActive,
             sourceGateOpen: acoustic.sourceGateOpen,
             renderReferenceConfidence:
-                acoustic.sourceAlignmentLocked ? 1 : 0,
+                (acoustic.sourceAlignmentLocked
+                    || acoustic.renderCaptureIsolationEstablished) ? 1 : 0,
             routeStable: state == .capturing && lastError == nil,
             inputDeviceAvailable: route.input.isAvailable,
             outputDeviceAvailable: route.output.isAvailable
@@ -189,6 +190,8 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
             sourceGateEpoch: acoustic.sourceGateEpoch,
             aecEnabled: acoustic.aecEnabled,
             aecActive: acoustic.aecActive,
+            renderCaptureIsolationEstablished:
+                acoustic.renderCaptureIsolationEstablished,
             sourceAlignmentLocked: acoustic.sourceAlignmentLocked,
             sourceAlignmentDelayMilliseconds:
                 acoustic.sourceAlignmentDelayMilliseconds,
