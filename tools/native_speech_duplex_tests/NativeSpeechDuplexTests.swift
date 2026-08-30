@@ -1122,8 +1122,8 @@ private struct NativeSpeechDuplexTests {
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 9,
-               "diagnostic export freezes schema version 9")
+        expect(object["schema_version"] as? Int == 10,
+               "diagnostic export freezes schema version 10")
         expect(
             object["route_kind"] as? String == "realtime_full_duplex",
             "diagnostic export identifies the requested route"

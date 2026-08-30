@@ -23,6 +23,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var holdsNextCloseCompletion = false
     private var heldCloseContinuation: CheckedContinuation<Void, Never>?
     private var failsNextResponseCancel = false
+    private var acknowledgesUnsafeTurnDetection = false
 
     func connect(endpoint: URL, bearerToken: String) async throws {
         guard !isConnected else { throw NativeSpeechError.invalidConfiguration }
@@ -46,6 +47,17 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         case "session.update":
             if holdsSessionUpdate {
                 heldSessionUpdateAcknowledgements += 1
+            } else if acknowledgesUnsafeTurnDetection,
+                      let session = object["session"] as? [String: Any],
+                      session["turn_detection"] != nil {
+                enqueueText(
+                    #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"server_vad","threshold":0.5,"silence_duration_ms":800,"create_response":true,"interrupt_response":true}}}"#
+                )
+            } else if let session = object["session"] as? [String: Any],
+                      session["turn_detection"] != nil {
+                enqueueText(
+                    #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"semantic_vad","threshold":0.5,"silence_duration_ms":800,"create_response":false,"interrupt_response":false}}}"#
+                )
             } else {
                 enqueueText(#"{"type":"session.updated","session":{"id":"session-r3"}}"#)
             }
@@ -146,6 +158,10 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func useNextResponseID(_ responseID: String) {
         nextResponseID = responseID
+    }
+
+    func useUnsafeTurnDetectionAcknowledgement() {
+        acknowledgesUnsafeTurnDetection = true
     }
 
     func holdResponseCreationAcknowledgements() {

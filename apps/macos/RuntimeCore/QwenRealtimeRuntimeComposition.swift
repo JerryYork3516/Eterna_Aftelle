@@ -33,7 +33,8 @@ enum QwenRealtimeRuntimeComposition {
                     diagnosticBuffer: diagnosticBuffer,
                     diagnosticRouteKind: .realtimeBrain
                 ),
-                configuration: realtimeBrainConfiguration
+                configuration: realtimeBrainConfiguration,
+                diagnosticBuffer: diagnosticBuffer
             )
         let nativeSpeechProvider = QwenRealtimeAdapter(
             credentialReader: credentialReader,

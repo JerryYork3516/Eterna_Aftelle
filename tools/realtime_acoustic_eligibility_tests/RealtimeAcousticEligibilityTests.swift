@@ -186,15 +186,64 @@ private final class R822AudioSource:
         lock.withLock {
             guard self.generation == generation else { return }
             frameSequence &+= 1
+            let acousticSnapshot = snapshot.map(Self.acousticSnapshot)
             frames.append(MacSpeechAudioFrame(
                 captureGeneration: generation,
                 sequenceNumber: frameSequence,
-                monotonicTimestampNanoseconds:
-                    DispatchTime.now().uptimeNanoseconds,
+                monotonicTimestampNanoseconds: acousticSnapshot?
+                    .captureHostTimeNanoseconds
+                    ?? DispatchTime.now().uptimeNanoseconds,
                 pcm16Bytes: Data(repeating: 0, count: 960),
-                activity: 0
+                activity: 0,
+                activityEvidenceKind: snapshot?.sourceGateOpen == true
+                    ? .sourceGatedNearEnd : .none,
+                residentPlaybackSequence: snapshot?.playbackSequence ?? 0,
+                residentPlaybackActive:
+                    snapshot?.residentPlaybackActive ?? false,
+                lastAudibleResidentRenderTimestampNanoseconds:
+                    snapshot?
+                        .lastAudibleResidentRenderTimestampNanoseconds,
+                sourceGateEpoch: snapshot?.sourceGateEpoch ?? 0,
+                acousticSnapshot: acousticSnapshot
             ))
         }
+    }
+
+    private static func acousticSnapshot(
+        _ value: MacSpeechResidentAcousticSnapshot
+    ) -> MacSpeechAcousticObservationSnapshot {
+        MacSpeechAcousticObservationSnapshot(
+            captureFrameIndex: value.captureFrameIndex,
+            captureHostTimeNanoseconds: value.captureHostTimeNanoseconds,
+            playbackSequence: value.playbackSequence,
+            isPlaybackActive: value.residentPlaybackActive,
+            lastAudibleRenderHostTimeNanoseconds:
+                value.lastAudibleResidentRenderTimestampNanoseconds,
+            renderReferenceAvailable: value.renderReferenceAvailable,
+            renderReferenceRMS: value.renderReferenceRMS,
+            renderHostTimeNanoseconds: value.renderHostTimeNanoseconds,
+            rawCaptureRMS: value.rawCaptureRMS,
+            processedCaptureRMS: value.processedCaptureRMS,
+            linearAECOutputRMS: value.linearAECOutputRMS,
+            renderCaptureCorrelation: value.renderCaptureCorrelation,
+            residualRenderCorrelation: value.residualRenderCorrelation,
+            linearRenderCorrelation: value.linearRenderCorrelation,
+            inputClassification: value.inputClassification,
+            sourceGateOpen: value.sourceGateOpen,
+            sourceGateEpoch: value.sourceGateEpoch,
+            aecEnabled: value.aecEnabled,
+            aecActive: value.aecActive,
+            renderCaptureIsolationEstablished:
+                value.renderCaptureIsolationEstablished,
+            sourceAlignmentLocked: value.sourceAlignmentLocked,
+            sourceAlignmentDelayMilliseconds:
+                value.sourceAlignmentDelayMilliseconds,
+            estimatedDelayMilliseconds: value.estimatedDelayMilliseconds,
+            erlDecibels: value.erlDecibels,
+            erleDecibels: value.erleDecibels,
+            renderCaptureSkewFrames: value.renderCaptureSkewFrames,
+            driftTrend: value.driftTrend
+        )
     }
 }
 

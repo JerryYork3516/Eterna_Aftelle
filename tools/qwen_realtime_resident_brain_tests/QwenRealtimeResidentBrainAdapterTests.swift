@@ -57,6 +57,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         try await testHandshakeAndBootstrap()
+        try await testUnsafeTurnDetectionAcknowledgementFailsClosed()
         try await testInvalidToolAdvertisementsFailClosed()
         try await testContextScopeReplacement()
         try await testAudioAndEventMapping()
@@ -825,7 +826,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
     private static func testInterruptionAndGeneration() async throws {
         cases += 1
-        let stack = try makeStack()
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
         let identity = sessionIdentity(generation: 3)
         try await openAndBootstrap(stack, identity: identity)
 
@@ -839,6 +841,71 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             stack,
             from: initialSpeech,
             responseID: "response-interrupt"
+        )
+        let overlapAudioFrame = RealtimeBrainAudioFrame(
+            identity: identity,
+            sequence: 1,
+            timestampNanoseconds: 100,
+            format: RealtimeBrainAudioFormat(
+                encoding: .pcm16LittleEndian,
+                sampleRate: 24_000,
+                channelCount: 1
+            ),
+            provenance: .acousticEchoProcessed,
+            bytes: pcm16(Array(repeating: [600, 600, 600], count: 160)
+                .flatMap { $0 })
+        )
+        for index in 0 ..< 5 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 1) * 100),
+                format: overlapAudioFrame.format,
+                provenance: overlapAudioFrame.provenance,
+                bytes: overlapAudioFrame.bytes
+            ))
+        }
+        let overlapAppends = try await sentObjects(stack.transport)
+            .filter { $0["type"] as? String == "input_audio_buffer.append" }
+        guard overlapAppends.count == 1,
+              let overlapEncoded = overlapAppends[0]["audio"] as? String,
+              let overlapBytes = Data(base64Encoded: overlapEncoded) else {
+            fatalError("active-response audio batch missing")
+        }
+        expect(
+            overlapBytes.count == 3_200,
+            "five overlap frames form exactly one 100 ms Provider batch"
+        )
+        let batchDiagnostics = diagnostics.drain().events
+        expect(
+            batchDiagnostics.contains {
+                $0.category == "qwen_turn_detection_requested"
+                    && $0.disposition?.contains("type=semantic_vad") == true
+                    && $0.disposition?.contains("interrupt_response=false")
+                        == true
+            },
+            "diagnostics expose the requested provider-neutral VAD policy"
+        )
+        expect(
+            batchDiagnostics.contains {
+                $0.category == "qwen_turn_detection_acknowledged"
+                    && $0.disposition?.contains("type=semantic_vad") == true
+                    && $0.disposition?.contains("silence_ms=800") == true
+            },
+            "diagnostics expose the Provider-acknowledged VAD policy"
+        )
+        guard let batchDiagnostic = batchDiagnostics.last(where: {
+            $0.category == "qwen_active_response_input_audio_batch"
+        }) else {
+            fatalError("active-response audio diagnostic missing")
+        }
+        expect(
+            batchDiagnostic.byteCount == 3_200
+                && batchDiagnostic.disposition == "transport_enqueued"
+                && batchDiagnostic.turnGeneration == identity.generation
+                && (batchDiagnostic.pcmPeak ?? 0) > 0
+                && (batchDiagnostic.pcmRMS ?? 0) > 0,
+            "active-response diagnostic proves audible PCM enters transport"
         )
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"user-b"}"#
@@ -855,6 +922,15 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(evidence.identity == proposal.identity, "proposal identity is exact")
         let nextSpeech = try await stack.adapter.receiveEvent(session: identity)
         expect(nextSpeech.kind == .userSpeechStarted, "new speech lifecycle is preserved beside proposal")
+        let speechDiagnostics = diagnostics.drain().events
+        expect(
+            speechDiagnostics.contains {
+                $0.category == "qwen_speech_started_received"
+                    && $0.disposition == "active_response"
+                    && $0.turnGeneration == identity.generation
+            },
+            "Provider speech-start is attributed to the active response"
+        )
         let typesBeforeInterrupt = try await sentTypes(stack.transport)
         expect(
             typesBeforeInterrupt.filter { $0 == "response.cancel" }.isEmpty,
@@ -867,13 +943,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
         let oldAudioFrame = RealtimeBrainAudioFrame(
             identity: identity,
-            sequence: 1,
-            timestampNanoseconds: 100,
-            format: RealtimeBrainAudioFormat(
-                encoding: .pcm16LittleEndian,
-                sampleRate: 24_000,
-                channelCount: 1
-            ),
+            sequence: 6,
+            timestampNanoseconds: 600,
+            format: overlapAudioFrame.format,
             provenance: .acousticEchoProcessed,
             bytes: pcm16(Array(repeating: [300, 300, 300], count: 160)
                 .flatMap { $0 })
@@ -881,8 +953,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         for index in 0 ..< 4 {
             try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
                 identity: identity,
-                sequence: UInt64(index + 1),
-                timestampNanoseconds: UInt64((index + 1) * 100),
+                sequence: UInt64(index + 6),
+                timestampNanoseconds: UInt64((index + 6) * 100),
                 format: oldAudioFrame.format,
                 provenance: oldAudioFrame.provenance,
                 bytes: oldAudioFrame.bytes
@@ -892,7 +964,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(
             typesWithPartialOldAudio.filter {
                 $0 == "input_audio_buffer.append"
-            }.isEmpty,
+            }.count == 1,
             "partial old-generation audio remains local until a full batch"
         )
 
@@ -956,8 +1028,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         let postInterruptAppends = try await sentObjects(stack.transport)
             .filter { $0["type"] as? String == "input_audio_buffer.append" }
-        guard postInterruptAppends.count == 1,
-              let encodedNewAudio = postInterruptAppends[0]["audio"]
+        guard postInterruptAppends.count == 2,
+              let encodedNewAudio = postInterruptAppends[1]["audio"]
                 as? String,
               let newAudio = Data(base64Encoded: encodedNewAudio) else {
             fatalError("new-generation audio batch missing")
@@ -2439,7 +2511,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
-    private static func makeStack() throws -> (
+    private static func makeStack(
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil
+    ) throws -> (
         adapter: QwenRealtimeResidentBrainAdapter,
         transport: R3FakeRealtimeWebSocketTransport
     ) {
@@ -2455,9 +2529,29 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                     keyRef: "keychain://test/qwen",
                     defaultProviderVoiceID: "R6FixtureVoice",
                     acknowledgementTimeout: .seconds(1)
-                )
+                ),
+                diagnosticBuffer: diagnosticBuffer
             ),
             transport
+        )
+    }
+
+    private static func testUnsafeTurnDetectionAcknowledgementFailsClosed()
+        async throws {
+        cases += 1
+        let stack = try makeStack()
+        await stack.transport.useUnsafeTurnDetectionAcknowledgement()
+        await expectRealtimeError(.invalidEvent) {
+            try await stack.adapter.openSession(
+                RealtimeBrainOpenSessionCommand(
+                    identity: sessionIdentity(generation: 1)
+                )
+            )
+        }
+        let closeCount = await stack.transport.closeCount()
+        expect(
+            closeCount == 1,
+            "unsafe Provider VAD authority acknowledgement closes the session"
         )
     }
 

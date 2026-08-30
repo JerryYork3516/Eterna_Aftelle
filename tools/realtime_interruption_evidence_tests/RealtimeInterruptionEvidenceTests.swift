@@ -209,10 +209,27 @@ private final class R81AudioCapture:
         guard target.0,
               let frameBuffer = target.1,
               let generation = target.2 else { return false }
+        let acoustic = acousticEchoHost.acousticObservationSnapshot()
+        let activityEvidenceKind: MacSpeechAudioActivityEvidenceKind =
+            acoustic.sourceGateOpen
+                && acoustic.sourceGateEpoch > 0
+                && (acoustic.inputClassification == .nearEndSpeech
+                    || acoustic.inputClassification == .doubleTalk)
+                ? .sourceGatedNearEnd : .none
         return frameBuffer.append(
             pcm16Bytes: Data(repeating: marker, count: 960),
             activity: 0.25,
-            generation: generation
+            generation: generation,
+            timestamp: acoustic.captureHostTimeNanoseconds
+                ?? DispatchTime.now().uptimeNanoseconds,
+            activityEvidenceKind: activityEvidenceKind,
+            residentPlaybackSequence: acoustic.playbackSequence,
+            residentPlaybackActive: acoustic.isPlaybackActive,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                acoustic.lastAudibleRenderHostTimeNanoseconds,
+            sourceGateEpoch: activityEvidenceKind == .sourceGatedNearEnd
+                ? acoustic.sourceGateEpoch : 0,
+            acousticSnapshot: acoustic
         )
     }
 }
@@ -2006,9 +2023,13 @@ private struct RealtimeInterruptionEvidenceTests {
         await stack.controller.refreshMicrophoneAuthorization()
         let bridgeSnapshot = stack.controller
             .realtimeBrainInputBridgeSnapshot
+        let eligibilityDisposition =
+            bridgeSnapshot.lastAcousticEligibilityDisposition ?? "nil"
+        let forwardDisposition =
+            bridgeSnapshot.lastAcousticEvidenceForwardDisposition ?? "nil"
         expect(
             bridgeSnapshot.acousticEvidenceCount == 1,
-            "Host forwards one source-gate acoustic evidence edge; sends=\(bridgeSnapshot.sendOperationCount), forwarded=\(bridgeSnapshot.forwardedFrameCount)"
+            "Host forwards one source-gate acoustic evidence edge; evidence=\(bridgeSnapshot.acousticEvidenceCount), candidates=\(bridgeSnapshot.acousticEligibilityCandidateCount), rearmed=\(bridgeSnapshot.acousticEligibilityRearmedCount), stale=\(bridgeSnapshot.acousticEvidenceStaleFenceCount), eligibility=\(eligibilityDisposition), forward=\(forwardDisposition), sends=\(bridgeSnapshot.sendOperationCount), forwarded=\(bridgeSnapshot.forwardedFrameCount)"
         )
     }
 

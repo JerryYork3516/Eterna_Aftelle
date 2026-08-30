@@ -868,6 +868,7 @@ struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
     let responseCorrelationHash: String?
     let itemCorrelationHash: String?
     let audioSequence: UInt64?
+    let sourceGateEpoch: UInt64?
     let byteCount: Int?
     let queueDepth: Int?
     let pendingWriteCount: Int?
@@ -924,6 +925,7 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
         responseCorrelationHash: String? = nil,
         itemCorrelationHash: String? = nil,
         audioSequence: UInt64? = nil,
+        sourceGateEpoch: UInt64? = nil,
         byteCount: Int? = nil,
         queueDepth: Int? = nil,
         pendingWriteCount: Int? = nil,
@@ -948,7 +950,9 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
             id: nextSequence,
             timestamp: timestamp,
             elapsedMilliseconds:
-                (nowNanoseconds &- startedAtNanoseconds) / 1_000_000,
+                nowNanoseconds >= startedAtNanoseconds
+                    ? (nowNanoseconds - startedAtNanoseconds) / 1_000_000
+                    : 0,
             source: source,
             category: category,
             routeKind: routeKind,
@@ -962,6 +966,7 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
             responseCorrelationHash: responseCorrelationHash,
             itemCorrelationHash: itemCorrelationHash,
             audioSequence: audioSequence,
+            sourceGateEpoch: sourceGateEpoch,
             byteCount: byteCount,
             queueDepth: queueDepth,
             pendingWriteCount: pendingWriteCount,
@@ -1204,6 +1209,11 @@ struct RealtimeBrainInputDiagnosticExport: Encodable, Sendable {
     let rejectedAcousticObservationCount: UInt64
     let droppedAcousticObservationCount: UInt64
     let acousticEvidenceCount: UInt64
+    let acousticEligibilityCandidateCount: UInt64
+    let acousticEligibilityRearmedCount: UInt64
+    let acousticEvidenceStaleFenceCount: UInt64
+    let acousticEligibilityDispositionCounts: [String: UInt64]
+    let acousticEvidenceForwardDispositionCounts: [String: UInt64]
     let lastAcousticEligibilityDisposition: String?
     let lastAcousticEvidenceForwardDisposition: String?
     let lastError: String?

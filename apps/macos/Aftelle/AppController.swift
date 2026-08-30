@@ -513,6 +513,25 @@ final class AppController: ObservableObject {
         Task<Void, Never>?
     private var realtimeBrainSubtitlePresentation =
         RealtimeBrainSubtitlePresentation()
+    private var realtimeBrainAcousticDiagnosticRecorder:
+        MacSpeechRealtimeBrainInputBridge.RecordAcousticDiagnostic? {
+        #if DEBUG
+        return { [weak self] diagnostic in
+            self?.recordRealtimeSpeechDiagnostic(
+                source: .inputBridge,
+                category: diagnostic.category,
+                routeKind: .realtimeBrain,
+                turnGeneration: diagnostic.turnGeneration,
+                disposition: diagnostic.disposition,
+                audioSequence: diagnostic.observationSequence,
+                sourceGateEpoch: diagnostic.sourceGateEpoch,
+                nowNanoseconds: diagnostic.timestampNanoseconds
+            )
+        }
+        #else
+        return nil
+        #endif
+    }
     private lazy var realtimeBrainInputBridge = MacSpeechRealtimeBrainInputBridge(
         source: speechAudioHost,
         sendFrameWithActivity: { [orchestrationKernel] frame, activity in
@@ -542,7 +561,8 @@ final class AppController: ObservableObject {
             await self?.consumeRealtimeResidentBrainAcousticObservation(
                 observation
             )
-        }
+        },
+        recordAcousticDiagnostic: realtimeBrainAcousticDiagnosticRecorder
     )
     private lazy var realtimeBrainOutputBridge =
         MacSpeechRealtimeBrainOutputBridge(
@@ -1120,7 +1140,7 @@ final class AppController: ObservableObject {
         let turnCompletion = orchestrationKernel
             .realtimeUtteranceCompletionDebugSnapshot()
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 9,
+            schemaVersion: 10,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -1211,6 +1231,21 @@ final class AppController: ObservableObject {
                         .droppedResidentAcousticObservationCount,
                 acousticEvidenceCount:
                     realtimeBrainInputBridgeSnapshot.acousticEvidenceCount,
+                acousticEligibilityCandidateCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .acousticEligibilityCandidateCount,
+                acousticEligibilityRearmedCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .acousticEligibilityRearmedCount,
+                acousticEvidenceStaleFenceCount:
+                    realtimeBrainInputBridgeSnapshot
+                        .acousticEvidenceStaleFenceCount,
+                acousticEligibilityDispositionCounts:
+                    realtimeBrainInputBridgeSnapshot
+                        .acousticEligibilityDispositionCounts,
+                acousticEvidenceForwardDispositionCounts:
+                    realtimeBrainInputBridgeSnapshot
+                        .acousticEvidenceForwardDispositionCounts,
                 lastAcousticEligibilityDisposition:
                     realtimeBrainInputBridgeSnapshot
                         .lastAcousticEligibilityDisposition,
@@ -5408,6 +5443,7 @@ final class AppController: ObservableObject {
         responseCorrelationHash: String? = nil,
         itemCorrelationHash: String? = nil,
         audioSequence: UInt64? = nil,
+        sourceGateEpoch: UInt64? = nil,
         byteCount: Int? = nil,
         queueDepth: Int? = nil,
         pendingWriteCount: Int? = nil,
@@ -5441,6 +5477,7 @@ final class AppController: ObservableObject {
             responseCorrelationHash: responseCorrelationHash,
             itemCorrelationHash: itemCorrelationHash,
             audioSequence: audioSequence,
+            sourceGateEpoch: sourceGateEpoch,
             byteCount: byteCount,
             queueDepth: queueDepth,
             pendingWriteCount: pendingWriteCount,
@@ -5500,6 +5537,8 @@ final class AppController: ObservableObject {
                 wireToStandardDurationMilliseconds:
                     event.wireToStandardDurationMilliseconds,
                 durationMilliseconds: event.durationMilliseconds,
+                pcmPeak: event.pcmPeak,
+                pcmRMS: event.pcmRMS,
                 errorCode: event.errorCode,
                 timestamp: event.timestamp,
                 nowNanoseconds: event.monotonicTimestampNanoseconds

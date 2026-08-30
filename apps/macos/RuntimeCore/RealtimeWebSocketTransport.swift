@@ -87,6 +87,8 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
     let writeWindowCapacity: Int?
     let pendingWriteCount: Int?
     let durationMilliseconds: UInt64?
+    let pcmPeak: Double?
+    let pcmRMS: Double?
     let errorCode: String?
 
     init(
@@ -109,6 +111,8 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
         writeWindowCapacity: Int? = nil,
         pendingWriteCount: Int? = nil,
         durationMilliseconds: UInt64? = nil,
+        pcmPeak: Double? = nil,
+        pcmRMS: Double? = nil,
         errorCode: String? = nil,
         timestamp: Date = Date(),
         monotonicTimestampNanoseconds: UInt64 =
@@ -136,6 +140,8 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
         self.writeWindowCapacity = writeWindowCapacity
         self.pendingWriteCount = pendingWriteCount
         self.durationMilliseconds = durationMilliseconds
+        self.pcmPeak = pcmPeak
+        self.pcmRMS = pcmRMS
         self.errorCode = errorCode
     }
 }

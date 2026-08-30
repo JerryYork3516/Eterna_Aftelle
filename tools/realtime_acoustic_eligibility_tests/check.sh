@@ -159,8 +159,15 @@ awk '
   END { if (!forwarded) exit 1 }
 ' "$post_send_block"
 rg -q 'currentSnapshot = await source\.residentAcousticSnapshot' "$bridge"
-rg -q 'currentSnapshot\.sourceGateOpen' "$bridge"
-rg -q 'currentSnapshot\.sourceGateEpoch == eligibilityEpoch' "$bridge"
+stale_fence_block="$build_dir/stale-fence.txt"
+awk \
+  '/private static func acousticEvidenceStaleReason/ { active = 1 } \
+   /private func finish\(/ { if (active) active = 0 } \
+   active' "$bridge" > "$stale_fence_block"
+rg -q 'snapshot\.sourceGateOpen' "$stale_fence_block"
+rg -q 'snapshot\.sourceGateEpoch == eligibilityEpoch' "$stale_fence_block"
+rg -q 'snapshot\.playbackSequence' "$stale_fence_block"
+rg -q 'snapshot\.captureGeneration' "$stale_fence_block"
 rg -q 'facts\.sourceGateEpoch == observation\.metrics\.sourceGateEpoch' "$runtime"
 echo "r822_post_send_identity_guard=PASS"
 echo "r822_source_gate_epoch_fence=PASS"

@@ -50,6 +50,15 @@ nonisolated struct MacSpeechRealtimeBrainAcousticObservation:
     }
 }
 
+nonisolated struct MacSpeechRealtimeBrainAcousticDiagnostic: Sendable {
+    let category: String
+    let disposition: String
+    let turnGeneration: UInt64
+    let observationSequence: UInt64
+    let sourceGateEpoch: UInt64
+    let timestampNanoseconds: UInt64
+}
+
 nonisolated enum MacSpeechRealtimeBrainInputBridgeState: String, Sendable, Equatable {
     case idle
     case running
@@ -65,6 +74,11 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
     let rejectedResidentAcousticObservationCount: UInt64
     let droppedResidentAcousticObservationCount: UInt64
     let acousticEvidenceCount: UInt64
+    let acousticEligibilityCandidateCount: UInt64
+    let acousticEligibilityRearmedCount: UInt64
+    let acousticEvidenceStaleFenceCount: UInt64
+    let acousticEligibilityDispositionCounts: [String: UInt64]
+    let acousticEvidenceForwardDispositionCounts: [String: UInt64]
     let runtimeRejectedFrameCount: UInt64
     let sendOperationCount: UInt64
     let noneActivityFrameCount: UInt64
@@ -90,6 +104,11 @@ nonisolated struct MacSpeechRealtimeBrainInputBridgeSnapshot: Sendable, Equatabl
         rejectedResidentAcousticObservationCount: 0,
         droppedResidentAcousticObservationCount: 0,
         acousticEvidenceCount: 0,
+        acousticEligibilityCandidateCount: 0,
+        acousticEligibilityRearmedCount: 0,
+        acousticEvidenceStaleFenceCount: 0,
+        acousticEligibilityDispositionCounts: [:],
+        acousticEvidenceForwardDispositionCounts: [:],
         runtimeRejectedFrameCount: 0,
         sendOperationCount: 0,
         noneActivityFrameCount: 0,
@@ -141,6 +160,10 @@ actor MacSpeechRealtimeBrainInputBridge {
         RealtimeAcousticObservation
     ) async -> RealtimeAcousticObservationDisposition
 
+    typealias RecordAcousticDiagnostic = @MainActor @Sendable (
+        MacSpeechRealtimeBrainAcousticDiagnostic
+    ) -> Void
+
     private let source: any MacSpeechAudioFrameSourcing
     private let sendFrame: SendFrameWithActivity
     private let confirmAcceptedLocalActivity:
@@ -148,6 +171,7 @@ actor MacSpeechRealtimeBrainInputBridge {
     private let stopInput: StopInput
     private let observeResidentAcoustics: ObserveResidentAcoustics?
     private let consumeAcousticObservation: ConsumeAcousticObservation?
+    private let recordAcousticDiagnostic: RecordAcousticDiagnostic?
     private var pumpTask: Task<Void, Never>?
     private var activePumpID: UUID?
     private var activeBinding: MacSpeechRealtimeBrainInputBinding?
@@ -163,6 +187,11 @@ actor MacSpeechRealtimeBrainInputBridge {
     private var rejectedResidentAcousticObservationCount: UInt64 = 0
     private var droppedResidentAcousticObservationCount: UInt64 = 0
     private var acousticEvidenceCount: UInt64 = 0
+    private var acousticEligibilityCandidateCount: UInt64 = 0
+    private var acousticEligibilityRearmedCount: UInt64 = 0
+    private var acousticEvidenceStaleFenceCount: UInt64 = 0
+    private var acousticEligibilityDispositionCounts: [String: UInt64] = [:]
+    private var acousticEvidenceForwardDispositionCounts: [String: UInt64] = [:]
     private var runtimeRejectedFrameCount: UInt64 = 0
     private var sendOperationCount: UInt64 = 0
     private var noneActivityFrameCount: UInt64 = 0
@@ -178,6 +207,7 @@ actor MacSpeechRealtimeBrainInputBridge {
     private var nextResidentAcousticObservationSequence: UInt64 = 1
     private var nextResidentAcousticSnapshotPollNanoseconds: UInt64 = 0
     private var lastResidentCaptureFrameIndex: UInt64 = 0
+    private var lastObserverOnlyResidentCaptureFrameIndex: UInt64 = 0
     private var lastResidentObservationFrameIndex: UInt64 = 0
     private var residentAcousticObservationTask: Task<Void, Never>?
     private var residentAcousticObservationTaskID: UUID?
@@ -186,6 +216,8 @@ actor MacSpeechRealtimeBrainInputBridge {
     private var pendingEligibleAcousticObservation:
         RealtimeAcousticObservation?
     private var pendingEligibilitySourceGateEpoch: UInt64?
+    private var pendingEligibilityGateBeforeIssue:
+        RealtimeAcousticInterruptionEligibilityGate?
     private var acousticEligibilityForwarded = false
     private var lastAcousticEligibilityDisposition: String?
     private var lastAcousticEvidenceForwardDisposition: String?
@@ -196,7 +228,8 @@ actor MacSpeechRealtimeBrainInputBridge {
         sendFrame: @escaping SendFrame,
         stopInput: @escaping StopInput,
         observeResidentAcoustics: ObserveResidentAcoustics? = nil,
-        consumeAcousticObservation: ConsumeAcousticObservation? = nil
+        consumeAcousticObservation: ConsumeAcousticObservation? = nil,
+        recordAcousticDiagnostic: RecordAcousticDiagnostic? = nil
     ) {
         self.source = source
         self.sendFrame = { frame, _ in
@@ -206,6 +239,7 @@ actor MacSpeechRealtimeBrainInputBridge {
         self.stopInput = stopInput
         self.observeResidentAcoustics = observeResidentAcoustics
         self.consumeAcousticObservation = consumeAcousticObservation
+        self.recordAcousticDiagnostic = recordAcousticDiagnostic
     }
 
     init(
@@ -215,7 +249,8 @@ actor MacSpeechRealtimeBrainInputBridge {
             ConfirmAcceptedLocalActivity? = nil,
         stopInput: @escaping StopInput,
         observeResidentAcoustics: ObserveResidentAcoustics? = nil,
-        consumeAcousticObservation: ConsumeAcousticObservation? = nil
+        consumeAcousticObservation: ConsumeAcousticObservation? = nil,
+        recordAcousticDiagnostic: RecordAcousticDiagnostic? = nil
     ) {
         self.source = source
         self.sendFrame = sendFrameWithActivity
@@ -223,6 +258,7 @@ actor MacSpeechRealtimeBrainInputBridge {
         self.stopInput = stopInput
         self.observeResidentAcoustics = observeResidentAcoustics
         self.consumeAcousticObservation = consumeAcousticObservation
+        self.recordAcousticDiagnostic = recordAcousticDiagnostic
     }
 
     func start(
@@ -240,6 +276,13 @@ actor MacSpeechRealtimeBrainInputBridge {
         rejectedResidentAcousticObservationCount = 0
         droppedResidentAcousticObservationCount = 0
         acousticEvidenceCount = 0
+        acousticEligibilityCandidateCount = 0
+        acousticEligibilityRearmedCount = 0
+        acousticEvidenceStaleFenceCount = 0
+        acousticEligibilityDispositionCounts.removeAll(keepingCapacity: true)
+        acousticEvidenceForwardDispositionCounts.removeAll(keepingCapacity: true)
+        lastAcousticEligibilityDisposition = nil
+        lastAcousticEvidenceForwardDisposition = nil
         runtimeRejectedFrameCount = 0
         sendOperationCount = 0
         noneActivityFrameCount = 0
@@ -528,6 +571,7 @@ actor MacSpeechRealtimeBrainInputBridge {
                 case .failure(.invalidIdentity), .failure(.cancelled):
                     pendingEligibleAcousticObservation = nil
                     pendingEligibilitySourceGateEpoch = nil
+                    pendingEligibilityGateBeforeIssue = nil
                     acousticEligibilityForwarded = false
                     acousticEligibilityGate =
                         RealtimeAcousticInterruptionEligibilityGate(
@@ -645,35 +689,44 @@ actor MacSpeechRealtimeBrainInputBridge {
         binding: MacSpeechRealtimeBrainInputBinding,
         pumpID: UUID
     ) async {
-        let pollTimestamp = fallbackTimestampNanoseconds
-        if capturedAcousticSnapshot == nil {
-            guard pollTimestamp
+        if observerOnly {
+            guard fallbackTimestampNanoseconds
                     >= nextResidentAcousticSnapshotPollNanoseconds else {
                 return
             }
+            nextResidentAcousticSnapshotPollNanoseconds =
+                fallbackTimestampNanoseconds &+ 10_000_000
         }
         guard let liveSnapshot = await source.residentAcousticSnapshot(),
               liveSnapshot.captureGeneration == binding.captureGeneration,
-              capturedAcousticSnapshot.map({
-                  $0.playbackSequence == liveSnapshot.playbackSequence
-                      && $0.isPlaybackActive
-                          == liveSnapshot.residentPlaybackActive
-              }) ?? true,
               activeBinding == binding,
               activePumpID == pumpID else { return }
-        guard !observerOnly || !liveSnapshot.sourceGateOpen else { return }
-        if capturedAcousticSnapshot == nil {
-            nextResidentAcousticSnapshotPollNanoseconds =
-                pollTimestamp &+ 10_000_000
+        if observerOnly {
+            guard !liveSnapshot.sourceGateOpen else { return }
+        } else {
+            guard let capturedAcousticSnapshot,
+                  capturedAcousticSnapshot.playbackSequence
+                    == liveSnapshot.playbackSequence,
+                  capturedAcousticSnapshot.isPlaybackActive
+                    == liveSnapshot.residentPlaybackActive else { return }
         }
         let snapshot = residentAcousticSnapshot(
             captured: capturedAcousticSnapshot,
             live: liveSnapshot
         )
-        guard snapshot.captureFrameIndex > lastResidentCaptureFrameIndex,
-              activeBinding == binding,
-              activePumpID == pumpID else { return }
-        lastResidentCaptureFrameIndex = snapshot.captureFrameIndex
+        if observerOnly {
+            guard snapshot.captureFrameIndex
+                    > lastObserverOnlyResidentCaptureFrameIndex,
+                  activeBinding == binding,
+                  activePumpID == pumpID else { return }
+            lastObserverOnlyResidentCaptureFrameIndex =
+                snapshot.captureFrameIndex
+        } else {
+            guard snapshot.captureFrameIndex > lastResidentCaptureFrameIndex,
+                  activeBinding == binding,
+                  activePumpID == pumpID else { return }
+            lastResidentCaptureFrameIndex = snapshot.captureFrameIndex
+        }
 
         let timestamp = snapshot.captureHostTimeNanoseconds
             ?? fallbackTimestampNanoseconds
@@ -736,30 +789,52 @@ actor MacSpeechRealtimeBrainInputBridge {
         )
         nextResidentAcousticObservationSequence &+= 1
         var isEligibleCandidate = false
-        if var gate = acousticEligibilityGate {
+        if !observerOnly, var gate = acousticEligibilityGate {
+            let gateBeforeEvaluation = gate
             let disposition = gate.evaluate(observation)
             acousticEligibilityGate = gate
             #if DEBUG
+            let dispositionName: String
             switch disposition {
             case .eligible:
-                lastAcousticEligibilityDisposition = "eligible"
-                lastAcousticEvidenceForwardDisposition = "pending"
+                dispositionName = "eligible"
             case .suppressed(let reason):
-                lastAcousticEligibilityDisposition = reason.rawValue
+                dispositionName = reason.rawValue
             }
+            acousticEligibilityDispositionCounts[dispositionName, default: 0]
+                &+= 1
+            lastAcousticEligibilityDisposition = dispositionName
             #endif
             switch disposition {
             case .eligible:
                 pendingEligibleAcousticObservation = observation
                 pendingEligibilitySourceGateEpoch =
                     observation.metrics.sourceGateEpoch
+                pendingEligibilityGateBeforeIssue = gateBeforeEvaluation
                 acousticEligibilityForwarded = false
+                acousticEligibilityCandidateCount &+= 1
+                #if DEBUG
+                lastAcousticEvidenceForwardDisposition = "pending"
+                #endif
                 isEligibleCandidate = true
+                recordAcousticDiagnosticIfNeeded(
+                    MacSpeechRealtimeBrainAcousticDiagnostic(
+                        category: "acoustic_eligibility_candidate",
+                        disposition: "pending",
+                        turnGeneration: binding.session.generation,
+                        observationSequence: observation.identity.sequence,
+                        sourceGateEpoch:
+                            observation.metrics.sourceGateEpoch,
+                        timestampNanoseconds:
+                            observation.identity.timestampNanoseconds
+                    )
+                )
             case .suppressed(.alreadyEligible):
                 break
             case .suppressed:
                 pendingEligibleAcousticObservation = nil
                 pendingEligibilitySourceGateEpoch = nil
+                pendingEligibilityGateBeforeIssue = nil
             }
         }
 
@@ -874,32 +949,73 @@ actor MacSpeechRealtimeBrainInputBridge {
                 == binding.captureGeneration,
               activeBinding == binding,
               activePumpID == pumpID else { return }
-        guard let currentSnapshot = await source.residentAcousticSnapshot(),
-              currentSnapshot.captureGeneration == binding.captureGeneration,
-              currentSnapshot.playbackSequence
-                == observation.metrics.residentPlaybackSequence,
-              currentSnapshot.residentPlaybackActive,
-              currentSnapshot.sourceGateOpen,
-              currentSnapshot.sourceGateEpoch == eligibilityEpoch else {
+        let currentSnapshot = await source.residentAcousticSnapshot()
+        guard activeBinding == binding,
+              activePumpID == pumpID,
+              pendingEligibleAcousticObservation?.identity
+                == observation.identity,
+              pendingEligibilitySourceGateEpoch == eligibilityEpoch else {
+            return
+        }
+        let staleReason = Self.acousticEvidenceStaleReason(
+            snapshot: currentSnapshot,
+            binding: binding,
+            observation: observation,
+            eligibilityEpoch: eligibilityEpoch
+        )
+        if let staleReason {
+            if let pendingEligibilityGateBeforeIssue {
+                acousticEligibilityGate = pendingEligibilityGateBeforeIssue
+                acousticEligibilityRearmedCount &+= 1
+            }
+            acousticEvidenceStaleFenceCount &+= 1
             #if DEBUG
-            lastAcousticEvidenceForwardDisposition = "stale_fence"
+            acousticEvidenceForwardDispositionCounts[staleReason, default: 0]
+                &+= 1
+            lastAcousticEvidenceForwardDisposition = staleReason
             #endif
             pendingEligibleAcousticObservation = nil
             pendingEligibilitySourceGateEpoch = nil
+            pendingEligibilityGateBeforeIssue = nil
             acousticEligibilityForwarded = false
+            recordAcousticDiagnosticIfNeeded(
+                MacSpeechRealtimeBrainAcousticDiagnostic(
+                    category: "acoustic_evidence_forward",
+                    disposition: staleReason,
+                    turnGeneration: binding.session.generation,
+                    observationSequence: observation.identity.sequence,
+                    sourceGateEpoch: eligibilityEpoch,
+                    timestampNanoseconds:
+                        observation.identity.timestampNanoseconds
+                )
+            )
             return
         }
         pendingEligibleAcousticObservation = nil
         pendingEligibilitySourceGateEpoch = nil
+        pendingEligibilityGateBeforeIssue = nil
         acousticEligibilityForwarded = true
         #if DEBUG
         lastAcousticEvidenceForwardDisposition = "forwarded"
+        acousticEvidenceForwardDispositionCounts["forwarded", default: 0]
+            &+= 1
         #endif
+        acousticEvidenceCount &+= 1
+        recordAcousticDiagnosticIfNeeded(
+            MacSpeechRealtimeBrainAcousticDiagnostic(
+                category: "acoustic_evidence_forward",
+                disposition: "forwarded",
+                turnGeneration: binding.session.generation,
+                observationSequence: observation.identity.sequence,
+                sourceGateEpoch: eligibilityEpoch,
+                timestampNanoseconds:
+                    observation.identity.timestampNanoseconds
+            )
+        )
         let metrics = observation.metrics
         let sourceGateSeparatesNearEnd = metrics.sourceGateOpen
             && metrics.sourceGateEpoch > 0
             && metrics.sourceAssessment == .doubleTalk
-        acousticEvidenceCount &+= 1
         await consumeAcousticObservation(
             MacSpeechRealtimeBrainAcousticObservation(
                 observation: observation,
@@ -920,6 +1036,39 @@ actor MacSpeechRealtimeBrainInputBridge {
                 )
             )
         )
+    }
+
+    private static func acousticEvidenceStaleReason(
+        snapshot: MacSpeechResidentAcousticSnapshot?,
+        binding: MacSpeechRealtimeBrainInputBinding,
+        observation: RealtimeAcousticObservation,
+        eligibilityEpoch: UInt64
+    ) -> String? {
+        guard let snapshot else { return "stale_snapshot_unavailable" }
+        guard snapshot.captureGeneration == binding.captureGeneration else {
+            return "stale_capture_generation"
+        }
+        guard snapshot.playbackSequence
+                == observation.metrics.residentPlaybackSequence else {
+            return "stale_playback_sequence"
+        }
+        guard snapshot.residentPlaybackActive else {
+            return "stale_playback_inactive"
+        }
+        guard snapshot.sourceGateOpen else { return "stale_source_gate_closed" }
+        guard snapshot.sourceGateEpoch == eligibilityEpoch else {
+            return "stale_source_gate_epoch"
+        }
+        return nil
+    }
+
+    private func recordAcousticDiagnosticIfNeeded(
+        _ diagnostic: MacSpeechRealtimeBrainAcousticDiagnostic
+    ) {
+        guard let recorder = recordAcousticDiagnostic else { return }
+        Task { @MainActor in
+            recorder(diagnostic)
+        }
     }
 
     private func finish(
@@ -959,6 +1108,16 @@ actor MacSpeechRealtimeBrainInputBridge {
             droppedResidentAcousticObservationCount:
                 droppedResidentAcousticObservationCount,
             acousticEvidenceCount: acousticEvidenceCount,
+            acousticEligibilityCandidateCount:
+                acousticEligibilityCandidateCount,
+            acousticEligibilityRearmedCount:
+                acousticEligibilityRearmedCount,
+            acousticEvidenceStaleFenceCount:
+                acousticEvidenceStaleFenceCount,
+            acousticEligibilityDispositionCounts:
+                acousticEligibilityDispositionCounts,
+            acousticEvidenceForwardDispositionCounts:
+                acousticEvidenceForwardDispositionCounts,
             runtimeRejectedFrameCount: runtimeRejectedFrameCount,
             sendOperationCount: sendOperationCount,
             noneActivityFrameCount: noneActivityFrameCount,
@@ -1003,15 +1162,13 @@ actor MacSpeechRealtimeBrainInputBridge {
         }
         pendingEligibleAcousticObservation = nil
         pendingEligibilitySourceGateEpoch = nil
+        pendingEligibilityGateBeforeIssue = nil
         acousticEligibilityForwarded = false
         nextResidentAcousticObservationSequence = 1
         nextResidentAcousticSnapshotPollNanoseconds = 0
         lastResidentCaptureFrameIndex = 0
+        lastObserverOnlyResidentCaptureFrameIndex = 0
         lastResidentObservationFrameIndex = 0
-        #if DEBUG
-        lastAcousticEligibilityDisposition = nil
-        lastAcousticEvidenceForwardDisposition = nil
-        #endif
     }
 
     private static func sourceAssessment(

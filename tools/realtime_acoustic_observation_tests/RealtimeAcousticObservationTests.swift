@@ -251,14 +251,69 @@ private final class R821AudioSource:
             let now = DispatchTime.now().uptimeNanoseconds
             let timestamp = max(now, lastFrameTimestamp &+ 20_000_000)
             lastFrameTimestamp = timestamp
+            let acoustic = snapshot.map(Self.acousticSnapshot)
             frames.append(MacSpeechAudioFrame(
                 captureGeneration: generation,
                 sequenceNumber: frameSequence,
                 monotonicTimestampNanoseconds: timestamp,
                 pcm16Bytes: Data(repeating: 0, count: 960),
-                activity: 0
+                activity: 0,
+                activityEvidenceKind: .none,
+                residentPlaybackSequence:
+                    acoustic?.playbackSequence ?? 0,
+                residentPlaybackActive:
+                    acoustic?.isPlaybackActive ?? false,
+                lastAudibleResidentRenderTimestampNanoseconds:
+                    acoustic?.lastAudibleRenderHostTimeNanoseconds,
+                sourceGateEpoch: 0,
+                acousticSnapshot: acoustic
             ))
         }
+    }
+
+    private static func acousticSnapshot(
+        _ snapshot: MacSpeechResidentAcousticSnapshot
+    ) -> MacSpeechAcousticObservationSnapshot {
+        MacSpeechAcousticObservationSnapshot(
+            captureFrameIndex: snapshot.captureFrameIndex,
+            captureHostTimeNanoseconds:
+                snapshot.captureHostTimeNanoseconds,
+            playbackSequence: snapshot.playbackSequence,
+            isPlaybackActive: snapshot.residentPlaybackActive,
+            lastAudibleRenderHostTimeNanoseconds:
+                snapshot.lastAudibleResidentRenderTimestampNanoseconds,
+            renderReferenceAvailable:
+                snapshot.renderReferenceAvailable,
+            renderReferenceRMS: snapshot.renderReferenceRMS,
+            renderHostTimeNanoseconds:
+                snapshot.renderHostTimeNanoseconds,
+            rawCaptureRMS: snapshot.rawCaptureRMS,
+            processedCaptureRMS: snapshot.processedCaptureRMS,
+            linearAECOutputRMS: snapshot.linearAECOutputRMS,
+            renderCaptureCorrelation:
+                snapshot.renderCaptureCorrelation,
+            residualRenderCorrelation:
+                snapshot.residualRenderCorrelation,
+            linearRenderCorrelation:
+                snapshot.linearRenderCorrelation,
+            inputClassification: snapshot.inputClassification,
+            sourceGateOpen: snapshot.sourceGateOpen,
+            sourceGateEpoch: snapshot.sourceGateEpoch,
+            aecEnabled: snapshot.aecEnabled,
+            aecActive: snapshot.aecActive,
+            renderCaptureIsolationEstablished:
+                snapshot.renderCaptureIsolationEstablished,
+            sourceAlignmentLocked: snapshot.sourceAlignmentLocked,
+            sourceAlignmentDelayMilliseconds:
+                snapshot.sourceAlignmentDelayMilliseconds,
+            estimatedDelayMilliseconds:
+                snapshot.estimatedDelayMilliseconds,
+            erlDecibels: snapshot.erlDecibels,
+            erleDecibels: snapshot.erleDecibels,
+            renderCaptureSkewFrames:
+                snapshot.renderCaptureSkewFrames,
+            driftTrend: snapshot.driftTrend
+        )
     }
 }
 

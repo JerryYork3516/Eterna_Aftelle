@@ -32,9 +32,28 @@ nonisolated private struct QwenResolvedRealtimeVoice:
     let voiceID: String
 }
 
+nonisolated private struct QwenRealtimeTurnDetectionEcho: Sendable {
+    let type: String?
+    let threshold: Double?
+    let silenceDurationMilliseconds: Int?
+    let createResponse: Bool?
+    let interruptResponse: Bool?
+
+    var diagnosticDisposition: String {
+        let thresholdValue = threshold.map { String($0) } ?? "unknown"
+        let silenceValue = silenceDurationMilliseconds.map { String($0) }
+            ?? "unknown"
+        let createValue = createResponse.map { String($0) } ?? "unknown"
+        let interruptValue = interruptResponse.map { String($0) } ?? "unknown"
+        return "type=\(type ?? "unknown");threshold=\(thresholdValue)"
+            + ";silence_ms=\(silenceValue);create_response=\(createValue)"
+            + ";interrupt_response=\(interruptValue)"
+    }
+}
+
 nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
     case sessionCreated
-    case sessionUpdated
+    case sessionUpdated(turnDetection: QwenRealtimeTurnDetectionEcho?)
     case inputAudioCleared
     case inputSpeechStarted(itemID: String)
     case inputSpeechStopped(itemID: String)
@@ -191,7 +210,9 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
         case "session.created":
             return .sessionCreated
         case "session.updated":
-            return .sessionUpdated
+            return .sessionUpdated(
+                turnDetection: turnDetectionEcho(in: object)
+            )
         case "input_audio_buffer.cleared":
             return .inputAudioCleared
         case "input_audio_buffer.speech_started":
@@ -329,6 +350,23 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
             return value
         }
         throw RealtimeResidentBrainError.invalidEvent
+    }
+
+    private func turnDetectionEcho(
+        in object: [String: Any]
+    ) -> QwenRealtimeTurnDetectionEcho? {
+        guard let session = object["session"] as? [String: Any],
+              let value = session["turn_detection"] as? [String: Any] else {
+            return nil
+        }
+        return QwenRealtimeTurnDetectionEcho(
+            type: value["type"] as? String,
+            threshold: value["threshold"] as? Double,
+            silenceDurationMilliseconds:
+                value["silence_duration_ms"] as? Int,
+            createResponse: value["create_response"] as? Bool,
+            interruptResponse: value["interrupt_response"] as? Bool
+        )
     }
 
     private func string(
@@ -514,6 +552,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
     private let configuration: QwenRealtimeResidentBrainConfiguration
+    private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
     private let codec = QwenRealtimeResidentBrainCodec()
 
     private var lifecycle = Lifecycle.closed
@@ -561,11 +600,13 @@ actor QwenRealtimeResidentBrainAdapter:
     init(
         credentialReader: ProviderCredentialReading,
         transport: RealtimeWebSocketTransport,
-        configuration: QwenRealtimeResidentBrainConfiguration
+        configuration: QwenRealtimeResidentBrainConfiguration,
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil
     ) {
         self.credentialReader = credentialReader
         self.transport = transport
         self.configuration = configuration
+        self.diagnosticBuffer = diagnosticBuffer
     }
 
     func openSession(
@@ -612,10 +653,13 @@ actor QwenRealtimeResidentBrainAdapter:
                 tools: runtimeTools,
                 voice: resolvedVoice
             ))
-            guard case .sessionUpdated = try await receiveHandshakeEvent()
-            else {
+            recordTurnDetectionRequest()
+            let sessionUpdate = try await receiveHandshakeEvent()
+            guard case .sessionUpdated(let turnDetection) = sessionUpdate else {
                 throw RealtimeResidentBrainError.invalidEvent
             }
+            try validateTurnDetectionAcknowledgement(turnDetection)
+            recordTurnDetectionAcknowledgement(turnDetection)
             let token = UUID()
             connectionToken = token
             lifecycle = .awaitingBootstrap
@@ -682,7 +726,25 @@ actor QwenRealtimeResidentBrainAdapter:
                 try QwenRealtimePCM16Converter.mono16k(frame)
             )
             for batch in batches {
+                let hadActiveResponse = activeResponse != nil
                 try await send(codec.audioAppend(batch))
+                if hadActiveResponse, let diagnosticBuffer {
+                    let metrics = Self.pcmMetrics(batch)
+                    diagnosticBuffer.append(
+                        NativeSpeechInternalDiagnosticEvent(
+                            source: .adapter,
+                            category:
+                                "qwen_active_response_input_audio_batch",
+                            routeKind: .realtimeBrain,
+                            turnGeneration: frame.identity.generation,
+                            disposition: "transport_enqueued",
+                            audioSequence: frame.sequence,
+                            byteCount: batch.count,
+                            pcmPeak: metrics.peak,
+                            pcmRMS: metrics.rms
+                        )
+                    )
+                }
             }
         } catch {
             throw Self.map(error)
@@ -979,10 +1041,13 @@ actor QwenRealtimeResidentBrainAdapter:
                 tools: runtimeTools,
                 voice: resolvedVoice
             ))
-            guard case .sessionUpdated = try await receiveHandshakeEvent()
-            else {
+            recordTurnDetectionRequest()
+            let sessionUpdate = try await receiveHandshakeEvent()
+            guard case .sessionUpdated(let turnDetection) = sessionUpdate else {
                 throw RealtimeResidentBrainError.invalidEvent
             }
+            try validateTurnDetectionAcknowledgement(turnDetection)
+            recordTurnDetectionAcknowledgement(turnDetection)
             try requireOwnedGenerationTransition(expectedIdentity)
             return UUID()
         } catch {
@@ -1040,7 +1105,9 @@ actor QwenRealtimeResidentBrainAdapter:
         switch event {
         case .sessionCreated:
             throw RealtimeResidentBrainError.invalidEvent
-        case .sessionUpdated:
+        case .sessionUpdated(let turnDetection):
+            try validateTurnDetectionAcknowledgement(turnDetection)
+            recordTurnDetectionAcknowledgement(turnDetection)
             if let acknowledgement = expectedSessionUpdate {
                 deliver(acknowledgement)
             }
@@ -1049,6 +1116,16 @@ actor QwenRealtimeResidentBrainAdapter:
                 deliver(acknowledgement)
             }
         case .inputSpeechStarted(let itemID):
+            diagnosticBuffer?.append(
+                NativeSpeechInternalDiagnosticEvent(
+                    source: .adapter,
+                    category: "qwen_speech_started_received",
+                    routeKind: .realtimeBrain,
+                    turnGeneration: identity?.generation,
+                    disposition: activeResponse == nil
+                        ? "listening" : "active_response"
+                )
+            )
             guard lifecycle == .active else { return }
             guard let turn = turnBinding(for: itemID, createsIfNeeded: true)
             else { return }
@@ -1811,6 +1888,69 @@ actor QwenRealtimeResidentBrainAdapter:
         retiredItemOrder.removeAll(keepingCapacity: true)
         retiredResponseIDs.removeAll(keepingCapacity: true)
         retiredResponseOrder.removeAll(keepingCapacity: true)
+    }
+
+    private func recordTurnDetectionAcknowledgement(
+        _ value: QwenRealtimeTurnDetectionEcho?
+    ) {
+        diagnosticBuffer?.append(
+            NativeSpeechInternalDiagnosticEvent(
+                source: .adapter,
+                category: "qwen_turn_detection_acknowledged",
+                routeKind: .realtimeBrain,
+                turnGeneration: identity?.generation,
+                disposition: value?.diagnosticDisposition ?? "not_echoed"
+            )
+        )
+    }
+
+    private func validateTurnDetectionAcknowledgement(
+        _ value: QwenRealtimeTurnDetectionEcho?
+    ) throws {
+        guard let value else { return }
+        if let type = value.type, type != "semantic_vad" {
+            throw RealtimeResidentBrainError.invalidEvent
+        }
+        guard value.createResponse != true,
+              value.interruptResponse != true else {
+            throw RealtimeResidentBrainError.invalidEvent
+        }
+    }
+
+    private func recordTurnDetectionRequest() {
+        diagnosticBuffer?.append(
+            NativeSpeechInternalDiagnosticEvent(
+                source: .adapter,
+                category: "qwen_turn_detection_requested",
+                routeKind: .realtimeBrain,
+                turnGeneration: identity?.generation,
+                disposition: "type=semantic_vad;threshold=0.5"
+                    + ";silence_ms=800;create_response=false"
+                    + ";interrupt_response=false"
+            )
+        )
+    }
+
+    private static func pcmMetrics(_ data: Data) -> (
+        peak: Double,
+        rms: Double
+    ) {
+        let bytes = [UInt8](data)
+        guard !bytes.isEmpty, bytes.count.isMultiple(of: 2) else {
+            return (0, 0)
+        }
+        var peak = 0.0
+        var squaredSum = 0.0
+        var sampleCount = 0
+        for offset in stride(from: 0, to: bytes.count, by: 2) {
+            let sample = Int16(bitPattern: UInt16(bytes[offset])
+                | UInt16(bytes[offset + 1]) << 8)
+            let normalized = Double(sample) / 32_768
+            peak = max(peak, abs(normalized))
+            squaredSum += normalized * normalized
+            sampleCount += 1
+        }
+        return (peak, sqrt(squaredSum / Double(sampleCount)))
     }
 
     private static let contextScopeOrder: [RealtimeBrainContextScope] = [
