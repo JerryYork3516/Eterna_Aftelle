@@ -568,6 +568,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r853IsolationRevocations = 0
     private static var r853GrayZoneCorrelation = 0.0
     private static var r853SourceGateOpens = 0
+    private static var r853TerminalBeforePlaybackDrain = 0
+    private static var r853SpeechStartedSemanticConfirmations = 0
+    private static var r853SettledPlaybackTargetResurrections = 0
 
     private static var r841PositiveScenarios = 0
     private static var r841DetectedScenarios = 0
@@ -877,6 +880,14 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                     fixture: fixture,
                     usesRenderCaptureIsolation: true
                 )
+                cases += 1
+                try await testR853ProviderTerminalBeforePlaybackDrain(
+                    fixture: fixture
+                )
+                cases += 1
+                try await testR853SettledPlaybackTargetFailsClosed(
+                    fixture: fixture
+                )
                 print("realtime_isolated_barge_in_cases=\(cases)")
                 print("realtime_isolated_barge_in_checks=\(checks)")
                 print("r853_isolation_warmup_frames=\(r853IsolationWarmupFrames)")
@@ -884,6 +895,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 print("r853_isolation_revocations=\(r853IsolationRevocations)")
                 print("r853_gray_zone_correlation=\(r853GrayZoneCorrelation)")
                 print("r853_source_gate_opens=\(r853SourceGateOpens)")
+                print("r853_provider_terminal_before_playback_drain=\(r853TerminalBeforePlaybackDrain)")
+                print("r853_speech_started_semantic_confirmations=\(r853SpeechStartedSemanticConfirmations)")
+                print("r853_settled_playback_target_resurrections=\(r853SettledPlaybackTargetResurrections)")
                 print("r853_acoustic_eligibility=\(r832ProductionAcousticEligibility)")
                 print("r853_confirmed_interruptions=\(r832ConfirmedInterruptions)")
                 print("r853_provider_interrupts=\(r832ProviderInterrupts)")
@@ -9594,6 +9608,168 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         expect(stack.controller.realtimeSpeechSubtitleSnapshot
                 == baselineSubtitle,
                "R8.3.3 N output never resurrects subtitle state")
+        try await close(stack)
+    }
+
+    private static func testR853ProviderTerminalBeforePlaybackDrain(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let baselineIdentity = stack.session
+        let baselineInterrupts = await stack.provider.interruptCount()
+        let baselineClears = stack.outputPlayer.clearScheduledPlaybackCount
+        let baselineGeneration = baselineIdentity.generation
+
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 4,
+            kind: .residentSpeakingStopped
+        ))
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 5,
+            kind: .residentSemanticFinal(
+                RealtimeBrainSemanticOutput(
+                    canonicalText: "Provider 已完成但本地仍在播放"
+                )
+            )
+        ))
+        await waitUntil("R8.5.3 Provider terminal precedes Playback drain") {
+            let revision = await stack.provider.contextRevision(
+                for: baselineIdentity
+            )
+            let playback = await stack.outputHost.currentSnapshot()
+            return revision == stack.target.contextRevision + 1
+                && playback.state == .draining
+        }
+        let terminalSnapshot = stack.runtime
+            .realtimeInterruptionEvidenceDebugSnapshot()
+        expect(terminalSnapshot.playbackTarget == eventIdentity(stack.target),
+               "R8.5.3 Runtime keeps the physical Playback target after Provider terminal")
+        expect(stack.outputPlayer.clearScheduledPlaybackCount == baselineClears,
+               "R8.5.3 Provider terminal does not clear physical Playback")
+        r853TerminalBeforePlaybackDrain = 1
+
+        _ = try await submitTrueNearEndThroughProductionChain(stack: stack)
+        await waitUntilOnMainActor("R8.5.3 terminal response receives acoustic evidence") {
+            let snapshot = stack.runtime
+                .realtimeInterruptionEvidenceDebugSnapshot()
+            return snapshot.playbackTarget == eventIdentity(stack.target)
+                && snapshot.hasAcousticEvidence
+                && !snapshot.hasSemanticEvidence
+        }
+
+        guard let currentContextRevision = await stack.provider
+            .contextRevision(for: baselineIdentity) else {
+            fatalError("R8.5.3 post-terminal context revision missing")
+        }
+        await stack.provider.holdInterrupt()
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: baselineIdentity,
+                turnID: RealtimeBrainTurnID(),
+                responseID: nil,
+                contextRevision: currentContextRevision
+            ),
+            sequence: 6,
+            kind: .userSpeechStarted
+        ))
+        await waitUntil("R8.5.3 speech start confirms against physical Playback") {
+            await stack.provider.isInterruptHeld()
+                && stack.outputPlayer.clearScheduledPlaybackCount
+                    == baselineClears + 1
+        }
+        expect(await stack.provider.interruptCount() == baselineInterrupts + 1,
+               "R8.5.3 accepted speech start authorizes one Runtime interrupt")
+        expect(stack.runtime.realtimeInterruptionEvidenceDebugSnapshot()
+                .playbackTarget == nil,
+               "R8.5.3 confirmed interruption retires generation N Playback target")
+        r853SpeechStartedSemanticConfirmations = 1
+
+        await stack.provider.releaseInterrupt()
+        await waitUntilOnMainActor("R8.5.3 terminal-response interruption rebounds") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .listening
+                && stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == baselineGeneration + 1
+                && stack.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+                && stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+        }
+        expect(await stack.provider.interruptCount() == baselineInterrupts + 1
+                && stack.outputPlayer.clearScheduledPlaybackCount
+                    == baselineClears + 1,
+               "R8.5.3 terminal-response interruption remains exactly once")
+        stack.acousticEchoHost.playbackStopped()
+        try await close(stack)
+    }
+
+    private static func testR853SettledPlaybackTargetFailsClosed(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let baselineIdentity = stack.session
+        let baselineLease = stack.runtime.activeBrainLeaseForTesting()
+        let baselineInterrupts = await stack.provider.interruptCount()
+        let baselineClears = stack.outputPlayer.clearScheduledPlaybackCount
+
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 4,
+            kind: .residentSpeakingStopped
+        ))
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target),
+            sequence: 5,
+            kind: .residentSemanticFinal(
+                RealtimeBrainSemanticOutput(
+                    canonicalText: "本地播放正常结束"
+                )
+            )
+        ))
+        await waitUntil("R8.5.3 settled-target context advances") {
+            await stack.provider.contextRevision(for: baselineIdentity)
+                == stack.target.contextRevision + 1
+        }
+        _ = try await submitTrueNearEndThroughProductionChain(stack: stack)
+        await waitUntilOnMainActor("R8.5.3 pre-completion acoustic evidence exists") {
+            let snapshot = stack.runtime
+                .realtimeInterruptionEvidenceDebugSnapshot()
+            return snapshot.playbackTarget == eventIdentity(stack.target)
+                && snapshot.hasAcousticEvidence
+        }
+        stack.outputPlayer.completeScheduledChunk()
+        await waitUntilOnMainActor("R8.5.3 physical Playback settles target") {
+            let snapshot = stack.runtime
+                .realtimeInterruptionEvidenceDebugSnapshot()
+            return stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .listening
+                && snapshot.playbackTarget == nil
+                && !snapshot.hasSemanticEvidence
+        }
+
+        guard let currentContextRevision = await stack.provider
+            .contextRevision(for: baselineIdentity) else {
+            fatalError("R8.5.3 settled-target context revision missing")
+        }
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: baselineIdentity,
+                turnID: RealtimeBrainTurnID(),
+                responseID: nil,
+                contextRevision: currentContextRevision
+            ),
+            sequence: 6,
+            kind: .userSpeechStarted
+        ))
+        try? await Task.sleep(for: .milliseconds(80))
+        let resurrected = await stack.provider.interruptCount()
+                - baselineInterrupts
+            + stack.outputPlayer.clearScheduledPlaybackCount
+                - baselineClears
+            + (stack.runtime.activeBrainLeaseForTesting() == baselineLease ? 0 : 1)
+        r853SettledPlaybackTargetResurrections = resurrected
+        expect(resurrected == 0,
+               "R8.5.3 settled Playback target cannot resurrect interruption")
         try await close(stack)
     }
 

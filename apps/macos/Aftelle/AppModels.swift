@@ -1903,6 +1903,19 @@ public final class OrchestrationKernel {
         await runtimeCore.startRealtimeResidentBrainSession()
     }
 
+    func registerRealtimeResidentBrainPlaybackTarget(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Result<Void, RealtimeResidentBrainError> {
+        runtimeCore.registerRealtimeResidentBrainPlaybackTarget(identity)
+    }
+
+    @discardableResult
+    func settleRealtimeResidentBrainPlaybackTarget(
+        _ identity: RealtimeBrainEventIdentity
+    ) -> Bool {
+        runtimeCore.settleRealtimeResidentBrainPlaybackTarget(identity)
+    }
+
     func setRealtimePassiveBackchannelHandler(
         _ handler: (
             @MainActor @Sendable (

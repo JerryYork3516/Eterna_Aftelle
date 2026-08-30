@@ -2866,6 +2866,12 @@ final class AppController: ObservableObject {
                 ) else { return }
                 speechAudioOutputHostSnapshot = snapshot
             }
+            if let playbackIdentity = realtimeBrainPlaybackEventIdentity {
+                orchestrationKernel
+                    .settleRealtimeResidentBrainPlaybackTarget(
+                        playbackIdentity
+                    )
+            }
             realtimeBrainSubtitlePresentation.retire(
                 realtimeBrainPlaybackEventIdentity
             )
@@ -2916,6 +2922,14 @@ final class AppController: ObservableObject {
             syncRealtimeBrainSubtitlePresentation()
         case .userSpeechStarted:
             observeRealtimeBrainUserSpeechStarted()
+            await consumeRealtimeResidentBrainInterruptionDecision(
+                await orchestrationKernel
+                    .claimRealtimeResidentBrainInterruptionDecision(
+                        for: event
+                    ),
+                attemptID: attemptID,
+                expectedSession: binding.session
+            )
         case .userSpeechStopped:
             observeRealtimeBrainUserSpeechStopped(event.identity)
         case .residentSpeakingStarted:
@@ -3140,6 +3154,12 @@ final class AppController: ObservableObject {
                 )
                 return
             }
+            if let completedIdentity = realtimeBrainPlaybackEventIdentity {
+                orchestrationKernel
+                    .settleRealtimeResidentBrainPlaybackTarget(
+                        completedIdentity
+                    )
+            }
             realtimeBrainPlaybackResponseID = nil
             realtimeBrainPlaybackEventIdentity = nil
             realtimeBrainPlaybackProviderFinishedResponseID = nil
@@ -3160,6 +3180,17 @@ final class AppController: ObservableObject {
                 return
             }
             speechAudioOutputHostSnapshot = prepared
+            switch orchestrationKernel
+                .registerRealtimeResidentBrainPlaybackTarget(identity) {
+            case .success:
+                break
+            case .failure(let error):
+                await stopRealtimeResidentBrainRoute(
+                    expectedAttemptID: attemptID,
+                    errorCode: Self.realtimeResidentBrainErrorCode(error)
+                )
+                return
+            }
             realtimeBrainPlaybackResponseID = responseID
             realtimeBrainPlaybackEventIdentity = identity
             realtimeBrainPlaybackProviderFinishedResponseID = nil
@@ -3272,6 +3303,12 @@ final class AppController: ObservableObject {
                 visualStateMode: ResidentVisualIntent.speaking.rawValue
             )
         case .playbackCompleted:
+            if let completedIdentity = realtimeBrainPlaybackEventIdentity {
+                orchestrationKernel
+                    .settleRealtimeResidentBrainPlaybackTarget(
+                        completedIdentity
+                    )
+            }
             realtimeBrainSubtitlePresentation.retire(
                 realtimeBrainPlaybackEventIdentity
             )
@@ -3551,6 +3588,10 @@ final class AppController: ObservableObject {
             lastErrorCode: nil
         )
         realtimeBrainPreparedCaptureGeneration = nil
+        if let playbackIdentity = realtimeBrainPlaybackEventIdentity {
+            orchestrationKernel
+                .settleRealtimeResidentBrainPlaybackTarget(playbackIdentity)
+        }
         realtimeBrainPlaybackResponseID = nil
         realtimeBrainPlaybackEventIdentity = nil
         realtimeBrainPlaybackProviderFinishedResponseID = nil

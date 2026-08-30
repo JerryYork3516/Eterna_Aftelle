@@ -340,7 +340,7 @@ elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
   fi
   echo "r852_formal_production_fixture=PASS"
 elif [ "$test_mode" = "r853-isolated-barge-in-only" ]; then
-  rg -qx 'realtime_isolated_barge_in_cases=1' "$output"
+  rg -qx 'realtime_isolated_barge_in_cases=3' "$output"
   isolated_checks="$({
     awk -F= '/^realtime_isolated_barge_in_checks=/ { print $2 }' \
       "$output"
@@ -356,6 +356,9 @@ elif [ "$test_mode" = "r853-isolated-barge-in-only" ]; then
   awk -v value="$gray_zone_correlation" \
     'BEGIN { exit !(value > 0.25 && value < 0.35) }'
   rg -qx 'r853_source_gate_opens=1' "$output"
+  rg -qx 'r853_provider_terminal_before_playback_drain=1' "$output"
+  rg -qx 'r853_speech_started_semantic_confirmations=1' "$output"
+  rg -qx 'r853_settled_playback_target_resurrections=0' "$output"
   rg -qx 'r853_acoustic_eligibility=1' "$output"
   rg -qx 'r853_confirmed_interruptions=1' "$output"
   rg -qx 'r853_provider_interrupts=1' "$output"
@@ -370,12 +373,22 @@ elif [ "$test_mode" = "r853-isolated-barge-in-only" ]; then
          /private static func submitTrueNearEndThroughProductionChain/ { active = 0 }
          active' "$test_source"
   })"
+  lifecycle_source="$({
+    awk '/private static func testR853ProviderTerminalBeforePlaybackDrain/ { active = 1 }
+         /private static func testR832ConfirmedInterruptionProductionChain/ { active = 0 }
+         active' "$test_source"
+  })"
   rg -q 'processRender\(' <<< "$isolated_source"
   rg -q 'processCapture\(' <<< "$isolated_source"
   rg -q 'processedSamples: processed' <<< "$isolated_source"
+  rg -q 'kind: \.residentSpeakingStopped' <<< "$lifecycle_source"
+  rg -q 'kind: \.residentSemanticFinal' <<< "$lifecycle_source"
+  rg -q 'kind: \.userSpeechStarted' <<< "$lifecycle_source"
+  rg -q 'submitTrueNearEndThroughProductionChain' <<< "$lifecycle_source"
+  rg -q 'completeScheduledChunk' <<< "$lifecycle_source"
   if rg -q \
       'submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|interruptRealtimeResidentBrainForTesting|speechAudioOutputHost\.clear\(' \
-      <<< "$isolated_source"; then
+      <<< "${isolated_source}${lifecycle_source}"; then
     echo "r853_test_seam_bypass=FAIL" >&2
     exit 1
   fi
@@ -908,7 +921,7 @@ elif [ "$test_mode" = "r833-latency-stale-only" ]; then
 
   r833_case_source="$(
     awk '/private static func testR833BargeInLatencyAndStaleClosure/ { active = 1 }
-         /private static func testR832ConfirmedInterruptionProductionChain/ { active = 0 }
+         /private static func testR853ProviderTerminalBeforePlaybackDrain/ { active = 0 }
          active' "$test_source"
   )"
   r833_stale_source="$(

@@ -501,6 +501,8 @@ Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 53-B first repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B second wired-headset attempt = FAIL / P1
 53-B second repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B third wired-headset attempt = FAIL / P1
+53-B third repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 Other required Real-device Human Gates = NOT_RUN
 ```
 
@@ -760,13 +762,21 @@ real near-end + resident render
 
 第二次修复后自动化结果：R8.5.3 isolated production chain 的 gate / eligibility / confirmed / Provider interrupt / Playback clear / generation delta / N+1 Input / Output 各为 1；R8.4.1 的 11 个正向 double-talk 场景全部成立，6 个负向场景共 3896 frame 的 false double-talk 与危险副作用均为 0；R8.2.3 resident-only long stress 3840 frame 的 eligibility / interruption / clear / generation / lease 等危险指标均为 0；R8.3.1–R8.3.3、AEC、Qwen、Debug / Release build 保持通过。完整 A7 仍只在既有 `realtime_brain_audio_host` context-refresh 断言停止。修复后的 Real Qwen 同设备复测尚未执行，不能据此判定 Human Gate PASS。
 
+第二次自动化修复后的第三次 53-B 同设备真人复测仍为 `FAIL / P1`。这次 AEC / source gate / packet-bound Input Bridge 已形成正式用户侧声学 evidence，Real Qwen transport 也保持健康；Provider 接受了 4 次 `userSpeechStarted`，但在居民旧 PCM 仍物理可听时没有发出 `interruptionProposed`。时序证据显示 `response.done` / resident semantic terminal 比本地 Playback drain 约早 2.65 秒。旧 Runtime 只以 Provider active response 作为 interruption target，因而在 semantic terminal 时过早失去目标；后续真实 near-end acoustic evidence 即使成立，也不能针对仍在播放的 generation N 完成合法 semantic fusion。
+
+第三次最小修复把 exact physical Playback event identity 保存在 Runtime：首块 accepted resident PCM 准备播放时注册，真实 Playback completion、clear、Stop、Session close 或 generation transition 时退役。Provider response 已 terminal 但该 exact target 仍物理可听时，accepted `userSpeechStarted` 可以作为 provider-neutral semantic evidence，与 production acoustic evidence 在既有 2 秒 correlation window 内融合；只要 response 仍 active，就继续严格要求既有 Provider `interruptionProposed`，不会放宽 active-response 决策路径。Host 只报告 Playback lifecycle 并执行 Runtime-issued clear，Provider 只提交 event，RuntimeCore 仍是 confirmed interruption、generation invalidation 与 Provider interrupt 的唯一 owner。真实 completion 后单独 late `userSpeechStarted` 无法复活旧 target；既有“completion 与稍晚 Provider proposal”竞态仍保留。
+
+第三次修复自动化结果：R8.5.3 独立 3 cases / 97 checks，provider-terminal-before-playback-drain 1、speech-start semantic confirmation 1、acoustic eligibility / confirmed / Provider interrupt / Playback clear / generation delta / N+1 Input / Output 各 1，Provider cancel 0，settled playback target resurrection 0。interruption evidence 24 cases / 202 checks、R8.4.2 1/390、R8.4.1 11/11 production positives + 3896 negative frames、R8.2.3 3840 resident-only stress frames均通过；R8.5.1 total regression 为 13 cross-node / 0 failure、100 randomized / 0 failure、15 repeat / 0 failure，duplicate response / interrupt / clear、stale side effect、self-interrupt、generation / lease drift 全为 0。Qwen Adapter 26/185、AEC 1055、Audio Output / Host、Debug / Release clean build、architecture / secret / repository mutation guards 与 `git diff --check` PASS；production digest 为 `c60986c398fd7616c85e5f70a5d5d4b74f21e0b171c420fc4e4d3fcca30fe6cc`。完整 A7 仍仅在已于冻结基线独立复现的 `realtime_brain_audio_host` context-refresh 断言停止。未修改 acoustic threshold、source gate、500 ms tail、Qwen recoverable error contract、DR / Store schema 或 platform target；同设备 Real Qwen 第四次复测仍为 `NOT_RUN`，不能据此判定 Human Gate PASS。
+
 ```text
 R8.5.3 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
 53-B first wired-headset attempt = FAIL / P1
 53-B first automated repair = PASS
 53-B second wired-headset attempt = FAIL / P1
 53-B second automated repair = PASS
-53-B post-repair Real Qwen wired-headset retest = NOT_RUN
+53-B third wired-headset attempt = FAIL / P1
+53-B third automated repair = PASS
+53-B fourth Real Qwen wired-headset retest = NOT_RUN
 Human Gate PASS / FROZEN = NOT_ALLOWED_YET
 ```
 
@@ -1055,6 +1065,8 @@ Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 53-B first repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B second wired-headset attempt = FAIL / P1
 53-B second repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B third wired-headset attempt = FAIL / P1
+53-B third repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 Other Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
 Next = 52-B Real Qwen retest at 1.0 / 1.3 / 1.5 seconds plus true-end latency
