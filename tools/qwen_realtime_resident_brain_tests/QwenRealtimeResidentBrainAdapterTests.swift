@@ -387,8 +387,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let identity = sessionIdentity(generation: 7)
         try await openAndBootstrap(stack, identity: identity)
 
-        let mono24k = pcm16([1_000, 2_000, 3_000, 4_000, 5_000, 6_000])
-        try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+        let frame24k = RealtimeBrainAudioFrame(
             identity: identity,
             sequence: 1,
             timestampNanoseconds: 100,
@@ -398,7 +397,37 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 channelCount: 1
             ),
             provenance: .acousticEchoProcessed,
-            bytes: mono24k
+            bytes: pcm16(
+                Array(
+                    repeating: [1_000, 2_000, 3_000, 4_000, 5_000, 6_000],
+                    count: 80
+                ).flatMap { $0 }
+            )
+        )
+        for index in 0 ..< 4 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 1) * 100),
+                format: frame24k.format,
+                provenance: frame24k.provenance,
+                bytes: frame24k.bytes
+            ))
+        }
+        let objectsBeforeBatch = try await sentObjects(stack.transport)
+        expect(
+            objectsBeforeBatch.allSatisfy {
+                $0["type"] as? String != "input_audio_buffer.append"
+            },
+            "Qwen input waits for one 100 ms PCM batch"
+        )
+        try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+            identity: identity,
+            sequence: 5,
+            timestampNanoseconds: 500,
+            format: frame24k.format,
+            provenance: frame24k.provenance,
+            bytes: frame24k.bytes
         ))
         let objects = try await sentObjects(stack.transport)
         guard let append = objects.last(where: {
@@ -407,15 +436,19 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let converted = Data(base64Encoded: encoded) else {
             fatalError("audio append fixture missing")
         }
+        let converted24kSamples = pcm16Samples(converted)
         expect(
-            pcm16Samples(converted) == [1_000, 2_500, 4_000, 5_500],
-            "24 kHz mono is deterministically converted to 16 kHz mono"
+            converted.count == 3_200
+                && converted24kSamples.count == 1_600
+                && Array(converted24kSamples.prefix(4))
+                    == [1_000, 2_500, 4_000, 5_500],
+            "five 20 ms frames become one deterministic 100 ms 16 kHz batch"
         )
 
-        let frame48k = RealtimeBrainAudioFrame(
+        let positive48k = RealtimeBrainAudioFrame(
             identity: identity,
-            sequence: 2,
-            timestampNanoseconds: 200,
+            sequence: 6,
+            timestampNanoseconds: 600,
             format: RealtimeBrainAudioFormat(
                 encoding: .pcm16LittleEndian,
                 sampleRate: 48_000,
@@ -425,41 +458,60 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             bytes: pcm16(Array(repeating: [300, 600, 900], count: 160)
                 .flatMap { $0 })
         )
-        try await stack.adapter.appendAudio(frame48k)
-        try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+        let quiet48k = RealtimeBrainAudioFrame(
             identity: identity,
-            sequence: 3,
-            timestampNanoseconds: 300,
-            format: frame48k.format,
-            provenance: frame48k.provenance,
+            sequence: 11,
+            timestampNanoseconds: 1_100,
+            format: positive48k.format,
+            provenance: positive48k.provenance,
             bytes: pcm16(Array(repeating: [-300, 0, 300], count: 160)
                 .flatMap { $0 })
-        ))
-        let converted48k = try await sentObjects(stack.transport)
-            .filter { $0["type"] as? String == "input_audio_buffer.append" }
-            .suffix(2)
-            .compactMap { object -> Data? in
-                guard let encoded = object["audio"] as? String else {
-                    return nil
-                }
-                return Data(base64Encoded: encoded)
-            }
-        expect(
-            converted48k.count == 2
-                && converted48k.allSatisfy { $0.count == 320 },
-            "two 48 kHz 10 ms mono packets each become 160 samples"
         )
+        for index in 0 ..< 5 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 6),
+                timestampNanoseconds: UInt64((index + 6) * 100),
+                format: positive48k.format,
+                provenance: positive48k.provenance,
+                bytes: positive48k.bytes
+            ))
+        }
+        for index in 0 ..< 5 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 11),
+                timestampNanoseconds: UInt64((index + 11) * 100),
+                format: quiet48k.format,
+                provenance: quiet48k.provenance,
+                bytes: quiet48k.bytes
+            ))
+        }
+        let allAppends = try await sentObjects(stack.transport)
+            .filter { $0["type"] as? String == "input_audio_buffer.append" }
         expect(
-            pcm16Samples(converted48k[0]).allSatisfy { $0 == 600 }
-                && pcm16Samples(converted48k[1]).allSatisfy { $0 == 0 },
+            allAppends.count == 2,
+            "ten 48 kHz 10 ms frames produce one additional Qwen batch"
+        )
+        guard let encoded48k = allAppends.last?["audio"] as? String,
+              let converted48k = Data(base64Encoded: encoded48k) else {
+            fatalError("48 kHz audio batch fixture missing")
+        }
+        let converted48kSamples = pcm16Samples(converted48k)
+        expect(
+            converted48k.count == 3_200
+                && converted48kSamples.prefix(800)
+                    .allSatisfy { $0 == 600 }
+                && converted48kSamples.suffix(800)
+                    .allSatisfy { $0 == 0 },
             "48 to 16 kHz conversion is deterministic across packet boundaries"
         )
 
         await expectRealtimeError(.invalidAudioFrame) {
             try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
                 identity: identity,
-                sequence: 4,
-                timestampNanoseconds: 400,
+                sequence: 16,
+                timestampNanoseconds: 1_600,
                 format: RealtimeBrainAudioFormat(
                     encoding: .pcm16LittleEndian,
                     sampleRate: 48_000,
@@ -472,8 +524,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await expectRealtimeError(.invalidAudioFrame) {
             try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
                 identity: identity,
-                sequence: 4,
-                timestampNanoseconds: 400,
+                sequence: 16,
+                timestampNanoseconds: 1_600,
                 format: RealtimeBrainAudioFormat(
                     encoding: .pcm16LittleEndian,
                     sampleRate: 44_100,
@@ -813,6 +865,37 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "interruption proposal cannot create an overlapping response"
         )
 
+        let oldAudioFrame = RealtimeBrainAudioFrame(
+            identity: identity,
+            sequence: 1,
+            timestampNanoseconds: 100,
+            format: RealtimeBrainAudioFormat(
+                encoding: .pcm16LittleEndian,
+                sampleRate: 24_000,
+                channelCount: 1
+            ),
+            provenance: .acousticEchoProcessed,
+            bytes: pcm16(Array(repeating: [300, 300, 300], count: 160)
+                .flatMap { $0 })
+        )
+        for index in 0 ..< 4 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 1) * 100),
+                format: oldAudioFrame.format,
+                provenance: oldAudioFrame.provenance,
+                bytes: oldAudioFrame.bytes
+            ))
+        }
+        let typesWithPartialOldAudio = try await sentTypes(stack.transport)
+        expect(
+            typesWithPartialOldAudio.filter {
+                $0 == "input_audio_buffer.append"
+            }.isEmpty,
+            "partial old-generation audio remains local until a full batch"
+        )
+
         let nextIdentity = sessionIdentity(
             generation: 4,
             leaseID: identity.brainLeaseID,
@@ -850,6 +933,38 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(
             sent.contains { $0["type"] as? String == "input_audio_buffer.clear" },
             "Runtime interrupt clears uncommitted provider input"
+        )
+
+        let newAudioFrame = RealtimeBrainAudioFrame(
+            identity: nextIdentity,
+            sequence: 1,
+            timestampNanoseconds: 1_000,
+            format: oldAudioFrame.format,
+            provenance: oldAudioFrame.provenance,
+            bytes: pcm16(Array(repeating: [900, 900, 900], count: 160)
+                .flatMap { $0 })
+        )
+        for index in 0 ..< 5 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: nextIdentity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 10) * 100),
+                format: newAudioFrame.format,
+                provenance: newAudioFrame.provenance,
+                bytes: newAudioFrame.bytes
+            ))
+        }
+        let postInterruptAppends = try await sentObjects(stack.transport)
+            .filter { $0["type"] as? String == "input_audio_buffer.append" }
+        guard postInterruptAppends.count == 1,
+              let encodedNewAudio = postInterruptAppends[0]["audio"]
+                as? String,
+              let newAudio = Data(base64Encoded: encodedNewAudio) else {
+            fatalError("new-generation audio batch missing")
+        }
+        expect(
+            pcm16Samples(newAudio).allSatisfy { $0 == 900 },
+            "generation transition discards every pending old PCM byte"
         )
 
         await stack.transport.enqueueText(

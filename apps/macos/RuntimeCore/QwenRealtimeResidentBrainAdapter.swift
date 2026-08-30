@@ -428,6 +428,26 @@ nonisolated private enum QwenRealtimePCM16Converter {
     }
 }
 
+nonisolated private struct QwenRealtimeInputAudioBatcher {
+    static let batchByteCount = 3_200
+
+    private var pendingBytes = Data()
+
+    mutating func append(_ bytes: Data) -> [Data] {
+        pendingBytes.append(bytes)
+        var batches: [Data] = []
+        while pendingBytes.count >= Self.batchByteCount {
+            batches.append(Data(pendingBytes.prefix(Self.batchByteCount)))
+            pendingBytes.removeFirst(Self.batchByteCount)
+        }
+        return batches
+    }
+
+    mutating func reset() {
+        pendingBytes.removeAll(keepingCapacity: true)
+    }
+}
+
 actor QwenRealtimeResidentBrainAdapter:
     RealtimeResidentBrainProvider {
     private static let maximumPendingEventCount = 256
@@ -518,6 +538,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private var nextEventSequence: UInt64 = 0
     private var outputAudioSequence: UInt64 = 0
     private var outputAudioSampleFrames: UInt64 = 0
+    private var inputAudioBatcher = QwenRealtimeInputAudioBatcher()
     private var contextSectionsByScope: [String: String] = [:]
     private var runtimeTools: [RealtimeBrainToolAdvertisement] = []
     private var runtimeVoiceBinding: RuntimeVoiceBinding?
@@ -657,9 +678,12 @@ actor QwenRealtimeResidentBrainAdapter:
         let operationID = beginMutationOperation()
         defer { finishMutationOperation(operationID) }
         do {
-            try await send(codec.audioAppend(
+            let batches = inputAudioBatcher.append(
                 try QwenRealtimePCM16Converter.mono16k(frame)
-            ))
+            )
+            for batch in batches {
+                try await send(codec.audioAppend(batch))
+            }
         } catch {
             throw Self.map(error)
         }
@@ -1760,6 +1784,7 @@ actor QwenRealtimeResidentBrainAdapter:
         nextEventSequence = 0
         outputAudioSequence = 0
         outputAudioSampleFrames = 0
+        inputAudioBatcher.reset()
         turnsByWireItemID.removeAll(keepingCapacity: true)
         latestTurnBinding = nil
         lastUserTranscriptPreviewByItemID.removeAll(keepingCapacity: true)
