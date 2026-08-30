@@ -439,6 +439,8 @@ actor MacSpeechRealtimeBrainInputBridge {
                 await observeResidentAcousticsIfNeeded(
                     fallbackTimestampNanoseconds:
                         DispatchTime.now().uptimeNanoseconds,
+                    capturedAcousticSnapshot: nil,
+                    observerOnly: true,
                     binding: binding,
                     pumpID: pumpID
                 )
@@ -482,6 +484,8 @@ actor MacSpeechRealtimeBrainInputBridge {
                 await observeResidentAcousticsIfNeeded(
                     fallbackTimestampNanoseconds:
                         realtimeFrame.timestampNanoseconds,
+                    capturedAcousticSnapshot: frame.acousticSnapshot,
+                    observerOnly: false,
                     binding: binding,
                     pumpID: pumpID
                 )
@@ -548,19 +552,23 @@ actor MacSpeechRealtimeBrainInputBridge {
         for frame: MacSpeechAudioFrame,
         binding: MacSpeechRealtimeBrainInputBinding
     ) async -> MacSpeechRealtimeBrainInputActivity {
-        guard let snapshot = await source.residentAcousticSnapshot(),
-              snapshot.captureGeneration == binding.captureGeneration,
-              snapshot.playbackSequence
+        guard let liveSnapshot = await source.residentAcousticSnapshot(),
+              liveSnapshot.captureGeneration == binding.captureGeneration,
+              liveSnapshot.playbackSequence
                 == frame.residentPlaybackSequence,
-              snapshot.residentPlaybackActive
+              liveSnapshot.residentPlaybackActive
                 == frame.residentPlaybackActive,
-              snapshot.routeStable,
-              snapshot.inputDeviceAvailable,
-              snapshot.outputDeviceAvailable else {
+              liveSnapshot.routeStable,
+              liveSnapshot.inputDeviceAvailable,
+              liveSnapshot.outputDeviceAvailable else {
             return MacSpeechRealtimeBrainInputActivity(
                 localActivity: .none
             )
         }
+        let snapshot = residentAcousticSnapshot(
+            captured: frame.acousticSnapshot,
+            live: liveSnapshot
+        )
 
         let kind: RealtimeBrainLocalAudioActivityKind
         switch frame.activityEvidenceKind {
@@ -631,17 +639,38 @@ actor MacSpeechRealtimeBrainInputBridge {
 
     private func observeResidentAcousticsIfNeeded(
         fallbackTimestampNanoseconds: UInt64,
+        capturedAcousticSnapshot:
+            MacSpeechAcousticObservationSnapshot?,
+        observerOnly: Bool,
         binding: MacSpeechRealtimeBrainInputBinding,
         pumpID: UUID
     ) async {
         let pollTimestamp = fallbackTimestampNanoseconds
-        guard pollTimestamp >= nextResidentAcousticSnapshotPollNanoseconds else {
-            return
+        if capturedAcousticSnapshot == nil {
+            guard pollTimestamp
+                    >= nextResidentAcousticSnapshotPollNanoseconds else {
+                return
+            }
         }
-        nextResidentAcousticSnapshotPollNanoseconds = pollTimestamp &+ 10_000_000
-        guard let snapshot = await source.residentAcousticSnapshot(),
-              snapshot.captureGeneration == binding.captureGeneration,
-              snapshot.captureFrameIndex > lastResidentCaptureFrameIndex,
+        guard let liveSnapshot = await source.residentAcousticSnapshot(),
+              liveSnapshot.captureGeneration == binding.captureGeneration,
+              capturedAcousticSnapshot.map({
+                  $0.playbackSequence == liveSnapshot.playbackSequence
+                      && $0.isPlaybackActive
+                          == liveSnapshot.residentPlaybackActive
+              }) ?? true,
+              activeBinding == binding,
+              activePumpID == pumpID else { return }
+        guard !observerOnly || !liveSnapshot.sourceGateOpen else { return }
+        if capturedAcousticSnapshot == nil {
+            nextResidentAcousticSnapshotPollNanoseconds =
+                pollTimestamp &+ 10_000_000
+        }
+        let snapshot = residentAcousticSnapshot(
+            captured: capturedAcousticSnapshot,
+            live: liveSnapshot
+        )
+        guard snapshot.captureFrameIndex > lastResidentCaptureFrameIndex,
               activeBinding == binding,
               activePumpID == pumpID else { return }
         lastResidentCaptureFrameIndex = snapshot.captureFrameIndex
@@ -760,6 +789,57 @@ actor MacSpeechRealtimeBrainInputBridge {
                 pumpID: pumpID
             )
         }
+    }
+
+    private func residentAcousticSnapshot(
+        captured: MacSpeechAcousticObservationSnapshot?,
+        live: MacSpeechResidentAcousticSnapshot
+    ) -> MacSpeechResidentAcousticSnapshot {
+        guard let captured else { return live }
+        return MacSpeechResidentAcousticSnapshot(
+            captureGeneration: live.captureGeneration,
+            captureFrameIndex: captured.captureFrameIndex,
+            captureHostTimeNanoseconds:
+                captured.captureHostTimeNanoseconds,
+            playbackSequence: captured.playbackSequence,
+            residentPlaybackActive: captured.isPlaybackActive,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                captured.lastAudibleRenderHostTimeNanoseconds,
+            renderReferenceAvailable:
+                captured.renderReferenceAvailable,
+            renderReferenceRMS: captured.renderReferenceRMS,
+            renderHostTimeNanoseconds:
+                captured.renderHostTimeNanoseconds,
+            rawCaptureRMS: captured.rawCaptureRMS,
+            processedCaptureRMS: captured.processedCaptureRMS,
+            linearAECOutputRMS: captured.linearAECOutputRMS,
+            renderCaptureCorrelation:
+                captured.renderCaptureCorrelation,
+            residualRenderCorrelation:
+                captured.residualRenderCorrelation,
+            linearRenderCorrelation:
+                captured.linearRenderCorrelation,
+            inputClassification: captured.inputClassification,
+            sourceGateOpen: captured.sourceGateOpen,
+            sourceGateEpoch: captured.sourceGateEpoch,
+            aecEnabled: captured.aecEnabled,
+            aecActive: captured.aecActive,
+            renderCaptureIsolationEstablished:
+                captured.renderCaptureIsolationEstablished,
+            sourceAlignmentLocked: captured.sourceAlignmentLocked,
+            sourceAlignmentDelayMilliseconds:
+                captured.sourceAlignmentDelayMilliseconds,
+            estimatedDelayMilliseconds:
+                captured.estimatedDelayMilliseconds,
+            erlDecibels: captured.erlDecibels,
+            erleDecibels: captured.erleDecibels,
+            renderCaptureSkewFrames:
+                captured.renderCaptureSkewFrames,
+            driftTrend: captured.driftTrend,
+            routeStable: live.routeStable,
+            inputDeviceAvailable: live.inputDeviceAvailable,
+            outputDeviceAvailable: live.outputDeviceAvailable
+        )
     }
 
     private func finishResidentAcousticObservation(

@@ -149,6 +149,7 @@ nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
     let residentPlaybackActive: Bool
     let lastAudibleResidentRenderTimestampNanoseconds: UInt64?
     let sourceGateEpoch: UInt64
+    let acousticSnapshot: MacSpeechAcousticObservationSnapshot?
 
     init(
         captureGeneration: UInt64,
@@ -160,7 +161,8 @@ nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
         residentPlaybackSequence: UInt64 = 0,
         residentPlaybackActive: Bool = false,
         lastAudibleResidentRenderTimestampNanoseconds: UInt64? = nil,
-        sourceGateEpoch: UInt64 = 0
+        sourceGateEpoch: UInt64 = 0,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
     ) {
         self.captureGeneration = captureGeneration
         self.sequenceNumber = sequenceNumber
@@ -174,6 +176,7 @@ nonisolated struct MacSpeechAudioFrame: Sendable, Equatable {
         self.lastAudibleResidentRenderTimestampNanoseconds =
             lastAudibleResidentRenderTimestampNanoseconds
         self.sourceGateEpoch = sourceGateEpoch
+        self.acousticSnapshot = acousticSnapshot
     }
 }
 
@@ -234,7 +237,8 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
         residentPlaybackSequence: UInt64 = 0,
         residentPlaybackActive: Bool = false,
         lastAudibleResidentRenderTimestampNanoseconds: UInt64? = nil,
-        sourceGateEpoch: UInt64 = 0
+        sourceGateEpoch: UInt64 = 0,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
     ) -> Bool {
         lock.withLock {
             guard activeGeneration == generation, !pcm16Bytes.isEmpty else {
@@ -265,7 +269,8 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
                     residentPlaybackActive: residentPlaybackActive,
                     lastAudibleResidentRenderTimestampNanoseconds:
                         lastAudibleResidentRenderTimestampNanoseconds,
-                    sourceGateEpoch: sourceGateEpoch
+                    sourceGateEpoch: sourceGateEpoch,
+                    acousticSnapshot: acousticSnapshot
                 )
             )
             generatedCount &+= 1
@@ -321,13 +326,31 @@ nonisolated enum MacSpeechPCM16Encoder {
 nonisolated struct MacSpeechPCM16Packet: Sendable, Equatable {
     let bytes: Data
     let activity: Float
+    let activityEvidenceKind: MacSpeechAudioActivityEvidenceKind
+    let acousticSnapshot: MacSpeechAcousticObservationSnapshot?
 }
 
 nonisolated struct MacSpeechPCM16Packetizer: Sendable {
-    private var pendingSamples: [Float] = []
+    private struct EvidenceSpan: Sendable {
+        var sampleCount: Int
+        let kind: MacSpeechAudioActivityEvidenceKind
+        let acousticSnapshot: MacSpeechAcousticObservationSnapshot?
+    }
 
-    mutating func append(samples: [Float]) -> [MacSpeechPCM16Packet] {
+    private var pendingSamples: [Float] = []
+    private var evidenceSpans: [EvidenceSpan] = []
+
+    mutating func append(
+        samples: [Float],
+        activityEvidenceKind: MacSpeechAudioActivityEvidenceKind = .none,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
+    ) -> [MacSpeechPCM16Packet] {
         pendingSamples.append(contentsOf: samples)
+        evidenceSpans.append(EvidenceSpan(
+            sampleCount: samples.count,
+            kind: activityEvidenceKind,
+            acousticSnapshot: acousticSnapshot
+        ))
         var packets: [MacSpeechPCM16Packet] = []
         while pendingSamples.count >= MacSpeechAudioInputFormat.packetSampleCount {
             let packetSamples = Array(
@@ -338,9 +361,14 @@ nonisolated struct MacSpeechPCM16Packetizer: Sendable {
             pendingSamples.removeFirst(
                 MacSpeechAudioInputFormat.packetSampleCount
             )
+            let evidence = takeEvidence(
+                sampleCount: MacSpeechAudioInputFormat.packetSampleCount
+            )
             packets.append(MacSpeechPCM16Packet(
                 bytes: MacSpeechPCM16Encoder.encode(samples: packetSamples),
-                activity: Self.activity(samples: packetSamples)
+                activity: Self.activity(samples: packetSamples),
+                activityEvidenceKind: evidence.kind,
+                acousticSnapshot: evidence.acousticSnapshot
             ))
         }
         return packets
@@ -348,6 +376,43 @@ nonisolated struct MacSpeechPCM16Packetizer: Sendable {
 
     mutating func reset() {
         pendingSamples.removeAll(keepingCapacity: true)
+        evidenceSpans.removeAll(keepingCapacity: true)
+    }
+
+    private mutating func takeEvidence(
+        sampleCount: Int
+    ) -> (
+        kind: MacSpeechAudioActivityEvidenceKind,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot?
+    ) {
+        var remaining = sampleCount
+        var selectedKind = MacSpeechAudioActivityEvidenceKind.none
+        var selectedSnapshot: MacSpeechAcousticObservationSnapshot?
+        while remaining > 0, !evidenceSpans.isEmpty {
+            let consumed = min(remaining, evidenceSpans[0].sampleCount)
+            let span = evidenceSpans[0]
+            switch span.kind {
+            case .sourceGatedNearEnd:
+                selectedKind = .sourceGatedNearEnd
+                selectedSnapshot = span.acousticSnapshot
+            case .listeningNearEnd:
+                if selectedKind != .sourceGatedNearEnd {
+                    selectedKind = .listeningNearEnd
+                    selectedSnapshot = span.acousticSnapshot
+                }
+            case .none:
+                if selectedKind == .none {
+                    selectedSnapshot = span.acousticSnapshot
+                }
+            }
+            remaining -= consumed
+            if consumed == evidenceSpans[0].sampleCount {
+                evidenceSpans.removeFirst()
+            } else {
+                evidenceSpans[0].sampleCount -= consumed
+            }
+        }
+        return (selectedKind, selectedSnapshot)
     }
 
     private static func activity(samples: [Float]) -> Float {
@@ -432,7 +497,9 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
     }
 
     func convert(
-        _ inputBuffer: AVAudioPCMBuffer
+        _ inputBuffer: AVAudioPCMBuffer,
+        activityEvidenceKind: MacSpeechAudioActivityEvidenceKind = .none,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
     ) throws -> [MacSpeechPCM16Packet] {
         try lock.withLock {
             let ratio = MacSpeechAudioInputFormat.sampleRate / inputSampleRate
@@ -469,7 +536,11 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
 
             let count = Int(outputBuffer.frameLength)
             let values = Array(UnsafeBufferPointer(start: samples, count: count))
-            return packetizer.append(samples: values)
+            return packetizer.append(
+                samples: values,
+                activityEvidenceKind: activityEvidenceKind,
+                acousticSnapshot: acousticSnapshot
+            )
         }
     }
 
@@ -1008,22 +1079,32 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
            let cleanedBuffer = try? MacSpeechFloatMono48kConverter.makeBuffer(
             samples: cleanedSamples
            ),
-           let packets = try? outputConverter.convert(cleanedBuffer) {
+           let packets = try? outputConverter.convert(
+               cleanedBuffer,
+               activityEvidenceKind: activityEvidenceKind,
+               acousticSnapshot: acoustic
+           ) {
             for packet in packets {
+                let packetAcoustic = packet.acousticSnapshot
+                    ?? acoustic
                 frameBuffer.append(
                     pcm16Bytes: packet.bytes,
                     activity: packet.activity,
                     generation: generation,
-                    timestamp: acoustic.captureHostTimeNanoseconds
+                    timestamp: packetAcoustic.captureHostTimeNanoseconds
                         ?? DispatchTime.now().uptimeNanoseconds,
-                    activityEvidenceKind: activityEvidenceKind,
-                    residentPlaybackSequence: acoustic.playbackSequence,
-                    residentPlaybackActive: acoustic.isPlaybackActive,
+                    activityEvidenceKind: packet.activityEvidenceKind,
+                    residentPlaybackSequence:
+                        packetAcoustic.playbackSequence,
+                    residentPlaybackActive:
+                        packetAcoustic.isPlaybackActive,
                     lastAudibleResidentRenderTimestampNanoseconds:
-                        acoustic.lastAudibleRenderHostTimeNanoseconds,
-                    sourceGateEpoch: activityEvidenceKind
+                        packetAcoustic
+                            .lastAudibleRenderHostTimeNanoseconds,
+                    sourceGateEpoch: packet.activityEvidenceKind
                         == .sourceGatedNearEnd
-                        ? acoustic.sourceGateEpoch : 0
+                        ? packetAcoustic.sourceGateEpoch : 0,
+                    acousticSnapshot: packetAcoustic
                 )
             }
         }

@@ -745,7 +745,7 @@ elif [ "$test_mode" = "r841-double-talk-only" ]; then
   rg -q 'zip\(render, nearEnd\)' <<< "$r841_source"
   rg -q 'processedSamples: processed' <<< "$r841_source"
   rg -q 'sourceAssessment == \.doubleTalk' <<< "$r841_source"
-  rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
+  rg -q 'outputConverter\.convert\(cleanedBuffer(,|\))' "$test_source"
   rg -q 'pendingEligibleAcousticObservation == nil' \
     "$repo_root/apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift"
   echo "r841_production_chain_fixture=PASS"
@@ -783,7 +783,7 @@ elif [ "$test_mode" = "r831-positive-only" ]; then
   rg -q 'processRender\(' <<< "$positive_source"
   rg -q 'processCapture\(' <<< "$positive_source"
   rg -q 'processedSamples: processed' <<< "$positive_source"
-  rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
+  rg -q 'outputConverter\.convert\(cleanedBuffer(,|\))' "$test_source"
   echo "r831_production_chain_fixture=PASS"
 elif [ "$test_mode" = "r832-confirmed-only" ]; then
   rg -qx 'realtime_confirmed_interruption_cases=1' "$output"
@@ -866,7 +866,7 @@ elif [ "$test_mode" = "r832-confirmed-only" ]; then
   rg -q 'processRender\(' <<< "$r832_source"
   rg -q 'processCapture\(' <<< "$r832_source"
   rg -q 'processedSamples: processed' <<< "$r832_source"
-  rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
+  rg -q 'outputConverter\.convert\(cleanedBuffer(,|\))' "$test_source"
   echo "r832_production_chain_fixture=PASS"
 elif [ "$test_mode" = "r833-latency-stale-only" ]; then
   rg -qx 'realtime_barge_in_latency_stale_cases=1' "$output"
@@ -959,7 +959,7 @@ elif [ "$test_mode" = "r833-latency-stale-only" ]; then
   rg -q 'processRender\(' <<< "$r833_acoustic_source"
   rg -q 'processCapture\(' <<< "$r833_source"
   rg -q 'processedSamples: processed' <<< "$r833_source"
-  rg -q 'outputConverter\.convert\(cleanedBuffer\)' "$test_source"
+  rg -q 'outputConverter\.convert\(cleanedBuffer(,|\))' "$test_source"
   echo "r833_production_chain_fixture=PASS"
 else
   rg -qx 'realtime_resident_only_zero_self_interrupt_cases=12' "$output"

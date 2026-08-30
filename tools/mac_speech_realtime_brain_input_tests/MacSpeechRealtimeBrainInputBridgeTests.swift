@@ -148,6 +148,36 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
             ))
         }
     }
+
+    func appendSourceGatedFrame(
+        pcm16Bytes: Data,
+        generation: UInt64,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot
+    ) {
+        lock.withLock {
+            guard activeGeneration == generation else { return }
+            nextSequence &+= 1
+            frames.append(MacSpeechAudioFrame(
+                captureGeneration: generation,
+                sequenceNumber: nextSequence,
+                monotonicTimestampNanoseconds:
+                    acousticSnapshot.captureHostTimeNanoseconds
+                        ?? UInt64(nextSequence) * 20_000_000,
+                pcm16Bytes: pcm16Bytes,
+                activity: 0.18,
+                activityEvidenceKind: .sourceGatedNearEnd,
+                residentPlaybackSequence:
+                    acousticSnapshot.playbackSequence,
+                residentPlaybackActive:
+                    acousticSnapshot.isPlaybackActive,
+                lastAudibleResidentRenderTimestampNanoseconds:
+                    acousticSnapshot
+                        .lastAudibleRenderHostTimeNanoseconds,
+                sourceGateEpoch: acousticSnapshot.sourceGateEpoch,
+                acousticSnapshot: acousticSnapshot
+            ))
+        }
+    }
 }
 
 private actor FakeRealtimeResidentBrainProvider: RealtimeResidentBrainProvider {
@@ -488,6 +518,8 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testBridgeStopsOnError()
         await testBridgeRejectsStaleFrames()
         await testBridgeForwardsAcousticEvidenceEdges()
+        testPacketizerPreservesTenMillisecondSourceGateEvidence()
+        await testBridgeUsesFrameBoundAcousticEvidence()
         testControllerSourceGateEpochFence()
         await testBridgeSnapshot()
         await testAudioFrameConversion()
@@ -770,6 +802,118 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         _ = await bridge.stop()
     }
 
+    private static func testPacketizerPreservesTenMillisecondSourceGateEvidence() {
+        cases += 1
+        var packetizer = MacSpeechPCM16Packetizer()
+        let nearEnd = acousticSnapshot(
+            frameIndex: 1,
+            classification: .nearEndSpeech,
+            sourceGateOpen: true
+        )
+        let uncertain = acousticSnapshot(
+            frameIndex: 2,
+            classification: .uncertain,
+            sourceGateOpen: true
+        )
+
+        let firstHalf = packetizer.append(
+            samples: [Float](repeating: 0.2, count: 240),
+            activityEvidenceKind: .sourceGatedNearEnd,
+            acousticSnapshot: nearEnd
+        )
+        expect(firstHalf.isEmpty,
+               "first 10 ms waits for a complete Provider PCM packet")
+        let packets = packetizer.append(
+            samples: [Float](repeating: 0.002, count: 240),
+            activityEvidenceKind: .none,
+            acousticSnapshot: uncertain
+        )
+        expect(packets.count == 1,
+               "two 10 ms capture windows form one 20 ms Provider packet")
+        expect(packets[0].activityEvidenceKind == .sourceGatedNearEnd,
+               "20 ms packet retains near-end evidence from its first half")
+        expect(packets[0].acousticSnapshot?.captureFrameIndex == 1,
+               "packet binds the exact positive AEC snapshot")
+
+        packetizer.reset()
+        let echoOnly = acousticSnapshot(
+            frameIndex: 3,
+            classification: .echoOnly,
+            sourceGateOpen: false
+        )
+        let residentOnlyPackets = packetizer.append(
+            samples: [Float](repeating: 0.002, count: 480),
+            activityEvidenceKind: .none,
+            acousticSnapshot: echoOnly
+        )
+        expect(residentOnlyPackets.count == 1
+                   && residentOnlyPackets[0].activityEvidenceKind == .none,
+               "resident-only packet does not gain near-end evidence")
+    }
+
+    private static func testBridgeUsesFrameBoundAcousticEvidence() async {
+        cases += 1
+        let source = FakeMacSpeechAudioFrameSource()
+        let provider = FakeRealtimeResidentBrainProvider()
+        let sink = R81AcousticObservationSink()
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "frame-bound-resident",
+            runtimeSessionID: "frame-bound-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 351
+        let capturedNearEnd = acousticSnapshot(
+            frameIndex: 1,
+            classification: .nearEndSpeech,
+            sourceGateOpen: true
+        )
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(residentSnapshot(
+            generation: captureGeneration,
+            frameIndex: 2,
+            classification: .uncertain,
+            sourceGateOpen: true
+        ))
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrameWithActivity: { frame, _ in
+                do {
+                    try await provider.appendAudio(frame)
+                    return .success(())
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.providerFailure)
+                }
+            },
+            stopInput: { _ in .success(()) },
+            consumeAcousticObservation: { observation in
+                await sink.consume(observation)
+            }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        source.appendSourceGatedFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration,
+            acousticSnapshot: capturedNearEnd
+        )
+
+        await waitUntil(label: "frame-bound acoustic evidence") {
+            await sink.values().count == 1
+        }
+        let snapshot = await bridge.currentSnapshot()
+        expect(snapshot.sourceGatedNearEndFrameCount == 1,
+               "Bridge accepts the packet-bound source-gate activity")
+        expect(snapshot.acousticEvidenceCount == 1,
+               "Bridge evaluates the bound positive snapshot instead of a later uncertain sample")
+        _ = await bridge.stop()
+    }
+
     private static func residentSnapshot(
         generation: UInt64,
         frameIndex: UInt64,
@@ -809,6 +953,103 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             routeStable: true,
             inputDeviceAvailable: true,
             outputDeviceAvailable: true
+        )
+    }
+
+    private static func residentSnapshot(
+        generation: UInt64,
+        frameIndex: UInt64,
+        classification: MacSpeechAcousticInputClassification,
+        sourceGateOpen: Bool
+    ) -> MacSpeechResidentAcousticSnapshot {
+        let acoustic = acousticSnapshot(
+            frameIndex: frameIndex,
+            classification: classification,
+            sourceGateOpen: sourceGateOpen
+        )
+        return MacSpeechResidentAcousticSnapshot(
+            captureGeneration: generation,
+            captureFrameIndex: acoustic.captureFrameIndex,
+            captureHostTimeNanoseconds:
+                acoustic.captureHostTimeNanoseconds,
+            playbackSequence: acoustic.playbackSequence,
+            residentPlaybackActive: acoustic.isPlaybackActive,
+            lastAudibleResidentRenderTimestampNanoseconds:
+                acoustic.lastAudibleRenderHostTimeNanoseconds,
+            renderReferenceAvailable:
+                acoustic.renderReferenceAvailable,
+            renderReferenceRMS: acoustic.renderReferenceRMS,
+            renderHostTimeNanoseconds:
+                acoustic.renderHostTimeNanoseconds,
+            rawCaptureRMS: acoustic.rawCaptureRMS,
+            processedCaptureRMS: acoustic.processedCaptureRMS,
+            linearAECOutputRMS: acoustic.linearAECOutputRMS,
+            renderCaptureCorrelation:
+                acoustic.renderCaptureCorrelation,
+            residualRenderCorrelation:
+                acoustic.residualRenderCorrelation,
+            linearRenderCorrelation:
+                acoustic.linearRenderCorrelation,
+            inputClassification: acoustic.inputClassification,
+            sourceGateOpen: acoustic.sourceGateOpen,
+            sourceGateEpoch: acoustic.sourceGateEpoch,
+            aecEnabled: acoustic.aecEnabled,
+            aecActive: acoustic.aecActive,
+            renderCaptureIsolationEstablished:
+                acoustic.renderCaptureIsolationEstablished,
+            sourceAlignmentLocked: acoustic.sourceAlignmentLocked,
+            sourceAlignmentDelayMilliseconds:
+                acoustic.sourceAlignmentDelayMilliseconds,
+            estimatedDelayMilliseconds:
+                acoustic.estimatedDelayMilliseconds,
+            erlDecibels: acoustic.erlDecibels,
+            erleDecibels: acoustic.erleDecibels,
+            renderCaptureSkewFrames:
+                acoustic.renderCaptureSkewFrames,
+            driftTrend: acoustic.driftTrend,
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+    }
+
+    private static func acousticSnapshot(
+        frameIndex: UInt64,
+        classification: MacSpeechAcousticInputClassification,
+        sourceGateOpen: Bool
+    ) -> MacSpeechAcousticObservationSnapshot {
+        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        let renderTimestamp = captureTimestamp - 80_000_000
+        let isNearEnd = classification == .nearEndSpeech
+            || classification == .doubleTalk
+        return MacSpeechAcousticObservationSnapshot(
+            captureFrameIndex: frameIndex,
+            captureHostTimeNanoseconds: captureTimestamp,
+            playbackSequence: 1,
+            isPlaybackActive: true,
+            lastAudibleRenderHostTimeNanoseconds: renderTimestamp,
+            renderReferenceAvailable: true,
+            renderReferenceRMS: 0.2,
+            renderHostTimeNanoseconds: renderTimestamp,
+            rawCaptureRMS: isNearEnd ? 0.2 : 0.02,
+            processedCaptureRMS: isNearEnd ? 0.2 : 0.02,
+            linearAECOutputRMS: isNearEnd ? 0.2 : 0.02,
+            renderCaptureCorrelation: isNearEnd ? 0.1 : 0.2,
+            residualRenderCorrelation: 0.1,
+            linearRenderCorrelation: 0.1,
+            inputClassification: classification,
+            sourceGateOpen: sourceGateOpen,
+            sourceGateEpoch: sourceGateOpen ? 1 : 0,
+            aecEnabled: true,
+            aecActive: true,
+            renderCaptureIsolationEstablished: false,
+            sourceAlignmentLocked: true,
+            sourceAlignmentDelayMilliseconds: 80,
+            estimatedDelayMilliseconds: 80,
+            erlDecibels: 12,
+            erleDecibels: 10,
+            renderCaptureSkewFrames: 0,
+            driftTrend: "stable"
         )
     }
 

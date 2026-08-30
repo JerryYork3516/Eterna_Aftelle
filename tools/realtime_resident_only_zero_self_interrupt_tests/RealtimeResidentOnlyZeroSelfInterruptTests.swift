@@ -377,7 +377,6 @@ private final class R823AudioCapture:
         let cleanedBuffer = try MacSpeechFloatMono48kConverter.makeBuffer(
             samples: processedSamples
         )
-        let packets = try outputConverter.convert(cleanedBuffer)
         let acoustic = acousticEchoHost.acousticObservationSnapshot()
         let activityEvidenceKind: MacSpeechAudioActivityEvidenceKind
         if let acousticBefore {
@@ -394,6 +393,10 @@ private final class R823AudioCapture:
                         || acoustic.inputClassification == .doubleTalk)
                 ? .sourceGatedNearEnd : .none
         }
+        let packets = try outputConverter.convert(cleanedBuffer,
+            activityEvidenceKind: activityEvidenceKind,
+            acousticSnapshot: acoustic
+        )
         let target = lock.withLock { (started, frameBuffer, generation) }
         guard target.0,
               let frameBuffer = target.1,
@@ -401,20 +404,25 @@ private final class R823AudioCapture:
         var packetCount = 0
         var activePacketCount = 0
         for packet in packets {
+            let packetAcoustic = packet.acousticSnapshot ?? acoustic
             if frameBuffer.append(
                 pcm16Bytes: packet.bytes,
                 activity: packet.activity,
                 generation: generation,
-                timestamp: acoustic.captureHostTimeNanoseconds
+                timestamp: packetAcoustic.captureHostTimeNanoseconds
                     ?? DispatchTime.now().uptimeNanoseconds,
-                activityEvidenceKind: activityEvidenceKind,
-                residentPlaybackSequence: acoustic.playbackSequence,
-                residentPlaybackActive: acoustic.isPlaybackActive,
+                activityEvidenceKind: packet.activityEvidenceKind,
+                residentPlaybackSequence:
+                    packetAcoustic.playbackSequence,
+                residentPlaybackActive:
+                    packetAcoustic.isPlaybackActive,
                 lastAudibleResidentRenderTimestampNanoseconds:
-                    acoustic.lastAudibleRenderHostTimeNanoseconds,
-                sourceGateEpoch: activityEvidenceKind
+                    packetAcoustic
+                        .lastAudibleRenderHostTimeNanoseconds,
+                sourceGateEpoch: packet.activityEvidenceKind
                     == .sourceGatedNearEnd
-                    ? acoustic.sourceGateEpoch : 0
+                    ? packetAcoustic.sourceGateEpoch : 0,
+                acousticSnapshot: packetAcoustic
             ) {
                 packetCount += 1
                 if packet.activity > 0.001 {
@@ -8433,6 +8441,10 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         + "evidence=\(bridge.acousticEvidenceCount)/\(evidenceBefore) "
                         + "eligibility=\(eligibility) "
                         + "forward=\(forward) "
+                        + "source_gated=\(bridge.sourceGatedNearEndFrameCount) "
+                        + "observed=\(bridge.residentAcousticObservationCount) "
+                        + "rejected=\(bridge.rejectedResidentAcousticObservationCount) "
+                        + "dropped=\(bridge.droppedResidentAcousticObservationCount) "
                         + "classification=\(acoustic.inputClassification) "
                         + "gate=\(acoustic.sourceGateOpen) "
                         + "epoch=\(acoustic.sourceGateEpoch)"
