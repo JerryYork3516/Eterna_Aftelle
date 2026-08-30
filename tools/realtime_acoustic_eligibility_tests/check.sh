@@ -38,7 +38,7 @@ CFFIXED_USER_HOME="$runtime_home" \
   | tee "$output"
 
 rg -qx 'realtime_acoustic_eligibility_cases=9' "$output"
-rg -qx 'realtime_acoustic_eligibility_checks=84' "$output"
+rg -qx 'realtime_acoustic_eligibility_checks=85' "$output"
 rg -qx 'r822_resident_stress_observations=320' "$output"
 rg -qx 'r822_resident_stress_eligible_acoustic_evidence=0' "$output"
 rg -qx 'r822_resident_stress_confirmed_interruptions=0' "$output"
@@ -164,10 +164,15 @@ awk \
   '/private static func acousticEvidenceStaleReason/ { active = 1 } \
    /private func finish\(/ { if (active) active = 0 } \
    active' "$bridge" > "$stale_fence_block"
-rg -q 'snapshot\.sourceGateOpen' "$stale_fence_block"
+if rg -q 'snapshot\.sourceGateOpen' "$stale_fence_block"; then
+  echo "r822_packet_bound_gate_fence=FAIL" >&2
+  exit 1
+fi
 rg -q 'snapshot\.sourceGateEpoch == eligibilityEpoch' "$stale_fence_block"
 rg -q 'snapshot\.playbackSequence' "$stale_fence_block"
 rg -q 'snapshot\.captureGeneration' "$stale_fence_block"
+rg -q 'observationFreshnessNanoseconds' "$stale_fence_block"
+rg -q 'snapshot\.routeStable' "$stale_fence_block"
 rg -q 'facts\.sourceGateEpoch == observation\.metrics\.sourceGateEpoch' "$runtime"
 echo "r822_post_send_identity_guard=PASS"
 echo "r822_source_gate_epoch_fence=PASS"

@@ -48,6 +48,7 @@ rg -q 'renderConversionFailed' "$aec_host" "$capture"
 test "$(rg -c 'hostTimeNanoseconds: Self\.hostTimeNanoseconds\(when\)' "$capture")" -eq 2
 rg -q 'AVAudioTime\.seconds\(forHostTime:' "$capture"
 rg -q 'renderTimingHistory' "$aec_host"
+rg -q 'causalLastAudibleRenderHostTimeNanoseconds' "$aec_host"
 rg -q 'renderCaptureCorrelation' "$aec_host"
 rg -q 'residualRenderCorrelation' "$aec_host"
 rg -q 'case echoOnly = "echo_only"' "$aec_host"

@@ -491,7 +491,7 @@ R8.5.1 = PASS / FROZEN
 
 ```text
 R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
-R8.5.3 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
+R8.5.3 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
 Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
@@ -503,6 +503,9 @@ Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 53-B second repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B third wired-headset attempt = FAIL / P1
 53-B third repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B fourth wired-headset attempt = FAIL / P1
+53-B fourth repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B fifth wired-headset retest = NOT_RUN
 Other required Real-device Human Gates = NOT_RUN
 ```
 
@@ -758,7 +761,7 @@ real near-end + resident render
 
 第一次自动化修复后的第二次 53-B 同设备真人复测仍为 `FAIL / P1`。该次 diagnostics 显示 AEC Host 已产生 1 个 source-gate epoch，74 个 open frame、73 个 forwarded 10 ms frame，其中 `.nearEndSpeech` 12、`.doubleTalk` 3；但 Input Bridge 的 source-gated near-end frame 与 formal acoustic evidence 仍均为 0，因此没有 semantic fusion、confirmed interruption、Provider interrupt、Playback clear 或 generation advance。Transport 同期保持健康，故新的准确阻断点位于 AEC Host 已判定正向之后、20 ms Provider PCM 被 Input Bridge 接收之前。
 
-第二次最小修复处理 10 ms AEC 分类与 20 ms Provider PCM packetization 的时基错位：Capture 将每个 10 ms window 的 acoustic snapshot 与 activity evidence 按样本跨度传入 packetizer；同一 20 ms 包内按 `source-gated near-end > listening near-end > none` 聚合，避免前半包正向证据被后半包 `.uncertain` 覆盖。Input Bridge 使用 packet-bound snapshot 形成 observation / eligibility，不再依赖可能相位越过正向 frame 的 mutable latest-snapshot poll；当前 live route、device、capture generation、Playback identity、source-gate epoch 与 active gate 仍作为最终 fail-closed fence。该修复没有改声学阈值、500 ms tail、source gate、semantic policy 或 RuntimeCore interruption authority。
+第二次最小修复处理 10 ms AEC 分类与 20 ms Provider PCM packetization 的时基错位：Capture 将每个 10 ms window 的 acoustic snapshot 与 activity evidence 按样本跨度传入 packetizer；同一 20 ms 包内按 `source-gated near-end > listening near-end > none` 聚合，避免前半包正向证据被后半包 `.uncertain` 覆盖。Input Bridge 使用 packet-bound snapshot 形成 observation / eligibility，不再依赖可能相位越过正向 frame 的 mutable latest-snapshot poll；当前 live route、device、capture generation、Playback identity 与 source-gate epoch 仍作为最终 fail-closed fence。同一 epoch 内 gate 在 Provider send 期间关闭，不撤销该 packet 已绑定并通过 eligibility 的历史事实；只有 epoch rollover、Playback / generation / route / device 变化或 evidence 超过 500 ms 才使其失效。该修复没有改声学阈值、500 ms tail、source gate、semantic policy 或 RuntimeCore interruption authority。
 
 第二次修复后自动化结果：R8.5.3 isolated production chain 的 gate / eligibility / confirmed / Provider interrupt / Playback clear / generation delta / N+1 Input / Output 各为 1；R8.4.1 的 11 个正向 double-talk 场景全部成立，6 个负向场景共 3896 frame 的 false double-talk 与危险副作用均为 0；R8.2.3 resident-only long stress 3840 frame 的 eligibility / interruption / clear / generation / lease 等危险指标均为 0；R8.3.1–R8.3.3、AEC、Qwen、Debug / Release build 保持通过。完整 A7 仍只在既有 `realtime_brain_audio_host` context-refresh 断言停止。修复后的 Real Qwen 同设备复测尚未执行，不能据此判定 Human Gate PASS。
 
@@ -768,15 +771,21 @@ real near-end + resident render
 
 第三次修复自动化结果：R8.5.3 独立 3 cases / 97 checks，provider-terminal-before-playback-drain 1、speech-start semantic confirmation 1、acoustic eligibility / confirmed / Provider interrupt / Playback clear / generation delta / N+1 Input / Output 各 1，Provider cancel 0，settled playback target resurrection 0。interruption evidence 24 cases / 202 checks、R8.4.2 1/390、R8.4.1 11/11 production positives + 3896 negative frames、R8.2.3 3840 resident-only stress frames均通过；R8.5.1 total regression 为 13 cross-node / 0 failure、100 randomized / 0 failure、15 repeat / 0 failure，duplicate response / interrupt / clear、stale side effect、self-interrupt、generation / lease drift 全为 0。Qwen Adapter 26/185、AEC 1055、Audio Output / Host、Debug / Release clean build、architecture / secret / repository mutation guards 与 `git diff --check` PASS；production digest 为 `c60986c398fd7616c85e5f70a5d5d4b74f21e0b171c420fc4e4d3fcca30fe6cc`。完整 A7 仍仅在已于冻结基线独立复现的 `realtime_brain_audio_host` context-refresh 断言停止。未修改 acoustic threshold、source gate、500 ms tail、Qwen recoverable error contract、DR / Store schema 或 platform target；同设备 Real Qwen 第四次复测仍为 `NOT_RUN`，不能据此判定 Human Gate PASS。
 
+第三次自动化修复后的第四次 53-B 同设备真人复测仍为 `FAIL / P1`，但阻断边界进一步收窄：production AEC 已识别 double-talk，source gate 已打开，20 ms packet-bound Bridge 收到 30 个 `sourceGatedNearEnd` packet；其中 10 个在 eligibility last-audible 因果 guard 被拒，另有 11 个形成 candidate，但 10 个在 Provider send 返回后因 live gate 已关闭而被旧 fence 撤销，最终只有 1 个 acoustic evidence forward。同期 render/capture diagnostics 显示 `render_ahead`，而物理 Playback 期间没有取得可关联的 Qwen `speech_started`；旧 diagnostics 又只在 Provider active response 期间记录 PCM batch，无法证明 Provider terminal 到本地 Playback drain 窗口内送达 Qwen 的 PCM 能量。
+
+第四次最小修复不改 AEC / double-talk / source-gate threshold、三帧 confirmation、500 ms residual tail、Qwen semantic VAD 或 Runtime interruption authority。AEC Host 仅在生成 capture-bound snapshot 时将 raw last-audible watermark 投影为 `min(rawLastAudible, captureTime)`，保持原始 render watermark 不变，消除 render tap 时间领先 capture 时的非因果 observation。Input Bridge 与 AppController 均保留同一 source-gate epoch 内已经 packet-bound 且 eligible 的证据，即使 send 返回时 live gate 已关闭；generation、Playback sequence / active、source-gate epoch、route / device 与 500 ms freshness 继续 fail closed。DEBUG packet trace新增 capture / last-audible / gate-last-audible 三个 monotonic 时间字段；Qwen Adapter 在 Provider-listening 状态也记录每 100 ms transport-enqueued PCM 的 byte / peak / RMS，仍不合成 `speech_started`，也不改变 Provider error contract。自动化修复不能替代 Real Qwen 同设备复测。
+
 ```text
-R8.5.3 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
+R8.5.3 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B first wired-headset attempt = FAIL / P1
-53-B first automated repair = PASS
+53-B first automated repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B second wired-headset attempt = FAIL / P1
-53-B second automated repair = PASS
+53-B second automated repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B third wired-headset attempt = FAIL / P1
-53-B third automated repair = PASS
-53-B fourth Real Qwen wired-headset retest = NOT_RUN
+53-B third automated repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B fourth wired-headset attempt = FAIL / P1
+53-B fourth automated repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B fifth Real Qwen wired-headset retest = NOT_RUN
 Human Gate PASS / FROZEN = NOT_ALLOWED_YET
 ```
 
@@ -1052,7 +1061,7 @@ R8.5.5 的 P0 / P1 / P2 preparation 标准为：
 Existing automated regression baseline = PASS
 R8.4.2 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.5.2 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
-R8.5.3 = REWORK_APPLIED / HUMAN_GATE_RETEST_REQUIRED
+R8.5.3 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 R8.5.4 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5 = PREPARED / HUMAN_GATE_WAITING
 R8.5.5-R1 initial closeout = IMPLEMENTED / REVIEW_REQUIRED
@@ -1067,9 +1076,12 @@ Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 53-B second repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B third wired-headset attempt = FAIL / P1
 53-B third repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B fourth wired-headset attempt = FAIL / P1
+53-B fourth repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B fifth wired-headset retest = NOT_RUN
 Other Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
-Next = 52-B Real Qwen retest at 1.0 / 1.3 / 1.5 seconds plus true-end latency
+Next = fifth 53-B Real Qwen wired-headset barge-in retest
 ```
 
 ### R8.5+ Terminology

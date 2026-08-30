@@ -586,6 +586,7 @@ nonisolated struct RealtimeAcousticEligibilityGateDiagnosticState:
     let lastSequence: UInt64
     let lastTimestampNanoseconds: UInt64
     let lastPlaybackSequence: UInt64
+    let lastAudibleRenderTimestampNanoseconds: UInt64
 }
 #endif
 
@@ -616,7 +617,9 @@ nonisolated struct RealtimeAcousticInterruptionEligibilityGate: Sendable {
         RealtimeAcousticEligibilityGateDiagnosticState(
             lastSequence: lastSequence,
             lastTimestampNanoseconds: lastTimestampNanoseconds,
-            lastPlaybackSequence: lastPlaybackSequence
+            lastPlaybackSequence: lastPlaybackSequence,
+            lastAudibleRenderTimestampNanoseconds:
+                lastAudibleRenderTimestampNanoseconds
         )
     }
     #endif

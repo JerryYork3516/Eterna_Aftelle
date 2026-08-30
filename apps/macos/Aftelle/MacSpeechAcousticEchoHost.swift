@@ -2070,6 +2070,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         -> MacSpeechAcousticObservationSnapshot {
         let observationFrameIndex = captureFrameIndex
             ?? self.captureFrameCount
+        let causalLastAudibleRenderHostTimeNanoseconds: UInt64?
+        if let lastAudibleRenderHostTimeNanoseconds,
+           let latestCaptureHostTimeNanoseconds {
+            causalLastAudibleRenderHostTimeNanoseconds = min(
+                lastAudibleRenderHostTimeNanoseconds,
+                latestCaptureHostTimeNanoseconds
+            )
+        } else {
+            causalLastAudibleRenderHostTimeNanoseconds =
+                lastAudibleRenderHostTimeNanoseconds
+        }
         return MacSpeechAcousticObservationSnapshot(
             captureFrameIndex: observationFrameIndex,
             captureHostTimeNanoseconds:
@@ -2077,7 +2088,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             playbackSequence: playbackSequence,
             isPlaybackActive: isPlaybackActive,
             lastAudibleRenderHostTimeNanoseconds:
-                lastAudibleRenderHostTimeNanoseconds,
+                causalLastAudibleRenderHostTimeNanoseconds,
             renderReferenceAvailable:
                 latestRenderHostTimeNanoseconds != nil,
             renderReferenceRMS: matchedRenderHostTimeNanoseconds == nil

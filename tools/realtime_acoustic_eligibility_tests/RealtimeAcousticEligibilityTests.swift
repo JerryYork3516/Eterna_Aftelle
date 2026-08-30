@@ -1003,7 +1003,7 @@ private struct RealtimeAcousticEligibilityTests {
     private static func testSourceGateEpochSendRaces() async {
         cases += 1
         await runSourceGateEpochRace(
-            label: "Case A close",
+            label: "Case A same-epoch close",
             currentSnapshot: residentSnapshot(
                 captureGeneration: 31,
                 frameIndex: 2,
@@ -1011,7 +1011,7 @@ private struct RealtimeAcousticEligibilityTests {
                 sourceGateEpoch: 1,
                 sourceGateOpen: false
             ),
-            expectedEvidenceCount: 0
+            expectedEvidenceCount: 1
         )
         await runSourceGateEpochRace(
             label: "Case B reopen",

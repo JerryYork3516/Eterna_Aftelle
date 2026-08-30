@@ -37,6 +37,7 @@ for symbol in \
   response.done \
   residentSemanticFinal \
   input_audio_buffer.append \
+  qwen_listening_input_audio_batch \
   conversation.item.create \
   response.cancel; do
   rg -q "$symbol" "$adapter"

@@ -728,13 +728,14 @@ actor QwenRealtimeResidentBrainAdapter:
             for batch in batches {
                 let hadActiveResponse = activeResponse != nil
                 try await send(codec.audioAppend(batch))
-                if hadActiveResponse, let diagnosticBuffer {
+                if let diagnosticBuffer {
                     let metrics = Self.pcmMetrics(batch)
                     diagnosticBuffer.append(
                         NativeSpeechInternalDiagnosticEvent(
                             source: .adapter,
-                            category:
-                                "qwen_active_response_input_audio_batch",
+                            category: hadActiveResponse
+                                ? "qwen_active_response_input_audio_batch"
+                                : "qwen_listening_input_audio_batch",
                             routeKind: .realtimeBrain,
                             turnGeneration: frame.identity.generation,
                             disposition: "transport_enqueued",

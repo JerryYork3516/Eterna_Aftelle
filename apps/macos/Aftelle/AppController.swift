@@ -528,11 +528,17 @@ final class AppController: ObservableObject {
                     sourceGateEpoch: $0.sourceGateEpoch,
                     sourceAssessment: $0.sourceAssessment,
                     classification: $0.classification,
+                    captureTimestampNanoseconds:
+                        $0.captureTimestampNanoseconds,
+                    lastAudibleRenderTimestampNanoseconds:
+                        $0.lastAudibleRenderTimestampNanoseconds,
                     gateLastSequence: $0.gateLastSequence,
                     gateLastTimestampNanoseconds:
                         $0.gateLastTimestampNanoseconds,
                     gateLastPlaybackSequence:
-                        $0.gateLastPlaybackSequence
+                        $0.gateLastPlaybackSequence,
+                    gateLastAudibleRenderTimestampNanoseconds:
+                        $0.gateLastAudibleRenderTimestampNanoseconds
                 )
             }
             self?.recordRealtimeSpeechDiagnostic(

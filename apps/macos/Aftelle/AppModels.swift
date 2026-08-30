@@ -858,9 +858,12 @@ struct RealtimeSpeechAcousticPacketTrace: Codable, Equatable, Sendable {
     let sourceGateEpoch: UInt64
     let sourceAssessment: String?
     let classification: String?
+    let captureTimestampNanoseconds: UInt64?
+    let lastAudibleRenderTimestampNanoseconds: UInt64?
     let gateLastSequence: UInt64?
     let gateLastTimestampNanoseconds: UInt64?
     let gateLastPlaybackSequence: UInt64?
+    let gateLastAudibleRenderTimestampNanoseconds: UInt64?
 }
 
 struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,

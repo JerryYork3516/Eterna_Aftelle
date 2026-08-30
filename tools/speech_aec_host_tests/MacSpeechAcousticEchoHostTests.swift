@@ -120,6 +120,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testFIFORemainderIsBounded()
         testRenderAlignedDelay()
         testHostTimeAlignedDelayAndDiagnostics()
+        testFutureRenderTimestampIsCaptureCausal()
         testTimingLockDoesNotJumpOnRepeatedRender()
         testTimingLockReacquiresShiftedPath()
         testSourceGateEpochDiagnosticsAreBounded()
@@ -461,6 +462,45 @@ private struct MacSpeechAcousticEchoHostTests {
                "presentation updates control only AEC buffer delay")
         expect(host.snapshot().sourceAlignmentDelayMilliseconds == 80,
                "presentation updates preserve source alignment")
+    }
+
+    private static func testFutureRenderTimestampIsCaptureCausal() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        host.processRender(
+            [Float](repeating: 0.25, count: 480),
+            hostTimeNanoseconds: 2_000_000_000
+        )
+
+        var projected: [UInt64] = []
+        for captureTimestamp in [
+            UInt64(1_000_000_000),
+            UInt64(1_500_000_000),
+            UInt64(2_500_000_000)
+        ] {
+            _ = host.processCapture(
+                [Float](repeating: 0, count: 480),
+                hostTimeNanoseconds: captureTimestamp
+            )
+            let snapshot = host.acousticObservationSnapshot()
+            guard let audible = snapshot.lastAudibleRenderHostTimeNanoseconds,
+                  let capture = snapshot.captureHostTimeNanoseconds else {
+                fatalError("FAILED: causal render fixture timestamps missing")
+            }
+            projected.append(audible)
+            expect(audible <= capture,
+                   "audible render projection never leads capture time")
+        }
+        expect(projected == [
+            1_000_000_000,
+            1_500_000_000,
+            2_000_000_000
+        ], "future render watermark is clamped monotonically at capture time")
     }
 
     private static func testTimingHistoryIsBoundedAndReset() {

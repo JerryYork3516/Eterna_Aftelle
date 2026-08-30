@@ -57,6 +57,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
         try await testHandshakeAndBootstrap()
+        try await testProviderListeningInputAudioDiagnostics()
         try await testUnsafeTurnDetectionAcknowledgementFailsClosed()
         try await testInvalidToolAdvertisementsFailClosed()
         try await testContextScopeReplacement()
@@ -247,6 +248,71 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: reopenedIdentity)
+        )
+    }
+
+    private static func testProviderListeningInputAudioDiagnostics()
+        async throws {
+        cases += 1
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
+        let identity = sessionIdentity(generation: 23)
+        try await openAndBootstrap(stack, identity: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"listening-diagnostic-turn"}"#
+        )
+        let speechStarted = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: speechStarted,
+            responseID: "listening-diagnostic-response"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"listening-diagnostic-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"done"}]}]}}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        _ = diagnostics.drain()
+        let frameBytes = pcm16(
+            Array(repeating: [700, 700, 700], count: 160).flatMap { $0 }
+        )
+        for index in 0 ..< 5 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 1) * 20_000_000),
+                format: RealtimeBrainAudioFormat(
+                    encoding: .pcm16LittleEndian,
+                    sampleRate: 24_000,
+                    channelCount: 1
+                ),
+                provenance: .acousticEchoProcessed,
+                bytes: frameBytes
+            ))
+        }
+        let events = diagnostics.drain().events
+        guard let listeningBatch = events.last(where: {
+            $0.category == "qwen_listening_input_audio_batch"
+        }) else {
+            fatalError("Provider-listening audio diagnostic missing")
+        }
+        expect(
+            listeningBatch.byteCount == 3_200
+                && listeningBatch.disposition == "transport_enqueued"
+                && listeningBatch.turnGeneration == identity.generation
+                && (listeningBatch.pcmPeak ?? 0) > 0
+                && (listeningBatch.pcmRMS ?? 0) > 0,
+            "Provider-listening diagnostics prove audible PCM enters transport"
+        )
+        expect(
+            !events.contains {
+                $0.category == "qwen_active_response_input_audio_batch"
+            },
+            "Provider-listening PCM is not mislabeled as active-response audio"
+        )
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
         )
     }
 

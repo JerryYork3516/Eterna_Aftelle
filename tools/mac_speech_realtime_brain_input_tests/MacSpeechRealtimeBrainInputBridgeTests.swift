@@ -536,7 +536,10 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         testPacketizerPreservesTenMillisecondSourceGateEvidence()
         await testBridgeUsesFrameBoundAcousticEvidence()
         await testBridgeRecordsSourceGatedPacketTerminalDiagnostics()
-        await testBridgeRearmsEligibilityAfterStaleForwardFence()
+        await testBridgeForwardsSameEpochEvidenceAfterGateClose()
+        await testBridgeRearmsEligibilityAfterEpochRolloverFence()
+        await testBridgeRejectsRouteAndDeviceChangesAfterSend()
+        await testBridgeRejectsExpiredEvidenceAfterSend()
         testControllerSourceGateEpochFence()
         await testBridgeSnapshot()
         await testAudioFrameConversion()
@@ -829,20 +832,20 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         _ = await bridge.stop()
     }
 
-    private static func testBridgeRearmsEligibilityAfterStaleForwardFence()
+    private static func testBridgeForwardsSameEpochEvidenceAfterGateClose()
         async {
         cases += 1
         let source = FakeMacSpeechAudioFrameSource()
         let provider = FakeRealtimeResidentBrainProvider()
         let sink = R81AcousticObservationSink()
         let session = RealtimeBrainSessionIdentity(
-            residentID: "rearm-resident",
-            runtimeSessionID: "rearm-session",
+            residentID: "same-epoch-close-resident",
+            runtimeSessionID: "same-epoch-close-session",
             brainLeaseID: UUID(),
             routeEpoch: 1,
             generation: 1
         )
-        let captureGeneration: UInt64 = 352
+        let captureGeneration: UInt64 = 351
         source.setActiveGeneration(captureGeneration)
         source.setResidentSnapshot(residentSnapshot(
             generation: captureGeneration,
@@ -855,7 +858,8 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             generation: captureGeneration,
             frameIndex: 2,
             classification: .echoOnly,
-            sourceGateOpen: false
+            sourceGateOpen: false,
+            sourceGateEpoch: 1
         )
         let bridge = MacSpeechRealtimeBrainInputBridge(
             source: source,
@@ -891,6 +895,84 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
                 sourceGateEpoch: 1
             )
         )
+        await waitUntil(label: "same-epoch closed-gate evidence") {
+            await sink.values().count == 1
+        }
+        let snapshot = await bridge.currentSnapshot()
+        expect(snapshot.acousticEligibilityCandidateCount == 1,
+               "same-epoch close preserves the packet-bound candidate")
+        expect(snapshot.acousticEvidenceCount == 1,
+               "same-epoch close forwards exactly one acoustic fact")
+        expect(snapshot.acousticEvidenceStaleFenceCount == 0,
+               "same-epoch close is not a stale-fence transition")
+        expect(snapshot.acousticEligibilityRearmedCount == 0,
+               "delivered same-epoch evidence is never rearmed")
+        _ = await bridge.stop()
+    }
+
+    private static func testBridgeRearmsEligibilityAfterEpochRolloverFence()
+        async {
+        cases += 1
+        let source = FakeMacSpeechAudioFrameSource()
+        let provider = FakeRealtimeResidentBrainProvider()
+        let sink = R81AcousticObservationSink()
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "rearm-resident",
+            runtimeSessionID: "rearm-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 352
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(residentSnapshot(
+            generation: captureGeneration,
+            frameIndex: 1,
+            classification: .nearEndSpeech,
+            sourceGateOpen: true,
+            sourceGateEpoch: 1
+        ))
+        let rolledSnapshot = residentSnapshot(
+            generation: captureGeneration,
+            frameIndex: 2,
+            classification: .nearEndSpeech,
+            sourceGateOpen: true,
+            sourceGateEpoch: 2
+        )
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrameWithActivity: { frame, _ in
+                do {
+                    try await provider.appendAudio(frame)
+                    if frame.sequence == 1 {
+                        source.setResidentSnapshot(rolledSnapshot)
+                    }
+                    return .success(())
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.providerFailure)
+                }
+            },
+            stopInput: { _ in .success(()) },
+            consumeAcousticObservation: { observation in
+                await sink.consume(observation)
+            }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        source.appendSourceGatedFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration,
+            acousticSnapshot: acousticSnapshot(
+                frameIndex: 1,
+                classification: .nearEndSpeech,
+                sourceGateOpen: true,
+                sourceGateEpoch: 1
+            )
+        )
         await waitUntil(label: "stale acoustic evidence rearm") {
             let snapshot = await bridge.currentSnapshot()
             return snapshot.acousticEligibilityRearmedCount == 1
@@ -898,7 +980,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         }
         expect(
             await sink.values().isEmpty,
-            "stale post-send source gate cannot deliver acoustic evidence"
+            "a new source-gate epoch cannot accept old packet evidence"
         )
 
         source.setResidentSnapshot(residentSnapshot(
@@ -934,6 +1016,179 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             "forward diagnostics preserve the successful fresh candidate"
         )
         _ = await bridge.stop()
+    }
+
+    private static func testBridgeRejectsExpiredEvidenceAfterSend()
+        async {
+        cases += 1
+        let source = FakeMacSpeechAudioFrameSource()
+        let provider = FakeRealtimeResidentBrainProvider()
+        let sink = R81AcousticObservationSink()
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "expired-evidence-resident",
+            runtimeSessionID: "expired-evidence-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 354
+        let capturedSnapshot = acousticSnapshot(
+            frameIndex: 1,
+            classification: .nearEndSpeech,
+            sourceGateOpen: true,
+            sourceGateEpoch: 1
+        )
+        let captureTimestamp = capturedSnapshot.captureHostTimeNanoseconds!
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(residentSnapshot(
+            generation: captureGeneration,
+            frameIndex: 1,
+            classification: .nearEndSpeech,
+            sourceGateOpen: true,
+            sourceGateEpoch: 1
+        ))
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrameWithActivity: { frame, _ in
+                do {
+                    try await provider.appendAudio(frame)
+                    return .success(())
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.providerFailure)
+                }
+            },
+            stopInput: { _ in .success(()) },
+            consumeAcousticObservation: { observation in
+                await sink.consume(observation)
+            },
+            monotonicNow: {
+                captureTimestamp
+                    + RealtimeAcousticInterruptionEligibilityGate
+                        .observationFreshnessNanoseconds
+                    + 1
+            }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        source.appendSourceGatedFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration,
+            acousticSnapshot: capturedSnapshot
+        )
+        await waitUntil(label: "expired acoustic evidence fence") {
+            let snapshot = await bridge.currentSnapshot()
+            return snapshot.acousticEligibilityRearmedCount == 1
+                && snapshot.acousticEvidenceStaleFenceCount == 1
+        }
+        let snapshot = await bridge.currentSnapshot()
+        expect(await sink.values().isEmpty,
+               "expired packet evidence never reaches Runtime")
+        expect(
+            snapshot.acousticEvidenceForwardDispositionCounts[
+                "stale_observation_expired"
+            ] == 1,
+            "the 500 ms freshness fence records its exact reason"
+        )
+        expect(snapshot.acousticEvidenceCount == 0,
+               "expired evidence cannot increment the delivered count")
+        _ = await bridge.stop()
+    }
+
+    private static func testBridgeRejectsRouteAndDeviceChangesAfterSend()
+        async {
+        cases += 1
+        let scenarios: [(
+            label: String,
+            disposition: String,
+            routeStable: Bool,
+            inputDeviceAvailable: Bool,
+            outputDeviceAvailable: Bool
+        )] = [
+            ("route", "stale_route_unstable", false, true, true),
+            ("input", "stale_input_device_unavailable", true, false, true),
+            ("output", "stale_output_device_unavailable", true, true, false)
+        ]
+        for (offset, scenario) in scenarios.enumerated() {
+            let source = FakeMacSpeechAudioFrameSource()
+            let provider = FakeRealtimeResidentBrainProvider()
+            let sink = R81AcousticObservationSink()
+            let session = RealtimeBrainSessionIdentity(
+                residentID: "\(scenario.label)-fence-resident",
+                runtimeSessionID: "\(scenario.label)-fence-session",
+                brainLeaseID: UUID(),
+                routeEpoch: 1,
+                generation: 1
+            )
+            let captureGeneration = UInt64(355 + offset)
+            source.setActiveGeneration(captureGeneration)
+            source.setResidentSnapshot(residentSnapshot(
+                generation: captureGeneration,
+                frameIndex: 1,
+                classification: .nearEndSpeech,
+                sourceGateOpen: true,
+                sourceGateEpoch: 1
+            ))
+            let invalidSnapshot = residentSnapshot(
+                generation: captureGeneration,
+                frameIndex: 2,
+                classification: .nearEndSpeech,
+                sourceGateOpen: true,
+                sourceGateEpoch: 1,
+                routeStable: scenario.routeStable,
+                inputDeviceAvailable: scenario.inputDeviceAvailable,
+                outputDeviceAvailable: scenario.outputDeviceAvailable
+            )
+            let bridge = MacSpeechRealtimeBrainInputBridge(
+                source: source,
+                sendFrameWithActivity: { frame, _ in
+                    do {
+                        try await provider.appendAudio(frame)
+                        source.setResidentSnapshot(invalidSnapshot)
+                        return .success(())
+                    } catch let error as RealtimeResidentBrainError {
+                        return .failure(error)
+                    } catch {
+                        return .failure(.providerFailure)
+                    }
+                },
+                stopInput: { _ in .success(()) },
+                consumeAcousticObservation: { observation in
+                    await sink.consume(observation)
+                }
+            )
+            _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+                session: session,
+                captureGeneration: captureGeneration
+            ))
+            source.appendSourceGatedFrame(
+                pcm16Bytes: Data(repeating: 1, count: 960),
+                generation: captureGeneration,
+                acousticSnapshot: acousticSnapshot(
+                    frameIndex: 1,
+                    classification: .nearEndSpeech,
+                    sourceGateOpen: true,
+                    sourceGateEpoch: 1
+                )
+            )
+            await waitUntil(label: "\(scenario.label) live fence") {
+                await bridge.currentSnapshot()
+                    .acousticEvidenceStaleFenceCount == 1
+            }
+            let snapshot = await bridge.currentSnapshot()
+            expect(await sink.values().isEmpty,
+                   "\(scenario.label) transition rejects pending evidence")
+            expect(
+                snapshot.acousticEvidenceForwardDispositionCounts[
+                    scenario.disposition
+                ] == 1,
+                "\(scenario.label) transition records its exact fence"
+            )
+            _ = await bridge.stop()
+        }
     }
 
     private static func testBridgeForwardsEvidenceWithNonFiniteAECMetrics()
@@ -1197,9 +1452,21 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
                    && evaluated.packetTrace?.classification
                         == "near_end_candidate",
                "evaluated packet records source and high-level classifications")
+        expect(
+            evaluated.packetTrace?.captureTimestampNanoseconds
+                == evaluated.packetTrace?.observationTimestampNanoseconds,
+            "evaluated packet records the exact capture timestamp"
+        )
+        expect(
+            (evaluated.packetTrace?.lastAudibleRenderTimestampNanoseconds ?? 1)
+                <= (evaluated.packetTrace?.captureTimestampNanoseconds ?? 0),
+            "evaluated packet exposes causal last-audible evidence"
+        )
         expect(evaluated.packetTrace?.gateLastSequence == 0
                    && evaluated.packetTrace?.gateLastTimestampNanoseconds == 0
-                   && evaluated.packetTrace?.gateLastPlaybackSequence == 0,
+                   && evaluated.packetTrace?.gateLastPlaybackSequence == 0
+                   && evaluated.packetTrace?
+                        .gateLastAudibleRenderTimestampNanoseconds == 0,
                "evaluated packet records the authoritative gate pre-state")
 
         let guarded = traces[1]
@@ -1262,7 +1529,10 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         classification: MacSpeechAcousticInputClassification,
         sourceGateOpen: Bool,
         sourceGateEpoch: UInt64? = nil,
-        erleDecibels: Double = 10
+        erleDecibels: Double = 10,
+        routeStable: Bool = true,
+        inputDeviceAvailable: Bool = true,
+        outputDeviceAvailable: Bool = true
     ) -> MacSpeechResidentAcousticSnapshot {
         let acoustic = acousticSnapshot(
             frameIndex: frameIndex,
@@ -1311,9 +1581,9 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             renderCaptureSkewFrames:
                 acoustic.renderCaptureSkewFrames,
             driftTrend: acoustic.driftTrend,
-            routeStable: true,
-            inputDeviceAvailable: true,
-            outputDeviceAvailable: true
+            routeStable: routeStable,
+            inputDeviceAvailable: inputDeviceAvailable,
+            outputDeviceAvailable: outputDeviceAvailable
         )
     }
 
@@ -1345,7 +1615,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             linearRenderCorrelation: 0.1,
             inputClassification: classification,
             sourceGateOpen: sourceGateOpen,
-            sourceGateEpoch: sourceGateOpen ? sourceGateEpoch ?? 1 : 0,
+            sourceGateEpoch: sourceGateEpoch ?? (sourceGateOpen ? 1 : 0),
             aecEnabled: true,
             aecActive: true,
             renderCaptureIsolationEstablished: false,
@@ -1392,11 +1662,11 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             )
         )
         expect(
-            !observation.matchesCurrentPlayback(controllerFenceSnapshot(
+            observation.matchesCurrentPlayback(controllerFenceSnapshot(
                 sourceGateOpen: false,
                 sourceGateEpoch: 9
             )),
-            "Case A Controller rejects evidence after source gate closes"
+            "Case A Controller accepts captured evidence after same-epoch close"
         )
         expect(
             !observation.matchesCurrentPlayback(controllerFenceSnapshot(
@@ -1411,6 +1681,30 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
                 sourceGateEpoch: 9
             )),
             "Case C Controller accepts evidence in the same open epoch"
+        )
+        expect(
+            !observation.matchesCurrentPlayback(controllerFenceSnapshot(
+                sourceGateOpen: true,
+                sourceGateEpoch: 9,
+                routeStable: false
+            )),
+            "Case D Controller rejects evidence after route instability"
+        )
+        expect(
+            !observation.matchesCurrentPlayback(controllerFenceSnapshot(
+                sourceGateOpen: true,
+                sourceGateEpoch: 9,
+                inputDeviceAvailable: false
+            )),
+            "Case E Controller rejects evidence after input loss"
+        )
+        expect(
+            !observation.matchesCurrentPlayback(controllerFenceSnapshot(
+                sourceGateOpen: true,
+                sourceGateEpoch: 9,
+                outputDeviceAvailable: false
+            )),
+            "Case F Controller rejects evidence after output loss"
         )
     }
 
@@ -1453,7 +1747,10 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
 
     private static func controllerFenceSnapshot(
         sourceGateOpen: Bool,
-        sourceGateEpoch: UInt64
+        sourceGateEpoch: UInt64,
+        routeStable: Bool = true,
+        inputDeviceAvailable: Bool = true,
+        outputDeviceAvailable: Bool = true
     ) -> MacSpeechResidentAcousticSnapshot {
         let captureTimestamp = DispatchTime.now().uptimeNanoseconds
         return MacSpeechResidentAcousticSnapshot(
@@ -1486,9 +1783,9 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             erleDecibels: 10,
             renderCaptureSkewFrames: 0,
             driftTrend: "stable",
-            routeStable: true,
-            inputDeviceAvailable: true,
-            outputDeviceAvailable: true
+            routeStable: routeStable,
+            inputDeviceAvailable: inputDeviceAvailable,
+            outputDeviceAvailable: outputDeviceAvailable
         )
     }
 
