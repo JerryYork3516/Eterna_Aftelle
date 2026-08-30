@@ -473,6 +473,20 @@ private struct RealtimeAcousticObservationTests {
         expect(classify(value, timestamp: timestamp) == .nearEndCandidate,
                "explicit render isolation replaces unavailable timing lock")
 
+        let sourceGated = metrics(
+            timestamp: timestamp,
+            renderRMS: 0.18,
+            rawRMS: 0.27,
+            outputRMS: 0.21,
+            rawCorrelation: 0.33,
+            erle: 0,
+            source: .doubleTalk,
+            sourceAlignmentLocked: false
+        )
+        expect(classify(sourceGated, timestamp: timestamp)
+                   == .nearEndCandidate,
+               "production double-talk gate replaces a persistent timing lock")
+
         let unproven = metrics(
             timestamp: timestamp,
             renderRMS: 0.18,
@@ -481,10 +495,12 @@ private struct RealtimeAcousticObservationTests {
             rawCorrelation: 0.33,
             erle: 0,
             source: .nearEndSpeech,
+            sourceGateOpen: false,
+            sourceGateEpoch: 0,
             sourceAlignmentLocked: false
         )
         expect(classify(unproven, timestamp: timestamp) == .indeterminate,
-               "missing alignment and isolation still fail closed")
+               "missing alignment, isolation, and source gate still fails closed")
     }
 
     private static func testIndeterminateClassification() {
@@ -1375,6 +1391,8 @@ private struct RealtimeAcousticObservationTests {
         routeStable: Bool = true,
         outputDeviceAvailable: Bool = true,
         renderCaptureIsolationEstablished: Bool = false,
+        sourceGateOpen: Bool? = nil,
+        sourceGateEpoch: UInt64 = 1,
         sourceAlignmentLocked: Bool? = nil
     ) -> RealtimeAcousticMetrics {
         let measured = max(0, measuredDelayMilliseconds)
@@ -1403,9 +1421,9 @@ private struct RealtimeAcousticObservationTests {
             renderCaptureSkewFrames: 0,
             driftState: .stable,
             sourceAssessment: source,
-            sourceGateOpen: source == .nearEndSpeech
-                || source == .doubleTalk,
-            sourceGateEpoch: 1,
+            sourceGateOpen: sourceGateOpen
+                ?? (source == .nearEndSpeech || source == .doubleTalk),
+            sourceGateEpoch: sourceGateEpoch,
             aecActive: aecActive,
             renderCaptureIsolationEstablished:
                 renderCaptureIsolationEstablished,

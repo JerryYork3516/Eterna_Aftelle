@@ -5241,6 +5241,9 @@ public final class RuntimeCore {
         let sourceAssessment = observation.metrics.sourceAssessment
         let hasNearEndAssessment = sourceAssessment == .nearEndSpeech
             || sourceAssessment == .doubleTalk
+        let sourceGateSeparatesNearEnd = observation.metrics.sourceGateOpen
+            && observation.metrics.sourceGateEpoch > 0
+            && sourceAssessment == .doubleTalk
         guard case .acousticHost(let facts) = evidence.source,
               observationIdentity.session == evidence.identity.session,
               observationIdentity.sequence == evidence.identity.sequence,
@@ -5261,7 +5264,8 @@ public final class RuntimeCore {
               facts.renderReferenceConfidence
                 == ((observation.metrics.sourceAlignmentLocked
                     || observation.metrics
-                        .renderCaptureIsolationEstablished) ? 1 : 0),
+                        .renderCaptureIsolationEstablished
+                    || sourceGateSeparatesNearEnd) ? 1 : 0),
               facts.routeStable == observation.metrics.routeStable,
               facts.inputDeviceAvailable
                 == observation.metrics.inputDeviceAvailable,

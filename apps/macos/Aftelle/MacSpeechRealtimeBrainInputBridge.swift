@@ -896,6 +896,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         lastAcousticEvidenceForwardDisposition = "forwarded"
         #endif
         let metrics = observation.metrics
+        let sourceGateSeparatesNearEnd = metrics.sourceGateOpen
+            && metrics.sourceGateEpoch > 0
+            && metrics.sourceAssessment == .doubleTalk
         acousticEvidenceCount &+= 1
         await consumeAcousticObservation(
             MacSpeechRealtimeBrainAcousticObservation(
@@ -908,7 +911,8 @@ actor MacSpeechRealtimeBrainInputBridge {
                     sourceGateOpen: metrics.sourceGateOpen,
                     renderReferenceConfidence:
                         (metrics.sourceAlignmentLocked
-                            || metrics.renderCaptureIsolationEstablished)
+                            || metrics.renderCaptureIsolationEstablished
+                            || sourceGateSeparatesNearEnd)
                             ? 1 : 0,
                     routeStable: metrics.routeStable,
                     inputDeviceAvailable: metrics.inputDeviceAvailable,

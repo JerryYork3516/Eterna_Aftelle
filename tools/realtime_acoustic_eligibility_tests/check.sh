@@ -38,7 +38,7 @@ CFFIXED_USER_HOME="$runtime_home" \
   | tee "$output"
 
 rg -qx 'realtime_acoustic_eligibility_cases=9' "$output"
-rg -qx 'realtime_acoustic_eligibility_checks=76' "$output"
+rg -qx 'realtime_acoustic_eligibility_checks=84' "$output"
 rg -qx 'r822_resident_stress_observations=320' "$output"
 rg -qx 'r822_resident_stress_eligible_acoustic_evidence=0' "$output"
 rg -qx 'r822_resident_stress_confirmed_interruptions=0' "$output"

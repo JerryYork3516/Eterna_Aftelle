@@ -858,7 +858,31 @@ private struct MacSpeechAcousticEchoHostTests {
                        == 33,
                "external-output user audio reaches a 330 ms run")
 
+        backend.setLinearOutput([Float](repeating: 0, count: 160))
+        for _ in 0 ..< 30 {
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            let continued = host.processCapture(
+                rawDoubleTalk,
+                hostTimeNanoseconds: renderTime + 146_000_000
+            )
+            expect(continued.count == 480 && !isSilence(continued),
+                   "one surviving AEC near-end path keeps the open user epoch")
+            renderTime += 10_000_000
+        }
+        snapshot = host.snapshot()
+        expect(snapshot.inputClassification == .echoOnly
+                   && snapshot.sourceGateOpen,
+               "adaptive continuation does not relabel weak evidence")
+        expect(snapshot.adaptiveEvidenceCandidateFrameCount == 63
+                   && snapshot.adaptiveDoubleTalkFrameCount == 33,
+               "continuation reuses adaptive evidence without false double-talk")
+        expect(snapshot.maximumSourceGateOpenFrameCount == 63
+                   && snapshot.maximumContinuousSourceForwardedFrameCount
+                       == 63,
+               "confirmed user PCM remains continuous for 630 ms")
+
         backend.setCaptureOutput(residualEcho)
+        backend.setLinearOutput(linearOutput(residualEcho))
         for index in 0 ..< 20 {
             host.processRender(render, hostTimeNanoseconds: renderTime)
             let tail = host.processCapture(

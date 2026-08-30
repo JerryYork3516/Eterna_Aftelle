@@ -307,6 +307,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var residualEchoBaselineFreezeCount: UInt64 = 0
     private var adaptiveEvidenceCandidateFrameCount: UInt64 = 0
     private var adaptiveDoubleTalkFrameCount: UInt64 = 0
+    private var adaptiveNearEndContinuationCandidate = false
     private var maximumAdaptiveRawExcessRMS = 0.0
     private var maximumAdaptiveResidualExcessRMS = 0.0
     private var maximumAdaptiveLinearExcessRMS = 0.0
@@ -993,6 +994,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         _ processedFrame: [Float],
         timingMatch: TimingMatch?
     ) -> MacSpeechAcousticInputClassification {
+        adaptiveNearEndContinuationCandidate = false
         guard let timingMatch else { return .uncertain }
         let cleanRMS = signalRMS(processedFrame)
         let residualCorrelation = normalizedCorrelation(
@@ -1188,6 +1190,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             * Self.minimumNearEndRMS
         let hasCandidate = rawExcessPower >= minimumNearEndPower
             && max(excessPower, linearExcessPower) >= minimumNearEndPower
+        adaptiveNearEndContinuationCandidate = hasCandidate
         adaptiveEvidenceCandidateFrameCount &+= 1
         if hasCandidate {
             freezeResidualEchoBaseline()
@@ -1272,17 +1275,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             sourceGateNonUserHangoverFrameCount = 0
             recordForwardedSourceFrames(1)
             return processedFrame
-        case .uncertain:
-            sourceGateNonUserHangoverFrameCount += 1
-            if sourceGateNonUserHangoverFrameCount
-                >= Self.maximumSourceGateNonUserHangoverFrames {
-                return suppressCaptureFrameAndCloseGate(
-                    reason: .nonUserHangover
-                )
+        case .uncertain, .echoOnly:
+            if adaptiveNearEndContinuationCandidate {
+                sourceGateNonUserHangoverFrameCount = 0
+                recordForwardedSourceFrames(1)
+                return processedFrame
             }
-            recordForwardedSourceFrames(1)
-            return processedFrame
-        case .echoOnly:
             sourceGateNonUserHangoverFrameCount += 1
             if sourceGateNonUserHangoverFrameCount
                 >= Self.maximumSourceGateNonUserHangoverFrames {

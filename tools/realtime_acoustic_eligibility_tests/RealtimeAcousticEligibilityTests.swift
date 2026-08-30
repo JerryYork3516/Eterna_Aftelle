@@ -456,6 +456,55 @@ private struct RealtimeAcousticEligibilityTests {
                        "production 3x10 ms source gate unlocks one candidate")
             }
         }
+
+        let jitterBackend = R822AECBackend()
+        let jitterHost = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: jitterBackend
+        )
+        expect(jitterHost.configure() == .webRTCAEC3,
+               "production AEC Host configures for timing-jitter evidence")
+        jitterHost.playbackStarted()
+        jitterBackend.setCaptureOutput(nearEnd)
+        var jitterGate = RealtimeAcousticInterruptionEligibilityGate(
+            session: session,
+            captureGeneration: 2
+        )
+        let jitterDelays = [60, 90, 120]
+        for (index, delay) in jitterDelays.enumerated() {
+            let captureTimestamp = baseTimestamp
+                + 100_000_000 + UInt64(index * 150_000_000)
+            jitterHost.processRender(
+                render,
+                hostTimeNanoseconds: captureTimestamp
+                    - UInt64(delay) * 1_000_000
+            )
+            _ = jitterHost.processCapture(
+                render,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            let snapshot = jitterHost.acousticObservationSnapshot()
+            let value = observation(
+                session: session,
+                captureGeneration: 2,
+                sequence: UInt64(index + 1),
+                timestamp: captureTimestamp,
+                acousticSnapshot: snapshot
+            )
+            let disposition = jitterGate.evaluate(
+                value,
+                receivedAtNanoseconds: receivedAt + 500_000_000
+            )
+            expect(!snapshot.sourceAlignmentLocked,
+                   "jitter fixture does not establish a persistent timing lock")
+            if index < 2 {
+                expect(!snapshot.sourceGateOpen && disposition != .eligible,
+                       "jitter still requires three production source frames")
+            } else {
+                expect(snapshot.sourceGateOpen && disposition == .eligible,
+                       "source-gate proof survives timing-lock jitter")
+            }
+        }
     }
 
     private static func testResidentOnlyStress(
@@ -565,7 +614,9 @@ private struct RealtimeAcousticEligibilityTests {
             captureGeneration: 1,
             sequence: 1,
             timestamp: now - 10_000_000,
-            classification: .nearEndCandidate
+            classification: .nearEndCandidate,
+            sourceAssessment: .doubleTalk,
+            sourceAlignmentLocked: false
         )
         var gate = RealtimeAcousticInterruptionEligibilityGate(
             session: stack.target.session,
@@ -584,7 +635,7 @@ private struct RealtimeAcousticEligibilityTests {
                 )
             )
         expectDecision(decision, equals: .observed,
-                       "near-end evidence alone stays observer-only")
+                       "source-gated near-end without timing lock stays observer-only")
         expect(
             stack.runtime.observeRealtimeResidentBrainAcoustics(value)
                 == .ignored(.duplicateObservation),
@@ -931,9 +982,13 @@ private struct RealtimeAcousticEligibilityTests {
                 frameIndex: 2,
                 playbackSequence: 1,
                 sourceGateEpoch: 1,
-                sourceGateOpen: true
+                sourceGateOpen: true,
+                sourceClassification: .doubleTalk,
+                sourceAlignmentLocked: false
             ),
-            expectedEvidenceCount: 1
+            expectedEvidenceCount: 1,
+            sourceClassification: .doubleTalk,
+            sourceAlignmentLocked: false
         )
         await runRejectedSendEpochCase(error: .invalidIdentity)
         await runRejectedSendEpochCase(error: .cancelled)
@@ -942,7 +997,10 @@ private struct RealtimeAcousticEligibilityTests {
     private static func runSourceGateEpochRace(
         label: String,
         currentSnapshot: MacSpeechResidentAcousticSnapshot,
-        expectedEvidenceCount: Int
+        expectedEvidenceCount: Int,
+        sourceClassification: MacSpeechAcousticInputClassification =
+            .nearEndSpeech,
+        sourceAlignmentLocked: Bool = true
     ) async {
         let generation: UInt64 = 31
         let session = sessionIdentity(seed: label, generation: 1)
@@ -955,7 +1013,9 @@ private struct RealtimeAcousticEligibilityTests {
             frameIndex: 1,
             playbackSequence: 1,
             sourceGateEpoch: 1,
-            sourceGateOpen: true
+            sourceGateOpen: true,
+            sourceClassification: sourceClassification,
+            sourceAlignmentLocked: sourceAlignmentLocked
         ))
         let bridge = MacSpeechRealtimeBrainInputBridge(
             source: source,
@@ -979,10 +1039,15 @@ private struct RealtimeAcousticEligibilityTests {
         await barrier.release()
         await waitUntil("\(label) send returned") { await barrier.hasReturned() }
         try? await Task.sleep(for: .milliseconds(20))
+        let recordedEvidence = await recorder.snapshot()
         expect(
-            await recorder.snapshot().count == expectedEvidenceCount,
+            recordedEvidence.count == expectedEvidenceCount,
             "\(label) fences the exact source-gate epoch"
         )
+        if expectedEvidenceCount == 1 {
+            expect(recordedEvidence[0].facts.renderReferenceConfidence == 1,
+                   "source-gate proof carries render-reference confidence")
+        }
         _ = await bridge.stop(expectedSession: session)
     }
 
@@ -1262,6 +1327,10 @@ private struct RealtimeAcousticEligibilityTests {
         target: R822Target
     ) -> RealtimeInterruptionEvidence {
         let metrics = observation.metrics
+        let sourceAssessment = metrics.sourceAssessment
+        let sourceGateSeparatesNearEnd = metrics.sourceGateOpen
+            && metrics.sourceGateEpoch > 0
+            && sourceAssessment == .doubleTalk
         return RealtimeInterruptionEvidence(
             identity: RealtimeInterruptionEvidenceIdentity(
                 session: target.session,
@@ -1279,7 +1348,9 @@ private struct RealtimeAcousticEligibilityTests {
                 farEndActive: metrics.residentPlaybackActive,
                 sourceGateOpen: metrics.sourceGateOpen,
                 renderReferenceConfidence:
-                    metrics.sourceAlignmentLocked ? 1 : 0,
+                    (metrics.sourceAlignmentLocked
+                        || metrics.renderCaptureIsolationEstablished
+                        || sourceGateSeparatesNearEnd) ? 1 : 0,
                 routeStable: metrics.routeStable,
                 inputDeviceAvailable: metrics.inputDeviceAvailable,
                 outputDeviceAvailable: metrics.outputDeviceAvailable
@@ -1300,7 +1371,9 @@ private struct RealtimeAcousticEligibilityTests {
         routeStable: Bool = true,
         measuredDelayMilliseconds: Int = 80,
         alignedDelayMilliseconds: Int = 80,
-        captureTimestampAvailable: Bool = true
+        captureTimestampAvailable: Bool = true,
+        sourceAssessment: RealtimeAcousticSourceAssessment? = nil,
+        sourceAlignmentLocked: Bool? = nil
     ) -> RealtimeAcousticObservation {
         let renderTimestamp = timestamp
             - UInt64(max(0, measuredDelayMilliseconds)) * 1_000_000
@@ -1384,13 +1457,14 @@ private struct RealtimeAcousticEligibilityTests {
             erleDecibels: erle,
             renderCaptureSkewFrames: 0,
             driftState: .stable,
-            sourceAssessment: source,
+            sourceAssessment: sourceAssessment ?? source,
             sourceGateOpen: sourceGateOpen
                 ?? (fixture == .nearEndCandidate),
             sourceGateEpoch: 1,
             aecActive: true,
             renderCaptureIsolationEstablished: false,
-            sourceAlignmentLocked: renderReferenceAvailable,
+            sourceAlignmentLocked:
+                sourceAlignmentLocked ?? renderReferenceAvailable,
             routeStable: routeStable,
             inputDeviceAvailable: true,
             outputDeviceAvailable: true
@@ -1503,7 +1577,10 @@ private struct RealtimeAcousticEligibilityTests {
         frameIndex: UInt64,
         playbackSequence: UInt64,
         sourceGateEpoch: UInt64,
-        sourceGateOpen: Bool
+        sourceGateOpen: Bool,
+        sourceClassification: MacSpeechAcousticInputClassification =
+            .nearEndSpeech,
+        sourceAlignmentLocked: Bool = true
     ) -> MacSpeechResidentAcousticSnapshot {
         let captureTimestamp = monotonicNow() - 5_000_000
         let renderTimestamp = captureTimestamp - 80_000_000
@@ -1523,13 +1600,14 @@ private struct RealtimeAcousticEligibilityTests {
             renderCaptureCorrelation: sourceGateOpen ? 0.1 : 0.8,
             residualRenderCorrelation: 0.1,
             linearRenderCorrelation: 0.1,
-            inputClassification: sourceGateOpen ? .nearEndSpeech : .echoOnly,
+            inputClassification: sourceGateOpen
+                ? sourceClassification : .echoOnly,
             sourceGateOpen: sourceGateOpen,
             sourceGateEpoch: sourceGateEpoch,
             aecEnabled: true,
             aecActive: true,
             renderCaptureIsolationEstablished: false,
-            sourceAlignmentLocked: true,
+            sourceAlignmentLocked: sourceAlignmentLocked,
             sourceAlignmentDelayMilliseconds: 80,
             estimatedDelayMilliseconds: 80,
             erlDecibels: 12,

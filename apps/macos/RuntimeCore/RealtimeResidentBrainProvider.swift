@@ -479,8 +479,12 @@ nonisolated enum RealtimeAcousticClassifier {
                 ? .silenceOrNoise : .nearEndCandidate
         }
 
+        let sourceGateSeparatesNearEnd = metrics.sourceGateOpen
+            && metrics.sourceGateEpoch > 0
+            && metrics.sourceAssessment == .doubleTalk
         let sourceSeparationEstablished =
             metrics.renderCaptureIsolationEstablished
+            || sourceGateSeparatesNearEnd
             || (metrics.sourceAlignmentLocked
                 && timingIsAligned(
                     metrics: metrics,
