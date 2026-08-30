@@ -35,19 +35,28 @@ nonisolated enum MacSpeechAudioActivityEvidenceKind:
               after.isPlaybackActive == before.isPlaybackActive,
               after.aecEnabled,
               after.aecActive else { return .none }
-        if after.isPlaybackActive {
-            return after.sourceGateOpen
-                    && after.sourceGateEpoch > 0
-                    && (after.inputClassification == .nearEndSpeech
-                        || after.inputClassification == .doubleTalk)
+        return classify(observation: after)
+    }
+
+    static func classify(
+        observation: MacSpeechAcousticObservationSnapshot
+    ) -> Self {
+        guard observation.captureFrameIndex > 0,
+              observation.aecEnabled,
+              observation.aecActive else { return .none }
+        if observation.isPlaybackActive {
+            return observation.sourceGateOpen
+                    && observation.sourceGateEpoch > 0
+                    && (observation.inputClassification == .nearEndSpeech
+                        || observation.inputClassification == .doubleTalk)
                 ? .sourceGatedNearEnd : .none
         }
         let outputRMS = max(
-            after.processedCaptureRMS,
-            after.linearAECOutputRMS
+            observation.processedCaptureRMS,
+            observation.linearAECOutputRMS
         )
-        return after.inputClassification == .nearEndSpeech
-                && max(after.rawCaptureRMS, outputRMS)
+        return observation.inputClassification == .nearEndSpeech
+                && max(observation.rawCaptureRMS, outputRMS)
                     >= MacSpeechAcousticEchoHost.minimumNearEndRMS
             ? .listeningNearEnd : .none
     }
@@ -542,6 +551,26 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
                 acousticSnapshot: acousticSnapshot
             )
         }
+    }
+
+    func convert(
+        captureSpans: [MacSpeechAcousticCaptureSpan]
+    ) throws -> [MacSpeechPCM16Packet] {
+        var packets: [MacSpeechPCM16Packet] = []
+        for span in captureSpans where !span.samples.isEmpty {
+            let buffer = try MacSpeechFloatMono48kConverter.makeBuffer(
+                samples: span.samples
+            )
+            packets.append(contentsOf: try convert(
+                buffer,
+                activityEvidenceKind:
+                    MacSpeechAudioActivityEvidenceKind.classify(
+                        observation: span.observation
+                    ),
+                acousticSnapshot: span.observation
+            ))
+        }
+        return packets
     }
 
     func resetForGenerationTransition() {
@@ -1064,25 +1093,14 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
               let inputSamples = try? inputConverter.convert(buffer) else {
             return
         }
-        let acousticBefore = acousticEchoHost.acousticObservationSnapshot()
-        let cleanedSamples = acousticEchoHost.processCapture(
+        let captureSpans = acousticEchoHost.processCaptureSpans(
             inputSamples,
             hostTimeNanoseconds: hostTimeNanoseconds
         )
         let acoustic = acousticEchoHost.acousticObservationSnapshot()
-        let activityEvidenceKind =
-            MacSpeechAudioActivityEvidenceKind.classify(
-                before: acousticBefore,
-                after: acoustic
-            )
-        if !cleanedSamples.isEmpty,
-           let cleanedBuffer = try? MacSpeechFloatMono48kConverter.makeBuffer(
-            samples: cleanedSamples
-           ),
+        if !captureSpans.isEmpty,
            let packets = try? outputConverter.convert(
-               cleanedBuffer,
-               activityEvidenceKind: activityEvidenceKind,
-               acousticSnapshot: acoustic
+               captureSpans: captureSpans
            ) {
             for packet in packets {
                 let packetAcoustic = packet.acousticSnapshot

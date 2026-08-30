@@ -13,6 +13,7 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
     private var erlDecibels = 12.0
     private var erleDecibels = 24.0
     private var captureOutput: [Float]?
+    private var captureOutputQueue: [[Float]] = []
     private var linearOutput: [Float]?
 
     func configure() throws {
@@ -36,7 +37,9 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
         }
         return lock.withLock {
             operations.append("capture")
-            let processed = captureOutput ?? samples.map { $0 * 0.5 }
+            let processed = captureOutputQueue.isEmpty
+                ? captureOutput ?? samples.map { $0 * 0.5 }
+                : captureOutputQueue.removeFirst()
             return MacSpeechAECCaptureResult(
                 processedSamples: processed,
                 linearOutputSamples:
@@ -83,6 +86,10 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
         lock.withLock { captureOutput = samples }
     }
 
+    func setCaptureOutputQueue(_ frames: [[Float]]) {
+        lock.withLock { captureOutputQueue = frames }
+    }
+
     func setLinearOutput(_ samples: [Float]?) {
         lock.withLock { linearOutput = samples }
     }
@@ -109,6 +116,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testConfigureAndSerializedFraming()
         testArbitraryRenderCallbackFraming()
         testArbitraryCaptureCallbackFraming()
+        testMultiFrameCaptureCallbackPreservesGateEvidence()
         testFIFORemainderIsBounded()
         testRenderAlignedDelay()
         testHostTimeAlignedDelayAndDiagnostics()
@@ -207,6 +215,135 @@ private struct MacSpeechAcousticEchoHostTests {
                "500 ms capture callback is split into 10 ms frames")
         expect(snapshot.captureFIFOSampleCount == 0,
                "large capture callback leaves no complete frame queued")
+    }
+
+    private static func testMultiFrameCaptureCallbackPreservesGateEvidence() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 500, amplitude: 0.3)
+        let nearEnd = testSignal(seed: 501, amplitude: 0.25)
+        let echo = render.map { $0 * 0.5 }
+        let baseTimestamp: UInt64 = 500_000_000_000
+        host.processRender(
+            Array(repeating: render, count: 4).flatMap { $0 },
+            hostTimeNanoseconds: baseTimestamp
+        )
+        backend.setCaptureOutputQueue([nearEnd, nearEnd, nearEnd, echo])
+        let spans = host.processCaptureSpans(
+            nearEnd + nearEnd + nearEnd + render
+                + [Float](repeating: 0, count: 137),
+            hostTimeNanoseconds: baseTimestamp + 80_000_000
+        )
+        let snapshot = host.snapshot()
+        expect(snapshot.captureFrameCount == 4
+                   && snapshot.captureFIFOSampleCount == 137,
+               "irregular callback keeps only its incomplete remainder")
+        expect(snapshot.inputClassification == .echoOnly
+                   && snapshot.sourceGateOpen,
+               "callback may end on echo after opening the user gate")
+        expect(spans.count == 4,
+               "confirmed pre-roll and trailing echo retain four 10 ms spans")
+        expect(spans.map(\.observation.captureFrameIndex) == [1, 2, 3, 4],
+               "capture spans retain their original frame identities")
+        expect(spans.compactMap(\.observation.captureHostTimeNanoseconds)
+                   == [
+                       baseTimestamp + 80_000_000,
+                       baseTimestamp + 90_000_000,
+                       baseTimestamp + 100_000_000,
+                       baseTimestamp + 110_000_000
+                   ],
+               "capture spans retain their original monotonic timestamps")
+        let positiveSpans = spans.filter {
+            MacSpeechAudioActivityEvidenceKind.classify(
+                observation: $0.observation
+            ) == .sourceGatedNearEnd
+        }
+        expect(positiveSpans.count == 3
+                   && positiveSpans.allSatisfy {
+                       $0.observation.sourceGateOpen
+                           && $0.observation.sourceGateEpoch == 1
+                   },
+               "confirmed pre-roll binds exact positive frames to one epoch")
+        let trailingObservation = spans.last?.observation
+        expect(trailingObservation?.inputClassification == .echoOnly
+                   && trailingObservation.map {
+                       MacSpeechAudioActivityEvidenceKind.classify(
+                           observation: $0
+                       )
+                   } == MacSpeechAudioActivityEvidenceKind.none,
+               "open-gate echo hangover never becomes user evidence")
+        let packets = convertedPackets(captureSpans: spans)
+        let positivePackets = packets.filter {
+            $0.activityEvidenceKind == .sourceGatedNearEnd
+        }
+        expect(!positivePackets.isEmpty
+                   && positivePackets.allSatisfy {
+                       guard let packetObservation = $0.acousticSnapshot else {
+                           return false
+                       }
+                       return packetObservation.inputClassification
+                               == .nearEndSpeech
+                           && positiveSpans.contains {
+                               $0.observation == packetObservation
+                           }
+                   },
+               "production conversion binds packets to an original positive span")
+
+        let abortedBackend = FakeAECBackend()
+        let abortedHost = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: abortedBackend
+        )
+        _ = abortedHost.configure()
+        abortedHost.playbackStarted()
+        abortedHost.processRender(
+            Array(repeating: render, count: 4).flatMap { $0 },
+            hostTimeNanoseconds: baseTimestamp + 1_000_000_000
+        )
+        abortedBackend.setCaptureOutputQueue([nearEnd, nearEnd, echo, echo])
+        let abortedSpans = abortedHost.processCaptureSpans(
+            nearEnd + nearEnd + render + render,
+            hostTimeNanoseconds: baseTimestamp + 1_080_000_000
+        )
+        let abortedSnapshot = abortedHost.snapshot()
+        expect(abortedSnapshot.sourceGateOpenCount == 0
+                   && abortedSnapshot.sourceForwardedFrameCount == 0,
+               "two candidate frames cannot open the source gate")
+        expect(abortedSpans.allSatisfy { isSilence($0.samples) }
+                   && convertedPackets(captureSpans: abortedSpans)
+                       .allSatisfy {
+                           $0.activityEvidenceKind == .none
+                       },
+               "aborted pre-roll remains silence with no user evidence")
+
+        let echoBackend = FakeAECBackend()
+        let echoHost = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: echoBackend
+        )
+        _ = echoHost.configure()
+        echoHost.playbackStarted()
+        echoHost.processRender(
+            Array(repeating: render, count: 4).flatMap { $0 },
+            hostTimeNanoseconds: baseTimestamp + 2_000_000_000
+        )
+        echoBackend.setCaptureOutputQueue([echo, echo, echo, echo])
+        let echoSpans = echoHost.processCaptureSpans(
+            Array(repeating: render, count: 4).flatMap { $0 },
+            hostTimeNanoseconds: baseTimestamp + 2_080_000_000
+        )
+        let echoSnapshot = echoHost.snapshot()
+        expect(echoSnapshot.sourceGateOpenCount == 0
+                   && echoSnapshot.sourceForwardedFrameCount == 0,
+               "resident-only multi-frame callback keeps the gate closed")
+        expect(convertedPackets(captureSpans: echoSpans).allSatisfy {
+            $0.activityEvidenceKind == .none
+        }, "resident-only packets cannot gain source-gated evidence")
     }
 
     private static func testFIFORemainderIsBounded() {
@@ -1674,6 +1811,21 @@ private struct MacSpeechAcousticEchoHostTests {
         } catch {
             fatalError("FAILED: 24/48 kHz conversion: \(error)")
         }
+    }
+
+    private static func convertedPackets(
+        captureSpans: [MacSpeechAcousticCaptureSpan]
+    ) -> [MacSpeechPCM16Packet] {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ), let converter = try? MacSpeechAudioConverter(inputFormat: format),
+        let packets = try? converter.convert(captureSpans: captureSpans) else {
+            fatalError("FAILED: production capture span conversion unavailable")
+        }
+        return packets
     }
 
     private static func testSignal(seed: UInt32, amplitude: Float) -> [Float] {

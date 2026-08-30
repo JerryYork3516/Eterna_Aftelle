@@ -198,6 +198,46 @@ nonisolated struct MacSpeechAcousticObservationSnapshot:
     let erleDecibels: Double
     let renderCaptureSkewFrames: Int64
     let driftTrend: String
+
+    func withSourceGate(open: Bool, epoch: UInt64) -> Self {
+        Self(
+            captureFrameIndex: captureFrameIndex,
+            captureHostTimeNanoseconds: captureHostTimeNanoseconds,
+            playbackSequence: playbackSequence,
+            isPlaybackActive: isPlaybackActive,
+            lastAudibleRenderHostTimeNanoseconds:
+                lastAudibleRenderHostTimeNanoseconds,
+            renderReferenceAvailable: renderReferenceAvailable,
+            renderReferenceRMS: renderReferenceRMS,
+            renderHostTimeNanoseconds: renderHostTimeNanoseconds,
+            rawCaptureRMS: rawCaptureRMS,
+            processedCaptureRMS: processedCaptureRMS,
+            linearAECOutputRMS: linearAECOutputRMS,
+            renderCaptureCorrelation: renderCaptureCorrelation,
+            residualRenderCorrelation: residualRenderCorrelation,
+            linearRenderCorrelation: linearRenderCorrelation,
+            inputClassification: inputClassification,
+            sourceGateOpen: open,
+            sourceGateEpoch: epoch,
+            aecEnabled: aecEnabled,
+            aecActive: aecActive,
+            renderCaptureIsolationEstablished:
+                renderCaptureIsolationEstablished,
+            sourceAlignmentLocked: sourceAlignmentLocked,
+            sourceAlignmentDelayMilliseconds:
+                sourceAlignmentDelayMilliseconds,
+            estimatedDelayMilliseconds: estimatedDelayMilliseconds,
+            erlDecibels: erlDecibels,
+            erleDecibels: erleDecibels,
+            renderCaptureSkewFrames: renderCaptureSkewFrames,
+            driftTrend: driftTrend
+        )
+    }
+}
+
+nonisolated struct MacSpeechAcousticCaptureSpan: Sendable, Equatable {
+    let samples: [Float]
+    let observation: MacSpeechAcousticObservationSnapshot
 }
 
 nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
@@ -276,7 +316,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var inputClassification: MacSpeechAcousticInputClassification =
         .uncertain
     private var sourceGateOpen = false
-    private var sourceGatePreRoll: [[Float]] = []
+    private var sourceGatePreRoll: [MacSpeechAcousticCaptureSpan] = []
     private var sourceGateCandidateNearEndFrameCount: UInt64 = 0
     private var sourceGateCandidateDoubleTalkFrameCount: UInt64 = 0
     private var sourceGateConfirmationFrameCount = 0
@@ -452,6 +492,16 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         _ samples: [Float],
         hostTimeNanoseconds: UInt64? = nil
     ) -> [Float] {
+        processCaptureSpans(
+            samples,
+            hostTimeNanoseconds: hostTimeNanoseconds
+        ).flatMap { $0.samples }
+    }
+
+    func processCaptureSpans(
+        _ samples: [Float],
+        hostTimeNanoseconds: UInt64? = nil
+    ) -> [MacSpeechAcousticCaptureSpan] {
         guard !samples.isEmpty else { return [] }
         return queue.sync {
             if mode == .halfDuplexFallback {
@@ -460,17 +510,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     samples,
                     hostTimeNanoseconds: hostTimeNanoseconds
                 )
-                return isPlaybackActive || isRouteRebuilding ? [] : samples
+                return isPlaybackActive || isRouteRebuilding
+                    ? [] : [captureSpan(samples: samples)]
             }
             guard mode == .webRTCAEC3, let backend else {
                 recordUnavailableCaptureObservation(
                     samples,
                     hostTimeNanoseconds: hostTimeNanoseconds
                 )
-                return samples
+                return [captureSpan(samples: samples)]
             }
-            var output: [Float] = []
-            output.reserveCapacity(samples.count)
+            var output: [MacSpeechAcousticCaptureSpan] = []
             let captureFrameCountBeforeProcessing = captureFrameCount
             do {
                 try processFrames(
@@ -503,18 +553,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     updateRenderCaptureIsolationEvidence(
                         timingMatch: timingMatch
                     )
-                    output.append(contentsOf: gatedCaptureFrame(
+                    output.append(contentsOf: gatedCaptureSpans(
                         processedFrame,
-                        timingMatch: timingMatch
+                        timingMatch: timingMatch,
+                        captureFrameIndex: captureFrameCount &+ 1
                     ))
                     captureFrameCount &+= 1
                 }
             } catch FrameProcessingError.fifoOverflow {
                 enterFallback(.fifoOverflow)
-                return isPlaybackActive || isRouteRebuilding ? [] : samples
+                return isPlaybackActive || isRouteRebuilding
+                    ? [] : [captureSpan(samples: samples)]
             } catch {
                 enterFallback(.captureProcessingFailed)
-                return isPlaybackActive || isRouteRebuilding ? [] : samples
+                return isPlaybackActive || isRouteRebuilding
+                    ? [] : [captureSpan(samples: samples)]
             }
             refreshBackendStats()
             applyResidualEchoGateProtection(
@@ -526,6 +579,18 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     && (isPlaybackActive || isRouteRebuilding)
                 ? [] : output
         }
+    }
+
+    private func captureSpan(
+        samples: [Float],
+        captureFrameIndex: UInt64? = nil
+    ) -> MacSpeechAcousticCaptureSpan {
+        MacSpeechAcousticCaptureSpan(
+            samples: samples,
+            observation: makeAcousticObservationSnapshot(
+                captureFrameIndex: captureFrameIndex
+            )
+        )
     }
 
     private func recordUnavailableCaptureObservation(
@@ -927,17 +992,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         updateAlignedDelay(candidate)
     }
 
-    private func gatedCaptureFrame(
+    private func gatedCaptureSpans(
         _ processedFrame: [Float],
-        timingMatch: TimingMatch?
-    ) -> [Float] {
+        timingMatch: TimingMatch?,
+        captureFrameIndex: UInt64
+    ) -> [MacSpeechAcousticCaptureSpan] {
         guard isPlaybackActive else {
             inputClassification = .nearEndSpeech
             resetSourceGate(
                 keepingClassification: true,
                 closeReason: .playbackLifecycle
             )
-            return processedFrame
+            return [captureSpan(
+                samples: processedFrame,
+                captureFrameIndex: captureFrameIndex
+            )]
         }
 
         inputClassification = classifyCapture(
@@ -950,20 +1019,31 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
         if pendingSourceGateReset {
             return suppressCaptureFrameAndCloseGate(
-                reason: .sourceEvidenceReset
+                reason: .sourceEvidenceReset,
+                captureFrameIndex: captureFrameIndex
             )
         }
         if sourceGateOpen {
-            return captureWhileGateIsOpen(processedFrame)
+            return captureWhileGateIsOpen(
+                processedFrame,
+                captureFrameIndex: captureFrameIndex
+            )
         }
 
         switch inputClassification {
         case .echoOnly:
-            return suppressClosedGateFrame()
+            return suppressClosedGateFrame(
+                captureFrameIndex: captureFrameIndex
+            )
         case .uncertain:
-            return suppressClosedGateFrame()
+            return suppressClosedGateFrame(
+                captureFrameIndex: captureFrameIndex
+            )
         case .nearEndSpeech, .doubleTalk:
-            appendSourceGatePreRoll(processedFrame)
+            appendSourceGatePreRoll(captureSpan(
+                samples: processedFrame,
+                captureFrameIndex: captureFrameIndex
+            ))
             if inputClassification == .nearEndSpeech {
                 sourceGateCandidateNearEndFrameCount &+= 1
             } else {
@@ -1269,27 +1349,40 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         )
     }
 
-    private func captureWhileGateIsOpen(_ processedFrame: [Float]) -> [Float] {
+    private func captureWhileGateIsOpen(
+        _ processedFrame: [Float],
+        captureFrameIndex: UInt64
+    ) -> [MacSpeechAcousticCaptureSpan] {
         switch inputClassification {
         case .nearEndSpeech, .doubleTalk:
             sourceGateNonUserHangoverFrameCount = 0
             recordForwardedSourceFrames(1)
-            return processedFrame
+            return [captureSpan(
+                samples: processedFrame,
+                captureFrameIndex: captureFrameIndex
+            )]
         case .uncertain, .echoOnly:
             if adaptiveNearEndContinuationCandidate {
                 sourceGateNonUserHangoverFrameCount = 0
                 recordForwardedSourceFrames(1)
-                return processedFrame
+                return [captureSpan(
+                    samples: processedFrame,
+                    captureFrameIndex: captureFrameIndex
+                )]
             }
             sourceGateNonUserHangoverFrameCount += 1
             if sourceGateNonUserHangoverFrameCount
                 >= Self.maximumSourceGateNonUserHangoverFrames {
                 return suppressCaptureFrameAndCloseGate(
-                    reason: .nonUserHangover
+                    reason: .nonUserHangover,
+                    captureFrameIndex: captureFrameIndex
                 )
             }
             recordForwardedSourceFrames(1)
-            return processedFrame
+            return [captureSpan(
+                samples: processedFrame,
+                captureFrameIndex: captureFrameIndex
+            )]
         }
     }
 
@@ -1333,41 +1426,65 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
     }
 
-    private func appendSourceGatePreRoll(_ frame: [Float]) {
+    private func appendSourceGatePreRoll(
+        _ span: MacSpeechAcousticCaptureSpan
+    ) {
         if sourceGatePreRoll.count
             == Self.sourceGatePreRollFrameCapacity {
             sourceGatePreRoll.removeFirst()
             recordSuppressedSourceFrames(1)
         }
-        sourceGatePreRoll.append(frame)
+        sourceGatePreRoll.append(span)
     }
 
-    private func suppressClosedGateFrame() -> [Float] {
+    private func suppressClosedGateFrame(
+        captureFrameIndex: UInt64
+    ) -> [MacSpeechAcousticCaptureSpan] {
+        let current = captureSpan(
+            samples: [Float](
+                repeating: 0,
+                count: Self.frameSampleCount
+            ),
+            captureFrameIndex: captureFrameIndex
+        )
+        let output = sourceGatePreRoll.map(silencedCaptureSpan) + [current]
         let suppressedFrameCount = sourceGatePreRoll.count + 1
         sourceGatePreRoll.removeAll(keepingCapacity: true)
         sourceGateConfirmationFrameCount = 0
         sourceGateCandidateNearEndFrameCount = 0
         sourceGateCandidateDoubleTalkFrameCount = 0
         recordSuppressedSourceFrames(suppressedFrameCount)
-        return silenceFrames(suppressedFrameCount)
+        return output
     }
 
     private func suppressCaptureFrameAndCloseGate(
-        reason: MacSpeechSourceGateCloseReason
-    ) -> [Float] {
-        let suppressedFrameCount = sourceGatePreRoll.count + 1
+        reason: MacSpeechSourceGateCloseReason,
+        captureFrameIndex: UInt64
+    ) -> [MacSpeechAcousticCaptureSpan] {
+        let pending = sourceGatePreRoll.map(silencedCaptureSpan)
         recordSuppressedSourceFrames(1)
         resetSourceGate(
             keepingClassification: true,
             closeReason: reason
         )
-        return silenceFrames(suppressedFrameCount)
+        return pending + [captureSpan(
+            samples: [Float](
+                repeating: 0,
+                count: Self.frameSampleCount
+            ),
+            captureFrameIndex: captureFrameIndex
+        )]
     }
 
-    private func silenceFrames(_ frameCount: Int) -> [Float] {
-        [Float](
-            repeating: 0,
-            count: frameCount * Self.frameSampleCount
+    private func silencedCaptureSpan(
+        _ span: MacSpeechAcousticCaptureSpan
+    ) -> MacSpeechAcousticCaptureSpan {
+        MacSpeechAcousticCaptureSpan(
+            samples: [Float](
+                repeating: 0,
+                count: span.samples.count
+            ),
+            observation: span.observation
         )
     }
 
@@ -1386,8 +1503,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         currentContinuousSourceForwardedFrameCount = 0
     }
 
-    private func drainSourceGatePreRoll() -> [Float] {
-        let output = sourceGatePreRoll.flatMap { $0 }
+    private func drainSourceGatePreRoll()
+        -> [MacSpeechAcousticCaptureSpan] {
+        let output = sourceGatePreRoll.map { span in
+            MacSpeechAcousticCaptureSpan(
+                samples: span.samples,
+                observation: span.observation.withSourceGate(
+                    open: true,
+                    epoch: sourceGateEpochSequence
+                )
+            )
+        }
         recordForwardedSourceFrames(sourceGatePreRoll.count)
         sourceGatePreRoll.removeAll(keepingCapacity: true)
         sourceGateCandidateNearEndFrameCount = 0
@@ -1938,10 +2064,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         )
     }
 
-    private func makeAcousticObservationSnapshot()
+    private func makeAcousticObservationSnapshot(
+        captureFrameIndex: UInt64? = nil
+    )
         -> MacSpeechAcousticObservationSnapshot {
-        MacSpeechAcousticObservationSnapshot(
-            captureFrameIndex: captureFrameCount,
+        let observationFrameIndex = captureFrameIndex
+            ?? self.captureFrameCount
+        return MacSpeechAcousticObservationSnapshot(
+            captureFrameIndex: observationFrameIndex,
             captureHostTimeNanoseconds:
                 latestCaptureHostTimeNanoseconds,
             playbackSequence: playbackSequence,
@@ -1976,7 +2106,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             erlDecibels: backendStats.erlDecibels,
             erleDecibels: backendStats.erleDecibels,
             renderCaptureSkewFrames:
-                Int64(renderFrameCount) - Int64(captureFrameCount),
+                Int64(renderFrameCount) - Int64(observationFrameIndex),
             driftTrend: driftTrend
         )
     }
