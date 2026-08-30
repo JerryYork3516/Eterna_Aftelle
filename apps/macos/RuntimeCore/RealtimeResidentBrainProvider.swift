@@ -579,6 +579,16 @@ nonisolated enum RealtimeAcousticClassifier {
     }
 }
 
+#if DEBUG
+nonisolated struct RealtimeAcousticEligibilityGateDiagnosticState:
+    Sendable,
+    Equatable {
+    let lastSequence: UInt64
+    let lastTimestampNanoseconds: UInt64
+    let lastPlaybackSequence: UInt64
+}
+#endif
+
 nonisolated struct RealtimeAcousticInterruptionEligibilityGate: Sendable {
     static let minimumConsecutiveNearEndObservations: UInt64 = 1
     static let observationFreshnessNanoseconds: UInt64 = 500_000_000
@@ -600,6 +610,16 @@ nonisolated struct RealtimeAcousticInterruptionEligibilityGate: Sendable {
         self.session = session
         self.captureGeneration = captureGeneration
     }
+
+    #if DEBUG
+    var diagnosticState: RealtimeAcousticEligibilityGateDiagnosticState {
+        RealtimeAcousticEligibilityGateDiagnosticState(
+            lastSequence: lastSequence,
+            lastTimestampNanoseconds: lastTimestampNanoseconds,
+            lastPlaybackSequence: lastPlaybackSequence
+        )
+    }
+    #endif
 
     mutating func evaluate(
         _ observation: RealtimeAcousticObservation,

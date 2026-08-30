@@ -517,14 +517,35 @@ final class AppController: ObservableObject {
         MacSpeechRealtimeBrainInputBridge.RecordAcousticDiagnostic? {
         #if DEBUG
         return { [weak self] diagnostic in
+            let packetTrace = diagnostic.packetTrace.map {
+                RealtimeSpeechAcousticPacketTrace(
+                    packetSequence: $0.packetSequence,
+                    captureFrameIndex: $0.captureFrameIndex,
+                    observationSequence: $0.observationSequence,
+                    observationTimestampNanoseconds:
+                        $0.observationTimestampNanoseconds,
+                    playbackSequence: $0.playbackSequence,
+                    sourceGateEpoch: $0.sourceGateEpoch,
+                    sourceAssessment: $0.sourceAssessment,
+                    classification: $0.classification,
+                    gateLastSequence: $0.gateLastSequence,
+                    gateLastTimestampNanoseconds:
+                        $0.gateLastTimestampNanoseconds,
+                    gateLastPlaybackSequence:
+                        $0.gateLastPlaybackSequence
+                )
+            }
             self?.recordRealtimeSpeechDiagnostic(
                 source: .inputBridge,
                 category: diagnostic.category,
                 routeKind: .realtimeBrain,
                 turnGeneration: diagnostic.turnGeneration,
                 disposition: diagnostic.disposition,
-                audioSequence: diagnostic.observationSequence,
+                wireSequence: packetTrace?.observationSequence,
+                audioSequence: packetTrace?.packetSequence
+                    ?? diagnostic.observationSequence,
                 sourceGateEpoch: diagnostic.sourceGateEpoch,
+                acousticPacketTrace: packetTrace,
                 nowNanoseconds: diagnostic.timestampNanoseconds
             )
         }
@@ -5460,6 +5481,7 @@ final class AppController: ObservableObject {
         pcmClipCount: Int? = nil,
         pcmBoundaryJump: Double? = nil,
         errorCode: String? = nil,
+        acousticPacketTrace: RealtimeSpeechAcousticPacketTrace? = nil,
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
         drainNativeSpeechInternalDiagnostics()
@@ -5495,6 +5517,7 @@ final class AppController: ObservableObject {
             pcmClipCount: pcmClipCount,
             pcmBoundaryJump: pcmBoundaryJump,
             errorCode: errorCode,
+            acousticPacketTrace: acousticPacketTrace,
             nowNanoseconds: nowNanoseconds
         )
         if Self.realtimeSpeechDiagnosticNeedsImmediateRefresh(category) {

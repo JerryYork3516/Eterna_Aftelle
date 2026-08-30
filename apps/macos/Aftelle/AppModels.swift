@@ -849,6 +849,20 @@ enum RealtimeSpeechDiagnosticSource: String, Codable, Sendable {
     case subtitle
 }
 
+struct RealtimeSpeechAcousticPacketTrace: Codable, Equatable, Sendable {
+    let packetSequence: UInt64
+    let captureFrameIndex: UInt64?
+    let observationSequence: UInt64?
+    let observationTimestampNanoseconds: UInt64?
+    let playbackSequence: UInt64
+    let sourceGateEpoch: UInt64
+    let sourceAssessment: String?
+    let classification: String?
+    let gateLastSequence: UInt64?
+    let gateLastTimestampNanoseconds: UInt64?
+    let gateLastPlaybackSequence: UInt64?
+}
+
 struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
     Sendable
 {
@@ -885,6 +899,7 @@ struct RealtimeSpeechDiagnosticEvent: Codable, Equatable, Identifiable,
     let pcmClipCount: Int?
     let pcmBoundaryJump: Double?
     let errorCode: String?
+    let acousticPacketTrace: RealtimeSpeechAcousticPacketTrace?
 }
 
 struct RealtimeSpeechDiagnosticTimeline: Sendable {
@@ -942,6 +957,7 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
         pcmClipCount: Int? = nil,
         pcmBoundaryJump: Double? = nil,
         errorCode: String? = nil,
+        acousticPacketTrace: RealtimeSpeechAcousticPacketTrace? = nil,
         timestamp: Date = Date(),
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
@@ -983,7 +999,8 @@ struct RealtimeSpeechDiagnosticTimeline: Sendable {
             pcmRMS: pcmRMS,
             pcmClipCount: pcmClipCount,
             pcmBoundaryJump: pcmBoundaryJump,
-            errorCode: errorCode
+            errorCode: errorCode,
+            acousticPacketTrace: acousticPacketTrace
         )
         if eventCount < Self.capacity {
             let index = (startIndex + eventCount) % Self.capacity

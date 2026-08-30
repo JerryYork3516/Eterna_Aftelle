@@ -57,6 +57,41 @@ nonisolated struct MacSpeechRealtimeBrainAcousticDiagnostic: Sendable {
     let observationSequence: UInt64
     let sourceGateEpoch: UInt64
     let timestampNanoseconds: UInt64
+    let packetTrace: MacSpeechRealtimeBrainAcousticPacketTrace?
+
+    init(
+        category: String,
+        disposition: String,
+        turnGeneration: UInt64,
+        observationSequence: UInt64,
+        sourceGateEpoch: UInt64,
+        timestampNanoseconds: UInt64,
+        packetTrace: MacSpeechRealtimeBrainAcousticPacketTrace? = nil
+    ) {
+        self.category = category
+        self.disposition = disposition
+        self.turnGeneration = turnGeneration
+        self.observationSequence = observationSequence
+        self.sourceGateEpoch = sourceGateEpoch
+        self.timestampNanoseconds = timestampNanoseconds
+        self.packetTrace = packetTrace
+    }
+}
+
+nonisolated struct MacSpeechRealtimeBrainAcousticPacketTrace:
+    Sendable,
+    Equatable {
+    let packetSequence: UInt64
+    let captureFrameIndex: UInt64?
+    let observationSequence: UInt64?
+    let observationTimestampNanoseconds: UInt64?
+    let playbackSequence: UInt64
+    let sourceGateEpoch: UInt64
+    let sourceAssessment: String?
+    let classification: String?
+    let gateLastSequence: UInt64?
+    let gateLastTimestampNanoseconds: UInt64?
+    let gateLastPlaybackSequence: UInt64?
 }
 
 nonisolated enum MacSpeechRealtimeBrainInputBridgeState: String, Sendable, Equatable {
@@ -524,11 +559,35 @@ actor MacSpeechRealtimeBrainInputBridge {
                 case .sourceGatedNearEnd:
                     sourceGatedNearEndFrameCount &+= 1
                 }
+                let sourceGatedPacketTrace =
+                    inputActivity.localActivity.kind == .sourceGatedNearEnd
+                        && recordAcousticDiagnostic != nil
+                    ? MacSpeechRealtimeBrainAcousticPacketTrace(
+                        packetSequence: frame.sequenceNumber,
+                        captureFrameIndex:
+                            frame.acousticSnapshot?.captureFrameIndex,
+                        observationSequence: nil,
+                        observationTimestampNanoseconds:
+                            frame.acousticSnapshot?
+                                .captureHostTimeNanoseconds
+                                ?? frame.monotonicTimestampNanoseconds,
+                        playbackSequence:
+                            frame.residentPlaybackSequence,
+                        sourceGateEpoch: frame.sourceGateEpoch,
+                        sourceAssessment:
+                            frame.acousticSnapshot?
+                                .inputClassification.rawValue,
+                        classification: nil,
+                        gateLastSequence: nil,
+                        gateLastTimestampNanoseconds: nil,
+                        gateLastPlaybackSequence: nil
+                    ) : nil
                 await observeResidentAcousticsIfNeeded(
                     fallbackTimestampNanoseconds:
                         realtimeFrame.timestampNanoseconds,
                     capturedAcousticSnapshot: frame.acousticSnapshot,
                     observerOnly: false,
+                    sourceGatedPacketTrace: sourceGatedPacketTrace,
                     binding: binding,
                     pumpID: pumpID
                 )
@@ -686,6 +745,8 @@ actor MacSpeechRealtimeBrainInputBridge {
         capturedAcousticSnapshot:
             MacSpeechAcousticObservationSnapshot?,
         observerOnly: Bool,
+        sourceGatedPacketTrace:
+            MacSpeechRealtimeBrainAcousticPacketTrace? = nil,
         binding: MacSpeechRealtimeBrainInputBinding,
         pumpID: UUID
     ) async {
@@ -697,18 +758,72 @@ actor MacSpeechRealtimeBrainInputBridge {
             nextResidentAcousticSnapshotPollNanoseconds =
                 fallbackTimestampNanoseconds &+ 10_000_000
         }
-        guard let liveSnapshot = await source.residentAcousticSnapshot(),
-              liveSnapshot.captureGeneration == binding.captureGeneration,
-              activeBinding == binding,
-              activePumpID == pumpID else { return }
+        guard let liveSnapshot = await source.residentAcousticSnapshot() else {
+            #if DEBUG
+            recordSourceGatedPacketTrace(
+                sourceGatedPacketTrace,
+                disposition: "guard_live_snapshot_unavailable",
+                binding: binding
+            )
+            #endif
+            return
+        }
+        guard liveSnapshot.captureGeneration == binding.captureGeneration else {
+            #if DEBUG
+            recordSourceGatedPacketTrace(
+                sourceGatedPacketTrace,
+                disposition: "guard_capture_generation_mismatch",
+                binding: binding
+            )
+            #endif
+            return
+        }
+        guard activeBinding == binding,
+              activePumpID == pumpID else {
+            #if DEBUG
+            recordSourceGatedPacketTrace(
+                sourceGatedPacketTrace,
+                disposition: "guard_binding_or_pump_changed",
+                binding: binding
+            )
+            #endif
+            return
+        }
         if observerOnly {
             guard !liveSnapshot.sourceGateOpen else { return }
         } else {
-            guard let capturedAcousticSnapshot,
-                  capturedAcousticSnapshot.playbackSequence
-                    == liveSnapshot.playbackSequence,
-                  capturedAcousticSnapshot.isPlaybackActive
-                    == liveSnapshot.residentPlaybackActive else { return }
+            guard let capturedAcousticSnapshot else {
+                #if DEBUG
+                recordSourceGatedPacketTrace(
+                    sourceGatedPacketTrace,
+                    disposition: "guard_captured_snapshot_unavailable",
+                    binding: binding
+                )
+                #endif
+                return
+            }
+            guard capturedAcousticSnapshot.playbackSequence
+                    == liveSnapshot.playbackSequence else {
+                #if DEBUG
+                recordSourceGatedPacketTrace(
+                    sourceGatedPacketTrace,
+                    disposition: "guard_playback_sequence_mismatch",
+                    binding: binding
+                )
+                #endif
+                return
+            }
+            guard capturedAcousticSnapshot.isPlaybackActive
+                    == liveSnapshot.residentPlaybackActive else {
+                #if DEBUG
+                recordSourceGatedPacketTrace(
+                    sourceGatedPacketTrace,
+                    disposition: "guard_playback_activity_mismatch",
+                    binding: binding
+                )
+                #endif
+                return
+            }
         }
         let snapshot = residentAcousticSnapshot(
             captured: capturedAcousticSnapshot,
@@ -722,9 +837,30 @@ actor MacSpeechRealtimeBrainInputBridge {
             lastObserverOnlyResidentCaptureFrameIndex =
                 snapshot.captureFrameIndex
         } else {
-            guard snapshot.captureFrameIndex > lastResidentCaptureFrameIndex,
-                  activeBinding == binding,
-                  activePumpID == pumpID else { return }
+            guard snapshot.captureFrameIndex
+                    > lastResidentCaptureFrameIndex else {
+                #if DEBUG
+                recordSourceGatedPacketTrace(
+                    sourceGatedPacketTrace,
+                    disposition: "guard_capture_frame_not_newer",
+                    binding: binding,
+                    snapshot: snapshot
+                )
+                #endif
+                return
+            }
+            guard activeBinding == binding,
+                  activePumpID == pumpID else {
+                #if DEBUG
+                recordSourceGatedPacketTrace(
+                    sourceGatedPacketTrace,
+                    disposition: "guard_binding_or_pump_changed",
+                    binding: binding,
+                    snapshot: snapshot
+                )
+                #endif
+                return
+            }
             lastResidentCaptureFrameIndex = snapshot.captureFrameIndex
         }
 
@@ -791,6 +927,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         var isEligibleCandidate = false
         if !observerOnly, var gate = acousticEligibilityGate {
             let gateBeforeEvaluation = gate
+            #if DEBUG
+            let gateDiagnosticState = gate.diagnosticState
+            #endif
             let disposition = gate.evaluate(observation)
             acousticEligibilityGate = gate
             #if DEBUG
@@ -804,6 +943,14 @@ actor MacSpeechRealtimeBrainInputBridge {
             acousticEligibilityDispositionCounts[dispositionName, default: 0]
                 &+= 1
             lastAcousticEligibilityDisposition = dispositionName
+            recordSourceGatedPacketTrace(
+                sourceGatedPacketTrace,
+                disposition: dispositionName,
+                binding: binding,
+                snapshot: snapshot,
+                observation: observation,
+                gateState: gateDiagnosticState
+            )
             #endif
             switch disposition {
             case .eligible:
@@ -836,6 +983,16 @@ actor MacSpeechRealtimeBrainInputBridge {
                 pendingEligibilitySourceGateEpoch = nil
                 pendingEligibilityGateBeforeIssue = nil
             }
+        } else if !observerOnly {
+            #if DEBUG
+            recordSourceGatedPacketTrace(
+                sourceGatedPacketTrace,
+                disposition: "guard_eligibility_gate_unavailable",
+                binding: binding,
+                snapshot: snapshot,
+                observation: observation
+            )
+            #endif
         }
 
         guard !isEligibleCandidate,
@@ -1070,6 +1227,55 @@ actor MacSpeechRealtimeBrainInputBridge {
             recorder(diagnostic)
         }
     }
+
+    #if DEBUG
+    private func recordSourceGatedPacketTrace(
+        _ packetTrace: MacSpeechRealtimeBrainAcousticPacketTrace?,
+        disposition: String,
+        binding: MacSpeechRealtimeBrainInputBinding,
+        snapshot: MacSpeechResidentAcousticSnapshot? = nil,
+        observation: RealtimeAcousticObservation? = nil,
+        gateState: RealtimeAcousticEligibilityGateDiagnosticState? = nil
+    ) {
+        guard let packetTrace else { return }
+        let trace = MacSpeechRealtimeBrainAcousticPacketTrace(
+            packetSequence: packetTrace.packetSequence,
+            captureFrameIndex: snapshot?.captureFrameIndex
+                ?? packetTrace.captureFrameIndex,
+            observationSequence: observation?.identity.sequence,
+            observationTimestampNanoseconds:
+                observation?.identity.timestampNanoseconds
+                    ?? packetTrace.observationTimestampNanoseconds,
+            playbackSequence: observation?.metrics.residentPlaybackSequence
+                ?? snapshot?.playbackSequence
+                ?? packetTrace.playbackSequence,
+            sourceGateEpoch: observation?.metrics.sourceGateEpoch
+                ?? snapshot?.sourceGateEpoch
+                ?? packetTrace.sourceGateEpoch,
+            sourceAssessment: observation?.metrics.sourceAssessment.rawValue
+                ?? snapshot?.inputClassification.rawValue
+                ?? packetTrace.sourceAssessment,
+            classification: observation?.classification.rawValue,
+            gateLastSequence: gateState?.lastSequence,
+            gateLastTimestampNanoseconds:
+                gateState?.lastTimestampNanoseconds,
+            gateLastPlaybackSequence: gateState?.lastPlaybackSequence
+        )
+        recordAcousticDiagnosticIfNeeded(
+            MacSpeechRealtimeBrainAcousticDiagnostic(
+                category: "source_gated_near_end_packet",
+                disposition: disposition,
+                turnGeneration: binding.session.generation,
+                observationSequence: trace.observationSequence ?? 0,
+                sourceGateEpoch: trace.sourceGateEpoch,
+                timestampNanoseconds:
+                    trace.observationTimestampNanoseconds
+                        ?? DispatchTime.now().uptimeNanoseconds,
+                packetTrace: trace
+            )
+        )
+    }
+    #endif
 
     private func finish(
         binding: MacSpeechRealtimeBrainInputBinding,

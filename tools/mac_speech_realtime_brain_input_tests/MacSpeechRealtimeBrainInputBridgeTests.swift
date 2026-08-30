@@ -498,6 +498,20 @@ private actor R82AcousticDiagnosticSink {
     func values() -> [RealtimeAcousticObservation] { observations }
 }
 
+private actor R85AcousticPacketDiagnosticSink {
+    private var diagnostics: [MacSpeechRealtimeBrainAcousticDiagnostic] = []
+
+    func record(_ diagnostic: MacSpeechRealtimeBrainAcousticDiagnostic) {
+        diagnostics.append(diagnostic)
+    }
+
+    func packetTraces() -> [MacSpeechRealtimeBrainAcousticDiagnostic] {
+        diagnostics.filter {
+            $0.category == "source_gated_near_end_packet"
+        }
+    }
+}
+
 @MainActor
 private final class R7OutputBridgeHolder {
     var bridge: MacSpeechRealtimeBrainOutputBridge?
@@ -521,6 +535,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testBridgeForwardsEvidenceWithNonFiniteAECMetrics()
         testPacketizerPreservesTenMillisecondSourceGateEvidence()
         await testBridgeUsesFrameBoundAcousticEvidence()
+        await testBridgeRecordsSourceGatedPacketTerminalDiagnostics()
         await testBridgeRearmsEligibilityAfterStaleForwardFence()
         testControllerSourceGateEpochFence()
         await testBridgeSnapshot()
@@ -1094,6 +1109,108 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
                "Bridge accepts the packet-bound source-gate activity")
         expect(snapshot.acousticEvidenceCount == 1,
                "Bridge evaluates the bound positive snapshot instead of a later uncertain sample")
+        _ = await bridge.stop()
+    }
+
+    private static func testBridgeRecordsSourceGatedPacketTerminalDiagnostics()
+        async {
+        cases += 1
+        let source = FakeMacSpeechAudioFrameSource()
+        let provider = FakeRealtimeResidentBrainProvider()
+        let diagnostics = R85AcousticPacketDiagnosticSink()
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "packet-trace-resident",
+            runtimeSessionID: "packet-trace-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 354
+        let positiveSnapshot = acousticSnapshot(
+            frameIndex: 1,
+            classification: .doubleTalk,
+            sourceGateOpen: true,
+            sourceGateEpoch: 7
+        )
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(residentSnapshot(
+            generation: captureGeneration,
+            frameIndex: 1,
+            classification: .doubleTalk,
+            sourceGateOpen: true,
+            sourceGateEpoch: 7
+        ))
+        source.appendSourceGatedFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration,
+            acousticSnapshot: positiveSnapshot
+        )
+        source.appendSourceGatedFrame(
+            pcm16Bytes: Data(repeating: 2, count: 960),
+            generation: captureGeneration,
+            acousticSnapshot: positiveSnapshot
+        )
+
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { frame in
+                do {
+                    try await provider.appendAudio(frame)
+                    return .success(())
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.providerFailure)
+                }
+            },
+            stopInput: { _ in .success(()) },
+            recordAcousticDiagnostic: { diagnostic in
+                Task { await diagnostics.record(diagnostic) }
+            }
+        )
+        _ = await bridge.start(binding: MacSpeechRealtimeBrainInputBinding(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+
+        await waitUntil(label: "source-gated packet terminal diagnostics") {
+            await diagnostics.packetTraces().count == 2
+        }
+        let traces = await diagnostics.packetTraces().sorted {
+            ($0.packetTrace?.packetSequence ?? 0)
+                < ($1.packetTrace?.packetSequence ?? 0)
+        }
+        let evaluated = traces[0]
+        expect(evaluated.disposition == "eligible",
+               "positive packet records the eligibility result")
+        expect(evaluated.packetTrace?.packetSequence == 1
+                   && evaluated.packetTrace?.captureFrameIndex == 1,
+               "positive packet correlates packet and capture sequences")
+        expect(evaluated.packetTrace?.observationSequence == 1
+                   && evaluated.packetTrace?
+                        .observationTimestampNanoseconds != nil,
+               "evaluated packet records observation identity")
+        expect(evaluated.packetTrace?.playbackSequence == 1
+                   && evaluated.packetTrace?.sourceGateEpoch == 7,
+               "evaluated packet records playback and source-gate identity")
+        expect(evaluated.packetTrace?.sourceAssessment == "double_talk"
+                   && evaluated.packetTrace?.classification
+                        == "near_end_candidate",
+               "evaluated packet records source and high-level classifications")
+        expect(evaluated.packetTrace?.gateLastSequence == 0
+                   && evaluated.packetTrace?.gateLastTimestampNanoseconds == 0
+                   && evaluated.packetTrace?.gateLastPlaybackSequence == 0,
+               "evaluated packet records the authoritative gate pre-state")
+
+        let guarded = traces[1]
+        expect(guarded.disposition == "guard_capture_frame_not_newer",
+               "early-return packet records its exact terminal guard")
+        expect(guarded.packetTrace?.packetSequence == 2
+                   && guarded.packetTrace?.captureFrameIndex == 1,
+               "early-return packet remains correlated to its packet evidence")
+        expect(guarded.packetTrace?.observationSequence == nil
+                   && guarded.packetTrace?.classification == nil,
+               "early-return trace does not invent an observation result")
         _ = await bridge.stop()
     }
 
