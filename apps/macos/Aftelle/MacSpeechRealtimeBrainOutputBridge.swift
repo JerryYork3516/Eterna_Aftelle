@@ -37,6 +37,8 @@ nonisolated struct MacSpeechRealtimeBrainOutputBridgeSnapshot:
 }
 
 actor MacSpeechRealtimeBrainOutputBridge {
+    private static let maximumPendingPlaybackEventCount = 256
+
     typealias ReceiveEvent = @Sendable (
         RealtimeBrainSessionIdentity
     ) async -> Result<RealtimeBrainEventDisposition, RealtimeResidentBrainError>
@@ -53,10 +55,15 @@ actor MacSpeechRealtimeBrainOutputBridge {
     private let sessionEnded: SessionEnded
     private var receiveTask: Task<Void, Never>?
     private var retiredReceiveTask: Task<Void, Never>?
+    private var playbackConsumeTask: Task<Void, Never>?
+    private var retiredPlaybackConsumeTask: Task<Void, Never>?
     private var activeLoopID: UUID?
+    private var activePlaybackConsumeID: UUID?
     private var activeSession: RealtimeBrainSessionIdentity?
     private var suspendedSession: RealtimeBrainSessionIdentity?
     private var finishedAudioResponseID: RealtimeBrainResponseID?
+    private var primedAudioResponseID: RealtimeBrainResponseID?
+    private var pendingPlaybackEvents: [RealtimeResidentBrainEvent] = []
     private var state = MacSpeechRealtimeBrainOutputBridgeState.idle
     private var acceptedEventCount: UInt64 = 0
     private var rejectedEventCount: UInt64 = 0
@@ -89,6 +96,10 @@ actor MacSpeechRealtimeBrainOutputBridge {
         audioByteCount = 0
         completedResponseCount = 0
         finishedAudioResponseID = nil
+        primedAudioResponseID = nil
+        pendingPlaybackEvents.removeAll(keepingCapacity: true)
+        playbackConsumeTask = nil
+        activePlaybackConsumeID = nil
         lastError = nil
         installReceiveLoop(session: session)
         return makeSnapshot()
@@ -101,13 +112,21 @@ actor MacSpeechRealtimeBrainOutputBridge {
             return makeSnapshot()
         }
         let task = receiveTask
+        let playbackTask = playbackConsumeTask
+            ?? retiredPlaybackConsumeTask
         task?.cancel()
+        playbackTask?.cancel()
         retiredReceiveTask = task
+        retiredPlaybackConsumeTask = playbackTask
         receiveTask = nil
+        playbackConsumeTask = nil
         activeLoopID = nil
+        activePlaybackConsumeID = nil
         activeSession = nil
         suspendedSession = session
         finishedAudioResponseID = nil
+        primedAudioResponseID = nil
+        pendingPlaybackEvents.removeAll(keepingCapacity: true)
         state = .stopped
         return makeSnapshot()
     }
@@ -140,13 +159,21 @@ actor MacSpeechRealtimeBrainOutputBridge {
             return makeSnapshot()
         }
         let task = receiveTask ?? retiredReceiveTask
+        let playbackTask = playbackConsumeTask
+            ?? retiredPlaybackConsumeTask
         activeSession = nil
         suspendedSession = nil
         receiveTask = nil
+        playbackConsumeTask = nil
         activeLoopID = nil
+        activePlaybackConsumeID = nil
         finishedAudioResponseID = nil
+        primedAudioResponseID = nil
+        pendingPlaybackEvents.removeAll(keepingCapacity: true)
         task?.cancel()
+        playbackTask?.cancel()
         retiredReceiveTask = task
+        retiredPlaybackConsumeTask = playbackTask
         if state != .failed { state = .stopped }
         return makeSnapshot()
     }
@@ -159,11 +186,14 @@ actor MacSpeechRealtimeBrainOutputBridge {
         session: RealtimeBrainSessionIdentity
     ) {
         let predecessor = retiredReceiveTask
+        let playbackPredecessor = retiredPlaybackConsumeTask
         retiredReceiveTask = nil
+        retiredPlaybackConsumeTask = nil
         let loopID = UUID()
         activeLoopID = loopID
         receiveTask = Task { [weak self] in
             await predecessor?.value
+            await playbackPredecessor?.value
             guard !Task.isCancelled else { return }
             await self?.run(session: session, loopID: loopID)
         }
@@ -231,7 +261,60 @@ actor MacSpeechRealtimeBrainOutputBridge {
                     break
                 }
                 acceptedEventCount &+= 1
-                await consumeEvent(event)
+                switch event.kind {
+                case .residentAudioDelta:
+                    guard let responseID = event.identity.responseID else {
+                        return
+                    }
+                    if primedAudioResponseID != responseID {
+                        let retiredPredecessor = retiredPlaybackConsumeTask
+                        let predecessor = playbackConsumeTask
+                        retiredPlaybackConsumeTask = nil
+                        await retiredPredecessor?.value
+                        await predecessor?.value
+                        guard activeSession == session,
+                              activeLoopID == loopID else { return }
+                        primedAudioResponseID = responseID
+                        await consumeEvent(event)
+                    } else if !enqueuePlaybackEvent(
+                        event,
+                        session: session,
+                        loopID: loopID
+                    ) {
+                        rejectedEventCount &+= 1
+                        await finish(
+                            session: session,
+                            loopID: loopID,
+                            error: .invalidEvent
+                        )
+                        return
+                    }
+                case .residentSpeakingStopped:
+                    guard enqueuePlaybackEvent(
+                        event,
+                        session: session,
+                        loopID: loopID
+                    ) else {
+                        rejectedEventCount &+= 1
+                        await finish(
+                            session: session,
+                            loopID: loopID,
+                            error: .invalidEvent
+                        )
+                        return
+                    }
+                case .error:
+                    retirePlaybackConsumer()
+                    if let responseID = event.identity.responseID {
+                        finishedAudioResponseID = responseID
+                    }
+                    await consumeEvent(event)
+                case .sessionClosed, .cancelled:
+                    retirePlaybackConsumer()
+                    await consumeEvent(event)
+                default:
+                    await consumeEvent(event)
+                }
                 guard activeSession == session,
                       activeLoopID == loopID else { return }
                 switch event.kind {
@@ -288,6 +371,63 @@ actor MacSpeechRealtimeBrainOutputBridge {
         }
     }
 
+    private func retirePlaybackConsumer() {
+        let task = playbackConsumeTask
+        activePlaybackConsumeID = nil
+        playbackConsumeTask = nil
+        primedAudioResponseID = nil
+        pendingPlaybackEvents.removeAll(keepingCapacity: true)
+        task?.cancel()
+        if let task {
+            retiredPlaybackConsumeTask = task
+        }
+    }
+
+    private func enqueuePlaybackEvent(
+        _ event: RealtimeResidentBrainEvent,
+        session: RealtimeBrainSessionIdentity,
+        loopID: UUID
+    ) -> Bool {
+        guard pendingPlaybackEvents.count
+                < Self.maximumPendingPlaybackEventCount else {
+            return false
+        }
+        pendingPlaybackEvents.append(event)
+        guard playbackConsumeTask == nil else { return true }
+        let consumeID = UUID()
+        activePlaybackConsumeID = consumeID
+        playbackConsumeTask = Task { [weak self] in
+            await self?.consumePendingPlaybackEvents(
+                session: session,
+                loopID: loopID,
+                consumeID: consumeID
+            )
+        }
+        return true
+    }
+
+    private func consumePendingPlaybackEvents(
+        session: RealtimeBrainSessionIdentity,
+        loopID: UUID,
+        consumeID: UUID
+    ) async {
+        while !Task.isCancelled {
+            guard activeSession == session,
+                  activeLoopID == loopID,
+                  activePlaybackConsumeID == consumeID else { return }
+            guard !pendingPlaybackEvents.isEmpty else {
+                activePlaybackConsumeID = nil
+                playbackConsumeTask = nil
+                return
+            }
+            let event = pendingPlaybackEvents.removeFirst()
+            await consumeEvent(event)
+            guard activeSession == session,
+                  activeLoopID == loopID,
+                  activePlaybackConsumeID == consumeID else { return }
+        }
+    }
+
     private func finish(
         session: RealtimeBrainSessionIdentity,
         loopID: UUID,
@@ -295,6 +435,7 @@ actor MacSpeechRealtimeBrainOutputBridge {
     ) async {
         guard activeSession == session,
               activeLoopID == loopID else { return }
+        retirePlaybackConsumer()
         activeSession = nil
         activeLoopID = nil
         receiveTask = nil

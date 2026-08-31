@@ -2920,7 +2920,21 @@ final class AppController: ObservableObject {
             }
         case .error(let error):
             resetRealtimeBrainMissingSpeechStopPresentation()
-            if realtimeBrainPlaybackGeneration != nil {
+            let shouldClearPlayback = realtimeBrainPlaybackGeneration != nil
+            let playbackIdentity = realtimeBrainPlaybackEventIdentity
+            if let playbackIdentity {
+                orchestrationKernel
+                    .settleRealtimeResidentBrainPlaybackTarget(
+                        playbackIdentity
+                    )
+            }
+            realtimeBrainSubtitlePresentation.retire(playbackIdentity)
+            syncRealtimeBrainSubtitlePresentation()
+            realtimeBrainPlaybackResponseID = nil
+            realtimeBrainPlaybackEventIdentity = nil
+            realtimeBrainPlaybackProviderFinishedResponseID = nil
+            realtimeBrainPlaybackGeneration = nil
+            if shouldClearPlayback {
                 let snapshot = await speechAudioOutputHost.clear()
                 guard isCurrentRealtimeBrainRoute(
                     attemptID: attemptID,
@@ -2928,20 +2942,6 @@ final class AppController: ObservableObject {
                 ) else { return }
                 speechAudioOutputHostSnapshot = snapshot
             }
-            if let playbackIdentity = realtimeBrainPlaybackEventIdentity {
-                orchestrationKernel
-                    .settleRealtimeResidentBrainPlaybackTarget(
-                        playbackIdentity
-                    )
-            }
-            realtimeBrainSubtitlePresentation.retire(
-                realtimeBrainPlaybackEventIdentity
-            )
-            syncRealtimeBrainSubtitlePresentation()
-            realtimeBrainPlaybackResponseID = nil
-            realtimeBrainPlaybackEventIdentity = nil
-            realtimeBrainPlaybackProviderFinishedResponseID = nil
-            realtimeBrainPlaybackGeneration = nil
             #if DEBUG
             let recoverableErrorCode = Self.realtimeResidentBrainErrorCode(
                 error

@@ -505,7 +505,9 @@ Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 53-B third repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B fourth wired-headset attempt = FAIL / P1
 53-B fourth repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
-53-B fifth wired-headset retest = NOT_RUN
+53-B fifth wired-headset attempt = FAIL / P1
+53-B fifth repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B sixth wired-headset retest = NOT_RUN
 Other required Real-device Human Gates = NOT_RUN
 ```
 
@@ -775,6 +777,16 @@ real near-end + resident render
 
 第四次最小修复不改 AEC / double-talk / source-gate threshold、三帧 confirmation、500 ms residual tail、Qwen semantic VAD 或 Runtime interruption authority。AEC Host 仅在生成 capture-bound snapshot 时将 raw last-audible watermark 投影为 `min(rawLastAudible, captureTime)`，保持原始 render watermark 不变，消除 render tap 时间领先 capture 时的非因果 observation。Input Bridge 与 AppController 均保留同一 source-gate epoch 内已经 packet-bound 且 eligible 的证据，即使 send 返回时 live gate 已关闭；generation、Playback sequence / active、source-gate epoch、route / device 与 500 ms freshness 继续 fail closed。DEBUG packet trace新增 capture / last-audible / gate-last-audible 三个 monotonic 时间字段；Qwen Adapter 在 Provider-listening 状态也记录每 100 ms transport-enqueued PCM 的 byte / peak / RMS，仍不合成 `speech_started`，也不改变 Provider error contract。自动化修复不能替代 Real Qwen 同设备复测。
 
+第四次自动化修复后的第五次 53-B 同设备真人复测仍为 `FAIL / P1`，但声学 admission 已不再是阻断点。真人 evidence 为：AEC `.doubleTalk` 33 frame、source-gate epoch 3、source forwarded 104；Input Bridge 收到 18 个 packet-bound `sourceGatedNearEnd`，其中 eligible 2、already-eligible 14、duplicate-capture guard 2，正式 acoustic evidence forwarded 2、stale observation 0。Qwen audio append submitted / completed 为 379 / 379、pending write 最大 1 / 8、capacity wait 0。Provider active response 约在 40073 ms terminal，而实际本地 Playback 持续到约 51407 ms；acoustic evidence 约在 43707 ms 与 49922 ms 到达，Qwen `speech_started` 约在 44567 ms 到达，但最终仍没有 confirmed interruption 或 clear。
+
+第五次日志确认两个串联阻断点。第一，旧 Output Bridge 对每个 resident audio event 都同步等待 AppController / Audio Host consume；Host 的有界播放队列在真实长回复中产生 backpressure 后，同一 receive loop 内排在旧 PCM 后面的 `userSpeechStarted`、semantic 与 terminal control event 会发生 head-of-line blocking。第二，`response.done` context refresh 把当前 identity 从 revision 1 推进到 2；已经由 wire 收到、但仍排在旧 PCM 后面的下一用户 `speech_started` 继续携带 revision 1，最终进入 Session Gate 时被当作 invalid identity / stale 拒绝。当前根因因此位于 Output Bridge control admission 与 Qwen pending user activity context binding，不是 AEC、source gate、Eligibility、Runtime interruption authority或 WebSocket write window。
+
+第五次最小修复将 Output Bridge 拆成 control path 与单一有界 256-event media FIFO。每个 response 的首块 PCM 仍同步 consume，以在后续 control event 前注册 exact Playback target；后续 resident PCM 与 `residentSpeakingStopped` 由一个 worker 保序消费，`userSpeechStarted`、semantic、text、error 与 terminal control 不再等待物理 Playback。Stop / suspend / recoverable error / close 会退休 consume ID、取消并清空旧 media queue；resume / N+1 start 必须先 join 旧 worker。AppController 在 recoverable `.error` 的 Playback clear await 前先原子退休旧 target / response / generation identity，使已经阻塞的旧 enqueue continuation 不能在 clear 后重新接受旧 PCM；`.error` 仍保持 provider-neutral contract 定义的 recoverable response error，不被改成 terminal session failure。
+
+Qwen Adapter 只在 context update 成功后重绑 exact pending user activity：同一 Session、旧 revision、`responseID == nil` 且已经出现 pending `userSpeechStarted` 的 exact turn，允许其 speech started / stopped、transcript partial / final 与 wire-item binding 跟随新 context revision。resident / response event、旧 generation、其他 turn、已 terminal turn 与 sequence 均不改变。确定性测试真实覆盖 `response.done → pending speech_started → revision 1→2 → transcript / stop / final`，并证明旧 response terminal event 保持 revision 1、新用户 turn 保持同一 sequence / turn 且全部进入 revision 2。
+
+自动化结果：Qwen Adapter 29 cases / 204 checks；Realtime Input / Output Bridge 32/210；R8.5.3 isolated 3/97；interruption evidence 24/202；R8.3.1 1/29、R8.3.2 1/62、R8.3.3 1/68，独立 timing 为 first valid near-end → eligibility 5.073 ms、confirmed → clear 0.266 ms、first valid near-end → clear 28.485 ms，110 个 stale event 全部拒绝且 N+1 Input / Output / Playback / Listening 均为 1。R8.2.3 为 12/126、740 observations、120 × 32 = 3840 resident-only stress frames，eligibility / confirmed / interrupt / cancel / clear / generation / lease / false turn / persistence 全为 0。R8.5.1 total 为 13 cross-node / 0 failure、100 randomized / 0 failure、15 repeat / 0 failure，production digest 前后均为 `e8fed6defc49581b139e0bafd8d04a8078c5f3805cd36f79710e5ba61b4979e5`。最终 A7 为 34 suites / 37 entrypoints / 12595 assertions，Debug / Release clean build、architecture / secret / repository mutation guards 均 PASS。Production code 修改 3 files；未修改任何声学阈值、source gate、三帧 confirmation、500 ms tail、Runtime API、DR / Store schema 或 platform target。自动化不能替代第六次 Real Qwen 同设备真人复测。
+
 ```text
 R8.5.3 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B first wired-headset attempt = FAIL / P1
@@ -785,7 +797,9 @@ R8.5.3 = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B third automated repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B fourth wired-headset attempt = FAIL / P1
 53-B fourth automated repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
-53-B fifth Real Qwen wired-headset retest = NOT_RUN
+53-B fifth wired-headset attempt = FAIL / P1
+53-B fifth automated repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B sixth Real Qwen wired-headset retest = NOT_RUN
 Human Gate PASS / FROZEN = NOT_ALLOWED_YET
 ```
 
@@ -1078,10 +1092,12 @@ Unified Human Gate = IN_PROGRESS / PARTIAL_RESULTS
 53-B third repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
 53-B fourth wired-headset attempt = FAIL / P1
 53-B fourth repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
-53-B fifth wired-headset retest = NOT_RUN
+53-B fifth wired-headset attempt = FAIL / P1
+53-B fifth repair = AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
+53-B sixth wired-headset retest = NOT_RUN
 Other Real-device P0 / P1 / P2 = NOT_ASSESSED
 Release Route source availability = EXECUTABLE / HUMAN_GATE_NOT_RUN
-Next = fifth 53-B Real Qwen wired-headset barge-in retest
+Next = sixth 53-B Real Qwen wired-headset barge-in retest
 ```
 
 ### R8.5+ Terminology

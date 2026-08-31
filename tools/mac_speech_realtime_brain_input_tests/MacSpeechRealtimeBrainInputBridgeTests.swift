@@ -355,6 +355,73 @@ private actor R7EventSink {
     }
 }
 
+private actor R7BlockedOutputConsumer {
+    private var blockedAudioStarted = false
+    private var blockedAudioStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var blockedAudioRelease: CheckedContinuation<Void, Never>?
+    private var controlEventSequences: [UInt64] = []
+    private var recoverableErrorCount = 0
+    private var mediaStarts: [String] = []
+    private var mediaCompletions: [String] = []
+
+    func consume(_ event: RealtimeResidentBrainEvent) async {
+        switch event.kind {
+        case .residentAudioDelta(let audio):
+            let marker = "audio\(audio.sequence)"
+            mediaStarts.append(marker)
+            if audio.sequence == 2 {
+                blockedAudioStarted = true
+                let waiters = blockedAudioStartWaiters
+                blockedAudioStartWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+                await withCheckedContinuation { continuation in
+                    blockedAudioRelease = continuation
+                }
+            }
+            mediaCompletions.append(marker)
+        case .residentSpeakingStopped:
+            mediaStarts.append("stopped")
+            mediaCompletions.append("stopped")
+        case .userSpeechStarted:
+            controlEventSequences.append(event.sequence)
+        case .error:
+            recoverableErrorCount += 1
+            let release = blockedAudioRelease
+            blockedAudioRelease = nil
+            release?.resume()
+        default:
+            break
+        }
+    }
+
+    func waitUntilBlockedAudioStarted() async {
+        if blockedAudioStarted { return }
+        await withCheckedContinuation { continuation in
+            if blockedAudioStarted {
+                continuation.resume()
+            } else {
+                blockedAudioStartWaiters.append(continuation)
+            }
+        }
+    }
+
+    func releaseBlockedAudio() {
+        guard let blockedAudioRelease else {
+            fatalError("FAILED: second output audio was not blocked")
+        }
+        self.blockedAudioRelease = nil
+        blockedAudioRelease.resume()
+    }
+
+    func controlSequences() -> [UInt64] { controlEventSequences }
+
+    func errorCount() -> Int { recoverableErrorCount }
+
+    func startedMedia() -> [String] { mediaStarts }
+
+    func completedMedia() -> [String] { mediaCompletions }
+}
+
 private actor R7HeldAudioSend {
     private var started = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
@@ -473,6 +540,46 @@ private actor R7DispositionSource {
     }
 }
 
+private actor R7HoldingDispositionSource {
+    private var dispositions: [RealtimeBrainEventDisposition]
+    private var nextWaiter: CheckedContinuation<Void, Never>?
+    private var isClosed = false
+
+    init(_ dispositions: [RealtimeBrainEventDisposition]) {
+        self.dispositions = dispositions
+    }
+
+    func next() async -> Result<
+        RealtimeBrainEventDisposition,
+        RealtimeResidentBrainError
+    > {
+        while dispositions.isEmpty && !isClosed {
+            await withCheckedContinuation { continuation in
+                nextWaiter = continuation
+            }
+        }
+        guard !dispositions.isEmpty else {
+            return .success(.rejectedClosed)
+        }
+        return .success(dispositions.removeFirst())
+    }
+
+    func append(_ next: [RealtimeBrainEventDisposition]) {
+        guard !isClosed else { return }
+        dispositions.append(contentsOf: next)
+        let waiter = nextWaiter
+        nextWaiter = nil
+        waiter?.resume()
+    }
+
+    func close() {
+        isClosed = true
+        let waiter = nextWaiter
+        nextWaiter = nil
+        waiter?.resume()
+    }
+}
+
 private actor R81AcousticObservationSink {
     private var observations: [MacSpeechRealtimeBrainAcousticObservation] = []
 
@@ -545,6 +652,8 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testAudioFrameConversion()
         await testStopFailsClosedAndRetries()
         await testOutputRejectsLateAudioAfterAudioDone()
+        await testOutputErrorRetiresBlockedAudioBacklog()
+        await testOutputSuspendDropsBlockedOldGeneration()
         await testOutputStopFromConsumerDoesNotDeadlock()
         await testFormalRuntimeRouteRemainsActiveForTwoTurns(
             fixture: fixture
@@ -2146,6 +2255,214 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         expect(
             snapshot.rejectedEventCount == 2,
             "late audio and terminal close are deterministically rejected"
+        )
+    }
+
+    private static func testOutputErrorRetiresBlockedAudioBacklog() async {
+        cases += 1
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "test-resident",
+            runtimeSessionID: "test-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let turn = RealtimeBrainTurnID()
+        let firstIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: turn,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let nextIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: turn,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let controlIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: RealtimeBrainTurnID(),
+            responseID: nil,
+            contextRevision: 1
+        )
+        let initialEvents = [
+            outputAudioEvent(firstIdentity, event: 1, audio: 1),
+            outputAudioEvent(firstIdentity, event: 2, audio: 2),
+            outputAudioEvent(firstIdentity, event: 3, audio: 3),
+            RealtimeResidentBrainEvent(
+                identity: firstIdentity,
+                sequence: 4,
+                kind: .residentSpeakingStopped
+            ),
+            RealtimeResidentBrainEvent(
+                identity: controlIdentity,
+                sequence: 5,
+                kind: .userSpeechStarted
+            )
+        ]
+        let source = R7HoldingDispositionSource(initialEvents.map {
+            RealtimeBrainEventDisposition.accepted($0)
+        })
+        let consumer = R7BlockedOutputConsumer()
+        let bridge = MacSpeechRealtimeBrainOutputBridge(
+            receiveEvent: { _ in await source.next() },
+            consumeEvent: { event in await consumer.consume(event) }
+        )
+
+        _ = await bridge.start(session: session)
+        await consumer.waitUntilBlockedAudioStarted()
+        await waitUntil(label: "error test audio backlog is admitted") {
+            await consumer.controlSequences() == [5]
+        }
+        await source.append([
+            .accepted(RealtimeResidentBrainEvent(
+                identity: firstIdentity,
+                sequence: 6,
+                kind: .error(.providerFailure)
+            )),
+            .accepted(outputAudioEvent(nextIdentity, event: 7, audio: 4))
+        ])
+        await waitUntil(label: "recoverable error bypasses audio backlog") {
+            await consumer.errorCount() == 1
+        }
+        await waitUntil(label: "post-error response audio remains live") {
+            await consumer.completedMedia().contains("audio4")
+        }
+        expect(
+            await consumer.startedMedia() == ["audio1", "audio2", "audio4"],
+            "recoverable error drops queued old audio before the next response"
+        )
+        expect(
+            await consumer.completedMedia()
+                == ["audio1", "audio2", "audio4"],
+            "recoverable error cannot resurrect old audio or seal new output"
+        )
+        expect(
+            await bridge.currentSnapshot().state == .running,
+            "recoverable response error keeps the formal receive loop active"
+        )
+        await source.close()
+        await waitUntil(label: "recoverable error output settlement") {
+            await bridge.currentSnapshot().state == .stopped
+        }
+    }
+
+    private static func testOutputSuspendDropsBlockedOldGeneration() async {
+        cases += 1
+        let leaseID = UUID()
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "test-resident",
+            runtimeSessionID: "test-session",
+            brainLeaseID: leaseID,
+            routeEpoch: 1,
+            generation: 1
+        )
+        let nextSession = RealtimeBrainSessionIdentity(
+            residentID: session.residentID,
+            runtimeSessionID: session.runtimeSessionID,
+            brainLeaseID: leaseID,
+            routeEpoch: session.routeEpoch,
+            generation: 2
+        )
+        let oldIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: RealtimeBrainTurnID(),
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let nextIdentity = RealtimeBrainEventIdentity(
+            session: nextSession,
+            turnID: RealtimeBrainTurnID(),
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: 1
+        )
+        let oldUserIdentity = RealtimeBrainEventIdentity(
+            session: session,
+            turnID: RealtimeBrainTurnID(),
+            responseID: nil,
+            contextRevision: 1
+        )
+        let source = R7HoldingDispositionSource([
+            .accepted(outputAudioEvent(oldIdentity, event: 1, audio: 1)),
+            .accepted(outputAudioEvent(oldIdentity, event: 2, audio: 2)),
+            .accepted(outputAudioEvent(oldIdentity, event: 3, audio: 3)),
+            .accepted(RealtimeResidentBrainEvent(
+                identity: oldUserIdentity,
+                sequence: 4,
+                kind: .userSpeechStarted
+            ))
+        ])
+        let consumer = R7BlockedOutputConsumer()
+        let bridge = MacSpeechRealtimeBrainOutputBridge(
+            receiveEvent: { _ in await source.next() },
+            consumeEvent: { event in await consumer.consume(event) }
+        )
+
+        _ = await bridge.start(session: session)
+        await consumer.waitUntilBlockedAudioStarted()
+        await waitUntil(label: "old-generation control bypass") {
+            await consumer.controlSequences() == [4]
+        }
+        let suspended = await bridge.suspendForGenerationTransition(
+            session: session
+        )
+        expect(
+            suspended.state == .stopped && !suspended.hasActiveReceiveLoop,
+            "generation suspension fences receive and playback workers"
+        )
+        await consumer.releaseBlockedAudio()
+        let resumed = await bridge.resumeAfterGenerationTransition(
+            session: nextSession
+        )
+        expect(
+            resumed.state == .running && resumed.hasActiveReceiveLoop,
+            "the next generation restores the formal receive loop"
+        )
+        await source.append([
+            .rejectedStale,
+            .accepted(outputAudioEvent(
+                nextIdentity,
+                event: 1,
+                audio: 10
+            ))
+        ])
+        await waitUntil(label: "next-generation output after blocked old PCM") {
+            await consumer.completedMedia().contains("audio10")
+        }
+        expect(
+            !(await consumer.startedMedia()).contains("audio3"),
+            "suspension drops queued old-generation PCM"
+        )
+        expect(
+            await consumer.completedMedia().contains("audio10"),
+            "N+1 output remains functional after old worker retirement"
+        )
+        await source.close()
+        await waitUntil(label: "generation output settlement") {
+            await bridge.currentSnapshot().state == .stopped
+        }
+    }
+
+    private static func outputAudioEvent(
+        _ identity: RealtimeBrainEventIdentity,
+        event eventSequence: UInt64,
+        audio audioSequence: UInt64
+    ) -> RealtimeResidentBrainEvent {
+        RealtimeResidentBrainEvent(
+            identity: identity,
+            sequence: eventSequence,
+            kind: .residentAudioDelta(RealtimeBrainAudioDelta(
+                sequence: audioSequence,
+                timestampNanoseconds: audioSequence * 20_000_000,
+                format: RealtimeBrainAudioFormat(
+                    encoding: .pcm16LittleEndian,
+                    sampleRate: 24_000,
+                    channelCount: 1
+                ),
+                provenance: .providerGenerated,
+                bytes: Data(repeating: 1, count: 960)
+            ))
         )
     }
 

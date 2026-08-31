@@ -702,6 +702,12 @@ actor QwenRealtimeResidentBrainAdapter:
             try await waitForAcknowledgement(acknowledgement)
             expectedSessionUpdate = nil
             contextSectionsByScope = nextContextSections
+            if update.kind == .delta {
+                rebindPendingUserActivity(
+                    from: contextRevision,
+                    to: update.contextRevision
+                )
+            }
             contextRevision = update.contextRevision
             if update.kind == .bootstrap {
                 lifecycle = .active
@@ -1600,6 +1606,98 @@ actor QwenRealtimeResidentBrainAdapter:
             responseID: response.runtimeID,
             contextRevision: response.contextRevision
         )
+    }
+
+    private func rebindPendingUserActivity(
+        from previousContextRevision: UInt64,
+        to nextContextRevision: UInt64
+    ) {
+        guard let identity,
+              nextContextRevision > previousContextRevision else { return }
+        let pendingTurnIDs = Set<RealtimeBrainTurnID>(
+            pendingEvents.compactMap { event in
+                guard event.identity.session == identity,
+                      event.identity.contextRevision
+                        == previousContextRevision,
+                      event.identity.responseID == nil,
+                      let turnID = event.identity.turnID,
+                      case .userSpeechStarted = event.kind else { return nil }
+                return turnID
+            }
+        )
+        guard !pendingTurnIDs.isEmpty else { return }
+
+        var reboundEventCount = 0
+        pendingEvents = pendingEvents.map { event in
+            guard event.identity.session == identity,
+                  event.identity.contextRevision
+                    == previousContextRevision,
+                  event.identity.responseID == nil,
+                  let turnID = event.identity.turnID,
+                  pendingTurnIDs.contains(turnID),
+                  Self.isUserActivity(event.kind) else { return event }
+            reboundEventCount += 1
+            return RealtimeResidentBrainEvent(
+                identity: RealtimeBrainEventIdentity(
+                    session: identity,
+                    turnID: turnID,
+                    responseID: nil,
+                    contextRevision: nextContextRevision
+                ),
+                sequence: event.sequence,
+                kind: event.kind
+            )
+        }
+        let reboundWireItemIDs = turnsByWireItemID.compactMap {
+            wireItemID, turn in
+            turn.sessionIdentity == identity
+                && turn.contextRevision == previousContextRevision
+                && pendingTurnIDs.contains(turn.runtimeID)
+                ? wireItemID : nil
+        }
+        for wireItemID in reboundWireItemIDs {
+            guard let turn = turnsByWireItemID[wireItemID] else { continue }
+            turnsByWireItemID[wireItemID] = TurnBinding(
+                runtimeID: turn.runtimeID,
+                sessionIdentity: turn.sessionIdentity,
+                contextRevision: nextContextRevision
+            )
+        }
+        if let turn = latestTurnBinding,
+           turn.sessionIdentity == identity,
+           turn.contextRevision == previousContextRevision,
+           pendingTurnIDs.contains(turn.runtimeID) {
+            latestTurnBinding = TurnBinding(
+                runtimeID: turn.runtimeID,
+                sessionIdentity: turn.sessionIdentity,
+                contextRevision: nextContextRevision
+            )
+        }
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: "qwen_pending_user_activity_context_rebound",
+            routeKind: .realtimeBrain,
+            turnGeneration: identity.generation,
+            stateBefore: String(previousContextRevision),
+            stateAfter: String(nextContextRevision),
+            disposition: "events=\(reboundEventCount)",
+            itemCorrelationHash: pendingTurnIDs.count == 1
+                ? pendingTurnIDs.first.map {
+                    String($0.rawValue.uuidString.prefix(8))
+                } : nil
+        ))
+    }
+
+    private static func isUserActivity(
+        _ kind: RealtimeResidentBrainEventKind
+    ) -> Bool {
+        switch kind {
+        case .userSpeechStarted, .userSpeechStopped,
+             .userTranscriptPartial, .userTranscriptFinal:
+            true
+        default:
+            false
+        }
     }
 
     private func requestResponse(

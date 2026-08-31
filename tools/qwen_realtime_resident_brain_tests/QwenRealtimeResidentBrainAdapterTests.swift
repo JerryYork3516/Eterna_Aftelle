@@ -65,6 +65,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testResidentTextWireSourceCanonicalization()
         try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
+        try await testPendingUserActivityRebindsAcrossContextRefresh()
         try await testUnauthorizedResponseFailsClosed()
         try await testOverlappingResponseFailsClosed()
         try await testGenerationReconnectRejectsUnseenOldResponse()
@@ -1158,6 +1159,123 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: nextIdentity)
+        )
+    }
+
+    private static func testPendingUserActivityRebindsAcrossContextRefresh()
+        async throws {
+        cases += 1
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
+        let identity = sessionIdentity(generation: 23)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"context-source-user"}"#
+        )
+        let sourceSpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try await authorizeResponse(
+            stack,
+            from: sourceSpeech,
+            responseID: "context-source-response"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"context-source-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"context refresh"}]}]}}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"pending-barge-in-user"}"#
+        )
+
+        let residentText = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        let residentFinal = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            residentText.identity.contextRevision == 1
+                && residentFinal.identity.contextRevision == 1,
+            "terminal response events retain their accepted context revision"
+        )
+
+        try await stack.adapter.updateRuntimeContext(
+            RealtimeBrainRuntimeContextUpdate(
+                identity: identity,
+                kind: .delta,
+                contextRevision: 2,
+                sections: [RealtimeBrainContextSection(
+                    scope: .dynamicSession,
+                    content: "refreshed context"
+                )]
+            )
+        )
+        let pendingSpeech = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            pendingSpeech.kind == .userSpeechStarted
+                && pendingSpeech.sequence == 5
+                && pendingSpeech.identity.contextRevision == 2,
+            "pending speech-start joins the context accepted before delivery"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"pending-barge-in-user","text":"停一下","stash":""}"#
+        )
+        let pendingTranscript = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"pending-barge-in-user"}"#
+        )
+        let pendingStop = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"pending-barge-in-user","transcript":"停一下"}"#
+        )
+        let pendingFinal = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            pendingTranscript.identity.turnID == pendingSpeech.identity.turnID
+                && pendingStop.identity.turnID == pendingSpeech.identity.turnID
+                && pendingFinal.identity.turnID == pendingSpeech.identity.turnID
+                && pendingTranscript.identity.contextRevision == 2
+                && pendingStop.identity.contextRevision == 2
+                && pendingFinal.identity.contextRevision == 2,
+            "the exact pending user turn stays on the refreshed context"
+        )
+        try await authorizeResponse(
+            stack,
+            from: pendingFinal,
+            responseID: "pending-barge-in-response"
+        )
+        let responseCreateCount = try await sentTypes(stack.transport)
+            .filter { $0 == "response.create" }
+            .count
+        expect(
+            responseCreateCount == 2,
+            "the rebound turn remains authorized for its next response"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"pending-barge-in-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"继续"}]}]}}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        expect(
+            diagnostics.drain().events.contains {
+                $0.category == "qwen_pending_user_activity_context_rebound"
+                    && $0.stateBefore == "1"
+                    && $0.stateAfter == "2"
+            },
+            "diagnostics expose the pending user-turn context repair"
+        )
+
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
         )
     }
 
