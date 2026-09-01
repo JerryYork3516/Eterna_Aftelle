@@ -532,6 +532,14 @@ actor QwenRealtimeResidentBrainAdapter:
         let contextRevision: UInt64
     }
 
+    private struct ActiveUserInputTurn {
+        let wireItemID: String
+        var turn: TurnBinding
+        var latestTranscriptPartial: String?
+        var speechStopped = false
+        var transcriptFinal: String?
+    }
+
     private enum ResponseAuthorizationKind: Equatable {
         case runtime(sourceEventSequence: UInt64)
         case toolContinuation(callID: RealtimeBrainToolCallID)
@@ -587,7 +595,12 @@ actor QwenRealtimeResidentBrainAdapter:
         [String: TurnBinding] = [:]
     private var latestTurnBinding: TurnBinding?
     private var lastUserTranscriptPreviewByItemID: [String: String] = [:]
+    private var activeUserInputTurn: ActiveUserInputTurn?
     private var activeResponse: ActiveResponse?
+    private var completedUserInputItemIDs: Set<String> = []
+    private var completedUserInputItemOrder: [String] = []
+    private var stoppedUserInputItemIDs: Set<String> = []
+    private var stoppedUserInputItemOrder: [String] = []
     private var retiredItemIDs: Set<String> = []
     private var retiredItemOrder: [String] = []
     private var retiredResponseIDs: Set<String> = []
@@ -831,7 +844,8 @@ actor QwenRealtimeResidentBrainAdapter:
             to: next,
             reason: command.reason,
             clearInput: true,
-            reconnect: true
+            reconnect: true,
+            preserveInterruptingUserInput: false
         )
     }
 
@@ -845,7 +859,8 @@ actor QwenRealtimeResidentBrainAdapter:
             to: next,
             reason: .interrupted,
             clearInput: true,
-            reconnect: false
+            reconnect: false,
+            preserveInterruptingUserInput: true
         )
     }
 
@@ -943,7 +958,8 @@ actor QwenRealtimeResidentBrainAdapter:
         to next: RealtimeBrainSessionIdentity,
         reason: RealtimeBrainCancellationReason,
         clearInput: Bool,
-        reconnect: Bool
+        reconnect: Bool,
+        preserveInterruptingUserInput: Bool
     ) async throws {
         guard let current = identity,
               next.generation > current.generation,
@@ -955,6 +971,8 @@ actor QwenRealtimeResidentBrainAdapter:
         guard activeMutationOperations.isEmpty else {
             throw RealtimeResidentBrainError.operationInFlight
         }
+        let interruptingItemID = preserveInterruptingUserInput
+            ? activeUserInputTurn?.wireItemID : nil
         lifecycle = .transitioning
         do {
             if let responseID = activeResponse?.wireID {
@@ -963,7 +981,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 try await waitForAcknowledgement(.responseDone(responseID))
                 locallyCancellingResponseID = nil
             }
-            if clearInput {
+            if clearInput && interruptingItemID == nil {
                 acknowledgementSerial &+= 1
                 let acknowledgement = Acknowledgement.inputAudioCleared(
                     acknowledgementSerial
@@ -973,7 +991,19 @@ actor QwenRealtimeResidentBrainAdapter:
                 try await waitForAcknowledgement(acknowledgement)
                 expectedInputClear = nil
             }
-            retireCurrentGenerationWireState()
+            let carriedUserInput = activeUserInputTurn.flatMap { state in
+                state.wireItemID == interruptingItemID ? state : nil
+            }
+            let carriedInputAudioBatcher: QwenRealtimeInputAudioBatcher?
+            if carriedUserInput == nil {
+                carriedInputAudioBatcher = nil
+            } else {
+                carriedInputAudioBatcher = inputAudioBatcher
+                inputAudioBatcher = QwenRealtimeInputAudioBatcher()
+            }
+            retireCurrentGenerationWireState(
+                preservingItemID: carriedUserInput?.wireItemID
+            )
             let nextConnectionToken: UUID?
             if reconnect {
                 nextConnectionToken = try await reconnectForGeneration(
@@ -989,6 +1019,13 @@ actor QwenRealtimeResidentBrainAdapter:
             identity = next
             runtimeVoiceBinding = nextVoiceBinding
             resetGenerationStatePreservingTombstones()
+            if let carriedUserInput, let carriedInputAudioBatcher {
+                restoreInterruptingUserInput(
+                    carriedUserInput,
+                    inputAudioBatcher: carriedInputAudioBatcher,
+                    session: next
+                )
+            }
             if let nextConnectionToken {
                 resetWireTombstones()
                 connectionToken = nextConnectionToken
@@ -1133,9 +1170,15 @@ actor QwenRealtimeResidentBrainAdapter:
                         ? "listening" : "active_response"
                 )
             )
-            guard lifecycle == .active else { return }
+            guard lifecycle == .active,
+                  !completedUserInputItemIDs.contains(itemID) else { return }
             guard let turn = turnBinding(for: itemID, createsIfNeeded: true)
             else { return }
+            activeUserInputTurn = ActiveUserInputTurn(
+                wireItemID: itemID,
+                turn: turn,
+                latestTranscriptPartial: nil
+            )
             if let response = activeResponse {
                 let eventIdentity = makeEventIdentity(for: response)
                 enqueue(kind: .interruptionProposed(
@@ -1150,47 +1193,102 @@ actor QwenRealtimeResidentBrainAdapter:
                 identity: makeEventIdentity(for: turn)
             )
         case .inputSpeechStopped(let itemID):
+            guard !stoppedUserInputItemIDs.contains(itemID) else { return }
+            if lifecycle == .transitioning,
+               recordActiveUserSpeechStopped(itemID: itemID) {
+                markUserInputStopped(itemID)
+                return
+            }
             guard lifecycle == .active,
                   let turn = turnBinding(
                     for: itemID,
                     createsIfNeeded: false
                   ) else { return }
+            if activeUserInputTurn?.wireItemID == itemID,
+               !recordActiveUserSpeechStopped(itemID: itemID) {
+                return
+            }
+            markUserInputStopped(itemID)
             enqueue(
                 kind: .userSpeechStopped,
                 identity: makeEventIdentity(for: turn)
             )
         case .inputTranscriptDelta(let itemID, let preview):
+            guard !completedUserInputItemIDs.contains(itemID) else { return }
+            let trimmedPreview = preview.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if lifecycle == .transitioning,
+               !trimmedPreview.isEmpty,
+               lastUserTranscriptPreviewByItemID[itemID] != preview,
+               recordActiveUserTranscriptPartial(
+                   preview,
+                   itemID: itemID
+               ) {
+                lastUserTranscriptPreviewByItemID[itemID] = preview
+                return
+            }
             guard lifecycle == .active,
                   let turn = turnBinding(
                     for: itemID,
                     createsIfNeeded: false
                   ),
-                  !preview.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                  ).isEmpty,
+                  !trimmedPreview.isEmpty,
                   lastUserTranscriptPreviewByItemID[itemID] != preview else {
                 return
             }
             lastUserTranscriptPreviewByItemID[itemID] = preview
+            if activeUserInputTurn?.wireItemID == itemID {
+                _ = recordActiveUserTranscriptPartial(
+                    preview,
+                    itemID: itemID
+                )
+            }
             enqueue(
                 kind: .userTranscriptPartial(preview),
                 identity: makeEventIdentity(for: turn)
             )
         case .inputTranscriptCompleted(let itemID, let transcript):
+            guard !completedUserInputItemIDs.contains(itemID) else { return }
+            let trimmedTranscript = transcript.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if lifecycle == .transitioning,
+               !trimmedTranscript.isEmpty,
+               recordActiveUserTranscriptFinal(
+                   transcript,
+                   itemID: itemID
+               ) {
+                lastUserTranscriptPreviewByItemID[itemID] = transcript
+                markUserInputCompleted(itemID)
+                return
+            }
             guard lifecycle == .active,
                   let turn = turnBinding(
                     for: itemID,
                     createsIfNeeded: false
                   ),
-                  !transcript.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                  ).isEmpty else { return }
+                  !trimmedTranscript.isEmpty else { return }
             lastUserTranscriptPreviewByItemID[itemID] = transcript
+            if activeUserInputTurn?.wireItemID == itemID {
+                _ = recordActiveUserTranscriptFinal(
+                    transcript,
+                    itemID: itemID
+                )
+            }
+            markUserInputCompleted(itemID)
             enqueue(
                 kind: .userTranscriptFinal(transcript),
                 identity: makeEventIdentity(for: turn)
             )
         case .inputTranscriptFailed(let itemID):
+            guard !completedUserInputItemIDs.contains(itemID) else { return }
+            if lifecycle == .transitioning {
+                guard let state = activeUserInputTurn,
+                      state.wireItemID == itemID,
+                      state.transcriptFinal == nil else { return }
+                throw RealtimeResidentBrainError.providerFailure
+            }
             guard lifecycle == .active,
                   turnBinding(
                     for: itemID,
@@ -1673,6 +1771,17 @@ actor QwenRealtimeResidentBrainAdapter:
                 contextRevision: nextContextRevision
             )
         }
+        if var active = activeUserInputTurn,
+           active.turn.sessionIdentity == identity,
+           active.turn.contextRevision == previousContextRevision,
+           pendingTurnIDs.contains(active.turn.runtimeID) {
+            active.turn = TurnBinding(
+                runtimeID: active.turn.runtimeID,
+                sessionIdentity: identity,
+                contextRevision: nextContextRevision
+            )
+            activeUserInputTurn = active
+        }
         diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
             source: .adapter,
             category: "qwen_pending_user_activity_context_rebound",
@@ -1849,10 +1958,125 @@ actor QwenRealtimeResidentBrainAdapter:
         }
     }
 
-    private func retireCurrentGenerationWireState() {
-        turnsByWireItemID.keys.forEach { retire(itemID: $0) }
+    private func retireCurrentGenerationWireState(
+        preservingItemID: String? = nil
+    ) {
+        turnsByWireItemID.keys
+            .filter { $0 != preservingItemID }
+            .forEach { retire(itemID: $0) }
         if let responseID = activeResponse?.wireID {
             retire(responseID: responseID)
+        }
+    }
+
+    private func restoreInterruptingUserInput(
+        _ state: ActiveUserInputTurn,
+        inputAudioBatcher: QwenRealtimeInputAudioBatcher,
+        session: RealtimeBrainSessionIdentity
+    ) {
+        let turn = TurnBinding(
+            runtimeID: state.turn.runtimeID,
+            sessionIdentity: session,
+            contextRevision: state.turn.contextRevision
+        )
+        var restored = state
+        restored.turn = turn
+        self.inputAudioBatcher = inputAudioBatcher
+        turnsByWireItemID[state.wireItemID] = turn
+        latestTurnBinding = turn
+        activeUserInputTurn = restored
+        if let preview = state.transcriptFinal
+            ?? state.latestTranscriptPartial {
+            lastUserTranscriptPreviewByItemID[state.wireItemID] = preview
+        }
+        let eventIdentity = makeEventIdentity(for: turn)
+        enqueue(kind: .userSpeechStarted, identity: eventIdentity)
+        if let preview = state.latestTranscriptPartial {
+            enqueue(
+                kind: .userTranscriptPartial(preview),
+                identity: eventIdentity
+            )
+        }
+        if state.speechStopped {
+            enqueue(kind: .userSpeechStopped, identity: eventIdentity)
+        }
+        if let transcript = state.transcriptFinal {
+            enqueue(
+                kind: .userTranscriptFinal(transcript),
+                identity: eventIdentity
+            )
+        }
+        let eventCount = 1
+            + (state.latestTranscriptPartial == nil ? 0 : 1)
+            + (state.speechStopped ? 1 : 0)
+            + (state.transcriptFinal == nil ? 0 : 1)
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: "qwen_interrupting_user_turn_rebound",
+            routeKind: .realtimeBrain,
+            turnGeneration: session.generation,
+            disposition: "events=\(eventCount)",
+            itemCorrelationHash: String(
+                turn.runtimeID.rawValue.uuidString.prefix(8)
+            )
+        ))
+    }
+
+    private func recordActiveUserTranscriptPartial(
+        _ preview: String,
+        itemID: String
+    ) -> Bool {
+        guard var state = activeUserInputTurn,
+              state.wireItemID == itemID,
+              state.transcriptFinal == nil,
+              state.latestTranscriptPartial != preview else { return false }
+        state.latestTranscriptPartial = preview
+        activeUserInputTurn = state
+        return true
+    }
+
+    private func recordActiveUserSpeechStopped(itemID: String) -> Bool {
+        guard var state = activeUserInputTurn,
+              state.wireItemID == itemID,
+              !state.speechStopped else { return false }
+        state.speechStopped = true
+        activeUserInputTurn = state
+        return true
+    }
+
+    private func recordActiveUserTranscriptFinal(
+        _ transcript: String,
+        itemID: String
+    ) -> Bool {
+        guard var state = activeUserInputTurn,
+              state.wireItemID == itemID,
+              state.transcriptFinal == nil else { return false }
+        state.transcriptFinal = transcript
+        activeUserInputTurn = state
+        return true
+    }
+
+    private func markUserInputCompleted(_ itemID: String) {
+        guard completedUserInputItemIDs.insert(itemID).inserted else {
+            return
+        }
+        completedUserInputItemOrder.append(itemID)
+        if completedUserInputItemOrder.count > 256 {
+            completedUserInputItemIDs.remove(
+                completedUserInputItemOrder.removeFirst()
+            )
+        }
+    }
+
+    private func markUserInputStopped(_ itemID: String) {
+        guard stoppedUserInputItemIDs.insert(itemID).inserted else {
+            return
+        }
+        stoppedUserInputItemOrder.append(itemID)
+        if stoppedUserInputItemOrder.count > 256 {
+            stoppedUserInputItemIDs.remove(
+                stoppedUserInputItemOrder.removeFirst()
+            )
         }
     }
 
@@ -1964,6 +2188,7 @@ actor QwenRealtimeResidentBrainAdapter:
         turnsByWireItemID.removeAll(keepingCapacity: true)
         latestTurnBinding = nil
         lastUserTranscriptPreviewByItemID.removeAll(keepingCapacity: true)
+        activeUserInputTurn = nil
         activeResponse = nil
         pendingToolCalls.removeAll(keepingCapacity: true)
         locallyCancellingResponseID = nil
@@ -1983,6 +2208,10 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func resetWireTombstones() {
+        completedUserInputItemIDs.removeAll(keepingCapacity: true)
+        completedUserInputItemOrder.removeAll(keepingCapacity: true)
+        stoppedUserInputItemIDs.removeAll(keepingCapacity: true)
+        stoppedUserInputItemOrder.removeAll(keepingCapacity: true)
         retiredItemIDs.removeAll(keepingCapacity: true)
         retiredItemOrder.removeAll(keepingCapacity: true)
         retiredResponseIDs.removeAll(keepingCapacity: true)

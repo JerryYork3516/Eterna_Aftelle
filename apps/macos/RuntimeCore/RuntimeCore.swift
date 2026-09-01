@@ -1785,6 +1785,13 @@ public final class RuntimeCore {
         >
     }
 
+    private struct RealtimeConfirmedInterruptionUserTurnHandoff {
+        let interruptedSession: RealtimeBrainSessionIdentity
+        let nextSession: RealtimeBrainSessionIdentity
+        let contextRevision: UInt64
+        var expectedTurnID: RealtimeBrainTurnID?
+    }
+
     private struct CanonicalResidentResponseKey: Hashable {
         let residentID: String
         let runtimeSessionID: String
@@ -2017,6 +2024,8 @@ public final class RuntimeCore {
     private var realtimeInterruptionTriggerDecisionOrder:
         [RealtimeInterruptionTriggerKey] = []
     private var pendingRealtimeInterruption: PendingRealtimeInterruption?
+    private var realtimeConfirmedInterruptionUserTurnHandoff:
+        RealtimeConfirmedInterruptionUserTurnHandoff?
     private var realtimePassiveBackchannelHandler: (
         @MainActor @Sendable (RealtimePassiveBackchannelPresentation) -> Void
     )?
@@ -2542,6 +2551,7 @@ public final class RuntimeCore {
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         realtimePlaybackInterruptionTarget = nil
+        realtimeConfirmedInterruptionUserTurnHandoff = nil
         #if DEBUG
         realtimeInterruptionTimingDebugSnapshot = nil
         #endif
@@ -3026,16 +3036,36 @@ public final class RuntimeCore {
         allowsListeningAudioAfterEvent: Bool = false,
         maximumListeningAudioTimestampNanoseconds: UInt64? = nil
     ) -> Bool {
-        claimRealtimeUtteranceAcousticAuthorization(
-            for: event,
-            receivedAtNanoseconds: receivedAtNanoseconds
-        ) || claimRealtimeUtteranceListeningAuthorization(
-            for: event,
-            receivedAtNanoseconds: receivedAtNanoseconds,
-            allowsAudioAfterEvent: allowsListeningAudioAfterEvent,
-            maximumAudioTimestampNanoseconds:
-                maximumListeningAudioTimestampNanoseconds
-        )
+        claimRealtimeConfirmedInterruptionUserTurnHandoff(for: event)
+            || claimRealtimeUtteranceAcousticAuthorization(
+                for: event,
+                receivedAtNanoseconds: receivedAtNanoseconds
+            ) || claimRealtimeUtteranceListeningAuthorization(
+                for: event,
+                receivedAtNanoseconds: receivedAtNanoseconds,
+                allowsAudioAfterEvent: allowsListeningAudioAfterEvent,
+                maximumAudioTimestampNanoseconds:
+                    maximumListeningAudioTimestampNanoseconds
+            )
+    }
+
+    private func claimRealtimeConfirmedInterruptionUserTurnHandoff(
+        for event: RealtimeResidentBrainEvent
+    ) -> Bool {
+        guard case .userSpeechStarted = event.kind,
+              let handoff = realtimeConfirmedInterruptionUserTurnHandoff,
+              event.identity.session == handoff.nextSession else {
+            return false
+        }
+        defer { realtimeConfirmedInterruptionUserTurnHandoff = nil }
+        guard event.sequence == 1,
+              event.identity.contextRevision == handoff.contextRevision,
+              event.identity.responseID == nil,
+              let turnID = event.identity.turnID,
+              handoff.expectedTurnID.map({ $0 == turnID }) ?? true else {
+            return false
+        }
+        return true
     }
 
     @MainActor
@@ -4341,6 +4371,7 @@ public final class RuntimeCore {
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         realtimePlaybackInterruptionTarget = nil
+        realtimeConfirmedInterruptionUserTurnHandoff = nil
         #if DEBUG
         realtimeInterruptionTimingDebugSnapshot = nil
         #endif
@@ -4815,6 +4846,7 @@ public final class RuntimeCore {
         resetRuntimeToolState(route: .realtimeResidentBrain)
         resetRealtimeUtteranceCompletionState(matching: identity)
         resetRealtimeUtteranceAcousticAuthorization(matching: identity)
+        realtimeConfirmedInterruptionUserTurnHandoff = nil
         return .success(RealtimeBrainGenerationTransition(
             identity: identity,
             lease: brainLease,
@@ -4901,6 +4933,10 @@ public final class RuntimeCore {
         realtimeBrainSessionGate.cancelGenerationTransition(
             token: transition.token
         )
+        if realtimeConfirmedInterruptionUserTurnHandoff?.nextSession
+            == transition.nextIdentity {
+            realtimeConfirmedInterruptionUserTurnHandoff = nil
+        }
         await settleFailedRealtimeBrainSession(
             identity: transition.identity,
             lease: transition.lease
@@ -5475,6 +5511,13 @@ public final class RuntimeCore {
         case .success(let value):
             transition = value
         }
+        realtimeConfirmedInterruptionUserTurnHandoff =
+            RealtimeConfirmedInterruptionUserTurnHandoff(
+                interruptedSession: session,
+                nextSession: transition.nextIdentity,
+                contextRevision: semantic.identity.contextRevision,
+                expectedTurnID: nil
+            )
         let decision = RealtimeConfirmedInterruption(
             decisionID: UUID(),
             interruptedIdentity: session,
@@ -5616,6 +5659,11 @@ public final class RuntimeCore {
     func closeRealtimeResidentBrainSession(
         identity: RealtimeBrainSessionIdentity
     ) async -> Result<Void, RealtimeResidentBrainError> {
+        if let handoff = realtimeConfirmedInterruptionUserTurnHandoff,
+           handoff.interruptedSession == identity
+            || handoff.nextSession == identity {
+            realtimeConfirmedInterruptionUserTurnHandoff = nil
+        }
         if realtimePlaybackInterruptionTarget?.session == identity {
             realtimePlaybackInterruptionTarget = nil
             realtimeInterruptionEvidenceState = nil
@@ -5968,6 +6016,16 @@ public final class RuntimeCore {
         >,
         for event: RealtimeResidentBrainEvent
     ) {
+        if case .success(.confirmed(let confirmed)) = decision,
+           case .userSpeechStarted = event.kind,
+           let turnID = event.identity.turnID,
+           var handoff = realtimeConfirmedInterruptionUserTurnHandoff,
+           handoff.interruptedSession == confirmed.interruptedIdentity,
+           handoff.nextSession == confirmed.nextIdentity,
+           handoff.contextRevision == event.identity.contextRevision {
+            handoff.expectedTurnID = turnID
+            realtimeConfirmedInterruptionUserTurnHandoff = handoff
+        }
         guard let key = Self.realtimeInterruptionTriggerKey(for: event) else {
             return
         }
@@ -6163,6 +6221,10 @@ public final class RuntimeCore {
             realtimeBrainSessionGate.cancelGenerationTransition(
                 token: transitionToken
             )
+            if realtimeConfirmedInterruptionUserTurnHandoff?.nextSession
+                == proposedIdentity {
+                realtimeConfirmedInterruptionUserTurnHandoff = nil
+            }
             return .failure(.cancelled)
         }
         guard realtimeBrainSessionGate.commitGenerationTransition(
@@ -6170,6 +6232,10 @@ public final class RuntimeCore {
             from: identity,
             to: nextIdentity
         ) else {
+            if realtimeConfirmedInterruptionUserTurnHandoff?.nextSession
+                == proposedIdentity {
+                realtimeConfirmedInterruptionUserTurnHandoff = nil
+            }
             return .failure(.cancelled)
         }
         if var bridge = realtimeBrainContextBridgeState,
@@ -6189,6 +6255,10 @@ public final class RuntimeCore {
         resetRealtimeAcousticObservationState()
         realtimeInterruptionEvidenceState = nil
         realtimePlaybackInterruptionTarget = nil
+        if realtimeConfirmedInterruptionUserTurnHandoff?.nextSession
+            != nextIdentity {
+            realtimeConfirmedInterruptionUserTurnHandoff = nil
+        }
         realtimeBrainGeneration = nextIdentity.generation
         realtimeBrainToolResultSequence = 0
         return .success(nextIdentity)

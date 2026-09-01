@@ -62,6 +62,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testInvalidToolAdvertisementsFailClosed()
         try await testContextScopeReplacement()
         try await testAudioAndEventMapping()
+        try await testLateFinalKeepsExactProviderItemBinding()
         try await testResidentTextWireSourceCanonicalization()
         try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
@@ -79,6 +80,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testGenericErrorDuringTransition()
         try await testRuntimeCancelInputFence(fixture: fixture)
         try await testRuntimeGenerationFence(fixture: fixture)
+        try await testRuntimeConfirmedInterruptionUserTurnHandoff(
+            fixture: fixture
+        )
         try await testRuntimeAcousticActivityAdmissionFence(fixture: fixture)
         try await testRuntimeAdmission(fixture: fixture)
         print("qwen_realtime_resident_brain_cases=\(cases)")
@@ -807,6 +811,41 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
+    private static func testLateFinalKeepsExactProviderItemBinding()
+        async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 33)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"late-final-a"}"#
+        )
+        let startA = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"late-final-a"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"late-final-b"}"#
+        )
+        let startB = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"late-final-a","transcript":"第一句"}"#
+        )
+        let finalA = try await stack.adapter.receiveEvent(session: identity)
+
+        expect(
+            startA.identity.turnID != startB.identity.turnID
+                && finalA.kind == .userTranscriptFinal("第一句")
+                && finalA.identity.turnID == startA.identity.turnID,
+            "a late final remains bound to its exact Provider item"
+        )
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
     private static func testResidentTextWireSourceCanonicalization() async throws {
         cases += 5
         let expected: [RealtimeResidentBrainEventKind] = [
@@ -1046,11 +1085,26 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await waitUntilPendingReceive(stack.adapter, session: identity)
         let connectionCountBeforeInterrupt = await stack.transport.connectCount()
         let closeCountBeforeInterrupt = await stack.transport.closeCount()
-        try await stack.adapter.interrupt(RealtimeBrainInterruptCommand(
-            identity: identity,
-            nextGeneration: nextIdentity.generation,
-            reason: .runtimeDecision
-        ))
+        await stack.transport.holdResponseCancellationAcknowledgements()
+        let interruptTask = Task {
+            try await stack.adapter.interrupt(RealtimeBrainInterruptCommand(
+                identity: identity,
+                nextGeneration: nextIdentity.generation,
+                reason: .runtimeDecision
+            ))
+        }
+        await stack.transport.waitUntilSent(type: "response.cancel")
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"user-b","text":"停一下","stash":""}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"user-b"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"user-b","transcript":"停一下"}"#
+        )
+        await stack.transport.releaseResponseCancellationAcknowledgements()
+        try await interruptTask.value
         let staleWake = try await oldReceive.value
         expect(
             staleWake.identity.session == identity
@@ -1070,8 +1124,35 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }) else { fatalError("response.cancel missing") }
         expect(cancel["response_id"] == nil, "current Qwen response.cancel has no response ID")
         expect(
-            sent.contains { $0["type"] as? String == "input_audio_buffer.clear" },
-            "Runtime interrupt clears uncommitted provider input"
+            !sent.contains { $0["type"] as? String == "input_audio_buffer.clear" },
+            "Runtime interrupt preserves the admitted user utterance"
+        )
+
+        let reboundSpeech = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        let reboundPartial = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        let reboundStop = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        let reboundFinal = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        expect(
+            reboundSpeech.kind == .userSpeechStarted
+                && reboundPartial.kind == .userTranscriptPartial("停一下")
+                && reboundStop.kind == .userSpeechStopped
+                && reboundFinal.kind == .userTranscriptFinal("停一下"),
+            "the exact interrupting user item resumes in Provider order"
+        )
+        expect(
+            reboundSpeech.identity.session == nextIdentity
+                && reboundPartial.identity.turnID == reboundSpeech.identity.turnID
+                && reboundStop.identity.turnID == reboundSpeech.identity.turnID
+                && reboundFinal.identity.turnID == reboundSpeech.identity.turnID,
+            "the interrupting user item is rebound only to N+1"
         )
 
         let newAudioFrame = RealtimeBrainAudioFrame(
@@ -1101,9 +1182,33 @@ private struct QwenRealtimeResidentBrainAdapterTests {
               let newAudio = Data(base64Encoded: encodedNewAudio) else {
             fatalError("new-generation audio batch missing")
         }
+        let carriedSamples = pcm16Samples(newAudio)
         expect(
-            pcm16Samples(newAudio).allSatisfy { $0 == 900 },
-            "generation transition discards every pending old PCM byte"
+            carriedSamples.prefix(1_280).allSatisfy { $0 == 300 }
+                && carriedSamples.suffix(320).allSatisfy { $0 == 900 },
+            "the bounded pending PCM stays continuous across interruption"
+        )
+
+        try await authorizeResponse(
+            stack,
+            from: reboundFinal,
+            responseID: "response-barge-in"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"response-barge-in","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"我在听"}]}]}}"#
+        )
+        let reboundResidentText = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        let reboundResidentSemantic = try await stack.adapter.receiveEvent(
+            session: nextIdentity
+        )
+        expect(
+            reboundResidentText.kind == .residentTextFinal("我在听")
+                && reboundResidentSemantic.kind == .residentSemanticFinal(
+                    RealtimeBrainSemanticOutput(canonicalText: "我在听")
+                ),
+            "the rebound user turn remains response-authorizable"
         )
 
         await stack.transport.enqueueText(
@@ -1129,7 +1234,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         expect(
             currentSpeech.kind == .userSpeechStarted
-                && currentSpeech.sequence == 1,
+                && currentSpeech.sequence == 7,
             "late old item and response callbacks do not create a sequence gap"
         )
         try await authorizeResponse(
@@ -2301,6 +2406,54 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             transitionCloseCount == 1,
             "generic cancel error fails immediately and remains definitively closeable"
         )
+
+        let transcriptFailureStack = try makeStack()
+        let transcriptFailureIdentity = sessionIdentity(generation: 32)
+        try await openAndBootstrap(
+            transcriptFailureStack,
+            identity: transcriptFailureIdentity
+        )
+        await transcriptFailureStack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"transition-asr-failure"}"#
+        )
+        let transcriptFailureSpeech = try await transcriptFailureStack
+            .adapter.receiveEvent(session: transcriptFailureIdentity)
+        try await authorizeResponse(
+            transcriptFailureStack,
+            from: transcriptFailureSpeech,
+            responseID: "transition-asr-failure-response"
+        )
+        await transcriptFailureStack.transport
+            .holdResponseCancellationAcknowledgements()
+        let transcriptFailureInterrupt = Task {
+            try await transcriptFailureStack.adapter.interrupt(
+                RealtimeBrainInterruptCommand(
+                    identity: transcriptFailureIdentity,
+                    nextGeneration: transcriptFailureIdentity.generation + 1,
+                    reason: .runtimeDecision
+                )
+            )
+        }
+        await transcriptFailureStack.transport.waitUntilSent(
+            type: "response.cancel"
+        )
+        await transcriptFailureStack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"transition-asr-failure","error":{"code":"asr_failed"}}"#
+        )
+        await expectRealtimeError(.providerFailure) {
+            try await transcriptFailureInterrupt.value
+        }
+        try await transcriptFailureStack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(
+                identity: transcriptFailureIdentity
+            )
+        )
+        let transcriptFailureCloseCount = await transcriptFailureStack
+            .transport.closeCount()
+        expect(
+            transcriptFailureCloseCount == 1,
+            "exact ASR failure during transition remains fail closed"
+        )
     }
 
     private static func testRuntimeAcousticActivityAdmissionFence(
@@ -2472,11 +2625,51 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             staleDisposition == .rejectedStale,
             "Runtime rejects the explicitly woken old-generation receive"
         )
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"runtime-old-user","transcript":"late"}"#
+        let reboundDisposition = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        guard case .accepted(let reboundEvent) = reboundDisposition else {
+            fatalError("interrupting user turn must rebound into N+1")
+        }
+        expect(
+            reboundEvent.kind == .userSpeechStarted
+                && reboundEvent.sequence == 1
+                && reboundEvent.identity.session == nextIdentity
+                && reboundEvent.identity.turnID
+                    == acceptedSpeechStarted.identity.turnID,
+            "Runtime rebuilds the exact interrupting user turn in N+1"
         )
         await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"runtime-old-user","error":{"code":"late_old_asr"}}"#
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"runtime-old-user"}"#
+        )
+        let reboundStop = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        guard case .accepted(let reboundStopEvent) = reboundStop else {
+            fatalError("rebound speech stop expected")
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"runtime-old-user","transcript":"停一下"}"#
+        )
+        let reboundFinal = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        expect(
+            reboundStopEvent.kind == .userSpeechStopped
+                && reboundStopEvent.sequence == 2
+                && reboundStopEvent.identity.turnID
+                    == reboundEvent.identity.turnID,
+            "Runtime accepts the rebound speech stop only in N+1"
+        )
+        expect(
+            reboundFinal == .rejectedStale
+                && runtime.realtimePendingUserInputForTesting(
+                    reboundEvent.identity
+                ) == "停一下",
+            "Runtime receives the rebound transcript but keeps acoustic admission fail closed"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"runtime-unrelated-old-user","transcript":"late"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"runtime-unrelated-old-user","error":{"code":"late_old_asr"}}"#
         )
         await stack.transport.enqueueText(
             #"{"type":"response.created","response":{"id":"runtime-old-response","status":"in_progress"}}"#
@@ -2494,7 +2687,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         expect(
             currentEvent.kind == .userSpeechStarted
-                && currentEvent.sequence == 1
+                && currentEvent.sequence == 4
                 && currentEvent.identity.session == nextIdentity,
             "late wire callbacks cannot be relabeled into the new generation"
         )
@@ -2503,6 +2696,271 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 identity: nextIdentity
             ),
             "Runtime generation fixture closes"
+        )
+    }
+
+    private static func testRuntimeConfirmedInterruptionUserTurnHandoff(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        let stack = try makeStack()
+        let router = ProviderRouter(
+            credentialReader: try credentialReader(),
+            realtimeResidentBrainProvider: stack.adapter
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixture).isLoaded,
+               "confirmed-handoff fixture resident loads")
+        let identity = try realtimeIdentity(
+            await runtime.openRealtimeResidentBrainSession()
+        )
+        expectRealtimeSuccess(
+            await runtime.updateRealtimeResidentBrainContext(
+                RealtimeBrainRuntimeContextUpdate(
+                    identity: identity,
+                    kind: .bootstrap,
+                    contextRevision: 1,
+                    sections: [RealtimeBrainContextSection(
+                        scope: .stableResident,
+                        content: "confirmed interruption user-turn handoff"
+                    )]
+                )
+            ),
+            "confirmed-handoff fixture bootstraps"
+        )
+        expectAccepted(
+            try await runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            kind: .sessionReady,
+            "confirmed-handoff session becomes ready"
+        )
+
+        let listeningActivity = RealtimeBrainLocalAudioActivity(
+            kind: .listeningNearEnd,
+            residentPlaybackSequence: 0,
+            residentPlaybackActive: false,
+            lastAudibleResidentRenderTimestampNanoseconds: nil,
+            sourceGateEpoch: 0,
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+        let frameBytes = pcm16(Array(repeating: 400, count: 320))
+        var timestamp = DispatchTime.now().uptimeNanoseconds
+        expectRealtimeSuccess(
+            await runtime.appendRealtimeResidentBrainAudio(
+                RealtimeBrainAudioFrame(
+                    identity: identity,
+                    sequence: 1,
+                    timestampNanoseconds: timestamp,
+                    format: RealtimeBrainAudioFormat(
+                        encoding: .pcm16LittleEndian,
+                        sampleRate: 16_000,
+                        channelCount: 1
+                    ),
+                    provenance: .acousticEchoProcessed,
+                    bytes: frameBytes
+                ),
+                activity: listeningActivity
+            ),
+            "initial listening audio establishes the turn boundary"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"initial-user"}"#
+        )
+        expectAccepted(
+            try await runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            kind: .userSpeechStarted,
+            "initial listening turn starts"
+        )
+        for sequence in 2 ... 5 {
+            try? await Task.sleep(for: .milliseconds(20))
+            timestamp = DispatchTime.now().uptimeNanoseconds
+            expectRealtimeSuccess(
+                await runtime.appendRealtimeResidentBrainAudio(
+                    RealtimeBrainAudioFrame(
+                        identity: identity,
+                        sequence: UInt64(sequence),
+                        timestampNanoseconds: timestamp,
+                        format: RealtimeBrainAudioFormat(
+                            encoding: .pcm16LittleEndian,
+                            sampleRate: 16_000,
+                            channelCount: 1
+                        ),
+                        provenance: .acousticEchoProcessed,
+                        bytes: frameBytes
+                    ),
+                    activity: listeningActivity
+                ),
+                "initial listening audio remains continuous"
+            )
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"initial-user"}"#
+        )
+        _ = try await runtime.receiveRealtimeResidentBrainEvent(
+            session: identity
+        )
+        _ = try await receiveRuntimeTranscript(
+            stack,
+            runtime: runtime,
+            identity: identity,
+            itemID: "initial-user",
+            transcript: "请先回答"
+        )
+        await stack.transport.waitUntilSent(type: "response.create")
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.delta","response_id":"response-tool-1","delta":"AAA="}"#
+        )
+        let residentSpeaking = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        let residentAudio = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        guard case .accepted(let residentSpeakingEvent) = residentSpeaking,
+              residentSpeakingEvent.kind == .residentSpeakingStarted,
+              case .accepted(let residentAudioEvent) = residentAudio,
+              case .residentAudioDelta = residentAudioEvent.kind else {
+            fatalError("confirmed-handoff resident response must be active")
+        }
+
+        let evidenceTimestamp = DispatchTime.now().uptimeNanoseconds
+        let acousticEvidence = RealtimeInterruptionEvidence(
+            identity: RealtimeInterruptionEvidenceIdentity(
+                session: identity,
+                turnID: residentAudioEvent.identity.turnID,
+                responseID: residentAudioEvent.identity.responseID,
+                contextRevision: residentAudioEvent.identity.contextRevision,
+                sequence: 1,
+                timestampNanoseconds: evidenceTimestamp
+            ),
+            source: .acousticHost(RealtimeInterruptionAcousticFacts(
+                sourceGateEpoch: 1,
+                nearEndDetected: true,
+                farEndActive: true,
+                sourceGateOpen: true,
+                renderReferenceConfidence: 1,
+                routeStable: true,
+                inputDeviceAvailable: true,
+                outputDeviceAvailable: true
+            ))
+        )
+        guard case .success(.observed) = await runtime
+            .submitRealtimeResidentBrainAcousticEvidenceForTesting(
+                acousticEvidence
+            ) else {
+            fatalError("confirmed-handoff acoustic evidence must be observed")
+        }
+
+        await stack.transport.holdResponseCancellationAcknowledgements()
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"interrupting-user"}"#
+        )
+        let proposalDisposition = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        guard case .accepted(let proposalEvent) = proposalDisposition,
+              case .interruptionProposed = proposalEvent.kind,
+              case .success(.confirmed(let decision)) = await runtime
+                .claimRealtimeResidentBrainInterruptionDecision(
+                    for: proposalEvent
+                ) else {
+            fatalError("confirmed-handoff interruption must be Runtime-confirmed")
+        }
+        await stack.transport.waitUntilSent(type: "response.cancel")
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"停一下","stash":""}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"停一下"}"#
+        )
+        await stack.transport.releaseResponseCancellationAcknowledgements()
+        let nextIdentity = try realtimeIdentity(
+            await runtime.completeRealtimeResidentBrainInterruption(decision)
+        )
+
+        let reboundStart = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        let reboundPartial = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        let reboundStop = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        let reboundFinal = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        guard case .accepted(let reboundStartEvent) = reboundStart else {
+            fatalError("confirmed interrupting turn must start in N+1")
+        }
+        guard case .accepted(let reboundPartialEvent) = reboundPartial,
+              case .accepted(let reboundStopEvent) = reboundStop,
+              case .accepted(let reboundFinalEvent) = reboundFinal else {
+            fatalError("confirmed interrupting turn must finish in N+1")
+        }
+        expect(
+            reboundStartEvent.kind == .userSpeechStarted
+                && reboundStartEvent.sequence == 1,
+            "Runtime consumes the confirmed-interruption handoff once"
+        )
+        expect(
+            reboundPartialEvent.kind
+                    == .userTranscriptPartial("停一下")
+                && reboundStopEvent.kind == .userSpeechStopped
+                && reboundFinalEvent.kind
+                    == .userTranscriptFinal("停一下")
+                && runtime.realtimePendingUserInputForTesting(
+                    reboundStartEvent.identity
+                ) == "停一下",
+            "the complete short utterance survives into N+1"
+        )
+        expect(
+            runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .candidatePause,
+            "the confirmed handoff carries an exact completion boundary"
+        )
+        await stack.transport.waitUntilSent(type: "response.create", count: 2)
+        let responseCreateCountAfterHandoff = try await sentTypes(
+            stack.transport
+        ).filter { $0 == "response.create" }.count
+        expect(
+            responseCreateCountAfterHandoff == 2,
+            "the completed interrupting turn creates exactly one N+1 response"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"interrupting-user"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"停一下","stash":""}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"停一下"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"interrupting-user","error":{"code":"late_asr_failure"}}"#
+        )
+        try? await Task.sleep(for: .milliseconds(50))
+        let responseCreateCountAfterDuplicates = try await sentTypes(
+            stack.transport
+        ).filter { $0 == "response.create" }.count
+        expect(
+            responseCreateCountAfterDuplicates == 2,
+            "late duplicate events cannot create an extra response"
+        )
+        expectRealtimeSuccess(
+            await runtime.closeRealtimeResidentBrainSession(
+                identity: nextIdentity
+            ),
+            "confirmed-handoff fixture closes"
         )
     }
 

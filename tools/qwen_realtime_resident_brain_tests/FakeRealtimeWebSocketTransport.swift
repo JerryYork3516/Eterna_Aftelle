@@ -23,6 +23,8 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var holdsNextCloseCompletion = false
     private var heldCloseContinuation: CheckedContinuation<Void, Never>?
     private var failsNextResponseCancel = false
+    private var holdsResponseCancellation = false
+    private var heldResponseCancellationFrames: [String] = []
     private var acknowledgesUnsafeTurnDetection = false
 
     func connect(endpoint: URL, bearerToken: String) async throws {
@@ -80,9 +82,13 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
                 failsNextResponseCancel = false
                 enqueueText(#"{"type":"error","error":{"code":"cancel_failed"}}"#)
             } else if let activeResponseID {
-                enqueueText(
+                let event =
                     #"{"type":"response.done","response":{"id":"\#(activeResponseID)","status":"incomplete","output":[]}}"#
-                )
+                if holdsResponseCancellation {
+                    heldResponseCancellationFrames.append(event)
+                } else {
+                    enqueueText(event)
+                }
                 self.activeResponseID = nil
             } else {
                 enqueueText(#"{"type":"error","error":{"code":"no_active_response"}}"#)
@@ -221,6 +227,17 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func failNextResponseCancelWithGenericError() {
         failsNextResponseCancel = true
+    }
+
+    func holdResponseCancellationAcknowledgements() {
+        holdsResponseCancellation = true
+    }
+
+    func releaseResponseCancellationAcknowledgements() {
+        holdsResponseCancellation = false
+        let frames = heldResponseCancellationFrames
+        heldResponseCancellationFrames.removeAll(keepingCapacity: true)
+        frames.forEach(enqueueText)
     }
 
     func waitUntilSent(type: String, count: Int = 1) async {
