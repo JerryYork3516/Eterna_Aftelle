@@ -423,10 +423,10 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
 
     func close() {
         lock.withLock {
-            audioEngine.closeOutput()
             converter = nil
             localFormat = nil
         }
+        audioEngine.closeOutput()
     }
 
     private func describe(

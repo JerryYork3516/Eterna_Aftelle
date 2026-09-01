@@ -83,6 +83,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testRuntimeConfirmedInterruptionUserTurnHandoff(
             fixture: fixture
         )
+        try await testRuntimeProviderTerminalPlaybackTailInterruptionHandoff(
+            fixture: fixture
+        )
         try await testRuntimeAcousticActivityAdmissionFence(fixture: fixture)
         try await testRuntimeAdmission(fixture: fixture)
         print("qwen_realtime_resident_brain_cases=\(cases)")
@@ -2961,6 +2964,319 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 identity: nextIdentity
             ),
             "confirmed-handoff fixture closes"
+        )
+    }
+
+    private static func
+        testRuntimeProviderTerminalPlaybackTailInterruptionHandoff(
+            fixture: Data
+        ) async throws {
+        cases += 1
+        let stack = try makeStack()
+        let router = ProviderRouter(
+            credentialReader: try credentialReader(),
+            realtimeResidentBrainProvider: stack.adapter
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        expect(runtime.loadDR(from: fixture).isLoaded,
+               "near-tail fixture resident loads")
+        let identity = try realtimeIdentity(
+            await runtime.openRealtimeResidentBrainSession()
+        )
+        expectRealtimeSuccess(
+            await runtime.updateRealtimeResidentBrainContext(
+                RealtimeBrainRuntimeContextUpdate(
+                    identity: identity,
+                    kind: .bootstrap,
+                    contextRevision: 1,
+                    sections: [RealtimeBrainContextSection(
+                        scope: .stableResident,
+                        content: "provider-terminal playback tail"
+                    )]
+                )
+            ),
+            "near-tail fixture bootstraps"
+        )
+        expectAccepted(
+            try await runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            kind: .sessionReady,
+            "near-tail session becomes ready"
+        )
+        let listeningActivity = RealtimeBrainLocalAudioActivity(
+            kind: .listeningNearEnd,
+            residentPlaybackSequence: 0,
+            residentPlaybackActive: false,
+            lastAudibleResidentRenderTimestampNanoseconds: nil,
+            sourceGateEpoch: 0,
+            routeStable: true,
+            inputDeviceAvailable: true,
+            outputDeviceAvailable: true
+        )
+        let frameBytes = pcm16(Array(repeating: 400, count: 320))
+        var timestamp = DispatchTime.now().uptimeNanoseconds
+        expectRealtimeSuccess(
+            await runtime.appendRealtimeResidentBrainAudio(
+                RealtimeBrainAudioFrame(
+                    identity: identity,
+                    sequence: 1,
+                    timestampNanoseconds: timestamp,
+                    format: RealtimeBrainAudioFormat(
+                        encoding: .pcm16LittleEndian,
+                        sampleRate: 16_000,
+                        channelCount: 1
+                    ),
+                    provenance: .acousticEchoProcessed,
+                    bytes: frameBytes
+                ),
+                activity: listeningActivity
+            ),
+            "near-tail initial audio establishes the turn boundary"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"near-tail-initial-user"}"#
+        )
+        expectAccepted(
+            try await runtime.receiveRealtimeResidentBrainEvent(
+                session: identity
+            ),
+            kind: .userSpeechStarted,
+            "near-tail initial listening turn starts"
+        )
+        for sequence in 2 ... 5 {
+            try? await Task.sleep(for: .milliseconds(20))
+            timestamp = DispatchTime.now().uptimeNanoseconds
+            expectRealtimeSuccess(
+                await runtime.appendRealtimeResidentBrainAudio(
+                    RealtimeBrainAudioFrame(
+                        identity: identity,
+                        sequence: UInt64(sequence),
+                        timestampNanoseconds: timestamp,
+                        format: RealtimeBrainAudioFormat(
+                            encoding: .pcm16LittleEndian,
+                            sampleRate: 16_000,
+                            channelCount: 1
+                        ),
+                        provenance: .acousticEchoProcessed,
+                        bytes: frameBytes
+                    ),
+                    activity: listeningActivity
+                ),
+                "near-tail listening audio remains continuous"
+            )
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"near-tail-initial-user"}"#
+        )
+        _ = try await runtime.receiveRealtimeResidentBrainEvent(
+            session: identity
+        )
+        await stack.transport.useNextResponseID("near-tail-old-response")
+        _ = try await receiveRuntimeTranscript(
+            stack,
+            runtime: runtime,
+            identity: identity,
+            itemID: "near-tail-initial-user",
+            transcript: "请先回答"
+        )
+        await stack.transport.waitUntilSent(type: "response.create")
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.delta","response_id":"near-tail-old-response","delta":"AAA="}"#
+        )
+        let residentSpeaking = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        let residentAudio = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        guard case .accepted(let residentSpeakingEvent) = residentSpeaking,
+              residentSpeakingEvent.kind == .residentSpeakingStarted,
+              case .accepted(let residentAudioEvent) = residentAudio,
+              case .residentAudioDelta = residentAudioEvent.kind else {
+            fatalError("near-tail resident response must be audible")
+        }
+        expectRealtimeSuccess(
+            runtime.registerRealtimeResidentBrainPlaybackTarget(
+                residentAudioEvent.identity
+            ),
+            "near-tail physical playback target registers"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.done","response_id":"near-tail-old-response"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"near-tail-old-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"旧回答"}]}]}}"#
+        )
+        let residentStopped = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        let residentText = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        let residentSemantic = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        expectAccepted(
+            residentStopped,
+            kind: .residentSpeakingStopped,
+            "near-tail Provider speech ends"
+        )
+        expectAccepted(
+            residentText,
+            kind: .residentTextFinal("旧回答"),
+            "near-tail Provider text ends"
+        )
+        expectAccepted(
+            residentSemantic,
+            kind: .residentSemanticFinal(
+                RealtimeBrainSemanticOutput(canonicalText: "旧回答")
+            ),
+            "near-tail Provider response ends"
+        )
+        let activeWireResponse = await stack.adapter
+            .activeWireResponseIDForTesting(session: identity)
+        expect(
+            activeWireResponse == nil,
+            "near-tail Provider response is terminal"
+        )
+        expect(
+            runtime.realtimeInterruptionEvidenceDebugSnapshot()
+                .playbackTarget == residentAudioEvent.identity,
+            "near-tail old PCM remains the physical playback target"
+        )
+
+        let evidenceTimestamp = DispatchTime.now().uptimeNanoseconds
+        let acousticEvidence = RealtimeInterruptionEvidence(
+            identity: RealtimeInterruptionEvidenceIdentity(
+                session: identity,
+                turnID: residentAudioEvent.identity.turnID,
+                responseID: residentAudioEvent.identity.responseID,
+                contextRevision: residentAudioEvent.identity.contextRevision,
+                sequence: 1,
+                timestampNanoseconds: evidenceTimestamp
+            ),
+            source: .acousticHost(RealtimeInterruptionAcousticFacts(
+                sourceGateEpoch: 1,
+                nearEndDetected: true,
+                farEndActive: true,
+                sourceGateOpen: true,
+                renderReferenceConfidence: 1,
+                routeStable: true,
+                inputDeviceAvailable: true,
+                outputDeviceAvailable: true
+            ))
+        )
+        guard case .success(.observed) = await runtime
+            .submitRealtimeResidentBrainAcousticEvidenceForTesting(
+                acousticEvidence
+            ) else {
+            fatalError("near-tail acoustic evidence must be observed")
+        }
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"near-tail-user"}"#
+        )
+        let tailStart = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: identity)
+        guard case .accepted(let tailStartEvent) = tailStart,
+              tailStartEvent.kind == .userSpeechStarted,
+              case .success(.confirmed(let decision)) = await runtime
+                .claimRealtimeResidentBrainInterruptionDecision(
+                    for: tailStartEvent
+                ) else {
+            fatalError("near-tail user speech must confirm interruption")
+        }
+        expect(
+            decision.interruptedIdentity == identity
+                && decision.turnID == residentAudioEvent.identity.turnID
+                && decision.responseID
+                    == residentAudioEvent.identity.responseID,
+            "near-tail decision targets only the audible old response"
+        )
+        let nextIdentity = try realtimeIdentity(
+            await runtime.completeRealtimeResidentBrainInterruption(decision)
+        )
+        expect(
+            nextIdentity.generation == identity.generation + 1,
+            "near-tail interruption advances exactly one generation"
+        )
+        expect(
+            runtime.realtimeInterruptionEvidenceDebugSnapshot()
+                .playbackTarget == nil,
+            "near-tail transition retires the old playback target"
+        )
+        let sentAfterTransition = try await sentTypes(stack.transport)
+        expect(
+            sentAfterTransition.filter { $0 == "response.cancel" }.isEmpty,
+            "near-tail terminal response does not send Provider cancel"
+        )
+        expect(
+            sentAfterTransition.filter {
+                $0 == "input_audio_buffer.clear"
+            }.isEmpty,
+            "near-tail transition preserves the interrupting utterance"
+        )
+
+        let reboundStart = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        guard case .accepted(let reboundStartEvent) = reboundStart else {
+            fatalError("near-tail user turn must rebound into N+1")
+        }
+        expect(
+            reboundStartEvent.kind == .userSpeechStarted
+                && reboundStartEvent.sequence == 1
+                && reboundStartEvent.identity.session == nextIdentity
+                && reboundStartEvent.identity.turnID
+                    == tailStartEvent.identity.turnID,
+            "near-tail handoff admits the exact user turn once"
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"near-tail-user"}"#
+        )
+        let reboundStop = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"near-tail-user","transcript":"找点乐子是什么"}"#
+        )
+        let reboundFinal = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        guard case .accepted(let reboundStopEvent) = reboundStop,
+              case .accepted(let reboundFinalEvent) = reboundFinal else {
+            fatalError("near-tail user turn must finish in N+1")
+        }
+        expect(
+            reboundStopEvent.kind == .userSpeechStopped
+                && reboundFinalEvent.kind
+                    == .userTranscriptFinal("找点乐子是什么")
+                && reboundStopEvent.identity.turnID
+                    == reboundStartEvent.identity.turnID
+                && reboundFinalEvent.identity.turnID
+                    == reboundStartEvent.identity.turnID,
+            "near-tail late stop and transcript stay on the rebound turn"
+        )
+        expect(
+            runtime.realtimePendingUserInputForTesting(
+                reboundStartEvent.identity
+            ) == "找点乐子是什么",
+            "near-tail transcript survives generation transition"
+        )
+        expect(
+            runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .candidatePause,
+            "near-tail rebound reaches the completion window"
+        )
+        await stack.transport.waitUntilSent(type: "response.create", count: 2)
+        let finalSent = try await sentTypes(stack.transport)
+        expect(
+            finalSent.filter { $0 == "response.create" }.count == 2,
+            "near-tail rebound creates exactly one new response"
+        )
+        expectRealtimeSuccess(
+            await runtime.closeRealtimeResidentBrainSession(
+                identity: nextIdentity
+            ),
+            "near-tail fixture closes"
         )
     }
 

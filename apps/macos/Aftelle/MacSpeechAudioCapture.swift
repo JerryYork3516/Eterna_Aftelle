@@ -685,6 +685,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private let renderConverterLock = NSLock()
     private let audioProcessingMode: MacSpeechAudioProcessingMode
     private let acousticEchoHost: MacSpeechAcousticEchoHost
+    private let stopPlayerNode:
+        @Sendable (AVAudioPlayerNode?) -> Void
     private var engine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
     private var captureAECConverter: MacSpeechFloatMono48kConverter?
@@ -711,9 +713,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     init(
         audioProcessingMode: MacSpeechAudioProcessingMode = .webRTCAEC3,
-        acousticEchoHost: MacSpeechAcousticEchoHost? = nil
+        acousticEchoHost: MacSpeechAcousticEchoHost? = nil,
+        stopPlayerNode: @escaping @Sendable (
+            AVAudioPlayerNode?
+        ) -> Void = { $0?.stop() }
     ) {
         self.audioProcessingMode = audioProcessingMode
+        self.stopPlayerNode = stopPlayerNode
         if let acousticEchoHost {
             self.acousticEchoHost = acousticEchoHost
         } else {
@@ -882,8 +888,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     func clearScheduledOutput() {
+        let playerNode = lock.withLock { self.playerNode }
+        stopPlayerNodeOutsideStateLock(playerNode, reason: "clear")
         lock.withLock {
-            playerNode?.stop()
             isOutputPlaying = false
             acousticEchoHost.playbackStopped()
             unmuteInput()
@@ -891,8 +898,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     func stopOutput() {
+        let playerNode = lock.withLock { self.playerNode }
+        stopPlayerNodeOutsideStateLock(playerNode, reason: "stop")
         lock.withLock {
-            playerNode?.stop()
             isOutputPlaying = false
             acousticEchoHost.playbackStopped()
             unmuteInput()
@@ -903,14 +911,33 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     func closeOutput() {
+        let playerNode = lock.withLock { self.playerNode }
+        stopPlayerNodeOutsideStateLock(playerNode, reason: "close")
         lock.withLock {
-            playerNode?.stop()
             isOutputPlaying = false
             acousticEchoHost.playbackStopped()
             unmuteInput()
             isOutputPrepared = false
             tearDownIfIdle()
         }
+    }
+
+    private func stopPlayerNodeOutsideStateLock(
+        _ playerNode: AVAudioPlayerNode?,
+        reason: String
+    ) {
+        #if DEBUG
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        Self.audioUnitDiagnosticLogger.debug(
+            "event=audio_output_node_stop phase=will_stop reason=\(reason, privacy: .public) sample=\(startedAt)"
+        )
+        #endif
+        stopPlayerNode(playerNode)
+        #if DEBUG
+        Self.audioUnitDiagnosticLogger.debug(
+            "event=audio_output_node_stop phase=did_stop reason=\(reason, privacy: .public) sample=\(DispatchTime.now().uptimeNanoseconds)"
+        )
+        #endif
     }
 
     private func configureIfNeeded() throws {

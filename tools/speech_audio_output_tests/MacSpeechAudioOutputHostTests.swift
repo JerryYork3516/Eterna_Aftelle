@@ -29,6 +29,7 @@ private struct MacSpeechAudioOutputHostTests {
         await testConversionFailureStopsAndClears()
         await testConsumerTimeoutStopsAndClears()
         testConsumerWatchdogIncludesScheduledPCMDuration()
+        testOutputStopDoesNotBlockCaptureStateTransition()
         await testStopAndCloseAreIdempotent()
         await testSpeechStartClearKeepsEngineAvailable()
         await testGenerationRejectsLateInputAndCompletion()
@@ -689,6 +690,77 @@ private struct MacSpeechAudioOutputHostTests {
         expect(player.startCount == 0, "conversion failure never starts player")
         expect(player.stopCount == 1, "conversion failure stops player")
         expect(failed.recentEvents.last?.kind == .failed, "conversion failure emits event")
+    }
+
+    private final class BlockingOutputStopper: @unchecked Sendable {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+
+        func stop(_ playerNode: AVAudioPlayerNode?) {
+            entered.signal()
+            release.wait()
+        }
+    }
+
+    private static func testOutputStopDoesNotBlockCaptureStateTransition() {
+        assertOutputStopDoesNotBlockCaptureStateTransition(
+            "clear"
+        ) { engine in
+            engine.clearScheduledOutput()
+        }
+        assertOutputStopDoesNotBlockCaptureStateTransition(
+            "stop"
+        ) { engine in
+            engine.stopOutput()
+        }
+        assertOutputStopDoesNotBlockCaptureStateTransition(
+            "close"
+        ) { engine in
+            engine.closeOutput()
+        }
+    }
+
+    private static func assertOutputStopDoesNotBlockCaptureStateTransition(
+        _ label: String,
+        operation: @escaping @Sendable (
+            SystemMacSpeechVoiceProcessingEngine
+        ) -> Void
+    ) {
+        let stopper = BlockingOutputStopper()
+        let engine = SystemMacSpeechVoiceProcessingEngine(
+            stopPlayerNode: { playerNode in
+                stopper.stop(playerNode)
+            }
+        )
+        let outputFinished = DispatchSemaphore(value: 0)
+        let captureFinished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global().async {
+            operation(engine)
+            outputFinished.signal()
+        }
+        expect(
+            stopper.entered.wait(timeout: .now() + 1) == .success,
+            "\(label) reaches the injected PlayerNode stop"
+        )
+        DispatchQueue.global().async {
+            engine.discardPendingAudioForGenerationTransition()
+            captureFinished.signal()
+        }
+        let captureAdvancedBeforeStopReturned =
+            captureFinished.wait(timeout: .now() + 1) == .success
+        stopper.release.signal()
+        if !captureAdvancedBeforeStopReturned {
+            _ = captureFinished.wait(timeout: .now() + 1)
+        }
+        expect(
+            outputFinished.wait(timeout: .now() + 1) == .success,
+            "\(label) returns after PlayerNode stop is released"
+        )
+        expect(
+            captureAdvancedBeforeStopReturned,
+            "\(label) never holds the shared state lock while PlayerNode stops"
+        )
     }
 
     private static func testStopAndCloseAreIdempotent() async {
