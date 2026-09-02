@@ -2,6 +2,7 @@ import Combine
 import Foundation
 #if DEBUG
 import AppKit
+import CryptoKit
 import UniformTypeIdentifiers
 #endif
 
@@ -776,13 +777,15 @@ final class AppController: ObservableObject {
         speechAudioOutputHost: MacSpeechAudioOutputHost =
             MacSpeechAudioOutputHost(),
         nativeSpeechProfile: NativeSpeechProviderProfile =
-            Stage75NativeSpeechConfiguration.profile
+            Stage75NativeSpeechConfiguration.profile,
+        nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer =
+            NativeSpeechDiagnosticBuffer()
     ) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         self.speechAudioHost = speechAudioHost
         self.speechAudioOutputHost = speechAudioOutputHost
-        nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
+        self.nativeSpeechDiagnosticBuffer = nativeSpeechDiagnosticBuffer
         nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
             profile: nativeSpeechProfile
         )
@@ -1116,18 +1119,22 @@ final class AppController: ObservableObject {
 
     func exportRealtimeSpeechDiagnostics() {
         let exportedAt = Date()
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.title = String(
             localized: "particleDebug.realtimeDiagnostics.chooseLocation"
         )
-        panel.nameFieldStringValue = realtimeSpeechDiagnosticFileName(
-            exportedAt: exportedAt
-        )
 
         panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url, let self else { return }
+            guard response == .OK,
+                  let directoryURL = panel.url,
+                  let self else { return }
+            let url = directoryURL.appendingPathComponent(
+                self.realtimeSpeechDiagnosticFileName(exportedAt: exportedAt)
+            )
             do {
                 try self.writeRealtimeSpeechDiagnostics(
                     to: url,
@@ -1140,6 +1147,38 @@ final class AppController: ObservableObject {
                     "particleDebug.realtimeDiagnostics.status.exportFailed"
             }
         }
+    }
+
+    func armRealtimeSpeechAudioCapsule() {
+        guard let routeAttemptID = realtimeBrainRouteAttemptID,
+              let binding = realtimeBrainInputBinding,
+              isCurrentRealtimeBrainRoute(
+                attemptID: routeAttemptID,
+                session: binding.session
+              ) else {
+            realtimeSpeechDiagnosticStatusKey =
+                "particleDebug.realtimeDiagnostics.status.audioUnavailable"
+            return
+        }
+        let attemptID = UUID()
+        guard nativeSpeechDiagnosticBuffer.armRealtimeAudioCapsule(
+            attemptID: attemptID,
+            routeAttemptID: routeAttemptID,
+            session: binding.session
+        ) else {
+            realtimeSpeechDiagnosticStatusKey =
+                "particleDebug.realtimeDiagnostics.status.audioAlreadyArmed"
+            return
+        }
+        recordRealtimeSpeechDiagnostic(
+            source: .lifecycle,
+            category: "qwen_input_audio_capsule_armed",
+            routeKind: .realtimeBrain,
+            interactionShortID: String(attemptID.uuidString.prefix(8)),
+            disposition: "next_5_seconds"
+        )
+        realtimeSpeechDiagnosticStatusKey =
+            "particleDebug.realtimeDiagnostics.status.audioArmed"
     }
 
     func clearRealtimeSpeechDiagnostics() {
@@ -1159,15 +1198,20 @@ final class AppController: ObservableObject {
     }
 
     func realtimeSpeechDiagnosticExportData(
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        audioCapsuleFileName: String? = nil,
+        audioCapsuleSHA256: String? = nil
     ) throws -> Data {
         drainNativeSpeechInternalDiagnostics()
         let bundle = Bundle.main
         let qwenRealtime = qwenRealtimeDiagnosticExport()
+        let qwenInputAudioCapsule = nativeSpeechDiagnosticBuffer
+            .realtimeAudioCapsuleSnapshot()
+        let buildBinary = Self.runningBuildBinary()
         let turnCompletion = orchestrationKernel
             .realtimeUtteranceCompletionDebugSnapshot()
         let export = RealtimeSpeechDiagnosticExport(
-            schemaVersion: 10,
+            schemaVersion: 11,
             exportedAt: exportedAt,
             appVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -1175,6 +1219,8 @@ final class AppController: ObservableObject {
             appBuild: bundle.object(
                 forInfoDictionaryKey: "CFBundleVersion"
             ) as? String ?? "-",
+            buildBinaryName: buildBinary.name,
+            buildBinarySHA256: buildBinary.sha256,
             routeKind: NativeSpeechDiagnosticRouteKind.realtimeBrain.rawValue,
             formalRoute: RealtimeSpeechFormalRouteDiagnosticExport(
                 state: realtimeFullDuplexSpeechStatus.phase.rawValue,
@@ -1388,6 +1434,30 @@ final class AppController: ObservableObject {
                     speechAudioOutputHostSnapshot.rejectedCallbackCount,
                 lastError: speechAudioOutputHostSnapshot.lastError
             ),
+            qwenInputAudioCapsule: qwenInputAudioCapsule.map {
+                RealtimeSpeechAudioCapsuleDiagnosticExport(
+                    attemptID: $0.attemptID.uuidString,
+                    routeAttemptID: $0.routeAttemptID.uuidString,
+                    brainLeaseID: $0.brainLeaseID.uuidString,
+                    routeEpoch: $0.routeEpoch,
+                    startedAt: $0.startedAt,
+                    endedAt: $0.endedAt,
+                    firstGeneration: $0.firstGeneration,
+                    lastGeneration: $0.lastGeneration,
+                    firstBatchTerminalAudioSequence:
+                        $0.firstBatchTerminalAudioSequence,
+                    lastBatchTerminalAudioSequence:
+                        $0.lastBatchTerminalAudioSequence,
+                    encoding: "pcm16le",
+                    sampleRate: 16_000,
+                    channelCount: 1,
+                    byteCount: $0.bytes.count,
+                    durationMilliseconds: $0.durationMilliseconds,
+                    sha256: audioCapsuleSHA256,
+                    isSealed: $0.isSealed,
+                    fileName: audioCapsuleFileName
+                )
+            },
             droppedEventCount:
                 realtimeSpeechDiagnosticTimeline.droppedEventCount,
             events: realtimeSpeechDiagnosticTimeline.events
@@ -1447,8 +1517,89 @@ final class AppController: ObservableObject {
         to url: URL,
         exportedAt: Date = Date()
     ) throws {
-        try realtimeSpeechDiagnosticExportData(exportedAt: exportedAt)
-            .write(to: url, options: [.withoutOverwriting])
+        nativeSpeechDiagnosticBuffer.sealRealtimeAudioCapsule()
+        let capsule = nativeSpeechDiagnosticBuffer
+            .realtimeAudioCapsuleSnapshot()
+        let pcmURL = capsule.flatMap { snapshot -> URL? in
+            guard !snapshot.bytes.isEmpty else { return nil }
+            return url.deletingPathExtension()
+                .appendingPathExtension("qwen-input.pcm")
+        }
+        let audioCapsuleSHA256 = capsule.flatMap { snapshot in
+            snapshot.bytes.isEmpty ? nil : Self.sha256Hex(snapshot.bytes)
+        }
+        let data = try realtimeSpeechDiagnosticExportData(
+            exportedAt: exportedAt,
+            audioCapsuleFileName: pcmURL?.lastPathComponent,
+            audioCapsuleSHA256: audioCapsuleSHA256
+        )
+        let fileManager = FileManager.default
+        let destinations = [url] + (pcmURL.map { [$0] } ?? [])
+        guard !destinations.contains(where: {
+            fileManager.fileExists(atPath: $0.path)
+        }) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        let stagingID = UUID().uuidString
+        let stagingDirectory = url.deletingLastPathComponent()
+        let jsonStagingURL = stagingDirectory.appendingPathComponent(
+            ".aftelle-diagnostics-\(stagingID).json.tmp"
+        )
+        let pcmStagingURL = stagingDirectory.appendingPathComponent(
+            ".aftelle-diagnostics-\(stagingID).pcm.tmp"
+        )
+        defer {
+            try? fileManager.removeItem(at: jsonStagingURL)
+            try? fileManager.removeItem(at: pcmStagingURL)
+        }
+        try data.write(to: jsonStagingURL, options: .atomic)
+        if let capsule, pcmURL != nil {
+            try capsule.bytes.write(to: pcmStagingURL, options: .atomic)
+        }
+        try fileManager.moveItem(at: jsonStagingURL, to: url)
+        if let pcmURL {
+            do {
+                try fileManager.moveItem(at: pcmStagingURL, to: pcmURL)
+            } catch {
+                try? fileManager.removeItem(at: url)
+                throw error
+            }
+        }
+        if let attemptID = capsule?.attemptID {
+            nativeSpeechDiagnosticBuffer.clearRealtimeAudioCapsule(
+                matchingAttemptID: attemptID
+            )
+        }
+    }
+
+    private static func runningBuildBinary() -> (
+        name: String,
+        sha256: String
+    ) {
+        guard let executableURL = Bundle.main.executableURL else {
+            return ("-", "-")
+        }
+        let debugLibraryURL = executableURL.deletingLastPathComponent()
+            .appendingPathComponent(
+                "\(executableURL.lastPathComponent).debug.dylib"
+            )
+        let binaryURL = FileManager.default.fileExists(
+            atPath: debugLibraryURL.path
+        ) ? debugLibraryURL : executableURL
+        guard let data = try? Data(contentsOf: binaryURL) else {
+            return (binaryURL.lastPathComponent, "-")
+        }
+        let sha256 = SHA256.hash(data: data)
+        return (binaryURL.lastPathComponent, Self.hexString(sha256))
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        hexString(SHA256.hash(data: data))
+    }
+
+    private static func hexString<S: Sequence>(_ bytes: S) -> String
+        where S.Element == UInt8 {
+        bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     private func realtimeSpeechAcousticEchoDiagnosticExport()

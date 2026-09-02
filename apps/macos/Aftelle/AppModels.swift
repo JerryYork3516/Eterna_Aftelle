@@ -1322,11 +1322,34 @@ struct RealtimeSpeechPlaybackDiagnosticExport: Encodable, Sendable {
     let lastError: String?
 }
 
+struct RealtimeSpeechAudioCapsuleDiagnosticExport: Encodable, Sendable {
+    let attemptID: String
+    let routeAttemptID: String
+    let brainLeaseID: String
+    let routeEpoch: UInt64
+    let startedAt: Date?
+    let endedAt: Date?
+    let firstGeneration: UInt64?
+    let lastGeneration: UInt64?
+    let firstBatchTerminalAudioSequence: UInt64?
+    let lastBatchTerminalAudioSequence: UInt64?
+    let encoding: String
+    let sampleRate: Int
+    let channelCount: Int
+    let byteCount: Int
+    let durationMilliseconds: UInt64
+    let sha256: String?
+    let isSealed: Bool
+    let fileName: String?
+}
+
 struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let schemaVersion: Int
     let exportedAt: Date
     let appVersion: String
     let appBuild: String
+    let buildBinaryName: String
+    let buildBinarySHA256: String
     let routeKind: String
     let formalRoute: RealtimeSpeechFormalRouteDiagnosticExport
     let captureAEC: RealtimeSpeechCaptureDiagnosticExport
@@ -1336,6 +1359,7 @@ struct RealtimeSpeechDiagnosticExport: Encodable, Sendable {
     let turnCompletion: RealtimeTurnCompletionDiagnosticExport
     let nativeSpeech: NativeSpeechDiagnosticExport
     let playbackShared: RealtimeSpeechPlaybackDiagnosticExport
+    let qwenInputAudioCapsule: RealtimeSpeechAudioCapsuleDiagnosticExport?
     let droppedEventCount: UInt64
     let events: [RealtimeSpeechDiagnosticEvent]
 }

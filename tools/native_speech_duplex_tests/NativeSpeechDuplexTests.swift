@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CryptoKit
 import Foundation
 
 private struct DuplexCredentialReader: ProviderCredentialReading {
@@ -528,7 +529,7 @@ private struct NativeSpeechDuplexTests {
         try await testFormalSpeechStartsCaptureFromOneClick()
         try await testFormalSpeechFinalIgnoresClosingAudioSend()
         try await testFormalSpeechInterruptCrossesEveryRuntimeBoundary()
-        try await testRedactedDiagnosticsAndExport()
+        try await testDiagnosticsAndAudioCapsuleExport()
         print("native_speech_duplex_checks=\(checks)")
     }
 
@@ -1079,7 +1080,7 @@ private struct NativeSpeechDuplexTests {
         await stack.controller.stopSpeechAudioCapture()
     }
 
-    private static func testRedactedDiagnosticsAndExport() async throws {
+    private static func testDiagnosticsAndAudioCapsuleExport() async throws {
         var timeline = RealtimeSpeechDiagnosticTimeline()
         for index in 0 ... RealtimeSpeechDiagnosticTimeline.capacity {
             timeline.append(
@@ -1115,15 +1116,24 @@ private struct NativeSpeechDuplexTests {
             "diagnostic timeline clears events and dropped count"
         )
 
-        let stack = makeControllerStack(transport: handshakeTransport())
+        let diagnosticBuffer = NativeSpeechDiagnosticBuffer()
+        let stack = makeControllerStack(
+            transport: handshakeTransport(),
+            diagnosticBuffer: diagnosticBuffer
+        )
         await stack.controller.startSpeechAudioCapture()
         let data = try stack.controller.realtimeSpeechDiagnosticExportData(
             exportedAt: Date(timeIntervalSince1970: 0)
         )
         let object = try JSONSerialization.jsonObject(with: data)
             as! [String: Any]
-        expect(object["schema_version"] as? Int == 10,
-               "diagnostic export freezes schema version 10")
+        expect(object["schema_version"] as? Int == 11,
+               "diagnostic export freezes schema version 11")
+        expect(
+            (object["build_binary_name"] as? String)?.isEmpty == false
+                && (object["build_binary_sha256"] as? String)?.count == 64,
+            "diagnostic export identifies the exact running code binary"
+        )
         expect(
             object["route_kind"] as? String == "realtime_full_duplex",
             "diagnostic export identifies the requested route"
@@ -1245,6 +1255,118 @@ private struct NativeSpeechDuplexTests {
                 "diagnostic export omits \(forbidden)"
             )
         }
+
+        let capsuleSession = RealtimeBrainSessionIdentity(
+            residentID: "capsule-resident",
+            runtimeSessionID: "capsule-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 7,
+            generation: 3
+        )
+        let capsuleAttemptID = UUID()
+        expect(diagnosticBuffer.armRealtimeAudioCapsule(
+            attemptID: capsuleAttemptID,
+            routeAttemptID: UUID(),
+            session: capsuleSession
+        ), "diagnostic PCM export fixture arms")
+        let capsuleBytes = Data(repeating: 42, count: 3_200)
+        diagnosticBuffer.appendRealtimeAudioCapsuleBatch(
+            capsuleBytes,
+            identity: capsuleSession,
+            audioSequence: 5
+        )
+        let exportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: exportDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: exportDirectory) }
+        let diagnosticURL = exportDirectory.appendingPathComponent(
+            "diagnostic.json"
+        )
+        try stack.controller.writeRealtimeSpeechDiagnostics(
+            to: diagnosticURL,
+            exportedAt: Date(timeIntervalSince1970: 1)
+        )
+        let pcmURL = exportDirectory.appendingPathComponent(
+            "diagnostic.qwen-input.pcm"
+        )
+        let exportedObject = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: diagnosticURL)
+        ) as! [String: Any]
+        let capsuleMetadata = exportedObject["qwen_input_audio_capsule"]
+            as? [String: Any]
+        let expectedCapsuleSHA256 = SHA256.hash(data: capsuleBytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        expect(
+            try Data(contentsOf: pcmURL) == capsuleBytes
+                && capsuleMetadata?["attempt_id"] as? String
+                    == capsuleAttemptID.uuidString
+                && capsuleMetadata?["sha256"] as? String
+                    == expectedCapsuleSHA256,
+            "diagnostic export writes matched JSON and exact PCM sidecar"
+        )
+        expect(
+            diagnosticBuffer.realtimeAudioCapsuleSnapshot() == nil,
+            "successful dual-file export clears the PCM capsule exactly once"
+        )
+
+        let secondDiagnosticURL = exportDirectory.appendingPathComponent(
+            "diagnostic-second.json"
+        )
+        try stack.controller.writeRealtimeSpeechDiagnostics(
+            to: secondDiagnosticURL,
+            exportedAt: Date(timeIntervalSince1970: 2)
+        )
+        let secondObject = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: secondDiagnosticURL)
+        ) as! [String: Any]
+        expect(
+            secondObject["qwen_input_audio_capsule"] == nil
+                && !FileManager.default.fileExists(
+                    atPath: exportDirectory.appendingPathComponent(
+                        "diagnostic-second.qwen-input.pcm"
+                    ).path
+                ),
+            "a second export cannot repeat previously exported raw PCM"
+        )
+
+        let retainedAttemptID = UUID()
+        expect(diagnosticBuffer.armRealtimeAudioCapsule(
+            attemptID: retainedAttemptID,
+            routeAttemptID: UUID(),
+            session: capsuleSession
+        ), "a post-export PCM capsule can be armed")
+        diagnosticBuffer.appendRealtimeAudioCapsuleBatch(
+            capsuleBytes,
+            identity: capsuleSession,
+            audioSequence: 10
+        )
+        let collisionURL = exportDirectory.appendingPathComponent(
+            "collision.json"
+        )
+        try Data("existing".utf8).write(to: collisionURL)
+        do {
+            try stack.controller.writeRealtimeSpeechDiagnostics(
+                to: collisionURL,
+                exportedAt: Date(timeIntervalSince1970: 3)
+            )
+            fatalError("existing diagnostic destination must fail closed")
+        } catch {}
+        expect(
+            !FileManager.default.fileExists(
+                atPath: exportDirectory.appendingPathComponent(
+                    "collision.qwen-input.pcm"
+                ).path
+            ) && diagnosticBuffer.realtimeAudioCapsuleSnapshot()?.attemptID
+                == retainedAttemptID,
+            "failed JSON export leaves no raw PCM and retains the retry capsule"
+        )
+        diagnosticBuffer.clearRealtimeAudioCapsule(
+            matchingAttemptID: retainedAttemptID
+        )
         stack.controller.clearRealtimeSpeechDiagnostics()
         expect(
             stack.controller.realtimeSpeechDiagnosticTimeline.events.isEmpty,
@@ -3286,7 +3408,9 @@ private struct NativeSpeechDuplexTests {
     }
 
     private static func makeControllerStack(
-        transport: FakeRealtimeWebSocketTransport
+        transport: FakeRealtimeWebSocketTransport,
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer =
+            NativeSpeechDiagnosticBuffer()
     ) -> (
         controller: AppController,
         orchestration: OrchestrationKernel,
@@ -3321,7 +3445,8 @@ private struct NativeSpeechDuplexTests {
                 orchestrationKernel: runtimeStack.orchestration,
                 speechAudioHost: host,
                 speechAudioOutputHost: outputHost,
-                nativeSpeechProfile: profile()
+                nativeSpeechProfile: profile(),
+                nativeSpeechDiagnosticBuffer: diagnosticBuffer
             ),
             runtimeStack.orchestration,
             capture,

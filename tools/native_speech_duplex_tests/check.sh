@@ -162,13 +162,21 @@ for localization in "${localizations[@]}"; do
   rg -q 'particleDebug\.audioHost\.completedResponses' "$localization"
   rg -q 'particleDebug\.audioHost\.outputTerminal' "$localization"
   rg -q 'particleDebug\.realtimeDiagnostics\.export' "$localization"
+  rg -q 'particleDebug\.realtimeDiagnostics\.captureAudio' "$localization"
+  rg -q 'particleDebug\.realtimeDiagnostics\.status\.audioAlreadyArmed' "$localization"
+  rg -q 'particleDebug\.realtimeDiagnostics\.status\.audioUnavailable' "$localization"
   rg -q 'particleDebug\.qwen\.title' "$localization"
   rg -q 'particleDebug\.qwen\.workspacePlaceholder' "$localization"
 done
 rg -q 'completedResponseCount' "$output_bridge" "$content_view"
 rg -q 'RealtimeSpeechDiagnosticTimeline' "$controller" "$orchestration"
-rg -q 'NSSavePanel' "$controller"
-rg -q 'schemaVersion: 10' "$controller"
+sed -n '/func exportRealtimeSpeechDiagnostics/,/func armRealtimeSpeechAudioCapsule/p' \
+  "$controller" | rg -q 'let panel = NSOpenPanel()'
+sed -n '/func exportRealtimeSpeechDiagnostics/,/func armRealtimeSpeechAudioCapsule/p' \
+  "$controller" | rg -q 'panel.canChooseDirectories = true'
+rg -q 'schemaVersion: 11' "$controller"
+rg -q 'runningBuildBinary' "$controller"
+rg -q 'armRealtimeSpeechAudioCapsule' "$controller" "$content_view"
 rg -q 'realtimeSpeechAcousticEchoDiagnosticExport' "$controller"
 rg -q 'sourceTimingCandidateFrameCount' "$controller"
 rg -q 'sourceTimingUnavailableFrameCount' "$controller"
@@ -193,11 +201,11 @@ sed -n '/enum RealtimeSpeechDiagnosticSource/,/^#endif/p' \
   "$repo_root/apps/macos/Aftelle/AppModels.swift" > "$diagnostic_model"
 if rg -qi 'bearerToken|credential|instructions|transcript|base64|resident_identity' \
   "$diagnostic_model"; then
-  echo "native_speech_diagnostic_redaction=FAIL"
+  echo "native_speech_diagnostic_json_redaction=FAIL"
   exit 1
 fi
 echo "native_speech_duplex_debug_localization=PASS"
-echo "native_speech_diagnostic_redaction=PASS"
+echo "native_speech_diagnostic_json_redaction=PASS"
 
 transport="$repo_root/apps/macos/RuntimeCore/URLSessionRealtimeWebSocketTransport.swift"
 rg -q 'timeoutIntervalForRequest = 15' "$transport"

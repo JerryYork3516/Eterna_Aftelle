@@ -293,7 +293,65 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let frameBytes = pcm16(
             Array(repeating: [700, 700, 700], count: 160).flatMap { $0 }
         )
-        for index in 0 ..< 5 {
+        diagnostics.appendRealtimeAudioCapsuleBatch(
+            Data(repeating: 1, count: 3_200),
+            identity: identity,
+            audioSequence: 1
+        )
+        expect(
+            diagnostics.realtimeAudioCapsuleSnapshot() == nil,
+            "Qwen input PCM is not retained before explicit arming"
+        )
+        let capsuleAttemptID = UUID()
+        let routeAttemptID = UUID()
+        expect(diagnostics.armRealtimeAudioCapsule(
+            attemptID: capsuleAttemptID,
+            routeAttemptID: routeAttemptID,
+            session: identity
+        ), "an empty Qwen input PCM capsule arms once")
+        expect(!diagnostics.armRealtimeAudioCapsule(
+            attemptID: UUID(),
+            routeAttemptID: UUID(),
+            session: identity
+        ), "an unexported Qwen input PCM capsule cannot be overwritten")
+        diagnostics.appendRealtimeAudioCapsuleBatch(
+            Data(repeating: 2, count: 3_200),
+            identity: sessionIdentity(generation: identity.generation),
+            audioSequence: 2
+        )
+        for index in 0 ..< 2 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 1) * 20_000_000),
+                format: RealtimeBrainAudioFormat(
+                    encoding: .pcm16LittleEndian,
+                    sampleRate: 24_000,
+                    channelCount: 1
+                ),
+                provenance: .microphoneCapture,
+                bytes: frameBytes
+            ))
+        }
+        for index in 2 ..< 5 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 1) * 20_000_000),
+                format: RealtimeBrainAudioFormat(
+                    encoding: .pcm16LittleEndian,
+                    sampleRate: 24_000,
+                    channelCount: 1
+                ),
+                provenance: .acousticEchoProcessed,
+                bytes: frameBytes
+            ))
+        }
+        expect(
+            diagnostics.realtimeAudioCapsuleSnapshot()?.bytes.isEmpty == true,
+            "capsule rejects another lease and a mixed-provenance batch"
+        )
+        for index in 5 ..< 10 {
             try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
                 identity: identity,
                 sequence: UInt64(index + 1),
@@ -326,6 +384,134 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 $0.category == "qwen_active_response_input_audio_batch"
             },
             "Provider-listening PCM is not mislabeled as active-response audio"
+        )
+        guard let capsule = diagnostics.realtimeAudioCapsuleSnapshot() else {
+            fatalError("armed Qwen input PCM capsule missing")
+        }
+        expect(
+            capsule.attemptID == capsuleAttemptID
+                && capsule.routeAttemptID == routeAttemptID
+                && capsule.brainLeaseID == identity.brainLeaseID
+                && capsule.routeEpoch == identity.routeEpoch
+                && capsule.firstGeneration == identity.generation
+                && capsule.lastGeneration == identity.generation
+                && capsule.firstBatchTerminalAudioSequence == 10
+                && capsule.lastBatchTerminalAudioSequence == 10
+                && capsule.bytes.count == 3_200
+                && capsule.durationMilliseconds == 100
+                && !capsule.isSealed,
+            "capsule contains only the exact batch successfully sent to Qwen"
+        )
+        let sentAudioAppends = try await sentObjects(stack.transport).filter {
+            $0["type"] as? String == "input_audio_buffer.append"
+        }
+        let lastTransportedBatch: Data?
+        if let encodedBatch = sentAudioAppends.last?["audio"] as? String {
+            lastTransportedBatch = Data(base64Encoded: encodedBatch)
+        } else {
+            lastTransportedBatch = nil
+        }
+        expect(
+            sentAudioAppends.count == 2
+                && lastTransportedBatch == capsule.bytes,
+            "capsule bytes exactly match the successful Qwen audio batch"
+        )
+        diagnostics.clearRealtimeAudioCapsule(
+            matchingAttemptID: capsuleAttemptID
+        )
+        let cappedAttemptID = UUID()
+        expect(diagnostics.armRealtimeAudioCapsule(
+            attemptID: cappedAttemptID,
+            routeAttemptID: UUID(),
+            session: identity
+        ), "a cleared Qwen input PCM capsule can be armed again")
+        diagnostics.appendRealtimeAudioCapsuleBatch(
+            Data(repeating: 9, count: 3_200),
+            identity: sessionIdentity(
+                generation: identity.generation,
+                leaseID: identity.brainLeaseID,
+                routeEpoch: identity.routeEpoch + 1
+            ),
+            audioSequence: 1
+        )
+        expect(
+            diagnostics.realtimeAudioCapsuleSnapshot()?.bytes.isEmpty == true,
+            "capsule rejects another route epoch on the same brain lease"
+        )
+        let reboundIdentity = sessionIdentity(
+            generation: identity.generation + 1,
+            leaseID: identity.brainLeaseID,
+            routeEpoch: identity.routeEpoch
+        )
+        for sequence in 1 ... 51 {
+            diagnostics.appendRealtimeAudioCapsuleBatch(
+                Data(repeating: UInt8(sequence), count: 3_200),
+                identity: sequence == 1 ? identity : reboundIdentity,
+                audioSequence: UInt64(sequence)
+            )
+        }
+        guard let cappedCapsule = diagnostics
+            .realtimeAudioCapsuleSnapshot() else {
+            fatalError("bounded Qwen input PCM capsule missing")
+        }
+        expect(
+            cappedCapsule.bytes.count == 160_000
+                && cappedCapsule.durationMilliseconds == 5_000
+                && cappedCapsule.firstGeneration == identity.generation
+                && cappedCapsule.lastGeneration
+                    == reboundIdentity.generation
+                && cappedCapsule.lastBatchTerminalAudioSequence == 50
+                && cappedCapsule.isSealed,
+            "capsule spans N to N+1 and seals at exactly five seconds"
+        )
+        diagnostics.clearRealtimeAudioCapsule(
+            matchingAttemptID: cappedAttemptID
+        )
+        expect(
+            diagnostics.realtimeAudioCapsuleSnapshot() == nil,
+            "capsule export cleanup is attempt-bound and exactly once"
+        )
+        let failedAttemptID = UUID()
+        expect(diagnostics.armRealtimeAudioCapsule(
+            attemptID: failedAttemptID,
+            routeAttemptID: routeAttemptID,
+            session: identity
+        ), "send-failure PCM capsule fixture arms")
+        for index in 10 ..< 14 {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: UInt64(index + 1),
+                timestampNanoseconds: UInt64((index + 1) * 20_000_000),
+                format: RealtimeBrainAudioFormat(
+                    encoding: .pcm16LittleEndian,
+                    sampleRate: 24_000,
+                    channelCount: 1
+                ),
+                provenance: .acousticEchoProcessed,
+                bytes: frameBytes
+            ))
+        }
+        await stack.transport.failNextAudioAppend()
+        await expectRealtimeError(.transportFailure) {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity,
+                sequence: 15,
+                timestampNanoseconds: 300_000_000,
+                format: RealtimeBrainAudioFormat(
+                    encoding: .pcm16LittleEndian,
+                    sampleRate: 24_000,
+                    channelCount: 1
+                ),
+                provenance: .acousticEchoProcessed,
+                bytes: frameBytes
+            ))
+        }
+        expect(
+            diagnostics.realtimeAudioCapsuleSnapshot()?.bytes.isEmpty == true,
+            "a failed Qwen transport send cannot enter the PCM capsule"
+        )
+        diagnostics.clearRealtimeAudioCapsule(
+            matchingAttemptID: failedAttemptID
         )
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: identity)
@@ -1373,7 +1559,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 reason: .runtimeDecision
             ))
         }
-        await stack.transport.waitUntilSent(type: "response.cancel")
+        try await waitUntilSentTypeCount(
+            stack.transport,
+            type: "response.cancel",
+            minimum: 1
+        )
         await stack.transport.enqueueText(
             #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"user-b","text":"停一下","stash":""}"#
         )
@@ -2983,7 +3173,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         fixture: Data
     ) async throws {
         cases += 1
-        let stack = try makeStack()
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
         let router = ProviderRouter(
             credentialReader: try credentialReader(),
             realtimeResidentBrainProvider: stack.adapter
@@ -3109,6 +3300,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
               case .residentAudioDelta = residentAudioEvent.kind else {
             fatalError("confirmed-handoff resident response must be active")
         }
+        _ = diagnostics.drain()
 
         let evidenceTimestamp = DispatchTime.now().uptimeNanoseconds
         let acousticEvidence = RealtimeInterruptionEvidence(
@@ -3152,15 +3344,10 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 ) else {
             fatalError("confirmed-handoff interruption must be Runtime-confirmed")
         }
-        await stack.transport.waitUntilSent(type: "response.cancel")
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"停一下","stash":""}"#
-        )
-        await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#
-        )
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"停一下"}"#
+        try await waitUntilSentTypeCount(
+            stack.transport,
+            type: "response.cancel",
+            minimum: 1
         )
         await stack.transport.releaseResponseCancellationAcknowledgements()
         let nextIdentity = try realtimeIdentity(
@@ -3169,42 +3356,113 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
         let reboundStart = try await runtime
             .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        let reboundPartial = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        let reboundStop = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        let reboundFinal = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
         guard case .accepted(let reboundStartEvent) = reboundStart else {
             fatalError("confirmed interrupting turn must start in N+1")
-        }
-        guard case .accepted(let reboundPartialEvent) = reboundPartial,
-              case .accepted(let reboundStopEvent) = reboundStop,
-              case .accepted(let reboundFinalEvent) = reboundFinal else {
-            fatalError("confirmed interrupting turn must finish in N+1")
         }
         expect(
             reboundStartEvent.kind == .userSpeechStarted
                 && reboundStartEvent.sequence == 1,
             "Runtime consumes the confirmed-interruption handoff once"
         )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"找点乐子","stash":""}"#
+        )
+        let reboundPartialOne = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"找点乐子是什么","stash":""}"#
+        )
+        let reboundPartialTwo = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#
+        )
+        let reboundStop = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        let responseCreateCountBeforeFallback = try await sentTypes(
+            stack.transport
+        ).filter { $0 == "response.create" }.count
         expect(
-            reboundPartialEvent.kind
-                    == .userTranscriptPartial("停一下")
+            responseCreateCountBeforeFallback == 1,
+            "speech stopped does not create N+1 response before fallback final"
+        )
+        await waitUntilPendingEventCount(
+            stack.adapter,
+            session: nextIdentity,
+            minimum: 1
+        )
+        let reboundFinal = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        guard case .accepted(let reboundPartialOneEvent) = reboundPartialOne,
+              case .accepted(let reboundPartialTwoEvent) = reboundPartialTwo,
+              case .accepted(let reboundStopEvent) = reboundStop,
+              case .accepted(let reboundFinalEvent) = reboundFinal else {
+            fatalError("confirmed interrupting turn must finish in N+1")
+        }
+        expect(
+            reboundPartialOneEvent.kind
+                    == .userTranscriptPartial("找点乐子")
+                && reboundPartialTwoEvent.kind
+                    == .userTranscriptPartial("找点乐子是什么")
                 && reboundStopEvent.kind == .userSpeechStopped
                 && reboundFinalEvent.kind
-                    == .userTranscriptFinal("停一下")
+                    == .userTranscriptFinal("找点乐子是什么")
+                && reboundPartialOneEvent.identity.session == nextIdentity
+                && reboundPartialTwoEvent.identity.turnID
+                    == reboundStartEvent.identity.turnID
+                && reboundStopEvent.identity.turnID
+                    == reboundStartEvent.identity.turnID
+                && reboundFinalEvent.identity.turnID
+                    == reboundStartEvent.identity.turnID
                 && runtime.realtimePendingUserInputForTesting(
                     reboundStartEvent.identity
-                ) == "停一下",
-            "the complete short utterance survives into N+1"
+                ) == "找点乐子是什么",
+            "post-transition partials and missing final stay on the N+1 turn"
+        )
+        let fallbackEvents = diagnostics.drain().events
+        let correlatedCategories = [
+            "qwen_speech_started_received",
+            "qwen_transcript_partial_received",
+            "qwen_speech_stopped_received",
+            "qwen_transcript_final_fallback_scheduled",
+            "qwen_transcript_final_fallback_fired",
+            "qwen_transcript_final_recovered_from_partial"
+        ]
+        let fallbackCorrelationHashes = Set(fallbackEvents.compactMap {
+            event -> String? in
+            guard correlatedCategories.contains(event.category) else {
+                return nil
+            }
+            return event.itemCorrelationHash
+        })
+        expect(
+            fallbackEvents.filter {
+                $0.category
+                    == "qwen_transcript_final_recovered_from_partial"
+            }.count == 1
+                && fallbackEvents.filter {
+                    $0.category
+                        == "qwen_transcript_final_fallback_fired"
+                }.count == 1,
+            "active-response rebound fires exactly one observable fallback"
+        )
+        expect(
+            fallbackCorrelationHashes.count == 1
+                && correlatedCategories.allSatisfy { category in
+                    fallbackEvents.contains { $0.category == category }
+                },
+            "speech, transcript, and fallback evidence share one item correlation"
         )
         expect(
             runtime.realtimeUtteranceCompletionDebugSnapshot().phase
                 == .candidatePause,
             "the confirmed handoff carries an exact completion boundary"
         )
-        await stack.transport.waitUntilSent(type: "response.create", count: 2)
+        try await waitUntilSentTypeCount(
+            stack.transport,
+            type: "response.create",
+            minimum: 2
+        )
         let responseCreateCountAfterHandoff = try await sentTypes(
             stack.transport
         ).filter { $0 == "response.create" }.count
@@ -3214,27 +3472,37 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
 
         await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_started","item_id":"interrupting-user"}"#
-        )
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"停一下","stash":""}"#
-        )
-        await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#
         )
         await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"停一下"}"#
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"迟到的重复内容","stash":""}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"迟到的完整内容"}"#
         )
         await stack.transport.enqueueText(
             #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"interrupting-user","error":{"code":"late_asr_failure"}}"#
         )
-        try? await Task.sleep(for: .milliseconds(50))
+        try? await Task.sleep(for: .milliseconds(650))
         let responseCreateCountAfterDuplicates = try await sentTypes(
             stack.transport
         ).filter { $0 == "response.create" }.count
         expect(
             responseCreateCountAfterDuplicates == 2,
             "late duplicate events cannot create an extra response"
+        )
+        expect(
+            diagnostics.drain().events.filter {
+                $0.category
+                    == "qwen_transcript_final_recovered_from_partial"
+            }.isEmpty,
+            "late duplicate events cannot fire a second fallback final"
+        )
+        let pendingEventCountAfterDuplicates = await stack.adapter
+            .pendingEventCountForTesting(session: nextIdentity)
+        expect(
+            pendingEventCountAfterDuplicates == 0,
+            "late duplicate events leave no stale user event queued"
         )
         expectRealtimeSuccess(
             await runtime.closeRealtimeResidentBrainSession(
@@ -4013,6 +4281,36 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             await Task.yield()
         }
         fatalError("event receive did not enter the Adapter waiter")
+    }
+
+    private static func waitUntilPendingEventCount(
+        _ adapter: QwenRealtimeResidentBrainAdapter,
+        session: RealtimeBrainSessionIdentity,
+        minimum: Int
+    ) async {
+        for _ in 0 ..< 1_000 {
+            if await adapter.pendingEventCountForTesting(session: session)
+                >= minimum {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        fatalError("Adapter did not enqueue the expected bounded event")
+    }
+
+    private static func waitUntilSentTypeCount(
+        _ transport: R3FakeRealtimeWebSocketTransport,
+        type: String,
+        minimum: Int
+    ) async throws {
+        for _ in 0 ..< 1_500 {
+            if try await sentTypes(transport).filter({ $0 == type }).count
+                >= minimum {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        fatalError("transport did not send \(minimum) bounded \(type) frames")
     }
 
     private static func waitUntilResponseDoneWaiter(

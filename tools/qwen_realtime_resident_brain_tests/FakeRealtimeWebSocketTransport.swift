@@ -31,6 +31,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var holdsNextCloseCompletion = false
     private var heldCloseContinuation: CheckedContinuation<Void, Never>?
     private var failsNextResponseCancel = false
+    private var failsNextAudioAppend = false
     private var holdsResponseCancellation = false
     private var heldResponseCancellationFrames: [String] = []
     private var turnDetectionAcknowledgementMode:
@@ -64,6 +65,11 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
             }
         case "conversation.item.create":
             break
+        case "input_audio_buffer.append":
+            if failsNextAudioAppend {
+                failsNextAudioAppend = false
+                throw RealtimeResidentBrainError.transportFailure
+            }
         case "response.create":
             generatedResponseIndex += 1
             let responseID = nextResponseID
@@ -257,6 +263,10 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func failNextResponseCancelWithGenericError() {
         failsNextResponseCancel = true
+    }
+
+    func failNextAudioAppend() {
+        failsNextAudioAppend = true
     }
 
     func holdResponseCancellationAcknowledgements() {

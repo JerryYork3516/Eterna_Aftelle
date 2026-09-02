@@ -476,13 +476,56 @@ nonisolated private enum QwenRealtimePCM16Converter {
 nonisolated private struct QwenRealtimeInputAudioBatcher {
     static let batchByteCount = 3_200
 
-    private var pendingBytes = Data()
+    private struct PendingSegment {
+        var byteCount: Int
+        let isAcousticEchoProcessed: Bool
+    }
 
-    mutating func append(_ bytes: Data) -> [Data] {
+    struct Batch {
+        let bytes: Data
+        let isAcousticEchoProcessed: Bool
+    }
+
+    private var pendingBytes = Data()
+    private var pendingSegments: [PendingSegment] = []
+
+    mutating func append(
+        _ bytes: Data,
+        isAcousticEchoProcessed: Bool
+    ) -> [Batch] {
+        guard !bytes.isEmpty else { return [] }
         pendingBytes.append(bytes)
-        var batches: [Data] = []
+        if pendingSegments.last?.isAcousticEchoProcessed
+            == isAcousticEchoProcessed {
+            pendingSegments[pendingSegments.count - 1].byteCount += bytes.count
+        } else {
+            pendingSegments.append(PendingSegment(
+                byteCount: bytes.count,
+                isAcousticEchoProcessed: isAcousticEchoProcessed
+            ))
+        }
+        var batches: [Batch] = []
         while pendingBytes.count >= Self.batchByteCount {
-            batches.append(Data(pendingBytes.prefix(Self.batchByteCount)))
+            var remainingByteCount = Self.batchByteCount
+            var batchIsAcousticEchoProcessed = true
+            while remainingByteCount > 0 {
+                let consumedByteCount = min(
+                    remainingByteCount,
+                    pendingSegments[0].byteCount
+                )
+                batchIsAcousticEchoProcessed =
+                    batchIsAcousticEchoProcessed
+                    && pendingSegments[0].isAcousticEchoProcessed
+                pendingSegments[0].byteCount -= consumedByteCount
+                remainingByteCount -= consumedByteCount
+                if pendingSegments[0].byteCount == 0 {
+                    pendingSegments.removeFirst()
+                }
+            }
+            batches.append(Batch(
+                bytes: Data(pendingBytes.prefix(Self.batchByteCount)),
+                isAcousticEchoProcessed: batchIsAcousticEchoProcessed
+            ))
             pendingBytes.removeFirst(Self.batchByteCount)
         }
         return batches
@@ -490,6 +533,7 @@ nonisolated private struct QwenRealtimeInputAudioBatcher {
 
     mutating func reset() {
         pendingBytes.removeAll(keepingCapacity: true)
+        pendingSegments.removeAll(keepingCapacity: true)
     }
 }
 
@@ -761,13 +805,24 @@ actor QwenRealtimeResidentBrainAdapter:
         defer { finishMutationOperation(operationID) }
         do {
             let batches = inputAudioBatcher.append(
-                try QwenRealtimePCM16Converter.mono16k(frame)
+                try QwenRealtimePCM16Converter.mono16k(frame),
+                isAcousticEchoProcessed:
+                    frame.provenance == .acousticEchoProcessed
             )
             for batch in batches {
                 let hadActiveResponse = activeResponse != nil
-                try await send(codec.audioAppend(batch))
+                try await send(codec.audioAppend(batch.bytes))
+                #if DEBUG
+                if batch.isAcousticEchoProcessed {
+                    diagnosticBuffer?.appendRealtimeAudioCapsuleBatch(
+                        batch.bytes,
+                        identity: frame.identity,
+                        audioSequence: frame.sequence
+                    )
+                }
+                #endif
                 if let diagnosticBuffer {
-                    let metrics = Self.pcmMetrics(batch)
+                    let metrics = Self.pcmMetrics(batch.bytes)
                     diagnosticBuffer.append(
                         NativeSpeechInternalDiagnosticEvent(
                             source: .adapter,
@@ -778,7 +833,7 @@ actor QwenRealtimeResidentBrainAdapter:
                             turnGeneration: frame.identity.generation,
                             disposition: "transport_enqueued",
                             audioSequence: frame.sequence,
-                            byteCount: batch.count,
+                            byteCount: batch.bytes.count,
                             pcmPeak: metrics.peak,
                             pcmRMS: metrics.rms
                         )
@@ -935,6 +990,12 @@ actor QwenRealtimeResidentBrainAdapter:
         session: RealtimeBrainSessionIdentity
     ) -> Bool {
         identity == session && lifecycle == .closing
+    }
+
+    func pendingEventCountForTesting(
+        session: RealtimeBrainSessionIdentity
+    ) -> Int {
+        identity == session ? pendingEvents.count : 0
     }
     #endif
 
@@ -1189,7 +1250,8 @@ actor QwenRealtimeResidentBrainAdapter:
                     routeKind: .realtimeBrain,
                     turnGeneration: identity?.generation,
                     disposition: activeResponse == nil
-                        ? "listening" : "active_response"
+                        ? "listening" : "active_response",
+                    itemCorrelationHash: Self.correlationHash(itemID)
                 )
             )
             guard lifecycle == .active,
@@ -1215,6 +1277,10 @@ actor QwenRealtimeResidentBrainAdapter:
                 identity: makeEventIdentity(for: turn)
             )
         case .inputSpeechStopped(let itemID):
+            recordUserInputWireDiagnostic(
+                category: "qwen_speech_stopped_received",
+                itemID: itemID
+            )
             guard !stoppedUserInputItemIDs.contains(itemID) else { return }
             if lifecycle == .transitioning,
                recordActiveUserSpeechStopped(itemID: itemID) {
@@ -1237,6 +1303,10 @@ actor QwenRealtimeResidentBrainAdapter:
             )
             scheduleTranscriptFinalFallback(itemID: itemID)
         case .inputTranscriptDelta(let itemID, let preview):
+            recordUserInputWireDiagnostic(
+                category: "qwen_transcript_partial_received",
+                itemID: itemID
+            )
             guard !completedUserInputItemIDs.contains(itemID) else { return }
             let trimmedPreview = preview.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -1275,6 +1345,10 @@ actor QwenRealtimeResidentBrainAdapter:
                 scheduleTranscriptFinalFallback(itemID: itemID)
             }
         case .inputTranscriptCompleted(let itemID, let transcript):
+            recordUserInputWireDiagnostic(
+                category: "qwen_transcript_final_received",
+                itemID: itemID
+            )
             guard !completedUserInputItemIDs.contains(itemID) else { return }
             let trimmedTranscript = transcript.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -1285,7 +1359,10 @@ actor QwenRealtimeResidentBrainAdapter:
                    transcript,
                    itemID: itemID
                ) {
-                cancelTranscriptFinalFallback(itemID: itemID)
+                cancelTranscriptFinalFallback(
+                    itemID: itemID,
+                    reason: "provider_final_during_transition"
+                )
                 lastUserTranscriptPreviewByItemID[itemID] = transcript
                 markUserInputCompleted(itemID)
                 return
@@ -1296,7 +1373,10 @@ actor QwenRealtimeResidentBrainAdapter:
                     createsIfNeeded: false
                   ),
                   !trimmedTranscript.isEmpty else { return }
-            cancelTranscriptFinalFallback(itemID: itemID)
+            cancelTranscriptFinalFallback(
+                itemID: itemID,
+                reason: "provider_final"
+            )
             lastUserTranscriptPreviewByItemID[itemID] = transcript
             if activeUserInputTurn?.wireItemID == itemID {
                 _ = recordActiveUserTranscriptFinal(
@@ -1310,8 +1390,15 @@ actor QwenRealtimeResidentBrainAdapter:
                 identity: makeEventIdentity(for: turn)
             )
         case .inputTranscriptFailed(let itemID):
+            recordUserInputWireDiagnostic(
+                category: "qwen_transcription_failed_received",
+                itemID: itemID
+            )
             guard !completedUserInputItemIDs.contains(itemID) else { return }
-            cancelTranscriptFinalFallback(itemID: itemID)
+            cancelTranscriptFinalFallback(
+                itemID: itemID,
+                reason: "provider_transcription_failed"
+            )
             if lifecycle == .transitioning {
                 guard let state = activeUserInputTurn,
                       state.wireItemID == itemID,
@@ -2089,7 +2176,10 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func scheduleTranscriptFinalFallback(itemID: String) {
-        transcriptFinalFallbackTasks[itemID]?.task.cancel()
+        cancelTranscriptFinalFallback(
+            itemID: itemID,
+            reason: "rescheduled"
+        )
         let token = UUID()
         let task = Task { [weak self] in
             try? await Task.sleep(
@@ -2105,15 +2195,36 @@ actor QwenRealtimeResidentBrainAdapter:
             token: token,
             task: task
         )
+        recordTranscriptFinalFallbackDiagnostic(
+            category: "qwen_transcript_final_fallback_scheduled",
+            itemID: itemID,
+            disposition: "delay_ms=500"
+        )
     }
 
-    private func cancelTranscriptFinalFallback(itemID: String) {
-        transcriptFinalFallbackTasks.removeValue(forKey: itemID)?.task.cancel()
+    private func cancelTranscriptFinalFallback(
+        itemID: String,
+        reason: String
+    ) {
+        guard let fallback = transcriptFinalFallbackTasks.removeValue(
+            forKey: itemID
+        ) else { return }
+        fallback.task.cancel()
+        recordTranscriptFinalFallbackDiagnostic(
+            category: "qwen_transcript_final_fallback_cancelled",
+            itemID: itemID,
+            disposition: reason
+        )
     }
 
-    private func cancelTranscriptFinalFallbacks() {
-        transcriptFinalFallbackTasks.values.forEach { $0.task.cancel() }
-        transcriptFinalFallbackTasks.removeAll(keepingCapacity: true)
+    private func cancelTranscriptFinalFallbacks(reason: String) {
+        let itemIDs = Array(transcriptFinalFallbackTasks.keys)
+        for itemID in itemIDs {
+            cancelTranscriptFinalFallback(
+                itemID: itemID,
+                reason: reason
+            )
+        }
     }
 
     private func recoverTranscriptFinalFromPartial(
@@ -2121,34 +2232,132 @@ actor QwenRealtimeResidentBrainAdapter:
         token: UUID
     ) {
         guard transcriptFinalFallbackTasks[itemID]?.token == token else {
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "token_replaced"
+            )
+            return
+        }
+        if lifecycle == .transitioning {
+            transcriptFinalFallbackTasks.removeValue(forKey: itemID)
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "transition_deferred_to_rebound"
+            )
             return
         }
         transcriptFinalFallbackTasks.removeValue(forKey: itemID)
-        guard lifecycle == .active,
-              stoppedUserInputItemIDs.contains(itemID),
-              !completedUserInputItemIDs.contains(itemID),
-              let turn = turnBinding(for: itemID, createsIfNeeded: false),
-              let preview = lastUserTranscriptPreviewByItemID[itemID]?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              !preview.isEmpty else { return }
+        guard lifecycle == .active else {
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "route_not_active"
+            )
+            return
+        }
+        guard !completedUserInputItemIDs.contains(itemID) else {
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "already_completed"
+            )
+            return
+        }
+        guard stoppedUserInputItemIDs.contains(itemID) else {
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "speech_not_stopped"
+            )
+            return
+        }
+        guard let turn = turnBinding(
+            for: itemID,
+            createsIfNeeded: false
+        ) else {
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "turn_binding_missing"
+            )
+            return
+        }
+        guard turn.sessionIdentity == identity,
+              turn.contextRevision == contextRevision else {
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "turn_binding_stale"
+            )
+            return
+        }
+        let preview = lastUserTranscriptPreviewByItemID[itemID]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let preview, !preview.isEmpty else {
+            recordTranscriptFinalFallbackDiagnostic(
+                category: "qwen_transcript_final_fallback_suppressed",
+                itemID: itemID,
+                disposition: "partial_missing"
+            )
+            return
+        }
         if activeUserInputTurn?.wireItemID == itemID {
             _ = recordActiveUserTranscriptFinal(preview, itemID: itemID)
         }
         markUserInputCompleted(itemID)
+        recordTranscriptFinalFallbackDiagnostic(
+            category: "qwen_transcript_final_fallback_fired",
+            itemID: itemID,
+            disposition: "latest_partial_promoted"
+        )
         diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
             source: .adapter,
             category: "qwen_transcript_final_recovered_from_partial",
             routeKind: .realtimeBrain,
             turnGeneration: turn.sessionIdentity.generation,
             disposition: "speech_stopped_partial_fallback",
-            itemCorrelationHash: String(
-                turn.runtimeID.rawValue.uuidString.prefix(8)
-            )
+            itemCorrelationHash: Self.correlationHash(itemID)
         ))
         enqueue(
             kind: .userTranscriptFinal(preview),
             identity: makeEventIdentity(for: turn)
         )
+    }
+
+    private func recordTranscriptFinalFallbackDiagnostic(
+        category: String,
+        itemID: String,
+        disposition: String
+    ) {
+        let turn = turnsByWireItemID[itemID]
+            ?? activeUserInputTurn.flatMap {
+                $0.wireItemID == itemID ? $0.turn : nil
+            }
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: category,
+            routeKind: .realtimeBrain,
+            turnGeneration: turn?.sessionIdentity.generation
+                ?? identity?.generation,
+            disposition: disposition,
+            itemCorrelationHash: Self.correlationHash(itemID)
+        ))
+    }
+
+    private func recordUserInputWireDiagnostic(
+        category: String,
+        itemID: String
+    ) {
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: category,
+            routeKind: .realtimeBrain,
+            turnGeneration: identity?.generation,
+            disposition: String(describing: lifecycle),
+            itemCorrelationHash: Self.correlationHash(itemID)
+        ))
     }
 
     private func markUserInputCompleted(_ itemID: String) {
@@ -2171,7 +2380,10 @@ actor QwenRealtimeResidentBrainAdapter:
         if stoppedUserInputItemOrder.count > 256 {
             let evictedItemID = stoppedUserInputItemOrder.removeFirst()
             stoppedUserInputItemIDs.remove(evictedItemID)
-            cancelTranscriptFinalFallback(itemID: evictedItemID)
+            cancelTranscriptFinalFallback(
+                itemID: evictedItemID,
+                reason: "stopped_tombstone_evicted"
+            )
         }
     }
 
@@ -2275,7 +2487,9 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func resetGenerationStatePreservingTombstones() {
-        cancelTranscriptFinalFallbacks()
+        cancelTranscriptFinalFallbacks(
+            reason: "generation_or_session_reset"
+        )
         pendingEvents.removeAll(keepingCapacity: true)
         nextEventSequence = 0
         outputAudioSequence = 0
@@ -2404,6 +2618,15 @@ actor QwenRealtimeResidentBrainAdapter:
             sampleCount += 1
         }
         return (peak, sqrt(squaredSum / Double(sampleCount)))
+    }
+
+    private static func correlationHash(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(format: "%016llx", hash)
     }
 
     private static let contextScopeOrder: [RealtimeBrainContextScope] = [

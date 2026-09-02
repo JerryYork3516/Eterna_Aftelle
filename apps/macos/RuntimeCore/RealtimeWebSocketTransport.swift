@@ -146,6 +146,29 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
     }
 }
 
+#if DEBUG
+nonisolated struct NativeSpeechRealtimeAudioCapsuleSnapshot:
+    Sendable,
+    Equatable {
+    let attemptID: UUID
+    let routeAttemptID: UUID
+    let brainLeaseID: UUID
+    let routeEpoch: UInt64
+    let startedAt: Date?
+    let endedAt: Date?
+    let firstGeneration: UInt64?
+    let lastGeneration: UInt64?
+    let firstBatchTerminalAudioSequence: UInt64?
+    let lastBatchTerminalAudioSequence: UInt64?
+    let bytes: Data
+    let isSealed: Bool
+
+    var durationMilliseconds: UInt64 {
+        UInt64(bytes.count) * 1_000 / (16_000 * 2)
+    }
+}
+#endif
+
 nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
     private struct TransportWriteDiagnosticAccumulator {
         var writeWindowCapacity = 0
@@ -237,6 +260,25 @@ nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
         NativeSpeechDiagnosticRouteKind:
             TransportWriteDiagnosticAccumulator
     ] = [:]
+    #if DEBUG
+    private struct RealtimeAudioCapsule {
+        let attemptID: UUID
+        let routeAttemptID: UUID
+        let brainLeaseID: UUID
+        let routeEpoch: UInt64
+        var startedAt: Date?
+        var endedAt: Date?
+        var firstGeneration: UInt64?
+        var lastGeneration: UInt64?
+        var firstBatchTerminalAudioSequence: UInt64?
+        var lastBatchTerminalAudioSequence: UInt64?
+        var bytes = Data()
+        var isSealed = false
+    }
+
+    private static let realtimeAudioCapsuleByteCapacity = 160_000
+    private var realtimeAudioCapsule: RealtimeAudioCapsule?
+    #endif
 
     init(capacity: Int = NativeSpeechDiagnosticBuffer.defaultCapacity) {
         precondition(capacity > 0)
@@ -269,6 +311,105 @@ nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
             transportWriteDiagnostics[routeKind]?.snapshot ?? .zero
         }
     }
+
+    #if DEBUG
+    func armRealtimeAudioCapsule(
+        attemptID: UUID,
+        routeAttemptID: UUID,
+        session: RealtimeBrainSessionIdentity
+    ) -> Bool {
+        lock.withLock {
+            guard realtimeAudioCapsule == nil else { return false }
+            realtimeAudioCapsule = RealtimeAudioCapsule(
+                attemptID: attemptID,
+                routeAttemptID: routeAttemptID,
+                brainLeaseID: session.brainLeaseID,
+                routeEpoch: session.routeEpoch
+            )
+            return true
+        }
+    }
+
+    func appendRealtimeAudioCapsuleBatch(
+        _ bytes: Data,
+        identity: RealtimeBrainSessionIdentity,
+        audioSequence: UInt64,
+        capturedAt: Date = Date()
+    ) {
+        lock.withLock {
+            guard var capsule = realtimeAudioCapsule,
+                  !capsule.isSealed,
+                  !bytes.isEmpty,
+                  identity.brainLeaseID == capsule.brainLeaseID,
+                  identity.routeEpoch == capsule.routeEpoch else { return }
+            let remaining = Self.realtimeAudioCapsuleByteCapacity
+                - capsule.bytes.count
+            guard remaining > 0 else {
+                capsule.isSealed = true
+                realtimeAudioCapsule = capsule
+                return
+            }
+            let appendedByteCount = min(remaining, bytes.count)
+            capsule.bytes.append(
+                contentsOf: bytes.prefix(appendedByteCount)
+            )
+            if capsule.startedAt == nil {
+                capsule.startedAt = capturedAt
+                capsule.firstGeneration = identity.generation
+                capsule.firstBatchTerminalAudioSequence = audioSequence
+            }
+            capsule.endedAt = capturedAt
+            capsule.lastGeneration = identity.generation
+            capsule.lastBatchTerminalAudioSequence = audioSequence
+            if capsule.bytes.count == Self.realtimeAudioCapsuleByteCapacity {
+                capsule.isSealed = true
+            }
+            realtimeAudioCapsule = capsule
+        }
+    }
+
+    func sealRealtimeAudioCapsule() {
+        lock.withLock {
+            realtimeAudioCapsule?.isSealed = true
+        }
+    }
+
+    func realtimeAudioCapsuleSnapshot()
+        -> NativeSpeechRealtimeAudioCapsuleSnapshot? {
+        lock.withLock {
+            realtimeAudioCapsule.map {
+                NativeSpeechRealtimeAudioCapsuleSnapshot(
+                    attemptID: $0.attemptID,
+                    routeAttemptID: $0.routeAttemptID,
+                    brainLeaseID: $0.brainLeaseID,
+                    routeEpoch: $0.routeEpoch,
+                    startedAt: $0.startedAt,
+                    endedAt: $0.endedAt,
+                    firstGeneration: $0.firstGeneration,
+                    lastGeneration: $0.lastGeneration,
+                    firstBatchTerminalAudioSequence:
+                        $0.firstBatchTerminalAudioSequence,
+                    lastBatchTerminalAudioSequence:
+                        $0.lastBatchTerminalAudioSequence,
+                    bytes: $0.bytes,
+                    isSealed: $0.isSealed
+                )
+            }
+        }
+    }
+
+    func clearRealtimeAudioCapsule(
+        matchingAttemptID attemptID: UUID? = nil
+    ) {
+        lock.withLock {
+            guard attemptID == nil
+                    || realtimeAudioCapsule?.attemptID == attemptID else {
+                return
+            }
+            realtimeAudioCapsule = nil
+        }
+    }
+    #endif
 
     func drain() -> (
         events: [NativeSpeechInternalDiagnosticEvent],
@@ -303,6 +444,9 @@ nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
             eventCount = 0
             droppedEventCount = 0
             transportWriteDiagnostics.removeAll(keepingCapacity: true)
+            #if DEBUG
+            realtimeAudioCapsule = nil
+            #endif
         }
     }
 }
