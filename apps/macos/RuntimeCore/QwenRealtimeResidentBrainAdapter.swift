@@ -51,6 +51,12 @@ nonisolated private struct QwenRealtimeTurnDetectionEcho: Sendable {
     }
 }
 
+nonisolated private enum QwenRealtimeTurnDetectionPolicy {
+    static let type = "semantic_vad"
+    static let threshold = 0.2
+    static let silenceDurationMilliseconds = 800
+}
+
 nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
     case sessionCreated
     case sessionUpdated(turnDetection: QwenRealtimeTurnDetectionEcho?)
@@ -116,9 +122,10 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
                     "model": "qwen3-asr-flash-realtime"
                 ],
                 "turn_detection": [
-                    "type": "semantic_vad",
-                    "threshold": 0.5,
-                    "silence_duration_ms": 800,
+                    "type": QwenRealtimeTurnDetectionPolicy.type,
+                    "threshold": QwenRealtimeTurnDetectionPolicy.threshold,
+                    "silence_duration_ms": QwenRealtimeTurnDetectionPolicy
+                        .silenceDurationMilliseconds,
                     "create_response": false,
                     "interrupt_response": false
                 ],
@@ -489,6 +496,8 @@ nonisolated private struct QwenRealtimeInputAudioBatcher {
 actor QwenRealtimeResidentBrainAdapter:
     RealtimeResidentBrainProvider {
     private static let maximumPendingEventCount = 256
+    private static let transcriptFinalFallbackDelay: Duration =
+        .milliseconds(500)
 
     private enum Lifecycle {
         case closed
@@ -538,6 +547,11 @@ actor QwenRealtimeResidentBrainAdapter:
         var latestTranscriptPartial: String?
         var speechStopped = false
         var transcriptFinal: String?
+    }
+
+    private struct TranscriptFinalFallback {
+        let token: UUID
+        let task: Task<Void, Never>
     }
 
     private enum ResponseAuthorizationKind: Equatable {
@@ -596,6 +610,8 @@ actor QwenRealtimeResidentBrainAdapter:
     private var latestTurnBinding: TurnBinding?
     private var lastUserTranscriptPreviewByItemID: [String: String] = [:]
     private var activeUserInputTurn: ActiveUserInputTurn?
+    private var transcriptFinalFallbackTasks:
+        [String: TranscriptFinalFallback] = [:]
     private var activeResponse: ActiveResponse?
     private var completedUserInputItemIDs: Set<String> = []
     private var completedUserInputItemOrder: [String] = []
@@ -671,7 +687,10 @@ actor QwenRealtimeResidentBrainAdapter:
             guard case .sessionUpdated(let turnDetection) = sessionUpdate else {
                 throw RealtimeResidentBrainError.invalidEvent
             }
-            try validateTurnDetectionAcknowledgement(turnDetection)
+            try validateTurnDetectionAcknowledgement(
+                turnDetection,
+                requiresCompletePolicy: true
+            )
             recordTurnDetectionAcknowledgement(turnDetection)
             let token = UUID()
             connectionToken = token
@@ -1090,7 +1109,10 @@ actor QwenRealtimeResidentBrainAdapter:
             guard case .sessionUpdated(let turnDetection) = sessionUpdate else {
                 throw RealtimeResidentBrainError.invalidEvent
             }
-            try validateTurnDetectionAcknowledgement(turnDetection)
+            try validateTurnDetectionAcknowledgement(
+                turnDetection,
+                requiresCompletePolicy: true
+            )
             recordTurnDetectionAcknowledgement(turnDetection)
             try requireOwnedGenerationTransition(expectedIdentity)
             return UUID()
@@ -1213,6 +1235,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 kind: .userSpeechStopped,
                 identity: makeEventIdentity(for: turn)
             )
+            scheduleTranscriptFinalFallback(itemID: itemID)
         case .inputTranscriptDelta(let itemID, let preview):
             guard !completedUserInputItemIDs.contains(itemID) else { return }
             let trimmedPreview = preview.trimmingCharacters(
@@ -1248,6 +1271,9 @@ actor QwenRealtimeResidentBrainAdapter:
                 kind: .userTranscriptPartial(preview),
                 identity: makeEventIdentity(for: turn)
             )
+            if stoppedUserInputItemIDs.contains(itemID) {
+                scheduleTranscriptFinalFallback(itemID: itemID)
+            }
         case .inputTranscriptCompleted(let itemID, let transcript):
             guard !completedUserInputItemIDs.contains(itemID) else { return }
             let trimmedTranscript = transcript.trimmingCharacters(
@@ -1259,6 +1285,7 @@ actor QwenRealtimeResidentBrainAdapter:
                    transcript,
                    itemID: itemID
                ) {
+                cancelTranscriptFinalFallback(itemID: itemID)
                 lastUserTranscriptPreviewByItemID[itemID] = transcript
                 markUserInputCompleted(itemID)
                 return
@@ -1269,6 +1296,7 @@ actor QwenRealtimeResidentBrainAdapter:
                     createsIfNeeded: false
                   ),
                   !trimmedTranscript.isEmpty else { return }
+            cancelTranscriptFinalFallback(itemID: itemID)
             lastUserTranscriptPreviewByItemID[itemID] = transcript
             if activeUserInputTurn?.wireItemID == itemID {
                 _ = recordActiveUserTranscriptFinal(
@@ -1283,6 +1311,7 @@ actor QwenRealtimeResidentBrainAdapter:
             )
         case .inputTranscriptFailed(let itemID):
             guard !completedUserInputItemIDs.contains(itemID) else { return }
+            cancelTranscriptFinalFallback(itemID: itemID)
             if lifecycle == .transitioning {
                 guard let state = activeUserInputTurn,
                       state.wireItemID == itemID,
@@ -2020,6 +2049,9 @@ actor QwenRealtimeResidentBrainAdapter:
                 turn.runtimeID.rawValue.uuidString.prefix(8)
             )
         ))
+        if state.speechStopped && state.transcriptFinal == nil {
+            scheduleTranscriptFinalFallback(itemID: state.wireItemID)
+        }
     }
 
     private func recordActiveUserTranscriptPartial(
@@ -2056,6 +2088,69 @@ actor QwenRealtimeResidentBrainAdapter:
         return true
     }
 
+    private func scheduleTranscriptFinalFallback(itemID: String) {
+        transcriptFinalFallbackTasks[itemID]?.task.cancel()
+        let token = UUID()
+        let task = Task { [weak self] in
+            try? await Task.sleep(
+                for: Self.transcriptFinalFallbackDelay
+            )
+            guard !Task.isCancelled else { return }
+            await self?.recoverTranscriptFinalFromPartial(
+                itemID: itemID,
+                token: token
+            )
+        }
+        transcriptFinalFallbackTasks[itemID] = TranscriptFinalFallback(
+            token: token,
+            task: task
+        )
+    }
+
+    private func cancelTranscriptFinalFallback(itemID: String) {
+        transcriptFinalFallbackTasks.removeValue(forKey: itemID)?.task.cancel()
+    }
+
+    private func cancelTranscriptFinalFallbacks() {
+        transcriptFinalFallbackTasks.values.forEach { $0.task.cancel() }
+        transcriptFinalFallbackTasks.removeAll(keepingCapacity: true)
+    }
+
+    private func recoverTranscriptFinalFromPartial(
+        itemID: String,
+        token: UUID
+    ) {
+        guard transcriptFinalFallbackTasks[itemID]?.token == token else {
+            return
+        }
+        transcriptFinalFallbackTasks.removeValue(forKey: itemID)
+        guard lifecycle == .active,
+              stoppedUserInputItemIDs.contains(itemID),
+              !completedUserInputItemIDs.contains(itemID),
+              let turn = turnBinding(for: itemID, createsIfNeeded: false),
+              let preview = lastUserTranscriptPreviewByItemID[itemID]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !preview.isEmpty else { return }
+        if activeUserInputTurn?.wireItemID == itemID {
+            _ = recordActiveUserTranscriptFinal(preview, itemID: itemID)
+        }
+        markUserInputCompleted(itemID)
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: "qwen_transcript_final_recovered_from_partial",
+            routeKind: .realtimeBrain,
+            turnGeneration: turn.sessionIdentity.generation,
+            disposition: "speech_stopped_partial_fallback",
+            itemCorrelationHash: String(
+                turn.runtimeID.rawValue.uuidString.prefix(8)
+            )
+        ))
+        enqueue(
+            kind: .userTranscriptFinal(preview),
+            identity: makeEventIdentity(for: turn)
+        )
+    }
+
     private func markUserInputCompleted(_ itemID: String) {
         guard completedUserInputItemIDs.insert(itemID).inserted else {
             return
@@ -2074,9 +2169,9 @@ actor QwenRealtimeResidentBrainAdapter:
         }
         stoppedUserInputItemOrder.append(itemID)
         if stoppedUserInputItemOrder.count > 256 {
-            stoppedUserInputItemIDs.remove(
-                stoppedUserInputItemOrder.removeFirst()
-            )
+            let evictedItemID = stoppedUserInputItemOrder.removeFirst()
+            stoppedUserInputItemIDs.remove(evictedItemID)
+            cancelTranscriptFinalFallback(itemID: evictedItemID)
         }
     }
 
@@ -2180,6 +2275,7 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func resetGenerationStatePreservingTombstones() {
+        cancelTranscriptFinalFallbacks()
         pendingEvents.removeAll(keepingCapacity: true)
         nextEventSequence = 0
         outputAudioSequence = 0
@@ -2233,10 +2329,37 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func validateTurnDetectionAcknowledgement(
-        _ value: QwenRealtimeTurnDetectionEcho?
+        _ value: QwenRealtimeTurnDetectionEcho?,
+        requiresCompletePolicy: Bool = false
     ) throws {
-        guard let value else { return }
-        if let type = value.type, type != "semantic_vad" {
+        guard let value else {
+            if requiresCompletePolicy {
+                throw RealtimeResidentBrainError.invalidEvent
+            }
+            return
+        }
+        if requiresCompletePolicy {
+            guard value.type != nil,
+                  value.threshold != nil,
+                  value.silenceDurationMilliseconds != nil,
+                  value.createResponse != nil,
+                  value.interruptResponse != nil else {
+                throw RealtimeResidentBrainError.invalidEvent
+            }
+        }
+        if let type = value.type,
+           type != QwenRealtimeTurnDetectionPolicy.type {
+            throw RealtimeResidentBrainError.invalidEvent
+        }
+        if let threshold = value.threshold,
+           threshold != QwenRealtimeTurnDetectionPolicy.threshold {
+            throw RealtimeResidentBrainError.invalidEvent
+        }
+        if let silenceDurationMilliseconds =
+            value.silenceDurationMilliseconds,
+           silenceDurationMilliseconds
+            != QwenRealtimeTurnDetectionPolicy
+                .silenceDurationMilliseconds {
             throw RealtimeResidentBrainError.invalidEvent
         }
         guard value.createResponse != true,
@@ -2252,8 +2375,10 @@ actor QwenRealtimeResidentBrainAdapter:
                 category: "qwen_turn_detection_requested",
                 routeKind: .realtimeBrain,
                 turnGeneration: identity?.generation,
-                disposition: "type=semantic_vad;threshold=0.5"
-                    + ";silence_ms=800;create_response=false"
+                disposition: "type=\(QwenRealtimeTurnDetectionPolicy.type)"
+                    + ";threshold=\(QwenRealtimeTurnDetectionPolicy.threshold)"
+                    + ";silence_ms=\(QwenRealtimeTurnDetectionPolicy.silenceDurationMilliseconds)"
+                    + ";create_response=false"
                     + ";interrupt_response=false"
             )
         )

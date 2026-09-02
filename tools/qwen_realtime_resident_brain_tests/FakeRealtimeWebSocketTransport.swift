@@ -1,6 +1,14 @@
 import Foundation
 
 actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
+    private enum TurnDetectionAcknowledgementMode {
+        case valid
+        case unsafe
+        case missing
+        case missingThreshold
+        case wrongThreshold
+    }
+
     private(set) var connectedEndpoints: [URL] = []
     private(set) var bearerTokens: [String] = []
     private(set) var sentFrames: [RealtimeWebSocketFrame] = []
@@ -19,13 +27,14 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var holdsInputClear = false
     private var heldInputClearAcknowledgements = 0
     private var holdsSessionUpdate = false
-    private var heldSessionUpdateAcknowledgements = 0
+    private var heldSessionUpdateAcknowledgements: [String] = []
     private var holdsNextCloseCompletion = false
     private var heldCloseContinuation: CheckedContinuation<Void, Never>?
     private var failsNextResponseCancel = false
     private var holdsResponseCancellation = false
     private var heldResponseCancellationFrames: [String] = []
-    private var acknowledgesUnsafeTurnDetection = false
+    private var turnDetectionAcknowledgementMode:
+        TurnDetectionAcknowledgementMode = .valid
 
     func connect(endpoint: URL, bearerToken: String) async throws {
         guard !isConnected else { throw NativeSpeechError.invalidConfiguration }
@@ -47,21 +56,11 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
         switch type {
         case "session.update":
+            let acknowledgement = sessionUpdateAcknowledgement(for: object)
             if holdsSessionUpdate {
-                heldSessionUpdateAcknowledgements += 1
-            } else if acknowledgesUnsafeTurnDetection,
-                      let session = object["session"] as? [String: Any],
-                      session["turn_detection"] != nil {
-                enqueueText(
-                    #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"server_vad","threshold":0.5,"silence_duration_ms":800,"create_response":true,"interrupt_response":true}}}"#
-                )
-            } else if let session = object["session"] as? [String: Any],
-                      session["turn_detection"] != nil {
-                enqueueText(
-                    #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"semantic_vad","threshold":0.5,"silence_duration_ms":800,"create_response":false,"interrupt_response":false}}}"#
-                )
+                heldSessionUpdateAcknowledgements.append(acknowledgement)
             } else {
-                enqueueText(#"{"type":"session.updated","session":{"id":"session-r3"}}"#)
+                enqueueText(acknowledgement)
             }
         case "conversation.item.create":
             break
@@ -120,7 +119,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         isConnected = false
         currentConnectionNumber = nil
         activeResponseID = nil
-        heldSessionUpdateAcknowledgements = 0
+        heldSessionUpdateAcknowledgements.removeAll(keepingCapacity: true)
         queuedFrames.removeAll(keepingCapacity: true)
         if let waiter = receiveWaiter {
             receiveWaiter = nil
@@ -167,7 +166,19 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     }
 
     func useUnsafeTurnDetectionAcknowledgement() {
-        acknowledgesUnsafeTurnDetection = true
+        turnDetectionAcknowledgementMode = .unsafe
+    }
+
+    func useMissingTurnDetectionAcknowledgement() {
+        turnDetectionAcknowledgementMode = .missing
+    }
+
+    func useMissingThresholdTurnDetectionAcknowledgement() {
+        turnDetectionAcknowledgementMode = .missingThreshold
+    }
+
+    func useWrongThresholdTurnDetectionAcknowledgement() {
+        turnDetectionAcknowledgementMode = .wrongThreshold
     }
 
     func holdResponseCreationAcknowledgements() {
@@ -200,10 +211,29 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func releaseSessionUpdateAcknowledgements() {
         holdsSessionUpdate = false
-        let count = heldSessionUpdateAcknowledgements
-        heldSessionUpdateAcknowledgements = 0
-        for _ in 0 ..< count {
-            enqueueText(#"{"type":"session.updated","session":{"id":"session-r3"}}"#)
+        let acknowledgements = heldSessionUpdateAcknowledgements
+        heldSessionUpdateAcknowledgements.removeAll(keepingCapacity: true)
+        acknowledgements.forEach(enqueueText)
+    }
+
+    private func sessionUpdateAcknowledgement(
+        for object: [String: Any]
+    ) -> String {
+        guard let session = object["session"] as? [String: Any],
+              session["turn_detection"] != nil else {
+            return #"{"type":"session.updated","session":{"id":"session-r3"}}"#
+        }
+        switch turnDetectionAcknowledgementMode {
+        case .valid:
+            return #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"semantic_vad","threshold":0.2,"silence_duration_ms":800,"create_response":false,"interrupt_response":false}}}"#
+        case .unsafe:
+            return #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"server_vad","threshold":0.5,"silence_duration_ms":800,"create_response":true,"interrupt_response":true}}}"#
+        case .missing:
+            return #"{"type":"session.updated","session":{"id":"session-r3"}}"#
+        case .missingThreshold:
+            return #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"semantic_vad","silence_duration_ms":800,"create_response":false,"interrupt_response":false}}}"#
+        case .wrongThreshold:
+            return #"{"type":"session.updated","session":{"id":"session-r3","turn_detection":{"type":"semantic_vad","threshold":0.5,"silence_duration_ms":800,"create_response":false,"interrupt_response":false}}}"#
         }
     }
 

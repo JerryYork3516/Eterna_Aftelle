@@ -62,6 +62,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testInvalidToolAdvertisementsFailClosed()
         try await testContextScopeReplacement()
         try await testAudioAndEventMapping()
+        try await testMissingTranscriptFinalRecovery()
+        try await testTranscriptFinalFallbackDebounce()
+        try await testTranscriptFinalFallbackLifecycleCancellation()
         try await testLateFinalKeepsExactProviderItemBinding()
         try await testResidentTextWireSourceCanonicalization()
         try await testGenerationGlobalOutputAudioClock()
@@ -173,6 +176,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(
             turnDetection?["type"] as? String == "semantic_vad",
             "Qwen3.5 semantic VAD is configured"
+        )
+        expect(
+            turnDetection?["threshold"] as? Double == 0.2
+                && turnDetection?["silence_duration_ms"] as? Int == 800,
+            "Qwen semantic VAD keeps the pause window while admitting quieter speech"
         )
         expect(
             turnDetection?["create_response"] as? Bool == false
@@ -732,6 +740,275 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testMissingTranscriptFinalRecovery() async throws {
+        cases += 1
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
+        let identity = sessionIdentity(generation: 18)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"missing-final-user"}"#
+        )
+        let started = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"missing-final-user","text":"停，等一下","stash":""}"#
+        )
+        let partial = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"missing-final-user"}"#
+        )
+        let stopped = try await stack.adapter.receiveEvent(session: identity)
+        let recovered = try await stack.adapter.receiveEvent(session: identity)
+        expect(
+            started.kind == .userSpeechStarted
+                && partial.kind == .userTranscriptPartial("停，等一下")
+                && stopped.kind == .userSpeechStopped
+                && recovered.kind == .userTranscriptFinal("停，等一下"),
+            "speech stopped recovers one missing final from the latest partial"
+        )
+        let recoveryDiagnostics = diagnostics.drain().events
+        expect(
+            recoveryDiagnostics.contains {
+                $0.category
+                    == "qwen_transcript_final_recovered_from_partial"
+            },
+            "missing-final recovery is visible without logging transcript text"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"missing-final-user","error":{"code":"late_asr_failure"}}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"missing-final-user","transcript":"停，等一下，我还有话"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"after-late-final"}"#
+        )
+        let afterLateFinal = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            afterLateFinal.kind == .userSpeechStarted,
+            "late Provider final cannot duplicate the recovered final"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"after-late-final"}"#
+        )
+        let noPartialStop = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            noPartialStop.kind == .userSpeechStopped,
+            "speech without a partial still keeps its lifecycle"
+        )
+        try? await Task.sleep(for: .milliseconds(650))
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"after-empty-fallback"}"#
+        )
+        let afterEmptyFallback = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            afterEmptyFallback.kind == .userSpeechStarted,
+            "missing-final recovery never fabricates an empty transcript"
+        )
+
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testTranscriptFinalFallbackDebounce() async throws {
+        cases += 1
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
+        let identity = sessionIdentity(generation: 19)
+        try await openAndBootstrap(stack, identity: identity)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"progressive-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"progressive-user","text":"找点乐子","stash":""}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"progressive-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        try? await Task.sleep(for: .milliseconds(300))
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"progressive-user","text":"找点乐子是什么","stash":""}"#
+        )
+        let progressivePartial = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        let progressiveFinalTask = Task {
+            try await stack.adapter.receiveEvent(session: identity)
+        }
+        await waitUntilPendingReceive(stack.adapter, session: identity)
+        try? await Task.sleep(for: .milliseconds(250))
+        let fallbackStillPending = await stack.adapter
+            .hasPendingEventWaiterForTesting(session: identity)
+        expect(
+            fallbackStillPending,
+            "a later partial restarts the stopped-turn fallback window"
+        )
+        let progressiveFinal = try await progressiveFinalTask.value
+        expect(
+            progressivePartial.kind
+                == .userTranscriptPartial("找点乐子是什么")
+                && progressiveFinal.kind
+                    == .userTranscriptFinal("找点乐子是什么"),
+            "fallback commits the latest stable partial instead of an earlier preview"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"late-partial-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"late-partial-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        try? await Task.sleep(for: .milliseconds(650))
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"late-partial-user","text":"稍晚到达的内容","stash":""}"#
+        )
+        let latePartial = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        let latePartialFinal = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            latePartial.kind == .userTranscriptPartial("稍晚到达的内容")
+                && latePartialFinal.kind
+                    == .userTranscriptFinal("稍晚到达的内容"),
+            "a first partial arriving after the original deadline gets its own fallback window"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"provider-final-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"provider-final-user","text":"未完成","stash":""}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"provider-final-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        try? await Task.sleep(for: .milliseconds(100))
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"provider-final-user","transcript":"Provider 完整文本"}"#
+        )
+        let providerFinal = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        try? await Task.sleep(for: .milliseconds(550))
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"after-provider-final"}"#
+        )
+        let afterProviderFinal = try await stack.adapter.receiveEvent(
+            session: identity
+        )
+        expect(
+            providerFinal.kind == .userTranscriptFinal("Provider 完整文本")
+                && afterProviderFinal.kind == .userSpeechStarted,
+            "a timely Provider final cancels fallback without a duplicate"
+        )
+        let recoveryCount = diagnostics.drain().events.filter {
+            $0.category == "qwen_transcript_final_recovered_from_partial"
+        }.count
+        expect(
+            recoveryCount == 2,
+            "only the two genuinely missing finals use fallback recovery"
+        )
+
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: identity)
+        )
+    }
+
+    private static func testTranscriptFinalFallbackLifecycleCancellation()
+        async throws {
+        cases += 1
+        let stack = try makeStack()
+        let initial = sessionIdentity(generation: 20)
+        try await openAndBootstrap(stack, identity: initial)
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"close-old-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: initial)
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"close-old-user","text":"旧会话","stash":""}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: initial)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"close-old-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: initial)
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: initial)
+        )
+
+        let reopened = sessionIdentity(generation: 1)
+        try await openAndBootstrap(stack, identity: reopened)
+        try? await Task.sleep(for: .milliseconds(650))
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"reopened-user"}"#
+        )
+        let reopenedSpeech = try await stack.adapter.receiveEvent(
+            session: reopened
+        )
+        expect(
+            reopenedSpeech.kind == .userSpeechStarted,
+            "close and reopen cannot resurrect an old fallback final"
+        )
+
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"reopened-user","text":"旧 generation","stash":""}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: reopened)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"reopened-user"}"#
+        )
+        _ = try await stack.adapter.receiveEvent(session: reopened)
+        let next = sessionIdentity(
+            generation: 2,
+            leaseID: reopened.brainLeaseID,
+            routeEpoch: reopened.routeEpoch
+        )
+        try await stack.adapter.cancelGeneration(
+            RealtimeBrainCancelGenerationCommand(
+                identity: reopened,
+                nextGeneration: next.generation,
+                reason: .runtimeDecision
+            )
+        )
+        let cancelled = try await stack.adapter.receiveEvent(session: next)
+        try? await Task.sleep(for: .milliseconds(650))
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"next-generation-user"}"#
+        )
+        let nextSpeech = try await stack.adapter.receiveEvent(session: next)
+        expect(
+            cancelled.kind == .cancelled(.runtimeDecision)
+                && nextSpeech.kind == .userSpeechStarted,
+            "generation reset cancels the old fallback without touching N+1"
+        )
+
+        try await stack.adapter.closeSession(
+            RealtimeBrainCloseSessionCommand(identity: next)
         )
     }
 
@@ -3232,28 +3509,33 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "near-tail handoff admits the exact user turn once"
         )
         await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"near-tail-user","text":"找点乐子是什么","stash":""}"#
+        )
+        let reboundPartial = try await runtime
+            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_stopped","item_id":"near-tail-user"}"#
         )
         let reboundStop = try await runtime
             .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"near-tail-user","transcript":"找点乐子是什么"}"#
-        )
         let reboundFinal = try await runtime
             .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        guard case .accepted(let reboundStopEvent) = reboundStop,
+        guard case .accepted(let reboundPartialEvent) = reboundPartial,
+              case .accepted(let reboundStopEvent) = reboundStop,
               case .accepted(let reboundFinalEvent) = reboundFinal else {
             fatalError("near-tail user turn must finish in N+1")
         }
         expect(
-            reboundStopEvent.kind == .userSpeechStopped
+            reboundPartialEvent.kind
+                == .userTranscriptPartial("找点乐子是什么")
+                && reboundStopEvent.kind == .userSpeechStopped
                 && reboundFinalEvent.kind
                     == .userTranscriptFinal("找点乐子是什么")
                 && reboundStopEvent.identity.turnID
                     == reboundStartEvent.identity.turnID
                 && reboundFinalEvent.identity.turnID
                     == reboundStartEvent.identity.turnID,
-            "near-tail late stop and transcript stay on the rebound turn"
+            "near-tail missing final recovers inside the rebound turn"
         )
         expect(
             runtime.realtimePendingUserInputForTesting(
@@ -3510,6 +3792,55 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(
             closeCount == 1,
             "unsafe Provider VAD authority acknowledgement closes the session"
+        )
+
+        let missingStack = try makeStack()
+        await missingStack.transport.useMissingTurnDetectionAcknowledgement()
+        await expectRealtimeError(.invalidEvent) {
+            try await missingStack.adapter.openSession(
+                RealtimeBrainOpenSessionCommand(
+                    identity: sessionIdentity(generation: 2)
+                )
+            )
+        }
+        let missingCloseCount = await missingStack.transport.closeCount()
+        expect(
+            missingCloseCount == 1,
+            "missing Provider VAD policy acknowledgement fails closed"
+        )
+
+        let missingThresholdStack = try makeStack()
+        await missingThresholdStack.transport
+            .useMissingThresholdTurnDetectionAcknowledgement()
+        await expectRealtimeError(.invalidEvent) {
+            try await missingThresholdStack.adapter.openSession(
+                RealtimeBrainOpenSessionCommand(
+                    identity: sessionIdentity(generation: 3)
+                )
+            )
+        }
+        let missingThresholdCloseCount = await missingThresholdStack
+            .transport.closeCount()
+        expect(
+            missingThresholdCloseCount == 1,
+            "incomplete Provider VAD policy acknowledgement fails closed"
+        )
+
+        let wrongThresholdStack = try makeStack()
+        await wrongThresholdStack.transport
+            .useWrongThresholdTurnDetectionAcknowledgement()
+        await expectRealtimeError(.invalidEvent) {
+            try await wrongThresholdStack.adapter.openSession(
+                RealtimeBrainOpenSessionCommand(
+                    identity: sessionIdentity(generation: 4)
+                )
+            )
+        }
+        let wrongThresholdCloseCount = await wrongThresholdStack.transport
+            .closeCount()
+        expect(
+            wrongThresholdCloseCount == 1,
+            "Provider VAD threshold mismatch fails closed"
         )
     }
 

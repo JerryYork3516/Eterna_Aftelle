@@ -41,9 +41,11 @@ private actor R6FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         }
         switch type {
         case "session.update":
-            enqueue(.text(
-                #"{"type":"session.updated","session":{"id":"r6-session"}}"#
-            ))
+            let session = object["session"] as? [String: Any]
+            let acknowledgement = session?["turn_detection"] == nil
+                ? #"{"type":"session.updated","session":{"id":"r6-session"}}"#
+                : #"{"type":"session.updated","session":{"id":"r6-session","turn_detection":{"type":"semantic_vad","threshold":0.2,"silence_duration_ms":800,"create_response":false,"interrupt_response":false}}}"#
+            enqueue(.text(acknowledgement))
         case "input_audio_buffer.clear":
             enqueue(.text(#"{"type":"input_audio_buffer.cleared"}"#))
         default:

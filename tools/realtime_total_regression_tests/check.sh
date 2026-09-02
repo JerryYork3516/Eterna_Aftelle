@@ -8,7 +8,7 @@ shared_runner="$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests
 production_contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeResidentBrainAdapter.swift"
 timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
-expected_production_digest="e64f1f6d047d17dc8630bb7be20283fdfbd4eb7624a213222b5e4ca13742425a"
+expected_production_digest="be99fdff4c2902c2042ce6600c8103626d7eef19279fe8627ae6f7318eb2093a"
 expected_manifest_digest="6de2ef316f6bf03b393e14549e4cd3dd6f1b0c958ad1a75e1dcec6731ddb7780"
 trap 'rm -rf "$work_dir"' EXIT
 
