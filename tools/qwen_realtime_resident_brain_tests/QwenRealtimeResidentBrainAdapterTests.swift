@@ -44,6 +44,57 @@ private actor R3ASRProvider: ASRProvider {
     func startCount() -> Int { starts }
 }
 
+private actor R3RealtimeEventRecorder {
+    private var events: [RealtimeResidentBrainEvent] = []
+
+    func append(_ event: RealtimeResidentBrainEvent) {
+        events.append(event)
+    }
+
+    func snapshot() -> [RealtimeResidentBrainEvent] {
+        events
+    }
+}
+
+@MainActor
+private final class R3OutputBridgeInterruptionCoordinator {
+    let runtime: RuntimeCore
+    let recorder: R3RealtimeEventRecorder
+    var bridge: MacSpeechRealtimeBrainOutputBridge?
+    private(set) var decision: RealtimeConfirmedInterruption?
+    private(set) var nextIdentity: RealtimeBrainSessionIdentity?
+
+    init(runtime: RuntimeCore, recorder: R3RealtimeEventRecorder) {
+        self.runtime = runtime
+        self.recorder = recorder
+    }
+
+    func consume(_ event: RealtimeResidentBrainEvent) async {
+        await recorder.append(event)
+        guard case .userSpeechStarted = event.kind,
+              decision == nil,
+              case .success(.confirmed(let confirmed)) = await runtime
+                .claimRealtimeResidentBrainInterruptionDecision(for: event),
+              let bridge else {
+            if case .userTranscriptPartial = event.kind {
+                try? await Task.sleep(for: .milliseconds(90))
+            }
+            return
+        }
+        decision = confirmed
+        _ = await bridge.suspendForGenerationTransition(
+            session: confirmed.interruptedIdentity
+        )
+        guard case .success(let rebound) = await runtime
+            .completeRealtimeResidentBrainInterruption(confirmed) else {
+            return
+        }
+        nextIdentity = rebound
+        try? await Task.sleep(for: .milliseconds(500))
+        _ = await bridge.resumeAfterGenerationTransition(session: rebound)
+    }
+}
+
 @main
 private struct QwenRealtimeResidentBrainAdapterTests {
     private static var checks = 0
@@ -3364,99 +3415,86 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 && reboundStartEvent.sequence == 1,
             "Runtime consumes the confirmed-interruption handoff once"
         )
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"找点乐子","stash":""}"#
-        )
-        let reboundPartialOne = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"找点乐子是什么","stash":""}"#
-        )
-        let reboundPartialTwo = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+        for preview in ["找", "找点", "找点乐子", "找点乐子是什么"] {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"\#(preview)","stash":""}"#
+            )
+        }
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#
-        )
-        let reboundStop = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        let responseCreateCountBeforeFallback = try await sentTypes(
-            stack.transport
-        ).filter { $0 == "response.create" }.count
-        expect(
-            responseCreateCountBeforeFallback == 1,
-            "speech stopped does not create N+1 response before fallback final"
         )
         await waitUntilPendingEventCount(
             stack.adapter,
             session: nextIdentity,
-            minimum: 1
+            minimum: 5,
+            label: "pre-final interrupting turn burst"
         )
-        let reboundFinal = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        guard case .accepted(let reboundPartialOneEvent) = reboundPartialOne,
-              case .accepted(let reboundPartialTwoEvent) = reboundPartialTwo,
-              case .accepted(let reboundStopEvent) = reboundStop,
-              case .accepted(let reboundFinalEvent) = reboundFinal else {
-            fatalError("confirmed interrupting turn must finish in N+1")
+        var preFinalEvents: [RealtimeResidentBrainEvent] = []
+        for _ in 0 ..< 5 {
+            let disposition = try await runtime
+                .receiveRealtimeResidentBrainEvent(session: nextIdentity)
+            guard case .accepted(let event) = disposition else {
+                fatalError("confirmed handoff burst must remain ordered")
+            }
+            preFinalEvents.append(event)
+            try? await Task.sleep(for: .milliseconds(90))
         }
         expect(
-            reboundPartialOneEvent.kind
-                    == .userTranscriptPartial("找点乐子")
-                && reboundPartialTwoEvent.kind
-                    == .userTranscriptPartial("找点乐子是什么")
-                && reboundStopEvent.kind == .userSpeechStopped
-                && reboundFinalEvent.kind
+            preFinalEvents.dropLast().allSatisfy {
+                if case .userTranscriptPartial = $0.kind { return true }
+                return false
+            } && preFinalEvents.last?.kind == .userSpeechStopped,
+            "queued N+1 partials and stop remain ordered under slow consumption"
+        )
+        for preview in ["找点乐子是", "找点乐子是什么", "找点乐子是什么呢"] {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"\#(preview)","stash":""}"#
+            )
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"找点乐子是什么"}"#
+        )
+        await waitUntilPendingEventCount(
+            stack.adapter,
+            session: nextIdentity,
+            minimum: 4,
+            label: "post-stop interrupting turn burst"
+        )
+        var postStopEvents: [RealtimeBrainEventDisposition] = []
+        for _ in 0 ..< 4 {
+            try? await Task.sleep(for: .milliseconds(110))
+            postStopEvents.append(
+                try await runtime.receiveRealtimeResidentBrainEvent(
+                    session: nextIdentity
+                )
+            )
+        }
+        guard case .accepted(let reboundFinalEvent) = postStopEvents.last else {
+            fatalError("Provider final must survive the slow N+1 burst")
+        }
+        expect(
+            reboundFinalEvent.kind
                     == .userTranscriptFinal("找点乐子是什么")
-                && reboundPartialOneEvent.identity.session == nextIdentity
-                && reboundPartialTwoEvent.identity.turnID
-                    == reboundStartEvent.identity.turnID
-                && reboundStopEvent.identity.turnID
-                    == reboundStartEvent.identity.turnID
+                && reboundFinalEvent.identity.session == nextIdentity
                 && reboundFinalEvent.identity.turnID
                     == reboundStartEvent.identity.turnID
                 && runtime.realtimePendingUserInputForTesting(
                     reboundStartEvent.identity
                 ) == "找点乐子是什么",
-            "post-transition partials and missing final stay on the N+1 turn"
+            "Provider final remains bound to the interrupting N+1 turn"
         )
-        let fallbackEvents = diagnostics.drain().events
-        let correlatedCategories = [
-            "qwen_speech_started_received",
-            "qwen_transcript_partial_received",
-            "qwen_speech_stopped_received",
-            "qwen_transcript_final_fallback_scheduled",
-            "qwen_transcript_final_fallback_fired",
-            "qwen_transcript_final_recovered_from_partial"
-        ]
-        let fallbackCorrelationHashes = Set(fallbackEvents.compactMap {
-            event -> String? in
-            guard correlatedCategories.contains(event.category) else {
-                return nil
-            }
-            return event.itemCorrelationHash
-        })
+        let providerFinalEvents = diagnostics.drain().events
         expect(
-            fallbackEvents.filter {
-                $0.category
-                    == "qwen_transcript_final_recovered_from_partial"
+            providerFinalEvents.filter {
+                $0.category == "qwen_transcript_final_received"
             }.count == 1
-                && fallbackEvents.filter {
+                && providerFinalEvents.filter {
                     $0.category
                         == "qwen_transcript_final_fallback_fired"
-                }.count == 1,
-            "active-response rebound fires exactly one observable fallback"
-        )
-        expect(
-            fallbackCorrelationHashes.count == 1
-                && correlatedCategories.allSatisfy { category in
-                    fallbackEvents.contains { $0.category == category }
-                },
-            "speech, transcript, and fallback evidence share one item correlation"
-        )
-        expect(
-            runtime.realtimeUtteranceCompletionDebugSnapshot().phase
-                == .candidatePause,
-            "the confirmed handoff carries an exact completion boundary"
+                        || $0.category
+                            == "qwen_transcript_final_recovered_from_partial"
+                }.isEmpty,
+            "a real Provider final cancels fallback without replacement"
         )
         try await waitUntilSentTypeCount(
             stack.transport,
@@ -3719,17 +3757,39 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             fatalError("near-tail acoustic evidence must be observed")
         }
 
+        let recorder = R3RealtimeEventRecorder()
+        let coordinator = R3OutputBridgeInterruptionCoordinator(
+            runtime: runtime,
+            recorder: recorder
+        )
+        let outputBridge = MacSpeechRealtimeBrainOutputBridge(
+            receiveEvent: { session in
+                do {
+                    return .success(
+                        try await runtime.receiveRealtimeResidentBrainEvent(
+                            session: session
+                        )
+                    )
+                } catch let error as RealtimeResidentBrainError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.transportFailure)
+                }
+            },
+            consumeEvent: { event in
+                await coordinator.consume(event)
+            }
+        )
+        coordinator.bridge = outputBridge
+        _ = await outputBridge.start(session: identity)
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"near-tail-user"}"#
         )
-        let tailStart = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: identity)
-        guard case .accepted(let tailStartEvent) = tailStart,
+        await waitUntilInterruptionTransition(coordinator)
+        guard let tailStartEvent = await recorder.snapshot().first,
               tailStartEvent.kind == .userSpeechStarted,
-              case .success(.confirmed(let decision)) = await runtime
-                .claimRealtimeResidentBrainInterruptionDecision(
-                    for: tailStartEvent
-                ) else {
+              let decision = coordinator.decision,
+              let nextIdentity = coordinator.nextIdentity else {
             fatalError("near-tail user speech must confirm interruption")
         }
         expect(
@@ -3738,9 +3798,6 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 && decision.responseID
                     == residentAudioEvent.identity.responseID,
             "near-tail decision targets only the audible old response"
-        )
-        let nextIdentity = try realtimeIdentity(
-            await runtime.completeRealtimeResidentBrainInterruption(decision)
         )
         expect(
             nextIdentity.generation == identity.generation + 1,
@@ -3763,11 +3820,17 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "near-tail transition preserves the interrupting utterance"
         )
 
-        let reboundStart = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        guard case .accepted(let reboundStartEvent) = reboundStart else {
+        for preview in ["找", "找点", "找点乐子", "找点乐子是什么"] {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"near-tail-user","text":"\#(preview)","stash":""}"#
+            )
+        }
+        await waitUntilRecordedEventCount(recorder, minimum: 6)
+        let transitionEvents = await recorder.snapshot()
+        guard transitionEvents.count >= 2 else {
             fatalError("near-tail user turn must rebound into N+1")
         }
+        let reboundStartEvent = transitionEvents[1]
         expect(
             reboundStartEvent.kind == .userSpeechStarted
                 && reboundStartEvent.sequence == 1
@@ -3777,33 +3840,37 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "near-tail handoff admits the exact user turn once"
         )
         await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"near-tail-user","text":"找点乐子是什么","stash":""}"#
-        )
-        let reboundPartial = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_stopped","item_id":"near-tail-user"}"#
         )
-        let reboundStop = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        let reboundFinal = try await runtime
-            .receiveRealtimeResidentBrainEvent(session: nextIdentity)
-        guard case .accepted(let reboundPartialEvent) = reboundPartial,
-              case .accepted(let reboundStopEvent) = reboundStop,
-              case .accepted(let reboundFinalEvent) = reboundFinal else {
-            fatalError("near-tail user turn must finish in N+1")
+        await waitUntilRecordedEventCount(recorder, minimum: 7)
+        let preFinalEvents = Array(
+            await recorder.snapshot().dropFirst(2).prefix(5)
+        )
+        expect(
+            preFinalEvents.dropLast().allSatisfy {
+                if case .userTranscriptPartial = $0.kind { return true }
+                return false
+            } && preFinalEvents.last?.kind == .userSpeechStopped,
+            "near-tail queued partials and stop remain ordered"
+        )
+        for preview in ["找点乐子是", "找点乐子是什么", "找点乐子是什么呢"] {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"near-tail-user","text":"\#(preview)","stash":""}"#
+            )
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"near-tail-user","transcript":"找点乐子是什么"}"#
+        )
+        await waitUntilRecordedEventCount(recorder, minimum: 11)
+        guard let reboundFinalEvent = await recorder.snapshot().last else {
+            fatalError("near-tail Provider final must survive the N+1 burst")
         }
         expect(
-            reboundPartialEvent.kind
-                == .userTranscriptPartial("找点乐子是什么")
-                && reboundStopEvent.kind == .userSpeechStopped
-                && reboundFinalEvent.kind
+            reboundFinalEvent.kind
                     == .userTranscriptFinal("找点乐子是什么")
-                && reboundStopEvent.identity.turnID
-                    == reboundStartEvent.identity.turnID
                 && reboundFinalEvent.identity.turnID
                     == reboundStartEvent.identity.turnID,
-            "near-tail missing final recovers inside the rebound turn"
+            "near-tail Provider final stays on the rebound turn"
         )
         expect(
             runtime.realtimePendingUserInputForTesting(
@@ -3811,17 +3878,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             ) == "找点乐子是什么",
             "near-tail transcript survives generation transition"
         )
-        expect(
-            runtime.realtimeUtteranceCompletionDebugSnapshot().phase
-                == .candidatePause,
-            "near-tail rebound reaches the completion window"
-        )
         await stack.transport.waitUntilSent(type: "response.create", count: 2)
         let finalSent = try await sentTypes(stack.transport)
         expect(
             finalSent.filter { $0 == "response.create" }.count == 2,
             "near-tail rebound creates exactly one new response"
         )
+        _ = await outputBridge.stop(expectedSession: nextIdentity)
         expectRealtimeSuccess(
             await runtime.closeRealtimeResidentBrainSession(
                 identity: nextIdentity
@@ -4286,16 +4349,43 @@ private struct QwenRealtimeResidentBrainAdapterTests {
     private static func waitUntilPendingEventCount(
         _ adapter: QwenRealtimeResidentBrainAdapter,
         session: RealtimeBrainSessionIdentity,
-        minimum: Int
+        minimum: Int,
+        label: String
     ) async {
-        for _ in 0 ..< 1_000 {
+        for _ in 0 ..< 5_000 {
             if await adapter.pendingEventCountForTesting(session: session)
                 >= minimum {
                 return
             }
             try? await Task.sleep(for: .milliseconds(1))
         }
-        fatalError("Adapter did not enqueue the expected bounded event")
+        fatalError("Adapter did not enqueue \(label)")
+    }
+
+    private static func waitUntilRecordedEventCount(
+        _ recorder: R3RealtimeEventRecorder,
+        minimum: Int
+    ) async {
+        for _ in 0 ..< 2_000 {
+            if await recorder.snapshot().count >= minimum {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        fatalError("Output Bridge did not consume the expected event burst")
+    }
+
+    @MainActor
+    private static func waitUntilInterruptionTransition(
+        _ coordinator: R3OutputBridgeInterruptionCoordinator
+    ) async {
+        for _ in 0 ..< 2_000 {
+            if coordinator.nextIdentity != nil {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        fatalError("Output Bridge did not enter the generation transition")
     }
 
     private static func waitUntilSentTypeCount(

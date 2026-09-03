@@ -5711,6 +5711,7 @@ final class AppController: ObservableObject {
                 itemCorrelationHash: event.itemCorrelationHash,
                 audioSequence: event.audioSequence,
                 byteCount: event.byteCount,
+                queueDepth: event.queueDepth,
                 pendingWriteCount: event.pendingWriteCount,
                 arrivalIntervalMilliseconds:
                     event.arrivalIntervalMilliseconds,

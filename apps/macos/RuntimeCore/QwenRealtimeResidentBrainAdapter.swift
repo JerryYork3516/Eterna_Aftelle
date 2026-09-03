@@ -943,7 +943,14 @@ actor QwenRealtimeResidentBrainAdapter:
     ) async throws -> RealtimeResidentBrainEvent {
         try requireActive(session)
         if !pendingEvents.isEmpty {
-            return pendingEvents.removeFirst()
+            let event = pendingEvents.removeFirst()
+            recordTranscriptFinalQueueDiagnostic(
+                event,
+                category: "qwen_transcript_final_delivered",
+                disposition: "dequeued",
+                queueDepth: pendingEvents.count
+            )
+            return event
         }
         if let terminalError { throw terminalError }
         guard eventWaiter == nil else {
@@ -996,6 +1003,12 @@ actor QwenRealtimeResidentBrainAdapter:
         session: RealtimeBrainSessionIdentity
     ) -> Int {
         identity == session ? pendingEvents.count : 0
+    }
+
+    func contextRevisionForTesting(
+        session: RealtimeBrainSessionIdentity
+    ) -> UInt64? {
+        identity == session ? contextRevision : nil
     }
     #endif
 
@@ -1734,11 +1747,12 @@ actor QwenRealtimeResidentBrainAdapter:
         return .sessionUpdated(acknowledgementSerial)
     }
 
+    @discardableResult
     private func enqueue(
         kind: RealtimeResidentBrainEventKind,
         turnID: RealtimeBrainTurnID? = nil,
         responseID: RealtimeBrainResponseID? = nil
-    ) {
+    ) -> Bool {
         enqueue(
             kind: kind,
             identity: makeEventIdentity(
@@ -1748,12 +1762,20 @@ actor QwenRealtimeResidentBrainAdapter:
         )
     }
 
+    @discardableResult
     private func enqueue(
         kind: RealtimeResidentBrainEventKind,
         identity eventIdentity: RealtimeBrainEventIdentity
-    ) {
+    ) -> Bool {
         let matchingWaiter = eventWaiter?.session == eventIdentity.session
-        guard eventIdentity.session == identity || matchingWaiter else { return }
+        guard eventIdentity.session == identity || matchingWaiter else {
+            recordTranscriptFinalQueueRejectionIfNeeded(
+                kind,
+                identity: eventIdentity,
+                disposition: "identity_mismatch"
+            )
+            return false
+        }
         nextEventSequence &+= 1
         let event = RealtimeResidentBrainEvent(
             identity: eventIdentity,
@@ -1762,14 +1784,88 @@ actor QwenRealtimeResidentBrainAdapter:
         )
         if let waiter = eventWaiter, matchingWaiter {
             eventWaiter = nil
+            recordTranscriptFinalQueueDiagnostic(
+                event,
+                category: "qwen_transcript_final_enqueued",
+                disposition: "direct_waiter",
+                queueDepth: pendingEvents.count
+            )
+            recordTranscriptFinalQueueDiagnostic(
+                event,
+                category: "qwen_transcript_final_delivered",
+                disposition: "direct_waiter",
+                queueDepth: pendingEvents.count
+            )
             waiter.continuation.resume(returning: event)
         } else if eventIdentity.session == identity {
             guard pendingEvents.count < Self.maximumPendingEventCount else {
+                recordTranscriptFinalQueueDiagnostic(
+                    event,
+                    category: "qwen_transcript_final_enqueue_rejected",
+                    disposition: "buffer_overflow",
+                    queueDepth: pendingEvents.count
+                )
                 failPendingEventBuffer()
-                return
+                return false
             }
             pendingEvents.append(event)
+            recordTranscriptFinalQueueDiagnostic(
+                event,
+                category: "qwen_transcript_final_enqueued",
+                disposition: "pending_queue",
+                queueDepth: pendingEvents.count
+            )
         }
+        return true
+    }
+
+    private func recordTranscriptFinalQueueRejectionIfNeeded(
+        _ kind: RealtimeResidentBrainEventKind,
+        identity eventIdentity: RealtimeBrainEventIdentity,
+        disposition: String
+    ) {
+        guard case .userTranscriptFinal = kind else { return }
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: "qwen_transcript_final_enqueue_rejected",
+            routeKind: .realtimeBrain,
+            turnGeneration: eventIdentity.session.generation,
+            disposition: disposition,
+            itemCorrelationHash:
+                wireItemCorrelationHash(for: eventIdentity),
+            queueDepth: pendingEvents.count
+        ))
+    }
+
+    private func recordTranscriptFinalQueueDiagnostic(
+        _ event: RealtimeResidentBrainEvent,
+        category: String,
+        disposition: String,
+        queueDepth: Int
+    ) {
+        guard case .userTranscriptFinal = event.kind else { return }
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: category,
+            routeKind: .realtimeBrain,
+            turnGeneration: event.identity.session.generation,
+            disposition: disposition,
+            wireSequence: event.sequence,
+            itemCorrelationHash:
+                wireItemCorrelationHash(for: event.identity),
+            queueDepth: queueDepth
+        ))
+    }
+
+    private func wireItemCorrelationHash(
+        for eventIdentity: RealtimeBrainEventIdentity
+    ) -> String? {
+        guard let turnID = eventIdentity.turnID else { return nil }
+        let itemID = turnsByWireItemID.first { entry in
+            entry.value.runtimeID == turnID
+                && entry.value.sessionIdentity == eventIdentity.session
+        }?.key
+        return itemID.map(Self.correlationHash)
     }
 
     private func failPendingEventBuffer() {

@@ -12,6 +12,7 @@ swiftc \
   -default-isolation MainActor \
   -warn-concurrency \
   "${runtime_sources[@]}" \
+  "$repo_root/apps/macos/Aftelle/MacSpeechRealtimeBrainOutputBridge.swift" \
   "$repo_root/tools/qwen_realtime_resident_brain_tests/FakeRealtimeWebSocketTransport.swift" \
   "$repo_root/tools/qwen_realtime_resident_brain_tests/QwenRealtimeResidentBrainAdapterTests.swift" \
   -o "$build_dir/qwen_realtime_resident_brain_tests"

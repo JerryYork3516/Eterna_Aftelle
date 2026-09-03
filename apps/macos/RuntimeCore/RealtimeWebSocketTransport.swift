@@ -81,6 +81,7 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
     let responseCorrelationHash: String?
     let itemCorrelationHash: String?
     let audioSequence: UInt64?
+    let queueDepth: Int?
     let byteCount: Int?
     let arrivalIntervalMilliseconds: UInt64?
     let wireToStandardDurationMilliseconds: UInt64?
@@ -105,6 +106,7 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
         responseCorrelationHash: String? = nil,
         itemCorrelationHash: String? = nil,
         audioSequence: UInt64? = nil,
+        queueDepth: Int? = nil,
         byteCount: Int? = nil,
         arrivalIntervalMilliseconds: UInt64? = nil,
         wireToStandardDurationMilliseconds: UInt64? = nil,
@@ -133,6 +135,7 @@ nonisolated struct NativeSpeechInternalDiagnosticEvent: Sendable {
         self.responseCorrelationHash = responseCorrelationHash
         self.itemCorrelationHash = itemCorrelationHash
         self.audioSequence = audioSequence
+        self.queueDepth = queueDepth
         self.byteCount = byteCount
         self.arrivalIntervalMilliseconds = arrivalIntervalMilliseconds
         self.wireToStandardDurationMilliseconds =

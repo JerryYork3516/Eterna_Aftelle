@@ -6,6 +6,14 @@ private struct R823CredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? { nil }
 }
 
+private struct R853QwenCredentialReader: ProviderCredentialReading {
+    let value: String
+
+    func readCredential(for keyRef: String) throws -> String? {
+        keyRef == "keychain://test/qwen" ? value : nil
+    }
+}
+
 private struct R823AuthorizationProvider:
     MicrophoneAuthorizationProviding {
     func currentAuthorization() async throws -> MicrophoneAuthorizationState {
@@ -457,6 +465,19 @@ private struct R823ControllerStack {
 }
 
 @MainActor
+private struct R853QwenControllerStack {
+    let controller: AppController
+    let runtime: RuntimeCore
+    let adapter: QwenRealtimeResidentBrainAdapter
+    let transport: R3FakeRealtimeWebSocketTransport
+    let aecBackend: R823AECBackend
+    let acousticEchoHost: MacSpeechAcousticEchoHost
+    let capture: R823AudioCapture
+    let outputPlayer: FakeMacSpeechAudioOutputPlayer
+    let session: RealtimeBrainSessionIdentity
+}
+
+@MainActor
 @main
 private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var cases = 0
@@ -708,6 +729,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var r851RandomizedShortPauseResume = 0
     private static var r851RandomizedProviderFirstStart = 0
     private static let r851RandomSeed: UInt64 = 0x8515_11A7
+    private static var r853ExternalPCMReported = false
 
     static func main() async throws {
         guard CommandLine.arguments.count == 2
@@ -724,6 +746,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r844-classifier-only",
                         "--r844-response-policy-only",
                         "--r852-subtitle-diagnostics-only",
+                        "--r853-qwen-handoff-only",
                         "--r851-cross-node-only",
                         "--r851-randomized-only"
                     ].contains(CommandLine.arguments[2])) else {
@@ -752,6 +775,16 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 print("r852_terminal_stops=\(r852TerminalStops)")
                 print("r852_post_error_response_rebound=\(r852PostErrorResponseRebound)")
                 print("r852_provider_closes_on_response_error=\(r852ProviderClosesOnResponseError)")
+                return
+            }
+            if CommandLine.arguments[2] == "--r853-qwen-handoff-only" {
+                for _ in 0 ..< 10 {
+                    try await testR853QwenAppControllerInterruptionHandoff(
+                        fixture: fixture
+                    )
+                }
+                print("r853_qwen_app_controller_cases=\(cases)")
+                print("r853_qwen_app_controller_checks=\(checks)")
                 return
             }
             if CommandLine.arguments[2] == "--r851-cross-node-only" {
@@ -1093,6 +1126,249 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             state = state &* 6_364_136_223_846_793_005 &+ 1
             return state
         }
+    }
+
+    private static func testR853QwenAppControllerInterruptionHandoff(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        let stack = try await makeR853QwenControllerStack(fixture: fixture)
+        await stack.transport.useNextResponseID("r853-old-response")
+
+        try await emitR853QwenListeningNearEnd(stack: stack)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"r853-initial-user"}"#
+        )
+        await waitUntilOnMainActor("R8.5.3 initial Qwen turn admission") {
+            stack.runtime.realtimeUtteranceCompletionDebugSnapshot().phase
+                == .speaking
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"r853-initial-user","text":"请先","stash":""}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"r853-initial-user"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"r853-initial-user","transcript":"请先回答"}"#
+        )
+        await waitUntil("R8.5.3 initial Qwen response authorization") {
+            await r853SentTypeCount(
+                stack.transport,
+                type: "response.create"
+            ) == 1
+        }
+
+        let oldPCM = Data(repeating: 1, count: 960)
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.delta","response_id":"r853-old-response","delta":"\#(oldPCM.base64EncodedString())"}"#
+        )
+        await waitUntilOnMainActor("R8.5.3 old response starts Playback") {
+            stack.outputPlayer.startCount == 1
+                && stack.outputPlayer.pendingCount == 1
+                && stack.runtime
+                    .realtimeInterruptionEvidenceDebugSnapshot()
+                    .playbackTarget != nil
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.done","response_id":"r853-old-response"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"response.done","response":{"id":"r853-old-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"旧回答"}]}]}}"#
+        )
+        let terminalDeadline = monotonicNow() + 3_000_000_000
+        while true {
+            let activeResponseID = await stack.adapter
+                .activeWireResponseIDForTesting(session: stack.session)
+            let playbackTarget = stack.runtime
+                .realtimeInterruptionEvidenceDebugSnapshot()
+                .playbackTarget
+            if activeResponseID == nil,
+               stack.outputPlayer.pendingCount == 1,
+               playbackTarget != nil {
+                break
+            }
+            guard monotonicNow() < terminalDeadline else {
+                fatalError(
+                    "R8.5.3 Provider terminal did not preserve Playback tail"
+                )
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        expect(
+            stack.outputPlayer.pendingCount == 1,
+            "R8.5.3 reproduces Provider-terminal physical Playback tail"
+        )
+        await waitUntil("R8.5.3 committed response advances context") {
+            await stack.adapter.contextRevisionForTesting(
+                session: stack.session
+            ) == 2
+        }
+        expect(
+            await stack.adapter.contextRevisionForTesting(
+                session: stack.session
+            ) == 2,
+            "R8.5.3 interruption starts after context revision advances"
+        )
+
+        let evidenceBaseline = stack.controller
+            .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+        try await emitR853QwenPlaybackNearEnd(stack: stack)
+        await waitUntil("R8.5.3 production acoustic evidence reaches Runtime") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainInputBridgeSnapshot
+                .acousticEvidenceCount == evidenceBaseline + 1
+        }
+
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"r853-interrupting-user"}"#
+        )
+        for preview in ["找", "找点", "找点乐子", "找点乐子是什么"] {
+            try? await Task.sleep(for: .milliseconds(90))
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"r853-interrupting-user","text":"\#(preview)","stash":""}"#
+            )
+        }
+
+        let nextGeneration = stack.session.generation + 1
+        await waitUntilOnMainActor("R8.5.3 AppController completes N+1 handoff") {
+            guard let lease = stack.runtime.activeBrainLeaseForTesting(),
+                  lease.generation
+                    == .realtimeResidentBrain(nextGeneration) else {
+                return false
+            }
+            return stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == nextGeneration
+                && stack.controller.realtimeBrainInputBridgeSnapshot
+                    .hasActivePump
+                && stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+                && stack.outputPlayer.clearScheduledPlaybackCount == 1
+        }
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"r853-interrupting-user"}"#
+        )
+        for preview in ["找点乐子是", "找点乐子是什么", "找点乐子是什么呢"] {
+            try? await Task.sleep(for: .milliseconds(90))
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"r853-interrupting-user","text":"\#(preview)","stash":""}"#
+            )
+        }
+        try? await Task.sleep(for: .milliseconds(90))
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"r853-interrupting-user","transcript":"找点乐子是什么"}"#
+        )
+
+        let responseDeadline = monotonicNow() + 5_000_000_000
+        while await r853SentTypeCount(
+                stack.transport,
+                type: "response.create"
+            ) < 2 {
+            await stack.controller.refreshMicrophoneAuthorization()
+            if monotonicNow() >= responseDeadline {
+                let finalTrace = stack.controller
+                    .realtimeSpeechDiagnosticTimeline.events.filter {
+                        $0.turnGeneration == nextGeneration
+                            && ($0.category.contains("transcript_final")
+                                || $0.category.contains("handoff")
+                                || $0.category == "user_speech_started"
+                                || $0.category == "user_speech_stopped")
+                    }.map {
+                        "\($0.source.rawValue):\($0.category):"
+                            + "\($0.disposition ?? "-"):"
+                            + "q=\($0.queueDepth.map { String($0) } ?? "-")"
+                    }.joined(separator: ",")
+                let output = stack.controller
+                    .realtimeBrainOutputBridgeSnapshot
+                let completion = stack.runtime
+                    .realtimeUtteranceCompletionDebugSnapshot()
+                let pending = await stack.adapter
+                    .pendingEventCountForTesting(
+                        session: RealtimeBrainSessionIdentity(
+                            residentID: stack.session.residentID,
+                            runtimeSessionID: stack.session.runtimeSessionID,
+                            brainLeaseID: stack.session.brainLeaseID,
+                            routeEpoch: stack.session.routeEpoch,
+                            generation: nextGeneration
+                        )
+                    )
+                fatalError(
+                    "R8.5.3 N+1 response missing trace=\(finalTrace)"
+                        + " pending=\(pending)"
+                        + " output_accepted=\(output.acceptedEventCount)"
+                        + " output_rejected=\(output.rejectedEventCount)"
+                        + " completion=\(completion.phase.rawValue)"
+                        + " completion_count="
+                        + "\(completion.completionCandidateCount)"
+                        + " route="
+                        + stack.controller.formalSpeechRouteDebugSnapshot
+                            .phase.rawValue
+                )
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let diagnosticEvents = stack.controller
+            .realtimeSpeechDiagnosticTimeline.events
+        let providerFinals = diagnosticEvents.filter {
+                $0.source == .providerEvent
+                    && $0.category == "user_transcript_final"
+                    && $0.turnGeneration == nextGeneration
+            }
+        let acceptedHandoffClaims = diagnosticEvents.filter {
+            $0.source == .runtime
+                && $0.category == "runtime_interruption_handoff_claim"
+                && $0.turnGeneration == nextGeneration
+                && $0.disposition == "accepted"
+        }
+        let finalBoundaryCategories = [
+            "qwen_transcript_final_enqueued",
+            "qwen_transcript_final_delivered",
+            "runtime_user_transcript_final_received",
+            "runtime_user_transcript_final_admission",
+            "runtime_user_transcript_final_disposition"
+        ]
+        let finalBoundaryEvents = diagnosticEvents.filter {
+            finalBoundaryCategories.contains($0.category)
+                && $0.turnGeneration == nextGeneration
+        }
+        let responseCreates = await r853SentTypeCount(
+            stack.transport,
+            type: "response.create"
+        )
+        expect(
+            providerFinals.count == 1,
+            "R8.5.3 AppController consumes the rebound Provider final once"
+        )
+        expect(
+            acceptedHandoffClaims.count == 1,
+            "R8.5.3 Runtime carries the interrupting turn into N+1 once"
+        )
+        expect(
+            finalBoundaryCategories.allSatisfy { category in
+                finalBoundaryEvents.filter { $0.category == category }
+                    .count == 1
+            } && finalBoundaryEvents.first {
+                $0.category == "runtime_user_transcript_final_disposition"
+            }?.disposition == "accepted"
+                && finalBoundaryEvents.first {
+                    $0.category == "runtime_user_transcript_final_admission"
+                }?.disposition?.hasPrefix("accepted_") == true,
+            "R8.5.3 diagnostics trace Provider final across every boundary"
+        )
+        expect(
+            responseCreates == 2
+                && stack.outputPlayer.clearScheduledPlaybackCount == 1,
+            "R8.5.3 rebound final creates one response after one clear"
+        )
+        expect(
+            stack.controller.formalSpeechRouteDebugSnapshot.phase
+                    == .processing
+                && stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == nextGeneration,
+            "R8.5.3 route leaves the interrupted utterance in N+1 processing"
+        )
+        await stack.controller.stopSpeechAudioCapture()
     }
 
     private static func testR851CrossNodeTotalRegression(
@@ -10752,6 +11028,325 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             try? await Task.sleep(for: .milliseconds(8))
         }
         _ = label
+    }
+
+    private static func makeR853QwenControllerStack(
+        fixture: Data
+    ) async throws -> R853QwenControllerStack {
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let transport = R3FakeRealtimeWebSocketTransport()
+        let credentialReader = R853QwenCredentialReader(
+            value: try QwenRealtimeCredential(
+                workspaceID: "fixture-workspace",
+                secret: "fixture-secret"
+            ).storedValue()
+        )
+        let adapter = QwenRealtimeResidentBrainAdapter(
+            credentialReader: credentialReader,
+            transport: transport,
+            configuration: QwenRealtimeResidentBrainConfiguration(
+                endpoint: URL(
+                    string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
+                )!,
+                keyRef: "keychain://test/qwen",
+                defaultProviderVoiceID: "R6FixtureVoice",
+                acknowledgementTimeout: .seconds(1)
+            ),
+            diagnosticBuffer: diagnostics
+        )
+        let router = ProviderRouter(
+            credentialReader: credentialReader,
+            realtimeResidentBrainProvider: adapter
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router,
+            sessionStore: SessionStore()
+        )
+        runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
+        let aecBackend = R823AECBackend()
+        let acousticEchoHost = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: aecBackend
+        )
+        expect(
+            acousticEchoHost.configure() == .webRTCAEC3,
+            "R8.5.3 Qwen integration configures production AEC Host"
+        )
+        let capture = try R823AudioCapture(
+            acousticEchoHost: acousticEchoHost
+        )
+        let audioHost = MacSpeechAudioHost(
+            authorizationProvider: R823AuthorizationProvider(),
+            capture: capture,
+            deviceMonitor: R823DeviceMonitor()
+        )
+        let outputPlayer = FakeMacSpeechAudioOutputPlayer()
+        let outputHost = MacSpeechAudioOutputHost(
+            player: outputPlayer,
+            deviceMonitor: FakeMacSpeechOutputDeviceMonitor(),
+            configuration: MacSpeechPCMPlaybackConfiguration(
+                capacity: 4,
+                lowWatermark: 1,
+                consumerTimeoutNanoseconds: 30_000_000_000,
+                startupBufferCount: 1,
+                startupBufferDurationNanoseconds: 0,
+                scheduleAheadCount: 2
+            )
+        )
+        let controller = AppController(
+            orchestrationKernel: OrchestrationKernel(runtimeCore: runtime),
+            speechAudioHost: audioHost,
+            speechAudioOutputHost: outputHost,
+            nativeSpeechDiagnosticBuffer: diagnostics
+        )
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "r853-qwen-controller-\(UUID().uuidString).digital_resident"
+            )
+        try fixture.write(to: fixtureURL, options: .atomic)
+        controller.debugImportResident(from: fixtureURL)
+        try? FileManager.default.removeItem(at: fixtureURL)
+        expect(
+            controller.isResidentTextInputAvailable,
+            "R8.5.3 Qwen integration loads the fixture resident"
+        )
+
+        await controller.startRealtimeResidentBrainRoute()
+        try? await Task.sleep(for: .milliseconds(100))
+        let routeSnapshot = controller.formalSpeechRouteDebugSnapshot
+        let inputSnapshot = controller.realtimeBrainInputBridgeSnapshot
+        let outputSnapshot = controller.realtimeBrainOutputBridgeSnapshot
+        guard routeSnapshot.phase == .listening,
+              inputSnapshot.hasActivePump,
+              outputSnapshot.hasActiveReceiveLoop else {
+            let diagnosticCategories = controller
+                .realtimeSpeechDiagnosticTimeline.events.suffix(20).map {
+                    "\($0.source.rawValue):\($0.category):"
+                        + "\($0.disposition ?? "-"):"
+                        + "\($0.errorCode ?? "-")"
+                }.joined(separator: ",")
+            fatalError(
+                "R8.5.3 Qwen route failed phase="
+                    + routeSnapshot.phase.rawValue
+                    + " error=\(routeSnapshot.lastErrorCode ?? "-")"
+                    + " input=\(inputSnapshot.state.rawValue)"
+                    + " output=\(outputSnapshot.state.rawValue)"
+                    + " events=\(diagnosticCategories)"
+            )
+        }
+        guard let lease = runtime.activeBrainLeaseForTesting(),
+              lease.route == .realtimeResidentBrain,
+              case .realtimeResidentBrain(let generation) = lease.generation
+        else {
+            fatalError("R8.5.3 Qwen Realtime Brain lease missing")
+        }
+        let session = RealtimeBrainSessionIdentity(
+            residentID: lease.residentID,
+            runtimeSessionID: lease.runtimeSessionID,
+            brainLeaseID: lease.brainLeaseID,
+            routeEpoch: lease.routeEpoch,
+            generation: generation
+        )
+        return R853QwenControllerStack(
+            controller: controller,
+            runtime: runtime,
+            adapter: adapter,
+            transport: transport,
+            aecBackend: aecBackend,
+            acousticEchoHost: acousticEchoHost,
+            capture: capture,
+            outputPlayer: outputPlayer,
+            session: session
+        )
+    }
+
+    private static func emitR853QwenListeningNearEnd(
+        stack: R853QwenControllerStack
+    ) async throws {
+        let appendBaseline = await r853SentTypeCount(
+            stack.transport,
+            type: "input_audio_buffer.append"
+        )
+        let forwardedBaseline = stack.controller
+            .realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+        let nearEnd = signal(seed: 85_301, amplitude: 0.18)
+        var packetCount = 0
+        for _ in 0 ..< 12 {
+            let before = stack.acousticEchoHost
+                .acousticObservationSnapshot()
+            stack.aecBackend.setCaptureOutput(nearEnd)
+            let processed = stack.acousticEchoHost.processCapture(
+                nearEnd,
+                hostTimeNanoseconds: monotonicNow()
+            )
+            packetCount += try stack.capture.emit(
+                processedSamples: processed,
+                acousticBefore: before
+            ).packetCount
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let deadline = monotonicNow() + 3_000_000_000
+        while true {
+            await stack.controller.refreshMicrophoneAuthorization()
+            let appendCount = await r853SentTypeCount(
+                stack.transport,
+                type: "input_audio_buffer.append"
+            )
+            let bridge = stack.controller
+                .realtimeBrainInputBridgeSnapshot.forwardedFrameCount
+            if appendCount > appendBaseline && bridge > forwardedBaseline {
+                break
+            }
+            if monotonicNow() >= deadline {
+                let snapshot = stack.controller
+                    .realtimeBrainInputBridgeSnapshot
+                fatalError(
+                    "R8.5.3 listening PCM stalled packets=\(packetCount)"
+                        + " capture_started=\(stack.capture.isStarted)"
+                        + " append_delta=\(appendCount - appendBaseline)"
+                        + " forwarded_delta="
+                        + "\(snapshot.forwardedFrameCount - forwardedBaseline)"
+                        + " rejected=\(snapshot.runtimeRejectedFrameCount)"
+                        + " sends=\(snapshot.sendOperationCount)"
+                        + " state=\(snapshot.state.rawValue)"
+                        + " error=\(snapshot.lastError ?? "-")"
+                )
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        expect(
+            packetCount > 0
+                && !stack.acousticEchoHost.acousticObservationSnapshot()
+                    .isPlaybackActive,
+            "R8.5.3 initial user audio crosses production Listening input"
+        )
+    }
+
+    private static func emitR853QwenPlaybackNearEnd(
+        stack: R853QwenControllerStack
+    ) async throws {
+        stack.acousticEchoHost.playbackStarted()
+        let render = signal(seed: 17, amplitude: 0.3)
+        let nearEndFrames = try r853ExternalNearEndFrames()
+            ?? Array(
+                repeating: signal(seed: 19, amplitude: 0.27),
+                count: 4
+            )
+        let cleanedFarEnd = [Float](
+            repeating: 0,
+            count: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        for _ in 0 ..< 3 {
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(cleanedFarEnd)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                render,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            _ = try stack.capture.emit(processedSamples: processed)
+            try? await Task.sleep(for: .milliseconds(12))
+        }
+        var activePacketCount = 0
+        for nearEnd in nearEndFrames {
+            let captureTimestamp = monotonicNow()
+            stack.aecBackend.setCaptureOutput(nearEnd)
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: captureTimestamp - 80_000_000
+            )
+            let processed = stack.acousticEchoHost.processCapture(
+                nearEnd,
+                hostTimeNanoseconds: captureTimestamp
+            )
+            activePacketCount += try stack.capture.emit(
+                processedSamples: processed
+            ).activePacketCount
+            try? await Task.sleep(for: .milliseconds(12))
+        }
+        let acoustic = stack.acousticEchoHost
+            .acousticObservationSnapshot()
+        expect(
+            acoustic.inputClassification == .nearEndSpeech
+                && acoustic.sourceGateOpen
+                && acoustic.sourceGateEpoch > 0
+                && activePacketCount > 0,
+            "R8.5.3 true overlap opens production source gate"
+        )
+    }
+
+    private static func r853ExternalNearEndFrames() throws -> [[Float]]? {
+        guard let path = ProcessInfo.processInfo.environment[
+            "AFTELLE_R853_NEAR_END_PCM16LE"
+        ], !path.isEmpty else { return nil }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let bytes = [UInt8](data)
+        let inputFrameSampleCount = 160
+        let selectedFrameCount = 4
+        guard bytes.count.isMultiple(of: 2) else {
+            fatalError("R8.5.3 external PCM must be signed PCM16 LE")
+        }
+        let samples = stride(from: 0, to: bytes.count, by: 2).map {
+            offset -> Float in
+            let bits = UInt16(bytes[offset])
+                | (UInt16(bytes[offset + 1]) << 8)
+            return Float(Int16(bitPattern: bits)) / 32_768
+        }
+        let inputFrameCount = samples.count / inputFrameSampleCount
+        guard inputFrameCount >= selectedFrameCount else {
+            fatalError("R8.5.3 external PCM is shorter than 40 ms")
+        }
+
+        var bestStartFrame = 0
+        var bestEnergy = -Double.infinity
+        for startFrame in 0 ... inputFrameCount - selectedFrameCount {
+            let start = startFrame * inputFrameSampleCount
+            let end = start
+                + selectedFrameCount * inputFrameSampleCount
+            let energy = samples[start ..< end].reduce(0.0) {
+                $0 + Double($1 * $1)
+            }
+            if energy > bestEnergy {
+                bestEnergy = energy
+                bestStartFrame = startFrame
+            }
+        }
+
+        let selectedSampleCount = selectedFrameCount * inputFrameSampleCount
+        let selectedRMS = sqrt(bestEnergy / Double(selectedSampleCount))
+        if !r853ExternalPCMReported {
+            r853ExternalPCMReported = true
+            print("r853_external_pcm_bytes=\(data.count)")
+            print("r853_external_pcm_selected_window_ms=40")
+            print(
+                "r853_external_pcm_selected_rms="
+                    + String(format: "%.6f", selectedRMS)
+            )
+        }
+
+        return (0 ..< selectedFrameCount).map { frameOffset in
+            let start = (bestStartFrame + frameOffset)
+                * inputFrameSampleCount
+            return samples[start ..< start + inputFrameSampleCount]
+                .flatMap { [$0, $0, $0] }
+        }
+    }
+
+    private static func r853SentTypeCount(
+        _ transport: R3FakeRealtimeWebSocketTransport,
+        type: String
+    ) async -> Int {
+        await transport.sentTexts().reduce(into: 0) { count, text in
+            guard let data = text.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data)
+                    as? [String: Any],
+                  object["type"] as? String == type else { return }
+            count += 1
+        }
     }
 
     private static func makeControllerStack(

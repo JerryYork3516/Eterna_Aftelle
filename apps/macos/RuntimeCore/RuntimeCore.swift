@@ -1788,7 +1788,7 @@ public final class RuntimeCore {
     private struct RealtimeConfirmedInterruptionUserTurnHandoff {
         let interruptedSession: RealtimeBrainSessionIdentity
         let nextSession: RealtimeBrainSessionIdentity
-        let contextRevision: UInt64
+        var contextRevision: UInt64
         var expectedTurnID: RealtimeBrainTurnID?
     }
 
@@ -3052,8 +3052,44 @@ public final class RuntimeCore {
     private func claimRealtimeConfirmedInterruptionUserTurnHandoff(
         for event: RealtimeResidentBrainEvent
     ) -> Bool {
-        guard case .userSpeechStarted = event.kind,
-              let handoff = realtimeConfirmedInterruptionUserTurnHandoff,
+        guard case .userSpeechStarted = event.kind else {
+            return false
+        }
+        let handoff = realtimeConfirmedInterruptionUserTurnHandoff
+        let disposition: String
+        if handoff == nil {
+            disposition = "rejected_missing_handoff"
+        } else if event.identity.session != handoff?.nextSession {
+            disposition = "rejected_session_mismatch"
+        } else if event.sequence != 1 {
+            disposition = "rejected_sequence_mismatch"
+        } else if event.identity.contextRevision
+                    != handoff?.contextRevision {
+            disposition = "rejected_context_mismatch"
+        } else if event.identity.responseID != nil {
+            disposition = "rejected_response_identity"
+        } else if event.identity.turnID == nil {
+            disposition = "rejected_missing_turn"
+        } else if let expectedTurnID = handoff?.expectedTurnID,
+                  event.identity.turnID != expectedTurnID {
+            disposition = "rejected_turn_mismatch"
+        } else {
+            disposition = "accepted"
+        }
+        nativeSpeechDiagnosticBuffer?.append(
+            NativeSpeechInternalDiagnosticEvent(
+                source: .runtime,
+                category: "runtime_interruption_handoff_claim",
+                routeKind: .realtimeBrain,
+                turnGeneration: event.identity.session.generation,
+                disposition: disposition,
+                wireSequence: event.sequence,
+                itemCorrelationHash: event.identity.turnID.map {
+                    String($0.rawValue.uuidString.prefix(8))
+                }
+            )
+        )
+        guard let handoff,
               event.identity.session == handoff.nextSession else {
             return false
         }
@@ -5611,12 +5647,30 @@ public final class RuntimeCore {
         case .buffered(let event):
             guard let brainLease = currentRealtimeBrainLease(
                 identity: identity
-            ) else { return .rejectedStale }
-            return await finishRealtimeResidentBrainEvent(
+            ) else {
+                recordRealtimeTranscriptFinalDiagnostic(
+                    event,
+                    category: "runtime_user_transcript_final_disposition",
+                    disposition: "rejected_stale_before_finish"
+                )
+                return .rejectedStale
+            }
+            recordRealtimeTranscriptFinalDiagnostic(
+                event,
+                category: "runtime_user_transcript_final_received",
+                disposition: "buffered"
+            )
+            let result = await finishRealtimeResidentBrainEvent(
                 .accepted(event),
                 identity: identity,
                 lease: brainLease
             )
+            recordRealtimeTranscriptFinalDiagnostic(
+                event,
+                category: "runtime_user_transcript_final_disposition",
+                disposition: Self.realtimeBrainEventDispositionName(result)
+            )
+            return result
         case .provider:
             break
         }
@@ -5638,21 +5692,79 @@ public final class RuntimeCore {
             )
             throw Self.realtimeBrainError(error)
         }
+        recordRealtimeTranscriptFinalDiagnostic(
+            event,
+            category: "runtime_user_transcript_final_received",
+            disposition: "provider_returned"
+        )
         guard activeBrainLeaseGate.isCurrent(brainLease) else {
             realtimeBrainSessionGate.cancelReceiving(token: token)
-            return realtimeBrainSessionGate.isClosed(identity)
+            let result: RealtimeBrainEventDisposition =
+                realtimeBrainSessionGate.isClosed(identity)
                 ? .rejectedClosed : .rejectedStale
+            recordRealtimeTranscriptFinalDiagnostic(
+                event,
+                category: "runtime_user_transcript_final_disposition",
+                disposition: Self.realtimeBrainEventDispositionName(result)
+            )
+            return result
         }
         let disposition = realtimeBrainSessionGate.accept(
             event,
             expected: identity,
             token: token
         )
-        return await finishRealtimeResidentBrainEvent(
+        let result = await finishRealtimeResidentBrainEvent(
             disposition,
             identity: identity,
             lease: brainLease
         )
+        recordRealtimeTranscriptFinalDiagnostic(
+            event,
+            category: "runtime_user_transcript_final_disposition",
+            disposition: Self.realtimeBrainEventDispositionName(result)
+        )
+        return result
+    }
+
+    @MainActor
+    private func recordRealtimeTranscriptFinalDiagnostic(
+        _ event: RealtimeResidentBrainEvent,
+        category: String,
+        disposition: String
+    ) {
+        guard case .userTranscriptFinal = event.kind else { return }
+        nativeSpeechDiagnosticBuffer?.append(
+            NativeSpeechInternalDiagnosticEvent(
+                source: .runtime,
+                category: category,
+                routeKind: .realtimeBrain,
+                turnGeneration: event.identity.session.generation,
+                disposition: disposition,
+                wireSequence: event.sequence,
+                itemCorrelationHash: event.identity.turnID.map {
+                    String($0.rawValue.uuidString.prefix(8))
+                }
+            )
+        )
+    }
+
+    private static func realtimeBrainEventDispositionName(
+        _ disposition: RealtimeBrainEventDisposition
+    ) -> String {
+        switch disposition {
+        case .accepted: "accepted"
+        case .rejectedStale: "rejected_stale"
+        case .rejectedDuplicate: "rejected_duplicate"
+        case .rejectedOutOfOrder: "rejected_out_of_order"
+        case .rejectedBufferOverflow: "rejected_buffer_overflow"
+        case .deferredOutOfOrder: "deferred_out_of_order"
+        case .rejectedClosed: "rejected_closed"
+        case .rejectedInvalidIdentity: "rejected_invalid_identity"
+        case .rejectedInvalidEvent: "rejected_invalid_event"
+        case .rejectedContextTransition: "rejected_context_transition"
+        case .rejectedReceiveInFlight: "rejected_receive_in_flight"
+        }
     }
 
     @MainActor
@@ -5778,6 +5890,11 @@ public final class RuntimeCore {
             return disposition
         case .userTranscriptFinal(let transcript):
             guard let turnID = event.identity.turnID else {
+                recordRealtimeTranscriptFinalDiagnostic(
+                    event,
+                    category: "runtime_user_transcript_final_admission",
+                    disposition: "rejected_missing_turn"
+                )
                 return .rejectedInvalidIdentity
             }
             let key = RealtimeBrainPendingTurnKey(
@@ -5792,6 +5909,11 @@ public final class RuntimeCore {
                 event: event
             )
             if realtimeUtteranceConsumedSemanticTurns.contains(key) {
+                recordRealtimeTranscriptFinalDiagnostic(
+                    event,
+                    category: "runtime_user_transcript_final_admission",
+                    disposition: "accepted_already_consumed"
+                )
                 return disposition
             }
             if realtimeUtteranceCompletionTracksTranscriptFinal(
@@ -5801,15 +5923,28 @@ public final class RuntimeCore {
                     realtimeBrainPendingUserInputs[key] = input
                 }
                 if let claim = claimRealtimeUtteranceSemanticFusion() {
-                    return await completeRealtimeUtteranceSemanticFusion(
+                    let fused = await completeRealtimeUtteranceSemanticFusion(
                         claim
-                    ) ? disposition : .rejectedStale
+                    )
+                    recordRealtimeTranscriptFinalDiagnostic(
+                        event,
+                        category: "runtime_user_transcript_final_admission",
+                        disposition: fused
+                            ? "accepted_semantic_fusion"
+                            : "rejected_semantic_fusion"
+                    )
+                    return fused ? disposition : .rejectedStale
                 }
                 if realtimeUtteranceAwaitsProviderSpeechStop(
                     event.identity
                 ) {
                     scheduleRealtimeUtteranceMissingStopExpiry(
                         matching: event.identity
+                    )
+                    recordRealtimeTranscriptFinalDiagnostic(
+                        event,
+                        category: "runtime_user_transcript_final_admission",
+                        disposition: "accepted_awaiting_speech_stop"
                     )
                     return disposition
                 }
@@ -5821,6 +5956,11 @@ public final class RuntimeCore {
                         || pending.sourceTurnIDs.contains(turnID)) {
                     retireRealtimeUtteranceSemanticTurns(
                         matching: event.identity
+                    )
+                    recordRealtimeTranscriptFinalDiagnostic(
+                        event,
+                        category: "runtime_user_transcript_final_admission",
+                        disposition: "rejected_pending_start"
                     )
                     return .rejectedStale
                 }
@@ -5836,6 +5976,11 @@ public final class RuntimeCore {
                     retireRealtimeUtteranceSemanticTurns(
                         matching: event.identity
                     )
+                    recordRealtimeTranscriptFinalDiagnostic(
+                        event,
+                        category: "runtime_user_transcript_final_admission",
+                        disposition: "rejected_still_speaking"
+                    )
                     return .rejectedStale
                 }
                 if let pendingResume = realtimeUtterancePendingResume,
@@ -5847,8 +5992,18 @@ public final class RuntimeCore {
                     retireRealtimeUtteranceSemanticTurns(
                         matching: event.identity
                     )
+                    recordRealtimeTranscriptFinalDiagnostic(
+                        event,
+                        category: "runtime_user_transcript_final_admission",
+                        disposition: "rejected_pending_resume"
+                    )
                     return .rejectedStale
                 }
+                recordRealtimeTranscriptFinalDiagnostic(
+                    event,
+                    category: "runtime_user_transcript_final_admission",
+                    disposition: "accepted_tracked_completion"
+                )
                 return disposition
             }
             if realtimeUtteranceTrackedSemanticTurns.contains(key) {
@@ -5856,6 +6011,11 @@ public final class RuntimeCore {
                     [key],
                     session: key.session,
                     contextRevision: key.contextRevision
+                )
+                recordRealtimeTranscriptFinalDiagnostic(
+                    event,
+                    category: "runtime_user_transcript_final_admission",
+                    disposition: "rejected_retired_semantic_turn"
                 )
                 return .rejectedStale
             }
@@ -5865,6 +6025,11 @@ public final class RuntimeCore {
                     session: key.session,
                     contextRevision: key.contextRevision
                 )
+                recordRealtimeTranscriptFinalDiagnostic(
+                    event,
+                    category: "runtime_user_transcript_final_admission",
+                    disposition: "rejected_stale_tracking_context"
+                )
                 return .rejectedStale
             }
             if realtimeBrainPendingUserInputs[key] == nil {
@@ -5873,10 +6038,18 @@ public final class RuntimeCore {
             resetRealtimeUtteranceCompletionState(
                 matching: event.identity
             )
-            return await createRealtimeResidentBrainResponseIfEligible(
+            let created = await createRealtimeResidentBrainResponseIfEligible(
                 for: event,
                 lease: lease
-            ) ? disposition : .rejectedStale
+            )
+            recordRealtimeTranscriptFinalDiagnostic(
+                event,
+                category: "runtime_user_transcript_final_admission",
+                disposition: created
+                    ? "accepted_response_created"
+                    : "rejected_response_ineligible"
+            )
+            return created ? disposition : .rejectedStale
         case .residentSemanticFinal(let output):
             resetRealtimeUtteranceCompletionState(
                 matching: event.identity
@@ -6021,8 +6194,10 @@ public final class RuntimeCore {
            let turnID = event.identity.turnID,
            var handoff = realtimeConfirmedInterruptionUserTurnHandoff,
            handoff.interruptedSession == confirmed.interruptedIdentity,
-           handoff.nextSession == confirmed.nextIdentity,
-           handoff.contextRevision == event.identity.contextRevision {
+           handoff.nextSession == confirmed.nextIdentity {
+            // The interruption evidence targets the audible response's
+            // context. The carried user turn follows its accepted event.
+            handoff.contextRevision = event.identity.contextRevision
             handoff.expectedTurnID = turnID
             realtimeConfirmedInterruptionUserTurnHandoff = handoff
         }

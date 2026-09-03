@@ -115,7 +115,7 @@ if rg -q 'AVFoundation|CoreAudio|AVAudio' "$runtime" "$engine" "$router"; then
 fi
 echo "native_speech_input_bridge_architecture=PASS"
 
-if rg -q 'input_audio_buffer.commit|response.create|response.audio.delta|AVAudioPlayer|AVAudioPlayerNode' \
+if rg -q 'input_audio_buffer\.commit|response\.create|response\.audio\.delta|AVAudioPlayer|AVAudioPlayerNode' \
   "$bridge" "$controller" "$orchestration" "$runtime"; then
   echo "native_speech_input_bridge_scope=FAIL"
   exit 1

@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture="$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-a7-regression.XXXXXX")"
 suite_log="$work_dir/suites.log"
+runtime_home="$work_dir/runtime-home"
 timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
 
 worktree_fingerprint() {
@@ -24,6 +25,8 @@ branch_before="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
 suite_count=0
 
 trap 'rm -rf "$work_dir"' EXIT
+mkdir -p "$runtime_home"
+export CFFIXED_USER_HOME="$runtime_home"
 
 run_suite() {
   local name="$1"
@@ -86,6 +89,9 @@ run_suite realtime_acoustic_eligibility \
   "$repo_root/tools/realtime_acoustic_eligibility_tests/check.sh"
 run_suite realtime_resident_only_zero_self_interrupt \
   "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh"
+run_suite realtime_qwen_interruption_handoff \
+  "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh" \
+  r853-qwen-handoff-only
 run_suite realtime_true_near_end_opening \
   "$repo_root/tools/realtime_true_near_end_opening_tests/check.sh"
 run_suite realtime_confirmed_interruption \
