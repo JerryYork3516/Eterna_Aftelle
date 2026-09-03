@@ -1086,6 +1086,33 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         acousticEchoHost.resetDiagnostics()
     }
 
+    #if DEBUG
+    func armAcousticReplayCapture(
+        attemptID: UUID,
+        targetCaptureFrameCount: Int = 1_000
+    ) -> Bool {
+        acousticEchoHost.armAcousticReplayCapture(
+            attemptID: attemptID,
+            targetCaptureFrameCount: targetCaptureFrameCount
+        )
+    }
+
+    func sealAcousticReplayCapture() {
+        acousticEchoHost.sealAcousticReplayCapture()
+    }
+
+    func acousticReplayCaptureSnapshot()
+        -> MacSpeechAcousticReplayCaptureSnapshot? {
+        acousticEchoHost.acousticReplayCaptureSnapshot()
+    }
+
+    func clearAcousticReplayCapture(matchingAttemptID attemptID: UUID? = nil) {
+        acousticEchoHost.clearAcousticReplayCapture(
+            matchingAttemptID: attemptID
+        )
+    }
+    #endif
+
     private func processCapture(
         _ buffer: AVAudioPCMBuffer,
         hostTimeNanoseconds: UInt64?,

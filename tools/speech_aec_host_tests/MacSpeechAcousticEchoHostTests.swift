@@ -120,6 +120,9 @@ private struct MacSpeechAcousticEchoHostTests {
         testFIFORemainderIsBounded()
         testRenderAlignedDelay()
         testHostTimeAlignedDelayAndDiagnostics()
+        #if DEBUG
+        testAcousticReplayCapture()
+        #endif
         testFutureRenderTimestampIsCaptureCausal()
         testTimingLockDoesNotJumpOnRepeatedRender()
         testTimingLockReacquiresShiftedPath()
@@ -463,6 +466,82 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(host.snapshot().sourceAlignmentDelayMilliseconds == 80,
                "presentation updates preserve source alignment")
     }
+
+    #if DEBUG
+    private static func testAcousticReplayCapture() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.updateDelay(
+            outputPresentationLatencySeconds: 0.020,
+            capturePresentationLatencySeconds: 0.010
+        )
+        host.playbackStarted()
+        let attemptID = UUID()
+        expect(host.armAcousticReplayCapture(
+            attemptID: attemptID,
+            targetCaptureFrameCount: 3
+        ), "DEBUG acoustic replay capture arms")
+
+        var rawSamples: [Float] = []
+        for index in 0 ..< 3 {
+            let frame = testSignal(
+                seed: UInt32(1_700 + index),
+                amplitude: 0.25
+            )
+            rawSamples.append(contentsOf: frame)
+            host.processRender(
+                frame,
+                hostTimeNanoseconds:
+                    2_000_000_000 + UInt64(index * 10_000_000)
+            )
+            _ = host.processCapture(
+                frame,
+                hostTimeNanoseconds:
+                    2_080_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+
+        guard let capture = host.acousticReplayCaptureSnapshot() else {
+            fatalError("FAILED: DEBUG acoustic replay snapshot exists")
+        }
+        expect(capture.attemptID == attemptID,
+               "replay snapshot preserves attempt identity")
+        expect(capture.frames.count == 3 && capture.isSealed,
+               "three 10 ms frames seal the bounded replay capture")
+        expect(capture.durationMilliseconds == 30,
+               "replay duration derives from exact 10 ms frames")
+        expect(capture.rawMicrophoneSamples == rawSamples,
+               "replay preserves exact pre-AEC microphone samples")
+        expect(capture.renderReferenceSamples == rawSamples,
+               "replay preserves each exact matched render reference")
+        expect(
+            capture.aecCleanSamples == rawSamples.map { $0 * 0.5 },
+            "replay preserves exact pre-gate AEC clean samples"
+        )
+        expect(capture.frames.allSatisfy { $0.timingMatchAvailable },
+               "every replay frame records timing-match availability")
+        expect(capture.frames.allSatisfy {
+            abs(($0.timingDelayMilliseconds ?? 0) - 80) < 0.001
+                && ($0.timingCorrelation ?? 0) > 0.99
+        }, "replay records matched delay and correlation per frame")
+        expect(capture.frames.last?.sourceAlignmentLocked == true,
+               "replay records per-frame alignment lock")
+        expect(capture.frames.allSatisfy {
+            $0.inputClassification == .echoOnly && !$0.sourceGateOpen
+        }, "replay records classifier and final source-gate state")
+        expect(!host.armAcousticReplayCapture(
+            attemptID: UUID(),
+            targetCaptureFrameCount: 1
+        ), "unexported replay capture cannot be overwritten")
+        host.clearAcousticReplayCapture(matchingAttemptID: attemptID)
+        expect(host.acousticReplayCaptureSnapshot() == nil,
+               "matching replay capture clears exactly once")
+    }
+    #endif
 
     private static func testFutureRenderTimestampIsCaptureCausal() {
         let backend = FakeAECBackend()

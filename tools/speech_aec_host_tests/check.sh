@@ -11,6 +11,7 @@ tests="$repo_root/tools/speech_aec_host_tests/MacSpeechAcousticEchoHostTests.swi
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 
 swiftc \
+  -D DEBUG \
   -parse-as-library \
   -warn-concurrency \
   -strict-concurrency=complete \

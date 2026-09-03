@@ -88,6 +88,60 @@ nonisolated private enum Stage7511QwenTTSConfiguration {
     )
 }
 
+private struct RealtimeSpeechAcousticReplayAudioFile: Encodable {
+    let fileName: String
+    let sha256: String
+    let stage: String
+    let encoding: String
+    let sampleRate: Int
+    let channelCount: Int
+    let frameSampleCount: Int
+    let byteCount: Int
+}
+
+private struct RealtimeSpeechAcousticReplayFrameExport: Encodable {
+    let captureFrameIndex: UInt64
+    let sampleOffset: Int
+    let timestampNanoseconds: UInt64
+    let captureHostTimeNanoseconds: UInt64?
+    let captureHostTimeValid: Bool
+    let timingMatchAvailable: Bool
+    let matchedRenderHostTimeNanoseconds: UInt64?
+    let timingDelayMilliseconds: Double?
+    let timingCorrelation: Double?
+    let renderReferenceRMS: Double?
+    let aecBufferDelayMilliseconds: Int
+    let sourceAlignmentLocked: Bool
+    let sourceAlignmentDelayMilliseconds: Int?
+    let estimatedDelayMilliseconds: Int
+    let classifier: String
+    let sourceGateOpen: Bool
+    let sourceGateEpoch: UInt64
+    let playbackSequence: UInt64
+    let playbackActive: Bool
+    let rawCaptureRMS: Double
+    let aecCleanRMS: Double
+    let residualRenderCorrelation: Double
+}
+
+private struct RealtimeSpeechAcousticReplayManifest: Encodable {
+    let schemaVersion: Int
+    let attemptID: String
+    let armedAt: Date
+    let startedAt: Date?
+    let endedAt: Date?
+    let targetCaptureFrameCount: Int
+    let capturedFrameCount: Int
+    let durationMilliseconds: Int
+    let missingTimingMatchFrameCount: Int
+    let isSealed: Bool
+    let renderReferenceSemantics: String
+    let rawMicrophone: RealtimeSpeechAcousticReplayAudioFile
+    let renderReference: RealtimeSpeechAcousticReplayAudioFile
+    let aecClean: RealtimeSpeechAcousticReplayAudioFile
+    let frames: [RealtimeSpeechAcousticReplayFrameExport]
+}
+
 nonisolated struct RealtimeSpeechPlaybackSubtitleIdentity:
     Sendable,
     Equatable {
@@ -611,6 +665,8 @@ final class AppController: ObservableObject {
         )
     #if DEBUG
     private let nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer
+    private let realtimeSpeechDiagnosticAudioEngine:
+        SystemMacSpeechVoiceProcessingEngine?
     private let speechOutputDebugSink = MacSpeechNativeDebugOutputSink()
     private var nativeSpeechPlaybackBinding: NativeSpeechPlaybackBinding?
     private var formalSpeechRouteGeneration: UInt64?
@@ -645,6 +701,7 @@ final class AppController: ObservableObject {
     private var realtimeBrainRecoverableResponseErrorCount: UInt64 = 0
     private var lastRealtimeBrainRecoverableResponseErrorCode: String?
     private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
+    private var realtimeSpeechAudioCaptureTask: Task<Void, Never>?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
         sendFrame: { [orchestrationKernel] payload, context in
@@ -722,6 +779,7 @@ final class AppController: ObservableObject {
         #if DEBUG
         let speechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
         nativeSpeechDiagnosticBuffer = speechDiagnosticBuffer
+        realtimeSpeechDiagnosticAudioEngine = speechAudioEngine
         runtimeCore = QwenRealtimeRuntimeComposition.makeDebugRuntimeCore(
             credentialReader: credentialStore,
             diagnosticBuffer: speechDiagnosticBuffer,
@@ -763,6 +821,7 @@ final class AppController: ObservableObject {
         )
         #if DEBUG
         nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
+        realtimeSpeechDiagnosticAudioEngine = speechAudioEngine
         #endif
         restoreProviderConfiguration()
         #if DEBUG
@@ -779,13 +838,17 @@ final class AppController: ObservableObject {
         nativeSpeechProfile: NativeSpeechProviderProfile =
             Stage75NativeSpeechConfiguration.profile,
         nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer =
-            NativeSpeechDiagnosticBuffer()
+            NativeSpeechDiagnosticBuffer(),
+        realtimeSpeechDiagnosticAudioEngine:
+            SystemMacSpeechVoiceProcessingEngine? = nil
     ) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         self.speechAudioHost = speechAudioHost
         self.speechAudioOutputHost = speechAudioOutputHost
         self.nativeSpeechDiagnosticBuffer = nativeSpeechDiagnosticBuffer
+        self.realtimeSpeechDiagnosticAudioEngine =
+            realtimeSpeechDiagnosticAudioEngine
         nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
             profile: nativeSpeechProfile
         )
@@ -1170,22 +1233,58 @@ final class AppController: ObservableObject {
                 "particleDebug.realtimeDiagnostics.status.audioAlreadyArmed"
             return
         }
+        guard realtimeSpeechDiagnosticAudioEngine?.armAcousticReplayCapture(
+            attemptID: attemptID
+        ) == true else {
+            nativeSpeechDiagnosticBuffer.clearRealtimeAudioCapsule(
+                matchingAttemptID: attemptID
+            )
+            realtimeSpeechDiagnosticStatusKey =
+                "particleDebug.realtimeDiagnostics.status.audioUnavailable"
+            return
+        }
+        realtimeSpeechAudioCaptureTask?.cancel()
+        realtimeSpeechAudioCaptureTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(10))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            self.nativeSpeechDiagnosticBuffer.sealRealtimeAudioCapsule()
+            self.realtimeSpeechDiagnosticAudioEngine?
+                .sealAcousticReplayCapture()
+            self.recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "acoustic_replay_capture_sealed",
+                routeKind: .realtimeBrain,
+                interactionShortID:
+                    String(attemptID.uuidString.prefix(8)),
+                disposition: "ready_to_export"
+            )
+            self.realtimeSpeechDiagnosticStatusKey =
+                "particleDebug.realtimeDiagnostics.status.audioCaptured"
+            self.realtimeSpeechAudioCaptureTask = nil
+        }
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
-            category: "qwen_input_audio_capsule_armed",
+            category: "acoustic_replay_capture_armed",
             routeKind: .realtimeBrain,
             interactionShortID: String(attemptID.uuidString.prefix(8)),
-            disposition: "next_5_seconds"
+            disposition: "next_10_seconds"
         )
         realtimeSpeechDiagnosticStatusKey =
             "particleDebug.realtimeDiagnostics.status.audioArmed"
     }
 
     func clearRealtimeSpeechDiagnostics() {
+        realtimeSpeechAudioCaptureTask?.cancel()
+        realtimeSpeechAudioCaptureTask = nil
         realtimeSpeechDiagnosticViewRefreshTask?.cancel()
         realtimeSpeechDiagnosticViewRefreshTask = nil
         realtimeSpeechDiagnosticTimeline.clear()
         nativeSpeechDiagnosticBuffer.clear()
+        realtimeSpeechDiagnosticAudioEngine?.clearAcousticReplayCapture()
         speechAudioHost.resetAcousticEchoDiagnostics()
         publishRealtimeSpeechDiagnosticViewState()
         realtimeSpeechDiagnosticStatusKey = nil
@@ -1517,10 +1616,13 @@ final class AppController: ObservableObject {
         to url: URL,
         exportedAt: Date = Date()
     ) throws {
+        realtimeSpeechAudioCaptureTask?.cancel()
+        realtimeSpeechAudioCaptureTask = nil
         nativeSpeechDiagnosticBuffer.sealRealtimeAudioCapsule()
+        realtimeSpeechDiagnosticAudioEngine?.sealAcousticReplayCapture()
         let capsule = nativeSpeechDiagnosticBuffer
             .realtimeAudioCapsuleSnapshot()
-        let pcmURL = capsule.flatMap { snapshot -> URL? in
+        let qwenPCMURL = capsule.flatMap { snapshot -> URL? in
             guard !snapshot.bytes.isEmpty else { return nil }
             return url.deletingPathExtension()
                 .appendingPathExtension("qwen-input.pcm")
@@ -1528,13 +1630,98 @@ final class AppController: ObservableObject {
         let audioCapsuleSHA256 = capsule.flatMap { snapshot in
             snapshot.bytes.isEmpty ? nil : Self.sha256Hex(snapshot.bytes)
         }
+        let acousticReplay = realtimeSpeechDiagnosticAudioEngine?
+            .acousticReplayCaptureSnapshot()
+        let rawMicrophoneData = acousticReplay.map {
+            Self.float32LittleEndianData($0.rawMicrophoneSamples)
+        }
+        let renderReferenceData = acousticReplay.map {
+            Self.float32LittleEndianData($0.renderReferenceSamples)
+        }
+        let aecCleanData = acousticReplay.map {
+            Self.float32LittleEndianData($0.aecCleanSamples)
+        }
+        let baseURL = url.deletingPathExtension()
+        let rawMicrophoneURL = rawMicrophoneData.flatMap { data in
+            data.isEmpty ? nil : baseURL.appendingPathExtension(
+                "raw-mic.f32le.pcm"
+            )
+        }
+        let renderReferenceURL = renderReferenceData.flatMap { data in
+            data.isEmpty ? nil : baseURL.appendingPathExtension(
+                "render-reference.f32le.pcm"
+            )
+        }
+        let aecCleanURL = aecCleanData.flatMap { data in
+            data.isEmpty ? nil : baseURL.appendingPathExtension(
+                "aec-clean.f32le.pcm"
+            )
+        }
+        let acousticFramesURL = acousticReplay.flatMap { snapshot in
+            snapshot.frames.isEmpty ? nil : baseURL.appendingPathExtension(
+                "aec-frames.json"
+            )
+        }
+        let acousticFramesData: Data?
+        if let acousticReplay,
+           let rawMicrophoneData,
+           let renderReferenceData,
+           let aecCleanData,
+           let rawMicrophoneURL,
+           let renderReferenceURL,
+           let aecCleanURL {
+            acousticFramesData = try acousticReplayManifestData(
+                snapshot: acousticReplay,
+                rawMicrophoneData: rawMicrophoneData,
+                rawMicrophoneFileName: rawMicrophoneURL.lastPathComponent,
+                renderReferenceData: renderReferenceData,
+                renderReferenceFileName:
+                    renderReferenceURL.lastPathComponent,
+                aecCleanData: aecCleanData,
+                aecCleanFileName: aecCleanURL.lastPathComponent
+            )
+        } else {
+            acousticFramesData = nil
+        }
         let data = try realtimeSpeechDiagnosticExportData(
             exportedAt: exportedAt,
-            audioCapsuleFileName: pcmURL?.lastPathComponent,
+            audioCapsuleFileName: qwenPCMURL?.lastPathComponent,
             audioCapsuleSHA256: audioCapsuleSHA256
         )
+
+        struct Sidecar {
+            let url: URL
+            let data: Data
+        }
+
+        var sidecars: [Sidecar] = []
+        if let capsule, let qwenPCMURL, !capsule.bytes.isEmpty {
+            sidecars.append(Sidecar(url: qwenPCMURL, data: capsule.bytes))
+        }
+        if let rawMicrophoneURL, let rawMicrophoneData {
+            sidecars.append(Sidecar(
+                url: rawMicrophoneURL,
+                data: rawMicrophoneData
+            ))
+        }
+        if let renderReferenceURL, let renderReferenceData {
+            sidecars.append(Sidecar(
+                url: renderReferenceURL,
+                data: renderReferenceData
+            ))
+        }
+        if let aecCleanURL, let aecCleanData {
+            sidecars.append(Sidecar(url: aecCleanURL, data: aecCleanData))
+        }
+        if let acousticFramesURL, let acousticFramesData {
+            sidecars.append(Sidecar(
+                url: acousticFramesURL,
+                data: acousticFramesData
+            ))
+        }
+
         let fileManager = FileManager.default
-        let destinations = [url] + (pcmURL.map { [$0] } ?? [])
+        let destinations = [url] + sidecars.map(\.url)
         guard !destinations.contains(where: {
             fileManager.fileExists(atPath: $0.path)
         }) else {
@@ -1545,31 +1732,144 @@ final class AppController: ObservableObject {
         let jsonStagingURL = stagingDirectory.appendingPathComponent(
             ".aftelle-diagnostics-\(stagingID).json.tmp"
         )
-        let pcmStagingURL = stagingDirectory.appendingPathComponent(
-            ".aftelle-diagnostics-\(stagingID).pcm.tmp"
-        )
+        let sidecarStagingURLs = sidecars.enumerated().map { index, _ in
+            stagingDirectory.appendingPathComponent(
+                ".aftelle-diagnostics-\(stagingID)-\(index).tmp"
+            )
+        }
         defer {
             try? fileManager.removeItem(at: jsonStagingURL)
-            try? fileManager.removeItem(at: pcmStagingURL)
+            for stagingURL in sidecarStagingURLs {
+                try? fileManager.removeItem(at: stagingURL)
+            }
         }
         try data.write(to: jsonStagingURL, options: .atomic)
-        if let capsule, pcmURL != nil {
-            try capsule.bytes.write(to: pcmStagingURL, options: .atomic)
+        for (sidecar, stagingURL) in zip(sidecars, sidecarStagingURLs) {
+            try sidecar.data.write(to: stagingURL, options: .atomic)
         }
-        try fileManager.moveItem(at: jsonStagingURL, to: url)
-        if let pcmURL {
-            do {
-                try fileManager.moveItem(at: pcmStagingURL, to: pcmURL)
-            } catch {
-                try? fileManager.removeItem(at: url)
-                throw error
+        var movedURLs: [URL] = []
+        do {
+            try fileManager.moveItem(at: jsonStagingURL, to: url)
+            movedURLs.append(url)
+            for (sidecar, stagingURL) in zip(sidecars, sidecarStagingURLs) {
+                try fileManager.moveItem(at: stagingURL, to: sidecar.url)
+                movedURLs.append(sidecar.url)
             }
+        } catch {
+            for movedURL in movedURLs {
+                try? fileManager.removeItem(at: movedURL)
+            }
+            throw error
         }
         if let attemptID = capsule?.attemptID {
             nativeSpeechDiagnosticBuffer.clearRealtimeAudioCapsule(
                 matchingAttemptID: attemptID
             )
         }
+        if let attemptID = acousticReplay?.attemptID {
+            realtimeSpeechDiagnosticAudioEngine?.clearAcousticReplayCapture(
+                matchingAttemptID: attemptID
+            )
+        }
+    }
+
+    private func acousticReplayManifestData(
+        snapshot: MacSpeechAcousticReplayCaptureSnapshot,
+        rawMicrophoneData: Data,
+        rawMicrophoneFileName: String,
+        renderReferenceData: Data,
+        renderReferenceFileName: String,
+        aecCleanData: Data,
+        aecCleanFileName: String
+    ) throws -> Data {
+        let audioFile: (String, Data, String) ->
+            RealtimeSpeechAcousticReplayAudioFile = { fileName, data, stage in
+                RealtimeSpeechAcousticReplayAudioFile(
+                    fileName: fileName,
+                    sha256: Self.sha256Hex(data),
+                    stage: stage,
+                    encoding: "float32le",
+                    sampleRate: MacSpeechAcousticEchoHost.sampleRate,
+                    channelCount: 1,
+                    frameSampleCount:
+                        MacSpeechAcousticEchoHost.frameSampleCount,
+                    byteCount: data.count
+                )
+            }
+        let manifest = RealtimeSpeechAcousticReplayManifest(
+            schemaVersion: 1,
+            attemptID: snapshot.attemptID.uuidString,
+            armedAt: snapshot.armedAt,
+            startedAt: snapshot.startedAt,
+            endedAt: snapshot.endedAt,
+            targetCaptureFrameCount: snapshot.targetCaptureFrameCount,
+            capturedFrameCount: snapshot.frames.count,
+            durationMilliseconds: snapshot.durationMilliseconds,
+            missingTimingMatchFrameCount: snapshot.frames.reduce(0) {
+                $0 + ($1.timingMatchAvailable ? 0 : 1)
+            },
+            isSealed: snapshot.isSealed,
+            renderReferenceSemantics:
+                "matched_per_capture_frame_zero_when_unavailable",
+            rawMicrophone: audioFile(
+                rawMicrophoneFileName,
+                rawMicrophoneData,
+                "post_device_conversion_pre_aec"
+            ),
+            renderReference: audioFile(
+                renderReferenceFileName,
+                renderReferenceData,
+                "exact_timing_matched_render_reference"
+            ),
+            aecClean: audioFile(
+                aecCleanFileName,
+                aecCleanData,
+                "post_aec_pre_source_gate"
+            ),
+            frames: snapshot.frames.map {
+                RealtimeSpeechAcousticReplayFrameExport(
+                    captureFrameIndex: $0.captureFrameIndex,
+                    sampleOffset: $0.sampleOffset,
+                    timestampNanoseconds: $0.timestampNanoseconds,
+                    captureHostTimeNanoseconds:
+                        $0.captureHostTimeNanoseconds,
+                    captureHostTimeValid:
+                        $0.captureHostTimeNanoseconds != nil,
+                    timingMatchAvailable: $0.timingMatchAvailable,
+                    matchedRenderHostTimeNanoseconds:
+                        $0.matchedRenderHostTimeNanoseconds,
+                    timingDelayMilliseconds:
+                        $0.timingDelayMilliseconds,
+                    timingCorrelation: $0.timingCorrelation,
+                    renderReferenceRMS: $0.renderReferenceRMS,
+                    aecBufferDelayMilliseconds:
+                        $0.aecBufferDelayMilliseconds,
+                    sourceAlignmentLocked: $0.sourceAlignmentLocked,
+                    sourceAlignmentDelayMilliseconds:
+                        $0.sourceAlignmentDelayMilliseconds,
+                    estimatedDelayMilliseconds:
+                        $0.estimatedDelayMilliseconds,
+                    classifier: $0.inputClassification.rawValue,
+                    sourceGateOpen: $0.sourceGateOpen,
+                    sourceGateEpoch: $0.sourceGateEpoch,
+                    playbackSequence: $0.playbackSequence,
+                    playbackActive: $0.isPlaybackActive,
+                    rawCaptureRMS: $0.rawCaptureRMS,
+                    aecCleanRMS: $0.processedCaptureRMS,
+                    residualRenderCorrelation:
+                        $0.residualRenderCorrelation
+                )
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(manifest)
+    }
+
+    private static func float32LittleEndianData(_ samples: [Float]) -> Data {
+        samples.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
     private static func runningBuildBinary() -> (
