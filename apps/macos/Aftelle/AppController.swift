@@ -88,60 +88,6 @@ nonisolated private enum Stage7511QwenTTSConfiguration {
     )
 }
 
-private struct RealtimeSpeechAcousticReplayAudioFile: Encodable {
-    let fileName: String
-    let sha256: String
-    let stage: String
-    let encoding: String
-    let sampleRate: Int
-    let channelCount: Int
-    let frameSampleCount: Int
-    let byteCount: Int
-}
-
-private struct RealtimeSpeechAcousticReplayFrameExport: Encodable {
-    let captureFrameIndex: UInt64
-    let sampleOffset: Int
-    let timestampNanoseconds: UInt64
-    let captureHostTimeNanoseconds: UInt64?
-    let captureHostTimeValid: Bool
-    let timingMatchAvailable: Bool
-    let matchedRenderHostTimeNanoseconds: UInt64?
-    let timingDelayMilliseconds: Double?
-    let timingCorrelation: Double?
-    let renderReferenceRMS: Double?
-    let aecBufferDelayMilliseconds: Int
-    let sourceAlignmentLocked: Bool
-    let sourceAlignmentDelayMilliseconds: Int?
-    let estimatedDelayMilliseconds: Int
-    let classifier: String
-    let sourceGateOpen: Bool
-    let sourceGateEpoch: UInt64
-    let playbackSequence: UInt64
-    let playbackActive: Bool
-    let rawCaptureRMS: Double
-    let aecCleanRMS: Double
-    let residualRenderCorrelation: Double
-}
-
-private struct RealtimeSpeechAcousticReplayManifest: Encodable {
-    let schemaVersion: Int
-    let attemptID: String
-    let armedAt: Date
-    let startedAt: Date?
-    let endedAt: Date?
-    let targetCaptureFrameCount: Int
-    let capturedFrameCount: Int
-    let durationMilliseconds: Int
-    let missingTimingMatchFrameCount: Int
-    let isSealed: Bool
-    let renderReferenceSemantics: String
-    let rawMicrophone: RealtimeSpeechAcousticReplayAudioFile
-    let renderReference: RealtimeSpeechAcousticReplayAudioFile
-    let aecClean: RealtimeSpeechAcousticReplayAudioFile
-    let frames: [RealtimeSpeechAcousticReplayFrameExport]
-}
-
 nonisolated struct RealtimeSpeechPlaybackSubtitleIdentity:
     Sendable,
     Equatable {
@@ -702,6 +648,7 @@ final class AppController: ObservableObject {
     private var lastRealtimeBrainRecoverableResponseErrorCode: String?
     private var realtimeSpeechDiagnosticViewRefreshTask: Task<Void, Never>?
     private var realtimeSpeechAudioCaptureTask: Task<Void, Never>?
+    private var realtimeSpeechReplayCaptureAttemptID: UUID?
     private lazy var speechInputBridge = MacSpeechNativeInputBridge(
         source: speechAudioHost,
         sendFrame: { [orchestrationKernel] payload, context in
@@ -1243,27 +1190,67 @@ final class AppController: ObservableObject {
                 "particleDebug.realtimeDiagnostics.status.audioUnavailable"
             return
         }
+        realtimeSpeechReplayCaptureAttemptID = attemptID
         realtimeSpeechAudioCaptureTask?.cancel()
         realtimeSpeechAudioCaptureTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(10))
-            } catch {
+            let maximumWaitingForPlaybackPollCount = 600
+            let maximumRecordingPollCount = 300
+            var waitingForPlaybackPollCount = 0
+            var recordingPollCount = 0
+            var sawPlaybackStart = false
+            while waitingForPlaybackPollCount
+                    < maximumWaitingForPlaybackPollCount,
+                  recordingPollCount < maximumRecordingPollCount {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    return
+                }
+                guard let self,
+                      let snapshot = self.realtimeSpeechDiagnosticAudioEngine?
+                        .acousticReplayCaptureSnapshot(),
+                      snapshot.attemptID == attemptID else { return }
+                sawPlaybackStart = sawPlaybackStart
+                    || snapshot.controlEvents.contains(where: {
+                        $0.kind == .playbackStarted
+                    })
+                if sawPlaybackStart {
+                    recordingPollCount += 1
+                } else {
+                    waitingForPlaybackPollCount += 1
+                }
+                guard snapshot.isSealed else { continue }
+                let auxiliaryCapsuleSealed = self
+                    .sealRealtimeAudioCapsule(matchingAttemptID: attemptID)
+                let exactReplayReady = snapshot.isExactReplayReady
+                    && auxiliaryCapsuleSealed
+                self.recordRealtimeSpeechDiagnostic(
+                    source: .lifecycle,
+                    category: "acoustic_replay_capture_sealed",
+                    routeKind: .realtimeBrain,
+                    interactionShortID:
+                        String(attemptID.uuidString.prefix(8)),
+                    disposition: exactReplayReady
+                        ? "ready_to_export" : "invalid_capture"
+                )
+                self.realtimeSpeechDiagnosticStatusKey =
+                    exactReplayReady
+                    ? "particleDebug.realtimeDiagnostics.status.audioCaptured"
+                    : "particleDebug.realtimeDiagnostics.status.audioInvalid"
+                self.realtimeSpeechAudioCaptureTask = nil
                 return
             }
             guard let self else { return }
-            self.nativeSpeechDiagnosticBuffer.sealRealtimeAudioCapsule()
             self.realtimeSpeechDiagnosticAudioEngine?
-                .sealAcousticReplayCapture()
-            self.recordRealtimeSpeechDiagnostic(
-                source: .lifecycle,
-                category: "acoustic_replay_capture_sealed",
-                routeKind: .realtimeBrain,
-                interactionShortID:
-                    String(attemptID.uuidString.prefix(8)),
-                disposition: "ready_to_export"
+                .sealAcousticReplayCapture(
+                    reason: .timeout,
+                    matchingAttemptID: attemptID
+                )
+            _ = self.sealRealtimeAudioCapsule(
+                matchingAttemptID: attemptID
             )
             self.realtimeSpeechDiagnosticStatusKey =
-                "particleDebug.realtimeDiagnostics.status.audioCaptured"
+                "particleDebug.realtimeDiagnostics.status.audioInvalid"
             self.realtimeSpeechAudioCaptureTask = nil
         }
         recordRealtimeSpeechDiagnostic(
@@ -1271,7 +1258,7 @@ final class AppController: ObservableObject {
             category: "acoustic_replay_capture_armed",
             routeKind: .realtimeBrain,
             interactionShortID: String(attemptID.uuidString.prefix(8)),
-            disposition: "next_10_seconds"
+            disposition: "armed_before_next_playback"
         )
         realtimeSpeechDiagnosticStatusKey =
             "particleDebug.realtimeDiagnostics.status.audioArmed"
@@ -1285,6 +1272,7 @@ final class AppController: ObservableObject {
         realtimeSpeechDiagnosticTimeline.clear()
         nativeSpeechDiagnosticBuffer.clear()
         realtimeSpeechDiagnosticAudioEngine?.clearAcousticReplayCapture()
+        realtimeSpeechReplayCaptureAttemptID = nil
         speechAudioHost.resetAcousticEchoDiagnostics()
         publishRealtimeSpeechDiagnosticViewState()
         realtimeSpeechDiagnosticStatusKey = nil
@@ -1616,10 +1604,28 @@ final class AppController: ObservableObject {
         to url: URL,
         exportedAt: Date = Date()
     ) throws {
+        let expectedReplayAttemptID = realtimeSpeechReplayCaptureAttemptID
+        let pendingCapsule = nativeSpeechDiagnosticBuffer
+            .realtimeAudioCapsuleSnapshot()
+        let pendingAcousticReplay = realtimeSpeechDiagnosticAudioEngine?
+            .acousticReplayCaptureSnapshot()
+        if let expectedReplayAttemptID {
+            guard let pendingCapsule,
+                  pendingCapsule.attemptID == expectedReplayAttemptID,
+                  let pendingAcousticReplay,
+                  pendingAcousticReplay.attemptID == expectedReplayAttemptID,
+                  pendingAcousticReplay.isExactReplayReady else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
         realtimeSpeechAudioCaptureTask?.cancel()
         realtimeSpeechAudioCaptureTask = nil
-        nativeSpeechDiagnosticBuffer.sealRealtimeAudioCapsule()
-        realtimeSpeechDiagnosticAudioEngine?.sealAcousticReplayCapture()
+        if let expectedReplayAttemptID,
+           !sealRealtimeAudioCapsule(
+                matchingAttemptID: expectedReplayAttemptID
+           ) {
+            throw CocoaError(.fileWriteUnknown)
+        }
         let capsule = nativeSpeechDiagnosticBuffer
             .realtimeAudioCapsuleSnapshot()
         let qwenPCMURL = capsule.flatMap { snapshot -> URL? in
@@ -1632,14 +1638,33 @@ final class AppController: ObservableObject {
         }
         let acousticReplay = realtimeSpeechDiagnosticAudioEngine?
             .acousticReplayCaptureSnapshot()
-        let rawMicrophoneData = acousticReplay.map {
-            Self.float32LittleEndianData($0.rawMicrophoneSamples)
+        if let expectedReplayAttemptID,
+           (capsule?.attemptID != expectedReplayAttemptID
+                || acousticReplay?.attemptID != expectedReplayAttemptID) {
+            throw CocoaError(.fileWriteUnknown)
         }
-        let renderReferenceData = acousticReplay.map {
-            Self.float32LittleEndianData($0.renderReferenceSamples)
+        if let acousticReplay, !acousticReplay.isExactReplayReady {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let rawMicrophoneData = acousticReplay.map {
+            MacSpeechAcousticReplayCodec.float32LittleEndianData(
+                $0.rawMicrophoneSamples
+            )
+        }
+        let chronologicalRenderData = acousticReplay.map {
+            MacSpeechAcousticReplayCodec.float32LittleEndianData(
+                $0.chronologicalRenderSamples
+            )
         }
         let aecCleanData = acousticReplay.map {
-            Self.float32LittleEndianData($0.aecCleanSamples)
+            MacSpeechAcousticReplayCodec.float32LittleEndianData(
+                $0.aecCleanSamples
+            )
+        }
+        let aecLinearData = acousticReplay.map {
+            MacSpeechAcousticReplayCodec.float32LittleEndianData(
+                $0.aecLinearSamples
+            )
         }
         let baseURL = url.deletingPathExtension()
         let rawMicrophoneURL = rawMicrophoneData.flatMap { data in
@@ -1647,9 +1672,9 @@ final class AppController: ObservableObject {
                 "raw-mic.f32le.pcm"
             )
         }
-        let renderReferenceURL = renderReferenceData.flatMap { data in
+        let chronologicalRenderURL = chronologicalRenderData.flatMap { data in
             data.isEmpty ? nil : baseURL.appendingPathExtension(
-                "render-reference.f32le.pcm"
+                "render-full.f32le.pcm"
             )
         }
         let aecCleanURL = aecCleanData.flatMap { data in
@@ -1657,31 +1682,41 @@ final class AppController: ObservableObject {
                 "aec-clean.f32le.pcm"
             )
         }
-        let acousticFramesURL = acousticReplay.flatMap { snapshot in
-            snapshot.frames.isEmpty ? nil : baseURL.appendingPathExtension(
-                "aec-frames.json"
+        let aecLinearURL = aecLinearData.flatMap { data in
+            data.isEmpty ? nil : baseURL.appendingPathExtension(
+                "aec-linear.f32le.pcm"
             )
         }
-        let acousticFramesData: Data?
+        let acousticTimelineURL = acousticReplay.flatMap { snapshot in
+            snapshot.captureFrames.isEmpty
+                ? nil : baseURL.appendingPathExtension(
+                "aec-timeline.json"
+            )
+        }
+        let acousticTimelineData: Data?
         if let acousticReplay,
            let rawMicrophoneData,
-           let renderReferenceData,
+           let chronologicalRenderData,
            let aecCleanData,
+           let aecLinearData,
            let rawMicrophoneURL,
-           let renderReferenceURL,
-           let aecCleanURL {
-            acousticFramesData = try acousticReplayManifestData(
+           let chronologicalRenderURL,
+           let aecCleanURL,
+           let aecLinearURL {
+            acousticTimelineData = try acousticReplayManifestData(
                 snapshot: acousticReplay,
                 rawMicrophoneData: rawMicrophoneData,
                 rawMicrophoneFileName: rawMicrophoneURL.lastPathComponent,
-                renderReferenceData: renderReferenceData,
-                renderReferenceFileName:
-                    renderReferenceURL.lastPathComponent,
+                chronologicalRenderData: chronologicalRenderData,
+                chronologicalRenderFileName:
+                    chronologicalRenderURL.lastPathComponent,
                 aecCleanData: aecCleanData,
-                aecCleanFileName: aecCleanURL.lastPathComponent
+                aecCleanFileName: aecCleanURL.lastPathComponent,
+                aecLinearData: aecLinearData,
+                aecLinearFileName: aecLinearURL.lastPathComponent
             )
         } else {
-            acousticFramesData = nil
+            acousticTimelineData = nil
         }
         let data = try realtimeSpeechDiagnosticExportData(
             exportedAt: exportedAt,
@@ -1704,19 +1739,22 @@ final class AppController: ObservableObject {
                 data: rawMicrophoneData
             ))
         }
-        if let renderReferenceURL, let renderReferenceData {
+        if let chronologicalRenderURL, let chronologicalRenderData {
             sidecars.append(Sidecar(
-                url: renderReferenceURL,
-                data: renderReferenceData
+                url: chronologicalRenderURL,
+                data: chronologicalRenderData
             ))
         }
         if let aecCleanURL, let aecCleanData {
             sidecars.append(Sidecar(url: aecCleanURL, data: aecCleanData))
         }
-        if let acousticFramesURL, let acousticFramesData {
+        if let aecLinearURL, let aecLinearData {
+            sidecars.append(Sidecar(url: aecLinearURL, data: aecLinearData))
+        }
+        if let acousticTimelineURL, let acousticTimelineData {
             sidecars.append(Sidecar(
-                url: acousticFramesURL,
-                data: acousticFramesData
+                url: acousticTimelineURL,
+                data: acousticTimelineData
             ))
         }
 
@@ -1771,105 +1809,115 @@ final class AppController: ObservableObject {
                 matchingAttemptID: attemptID
             )
         }
+        if expectedReplayAttemptID != nil {
+            realtimeSpeechReplayCaptureAttemptID = nil
+        }
+    }
+
+    private func sealRealtimeAudioCapsule(
+        matchingAttemptID attemptID: UUID
+    ) -> Bool {
+        guard nativeSpeechDiagnosticBuffer.realtimeAudioCapsuleSnapshot()?
+            .attemptID == attemptID else { return false }
+        nativeSpeechDiagnosticBuffer.sealRealtimeAudioCapsule()
+        guard let snapshot = nativeSpeechDiagnosticBuffer
+            .realtimeAudioCapsuleSnapshot() else { return false }
+        return snapshot.attemptID == attemptID && snapshot.isSealed
     }
 
     private func acousticReplayManifestData(
         snapshot: MacSpeechAcousticReplayCaptureSnapshot,
         rawMicrophoneData: Data,
         rawMicrophoneFileName: String,
-        renderReferenceData: Data,
-        renderReferenceFileName: String,
+        chronologicalRenderData: Data,
+        chronologicalRenderFileName: String,
         aecCleanData: Data,
-        aecCleanFileName: String
+        aecCleanFileName: String,
+        aecLinearData: Data,
+        aecLinearFileName: String
     ) throws -> Data {
-        let audioFile: (String, Data, String) ->
-            RealtimeSpeechAcousticReplayAudioFile = { fileName, data, stage in
-                RealtimeSpeechAcousticReplayAudioFile(
+        let audioFile: (String, Data, String, Int, Int) ->
+            MacSpeechAcousticReplayAudioFile = {
+                fileName,
+                data,
+                stage,
+                sampleRate,
+                frameSampleCount in
+                MacSpeechAcousticReplayAudioFile(
                     fileName: fileName,
                     sha256: Self.sha256Hex(data),
                     stage: stage,
                     encoding: "float32le",
-                    sampleRate: MacSpeechAcousticEchoHost.sampleRate,
+                    sampleRate: sampleRate,
                     channelCount: 1,
-                    frameSampleCount:
-                        MacSpeechAcousticEchoHost.frameSampleCount,
+                    frameSampleCount: frameSampleCount,
                     byteCount: data.count
                 )
             }
-        let manifest = RealtimeSpeechAcousticReplayManifest(
-            schemaVersion: 1,
+        let producerBinary = Self.runningBuildBinary()
+        guard producerBinary.name != "-",
+              producerBinary.sha256.count == 64 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let manifest = MacSpeechAcousticReplayManifest(
+            schemaVersion: 2,
+            producerBinaryName: producerBinary.name,
+            producerBinarySHA256: producerBinary.sha256,
             attemptID: snapshot.attemptID.uuidString,
             armedAt: snapshot.armedAt,
             startedAt: snapshot.startedAt,
             endedAt: snapshot.endedAt,
-            targetCaptureFrameCount: snapshot.targetCaptureFrameCount,
-            capturedFrameCount: snapshot.frames.count,
+            targetPostPlaybackCaptureFrameCount:
+                snapshot.targetPostPlaybackCaptureFrameCount,
+            postPlaybackCaptureFrameCount:
+                snapshot.postPlaybackCaptureFrameCount,
+            capturedFrameCount: snapshot.captureFrames.count,
+            renderedFrameCount: snapshot.renderFrames.count,
             durationMilliseconds: snapshot.durationMilliseconds,
-            missingTimingMatchFrameCount: snapshot.frames.reduce(0) {
+            missingTimingMatchFrameCount: snapshot.captureFrames.reduce(0) {
                 $0 + ($1.timingMatchAvailable ? 0 : 1)
             },
             isSealed: snapshot.isSealed,
+            sealReason: snapshot.sealReason,
+            exactReplayReady: snapshot.isExactReplayReady,
             renderReferenceSemantics:
-                "matched_per_capture_frame_zero_when_unavailable",
+                "chronological_host_render_callback_input",
             rawMicrophone: audioFile(
                 rawMicrophoneFileName,
                 rawMicrophoneData,
-                "post_device_conversion_pre_aec"
+                "post_device_conversion_pre_aec_callback_input",
+                MacSpeechAcousticEchoHost.sampleRate,
+                MacSpeechAcousticEchoHost.frameSampleCount
             ),
-            renderReference: audioFile(
-                renderReferenceFileName,
-                renderReferenceData,
-                "exact_timing_matched_render_reference"
+            chronologicalRender: audioFile(
+                chronologicalRenderFileName,
+                chronologicalRenderData,
+                "chronological_post_device_conversion_render_callback_input",
+                MacSpeechAcousticEchoHost.sampleRate,
+                MacSpeechAcousticEchoHost.frameSampleCount
             ),
             aecClean: audioFile(
                 aecCleanFileName,
                 aecCleanData,
-                "post_aec_pre_source_gate"
+                "post_aec_pre_source_gate",
+                MacSpeechAcousticEchoHost.sampleRate,
+                MacSpeechAcousticEchoHost.frameSampleCount
             ),
-            frames: snapshot.frames.map {
-                RealtimeSpeechAcousticReplayFrameExport(
-                    captureFrameIndex: $0.captureFrameIndex,
-                    sampleOffset: $0.sampleOffset,
-                    timestampNanoseconds: $0.timestampNanoseconds,
-                    captureHostTimeNanoseconds:
-                        $0.captureHostTimeNanoseconds,
-                    captureHostTimeValid:
-                        $0.captureHostTimeNanoseconds != nil,
-                    timingMatchAvailable: $0.timingMatchAvailable,
-                    matchedRenderHostTimeNanoseconds:
-                        $0.matchedRenderHostTimeNanoseconds,
-                    timingDelayMilliseconds:
-                        $0.timingDelayMilliseconds,
-                    timingCorrelation: $0.timingCorrelation,
-                    renderReferenceRMS: $0.renderReferenceRMS,
-                    aecBufferDelayMilliseconds:
-                        $0.aecBufferDelayMilliseconds,
-                    sourceAlignmentLocked: $0.sourceAlignmentLocked,
-                    sourceAlignmentDelayMilliseconds:
-                        $0.sourceAlignmentDelayMilliseconds,
-                    estimatedDelayMilliseconds:
-                        $0.estimatedDelayMilliseconds,
-                    classifier: $0.inputClassification.rawValue,
-                    sourceGateOpen: $0.sourceGateOpen,
-                    sourceGateEpoch: $0.sourceGateEpoch,
-                    playbackSequence: $0.playbackSequence,
-                    playbackActive: $0.isPlaybackActive,
-                    rawCaptureRMS: $0.rawCaptureRMS,
-                    aecCleanRMS: $0.processedCaptureRMS,
-                    residualRenderCorrelation:
-                        $0.residualRenderCorrelation
-                )
-            }
+            aecLinear: audioFile(
+                aecLinearFileName,
+                aecLinearData,
+                "webrtc_aec_linear_output",
+                MacSpeechAcousticEchoHost.linearOutputSampleRate,
+                MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+            ),
+            initialState: snapshot.initialState,
+            finalState: snapshot.finalState,
+            audioCalls: snapshot.audioCalls,
+            controlEvents: snapshot.controlEvents,
+            renderFrames: snapshot.renderFrames,
+            captureFrames: snapshot.captureFrames
         )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return try encoder.encode(manifest)
-    }
-
-    private static func float32LittleEndianData(_ samples: [Float]) -> Data {
-        samples.withUnsafeBufferPointer { Data(buffer: $0) }
+        return try manifest.encodedData()
     }
 
     private static func runningBuildBinary() -> (

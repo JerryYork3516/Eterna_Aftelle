@@ -479,12 +479,12 @@ private struct MacSpeechAcousticEchoHostTests {
             outputPresentationLatencySeconds: 0.020,
             capturePresentationLatencySeconds: 0.010
         )
-        host.playbackStarted()
         let attemptID = UUID()
         expect(host.armAcousticReplayCapture(
             attemptID: attemptID,
             targetCaptureFrameCount: 3
         ), "DEBUG acoustic replay capture arms")
+        host.playbackStarted()
 
         var rawSamples: [Float] = []
         for index in 0 ..< 3 {
@@ -510,27 +510,40 @@ private struct MacSpeechAcousticEchoHostTests {
         }
         expect(capture.attemptID == attemptID,
                "replay snapshot preserves attempt identity")
-        expect(capture.frames.count == 3 && capture.isSealed,
+        expect(capture.captureFrames.count == 3 && capture.isSealed,
                "three 10 ms frames seal the bounded replay capture")
+        expect(capture.isExactReplayReady,
+               "clean pre-playback capture is exact-replay ready")
         expect(capture.durationMilliseconds == 30,
                "replay duration derives from exact 10 ms frames")
         expect(capture.rawMicrophoneSamples == rawSamples,
                "replay preserves exact pre-AEC microphone samples")
-        expect(capture.renderReferenceSamples == rawSamples,
-               "replay preserves each exact matched render reference")
+        expect(capture.chronologicalRenderSamples == rawSamples,
+               "replay preserves chronological render callback input")
         expect(
             capture.aecCleanSamples == rawSamples.map { $0 * 0.5 },
             "replay preserves exact pre-gate AEC clean samples"
         )
-        expect(capture.frames.allSatisfy { $0.timingMatchAvailable },
+        expect(capture.aecLinearSamples.count
+                == 3 * MacSpeechAcousticEchoHost.linearOutputFrameSampleCount,
+               "replay preserves exact AEC linear output")
+        expect(capture.renderFrames.count == 3,
+               "replay records each chronological render frame")
+        expect(capture.audioCalls.count == 6,
+               "replay records render and capture callback boundaries")
+        expect(capture.controlEvents.map(\.kind) == [.playbackStarted],
+               "replay records playback lifecycle in the event timeline")
+        expect(capture.captureFrames.allSatisfy {
+            $0.timingMatchAvailable
+        },
                "every replay frame records timing-match availability")
-        expect(capture.frames.allSatisfy {
+        expect(capture.captureFrames.allSatisfy {
             abs(($0.timingDelayMilliseconds ?? 0) - 80) < 0.001
                 && ($0.timingCorrelation ?? 0) > 0.99
         }, "replay records matched delay and correlation per frame")
-        expect(capture.frames.last?.sourceAlignmentLocked == true,
+        expect(capture.captureFrames.last?.sourceAlignmentLocked == true,
                "replay records per-frame alignment lock")
-        expect(capture.frames.allSatisfy {
+        expect(capture.captureFrames.allSatisfy {
             $0.inputClassification == .echoOnly && !$0.sourceGateOpen
         }, "replay records classifier and final source-gate state")
         expect(!host.armAcousticReplayCapture(

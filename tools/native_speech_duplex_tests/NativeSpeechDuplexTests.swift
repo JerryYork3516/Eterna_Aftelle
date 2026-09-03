@@ -1117,9 +1117,21 @@ private struct NativeSpeechDuplexTests {
         )
 
         let diagnosticBuffer = NativeSpeechDiagnosticBuffer()
+        let replayBackend = DuplexFormalAECBackend()
+        let replayHost = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: replayBackend
+        )
+        _ = replayHost.configure()
+        replayHost.playbackStarted()
+        let diagnosticAudioEngine = SystemMacSpeechVoiceProcessingEngine(
+            audioProcessingMode: .webRTCAEC3,
+            acousticEchoHost: replayHost
+        )
         let stack = makeControllerStack(
             transport: handshakeTransport(),
-            diagnosticBuffer: diagnosticBuffer
+            diagnosticBuffer: diagnosticBuffer,
+            diagnosticAudioEngine: diagnosticAudioEngine
         )
         await stack.controller.startSpeechAudioCapture()
         let data = try stack.controller.realtimeSpeechDiagnosticExportData(
@@ -1275,6 +1287,29 @@ private struct NativeSpeechDuplexTests {
             identity: capsuleSession,
             audioSequence: 5
         )
+        expect(diagnosticAudioEngine.armAcousticReplayCapture(
+            attemptID: capsuleAttemptID,
+            targetCaptureFrameCount: 3
+        ), "diagnostic AEC replay export fixture arms")
+        var replayRawSamples: [Float] = []
+        for index in 0 ..< 3 {
+            let frame = (0 ..< MacSpeechAcousticEchoHost.frameSampleCount)
+                .map { sample in
+                    sin(Float(sample + index) * 0.07) * 0.25
+                }
+            replayRawSamples.append(contentsOf: frame)
+            replayBackend.setCaptureOutput(frame.map { $0 * 0.25 })
+            replayHost.processRender(
+                frame,
+                hostTimeNanoseconds:
+                    3_000_000_000 + UInt64(index * 10_000_000)
+            )
+            _ = replayHost.processCapture(
+                frame,
+                hostTimeNanoseconds:
+                    3_080_000_000 + UInt64(index * 10_000_000)
+            )
+        }
         let exportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
@@ -1292,6 +1327,18 @@ private struct NativeSpeechDuplexTests {
         let pcmURL = exportDirectory.appendingPathComponent(
             "diagnostic.qwen-input.pcm"
         )
+        let rawMicrophoneURL = exportDirectory.appendingPathComponent(
+            "diagnostic.raw-mic.f32le.pcm"
+        )
+        let renderReferenceURL = exportDirectory.appendingPathComponent(
+            "diagnostic.render-reference.f32le.pcm"
+        )
+        let aecCleanURL = exportDirectory.appendingPathComponent(
+            "diagnostic.aec-clean.f32le.pcm"
+        )
+        let acousticFramesURL = exportDirectory.appendingPathComponent(
+            "diagnostic.aec-frames.json"
+        )
         let exportedObject = try JSONSerialization.jsonObject(
             with: Data(contentsOf: diagnosticURL)
         ) as! [String: Any]
@@ -1308,9 +1355,59 @@ private struct NativeSpeechDuplexTests {
                     == expectedCapsuleSHA256,
             "diagnostic export writes matched JSON and exact PCM sidecar"
         )
+        let replayRawData = replayRawSamples.withUnsafeBufferPointer {
+            Data(buffer: $0)
+        }
+        let replayCleanData = replayRawSamples.map { $0 * 0.25 }
+            .withUnsafeBufferPointer { Data(buffer: $0) }
+        let exportedRawData = try Data(contentsOf: rawMicrophoneURL)
+        let exportedRenderData = try Data(contentsOf: renderReferenceURL)
+        let exportedCleanData = try Data(contentsOf: aecCleanURL)
+        let replayManifest = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: acousticFramesURL)
+        ) as! [String: Any]
+        let replayFrames = replayManifest["frames"] as? [[String: Any]]
+        let rawFile = replayManifest["raw_microphone"] as? [String: Any]
+        let renderFile = replayManifest["render_reference"]
+            as? [String: Any]
+        let cleanFile = replayManifest["aec_clean"] as? [String: Any]
         expect(
-            diagnosticBuffer.realtimeAudioCapsuleSnapshot() == nil,
-            "successful dual-file export clears the PCM capsule exactly once"
+            exportedRawData == replayRawData
+                && exportedRenderData == replayRawData
+                && exportedCleanData == replayCleanData,
+            "diagnostic export preserves three aligned Float32LE AEC tracks"
+        )
+        expect(
+            replayManifest["attempt_id"] as? String
+                == capsuleAttemptID.uuidString
+                && replayManifest["captured_frame_count"] as? Int == 3
+                && replayManifest["duration_milliseconds"] as? Int == 30
+                && replayManifest["is_sealed"] as? Bool == true
+                && replayFrames?.count == 3,
+            "AEC replay manifest binds identity and exact 10 ms frame count"
+        )
+        expect(
+            replayFrames?.allSatisfy {
+                $0["timing_match_available"] as? Bool == true
+                    && $0["timing_delay_milliseconds"] != nil
+                    && $0["timing_correlation"] != nil
+                    && $0["source_alignment_locked"] != nil
+                    && $0["classifier"] != nil
+                    && $0["source_gate_open"] != nil
+            } == true,
+            "AEC replay exports timing, alignment, classifier and gate per frame"
+        )
+        expect(
+            rawFile?["sha256"] != nil
+                && renderFile?["sha256"] != nil
+                && cleanFile?["sha256"] != nil,
+            "AEC replay manifest hashes every audio sidecar"
+        )
+        expect(
+            diagnosticBuffer.realtimeAudioCapsuleSnapshot() == nil
+                && diagnosticAudioEngine.acousticReplayCaptureSnapshot()
+                    == nil,
+            "successful export clears both diagnostic capsules exactly once"
         )
 
         let secondDiagnosticURL = exportDirectory.appendingPathComponent(
@@ -1329,8 +1426,13 @@ private struct NativeSpeechDuplexTests {
                     atPath: exportDirectory.appendingPathComponent(
                         "diagnostic-second.qwen-input.pcm"
                     ).path
+                )
+                && !FileManager.default.fileExists(
+                    atPath: exportDirectory.appendingPathComponent(
+                        "diagnostic-second.aec-frames.json"
+                    ).path
                 ),
-            "a second export cannot repeat previously exported raw PCM"
+            "a second export cannot repeat prior audio or frame metadata"
         )
 
         let retainedAttemptID = UUID()
@@ -3410,7 +3512,9 @@ private struct NativeSpeechDuplexTests {
     private static func makeControllerStack(
         transport: FakeRealtimeWebSocketTransport,
         diagnosticBuffer: NativeSpeechDiagnosticBuffer =
-            NativeSpeechDiagnosticBuffer()
+            NativeSpeechDiagnosticBuffer(),
+        diagnosticAudioEngine:
+            SystemMacSpeechVoiceProcessingEngine? = nil
     ) -> (
         controller: AppController,
         orchestration: OrchestrationKernel,
@@ -3446,7 +3550,8 @@ private struct NativeSpeechDuplexTests {
                 speechAudioHost: host,
                 speechAudioOutputHost: outputHost,
                 nativeSpeechProfile: profile(),
-                nativeSpeechDiagnosticBuffer: diagnosticBuffer
+                nativeSpeechDiagnosticBuffer: diagnosticBuffer,
+                realtimeSpeechDiagnosticAudioEngine: diagnosticAudioEngine
             ),
             runtimeStack.orchestration,
             capture,

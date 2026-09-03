@@ -494,7 +494,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             leaseID: identity.brainLeaseID,
             routeEpoch: identity.routeEpoch
         )
-        for sequence in 1 ... 51 {
+        for sequence in 1 ... 101 {
             diagnostics.appendRealtimeAudioCapsuleBatch(
                 Data(repeating: UInt8(sequence), count: 3_200),
                 identity: sequence == 1 ? identity : reboundIdentity,
@@ -506,14 +506,14 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             fatalError("bounded Qwen input PCM capsule missing")
         }
         expect(
-            cappedCapsule.bytes.count == 160_000
-                && cappedCapsule.durationMilliseconds == 5_000
+            cappedCapsule.bytes.count == 320_000
+                && cappedCapsule.durationMilliseconds == 10_000
                 && cappedCapsule.firstGeneration == identity.generation
                 && cappedCapsule.lastGeneration
                     == reboundIdentity.generation
-                && cappedCapsule.lastBatchTerminalAudioSequence == 50
+                && cappedCapsule.lastBatchTerminalAudioSequence == 100
                 && cappedCapsule.isSealed,
-            "capsule spans N to N+1 and seals at exactly five seconds"
+            "capsule spans N to N+1 and seals at exactly ten seconds"
         )
         diagnostics.clearRealtimeAudioCapsule(
             matchingAttemptID: cappedAttemptID

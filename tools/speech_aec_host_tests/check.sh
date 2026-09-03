@@ -8,6 +8,7 @@ trap 'rm -rf "$build_dir"' EXIT
 aec_host="$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
 capture="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
 tests="$repo_root/tools/speech_aec_host_tests/MacSpeechAcousticEchoHostTests.swift"
+replay="$repo_root/tools/speech_aec_host_tests/RecordedAcousticReplay.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 
 swiftc \
@@ -15,6 +16,7 @@ swiftc \
   -parse-as-library \
   -warn-concurrency \
   -strict-concurrency=complete \
+  -module-cache-path "$build_dir/module-cache" \
   -framework AVFoundation \
   "$aec_host" \
   "$capture" \
@@ -22,6 +24,18 @@ swiftc \
   -o "$build_dir/speech_aec_host_tests"
 
 "$build_dir/speech_aec_host_tests"
+
+swiftc \
+  -D DEBUG \
+  -parse-as-library \
+  -warn-concurrency \
+  -strict-concurrency=complete \
+  -module-cache-path "$build_dir/module-cache" \
+  "$aec_host" \
+  "$replay" \
+  -o "$build_dir/recorded_acoustic_replay"
+
+"$build_dir/recorded_acoustic_replay" --self-check
 
 rg -q 'case webRTCAEC3' "$aec_host"
 rg -q 'case appleVoiceProcessing' "$aec_host"

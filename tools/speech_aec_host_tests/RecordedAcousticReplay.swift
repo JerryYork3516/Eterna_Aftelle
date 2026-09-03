@@ -1,55 +1,26 @@
 import CryptoKit
 import Foundation
 
-private struct ReplayAudioFile: Decodable {
-    let fileName: String
-    let sha256: String
-    let byteCount: Int
-    let sampleRate: Int
-    let channelCount: Int
-    let frameSampleCount: Int
-}
+private typealias ReplayAudioFile = MacSpeechAcousticReplayAudioFile
+private typealias ReplayManifest = MacSpeechAcousticReplayManifest
 
-private struct ReplayFrame: Decodable {
-    let captureFrameIndex: UInt64
-    let sampleOffset: Int
-    let timestampNanoseconds: UInt64
-    let captureHostTimeNanoseconds: UInt64?
-    let timingMatchAvailable: Bool
-    let matchedRenderHostTimeNanoseconds: UInt64?
-    let aecBufferDelayMilliseconds: Int
-    let sourceAlignmentLocked: Bool
-    let classifier: String
-    let sourceGateOpen: Bool
-    let playbackSequence: UInt64
-    let playbackActive: Bool
-}
-
-private struct ReplayManifest: Decodable {
-    let schemaVersion: Int
-    let attemptId: UUID
-    let targetCaptureFrameCount: Int
-    let capturedFrameCount: Int
-    let durationMilliseconds: Int
-    let missingTimingMatchFrameCount: Int
-    let isSealed: Bool
-    let renderReferenceSemantics: String
-    let rawMicrophone: ReplayAudioFile
-    let renderReference: ReplayAudioFile
-    let aecClean: ReplayAudioFile
-    let frames: [ReplayFrame]
-}
-
-private final class RecordedCleanBackend:
-    MacSpeechAECBackend, @unchecked Sendable
-{
+private final class RecordedAECBackend:
+    MacSpeechAECBackend,
+    @unchecked Sendable {
     private let cleanSamples: [Float]
-    private var captureIndex = 0
+    private let linearSamples: [Float]
+    private var captureFrameIndex = 0
+    private var currentStats: MacSpeechAECBackendStats
     private(set) var underflowCount = 0
-    private(set) var delayMilliseconds = 0
 
-    init(cleanSamples: [Float]) {
+    init(
+        cleanSamples: [Float],
+        linearSamples: [Float],
+        initialStats: MacSpeechAECBackendStats
+    ) {
         self.cleanSamples = cleanSamples
+        self.linearSamples = linearSamples
+        currentStats = initialStats
     }
 
     func configure() throws {}
@@ -62,21 +33,70 @@ private final class RecordedCleanBackend:
 
     func processCapture(_ samples: [Float]) throws
         -> MacSpeechAECCaptureResult {
-        let frameSize = MacSpeechAcousticEchoHost.frameSampleCount
-        let start = captureIndex * frameSize
-        let end = start + frameSize
-        guard end <= cleanSamples.count else {
+        let cleanFrameSize = MacSpeechAcousticEchoHost.frameSampleCount
+        let linearFrameSize =
+            MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+        let cleanStart = captureFrameIndex * cleanFrameSize
+        let linearStart = captureFrameIndex * linearFrameSize
+        guard cleanStart + cleanFrameSize <= cleanSamples.count,
+              linearStart + linearFrameSize <= linearSamples.count else {
             underflowCount += 1
             throw MacSpeechAECBackendError.captureFailed
         }
-        captureIndex += 1
-        let clean = Array(cleanSamples[start ..< end])
+        captureFrameIndex += 1
         return MacSpeechAECCaptureResult(
-            processedSamples: clean,
-            linearOutputSamples: stride(from: 0, to: clean.count, by: 3)
-                .map { index in
-                    (clean[index] + clean[index + 1] + clean[index + 2]) / 3
-                }
+            processedSamples: Array(
+                cleanSamples[cleanStart ..< cleanStart + cleanFrameSize]
+            ),
+            linearOutputSamples: Array(
+                linearSamples[linearStart ..< linearStart + linearFrameSize]
+            )
+        )
+    }
+
+    func setDelay(milliseconds _: Int) throws {}
+    func reset() throws {}
+
+    func stats() throws -> MacSpeechAECBackendStats { currentStats }
+
+    func prepareStats(
+        _ stats: MacSpeechAcousticReplayBackendStatsSnapshot
+    ) {
+        currentStats = stats.backendStats
+    }
+
+    var consumedCaptureFrameCount: Int { captureFrameIndex }
+}
+
+private final class FixtureAECBackend:
+    MacSpeechAECBackend,
+    @unchecked Sendable {
+    private var delayMilliseconds = 0
+    private var processedSamples = [Float](
+        repeating: 0,
+        count: MacSpeechAcousticEchoHost.frameSampleCount
+    )
+    private var linearSamples = [Float](
+        repeating: 0,
+        count: MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+    )
+
+    func configure() throws {}
+
+    func processRender(_ samples: [Float]) throws {
+        guard samples.count == MacSpeechAcousticEchoHost.frameSampleCount else {
+            throw MacSpeechAECBackendError.renderFailed
+        }
+    }
+
+    func processCapture(_ samples: [Float]) throws
+        -> MacSpeechAECCaptureResult {
+        guard samples.count == MacSpeechAcousticEchoHost.frameSampleCount else {
+            throw MacSpeechAECBackendError.captureFailed
+        }
+        return MacSpeechAECCaptureResult(
+            processedSamples: processedSamples,
+            linearOutputSamples: linearSamples
         )
     }
 
@@ -84,157 +104,214 @@ private final class RecordedCleanBackend:
         delayMilliseconds = milliseconds
     }
 
-    func reset() throws {
-        captureIndex = 0
-    }
+    func reset() throws {}
 
     func stats() throws -> MacSpeechAECBackendStats {
         MacSpeechAECBackendStats(
             enabled: true,
             active: true,
-            estimatedDelayMilliseconds: 0,
-            erlDecibels: 20,
-            erleDecibels: 3.04
+            estimatedDelayMilliseconds: delayMilliseconds,
+            erlDecibels: 12,
+            erleDecibels: 24
         )
     }
 
-    var consumedFrameCount: Int { captureIndex }
+    func setCaptureOutput(_ samples: [Float]) {
+        processedSamples = samples
+        linearSamples = downsample(samples)
+    }
 }
 
-private struct ReplayRun: Equatable {
-    let classifications: [String]
-    let gateOpen: [Bool]
-    let timingMatchAvailable: [Bool]
-    let alignmentLocked: [Bool]
-    let forwardedFrameIndexes: [Int]
-    let snapshot: MacSpeechAcousticEchoSnapshot
+private enum ReplayTimelineEvent {
+    case audio(MacSpeechAcousticReplayAudioCallSnapshot)
+    case control(MacSpeechAcousticReplayControlEventSnapshot)
+
+    var ordinal: UInt64 {
+        switch self {
+        case let .audio(call): call.ordinal
+        case let .control(event): event.ordinal
+        }
+    }
 }
 
-private struct ReplayRenderEvent {
-    let hostTimeNanoseconds: UInt64
-    let samples: [Float]
+private struct ReplayComparison {
+    let captureFrameMismatches: [Int]
+    let classifierMismatches: [Int]
+    let gateMismatches: [Int]
+    let timingMismatches: [Int]
+    let audioCallsMatch: Bool
+    let controlEventsMatch: Bool
+    let renderFramesMatch: Bool
+    let initialStateMatches: Bool
+    let finalStateMatches: Bool
+    let tracksMatch: Bool
+
+    var isExact: Bool {
+        captureFrameMismatches.isEmpty
+            && classifierMismatches.isEmpty
+            && gateMismatches.isEmpty
+            && timingMismatches.isEmpty
+            && audioCallsMatch
+            && controlEventsMatch
+            && renderFramesMatch
+            && initialStateMatches
+            && finalStateMatches
+            && tracksMatch
+    }
 }
 
 @main
 private struct RecordedAcousticReplay {
     static func main() throws {
+        if CommandLine.arguments.count == 2,
+           CommandLine.arguments[1] == "--self-check" {
+            try runSelfCheck()
+            return
+        }
         guard CommandLine.arguments.count == 4,
               CommandLine.arguments[2] == "--resident-only",
-              let residentOnlyRange = parseRange(CommandLine.arguments[3]) else {
+              let residentOnlyRange = parseRange(CommandLine.arguments[3])
+        else {
             fputs(
-                "usage: RecordedAcousticReplay <sample.aec-frames.json> "
-                    + "--resident-only <start:end>\n",
+                "usage: RecordedAcousticReplay <sample.aec-timeline.json> "
+                    + "--resident-only <start:end>\n"
+                    + "       RecordedAcousticReplay --self-check\n",
                 stderr
             )
             Foundation.exit(64)
         }
 
         let manifestURL = URL(fileURLWithPath: CommandLine.arguments[1])
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let manifest = try decoder.decode(
-            ReplayManifest.self,
-            from: Data(contentsOf: manifestURL)
-        )
-        let directory = manifestURL.deletingLastPathComponent()
-        let raw = try loadTrack(
-            manifest.rawMicrophone,
-            from: directory
-        )
-        let render = try loadTrack(
-            manifest.renderReference,
-            from: directory
-        )
-        let clean = try loadTrack(manifest.aecClean, from: directory)
-
+        let manifest = try loadManifest(manifestURL)
+        let snapshot = try loadSnapshot(manifest, from: manifestURL)
         try validate(
             manifest: manifest,
-            rawSampleCount: raw.count,
-            renderSampleCount: render.count,
-            cleanSampleCount: clean.count,
+            snapshot: snapshot,
             residentOnlyRange: residentOnlyRange
         )
 
-        let runs = try (0 ..< 3).map { _ in
-            try replay(
-                manifest: manifest,
-                raw: raw,
-                render: render,
-                clean: clean
-            )
+        let comparisons = try (0 ..< 3).map { _ in
+            compare(snapshot, try replay(snapshot))
         }
-        guard runs.dropFirst().allSatisfy({ $0 == runs[0] }) else {
-            throw ReplayError.nondeterministicReplay
+        guard comparisons.allSatisfy(\.isExact) else {
+            printComparison(comparisons[0])
+            throw ReplayError.liveReplayMismatch
         }
 
-        let result = runs[0]
-        let recordedClassifications = manifest.frames.map(\.classifier)
-        let recordedGate = manifest.frames.map(\.sourceGateOpen)
-        let recordedTiming = manifest.frames.map(\.timingMatchAvailable)
-        let recordedAlignment = manifest.frames.map(\.sourceAlignmentLocked)
-        let classifierMismatches = mismatchIndexes(
-            recordedClassifications,
-            result.classifications
+        let residentFrames = Array(
+            snapshot.captureFrames[residentOnlyRange]
         )
-        let gateMismatches = mismatchIndexes(recordedGate, result.gateOpen)
-        let timingMismatches = mismatchIndexes(
-            recordedTiming,
-            result.timingMatchAvailable
-        )
-        let alignmentMismatches = mismatchIndexes(
-            recordedAlignment,
-            result.alignmentLocked
-        )
-        let negativeGateFrames = residentOnlyRange.filter {
-            result.gateOpen[$0]
-        }
-        let negativeForwardedFrames = result.forwardedFrameIndexes.filter {
-            residentOnlyRange.contains($0)
+        let residentOnlyGateOpenFrames = residentFrames.filter {
+            $0.sourceGateOpen
+                || $0.emittedSpans.contains(where: \.sourceGateOpen)
+        }.count
+        let residentOnlyForwardedFrames = residentFrames.filter { frame in
+            frame.emittedSpans.contains(where: { !$0.silenced })
+        }.count
+        guard residentOnlyGateOpenFrames == 0,
+              residentOnlyForwardedFrames == 0 else {
+            throw ReplayError.residentOnlyNegativeControlFailed
         }
 
-        let faithfulReplay = classifierMismatches.isEmpty
-            && gateMismatches.isEmpty
-            && timingMismatches.isEmpty
-            && alignmentMismatches.isEmpty
-        print("archive_integrity_valid=true")
-        print("sample_valid_for_bit_exact_host_replay=false")
-        print("failure_reproduced=\(faithfulReplay)")
-        print("attempt_id=\(manifest.attemptId.uuidString)")
-        print("captured_frames=\(manifest.frames.count)")
-        print("duration_ms=\(manifest.durationMilliseconds)")
-        print("replay_runs=3")
-        print("replay_deterministic=true")
-        print("linear_output_source=downsampled_recorded_clean")
-        print("render_history=sparse_selected_matches")
-        print("bit_exact=false")
-        print("recorded_classifier=\(counts(recordedClassifications))")
-        print("replay_classifier=\(counts(result.classifications))")
-        print("classifier_mismatch_count=\(classifierMismatches.count)")
-        print("classifier_mismatch_first=\(prefix(classifierMismatches))")
-        print("recorded_gate_open_frames=\(recordedGate.filter { $0 }.count)")
-        print("replay_gate_open_frames=\(result.gateOpen.filter { $0 }.count)")
-        print("recorded_first_gate_open=\(firstTrue(recordedGate))")
-        print("replay_first_gate_open=\(firstTrue(result.gateOpen))")
-        print("gate_mismatch_count=\(gateMismatches.count)")
-        print("gate_mismatch_first=\(prefix(gateMismatches))")
-        print("recorded_timing_match_frames=\(recordedTiming.filter { $0 }.count)")
-        print("replay_timing_match_frames=\(result.timingMatchAvailable.filter { $0 }.count)")
-        print("timing_mismatch_count=\(timingMismatches.count)")
-        print("alignment_mismatch_count=\(alignmentMismatches.count)")
-        print("replay_forwarded_frames=\(result.forwardedFrameIndexes.count)")
-        print("replay_source_gate_epochs=\(result.snapshot.sourceGateOpenCount)")
+        print("sample_valid_for_exact_replay=true")
+        print("attempt_id=\(manifest.attemptID)")
+        print("schema_version=\(manifest.schemaVersion)")
+        print("capture_frames=\(snapshot.captureFrames.count)")
+        print("render_frames=\(snapshot.renderFrames.count)")
+        print("post_playback_capture_frames=\(snapshot.postPlaybackCaptureFrameCount)")
+        print("live_replay_runs=3")
+        printComparison(comparisons[0])
+        print("recorded_classifier=\(classificationCounts(snapshot))")
+        print("recorded_gate_open_frames=\(gateOpenFrameCount(snapshot))")
         print("resident_only_range=\(residentOnlyRange.lowerBound):\(residentOnlyRange.upperBound)")
-        print("resident_only_gate_open_frames=\(negativeGateFrames.count)")
-        print("resident_only_forwarded_frames=\(negativeForwardedFrames.count)")
+        print("resident_only_gate_open_frames=0")
+        print("resident_only_forwarded_frames=0")
+        print("live_replay=PASS")
     }
 
-    private static func replay(
-        manifest: ReplayManifest,
-        raw: [Float],
-        render: [Float],
-        clean: [Float]
-    ) throws -> ReplayRun {
-        let backend = RecordedCleanBackend(cleanSamples: clean)
+    private static func runSelfCheck() throws {
+        let live = try makeLiveFixture()
+        guard live.isExactReplayReady else {
+            throw ReplayError.invalidSnapshot
+        }
+        let fixtureDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "aftelle-replay-v2-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: fixtureDirectory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: fixtureDirectory) }
+        let manifestURL = try writeFixture(
+            live,
+            to: fixtureDirectory
+        )
+        let manifest = try loadManifest(manifestURL)
+        guard try manifest.encodedData() == Data(contentsOf: manifestURL)
+        else {
+            throw ReplayError.fileRoundTripMismatch
+        }
+        let loaded = try loadSnapshot(manifest, from: manifestURL)
+        try validate(
+            manifest: manifest,
+            snapshot: loaded,
+            residentOnlyRange: 1 ..< 25
+        )
+        guard capsulePayloadMatches(live, loaded) else {
+            throw ReplayError.fileRoundTripMismatch
+        }
+        let residentOnlyRange = 1 ..< 25
+        let residentFrames = Array(loaded.captureFrames[residentOnlyRange])
+        guard residentFrames.allSatisfy({
+            !$0.sourceGateOpen
+                && !$0.emittedSpans.contains(where: \.sourceGateOpen)
+                && !$0.emittedSpans.contains(where: { !$0.silenced })
+        }) else {
+            throw ReplayError.residentOnlyNegativeControlFailed
+        }
+        let positiveGateOpenFrames = loaded.captureFrames[25...].filter {
+            $0.sourceGateOpen
+                || $0.emittedSpans.contains(where: \.sourceGateOpen)
+        }.count
+        let positiveForwardedFrames = loaded.captureFrames[25...].filter {
+            $0.emittedSpans.contains(where: { !$0.silenced })
+        }.count
+        guard positiveGateOpenFrames > 0,
+              positiveForwardedFrames > 0 else {
+            throw ReplayError.positiveControlFailed
+        }
+
+        let comparisons = try (0 ..< 3).map { _ in
+            compare(loaded, try replay(loaded))
+        }
+        guard comparisons.allSatisfy(\.isExact) else {
+            printComparison(comparisons[0])
+            throw ReplayError.liveReplayMismatch
+        }
+
+        print("replay_capsule_schema=2")
+        print("shared_manifest_codec_round_trip=true")
+        print("replay_payload_round_trip_match=true")
+        print("live_capture_frames=\(loaded.captureFrames.count)")
+        print("live_render_frames=\(loaded.renderFrames.count)")
+        print("chronological_render_samples=\(loaded.chronologicalRenderSamples.count)")
+        print("raw_microphone_samples=\(loaded.rawMicrophoneSamples.count)")
+        print("aec_clean_samples=\(loaded.aecCleanSamples.count)")
+        print("aec_linear_samples=\(loaded.aecLinearSamples.count)")
+        print("resident_only_gate_open_frames=0")
+        print("resident_only_forwarded_frames=0")
+        print("positive_gate_open_frames=\(positiveGateOpenFrames)")
+        print("positive_forwarded_frames=\(positiveForwardedFrames)")
+        print("live_replay_runs=3")
+        printComparison(comparisons[0])
+        print("live_replay=PASS")
+    }
+
+    private static func makeLiveFixture() throws
+        -> MacSpeechAcousticReplayCaptureSnapshot {
+        let backend = FixtureAECBackend()
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
             backend: backend
@@ -242,158 +319,493 @@ private struct RecordedAcousticReplay {
         guard host.configure() == .webRTCAEC3 else {
             throw ReplayError.hostConfigurationFailed
         }
-
-        let frameSize = MacSpeechAcousticEchoHost.frameSampleCount
-        let renderEvents = try makeRenderEvents(
-            manifest: manifest,
-            render: render
+        host.updateDelay(
+            outputPresentationLatencySeconds: 0.020,
+            capturePresentationLatencySeconds: 0.010
         )
-        var renderEventIndex = 0
-        var playbackActive = false
-        var playbackSequence: UInt64 = 0
-        var classifications: [String] = []
-        var gateOpen: [Bool] = []
-        var timingMatchAvailable: [Bool] = []
-        var alignmentLocked: [Bool] = []
-        var forwardedFrameIndexes: [Int] = []
-
-        for (index, frame) in manifest.frames.enumerated() {
-            if frame.playbackActive,
-               !playbackActive || frame.playbackSequence != playbackSequence {
-                host.playbackStarted()
-            } else if !frame.playbackActive, playbackActive {
-                host.playbackCompleted()
-            }
-            playbackActive = frame.playbackActive
-            playbackSequence = frame.playbackSequence
-
-            host.updateDelay(
-                outputPresentationLatencySeconds:
-                    Double(frame.aecBufferDelayMilliseconds) / 1_000,
-                capturePresentationLatencySeconds: 0
-            )
-            let start = index * frameSize
-            let end = start + frameSize
-            let captureTimestamp = frame.captureHostTimeNanoseconds
-                ?? frame.timestampNanoseconds
-            while renderEventIndex < renderEvents.count,
-                  renderEvents[renderEventIndex].hostTimeNanoseconds
-                    <= captureTimestamp {
-                let event = renderEvents[renderEventIndex]
-                host.processRender(
-                    event.samples,
-                    hostTimeNanoseconds: event.hostTimeNanoseconds
-                )
-                renderEventIndex += 1
-            }
-            let spans = host.processCaptureSpans(
-                Array(raw[start ..< end]),
-                hostTimeNanoseconds: captureTimestamp
-            )
-            let observation = host.acousticObservationSnapshot()
-            classifications.append(observation.inputClassification.rawValue)
-            gateOpen.append(observation.sourceGateOpen)
-            timingMatchAvailable.append(
-                observation.renderHostTimeNanoseconds != nil
-            )
-            alignmentLocked.append(observation.sourceAlignmentLocked)
-            forwardedFrameIndexes.append(contentsOf: spans.compactMap {
-                guard $0.observation.sourceGateOpen else { return nil }
-                return max(0, Int($0.observation.captureFrameIndex) - 1)
-            })
+        guard host.armAcousticReplayCapture(
+            attemptID: UUID(),
+            targetCaptureFrameCount: 30
+        ) else {
+            throw ReplayError.captureArmFailed
         }
 
-        guard backend.consumedFrameCount == manifest.frames.count,
-              backend.underflowCount == 0 else {
+        let baseTime: UInt64 = 20_000_000_000
+        let prePlayback = signal(seed: 7, amplitude: 0.08)
+        backend.setCaptureOutput(prePlayback.map { $0 * 0.5 })
+        _ = host.processCaptureSpans(
+            Array(prePlayback[..<240]),
+            hostTimeNanoseconds: baseTime - 100_000_000
+        )
+        _ = host.processCaptureSpans(
+            Array(prePlayback[240...]),
+            hostTimeNanoseconds: baseTime - 95_000_000
+        )
+        host.updateDelay(
+            outputPresentationLatencySeconds: 0.022,
+            capturePresentationLatencySeconds: 0.010
+        )
+        host.playbackStarted()
+
+        for index in 0 ..< 30 {
+            let render = signal(
+                seed: UInt32(100 + index),
+                amplitude: 0.35
+            )
+            let renderTime = baseTime + UInt64(index) * 10_000_000
+            if index == 28 {
+                host.playbackStopped()
+            }
+            if index < 28 {
+                host.processRender(render, hostTimeNanoseconds: renderTime)
+            }
+            let rawCapture: [Float]
+            if index < 24 {
+                let residual = render.map { $0 * 0.10 }
+                backend.setCaptureOutput(residual)
+                rawCapture = render.map { $0 * 0.80 }
+            } else {
+                let user = signal(
+                    seed: UInt32(1_000 + index),
+                    amplitude: 0.20
+                )
+                backend.setCaptureOutput(user)
+                rawCapture = zip(render, user).map {
+                    $0.0 * 0.80 + $0.1
+                }
+            }
+            _ = host.processCaptureSpans(
+                rawCapture,
+                hostTimeNanoseconds: renderTime + 80_000_000
+            )
+            host.recordCaptureProcessingDuration(
+                nanoseconds: UInt64(300_000 + index)
+            )
+        }
+        guard let snapshot = host.acousticReplayCaptureSnapshot() else {
+            throw ReplayError.invalidSnapshot
+        }
+        return snapshot
+    }
+
+    private static func replay(
+        _ recorded: MacSpeechAcousticReplayCaptureSnapshot
+    ) throws -> MacSpeechAcousticReplayCaptureSnapshot {
+        let backend = RecordedAECBackend(
+            cleanSamples: recorded.aecCleanSamples,
+            linearSamples: recorded.aecLinearSamples,
+            initialStats: recorded.initialState.backendStats.backendStats
+        )
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        guard host.configure() == .webRTCAEC3,
+              host.restoreAcousticReplayInitialState(recorded.initialState),
+              host.armAcousticReplayCapture(
+                  attemptID: UUID(),
+                  targetCaptureFrameCount:
+                    recorded.targetPostPlaybackCaptureFrameCount
+              ) else {
+            throw ReplayError.hostConfigurationFailed
+        }
+
+        let events = (
+            recorded.audioCalls.map(ReplayTimelineEvent.audio)
+                + recorded.controlEvents.map(ReplayTimelineEvent.control)
+        ).sorted { $0.ordinal < $1.ordinal }
+        for event in events {
+            switch event {
+            case let .audio(call):
+                backend.prepareStats(call.backendStatsAfter)
+                switch call.kind {
+                case .render:
+                    host.processRender(
+                        try samples(
+                            recorded.chronologicalRenderSamples,
+                            offset: call.sampleOffset,
+                            count: call.sampleCount
+                        ),
+                        hostTimeNanoseconds: call.hostTimeNanoseconds
+                    )
+                case .capture:
+                    _ = host.processCaptureSpans(
+                        try samples(
+                            recorded.rawMicrophoneSamples,
+                            offset: call.sampleOffset,
+                            count: call.sampleCount
+                        ),
+                        hostTimeNanoseconds: call.hostTimeNanoseconds
+                    )
+                }
+            case let .control(event):
+                try apply(event, to: host)
+            }
+        }
+
+        guard backend.underflowCount == 0,
+              backend.consumedCaptureFrameCount
+                == recorded.captureFrames.count,
+              let replayed = host.acousticReplayCaptureSnapshot(),
+              replayed.isExactReplayReady else {
             throw ReplayError.backendFrameMismatch
         }
-        return ReplayRun(
-            classifications: classifications,
-            gateOpen: gateOpen,
-            timingMatchAvailable: timingMatchAvailable,
-            alignmentLocked: alignmentLocked,
-            forwardedFrameIndexes: forwardedFrameIndexes,
-            snapshot: host.snapshot()
+        return replayed
+    }
+
+    private static func apply(
+        _ event: MacSpeechAcousticReplayControlEventSnapshot,
+        to host: MacSpeechAcousticEchoHost
+    ) throws {
+        switch event.kind {
+        case .playbackStarted:
+            host.playbackStarted()
+        case .playbackCompleted:
+            host.playbackCompleted()
+        case .playbackStopped:
+            host.playbackStopped()
+        case .discardPendingCapture:
+            host.discardPendingCaptureForGenerationTransition()
+        case .delayUpdated:
+            guard let output = event.outputPresentationLatencySeconds,
+                  let capture = event.capturePresentationLatencySeconds else {
+                throw ReplayError.invalidTimeline
+            }
+            host.updateDelay(
+                outputPresentationLatencySeconds: output,
+                capturePresentationLatencySeconds: capture
+            )
+        case .captureProcessingDuration:
+            guard let duration =
+                    event.captureProcessingDurationNanoseconds else {
+                throw ReplayError.invalidTimeline
+            }
+            host.recordCaptureProcessingDuration(nanoseconds: duration)
+        }
+    }
+
+    private static func compare(
+        _ expected: MacSpeechAcousticReplayCaptureSnapshot,
+        _ actual: MacSpeechAcousticReplayCaptureSnapshot
+    ) -> ReplayComparison {
+        ReplayComparison(
+            captureFrameMismatches: mismatchIndexes(
+                expected.captureFrames,
+                actual.captureFrames
+            ),
+            classifierMismatches: pairedMismatchIndexes(
+                expected.captureFrames,
+                actual.captureFrames
+            ) { $0.inputClassification == $1.inputClassification },
+            gateMismatches: pairedMismatchIndexes(
+                expected.captureFrames,
+                actual.captureFrames
+            ) {
+                $0.sourceGateOpen == $1.sourceGateOpen
+                    && $0.sourceGateEpoch == $1.sourceGateEpoch
+                    && $0.sourceGatePreRollFrameCount
+                        == $1.sourceGatePreRollFrameCount
+                    && $0.sourceGateConfirmationFrameCount
+                        == $1.sourceGateConfirmationFrameCount
+                    && $0.sourceGateNonUserHangoverFrameCount
+                        == $1.sourceGateNonUserHangoverFrameCount
+                    && $0.pendingSourceGateReset
+                        == $1.pendingSourceGateReset
+                    && $0.emittedSpans == $1.emittedSpans
+            },
+            timingMismatches: pairedMismatchIndexes(
+                expected.captureFrames,
+                actual.captureFrames
+            ) {
+                $0.captureHostTimeNanoseconds
+                        == $1.captureHostTimeNanoseconds
+                    && $0.timingMatchAvailable
+                        == $1.timingMatchAvailable
+                    && $0.matchedRenderCallOrdinal
+                        == $1.matchedRenderCallOrdinal
+                    && $0.matchedRenderHostTimeNanoseconds
+                        == $1.matchedRenderHostTimeNanoseconds
+                    && $0.timingDelayMilliseconds
+                        == $1.timingDelayMilliseconds
+                    && $0.timingCorrelation == $1.timingCorrelation
+                    && $0.sourceAlignmentLocked
+                        == $1.sourceAlignmentLocked
+                    && $0.sourceAlignmentDelayMilliseconds
+                        == $1.sourceAlignmentDelayMilliseconds
+                    && $0.timingLockCandidateMilliseconds
+                        == $1.timingLockCandidateMilliseconds
+                    && $0.timingLockCandidateFrameCount
+                        == $1.timingLockCandidateFrameCount
+                    && $0.timingLockedDelayMilliseconds
+                        == $1.timingLockedDelayMilliseconds
+                    && $0.timingLockConsecutiveMissFrameCount
+                        == $1.timingLockConsecutiveMissFrameCount
+            },
+            audioCallsMatch: expected.audioCalls == actual.audioCalls,
+            controlEventsMatch:
+                expected.controlEvents == actual.controlEvents,
+            renderFramesMatch: expected.renderFrames == actual.renderFrames,
+            initialStateMatches:
+                expected.initialState == actual.initialState,
+            finalStateMatches:
+                expected.finalState == actual.finalState,
+            tracksMatch:
+                expected.rawMicrophoneSamples == actual.rawMicrophoneSamples
+                    && expected.chronologicalRenderSamples
+                        == actual.chronologicalRenderSamples
+                    && expected.aecCleanSamples == actual.aecCleanSamples
+                    && expected.aecLinearSamples == actual.aecLinearSamples
         )
     }
 
-    private static func makeRenderEvents(
-        manifest: ReplayManifest,
-        render: [Float]
-    ) throws -> [ReplayRenderEvent] {
-        let frameSize = MacSpeechAcousticEchoHost.frameSampleCount
-        var samplesByTimestamp: [UInt64: [Float]] = [:]
-        for (index, frame) in manifest.frames.enumerated() {
-            guard frame.timingMatchAvailable,
-                  let timestamp = frame.matchedRenderHostTimeNanoseconds else {
-                continue
-            }
-            let start = index * frameSize
-            let samples = Array(render[start ..< start + frameSize])
-            if let existing = samplesByTimestamp[timestamp],
-               existing != samples {
-                throw ReplayError.inconsistentRenderReference
-            }
-            samplesByTimestamp[timestamp] = samples
+    private static func capsulePayloadMatches(
+        _ expected: MacSpeechAcousticReplayCaptureSnapshot,
+        _ actual: MacSpeechAcousticReplayCaptureSnapshot
+    ) -> Bool {
+        expected.attemptID == actual.attemptID
+            && expected.targetPostPlaybackCaptureFrameCount
+                == actual.targetPostPlaybackCaptureFrameCount
+            && expected.postPlaybackCaptureFrameCount
+                == actual.postPlaybackCaptureFrameCount
+            && expected.initialState == actual.initialState
+            && expected.finalState == actual.finalState
+            && expected.rawMicrophoneSamples == actual.rawMicrophoneSamples
+            && expected.chronologicalRenderSamples
+                == actual.chronologicalRenderSamples
+            && expected.aecCleanSamples == actual.aecCleanSamples
+            && expected.aecLinearSamples == actual.aecLinearSamples
+            && expected.audioCalls == actual.audioCalls
+            && expected.controlEvents == actual.controlEvents
+            && expected.renderFrames == actual.renderFrames
+            && expected.captureFrames == actual.captureFrames
+            && expected.isSealed == actual.isSealed
+            && expected.sealReason == actual.sealReason
+    }
+
+    private static func writeFixture(
+        _ snapshot: MacSpeechAcousticReplayCaptureSnapshot,
+        to directory: URL
+    ) throws -> URL {
+        let raw = MacSpeechAcousticReplayCodec.float32LittleEndianData(
+            snapshot.rawMicrophoneSamples
+        )
+        let render = MacSpeechAcousticReplayCodec.float32LittleEndianData(
+            snapshot.chronologicalRenderSamples
+        )
+        let clean = MacSpeechAcousticReplayCodec.float32LittleEndianData(
+            snapshot.aecCleanSamples
+        )
+        let linear = MacSpeechAcousticReplayCodec.float32LittleEndianData(
+            snapshot.aecLinearSamples
+        )
+        let files: [(String, Data)] = [
+            ("fixture.raw-mic.f32le.pcm", raw),
+            ("fixture.render-full.f32le.pcm", render),
+            ("fixture.aec-clean.f32le.pcm", clean),
+            ("fixture.aec-linear.f32le.pcm", linear)
+        ]
+        for (name, data) in files {
+            try data.write(
+                to: directory.appendingPathComponent(name),
+                options: .atomic
+            )
         }
-        return samplesByTimestamp
-            .map {
-                ReplayRenderEvent(
-                    hostTimeNanoseconds: $0.key,
-                    samples: $0.value
-                )
-            }
-            .sorted { $0.hostTimeNanoseconds < $1.hostTimeNanoseconds }
+        let descriptor: (String, Data, String, Int, Int) -> ReplayAudioFile = {
+            name,
+            data,
+            stage,
+            sampleRate,
+            frameSampleCount in
+            ReplayAudioFile(
+                fileName: name,
+                sha256: sha256(data),
+                stage: stage,
+                encoding: "float32le",
+                sampleRate: sampleRate,
+                channelCount: 1,
+                frameSampleCount: frameSampleCount,
+                byteCount: data.count
+            )
+        }
+        let producerFingerprint = Data(
+            "RecordedAcousticReplay.self-check".utf8
+        )
+        let manifest = ReplayManifest(
+            schemaVersion: 2,
+            producerBinaryName: "RecordedAcousticReplay.self-check",
+            producerBinarySHA256: sha256(producerFingerprint),
+            attemptID: snapshot.attemptID.uuidString,
+            armedAt: snapshot.armedAt,
+            startedAt: snapshot.startedAt,
+            endedAt: snapshot.endedAt,
+            targetPostPlaybackCaptureFrameCount:
+                snapshot.targetPostPlaybackCaptureFrameCount,
+            postPlaybackCaptureFrameCount:
+                snapshot.postPlaybackCaptureFrameCount,
+            capturedFrameCount: snapshot.captureFrames.count,
+            renderedFrameCount: snapshot.renderFrames.count,
+            durationMilliseconds: snapshot.durationMilliseconds,
+            missingTimingMatchFrameCount: snapshot.captureFrames.filter {
+                !$0.timingMatchAvailable
+            }.count,
+            isSealed: snapshot.isSealed,
+            sealReason: snapshot.sealReason,
+            exactReplayReady: snapshot.isExactReplayReady,
+            renderReferenceSemantics:
+                "chronological_host_render_callback_input",
+            rawMicrophone: descriptor(
+                files[0].0,
+                raw,
+                "post_device_conversion_pre_aec_callback_input",
+                MacSpeechAcousticEchoHost.sampleRate,
+                MacSpeechAcousticEchoHost.frameSampleCount
+            ),
+            chronologicalRender: descriptor(
+                files[1].0,
+                render,
+                "chronological_post_device_conversion_render_callback_input",
+                MacSpeechAcousticEchoHost.sampleRate,
+                MacSpeechAcousticEchoHost.frameSampleCount
+            ),
+            aecClean: descriptor(
+                files[2].0,
+                clean,
+                "post_aec_pre_source_gate",
+                MacSpeechAcousticEchoHost.sampleRate,
+                MacSpeechAcousticEchoHost.frameSampleCount
+            ),
+            aecLinear: descriptor(
+                files[3].0,
+                linear,
+                "webrtc_aec_linear_output",
+                MacSpeechAcousticEchoHost.linearOutputSampleRate,
+                MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+            ),
+            initialState: snapshot.initialState,
+            finalState: snapshot.finalState,
+            audioCalls: snapshot.audioCalls,
+            controlEvents: snapshot.controlEvents,
+            renderFrames: snapshot.renderFrames,
+            captureFrames: snapshot.captureFrames
+        )
+        let manifestURL = directory.appendingPathComponent(
+            "fixture.aec-timeline.json"
+        )
+        try manifest.encodedData().write(to: manifestURL, options: .atomic)
+        return manifestURL
+    }
+
+    private static func loadManifest(_ url: URL) throws -> ReplayManifest {
+        try ReplayManifest.decode(from: Data(contentsOf: url))
+    }
+
+    private static func loadSnapshot(
+        _ manifest: ReplayManifest,
+        from manifestURL: URL
+    ) throws -> MacSpeechAcousticReplayCaptureSnapshot {
+        let directory = manifestURL.deletingLastPathComponent()
+        let raw = try loadTrack(
+            manifest.rawMicrophone,
+            from: directory,
+            expectedStage:
+                "post_device_conversion_pre_aec_callback_input",
+            sampleRate: MacSpeechAcousticEchoHost.sampleRate,
+            frameSampleCount: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        let render = try loadTrack(
+            manifest.chronologicalRender,
+            from: directory,
+            expectedStage:
+                "chronological_post_device_conversion_render_callback_input",
+            sampleRate: MacSpeechAcousticEchoHost.sampleRate,
+            frameSampleCount: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        let clean = try loadTrack(
+            manifest.aecClean,
+            from: directory,
+            expectedStage: "post_aec_pre_source_gate",
+            sampleRate: MacSpeechAcousticEchoHost.sampleRate,
+            frameSampleCount: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        let linear = try loadTrack(
+            manifest.aecLinear,
+            from: directory,
+            expectedStage: "webrtc_aec_linear_output",
+            sampleRate: MacSpeechAcousticEchoHost.linearOutputSampleRate,
+            frameSampleCount:
+                MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+        )
+        guard let attemptID = UUID(uuidString: manifest.attemptID) else {
+            throw ReplayError.invalidManifest
+        }
+        return MacSpeechAcousticReplayCaptureSnapshot(
+            attemptID: attemptID,
+            armedAt: manifest.armedAt,
+            startedAt: manifest.startedAt,
+            endedAt: manifest.endedAt,
+            targetPostPlaybackCaptureFrameCount:
+                manifest.targetPostPlaybackCaptureFrameCount,
+            postPlaybackCaptureFrameCount:
+                manifest.postPlaybackCaptureFrameCount,
+            initialState: manifest.initialState,
+            finalState: manifest.finalState,
+            rawMicrophoneSamples: raw,
+            chronologicalRenderSamples: render,
+            aecCleanSamples: clean,
+            aecLinearSamples: linear,
+            audioCalls: manifest.audioCalls,
+            controlEvents: manifest.controlEvents,
+            renderFrames: manifest.renderFrames,
+            captureFrames: manifest.captureFrames,
+            isSealed: manifest.isSealed,
+            sealReason: manifest.sealReason
+        )
     }
 
     private static func validate(
         manifest: ReplayManifest,
-        rawSampleCount: Int,
-        renderSampleCount: Int,
-        cleanSampleCount: Int,
+        snapshot: MacSpeechAcousticReplayCaptureSnapshot,
         residentOnlyRange: Range<Int>
     ) throws {
-        let frameSize = MacSpeechAcousticEchoHost.frameSampleCount
-        let expectedSamples = manifest.frames.count * frameSize
-        guard manifest.schemaVersion == 1,
-              manifest.isSealed,
-              manifest.targetCaptureFrameCount == manifest.frames.count,
-              manifest.capturedFrameCount == manifest.frames.count,
-              manifest.durationMilliseconds
-                == manifest.frames.count
-                    * MacSpeechAcousticEchoHost.frameDurationMilliseconds,
-              rawSampleCount == expectedSamples,
-              renderSampleCount == expectedSamples,
-              cleanSampleCount == expectedSamples,
+        let missingTimingMatchFrameCount = snapshot.captureFrames.filter {
+            !$0.timingMatchAvailable
+        }.count
+        guard manifest.schemaVersion == 2,
+              !manifest.producerBinaryName.isEmpty,
+              manifest.producerBinarySHA256.count == 64,
+              manifest.producerBinarySHA256.allSatisfy({
+                  $0.isHexDigit
+              }),
+              manifest.exactReplayReady,
+              snapshot.isExactReplayReady,
               manifest.renderReferenceSemantics
-                == "matched_per_capture_frame_zero_when_unavailable",
+                == "chronological_host_render_callback_input",
+              manifest.capturedFrameCount == snapshot.captureFrames.count,
+              manifest.renderedFrameCount == snapshot.renderFrames.count,
+              manifest.durationMilliseconds == snapshot.durationMilliseconds,
+              manifest.missingTimingMatchFrameCount
+                == missingTimingMatchFrameCount,
               residentOnlyRange.lowerBound >= 0,
-              residentOnlyRange.upperBound <= manifest.frames.count,
-              residentOnlyRange.count >= 23 else {
+              residentOnlyRange.upperBound <= snapshot.captureFrames.count,
+              !residentOnlyRange.isEmpty else {
             throw ReplayError.invalidManifest
-        }
-        for (index, frame) in manifest.frames.enumerated() {
-            guard frame.sampleOffset == index * frameSize,
-                  index == 0
-                    || frame.timestampNanoseconds
-                        > manifest.frames[index - 1].timestampNanoseconds else {
-                throw ReplayError.invalidTimeline
-            }
-        }
-        guard manifest.frames.filter({ !$0.timingMatchAvailable }).count
-                == manifest.missingTimingMatchFrameCount else {
-            throw ReplayError.invalidTimeline
         }
     }
 
     private static func loadTrack(
         _ descriptor: ReplayAudioFile,
-        from directory: URL
+        from directory: URL,
+        expectedStage: String,
+        sampleRate: Int,
+        frameSampleCount: Int
     ) throws -> [Float] {
-        guard descriptor.sampleRate == MacSpeechAcousticEchoHost.sampleRate,
+        guard descriptor.fileName == (descriptor.fileName as NSString)
+                .lastPathComponent,
+              descriptor.encoding == "float32le",
+              descriptor.sampleRate == sampleRate,
               descriptor.channelCount == 1,
-              descriptor.frameSampleCount
-                == MacSpeechAcousticEchoHost.frameSampleCount else {
+              descriptor.frameSampleCount == frameSampleCount,
+              descriptor.stage == expectedStage else {
             throw ReplayError.invalidAudioFormat
         }
         let data = try Data(
@@ -415,6 +827,19 @@ private struct RecordedAcousticReplay {
         }
     }
 
+    private static func samples(
+        _ track: [Float],
+        offset: Int,
+        count: Int
+    ) throws -> [Float] {
+        guard offset >= 0,
+              count > 0,
+              offset + count <= track.count else {
+            throw ReplayError.invalidTimeline
+        }
+        return Array(track[offset ..< offset + count])
+    }
+
     private static func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -432,35 +857,90 @@ private struct RecordedAcousticReplay {
         _ expected: [T],
         _ actual: [T]
     ) -> [Int] {
-        zip(expected, actual).enumerated().compactMap { index, pair in
-            pair.0 == pair.1 ? nil : index
+        pairedMismatchIndexes(expected, actual, matches: ==)
+    }
+
+    private static func pairedMismatchIndexes<T, U>(
+        _ expected: [T],
+        _ actual: [U],
+        matches: (T, U) -> Bool
+    ) -> [Int] {
+        let sharedCount = min(expected.count, actual.count)
+        var mismatches = (0 ..< sharedCount).filter {
+            !matches(expected[$0], actual[$0])
         }
+        if expected.count != actual.count {
+            mismatches.append(contentsOf:
+                sharedCount ..< max(expected.count, actual.count)
+            )
+        }
+        return mismatches
     }
 
-    private static func counts(_ values: [String]) -> String {
-        Dictionary(grouping: values, by: { $0 })
-            .mapValues(\.count)
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key):\($0.value)" }
-            .joined(separator: ",")
+    private static func printComparison(_ comparison: ReplayComparison) {
+        print("capture_frame_mismatch_count=\(comparison.captureFrameMismatches.count)")
+        print("classifier_mismatch_count=\(comparison.classifierMismatches.count)")
+        print("gate_mismatch_count=\(comparison.gateMismatches.count)")
+        print("timing_mismatch_count=\(comparison.timingMismatches.count)")
+        print("audio_calls_match=\(comparison.audioCallsMatch)")
+        print("control_events_match=\(comparison.controlEventsMatch)")
+        print("render_frames_match=\(comparison.renderFramesMatch)")
+        print("initial_state_match=\(comparison.initialStateMatches)")
+        print("final_state_match=\(comparison.finalStateMatches)")
+        print("audio_tracks_match=\(comparison.tracksMatch)")
     }
 
-    private static func firstTrue(_ values: [Bool]) -> String {
-        values.firstIndex(of: true).map(String.init) ?? "none"
+    private static func classificationCounts(
+        _ snapshot: MacSpeechAcousticReplayCaptureSnapshot
+    ) -> String {
+        Dictionary(
+            grouping: snapshot.captureFrames.map {
+                $0.inputClassification.rawValue
+            },
+            by: { $0 }
+        )
+        .mapValues(\.count)
+        .sorted { $0.key < $1.key }
+        .map { "\($0.key):\($0.value)" }
+        .joined(separator: ",")
     }
 
-    private static func prefix(_ values: [Int]) -> String {
-        values.prefix(20).map(String.init).joined(separator: ",")
+    private static func gateOpenFrameCount(
+        _ snapshot: MacSpeechAcousticReplayCaptureSnapshot
+    ) -> Int {
+        snapshot.captureFrames.filter {
+            $0.sourceGateOpen
+                || $0.emittedSpans.contains(where: \.sourceGateOpen)
+        }.count
+    }
+}
+
+private func signal(seed: UInt32, amplitude: Float) -> [Float] {
+    var state = seed
+    return (0 ..< MacSpeechAcousticEchoHost.frameSampleCount).map { _ in
+        state = state &* 1_664_525 &+ 1_013_904_223
+        let unit = Float(state >> 8) / Float(0x00FF_FFFF)
+        return (unit * 2 - 1) * amplitude
+    }
+}
+
+private func downsample(_ samples: [Float]) -> [Float] {
+    stride(from: 0, to: samples.count, by: 3).map { index in
+        (samples[index] + samples[index + 1] + samples[index + 2]) / 3
     }
 }
 
 private enum ReplayError: Error {
     case invalidManifest
+    case invalidSnapshot
     case invalidTimeline
     case invalidAudioFormat
     case invalidAudioFile
     case hostConfigurationFailed
+    case captureArmFailed
     case backendFrameMismatch
-    case nondeterministicReplay
-    case inconsistentRenderReference
+    case liveReplayMismatch
+    case fileRoundTripMismatch
+    case residentOnlyNegativeControlFailed
+    case positiveControlFailed
 }

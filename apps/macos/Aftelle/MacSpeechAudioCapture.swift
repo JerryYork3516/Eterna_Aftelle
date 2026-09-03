@@ -1097,8 +1097,14 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         )
     }
 
-    func sealAcousticReplayCapture() {
-        acousticEchoHost.sealAcousticReplayCapture()
+    func sealAcousticReplayCapture(
+        reason: MacSpeechAcousticReplaySealReason = .manual,
+        matchingAttemptID attemptID: UUID? = nil
+    ) {
+        acousticEchoHost.sealAcousticReplayCapture(
+            reason: reason,
+            matchingAttemptID: attemptID
+        )
     }
 
     func acousticReplayCaptureSnapshot()

@@ -279,7 +279,7 @@ nonisolated final class NativeSpeechDiagnosticBuffer: @unchecked Sendable {
         var isSealed = false
     }
 
-    private static let realtimeAudioCapsuleByteCapacity = 160_000
+    private static let realtimeAudioCapsuleByteCapacity = 320_000
     private var realtimeAudioCapsule: RealtimeAudioCapsule?
     #endif
 

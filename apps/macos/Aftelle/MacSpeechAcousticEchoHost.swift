@@ -241,14 +241,195 @@ nonisolated struct MacSpeechAcousticCaptureSpan: Sendable, Equatable {
 }
 
 #if DEBUG
-nonisolated struct MacSpeechAcousticReplayFrameSnapshot:
+extension MacSpeechAcousticInputClassification: Codable {}
+
+nonisolated enum MacSpeechAcousticReplayAudioCallKind:
+    String,
+    Codable,
+    Sendable {
+    case render
+    case capture
+}
+
+nonisolated enum MacSpeechAcousticReplayControlKind:
+    String,
+    Codable,
+    Sendable {
+    case playbackStarted = "playback_started"
+    case playbackCompleted = "playback_completed"
+    case playbackStopped = "playback_stopped"
+    case discardPendingCapture = "discard_pending_capture"
+    case delayUpdated = "delay_updated"
+    case captureProcessingDuration = "capture_processing_duration"
+}
+
+nonisolated enum MacSpeechAcousticReplaySealReason:
+    String,
+    Codable,
+    Sendable {
+    case targetReached = "target_reached"
+    case manual
+    case timeout
+    case routeRebuild = "route_rebuild"
+    case hostFallback = "host_fallback"
+}
+
+nonisolated struct MacSpeechAcousticReplayBackendStatsSnapshot:
+    Codable,
+    Sendable,
+    Equatable {
+    let enabled: Bool
+    let active: Bool
+    let estimatedDelayMilliseconds: Int
+    let erlDecibels: Double
+    let erleDecibels: Double
+
+    init(_ stats: MacSpeechAECBackendStats) {
+        enabled = stats.enabled
+        active = stats.active
+        estimatedDelayMilliseconds = stats.estimatedDelayMilliseconds
+        erlDecibels = stats.erlDecibels
+        erleDecibels = stats.erleDecibels
+    }
+
+    var backendStats: MacSpeechAECBackendStats {
+        MacSpeechAECBackendStats(
+            enabled: enabled,
+            active: active,
+            estimatedDelayMilliseconds: estimatedDelayMilliseconds,
+            erlDecibels: erlDecibels,
+            erleDecibels: erleDecibels
+        )
+    }
+}
+
+nonisolated struct MacSpeechAcousticReplayInitialStateSnapshot:
+    Codable,
+    Sendable,
+    Equatable {
+    let mode: String
+    let renderFIFOSamples: [Float]
+    let captureFIFOSamples: [Float]
+    let fifoSampleCapacity: Int
+    let renderRemainderHostTimeNanoseconds: UInt64?
+    let captureRemainderHostTimeNanoseconds: UInt64?
+    let renderFrameCount: UInt64
+    let captureFrameCount: UInt64
+    let delayMilliseconds: Int
+    let presentationDelayMilliseconds: Int
+    let captureProcessingNanoseconds: UInt64
+    let backendStats: MacSpeechAcousticReplayBackendStatsSnapshot
+    let timingHistoryFrameCount: Int
+    let timingLockCandidateMilliseconds: Double?
+    let timingLockCandidateFrameCount: Int
+    let timingLockedDelayMilliseconds: Double?
+    let timingLockConsecutiveMissFrameCount: Int
+    let alignedDelayMilliseconds: Double?
+    let rawEchoGainBaseline: Double
+    let residualEchoGainBaseline: Double
+    let linearAECOutputGainBaseline: Double
+    let residualEchoBaselineFrameCount: UInt64
+    let residualEchoBaselineFrozen: Bool
+    let sourceGateOpen: Bool
+    let sourceGatePreRollFrameCount: Int
+    let sourceGateConfirmationFrameCount: Int
+    let sourceGateNonUserHangoverFrameCount: Int
+    let sourceGateCandidateNearEndFrameCount: UInt64
+    let sourceGateCandidateDoubleTalkFrameCount: UInt64
+    let consecutiveSourceAlignmentUnavailableFrameCount: Int
+    let consecutiveSourceUncertainFrameCount: Int
+    let pendingSourceGateReset: Bool
+    let renderCaptureIsolationEstablished: Bool
+    let renderCaptureIsolationQuietFrameCount: Int
+    let hasReliableEchoCancellation: Bool
+    let poorResidualEchoFrameCount: UInt64
+    let playbackSequence: UInt64
+    let sourceGateEpochSequence: UInt64
+    let playbackActive: Bool
+    let routeRebuilding: Bool
+    let fallbackReason: String?
+
+    var exactReplayEligible: Bool {
+        mode == MacSpeechAudioProcessingMode.webRTCAEC3.rawValue
+            && timingHistoryFrameCount == 0
+            && timingLockCandidateMilliseconds == nil
+            && timingLockCandidateFrameCount == 0
+            && timingLockedDelayMilliseconds == nil
+            && timingLockConsecutiveMissFrameCount == 0
+            && !sourceGateOpen
+            && sourceGatePreRollFrameCount == 0
+            && sourceGateConfirmationFrameCount == 0
+            && sourceGateNonUserHangoverFrameCount == 0
+            && sourceGateCandidateNearEndFrameCount == 0
+            && sourceGateCandidateDoubleTalkFrameCount == 0
+            && !pendingSourceGateReset
+            && !playbackActive
+            && !routeRebuilding
+            && fallbackReason == nil
+    }
+}
+
+nonisolated struct MacSpeechAcousticReplayAudioCallSnapshot:
+    Codable,
+    Sendable,
+    Equatable {
+    let ordinal: UInt64
+    let kind: MacSpeechAcousticReplayAudioCallKind
+    let sampleOffset: Int
+    let sampleCount: Int
+    let hostTimeNanoseconds: UInt64?
+    let firstFrameIndex: Int
+    let frameCount: Int
+    let backendStatsBefore: MacSpeechAcousticReplayBackendStatsSnapshot
+    let backendStatsAfter: MacSpeechAcousticReplayBackendStatsSnapshot
+}
+
+nonisolated struct MacSpeechAcousticReplayControlEventSnapshot:
+    Codable,
+    Sendable,
+    Equatable {
+    let ordinal: UInt64
+    let kind: MacSpeechAcousticReplayControlKind
+    let outputPresentationLatencySeconds: Double?
+    let capturePresentationLatencySeconds: Double?
+    let captureProcessingDurationNanoseconds: UInt64?
+}
+
+nonisolated struct MacSpeechAcousticReplayRenderFrameSnapshot:
+    Codable,
+    Sendable,
+    Equatable {
+    let callOrdinal: UInt64
+    let frameInCall: Int
+    let renderFrameIndex: UInt64
+    let hostTimeNanoseconds: UInt64?
+    let aecBufferDelayMilliseconds: Int
+    let backendStats: MacSpeechAcousticReplayBackendStatsSnapshot
+}
+
+nonisolated struct MacSpeechAcousticReplayEmittedSpanSnapshot:
+    Codable,
     Sendable,
     Equatable {
     let captureFrameIndex: UInt64
-    let sampleOffset: Int
+    let sourceGateOpen: Bool
+    let sourceGateEpoch: UInt64
+    let silenced: Bool
+}
+
+nonisolated struct MacSpeechAcousticReplayFrameSnapshot:
+    Codable,
+    Sendable,
+    Equatable {
+    let callOrdinal: UInt64
+    let frameInCall: Int
+    let captureFrameIndex: UInt64
+    let aecCleanSampleOffset: Int
+    let aecLinearSampleOffset: Int
     let timestampNanoseconds: UInt64
     let captureHostTimeNanoseconds: UInt64?
     let timingMatchAvailable: Bool
+    let matchedRenderCallOrdinal: UInt64?
     let matchedRenderHostTimeNanoseconds: UInt64?
     let timingDelayMilliseconds: Double?
     let timingCorrelation: Double?
@@ -257,6 +438,7 @@ nonisolated struct MacSpeechAcousticReplayFrameSnapshot:
     let sourceAlignmentLocked: Bool
     let sourceAlignmentDelayMilliseconds: Int?
     let estimatedDelayMilliseconds: Int
+    let backendStats: MacSpeechAcousticReplayBackendStatsSnapshot
     let inputClassification: MacSpeechAcousticInputClassification
     let sourceGateOpen: Bool
     let sourceGateEpoch: UInt64
@@ -264,7 +446,26 @@ nonisolated struct MacSpeechAcousticReplayFrameSnapshot:
     let isPlaybackActive: Bool
     let rawCaptureRMS: Double
     let processedCaptureRMS: Double
+    let linearAECOutputRMS: Double
+    let linearRenderCorrelation: Double
+    let processedLinearCorrelation: Double
     let residualRenderCorrelation: Double
+    let timingLockCandidateMilliseconds: Double?
+    let timingLockCandidateFrameCount: Int
+    let timingLockedDelayMilliseconds: Double?
+    let timingLockConsecutiveMissFrameCount: Int
+    let rawEchoGainBaseline: Double
+    let residualEchoGainBaseline: Double
+    let linearAECOutputGainBaseline: Double
+    let residualEchoBaselineFrameCount: UInt64
+    let residualEchoBaselineFrozen: Bool
+    let sourceGatePreRollFrameCount: Int
+    let sourceGateConfirmationFrameCount: Int
+    let sourceGateNonUserHangoverFrameCount: Int
+    let pendingSourceGateReset: Bool
+    let renderCaptureIsolationEstablished: Bool
+    let renderCaptureIsolationQuietFrameCount: Int
+    let emittedSpans: [MacSpeechAcousticReplayEmittedSpanSnapshot]
 }
 
 nonisolated struct MacSpeechAcousticReplayCaptureSnapshot:
@@ -274,15 +475,235 @@ nonisolated struct MacSpeechAcousticReplayCaptureSnapshot:
     let armedAt: Date
     let startedAt: Date?
     let endedAt: Date?
-    let targetCaptureFrameCount: Int
+    let targetPostPlaybackCaptureFrameCount: Int
+    let postPlaybackCaptureFrameCount: Int
+    let initialState: MacSpeechAcousticReplayInitialStateSnapshot
+    let finalState: MacSpeechAcousticReplayInitialStateSnapshot
     let rawMicrophoneSamples: [Float]
-    let renderReferenceSamples: [Float]
+    let chronologicalRenderSamples: [Float]
     let aecCleanSamples: [Float]
-    let frames: [MacSpeechAcousticReplayFrameSnapshot]
+    let aecLinearSamples: [Float]
+    let audioCalls: [MacSpeechAcousticReplayAudioCallSnapshot]
+    let controlEvents: [MacSpeechAcousticReplayControlEventSnapshot]
+    let renderFrames: [MacSpeechAcousticReplayRenderFrameSnapshot]
+    let captureFrames: [MacSpeechAcousticReplayFrameSnapshot]
     let isSealed: Bool
+    let sealReason: MacSpeechAcousticReplaySealReason?
 
     var durationMilliseconds: Int {
-        frames.count * MacSpeechAcousticEchoHost.frameDurationMilliseconds
+        captureFrames.count
+            * MacSpeechAcousticEchoHost.frameDurationMilliseconds
+    }
+
+    var isExactReplayReady: Bool {
+        guard isSealed,
+              sealReason == .targetReached,
+              startedAt != nil,
+              endedAt != nil,
+              initialState.exactReplayEligible,
+              postPlaybackCaptureFrameCount
+                >= targetPostPlaybackCaptureFrameCount,
+              !rawMicrophoneSamples.isEmpty,
+              !chronologicalRenderSamples.isEmpty,
+              !captureFrames.isEmpty,
+              !renderFrames.isEmpty,
+              aecCleanSamples.count
+                == captureFrames.count
+                    * MacSpeechAcousticEchoHost.frameSampleCount,
+              aecLinearSamples.count
+                == captureFrames.count
+                    * MacSpeechAcousticEchoHost.linearOutputFrameSampleCount,
+              controlEvents.contains(where: {
+                  $0.kind == .playbackStarted
+              }),
+              hasCompleteChronology,
+              hasCompleteAudioCalls,
+              hasCompleteCaptureTimeline,
+              hasCompleteRenderTimeline else { return false }
+        return true
+    }
+
+    private var hasCompleteChronology: Bool {
+        let ordinals = (
+            audioCalls.map(\.ordinal) + controlEvents.map(\.ordinal)
+        ).sorted()
+        guard ordinals.count == Set(ordinals).count else { return false }
+        return ordinals.enumerated().allSatisfy { index, ordinal in
+            ordinal == UInt64(index + 1)
+        }
+    }
+
+    private var hasCompleteAudioCalls: Bool {
+        var rawOffset = 0
+        var renderOffset = 0
+        var captureFrameOffset = 0
+        var renderFrameOffset = 0
+        for call in audioCalls.sorted(by: { $0.ordinal < $1.ordinal }) {
+            guard call.sampleCount > 0,
+                  call.frameCount >= 0,
+                  call.hostTimeNanoseconds != nil else { return false }
+            switch call.kind {
+            case .capture:
+                guard call.sampleOffset == rawOffset,
+                      call.firstFrameIndex == captureFrameOffset,
+                      call.firstFrameIndex + call.frameCount
+                        <= captureFrames.count else {
+                    return false
+                }
+                let frames = captureFrames[
+                    call.firstFrameIndex
+                        ..< call.firstFrameIndex + call.frameCount
+                ]
+                guard frames.enumerated().allSatisfy({ index, frame in
+                    frame.callOrdinal == call.ordinal
+                        && frame.frameInCall == index
+                }) else { return false }
+                rawOffset += call.sampleCount
+                captureFrameOffset += call.frameCount
+            case .render:
+                guard call.sampleOffset == renderOffset,
+                      call.firstFrameIndex == renderFrameOffset,
+                      call.firstFrameIndex + call.frameCount
+                        <= renderFrames.count else {
+                    return false
+                }
+                let frames = renderFrames[
+                    call.firstFrameIndex
+                        ..< call.firstFrameIndex + call.frameCount
+                ]
+                guard frames.enumerated().allSatisfy({ index, frame in
+                    frame.callOrdinal == call.ordinal
+                        && frame.frameInCall == index
+                }) else { return false }
+                renderOffset += call.sampleCount
+                renderFrameOffset += call.frameCount
+            }
+        }
+        return rawOffset == rawMicrophoneSamples.count
+            && renderOffset == chronologicalRenderSamples.count
+            && captureFrameOffset == captureFrames.count
+            && renderFrameOffset == renderFrames.count
+    }
+
+    private var hasCompleteCaptureTimeline: Bool {
+        let frameSamples = MacSpeechAcousticEchoHost.frameSampleCount
+        let linearSamples =
+            MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+        var renderCallOrdinalByHostTime: [UInt64: UInt64] = [:]
+        for frame in renderFrames {
+            guard let hostTime = frame.hostTimeNanoseconds,
+                  renderCallOrdinalByHostTime.updateValue(
+                      frame.callOrdinal,
+                      forKey: hostTime
+                  ) == nil else { return false }
+        }
+        for (index, frame) in captureFrames.enumerated() {
+            guard frame.frameInCall >= 0,
+                  frame.aecCleanSampleOffset == index * frameSamples,
+                  frame.aecLinearSampleOffset == index * linearSamples,
+                  let hostTime = frame.captureHostTimeNanoseconds,
+                  frame.timestampNanoseconds == hostTime,
+                  index == 0
+                    || hostTime
+                        > captureFrames[index - 1]
+                            .captureHostTimeNanoseconds!
+            else { return false }
+            if frame.timingMatchAvailable {
+                guard let matchedHostTime =
+                        frame.matchedRenderHostTimeNanoseconds,
+                      let matchedCall = frame.matchedRenderCallOrdinal,
+                      renderCallOrdinalByHostTime[matchedHostTime]
+                        == matchedCall else { return false }
+            } else if frame.matchedRenderHostTimeNanoseconds != nil
+                        || frame.matchedRenderCallOrdinal != nil {
+                return false
+            }
+        }
+        return true
+    }
+
+    private var hasCompleteRenderTimeline: Bool {
+        for (index, frame) in renderFrames.enumerated() {
+            guard frame.frameInCall >= 0,
+                  let hostTime = frame.hostTimeNanoseconds,
+                  index == 0
+                    || hostTime
+                        > renderFrames[index - 1]
+                            .hostTimeNanoseconds!
+            else { return false }
+        }
+        return true
+    }
+}
+
+nonisolated struct MacSpeechAcousticReplayAudioFile:
+    Codable,
+    Sendable,
+    Equatable {
+    let fileName: String
+    let sha256: String
+    let stage: String
+    let encoding: String
+    let sampleRate: Int
+    let channelCount: Int
+    let frameSampleCount: Int
+    let byteCount: Int
+}
+
+nonisolated struct MacSpeechAcousticReplayManifest:
+    Codable,
+    Sendable,
+    Equatable {
+    let schemaVersion: Int
+    let producerBinaryName: String
+    let producerBinarySHA256: String
+    let attemptID: String
+    let armedAt: Date
+    let startedAt: Date?
+    let endedAt: Date?
+    let targetPostPlaybackCaptureFrameCount: Int
+    let postPlaybackCaptureFrameCount: Int
+    let capturedFrameCount: Int
+    let renderedFrameCount: Int
+    let durationMilliseconds: Int
+    let missingTimingMatchFrameCount: Int
+    let isSealed: Bool
+    let sealReason: MacSpeechAcousticReplaySealReason?
+    let exactReplayReady: Bool
+    let renderReferenceSemantics: String
+    let rawMicrophone: MacSpeechAcousticReplayAudioFile
+    let chronologicalRender: MacSpeechAcousticReplayAudioFile
+    let aecClean: MacSpeechAcousticReplayAudioFile
+    let aecLinear: MacSpeechAcousticReplayAudioFile
+    let initialState: MacSpeechAcousticReplayInitialStateSnapshot
+    let finalState: MacSpeechAcousticReplayInitialStateSnapshot
+    let audioCalls: [MacSpeechAcousticReplayAudioCallSnapshot]
+    let controlEvents: [MacSpeechAcousticReplayControlEventSnapshot]
+    let renderFrames: [MacSpeechAcousticReplayRenderFrameSnapshot]
+    let captureFrames: [MacSpeechAcousticReplayFrameSnapshot]
+
+    func encodedData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(self)
+    }
+
+    static func decode(from data: Data) throws -> Self {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+nonisolated enum MacSpeechAcousticReplayCodec {
+    static func float32LittleEndianData(_ samples: [Float]) -> Data {
+        var data = Data(capacity: samples.count * MemoryLayout<UInt32>.size)
+        for sample in samples {
+            var bits = sample.bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+        }
+        return data
     }
 }
 #endif
@@ -432,35 +853,70 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         erleDecibels: 0
     )
     #if DEBUG
+    private struct AcousticReplayAudioCallContext {
+        let ordinal: UInt64
+        let kind: MacSpeechAcousticReplayAudioCallKind
+        let sampleOffset: Int
+        let sampleCount: Int
+        let hostTimeNanoseconds: UInt64?
+        let firstFrameIndex: Int
+        let backendStatsBefore: MacSpeechAcousticReplayBackendStatsSnapshot
+    }
+
     private final class AcousticReplayCapture {
         let attemptID: UUID
         let armedAt = Date()
-        let targetCaptureFrameCount: Int
+        let targetPostPlaybackCaptureFrameCount: Int
+        let initialState: MacSpeechAcousticReplayInitialStateSnapshot
+        var finalState: MacSpeechAcousticReplayInitialStateSnapshot?
         var startedAt: Date?
         var endedAt: Date?
+        var nextOrdinal: UInt64 = 1
+        var sawPlaybackStart = false
+        var postPlaybackCaptureFrameCount = 0
         var rawMicrophoneSamples: [Float] = []
-        var renderReferenceSamples: [Float] = []
+        var chronologicalRenderSamples: [Float] = []
         var aecCleanSamples: [Float] = []
-        var frames: [MacSpeechAcousticReplayFrameSnapshot] = []
+        var aecLinearSamples: [Float] = []
+        var audioCalls: [MacSpeechAcousticReplayAudioCallSnapshot] = []
+        var controlEvents: [MacSpeechAcousticReplayControlEventSnapshot] = []
+        var renderFrames: [MacSpeechAcousticReplayRenderFrameSnapshot] = []
+        var captureFrames: [MacSpeechAcousticReplayFrameSnapshot] = []
+        var renderCallOrdinalByHostTime: [UInt64: UInt64] = [:]
         var isSealed = false
+        var sealReason: MacSpeechAcousticReplaySealReason?
 
-        init(attemptID: UUID, targetCaptureFrameCount: Int) {
+        init(
+            attemptID: UUID,
+            targetPostPlaybackCaptureFrameCount: Int,
+            initialState: MacSpeechAcousticReplayInitialStateSnapshot
+        ) {
             self.attemptID = attemptID
-            self.targetCaptureFrameCount = targetCaptureFrameCount
-            let sampleCapacity = targetCaptureFrameCount
+            self.targetPostPlaybackCaptureFrameCount =
+                targetPostPlaybackCaptureFrameCount
+            self.initialState = initialState
+            let sampleCapacity = targetPostPlaybackCaptureFrameCount
                 * MacSpeechAcousticEchoHost.frameSampleCount
             rawMicrophoneSamples.reserveCapacity(sampleCapacity)
-            renderReferenceSamples.reserveCapacity(sampleCapacity)
+            chronologicalRenderSamples.reserveCapacity(sampleCapacity)
             aecCleanSamples.reserveCapacity(sampleCapacity)
-            frames.reserveCapacity(targetCaptureFrameCount)
+            aecLinearSamples.reserveCapacity(
+                targetPostPlaybackCaptureFrameCount
+                    * MacSpeechAcousticEchoHost.linearOutputFrameSampleCount
+            )
+            audioCalls.reserveCapacity(targetPostPlaybackCaptureFrameCount)
+            controlEvents.reserveCapacity(32)
+            renderFrames.reserveCapacity(targetPostPlaybackCaptureFrameCount)
+            captureFrames.reserveCapacity(targetPostPlaybackCaptureFrameCount)
+        }
+
+        func takeOrdinal() -> UInt64 {
+            defer { nextOrdinal &+= 1 }
+            return nextOrdinal
         }
     }
 
     private static let acousticReplayCaptureFrameCapacity = 1_000
-    private static let silentAcousticReplayRenderFrame = [Float](
-        repeating: 0,
-        count: frameSampleCount
-    )
     private var acousticReplayCapture: AcousticReplayCapture?
     #endif
 
@@ -533,6 +989,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         guard !samples.isEmpty else { return }
         queue.sync {
             guard mode == .webRTCAEC3, let backend else { return }
+            #if DEBUG
+            let replayCall = beginAcousticReplayAudioCall(
+                kind: .render,
+                samples: samples,
+                hostTimeNanoseconds: hostTimeNanoseconds
+            )
+            #endif
             do {
                 try processFrames(
                     samples,
@@ -543,6 +1006,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 ) { frame, frameHostTimeNanoseconds in
                     try backend.processRender(frame)
                     renderFrameCount &+= 1
+                    #if DEBUG
+                    recordAcousticReplayRenderFrame(
+                        call: replayCall,
+                        hostTimeNanoseconds: frameHostTimeNanoseconds
+                    )
+                    #endif
                     if isPlaybackActive,
                        let frameHostTimeNanoseconds {
                         appendRenderTimingFrame(
@@ -560,6 +1029,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             }
             refreshBackendStats()
             updateDrift()
+            #if DEBUG
+            finishAcousticReplayAudioCall(replayCall)
+            #endif
         }
     }
 
@@ -599,6 +1071,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 )
                 return [captureSpan(samples: samples)]
             }
+            #if DEBUG
+            let replayCall = beginAcousticReplayAudioCall(
+                kind: .capture,
+                samples: samples,
+                hostTimeNanoseconds: hostTimeNanoseconds
+            )
+            #endif
             var output: [MacSpeechAcousticCaptureSpan] = []
             let captureFrameCountBeforeProcessing = captureFrameCount
             do {
@@ -640,13 +1119,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     output.append(contentsOf: gatedSpans)
                     #if DEBUG
                     recordAcousticReplayCaptureFrame(
+                        call: replayCall,
                         rawCapture: frame,
-                        renderReference: timingMatch?.renderSamples,
                         processedCapture: processedFrame,
+                        linearAECOutput: captureResult.linearOutputSamples,
                         timingMatch: timingMatch,
                         observation: makeAcousticObservationSnapshot(
                             captureFrameIndex: captureFrameCount &+ 1
-                        )
+                        ),
+                        emittedSpans: gatedSpans
                     )
                     #endif
                     captureFrameCount &+= 1
@@ -666,6 +1147,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     captureFrameCount - captureFrameCountBeforeProcessing
             )
             updateDrift()
+            #if DEBUG
+            finishAcousticReplayAudioCall(replayCall)
+            #endif
             return mode == .halfDuplexFallback
                     && (isPlaybackActive || isRouteRebuilding)
                 ? [] : output
@@ -717,6 +1201,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 enterFallback(.delayInvalid)
                 return
             }
+            #if DEBUG
+            recordAcousticReplayControl(
+                kind: .delayUpdated,
+                outputPresentationLatencySeconds:
+                    outputPresentationLatencySeconds,
+                capturePresentationLatencySeconds:
+                    capturePresentationLatencySeconds
+            )
+            #endif
             let totalSeconds = max(0, outputPresentationLatencySeconds)
                 + max(0, capturePresentationLatencySeconds)
             presentationDelayMilliseconds = Int(
@@ -736,12 +1229,22 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func recordCaptureProcessingDuration(nanoseconds: UInt64) {
         queue.sync {
+            #if DEBUG
+            recordAcousticReplayControl(
+                kind: .captureProcessingDuration,
+                captureProcessingDurationNanoseconds: nanoseconds
+            )
+            #endif
             captureProcessingMilliseconds = Double(nanoseconds) / 1_000_000
         }
     }
 
     func playbackStarted() {
         queue.sync {
+            #if DEBUG
+            recordAcousticReplayControl(kind: .playbackStarted)
+            acousticReplayCapture?.sawPlaybackStart = true
+            #endif
             playbackSequence &+= 1
             isPlaybackActive = true
             lastAudibleRenderHostTimeNanoseconds = nil
@@ -756,6 +1259,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func playbackCompleted() {
         queue.sync {
+            #if DEBUG
+            recordAcousticReplayControl(kind: .playbackCompleted)
+            #endif
             isPlaybackActive = false
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
@@ -782,6 +1288,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func playbackStopped() {
         queue.sync {
+            #if DEBUG
+            recordAcousticReplayControl(kind: .playbackStopped)
+            #endif
             isPlaybackActive = false
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
@@ -793,6 +1302,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func discardPendingCaptureForGenerationTransition() {
         queue.sync {
+            #if DEBUG
+            recordAcousticReplayControl(kind: .discardPendingCapture)
+            #endif
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
         }
@@ -800,6 +1312,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func routeWillRebuild() {
         queue.sync {
+            #if DEBUG
+            sealAcousticReplayCaptureLocked(reason: .routeRebuild)
+            #endif
             routeResetCount &+= 1
             lastAudibleRenderHostTimeNanoseconds = nil
             isRouteRebuilding = true
@@ -859,21 +1374,29 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             guard mode == .webRTCAEC3,
                   backend != nil,
                   acousticReplayCapture == nil,
+                  !isPlaybackActive,
                   targetCaptureFrameCount > 0 else { return false }
+            let initialState = makeAcousticReplayInitialState()
+            guard initialState.exactReplayEligible else { return false }
             acousticReplayCapture = AcousticReplayCapture(
                 attemptID: attemptID,
-                targetCaptureFrameCount: targetCaptureFrameCount
+                targetPostPlaybackCaptureFrameCount: targetCaptureFrameCount,
+                initialState: initialState
             )
             return true
         }
     }
 
-    func sealAcousticReplayCapture() {
+    func sealAcousticReplayCapture(
+        reason: MacSpeechAcousticReplaySealReason = .manual,
+        matchingAttemptID attemptID: UUID? = nil
+    ) {
         queue.sync {
-            guard let capture = acousticReplayCapture,
-                  !capture.isSealed else { return }
-            capture.isSealed = true
-            capture.endedAt = Date()
+            guard attemptID == nil
+                    || acousticReplayCapture?.attemptID == attemptID else {
+                return
+            }
+            sealAcousticReplayCaptureLocked(reason: reason)
         }
     }
 
@@ -886,13 +1409,90 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 armedAt: capture.armedAt,
                 startedAt: capture.startedAt,
                 endedAt: capture.endedAt,
-                targetCaptureFrameCount: capture.targetCaptureFrameCount,
+                targetPostPlaybackCaptureFrameCount:
+                    capture.targetPostPlaybackCaptureFrameCount,
+                postPlaybackCaptureFrameCount:
+                    capture.postPlaybackCaptureFrameCount,
+                initialState: capture.initialState,
+                finalState: capture.finalState
+                    ?? makeAcousticReplayInitialState(),
                 rawMicrophoneSamples: capture.rawMicrophoneSamples,
-                renderReferenceSamples: capture.renderReferenceSamples,
+                chronologicalRenderSamples:
+                    capture.chronologicalRenderSamples,
                 aecCleanSamples: capture.aecCleanSamples,
-                frames: capture.frames,
-                isSealed: capture.isSealed
+                aecLinearSamples: capture.aecLinearSamples,
+                audioCalls: capture.audioCalls,
+                controlEvents: capture.controlEvents,
+                renderFrames: capture.renderFrames,
+                captureFrames: capture.captureFrames,
+                isSealed: capture.isSealed,
+                sealReason: capture.sealReason
             )
+        }
+    }
+
+    func restoreAcousticReplayInitialState(
+        _ state: MacSpeechAcousticReplayInitialStateSnapshot
+    ) -> Bool {
+        queue.sync {
+            guard state.exactReplayEligible,
+                  mode.rawValue == state.mode,
+                  fifoSampleCapacity == state.fifoSampleCapacity,
+                  !isPlaybackActive else { return false }
+            renderFIFO = state.renderFIFOSamples
+            captureFIFO = state.captureFIFOSamples
+            renderRemainderHostTimeNanoseconds =
+                state.renderRemainderHostTimeNanoseconds
+            captureRemainderHostTimeNanoseconds =
+                state.captureRemainderHostTimeNanoseconds
+            renderFrameCount = state.renderFrameCount
+            captureFrameCount = state.captureFrameCount
+            delayMilliseconds = state.delayMilliseconds
+            presentationDelayMilliseconds =
+                state.presentationDelayMilliseconds
+            captureProcessingMilliseconds =
+                Double(state.captureProcessingNanoseconds) / 1_000_000
+            backendStats = state.backendStats.backendStats
+            timingLockCandidateMilliseconds =
+                state.timingLockCandidateMilliseconds
+            timingLockCandidateFrameCount =
+                state.timingLockCandidateFrameCount
+            timingLockedDelayMilliseconds =
+                state.timingLockedDelayMilliseconds
+            timingLockConsecutiveMissFrameCount =
+                state.timingLockConsecutiveMissFrameCount
+            alignedDelayMilliseconds = state.alignedDelayMilliseconds
+            rawEchoGainBaseline = state.rawEchoGainBaseline
+            residualEchoGainBaseline = state.residualEchoGainBaseline
+            linearAECOutputGainBaseline = state.linearAECOutputGainBaseline
+            residualEchoBaselineFrameCount =
+                state.residualEchoBaselineFrameCount
+            residualEchoBaselineFrozen = state.residualEchoBaselineFrozen
+            sourceGateConfirmationFrameCount =
+                state.sourceGateConfirmationFrameCount
+            sourceGateNonUserHangoverFrameCount =
+                state.sourceGateNonUserHangoverFrameCount
+            sourceGateCandidateNearEndFrameCount =
+                state.sourceGateCandidateNearEndFrameCount
+            sourceGateCandidateDoubleTalkFrameCount =
+                state.sourceGateCandidateDoubleTalkFrameCount
+            consecutiveSourceAlignmentUnavailableFrameCount =
+                state.consecutiveSourceAlignmentUnavailableFrameCount
+            consecutiveSourceUncertainFrameCount =
+                state.consecutiveSourceUncertainFrameCount
+            pendingSourceGateReset = state.pendingSourceGateReset
+            renderCaptureIsolationEstablished =
+                state.renderCaptureIsolationEstablished
+            renderCaptureIsolationQuietFrameCount =
+                state.renderCaptureIsolationQuietFrameCount
+            hasReliableEchoCancellation =
+                state.hasReliableEchoCancellation
+            poorResidualEchoFrameCount = state.poorResidualEchoFrameCount
+            playbackSequence = state.playbackSequence
+            sourceGateEpochSequence = state.sourceGateEpochSequence
+            lastDriftSkew = Int64(renderFrameCount) - Int64(captureFrameCount)
+            driftTrend = "stable"
+            return true
         }
     }
 
@@ -1885,41 +2485,198 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     #if DEBUG
-    private func recordAcousticReplayCaptureFrame(
-        rawCapture: [Float],
-        renderReference: [Float]?,
-        processedCapture: [Float],
-        timingMatch: TimingMatch?,
-        observation: MacSpeechAcousticObservationSnapshot
-    ) {
+    private func makeAcousticReplayInitialState()
+        -> MacSpeechAcousticReplayInitialStateSnapshot {
+        MacSpeechAcousticReplayInitialStateSnapshot(
+            mode: mode.rawValue,
+            renderFIFOSamples: renderFIFO,
+            captureFIFOSamples: captureFIFO,
+            fifoSampleCapacity: fifoSampleCapacity,
+            renderRemainderHostTimeNanoseconds:
+                renderRemainderHostTimeNanoseconds,
+            captureRemainderHostTimeNanoseconds:
+                captureRemainderHostTimeNanoseconds,
+            renderFrameCount: renderFrameCount,
+            captureFrameCount: captureFrameCount,
+            delayMilliseconds: delayMilliseconds,
+            presentationDelayMilliseconds: presentationDelayMilliseconds,
+            captureProcessingNanoseconds: UInt64(max(
+                0,
+                (captureProcessingMilliseconds * 1_000_000).rounded()
+            )),
+            backendStats: MacSpeechAcousticReplayBackendStatsSnapshot(
+                backendStats
+            ),
+            timingHistoryFrameCount: renderTimingHistory.count,
+            timingLockCandidateMilliseconds:
+                timingLockCandidateMilliseconds,
+            timingLockCandidateFrameCount: timingLockCandidateFrameCount,
+            timingLockedDelayMilliseconds: timingLockedDelayMilliseconds,
+            timingLockConsecutiveMissFrameCount:
+                timingLockConsecutiveMissFrameCount,
+            alignedDelayMilliseconds: alignedDelayMilliseconds,
+            rawEchoGainBaseline: rawEchoGainBaseline,
+            residualEchoGainBaseline: residualEchoGainBaseline,
+            linearAECOutputGainBaseline: linearAECOutputGainBaseline,
+            residualEchoBaselineFrameCount: residualEchoBaselineFrameCount,
+            residualEchoBaselineFrozen: residualEchoBaselineFrozen,
+            sourceGateOpen: sourceGateOpen,
+            sourceGatePreRollFrameCount: sourceGatePreRoll.count,
+            sourceGateConfirmationFrameCount:
+                sourceGateConfirmationFrameCount,
+            sourceGateNonUserHangoverFrameCount:
+                sourceGateNonUserHangoverFrameCount,
+            sourceGateCandidateNearEndFrameCount:
+                sourceGateCandidateNearEndFrameCount,
+            sourceGateCandidateDoubleTalkFrameCount:
+                sourceGateCandidateDoubleTalkFrameCount,
+            consecutiveSourceAlignmentUnavailableFrameCount:
+                consecutiveSourceAlignmentUnavailableFrameCount,
+            consecutiveSourceUncertainFrameCount:
+                consecutiveSourceUncertainFrameCount,
+            pendingSourceGateReset: pendingSourceGateReset,
+            renderCaptureIsolationEstablished:
+                renderCaptureIsolationEstablished,
+            renderCaptureIsolationQuietFrameCount:
+                renderCaptureIsolationQuietFrameCount,
+            hasReliableEchoCancellation: hasReliableEchoCancellation,
+            poorResidualEchoFrameCount: poorResidualEchoFrameCount,
+            playbackSequence: playbackSequence,
+            sourceGateEpochSequence: sourceGateEpochSequence,
+            playbackActive: isPlaybackActive,
+            routeRebuilding: isRouteRebuilding,
+            fallbackReason: fallbackReason?.rawValue
+        )
+    }
+
+    private func beginAcousticReplayAudioCall(
+        kind: MacSpeechAcousticReplayAudioCallKind,
+        samples: [Float],
+        hostTimeNanoseconds: UInt64?
+    ) -> AcousticReplayAudioCallContext? {
         guard let capture = acousticReplayCapture,
+              !capture.isSealed else { return nil }
+        if capture.startedAt == nil {
+            capture.startedAt = Date()
+        }
+        let sampleOffset: Int
+        let firstFrameIndex: Int
+        switch kind {
+        case .render:
+            sampleOffset = capture.chronologicalRenderSamples.count
+            firstFrameIndex = capture.renderFrames.count
+            capture.chronologicalRenderSamples.append(contentsOf: samples)
+        case .capture:
+            sampleOffset = capture.rawMicrophoneSamples.count
+            firstFrameIndex = capture.captureFrames.count
+            capture.rawMicrophoneSamples.append(contentsOf: samples)
+        }
+        return AcousticReplayAudioCallContext(
+            ordinal: capture.takeOrdinal(),
+            kind: kind,
+            sampleOffset: sampleOffset,
+            sampleCount: samples.count,
+            hostTimeNanoseconds: hostTimeNanoseconds,
+            firstFrameIndex: firstFrameIndex,
+            backendStatsBefore:
+                MacSpeechAcousticReplayBackendStatsSnapshot(backendStats)
+        )
+    }
+
+    private func finishAcousticReplayAudioCall(
+        _ context: AcousticReplayAudioCallContext?
+    ) {
+        guard let context,
+              let capture = acousticReplayCapture,
+              !capture.isSealed else { return }
+        let frameCount: Int
+        switch context.kind {
+        case .render:
+            frameCount = capture.renderFrames.count - context.firstFrameIndex
+        case .capture:
+            frameCount = capture.captureFrames.count - context.firstFrameIndex
+        }
+        capture.audioCalls.append(MacSpeechAcousticReplayAudioCallSnapshot(
+            ordinal: context.ordinal,
+            kind: context.kind,
+            sampleOffset: context.sampleOffset,
+            sampleCount: context.sampleCount,
+            hostTimeNanoseconds: context.hostTimeNanoseconds,
+            firstFrameIndex: context.firstFrameIndex,
+            frameCount: frameCount,
+            backendStatsBefore: context.backendStatsBefore,
+            backendStatsAfter:
+                MacSpeechAcousticReplayBackendStatsSnapshot(backendStats)
+        ))
+        if context.kind == .capture,
+           capture.sawPlaybackStart,
+           capture.postPlaybackCaptureFrameCount
+            >= capture.targetPostPlaybackCaptureFrameCount {
+            sealAcousticReplayCaptureLocked(reason: .targetReached)
+        }
+    }
+
+    private func recordAcousticReplayRenderFrame(
+        call: AcousticReplayAudioCallContext?,
+        hostTimeNanoseconds: UInt64?
+    ) {
+        guard let call,
+              let capture = acousticReplayCapture,
+              !capture.isSealed else { return }
+        let frame = MacSpeechAcousticReplayRenderFrameSnapshot(
+            callOrdinal: call.ordinal,
+            frameInCall: capture.renderFrames.count - call.firstFrameIndex,
+            renderFrameIndex: renderFrameCount,
+            hostTimeNanoseconds: hostTimeNanoseconds,
+            aecBufferDelayMilliseconds: delayMilliseconds,
+            backendStats: MacSpeechAcousticReplayBackendStatsSnapshot(
+                backendStats
+            )
+        )
+        capture.renderFrames.append(frame)
+        if let hostTimeNanoseconds {
+            capture.renderCallOrdinalByHostTime[hostTimeNanoseconds] =
+                call.ordinal
+        }
+    }
+
+    private func recordAcousticReplayCaptureFrame(
+        call: AcousticReplayAudioCallContext?,
+        rawCapture: [Float],
+        processedCapture: [Float],
+        linearAECOutput: [Float],
+        timingMatch: TimingMatch?,
+        observation: MacSpeechAcousticObservationSnapshot,
+        emittedSpans: [MacSpeechAcousticCaptureSpan]
+    ) {
+        guard let call,
+              let capture = acousticReplayCapture,
               !capture.isSealed,
               rawCapture.count == Self.frameSampleCount,
-              processedCapture.count == Self.frameSampleCount else { return }
-        let matchedRender: [Float]
-        if let renderReference,
-           renderReference.count == Self.frameSampleCount {
-            matchedRender = renderReference
-        } else {
-            matchedRender = Self.silentAcousticReplayRenderFrame
-        }
-        let now = Date()
-        if capture.startedAt == nil {
-            capture.startedAt = now
-        }
-        let sampleOffset = capture.rawMicrophoneSamples.count
-        capture.rawMicrophoneSamples.append(contentsOf: rawCapture)
-        capture.renderReferenceSamples.append(contentsOf: matchedRender)
+              processedCapture.count == Self.frameSampleCount,
+              linearAECOutput.count
+                == Self.linearOutputFrameSampleCount else { return }
+        let cleanOffset = capture.aecCleanSamples.count
+        let linearOffset = capture.aecLinearSamples.count
         capture.aecCleanSamples.append(contentsOf: processedCapture)
-        capture.frames.append(MacSpeechAcousticReplayFrameSnapshot(
+        capture.aecLinearSamples.append(contentsOf: linearAECOutput)
+        capture.captureFrames.append(MacSpeechAcousticReplayFrameSnapshot(
+            callOrdinal: call.ordinal,
+            frameInCall: capture.captureFrames.count - call.firstFrameIndex,
             captureFrameIndex: observation.captureFrameIndex,
-            sampleOffset: sampleOffset,
+            aecCleanSampleOffset: cleanOffset,
+            aecLinearSampleOffset: linearOffset,
             timestampNanoseconds:
                 observation.captureHostTimeNanoseconds
                     ?? DispatchTime.now().uptimeNanoseconds,
             captureHostTimeNanoseconds:
                 observation.captureHostTimeNanoseconds,
             timingMatchAvailable: timingMatch != nil,
+            matchedRenderCallOrdinal: timingMatch.flatMap {
+                capture.renderCallOrdinalByHostTime[
+                    $0.renderHostTimeNanoseconds
+                ]
+            },
             matchedRenderHostTimeNanoseconds:
                 timingMatch?.renderHostTimeNanoseconds,
             timingDelayMilliseconds: timingMatch?.delayMilliseconds,
@@ -1931,6 +2688,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 observation.sourceAlignmentDelayMilliseconds,
             estimatedDelayMilliseconds:
                 observation.estimatedDelayMilliseconds,
+            backendStats: MacSpeechAcousticReplayBackendStatsSnapshot(
+                backendStats
+            ),
             inputClassification: observation.inputClassification,
             sourceGateOpen: observation.sourceGateOpen,
             sourceGateEpoch: observation.sourceGateEpoch,
@@ -1938,14 +2698,80 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             isPlaybackActive: observation.isPlaybackActive,
             rawCaptureRMS: observation.rawCaptureRMS,
             processedCaptureRMS: observation.processedCaptureRMS,
+            linearAECOutputRMS: observation.linearAECOutputRMS,
+            linearRenderCorrelation: observation.linearRenderCorrelation,
+            processedLinearCorrelation: processedLinearCorrelation,
             residualRenderCorrelation:
-                observation.residualRenderCorrelation
+                observation.residualRenderCorrelation,
+            timingLockCandidateMilliseconds:
+                timingLockCandidateMilliseconds,
+            timingLockCandidateFrameCount: timingLockCandidateFrameCount,
+            timingLockedDelayMilliseconds: timingLockedDelayMilliseconds,
+            timingLockConsecutiveMissFrameCount:
+                timingLockConsecutiveMissFrameCount,
+            rawEchoGainBaseline: rawEchoGainBaseline,
+            residualEchoGainBaseline: residualEchoGainBaseline,
+            linearAECOutputGainBaseline: linearAECOutputGainBaseline,
+            residualEchoBaselineFrameCount: residualEchoBaselineFrameCount,
+            residualEchoBaselineFrozen: residualEchoBaselineFrozen,
+            sourceGatePreRollFrameCount: sourceGatePreRoll.count,
+            sourceGateConfirmationFrameCount:
+                sourceGateConfirmationFrameCount,
+            sourceGateNonUserHangoverFrameCount:
+                sourceGateNonUserHangoverFrameCount,
+            pendingSourceGateReset: pendingSourceGateReset,
+            renderCaptureIsolationEstablished:
+                renderCaptureIsolationEstablished,
+            renderCaptureIsolationQuietFrameCount:
+                renderCaptureIsolationQuietFrameCount,
+            emittedSpans: emittedSpans.map {
+                MacSpeechAcousticReplayEmittedSpanSnapshot(
+                    captureFrameIndex: $0.observation.captureFrameIndex,
+                    sourceGateOpen: $0.observation.sourceGateOpen,
+                    sourceGateEpoch: $0.observation.sourceGateEpoch,
+                    silenced: $0.samples.allSatisfy { $0 == 0 }
+                )
+            }
         ))
-        guard capture.frames.count >= capture.targetCaptureFrameCount else {
-            return
+        if capture.sawPlaybackStart {
+            capture.postPlaybackCaptureFrameCount += 1
         }
+    }
+
+    private func recordAcousticReplayControl(
+        kind: MacSpeechAcousticReplayControlKind,
+        outputPresentationLatencySeconds: Double? = nil,
+        capturePresentationLatencySeconds: Double? = nil,
+        captureProcessingDurationNanoseconds: UInt64? = nil
+    ) {
+        guard let capture = acousticReplayCapture,
+              !capture.isSealed else { return }
+        if capture.startedAt == nil {
+            capture.startedAt = Date()
+        }
+        capture.controlEvents.append(
+            MacSpeechAcousticReplayControlEventSnapshot(
+                ordinal: capture.takeOrdinal(),
+                kind: kind,
+                outputPresentationLatencySeconds:
+                    outputPresentationLatencySeconds,
+                capturePresentationLatencySeconds:
+                    capturePresentationLatencySeconds,
+                captureProcessingDurationNanoseconds:
+                    captureProcessingDurationNanoseconds
+            )
+        )
+    }
+
+    private func sealAcousticReplayCaptureLocked(
+        reason: MacSpeechAcousticReplaySealReason
+    ) {
+        guard let capture = acousticReplayCapture,
+              !capture.isSealed else { return }
+        capture.finalState = makeAcousticReplayInitialState()
         capture.isSealed = true
-        capture.endedAt = now
+        capture.sealReason = reason
+        capture.endedAt = Date()
     }
     #endif
 
@@ -2041,6 +2867,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private func enterFallback(_ reason: MacSpeechAECFallbackReason) {
+        #if DEBUG
+        sealAcousticReplayCaptureLocked(reason: .hostFallback)
+        #endif
         if mode != .halfDuplexFallback || fallbackReason != reason {
             fallbackCount &+= 1
         }
