@@ -125,6 +125,7 @@ private struct MacSpeechAcousticEchoHostTests {
         #endif
         testFutureRenderTimestampIsCaptureCausal()
         testTimingLockDoesNotJumpOnRepeatedRender()
+        testUnsupportedExpectedTimingDiscoversActualPath()
         testTimingLockReacquiresShiftedPath()
         testSourceGateEpochDiagnosticsAreBounded()
         testTimingHistoryIsBoundedAndReset()
@@ -247,9 +248,9 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(snapshot.captureFrameCount == 4
                    && snapshot.captureFIFOSampleCount == 137,
                "irregular callback keeps only its incomplete remainder")
-        expect(snapshot.inputClassification == .echoOnly
+        expect(snapshot.inputClassification == .uncertain
                    && snapshot.sourceGateOpen,
-               "callback may end on echo after opening the user gate")
+               "one historical echo frame stays uncertain during hangover")
         expect(spans.count == 4,
                "confirmed pre-roll and trailing echo retain four 10 ms spans")
         expect(spans.map(\.observation.captureFrameIndex) == [1, 2, 3, 4],
@@ -274,13 +275,13 @@ private struct MacSpeechAcousticEchoHostTests {
                    },
                "confirmed pre-roll binds exact positive frames to one epoch")
         let trailingObservation = spans.last?.observation
-        expect(trailingObservation?.inputClassification == .echoOnly
+        expect(trailingObservation?.inputClassification == .uncertain
                    && trailingObservation.map {
                        MacSpeechAudioActivityEvidenceKind.classify(
                            observation: $0
                        )
                    } == MacSpeechAudioActivityEvidenceKind.none,
-               "open-gate echo hangover never becomes user evidence")
+               "untrusted open-gate hangover never becomes user evidence")
         let packets = convertedPackets(captureSpans: spans)
         let positivePackets = packets.filter {
             $0.activityEvidenceKind == .sourceGatedNearEnd
@@ -543,9 +544,10 @@ private struct MacSpeechAcousticEchoHostTests {
         }, "replay records matched delay and correlation per frame")
         expect(capture.captureFrames.last?.sourceAlignmentLocked == true,
                "replay records per-frame alignment lock")
-        expect(capture.captureFrames.allSatisfy {
-            $0.inputClassification == .echoOnly && !$0.sourceGateOpen
-        }, "replay records classifier and final source-gate state")
+        expect(capture.captureFrames.map(\.inputClassification) == [
+            .uncertain, .uncertain, .echoOnly
+        ] && capture.captureFrames.allSatisfy { !$0.sourceGateOpen },
+               "replay records three-frame trusted echo acquisition")
         expect(!host.armAcousticReplayCapture(
             attemptID: UUID(),
             targetCaptureFrameCount: 1
@@ -646,6 +648,47 @@ private struct MacSpeechAcousticEchoHostTests {
                "stable repeated speech does not trigger reacquisition")
     }
 
+    private static func testUnsupportedExpectedTimingDiscoversActualPath() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .webRTCAEC3,
+            backend: backend
+        )
+        _ = host.configure()
+        host.updateDelay(
+            outputPresentationLatencySeconds: 0.08,
+            capturePresentationLatencySeconds: 0
+        )
+        host.playbackStarted()
+        let start: UInt64 = 35_000_000_000
+        let renderFrames = (0 ..< 30).map { index in
+            testSignal(seed: UInt32(2_550 + index), amplitude: 0.3)
+        }
+        for (index, frame) in renderFrames.enumerated() {
+            host.processRender(
+                frame,
+                hostTimeNanoseconds:
+                    start + UInt64(index) * 10_000_000
+            )
+        }
+
+        for index in 0 ..< 10 {
+            _ = host.processCapture(
+                renderFrames[16 + index],
+                hostTimeNanoseconds:
+                    start + UInt64(30 + index) * 10_000_000
+            )
+        }
+
+        let snapshot = host.snapshot()
+        expect(snapshot.sourceAlignmentLocked
+                   && snapshot.sourceAlignmentDelayMilliseconds == 140,
+               "unsupported expected delay discovers the actual echo path")
+        expect(!snapshot.sourceGateOpen
+                   && snapshot.sourceForwardedFrameCount == 0,
+               "timing reacquisition keeps resident-only PCM suppressed")
+    }
+
     private static func testTimingLockReacquiresShiftedPath() {
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
@@ -740,8 +783,8 @@ private struct MacSpeechAcousticEchoHostTests {
                "source gate epoch records deterministic closure")
         expect(epochs.last?.aecBufferDelayMillisecondsAtOpen == 0
                    && epochs.last?.sourceAlignmentDelayMillisecondsAtOpen
-                       == 90,
-               "source gate epoch keeps delay semantics separate")
+                       == nil,
+               "near-end output cannot manufacture an alignment lock")
     }
 
     private static func testEchoOnlySourceGate() {
@@ -762,15 +805,15 @@ private struct MacSpeechAcousticEchoHostTests {
         let snapshot = host.snapshot()
         expect(isSilence(output),
                "aligned resident-only echo becomes one silence frame")
-        expect(snapshot.inputClassification == .echoOnly,
-               "resident-only echo is classified from PCM correlation")
+        expect(snapshot.inputClassification == .uncertain,
+               "one historical echo peak has no classification authority")
         expect(!snapshot.sourceGateOpen,
                "resident-only echo keeps the source gate closed")
         expect(snapshot.sourceGatePreRollFrameCount == 0,
                "resident-only echo is not retained as user pre-roll")
-        expect(snapshot.echoOnlyFrameCount == 1
+        expect(snapshot.uncertainFrameCount == 1
                    && snapshot.sourceSuppressedFrameCount == 1,
-               "resident-only diagnostics count the suppressed frame")
+               "untrusted resident evidence remains suppressed")
         expect(snapshot.sourceTimingCandidateFrameCount == 1,
                "resident-only diagnostics count aligned timing")
         expect(snapshot.mode == .webRTCAEC3,
@@ -823,10 +866,10 @@ private struct MacSpeechAcousticEchoHostTests {
             hostTimeNanoseconds: 2_120_000_000
         )), "confirmed speech epoch stays continuous through one echo frame")
         snapshot = host.snapshot()
-        expect(snapshot.inputClassification == .echoOnly
+        expect(snapshot.inputClassification == .uncertain
                    && snapshot.sourceGateOpen
                    && snapshot.sourceGateCloseCount == 0,
-               "one echo frame cannot fragment confirmed user speech")
+               "one untrusted echo frame cannot fragment confirmed speech")
         for index in 1 ..< 19 {
             expect(!isSilence(host.processCapture(
                 render,
@@ -1070,8 +1113,8 @@ private struct MacSpeechAcousticEchoHostTests {
         }
 
         var snapshot = host.snapshot()
-        expect(snapshot.residualEchoBaselineFrameCount == 10,
-               "resident-only frames establish the route baseline")
+        expect(snapshot.residualEchoBaselineFrameCount == 8,
+               "trusted resident frames establish the route baseline")
         expect(abs(snapshot.rawEchoGainBaseline - 0.9) < 0.001,
                "raw echo coupling is normalized against render level")
         expect(abs(snapshot.residualEchoGainBaseline - 0.12) < 0.001,
@@ -1128,45 +1171,49 @@ private struct MacSpeechAcousticEchoHostTests {
                "external-output user audio reaches a 330 ms run")
 
         backend.setLinearOutput([Float](repeating: 0, count: 160))
-        for _ in 0 ..< 30 {
+        for index in 0 ..< 30 {
             host.processRender(render, hostTimeNanoseconds: renderTime)
             let continued = host.processCapture(
                 rawDoubleTalk,
                 hostTimeNanoseconds: renderTime + 146_000_000
             )
-            expect(continued.count == 480 && !isSilence(continued),
-                   "one surviving AEC near-end path keeps the open user epoch")
+            expect(index < 19
+                    ? continued.count == 480 && !isSilence(continued)
+                    : isSilence(continued),
+                   "weak-only continuation closes after the bounded window")
             renderTime += 10_000_000
         }
         snapshot = host.snapshot()
-        expect(snapshot.inputClassification == .echoOnly
-                   && snapshot.sourceGateOpen,
-               "adaptive continuation does not relabel weak evidence")
+        expect(snapshot.inputClassification == .uncertain
+                   && !snapshot.sourceGateOpen
+                   && snapshot.lastSourceGateCloseReason
+                       == .sourceEvidenceReset,
+               "uncertain continuation cannot keep the gate open forever")
         expect(snapshot.adaptiveEvidenceCandidateFrameCount == 63
                    && snapshot.adaptiveDoubleTalkFrameCount == 33,
                "continuation reuses adaptive evidence without false double-talk")
-        expect(snapshot.maximumSourceGateOpenFrameCount == 63
+        expect(snapshot.maximumSourceGateOpenFrameCount == 53
                    && snapshot.maximumContinuousSourceForwardedFrameCount
-                       == 63,
-               "confirmed user PCM remains continuous for 630 ms")
+                       == 52,
+               "weak-only forwarding is bounded to the existing reset window")
 
         backend.setCaptureOutput(residualEcho)
         backend.setLinearOutput(linearOutput(residualEcho))
-        for index in 0 ..< 20 {
+        for _ in 0 ..< 20 {
             host.processRender(render, hostTimeNanoseconds: renderTime)
             let tail = host.processCapture(
                 render.map { $0 * 0.9 },
                 hostTimeNanoseconds: renderTime + 146_000_000
             )
-            expect(index == 19 ? isSilence(tail) : !isSilence(tail),
-                   "adaptive user epoch closes without frame fragmentation")
+            expect(isSilence(tail),
+                   "resident-only tail stays suppressed after bounded closure")
             renderTime += 10_000_000
         }
         snapshot = host.snapshot()
         expect(!snapshot.sourceGateOpen
                    && snapshot.lastSourceGateCloseReason
-                       == .nonUserHangover,
-               "resident-only tail closes the adaptive user epoch")
+                       == .sourceEvidenceReset,
+               "resident-only tail cannot reopen the closed user epoch")
     }
 
     private static func testBaselineFreezesBeforeQuieterUserSpeech() {
@@ -1179,7 +1226,7 @@ private struct MacSpeechAcousticEchoHostTests {
         host.playbackStarted()
         var renderTime: UInt64 = 50_000_000_000
 
-        for index in 0 ..< 5 {
+        for index in 0 ..< 7 {
             let render = testSignal(
                 seed: UInt32(3_000 + index),
                 amplitude: 0.55
@@ -1198,7 +1245,7 @@ private struct MacSpeechAcousticEchoHostTests {
         let trained = host.snapshot()
         expect(trained.residualEchoBaselineFrameCount == 5
                    && !trained.residualEchoBaselineFrozen,
-               "five resident-only frames establish an unfrozen baseline")
+               "five trusted resident frames establish an unfrozen baseline")
         let rawBaseline = trained.rawEchoGainBaseline
         let residualBaseline = trained.residualEchoGainBaseline
         let linearBaseline = trained.linearAECOutputGainBaseline
@@ -1336,9 +1383,9 @@ private struct MacSpeechAcousticEchoHostTests {
             hostTimeNanoseconds: 4_580_000_000
         )), "final resident mix remains one zeroed far-end reference")
         let snapshot = host.snapshot()
-        expect(snapshot.inputClassification == .echoOnly
-                   && snapshot.echoOnlyFrameCount == 1,
-               "mixed resident playback cannot be mistaken for near-end speech")
+        expect(snapshot.inputClassification == .uncertain
+                   && snapshot.uncertainFrameCount == 1,
+               "one mixed resident frame stays suppressed without authority")
     }
 
     private static func testLongLoudEchoStaysSuppressed() {
@@ -1367,9 +1414,10 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(snapshot.mode == .webRTCAEC3
                    && snapshot.fallbackCount == 0,
                "aligned loud echo does not destabilize AEC")
-        expect(snapshot.echoOnlyFrameCount == 300
+        expect(snapshot.echoOnlyFrameCount == 298
+                   && snapshot.uncertainFrameCount == 2
                    && snapshot.sourceSuppressedFrameCount == 300,
-               "long loud playback is fully counted as resident echo")
+               "long loud playback stays fully suppressed during lock-in")
         expect(snapshot.sourceTimingCandidateFrameCount == 300
                    && snapshot.sourceTimingUnavailableFrameCount == 0,
                "long loud playback retains timing evidence")
@@ -1377,7 +1425,7 @@ private struct MacSpeechAcousticEchoHostTests {
                "resident-only playback never opens the source gate")
         expect(snapshot.maximumContinuousSourceForwardedFrameCount == 0,
                "resident-only playback never emits nonzero source PCM")
-        expect(snapshot.residualEchoBaselineFrameCount == 300
+        expect(snapshot.residualEchoBaselineFrameCount == 298
                    && abs(snapshot.residualEchoGainBaseline - 0.5) < 0.001,
                "resident-only playback learns a stable residual gain")
         expect(snapshot.adaptiveDoubleTalkFrameCount == 0
@@ -1392,7 +1440,7 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(snapshot.mode == .webRTCAEC3
                    && snapshot.isPlaybackActive,
                "diagnostic reset does not alter audio processing")
-        expect(snapshot.residualEchoBaselineFrameCount == 300,
+        expect(snapshot.residualEchoBaselineFrameCount == 298,
                "diagnostic reset preserves the live echo baseline")
     }
 
@@ -1534,9 +1582,9 @@ private struct MacSpeechAcousticEchoHostTests {
             )
         }
         snapshot = host.snapshot()
-        expect(snapshot.renderCaptureCorrelation > 0.25
-                   && snapshot.renderCaptureCorrelation < 0.35,
-               "fixture reproduces the independent-speech gray zone")
+        expect(snapshot.renderCaptureCorrelation == 0
+                   && !snapshot.sourceAlignmentLocked,
+               "established isolation rejects unrelated historical matches")
         expect(snapshot.inputClassification == .nearEndSpeech,
                "isolated gray-zone speech is classified as near-end")
         expect(snapshot.sourceGateOpen && opened.count == 3 * 480,
@@ -1577,12 +1625,29 @@ private struct MacSpeechAcousticEchoHostTests {
         )
         snapshot = host.snapshot()
         expect(isSilence(echo)
-                   && snapshot.inputClassification == .echoOnly
+                   && snapshot.inputClassification == .uncertain
                    && !snapshot.sourceGateOpen,
-               "late aligned echo stays suppressed after isolation warm-up")
-        expect(!snapshot.renderCaptureIsolationEstablished
-                   && snapshot.renderCaptureIsolationRevocationCount == 1,
-               "high-confidence resident echo revokes isolation evidence")
+               "one historical echo peak has no classification authority")
+        expect(snapshot.renderCaptureIsolationEstablished,
+               "one untrusted peak cannot revoke established isolation")
+        for index in 1 ..< 3 {
+            let renderTime = baseTime + 1_500_000_000
+                + UInt64(index) * 10_000_000
+            host.processRender(
+                latestRender,
+                hostTimeNanoseconds: renderTime
+            )
+            expect(isSilence(host.processCapture(
+                latestRender,
+                hostTimeNanoseconds: renderTime + 80_000_000
+            )), "post-isolation resident energy remains source-gated")
+        }
+        snapshot = host.snapshot()
+        expect(snapshot.inputClassification == .uncertain
+                   && !snapshot.sourceGateOpen
+                   && snapshot.renderCaptureIsolationEstablished
+                   && snapshot.renderCaptureIsolationRevocationCount == 0,
+               "historical peaks cannot revoke established isolation")
     }
 
     private static func testAmbiguousSourceStaysGatedAndRecovers() {
@@ -1613,8 +1678,9 @@ private struct MacSpeechAcousticEchoHostTests {
                    && snapshot.fallbackReason == nil,
                "ambiguous source stays gated without disabling AEC")
         expect(snapshot.uncertainFrameCount == 20
-                   && snapshot.sourceTimingCandidateFrameCount == 20,
-               "diagnostics distinguish timing from attribution")
+                   && snapshot.sourceTimingCandidateFrameCount == 0
+                   && snapshot.sourceTimingUnavailableFrameCount == 20,
+               "untrusted historical peaks are not timing associations")
         expect(snapshot.sourceGatePreRollFrameCount == 0,
                "bounded ambiguous pre-roll is discarded")
 

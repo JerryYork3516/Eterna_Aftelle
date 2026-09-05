@@ -733,7 +733,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let maximumBaselineGainIncreaseRatio = 1.25
     private static let timingLockAcquisitionFrameCount = 3
     private static let timingLockCandidateToleranceMilliseconds = 20.0
-    private static let timingLockSearchRadiusMilliseconds = 30.0
+    private static let timingAssociationProgressToleranceMilliseconds = 5.0
     private static let timingLockMissFrameCount = 5
     private static let requiredSourceGateConfirmationFrames = 3
     private static let maximumSourceGateNonUserHangoverFrames = 20
@@ -827,6 +827,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var timingLockCandidateFrameCount = 0
     private var timingLockedDelayMilliseconds: Double?
     private var timingLockConsecutiveMissFrameCount = 0
+    private var timingAssociationCaptureHostTimeNanoseconds: UInt64?
+    private var timingAssociationRenderHostTimeNanoseconds: UInt64?
+    private var timingAssociationFollowsExpectedTimeline = false
     private var sourceAlignmentMissCount: UInt64 = 0
     private var sourceAlignmentReacquisitionCount: UInt64 = 0
     private var lastSourceGateCloseReason: MacSpeechSourceGateCloseReason?
@@ -1108,12 +1111,22 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                             frameHostTimeNanoseconds,
                         timingMatch: timingMatch
                     )
+                    let reportedTimingMatch: TimingMatch?
+                    if let timingMatch,
+                       timingMatch.associationOrigin == .historicalDiscovery,
+                       !timingMatchSupportsEchoAssociation(timingMatch) {
+                        reportedTimingMatch = nil
+                    } else {
+                        reportedTimingMatch = timingMatch
+                    }
+                    updateTimingLock(with: timingMatch)
                     updateRenderCaptureIsolationEvidence(
                         timingMatch: timingMatch
                     )
                     let gatedSpans = gatedCaptureSpans(
                         processedFrame,
-                        timingMatch: timingMatch,
+                        classificationTimingMatch: timingMatch,
+                        reportedTimingMatch: reportedTimingMatch,
                         captureFrameIndex: captureFrameCount &+ 1
                     )
                     output.append(contentsOf: gatedSpans)
@@ -1123,7 +1136,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         rawCapture: frame,
                         processedCapture: processedFrame,
                         linearAECOutput: captureResult.linearOutputSamples,
-                        timingMatch: timingMatch,
+                        timingMatch: reportedTimingMatch,
                         observation: makeAcousticObservationSnapshot(
                             captureFrameIndex: captureFrameCount &+ 1
                         ),
@@ -1528,11 +1541,20 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private struct TimingMatch {
+        enum AssociationOrigin {
+            case expected
+            case trackedCandidate
+            case locked
+            case historicalDiscovery
+        }
+
         let renderSamples: [Float]
+        let captureHostTimeNanoseconds: UInt64
         let renderHostTimeNanoseconds: UInt64
         let renderRMS: Double
         let delayMilliseconds: Double
         let correlation: Double
+        let associationOrigin: AssociationOrigin
     }
 
     private struct SourceGateEpochAccumulator {
@@ -1651,8 +1673,49 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
               signalRMS(captureSamples) >= Self.minimumTimingRMS else {
             return nil
         }
-        let lockedDelay = timingLockedDelayMilliseconds
+        let hasAssociationAuthority =
+            timingLockedDelayMilliseconds != nil
+            || timingLockCandidateFrameCount > 0
+        let hasChronologicalAssociation =
+            timingAssociationCaptureHostTimeNanoseconds != nil
+            && timingAssociationRenderHostTimeNanoseconds != nil
+        let shouldDiscoverHistoricalAssociation =
+            timingLockedDelayMilliseconds == nil
+            && timingLockCandidateFrameCount == 0
+            && timingLockConsecutiveMissFrameCount
+                >= Self.timingLockMissFrameCount
+            && !renderCaptureIsolationEstablished
+        let followsExistingAssociation: Bool
+        let targetRenderHostTimeNanoseconds: UInt64
+        if (hasAssociationAuthority
+                || timingAssociationFollowsExpectedTimeline),
+           hasChronologicalAssociation,
+           let previousCapture =
+                timingAssociationCaptureHostTimeNanoseconds,
+           let previousRender =
+                timingAssociationRenderHostTimeNanoseconds,
+           captureHostTimeNanoseconds > previousCapture {
+            followsExistingAssociation = true
+            targetRenderHostTimeNanoseconds = previousRender &+
+                (captureHostTimeNanoseconds - previousCapture)
+        } else {
+            followsExistingAssociation = false
+            let preferredDelayMilliseconds =
+                timingLockedDelayMilliseconds
+                ?? timingLockCandidateMilliseconds
+                ?? Double(delayMilliseconds)
+            let preferredDelayNanoseconds = UInt64(max(
+                0,
+                (preferredDelayMilliseconds * 1_000_000).rounded()
+            ))
+            targetRenderHostTimeNanoseconds =
+                captureHostTimeNanoseconds >= preferredDelayNanoseconds
+                ? captureHostTimeNanoseconds - preferredDelayNanoseconds
+                : 0
+        }
         var bestMatch: TimingMatch?
+        var bestDistanceNanoseconds: UInt64?
+        var fallbackMatch: TimingMatch?
         for renderFrame in renderTimingHistory {
             guard captureHostTimeNanoseconds >= renderFrame.hostTimeNanoseconds
             else { continue }
@@ -1663,34 +1726,103 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                   renderFrame.rms >= Self.minimumTimingRMS else {
                 continue
             }
-            if let lockedDelay,
-               abs(delayMilliseconds - lockedDelay)
-                > Self.timingLockSearchRadiusMilliseconds {
-                continue
+            if followsExistingAssociation {
+                guard timingAssociationIsContinuous(
+                    captureHostTimeNanoseconds: captureHostTimeNanoseconds,
+                    renderHostTimeNanoseconds: renderFrame.hostTimeNanoseconds
+                ) else { continue }
             }
             let correlation = normalizedCorrelation(
                 captureSamples,
                 renderFrame.samples
             )
-            if bestMatch == nil
-                || correlation >= (bestMatch?.correlation ?? 0) {
-                bestMatch = TimingMatch(
+            if !followsExistingAssociation,
+               fallbackMatch == nil
+                    || correlation >= (fallbackMatch?.correlation ?? 0) {
+                fallbackMatch = TimingMatch(
                     renderSamples: renderFrame.samples,
+                    captureHostTimeNanoseconds:
+                        captureHostTimeNanoseconds,
                     renderHostTimeNanoseconds:
                         renderFrame.hostTimeNanoseconds,
                     renderRMS: renderFrame.rms,
                     delayMilliseconds: delayMilliseconds,
-                    correlation: correlation
+                    correlation: correlation,
+                    associationOrigin: .historicalDiscovery
+                )
+            }
+            let distanceNanoseconds = renderFrame.hostTimeNanoseconds
+                    >= targetRenderHostTimeNanoseconds
+                ? renderFrame.hostTimeNanoseconds
+                    - targetRenderHostTimeNanoseconds
+                : targetRenderHostTimeNanoseconds
+                    - renderFrame.hostTimeNanoseconds
+            let maximumDistanceMilliseconds =
+                followsExistingAssociation
+                ? Self.timingAssociationProgressToleranceMilliseconds
+                : Self.timingLockCandidateToleranceMilliseconds
+            guard Double(distanceNanoseconds) / 1_000_000
+                    <= maximumDistanceMilliseconds else {
+                continue
+            }
+            if bestDistanceNanoseconds == nil
+                || distanceNanoseconds < (bestDistanceNanoseconds ?? .max)
+                || (distanceNanoseconds == bestDistanceNanoseconds
+                    && correlation >= (bestMatch?.correlation ?? 0)) {
+                bestDistanceNanoseconds = distanceNanoseconds
+                bestMatch = TimingMatch(
+                    renderSamples: renderFrame.samples,
+                    captureHostTimeNanoseconds:
+                        captureHostTimeNanoseconds,
+                    renderHostTimeNanoseconds:
+                        renderFrame.hostTimeNanoseconds,
+                    renderRMS: renderFrame.rms,
+                    delayMilliseconds: delayMilliseconds,
+                    correlation: correlation,
+                    associationOrigin:
+                        timingLockedDelayMilliseconds != nil
+                        ? .locked
+                        : followsExistingAssociation
+                            ? .trackedCandidate
+                            : .expected
                 )
             }
         }
-        updateTimingLock(with: bestMatch)
+        if (bestMatch == nil || shouldDiscoverHistoricalAssociation),
+           !followsExistingAssociation,
+           !renderCaptureIsolationEstablished {
+            bestMatch = fallbackMatch
+        }
         return bestMatch
+    }
+
+    private func timingAssociationIsContinuous(
+        captureHostTimeNanoseconds: UInt64,
+        renderHostTimeNanoseconds: UInt64
+    ) -> Bool {
+        guard let previousCapture =
+                timingAssociationCaptureHostTimeNanoseconds,
+              let previousRender =
+                timingAssociationRenderHostTimeNanoseconds else {
+            return true
+        }
+        guard captureHostTimeNanoseconds > previousCapture,
+              renderHostTimeNanoseconds > previousRender else {
+            return false
+        }
+        let captureAdvanceMilliseconds = Double(
+            captureHostTimeNanoseconds - previousCapture
+        ) / 1_000_000
+        let renderAdvanceMilliseconds = Double(
+            renderHostTimeNanoseconds - previousRender
+        ) / 1_000_000
+        return abs(captureAdvanceMilliseconds - renderAdvanceMilliseconds)
+            <= Self.timingAssociationProgressToleranceMilliseconds
     }
 
     private func updateTimingLock(with timingMatch: TimingMatch?) {
         guard let timingMatch,
-              timingMatch.correlation >= Self.minimumTimingCorrelation else {
+              timingMatchSupportsEchoAssociation(timingMatch) else {
             if timingLockedDelayMilliseconds != nil {
                 sourceAlignmentMissCount &+= 1
                 timingLockConsecutiveMissFrameCount += 1
@@ -1700,17 +1832,40 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     timingLockCandidateMilliseconds = nil
                     timingLockCandidateFrameCount = 0
                     timingLockConsecutiveMissFrameCount = 0
+                    clearTimingAssociation()
                     alignedDelayMilliseconds = nil
                     sourceAlignmentReacquisitionCount &+= 1
                 }
             } else {
                 timingLockCandidateMilliseconds = nil
                 timingLockCandidateFrameCount = 0
+                let rejectedChronologicalAssociation =
+                    timingMatch?.associationOrigin == .expected
+                    || timingMatch?.associationOrigin == .trackedCandidate
+                    || timingAssociationFollowsExpectedTimeline
+                if rejectedChronologicalAssociation {
+                    timingLockConsecutiveMissFrameCount = min(
+                        timingLockConsecutiveMissFrameCount + 1,
+                        Self.timingLockMissFrameCount
+                    )
+                    if timingLockConsecutiveMissFrameCount
+                        >= Self.timingLockMissFrameCount {
+                        clearTimingAssociation()
+                    }
+                } else {
+                    timingLockConsecutiveMissFrameCount = 0
+                }
             }
             return
         }
 
         timingLockConsecutiveMissFrameCount = 0
+        timingAssociationCaptureHostTimeNanoseconds =
+            timingMatch.captureHostTimeNanoseconds
+        timingAssociationRenderHostTimeNanoseconds =
+            timingMatch.renderHostTimeNanoseconds
+        timingAssociationFollowsExpectedTimeline =
+            timingMatch.associationOrigin != .historicalDiscovery
         if let lockedDelay = timingLockedDelayMilliseconds {
             let updatedDelay = lockedDelay * 0.9
                 + timingMatch.delayMilliseconds * 0.1
@@ -1740,9 +1895,28 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         updateAlignedDelay(candidate)
     }
 
+    private func timingMatchSupportsEchoAssociation(
+        _ timingMatch: TimingMatch
+    ) -> Bool {
+        guard timingMatch.correlation
+                >= Self.minimumTimingCorrelation else {
+            return false
+        }
+        let bothOutputsQuiet =
+            processedCaptureRMS < Self.minimumNearEndRMS
+            && linearAECOutputRMS < Self.minimumNearEndRMS
+        let bothOutputsTrackRender =
+            residualRenderCorrelation
+                >= Self.minimumResidentOnlyResidualCorrelation
+            && linearRenderCorrelation
+                >= Self.minimumResidentOnlyResidualCorrelation
+        return bothOutputsQuiet || bothOutputsTrackRender
+    }
+
     private func gatedCaptureSpans(
         _ processedFrame: [Float],
-        timingMatch: TimingMatch?,
+        classificationTimingMatch: TimingMatch?,
+        reportedTimingMatch: TimingMatch?,
         captureFrameIndex: UInt64
     ) -> [MacSpeechAcousticCaptureSpan] {
         guard isPlaybackActive else {
@@ -1759,9 +1933,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
         inputClassification = classifyCapture(
             processedFrame,
-            timingMatch: timingMatch
+            timingMatch: classificationTimingMatch
         )
-        recordSourceClassification(timingMatch: timingMatch)
+        if classificationTimingMatch != nil,
+           reportedTimingMatch == nil {
+            clearTimingMatchIdentity()
+        }
+        recordSourceClassification(timingMatch: reportedTimingMatch)
         if sourceGateOpen {
             recordSourceGateOpenFrame()
         }
@@ -1823,8 +2001,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         timingMatch: TimingMatch?
     ) -> MacSpeechAcousticInputClassification {
         adaptiveNearEndContinuationCandidate = false
-        guard let timingMatch else { return .uncertain }
         let cleanRMS = signalRMS(processedFrame)
+        guard let timingMatch else {
+            if hasUnalignedIsolatedNearEndEvidence(cleanRMS: cleanRMS) {
+                freezeResidualEchoBaseline()
+                return .nearEndSpeech
+            }
+            return .uncertain
+        }
         let residualCorrelation = normalizedCorrelation(
             processedFrame,
             timingMatch.renderSamples
@@ -1862,7 +2046,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         ) {
             classification = .nearEndSpeech
             freezeResidualEchoBaseline()
-        } else if timingMatch.correlation
+        } else if hasUnalignedIsolatedNearEndEvidence(
+            cleanRMS: cleanRMS
+        ) {
+            classification = .nearEndSpeech
+            freezeResidualEchoBaseline()
+        } else if (timingMatch.associationOrigin == .historicalDiscovery
+                    || timingLockedDelayMilliseconds != nil),
+                  timingMatch.correlation
                     <= Self.maximumNearEndCorrelation,
                   residualCorrelation <= Self.maximumNearEndCorrelation,
                   linearRenderCorrelation
@@ -1873,8 +2064,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     >= Self.minimumNearEndRMS {
             classification = .nearEndSpeech
             freezeResidualEchoBaseline()
-        } else if timingMatch.correlation
-                    >= Self.minimumTimingCorrelation {
+        } else if timingLockedDelayMilliseconds != nil,
+                  timingMatchSupportsEchoAssociation(timingMatch) {
             classification = .echoOnly
         } else {
             classification = .uncertain
@@ -1885,6 +2076,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             timingMatch: timingMatch
         )
         return classification
+    }
+
+    private func hasUnalignedIsolatedNearEndEvidence(
+        cleanRMS: Double
+    ) -> Bool {
+        timingLockedDelayMilliseconds == nil
+            && timingLockCandidateFrameCount == 0
+            && renderCaptureIsolationEstablished
+            && rawCaptureRMS >= Self.minimumNearEndRMS
+            && cleanRMS >= Self.minimumNearEndRMS
+            && linearAECOutputRMS >= Self.minimumNearEndRMS
     }
 
     private func updateRenderCaptureIsolationEvidence(
@@ -1899,10 +2101,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
               latestRenderReferenceRMS >= Self.minimumTimingRMS,
               rawCaptureRMS < Self.minimumNearEndRMS,
               processedCaptureRMS < Self.minimumNearEndRMS,
-              linearAECOutputRMS < Self.minimumNearEndRMS,
-              timingMatch.map({
-                  $0.correlation < Self.minimumTimingCorrelation
-              }) ?? true else {
+              linearAECOutputRMS < Self.minimumNearEndRMS else {
             renderCaptureIsolationQuietFrameCount = 0
             return
         }
@@ -1956,7 +2155,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 >= Self.minimumResidentOnlyResidualCorrelation
             && linearRenderCorrelation
                 >= Self.minimumResidentOnlyResidualCorrelation
-        return bothOutputsQuiet || bothOutputsTrackRender
+        let associationCanClassifyEcho =
+            timingMatch.associationOrigin == .expected
+            || timingMatch.associationOrigin == .locked
+            || timingLockedDelayMilliseconds != nil
+        return (associationCanClassifyEcho && bothOutputsTrackRender)
+            || (timingLockedDelayMilliseconds != nil && bothOutputsQuiet)
     }
 
     private func hasImmediateDoubleTalkEvidence(
@@ -2147,7 +2351,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
 
         if timingMatch == nil,
-           rawCaptureRMS >= Self.minimumNearEndRMS {
+           rawCaptureRMS >= Self.minimumNearEndRMS,
+           inputClassification != .nearEndSpeech,
+           inputClassification != .doubleTalk {
             sourceTimingUnavailableFrameCount &+= 1
             consecutiveSourceAlignmentUnavailableFrameCount += 1
             consecutiveSourceUncertainFrameCount = 0
@@ -2902,8 +3108,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         timingLockCandidateFrameCount = 0
         timingLockedDelayMilliseconds = nil
         timingLockConsecutiveMissFrameCount = 0
+        clearTimingAssociation()
         renderCaptureIsolationEstablished = false
         renderCaptureIsolationQuietFrameCount = 0
+    }
+
+    private func clearTimingAssociation() {
+        timingAssociationCaptureHostTimeNanoseconds = nil
+        timingAssociationRenderHostTimeNanoseconds = nil
+        timingAssociationFollowsExpectedTimeline = false
     }
 
     private func resetSignalDiagnostics() {
@@ -2917,6 +3130,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         linearAECOutputRMS = 0
         linearRenderCorrelation = 0
         processedLinearCorrelation = 0
+    }
+
+    private func clearTimingMatchIdentity() {
+        matchedRenderHostTimeNanoseconds = nil
+        matchedRenderReferenceRMS = 0
     }
 
     private func resetSourceGate(
