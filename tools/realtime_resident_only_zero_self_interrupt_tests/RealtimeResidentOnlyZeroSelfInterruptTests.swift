@@ -747,6 +747,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r844-response-policy-only",
                         "--r852-subtitle-diagnostics-only",
                         "--r853-qwen-handoff-only",
+                        "--r853-qwen-repeated-reassociation-only",
                         "--r853-queued-start-only",
                         "--r851-cross-node-only",
                         "--r851-randomized-only"
@@ -786,6 +787,12 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 }
                 print("r853_qwen_app_controller_cases=\(cases)")
                 print("r853_qwen_app_controller_checks=\(checks)")
+                return
+            }
+            if CommandLine.arguments[2] == "--r853-qwen-repeated-reassociation-only" {
+                try await testR853QwenRepeatedReassociation(fixture: fixture)
+                print("r853_qwen_repeated_cases=\(cases)")
+                print("r853_qwen_repeated_checks=\(checks)")
                 return
             }
             if CommandLine.arguments[2] == "--r853-queued-start-only" {
@@ -1150,6 +1157,193 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             state = state &* 6_364_136_223_846_793_005 &+ 1
             return state
         }
+    }
+
+    private static func testR853QwenRepeatedReassociation(fixture: Data) async throws {
+        cases += 1
+        let stack = try await makeR853QwenControllerStack(
+            fixture: fixture, acknowledgementTimeout: .seconds(5)
+        )
+        let repetitions = 10
+        await stack.transport.useNextResponseID("repeated-response-0")
+        try await emitR853QwenListeningNearEnd(stack: stack)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"repeated-initial"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"repeated-initial","text":"请先回答","stash":""}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"repeated-initial"}"#
+        )
+        await stack.transport.enqueueText(
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"repeated-initial","transcript":"请先回答"}"#
+        )
+        await waitUntil("initial repeated Qwen response") {
+            await r853SentTypeCount(stack.transport, type: "response.create") == 1
+        }
+        var reassociations = 0
+        var acceptedContents = 0
+        var clearsBeforeACK = 0
+        var reboundPlaybacks = 0
+        for index in 0 ... repetitions {
+            let responseID = "repeated-response-\(index)"
+            let generation = stack.session.generation + UInt64(index)
+            let session = RealtimeBrainSessionIdentity(
+                residentID: stack.session.residentID,
+                runtimeSessionID: stack.session.runtimeSessionID,
+                brainLeaseID: stack.session.brainLeaseID,
+                routeEpoch: stack.session.routeEpoch,
+                generation: generation
+            )
+            await waitUntil("active Qwen response before overlap \(index)") {
+                await stack.adapter.activeWireResponseIDForTesting(session: session)
+                    == responseID
+            }
+            let startsBefore = stack.outputPlayer.startCount
+            let pcm = Data(repeating: UInt8(index + 1), count: 960)
+            await stack.transport.enqueueText(
+                #"{"type":"response.audio.delta","response_id":"\#(responseID)","delta":"\#(pcm.base64EncodedString())"}"#
+            )
+            await waitUntilOnMainActor("N+1 Playback actually starts \(index)") {
+                stack.outputPlayer.startCount == startsBefore + 1
+                    && stack.outputPlayer.pendingCount == 1
+                    && stack.runtime.realtimeInterruptionEvidenceDebugSnapshot()
+                        .playbackTarget != nil
+            }
+            if index > 0 { reboundPlaybacks += 1 }
+            if index == repetitions { break }
+
+            let evidenceBefore = stack.controller.realtimeBrainInputBridgeSnapshot
+                .acousticEvidenceCount
+            try await emitR853QwenPlaybackNearEnd(stack: stack)
+            await waitUntil("formal acoustic evidence for repeated overlap \(index)") {
+                await stack.controller.refreshMicrophoneAuthorization()
+                return await stack.controller.realtimeBrainInputBridgeSnapshot
+                    .acousticEvidenceCount > evidenceBefore
+            }
+            await stack.transport.holdResponseCancellationAcknowledgements()
+            await stack.transport.useNextResponseID("repeated-response-\(index + 1)")
+            let provisionalID = "repeated-provisional-\(index)"
+            let finalID = "repeated-final-\(index)"
+            let transcript = "请解释你刚才的第\(index + 1)个观点"
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_started","item_id":"\#(provisionalID)","audio_start_ms":\#(index * 10000 + 100)}"#
+            )
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"\#(provisionalID)","text":"请解释你刚才","stash":""}"#
+            )
+            await waitUntil("Runtime confirms and requests cancel \(index)") {
+                await r853SentTypeCount(stack.transport, type: "response.cancel")
+                    == index + 1
+            }
+            expect(stack.outputPlayer.clearScheduledPlaybackCount == index + 1
+                       && stack.outputPlayer.pendingCount == 0,
+                   "confirmed interruption clears old PCM before held cancel ACK")
+            clearsBeforeACK += 1
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"\#(finalID)","text":"\#(transcript)","stash":""}"#
+            )
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_stopped","item_id":"\#(finalID)","audio_end_ms":\#(index * 10000 + 1600)}"#
+            )
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(finalID)","transcript":"\#(transcript)"}"#
+            )
+            await waitUntil("item reassociation while cancel ACK is held \(index)") {
+                await stack.controller.refreshMicrophoneAuthorization()
+                return await stack.controller.realtimeSpeechDiagnosticTimeline.events
+                    .filter { $0.category == "qwen_input_item_reassociated" }.count
+                    == index + 1
+            }
+            reassociations += 1
+            expect(await r853SentTypeCount(stack.transport, type: "response.create")
+                       == index + 1,
+                   "held cancel ACK cannot authorize the next response early")
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+            await waitUntil("reassociated N+1 content authorizes response \(index)") {
+                await r853SentTypeCount(stack.transport, type: "response.create")
+                    == index + 2
+            }
+            await stack.controller.refreshMicrophoneAuthorization()
+            expect(stack.runtime.realtimeUserTurnDispositionDebugSnapshot()
+                       .lastCanonicalTranscript == transcript,
+                   "N+1 receives the exact reassociated interruption content")
+            acceptedContents += 1
+            expect(stack.controller.formalSpeechRouteDebugSnapshot.generation
+                       == generation + 1
+                       && stack.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+                       && stack.controller.realtimeBrainOutputBridgeSnapshot.hasActiveReceiveLoop
+                       && stack.runtime.activeBrainLeaseForTesting()?.brainLeaseID
+                           == stack.session.brainLeaseID,
+                   "repeated interruption advances once without replacing the Brain lease")
+
+            // Old item/output duplicates and a late physical completion use the
+            // public wire/player callbacks, never an internal interruption seam.
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(provisionalID)","transcript":"旧内容"}"#
+            )
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(finalID)","transcript":"\#(transcript)"}"#
+            )
+            await stack.transport.enqueueText(
+                #"{"type":"response.audio.delta","response_id":"\#(responseID)","delta":"\#(pcm.base64EncodedString())"}"#
+            )
+            await stack.transport.enqueueText(
+                #"{"type":"response.text.delta","response_id":"\#(responseID)","delta":"旧字幕"}"#
+            )
+            stack.outputPlayer.completeStoppedChunk()
+            print("r853_qwen_repeated_iteration=\(index + 1) PASS")
+        }
+        expect(await r853SentTypeCount(stack.transport, type: "response.cancel")
+                   == repetitions
+                   && stack.outputPlayer.clearScheduledPlaybackCount == repetitions
+                   && stack.controller.particleSubtitleState.text != "旧字幕",
+               "ten same-session handoffs have no extra cancel, clear or stale subtitle")
+        await stack.controller.stopSpeechAudioCapture()
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle,
+               "same-session stress Stop completes")
+        // The fake capture has no System audio-engine render lifecycle callback.
+        // Mirror its playback-ended notification only after formal Stop finishes.
+        stack.acousticEchoHost.playbackStopped()
+        await stack.controller.startRealtimeResidentBrainRoute()
+        await waitUntilOnMainActor("same controller restarts into Listening") {
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .listening
+                && stack.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+        }
+        expect(stack.runtime.activeBrainLeaseForTesting()?.brainLeaseID
+                   != stack.session.brainLeaseID,
+               "Restart acquires a fresh lease rather than resurrecting the old session")
+        try await emitR853QwenListeningNearEnd(stack: stack)
+        await stack.transport.useNextResponseID("restarted-response")
+        for event in [
+            #"{"type":"input_audio_buffer.speech_started","item_id":"restarted-user"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"restarted-user","text":"重启后继续","stash":""}"#,
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"restarted-user"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"restarted-user","transcript":"重启后继续"}"#
+        ] { await stack.transport.enqueueText(event) }
+        await waitUntil("Restart permits one fresh response") {
+            await r853SentTypeCount(stack.transport, type: "response.create")
+                == repetitions + 2
+        }
+        let startsBefore = stack.outputPlayer.startCount
+        await stack.transport.enqueueText(
+            #"{"type":"response.audio.delta","response_id":"restarted-response","delta":"\#(Data(repeating: 42, count: 960).base64EncodedString())"}"#
+        )
+        await waitUntilOnMainActor("Restart permits fresh PCM Playback") {
+            stack.outputPlayer.startCount == startsBefore + 1
+                && stack.outputPlayer.pendingCount == 1
+        }
+        expect(stack.runtime.realtimeUserTurnDispositionDebugSnapshot()
+                   .lastCanonicalTranscript == "重启后继续",
+               "Restart retains fresh input content and output functionality")
+        await stack.controller.stopSpeechAudioCapture()
+        print("r853_qwen_same_session_interruptions=\(repetitions)")
+        print("r853_qwen_cancel_wait_reassociations=\(reassociations)")
+        print("r853_qwen_exact_n_plus_one_contents=\(acceptedContents)")
+        print("r853_qwen_clears_before_ack=\(clearsBeforeACK)")
+        print("r853_qwen_n_plus_one_playbacks=\(reboundPlaybacks)")
+        print("r853_qwen_stop_restart=1")
     }
 
     private static func testR853QwenAppControllerInterruptionHandoff(

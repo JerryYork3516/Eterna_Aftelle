@@ -92,6 +92,9 @@ run_suite realtime_resident_only_zero_self_interrupt \
 run_suite realtime_qwen_interruption_handoff \
   "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh" \
   r853-qwen-handoff-only
+run_suite realtime_qwen_repeated_reassociation \
+  "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh" \
+  r853-qwen-repeated-reassociation-only
 run_suite realtime_true_near_end_opening \
   "$repo_root/tools/realtime_true_near_end_opening_tests/check.sh"
 run_suite realtime_confirmed_interruption \

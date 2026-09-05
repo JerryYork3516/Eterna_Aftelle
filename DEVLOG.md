@@ -10,11 +10,27 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:R8.5.3 Wired-headset Human Gate — FAIL / P1；2026-09-06 Qwen 输入 item ID 关联修复已通过定向回归、一次授权 Real Qwen 验证及该次协议离线重放；整链真人验收未通过，未冻结。
+- **现在在做**:第二项插话自动化验证基线 = AUTOMATED_BASELINE_FROZEN；开始仅针对第二项多轮修复遗留的只读技术债盘点。R8.5.3 Wired-headset Human Gate 仍为 FAIL / P1，整链真人验收未通过，不标 Human Gate PASS / FROZEN。
 - **已知事实**:20:37:32 导出的真人 diagnostics 记录 `invalid_event` 终止；前三次成功 rebound 的 Provider 已结束生成，最后失败的 speech-start 为 `active_response`。Runtime 原样传递 Provider 接收异常；原始失败报文未保存，唯一触发条件仍未确认。
 - **前次取证完成**:Qwen Adapter 增加 DEBUG-only `qwen_receive_failure`，区分 decode / state / transport_receive，记录固定失败分支、白名单事件类型、monotonic 时间、wire sequence、generation、回答/授权/用户输入状态及队列深度；不保存文本、原始报文、密钥或原始 ID。公开错误仍映射为原来的 `invalid_event`。
-- **本次验证**:Qwen 56 cases / 708 checks、探针离线 5 场景 / 安全 9 项 / 计时 6 项、R8.2.3 resident-only 3840 frames、Xcode Debug、architecture / secret guards 通过。授权 live 与其离线协议 replay 均触发一次受限关联，Runtime accepted final = 2、response.create = 2、error = none；只证明已覆盖的 Adapter 输入关联边界。A7 全量 / Release 未跑，SwiftFormat / SwiftLint 不可用；不是全门禁 PASS。
-- **下一步与边界**:本次没有复现原真人缺失报文中的 `invalid_event`，也未执行或要求新的真人测试。Human Gate 继续 FAIL / P1，不改 AEC / classifier / Source Gate / eligibility / 500 ms tail / Runtime authority / Provider error contract / DR / Store / platform target，不进入 R9 / R10。
+- **本次验证**:测试夹具与 digest 门禁修正后，完整 A7 36 顶层入口 / 39 测试入口 / 13,317 assertions、Debug / Release clean build、architecture / secret / repository mutation guards 通过。新增正式 Qwen Adapter + AppController 同会话 10 次 active-response 插话组合：10 次 cancel ACK 等待期间 item 关联、完整 N+1 内容与播放、ACK 前 clear，Stop/Restart 正常；Fake Wire / AEC backend / Playback，不是物理设备或 Real Qwen 证明。R8.2.3 resident-only 3840 frames 的 eligibility / confirmed / interrupt / cancel / clear / generation / lease / false writes 均 0。此前一次授权 live 与其离线协议 replay 的 2 accepted finals / 2 creates 证据保留；本轮没有再联网。SwiftFormat / SwiftLint 不可用，既有 Swift concurrency / AppIntents build warnings 保留；Human Gate 仍未通过。
+- **下一步与边界**:仅盘点 `ab1b7d51..本次自动化基线提交` 中与第二项插话有关的遗留改动（首轮为 `abafb242`，2026-08-29），先列可删除 / 须保留 / 待确认清单，再由用户确认分批清理。其他五项测试和第二项开始前的稳定实现不在清理范围内；不改 AEC / classifier / Source Gate / eligibility / 500 ms tail / Runtime authority / Provider error contract / DR / Store / platform target，不进入 R9 / R10。原真人 `invalid_event` 根因尚未证实，Human Gate P1 不因基线冻结而关闭。
+
+### 2026-09-06 · 第二项插话自动化基线冻结
+
+- 用户明确确认仅冻结自动化验证基线，提交推送已验证改动后只读盘点第二项遗留技术债。本记录所在提交是清理前回滚基线；状态为 `AUTOMATED_BASELINE_FROZEN`，不是 R8.5.3 Human Gate PASS / FROZEN。
+- 验证证据沿用下方完整 A7 36 顶层入口 / 39 测试入口 / 13,317 assertions、Debug / Release clean build 及 guards PASS；收口仅更新文档状态，测试代码不再变更，production 修改仍为 0。已审阅 production digest 保持 `389412a6582ab2c1449981cba689629ddfac62d2755a092c727723f187f7640b`。
+- 清理候选必须同时有本段提交来源、当前调用/消费关系、替代实现和回归证据；不能因名称含 debug/fallback/temporary 就认定无用。有效声学修复、packet-bound evidence、Runtime 唯一 authority、generation/lease/stale fences、Replay Capsule、回归测试、仍服务于未闭环 P1 的接收诊断均须保留。
+- 本次只准备清理，不删除/重写生产代码、不执行真人或真实 Qwen 测试、不扩大到其他五项测试、不清理 Git 历史。
+
+### 2026-09-06 · 离线验证缺口收口（测试修正，非 Human Gate 冻结）
+
+- Production 修改 = 0。R8.1 旧夹具从冷启动仅提供 near-end clean，却断言回声 alignment 已锁定；补足三帧 cancelled far-end warm-up，再送 render + near-end 混合 raw，保留原对齐/source gate/eligibility 断言。定向 205 checks 通过，未改声学阈值。
+- Native duplex 的 Replay 导出夹具仍按 v1 在 playbackStarted 后 arm，违反 v2 clean-start guard。改为播放前 arm，解码正式 v2 timeline，并校验 raw/render/clean 48k 与 linear 16k 四路精确字节及各自 SHA。Native duplex 382 checks 与入口 guards 通过，不放宽导出条件。
+- R8.5.1 digest 门禁的旧 R8.5.1 固定值未随已审阅修复更新，且将基线不符误报为测试期间 mutation。固定基线明确绑定已推送 `d4cdb77d818c55b94e338dc22ef324498d19f554`（production SHA-256 `389412a6582ab2c1449981cba689629ddfac62d2755a092c727723f187f7640b`）；基线检查前置，保留独立 before/after 与 repository mutation guard。正常/基线过期/实际变更三项 guard 自测通过，不自动接受任意当前 digest。
+- 新增独立 `r853-qwen-repeated-reassociation-only`，接入 A7：正式 Qwen Adapter / Runtime / AppController / Input/Output Bridge，Fake Wire、Fake AEC backend、Fake Playback。同一 Session 10 次 response-active 插话，每次刻意 hold cancel ACK、变更 item ID、注入旧 final/audio/text 与 late Playback callback；10 次 ACK 前 clear、10 次受限关联、10 次完整 N+1 canonical transcript、10 次 N+1 播放，Stop/Restart 后新输入及新播放通过，58 checks。测试替身的播放结束通知仅在正式 Stop 完成后补发；没有直接调用 interruption/clear/generation seam。
+- 最终完整 A7：36 顶层入口 / 39 测试入口 / 13,317 assertions PASS；跨节点 12 场景 / 846 checks、随机顺序 100 次 / 1274 checks、关键重复 15 组均 0 failure。R8.2.3 3840 frames 的 eligibility / confirmed / interrupt / cancel / clear / generation / lease / false writes 均 0。新增组合在定向与 A7 内各通过一次。A7 自带 Debug / Release clean build、architecture / secret / repository mutation guards 均 PASS，Stage 7 checklist PASS，Runtime API / DR / Store / platform target 不变。
+- 初次 A7 在早期主动中止，改用已验证的 Metal 工具链访问权限从头完整执行，未改/下载工具链。完整日志与定向结果保存在 `/tmp/aftelle-validation-repair.xO0AGN/`；既有 Swift concurrency / AppIntents build warnings 保留，SwiftFormat / SwiftLint 不可用。本轮不联网、不上传录音、不开麦、不播放、不真人复测；原始真人 `invalid_event` 报文仍缺失，不能把组合测试通过当作该根因已证实或 Human Gate PASS。仅创建本地测试修正前 checkpoint，功能修改未提交/未推送。
 
 ### 2026-09-06 · Qwen 输入 item ID 受限关联修复
 

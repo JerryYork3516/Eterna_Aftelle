@@ -1983,18 +1983,33 @@ private struct RealtimeInterruptionEvidenceTests {
         stack.acousticEchoHost.playbackStarted()
         let render = signal(seed: 2, amplitude: 0.3)
         let nearEnd = signal(seed: 3, amplitude: 0.25)
-        let baseTimestamp = monotonicNow() - 120_000_000
+        let baseTimestamp = monotonicNow() - 150_000_000
+        // Acquire the real timing lock from cancelled far-end before overlap.
+        stack.aecBackend.setCaptureOutput(Array(repeating: 0, count: render.count))
+        for index in 0 ..< 3 {
+            stack.acousticEchoHost.processRender(
+                render,
+                hostTimeNanoseconds: baseTimestamp + UInt64(index * 10_000_000)
+            )
+            _ = stack.acousticEchoHost.processCapture(
+                render,
+                hostTimeNanoseconds: baseTimestamp + 80_000_000
+                    + UInt64(index * 10_000_000)
+            )
+        }
+        expect(stack.acousticEchoHost.snapshot().sourceAlignmentLocked,
+               "far-end warm-up acquires production timing alignment")
         stack.aecBackend.setCaptureOutput(nearEnd)
         for index in 0 ..< 3 {
             stack.acousticEchoHost.processRender(
                 render,
                 hostTimeNanoseconds:
-                    baseTimestamp + UInt64(index * 10_000_000)
+                    baseTimestamp + 30_000_000 + UInt64(index * 10_000_000)
             )
             _ = stack.acousticEchoHost.processCapture(
-                render,
+                zip(render, nearEnd).map(+),
                 hostTimeNanoseconds:
-                    baseTimestamp + 80_000_000
+                    baseTimestamp + 110_000_000
                         + UInt64(index * 10_000_000)
             )
             try? await Task.sleep(for: .milliseconds(12))

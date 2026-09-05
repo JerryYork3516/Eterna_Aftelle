@@ -8,9 +8,40 @@ shared_runner="$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests
 production_contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeResidentBrainAdapter.swift"
 timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
-expected_production_digest="e0cbfe9130c1d2bd9b6e65a25c1603ab13337253d54783c0f5d92d1df65325c4"
+# Reviewed production baseline: d4cdb77d818c55b94e338dc22ef324498d19f554.
+expected_production_digest="389412a6582ab2c1449981cba689629ddfac62d2755a092c727723f187f7640b"
 expected_manifest_digest="6de2ef316f6bf03b393e14549e4cd3dd6f1b0c958ad1a75e1dcec6731ddb7780"
 trap 'rm -rf "$work_dir"' EXIT
+
+check_production_digests() {
+  local expected="$1" before="$2" after="$3"
+  if [ "$before" != "$after" ]; then
+    printf 'r851_production_mutations=1\n' >&2
+    return 1
+  fi
+  printf 'r851_production_mutations=0\n'
+  if [ "$before" != "$expected" ]; then
+    printf 'r851_production_baseline=FAIL expected=%s observed=%s\n' \
+      "$expected" "$before" >&2
+    return 1
+  fi
+  printf 'r851_production_baseline=PASS\n'
+}
+
+if [ "${1:-}" = "--guard-self-test" ]; then
+  check_production_digests approved approved approved > "$work_dir/unchanged"
+  if check_production_digests approved newer newer > "$work_dir/baseline" 2>&1; then
+    exit 1
+  fi
+  rg -qx 'r851_production_mutations=0' "$work_dir/baseline"
+  rg -q '^r851_production_baseline=FAIL' "$work_dir/baseline"
+  if check_production_digests approved approved mutated > "$work_dir/mutation" 2>&1; then
+    exit 1
+  fi
+  rg -qx 'r851_production_mutations=1' "$work_dir/mutation"
+  printf 'r851_digest_guard_cases=3 PASS\n'
+  exit 0
+fi
 
 production_digest() {
   git -C "$repo_root" ls-files -z \
@@ -71,6 +102,9 @@ fingerprint_before="$(worktree_fingerprint)"
 head_before="$(git -C "$repo_root" rev-parse HEAD)"
 branch_before="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
 production_before="$(production_digest)"
+check_production_digests "$expected_production_digest" \
+  "$production_before" "$production_before"
+bash "$0" --guard-self-test
 
 expected_manifest_header=$'ID\tInvariant\tExecutable evidence'
 [ "$(head -n 1 "$manifest")" = "$expected_manifest_header" ]
@@ -233,17 +267,8 @@ status_after="$(git -C "$repo_root" status --porcelain=v1)"
 fingerprint_after="$(worktree_fingerprint)"
 head_after="$(git -C "$repo_root" rev-parse HEAD)"
 branch_after="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
-if [ "$production_before" != "$expected_production_digest" ] \
-    || [ "$production_after" != "$expected_production_digest" ]; then
-  printf 'r851_production_digest_expected=%s\n' \
-    "$expected_production_digest" >&2
-  printf 'r851_production_digest_observed_before=%s\n' \
-    "$production_before" >&2
-  printf 'r851_production_digest_observed_after=%s\n' \
-    "$production_after" >&2
-  printf 'r851_production_mutations=1\n' >&2
-  exit 1
-fi
+check_production_digests "$expected_production_digest" \
+  "$production_before" "$production_after"
 if [ "$status_before" != "$status_after" ] \
     || [ "$fingerprint_before" != "$fingerprint_after" ] \
     || [ "$head_before" != "$head_after" ] \

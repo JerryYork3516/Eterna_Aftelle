@@ -1123,7 +1123,6 @@ private struct NativeSpeechDuplexTests {
             backend: replayBackend
         )
         _ = replayHost.configure()
-        replayHost.playbackStarted()
         let diagnosticAudioEngine = SystemMacSpeechVoiceProcessingEngine(
             audioProcessingMode: .webRTCAEC3,
             acousticEchoHost: replayHost
@@ -1291,6 +1290,10 @@ private struct NativeSpeechDuplexTests {
             attemptID: capsuleAttemptID,
             targetCaptureFrameCount: 3
         ), "diagnostic AEC replay export fixture arms")
+        replayHost.playbackStarted()
+        expect(!diagnosticAudioEngine.armAcousticReplayCapture(
+            attemptID: UUID(), targetCaptureFrameCount: 3
+        ), "Replay v2 rejects rearming during playback")
         var replayRawSamples: [Float] = []
         for index in 0 ..< 3 {
             let frame = (0 ..< MacSpeechAcousticEchoHost.frameSampleCount)
@@ -1331,13 +1334,16 @@ private struct NativeSpeechDuplexTests {
             "diagnostic.raw-mic.f32le.pcm"
         )
         let renderReferenceURL = exportDirectory.appendingPathComponent(
-            "diagnostic.render-reference.f32le.pcm"
+            "diagnostic.render-full.f32le.pcm"
         )
         let aecCleanURL = exportDirectory.appendingPathComponent(
             "diagnostic.aec-clean.f32le.pcm"
         )
         let acousticFramesURL = exportDirectory.appendingPathComponent(
-            "diagnostic.aec-frames.json"
+            "diagnostic.aec-timeline.json"
+        )
+        let aecLinearURL = exportDirectory.appendingPathComponent(
+            "diagnostic.aec-linear.f32le.pcm"
         )
         let exportedObject = try JSONSerialization.jsonObject(
             with: Data(contentsOf: diagnosticURL)
@@ -1363,44 +1369,56 @@ private struct NativeSpeechDuplexTests {
         let exportedRawData = try Data(contentsOf: rawMicrophoneURL)
         let exportedRenderData = try Data(contentsOf: renderReferenceURL)
         let exportedCleanData = try Data(contentsOf: aecCleanURL)
-        let replayManifest = try JSONSerialization.jsonObject(
-            with: Data(contentsOf: acousticFramesURL)
-        ) as! [String: Any]
-        let replayFrames = replayManifest["frames"] as? [[String: Any]]
-        let rawFile = replayManifest["raw_microphone"] as? [String: Any]
-        let renderFile = replayManifest["render_reference"]
-            as? [String: Any]
-        let cleanFile = replayManifest["aec_clean"] as? [String: Any]
+        let exportedLinearData = try Data(contentsOf: aecLinearURL)
+        let replayCleanSamples = replayRawSamples.map { $0 * 0.25 }
+        let replayLinearSamples: [Float] = stride(
+            from: 0, to: replayCleanSamples.count, by: 3
+        ).map { index -> Float in
+            let sum = replayCleanSamples[index] + replayCleanSamples[index + 1]
+                + replayCleanSamples[index + 2]
+            return sum / 3
+        }
+        let replayLinearData = replayLinearSamples.withUnsafeBufferPointer {
+            Data(buffer: $0)
+        }
+        let replayManifest = try MacSpeechAcousticReplayManifest.decode(
+            from: Data(contentsOf: acousticFramesURL)
+        )
         expect(
             exportedRawData == replayRawData
                 && exportedRenderData == replayRawData
-                && exportedCleanData == replayCleanData,
-            "diagnostic export preserves three aligned Float32LE AEC tracks"
+                && exportedCleanData == replayCleanData
+                && exportedLinearData == replayLinearData,
+            "Replay v2 preserves exact raw/render/clean 48k and linear 16k tracks"
         )
         expect(
-            replayManifest["attempt_id"] as? String
-                == capsuleAttemptID.uuidString
-                && replayManifest["captured_frame_count"] as? Int == 3
-                && replayManifest["duration_milliseconds"] as? Int == 30
-                && replayManifest["is_sealed"] as? Bool == true
-                && replayFrames?.count == 3,
+            replayManifest.attemptID == capsuleAttemptID.uuidString
+                && replayManifest.capturedFrameCount == 3
+                && replayManifest.durationMilliseconds == 30
+                && replayManifest.isSealed
+                && replayManifest.schemaVersion == 2
+                && replayManifest.exactReplayReady
+                && replayManifest.renderedFrameCount == 3
+                && replayManifest.initialState.exactReplayEligible
+                && replayManifest.captureFrames.count == 3,
             "AEC replay manifest binds identity and exact 10 ms frame count"
         )
         expect(
-            replayFrames?.allSatisfy {
-                $0["timing_match_available"] as? Bool == true
-                    && $0["timing_delay_milliseconds"] != nil
-                    && $0["timing_correlation"] != nil
-                    && $0["source_alignment_locked"] != nil
-                    && $0["classifier"] != nil
-                    && $0["source_gate_open"] != nil
-            } == true,
+            replayManifest.captureFrames.allSatisfy {
+                $0.timingMatchAvailable && $0.timingDelayMilliseconds != nil
+                    && $0.timingCorrelation != nil
+            },
             "AEC replay exports timing, alignment, classifier and gate per frame"
         )
         expect(
-            rawFile?["sha256"] != nil
-                && renderFile?["sha256"] != nil
-                && cleanFile?["sha256"] != nil,
+            zip([replayManifest.rawMicrophone, replayManifest.chronologicalRender,
+                 replayManifest.aecClean, replayManifest.aecLinear],
+                [exportedRawData, exportedRenderData, exportedCleanData,
+                 exportedLinearData]).allSatisfy { metadata, data in
+                metadata.sha256 == SHA256.hash(data: data)
+                    .map { String(format: "%02x", $0) }.joined()
+                    && metadata.byteCount == data.count
+            },
             "AEC replay manifest hashes every audio sidecar"
         )
         expect(
@@ -1429,7 +1447,7 @@ private struct NativeSpeechDuplexTests {
                 )
                 && !FileManager.default.fileExists(
                     atPath: exportDirectory.appendingPathComponent(
-                        "diagnostic-second.aec-frames.json"
+                        "diagnostic-second.aec-timeline.json"
                     ).path
                 ),
             "a second export cannot repeat prior audio or frame metadata"
