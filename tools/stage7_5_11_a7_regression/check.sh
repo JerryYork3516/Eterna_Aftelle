@@ -23,6 +23,8 @@ worktree_fingerprint_before="$(worktree_fingerprint)"
 head_before="$(git -C "$repo_root" rev-parse HEAD)"
 branch_before="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
 suite_count=0
+# The total regression runner contains four independent test entrypoints.
+extra_entrypoints=3
 
 trap 'rm -rf "$work_dir"' EXIT
 mkdir -p "$runtime_home"
@@ -34,6 +36,9 @@ run_suite() {
   local timeout_seconds=300
   if [ "$name" = "realtime_total_regression" ]; then
     timeout_seconds=1800
+  elif [ "$name" = "realtime_qwen_suite" ]; then
+    # Three separately bounded 120-second modes, plus compilation.
+    timeout_seconds=480
   fi
   printf 'a7_suite_start=%s\n' "$name"
   printf 'a7_suite_timeout_seconds=%s:%s\n' \
@@ -89,12 +94,10 @@ run_suite realtime_acoustic_eligibility \
   "$repo_root/tools/realtime_acoustic_eligibility_tests/check.sh"
 run_suite realtime_resident_only_zero_self_interrupt \
   "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh"
-run_suite realtime_qwen_interruption_handoff \
+run_suite realtime_qwen_suite \
   "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh" \
-  r853-qwen-handoff-only
-run_suite realtime_qwen_repeated_reassociation \
-  "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/check.sh" \
-  r853-qwen-repeated-reassociation-only
+  r853-qwen-suite
+extra_entrypoints=$((extra_entrypoints + 2))
 run_suite realtime_true_near_end_opening \
   "$repo_root/tools/realtime_true_near_end_opening_tests/check.sh"
 run_suite realtime_confirmed_interruption \
@@ -192,7 +195,8 @@ assertion_count="$({
 } | awk '{ total += $1 } END { print total + 0 }')"
 
 printf 'a7_regression_top_level_suites=%d\n' "$suite_count"
-printf 'a7_regression_test_entrypoints=%d\n' "$((suite_count + 3))"
+printf 'a7_regression_test_entrypoints=%d\n' \
+  "$((suite_count + extra_entrypoints))"
 printf 'a7_regression_assertions=%s\n' "$assertion_count"
 printf 'a7_repository_mutation=PASS\n'
 printf 'a7_debug_clean_build=PASS\n'

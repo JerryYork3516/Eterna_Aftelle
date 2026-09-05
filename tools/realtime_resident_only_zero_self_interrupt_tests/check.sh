@@ -36,6 +36,7 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r844-classifier-only" ] \
     && [ "$test_mode" != "r844-response-policy-only" ] \
     && [ "$test_mode" != "r852-subtitle-diagnostics-only" ] \
+    && [ "$test_mode" != "r853-qwen-suite" ] \
     && [ "$test_mode" != "r853-qwen-handoff-only" ] \
     && [ "$test_mode" != "r853-qwen-repeated-reassociation-only" ] \
     && [ "$test_mode" != "r853-queued-start-only" ] \
@@ -125,6 +126,34 @@ run_bounded_binary() {
   printf 'r851_subprocess_pass=%s\n' "$name"
 }
 
+validate_r853_output() {
+  local mode="$1"
+  local log_file="$2"
+  case "$mode" in
+    r853-qwen-handoff-only)
+      rg -qx 'r853_qwen_app_controller_cases=10' "$log_file"
+      rg -qx 'r853_qwen_app_controller_checks=110' "$log_file"
+      echo "r853_qwen_handoff_fixture=PASS"
+      ;;
+    r853-qwen-repeated-reassociation-only)
+      rg -qx 'r853_qwen_repeated_cases=1' "$log_file"
+      local metric
+      for metric in same_session_interruptions cancel_wait_reassociations \
+        exact_n_plus_one_contents clears_before_ack n_plus_one_playbacks; do
+        rg -qx "r853_qwen_${metric}=10" "$log_file"
+      done
+      rg -qx 'r853_qwen_stop_restart=1' "$log_file"
+      echo "r853_qwen_repeated_fixture=PASS"
+      ;;
+    r853-queued-start-only)
+      rg -qx 'r853_queued_start_cases=4' "$log_file"
+      rg -qx 'r853_queued_start_checks=40' "$log_file"
+      echo "r853_queued_start_fixture=PASS"
+      ;;
+    *) return 2 ;;
+  esac
+}
+
 runner_arguments=("$fixture")
 if [ "$test_mode" = "r831-positive-only" ]; then
   runner_arguments+=("--r831-positive-only")
@@ -160,7 +189,15 @@ elif [ "$test_mode" = "r851-randomized-only" ]; then
   runner_arguments+=("--r851-randomized-only")
 fi
 
-if [ "$test_mode" = "r851-key-repeat" ]; then
+if [ "$test_mode" = "r853-qwen-suite" ]; then
+  for mode in r853-qwen-handoff-only \
+    r853-qwen-repeated-reassociation-only r853-queued-start-only; do
+    mode_log="$build_dir/$mode.log"
+    run_bounded_binary "$mode" 120 "$mode_log" "$fixture" "--$mode"
+    validate_r853_output "$mode" "$mode_log"
+  done
+  printf 'r853_qwen_suite_modes=3\n' | tee "$output"
+elif [ "$test_mode" = "r851-key-repeat" ]; then
   repeat_runs=0
   repeat_subprocesses=0
   for repetition in 1 2 3; do
@@ -254,7 +291,9 @@ else
     "$test_mode" 120 "$output" "${runner_arguments[@]}"
 fi
 
-if [ "$test_mode" = "r851-key-repeat" ]; then
+if [ "$test_mode" = "r853-qwen-suite" ]; then
+  rg -qx 'r853_qwen_suite_modes=3' "$output"
+elif [ "$test_mode" = "r851-key-repeat" ]; then
   rg -qx 'r851_key_suite_repeat_runs=15' "$output"
   rg -qx 'r851_key_suite_repeat_subprocesses=18' "$output"
   rg -qx 'r851_key_suite_repeat_failures=0' "$output"
@@ -350,22 +389,10 @@ elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
     exit 1
   fi
   echo "r852_formal_production_fixture=PASS"
-elif [ "$test_mode" = "r853-qwen-handoff-only" ]; then
-  rg -qx 'r853_qwen_app_controller_cases=10' "$output"
-  rg -qx 'r853_qwen_app_controller_checks=110' "$output"
-  echo "r853_qwen_handoff_fixture=PASS"
-elif [ "$test_mode" = "r853-qwen-repeated-reassociation-only" ]; then
-  rg -qx 'r853_qwen_repeated_cases=1' "$output"
-  for metric in same_session_interruptions cancel_wait_reassociations \
-    exact_n_plus_one_contents clears_before_ack n_plus_one_playbacks; do
-    rg -qx "r853_qwen_${metric}=10" "$output"
-  done
-  rg -qx 'r853_qwen_stop_restart=1' "$output"
-  echo "r853_qwen_repeated_fixture=PASS"
-elif [ "$test_mode" = "r853-queued-start-only" ]; then
-  rg -qx 'r853_queued_start_cases=4' "$output"
-  rg -qx 'r853_queued_start_checks=40' "$output"
-  echo "r853_queued_start_fixture=PASS"
+elif [ "$test_mode" = "r853-qwen-handoff-only" ] \
+    || [ "$test_mode" = "r853-qwen-repeated-reassociation-only" ] \
+    || [ "$test_mode" = "r853-queued-start-only" ]; then
+  validate_r853_output "$test_mode" "$output"
 elif [ "$test_mode" = "r853-isolated-barge-in-only" ]; then
   rg -qx 'realtime_isolated_barge_in_cases=3' "$output"
   isolated_checks="$({
@@ -1106,6 +1133,8 @@ elif [ "$test_mode" = "r844-response-policy-only" ]; then
   echo "realtime_backchannel_response_policy=PASS"
 elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
   echo "realtime_formal_subtitle_diagnostics=PASS"
+elif [ "$test_mode" = "r853-qwen-suite" ]; then
+  echo "realtime_qwen_suite=PASS"
 elif [ "$test_mode" = "r853-qwen-handoff-only" ]; then
   echo "realtime_qwen_interruption_handoff=PASS"
 elif [ "$test_mode" = "r853-qwen-repeated-reassociation-only" ]; then

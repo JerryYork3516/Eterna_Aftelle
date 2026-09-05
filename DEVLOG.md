@@ -10,11 +10,21 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:第二项插话自动化验证基线 = AUTOMATED_BASELINE_FROZEN；开始仅针对第二项多轮修复遗留的只读技术债盘点。R8.5.3 Wired-headset Human Gate 仍为 FAIL / P1，整链真人验收未通过，不标 Human Gate PASS / FROZEN。
+- **现在在做**:第二项插话自动化验证基线 = AUTOMATED_BASELINE_FROZEN；技术债清理第一批已验证：仅整理 R853 测试编译入口，production 修改为 0。R8.5.3 Wired-headset Human Gate 仍为 FAIL / P1，整链真人验收未通过，不标 Human Gate PASS / FROZEN。
 - **已知事实**:20:37:32 导出的真人 diagnostics 记录 `invalid_event` 终止；前三次成功 rebound 的 Provider 已结束生成，最后失败的 speech-start 为 `active_response`。Runtime 原样传递 Provider 接收异常；原始失败报文未保存，唯一触发条件仍未确认。
 - **前次取证完成**:Qwen Adapter 增加 DEBUG-only `qwen_receive_failure`，区分 decode / state / transport_receive，记录固定失败分支、白名单事件类型、monotonic 时间、wire sequence、generation、回答/授权/用户输入状态及队列深度；不保存文本、原始报文、密钥或原始 ID。公开错误仍映射为原来的 `invalid_event`。
-- **本次验证**:测试夹具与 digest 门禁修正后，完整 A7 36 顶层入口 / 39 测试入口 / 13,317 assertions、Debug / Release clean build、architecture / secret / repository mutation guards 通过。新增正式 Qwen Adapter + AppController 同会话 10 次 active-response 插话组合：10 次 cancel ACK 等待期间 item 关联、完整 N+1 内容与播放、ACK 前 clear，Stop/Restart 正常；Fake Wire / AEC backend / Playback，不是物理设备或 Real Qwen 证明。R8.2.3 resident-only 3840 frames 的 eligibility / confirmed / interrupt / cancel / clear / generation / lease / false writes 均 0。此前一次授权 live 与其离线协议 replay 的 2 accepted finals / 2 creates 证据保留；本轮没有再联网。SwiftFormat / SwiftLint 不可用，既有 Swift concurrency / AppIntents build warnings 保留；Human Gate 仍未通过。
-- **下一步与边界**:仅盘点 `ab1b7d51..本次自动化基线提交` 中与第二项插话有关的遗留改动（首轮为 `abafb242`，2026-08-29），先列可删除 / 须保留 / 待确认清单，再由用户确认分批清理。其他五项测试和第二项开始前的稳定实现不在清理范围内；不改 AEC / classifier / Source Gate / eligibility / 500 ms tail / Runtime authority / Provider error contract / DR / Store / platform target，不进入 R9 / R10。原真人 `invalid_event` 根因尚未证实，Human Gate P1 不因基线冻结而关闭。
+- **本次验证**:R853 三组测试共 208 checks，合并入口与三个原入口逐项结果一致；一次编译、三进程/隔离目录，120 秒子进程预算不变。本机单次耗时 153.15 → 91.66 秒。完整 A7 35 顶层入口 / 40 测试入口 / 13,357 assertions、Debug / Release clean build、architecture / secret / repository mutation guards 通过；相较清理前增加 queued-start 40 checks，未减少场景。正式 Qwen Adapter + AppController 同会话 10 次 active-response 插话组合保留，Fake Wire / AEC backend / Playback，不是物理设备或 Real Qwen 证明。R8.2.3 resident-only 3840 frames 的 eligibility / confirmed / interrupt / cancel / clear / generation / lease / false writes 均 0。此前一次授权 live 与其离线协议 replay 的 2 accepted finals / 2 creates 证据保留；本批没有运行真实 Qwen。既有 Swift concurrency / AppIntents build warnings 保留；Human Gate 仍未通过。
+- **下一步与边界**:第一批只改共享测试 runner、A7 入口与本日志，验证后提交推送并停止；后续清理仍需单独确认。清理范围为 `ab1b7d51..117119b8` 中与第二项插话有关的遗留改动（首轮为 `abafb242`，2026-08-29）。其他五项测试和第二项开始前的稳定实现不在清理范围内；不改 AEC / classifier / Source Gate / eligibility / 500 ms tail / Runtime authority / Provider error contract / DR / Store / platform target，不进入 R9 / R10。原真人 `invalid_event` 根因尚未证实，Human Gate P1 不因基线冻结而关闭。
+
+### 2026-09-06 · 第二项技术债清理第一批：R853 测试入口
+
+- 以 `117119b8` 为清理前基线，先创建本地回滚点 `389c0408`。仅修改 `tools/realtime_resident_only_zero_self_interrupt_tests/check.sh`、`tools/stage7_5_11_a7_regression/check.sh` 与本日志；production / Swift 测试修改 = 0，不删除任何有效修复、诊断或 Replay 能力。
+- 新入口 `bash tools/realtime_resident_only_zero_self_interrupt_tests/check.sh r853-qwen-suite`：一次编译后依次运行 handoff / repeated-reassociation / queued-start；三个独立进程、三个隔离运行目录，各自保持 120 秒超时。原三个独立命令与场景/断言全部保留，结果校验共用原断言；A7 使用组合入口，并补纳入原先仅独立执行的 queued-start。组合外层 480 秒覆盖三份原 120 秒预算及编译，其他超时不变。
+- 清理前单独运行三组：110 / 58 / 40 checks，共 208，耗时 56.92 / 42.56 / 53.67 秒，总计 153.15 秒。清理后组合入口 208 checks、91.66 秒，逐项指标一致；单次本机对比减少 61.49 秒（40.15%），不是稳定性能承诺。原三个入口修改后再次独立运行也全部通过，逐项指标不变。
+- 临时 shell 控制自测确认一次编译、三进程/隔离目录，以及编译失败、第二子进程失败、缺失结果指标、日志写入失败、非法模式和真实 watchdog 超时均正确 fail closed；这些替身只验证脚本控制流，不计入 Swift 功能检查数。定向日志与控制自测位于 `/tmp/aftelle-r853-runner-cleanup.PLxkRn/`。
+- 完整 A7 PASS：35 顶层入口 / 40 测试入口 / 13,357 assertions；顶层减少 1 是两次旧编译入口改为一次组合入口，测试入口增加 1、检查数增加 40 是补入 queued-start，未减少原场景。跨节点 12 场景 / 846 checks、随机时序 100 次 / 1274 checks、关键重复 15 组 / 18 子进程均 0 failure；R8.2.3 resident-only 3840 frames 的 eligibility / confirmed / interrupt / cancel / clear / generation / lease / false writes 均 0。
+- Debug / Release clean build、architecture / secret / repository mutation guards、`git diff --check` 与 Stage 7 forbidden checklist PASS。production digest 前后均为 `389412a6582ab2c1449981cba689629ddfac62d2755a092c727723f187f7640b`；Runtime API / DR / Store / platform target 均未改。既有 Swift concurrency / AppIntents 警告保留；本批无 Swift 修改。完整 A7 耗时 1366.53 秒，日志与结果见上述私有临时目录。
+- 本批不调用真实 Provider、不上传录音、不开麦、不播放、不要求真人复测；有效声学修复、packet diagnostics 与 Replay 能力全部保留，Human Gate 仍 FAIL / P1，不因本次清理关闭。验证后按用户授权提交推送，随后停止，其他技术债不自动展开。
 
 ### 2026-09-06 · 第二项插话自动化基线冻结
 
