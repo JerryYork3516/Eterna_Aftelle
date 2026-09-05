@@ -17,6 +17,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var queuedFrames: [RealtimeWebSocketFrame] = []
     private var receiveWaiter:
         CheckedContinuation<RealtimeWebSocketFrame, any Error>?
+    private var nextReceiveError: NativeSpeechError?
     private var isConnected = false
     private var currentConnectionNumber: Int?
     private var activeResponseID: String?
@@ -111,6 +112,10 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func receive() async throws -> RealtimeWebSocketFrame {
         guard isConnected else { throw NativeSpeechError.transportFailure }
+        if let error = nextReceiveError {
+            nextReceiveError = nil
+            throw error
+        }
         if !queuedFrames.isEmpty { return queuedFrames.removeFirst() }
         guard receiveWaiter == nil else {
             throw NativeSpeechError.invalidEvent
@@ -125,6 +130,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         isConnected = false
         currentConnectionNumber = nil
         activeResponseID = nil
+        nextReceiveError = nil
         heldSessionUpdateAcknowledgements.removeAll(keepingCapacity: true)
         queuedFrames.removeAll(keepingCapacity: true)
         if let waiter = receiveWaiter {
@@ -157,6 +163,15 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
             waiter.resume(returning: frame)
         } else {
             queuedFrames.append(frame)
+        }
+    }
+
+    func failNextReceive(_ error: NativeSpeechError) {
+        if let waiter = receiveWaiter {
+            receiveWaiter = nil
+            waiter.resume(throwing: error)
+        } else {
+            nextReceiveError = error
         }
     }
 

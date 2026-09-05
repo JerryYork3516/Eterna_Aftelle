@@ -117,9 +117,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testTranscriptFinalFallbackDebounce()
         try await testTranscriptFinalFallbackLifecycleCancellation()
         try await testLateFinalKeepsExactProviderItemBinding()
+        try await testBoundedUserItemReassociation()
         try await testResidentTextWireSourceCanonicalization()
         try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
+        try await testInterruptionAndGeneration(reassociateItem: true)
+        try await testActiveResponseReceiveDiagnostics()
         try await testPendingUserActivityRebindsAcrossContextRefresh()
         try await testUnauthorizedResponseFailsClosed()
         try await testOverlappingResponseFailsClosed()
@@ -1363,6 +1366,60 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
+    private static func testBoundedUserItemReassociation() async throws {
+        let scenarios: [(String, String, String, [String], Bool)] = [
+            ("bounded", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new"], true),
+            ("missing-start", "", ",\"audio_end_ms\":1800", ["new"], false),
+            ("missing-end", ",\"audio_start_ms\":1000", "", ["new"], false),
+            ("old-end", ",\"audio_start_ms\":2000", ",\"audio_end_ms\":1800", ["new"], false),
+            ("boolean-end", ",\"audio_start_ms\":0", ",\"audio_end_ms\":true", ["new"], false),
+            ("fractional-end", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800.5", ["new"], false),
+            ("ambiguous", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new", "other"], false),
+            ("unseen-final", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", [], false)
+        ]
+        for (name, startTime, stopTime, candidates, accepts) in scenarios {
+            cases += 1
+            let stack = try makeStack()
+            let identity = sessionIdentity(generation: 90)
+            try await openAndBootstrap(stack, identity: identity)
+            await stack.transport.enqueueText(
+                "{\"type\":\"input_audio_buffer.speech_started\",\"item_id\":\"original\"\(startTime)}"
+            )
+            let start = try await stack.adapter.receiveEvent(session: identity)
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"original","text":"","stash":"先停一下"}"#
+            )
+            _ = try await stack.adapter.receiveEvent(session: identity)
+            for candidate in candidates {
+                await stack.transport.enqueueText(
+                    "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"\(candidate)\",\"text\":\"\",\"stash\":\"先停一下我想问第二点\"}"
+                )
+            }
+            await stack.transport.enqueueText(
+                "{\"type\":\"input_audio_buffer.speech_stopped\",\"item_id\":\"new\"\(stopTime)}"
+            )
+            for item in ["new", "new", "original"] {
+                await stack.transport.enqueueText(
+                    "{\"type\":\"conversation.item.input_audio_transcription.completed\",\"item_id\":\"\(item)\",\"transcript\":\"\(item) final\"}"
+                )
+            }
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_started","item_id":"sentinel"}"#
+            )
+            var finals: [RealtimeResidentBrainEvent] = []
+            while true {
+                let event = try await stack.adapter.receiveEvent(session: identity)
+                if case .userSpeechStarted = event.kind { break }
+                if case .userTranscriptFinal = event.kind { finals.append(event) }
+            }
+            expect(finals.count == 1, "\(name): final remains exactly once")
+            expect(finals.first?.kind == .userTranscriptFinal(accepts ? "new final" : "original final"),
+                   "\(name): only bounded ID reassociation is accepted")
+            expect(finals.first?.identity == start.identity, "\(name): same Runtime turn and generation")
+            try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+        }
+    }
+
     private static func testResidentTextWireSourceCanonicalization() async throws {
         cases += 5
         let expected: [RealtimeResidentBrainEventKind] = [
@@ -1447,7 +1504,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
-    private static func testInterruptionAndGeneration() async throws {
+    private static func testInterruptionAndGeneration(reassociateItem: Bool = false) async throws {
         cases += 1
         let diagnostics = NativeSpeechDiagnosticBuffer()
         let stack = try makeStack(diagnosticBuffer: diagnostics)
@@ -1531,7 +1588,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "active-response diagnostic proves audible PCM enters transport"
         )
         await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_started","item_id":"user-b"}"#
+            #"{"type":"input_audio_buffer.speech_started","item_id":"user-b","audio_start_ms":1000}"#
         )
         let proposal = try await stack.adapter.receiveEvent(session: identity)
         guard case .interruptionProposed(let evidence) = proposal.kind else {
@@ -1618,11 +1675,17 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"user-b","text":"停一下","stash":""}"#
         )
+        let endingItemID = reassociateItem ? "user-b-committed" : "user-b"
+        if reassociateItem {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"user-b-committed","text":"停一下","stash":""}"#
+            )
+        }
         await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_stopped","item_id":"user-b"}"#
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"\#(endingItemID)","audio_end_ms":1800}"#
         )
         await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"user-b","transcript":"停一下"}"#
+            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(endingItemID)","transcript":"停一下"}"#
         )
         await stack.transport.releaseResponseCancellationAcknowledgements()
         try await interruptTask.value
@@ -1915,6 +1978,136 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await stack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(identity: identity)
         )
+    }
+
+    private static func testActiveResponseReceiveDiagnostics() async throws {
+        let failures: [(frame: String?, phase: String, branch: String, wire: String)] = [
+            ("{private-wire-marker", "decode", "json_object", "unknown"),
+            (#"{"type":17,"text":"private-wire-marker"}"#,
+             "decode", "object_or_type", "unknown"),
+            (#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"private-item","text":"private-wire-marker"}"#,
+             "decode", "transcript_text_or_stash", "conversation.item.input_audio_transcription.delta"),
+            (#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"private-item","text":"private-wire-marker","stash":null}"#,
+             "decode", "transcript_text_or_stash", "conversation.item.input_audio_transcription.delta"),
+            (#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"private-item","transcript":null}"#,
+             "decode", "transcript", "conversation.item.input_audio_transcription.completed"),
+            (#"{"type":"response.audio.delta","response_id":"private-response","delta":"!!!private-wire-marker"}"#,
+             "decode", "audio_base64", "response.audio.delta"),
+            (#"{"type":"response.created","response":{"id":""}}"#,
+             "decode", "response_id", "response.created"),
+            (#"{"type":"response.created","response":{"id":"private-overlap"}}"#,
+             "state", "response_authorization", "response.created"),
+            (#"{"type":"session.created","session":{"id":"private-session"}}"#,
+             "state", "unexpected_session_created", "session.created"),
+            (#"{"type":"session.updated","session":{"turn_detection":{"create_response":true}}}"#,
+             "state", "turn_detection_authority", "session.updated"),
+            (nil, "transport_receive", "upstream_error", "none")
+        ]
+        // The valid control follows the same prefix as every injected failure.
+        // This is a branch test, not a replay of the missing real wire packet.
+        for index in 0 ... failures.count {
+            cases += 1
+            let diagnostics = NativeSpeechDiagnosticBuffer()
+            let stack = try makeStack(diagnosticBuffer: diagnostics)
+            let identity = sessionIdentity(generation: 4)
+            try await openAndBootstrap(stack, identity: identity)
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_started","item_id":"initial-user"}"#
+            )
+            let firstSpeech = try await stack.adapter.receiveEvent(session: identity)
+            try await authorizeResponse(stack, from: firstSpeech, responseID: "private-response")
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_started","item_id":"private-item"}"#
+            )
+            let proposal = try await stack.adapter.receiveEvent(session: identity)
+            guard case .interruptionProposed = proposal.kind else {
+                fatalError("active generation must emit interruption evidence")
+            }
+            let speech = try await stack.adapter.receiveEvent(session: identity)
+            expect(speech.kind == .userSpeechStarted, "speech follows proposal")
+            for partialIndex in 1 ... 8 {
+                await stack.transport.enqueueText(
+                    #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"private-item","text":"private-wire-marker-\#(partialIndex)","stash":""}"#
+                )
+                let partial = try await stack.adapter.receiveEvent(session: identity)
+                expect(partial.kind == .userTranscriptPartial("private-wire-marker-\(partialIndex)"),
+                       "each active-response partial survives without a Runtime decision")
+                expect(partial.identity.turnID == speech.identity.turnID,
+                       "active-response partial keeps the exact user turn")
+            }
+            let prefixDiagnostics = diagnostics.drain().events
+            expect(prefixDiagnostics.contains {
+                $0.category == "qwen_speech_started_received" && $0.disposition == "active_response"
+            }, "failure prefix really has Provider generation in progress")
+            expect(!prefixDiagnostics.contains { $0.category == "qwen_receive_failure" },
+                   "valid active-response prefix has no receiver error")
+
+            if index == failures.count {
+                await stack.transport.enqueueText(
+                    #"{"type":"input_audio_buffer.speech_stopped","item_id":"private-item"}"#
+                )
+                let stopped = try await stack.adapter.receiveEvent(session: identity)
+                expect(stopped.kind == .userSpeechStopped, "valid overlap can end")
+                await stack.transport.enqueueText(
+                    #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"private-item","transcript":"停等一下"}"#
+                )
+                let final = try await stack.adapter.receiveEvent(session: identity)
+                expect(final.kind == .userTranscriptFinal("停等一下"), "valid stop words remain transcript evidence")
+                await stack.transport.enqueueText(
+                    #"{"type":"response.audio.delta","response_id":"private-response","delta":"AAA="}"#
+                )
+                let speaking = try await stack.adapter.receiveEvent(session: identity)
+                expect(speaking.kind == .residentSpeakingStarted, "valid audio starts resident speaking")
+                let audio = try await stack.adapter.receiveEvent(session: identity)
+                guard case .residentAudioDelta = audio.kind else {
+                    fatalError("without a Runtime decision the resident audio stays active")
+                }
+                let terminal = await stack.adapter.terminalErrorForTesting(session: identity)
+                expect(terminal == nil, "valid generating overlap does not fail the session")
+                expect(!diagnostics.drain().events.contains { $0.category == "qwen_receive_failure" },
+                       "normal receipt never produces failure diagnostics")
+            } else {
+                let failure = failures[index]
+                let receive = Task {
+                    try await stack.adapter.receiveEvent(session: identity)
+                }
+                await waitUntilPendingReceive(stack.adapter, session: identity)
+                if let frame = failure.frame {
+                    // Exercise binary JSON as well as the usual text WebSocket frame.
+                    await stack.transport.enqueue(index == 3 ? .binary(Data(frame.utf8)) : .text(frame))
+                } else {
+                    await stack.transport.failNextReceive(.invalidEvent)
+                }
+                await expectRealtimeError(.invalidEvent) { _ = try await receive.value }
+                await waitUntilTerminalError(stack.adapter, session: identity, expected: .invalidEvent)
+                let events = diagnostics.drain().events.filter { $0.category == "qwen_receive_failure" }
+                expect(events.count == 1, "one failure produces exactly one diagnostic")
+                guard let diagnostic = events.first else { fatalError("missing receive failure diagnostic") }
+                let detail = diagnostic.disposition ?? ""
+                expect(detail.contains("phase=\(failure.phase);wire=\(failure.wire);branch=\(failure.branch)"),
+                       "the actual decode/state/transport branch is distinguishable")
+                expect(detail.contains("active_response=true") && detail.contains("user_input=true"),
+                       "failure records the overlap state before teardown")
+                expect(diagnostic.stateBefore == "active" && diagnostic.stateAfter == "failed"
+                    && diagnostic.turnGeneration == 4 && diagnostic.routeKind == .realtimeBrain,
+                       "failure retains formal route and generation attribution")
+                expect(diagnostic.errorCode == "invalid_event" && (diagnostic.wireSequence ?? 0) > 0,
+                       "public error remains unchanged and wire receipt is correlated")
+                expect(diagnostic.byteCount == failure.frame.map { $0.utf8.count },
+                       "failure byte count is accurate without storing the packet")
+                expect(!detail.contains("private-") && !detail.contains("停等一下"),
+                       "diagnostic excludes transcript, identifiers and raw payload")
+            }
+            let sent = try await sentTypes(stack.transport)
+            expect(sent.filter { $0 == "response.create" }.count == 1,
+                   "receiver diagnostics never authorize another response")
+            expect(!sent.contains("response.cancel") && !sent.contains("input_audio_buffer.clear"),
+                   "receiver diagnostics never decide cancellation or input clearing")
+            try? await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+        }
+        print("qwen_receive_failure_matrix_cases=\(failures.count)")
+        print("qwen_active_response_receive_control=PASS")
+        print("qwen_real_invalid_event_packet_replay=NOT_AVAILABLE")
     }
 
     private static func testUnauthorizedResponseFailsClosed() async throws {

@@ -61,8 +61,8 @@ nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
     case sessionCreated
     case sessionUpdated(turnDetection: QwenRealtimeTurnDetectionEcho?)
     case inputAudioCleared
-    case inputSpeechStarted(itemID: String)
-    case inputSpeechStopped(itemID: String)
+    case inputSpeechStarted(itemID: String, audioStartMilliseconds: Int?)
+    case inputSpeechStopped(itemID: String, audioEndMilliseconds: Int?)
     case inputTranscriptDelta(itemID: String, preview: String)
     case inputTranscriptCompleted(itemID: String, transcript: String)
     case inputTranscriptFailed(itemID: String)
@@ -86,6 +86,22 @@ nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
     )
     case providerError
     case other
+}
+
+#if DEBUG
+nonisolated private struct QwenRealtimeReceiveFailure: Error {
+    let branch: String
+}
+#endif
+
+nonisolated private func invalidQwenReceiveEvent(
+    _ branch: StaticString
+) -> any Error {
+    #if DEBUG
+    return QwenRealtimeReceiveFailure(branch: branch.description)
+    #else
+    return RealtimeResidentBrainError.invalidEvent
+    #endif
 }
 
 nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
@@ -206,11 +222,11 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
         do {
             rawObject = try JSONSerialization.jsonObject(with: data)
         } catch {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("json_object")
         }
         guard let object = rawObject as? [String: Any],
               let type = object["type"] as? String else {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("object_or_type")
         }
 
         switch type {
@@ -223,13 +239,19 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
         case "input_audio_buffer.cleared":
             return .inputAudioCleared
         case "input_audio_buffer.speech_started":
-            return .inputSpeechStarted(itemID: try itemID(in: object))
+            return .inputSpeechStarted(
+                itemID: try itemID(in: object),
+                audioStartMilliseconds: audioMilliseconds("audio_start_ms", in: object)
+            )
         case "input_audio_buffer.speech_stopped":
-            return .inputSpeechStopped(itemID: try itemID(in: object))
+            return .inputSpeechStopped(
+                itemID: try itemID(in: object),
+                audioEndMilliseconds: audioMilliseconds("audio_end_ms", in: object)
+            )
         case "conversation.item.input_audio_transcription.delta":
             guard let text = object["text"] as? String,
                   let stash = object["stash"] as? String else {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("transcript_text_or_stash")
             }
             return .inputTranscriptDelta(
                 itemID: try itemID(in: object),
@@ -237,7 +259,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
             )
         case "conversation.item.input_audio_transcription.completed":
             guard let transcript = object["transcript"] as? String else {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("transcript")
             }
             return .inputTranscriptCompleted(
                 itemID: try itemID(in: object),
@@ -272,7 +294,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
         case "response.audio.delta":
             guard let encoded = object["delta"] as? String,
                   let bytes = Data(base64Encoded: encoded) else {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("audio_base64")
             }
             return .responseAudioDelta(
                 responseID: try responseID(in: object),
@@ -290,10 +312,10 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
                     with: Data(arguments.utf8)
                 )
             } catch {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("tool_arguments_json")
             }
             guard JSONSerialization.isValidJSONObject(argumentsObject) else {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("tool_arguments_object")
             }
             return .toolArgumentsDone(
                 responseID: try responseID(in: object),
@@ -307,7 +329,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
                   let status = response["status"] as? String,
                   !responseID.isEmpty,
                   !status.isEmpty else {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("response_done_identity_or_status")
             }
             return .responseDone(
                 responseID: responseID,
@@ -339,10 +361,20 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
         "event_\(UUID().uuidString.lowercased())"
     }
 
+    private func audioMilliseconds(
+        _ key: String,
+        in object: [String: Any]
+    ) -> Int? {
+        guard let number = object[key] as? NSNumber,
+              String(cString: number.objCType) != "c",
+              let value = Int(number.stringValue), value >= 0 else { return nil }
+        return value
+    }
+
     private func itemID(in object: [String: Any]) throws -> String {
         guard let value = object["item_id"] as? String,
               !value.isEmpty else {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("item_id")
         }
         return value
     }
@@ -356,7 +388,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
            !value.isEmpty {
             return value
         }
-        throw RealtimeResidentBrainError.invalidEvent
+        throw invalidQwenReceiveEvent("response_id")
     }
 
     private func turnDetectionEcho(
@@ -381,7 +413,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
         in object: [String: Any]
     ) throws -> String {
         guard let value = object[key] as? String else {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("required_string")
         }
         return value
     }
@@ -586,9 +618,13 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private struct ActiveUserInputTurn {
-        let wireItemID: String
+        var wireItemID: String
         var turn: TurnBinding
         var latestTranscriptPartial: String?
+        var audioStartMilliseconds: Int?
+        var unboundTranscript: (itemID: String, preview: String)?
+        var hasAmbiguousItem = false
+        var didReassociateItem = false
         var speechStopped = false
         var transcriptFinal: String?
     }
@@ -629,6 +665,9 @@ actor QwenRealtimeResidentBrainAdapter:
     private var receiverTask: Task<Void, Never>?
     private var terminalTransportCloseTask: Task<Void, Never>?
     private var terminalError: RealtimeResidentBrainError?
+    #if DEBUG
+    private var receivedWireSequence: UInt64 = 0
+    #endif
 
     private var acknowledgementSerial: UInt64 = 0
     private var expectedSessionUpdate: Acknowledgement?
@@ -644,6 +683,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private var outputAudioSequence: UInt64 = 0
     private var outputAudioSampleFrames: UInt64 = 0
     private var inputAudioBatcher = QwenRealtimeInputAudioBatcher()
+    private var preservingUserInputDuringTransition = false
     private var contextSectionsByScope: [String: String] = [:]
     private var runtimeTools: [RealtimeBrainToolAdvertisement] = []
     private var runtimeVoiceBinding: RuntimeVoiceBinding?
@@ -1064,8 +1104,10 @@ actor QwenRealtimeResidentBrainAdapter:
         guard activeMutationOperations.isEmpty else {
             throw RealtimeResidentBrainError.operationInFlight
         }
-        let interruptingItemID = preserveInterruptingUserInput
-            ? activeUserInputTurn?.wireItemID : nil
+        let interruptingTurnID = preserveInterruptingUserInput
+            ? activeUserInputTurn?.turn.runtimeID : nil
+        preservingUserInputDuringTransition = interruptingTurnID != nil
+        defer { preservingUserInputDuringTransition = false }
         lifecycle = .transitioning
         do {
             if let responseID = activeResponse?.wireID {
@@ -1074,7 +1116,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 try await waitForAcknowledgement(.responseDone(responseID))
                 locallyCancellingResponseID = nil
             }
-            if clearInput && interruptingItemID == nil {
+            if clearInput && interruptingTurnID == nil {
                 acknowledgementSerial &+= 1
                 let acknowledgement = Acknowledgement.inputAudioCleared(
                     acknowledgementSerial
@@ -1085,7 +1127,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 expectedInputClear = nil
             }
             let carriedUserInput = activeUserInputTurn.flatMap { state in
-                state.wireItemID == interruptingItemID ? state : nil
+                state.turn.runtimeID == interruptingTurnID ? state : nil
             }
             let carriedInputAudioBatcher: QwenRealtimeInputAudioBatcher?
             if carriedUserInput == nil {
@@ -1234,17 +1276,25 @@ actor QwenRealtimeResidentBrainAdapter:
         connectionToken token: UUID
     ) {
         guard connectionToken == token else { return }
+        #if DEBUG
+        receivedWireSequence &+= 1
+        #endif
+        var phase = "decode"
         do {
-            try handle(codec.decode(frame))
+            let event = try codec.decode(frame)
+            phase = "state"
+            try handle(event)
         } catch {
-            handleReceiverFailure(error, connectionToken: token)
+            handleReceiverFailure(
+                error, connectionToken: token, phase: phase, frame: frame
+            )
         }
     }
 
     private func handle(_ event: QwenRealtimeBrainWireEvent) throws {
         switch event {
         case .sessionCreated:
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("unexpected_session_created")
         case .sessionUpdated(let turnDetection):
             try validateTurnDetectionAcknowledgement(turnDetection)
             recordTurnDetectionAcknowledgement(turnDetection)
@@ -1255,7 +1305,7 @@ actor QwenRealtimeResidentBrainAdapter:
             if let acknowledgement = expectedInputClear {
                 deliver(acknowledgement)
             }
-        case .inputSpeechStarted(let itemID):
+        case .inputSpeechStarted(let itemID, let audioStartMilliseconds):
             diagnosticBuffer?.append(
                 NativeSpeechInternalDiagnosticEvent(
                     source: .adapter,
@@ -1274,7 +1324,8 @@ actor QwenRealtimeResidentBrainAdapter:
             activeUserInputTurn = ActiveUserInputTurn(
                 wireItemID: itemID,
                 turn: turn,
-                latestTranscriptPartial: nil
+                latestTranscriptPartial: nil,
+                audioStartMilliseconds: audioStartMilliseconds
             )
             if let response = activeResponse {
                 let eventIdentity = makeEventIdentity(for: response)
@@ -1289,12 +1340,16 @@ actor QwenRealtimeResidentBrainAdapter:
                 kind: .userSpeechStarted,
                 identity: makeEventIdentity(for: turn)
             )
-        case .inputSpeechStopped(let itemID):
+        case .inputSpeechStopped(let itemID, let audioEndMilliseconds):
             recordUserInputWireDiagnostic(
                 category: "qwen_speech_stopped_received",
                 itemID: itemID
             )
             guard !stoppedUserInputItemIDs.contains(itemID) else { return }
+            reassociateUserInputAtSpeechStop(
+                itemID: itemID,
+                audioEndMilliseconds: audioEndMilliseconds
+            )
             if lifecycle == .transitioning,
                recordActiveUserSpeechStopped(itemID: itemID) {
                 markUserInputStopped(itemID)
@@ -1324,6 +1379,7 @@ actor QwenRealtimeResidentBrainAdapter:
             let trimmedPreview = preview.trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
+            recordUnboundUserTranscript(preview, itemID: itemID)
             if lifecycle == .transitioning,
                !trimmedPreview.isEmpty,
                lastUserTranscriptPreviewByItemID[itemID] != preview,
@@ -1434,7 +1490,7 @@ actor QwenRealtimeResidentBrainAdapter:
                   let authorization = pendingResponseAuthorization,
                   authorization.turn.sessionIdentity == identity,
                   authorization.turn.contextRevision == contextRevision else {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("response_authorization")
             }
             let turn = authorization.turn
             activeResponse = ActiveResponse(
@@ -1629,7 +1685,9 @@ actor QwenRealtimeResidentBrainAdapter:
 
     private func handleReceiverFailure(
         _ error: any Error,
-        connectionToken token: UUID
+        connectionToken token: UUID,
+        phase: String = "transport_receive",
+        frame: RealtimeWebSocketFrame? = nil
     ) {
         guard connectionToken == token else { return }
         if lifecycle == .closing || lifecycle == .closed {
@@ -1637,10 +1695,71 @@ actor QwenRealtimeResidentBrainAdapter:
             return
         }
         let mapped = Self.map(error)
+        #if DEBUG
+        if terminalError == nil {
+            recordReceiveFailure(error, mapped: mapped, phase: phase, frame: frame)
+        }
+        #endif
         lifecycle = .failed
         terminalError = mapped
         failWaiters(with: mapped)
     }
+
+    #if DEBUG
+    private func recordReceiveFailure(
+        _ error: any Error,
+        mapped: RealtimeResidentBrainError,
+        phase: String,
+        frame: RealtimeWebSocketFrame?
+    ) {
+        guard let diagnosticBuffer else { return }
+        let data: Data? = switch frame {
+        case .text(let text): Data(text.utf8)
+        case .binary(let bytes): bytes
+        case nil: nil
+        }
+        let object = data.flatMap {
+            (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+        }
+        // Only protocol constants may enter diagnostics, never arbitrary wire text.
+        let wireType: String
+        switch object?["type"] as? String {
+        case let value? where [
+            "session.created", "session.updated", "input_audio_buffer.cleared",
+            "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
+            "conversation.item.input_audio_transcription.delta",
+            "conversation.item.input_audio_transcription.completed",
+            "conversation.item.input_audio_transcription.failed",
+            "response.created", "response.text.delta", "response.text.done",
+            "response.audio_transcript.delta", "response.audio_transcript.done",
+            "response.audio.delta", "response.audio.done",
+            "response.function_call_arguments.done", "response.done", "error"
+        ].contains(value): wireType = value
+        default: wireType = frame == nil ? "none" : "unknown"
+        }
+        let branch = (error as? QwenRealtimeReceiveFailure)?.branch ?? "upstream_error"
+        diagnosticBuffer.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: "qwen_receive_failure",
+            routeKind: .realtimeBrain,
+            turnGeneration: identity?.generation,
+            stateBefore: String(describing: lifecycle),
+            stateAfter: "failed",
+            disposition: "phase=\(phase);wire=\(wireType);branch=\(branch)"
+                + ";active_response=\(activeResponse != nil)"
+                + ";authorization=\(pendingResponseAuthorization != nil)"
+                + ";authorization_session_matches=\(pendingResponseAuthorization?.turn.sessionIdentity == identity)"
+                + ";authorization_context_matches=\(pendingResponseAuthorization?.turn.contextRevision == contextRevision)"
+                + ";user_input=\(activeUserInputTurn != nil)"
+                + ";text_string=\(object?["text"] is String)"
+                + ";stash_string=\(object?["stash"] is String)",
+            wireSequence: receivedWireSequence,
+            queueDepth: pendingEvents.count,
+            byteCount: data?.count,
+            errorCode: mapped == .invalidEvent ? "invalid_event" : String(describing: mapped)
+        ))
+    }
+    #endif
 
     private func receiveHandshakeEvent() async throws
         -> QwenRealtimeBrainWireEvent {
@@ -2239,6 +2358,75 @@ actor QwenRealtimeResidentBrainAdapter:
         }
     }
 
+    private var canAssociateUserInput: Bool {
+        lifecycle == .active
+            || (lifecycle == .transitioning && preservingUserInputDuringTransition)
+    }
+
+    private func recordUnboundUserTranscript(_ preview: String, itemID: String) {
+        guard canAssociateUserInput,
+              turnsByWireItemID[itemID] == nil,
+              !retiredItemIDs.contains(itemID),
+              !completedUserInputItemIDs.contains(itemID),
+              !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              var state = activeUserInputTurn,
+              state.turn.sessionIdentity == identity,
+              state.turn.contextRevision == contextRevision,
+              state.audioStartMilliseconds != nil,
+              state.latestTranscriptPartial != nil,
+              !state.speechStopped, state.transcriptFinal == nil,
+              !state.didReassociateItem else { return }
+        if let candidate = state.unboundTranscript, candidate.itemID != itemID {
+            state.hasAmbiguousItem = true
+        } else {
+            state.unboundTranscript = (itemID, preview)
+        }
+        activeUserInputTurn = state
+    }
+
+    private func reassociateUserInputAtSpeechStop(
+        itemID: String,
+        audioEndMilliseconds: Int?
+    ) {
+        guard canAssociateUserInput, turnsByWireItemID[itemID] == nil,
+              !retiredItemIDs.contains(itemID),
+              !completedUserInputItemIDs.contains(itemID),
+              var state = activeUserInputTurn,
+              state.turn.sessionIdentity == identity,
+              state.turn.contextRevision == contextRevision,
+              !state.speechStopped, state.transcriptFinal == nil,
+              !state.hasAmbiguousItem, !state.didReassociateItem,
+              let candidate = state.unboundTranscript, candidate.itemID == itemID,
+              let start = state.audioStartMilliseconds, let end = audioEndMilliseconds,
+              end > start else { return }
+        // Final/partial alone cannot create a turn. Only this bounded VAD stop may
+        // replace one provisional item ID; the Runtime turn identity stays intact.
+        let previousItemID = state.wireItemID
+        retire(itemID: previousItemID)
+        turnsByWireItemID.removeValue(forKey: previousItemID)
+        lastUserTranscriptPreviewByItemID.removeValue(forKey: previousItemID)
+        cancelTranscriptFinalFallback(
+            itemID: previousItemID,
+            reason: "input_item_reassociated"
+        )
+        state.wireItemID = itemID
+        state.latestTranscriptPartial = candidate.preview
+        state.unboundTranscript = nil
+        state.didReassociateItem = true
+        turnsByWireItemID[itemID] = state.turn
+        latestTurnBinding = state.turn
+        lastUserTranscriptPreviewByItemID[itemID] = candidate.preview
+        activeUserInputTurn = state
+        diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .adapter,
+            category: "qwen_input_item_reassociated",
+            routeKind: .realtimeBrain,
+            turnGeneration: identity?.generation,
+            disposition: "single_candidate_valid_audio_interval",
+            itemCorrelationHash: Self.correlationHash(itemID)
+        ))
+    }
+
     private func recordActiveUserTranscriptPartial(
         _ preview: String,
         itemID: String
@@ -2646,7 +2834,7 @@ actor QwenRealtimeResidentBrainAdapter:
     ) throws {
         guard let value else {
             if requiresCompletePolicy {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("turn_detection_missing")
             }
             return
         }
@@ -2656,27 +2844,27 @@ actor QwenRealtimeResidentBrainAdapter:
                   value.silenceDurationMilliseconds != nil,
                   value.createResponse != nil,
                   value.interruptResponse != nil else {
-                throw RealtimeResidentBrainError.invalidEvent
+                throw invalidQwenReceiveEvent("turn_detection_incomplete")
             }
         }
         if let type = value.type,
            type != QwenRealtimeTurnDetectionPolicy.type {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("turn_detection_type")
         }
         if let threshold = value.threshold,
            threshold != QwenRealtimeTurnDetectionPolicy.threshold {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("turn_detection_threshold")
         }
         if let silenceDurationMilliseconds =
             value.silenceDurationMilliseconds,
            silenceDurationMilliseconds
             != QwenRealtimeTurnDetectionPolicy
                 .silenceDurationMilliseconds {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("turn_detection_silence")
         }
         guard value.createResponse != true,
               value.interruptResponse != true else {
-            throw RealtimeResidentBrainError.invalidEvent
+            throw invalidQwenReceiveEvent("turn_detection_authority")
         }
     }
 
@@ -2816,6 +3004,9 @@ actor QwenRealtimeResidentBrainAdapter:
     private static func map(
         _ error: any Error
     ) -> RealtimeResidentBrainError {
+        #if DEBUG
+        if error is QwenRealtimeReceiveFailure { return .invalidEvent }
+        #endif
         if let error = error as? RealtimeResidentBrainError {
             return error
         }

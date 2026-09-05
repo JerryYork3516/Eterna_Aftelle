@@ -10,11 +10,30 @@
 
 ## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
 
-- **现在在做**:R8.5.3 Wired-headset Barge-in Human Gate Rework #5 — AUTOMATED_REPAIR_PASS / HUMAN_GATE_RETEST_REQUIRED
-- **上一步刚完成**:拆分 Realtime Output Bridge 的有界 media lane 与 control lane，并在 Qwen context refresh 时只重绑 exact pending user activity，关闭 Playback backpressure head-of-line 与 context revision stale race
-- **当前卡在**:53-B 第五次有线耳机输出 / 外置麦克风真人插话仍无反应，保留为 FAIL / P1；第五次自动化修复尚未经过同一设备 Real Qwen 复测
-- **下一步**:先用同一有线耳机组合做第六次 53-B 复测；居民稳定发声至少 500 ms 后持续说一句实质性内容，若失败立即保存 diagnostics 与 Xcode Console，不进入 R9 / R10
-- **本轮范围**:只修复 capture-bound monotonic evidence 与同 epoch packet-bound eligibility 保留；不改 acoustic / double-talk threshold、source gate、三帧 confirmation、500 ms residual tail、Qwen semantic VAD、Runtime interruption authority、Provider error contract、DR / Store 或 platform target
+- **现在在做**:R8.5.3 Wired-headset Human Gate — FAIL / P1；2026-09-06 Qwen 输入 item ID 关联修复已通过定向回归、一次授权 Real Qwen 验证及该次协议离线重放；整链真人验收未通过，未冻结。
+- **已知事实**:20:37:32 导出的真人 diagnostics 记录 `invalid_event` 终止；前三次成功 rebound 的 Provider 已结束生成，最后失败的 speech-start 为 `active_response`。Runtime 原样传递 Provider 接收异常；原始失败报文未保存，唯一触发条件仍未确认。
+- **前次取证完成**:Qwen Adapter 增加 DEBUG-only `qwen_receive_failure`，区分 decode / state / transport_receive，记录固定失败分支、白名单事件类型、monotonic 时间、wire sequence、generation、回答/授权/用户输入状态及队列深度；不保存文本、原始报文、密钥或原始 ID。公开错误仍映射为原来的 `invalid_event`。
+- **本次验证**:Qwen 56 cases / 708 checks、探针离线 5 场景 / 安全 9 项 / 计时 6 项、R8.2.3 resident-only 3840 frames、Xcode Debug、architecture / secret guards 通过。授权 live 与其离线协议 replay 均触发一次受限关联，Runtime accepted final = 2、response.create = 2、error = none；只证明已覆盖的 Adapter 输入关联边界。A7 全量 / Release 未跑，SwiftFormat / SwiftLint 不可用；不是全门禁 PASS。
+- **下一步与边界**:本次没有复现原真人缺失报文中的 `invalid_event`，也未执行或要求新的真人测试。Human Gate 继续 FAIL / P1，不改 AEC / classifier / Source Gate / eligibility / 500 ms tail / Runtime authority / Provider error contract / DR / Store / platform target，不进入 R9 / R10。
+
+### 2026-09-06 · Qwen 输入 item ID 受限关联修复
+
+- 原始自动 live 及离线 replay 均为两次 wire final → 一次 Runtime accepted final；第二段由 id_5 变成 id_6，而 Adapter 只在 speech-start 建绑定。临时仅归一 ID 的反事实恢复到两次 accepted final，但后续缺少第二回答记录而 cancelled，不能作为完整 PASS；原真人 `invalid_event` 根因仍未确认。
+- 唯一 production 修改为 `QwenRealtimeResidentBrainAdapter.swift`：保持原先精确匹配路径；新增仅在同一 Session / generation / context 的未结束发言、有原 ID partial、唯一未绑定候选、有效 Provider audio start/end 时，于 speech-stop 完成一次 item 关联。缺少时间、歧义、已完成/退休 ID 和未知 final 继续拒绝。退休原别名，Runtime turn ID 不变；ACK 等待期间按 Runtime turn ID 保留输入到 N+1。不改 AEC / Source Gate / acoustic threshold / eligibility / 500ms tail / Runtime decision authority / Provider error contract。
+- 起止时间字段参考 [Qwen 官方服务端事件定义](https://www.alibabacloud.com/help/en/model-studio/server-events)；上述关联是有条件的适配兼容策略，不把文档解释成可任意迁移 ID。旧 capsule 已脱敏丢失起止时间，继续保留为缺证据负控，不补造字段宣称通过。
+- 新回归在生产修复前以 `bounded: only bounded ID reassociation is accepted` 失败。修复后 Qwen 全套 56 cases / 708 checks，通过缺失/非法/过期时间、多候选、未知 final、重复与旧 ID、原精确迟到 final，以及关联发生在 interruption ACK 等待期间的 N+1 保留。探针 5 个离线场景 / 9 项安全检查 / 6 项计时检查通过；macOS Xcode build、architecture / secret guards、diff-check 通过。R8.2.3 resident-only 3840 frames，eligibility / confirmed / interrupt / cancel / clear / generation / lease / false turn / history / memory 均 0，repository mutation 检查通过。
+- 真实验证首次请求被安全审查拒绝，未启动、未上传；取得用户对指定 `20260903_215911.qwen-input.pcm` → Qwen 的明确授权后，仅执行一次最长 120 秒的 live。实际 37.49 秒结束，输入 ID 再次由 id_5 变为 id_6，真实 `audio_start_ms = 11420 / audio_end_ms = 15620`；受限关联触发 1 次，两次最终转写均经 Adapter 交付并被 Runtime 接受，`response.create = 2`，Provider active 时实际重叠 speech-start = 1，error = none。使用该次新脱敏记录离线重放也得到一次关联、两次 accepted final / create；未补造字段、未再次联网。
+- 证据位于私有临时目录 `aftelle-qwen-association-live.TdtLuE` 与 `aftelle-qwen-association-repaired-replay.B7BVIX`。两次工具 outcome 都是 `NOT_REPRODUCED`，指未观察到错误，不等于 Human Gate PASS。generation 保持 1、cancel / input clear 为 0；本探针未覆盖 AEC / Source Gate / Input/Output Bridge / AppController / physical Playback / confirmed interruption / N+1，不据此宣称完整插话或原 `invalid_event` 已修复。
+- 本次未跑 A7 全量、Release build；SwiftFormat / SwiftLint 当前不可用，未执行。Human Gate 仍 FAIL / P1，不判 PASS / FROZEN，不要求真人重复测试；未提交功能修改、未推送。
+
+### 2026-09-05 · R8.5.3 有界真实协议 Probe 准备
+
+- 新增 `tools/qwen_live_receive_probe/`：正式 RuntimeCore / Qwen Adapter、录音按 20 ms 发送、真实 response-active 重叠条件、5 轮 / 300 秒上限、首发错误留存与脱敏 codec/state 重放；仅显式命令启动，不开麦、不播放。
+- 离线工具自测：正常流程、注入 `invalid_event`、同一脱敏序列重放、发送挂起时的超时关闭、延迟启动后正常送音，共 5 场景通过；6 项 monotonic 超时边界、9 项输入/授权/预算拒绝、配置一致性和 forbidden seams 检查通过。
+- 本轮未修改 production code；使用 post-AEC fixture activity，AEC / Source Gate / Input/Output Bridge / AppController / physical Playback / confirmed interruption / N+1 均为 NOT_TESTED，不得用此工具替代完整有线耳机验收。
+- 用户授权后的首次 Real Qwen 试运行：收到 session.created / updated，但送音前 phaseTimeout，尚未覆盖插话。工具原先把启动计入 30 秒语音无进展预算；现改为启动 60 秒、session ready 后独立 30 秒，总上限仍 300 秒，并补启动/首 PCM 阶段记录。修正后的测试结果单独记录，不把首次超时误判为生产插话根因。
+- 修正后 live 运行 `vR1578`：`TIMEOUT / startupTimeout`，Keychain begin→end = 222.48 秒；只读进程采样确认阻塞于 `ProbeKeychainCredential → SecItemCopyMatching → Security Keychain getContent`。随后 session.updated 约 0.24 秒，完成输入帧 / wire audio append = 0/0。同步系统调用无法由 Swift 异步计时强制中断，外层 315 秒进程 watchdog 保留；本次进程在其触发前自行结束。未修改 Keychain ACL，未新增 production 修改，未复现插话错误；architecture / secret / diff-check、Stage 7 范围检查通过。真人无需重复测试，先解决测试程序的本机凭据访问等待。
+- 未复现只能记 NOT_REPRODUCED；R8.5.3 Human Gate 仍为 FAIL / P1，不冻结、不进入 R9/R10。
 
 > - **现在在做**:Stage 7.1.6 —— Runtime Config 本地配置边界
 > - **上一步刚完成**:Stage 7.1.5 DR Loader 读取 / 浅校验 / 加载边界已正规化
