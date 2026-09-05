@@ -1780,7 +1780,8 @@ actor QwenRealtimeResidentBrainAdapter:
         let event = RealtimeResidentBrainEvent(
             identity: eventIdentity,
             sequence: nextEventSequence,
-            kind: kind
+            kind: kind,
+            ingressTimestampNanoseconds: DispatchTime.now().uptimeNanoseconds
         )
         if let waiter = eventWaiter, matchingWaiter {
             eventWaiter = nil
@@ -1955,7 +1956,8 @@ actor QwenRealtimeResidentBrainAdapter:
                     contextRevision: nextContextRevision
                 ),
                 sequence: event.sequence,
-                kind: event.kind
+                kind: event.kind,
+                ingressTimestampNanoseconds: event.ingressTimestampNanoseconds
             )
         }
         let reboundWireItemIDs = turnsByWireItemID.compactMap {

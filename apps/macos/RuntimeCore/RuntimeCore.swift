@@ -5598,6 +5598,21 @@ public final class RuntimeCore {
         return delta <= realtimeInterruptionEvidenceWindowNanoseconds
     }
 
+    private static func realtimeSemanticIngressTimestamp(
+        for event: RealtimeResidentBrainEvent,
+        deliveredAtNanoseconds: UInt64
+    ) -> UInt64? {
+        let ingress = event.ingressTimestampNanoseconds
+            ?? deliveredAtNanoseconds
+        guard ingress > 0,
+              ingress <= deliveredAtNanoseconds,
+              deliveredAtNanoseconds - ingress
+                <= realtimeInterruptionEvidenceWindowNanoseconds else {
+            return nil
+        }
+        return ingress
+    }
+
     @MainActor
     private func consumeRealtimeUserSpeechStartedInterruptionEvidence(
         _ event: RealtimeResidentBrainEvent,
@@ -5616,6 +5631,14 @@ public final class RuntimeCore {
         else {
             return .success(.ignored(.staleEvidence))
         }
+        guard let ingress = Self.realtimeSemanticIngressTimestamp(
+            for: event,
+            deliveredAtNanoseconds: receivedAtNanoseconds
+        ) else {
+            return .success(.ignored(.invalidEvidence))
+        }
+        // Context/presentation queues must not shift the semantic observation
+        // relative to acoustic evidence. Queue age is independently bounded.
         return consumeRealtimeResidentBrainInterruptionEvidence(
             RealtimeInterruptionEvidence(
                 identity: RealtimeInterruptionEvidenceIdentity(
@@ -5624,7 +5647,7 @@ public final class RuntimeCore {
                     responseID: target.responseID,
                     contextRevision: target.contextRevision,
                     sequence: event.sequence,
-                    timestampNanoseconds: receivedAtNanoseconds
+                    timestampNanoseconds: ingress
                 ),
                 source: .realtimeBrain(
                     RealtimeInterruptionSemanticFacts(
@@ -5632,7 +5655,7 @@ public final class RuntimeCore {
                     )
                 )
             ),
-            receivedAtNanoseconds: receivedAtNanoseconds
+            receivedAtNanoseconds: ingress
         )
     }
 
@@ -6080,6 +6103,16 @@ public final class RuntimeCore {
             return disposition
         case .interruptionProposed(let proposal):
             let receivedAt = DispatchTime.now().uptimeNanoseconds
+            guard let ingress = Self.realtimeSemanticIngressTimestamp(
+                for: event,
+                deliveredAtNanoseconds: receivedAt
+            ) else {
+                recordRealtimeInterruptionTriggerDecision(
+                    .success(.ignored(.invalidEvidence)),
+                    for: event
+                )
+                return disposition
+            }
             let decision = consumeRealtimeResidentBrainInterruptionEvidence(
                 RealtimeInterruptionEvidence(
                     identity: RealtimeInterruptionEvidenceIdentity(
@@ -6088,7 +6121,7 @@ public final class RuntimeCore {
                         responseID: event.identity.responseID,
                         contextRevision: event.identity.contextRevision,
                         sequence: event.sequence,
-                        timestampNanoseconds: receivedAt
+                        timestampNanoseconds: ingress
                     ),
                     source: .realtimeBrain(
                         RealtimeInterruptionSemanticFacts(
@@ -6096,7 +6129,7 @@ public final class RuntimeCore {
                         )
                     )
                 ),
-                receivedAtNanoseconds: receivedAt
+                receivedAtNanoseconds: ingress
             )
             recordRealtimeInterruptionTriggerDecision(
                 decision,

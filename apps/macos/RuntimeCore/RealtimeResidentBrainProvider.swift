@@ -913,6 +913,20 @@ nonisolated struct RealtimeResidentBrainEvent: Sendable, Equatable {
     let identity: RealtimeBrainEventIdentity
     let sequence: UInt64
     let kind: RealtimeResidentBrainEventKind
+    // Local monotonic ingress time, never a Provider/server wall clock.
+    let ingressTimestampNanoseconds: UInt64?
+
+    init(
+        identity: RealtimeBrainEventIdentity,
+        sequence: UInt64,
+        kind: RealtimeResidentBrainEventKind,
+        ingressTimestampNanoseconds: UInt64? = nil
+    ) {
+        self.identity = identity
+        self.sequence = sequence
+        self.kind = kind
+        self.ingressTimestampNanoseconds = ingressTimestampNanoseconds
+    }
 }
 
 nonisolated protocol RealtimeResidentBrainProvider: Sendable {

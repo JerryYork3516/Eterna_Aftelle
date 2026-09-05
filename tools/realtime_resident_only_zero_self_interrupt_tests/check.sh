@@ -37,6 +37,7 @@ if [ "$test_mode" != "r823-full" ] \
     && [ "$test_mode" != "r844-response-policy-only" ] \
     && [ "$test_mode" != "r852-subtitle-diagnostics-only" ] \
     && [ "$test_mode" != "r853-qwen-handoff-only" ] \
+    && [ "$test_mode" != "r853-queued-start-only" ] \
     && [ "$test_mode" != "r851-cross-node-only" ] \
     && [ "$test_mode" != "r851-randomized-only" ] \
     && [ "$test_mode" != "r851-key-repeat" ]; then
@@ -68,6 +69,7 @@ host_sources=(
 )
 
 swiftc \
+  -module-cache-path "${TMPDIR:-/tmp}/aftelle-r853-module-cache" \
   -D DEBUG \
   -parse-as-library \
   -warn-concurrency \
@@ -147,6 +149,8 @@ elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
   runner_arguments+=("--r852-subtitle-diagnostics-only")
 elif [ "$test_mode" = "r853-qwen-handoff-only" ]; then
   runner_arguments+=("--r853-qwen-handoff-only")
+elif [ "$test_mode" = "r853-queued-start-only" ]; then
+  runner_arguments+=("--r853-queued-start-only")
 elif [ "$test_mode" = "r851-cross-node-only" ]; then
   runner_arguments+=("--r851-cross-node-only")
 elif [ "$test_mode" = "r851-randomized-only" ]; then
@@ -347,6 +351,10 @@ elif [ "$test_mode" = "r853-qwen-handoff-only" ]; then
   rg -qx 'r853_qwen_app_controller_cases=10' "$output"
   rg -qx 'r853_qwen_app_controller_checks=110' "$output"
   echo "r853_qwen_handoff_fixture=PASS"
+elif [ "$test_mode" = "r853-queued-start-only" ]; then
+  rg -qx 'r853_queued_start_cases=4' "$output"
+  rg -qx 'r853_queued_start_checks=40' "$output"
+  echo "r853_queued_start_fixture=PASS"
 elif [ "$test_mode" = "r853-isolated-barge-in-only" ]; then
   rg -qx 'realtime_isolated_barge_in_cases=3' "$output"
   isolated_checks="$({
@@ -1089,6 +1097,8 @@ elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
   echo "realtime_formal_subtitle_diagnostics=PASS"
 elif [ "$test_mode" = "r853-qwen-handoff-only" ]; then
   echo "realtime_qwen_interruption_handoff=PASS"
+elif [ "$test_mode" = "r853-queued-start-only" ]; then
+  echo "realtime_qwen_queued_start=PASS"
 elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
   echo "realtime_semantic_turn_taking=PASS"
 elif [ "$test_mode" = "r851-cross-node-only" ]; then

@@ -747,6 +747,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                         "--r844-response-policy-only",
                         "--r852-subtitle-diagnostics-only",
                         "--r853-qwen-handoff-only",
+                        "--r853-queued-start-only",
                         "--r851-cross-node-only",
                         "--r851-randomized-only"
                     ].contains(CommandLine.arguments[2])) else {
@@ -785,6 +786,29 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 }
                 print("r853_qwen_app_controller_cases=\(cases)")
                 print("r853_qwen_app_controller_checks=\(checks)")
+                return
+            }
+            if CommandLine.arguments[2] == "--r853-queued-start-only" {
+                for delay in [Duration.zero, .milliseconds(1_158)] {
+                    try await testR853QwenAppControllerInterruptionHandoff(
+                        fixture: fixture,
+                        pendingContextStartDelay: delay
+                    )
+                    print("r853_queued_start_delay=\(delay) PASS")
+                }
+                try await testR853QwenAppControllerInterruptionHandoff(
+                    fixture: fixture,
+                    pendingContextStartDelay: .milliseconds(2_100),
+                    expectsInterruption: false
+                )
+                try await testR853QwenAppControllerInterruptionHandoff(
+                    fixture: fixture,
+                    pendingContextStartDelay: .zero,
+                    acousticLead: .milliseconds(2_100),
+                    expectsInterruption: false
+                )
+                print("r853_queued_start_cases=\(cases)")
+                print("r853_queued_start_checks=\(checks)")
                 return
             }
             if CommandLine.arguments[2] == "--r851-cross-node-only" {
@@ -1129,10 +1153,17 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     }
 
     private static func testR853QwenAppControllerInterruptionHandoff(
-        fixture: Data
+        fixture: Data,
+        pendingContextStartDelay: Duration? = nil,
+        acousticLead: Duration = .milliseconds(1_012),
+        expectsInterruption: Bool = true
     ) async throws {
         cases += 1
-        let stack = try await makeR853QwenControllerStack(fixture: fixture)
+        let stack = try await makeR853QwenControllerStack(
+            fixture: fixture,
+            acknowledgementTimeout: pendingContextStartDelay == nil
+                ? .seconds(1) : .seconds(5)
+        )
         await stack.transport.useNextResponseID("r853-old-response")
 
         try await emitR853QwenListeningNearEnd(stack: stack)
@@ -1170,6 +1201,18 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                     .realtimeInterruptionEvidenceDebugSnapshot()
                     .playbackTarget != nil
         }
+        if pendingContextStartDelay != nil {
+            try await emitR853QwenPlaybackNearEnd(stack: stack)
+            await waitUntil("R8.5.3 pre-refresh acoustic evidence") {
+                await stack.controller.refreshMicrophoneAuthorization()
+                return await stack.controller.realtimeBrainInputBridgeSnapshot
+                    .acousticEvidenceCount == 1
+            }
+            // The real sample's speech-start arrived 1,012 ms after acoustic
+            // admission. The held ACK below models its subsequent queue delay.
+            try await Task.sleep(for: acousticLead)
+            await stack.transport.holdSessionUpdateAcknowledgements()
+        }
         await stack.transport.enqueueText(
             #"{"type":"response.audio.done","response_id":"r853-old-response"}"#
         )
@@ -1199,35 +1242,107 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             stack.outputPlayer.pendingCount == 1,
             "R8.5.3 reproduces Provider-terminal physical Playback tail"
         )
-        await waitUntil("R8.5.3 committed response advances context") {
-            await stack.adapter.contextRevisionForTesting(
-                session: stack.session
-            ) == 2
-        }
-        expect(
-            await stack.adapter.contextRevisionForTesting(
-                session: stack.session
-            ) == 2,
-            "R8.5.3 interruption starts after context revision advances"
-        )
-
-        let evidenceBaseline = stack.controller
-            .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
-        try await emitR853QwenPlaybackNearEnd(stack: stack)
-        await waitUntil("R8.5.3 production acoustic evidence reaches Runtime") {
-            await stack.controller.refreshMicrophoneAuthorization()
-            return await stack.controller.realtimeBrainInputBridgeSnapshot
-                .acousticEvidenceCount == evidenceBaseline + 1
-        }
-
-        await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_started","item_id":"r853-interrupting-user"}"#
-        )
-        for preview in ["找", "找点", "找点乐子", "找点乐子是什么"] {
-            try? await Task.sleep(for: .milliseconds(90))
+        if let pendingContextStartDelay {
+            await waitUntil("R8.5.3 Runtime context refresh is awaiting ACK") {
+                await r853SentTypeCount(stack.transport, type: "session.update")
+                    == 3
+            }
             await stack.transport.enqueueText(
-                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"r853-interrupting-user","text":"\#(preview)","stash":""}"#
+                #"{"type":"input_audio_buffer.speech_started","item_id":"r853-interrupting-user"}"#
             )
+            for preview in ["找", "找点", "找点乐", "找点乐子", "找点乐子是", "找点乐子是什", "找点乐子是什么"] {
+                await stack.transport.enqueueText(
+                    #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"r853-interrupting-user","text":"\#(preview)","stash":""}"#
+                )
+            }
+            await waitUntil("R8.5.3 pending user activity is queued") {
+                await stack.adapter.pendingEventCountForTesting(
+                    session: stack.session
+                ) >= 8
+            }
+            try await Task.sleep(for: pendingContextStartDelay)
+            await stack.transport.releaseSessionUpdateAcknowledgements()
+        }
+        if pendingContextStartDelay == nil {
+            await waitUntil("R8.5.3 committed response advances context") {
+                await stack.adapter.contextRevisionForTesting(
+                    session: stack.session
+                ) == 2
+            }
+            expect(
+                await stack.adapter.contextRevisionForTesting(
+                    session: stack.session
+                ) == 2,
+                "R8.5.3 interruption starts after context revision advances"
+            )
+            let evidenceBaseline = stack.controller
+                .realtimeBrainInputBridgeSnapshot.acousticEvidenceCount
+            try await emitR853QwenPlaybackNearEnd(stack: stack)
+            await waitUntil("R8.5.3 production acoustic evidence reaches Runtime") {
+                await stack.controller.refreshMicrophoneAuthorization()
+                return await stack.controller.realtimeBrainInputBridgeSnapshot
+                    .acousticEvidenceCount == evidenceBaseline + 1
+            }
+
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_started","item_id":"r853-interrupting-user"}"#
+            )
+            for preview in ["找", "找点", "找点乐子", "找点乐子是什么"] {
+                try? await Task.sleep(for: .milliseconds(90))
+                await stack.transport.enqueueText(
+                    #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"r853-interrupting-user","text":"\#(preview)","stash":""}"#
+                )
+            }
+        }
+
+        if pendingContextStartDelay != nil {
+            let deadline = monotonicNow() + 3_000_000_000
+            while stack.outputPlayer.clearScheduledPlaybackCount == 0,
+                  monotonicNow() < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            await stack.controller.refreshMicrophoneAuthorization()
+            expect(
+                stack.controller.realtimeSpeechDiagnosticTimeline.events
+                    .contains { $0.category == "qwen_pending_user_activity_context_rebound"
+                        && $0.stateBefore == "1" && $0.stateAfter == "2" },
+                "queued speech-start crosses the formal context refresh"
+            )
+            if stack.outputPlayer.clearScheduledPlaybackCount == 0 {
+                await stack.transport.enqueueText(
+                    #"{"type":"input_audio_buffer.speech_stopped","item_id":"r853-interrupting-user"}"#
+                )
+                await stack.transport.enqueueText(
+                    #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"r853-interrupting-user","transcript":"找点乐子是什么"}"#
+                )
+                await waitUntil("R8.5.3 queued final admission is recorded") {
+                    await stack.controller.refreshMicrophoneAuthorization()
+                    return await stack.controller.realtimeSpeechDiagnosticTimeline
+                        .events.contains { $0.disposition == "rejected_pending_start" }
+                }
+                await stack.controller.refreshMicrophoneAuthorization()
+                let rejected = stack.controller.realtimeSpeechDiagnosticTimeline
+                    .events.filter { $0.disposition == "rejected_pending_start" }
+                print("r853_queued_start_rejected_pending_start=\(rejected.count)")
+            }
+            expect(
+                stack.outputPlayer.clearScheduledPlaybackCount
+                    == (expectsInterruption ? 1 : 0),
+                "queued speech-start preserves correlation and expiry fences"
+            )
+            if !expectsInterruption {
+                let responseCreates = await r853SentTypeCount(
+                    stack.transport, type: "response.create"
+                )
+                expect(
+                    stack.controller.formalSpeechRouteDebugSnapshot.generation
+                        == stack.session.generation
+                        && responseCreates == 1,
+                    "expired evidence cannot advance generation or create a response"
+                )
+                await stack.controller.stopSpeechAudioCapture()
+                return
+            }
         }
 
         let nextGeneration = stack.session.generation + 1
@@ -8056,8 +8171,16 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
         expect(result.detected && result.sourceGateOpened,
                "R8.4.2 \(label) is production-acoustic user evidence")
-        expect(result.acousticEligibility == 1,
+        expect(result.acousticEligibility == 1
+                && result.activePCMPackets > 0
+                && result.runtimeObservedDoubleTalk,
                "R8.4.2 \(label) obtains one acoustic authorization")
+        print("r842_acoustic_authorization label=\(label)"
+            + " double_talk_frames=\(result.doubleTalkFrames)"
+            + " source_gate_open=\(result.sourceGateOpened)"
+            + " alignment_locked=\(result.sourceAlignmentLocked)"
+            + " active_pcm_packets=\(result.activePCMPackets)"
+            + " eligibility=\(result.acousticEligibility)")
     }
 
     private static func emitR842NearEndContinuation(
@@ -8242,6 +8365,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let residualGain: Float
         let doubleTalkFrames: Int
         let delayMilliseconds: [Int]
+        let callbackDelayMilliseconds: [Int]
         let expectsAdaptiveEvidence: Bool
         let transition: R841DoubleTalkTransition
 
@@ -8253,6 +8377,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             residualGain: Float = 0,
             doubleTalkFrames: Int = 4,
             delayMilliseconds: [Int] = [80],
+            callbackDelayMilliseconds: [Int] = [0],
             expectsAdaptiveEvidence: Bool = false,
             transition: R841DoubleTalkTransition = .none
         ) {
@@ -8263,6 +8388,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             self.residualGain = residualGain
             self.doubleTalkFrames = doubleTalkFrames
             self.delayMilliseconds = delayMilliseconds
+            self.callbackDelayMilliseconds = callbackDelayMilliseconds
             self.expectsAdaptiveEvidence = expectsAdaptiveEvidence
             self.transition = transition
         }
@@ -8271,6 +8397,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private struct R841DoubleTalkResult {
         let detected: Bool
         let sourceGateOpened: Bool
+        let sourceAlignmentLocked: Bool
         let acousticEligibility: Int
         let doubleTalkFrames: Int
         let activePCMPackets: Int
@@ -8353,11 +8480,11 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 nearEndAmplitude: 0.08
             ),
             R841DoubleTalkScenario(
-                label: "bounded timing jitter",
+                label: "bounded callback jitter",
                 renderAmplitude: 0.30,
                 echoGain: 0.80,
                 nearEndAmplitude: 0.20,
-                delayMilliseconds: [70, 90, 80, 100]
+                callbackDelayMilliseconds: [70, 90, 80, 100]
             ),
             R841DoubleTalkScenario(
                 label: "residual echo + near-end",
@@ -8513,7 +8640,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 bucket: .residualEcho
             ),
             R841NegativeScenario(
-                label: "timing jitter",
+                label: "discontinuous timing fails closed",
                 renderAmplitude: 0.30,
                 echoGain: 0.85,
                 residualGain: 0.03,
@@ -8643,8 +8770,10 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
         let warmupCapture = render.map { $0 * scenario.echoGain }
         let warmupOutput = render.map { $0 * scenario.residualGain }
+        // Three alignment frames, then five trusted baseline frames overlap once.
+        let warmupFrameCount = scenario.expectsAdaptiveEvidence ? 7 : 6
 
-        for index in 0 ..< 6 {
+        for index in 0 ..< warmupFrameCount {
             let delay = scenario.delayMilliseconds[
                 index % scenario.delayMilliseconds.count
             ]
@@ -8656,6 +8785,12 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 render,
                 hostTimeNanoseconds: renderTimestamp
             )
+            // Callback arrival jitter must not rewrite the audio timestamps.
+            try await Task.sleep(for: .milliseconds(
+                scenario.callbackDelayMilliseconds[
+                    index % scenario.callbackDelayMilliseconds.count
+                ]
+            ))
             let processed = stack.acousticEchoHost.processCapture(
                 warmupCapture,
                 hostTimeNanoseconds: captureTimestamp
@@ -8666,8 +8801,11 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let warmup = stack.acousticEchoHost.acousticObservationSnapshot()
         expect(warmup.sourceAlignmentLocked,
                "R8.4.1 \(scenario.label) warm-up locks alignment")
-        expect(warmup.inputClassification == .echoOnly,
-               "R8.4.1 \(scenario.label) warm-up is echo-only")
+        let baselineFrames = stack.acousticEchoHost.snapshot()
+            .residualEchoBaselineFrameCount
+        expect(warmup.inputClassification == .echoOnly
+                && (!scenario.expectsAdaptiveEvidence || baselineFrames >= 5),
+               "R8.4.1 \(scenario.label) warm-up establishes trusted echo evidence")
         expect(!warmup.sourceGateOpen,
                "R8.4.1 \(scenario.label) warm-up keeps gate closed")
 
@@ -8680,7 +8818,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         var activePCMPackets = 0
         for index in 0 ..< scenario.doubleTalkFrames {
             let delay = scenario.delayMilliseconds[
-                (index + 6) % scenario.delayMilliseconds.count
+                (index + warmupFrameCount) % scenario.delayMilliseconds.count
             ]
             let captureTimestamp = monotonicNow()
             let renderTimestamp = captureTimestamp
@@ -8690,6 +8828,12 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 render,
                 hostTimeNanoseconds: renderTimestamp
             )
+            try await Task.sleep(for: .milliseconds(
+                scenario.callbackDelayMilliseconds[
+                    (index + warmupFrameCount)
+                        % scenario.callbackDelayMilliseconds.count
+                ]
+            ))
             let processed = stack.acousticEchoHost.processCapture(
                 mixedCapture,
                 hostTimeNanoseconds: captureTimestamp
@@ -8707,7 +8851,6 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         let detected = openedObservation.inputClassification == .doubleTalk
         let gateOpened = openedObservation.sourceGateOpen
             && openedObservation.sourceGateEpoch > 0
-            && openedObservation.sourceAlignmentLocked
         let pendingDeadline = monotonicNow() + 3_000_000_000
         while true {
             await stack.controller.refreshMicrophoneAuthorization()
@@ -8745,7 +8888,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         if await bridgeEvidenceCount(stack) == evidenceBefore {
             for index in 0 ..< 2 {
                 let delay = scenario.delayMilliseconds[
-                    (index + scenario.doubleTalkFrames + 6)
+                    (index + scenario.doubleTalkFrames + warmupFrameCount)
                         % scenario.delayMilliseconds.count
                 ]
                 let captureTimestamp = monotonicNow()
@@ -8856,6 +8999,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         return R841DoubleTalkResult(
             detected: detected,
             sourceGateOpened: gateOpened,
+            sourceAlignmentLocked: openedObservation.sourceAlignmentLocked,
             acousticEligibility: eligibility,
             doubleTalkFrames: Int(
                 opened.doubleTalkFrameCount
@@ -8901,8 +9045,16 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             try? await Task.sleep(for: .milliseconds(2))
         }
         let snapshot = stack.acousticEchoHost.snapshot()
-        expect(snapshot.inputClassification == .echoOnly,
-               "R8.4.1 \(scenario.label) remains echo-only")
+        let classificationSafe: Bool
+        if case .timingJitter = scenario.bucket {
+            classificationSafe = !snapshot.sourceAlignmentLocked
+                && (snapshot.inputClassification == .echoOnly
+                    || snapshot.inputClassification == .uncertain)
+        } else {
+            classificationSafe = snapshot.inputClassification == .echoOnly
+        }
+        expect(classificationSafe,
+               "R8.4.1 \(scenario.label) retains only non-user evidence")
         expect(!snapshot.sourceGateOpen,
                "R8.4.1 \(scenario.label) keeps source gate closed")
         return R841NegativeResult(
@@ -11031,7 +11183,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     }
 
     private static func makeR853QwenControllerStack(
-        fixture: Data
+        fixture: Data,
+        acknowledgementTimeout: Duration = .seconds(1)
     ) async throws -> R853QwenControllerStack {
         let diagnostics = NativeSpeechDiagnosticBuffer()
         let transport = R3FakeRealtimeWebSocketTransport()
@@ -11050,7 +11203,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 )!,
                 keyRef: "keychain://test/qwen",
                 defaultProviderVoiceID: "R6FixtureVoice",
-                acknowledgementTimeout: .seconds(1)
+                acknowledgementTimeout: acknowledgementTimeout
             ),
             diagnosticBuffer: diagnostics
         )

@@ -1810,6 +1810,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"response.done","response":{"id":"context-source-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"context refresh"}]}]}}"#
         )
+        let ingressLowerBound = DispatchTime.now().uptimeNanoseconds
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"pending-barge-in-user"}"#
         )
@@ -1825,6 +1826,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 && residentFinal.identity.contextRevision == 1,
             "terminal response events retain their accepted context revision"
         )
+        await waitUntilPendingEventCount(
+            stack.adapter, session: identity, minimum: 1,
+            label: "pending speech-start before context refresh"
+        )
+        let ingressUpperBound = DispatchTime.now().uptimeNanoseconds
 
         try await stack.adapter.updateRuntimeContext(
             RealtimeBrainRuntimeContextUpdate(
@@ -1845,6 +1851,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 && pendingSpeech.sequence == 5
                 && pendingSpeech.identity.contextRevision == 2,
             "pending speech-start joins the context accepted before delivery"
+        )
+        expect(
+            pendingSpeech.ingressTimestampNanoseconds.map {
+                $0 >= ingressLowerBound && $0 <= ingressUpperBound
+            } == true,
+            "context rebinding preserves local ingress time, not delivery time"
         )
 
         await stack.transport.enqueueText(
