@@ -3042,6 +3042,16 @@ final class AppController: ObservableObject {
                 presentation
             )
         }
+        orchestrationKernel.setRealtimePendingAnswerPresentationHandler { [weak self] identity, error in
+            guard let self,
+                  self.isCurrentRealtimeBrainRoute(attemptID: attemptID, session: identity.session),
+                  !self.realtimeBrainStopping else { return }
+            self.updateRealtimeFullDuplexSpeechStatus(
+                error == nil ? .processing : .listening,
+                generation: identity.session.generation,
+                lastErrorCode: error.map(Self.realtimeResidentBrainErrorCode)
+            )
+        }
         realtimeBrainStartInFlight = true
         defer {
             realtimeBrainStartInFlight = false

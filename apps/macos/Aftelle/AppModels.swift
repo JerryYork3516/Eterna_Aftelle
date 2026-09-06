@@ -1970,6 +1970,13 @@ public final class OrchestrationKernel {
         runtimeCore.settleRealtimeResidentBrainPlaybackTarget(identity)
     }
 
+    @MainActor
+    func setRealtimePendingAnswerPresentationHandler(
+        _ handler: (@MainActor @Sendable (RealtimeBrainEventIdentity, RealtimeResidentBrainError?) -> Void)?
+    ) {
+        runtimeCore.setRealtimePendingAnswerPresentationHandler(handler)
+    }
+
     func setRealtimePassiveBackchannelHandler(
         _ handler: (
             @MainActor @Sendable (

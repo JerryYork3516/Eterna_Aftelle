@@ -804,6 +804,33 @@ private struct RealtimeResidentBrainContractTests {
             command: successCommand,
             sourceTurnIDs: successSourceTurns
         ), "all live source turns atomically claim response execution")
+        let continuationCommand = RealtimeBrainCreateResponseCommand(
+            identity: successCommand.identity, sourceEventSequence: successCommand.sourceEventSequence
+        )
+        for submission in [RealtimeBrainResponseAttempt.Submission.submitted, .uncertain] {
+            expect(successFixture.gate.continueResponseCreate(
+                token: successToken, previous: successCommand, next: continuationCommand,
+                failure: RealtimeBrainResponseAttemptFailure(attemptID: successCommand.attempt.id,
+                    submission: submission, reason: .responseWriteOrAcknowledgement, error: .timedOut)
+            ) == nil, "submitted and uncertain attempts cannot obtain another Runtime authorization")
+        }
+        let notSubmitted = RealtimeBrainResponseAttemptFailure(
+            attemptID: successCommand.attempt.id, submission: .notSubmitted,
+            reason: .retiredResponseWait, error: .timedOut
+        )
+        successCommand.attempt.setPermitted(false)
+        expect(successFixture.gate.continueResponseCreate(
+            token: successToken, previous: successCommand, next: continuationCommand, failure: notSubmitted
+        ) == nil, "speech pause prevents Runtime re-authorization")
+        successCommand.attempt.setPermitted(true)
+        guard let continuedToken = successFixture.gate.continueResponseCreate(
+            token: successToken, previous: successCommand, next: continuationCommand, failure: notSubmitted
+        ) else { fatalError("valid not-submitted continuation must be authorized") }
+        expect(continuedToken != successToken, "each attempt receives a different operation token")
+        expect(successFixture.gate.beginResponseCreate(continuationCommand) == .alreadyAuthorized(successResponseTurn),
+               "continuation never clears consumed logical-turn authorization")
+        expect(!successFixture.gate.finishResponseCreate(token: successToken, command: successCommand, succeeded: false),
+               "late old attempt completion cannot clear the current attempt")
         let lateAlias = RealtimeResidentBrainEvent(
             identity: successFirstIdentity,
             sequence: 3,
@@ -816,8 +843,8 @@ private struct RealtimeResidentBrainContractTests {
         ) == .rejectedInvalidEvent,
         "successful execution closes non-response aliases")
         expect(successFixture.gate.finishResponseCreate(
-            token: successToken,
-            command: successCommand,
+            token: continuedToken,
+            command: continuationCommand,
             succeeded: true
         ), "cross-source response authorization commits")
         let residentIdentity = RealtimeBrainEventIdentity(
@@ -1685,12 +1712,9 @@ private struct RealtimeResidentBrainContractTests {
         let responseCreateCommands = await stack.provider
             .responseCreateCommands
         expect(
-            responseCreateCommands == [
-                RealtimeBrainCreateResponseCommand(
-                    identity: userIdentity,
-                    sourceEventSequence: userFinal.sequence
-                )
-            ],
+            responseCreateCommands.count == 1
+                && responseCreateCommands.first?.identity == userIdentity
+                && responseCreateCommands.first?.sourceEventSequence == userFinal.sequence,
             "Runtime sends one exact createResponse command across the race"
         )
         expectRealtimeSuccess(

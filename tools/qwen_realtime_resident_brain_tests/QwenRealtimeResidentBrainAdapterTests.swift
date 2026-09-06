@@ -1,5 +1,29 @@
 import Foundation
 
+private actor R3ResponseCatchBarrier {
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func suspend() async {
+        entered = true
+        entryWaiter?.resume()
+        entryWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitForEntry() async {
+        if entered { return }
+        await withCheckedContinuation { entryWaiter = $0 }
+    }
+
+    func release() { releaseWaiter?.resume(); releaseWaiter = nil }
+}
+
+private enum R3PendingAnswerCase: String, CaseIterable {
+    case doneBeforeTimeout, doneBeforeCatch, lateDone, stop, expiry, speechPause, supersede, supersedeDuringWait, generation, context
+}
+
 private struct R3CredentialReader: ProviderCredentialReading {
     let value: String?
 
@@ -111,6 +135,22 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let fixture = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+        if ProcessInfo.processInfo.environment["AFTELLE_UNSENT_RACE_ONLY"] == "1" {
+            try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true, doneBeforeCatch: true)
+            print("unsent_timeout_done_catch=PASS checks=\(checks)")
+            return
+        }
+        if ProcessInfo.processInfo.environment["AFTELLE_PENDING_ANSWER_ONLY"] == "1" {
+            for scenario in R3PendingAnswerCase.allCases {
+                try await testRuntimeConfirmedInterruptionUserTurnHandoff(
+                    fixture: fixture, drainTimeout: true, pendingCase: scenario
+                )
+            }
+            try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true, doneBeforeCatch: true)
+            try await testSubmittedResponseTimeoutIsTerminal()
+            print("pending_answer_matrix=PASS cases=\(cases) checks=\(checks)")
+            return
+        }
         try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true)
         try await testInterruptionAndGeneration(missingCancellationCompletion: true)
         try await testInterruptionAndGeneration(missingCancellationCompletion: true, unsolicitedDuringDrain: true)
@@ -1554,7 +1594,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
-    private static func testInterruptionAndGeneration(reassociateItem: Bool = false, withProvisionalPreview: Bool = true, missingCancellationCompletion: Bool = false, unsolicitedDuringDrain: Bool = false, drainTimeout: Bool = false) async throws {
+    private static func testInterruptionAndGeneration(reassociateItem: Bool = false, withProvisionalPreview: Bool = true, missingCancellationCompletion: Bool = false, unsolicitedDuringDrain: Bool = false, drainTimeout: Bool = false, doneBeforeCatch: Bool = false) async throws {
         cases += 1
         let diagnostics = NativeSpeechDiagnosticBuffer()
         let stack = try makeStack(diagnosticBuffer: diagnostics)
@@ -1838,8 +1878,25 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "the bounded pending PCM stays continuous across interruption"
         )
 
+        let catchBarrier = R3ResponseCatchBarrier()
+        if doneBeforeCatch {
+            await stack.adapter.setResponseCatchBarrierForTesting { await catchBarrier.suspend() }
+        }
+        let reboundCommand = RealtimeBrainCreateResponseCommand(
+            identity: reboundFinal.identity, sourceEventSequence: reboundFinal.sequence
+        )
+        await stack.transport.useNextResponseID("response-barge-in")
         let reboundResponse = Task {
-            try await authorizeResponse(stack, from: reboundFinal, responseID: "response-barge-in")
+            do {
+                try await stack.adapter.createResponse(reboundCommand)
+            } catch let failure as RealtimeBrainResponseAttemptFailure
+                where !drainTimeout && failure.submission == .notSubmitted
+                    && reboundCommand.attempt.snapshot().providerReady {
+                // Adapter fixture explicitly grants a new attempt; production uses Runtime's gate.
+                try await stack.adapter.createResponse(RealtimeBrainCreateResponseCommand(
+                    identity: reboundFinal.identity, sourceEventSequence: reboundFinal.sequence
+                ))
+            }
         }
         if missingCancellationCompletion {
             for _ in 0 ..< 10_000 {
@@ -1876,13 +1933,30 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 )
             }
             if drainTimeout {
-                try await reboundResponse.value
-                let failure = try await stack.adapter.receiveEvent(session: nextIdentity)
-                expect(failure.kind == .error(.timedOut)
-                    && failure.identity.session == reboundFinal.identity.session
-                    && failure.identity.turnID == reboundFinal.identity.turnID
-                    && failure.identity.responseID != nil,
-                    "an unsent response attempt times out as one correlated recoverable error")
+                if doneBeforeCatch {
+                    await catchBarrier.waitForEntry()
+                    await stack.transport.releaseResponseCancellationAcknowledgements()
+                    for _ in 0 ..< 10_000 {
+                        if !(await stack.adapter.hasRetiringResponseForTesting()) { break }
+                        await Task.yield()
+                    }
+                    let stillRetiring = await stack.adapter.hasRetiringResponseForTesting()
+                    expect(!stillRetiring, "old done is consumed after timeout but before catch")
+                    await stack.adapter.setResponseCatchBarrierForTesting(nil)
+                    await catchBarrier.release()
+                    FileHandle.standardError.write(Data("counterexample_order=timer_fired,old_done_consumed,catch_released\n".utf8))
+                }
+                do {
+                    try await reboundResponse.value
+                    fatalError("the original waiting attempt must return its not-submitted receipt")
+                } catch let failure as RealtimeBrainResponseAttemptFailure {
+                    expect(failure.attemptID == reboundCommand.attempt.id
+                        && failure.submission == .notSubmitted
+                        && failure.reason == .retiredResponseWait && failure.error == .timedOut,
+                        "timeout belongs to the original unsubmitted attempt even when old done beats catch")
+                }
+                let terminalFailure = await stack.adapter.terminalErrorForTesting(session: nextIdentity)
+                expect(terminalFailure == nil, "late old done cannot turn an unsubmitted timeout into terminal failure")
                 let afterTimeout = try await sentTypes(stack.transport)
                 expect(afterTimeout.filter { $0 == "response.create" }.count == 1,
                        "timed-out drain never submits or retries response.create")
@@ -1905,7 +1979,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                     #"{"type":"input_audio_buffer.speech_started","item_id":"after-timeout-user"}"#
                 )
                 let fresh = try await stack.adapter.receiveEvent(session: nextIdentity)
-                expect(fresh.kind == .userSpeechStarted && fresh.sequence == failure.sequence + 1,
+                expect(fresh.kind == .userSpeechStarted && fresh.sequence == reboundFinal.sequence + 1,
                        "late old completion and audio cannot revive or duplicate a failed attempt")
                 let beforeFreshCreate = try await sentTypes(stack.transport)
                 expect(beforeFreshCreate.filter { $0 == "response.create" }.count == 1,
@@ -3687,11 +3761,16 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
     private static func testRuntimeConfirmedInterruptionUserTurnHandoff(
         fixture: Data,
-        drainTimeout: Bool = false
+        drainTimeout: Bool = false,
+        pendingCase: R3PendingAnswerCase = .lateDone
     ) async throws {
         cases += 1
         let diagnostics = NativeSpeechDiagnosticBuffer()
         let stack = try makeStack(diagnosticBuffer: diagnostics)
+        let catchBarrier = R3ResponseCatchBarrier()
+        if drainTimeout && pendingCase != .doneBeforeTimeout && pendingCase != .supersedeDuringWait {
+            await stack.adapter.setResponseCatchBarrierForTesting { await catchBarrier.suspend() }
+        }
         let router = ProviderRouter(
             credentialReader: try credentialReader(),
             realtimeResidentBrainProvider: stack.adapter
@@ -3703,6 +3782,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         expect(runtime.loadDR(from: fixture).isLoaded,
                "confirmed-handoff fixture resident loads")
+        runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
         let identity = try realtimeIdentity(
             await runtime.openRealtimeResidentBrainSession()
         )
@@ -3965,53 +4045,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "a real Provider final cancels fallback without replacement"
         )
         if drainTimeout {
-            let leaseBeforeTimeout = runtime.activeBrainLeaseForTesting()
-            let errorDisposition = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity)
-            guard case .accepted(let responseError) = errorDisposition else {
-                fatalError("Runtime must accept the exact unsent attempt failure")
-            }
-            expect(responseError.kind == .error(.timedOut)
-                && responseError.identity.turnID == reboundFinalEvent.identity.turnID,
-                "Runtime accepts one response-level timeout for the authorized N+1 user turn")
-            expect(runtime.activeBrainLeaseForTesting() == leaseBeforeTimeout && leaseBeforeTimeout != nil,
-                   "an unsent response timeout cannot release the Brain lease or advance generation")
-            expect(runtime.realtimePendingUserInputForTesting(reboundFinalEvent.identity) == nil,
-                   "failed turn is retired, not left pending for an unsolicited future answer")
-            let typesAfterTimeout = try await sentTypes(stack.transport)
-            expect(typesAfterTimeout.filter { $0 == "response.create" }.count == 1
-                && typesAfterTimeout.filter { $0 == "response.cancel" }.count == 1,
-                "timeout does not send, retry, or recancel a response")
-            let failureDiagnostics = diagnostics.drain().events
-            expect(failureDiagnostics.filter { $0.category == "qwen_response_not_submitted" }.count == 1,
-                   "diagnostics distinguishes an unsent request from a terminal receive failure")
-            expectRealtimeSuccess(
-                await runtime.appendRealtimeResidentBrainAudio(RealtimeBrainAudioFrame(
-                    identity: nextIdentity, sequence: 1,
-                    timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
-                    format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
-                    provenance: .acousticEchoProcessed, bytes: frameBytes
-                ), activity: listeningActivity),
-                "Runtime input stays usable while the old cloud response is unresolved"
+            try await verifyPendingAnswerCase(
+                pendingCase, runtime: runtime, stack: stack, diagnostics: diagnostics,
+                identity: nextIdentity, original: reboundFinalEvent, barrier: catchBarrier,
+                activity: listeningActivity, bytes: frameBytes
             )
-            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: nextIdentity),
-                                  "Stop closes without needing the withheld old response.done")
-            expect(runtime.activeBrainLeaseForTesting() == nil, "only explicit Stop releases the lease")
-            let restarted = try realtimeIdentity(await runtime.openRealtimeResidentBrainSession())
-            expectRealtimeSuccess(await runtime.updateRealtimeResidentBrainContext(
-                RealtimeBrainRuntimeContextUpdate(identity: restarted, kind: .bootstrap, contextRevision: 1,
-                    sections: [RealtimeBrainContextSection(scope: .stableResident, content: "restart after timeout")])
-            ), "Restart after recoverable timeout bootstraps normally")
-            expectAccepted(try await runtime.receiveRealtimeResidentBrainEvent(session: restarted),
-                           kind: .sessionReady, "restart reaches the formal ready state")
-            await stack.transport.releaseResponseCancellationAcknowledgements()
-            await stack.transport.enqueueText(
-                #"{"type":"input_audio_buffer.speech_started","item_id":"restart-user"}"#
-            )
-            expectAccepted(try await runtime.receiveRealtimeResidentBrainEvent(session: restarted),
-                           kind: .userSpeechStarted, "late old completion cannot revive output in the restarted session")
-            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: restarted),
-                                  "restarted Runtime session remains closeable")
-            print("runtime_unsent_response_timeout=RECOVERABLE same_lease=PASS input=PASS stop_restart=PASS")
             return
         }
         try await waitUntilSentTypeCount(
@@ -4066,6 +4104,215 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             ),
             "confirmed-handoff fixture closes"
         )
+    }
+
+    private static func waitForCondition(
+        _ label: String, _ predicate: @MainActor () async -> Bool
+    ) async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+        while !(await predicate()) {
+            guard ContinuousClock.now < deadline else { fatalError("condition timed out: \(label)") }
+            await Task.yield()
+        }
+    }
+
+    private static func verifyPendingAnswerCase(
+        _ scenario: R3PendingAnswerCase, runtime: RuntimeCore,
+        stack: (adapter: QwenRealtimeResidentBrainAdapter, transport: R3FakeRealtimeWebSocketTransport),
+        diagnostics: NativeSpeechDiagnosticBuffer, identity: RealtimeBrainSessionIdentity,
+        original: RealtimeResidentBrainEvent, barrier: R3ResponseCatchBarrier,
+        activity: RealtimeBrainLocalAudioActivity, bytes: Data
+    ) async throws {
+        FileHandle.standardError.write(Data("pending_answer_case=\(scenario.rawValue)\n".utf8))
+        let lease = runtime.activeBrainLeaseForTesting()
+        let historyBefore = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+        await waitForCondition("formal semantic completion admits pending answer") {
+            runtime.realtimePendingAnswerForTesting() != nil
+        }
+        guard let initial = runtime.realtimePendingAnswerForTesting() else {
+            fatalError("Runtime must retain exactly one pending question before ACK timeout")
+        }
+        expect(initial.turnID == original.identity.turnID && initial.state.submission == .notSubmitted,
+               "pending question carries the original logical authorization and submission receipt")
+        await waitForCondition("old response ACK wait registered") {
+            !(await stack.adapter.responseDoneWaiterIDsForTesting("response-tool-1")).isEmpty
+        }
+        let oldWaiters = await stack.adapter.responseDoneWaiterIDsForTesting("response-tool-1")
+        let (expired, expiryNotice) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        runtime.setRealtimePendingAnswerPresentationHandler { _, error in
+            if error == .timedOut { expiryNotice.yield(); expiryNotice.finish() }
+        }
+        if scenario != .doneBeforeTimeout && scenario != .supersedeDuringWait {
+            await barrier.waitForEntry()
+            if scenario == .doneBeforeCatch {
+                await stack.transport.releaseResponseCancellationAcknowledgements()
+                await waitForCondition("old done before request catch") {
+                    !(await stack.adapter.hasRetiringResponseForTesting())
+                }
+            }
+            await stack.adapter.setResponseCatchBarrierForTesting(nil)
+            await barrier.release()
+            await waitForCondition("original request catch finished") {
+                !(await stack.adapter.hasResponseRequestForTesting())
+            }
+        }
+        expect(runtime.realtimePendingUserInputForTesting(original.identity) == "找点乐子是什么",
+               "the ACK wait never consumes the unanswered question")
+        expect(runtime.activeBrainLeaseForTesting() == lease, "ACK lateness does not replace lease or generation")
+        let beforeReady = try await sentTypes(stack.transport)
+        if scenario != .doneBeforeCatch {
+            expect(beforeReady.filter { $0 == "response.create" }.count == 1,
+                   "not-submitted question is not sent while the old response is unresolved")
+        }
+
+        func append(_ sequence: UInt64) async {
+            expectRealtimeSuccess(await runtime.appendRealtimeResidentBrainAudio(RealtimeBrainAudioFrame(
+                identity: identity, sequence: sequence, timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
+                provenance: .acousticEchoProcessed, bytes: bytes
+            ), activity: activity), "formal input continues while waiting")
+        }
+
+        if scenario != .context { await append(1) }
+        var expectedIdentity = original.identity
+        var expectedQuestion = "找点乐子是什么"
+        let supersedes = scenario == .supersede || scenario == .supersedeDuringWait
+        if scenario == .speechPause || supersedes {
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"new-pending-question"}"#)
+            guard case .accepted(let started) = try await runtime.receiveRealtimeResidentBrainEvent(session: identity) else {
+                fatalError("new speech must be received while the original answer is waiting")
+            }
+            expect(started.kind == .userSpeechStarted, "new speech pauses old submission")
+            expect(runtime.realtimePendingAnswerForTesting()?.state.permitted == false,
+                   "new speech revokes submission permission before a late done can arrive")
+            if supersedes {
+                for sequence in 2 ... 5 {
+                    try await Task.sleep(for: .milliseconds(20))
+                    await append(UInt64(sequence))
+                }
+                await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"new-pending-question"}"#)
+                _ = try await runtime.receiveRealtimeResidentBrainEvent(session: identity)
+                _ = try await receiveRuntimeTranscript(stack, runtime: runtime, identity: identity,
+                    itemID: "new-pending-question", transcript: "改问今天该做什么")
+                await waitForCondition("new substantive question supersedes original") {
+                    runtime.realtimePendingAnswerForTesting()?.turnID == started.identity.turnID
+                }
+                expectedIdentity = started.identity
+                expectedQuestion = "改问今天该做什么"
+                expect(runtime.realtimePendingUserInputForTesting(original.identity) == nil,
+                       "superseded input is explicitly retired, not persisted or silently dropped as overlap")
+                runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+                expect(runtime.realtimePendingAnswerForTesting()?.turnID == started.identity.turnID,
+                       "old expiry callback cannot expire the new question")
+                if scenario == .supersedeDuringWait {
+                    guard let oldWaiter = oldWaiters.first else { fatalError("original ACK waiter must exist") }
+                    await waitForCondition("new attempt owns a different ACK waiter") {
+                        let ids = await stack.adapter.responseDoneWaiterIDsForTesting("response-tool-1")
+                        return !ids.isEmpty && !ids.contains(oldWaiter)
+                    }
+                    let newWaiters = await stack.adapter.responseDoneWaiterIDsForTesting("response-tool-1")
+                    await stack.adapter.fireResponseDoneTimeoutForTesting("response-tool-1", waiterID: oldWaiter)
+                    let remaining = await stack.adapter.responseDoneWaiterIDsForTesting("response-tool-1")
+                    expect(remaining == newWaiters, "old timer cannot remove or resume a new attempt's waiter")
+                }
+            }
+        }
+
+        if scenario == .stop {
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: identity), "Stop cancels pending without old done")
+            let next = try realtimeIdentity(await runtime.openRealtimeResidentBrainSession())
+            expectRealtimeSuccess(await runtime.updateRealtimeResidentBrainContext(RealtimeBrainRuntimeContextUpdate(
+                identity: next, kind: .bootstrap, contextRevision: 1,
+                sections: [RealtimeBrainContextSection(scope: .stableResident, content: "restart")]
+            )), "Restart is independent of old pending")
+            expectAccepted(try await runtime.receiveRealtimeResidentBrainEvent(session: next), kind: .sessionReady, "restart ready")
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+            runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+            expect(runtime.realtimePendingAnswerForTesting() == nil, "Stop/restart cannot resurrect pending")
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: next), "restart closes")
+        } else if scenario == .expiry || scenario == .speechPause {
+            if scenario == .speechPause {
+                await stack.transport.releaseResponseCancellationAcknowledgements()
+                await waitForCondition("readiness does not override speech pause") {
+                    runtime.realtimePendingAnswerForTesting()?.state.providerReady == true
+                }
+                expect(runtime.realtimePendingAnswerForTesting()?.id == initial.id, "same question remains paused")
+            }
+            expect(runtime.realtimePendingAnswerForTesting()?.deadline == initial.deadline, "total deadline never rolls forward")
+            if scenario == .expiry {
+                // Exercise the actual production 15-second deadline, not a shortened test timeout.
+                for await _ in expired { break }
+                expect(ContinuousClock.now >= initial.deadline
+                    && ContinuousClock.now < initial.deadline.advanced(by: .seconds(2)),
+                       "never-arriving done exits at the real fixed total deadline")
+            } else {
+                runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+            }
+            expect(runtime.realtimePendingAnswerForTesting() == nil
+                && runtime.realtimePendingUserInputForTesting(original.identity) == nil,
+                   "fixed total deadline explicitly fails the question without persisting it")
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: identity), "expired pending remains stoppable")
+        } else if scenario == .context {
+            expectRealtimeSuccess(await runtime.updateRealtimeResidentBrainContext(RealtimeBrainRuntimeContextUpdate(
+                identity: identity, kind: .delta, contextRevision: 2,
+                sections: [RealtimeBrainContextSection(scope: .dynamicSession, content: "updated context")]
+            )), "context replacement invalidates unsubmitted question")
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+            runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+            expect(runtime.realtimePendingAnswerForTesting() == nil, "old context never resubmits")
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: identity), "context test closes")
+        } else if scenario == .generation {
+            let next = try realtimeIdentity(await runtime.cancelRealtimeResidentBrainGenerationForTesting(identity: identity, reason: .runtimeDecision))
+            runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+            expect(runtime.realtimePendingAnswerForTesting() == nil, "new generation rejects old timer")
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: next), "generation test closes")
+        } else {
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+            try await waitUntilSentTypeCount(stack.transport, type: "response.create", minimum: 2)
+            await waitForCondition("pending question successfully submitted once") { runtime.realtimePendingAnswerForTesting() == nil }
+            for _ in 0 ..< 20 {
+                await stack.transport.enqueueText(#"{"type":"response.audio.delta","response_id":"response-tool-1","delta":"AAA="}"#)
+                await stack.transport.enqueueText(#"{"type":"response.audio_transcript.delta","response_id":"response-tool-1","delta":"stale"}"#)
+                await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-tool-1","status":"completed","output":[]}}"#)
+            }
+            await stack.transport.enqueueText(#"{"type":"response.audio_transcript.delta","response_id":"response-tool-2","delta":"new reply"}"#)
+            guard case .accepted(let text) = try await runtime.receiveRealtimeResidentBrainEvent(session: identity) else {
+                fatalError("only new response text should be accepted")
+            }
+            expect(text.kind == .residentTextDelta("new reply") && text.identity.turnID == expectedIdentity.turnID,
+                   "late old audio/text/done cannot resurrect or cross-bind the response")
+            expect(runtime.realtimePendingUserInputForTesting(expectedIdentity) == expectedQuestion,
+                   "exact canonical question survives until a real accepted answer")
+            let completed = #"{"type":"response.done","response":{"id":"response-tool-2","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"new reply"}]}]}}"#
+            await stack.transport.enqueueText(completed)
+            guard case .accepted(let finalText) = try await runtime.receiveRealtimeResidentBrainEvent(session: identity),
+                  case .accepted(let semantic) = try await runtime.receiveRealtimeResidentBrainEvent(session: identity) else {
+                fatalError("new answer must complete through the formal canonical path")
+            }
+            expect(finalText.kind == .residentTextFinal("new reply")
+                && semantic.kind == .residentSemanticFinal(RealtimeBrainSemanticOutput(canonicalText: "new reply")),
+                   "exact new answer completes once")
+            await stack.transport.enqueueText(completed)
+            let history = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+            expect(history.suffix(2).map(\.text) == [expectedQuestion, "new reply"],
+                   "only the correct question and actual answer reach canonical history")
+            expect(history.count == 2, "this new Runtime session stores exactly one history exchange, never a stale write")
+            expect(runtime.activeBrainLeaseForTesting() == lease, "re-authorization uses the same lease and generation")
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: identity), "retained question test closes")
+        }
+        let types = try await sentTypes(stack.transport)
+        let shouldAnswer = [.doneBeforeTimeout, .doneBeforeCatch, .lateDone, .supersede, .supersedeDuringWait].contains(scenario)
+        if !shouldAnswer {
+            let history = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+            expect(history == historyBefore, "failed, paused or invalidated questions cannot produce a history write")
+        }
+        expect(types.filter { $0 == "response.create" }.count == (shouldAnswer ? 2 : 1),
+               "exactly one valid submission, zero duplicate or revived old answers")
+        let dispositions = diagnostics.drain().events.filter { $0.category == "runtime_pending_answer" }.map(\.disposition)
+        if supersedes { expect(dispositions.filter { $0 == "superseded" }.count == 1, "superseded is explicit exactly once") }
+        if scenario == .expiry || scenario == .speechPause { expect(dispositions.filter { $0 == "expired" }.count == 1, "expiry is explicit exactly once") }
+        print("pending_answer_\(scenario.rawValue)=PASS duplicate_answer=0 stale_output=0")
     }
 
     private static func
@@ -4601,25 +4848,35 @@ private struct QwenRealtimeResidentBrainAdapterTests {
     }
 
     private static func testSubmittedResponseTimeoutIsTerminal() async throws {
-        cases += 1
-        let diagnostics = NativeSpeechDiagnosticBuffer()
-        let stack = try makeStack(diagnosticBuffer: diagnostics)
-        let identity = sessionIdentity(generation: 41)
-        try await openAndBootstrap(stack, identity: identity)
-        await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_started","item_id":"submitted-timeout-user"}"#
-        )
-        let speech = try await stack.adapter.receiveEvent(session: identity)
-        await stack.transport.holdResponseCreationAcknowledgements()
-        await expectRealtimeError(.timedOut) {
-            try await authorizeResponse(stack, from: speech, responseID: "submitted-timeout-response")
+        for uncertain in [false, true] {
+            cases += 1
+            let diagnostics = NativeSpeechDiagnosticBuffer()
+            let stack = try makeStack(diagnosticBuffer: diagnostics)
+            let identity = sessionIdentity(generation: 41)
+            try await openAndBootstrap(stack, identity: identity)
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_started","item_id":"submitted-timeout-user"}"#
+            )
+            let speech = try await stack.adapter.receiveEvent(session: identity)
+            if uncertain { await stack.transport.failNextResponseCreationWrite() }
+            else { await stack.transport.holdResponseCreationAcknowledgements() }
+            let command = RealtimeBrainCreateResponseCommand(identity: speech.identity, sourceEventSequence: speech.sequence)
+            do {
+                try await stack.adapter.createResponse(command)
+                fatalError("submission fault expected")
+            } catch let failure as RealtimeBrainResponseAttemptFailure {
+                expect(failure.attemptID == command.attempt.id
+                    && failure.submission == (uncertain ? .uncertain : .submitted)
+                    && failure.error == (uncertain ? .transportFailure : .timedOut),
+                       "submitted and uncertain outcomes carry typed non-retryable receipts")
+            }
+            let sent = try await sentTypes(stack.transport)
+            expect(sent.filter { $0 == "response.create" }.count == 1,
+                   "submitted or uncertain request is never retried")
+            expect(diagnostics.drain().events.allSatisfy { $0.category != "qwen_response_not_submitted" },
+                   "unknown outcome cannot be mislabeled as unsent")
+            try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
         }
-        let sent = try await sentTypes(stack.transport)
-        expect(sent.filter { $0 == "response.create" }.count == 1,
-               "an already submitted request is never retried after its acknowledgement timeout")
-        expect(diagnostics.drain().events.allSatisfy { $0.category != "qwen_response_not_submitted" },
-               "unknown submitted outcome cannot be mislabeled as a recoverable unsent failure")
-        try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
     }
 
     private static func makeStack(
@@ -5099,6 +5356,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             expect(false, "expected \(expected)")
         } catch let error as RealtimeResidentBrainError {
             expect(error == expected, "expected \(expected)")
+        } catch let failure as RealtimeBrainResponseAttemptFailure {
+            expect(failure.error == expected, "expected typed attempt error \(expected)")
         } catch {
             expect(false, "unexpected error \(error)")
         }

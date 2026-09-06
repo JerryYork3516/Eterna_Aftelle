@@ -849,6 +849,89 @@ nonisolated struct RealtimeBrainToolResultCommand: Sendable, Equatable {
 nonisolated struct RealtimeBrainCreateResponseCommand: Sendable, Equatable {
     let identity: RealtimeBrainEventIdentity
     let sourceEventSequence: UInt64
+    let attempt: RealtimeBrainResponseAttempt
+
+    init(
+        identity: RealtimeBrainEventIdentity,
+        sourceEventSequence: UInt64,
+        attempt: RealtimeBrainResponseAttempt = RealtimeBrainResponseAttempt()
+    ) {
+        self.identity = identity
+        self.sourceEventSequence = sourceEventSequence
+        self.attempt = attempt
+    }
+}
+
+// Internal submission receipt, not a retry owner. Runtime owns its lifetime and permission.
+nonisolated final class RealtimeBrainResponseAttempt: @unchecked Sendable, Equatable {
+    enum Submission: Sendable { case notSubmitted, uncertain, submitted }
+    struct State: Sendable {
+        var submission = Submission.notSubmitted
+        var providerReady = true
+        var permitted = true
+        var valid = true
+    }
+
+    let id = UUID()
+    let changes: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private let lock = NSLock()
+    private var state = State()
+    private var waiting: (@Sendable () -> Void)?
+
+    init() {
+        (changes, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
+    }
+
+    static func == (lhs: RealtimeBrainResponseAttempt, rhs: RealtimeBrainResponseAttempt) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func snapshot() -> State { lock.withLock { state } }
+
+    func onWaiting(_ callback: @escaping @Sendable () -> Void) {
+        lock.withLock { waiting = callback }
+    }
+
+    func waitForProvider() {
+        let callback = lock.withLock { state.providerReady = false; return waiting }
+        callback?()
+    }
+
+    func providerBecameReady() {
+        lock.withLock { state.providerReady = true }
+        continuation.yield()
+    }
+
+    func setPermitted(_ permitted: Bool) {
+        lock.withLock { state.permitted = permitted }
+        continuation.yield()
+    }
+
+    func beginSubmission() -> Bool {
+        lock.withLock {
+            guard state.valid, state.permitted, state.providerReady,
+                  state.submission == .notSubmitted else { return false }
+            // send() throwing does not prove that the remote never received the write.
+            state.submission = .uncertain
+            return true
+        }
+    }
+
+    func submitted() { lock.withLock { state.submission = .submitted } }
+
+    func invalidate() {
+        lock.withLock { state.valid = false }
+        continuation.finish()
+    }
+}
+
+nonisolated struct RealtimeBrainResponseAttemptFailure: Error, Sendable {
+    enum Reason: Sendable { case retiredResponseWait, submissionPermission, responseWriteOrAcknowledgement }
+    let attemptID: UUID
+    let submission: RealtimeBrainResponseAttempt.Submission
+    let reason: Reason
+    let error: RealtimeResidentBrainError
 }
 
 nonisolated enum RealtimeBrainCancellationReason:
@@ -1531,6 +1614,23 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         }
     }
 
+    func canSupersedeUnsubmittedResponse(
+        with command: RealtimeBrainCreateResponseCommand,
+        sourceTurnIDs: Set<RealtimeBrainTurnID>
+    ) -> Bool {
+        lock.withLock {
+            guard isReadyLocked(command.identity.session),
+                  contextRevision == command.identity.contextRevision,
+                  let turnID = command.identity.turnID, command.identity.responseID == nil,
+                  sourceTurnIDs.contains(turnID),
+                  !consumedResponseAuthorizationTurns.contains(turnID),
+                  responseAuthorizationCandidates[turnID] == command.sourceEventSequence,
+                  sourceTurnIDs.allSatisfy({ activeTurnIDs.contains($0) && !terminalTurnIDs.contains($0) }),
+                  pendingResponseCreate?.attempt.snapshot().submission == .notSubmitted else { return false }
+            return true
+        }
+    }
+
     func claimResponseCreateExecution(
         token: UUID,
         command: RealtimeBrainCreateResponseCommand,
@@ -1557,6 +1657,40 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             retireUserActivityTurnsLocked(sourceTurnIDs.subtracting([turnID]))
             responseCreateExecutionClaimed = true
             return true
+        }
+    }
+
+    func continueResponseCreate(
+        token: UUID,
+        previous: RealtimeBrainCreateResponseCommand,
+        next: RealtimeBrainCreateResponseCommand,
+        failure: RealtimeBrainResponseAttemptFailure
+    ) -> UUID? {
+        lock.withLock {
+            let state = previous.attempt.snapshot()
+            guard responseCreateToken == token, pendingResponseCreate == previous,
+                  responseCreateExecutionClaimed,
+                  failure.attemptID == previous.attempt.id,
+                  failure.submission == .notSubmitted,
+                  state.submission == .notSubmitted, state.valid,
+                  state.providerReady, state.permitted,
+                  previous.identity == next.identity,
+                  previous.sourceEventSequence == next.sourceEventSequence,
+                  previous.attempt.id != next.attempt.id,
+                  isReadyLocked(next.identity.session),
+                  contextRevision == next.identity.contextRevision,
+                  let turnID = next.identity.turnID,
+                  consumedResponseAuthorizationTurns.contains(turnID),
+                  awaitingResponseTurn == turnID,
+                  activeTurnIDs.contains(turnID), !terminalTurnIDs.contains(turnID),
+                  activeResponseIDs.isEmpty else { return nil }
+            previous.attempt.invalidate()
+            let nextToken = UUID()
+            responseCreateToken = nextToken
+            pendingResponseCreate = next
+            providerOperations.finish(token)
+            providerOperations.begin(nextToken)
+            return nextToken
         }
     }
 
@@ -1984,6 +2118,9 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
             }
         case .userSpeechStarted, .userSpeechStopped,
              .userTranscriptPartial, .userTranscriptFinal:
+            if case .userSpeechStarted = event.kind {
+                pendingResponseCreate?.attempt.setPermitted(false)
+            }
             if let turnID = event.identity.turnID {
                 activeTurnIDs.insert(turnID)
             }
@@ -2309,6 +2446,7 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         pendingAudioInputActivity = .none
         toolResultToken = nil
         pendingToolResult = nil
+        pendingResponseCreate?.attempt.invalidate()
         responseCreateToken = nil
         pendingResponseCreate = nil
         pendingResponseCreateSourceTurnIDs.removeAll(keepingCapacity: true)

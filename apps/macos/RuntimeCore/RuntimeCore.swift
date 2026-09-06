@@ -1685,6 +1685,30 @@ public final class RuntimeCore {
         case completed
     }
 
+    private final class RealtimePendingAnswer {
+        let id = UUID()
+        let logicalTurnID: RealtimeBrainTurnID
+        let event: RealtimeResidentBrainEvent
+        let lease: ActiveBrainLease
+        var token: UUID
+        let sourceTurnIDs: Set<RealtimeBrainTurnID>
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        var command: RealtimeBrainCreateResponseCommand
+        var task: Task<Bool, Never>?
+        var expiryTask: Task<Void, Never>?
+
+        init(command: RealtimeBrainCreateResponseCommand, token: UUID,
+             sourceTurnIDs: Set<RealtimeBrainTurnID>, event: RealtimeResidentBrainEvent,
+             lease: ActiveBrainLease, logicalTurnID: RealtimeBrainTurnID) {
+            self.command = command
+            self.token = token
+            self.sourceTurnIDs = sourceTurnIDs
+            self.event = event
+            self.lease = lease
+            self.logicalTurnID = logicalTurnID
+        }
+    }
+
     private struct RealtimeUtterancePendingStart {
         let event: RealtimeResidentBrainEvent
         let receivedAtNanoseconds: UInt64
@@ -1989,6 +2013,11 @@ public final class RuntimeCore {
         RealtimeBrainContextBridgeState?
     private var realtimeBrainPendingUserInputs:
         [RealtimeBrainPendingTurnKey: RealtimeBrainPendingUserInput] = [:]
+    private var realtimePendingAnswer: RealtimePendingAnswer?
+    private var realtimePendingAnswerDrain: Task<Bool, Never>?
+    private var realtimePendingAnswerPresentation: (
+        @MainActor @Sendable (RealtimeBrainEventIdentity, RealtimeResidentBrainError?) -> Void
+    )?
     private var realtimeUtteranceConsumedSemanticTurns:
         Set<RealtimeBrainPendingTurnKey> = []
     private var realtimeUtteranceTrackedSemanticTurns:
@@ -2536,6 +2565,7 @@ public final class RuntimeCore {
         ]
 
     private func resetRealtimeBrainRuntimeBridge() {
+        terminateRealtimePendingAnswer(reason: "identity_invalidated")
         realtimeBrainContextBridgeState = nil
         realtimeBrainPendingUserInputs.removeAll(keepingCapacity: true)
         realtimeUtteranceConsumedSemanticTurns.removeAll(
@@ -4083,6 +4113,7 @@ public final class RuntimeCore {
                         turnIDs: presentationTurnIDs
                     )
                 )
+                realtimePendingAnswer?.command.attempt.setPermitted(true)
                 return nil
             }
         }
@@ -4137,7 +4168,8 @@ public final class RuntimeCore {
         let created = await performRealtimeResidentBrainResponseCreation(
             claim.responseAuthorization,
             for: claim.event,
-            lease: claim.lease
+            lease: claim.lease,
+            logicalTurnID: claim.completionKey.turnID
         )
         for key in claim.semanticInputKeys
         where !created || key != claim.responseInputKey {
@@ -4476,6 +4508,11 @@ public final class RuntimeCore {
         ) else {
             return .failure(.invalidIdentity)
         }
+        if let pending = realtimePendingAnswer,
+           pending.event.identity.session == update.identity,
+           update.contextRevision > pending.event.identity.contextRevision {
+            terminateRealtimePendingAnswer(reason: "context_invalidated")
+        }
         guard let token = realtimeBrainSessionGate.beginContextUpdate(
             update
         ) else {
@@ -4736,6 +4773,15 @@ public final class RuntimeCore {
             identity: event.identity,
             sourceEventSequence: event.sequence
         )
+        if let pending = realtimePendingAnswer,
+           pending.event.identity.session == event.identity.session,
+           pending.event.identity.contextRevision == event.identity.contextRevision,
+           pending.event.identity.turnID != turnID,
+           realtimeBrainSessionGate.canSupersedeUnsubmittedResponse(
+                with: command, sourceTurnIDs: authorizedSourceTurnIDs
+           ) {
+            terminateRealtimePendingAnswer(reason: "superseded")
+        }
         switch realtimeBrainSessionGate.beginResponseCreate(
             command,
             sourceTurnIDs: authorizedSourceTurnIDs
@@ -4775,7 +4821,8 @@ public final class RuntimeCore {
     private func performRealtimeResidentBrainResponseCreation(
         _ authorization: RealtimeBrainResponseCreateAuthorization,
         for event: RealtimeResidentBrainEvent,
-        lease: ActiveBrainLease
+        lease: ActiveBrainLease,
+        logicalTurnID: RealtimeBrainTurnID? = nil
     ) async -> Bool {
         guard case .provider(
             let command,
@@ -4797,36 +4844,143 @@ public final class RuntimeCore {
             )
             return false
         }
-        do {
-            try await executionEngine.createRealtimeResidentBrainResponse(
-                command
-            )
-        } catch {
-            _ = realtimeBrainSessionGate.finishResponseCreate(
-                token: token,
-                command: command,
-                succeeded: false
-            )
-            await settleFailedRealtimeBrainSession(
-                identity: event.identity.session,
-                lease: lease
-            )
-            return false
+        guard realtimePendingAnswer == nil, let turnID = event.identity.turnID else { return false }
+        let pending = RealtimePendingAnswer(
+            command: command, token: token, sourceTurnIDs: sourceTurnIDs,
+            event: event, lease: lease,
+            logicalTurnID: logicalTurnID ?? turnID
+        )
+        realtimePendingAnswer = pending
+        let (notices, notice) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        command.attempt.onWaiting { notice.yield(true) }
+        let previous = realtimePendingAnswerDrain
+        pending.task = Task { @MainActor [weak self] in
+            _ = await previous?.value
+            guard let self else { notice.finish(); return false }
+            let result = await self.submitRealtimePendingAnswer(pending, notice: notice)
+            notice.yield(result)
+            notice.finish()
+            return result
         }
-        guard activeBrainLeaseGate.isCurrent(lease),
-              realtimeBrainSessionGate.finishResponseCreate(
-                token: token,
-                command: command,
-                succeeded: true
-              ) else {
-            _ = realtimeBrainSessionGate.finishResponseCreate(
-                token: token,
-                command: command,
-                succeeded: false
-            )
-            return true
+        pending.expiryTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(until: pending.deadline, clock: .continuous) }
+            catch { return }
+            self?.expireRealtimePendingAnswer(id: pending.id, now: .now)
         }
-        return true
+        for await accepted in notices { return accepted }
+        return false
+    }
+
+    @MainActor
+    private func submitRealtimePendingAnswer(
+        _ pending: RealtimePendingAnswer,
+        notice: AsyncStream<Bool>.Continuation
+    ) async -> Bool {
+        while realtimePendingAnswer?.id == pending.id,
+              !Task.isCancelled, ContinuousClock.now < pending.deadline,
+              activeBrainLeaseGate.isCurrent(pending.lease),
+              realtimeBrainSessionGate.isCurrent(pending.command.identity) {
+            let command = pending.command
+            do {
+                try await executionEngine.createRealtimeResidentBrainResponse(command)
+            } catch let failure as RealtimeBrainResponseAttemptFailure
+                where failure.attemptID == command.attempt.id
+                    && failure.submission == .notSubmitted
+                    && ((failure.reason == .retiredResponseWait
+                        && (failure.error == .timedOut || failure.error == .operationInFlight))
+                        || (failure.reason == .submissionPermission && failure.error == .cancelled)) {
+                guard realtimePendingAnswer?.id == pending.id else { return false }
+                recordRealtimePendingAnswer(pending, reason: "waiting_not_submitted")
+                realtimePendingAnswerPresentation?(command.identity, nil)
+                notice.yield(true)
+                var changes = command.attempt.changes.makeAsyncIterator()
+                while !Task.isCancelled {
+                    let state = command.attempt.snapshot()
+                    if !state.valid || (state.providerReady && state.permitted) { break }
+                    guard await changes.next() != nil else { break }
+                }
+                guard realtimePendingAnswer?.id == pending.id, !Task.isCancelled,
+                      ContinuousClock.now < pending.deadline,
+                      activeBrainLeaseGate.isCurrent(pending.lease) else { return false }
+                let next = RealtimeBrainCreateResponseCommand(
+                    identity: command.identity, sourceEventSequence: command.sourceEventSequence
+                )
+                guard let nextToken = realtimeBrainSessionGate.continueResponseCreate(
+                    token: pending.token, previous: command, next: next, failure: failure
+                ) else {
+                    terminateRealtimePendingAnswer(reason: "identity_invalidated")
+                    return false
+                }
+                pending.token = nextToken
+                pending.command = next
+                continue
+            } catch {
+                guard realtimePendingAnswer?.id == pending.id else { return false }
+                terminateRealtimePendingAnswer(reason: "submission_failed")
+                await settleFailedRealtimeBrainSession(
+                    identity: pending.event.identity.session, lease: pending.lease
+                )
+                return false
+            }
+            guard realtimePendingAnswer?.id == pending.id else { return false }
+            let accepted = realtimeBrainSessionGate.finishResponseCreate(
+                token: pending.token, command: command, succeeded: true
+            )
+            pending.expiryTask?.cancel()
+            pending.command.attempt.invalidate()
+            realtimePendingAnswer = nil
+            recordRealtimePendingAnswer(pending, reason: accepted ? "submitted" : "identity_invalidated")
+            return accepted
+        }
+        if realtimePendingAnswer?.id == pending.id {
+            terminateRealtimePendingAnswer(reason: "identity_invalidated")
+        }
+        return false
+    }
+
+    private func terminateRealtimePendingAnswer(reason: String) {
+        guard let pending = realtimePendingAnswer else { return }
+        realtimePendingAnswer = nil
+        pending.command.attempt.invalidate()
+        pending.expiryTask?.cancel()
+        pending.task?.cancel()
+        realtimePendingAnswerDrain = pending.task
+        _ = realtimeBrainSessionGate.finishResponseCreate(
+            token: pending.token, command: pending.command, succeeded: false
+        )
+        _ = realtimeBrainSessionGate.retireUserActivityTurns(
+            pending.sourceTurnIDs, session: pending.event.identity.session,
+            contextRevision: pending.event.identity.contextRevision
+        )
+        for turnID in pending.sourceTurnIDs {
+            realtimeBrainPendingUserInputs.removeValue(forKey: RealtimeBrainPendingTurnKey(
+                session: pending.event.identity.session, turnID: turnID,
+                contextRevision: pending.event.identity.contextRevision
+            ))
+        }
+        recordRealtimePendingAnswer(pending, reason: reason)
+    }
+
+    @MainActor
+    private func expireRealtimePendingAnswer(id: UUID, now: ContinuousClock.Instant) {
+        guard let pending = realtimePendingAnswer, pending.id == id,
+              now >= pending.deadline else { return }
+        terminateRealtimePendingAnswer(reason: "expired")
+        realtimePendingAnswerPresentation?(pending.event.identity, .timedOut)
+    }
+
+    private func recordRealtimePendingAnswer(_ pending: RealtimePendingAnswer, reason: String) {
+        nativeSpeechDiagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+            source: .runtime, category: "runtime_pending_answer", routeKind: .realtimeBrain,
+            turnGeneration: pending.event.identity.session.generation, disposition: reason
+        ))
+    }
+
+    @MainActor
+    func setRealtimePendingAnswerPresentationHandler(
+        _ handler: (@MainActor @Sendable (RealtimeBrainEventIdentity, RealtimeResidentBrainError?) -> Void)?
+    ) {
+        realtimePendingAnswerPresentation = handler
     }
 
     @MainActor
@@ -4948,6 +5102,7 @@ public final class RuntimeCore {
         resetRuntimeToolState(route: .realtimeResidentBrain)
         resetRealtimeUtteranceCompletionState(matching: identity)
         resetRealtimeUtteranceAcousticAuthorization(matching: identity)
+        terminateRealtimePendingAnswer(reason: "generation_invalidated")
         realtimeConfirmedInterruptionUserTurnHandoff = nil
         return .success(RealtimeBrainGenerationTransition(
             identity: identity,
@@ -5330,6 +5485,21 @@ public final class RuntimeCore {
                 contextRevision: identity.contextRevision
             )
         ]?.transcript
+    }
+
+    @MainActor
+    func realtimePendingAnswerForTesting() -> (
+        id: UUID, attemptID: UUID, turnID: RealtimeBrainTurnID?,
+        deadline: ContinuousClock.Instant, state: RealtimeBrainResponseAttempt.State
+    )? {
+        guard let pending = realtimePendingAnswer else { return nil }
+        return (pending.id, pending.command.attempt.id, pending.event.identity.turnID,
+                pending.deadline, pending.command.attempt.snapshot())
+    }
+
+    @MainActor
+    func expireRealtimePendingAnswerForTesting(id: UUID, now: ContinuousClock.Instant) {
+        expireRealtimePendingAnswer(id: id, now: now)
     }
     #endif
 
@@ -5860,6 +6030,9 @@ public final class RuntimeCore {
     func closeRealtimeResidentBrainSession(
         identity: RealtimeBrainSessionIdentity
     ) async -> Result<Void, RealtimeResidentBrainError> {
+        if realtimePendingAnswer?.event.identity.session == identity {
+            terminateRealtimePendingAnswer(reason: "stopped")
+        }
         if let handoff = realtimeConfirmedInterruptionUserTurnHandoff,
            handoff.interruptedSession == identity
             || handoff.nextSession == identity {
