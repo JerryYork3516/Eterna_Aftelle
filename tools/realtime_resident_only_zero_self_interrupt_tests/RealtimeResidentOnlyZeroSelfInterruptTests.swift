@@ -14,7 +14,7 @@ private struct R853QwenCredentialReader: ProviderCredentialReading {
     }
 }
 
-private struct R823AuthorizationProvider:
+struct R823AuthorizationProvider:
     MicrophoneAuthorizationProviding {
     func currentAuthorization() async throws -> MicrophoneAuthorizationState {
         .authorized
@@ -25,7 +25,7 @@ private struct R823AuthorizationProvider:
     }
 }
 
-private final class R823DeviceMonitor:
+final class R823DeviceMonitor:
     MacSpeechDeviceRouteMonitoring,
     @unchecked Sendable {
     private let route = MacSpeechDeviceRoute(
@@ -46,7 +46,7 @@ private final class R823DeviceMonitor:
     func stop() {}
 }
 
-private final class R823AECBackend:
+final class R823AECBackend:
     MacSpeechAECBackend,
     @unchecked Sendable {
     private let lock = NSLock()
@@ -316,7 +316,7 @@ private actor R823RealtimeProvider: RealtimeResidentBrainProvider {
     }
 }
 
-private final class R823AudioCapture:
+final class R823AudioCapture:
     MacSpeechAudioCapturing,
     @unchecked Sendable {
     let acousticEchoHost: MacSpeechAcousticEchoHost
@@ -478,7 +478,9 @@ private struct R853QwenControllerStack {
 }
 
 @MainActor
+#if !AFTELLE_CONTINUOUS_PROBE
 @main
+#endif
 private struct RealtimeResidentOnlyZeroSelfInterruptTests {
     private static var cases = 0
     private static var checks = 0

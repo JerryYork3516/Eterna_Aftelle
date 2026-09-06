@@ -1001,6 +1001,8 @@ nonisolated enum RuntimeRealtimeBrainAudioInputStart:
     Equatable {
     case accepted(UUID)
     case busy
+    case contextUpdating
+    case invalidIdentity
     case invalid
 }
 
@@ -1332,7 +1334,11 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         activity: RealtimeBrainLocalAudioActivity
     ) -> RuntimeRealtimeBrainAudioInputStart {
         lock.withLock {
-            guard isReadyLocked(frame.identity) else { return .invalid }
+            guard identity == frame.identity,
+                  lifecycle == .active,
+                  generationTransitionToken == nil,
+                  closeAttemptID == nil else { return .invalidIdentity }
+            guard contextUpdateToken == nil else { return .contextUpdating }
             guard audioInputToken == nil else { return .busy }
             guard frame.sequence == lastAudioInputSequence &+ 1,
                   lastAudioInputSequence == 0

@@ -63,6 +63,7 @@ nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
     case inputAudioCleared
     case inputSpeechStarted(itemID: String, audioStartMilliseconds: Int?)
     case inputSpeechStopped(itemID: String, audioEndMilliseconds: Int?)
+    case unidentifiedSpeechStopped
     case inputTranscriptDelta(itemID: String, preview: String)
     case inputTranscriptCompleted(itemID: String, transcript: String)
     case inputTranscriptFailed(itemID: String)
@@ -244,6 +245,10 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
                 audioStartMilliseconds: audioMilliseconds("audio_start_ms", in: object)
             )
         case "input_audio_buffer.speech_stopped":
+            // Qwen can emit an empty ID after cancellation. It cannot identify a turn.
+            if object["item_id"] as? String == "" {
+                return .unidentifiedSpeechStopped
+            }
             return .inputSpeechStopped(
                 itemID: try itemID(in: object),
                 audioEndMilliseconds: audioMilliseconds("audio_end_ms", in: object)
@@ -643,6 +648,7 @@ actor QwenRealtimeResidentBrainAdapter:
         let acknowledgement: Acknowledgement
         let turn: TurnBinding
         let kind: ResponseAuthorizationKind
+        var wasSubmitted = false
     }
 
     private struct EventWaiter {
@@ -708,6 +714,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private var pendingToolCalls:
         [RealtimeBrainToolCallID: RealtimeBrainEventIdentity] = [:]
     private var locallyCancellingResponseID: String?
+    private var retiringWireResponseID: String?
     private var activeMutationOperations: Set<UUID> = []
 
     init(
@@ -1112,8 +1119,17 @@ actor QwenRealtimeResidentBrainAdapter:
         do {
             if let responseID = activeResponse?.wireID {
                 locallyCancellingResponseID = responseID
+                if !reconnect { retiringWireResponseID = responseID }
                 try await send(codec.responseCancel())
-                try await waitForAcknowledgement(.responseDone(responseID))
+                if reconnect {
+                    try await waitForAcknowledgement(.responseDone(responseID))
+                } else {
+                    // Omni does not guarantee a response.done acknowledgement for cancel.
+                    // Fence old output locally so the interrupting input can keep flowing.
+                    if let terminalError { throw terminalError }
+                    try requireOwnedGenerationTransition(current)
+                    finishActiveResponse(responseID)
+                }
                 locallyCancellingResponseID = nil
             }
             if clearInput && interruptingTurnID == nil {
@@ -1340,6 +1356,14 @@ actor QwenRealtimeResidentBrainAdapter:
                 kind: .userSpeechStarted,
                 identity: makeEventIdentity(for: turn)
             )
+        case .unidentifiedSpeechStopped:
+            diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+                source: .adapter,
+                category: "qwen_speech_stopped_rejected",
+                routeKind: .realtimeBrain,
+                turnGeneration: identity?.generation,
+                disposition: "empty_item_id"
+            ))
         case .inputSpeechStopped(let itemID, let audioEndMilliseconds):
             recordUserInputWireDiagnostic(
                 category: "qwen_speech_stopped_received",
@@ -1488,6 +1512,7 @@ actor QwenRealtimeResidentBrainAdapter:
             }
             guard activeResponse == nil,
                   let authorization = pendingResponseAuthorization,
+                  authorization.wasSubmitted,
                   authorization.turn.sessionIdentity == identity,
                   authorization.turn.contextRevision == contextRevision else {
                 throw invalidQwenReceiveEvent("response_authorization")
@@ -1600,6 +1625,12 @@ actor QwenRealtimeResidentBrainAdapter:
             let status,
             let canonicalText
         ):
+            if retiringWireResponseID == responseID {
+                retiringWireResponseID = nil
+                finishActiveResponse(responseID)
+                deliverIfWaiting(.responseDone(responseID))
+                return
+            }
             if locallyCancellingResponseID == responseID {
                 finishActiveResponse(responseID)
                 deliver(.responseDone(responseID))
@@ -2154,13 +2185,24 @@ actor QwenRealtimeResidentBrainAdapter:
             throw RealtimeResidentBrainError.invalidEvent
         }
         acknowledgementSerial &+= 1
-        let authorization = PendingResponseAuthorization(
+        var authorization = PendingResponseAuthorization(
             acknowledgement: .responseCreated(acknowledgementSerial),
             turn: turn,
             kind: kind
         )
         pendingResponseAuthorization = authorization
         do {
+            // Keep capturing the rebound utterance while the retired wire response drains.
+            // A local output fence is not evidence that the Provider is ready for a new response.
+            if let responseID = retiringWireResponseID {
+                try await waitForAcknowledgement(.responseDone(responseID))
+                try requireActive(turn.sessionIdentity)
+                guard pendingResponseAuthorization == authorization else {
+                    throw RealtimeResidentBrainError.cancelled
+                }
+            }
+            authorization.wasSubmitted = true
+            pendingResponseAuthorization = authorization
             try await send(codec.responseCreate())
             try await waitForAcknowledgement(
                 authorization.acknowledgement
@@ -2170,8 +2212,36 @@ actor QwenRealtimeResidentBrainAdapter:
             }
             pendingResponseAuthorization = nil
         } catch {
+            let stillAuthorized = pendingResponseAuthorization == authorization
             if pendingResponseAuthorization == authorization {
                 pendingResponseAuthorization = nil
+            }
+            if case .runtime = kind,
+               Self.map(error) == .timedOut,
+               stillAuthorized, !authorization.wasSubmitted,
+               retiringWireResponseID != nil,
+               lifecycle == .active, terminalError == nil,
+               identity == turn.sessionIdentity,
+               contextRevision == turn.contextRevision {
+                // This local attempt never reached response.create. Fail the turn,
+                // not the socket; do not fabricate a wire response or retry it later.
+                let failureIdentity = RealtimeBrainEventIdentity(
+                    session: turn.sessionIdentity,
+                    turnID: turn.runtimeID,
+                    responseID: RealtimeBrainResponseID(),
+                    contextRevision: turn.contextRevision
+                )
+                diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+                    source: .adapter,
+                    category: "qwen_response_not_submitted",
+                    routeKind: .realtimeBrain,
+                    turnGeneration: turn.sessionIdentity.generation,
+                    disposition: "retired_response_drain_timed_out",
+                    errorCode: "timed_out"
+                ))
+                if enqueue(kind: .error(.timedOut), identity: failureIdentity) {
+                    return
+                }
             }
             throw error
         }
@@ -2373,9 +2443,10 @@ actor QwenRealtimeResidentBrainAdapter:
               state.turn.sessionIdentity == identity,
               state.turn.contextRevision == contextRevision,
               state.audioStartMilliseconds != nil,
-              state.latestTranscriptPartial != nil,
               !state.speechStopped, state.transcriptFinal == nil,
               !state.didReassociateItem else { return }
+        // Qwen can replace the provisional item before its first preview.
+        // Only the matching VAD stop below may bind this candidate to the turn.
         if let candidate = state.unboundTranscript, candidate.itemID != itemID {
             state.hasAmbiguousItem = true
         } else {
@@ -2804,6 +2875,7 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func resetWireTombstones() {
+        retiringWireResponseID = nil
         completedUserInputItemIDs.removeAll(keepingCapacity: true)
         completedUserInputItemOrder.removeAll(keepingCapacity: true)
         stoppedUserInputItemIDs.removeAll(keepingCapacity: true)

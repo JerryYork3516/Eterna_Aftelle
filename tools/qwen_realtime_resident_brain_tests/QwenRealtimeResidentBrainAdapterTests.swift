@@ -98,7 +98,11 @@ private final class R3OutputBridgeInterruptionCoordinator {
 @main
 private struct QwenRealtimeResidentBrainAdapterTests {
     private static var checks = 0
-    private static var cases = 0
+    private static var cases = 0 {
+        didSet {
+            FileHandle.standardError.write(Data("qwen_case_started=\(cases)\n".utf8))
+        }
+    }
 
     static func main() async throws {
         guard CommandLine.arguments.count == 2 else {
@@ -107,6 +111,15 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let fixture = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+        try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true)
+        try await testInterruptionAndGeneration(missingCancellationCompletion: true)
+        try await testInterruptionAndGeneration(missingCancellationCompletion: true, unsolicitedDuringDrain: true)
+        try await testRuntimeConfirmedInterruptionUserTurnHandoff(fixture: fixture, drainTimeout: true)
+        try await testSubmittedResponseTimeoutIsTerminal()
+        if ProcessInfo.processInfo.environment["AFTELLE_CANCEL_HANDOFF_ONLY"] == "1" {
+            print("cancel_handoff_checks=\(checks) PASS")
+            return
+        }
         try await testHandshakeAndBootstrap()
         try await testProviderListeningInputAudioDiagnostics()
         try await testUnsafeTurnDetectionAcknowledgementFailsClosed()
@@ -118,11 +131,14 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testTranscriptFinalFallbackLifecycleCancellation()
         try await testLateFinalKeepsExactProviderItemBinding()
         try await testBoundedUserItemReassociation()
+        try await testBoundedUserItemReassociation(withProvisionalPreview: false)
         try await testResidentTextWireSourceCanonicalization()
         try await testGenerationGlobalOutputAudioClock()
         try await testInterruptionAndGeneration()
         try await testInterruptionAndGeneration(reassociateItem: true)
+        try await testInterruptionAndGeneration(reassociateItem: true, withProvisionalPreview: false)
         try await testActiveResponseReceiveDiagnostics()
+        try await testEmptySpeechStopIsNotCompletion()
         try await testPendingUserActivityRebindsAcrossContextRefresh()
         try await testUnauthorizedResponseFailsClosed()
         try await testOverlappingResponseFailsClosed()
@@ -1366,7 +1382,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
-    private static func testBoundedUserItemReassociation() async throws {
+    private static func testBoundedUserItemReassociation(withProvisionalPreview: Bool = true) async throws {
         let scenarios: [(String, String, String, [String], Bool)] = [
             ("bounded", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new"], true),
             ("missing-start", "", ",\"audio_end_ms\":1800", ["new"], false),
@@ -1375,29 +1391,61 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             ("boolean-end", ",\"audio_start_ms\":0", ",\"audio_end_ms\":true", ["new"], false),
             ("fractional-end", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800.5", ["new"], false),
             ("ambiguous", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new", "other"], false),
-            ("unseen-final", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", [], false)
+            ("unseen-final", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", [], false),
+            ("no-start-event", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new"], false),
+            ("no-stop-event", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new"], false),
+            ("completed-item", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new"], false),
+            ("retired-generation-item", ",\"audio_start_ms\":1000", ",\"audio_end_ms\":1800", ["new"], false)
         ]
         for (name, startTime, stopTime, candidates, accepts) in scenarios {
             cases += 1
             let stack = try makeStack()
-            let identity = sessionIdentity(generation: 90)
+            var identity = sessionIdentity(generation: 90)
             try await openAndBootstrap(stack, identity: identity)
-            await stack.transport.enqueueText(
-                "{\"type\":\"input_audio_buffer.speech_started\",\"item_id\":\"original\"\(startTime)}"
-            )
-            let start = try await stack.adapter.receiveEvent(session: identity)
-            await stack.transport.enqueueText(
-                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"original","text":"","stash":"先停一下"}"#
-            )
-            _ = try await stack.adapter.receiveEvent(session: identity)
+            if name == "completed-item" || name == "retired-generation-item" {
+                await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"new"}"#)
+                _ = try await stack.adapter.receiveEvent(session: identity)
+                if name == "completed-item" {
+                    await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"new"}"#)
+                    _ = try await stack.adapter.receiveEvent(session: identity)
+                    await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"new","transcript":"already completed"}"#)
+                    _ = try await stack.adapter.receiveEvent(session: identity)
+                } else {
+                    await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"carried-user"}"#)
+                    _ = try await stack.adapter.receiveEvent(session: identity)
+                    let next = sessionIdentity(generation: 91, leaseID: identity.brainLeaseID, routeEpoch: identity.routeEpoch)
+                    try await stack.adapter.interrupt(RealtimeBrainInterruptCommand(
+                        identity: identity, nextGeneration: next.generation, reason: .runtimeDecision
+                    ))
+                    identity = next
+                    _ = try await stack.adapter.receiveEvent(session: identity)
+                    let connections = await stack.transport.connectCount()
+                    expect(connections == 1, "retired item test stays on the original socket")
+                }
+            }
+            var start: RealtimeResidentBrainEvent?
+            if name != "no-start-event" {
+                await stack.transport.enqueueText(
+                    "{\"type\":\"input_audio_buffer.speech_started\",\"item_id\":\"original\"\(startTime)}"
+                )
+                start = try await stack.adapter.receiveEvent(session: identity)
+                if withProvisionalPreview {
+                    await stack.transport.enqueueText(
+                        #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"original","text":"","stash":"先停一下"}"#
+                    )
+                    _ = try await stack.adapter.receiveEvent(session: identity)
+                }
+            }
             for candidate in candidates {
                 await stack.transport.enqueueText(
                     "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"\(candidate)\",\"text\":\"\",\"stash\":\"先停一下我想问第二点\"}"
                 )
             }
-            await stack.transport.enqueueText(
-                "{\"type\":\"input_audio_buffer.speech_stopped\",\"item_id\":\"new\"\(stopTime)}"
-            )
+            if name != "no-stop-event" {
+                await stack.transport.enqueueText(
+                    "{\"type\":\"input_audio_buffer.speech_stopped\",\"item_id\":\"new\"\(stopTime)}"
+                )
+            }
             for item in ["new", "new", "original"] {
                 await stack.transport.enqueueText(
                     "{\"type\":\"conversation.item.input_audio_transcription.completed\",\"item_id\":\"\(item)\",\"transcript\":\"\(item) final\"}"
@@ -1412,10 +1460,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 if case .userSpeechStarted = event.kind { break }
                 if case .userTranscriptFinal = event.kind { finals.append(event) }
             }
-            expect(finals.count == 1, "\(name): final remains exactly once")
-            expect(finals.first?.kind == .userTranscriptFinal(accepts ? "new final" : "original final"),
-                   "\(name): only bounded ID reassociation is accepted")
-            expect(finals.first?.identity == start.identity, "\(name): same Runtime turn and generation")
+            let label = "\(name), provisional-preview=\(withProvisionalPreview)"
+            expect(finals.count == (start == nil ? 0 : 1), "\(label): no extra or unbound final")
+            let expected: RealtimeResidentBrainEventKind? = start == nil ? nil
+                : .userTranscriptFinal(accepts ? "new final" : "original final")
+            expect(finals.first?.kind == expected, "\(label): only bounded ID reassociation is accepted")
+            expect(finals.first?.identity == start?.identity, "\(label): same Runtime turn and generation")
             try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
         }
     }
@@ -1504,7 +1554,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
-    private static func testInterruptionAndGeneration(reassociateItem: Bool = false) async throws {
+    private static func testInterruptionAndGeneration(reassociateItem: Bool = false, withProvisionalPreview: Bool = true, missingCancellationCompletion: Bool = false, unsolicitedDuringDrain: Bool = false, drainTimeout: Bool = false) async throws {
         cases += 1
         let diagnostics = NativeSpeechDiagnosticBuffer()
         let stack = try makeStack(diagnosticBuffer: diagnostics)
@@ -1672,9 +1722,21 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             type: "response.cancel",
             minimum: 1
         )
+        if missingCancellationCompletion {
+            // Qwen-Omni need not send response.done as a cancel acknowledgement.
+            // Input must rebound before any remote completion arrives.
+            try await interruptTask.value
+            print("cancel_handoff_without_response_done=PASS")
+        }
+        // An unidentifiable stop must not end the preserved utterance during cancel ACK.
         await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"user-b","text":"停一下","stash":""}"#
+            #"{"type":"input_audio_buffer.speech_stopped","item_id":"","audio_end_ms":10220}"#
         )
+        if withProvisionalPreview {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"user-b","text":"停一下","stash":""}"#
+            )
+        }
         let endingItemID = reassociateItem ? "user-b-committed" : "user-b"
         if reassociateItem {
             await stack.transport.enqueueText(
@@ -1687,7 +1749,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(endingItemID)","transcript":"停一下"}"#
         )
-        await stack.transport.releaseResponseCancellationAcknowledgements()
+        if !missingCancellationCompletion {
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+        }
         try await interruptTask.value
         let staleWake = try await oldReceive.value
         expect(
@@ -1712,30 +1776,31 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "Runtime interrupt preserves the admitted user utterance"
         )
 
-        let reboundSpeech = try await stack.adapter.receiveEvent(
-            session: nextIdentity
-        )
-        let reboundPartial = try await stack.adapter.receiveEvent(
-            session: nextIdentity
-        )
-        let reboundStop = try await stack.adapter.receiveEvent(
-            session: nextIdentity
-        )
-        let reboundFinal = try await stack.adapter.receiveEvent(
-            session: nextIdentity
-        )
+        var reboundEvents: [RealtimeResidentBrainEvent] = []
+        while reboundEvents.count < 4 {
+            let event = try await stack.adapter.receiveEvent(session: nextIdentity)
+            reboundEvents.append(event)
+            if case .userTranscriptFinal = event.kind { break }
+        }
+        guard let reboundSpeech = reboundEvents.first,
+              let reboundFinal = reboundEvents.last else {
+            fatalError("rebound input events missing")
+        }
+        // Reassociation after rebound may have only a final, not a bound partial.
+        let expectedInputKinds: [RealtimeResidentBrainEventKind] =
+            reboundEvents.count == 3 && reassociateItem && !withProvisionalPreview
+            ? [.userSpeechStarted, .userSpeechStopped, .userTranscriptFinal("停一下")]
+            : [.userSpeechStarted, .userTranscriptPartial("停一下"),
+               .userSpeechStopped, .userTranscriptFinal("停一下")]
         expect(
-            reboundSpeech.kind == .userSpeechStarted
-                && reboundPartial.kind == .userTranscriptPartial("停一下")
-                && reboundStop.kind == .userSpeechStopped
-                && reboundFinal.kind == .userTranscriptFinal("停一下"),
+            reboundEvents.map(\.kind) == expectedInputKinds,
             "the exact interrupting user item resumes in Provider order"
         )
         expect(
-            reboundSpeech.identity.session == nextIdentity
-                && reboundPartial.identity.turnID == reboundSpeech.identity.turnID
-                && reboundStop.identity.turnID == reboundSpeech.identity.turnID
-                && reboundFinal.identity.turnID == reboundSpeech.identity.turnID,
+            reboundEvents.allSatisfy {
+                $0.identity.session == nextIdentity
+                    && $0.identity.turnID == reboundSpeech.identity.turnID
+            },
             "the interrupting user item is rebound only to N+1"
         )
 
@@ -1773,11 +1838,96 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "the bounded pending PCM stays continuous across interruption"
         )
 
-        try await authorizeResponse(
-            stack,
-            from: reboundFinal,
-            responseID: "response-barge-in"
-        )
+        let reboundResponse = Task {
+            try await authorizeResponse(stack, from: reboundFinal, responseID: "response-barge-in")
+        }
+        if missingCancellationCompletion {
+            for _ in 0 ..< 10_000 {
+                if await stack.adapter.isWaitingForResponseDoneForTesting(
+                    "response-interrupt", session: nextIdentity
+                ) { break }
+                await Task.yield()
+            }
+            let waiting = await stack.adapter.isWaitingForResponseDoneForTesting(
+                "response-interrupt", session: nextIdentity
+            )
+            expect(waiting, "only new response creation waits for retired wire completion")
+            let beforeDrain = try await sentTypes(stack.transport)
+            expect(beforeDrain.filter { $0 == "response.create" }.count == 1,
+                   "no new response.create while the old wire response is still draining")
+            if unsolicitedDuringDrain {
+                await stack.transport.enqueueText(
+                    #"{"type":"response.created","response":{"id":"unrequested-during-drain","status":"in_progress"}}"#
+                )
+                await expectRealtimeError(.invalidEvent) {
+                    try await reboundResponse.value
+                }
+                try await stack.adapter.closeSession(
+                    RealtimeBrainCloseSessionCommand(identity: nextIdentity)
+                )
+                return
+            }
+            for _ in 0 ..< 20 {
+                await stack.transport.enqueueText(
+                    #"{"type":"response.audio.delta","response_id":"response-interrupt","delta":"AAA="}"#
+                )
+                await stack.transport.enqueueText(
+                    #"{"type":"response.audio_transcript.delta","response_id":"response-interrupt","delta":"stale"}"#
+                )
+            }
+            if drainTimeout {
+                try await reboundResponse.value
+                let failure = try await stack.adapter.receiveEvent(session: nextIdentity)
+                expect(failure.kind == .error(.timedOut)
+                    && failure.identity.session == reboundFinal.identity.session
+                    && failure.identity.turnID == reboundFinal.identity.turnID
+                    && failure.identity.responseID != nil,
+                    "an unsent response attempt times out as one correlated recoverable error")
+                let afterTimeout = try await sentTypes(stack.transport)
+                expect(afterTimeout.filter { $0 == "response.create" }.count == 1,
+                       "timed-out drain never submits or retries response.create")
+                for index in 0 ..< 5 {
+                    try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                        identity: nextIdentity, sequence: UInt64(index + 6),
+                        timestampNanoseconds: UInt64(index + 20) * 100,
+                        format: newAudioFrame.format, provenance: newAudioFrame.provenance,
+                        bytes: newAudioFrame.bytes
+                    ))
+                }
+                let afterInput = try await sentTypes(stack.transport)
+                expect(afterInput.filter { $0 == "input_audio_buffer.append" }.count == 3,
+                       "input keeps flowing in the same generation while retired response remains unresolved")
+                await stack.transport.releaseResponseCancellationAcknowledgements()
+                await stack.transport.enqueueText(
+                    #"{"type":"response.audio.delta","response_id":"response-interrupt","delta":"AAA="}"#
+                )
+                await stack.transport.enqueueText(
+                    #"{"type":"input_audio_buffer.speech_started","item_id":"after-timeout-user"}"#
+                )
+                let fresh = try await stack.adapter.receiveEvent(session: nextIdentity)
+                expect(fresh.kind == .userSpeechStarted && fresh.sequence == failure.sequence + 1,
+                       "late old completion and audio cannot revive or duplicate a failed attempt")
+                let beforeFreshCreate = try await sentTypes(stack.transport)
+                expect(beforeFreshCreate.filter { $0 == "response.create" }.count == 1,
+                       "old drain completion does not automatically retry the expired user turn")
+                try await authorizeResponse(stack, from: fresh, responseID: "after-timeout-response")
+                await stack.transport.enqueueText(
+                    #"{"type":"response.done","response":{"id":"after-timeout-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"fresh reply"}]}]}}"#
+                )
+                let freshText = try await stack.adapter.receiveEvent(session: nextIdentity)
+                let freshFinal = try await stack.adapter.receiveEvent(session: nextIdentity)
+                expect(freshText.kind == .residentTextFinal("fresh reply")
+                    && freshFinal.kind == .residentSemanticFinal(RealtimeBrainSemanticOutput(canonicalText: "fresh reply")),
+                    "fresh authorized turn works after late remote drain on the original connection")
+                let connections = await stack.transport.connectCount()
+                expect(connections == connectionCountAfterInterrupt, "recoverable timeout cannot replace the connection")
+                try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: nextIdentity))
+                try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: nextIdentity))
+                return
+            }
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+        }
+        try await reboundResponse.value
         await stack.transport.enqueueText(
             #"{"type":"response.done","response":{"id":"response-barge-in","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"我在听"}]}]}}"#
         )
@@ -1810,6 +1960,11 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await stack.transport.enqueueText(
             #"{"type":"response.done","response":{"id":"response-interrupt","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"late old final"}]}]}}"#
         )
+        for _ in 0 ..< 3 {
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_stopped","item_id":"","audio_end_ms":10220}"#
+            )
+        }
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"user-current"}"#
         )
@@ -1818,7 +1973,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         expect(
             currentSpeech.kind == .userSpeechStarted
-                && currentSpeech.sequence == 7,
+                && currentSpeech.sequence == UInt64(reboundEvents.count + 3),
             "late old item and response callbacks do not create a sequence gap"
         )
         try await authorizeResponse(
@@ -1980,8 +2135,85 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
+    private static func testEmptySpeechStopIsNotCompletion() async throws {
+        for activeItems in 0 ... 2 {
+            cases += 1
+            let diagnostics = NativeSpeechDiagnosticBuffer()
+            let stack = try makeStack(diagnosticBuffer: diagnostics)
+            let identity = sessionIdentity(generation: 41)
+            try await openAndBootstrap(stack, identity: identity)
+            var lastSpeech: RealtimeResidentBrainEvent?
+            for index in 0 ..< activeItems {
+                await stack.transport.enqueueText(
+                    #"{"type":"input_audio_buffer.speech_started","item_id":"empty-stop-\#(index)","audio_start_ms":1000}"#
+                )
+                lastSpeech = try await stack.adapter.receiveEvent(session: identity)
+            }
+            let sentBefore = try await sentTypes(stack.transport)
+            for _ in 0 ..< 20 {
+                await stack.transport.enqueueText(
+                    #"{"type":"input_audio_buffer.speech_stopped","item_id":"","audio_end_ms":10220}"#
+                )
+            }
+            // A valid marker proves all preceding rejected packets were processed.
+            let itemID = activeItems == 0 ? "empty-stop-marker" : "empty-stop-\(activeItems - 1)"
+            let marker: RealtimeResidentBrainEvent
+            if activeItems == 0 {
+                await stack.transport.enqueueText(
+                    #"{"type":"input_audio_buffer.speech_started","item_id":"\#(itemID)"}"#
+                )
+                marker = try await stack.adapter.receiveEvent(session: identity)
+                expect(marker.kind == .userSpeechStarted, "empty stops do not create user turns")
+            } else {
+                await stack.transport.enqueueText(
+                    #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"\#(itemID)","text":"继续说完整句话","stash":""}"#
+                )
+                marker = try await stack.adapter.receiveEvent(session: identity)
+                expect(marker.kind == .userTranscriptPartial("继续说完整句话"), "valid partial survives empty stops")
+                expect(marker.identity.turnID == lastSpeech?.identity.turnID, "no invented turn binding")
+            }
+            let observed = diagnostics.drain().events
+            expect(observed.filter { $0.category == "qwen_speech_stopped_rejected" }.count == 20,
+                   "each empty stop is rejected observably, not swallowed")
+            expect(!observed.contains { $0.category == "qwen_receive_failure" }, "empty stop is not terminal")
+            let waiting = Task { try await stack.adapter.receiveEvent(session: identity) }
+            await waitUntilPendingReceive(stack.adapter, session: identity)
+            // Cross the existing 500 ms transcript fallback window to detect accidental timers.
+            try await Task.sleep(for: .milliseconds(600))
+            let stillWaiting = await stack.adapter.hasPendingEventWaiterForTesting(session: identity)
+            expect(stillWaiting, "empty stops cannot schedule stop/final fallback, even with ambiguous input")
+            let sentAfter = try await sentTypes(stack.transport)
+            expect(sentAfter == sentBefore, "empty stops cannot create responses or send cancel/clear")
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_stopped","item_id":"\#(itemID)","audio_end_ms":11000}"#
+            )
+            let stop = try await waiting.value
+            expect(stop.kind == .userSpeechStopped && stop.identity == marker.identity,
+                   "only a valid identified stop ends the exact current utterance")
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(itemID)","transcript":"继续说完整句话"}"#
+            )
+            let final = try await stack.adapter.receiveEvent(session: identity)
+            expect(final.kind == .userTranscriptFinal("继续说完整句话") && final.identity == marker.identity,
+                   "later valid final is neither lost nor rebound to another generation")
+            let terminal = await stack.adapter.terminalErrorForTesting(session: identity)
+            expect(terminal == nil, "valid recovery keeps session healthy")
+            try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+        }
+    }
+
     private static func testActiveResponseReceiveDiagnostics() async throws {
         let failures: [(frame: String?, phase: String, branch: String, wire: String)] = [
+            (#"{"type":"input_audio_buffer.speech_stopped","audio_end_ms":10220}"#,
+             "decode", "item_id", "input_audio_buffer.speech_stopped"),
+            (#"{"type":"input_audio_buffer.speech_stopped","item_id":null,"audio_end_ms":10220}"#,
+             "decode", "item_id", "input_audio_buffer.speech_stopped"),
+            (#"{"type":"input_audio_buffer.speech_stopped","item_id":17,"audio_end_ms":10220}"#,
+             "decode", "item_id", "input_audio_buffer.speech_stopped"),
+            (#"{"type":"input_audio_buffer.speech_started","item_id":""}"#,
+             "decode", "item_id", "input_audio_buffer.speech_started"),
+            (#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"","transcript":"fixture"}"#,
+             "decode", "item_id", "conversation.item.input_audio_transcription.completed"),
             ("{private-wire-marker", "decode", "json_object", "unknown"),
             (#"{"type":17,"text":"private-wire-marker"}"#,
              "decode", "object_or_type", "unknown"),
@@ -3117,15 +3349,27 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         _ = try await stack.adapter.receiveEvent(session: identity)
         await stack.transport.failNextResponseCancelWithGenericError()
-        await expectRealtimeError(.providerFailure) {
+        var closingIdentity = identity
+        do {
             try await stack.adapter.interrupt(RealtimeBrainInterruptCommand(
                 identity: identity,
                 nextGeneration: identity.generation + 1,
                 reason: .runtimeDecision
             ))
+            closingIdentity = sessionIdentity(
+                generation: identity.generation + 1,
+                leaseID: identity.brainLeaseID,
+                routeEpoch: identity.routeEpoch
+            )
+            await expectRealtimeError(.providerFailure) {
+                while true { _ = try await stack.adapter.receiveEvent(session: closingIdentity) }
+            }
+        } catch {
+            expect(error as? RealtimeResidentBrainError == .providerFailure,
+                   "cancel failure is terminal whether before or after local rebound")
         }
         try await stack.adapter.closeSession(
-            RealtimeBrainCloseSessionCommand(identity: identity)
+            RealtimeBrainCloseSessionCommand(identity: closingIdentity)
         )
         let transitionCloseCount = await stack.transport.closeCount()
         expect(
@@ -3166,12 +3410,28 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         await transcriptFailureStack.transport.enqueueText(
             #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"transition-asr-failure","error":{"code":"asr_failed"}}"#
         )
-        await expectRealtimeError(.providerFailure) {
+        var transcriptClosingIdentity = transcriptFailureIdentity
+        do {
             try await transcriptFailureInterrupt.value
+            transcriptClosingIdentity = sessionIdentity(
+                generation: transcriptFailureIdentity.generation + 1,
+                leaseID: transcriptFailureIdentity.brainLeaseID,
+                routeEpoch: transcriptFailureIdentity.routeEpoch
+            )
+            await expectRealtimeError(.providerFailure) {
+                while true {
+                    _ = try await transcriptFailureStack.adapter.receiveEvent(
+                        session: transcriptClosingIdentity
+                    )
+                }
+            }
+        } catch {
+            expect(error as? RealtimeResidentBrainError == .providerFailure,
+                   "ASR failure remains terminal across local rebound")
         }
         try await transcriptFailureStack.adapter.closeSession(
             RealtimeBrainCloseSessionCommand(
-                identity: transcriptFailureIdentity
+                identity: transcriptClosingIdentity
             )
         )
         let transcriptFailureCloseCount = await transcriptFailureStack
@@ -3426,7 +3686,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
     }
 
     private static func testRuntimeConfirmedInterruptionUserTurnHandoff(
-        fixture: Data
+        fixture: Data,
+        drainTimeout: Bool = false
     ) async throws {
         cases += 1
         let diagnostics = NativeSpeechDiagnosticBuffer()
@@ -3605,7 +3866,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             type: "response.cancel",
             minimum: 1
         )
-        await stack.transport.releaseResponseCancellationAcknowledgements()
+        if !drainTimeout {
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+        }
         let nextIdentity = try realtimeIdentity(
             await runtime.completeRealtimeResidentBrainInterruption(decision)
         )
@@ -3701,6 +3964,56 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 }.isEmpty,
             "a real Provider final cancels fallback without replacement"
         )
+        if drainTimeout {
+            let leaseBeforeTimeout = runtime.activeBrainLeaseForTesting()
+            let errorDisposition = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity)
+            guard case .accepted(let responseError) = errorDisposition else {
+                fatalError("Runtime must accept the exact unsent attempt failure")
+            }
+            expect(responseError.kind == .error(.timedOut)
+                && responseError.identity.turnID == reboundFinalEvent.identity.turnID,
+                "Runtime accepts one response-level timeout for the authorized N+1 user turn")
+            expect(runtime.activeBrainLeaseForTesting() == leaseBeforeTimeout && leaseBeforeTimeout != nil,
+                   "an unsent response timeout cannot release the Brain lease or advance generation")
+            expect(runtime.realtimePendingUserInputForTesting(reboundFinalEvent.identity) == nil,
+                   "failed turn is retired, not left pending for an unsolicited future answer")
+            let typesAfterTimeout = try await sentTypes(stack.transport)
+            expect(typesAfterTimeout.filter { $0 == "response.create" }.count == 1
+                && typesAfterTimeout.filter { $0 == "response.cancel" }.count == 1,
+                "timeout does not send, retry, or recancel a response")
+            let failureDiagnostics = diagnostics.drain().events
+            expect(failureDiagnostics.filter { $0.category == "qwen_response_not_submitted" }.count == 1,
+                   "diagnostics distinguishes an unsent request from a terminal receive failure")
+            expectRealtimeSuccess(
+                await runtime.appendRealtimeResidentBrainAudio(RealtimeBrainAudioFrame(
+                    identity: nextIdentity, sequence: 1,
+                    timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
+                    provenance: .acousticEchoProcessed, bytes: frameBytes
+                ), activity: listeningActivity),
+                "Runtime input stays usable while the old cloud response is unresolved"
+            )
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: nextIdentity),
+                                  "Stop closes without needing the withheld old response.done")
+            expect(runtime.activeBrainLeaseForTesting() == nil, "only explicit Stop releases the lease")
+            let restarted = try realtimeIdentity(await runtime.openRealtimeResidentBrainSession())
+            expectRealtimeSuccess(await runtime.updateRealtimeResidentBrainContext(
+                RealtimeBrainRuntimeContextUpdate(identity: restarted, kind: .bootstrap, contextRevision: 1,
+                    sections: [RealtimeBrainContextSection(scope: .stableResident, content: "restart after timeout")])
+            ), "Restart after recoverable timeout bootstraps normally")
+            expectAccepted(try await runtime.receiveRealtimeResidentBrainEvent(session: restarted),
+                           kind: .sessionReady, "restart reaches the formal ready state")
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+            await stack.transport.enqueueText(
+                #"{"type":"input_audio_buffer.speech_started","item_id":"restart-user"}"#
+            )
+            expectAccepted(try await runtime.receiveRealtimeResidentBrainEvent(session: restarted),
+                           kind: .userSpeechStarted, "late old completion cannot revive output in the restarted session")
+            expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: restarted),
+                                  "restarted Runtime session remains closeable")
+            print("runtime_unsent_response_timeout=RECOVERABLE same_lease=PASS input=PASS stop_restart=PASS")
+            return
+        }
         try await waitUntilSentTypeCount(
             stack.transport,
             type: "response.create",
@@ -4285,6 +4598,28 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         _ = await runtime.cancelSpeechRoute(
             generation: cascadedGeneration
         )
+    }
+
+    private static func testSubmittedResponseTimeoutIsTerminal() async throws {
+        cases += 1
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
+        let identity = sessionIdentity(generation: 41)
+        try await openAndBootstrap(stack, identity: identity)
+        await stack.transport.enqueueText(
+            #"{"type":"input_audio_buffer.speech_started","item_id":"submitted-timeout-user"}"#
+        )
+        let speech = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.holdResponseCreationAcknowledgements()
+        await expectRealtimeError(.timedOut) {
+            try await authorizeResponse(stack, from: speech, responseID: "submitted-timeout-response")
+        }
+        let sent = try await sentTypes(stack.transport)
+        expect(sent.filter { $0 == "response.create" }.count == 1,
+               "an already submitted request is never retried after its acknowledgement timeout")
+        expect(diagnostics.drain().events.allSatisfy { $0.category != "qwen_response_not_submitted" },
+               "unknown submitted outcome cannot be mislabeled as a recoverable unsent failure")
+        try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
     }
 
     private static func makeStack(

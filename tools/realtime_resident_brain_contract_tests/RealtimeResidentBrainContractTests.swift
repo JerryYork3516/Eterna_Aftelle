@@ -519,6 +519,7 @@ private struct RealtimeResidentBrainContractTests {
         try await testIdentityOrderingAndLateCallbacks(fixture: fixture)
         try await testDeferredCapacityFailsClosed(fixture: fixture)
         try await testConcurrentTransitions(fixture: fixture)
+        try await testContextAudioAdmission(fixture: fixture)
         try await testProviderFailureAndRecovery(fixture: fixture)
         try await testRuntimeEagerResponseAuthorization(fixture: fixture)
         testEagerResponseAuthorization()
@@ -3043,6 +3044,133 @@ private struct RealtimeResidentBrainContractTests {
             closeRace.runtime.activeBrainLeaseForTesting() == nil,
             "all-candidate close releases admission"
         )
+    }
+
+    private static func testContextAudioAdmission(fixture: Data) async throws {
+        for scenario in ["ack", "cancel", "timeout", "failure", "close"] {
+            cases += 1
+            let stack = configuredStack(fixture: fixture)
+            let identity = try realtimeIdentity(
+                await stack.runtime.openRealtimeResidentBrainSession()
+            )
+            try await bootstrap(stack, identity: identity)
+            let lease = stack.runtime.activeBrainLeaseForTesting()
+            let diagnostics = NativeSpeechDiagnosticBuffer()
+            stack.runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
+            let delta = RealtimeBrainRuntimeContextUpdate(
+                identity: identity, kind: .delta, contextRevision: 2,
+                sections: [RealtimeBrainContextSection(scope: .dynamicSession, content: "next context")]
+            )
+            let frame = RealtimeBrainAudioFrame(
+                identity: identity, sequence: 1,
+                timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
+                provenance: .acousticEchoProcessed,
+                bytes: Data(repeating: 1, count: 640)
+            )
+            let activity = RealtimeBrainLocalAudioActivity(
+                kind: .listeningNearEnd, residentPlaybackSequence: 0,
+                residentPlaybackActive: false,
+                lastAudibleResidentRenderTimestampNanoseconds: nil,
+                sourceGateEpoch: 0, routeStable: true,
+                inputDeviceAvailable: true, outputDeviceAvailable: true
+            )
+            await stack.provider.holdNextContextUpdate()
+            let update = Task { await stack.runtime.updateRealtimeResidentBrainContext(delta) }
+            await stack.provider.waitForHeldContextUpdate()
+            let started = ContinuousClock.now
+            let append = Task { await stack.runtime.appendRealtimeResidentBrainAudio(frame, activity: activity) }
+            let waitDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+            var sawWait = false
+            while ContinuousClock.now < waitDeadline, !sawWait {
+                sawWait = diagnostics.drain().events.contains {
+                    $0.category == "runtime_audio_context_admission" && $0.disposition == "waiting"
+                }
+                if !sawWait { await Task.yield() }
+            }
+            expect(sawWait, "\(scenario): append reaches context wait before ACK")
+            expect(await stack.provider.audioCount() == 0,
+                   "\(scenario): no audio crosses uncommitted context")
+            var closing: Task<Result<Void, RealtimeResidentBrainError>, Never>?
+            switch scenario {
+            case "cancel":
+                append.cancel()
+                expectRealtimeFailure(await append.value, equals: .cancelled,
+                                      "cancelled waiter returns promptly")
+                expect(started.duration(to: .now) < .milliseconds(500),
+                       "cancellation does not wait for ACK or timeout")
+            case "timeout":
+                expectRealtimeFailure(await append.value, equals: .operationInFlight,
+                                      "unacknowledged context is bounded busy, not invalid identity")
+                let elapsed = started.duration(to: .now)
+                expect(elapsed >= .milliseconds(500) && elapsed < .seconds(1),
+                       "context wait is bounded to 500ms")
+            case "failure":
+                await stack.provider.failNextContext(.transportFailure)
+            case "close":
+                closing = Task { await stack.runtime.closeRealtimeResidentBrainSession(identity: identity) }
+                expectRealtimeFailure(await append.value, equals: .invalidIdentity,
+                                      "Stop rejects retained audio without waiting for ACK")
+            default: break
+            }
+            await stack.provider.resumeHeldContextUpdate()
+            if scenario == "failure" || scenario == "close" {
+                expectRealtimeFailure(await update.value,
+                                      equals: scenario == "failure" ? .transportFailure : .cancelled,
+                                      "failed or closed context cannot commit")
+                expectRealtimeFailure(await append.value, equals: .invalidIdentity,
+                                      "terminated lease rejects waiting audio")
+                if let closing { expectRealtimeSuccess(await closing.value, "Stop completes after ACK") }
+                expect(await stack.provider.audioCount() == 0,
+                       "terminal context never forwards retained PCM")
+                let next = try realtimeIdentity(await stack.runtime.openRealtimeResidentBrainSession())
+                try await bootstrap(stack, identity: next)
+                expectRealtimeFailure(await stack.runtime.appendRealtimeResidentBrainAudio(frame),
+                                      equals: .invalidIdentity, "restart rejects old retained frame")
+                expectRealtimeSuccess(await stack.runtime.closeRealtimeResidentBrainSession(identity: next),
+                                      "replacement session closes")
+            } else {
+                expectRealtimeSuccess(await update.value, "context ACK commits")
+                if scenario == "ack" {
+                    expectRealtimeSuccess(await append.value, "same PCM survives context ACK")
+                } else {
+                    expect(await stack.provider.audioCount() == 0,
+                           "cancel/timeout never sends PCM late")
+                    expectRealtimeSuccess(await stack.runtime.appendRealtimeResidentBrainAudio(frame, activity: activity),
+                                          "caller may retry unconsumed sequence after ACK")
+                }
+                expect(await stack.provider.audioFrames == [frame],
+                       "retained bytes, identity, sequence and timestamp are unchanged, sent exactly once")
+                expectRealtimeSuccess(await stack.runtime.confirmRealtimeResidentBrainAcceptedLocalAudioActivity(frame: frame, activity: activity),
+                                      "retained listening activity can be confirmed in committed context")
+                expectRealtimeFailure(await stack.runtime.appendRealtimeResidentBrainAudio(frame),
+                                      equals: .invalidAudioFrame, "duplicate sequence remains rejected")
+                let nextFrame = RealtimeBrainAudioFrame(
+                    identity: identity, sequence: 2,
+                    timestampNanoseconds: frame.timestampNanoseconds + 20_000_000,
+                    format: frame.format, provenance: frame.provenance, bytes: frame.bytes
+                )
+                let cancelledAppend = Task {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return await stack.runtime.appendRealtimeResidentBrainAudio(nextFrame)
+                }
+                expectRealtimeFailure(await cancelledAppend.value, equals: .cancelled,
+                                      "cancel between reservation and send cannot reach Provider")
+                expect(await stack.provider.audioFrames == [frame],
+                       "cancelled reservation sends no second PCM")
+                expectRealtimeSuccess(await stack.runtime.appendRealtimeResidentBrainAudio(nextFrame),
+                                      "cancelled reservation releases token and preserves next sequence")
+                expect(stack.runtime.activeBrainLeaseForTesting() == lease,
+                       "context wait does not advance generation or replace lease")
+                expectRealtimeSuccess(await stack.runtime.closeRealtimeResidentBrainSession(identity: identity),
+                                      "context admission fixture closes")
+            }
+            let interrupts = await stack.provider.interruptCount()
+            let cancellations = await stack.provider.cancelCount()
+            expect(interrupts == 0 && cancellations == 0,
+                   "context admission never invents interruption or cancellation")
+            print("context_audio_admission=PASS scenario=\(scenario)")
+        }
     }
 
     private static func testProviderFailureAndRecovery(

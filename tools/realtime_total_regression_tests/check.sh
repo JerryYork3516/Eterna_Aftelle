@@ -8,8 +8,9 @@ shared_runner="$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests
 production_contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeResidentBrainAdapter.swift"
 timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
-# Reviewed production baseline: d4cdb77d818c55b94e338dc22ef324498d19f554.
-expected_production_digest="389412a6582ab2c1449981cba689629ddfac62d2755a092c727723f187f7640b"
+# Reviewed context/audio admission working-tree snapshot over dc6fe600.
+# Exact production file hashes and review scope: DEVLOG, 2026-09-06.
+expected_production_digest="2acc7c53548424e3299ff35421960b18416ffe44acf9cd8dc8c3d7daba2ea2f2"
 expected_manifest_digest="6de2ef316f6bf03b393e14549e4cd3dd6f1b0c958ad1a75e1dcec6731ddb7780"
 trap 'rm -rf "$work_dir"' EXIT
 

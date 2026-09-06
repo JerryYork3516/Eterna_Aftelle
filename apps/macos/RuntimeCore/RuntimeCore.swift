@@ -4520,21 +4520,68 @@ public final class RuntimeCore {
     ) async -> Result<Void, RealtimeResidentBrainError> {
         guard let brainLease = currentRealtimeBrainLease(
             identity: frame.identity
-        ), realtimeBrainSessionGate.isActive(frame.identity) else {
+        ) else {
             return .failure(.invalidIdentity)
         }
-        let audioStart = realtimeBrainSessionGate.beginAudioInput(
+        var audioStart = realtimeBrainSessionGate.beginAudioInput(
             frame,
             activity: activity
         )
+        if audioStart == .contextUpdating {
+            // Retain this frame across a short context ACK, never across a
+            // generation/lease change. No Provider operation is reserved yet.
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: .milliseconds(500))
+            #if DEBUG
+            await recordRealtimeAudioContextAdmission(frame, disposition: "waiting")
+            #endif
+            while audioStart == .contextUpdating {
+                guard clock.now < deadline else {
+                    #if DEBUG
+                    await recordRealtimeAudioContextAdmission(frame, disposition: "timeout")
+                    #endif
+                    return .failure(.operationInFlight)
+                }
+                do { try await Task.sleep(for: .milliseconds(2)) }
+                catch { return .failure(.cancelled) }
+                guard activeBrainLeaseGate.isCurrent(brainLease) else {
+                    return .failure(.invalidIdentity)
+                }
+                audioStart = realtimeBrainSessionGate.beginAudioInput(
+                    frame,
+                    activity: activity
+                )
+            }
+            #if DEBUG
+            await recordRealtimeAudioContextAdmission(
+                frame,
+                disposition: {
+                    if case .accepted = audioStart { return "admitted" }
+                    return "rejected"
+                }()
+            )
+            #endif
+        }
         let token: UUID
         switch audioStart {
         case .accepted(let acceptedToken):
             token = acceptedToken
-        case .busy:
+        case .busy, .contextUpdating:
             return .failure(.operationInFlight)
+        case .invalidIdentity:
+            return .failure(.invalidIdentity)
         case .invalid:
             return .failure(.invalidAudioFrame)
+        }
+        guard !Task.isCancelled,
+              activeBrainLeaseGate.isCurrent(brainLease) else {
+            _ = realtimeBrainSessionGate.finishAudioInput(
+                token: token,
+                frame: frame,
+                activity: activity,
+                succeeded: false
+            )
+            return .failure(.cancelled)
         }
         do {
             try await executionEngine.appendRealtimeResidentBrainAudio(frame)
@@ -4574,6 +4621,25 @@ public final class RuntimeCore {
         }
         return .success(())
     }
+
+    #if DEBUG
+    @MainActor
+    private func recordRealtimeAudioContextAdmission(
+        _ frame: RealtimeBrainAudioFrame,
+        disposition: String
+    ) {
+        nativeSpeechDiagnosticBuffer?.append(
+            NativeSpeechInternalDiagnosticEvent(
+                source: .runtime,
+                category: "runtime_audio_context_admission",
+                routeKind: .realtimeBrain,
+                turnGeneration: frame.identity.generation,
+                disposition: disposition,
+                audioSequence: frame.sequence
+            )
+        )
+    }
+    #endif
 
     nonisolated func confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
         frame: RealtimeBrainAudioFrame,
