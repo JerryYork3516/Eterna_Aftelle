@@ -34,6 +34,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var failsNextResponseCancel = false
     private var failsNextAudioAppend = false
     private var failsNextResponseCreate = false
+    private var responseCreateWriteBarrier: (@Sendable () async -> Void)?
     private var holdsResponseCancellation = false
     private var heldResponseCancellationFrames: [String] = []
     private var turnDetectionAcknowledgementMode:
@@ -73,6 +74,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
                 throw RealtimeResidentBrainError.transportFailure
             }
         case "response.create":
+            await responseCreateWriteBarrier?()
             if failsNextResponseCreate {
                 failsNextResponseCreate = false
                 throw RealtimeResidentBrainError.transportFailure
@@ -212,6 +214,10 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     }
 
     func failNextResponseCreationWrite() { failsNextResponseCreate = true }
+
+    func setResponseCreateWriteBarrier(_ barrier: (@Sendable () async -> Void)?) {
+        responseCreateWriteBarrier = barrier
+    }
 
     func releaseResponseCreationAcknowledgements() {
         holdsResponseCreation = false

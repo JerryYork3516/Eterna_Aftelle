@@ -878,6 +878,7 @@ nonisolated final class RealtimeBrainResponseAttempt: @unchecked Sendable, Equat
     private let lock = NSLock()
     private var state = State()
     private var waiting: (@Sendable () -> Void)?
+    private var submissionDeadline: ContinuousClock.Instant?
 
     init() {
         (changes, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -909,9 +910,20 @@ nonisolated final class RealtimeBrainResponseAttempt: @unchecked Sendable, Equat
     }
 
     func beginSubmission() -> Bool {
+        beginSubmission(now: { .now })
+    }
+
+    #if DEBUG
+    func beginSubmissionForTesting(at now: ContinuousClock.Instant) -> Bool {
+        beginSubmission(now: { now })
+    }
+    #endif
+
+    private func beginSubmission(now: () -> ContinuousClock.Instant) -> Bool {
         lock.withLock {
             guard state.valid, state.permitted, state.providerReady,
-                  state.submission == .notSubmitted else { return false }
+                  state.submission == .notSubmitted,
+                  submissionDeadline.map({ now() < $0 }) ?? true else { return false }
             // send() throwing does not prove that the remote never received the write.
             state.submission = .uncertain
             return true
@@ -920,9 +932,15 @@ nonisolated final class RealtimeBrainResponseAttempt: @unchecked Sendable, Equat
 
     func submitted() { lock.withLock { state.submission = .submitted } }
 
-    func invalidate() {
-        lock.withLock { state.valid = false }
+    func setSubmissionDeadline(_ deadline: ContinuousClock.Instant) {
+        lock.withLock { submissionDeadline = min(submissionDeadline ?? deadline, deadline) }
+    }
+
+    @discardableResult
+    func invalidate() -> Submission {
+        let submission = lock.withLock { state.valid = false; return state.submission }
         continuation.finish()
+        return submission
     }
 }
 
@@ -1138,6 +1156,12 @@ nonisolated final class RuntimeRealtimeBrainProviderOperationGate:
     private let lock = NSLock()
     private var tokens: Set<UUID> = []
     private var waiters: [Waiter] = []
+
+    #if DEBUG
+    func snapshotForTesting() -> (operations: Int, waiters: Int) {
+        lock.withLock { (tokens.count, waiters.count) }
+    }
+    #endif
 
     func begin(_ token: UUID) {
         lock.withLock {
@@ -1730,6 +1754,15 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         succeeded: Bool
     ) -> Bool {
         defer { providerOperations.finish(token) }
+        return revokeResponseCreate(token: token, command: command, succeeded: succeeded)
+    }
+
+    // Authority can be revoked while the actual Provider call still owns its operation.
+    func revokeResponseCreate(
+        token: UUID,
+        command: RealtimeBrainCreateResponseCommand,
+        succeeded: Bool = false
+    ) -> Bool {
         return lock.withLock {
             guard responseCreateToken == token,
                   pendingResponseCreate == command else { return false }
@@ -1998,10 +2031,26 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
         await providerOperations.waitForAll()
     }
 
+    #if DEBUG
+    func providerOperationsForTesting() -> (operations: Int, waiters: Int) {
+        providerOperations.snapshotForTesting()
+    }
+    #endif
+
     func waitForProviderOperationsToFinish(
         excludingGenerationTransition token: UUID
     ) async {
         await providerOperations.waitForAll(excluding: token)
+    }
+
+    func fenceFailedResponse(_ eventIdentity: RealtimeBrainEventIdentity) -> Bool {
+        lock.withLock {
+            guard isReadyLocked(eventIdentity.session),
+                  contextRevision == eventIdentity.contextRevision else { return false }
+            lifecycle = .closing
+            invalidateInFlightOperationsLocked()
+            return true
+        }
     }
 
     private func receptionRejectionLocked(

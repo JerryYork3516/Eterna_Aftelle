@@ -938,12 +938,13 @@ actor QwenRealtimeResidentBrainAdapter:
                 attempt: command.attempt
             )
         } catch let failure as RealtimeBrainResponseAttemptFailure {
-            if failure.submission != .notSubmitted, identity == command.identity.session {
+            if failure.submission != .notSubmitted, command.attempt.snapshot().valid,
+               identity == command.identity.session {
                 lifecycle = .failed
             }
             throw failure
         } catch {
-            lifecycle = .failed
+            if identity == command.identity.session { lifecycle = .failed }
             throw Self.map(error)
         }
     }

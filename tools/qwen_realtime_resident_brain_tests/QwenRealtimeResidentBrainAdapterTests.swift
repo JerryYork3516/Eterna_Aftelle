@@ -22,6 +22,8 @@ private actor R3ResponseCatchBarrier {
 
 private enum R3PendingAnswerCase: String, CaseIterable {
     case doneBeforeTimeout, doneBeforeCatch, lateDone, stop, expiry, speechPause, supersede, supersedeDuringWait, generation, context
+    case expiryAfterSubmission, expiryDuringWrite, expiryBeforeSubmission
+    case cancelledOperationDrain, cancelledStopDrain, cancelledContextDrain, cancelledContextGenerationDrain
 }
 
 private struct R3CredentialReader: ProviderCredentialReading {
@@ -135,31 +137,34 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let fixture = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+        if let name = ProcessInfo.processInfo.environment["AFTELLE_PENDING_REVIEW_CASE"],
+           let scenario = R3PendingAnswerCase(rawValue: name) {
+            try await testRuntimeConfirmedInterruptionUserTurnHandoff(
+                fixture: fixture, drainTimeout: true, pendingCase: scenario
+            )
+            print("pending_review_case=\(name) PASS checks=\(checks)")
+            return
+        }
         if ProcessInfo.processInfo.environment["AFTELLE_UNSENT_RACE_ONLY"] == "1" {
             try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true, doneBeforeCatch: true)
             print("unsent_timeout_done_catch=PASS checks=\(checks)")
             return
         }
         if ProcessInfo.processInfo.environment["AFTELLE_PENDING_ANSWER_ONLY"] == "1" {
-            for scenario in R3PendingAnswerCase.allCases {
-                try await testRuntimeConfirmedInterruptionUserTurnHandoff(
-                    fixture: fixture, drainTimeout: true, pendingCase: scenario
-                )
-            }
-            try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true, doneBeforeCatch: true)
-            try await testSubmittedResponseTimeoutIsTerminal()
+            try await testPendingAnswerMatrix(fixture: fixture)
             print("pending_answer_matrix=PASS cases=\(cases) checks=\(checks)")
             return
         }
         try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true)
         try await testInterruptionAndGeneration(missingCancellationCompletion: true)
         try await testInterruptionAndGeneration(missingCancellationCompletion: true, unsolicitedDuringDrain: true)
-        try await testRuntimeConfirmedInterruptionUserTurnHandoff(fixture: fixture, drainTimeout: true)
-        try await testSubmittedResponseTimeoutIsTerminal()
         if ProcessInfo.processInfo.environment["AFTELLE_CANCEL_HANDOFF_ONLY"] == "1" {
+            try await testRuntimeConfirmedInterruptionUserTurnHandoff(fixture: fixture, drainTimeout: true)
+            try await testSubmittedResponseTimeoutIsTerminal()
             print("cancel_handoff_checks=\(checks) PASS")
             return
         }
+        try await testPendingAnswerMatrix(fixture: fixture)
         try await testHandshakeAndBootstrap()
         try await testProviderListeningInputAudioDiagnostics()
         try await testUnsafeTurnDetectionAcknowledgementFailsClosed()
@@ -3759,6 +3764,35 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
+    private static func testPendingAnswerMatrix(fixture: Data) async throws {
+        let startingCases = cases
+        let startingChecks = checks
+        cases += 1
+        let start = ContinuousClock.now
+        let deadline = start.advanced(by: .seconds(15))
+        let expired = RealtimeBrainResponseAttempt()
+        expired.setSubmissionDeadline(deadline)
+        expired.setSubmissionDeadline(deadline.advanced(by: .seconds(15)))
+        expect(!expired.beginSubmissionForTesting(at: deadline), "deadline is inclusive and cannot roll forward")
+        expect(expired.invalidate() == .notSubmitted, "deadline before beginSubmission proves no write")
+        expect(!expired.beginSubmissionForTesting(at: start), "revocation cannot be reversed by a late callback")
+        let sent = RealtimeBrainResponseAttempt()
+        sent.setSubmissionDeadline(deadline)
+        expect(sent.beginSubmissionForTesting(at: start.advanced(by: .milliseconds(14_900))), "submission at 14.9 seconds is admitted")
+        expect(sent.invalidate() == .uncertain, "beginSubmission before expiry atomically reports uncertainty")
+        expect(!sent.beginSubmissionForTesting(at: start), "uncertain write never obtains another submission")
+        sent.submitted()
+        expect(sent.invalidate() == .submitted, "completed write remains submitted after revocation")
+        for scenario in R3PendingAnswerCase.allCases {
+            try await testRuntimeConfirmedInterruptionUserTurnHandoff(
+                fixture: fixture, drainTimeout: true, pendingCase: scenario
+            )
+        }
+        try await testInterruptionAndGeneration(missingCancellationCompletion: true, drainTimeout: true, doneBeforeCatch: true)
+        try await testSubmittedResponseTimeoutIsTerminal()
+        print("pending_answer_default_matrix=PASS cases=\(cases - startingCases) checks=\(checks - startingChecks)")
+    }
+
     private static func testRuntimeConfirmedInterruptionUserTurnHandoff(
         fixture: Data,
         drainTimeout: Bool = false,
@@ -4138,6 +4172,116 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             !(await stack.adapter.responseDoneWaiterIDsForTesting("response-tool-1")).isEmpty
         }
         let oldWaiters = await stack.adapter.responseDoneWaiterIDsForTesting("response-tool-1")
+        if [.expiryAfterSubmission, .expiryDuringWrite, .expiryBeforeSubmission,
+            .cancelledOperationDrain, .cancelledStopDrain, .cancelledContextDrain,
+            .cancelledContextGenerationDrain].contains(scenario) {
+            await barrier.waitForEntry()
+            let sendsBeforeExpiry = scenario == .expiryAfterSubmission || scenario == .expiryDuringWrite
+            var timeoutPresentations = 0
+            runtime.setRealtimePendingAnswerPresentationHandler { _, error in
+                if error == .timedOut { timeoutPresentations += 1 }
+            }
+            if sendsBeforeExpiry {
+                await stack.adapter.setResponseCatchBarrierForTesting(nil)
+                await stack.transport.holdResponseCreationAcknowledgements()
+                let writeBarrier = R3ResponseCatchBarrier()
+                if scenario == .expiryDuringWrite {
+                    await stack.transport.setResponseCreateWriteBarrier { await writeBarrier.suspend() }
+                }
+                await barrier.release()
+                await stack.transport.releaseResponseCancellationAcknowledgements()
+                await waitForCondition("response.create written, ACK held") {
+                    runtime.realtimePendingAnswerForTesting()?.state.submission == (scenario == .expiryDuringWrite ? .uncertain : .submitted)
+                }
+                if scenario == .expiryDuringWrite { await writeBarrier.waitForEntry() }
+                let exitBarrier = R3ResponseCatchBarrier()
+                await stack.adapter.setResponseCatchBarrierForTesting { await exitBarrier.suspend() }
+                runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+                expect(timeoutPresentations == 0, "submitted or uncertain expiry cannot present ordinary Listening")
+                let disposition = try await runtime.receiveRealtimeResidentBrainEvent(session: identity)
+                if case .accepted = disposition { expect(false, "expired submitted attempt must fence output immediately") }
+                else { expect(true, "expired submitted attempt fences output before Adapter exits") }
+                if scenario == .expiryDuringWrite {
+                    await stack.transport.setResponseCreateWriteBarrier(nil)
+                    await writeBarrier.release()
+                }
+                await exitBarrier.waitForEntry()
+                expect(runtime.realtimeProviderOperationsForTesting().operations == 1, "expiry keeps operation until call exits")
+                await stack.adapter.setResponseCatchBarrierForTesting(nil)
+                await exitBarrier.release()
+                await runtime.waitForRealtimePendingAnswerDrainForTesting()
+                let isolated = runtime.activeBrainLeaseForTesting() == nil
+                FileHandle.standardError.write(Data("P1_A_expired_submitted_session_isolated=\(isolated)\n".utf8))
+                expect(isolated, "submitted expiry must settle the failed Runtime session even after pending is removed")
+                let closeCount = await stack.transport.closeCount()
+                expect(closeCount == 1, "Runtime failure settlement closes exactly once")
+            } else if scenario == .expiryBeforeSubmission {
+                runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+                expect(timeoutPresentations == 1, "definitely unsubmitted expiry reports failure once")
+                await stack.transport.releaseResponseCancellationAcknowledgements()
+                await stack.adapter.setResponseCatchBarrierForTesting(nil)
+                await barrier.release()
+                await runtime.waitForRealtimePendingAnswerDrainForTesting()
+                expect(runtime.activeBrainLeaseForTesting() == lease, "unsubmitted expiry keeps the current session")
+                expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: identity), "unsubmitted expiry closes normally")
+            } else {
+                var completed = false
+                let transition = Task { @MainActor in
+                    let result: Result<RealtimeBrainSessionIdentity, RealtimeResidentBrainError>
+                    if scenario == .cancelledStopDrain {
+                        result = await runtime.closeRealtimeResidentBrainSession(identity: identity).map { identity }
+                    } else if scenario == .cancelledContextDrain || scenario == .cancelledContextGenerationDrain {
+                        result = await runtime.updateRealtimeResidentBrainContext(RealtimeBrainRuntimeContextUpdate(
+                            identity: identity, kind: .delta, contextRevision: 2,
+                            sections: [RealtimeBrainContextSection(scope: .dynamicSession, content: "replacement")]
+                        )).map { identity }
+                    } else {
+                        runtime.expireRealtimePendingAnswerForTesting(id: initial.id, now: initial.deadline)
+                        result = await runtime.cancelRealtimeResidentBrainGenerationForTesting(identity: identity, reason: .runtimeDecision)
+                    }
+                    completed = true
+                    return result
+                }
+                let contextDrain = scenario == .cancelledContextDrain || scenario == .cancelledContextGenerationDrain
+                await waitForCondition("generation either drains or incorrectly escapes") {
+                    completed || (contextDrain ? runtime.realtimePendingAnswerForTesting() == nil
+                        : runtime.realtimeProviderOperationsForTesting().waiters > 0)
+                }
+                let waited = !completed
+                let retained = runtime.realtimeProviderOperationsForTesting().operations >= 1
+                var concurrentGeneration: Task<Result<RealtimeBrainSessionIdentity, RealtimeResidentBrainError>, Never>?
+                if scenario == .cancelledContextGenerationDrain {
+                    concurrentGeneration = Task { @MainActor in
+                        await runtime.cancelRealtimeResidentBrainGenerationForTesting(identity: identity, reason: .runtimeDecision)
+                    }
+                    await waitForCondition("generation waits for old call without a context-operation cycle") {
+                        runtime.realtimeProviderOperationsForTesting().waiters > 0
+                    }
+                    expect(runtime.realtimeProviderOperationsForTesting().operations == 2, "only old call and generation operation are reserved")
+                }
+                await stack.adapter.setResponseCatchBarrierForTesting(nil)
+                await barrier.release()
+                let result = await transition.value
+                FileHandle.standardError.write(Data("P1_B_operation_retained=\(retained) generation_waited=\(waited) result=\(result)\n".utf8))
+                expect(retained && waited, "Task.cancel must not release the Provider operation before Adapter exits")
+                let next: RealtimeBrainSessionIdentity
+                if let concurrentGeneration {
+                    expect(result == .failure(.invalidContextRevision), "context callback cannot update a transitioning generation")
+                    next = try realtimeIdentity(await concurrentGeneration.value)
+                } else {
+                    next = try realtimeIdentity(result)
+                }
+                expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: next), "drained generation closes")
+            }
+            let types = try await sentTypes(stack.transport)
+            expect(types.filter { $0 == "response.create" }.count == (sendsBeforeExpiry ? 2 : 1), "no retry or expired submission")
+            expect(types.filter { $0 == "response.cancel" }.count == 1, "no extra interrupt")
+            expect(runtime.realtimeProviderOperationsForTesting().operations == 0, "no leaked Provider operations")
+            let history = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+            expect(history == historyBefore, "expired question never persists")
+            print("pending_answer_\(scenario.rawValue)=PASS duplicate_answer=0 stale_output=0")
+            return
+        }
         let (expired, expiryNotice) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         runtime.setRealtimePendingAnswerPresentationHandler { _, error in
             if error == .timedOut { expiryNotice.yield(); expiryNotice.finish() }

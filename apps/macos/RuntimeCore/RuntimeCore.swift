@@ -1696,6 +1696,8 @@ public final class RuntimeCore {
         var command: RealtimeBrainCreateResponseCommand
         var task: Task<Bool, Never>?
         var expiryTask: Task<Void, Never>?
+        var providerCallInFlight = false
+        var needsFailureSettlement = false
 
         init(command: RealtimeBrainCreateResponseCommand, token: UUID,
              sourceTurnIDs: Set<RealtimeBrainTurnID>, event: RealtimeResidentBrainEvent,
@@ -4512,6 +4514,9 @@ public final class RuntimeCore {
            pending.event.identity.session == update.identity,
            update.contextRevision > pending.event.identity.contextRevision {
             terminateRealtimePendingAnswer(reason: "context_invalidated")
+            // Drain the cancelled call before reserving a context operation, so a
+            // simultaneous generation transition cannot wait cyclically on it.
+            _ = await pending.task?.value
         }
         guard let token = realtimeBrainSessionGate.beginContextUpdate(
             update
@@ -4851,6 +4856,7 @@ public final class RuntimeCore {
             logicalTurnID: logicalTurnID ?? turnID
         )
         realtimePendingAnswer = pending
+        command.attempt.setSubmissionDeadline(pending.deadline)
         let (notices, notice) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
         command.attempt.onWaiting { notice.yield(true) }
         let previous = realtimePendingAnswerDrain
@@ -4881,6 +4887,7 @@ public final class RuntimeCore {
               activeBrainLeaseGate.isCurrent(pending.lease),
               realtimeBrainSessionGate.isCurrent(pending.command.identity) {
             let command = pending.command
+            pending.providerCallInFlight = true
             do {
                 try await executionEngine.createRealtimeResidentBrainResponse(command)
             } catch let failure as RealtimeBrainResponseAttemptFailure
@@ -4889,7 +4896,14 @@ public final class RuntimeCore {
                     && ((failure.reason == .retiredResponseWait
                         && (failure.error == .timedOut || failure.error == .operationInFlight))
                         || (failure.reason == .submissionPermission && failure.error == .cancelled)) {
-                guard realtimePendingAnswer?.id == pending.id else { return false }
+                pending.providerCallInFlight = false
+                guard realtimePendingAnswer?.id == pending.id else {
+                    return await finishTerminatedRealtimePendingAnswer(pending, command: command)
+                }
+                if ContinuousClock.now >= pending.deadline {
+                    expireRealtimePendingAnswer(id: pending.id, now: .now)
+                    return false
+                }
                 recordRealtimePendingAnswer(pending, reason: "waiting_not_submitted")
                 realtimePendingAnswerPresentation?(command.identity, nil)
                 notice.yield(true)
@@ -4913,16 +4927,26 @@ public final class RuntimeCore {
                 }
                 pending.token = nextToken
                 pending.command = next
+                next.attempt.setSubmissionDeadline(pending.deadline)
                 continue
             } catch {
-                guard realtimePendingAnswer?.id == pending.id else { return false }
+                pending.providerCallInFlight = false
+                guard realtimePendingAnswer?.id == pending.id else {
+                    return await finishTerminatedRealtimePendingAnswer(pending, command: command)
+                }
                 terminateRealtimePendingAnswer(reason: "submission_failed")
                 await settleFailedRealtimeBrainSession(
                     identity: pending.event.identity.session, lease: pending.lease
                 )
                 return false
             }
-            guard realtimePendingAnswer?.id == pending.id else { return false }
+            if realtimePendingAnswer?.id == pending.id, ContinuousClock.now >= pending.deadline {
+                expireRealtimePendingAnswer(id: pending.id, now: .now)
+            }
+            pending.providerCallInFlight = false
+            guard realtimePendingAnswer?.id == pending.id else {
+                return await finishTerminatedRealtimePendingAnswer(pending, command: command)
+            }
             let accepted = realtimeBrainSessionGate.finishResponseCreate(
                 token: pending.token, command: command, succeeded: true
             )
@@ -4933,7 +4957,11 @@ public final class RuntimeCore {
             return accepted
         }
         if realtimePendingAnswer?.id == pending.id {
-            terminateRealtimePendingAnswer(reason: "identity_invalidated")
+            if ContinuousClock.now >= pending.deadline {
+                expireRealtimePendingAnswer(id: pending.id, now: .now)
+            } else {
+                terminateRealtimePendingAnswer(reason: "identity_invalidated")
+            }
         }
         return false
     }
@@ -4945,9 +4973,13 @@ public final class RuntimeCore {
         pending.expiryTask?.cancel()
         pending.task?.cancel()
         realtimePendingAnswerDrain = pending.task
-        _ = realtimeBrainSessionGate.finishResponseCreate(
-            token: pending.token, command: pending.command, succeeded: false
-        )
+        if pending.providerCallInFlight {
+            _ = realtimeBrainSessionGate.revokeResponseCreate(token: pending.token, command: pending.command)
+        } else {
+            _ = realtimeBrainSessionGate.finishResponseCreate(
+                token: pending.token, command: pending.command, succeeded: false
+            )
+        }
         _ = realtimeBrainSessionGate.retireUserActivityTurns(
             pending.sourceTurnIDs, session: pending.event.identity.session,
             contextRevision: pending.event.identity.contextRevision
@@ -4965,8 +4997,29 @@ public final class RuntimeCore {
     private func expireRealtimePendingAnswer(id: UUID, now: ContinuousClock.Instant) {
         guard let pending = realtimePendingAnswer, pending.id == id,
               now >= pending.deadline else { return }
+        // This lock is also held by beginSubmission: expiry either prevents the write,
+        // or observes a possibly submitted attempt which requires Runtime isolation.
+        let submission = pending.command.attempt.invalidate()
+        if submission != .notSubmitted {
+            pending.needsFailureSettlement = realtimeBrainSessionGate.fenceFailedResponse(pending.command.identity)
+        }
         terminateRealtimePendingAnswer(reason: "expired")
-        realtimePendingAnswerPresentation?(pending.event.identity, .timedOut)
+        if submission == .notSubmitted {
+            realtimePendingAnswerPresentation?(pending.event.identity, .timedOut)
+        }
+    }
+
+    private func finishTerminatedRealtimePendingAnswer(
+        _ pending: RealtimePendingAnswer, command: RealtimeBrainCreateResponseCommand
+    ) async -> Bool {
+        _ = realtimeBrainSessionGate.finishResponseCreate(
+            token: pending.token, command: command, succeeded: false
+        )
+        if pending.needsFailureSettlement {
+            pending.needsFailureSettlement = false
+            await settleFailedRealtimeBrainSession(identity: command.identity.session, lease: pending.lease)
+        }
+        return false
     }
 
     private func recordRealtimePendingAnswer(_ pending: RealtimePendingAnswer, reason: String) {
@@ -5500,6 +5553,14 @@ public final class RuntimeCore {
     @MainActor
     func expireRealtimePendingAnswerForTesting(id: UUID, now: ContinuousClock.Instant) {
         expireRealtimePendingAnswer(id: id, now: now)
+    }
+
+    func realtimeProviderOperationsForTesting() -> (operations: Int, waiters: Int) {
+        realtimeBrainSessionGate.providerOperationsForTesting()
+    }
+
+    func waitForRealtimePendingAnswerDrainForTesting() async {
+        _ = await realtimePendingAnswerDrain?.value
     }
     #endif
 

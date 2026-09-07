@@ -26,7 +26,15 @@ fi
 runtime_home="$build_dir/runtime-home"
 mkdir -p "$runtime_home"
 CFFIXED_USER_HOME="$runtime_home" \
-  "$build_dir/qwen_realtime_resident_brain_tests" "$fixture"
+  "$build_dir/qwen_realtime_resident_brain_tests" "$fixture" | tee "$build_dir/results.log"
+
+if [ "${AFTELLE_UNSENT_RACE_ONLY:-0}" != "1" ] \
+  && [ "${AFTELLE_PENDING_ANSWER_ONLY:-0}" != "1" ] \
+  && [ "${AFTELLE_CANCEL_HANDOFF_ONLY:-0}" != "1" ] \
+  && [ -z "${AFTELLE_PENDING_REVIEW_CASE:-}" ]; then
+  rg -q '^pending_answer_default_matrix=PASS cases=[0-9]+ checks=[0-9]+$' "$build_dir/results.log"
+  echo "qwen_pending_answer_default_coverage=PASS"
+fi
 
 adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeResidentBrainAdapter.swift"
 for symbol in \
