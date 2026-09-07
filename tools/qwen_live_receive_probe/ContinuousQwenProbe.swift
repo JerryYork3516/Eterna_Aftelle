@@ -142,6 +142,7 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
         let type = object(frame)?["type"] as? String
         if type == "response.create" {
             creates += 1
+            try recordDialogue("response_create_submission", round: creates - 1, lane: "authorization_only_no_transcript_upload")
             await scripted?.useNextResponseID("continuous-\(creates)")
         }
         if type == "response.cancel" {
@@ -459,6 +460,7 @@ private struct ContinuousQwenProbe {
                         if round > 0 {
                             let canonical = runtime.realtimeUserTurnDispositionDebugSnapshot().lastCanonicalTranscript ?? ""
                             let finals = await transport.finals
+                            try await transport.recordDialogue("runtime_canonical_at_validation", round: round, text: canonical)
                             try require(finals.count == round + 1 && !canonical.isEmpty && canonical == finals.last, "canonical_content_not_preserved")
                             guard let confirmation = runtime.realtimeInterruptionTimingForTesting() else {
                                 throw ContinuousProbeFailure(code: "missing_confirmed_decision")

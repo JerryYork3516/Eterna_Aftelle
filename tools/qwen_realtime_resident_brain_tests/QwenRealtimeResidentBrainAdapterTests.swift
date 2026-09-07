@@ -137,6 +137,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let fixture = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+        try await testPostStopCommittedItem()
+        try await testPostStopCommittedItemFences()
         try await testUnidentifiedStopRecoversBoundTurn()
         try await testUnidentifiedStopRejectsUnboundEvidence()
         if let name = ProcessInfo.processInfo.environment["AFTELLE_PENDING_REVIEW_CASE"],
@@ -205,6 +207,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         try await testRuntimeConfirmedInterruptionUserTurnHandoff(
             fixture: fixture, unidentifiedStop: true
+        )
+        try await testRuntimeConfirmedInterruptionUserTurnHandoff(
+            fixture: fixture, unidentifiedStop: true, postStopCommittedItem: true
         )
         try await testRuntimeProviderTerminalPlaybackTailInterruptionHandoff(
             fixture: fixture
@@ -2219,6 +2224,91 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
+    private static func testPostStopCommittedItem() async throws {
+        cases += 1
+        let diagnostics = NativeSpeechDiagnosticBuffer()
+        let stack = try makeStack(diagnosticBuffer: diagnostics)
+        let identity = sessionIdentity(generation: 43)
+        try await openAndBootstrap(stack, identity: identity)
+        // Live round 2: provisional partial -> empty timed stop -> new item partial/final.
+        // Ordered receive calls preserve causality without racing a wall-clock sleep.
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"provisional","audio_start_ms":19640}"#)
+        let started = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"provisional","text":"","stash":"请解释下雨，每一点都举。"}"#)
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"","audio_end_ms":26480}"#)
+        let stopped = try await stack.adapter.receiveEvent(session: identity)
+        expect(stopped.kind == .userSpeechStopped && stopped.identity == started.identity, "post-stop alias keeps the original speech boundary")
+        await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"committed","text":"","stash":"请解释下雨，每一点都举一个例子。"}"#)
+        await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"committed","transcript":"请解释下雨，每一点都举一个例子。"}"#)
+        let final = try await stack.adapter.receiveEvent(session: identity)
+        if case .userTranscriptFinal(let text) = final.kind {
+            FileHandle.standardError.write(Data("post_stop_alias adapter_final=\(text)\n".utf8))
+        }
+        expect(final.kind == .userTranscriptFinal("请解释下雨，每一点都举一个例子。") && final.identity == started.identity,
+               "committed final after empty stop replaces provisional text on the same turn")
+        let events = diagnostics.drain().events
+        expect(!events.contains { $0.category == "qwen_transcript_final_fallback_fired" }, "provider final cancels provisional fallback")
+        let creates = try await sentTypes(stack.transport).filter { $0 == "response.create" }
+        expect(creates.isEmpty,
+               "Adapter does not create an answer when rebinding input")
+        try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+    }
+
+    private static func testPostStopCommittedItemFences() async throws {
+        for name in ["identified-stop", "final-only", "different-final", "two-candidates", "expired",
+                     "resumed", "context", "generation", "restart"] {
+            cases += 1
+            let diagnostics = NativeSpeechDiagnosticBuffer()
+            let stack = try makeStack(diagnosticBuffer: diagnostics)
+            var identity = sessionIdentity(generation: 44)
+            try await openAndBootstrap(stack, identity: identity)
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"provisional","audio_start_ms":19640}"#)
+            _ = try await stack.adapter.receiveEvent(session: identity)
+            await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"provisional","text":"","stash":"原来的问题"}"#)
+            _ = try await stack.adapter.receiveEvent(session: identity)
+            let stopID = name == "identified-stop" ? "provisional" : ""
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"\#(stopID)","audio_end_ms":26480}"#)
+            _ = try await stack.adapter.receiveEvent(session: identity)
+            if name == "expired" {
+                let fallback = try await stack.adapter.receiveEvent(session: identity)
+                expect(fallback.kind == .userTranscriptFinal("原来的问题"), "expiry settles the old item before late input")
+            } else if name == "resumed" {
+                await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"resumed","audio_start_ms":27000}"#)
+                _ = try await stack.adapter.receiveEvent(session: identity)
+            } else if name == "context" {
+                try await stack.adapter.updateRuntimeContext(RealtimeBrainRuntimeContextUpdate(
+                    identity: identity, kind: .delta, contextRevision: 2,
+                    sections: [RealtimeBrainContextSection(scope: .stableResident, content: "new context")]))
+            } else if name == "generation" {
+                let next = sessionIdentity(generation: 45, leaseID: identity.brainLeaseID, routeEpoch: identity.routeEpoch)
+                try await stack.adapter.cancelGeneration(RealtimeBrainCancelGenerationCommand(
+                    identity: identity, nextGeneration: next.generation, reason: .runtimeDecision))
+                identity = next
+                _ = try await stack.adapter.receiveEvent(session: identity)
+            } else if name == "restart" {
+                try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+                identity = sessionIdentity(generation: 45)
+                try await openAndBootstrap(stack, identity: identity)
+            }
+            if name != "final-only" {
+                await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"committed","text":"","stash":"不应接纳的问题"}"#)
+            }
+            if name == "two-candidates" {
+                await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"another","text":"","stash":"另一个问题"}"#)
+            }
+            let final = name == "different-final" ? "另一个不同的问题" : "不应接纳的问题"
+            await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"committed","transcript":"\#(final)"}"#)
+            // FIFO marker proves the preceding unknown final was handled, without sleeping.
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"marker","audio_start_ms":28000}"#)
+            let marker = try await stack.adapter.receiveEvent(session: identity)
+            expect(marker.kind == .userSpeechStarted, "\(name): unknown final cannot claim or resurrect a turn")
+            expect(!diagnostics.drain().events.contains { $0.disposition == "post_empty_stop_unique_preview_final" },
+                   "\(name): post-stop alias fence stays closed")
+            try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+        }
+    }
+
     private static func testUnidentifiedStopRecoversBoundTurn() async throws {
         cases += 1
         let stack = try makeStack()
@@ -3876,7 +3966,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         fixture: Data,
         drainTimeout: Bool = false,
         pendingCase: R3PendingAnswerCase = .lateDone,
-        unidentifiedStop: Bool = false
+        unidentifiedStop: Bool = false,
+        postStopCommittedItem: Bool = false
     ) async throws {
         cases += 1
         let diagnostics = NativeSpeechDiagnosticBuffer()
@@ -4103,7 +4194,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 fatalError("confirmed handoff burst must remain ordered")
             }
             preFinalEvents.append(event)
-            try? await Task.sleep(for: .milliseconds(90))
+            if !postStopCommittedItem { try? await Task.sleep(for: .milliseconds(90)) }
         }
         expect(
             preFinalEvents.dropLast().allSatisfy {
@@ -4112,26 +4203,28 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             } && preFinalEvents.last?.kind == .userSpeechStopped,
             "queued N+1 partials and stop remain ordered under slow consumption"
         )
+        let finalItemID = postStopCommittedItem ? "committed-after-stop" : "interrupting-user"
         for preview in ["找点乐子是", "找点乐子是什么", "找点乐子是什么呢"] {
             await stack.transport.enqueueText(
-                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"\#(preview)","stash":""}"#
-            )
-        }
-        if !unidentifiedStop {
-            await stack.transport.enqueueText(
-                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"找点乐子是什么"}"#
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"\#(finalItemID)","text":"\#(preview)","stash":""}"#
             )
         }
         let expectedFinal = unidentifiedStop ? "找点乐子是什么呢" : "找点乐子是什么"
+        if !unidentifiedStop || postStopCommittedItem {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(finalItemID)","transcript":"\#(expectedFinal)"}"#
+            )
+        }
+        let postStopCount = postStopCommittedItem ? 1 : 4
         await waitUntilPendingEventCount(
             stack.adapter,
             session: nextIdentity,
-            minimum: 4,
+            minimum: postStopCount,
             label: "post-stop interrupting turn burst"
         )
         var postStopEvents: [RealtimeBrainEventDisposition] = []
-        for _ in 0 ..< 4 {
-            try? await Task.sleep(for: .milliseconds(110))
+        for _ in 0 ..< postStopCount {
+            if !postStopCommittedItem { try? await Task.sleep(for: .milliseconds(110)) }
             postStopEvents.append(
                 try await runtime.receiveRealtimeResidentBrainEvent(
                     session: nextIdentity
@@ -4156,13 +4249,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(
             providerFinalEvents.filter {
                 $0.category == "qwen_transcript_final_received"
-            }.count == (unidentifiedStop ? 0 : 1)
+            }.count == (unidentifiedStop && !postStopCommittedItem ? 0 : 1)
                 && providerFinalEvents.filter {
                     $0.category
                         == "qwen_transcript_final_fallback_fired"
                         || $0.category
                             == "qwen_transcript_final_recovered_from_partial"
-                }.count == (unidentifiedStop ? 2 : 0),
+                }.count == (unidentifiedStop && !postStopCommittedItem ? 2 : 0),
             "Provider final wins when present; otherwise existing fallback recovers exactly once"
         )
         if drainTimeout {
@@ -4185,6 +4278,15 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseCreateCountAfterHandoff == 2,
             "the completed interrupting turn creates exactly one N+1 response"
         )
+        if postStopCommittedItem {
+            let canonical = runtime.realtimeUserTurnDispositionDebugSnapshot().lastCanonicalTranscript
+            expect(canonical == expectedFinal, "committed item final equals Runtime canonical, without partial truncation")
+            let creates = try await sentObjects(stack.transport).filter { $0["type"] as? String == "response.create" }
+            expect(creates.count == 2 && creates.last?.keys.sorted() == ["event_id", "type"],
+                   "wire sends one authorization, not a synthetic re-upload of transcript")
+            print("post_stop_handoff provider_final=\(expectedFinal) adapter_final=\(expectedFinal) runtime_canonical=\(canonical ?? "nil") response_create=authorization_only")
+            await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"committed-after-stop","transcript":"重复"}"#)
+        }
 
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#

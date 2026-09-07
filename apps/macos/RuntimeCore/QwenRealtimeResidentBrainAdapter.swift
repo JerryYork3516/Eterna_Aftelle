@@ -629,6 +629,7 @@ actor QwenRealtimeResidentBrainAdapter:
         var turn: TurnBinding
         var latestTranscriptPartial: String?
         var audioStartMilliseconds: Int?
+        var unidentifiedStopEndMilliseconds: Int?
         var unboundTranscript: (itemID: String, preview: String)?
         var hasAmbiguousItem = false
         var didReassociateItem = false
@@ -639,6 +640,7 @@ actor QwenRealtimeResidentBrainAdapter:
     private struct TranscriptFinalFallback {
         let token: UUID
         let task: Task<Void, Never>
+        let deadline: ContinuousClock.Instant
     }
 
     private enum ResponseAuthorizationKind: Equatable {
@@ -1397,6 +1399,7 @@ actor QwenRealtimeResidentBrainAdapter:
                     category: "qwen_speech_stopped_associated", itemID: itemID
                 )
                 try handle(.inputSpeechStopped(itemID: itemID, audioEndMilliseconds: audioEndMilliseconds))
+                activeUserInputTurn?.unidentifiedStopEndMilliseconds = audioEndMilliseconds
                 return
             }
             diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
@@ -1485,6 +1488,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 itemID: itemID
             )
             guard !completedUserInputItemIDs.contains(itemID) else { return }
+            reassociateUserInputAfterUnidentifiedStop(itemID: itemID, transcript: transcript)
             let trimmedTranscript = transcript.trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
@@ -2506,7 +2510,7 @@ actor QwenRealtimeResidentBrainAdapter:
               state.turn.sessionIdentity == identity,
               state.turn.contextRevision == contextRevision,
               state.audioStartMilliseconds != nil,
-              !state.speechStopped, state.transcriptFinal == nil,
+              (!state.speechStopped || isAwaitingPostStopItem(state)), state.transcriptFinal == nil,
               !state.didReassociateItem else { return }
         // Qwen can replace the provisional item before its first preview.
         // Only the matching VAD stop below may bind this candidate to the turn.
@@ -2516,6 +2520,28 @@ actor QwenRealtimeResidentBrainAdapter:
             state.unboundTranscript = (itemID, preview)
         }
         activeUserInputTurn = state
+    }
+
+    private func isAwaitingPostStopItem(_ state: ActiveUserInputTurn) -> Bool {
+        guard state.speechStopped, state.unidentifiedStopEndMilliseconds != nil,
+              let fallback = transcriptFinalFallbackTasks[state.wireItemID] else { return false }
+        return ContinuousClock.now < fallback.deadline
+    }
+
+    private func reassociateUserInputAfterUnidentifiedStop(itemID: String, transcript: String) {
+        guard lifecycle == .active, turnsByWireItemID[itemID] == nil,
+              !retiredItemIDs.contains(itemID), !completedUserInputItemIDs.contains(itemID),
+              let state = activeUserInputTurn,
+              state.turn.sessionIdentity == identity, state.turn.contextRevision == contextRevision,
+              isAwaitingPostStopItem(state), state.transcriptFinal == nil,
+              !state.hasAmbiguousItem, !state.didReassociateItem,
+              let candidate = state.unboundTranscript, candidate.itemID == itemID,
+              candidate.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+                == transcript.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        // A final alone cannot claim a turn: only the unique preview following an
+        // already validated empty stop may settle its item, before the original deadline.
+        rebindUserInputItem(state, itemID: itemID, preview: candidate.preview)
+        markUserInputStopped(itemID)
     }
 
     private func uniquelyStoppedUserItem(audioEndMilliseconds: Int?) -> String? {
@@ -2548,7 +2574,7 @@ actor QwenRealtimeResidentBrainAdapter:
         guard canAssociateUserInput, turnsByWireItemID[itemID] == nil,
               !retiredItemIDs.contains(itemID),
               !completedUserInputItemIDs.contains(itemID),
-              var state = activeUserInputTurn,
+              let state = activeUserInputTurn,
               state.turn.sessionIdentity == identity,
               state.turn.contextRevision == contextRevision,
               !state.speechStopped, state.transcriptFinal == nil,
@@ -2558,6 +2584,11 @@ actor QwenRealtimeResidentBrainAdapter:
               end > start else { return }
         // Final/partial alone cannot create a turn. Only this bounded VAD stop may
         // replace one provisional item ID; the Runtime turn identity stays intact.
+        rebindUserInputItem(state, itemID: itemID, preview: candidate.preview)
+    }
+
+    private func rebindUserInputItem(_ original: ActiveUserInputTurn, itemID: String, preview: String) {
+        var state = original
         let previousItemID = state.wireItemID
         retire(itemID: previousItemID)
         turnsByWireItemID.removeValue(forKey: previousItemID)
@@ -2567,19 +2598,21 @@ actor QwenRealtimeResidentBrainAdapter:
             reason: "input_item_reassociated"
         )
         state.wireItemID = itemID
-        state.latestTranscriptPartial = candidate.preview
+        state.latestTranscriptPartial = preview
         state.unboundTranscript = nil
         state.didReassociateItem = true
+        state.unidentifiedStopEndMilliseconds = nil
         turnsByWireItemID[itemID] = state.turn
         latestTurnBinding = state.turn
-        lastUserTranscriptPreviewByItemID[itemID] = candidate.preview
+        lastUserTranscriptPreviewByItemID[itemID] = preview
         activeUserInputTurn = state
         diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
             source: .adapter,
             category: "qwen_input_item_reassociated",
             routeKind: .realtimeBrain,
             turnGeneration: identity?.generation,
-            disposition: "single_candidate_valid_audio_interval",
+            disposition: original.speechStopped
+                ? "post_empty_stop_unique_preview_final" : "single_candidate_valid_audio_interval",
             itemCorrelationHash: Self.correlationHash(itemID)
         ))
     }
@@ -2636,7 +2669,8 @@ actor QwenRealtimeResidentBrainAdapter:
         }
         transcriptFinalFallbackTasks[itemID] = TranscriptFinalFallback(
             token: token,
-            task: task
+            task: task,
+            deadline: ContinuousClock.now.advanced(by: Self.transcriptFinalFallbackDelay)
         )
         recordTranscriptFinalFallbackDiagnostic(
             category: "qwen_transcript_final_fallback_scheduled",
