@@ -503,9 +503,9 @@ elif [ "$test_mode" = "r844-response-policy-only" ]; then
          active' "$test_source"
   })"
   capture_activity_source="$({
-    awk '/private final class R823AudioCapture/ { active = 1 }
-         /private struct R823ControllerStack/ { active = 0 }
-         active' "$test_source"
+    awk '/^(private )?final class R823AudioCapture:/ { active = 1 }
+         active { print }
+         active && /^}/ { exit }' "$test_source"
   })"
   if rg -q \
       'realtimeUserTurnDispositionForTesting|provider\.createResponse\(|RealtimeBrainCreateResponseCommand\(|createRealtimeResidentBrainResponseIfEligible|authorizeRealtimeResidentBrainResponseIfEligible|beginResponseCreate|claimResponseCreateExecution|retireRealtimeUtterance|finishRealtimeUtteranceCompletionWindow|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|cancelRealtimeResidentBrainGenerationForTesting|interruptRealtimeResidentBrainForTesting|beginRealtimeBrainGenerationTransition|finishRealtimeBrainGenerationInterruption|frameBuffer\.append\(' \
@@ -586,9 +586,9 @@ elif [ "$test_mode" = "r843-semantic-fusion-only" ]; then
          active' "$test_source"
   })"
   capture_activity_source="$({
-    awk '/private final class R823AudioCapture/ { active = 1 }
-         /private struct R823ControllerStack/ { active = 0 }
-         active' "$test_source"
+    awk '/^(private )?final class R823AudioCapture:/ { active = 1 }
+         active { print }
+         active && /^}/ { exit }' "$test_source"
   })"
   if rg -q \
       'provider\.createResponse\(|RealtimeBrainCreateResponseCommand\(|createRealtimeResidentBrainResponseIfEligible|beginResponseCreate|finishResponseCreate|finishRealtimeUtteranceCompletionWindow|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|MacSpeechResidentAcousticSnapshot\(|cancelRealtimeResidentBrainGenerationForTesting|interruptRealtimeResidentBrainForTesting|beginRealtimeBrainGenerationTransition|finishRealtimeBrainGenerationInterruption|frameBuffer\.append\(' \
@@ -646,9 +646,9 @@ elif [ "$test_mode" = "r842-listening-only" ]; then
          active' "$test_source"
   })"
   capture_activity_source="$({
-    awk '/private final class R823AudioCapture/ { active = 1 }
-         /private struct R823ControllerStack/ { active = 0 }
-         active' "$test_source"
+    awk '/^(private )?final class R823AudioCapture:/ { active = 1 }
+         active { print }
+         active && /^}/ { exit }' "$test_source"
   })"
   if rg -q \
       'establishR842AcousticAuthorization|submitR841DoubleTalkThroughProductionChain|submitRealtimeResidentBrain(Acoustic|EligibleAcoustic)Evidence|RealtimeAcousticObservation\(|classification: \.nearEndCandidate|residentPlaybackActive: true' \
