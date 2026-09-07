@@ -238,6 +238,9 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
         }
         await scripted.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"\#(itemID)","audio_end_ms":\#(index * 10000 + 1600)}"#)
         await scripted.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(itemID)","transcript":"请解释你刚才的第\#(index + 1)个观点"}"#)
+        if index == 1 && ProcessInfo.processInfo.environment["AFTELLE_PROBE_SELF_TEST_DUPLICATE_FINAL"] == "1" {
+            await scripted.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(itemID)","transcript":"late duplicate fixture"}"#)
+        }
     }
 }
 
@@ -287,6 +290,7 @@ private struct ContinuousQwenProbe {
                 return
             }
             let live = args.contains("--live")
+            try require(!live || ProcessInfo.processInfo.environment["AFTELLE_PROBE_SELF_TEST_DUPLICATE_FINAL"] != "1", "live_fault_injection_forbidden")
             requireActiveCancel = args.contains("--require-active-cancel")
             try require(live != args.contains("--self-test"), "choose_one_mode")
             try require(!live || args.contains("--allow-audio-upload"), "audio_upload_not_authorized")
@@ -299,7 +303,7 @@ private struct ContinuousQwenProbe {
             try require(live || (!args.contains("--allow-keychain-interaction") && !args.contains("--allow-audio-upload") && value("--pcm") == nil), "self_test_external_access")
             let rounds = Int(value("--rounds") ?? "10") ?? 0
             let seconds = Int(value("--seconds") ?? "300") ?? 0
-            try require((1 ... 10).contains(rounds) && (1 ... 300).contains(seconds), "invalid_budget")
+            try require((1 ... 15).contains(rounds) && (1 ... 600).contains(seconds), "invalid_budget")
             if args.contains("--reassociate-at-round") {
                 try require(reassociateAtRound.map { (1 ... rounds).contains($0) } == true, "invalid_reassociation_round")
             }
@@ -461,25 +465,32 @@ private struct ContinuousQwenProbe {
                             let canonical = runtime.realtimeUserTurnDispositionDebugSnapshot().lastCanonicalTranscript ?? ""
                             let finals = await transport.finals
                             try await transport.recordDialogue("runtime_canonical_at_validation", round: round, text: canonical)
-                            try require(finals.count == round + 1 && !canonical.isEmpty && canonical == finals.last, "canonical_content_not_preserved")
+                            let contentPreserved = finals.count == round + 1 && !canonical.isEmpty && canonical == finals.last
+                            var roundFailures: [String] = []
+                            if !contentPreserved { roundFailures.append("canonical_content_not_preserved") }
                             guard let confirmation = runtime.realtimeInterruptionTimingForTesting() else {
                                 throw ContinuousProbeFailure(code: "missing_confirmed_decision")
                             }
                             try require(confirmation.interruptedIdentity.generation == initialGeneration + UInt64(round - 1)
                                 && confirmedDecisions.insert(confirmation.decisionID).inserted
                                 && playback.clears == round && route.generation == initialGeneration + UInt64(round), "missing_confirmed_handoff")
-                            try require(playback.clearedAt >= confirmation.confirmedAtNanoseconds
-                                && playback.clearedAt - confirmation.confirmedAtNanoseconds <= 50_000_000, "confirmed_to_clear_latency")
+                            try require(playback.clearedAt >= confirmation.confirmedAtNanoseconds, "clear_before_confirmation")
+                            if playback.clearedAt - confirmation.confirmedAtNanoseconds > 50_000_000 {
+                                roundFailures.append("confirmed_to_clear_latency")
+                            }
                             try require(input.hasActivePump && app.realtimeBrainOutputBridgeSnapshot.hasActiveReceiveLoop, "rebound_loop_missing")
                             try require(playback.postClearPlayed > 0, "no_new_audio_after_clear")
                             let activeAtSpeechStart = await transport.activeSpeechResponses.contains(round)
                             let activeAtCancel = await transport.activeCancelResponses.contains(round)
                             if requireActiveCancel {
-                                try require(activeAtSpeechStart && activeAtCancel && cancels == round,
-                                    "coverage_missing_active_generation_cancel")
+                                if !(activeAtSpeechStart && activeAtCancel && cancels == round) {
+                                    roundFailures.append("coverage_missing_active_generation_cancel")
+                                }
                             }
+                            let roundOutcome = roundFailures.isEmpty ? "PASS" : "FAIL"
                             let record: [String: Any] = ["round": round, "generation": route.generation ?? 0,
-                                "session_unchanged": true, "canonical_matches_provider_final": true,
+                                "outcome": roundOutcome, "failures": roundFailures,
+                                "session_unchanged": true, "canonical_matches_provider_final": contentPreserved,
                                 "canonical_sha256": hash(canonical), "canonical_length": canonical.count,
                                 "cancels": cancels, "clears": playback.clears, "creates": creates,
                                 "provider_active_at_speech_start": activeAtSpeechStart,
@@ -491,7 +502,8 @@ private struct ContinuousQwenProbe {
                                 "acoustic_evidence_before": openingEvidence, "acoustic_evidence_after": input.acousticEvidenceCount]
                             completed.append(record)
                             try write(["schema_version": 1, "completed": completed, "human_gate": "NOT_RUN"], to: directory.appendingPathComponent("rounds.json"))
-                            print("continuous_round=\(round) PASS generation=\(route.generation ?? 0)")
+                            try await transport.recordDialogue("round_validation_\(roundOutcome)", round: round, lane: roundFailures.joined(separator: ","))
+                            print("continuous_round=\(round) \(roundOutcome) generation=\(route.generation ?? 0) failures=\(roundFailures.joined(separator: ","))")
                             if completed.count == rounds {
                                 phase = "final_reply_drain"
                                 lastProgress = clock.now
@@ -548,15 +560,19 @@ private struct ContinuousQwenProbe {
             phase = "stopping"
             await app.stopSpeechAudioCapture()
             try require(app.formalSpeechRouteDebugSnapshot.phase == .idle, "stop_did_not_finish")
-            try write(["schema_version": 1, "outcome": "PASS", "mode": live ? "live" : "self-test",
+            let failedRounds = completed.filter { $0["outcome"] as? String == "FAIL" }.count
+            let outcome = failedRounds == 0 ? "PASS" : "FAIL"
+            try write(["schema_version": 1, "outcome": outcome, "mode": live ? "live" : "self-test",
                 "completed_rounds": completed.count, "connections": await transport.connects,
+                "passed_rounds": completed.count - failedRounds, "failed_rounds": failedRounds,
                 "require_active_cancel": requireActiveCancel,
                 "records": completed, "max_tick_lateness": String(describing: maxTickLateness),
                 "final_reply_drained": true,
                 "pcm_sha256": SHA256.hash(data: Data(pcm)).map { String(format: "%02x", $0) }.joined(),
                 "aec_backend": "FIXTURE_NOT_WEBRTC", "hardware": "SILENT_CLOCKED_TEST_DEVICE",
                 "semantic_answer_correctness": "NOT_ASSESSED", "human_gate": "NOT_RUN"], to: directory.appendingPathComponent("report.json"))
-            print("continuous_probe=PASS rounds=\(completed.count) connections=1 human_gate=NOT_RUN")
+            print("continuous_probe=\(outcome) rounds=\(completed.count) failed=\(failedRounds) connections=1 human_gate=NOT_RUN")
+            if failedRounds > 0 { exit(1) }
         } catch {
             let code = (error as? ContinuousProbeFailure)?.code ?? (error as? ProbeError)?.rawValue ?? "configuration_or_io_failure"
             let outcome = code.hasPrefix("coverage_") ? "COVERAGE_NOT_MET" : "FAIL"

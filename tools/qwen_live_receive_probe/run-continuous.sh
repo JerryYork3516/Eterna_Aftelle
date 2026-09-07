@@ -41,7 +41,7 @@ while [ "$#" -gt 0 ]; do
     *) echo 'continuous_error=arguments' >&2; exit 2 ;;
   esac
 done
-if [[ ! "$rounds" =~ ^([1-9]|10)$ ]] || [[ ! "$seconds" =~ ^[1-9][0-9]{0,2}$ ]] || (( seconds > 300 )); then
+if [[ ! "$rounds" =~ ^([1-9]|1[0-5])$ ]] || [[ ! "$seconds" =~ ^[1-9][0-9]{0,2}$ ]] || (( seconds > 600 )); then
   echo 'continuous_error=budget' >&2; exit 2
 fi
 for boundary in "$pcm_start" "$pcm_end"; do
@@ -49,7 +49,7 @@ for boundary in "$pcm_start" "$pcm_end"; do
     echo 'continuous_error=invalid_pcm_range' >&2; exit 2
   fi
 done
-if [ -n "$reassociate_round" ] && { [[ ! "$reassociate_round" =~ ^([1-9]|10)$ ]] || (( reassociate_round > rounds )); }; then
+if [ -n "$reassociate_round" ] && { [[ ! "$reassociate_round" =~ ^([1-9]|1[0-5])$ ]] || (( reassociate_round > rounds )); }; then
   echo 'continuous_error=invalid_reassociation_round' >&2; exit 2
 fi
 if [ "$omit_preview" = true ] && [ -z "$reassociate_round" ]; then
