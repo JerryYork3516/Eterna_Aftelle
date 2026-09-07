@@ -19,6 +19,8 @@ omit_preview=false
 require_active_cancel=false
 pcm_start=""
 pcm_end=""
+transcript_reference=""
+record_audio=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --allow-audio-upload) upload=true; shift ;;
@@ -27,7 +29,8 @@ while [ "$#" -gt 0 ]; do
     --terminal-responses) terminal_responses=true; shift ;;
     --omit-provisional-preview) omit_preview=true; shift ;;
     --require-active-cancel) require_active_cancel=true; shift ;;
-    --rounds|--seconds|--pcm|--reassociate-at-round|--pcm-start-ms|--pcm-end-ms)
+    --record-audio-evidence) record_audio=true; shift ;;
+    --rounds|--seconds|--pcm|--reassociate-at-round|--pcm-start-ms|--pcm-end-ms|--transcript-reference)
       if [ "$#" -lt 2 ]; then echo 'continuous_error=arguments' >&2; exit 2; fi
       case "$1" in
         --rounds) rounds="$2" ;;
@@ -36,11 +39,15 @@ while [ "$#" -gt 0 ]; do
         --reassociate-at-round) reassociate_round="$2" ;;
         --pcm-start-ms) pcm_start="$2" ;;
         --pcm-end-ms) pcm_end="$2" ;;
+        --transcript-reference) transcript_reference="$2" ;;
       esac
       shift 2 ;;
     *) echo 'continuous_error=arguments' >&2; exit 2 ;;
   esac
 done
+if { [ "$record_audio" = true ] || [ -n "$transcript_reference" ]; } && [ "$mode" != --live ] && [ "$mode" != --self-test ]; then
+  echo 'continuous_error=measurement_requires_test_mode' >&2; exit 2
+fi
 if [[ ! "$rounds" =~ ^([1-9]|1[0-5])$ ]] || [[ ! "$seconds" =~ ^[1-9][0-9]{0,2}$ ]] || (( seconds > 600 )); then
   echo 'continuous_error=budget' >&2; exit 2
 fi
@@ -102,6 +109,13 @@ host_sources=(
 )
 for index in "${!host_sources[@]}"; do host_sources[$index]="$repo_root/apps/macos/Aftelle/${host_sources[$index]}"; done
 source "$repo_root/tools/qwen_live_receive_probe/probe-build.sh"
+if [ "$mode" = --self-test ]; then
+  probe_build continuous-measurement "$work_dir/measurement-build.log" -parse-as-library \
+    "$repo_root/tools/qwen_live_receive_probe/ContinuousProbeMeasurement.swift" \
+    "$repo_root/tools/qwen_live_receive_probe/ContinuousProbeMeasurementTests.swift"
+  "$PROBE_BINARY" > "$work_dir/measurement-tests.log" 2>&1
+  cat "$work_dir/measurement-tests.log"
+fi
 probe_build continuous "$work_dir/build.log" -D DEBUG -D AFTELLE_CONTINUOUS_PROBE -parse-as-library -warn-concurrency -strict-concurrency=complete \
   -framework AVFoundation -framework CoreAudio -framework AppKit -framework Security -framework UniformTypeIdentifiers \
   "${runtime_sources[@]}" "${host_sources[@]}" \
@@ -110,6 +124,7 @@ probe_build continuous "$work_dir/build.log" -D DEBUG -D AFTELLE_CONTINUOUS_PROB
   "$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests/RealtimeResidentOnlyZeroSelfInterruptTests.swift" \
   "$repo_root/tools/qwen_live_receive_probe/ProbeEvidence.swift" \
   "$repo_root/tools/qwen_live_receive_probe/RealQwenReceiveProbe.swift" \
+  "$repo_root/tools/qwen_live_receive_probe/ContinuousProbeMeasurement.swift" \
   "$repo_root/tools/qwen_live_receive_probe/ContinuousQwenProbe.swift"
 ln -s "$PROBE_BINARY" "$work_dir/probe"
 if [ "$mode" = --build-only ]; then
@@ -129,6 +144,8 @@ if [ "$omit_preview" = true ]; then arguments+=(--omit-provisional-preview); fi
 if [ "$require_active_cancel" = true ]; then arguments+=(--require-active-cancel); fi
 if [ -n "$pcm_start" ]; then arguments+=(--pcm-start-ms "$pcm_start"); fi
 if [ -n "$pcm_end" ]; then arguments+=(--pcm-end-ms "$pcm_end"); fi
+if [ -n "$transcript_reference" ]; then arguments+=(--transcript-reference "$transcript_reference"); fi
+if [ "$record_audio" = true ]; then arguments+=(--record-audio-evidence); fi
 set +e
 /usr/bin/perl "$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl" "$seconds" \
   "$PROBE_BINARY" "${arguments[@]}" > "$work_dir/run.log" 2>&1

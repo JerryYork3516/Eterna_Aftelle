@@ -105,13 +105,15 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
     let terminalResponses: Bool
     let reassociateAtRound: Int?
     let omitProvisionalPreview: Bool
+    let audioEvidence: ProbeAudioEvidence?
 
-    init(base: ProbeTransport, scripted: R3FakeRealtimeWebSocketTransport?, targetRounds: Int, injectResponseError: Bool, terminalResponses: Bool, reassociateAtRound: Int?, omitProvisionalPreview: Bool) {
+    init(base: ProbeTransport, scripted: R3FakeRealtimeWebSocketTransport?, targetRounds: Int, injectResponseError: Bool, terminalResponses: Bool, reassociateAtRound: Int?, omitProvisionalPreview: Bool, audioEvidence: ProbeAudioEvidence?) {
         self.base = base; self.scripted = scripted
         self.targetRounds = targetRounds; self.injectResponseError = injectResponseError
         self.terminalResponses = terminalResponses
         self.reassociateAtRound = reassociateAtRound
         self.omitProvisionalPreview = omitProvisionalPreview
+        self.audioEvidence = audioEvidence
     }
     func connect(endpoint: URL, bearerToken: String) async throws {
         connects += 1
@@ -124,10 +126,11 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
         }
         dialogueFile = try FileHandle(forWritingTo: url)
     }
-    func recordDialogue(_ event: String, round: Int, text: String? = nil, lane: String? = nil) throws {
+    func recordDialogue(_ event: String, round: Int, text: String? = nil, lane: String? = nil, uptime: UInt64 = DispatchTime.now().uptimeNanoseconds) throws {
+        try audioEvidence?.event(["event": event, "round": round, "uptime_ns": uptime])
         guard let dialogueFile else { return }
         var entry: [String: Any] = ["event": event, "round": round,
-            "elapsed_ms": Double(DispatchTime.now().uptimeNanoseconds - dialogueStart) / 1_000_000]
+            "uptime_ns": uptime, "elapsed_ms": Double(uptime - dialogueStart) / 1_000_000]
         if let text { entry["text"] = text }
         if let lane { entry["lane"] = lane }
         var bytes = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
@@ -139,7 +142,15 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
         dialogueBytes += bytes.count
     }
     func send(_ frame: RealtimeWebSocketFrame) async throws {
-        let type = object(frame)?["type"] as? String
+        let object = object(frame)
+        let type = object?["type"] as? String
+        var appendSequence: Int?
+        if type == "input_audio_buffer.append", let audioEvidence {
+            guard let encoded = object?["audio"] as? String, let pcm = Data(base64Encoded: encoded) else {
+                throw ProbeMeasurementError(code: "outbound_pcm_decode_failed")
+            }
+            appendSequence = try audioEvidence.beginAppend(pcm, round: creates)
+        }
         if type == "response.create" {
             creates += 1
             try recordDialogue("response_create_submission", round: creates - 1, lane: "authorization_only_no_transcript_upload")
@@ -150,7 +161,18 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
             if active { activeCancelResponses.insert(creates) }
             try recordDialogue("cancel_submitted", round: cancels)
         }
-        try await base.send(frame)
+        do { try await base.send(frame) }
+        catch {
+            if let appendSequence {
+                try audioEvidence?.event(["event": "send_threw", "sequence": appendSequence,
+                    "uptime_ns": DispatchTime.now().uptimeNanoseconds])
+            }
+            throw error
+        }
+        if let appendSequence {
+            try audioEvidence?.event(["event": "send_returned", "sequence": appendSequence,
+                "uptime_ns": DispatchTime.now().uptimeNanoseconds])
+        }
         if type == "response.create", let scripted {
             if injectResponseError && creates == 2 {
                 await scripted.enqueueText(#"{"type":"error","error":{"code":"test_response_failure","message":"fixture"}}"#)
@@ -174,6 +196,12 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
     func receive() async throws -> RealtimeWebSocketFrame {
         let frame = try await base.receive()
         if let data = object(frame), let type = data["type"] as? String {
+            if type == "input_audio_buffer.speech_started" || type == "input_audio_buffer.speech_stopped" {
+                try audioEvidence?.event(["event": "provider_speech_activity", "type": type,
+                    "round": creates, "uptime_ns": DispatchTime.now().uptimeNanoseconds,
+                    "audio_start_ms": data["audio_start_ms"] as? Int ?? -1,
+                    "audio_end_ms": data["audio_end_ms"] as? Int ?? -1])
+            }
             // Explicit opt-in captures only dialogue fields, never wire objects, credentials or context.
             if dialogueFile != nil {
                 if type == "response.created", let response = data["response"] as? [String: Any],
@@ -333,6 +361,10 @@ private struct ContinuousQwenProbe {
             // Fixture selection only: exact bytes, original rate, no speech or
             // production VAD threshold adjustment. Keep the source file intact.
             pcm = Array(pcm[(pcmStart * 32) ..< (pcmEnd * 32)])
+            let reference = try value("--transcript-reference").map {
+                try ProbeTranscriptReference.load(from: URL(fileURLWithPath: $0), pcm: Data(pcm))
+            }
+            let audioEvidence = try args.contains("--record-audio-evidence") ? ProbeAudioEvidence(directory: directory) : nil
             try write(["schema_version": 1, "source_sha256": sourcePCMHash,
                 "start_ms": pcmStart, "end_ms": pcmEnd, "byte_count": pcm.count,
                 "selected_sha256": SHA256.hash(data: Data(pcm)).map { String(format: "%02x", $0) }.joined(),
@@ -345,7 +377,7 @@ private struct ContinuousQwenProbe {
             let transport = ContinuousWire(base: try ProbeTransport(underlying: underlying,
                 output: directory.appendingPathComponent("wire.ndjson"), diagnostics: diagnostics), scripted: scripted,
                 targetRounds: rounds, injectResponseError: injectResponseError, terminalResponses: terminalResponses,
-                reassociateAtRound: reassociateAtRound, omitProvisionalPreview: omitProvisionalPreview)
+                reassociateAtRound: reassociateAtRound, omitProvisionalPreview: omitProvisionalPreview, audioEvidence: audioEvidence)
             wire = transport
             if ProcessInfo.processInfo.environment["AFTELLE_PROBE_RECORD_DIALOGUE"] == "1" {
                 try await transport.enableDialogueRecording(at: directory.appendingPathComponent("dialogue.ndjson"))
@@ -362,9 +394,14 @@ private struct ContinuousQwenProbe {
             let router = ProviderRouter(credentialReader: credential, realtimeResidentBrainProvider: adapter)
             let runtime = RuntimeCore(executionEngine: ExecutionEngine(providerRouter: router), providerRouter: router, sessionStore: SessionStore())
             runtime.attachNativeSpeechDiagnosticBuffer(diagnostics)
+            let echoDelayFrames = 8
             let backend = R823AECBackend()
             let aec = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
             try require(aec.configure() == .webRTCAEC3, "fixture_backend_configuration")
+            // The virtual echo below uses this exact device delay. Report the
+            // simulated device metadata through the same Host API as hardware.
+            aec.updateDelay(outputPresentationLatencySeconds: Double(echoDelayFrames) * 0.01,
+                capturePresentationLatencySeconds: 0)
             let capture = try R823AudioCapture(acousticEchoHost: aec)
             let player = SilentClockedPlayer(aec: aec)
             let outputHost = MacSpeechAudioOutputHost(player: player, deviceMonitor: FakeMacSpeechOutputDeviceMonitor())
@@ -386,10 +423,10 @@ private struct ContinuousQwenProbe {
             var cursor: Int? = 0
             var playbackReadyAt: UInt64?
             var lastProgress = clock.now
-            var history = [[Float]](repeating: [Float](repeating: 0, count: 480), count: 8)
-            var tickDue = clock.now
+            var history = [[Float]](repeating: [Float](repeating: 0, count: 480), count: echoDelayFrames)
+            var sampleClock = ProbeSampleClock(origin: DispatchTime.now().uptimeNanoseconds)
             var tickIndex = 0
-            var maxTickLateness = Duration.zero
+            var maxTickLateness: UInt64 = 0
             var diagnosticsTail: [[String: Any]] = []
             var lastDiagnosticID: UInt64 = 0
             var openingEvidence: UInt64 = 0
@@ -398,17 +435,24 @@ private struct ContinuousQwenProbe {
             var finished = false
             var confirmedDecisions = Set<UUID>()
             var dialogueClearCount = 0
+            var injectionUptime = DispatchTime.now().uptimeNanoseconds
+            var firstAcousticUptime: UInt64?
+            var drainProgress: ProbePlaybackProgress?
             phase = "initial_input"
-            try await transport.recordDialogue("input_injection_started", round: 0)
             while !finished {
                 try require(clock.now < deadline, "total_timeout")
-                try require(lastProgress.duration(to: clock.now) < .seconds(40), "phase_timeout_\(phase)")
-                if clock.now < tickDue { try await clock.sleep(until: tickDue) }
-                let lateness = tickDue.duration(to: clock.now)
-                maxTickLateness = max(maxTickLateness, lateness)
-                try require(lateness < .milliseconds(100), "virtual_device_pacing_overrun")
-                tickDue = clock.now.advanced(by: .milliseconds(10))
+                if let drainProgress {
+                    try require(!drainProgress.stalled(at: DispatchTime.now().uptimeNanoseconds), "phase_timeout_final_reply_drain")
+                } else {
+                    try require(lastProgress.duration(to: clock.now) < .seconds(40), "phase_timeout_\(phase)")
+                }
+                let now = DispatchTime.now().uptimeNanoseconds
+                if now < sampleClock.deadline { try await Task.sleep(nanoseconds: sampleClock.deadline - now) }
                 let timestamp = DispatchTime.now().uptimeNanoseconds
+                let lateness = timestamp > sampleClock.deadline ? timestamp - sampleClock.deadline : 0
+                maxTickLateness = max(maxTickLateness, lateness)
+                try require(lateness < 100_000_000, "virtual_device_pacing_overrun")
+                sampleClock.advance()
                 let render = player.tick()
                 let delayedRender = history.removeFirst()
                 history.append(render)
@@ -416,7 +460,12 @@ private struct ContinuousQwenProbe {
                     aec.processRender(render, hostTimeNanoseconds: timestamp)
                 }
                 var nearEnd = [Float](repeating: 0, count: 480)
+                let injectedByteOffset = cursor
                 if let offset = cursor {
+                    if offset == 0 {
+                        injectionUptime = timestamp
+                        try await transport.recordDialogue("input_injection_started", round: round, uptime: timestamp)
+                    }
                     for sample in 0 ..< 160 {
                         let i = offset + sample * 2
                         let value = Float(Int16(bitPattern: UInt16(pcm[i]) | UInt16(pcm[i + 1]) << 8)) / 32768
@@ -436,6 +485,18 @@ private struct ContinuousQwenProbe {
                 let raw = zip(nearEnd, delayedRender).map { $0 + $1 * 0.25 }
                 let before = aec.acousticObservationSnapshot()
                 let processed = aec.processCapture(raw, hostTimeNanoseconds: timestamp)
+                let acoustic = aec.acousticObservationSnapshot()
+                try audioEvidence?.capture(render: render, gated: processed, fields: [
+                    "round": round, "input_byte_offset": injectedByteOffset ?? -1,
+                    "uptime_ns": timestamp, "scheduled_uptime_ns": sampleClock.deadline - 10_000_000,
+                    "capture_frame": acoustic.captureFrameIndex,
+                    "classification": acoustic.inputClassification.rawValue,
+                    "source_gate_open": acoustic.sourceGateOpen, "source_gate_epoch": acoustic.sourceGateEpoch,
+                    "alignment_locked": acoustic.sourceAlignmentLocked,
+                    "alignment_delay_ms": acoustic.sourceAlignmentDelayMilliseconds ?? -1,
+                    "raw_rms": acoustic.rawCaptureRMS, "clean_rms": acoustic.processedCaptureRMS,
+                    "correlation": acoustic.renderCaptureCorrelation,
+                    "playback_sequence": acoustic.playbackSequence])
                 _ = try capture.emit(processedSamples: processed, acousticBefore: before)
                 tickIndex += 1
                 if tickIndex % 10 != 0 { continue }
@@ -447,11 +508,19 @@ private struct ContinuousQwenProbe {
                 try require(currentLease?.brainLeaseID == lease.brainLeaseID && currentLease?.runtimeSessionID == lease.runtimeSessionID
                     && currentLease?.routeEpoch == lease.routeEpoch, "session_or_lease_replaced")
                 let playback = player.snapshot
+                drainProgress?.observe(played: playback.played, now: DispatchTime.now().uptimeNanoseconds)
                 if playback.clears > dialogueClearCount {
                     dialogueClearCount = playback.clears
                     try await transport.recordDialogue("playback_clear_observed", round: dialogueClearCount)
+                    try audioEvidence?.event(["event": "playback_clear_actual", "round": dialogueClearCount,
+                        "uptime_ns": playback.clearedAt])
                 }
                 let input = app.realtimeBrainInputBridgeSnapshot
+                if firstAcousticUptime == nil && input.acousticEvidenceCount > openingEvidence {
+                    firstAcousticUptime = DispatchTime.now().uptimeNanoseconds
+                    try audioEvidence?.event(["event": "acoustic_evidence_observed", "round": round,
+                        "uptime_ns": firstAcousticUptime!])
+                }
                 let cancels = await transport.cancels
                 let creates = await transport.creates
                 try require(cancels <= round && playback.clears <= round && creates <= round + 1, "duplicate_control_effect")
@@ -466,6 +535,7 @@ private struct ContinuousQwenProbe {
                             let finals = await transport.finals
                             try await transport.recordDialogue("runtime_canonical_at_validation", round: round, text: canonical)
                             let contentPreserved = finals.count == round + 1 && !canonical.isEmpty && canonical == finals.last
+                            let transcriptMatches = reference.map { $0.matches(finals.last ?? "") }
                             var roundFailures: [String] = []
                             if !contentPreserved { roundFailures.append("canonical_content_not_preserved") }
                             guard let confirmation = runtime.realtimeInterruptionTimingForTesting() else {
@@ -475,6 +545,8 @@ private struct ContinuousQwenProbe {
                                 && confirmedDecisions.insert(confirmation.decisionID).inserted
                                 && playback.clears == round && route.generation == initialGeneration + UInt64(round), "missing_confirmed_handoff")
                             try require(playback.clearedAt >= confirmation.confirmedAtNanoseconds, "clear_before_confirmation")
+                            try audioEvidence?.event(["event": "runtime_confirmed", "round": round,
+                                "uptime_ns": confirmation.confirmedAtNanoseconds])
                             if playback.clearedAt - confirmation.confirmedAtNanoseconds > 50_000_000 {
                                 roundFailures.append("confirmed_to_clear_latency")
                             }
@@ -487,9 +559,14 @@ private struct ContinuousQwenProbe {
                                     roundFailures.append("coverage_missing_active_generation_cancel")
                                 }
                             }
+                            let controlOutcome = roundFailures.isEmpty ? "PASS" : "FAIL"
+                            if transcriptMatches == false { roundFailures.append("provider_transcript_reference_mismatch") }
                             let roundOutcome = roundFailures.isEmpty ? "PASS" : "FAIL"
                             let record: [String: Any] = ["round": round, "generation": route.generation ?? 0,
                                 "outcome": roundOutcome, "failures": roundFailures,
+                                "control_outcome": controlOutcome,
+                                "transcript_fidelity": transcriptMatches.map { $0 ? "MATCH" : "MISMATCH" } ?? "NOT_ASSESSED",
+                                "semantic_answer_correctness": "NOT_ASSESSED",
                                 "session_unchanged": true, "canonical_matches_provider_final": contentPreserved,
                                 "canonical_sha256": hash(canonical), "canonical_length": canonical.count,
                                 "cancels": cancels, "clears": playback.clears, "creates": creates,
@@ -497,6 +574,8 @@ private struct ContinuousQwenProbe {
                                 "provider_active_at_cancel_submission": activeAtCancel,
                                 "unique_confirmed_decisions": confirmedDecisions.count,
                                 "confirmed_to_clear_ms": Double(playback.clearedAt - confirmation.confirmedAtNanoseconds) / 1_000_000,
+                                "injection_to_clear_ms": Double(playback.clearedAt - injectionUptime) / 1_000_000,
+                                "injection_to_acoustic_observed_ms": firstAcousticUptime.map { Double($0 - injectionUptime) / 1_000_000 } ?? -1,
                                 "post_clear_played_samples": playback.postClearPlayed,
                                 "late_callbacks_delivered": playback.late,
                                 "acoustic_evidence_before": openingEvidence, "acoustic_evidence_after": input.acousticEvidenceCount]
@@ -507,6 +586,7 @@ private struct ContinuousQwenProbe {
                             if completed.count == rounds {
                                 phase = "final_reply_drain"
                                 lastProgress = clock.now
+                                drainProgress = ProbePlaybackProgress(lastProgress: DispatchTime.now().uptimeNanoseconds, played: playback.played)
                                 continue
                             }
                         } else {
@@ -514,7 +594,7 @@ private struct ContinuousQwenProbe {
                         }
                         round += 1
                         phase = "overlap_input"
-                        try await transport.recordDialogue("input_injection_started", round: round)
+                        firstAcousticUptime = nil
                         cursor = 0
                         playedBefore = playback.played
                         clearBefore = playback.clears
@@ -561,20 +641,27 @@ private struct ContinuousQwenProbe {
             await app.stopSpeechAudioCapture()
             try require(app.formalSpeechRouteDebugSnapshot.phase == .idle, "stop_did_not_finish")
             let failedRounds = completed.filter { $0["outcome"] as? String == "FAIL" }.count
-            let outcome = failedRounds == 0 ? "PASS" : "FAIL"
+            let controlFailedRounds = completed.filter { $0["control_outcome"] as? String == "FAIL" }.count
+            let outcome = failedRounds > 0 ? "FAIL" : (live ? "REVIEW_REQUIRED" : "PASS")
             try write(["schema_version": 1, "outcome": outcome, "mode": live ? "live" : "self-test",
                 "completed_rounds": completed.count, "connections": await transport.connects,
                 "passed_rounds": completed.count - failedRounds, "failed_rounds": failedRounds,
+                "control_outcome": controlFailedRounds == 0 ? "PASS" : "FAIL",
+                "control_passed_rounds": completed.count - controlFailedRounds,
+                "transcript_reference_provided": reference != nil,
+                "audio_evidence_recorded": audioEvidence != nil,
                 "require_active_cancel": requireActiveCancel,
-                "records": completed, "max_tick_lateness": String(describing: maxTickLateness),
+                "records": completed, "max_tick_lateness_ms": Double(maxTickLateness) / 1_000_000,
+                "sample_clock_frames": sampleClock.frameIndex, "sample_clock_origin_ns": sampleClock.origin,
                 "final_reply_drained": true,
                 "pcm_sha256": SHA256.hash(data: Data(pcm)).map { String(format: "%02x", $0) }.joined(),
                 "aec_backend": "FIXTURE_NOT_WEBRTC", "hardware": "SILENT_CLOCKED_TEST_DEVICE",
+                "fixture_echo_delay_ms": echoDelayFrames * 10,
                 "semantic_answer_correctness": "NOT_ASSESSED", "human_gate": "NOT_RUN"], to: directory.appendingPathComponent("report.json"))
             print("continuous_probe=\(outcome) rounds=\(completed.count) failed=\(failedRounds) connections=1 human_gate=NOT_RUN")
             if failedRounds > 0 { exit(1) }
         } catch {
-            let code = (error as? ContinuousProbeFailure)?.code ?? (error as? ProbeError)?.rawValue ?? "configuration_or_io_failure"
+            let code = (error as? ContinuousProbeFailure)?.code ?? (error as? ProbeMeasurementError)?.code ?? (error as? ProbeError)?.rawValue ?? "configuration_or_io_failure"
             let outcome = code.hasPrefix("coverage_") ? "COVERAGE_NOT_MET" : "FAIL"
             if let output {
                 do {
