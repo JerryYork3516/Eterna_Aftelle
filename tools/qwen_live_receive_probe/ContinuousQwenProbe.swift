@@ -96,6 +96,10 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
     private(set) var active = false
     private(set) var activeSpeechResponses: Set<Int> = []
     private(set) var activeCancelResponses: Set<Int> = []
+    private var dialogueFile: FileHandle?
+    private var dialogueBytes = 0
+    private let dialogueStart = DispatchTime.now().uptimeNanoseconds
+    private var dialogueResponseNumbers: [String: Int] = [:]
     let targetRounds: Int
     let injectResponseError: Bool
     let terminalResponses: Bool
@@ -113,6 +117,27 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
         connects += 1
         try await base.connect(endpoint: endpoint, bearerToken: bearerToken)
     }
+    func enableDialogueRecording(at url: URL) throws {
+        guard FileManager.default.createFile(atPath: url.path, contents: nil,
+            attributes: [.posixPermissions: 0o600]) else {
+            throw ContinuousProbeFailure(code: "dialogue_file_creation_failed")
+        }
+        dialogueFile = try FileHandle(forWritingTo: url)
+    }
+    func recordDialogue(_ event: String, round: Int, text: String? = nil, lane: String? = nil) throws {
+        guard let dialogueFile else { return }
+        var entry: [String: Any] = ["event": event, "round": round,
+            "elapsed_ms": Double(DispatchTime.now().uptimeNanoseconds - dialogueStart) / 1_000_000]
+        if let text { entry["text"] = text }
+        if let lane { entry["lane"] = lane }
+        var bytes = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
+        bytes.append(10)
+        guard dialogueBytes + bytes.count <= 8_000_000 else {
+            throw ContinuousProbeFailure(code: "dialogue_capacity_exceeded")
+        }
+        try dialogueFile.write(contentsOf: bytes)
+        dialogueBytes += bytes.count
+    }
     func send(_ frame: RealtimeWebSocketFrame) async throws {
         let type = object(frame)?["type"] as? String
         if type == "response.create" {
@@ -122,6 +147,7 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
         if type == "response.cancel" {
             cancels += 1
             if active { activeCancelResponses.insert(creates) }
+            try recordDialogue("cancel_submitted", round: cancels)
         }
         try await base.send(frame)
         if type == "response.create", let scripted {
@@ -147,6 +173,30 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
     func receive() async throws -> RealtimeWebSocketFrame {
         let frame = try await base.receive()
         if let data = object(frame), let type = data["type"] as? String {
+            // Explicit opt-in captures only dialogue fields, never wire objects, credentials or context.
+            if dialogueFile != nil {
+                if type == "response.created", let response = data["response"] as? [String: Any],
+                   let id = response["id"] as? String {
+                    dialogueResponseNumbers[id] = creates - 1
+                }
+                let responseRound = (data["response_id"] as? String).flatMap { dialogueResponseNumbers[$0] } ?? (creates - 1)
+                switch type {
+                case "conversation.item.input_audio_transcription.delta":
+                    try recordDialogue("user_partial", round: creates,
+                        text: (data["text"] as? String ?? "") + (data["stash"] as? String ?? ""))
+                case "conversation.item.input_audio_transcription.completed":
+                    try recordDialogue("user_final", round: creates, text: data["transcript"] as? String)
+                case "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped":
+                    try recordDialogue(type, round: creates)
+                case "response.text.delta", "response.audio_transcript.delta":
+                    try recordDialogue("resident_delta", round: responseRound,
+                        text: data["delta"] as? String, lane: type)
+                case "response.text.done", "response.audio_transcript.done":
+                    try recordDialogue("resident_final", round: responseRound,
+                        text: data["transcript"] as? String ?? data["text"] as? String, lane: type)
+                default: break
+                }
+            }
             if type == "response.created" { active = true }
             if type == "response.done" { active = false }
             if type == "input_audio_buffer.speech_started", active {
@@ -158,7 +208,11 @@ private actor ContinuousWire: RealtimeWebSocketTransport {
         }
         return frame
     }
-    func close(reason: RealtimeWebSocketCloseReason) async { await base.close(reason: reason) }
+    func close(reason: RealtimeWebSocketCloseReason) async {
+        await base.close(reason: reason)
+        try? dialogueFile?.close()
+        dialogueFile = nil
+    }
     private func object(_ frame: RealtimeWebSocketFrame) -> [String: Any]? {
         let data: Data
         switch frame { case .text(let text): data = Data(text.utf8); case .binary(let bytes): data = bytes }
@@ -288,6 +342,9 @@ private struct ContinuousQwenProbe {
                 targetRounds: rounds, injectResponseError: injectResponseError, terminalResponses: terminalResponses,
                 reassociateAtRound: reassociateAtRound, omitProvisionalPreview: omitProvisionalPreview)
             wire = transport
+            if ProcessInfo.processInfo.environment["AFTELLE_PROBE_RECORD_DIALOGUE"] == "1" {
+                try await transport.enableDialogueRecording(at: directory.appendingPathComponent("dialogue.ndjson"))
+            }
             let credential: any ProviderCredentialReading = live
                 ? ProbeKeychainCredential(diagnostics: diagnostics, output: directory,
                     allowInteraction: args.contains("--allow-keychain-interaction"))
@@ -335,7 +392,9 @@ private struct ContinuousQwenProbe {
             var playedBefore = 0
             var finished = false
             var confirmedDecisions = Set<UUID>()
+            var dialogueClearCount = 0
             phase = "initial_input"
+            try await transport.recordDialogue("input_injection_started", round: 0)
             while !finished {
                 try require(clock.now < deadline, "total_timeout")
                 try require(lastProgress.duration(to: clock.now) < .seconds(40), "phase_timeout_\(phase)")
@@ -383,6 +442,10 @@ private struct ContinuousQwenProbe {
                 try require(currentLease?.brainLeaseID == lease.brainLeaseID && currentLease?.runtimeSessionID == lease.runtimeSessionID
                     && currentLease?.routeEpoch == lease.routeEpoch, "session_or_lease_replaced")
                 let playback = player.snapshot
+                if playback.clears > dialogueClearCount {
+                    dialogueClearCount = playback.clears
+                    try await transport.recordDialogue("playback_clear_observed", round: dialogueClearCount)
+                }
                 let input = app.realtimeBrainInputBridgeSnapshot
                 let cancels = await transport.cancels
                 let creates = await transport.creates
@@ -437,6 +500,7 @@ private struct ContinuousQwenProbe {
                         }
                         round += 1
                         phase = "overlap_input"
+                        try await transport.recordDialogue("input_injection_started", round: round)
                         cursor = 0
                         playedBefore = playback.played
                         clearBefore = playback.clears

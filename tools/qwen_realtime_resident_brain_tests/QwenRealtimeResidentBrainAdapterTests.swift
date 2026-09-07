@@ -137,6 +137,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let fixture = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+        try await testUnidentifiedStopRecoversBoundTurn()
+        try await testUnidentifiedStopRejectsUnboundEvidence()
         if let name = ProcessInfo.processInfo.environment["AFTELLE_PENDING_REVIEW_CASE"],
            let scenario = R3PendingAnswerCase(rawValue: name) {
             try await testRuntimeConfirmedInterruptionUserTurnHandoff(
@@ -200,6 +202,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         try await testRuntimeGenerationFence(fixture: fixture)
         try await testRuntimeConfirmedInterruptionUserTurnHandoff(
             fixture: fixture
+        )
+        try await testRuntimeConfirmedInterruptionUserTurnHandoff(
+            fixture: fixture, unidentifiedStop: true
         )
         try await testRuntimeProviderTerminalPlaybackTailInterruptionHandoff(
             fixture: fixture
@@ -2214,6 +2219,80 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
     }
 
+    private static func testUnidentifiedStopRecoversBoundTurn() async throws {
+        cases += 1
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 41)
+        try await openAndBootstrap(stack, identity: identity)
+        // The failing live round's audio interval; no text or raw Provider IDs are retained.
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"live-round-ten","audio_start_ms":125760}"#)
+        let started = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"live-round-ten","text":"","stash":"请解释第二点"}"#)
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"","audio_end_ms":132020}"#)
+        // This ordered marker also makes the pre-fix failure immediate, without a sleep.
+        await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"live-round-ten","text":"","stash":"请解释第二点的意思"}"#)
+        let stopped = try await stack.adapter.receiveEvent(session: identity)
+        expect(stopped.kind == .userSpeechStopped && stopped.identity == started.identity,
+               "unique timed empty stop binds the existing turn before the partial marker")
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        let final = try await stack.adapter.receiveEvent(session: identity)
+        expect(final.kind == .userTranscriptFinal("请解释第二点的意思") && final.identity == started.identity,
+               "existing debounce recovers the latest partial on the exact turn")
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"","audio_end_ms":132020}"#)
+        await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"live-round-ten","transcript":"late duplicate"}"#)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"next","audio_start_ms":133000}"#)
+        let next = try await stack.adapter.receiveEvent(session: identity)
+        expect(next.kind == .userSpeechStarted && next.identity.turnID != started.identity.turnID,
+               "duplicate stop and late final do not resurrect the completed turn")
+        let creates = try await sentTypes(stack.transport).filter { $0 == "response.create" }.count
+        expect(creates == 0, "empty stop recovery does not grant Adapter response authority")
+        try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+    }
+
+    private static func testUnidentifiedStopRejectsUnboundEvidence() async throws {
+        for name in ["no-partial", "no-start-time", "no-end-time", "old-end", "equal-end",
+                     "boolean-end", "fractional-end", "two-starts", "unbound-partial"] {
+            cases += 1
+            let diagnostics = NativeSpeechDiagnosticBuffer()
+            let stack = try makeStack(diagnosticBuffer: diagnostics)
+            let identity = sessionIdentity(generation: 42)
+            try await openAndBootstrap(stack, identity: identity)
+            if name == "two-starts" {
+                await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"other","audio_start_ms":500}"#)
+                _ = try await stack.adapter.receiveEvent(session: identity)
+            }
+            let startTime = name == "no-start-time" ? "" : ",\"audio_start_ms\":1000"
+            await stack.transport.enqueueText("{\"type\":\"input_audio_buffer.speech_started\",\"item_id\":\"current\"\(startTime)}")
+            let start = try await stack.adapter.receiveEvent(session: identity)
+            if name != "no-partial" {
+                await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"current","text":"","stash":"原问题"}"#)
+                _ = try await stack.adapter.receiveEvent(session: identity)
+            }
+            if name == "unbound-partial" {
+                await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"unknown","text":"","stash":"另一个候选"}"#)
+            }
+            let endTime: String = switch name {
+            case "no-end-time": ""
+            case "old-end": ",\"audio_end_ms\":900"
+            case "equal-end": ",\"audio_end_ms\":1000"
+            case "boolean-end": ",\"audio_end_ms\":true"
+            case "fractional-end": ",\"audio_end_ms\":1800.5"
+            default: ",\"audio_end_ms\":1800"
+            }
+            await stack.transport.enqueueText("{\"type\":\"input_audio_buffer.speech_stopped\",\"item_id\":\"\"\(endTime)}")
+            await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"current","text":"","stash":"继续讲话标记"}"#)
+            let marker = try await stack.adapter.receiveEvent(session: identity)
+            expect(marker.kind == .userTranscriptPartial("继续讲话标记") && marker.identity == start.identity,
+                   "\(name): unbound stop never completes or rebinds a turn")
+            let events = diagnostics.drain().events
+            expect(events.contains { $0.category == "qwen_speech_stopped_rejected" }
+                && !events.contains { $0.category == "qwen_transcript_final_fallback_scheduled" },
+                "\(name): rejected stop cannot arm final recovery")
+            try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+        }
+    }
+
     private static func testEmptySpeechStopIsNotCompletion() async throws {
         for activeItems in 0 ... 2 {
             cases += 1
@@ -3796,7 +3875,8 @@ private struct QwenRealtimeResidentBrainAdapterTests {
     private static func testRuntimeConfirmedInterruptionUserTurnHandoff(
         fixture: Data,
         drainTimeout: Bool = false,
-        pendingCase: R3PendingAnswerCase = .lateDone
+        pendingCase: R3PendingAnswerCase = .lateDone,
+        unidentifiedStop: Bool = false
     ) async throws {
         cases += 1
         let diagnostics = NativeSpeechDiagnosticBuffer()
@@ -3963,7 +4043,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
 
         await stack.transport.holdResponseCancellationAcknowledgements()
         await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_started","item_id":"interrupting-user"}"#
+            #"{"type":"input_audio_buffer.speech_started","item_id":"interrupting-user","audio_start_ms":125760}"#
         )
         let proposalDisposition = try await runtime
             .receiveRealtimeResidentBrainEvent(session: identity)
@@ -3980,7 +4060,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             type: "response.cancel",
             minimum: 1
         )
-        if !drainTimeout {
+        if !drainTimeout && !unidentifiedStop {
             await stack.transport.releaseResponseCancellationAcknowledgements()
         }
         let nextIdentity = try realtimeIdentity(
@@ -4002,9 +4082,13 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"\#(preview)","stash":""}"#
             )
         }
-        await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#
-        )
+        if unidentifiedStop {
+            // Match the live failure: old done follows the new partials, then an empty-ID stop.
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+        }
+        await stack.transport.enqueueText(unidentifiedStop
+            ? #"{"type":"input_audio_buffer.speech_stopped","item_id":"","audio_end_ms":132020}"#
+            : #"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#)
         await waitUntilPendingEventCount(
             stack.adapter,
             session: nextIdentity,
@@ -4033,9 +4117,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"\#(preview)","stash":""}"#
             )
         }
-        await stack.transport.enqueueText(
-            #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"找点乐子是什么"}"#
-        )
+        if !unidentifiedStop {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"interrupting-user","transcript":"找点乐子是什么"}"#
+            )
+        }
+        let expectedFinal = unidentifiedStop ? "找点乐子是什么呢" : "找点乐子是什么"
         await waitUntilPendingEventCount(
             stack.adapter,
             session: nextIdentity,
@@ -4056,27 +4143,27 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         expect(
             reboundFinalEvent.kind
-                    == .userTranscriptFinal("找点乐子是什么")
+                    == .userTranscriptFinal(expectedFinal)
                 && reboundFinalEvent.identity.session == nextIdentity
                 && reboundFinalEvent.identity.turnID
                     == reboundStartEvent.identity.turnID
                 && runtime.realtimePendingUserInputForTesting(
                     reboundStartEvent.identity
-                ) == "找点乐子是什么",
+                ) == expectedFinal,
             "Provider final remains bound to the interrupting N+1 turn"
         )
         let providerFinalEvents = diagnostics.drain().events
         expect(
             providerFinalEvents.filter {
                 $0.category == "qwen_transcript_final_received"
-            }.count == 1
+            }.count == (unidentifiedStop ? 0 : 1)
                 && providerFinalEvents.filter {
                     $0.category
                         == "qwen_transcript_final_fallback_fired"
                         || $0.category
                             == "qwen_transcript_final_recovered_from_partial"
-                }.isEmpty,
-            "a real Provider final cancels fallback without replacement"
+                }.count == (unidentifiedStop ? 2 : 0),
+            "Provider final wins when present; otherwise existing fallback recovers exactly once"
         )
         if drainTimeout {
             try await verifyPendingAnswerCase(

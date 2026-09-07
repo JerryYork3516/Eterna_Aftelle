@@ -63,7 +63,7 @@ nonisolated private enum QwenRealtimeBrainWireEvent: Sendable {
     case inputAudioCleared
     case inputSpeechStarted(itemID: String, audioStartMilliseconds: Int?)
     case inputSpeechStopped(itemID: String, audioEndMilliseconds: Int?)
-    case unidentifiedSpeechStopped
+    case unidentifiedSpeechStopped(audioEndMilliseconds: Int?)
     case inputTranscriptDelta(itemID: String, preview: String)
     case inputTranscriptCompleted(itemID: String, transcript: String)
     case inputTranscriptFailed(itemID: String)
@@ -245,9 +245,11 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
                 audioStartMilliseconds: audioMilliseconds("audio_start_ms", in: object)
             )
         case "input_audio_buffer.speech_stopped":
-            // Qwen can emit an empty ID after cancellation. It cannot identify a turn.
+            // Preserve the interval for bounded association; an empty ID alone is not a turn.
             if object["item_id"] as? String == "" {
-                return .unidentifiedSpeechStopped
+                return .unidentifiedSpeechStopped(
+                    audioEndMilliseconds: audioMilliseconds("audio_end_ms", in: object)
+                )
             }
             return .inputSpeechStopped(
                 itemID: try itemID(in: object),
@@ -1389,7 +1391,14 @@ actor QwenRealtimeResidentBrainAdapter:
                 kind: .userSpeechStarted,
                 identity: makeEventIdentity(for: turn)
             )
-        case .unidentifiedSpeechStopped:
+        case .unidentifiedSpeechStopped(let audioEndMilliseconds):
+            if let itemID = uniquelyStoppedUserItem(audioEndMilliseconds: audioEndMilliseconds) {
+                recordUserInputWireDiagnostic(
+                    category: "qwen_speech_stopped_associated", itemID: itemID
+                )
+                try handle(.inputSpeechStopped(itemID: itemID, audioEndMilliseconds: audioEndMilliseconds))
+                return
+            }
             diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
                 source: .adapter,
                 category: "qwen_speech_stopped_rejected",
@@ -2507,6 +2516,29 @@ actor QwenRealtimeResidentBrainAdapter:
             state.unboundTranscript = (itemID, preview)
         }
         activeUserInputTurn = state
+    }
+
+    private func uniquelyStoppedUserItem(audioEndMilliseconds: Int?) -> String? {
+        guard lifecycle == .active,
+              let state = activeUserInputTurn,
+              state.turn.sessionIdentity == identity,
+              state.turn.contextRevision == contextRevision,
+              !state.speechStopped, state.transcriptFinal == nil,
+              !state.hasAmbiguousItem, state.unboundTranscript == nil,
+              !state.didReassociateItem,
+              let partial = state.latestTranscriptPartial,
+              !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let start = state.audioStartMilliseconds,
+              let end = audioEndMilliseconds, end > start else { return nil }
+        // Never pick the latest turn when another unfinished item could own this stop.
+        let candidates = turnsByWireItemID.filter { itemID, turn in
+            turn.sessionIdentity == identity && turn.contextRevision == contextRevision
+                && !retiredItemIDs.contains(itemID)
+                && !completedUserInputItemIDs.contains(itemID)
+                && !stoppedUserInputItemIDs.contains(itemID)
+        }
+        guard candidates.count == 1, candidates[state.wireItemID] == state.turn else { return nil }
+        return state.wireItemID
     }
 
     private func reassociateUserInputAtSpeechStop(
