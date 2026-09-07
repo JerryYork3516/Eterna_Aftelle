@@ -2119,11 +2119,11 @@ private struct RealtimeInterruptionEvidenceTests {
         }
         let responseCreateCommands = await provider
             .recordedResponseCreateCommands()
+        // A fresh command has a different attempt; compare the authorized source binding.
         expect(
-            responseCreateCommands == [RealtimeBrainCreateResponseCommand(
-                identity: userFinal.identity,
-                sourceEventSequence: userFinal.sequence
-            )],
+            responseCreateCommands.count == 1
+                && responseCreateCommands.first?.identity == userFinal.identity
+                && responseCreateCommands.first?.sourceEventSequence == userFinal.sequence,
             "Runtime response authorization binds the exact final identity and sequence"
         )
         await provider.enqueue(RealtimeResidentBrainEvent(
