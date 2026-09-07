@@ -4,7 +4,7 @@ umask 077
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 mode="${1:---self-test}"
 if [ "$#" -gt 0 ]; then shift; fi
-if [ "$mode" != --live ] && [ "$mode" != --self-test ] && [ "$mode" != --build-only ] && [ "$mode" != --authorize-keychain ] && [ "$mode" != --check-keychain ]; then
+if [ "$mode" != --live ] && [ "$mode" != --self-test ] && [ "$mode" != --build-only ] && [ "$mode" != --authorize-keychain ] && [ "$mode" != --check-keychain ] && [ "$mode" != --provider-boundary ]; then
   echo 'continuous_error=mode' >&2; exit 2
 fi
 rounds=10
@@ -65,11 +65,17 @@ fi
 if [ "$mode" = --live ] && { [ "$upload" != true ] || [ ! -f "$pcm" ]; }; then
   echo 'continuous_error=audio_upload_not_authorized_or_missing_pcm' >&2; exit 2
 fi
+if [ "$mode" = --provider-boundary ] && { [ "$upload" != true ] || [ ! -f "$pcm" ]; }; then
+  echo 'continuous_error=audio_upload_not_authorized_or_missing_pcm' >&2; exit 2
+fi
 if [ "$mode" = --self-test ] && { [ "$upload" = true ] || [ "$interaction" = true ] || [ -n "$pcm" ]; }; then
   echo 'continuous_error=self_test_external_access' >&2; exit 2
 fi
 if [ "$mode" = --build-only ] && { [ "$upload" = true ] || [ "$interaction" = true ] || [ -n "$pcm" ]; }; then
   echo 'continuous_error=build_only_external_access' >&2; exit 2
+fi
+if [ "$mode" = --provider-boundary ] && { [ "$inject_error" = true ] || [ "$terminal_responses" = true ] || [ -n "$reassociate_round" ] || [ "$omit_preview" = true ]; }; then
+  echo 'continuous_error=provider_boundary_incompatible_flags' >&2; exit 2
 fi
 if [ "$mode" = --authorize-keychain ] && { [ "$interaction" != true ] || [ "$upload" = true ] || [ -n "$pcm" ] || [ -z "${AFTELLE_PROBE_SIGNING_IDENTITY:-}" ]; }; then
   echo 'continuous_error=authorization_requires_signed_probe_and_local_consent' >&2; exit 2
@@ -116,6 +122,12 @@ if [ "$mode" = --self-test ]; then
   "$PROBE_BINARY" > "$work_dir/measurement-tests.log" 2>&1
   cat "$work_dir/measurement-tests.log"
 fi
+if [ "$mode" = --provider-boundary ]; then
+  probe_build provider-boundary "$work_dir/provider-boundary-build.log" -parse-as-library \
+    -framework Foundation -framework Security \
+    "${runtime_sources[@]}" \
+    "$repo_root/tools/qwen_live_receive_probe/ProviderBoundaryDirectProbe.swift"
+fi
 probe_build continuous "$work_dir/build.log" -D DEBUG -D AFTELLE_CONTINUOUS_PROBE -parse-as-library -warn-concurrency -strict-concurrency=complete \
   -framework AVFoundation -framework CoreAudio -framework AppKit -framework Security -framework UniformTypeIdentifiers \
   "${runtime_sources[@]}" "${host_sources[@]}" \
@@ -132,6 +144,17 @@ if [ "$mode" = --build-only ]; then
   cmp "$work_dir/worktree-before.sha256" "$work_dir/worktree-after.sha256"
   echo 'continuous_build_only=PASS online=NOT_RUN keychain_read=NOT_RUN'
   exit 0
+fi
+# --provider-boundary uses its own binary and parameter set
+if [ "$mode" = --provider-boundary ]; then
+  interaction_flag="no"
+  if [ "$interaction" = true ]; then interaction_flag="yes"; fi
+  "$repo_root/tools/qwen_live_receive_probe/run-provider-boundary.sh" \
+    "$work_dir" "$pcm" "$interaction_flag" "$seconds" > "$work_dir/run.log" 2>&1
+  status=$?
+  cat "$work_dir/run.log" || true
+  echo "continuous_exit=$status"
+  exit $status
 fi
 arguments=("$mode" --rounds "$rounds" --seconds "$seconds" --output "$work_dir"
   --fixture "$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident")
