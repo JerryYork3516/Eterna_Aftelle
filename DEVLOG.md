@@ -8,7 +8,14 @@
 
 ---
 
-## 📌 当前状态(每次更新,粘给 AI 时就粘这一段)
+## 📌 当前状态 · 2026-09-07 · RB1 摘要基线与完整 A7
+
+- **源码审核**：主控接受 `75015d206db60b177fc196fc5c0c2546be1ffbef`（父提交 `682f9aeb4738ae47936eb62a39c6763a603a578a`）的 RB1 两项 P1 与一项 P2 补修，SOURCE REVIEW PASS；不是连续插话或 Human Gate 通过。
+- **摘要核对**：在该 HEAD、`7.5.11`、工作区/Stage 干净时，按既有 tracked-file SHA-256 算法（排除 tools/、docs/、DEVLOG.md）分别重算提交树和工作区，两者均为 `cbd80d527e224e44e344302e4365991716f60383491fb0f934caffb2950c2e91`，与先前报告一致。经明确授权，把 expected 从 `2acc7c53548424e3299ff35421960b18416ffe44acf9cd8dc8c3d7daba2ea2f2` 更新到该值；baseline/mutation guards、manifest digest、测试门槛不变，新增 production 修改 0。
+- **完整 A7**：FAIL / BLOCKED。使用默认入口、不携带专项筛选变量；前 9 组通过（含默认 Adapter 全矩阵），第 10 组 `realtime_interruption_evidence` 退出 133，断言 `Runtime response authorization binds the exact final identity and sequence` 失败（`RealtimeInterruptionEvidenceTests.swift:2393` 报出）。遵照新失败即停止：未重跑、未追加补丁、未调整门槛；后续套件、A7 Debug/Release clean build 与最终 guards/mutation 检查未执行，不能沿用历史通过结果。摘要 guard 独立自测 3 cases PASS。日志 `/tmp/aftelle-a7-75015d20-full.log`；重算证据 `/tmp/aftelle-a7-75015d20-digest-recheck.log`。该断言是失败定位证据，具体根因尚未调查。
+- **边界**：真实 Qwen 连续插话仍 BLOCKED / 本版未验证，真人 Human Gate 未通过；本轮仅离线，不在线、不真人复测、不进入 R9/R10、不提交推送。下方旧状态与失败记录作为历史保留，不代表本轮执行结果或在线授权。
+
+## 上轮状态（历史保留，当前以 2026-09-07 记录为准）
 
 - **现在在做**:第二项插话在线复验保持 BLOCKED / REWORK_REQUIRED，不判 PASS/FROZEN。2026-09-06 官方文档核实后，新增 Adapter 28 行，仅把旧 wire 未结束且 response.create 确定尚未提交的等待超时映射为当前授权轮次的 recoverable error；不再因此终止整个会话，不自动重试，不伪造云端取消成功。最新真实 Qwen 严格连续批次 `.vuRwD3` 为 FAIL 1/10：第 2 次仍因 retired-response drain 超时未获回答，但现场保住同一 session/lease、generation 3、Listening、输入/输出循环，clear 仍为预期 2 次。既有协议隔离失败及所有历史失败批次保留；阿里云内部取消原因/支持的兼容方案仍未确认，不能把本地容错称为插话全链修复。未修改声学/VAD/eligibility/500 ms tail、超时值、Runtime authority 或 Provider-neutral contract。
 - **已知事实**:20:37:32 导出的真人 diagnostics 记录 `invalid_event` 终止；前三次成功 rebound 的 Provider 已结束生成，最后失败的 speech-start 为 `active_response`。Runtime 原样传递 Provider 接收异常；原始失败报文未保存，唯一触发条件仍未确认。

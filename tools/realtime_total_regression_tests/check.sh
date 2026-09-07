@@ -8,9 +8,9 @@ shared_runner="$repo_root/tools/realtime_resident_only_zero_self_interrupt_tests
 production_contract="$repo_root/apps/macos/RuntimeCore/RealtimeResidentBrainProvider.swift"
 qwen_adapter="$repo_root/apps/macos/RuntimeCore/QwenRealtimeResidentBrainAdapter.swift"
 timeout_runner="$repo_root/tools/realtime_total_regression_tests/run_with_timeout.pl"
-# Reviewed context/audio admission working-tree snapshot over dc6fe600.
-# Exact production file hashes and review scope: DEVLOG, 2026-09-06.
-expected_production_digest="2acc7c53548424e3299ff35421960b18416ffe44acf9cd8dc8c3d7daba2ea2f2"
+# Source-reviewed RB1 lifecycle checkpoint 75015d206db60b177fc196fc5c0c2546be1ffbef.
+# Production digest independently recomputed before baseline update: DEVLOG, 2026-09-07.
+expected_production_digest="cbd80d527e224e44e344302e4365991716f60383491fb0f934caffb2950c2e91"
 expected_manifest_digest="6de2ef316f6bf03b393e14549e4cd3dd6f1b0c958ad1a75e1dcec6731ddb7780"
 trap 'rm -rf "$work_dir"' EXIT
 
