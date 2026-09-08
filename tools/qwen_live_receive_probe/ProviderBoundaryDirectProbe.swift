@@ -27,6 +27,28 @@ private let VAD_SILENCE_MS = 800
 
 // MARK: - Credential
 
+// MARK: - Keychain read result (does NOT carry secret)
+
+enum PBKeychainReadResult: Sendable {
+    case ok
+    case itemNotFound
+    case interactionNotAllowed
+    case authorizationFailed
+    case systemError(code: Int32)
+    case unknownError
+
+    var tag: String {
+        switch self {
+        case .ok: return "ok"
+        case .itemNotFound: return "item_not_found"
+        case .interactionNotAllowed: return "interaction_not_allowed"
+        case .authorizationFailed: return "authorization_failed"
+        case .systemError: return "system_error"
+        case .unknownError: return "unknown_error"
+        }
+    }
+}
+
 protocol PBProviderCredentialReading: Sendable {
     func readCredential(for keyRef: String) throws -> String?
 }
@@ -41,7 +63,10 @@ final class PBStoredCredential: PBProviderCredentialReading, @unchecked Sendable
     private let setInteractionAllowed: @Sendable (Bool) -> OSStatus
     private var cachedApiKey: String?
     private var cachedWorkspaceID: String?
+    private var _lastStatus: OSStatus = errSecSuccess
     private let lock = NSLock()
+
+    var lastOSStatus: OSStatus { lock.withLock { _lastStatus } }
 
     init(allowInteraction: Bool = false,
          copyMatching: @escaping @Sendable (CFDictionary, UnsafeMutablePointer<CFTypeRef?>) -> OSStatus = { SecItemCopyMatching($0, $1) },
@@ -68,6 +93,7 @@ final class PBStoredCredential: PBProviderCredentialReading, @unchecked Sendable
             }
             var result: CFTypeRef?
             let status = copyMatching(query as CFDictionary, &result)
+            _lastStatus = status
             guard status == errSecSuccess, let data = result as? Data,
                   let stored = String(data: data, encoding: .utf8) else { return nil }
             guard let json = try? JSONSerialization.jsonObject(with: Data(stored.utf8)) as? [String: Any],
@@ -78,9 +104,128 @@ final class PBStoredCredential: PBProviderCredentialReading, @unchecked Sendable
         }
     }
 
+    /// Classify the last OSStatus into a PBKeychainReadResult (no secret, no raw data).
+    func classifyLastStatus() -> PBKeychainReadResult {
+        let s = lastOSStatus
+        switch s {
+        case errSecSuccess: return .ok
+        case errSecItemNotFound: return .itemNotFound
+        case errSecInteractionNotAllowed: return .interactionNotAllowed
+        case errSecAuthFailed, errSecUserCanceled, errSecMissingEntitlement: return .authorizationFailed
+        default: return .systemError(code: s)
+        }
+    }
+
     func workspaceID(for keyRef: String) throws -> String? {
         _ = try readCredential(for: keyRef)
         return lock.withLock { cachedWorkspaceID }
+    }
+}
+
+// MARK: - Security CLI reader (live mode only)
+// Uses Process to call /usr/bin/security directly.
+// No shell, no file/tmp/arg/env leakage of secret.
+// Secret flows only through stdout pipe → memory variable.
+
+final class PBSecurityCLIReader: PBProviderCredentialReading, @unchecked Sendable {
+    // Cached after first read; nil on failure.
+    private var _secret: String?
+    private var _workspaceID: String?
+    private let lock = NSLock()
+
+    func readCredential(for keyRef: String) throws -> String? {
+        try lock.withLock {
+            if let s = _secret { return s }
+
+            let proc = Process()
+            // Direct executable path — no shell involved.
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+
+            // Each argument is a separate token; NO shell interpolation.
+            // args[0] = "find-generic-password"
+            // args[1] = "-s" + service
+            // args[2] = "-a" + account
+            // args[3] = "-w"
+            // Exit code != 0 → fail, no fallback.
+            let args: [String] = [
+                "find-generic-password",
+                "-s", "com.eterna.aftelle.provider.qwen",
+                "-a", "qwen_realtime_credential",
+                "-w"
+            ]
+            proc.arguments = args
+
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            proc.standardOutput = outPipe
+            proc.standardError = errPipe
+
+            try proc.run()
+            proc.waitUntilExit()
+
+            guard proc.terminationStatus == 0 else {
+                // exit code non-zero → fail-fast, do not retry.
+                // No secret leaked; error goes to PB_FAIL line only.
+                return nil
+            }
+
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+
+            // === Credential diagnostics (no secret content printed) ===
+            let outBytes = [UInt8](outData)
+            let lastIdx = outBytes.count - 1
+            let stdoutHasTrailingLF = lastIdx >= 0 && outBytes[lastIdx] == 0x0A
+            let stdoutHasTrailingCR: Bool = {
+                if lastIdx >= 0 && outBytes[lastIdx] == 0x0D { return true }
+                if lastIdx >= 1 && outBytes[lastIdx - 1] == 0x0D && outBytes[lastIdx] == 0x0A { return true }
+                return false
+            }()
+            let diagParts = [
+                "trailing_lf=\(stdoutHasTrailingLF ? 1 : 0)",
+                "trailing_cr=\(stdoutHasTrailingCR ? 1 : 0)",
+            ]
+            FileHandle.standardError.write("PB_CRED_DIAG \(diagParts.joined(separator: " "))\n".data(using: .utf8)!)
+
+            // Normalization:剥除 terminal CR/LF only, 保留 credential 中间所有字符。
+            // `trimmingCharacters(in: .whitespacesAndNewlines)` 会误剥 spaces，
+            // 改用字节级精确处理。
+            var normBytes = outBytes
+            while !normBytes.isEmpty && (normBytes.last == 0x0D || normBytes.last == 0x0A) {
+                normBytes.removeLast()
+            }
+            guard let secret = String(data: Data(normBytes), encoding: .utf8),
+                  !secret.isEmpty else {
+                return nil
+            }
+
+            // Fail-closed: check for control characters in credential body.
+            let normalizedBytes = [UInt8](secret.utf8)
+            let hasControlChar = normalizedBytes.contains { c in
+                c < 0x20 && c != 0x09 && c != 0x0A && c != 0x0D  // allow tab/CR/LF
+            }
+            let hasCR = normalizedBytes.contains { $0 == 0x0D }
+            let hasLF = normalizedBytes.contains { $0 == 0x0A }
+            FileHandle.standardError.write("PB_CRED_FMT nonEmpty=1 controlChar=\(hasControlChar ? 1 : 0) hasCR=\(hasCR ? 1 : 0) hasLF=\(hasLF ? 1 : 0)\n".data(using: .utf8)!)
+            if hasCR || hasLF || hasControlChar {
+                // Will be caught by caller and reported as credential_format_invalid.
+                _secret = nil
+                return nil
+            }
+
+            _secret = secret
+            if secret.contains("{"),
+               let data = secret.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let wsID = json["workspace_id"] as? String {
+                _workspaceID = wsID
+            }
+            return secret
+        }
+    }
+
+    func workspaceID(for keyRef: String) throws -> String? {
+        _ = try readCredential(for: keyRef)
+        return lock.withLock { _workspaceID }
     }
 }
 
@@ -109,13 +254,98 @@ protocol PBWebSocket: AnyObject {
     func close() async
 }
 
+// MARK: - WebSocket transport monitor (live mode only)
+// Observes the real URLSessionWebSocketTask lifecycle via
+// URLSessionWebSocketDelegate to emit transport diagnostics.
+// No credential or Authorization header is ever logged here.
+
+final class PBTransportMonitor: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    private let clock: PBClock
+    private var opened = false
+    private var closeCode: Int?
+
+    init(clock: PBClock) { self.clock = clock; super.init() }
+
+    // MARK: - Public results (read after monitor is done)
+    private let _resultLock = NSLock()
+    private var _wsOpened = false
+    private var _wsCloseCode: Int?
+    private var _wsOpenError: String?
+    private var _wsReceiveError: String?
+    private var _wsTaskError: String?
+    var result: (opened: Bool, closeCode: Int?, openError: String?, receiveError: String?, taskError: String?) {
+        _resultLock.withLock {
+            (_wsOpened, _wsCloseCode, _wsOpenError, _wsReceiveError, _wsTaskError)
+        }
+    }
+
+    // MARK: - URLSessionWebSocketDelegate
+    func urlSession(_ session: URLSession,
+                    webSocketTask: URLSessionWebSocketTask,
+                    didOpenWithProtocol protocol: String?) {
+        let ms = round(clock.elapsedSec() * 1000)
+        FileHandle.standardError.write("PB_WS_OPEN elapsed=\(ms)ms\n".data(using: .utf8)!)
+        _resultLock.withLock { _wsOpened = true }
+    }
+
+    func urlSession(_ session: URLSession,
+                    webSocketTask: URLSessionWebSocketTask,
+                    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+                    reason: Data?) {
+        let code = Int(closeCode.rawValue)
+        let ms = round(clock.elapsedSec() * 1000)
+        FileHandle.standardError.write("PB_WS_CLOSE code=\(code) elapsed=\(ms)ms\n".data(using: .utf8)!)
+        _resultLock.withLock { _wsCloseCode = code }
+    }
+
+    // Called when receive throws
+    func recordReceiveError(_ error: Error) {
+        let nsError = error as NSError
+        let tag = "\(nsError.domain)/\(nsError.code)"
+        let ms = round(clock.elapsedSec() * 1000)
+        FileHandle.standardError.write("PB_WS_RECEIVE_ERROR \(tag) elapsed=\(ms)ms\n".data(using: .utf8)!)
+        _resultLock.withLock { _wsReceiveError = tag }
+    }
+
+    // Called on task-level error
+    func recordTaskError(_ error: Error) {
+        let nsError = error as NSError
+        let tag = "\(nsError.domain)/\(nsError.code)"
+        let ms = round(clock.elapsedSec() * 1000)
+        FileHandle.standardError.write("PB_WS_TASK_ERROR \(tag) elapsed=\(ms)ms\n".data(using: .utf8)!)
+        _resultLock.withLock { _wsTaskError = tag }
+    }
+}
+
+// MARK: - WebSocket session with transport monitoring
+// Wraps a real URLSessionWebSocketTask and wires up PBTransportMonitor
+// for lifecycle diagnostics. PBWebSocketURLSession lives in an actor.
+
+// MARK: - WebSocket session with transport monitoring
+// Wraps a real URLSessionWebSocketTask and wires up PBTransportMonitor
+// for lifecycle diagnostics. PBWebSocketURLSession lives in an actor.
+
 actor PBWebSocketURLSession: PBWebSocket {
+    // nonisolated(unsafe): URLSession delegate callbacks are on a system
+    // queue, not the actor's serial queue. The property is written exactly
+    // once during init (on the caller's thread) and only read after init.
+    nonisolated(unsafe) private var monitor: PBTransportMonitor?
     private let task: URLSessionWebSocketTask
     private var closed = false
 
+    // Original init (for mock/test compatibility)
     init(task: URLSessionWebSocketTask) {
         self.task = task
         task.resume()
+    }
+
+    // Monitor-wired init (for live mode)
+    convenience init(task: URLSessionWebSocketTask, monitor: PBTransportMonitor) {
+        self.init(task: task)
+        // Written before the caller sees this actor as fully constructed;
+        // the delegate starts firing only after task.resume() which is
+        // called in the original init body. No race.
+        self.monitor = monitor
     }
 
     func send(_ text: String) async throws {
@@ -134,6 +364,7 @@ actor PBWebSocketURLSession: PBWebSocket {
                 @unknown default: return nil
                 }
             } catch {
+                if let m = monitor { await m.recordReceiveError(error) }
                 throw error
             }
         }
@@ -425,6 +656,7 @@ struct ProviderBoundaryDirectProbe {
             let flag = args[i]; i += 1
             switch flag {
             case "--live": mode = "live"
+            case "--preflight": mode = "preflight"
             case "--self-test":
                 mode = "self-test"
                 mockScenario = args[i]; i += 1
@@ -452,6 +684,11 @@ struct ProviderBoundaryDirectProbe {
             }
             runSelfTest(outputURL: outputURL, state: state, serverURL: url,
                         scenario: mockScenario, timeoutSec: timeoutSec, pcmPath: pcmPath)
+            return
+        }
+
+        if mode == "preflight" {
+            runPreflight(outputURL: outputURL, state: state, timeoutSec: timeoutSec)
             return
         }
 
@@ -696,6 +933,121 @@ struct ProviderBoundaryDirectProbe {
 
     // MARK: - Live mode
 
+    // MARK: - Preflight mode (connection-only, no PCM, no session.update)
+    // Credential → websocket.resume → PB_WS_OPEN / error
+    // → session.created ? close : deadline.
+    static func runPreflight(
+        outputURL: URL,
+        state: PBProbeState,
+        timeoutSec: Int
+    ) {
+        let credentialReader = PBSecurityCLIReader()
+        let endpoint = URL(string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime")!
+
+        print("PB_PREFLIGHT_START output=\(outputURL.path)")
+        fflush(stdout)
+
+        Task.detached {
+            let secret: String
+            let workspaceID: String
+            do {
+                guard let k = try credentialReader.readCredential(for: "qwen-realtime") else {
+                    FileHandle.standardError.write("PB_FAIL credential_format_invalid\n".data(using: .utf8)!)
+                    state.close(); exit(1)
+                }
+                secret = k
+                workspaceID = (try? credentialReader.workspaceID(for: "qwen-realtime")) ?? "workspace"
+            } catch {
+                FileHandle.standardError.write("PB_FAIL credential_format_invalid\n".data(using: .utf8)!)
+                state.close(); exit(1)
+            }
+            FileHandle.standardError.write("PB_CRED=ok\n".data(using: .utf8)!)
+
+            guard var comps = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+                FileHandle.standardError.write("PB_FAIL url\n".data(using: .utf8)!)
+                state.close(); exit(1)
+            }
+            comps.host = "\(workspaceID).cn-beijing.maas.aliyuncs.com"
+            guard let fullEndpoint = comps.url else {
+                FileHandle.standardError.write("PB_FAIL url2\n".data(using: .utf8)!)
+                state.close(); exit(1)
+            }
+
+            FileHandle.standardError.write("PB_WS_RESUME url=\(fullEndpoint.absoluteString)\n".data(using: .utf8)!)
+
+            let config = URLSessionConfiguration.ephemeral
+            config.urlCache = nil
+            config.httpCookieStorage = nil
+            config.timeoutIntervalForRequest = 15
+            let monitor = PBTransportMonitor(clock: state.clock)
+            let session = URLSession(configuration: config, delegate: monitor, delegateQueue: nil)
+            var request = URLRequest(url: fullEndpoint)
+            request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+            let task = session.webSocketTask(with: request)
+            let ws = PBWebSocketURLSession(task: task, monitor: monitor)
+
+            // Single persistent receiver
+            let receiverTask: Task<Void, Never> = Task { [ws] in
+                while !Task.isCancelled {
+                    do {
+                        guard let text = try await ws.receive() else { break }
+                        state.appendWire(direction: "receive", raw: text)
+                    } catch is CancellationError {
+                        break
+                    } catch {
+                        monitor.recordReceiveError(error)
+                        state.appendWire(direction: "system", raw: "{\"reason\":\"receiver_exit\"}", error: "\(error)")
+                        break
+                    }
+                }
+            }
+
+            defer {
+                receiverTask.cancel()
+                Task { await ws.close() }
+                state.close()
+            }
+
+            let deadline = state.clock.deadline(sec: timeoutSec)
+            FileHandle.standardError.write("PB_PREFLIGHT_PHASE=await_session_created elapsed=\(round(state.clock.elapsedSec()*1000))ms\n".data(using: .utf8)!)
+
+            var verdict = "C"
+            while state.clock.now < deadline {
+                if state.entries.contains(where: { $0.type == "session.created" }) {
+                    verdict = "A"
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+
+            let monitorResult = monitor.result
+            let elapsedMs = round(state.clock.elapsedSec() * 1000)
+
+            if verdict == "A" {
+                FileHandle.standardError.write("PB_VERDICT=A wsOpened=\(monitorResult.opened) sessionCreated=1 elapsed=\(elapsedMs)ms\n".data(using: .utf8)!)
+                // Clean shutdown: close immediately
+                receiverTask.cancel()
+                Task { await ws.close() }
+                state.close()
+                exit(0)
+            } else if monitorResult.opened {
+                verdict = "B"
+                FileHandle.standardError.write("PB_VERDICT=B wsOpened=1 sessionCreated=0 elapsed=\(elapsedMs)ms\n".data(using: .utf8)!)
+                exit(1)
+            } else if monitorResult.taskError != nil || monitorResult.receiveError != nil {
+                verdict = "C"
+                let err = monitorResult.taskError ?? monitorResult.receiveError ?? "unknown"
+                FileHandle.standardError.write("PB_VERDICT=C wsOpened=0 error=\(err) elapsed=\(elapsedMs)ms\n".data(using: .utf8)!)
+                exit(1)
+            } else {
+                verdict = "D"
+                FileHandle.standardError.write("PB_VERDICT=D wsOpened=0 noError elapsed=\(elapsedMs)ms\n".data(using: .utf8)!)
+                exit(1)
+            }
+        }
+        dispatchMain()
+    }
+
     static func runLive(
         outputURL: URL,
         state: PBProbeState,
@@ -727,29 +1079,33 @@ struct ProviderBoundaryDirectProbe {
         }
         FileHandle.standardError.write("PB_PCM cut=\(cutMode) pcm1=\(pcm1.count) pcm2=\(pcm2.count)\n".data(using: .utf8)!)
 
-        let storedCredential = PBStoredCredential(allowInteraction: allowInteraction)
-
+        // Live mode: use CLI security(1) to read credential.
+        // selftest uses PBStoredCredential via fixture injection — unchanged.
+        let credentialReader = PBSecurityCLIReader()
         let endpoint = URL(string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime")!
 
         print("PB_START pcm=\(pcmData.count) output=\(outputURL.path)")
         fflush(stdout)
 
         Task.detached {
-            // Credential
+            // Credential — read via /usr/bin/security CLI (live) or fixture (selftest)
             let secret: String
             let workspaceID: String
             do {
-                guard let k = try storedCredential.readCredential(for: "qwen-realtime") else {
-                    FileHandle.standardError.write("PB_FAIL keychain_empty\n".data(using: .utf8)!)
+                guard let k = try credentialReader.readCredential(for: "qwen-realtime") else {
+                    // CLI returns non-0, empty credential, or format check failed → fail-fast.
+                    // No secret printed; reason is in the diagnostic lines above.
+                    FileHandle.standardError.write("PB_FAIL credential_format_invalid\n".data(using: .utf8)!)
                     state.close(); exit(1)
                 }
                 secret = k
-                workspaceID = (try? storedCredential.workspaceID(for: "qwen-realtime")) ?? "workspace"
+                workspaceID = (try? credentialReader.workspaceID(for: "qwen-realtime")) ?? "workspace"
             } catch {
-                FileHandle.standardError.write("PB_FAIL keychain: \(error)\n".data(using: .utf8)!)
+                FileHandle.standardError.write("PB_FAIL credential_format_invalid\n".data(using: .utf8)!)
                 state.close(); exit(1)
             }
-            FileHandle.standardError.write("PB_CRED ok len=\(secret.count) ws=\(workspaceID)\n".data(using: .utf8)!)
+            // PB_CRED=ok — no secret content, no key, no length
+            FileHandle.standardError.write("PB_CRED=ok\n".data(using: .utf8)!)
 
             guard var comps = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
                 FileHandle.standardError.write("PB_FAIL url\n".data(using: .utf8)!)
@@ -761,15 +1117,18 @@ struct ProviderBoundaryDirectProbe {
                 state.close(); exit(1)
             }
 
+            FileHandle.standardError.write("PB_WS_RESUME url=\(fullEndpoint.absoluteString)\n".data(using: .utf8)!)
+
             let config = URLSessionConfiguration.ephemeral
             config.urlCache = nil
             config.httpCookieStorage = nil
             config.timeoutIntervalForRequest = 15
-            let session = URLSession(configuration: config)
+            let monitor = PBTransportMonitor(clock: state.clock)
+            let session = URLSession(configuration: config, delegate: monitor, delegateQueue: nil)
             var request = URLRequest(url: fullEndpoint)
             request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
             let task = session.webSocketTask(with: request)
-            let ws = PBWebSocketURLSession(task: task)
+            let ws = PBWebSocketURLSession(task: task, monitor: monitor)
 
             // Single persistent receiver
             let receiverTask: Task<Void, Never> = Task { [ws] in
@@ -847,22 +1206,57 @@ struct ProviderBoundaryDirectProbe {
             }
 
             // Phase 2: send PCM1 (append only, NO commit in VAD mode)
+            // Realtime cadence: 16kHz mono s16le = 32000 bytes/sec; chunkSize 3200 = 100ms audio.
+            // Append chunks at wall-clock pace matching real audio.
             FileHandle.standardError.write("PB_PHASE=pcm1_send elapsed=\(round(state.clock.elapsedSec()*1000))ms\n".data(using: .utf8)!)
-            let chunkSize = 3200
+            let chunkSize = 3200  // 100ms at 16kHz mono s16le
+            let bytesPerSecond: UInt64 = 32_000
             var c = 0
             var pcm1SendCompleteAt: UInt64 = 0
+            let pcm1SendStartNs: UInt64 = state.clock.now
             while c < pcm1.count {
                 let end = min(c + chunkSize, pcm1.count)
                 let chunk = pcm1[c..<end]; c = end
                 let b64 = chunk.base64EncodedString()
                 let frame = "{\"event_id\":\"\(UUID().uuidString.lowercased())\",\"type\":\"input_audio_buffer.append\",\"audio\":\"\(b64)\"}"
+                let targetNs = pcm1SendStartNs + (UInt64(c) * 1_000_000_000 / bytesPerSecond)
                 do { try await ws.send(frame) } catch {
                     FileHandle.standardError.write("PB_FAIL send_pcm1: \(error)\n".data(using: .utf8)!); exit(1)
                 }
                 state.appendWire(direction: "send", raw: frame)
+                let nowNs = state.clock.now
+                if nowNs < targetNs {
+                    let sleepNs = min(targetNs - nowNs, 50_000_000)
+                    try? await Task.sleep(nanoseconds: sleepNs)
+                }
             }
             pcm1SendCompleteAt = state.clock.now
-            FileHandle.standardError.write("PB_PCM1=COMPLETE elapsed=\(round(Double(pcm1SendCompleteAt)/1_000_000.0))ms chunks=\(c/chunkSize+1)\n".data(using: .utf8)!)
+            FileHandle.standardError.write("PB_PCM1=COMPLETE elapsed=\(round(Double(pcm1SendCompleteAt)/1_000_000.0))ms chunks=\(c/chunkSize+1) bytes=\(pcm1.count)\n".data(using: .utf8)!)
+
+            // Phase 2b: ≥1000ms zero-PCM silence tail so semantic_vad speech_stopped fires.
+            // silence_duration_ms=800 needs silence samples in-stream, not just wall-clock.
+            FileHandle.standardError.write("PB_PHASE=pcm1_silence_tail elapsed=\(round(state.clock.elapsedSec()*1000))ms\n".data(using: .utf8)!)
+            let silenceBytesTotal = chunkSize * 11  // 11 chunks * 100ms = 1100ms silence (≥1000ms)
+            let silence = Data(count: silenceBytesTotal)
+            let tail1StartNs: UInt64 = state.clock.now
+            var sIdx = 0
+            while sIdx < silence.count {
+                let end = min(sIdx + chunkSize, silence.count)
+                let chunk = silence[sIdx..<end]; sIdx = end
+                let b64 = chunk.base64EncodedString()
+                let frame = "{\"event_id\":\"\(UUID().uuidString.lowercased())\",\"type\":\"input_audio_buffer.append\",\"audio\":\"\(b64)\"}"
+                let targetNs = tail1StartNs + (UInt64(sIdx) * 1_000_000_000 / bytesPerSecond)
+                do { try await ws.send(frame) } catch {
+                    FileHandle.standardError.write("PB_FAIL send_silence1: \(error)\n".data(using: .utf8)!); exit(1)
+                }
+                state.appendWire(direction: "send", raw: frame)
+                let nowNs = state.clock.now
+                if nowNs < targetNs {
+                    let sleepNs = min(targetNs - nowNs, 50_000_000)
+                    try? await Task.sleep(nanoseconds: sleepNs)
+                }
+            }
+            FileHandle.standardError.write("PB_PCM1_SILENCE_DONE elapsed=\(round(state.clock.elapsedSec()*1000))ms chunks=\(silence.count/chunkSize) bytes=\(silence.count)\n".data(using: .utf8)!)
 
             // Phase 3: wait for speech_started (first user turn)
             phase = .awaitFirstSpeechStarted
@@ -874,6 +1268,18 @@ struct ProviderBoundaryDirectProbe {
                     firstItemId = iid
                     FileHandle.standardError.write("PB_SPEECH_STARTED_1 item=\(iid) audio_start_ms=\(entry.audioStartMs ?? -1) elapsed=\(round(Double(entry.elapsedNs)/1_000_000.0))ms\n".data(using: .utf8)!)
                     phase = .awaitFirstTurnCommitted
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+
+            // Phase 3a: wait for speech_stopped (signals end of user speech; silence tail triggers it)
+            var firstSpeechStoppedAt: UInt64 = 0
+            while state.clock.now < deadline {
+                if let entry = state.entries.first(where: { $0.type == "input_audio_buffer.speech_stopped" && $0.itemId == firstItemId }),
+                   let iid = entry.itemId {
+                    firstSpeechStoppedAt = state.clock.now
+                    FileHandle.standardError.write("PB_SPEECH_STOPPED_1 item=\(iid) audio_end_ms=\(entry.audioEndMs ?? -1) elapsed=\(round(Double(entry.elapsedNs)/1_000_000.0))ms\n".data(using: .utf8)!)
                     break
                 }
                 try? await Task.sleep(nanoseconds: 20_000_000)
@@ -891,12 +1297,13 @@ struct ProviderBoundaryDirectProbe {
                 try? await Task.sleep(nanoseconds: 20_000_000)
             }
 
-            // Guard: first turn must complete with speech_stopped + committed before PCM2.
-            // If deadline reached without committed, probe is INVALID_FIRST_TURN.
+            // Guard: first turn must complete with speech_stopped + committed before response.create.
+            // If deadline reached without both, probe is INVALID_FIRST_TURN.
             // Do NOT continue to response.create / PCM2 — that path has no valid turn to overlap.
-            if firstTurnCommittedAt == 0 {
+            if firstSpeechStoppedAt == 0 || firstTurnCommittedAt == 0 {
                 let elapsedMs = round(state.clock.elapsedSec() * 1000)
-                FileHandle.standardError.write("PB_INVALID_FIRST_TURN reason=no_committed elapsed=\(elapsedMs)ms deadline=\(deadline) entries=\(state.entries.count)\n".data(using: .utf8)!)
+                let reason = firstSpeechStoppedAt == 0 ? "no_speech_stopped" : "no_committed"
+                FileHandle.standardError.write("PB_INVALID_FIRST_TURN reason=\(reason) speech_stopped_at=\(firstSpeechStoppedAt) committed_at=\(firstTurnCommittedAt) elapsed=\(elapsedMs)ms deadline=\(deadline) entries=\(state.entries.count)\n".data(using: .utf8)!)
                 state.close()
                 exit(1)
             }
@@ -911,20 +1318,32 @@ struct ProviderBoundaryDirectProbe {
             state.appendWire(direction: "send", raw: rcPayload)
             FileHandle.standardError.write("PB_SEND=response_create elapsed=\(round(state.clock.elapsedSec()*1000))ms\n".data(using: .utf8)!)
 
-            // Phase 4b: wait for response.created
+            // Phase 4b: wait for response.created OR response.audio.delta (overlap trigger)
             var firstResponseId: String? = nil
+            var firstAssistantItemId: String? = nil
+            var responseTriggerType: String? = nil
             while state.clock.now < deadline {
                 if let entry = state.entries.first(where: { $0.type == "response.created" }),
                    let rid = entry.responseId {
                     firstResponseId = rid
+                    responseTriggerType = "response.created"
                     FileHandle.standardError.write("PB_RESPONSE_CREATED_1 rid=\(rid) elapsed=\(round(Double(entry.elapsedNs)/1_000_000.0))ms\n".data(using: .utf8)!)
+                    break
+                }
+                if let entry = state.entries.first(where: { $0.type == "response.audio.delta" }),
+                   let rid = entry.responseId {
+                    firstResponseId = rid
+                    firstAssistantItemId = entry.itemId
+                    responseTriggerType = "response.audio.delta"
+                    FileHandle.standardError.write("PB_RESPONSE_AUDIO_DELTA_1 rid=\(rid) item=\(firstAssistantItemId ?? "") elapsed=\(round(Double(entry.elapsedNs)/1_000_000.0))ms\n".data(using: .utf8)!)
                     break
                 }
                 try? await Task.sleep(nanoseconds: 20_000_000)
             }
 
-            // Phase 5: send PCM2 immediately upon response.created (mirrors Aftelle overlap logic)
-            FileHandle.standardError.write("PB_PHASE=pcm2_send elapsed=\(round(state.clock.elapsedSec()*1000))ms\n".data(using: .utf8)!)
+            // Phase 5: send PCM2 immediately upon response trigger (realtime cadence + ≥1000ms silence tail)
+            FileHandle.standardError.write("PB_PHASE=pcm2_send elapsed=\(round(state.clock.elapsedSec()*1000))ms trigger=\(responseTriggerType ?? "none")\n".data(using: .utf8)!)
+            let pcm2SendStartNs: UInt64 = state.clock.now
             var c2 = 0
             var pcm2SendCompleteAt: UInt64 = 0
             while c2 < pcm2.count {
@@ -932,15 +1351,43 @@ struct ProviderBoundaryDirectProbe {
                 let chunk = pcm2[c2..<end]; c2 = end
                 let b64 = chunk.base64EncodedString()
                 let frame = "{\"event_id\":\"\(UUID().uuidString.lowercased())\",\"type\":\"input_audio_buffer.append\",\"audio\":\"\(b64)\"}"
+                let targetNs = pcm2SendStartNs + (UInt64(c2) * 1_000_000_000 / bytesPerSecond)
                 do { try await ws.send(frame) } catch {
                     FileHandle.standardError.write("PB_FAIL send_pcm2: \(error)\n".data(using: .utf8)!); exit(1)
                 }
                 state.appendWire(direction: "send", raw: frame)
+                let nowNs = state.clock.now
+                if nowNs < targetNs {
+                    let sleepNs = min(targetNs - nowNs, 50_000_000)
+                    try? await Task.sleep(nanoseconds: sleepNs)
+                }
             }
             pcm2SendCompleteAt = state.clock.now
-            FileHandle.standardError.write("PB_PCM2=COMPLETE elapsed=\(round(Double(pcm2SendCompleteAt)/1_000_000.0))ms\n".data(using: .utf8)!)
+            FileHandle.standardError.write("PB_PCM2=COMPLETE elapsed=\(round(Double(pcm2SendCompleteAt)/1_000_000.0))ms chunks=\(c2/chunkSize+1) bytes=\(pcm2.count)\n".data(using: .utf8)!)
 
-            // Phase 5b: await second speech_started (may arrive during active response)
+            // Phase 5b: ≥1000ms silence tail for second-round VAD
+            FileHandle.standardError.write("PB_PHASE=pcm2_silence_tail elapsed=\(round(state.clock.elapsedSec()*1000))ms\n".data(using: .utf8)!)
+            let tail2StartNs: UInt64 = state.clock.now
+            var s2Idx = 0
+            while s2Idx < silence.count {
+                let end = min(s2Idx + chunkSize, silence.count)
+                let chunk = silence[s2Idx..<end]; s2Idx = end
+                let b64 = chunk.base64EncodedString()
+                let frame = "{\"event_id\":\"\(UUID().uuidString.lowercased())\",\"type\":\"input_audio_buffer.append\",\"audio\":\"\(b64)\"}"
+                let targetNs = tail2StartNs + (UInt64(s2Idx) * 1_000_000_000 / bytesPerSecond)
+                do { try await ws.send(frame) } catch {
+                    FileHandle.standardError.write("PB_FAIL send_silence2: \(error)\n".data(using: .utf8)!); exit(1)
+                }
+                state.appendWire(direction: "send", raw: frame)
+                let nowNs = state.clock.now
+                if nowNs < targetNs {
+                    let sleepNs = min(targetNs - nowNs, 50_000_000)
+                    try? await Task.sleep(nanoseconds: sleepNs)
+                }
+            }
+            FileHandle.standardError.write("PB_PCM2_SILENCE_DONE elapsed=\(round(state.clock.elapsedSec()*1000))ms chunks=\(silence.count/chunkSize) bytes=\(silence.count)\n".data(using: .utf8)!)
+
+            // Phase 5c: await second speech_started (may arrive during active response)
             phase = .phase2AwaitSecondSpeechStarted
             FileHandle.standardError.write("PB_PHASE=await_speech_started_2 elapsed=\(round(state.clock.elapsedSec()*1000))ms\n".data(using: .utf8)!)
             var secondItemId: String? = nil
@@ -964,6 +1411,27 @@ struct ProviderBoundaryDirectProbe {
                         }
                         state.appendWire(direction: "send", raw: rc2)
                     }
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+
+            // Phase 5d: await second speech_stopped + second committed
+            var secondSpeechStoppedAt: UInt64 = 0
+            while state.clock.now < deadline {
+                if let entry = state.entries.first(where: { $0.type == "input_audio_buffer.speech_stopped" && $0.itemId == secondItemId }),
+                   let iid = entry.itemId {
+                    secondSpeechStoppedAt = state.clock.now
+                    FileHandle.standardError.write("PB_SPEECH_STOPPED_2 item=\(iid) audio_end_ms=\(entry.audioEndMs ?? -1) elapsed=\(round(Double(entry.elapsedNs)/1_000_000.0))ms\n".data(using: .utf8)!)
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            var secondTurnCommittedAt: UInt64 = 0
+            while state.clock.now < deadline {
+                if state.entries.filter({ $0.type == "input_audio_buffer.committed" }).count >= 2 {
+                    secondTurnCommittedAt = state.clock.now
+                    FileHandle.standardError.write("PB_COMMITTED_2 elapsed=\(round(Double(secondTurnCommittedAt)/1_000_000.0))ms\n".data(using: .utf8)!)
                     break
                 }
                 try? await Task.sleep(nanoseconds: 20_000_000)
