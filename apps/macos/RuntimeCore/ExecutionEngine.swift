@@ -133,6 +133,10 @@ public final class ExecutionEngine {
         )
     }
 
+    func recoverRealtimeResidentBrainInput(_ command: RealtimeBrainRecoverInputCommand) async throws {
+        try await providerRouter.recoverRealtimeResidentBrainInput(command)
+    }
+
     func openRealtimeResidentBrainSession(
         _ command: RealtimeBrainOpenSessionCommand
     ) async throws {

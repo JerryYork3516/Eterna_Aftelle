@@ -3,6 +3,127 @@ import Foundation
 
 struct ProbeMeasurementError: Error { let code: String }
 
+struct ProbePlaybackKey: Hashable, Sendable {
+    let generation: UInt64
+    let sequence: UInt64
+}
+
+// Passive test observations: this ledger never controls playback or interruption.
+final class ProbePlaybackAudit: @unchecked Sendable {
+    private let lock = NSLock()
+    private var origins: [ProbePlaybackKey: UInt64] = [:]
+    private var retiredGeneration: UInt64?
+    private var renderedChunks = Set<ProbePlaybackKey>()
+    private var staleRenderedChunks = Set<ProbePlaybackKey>()
+    private var inputStarts: [UInt64: UInt64] = [:]
+    private var confirmedGenerations = Set<UInt64>()
+    private var decisions = Set<UUID>()
+    private var renderedSamples = 0
+    private var staleSamples = 0
+    private var staleCallbacksAccepted = Set<ProbePlaybackKey>()
+    private var staleCallbacksRejected = Set<ProbePlaybackKey>()
+    private var deliveredRetiredCallbacks = Set<ProbePlaybackKey>()
+    private var callbackDispositions: [ProbePlaybackKey: Bool] = [:]
+    private var unknownObservations = 0
+    private var unmatchedConfirmations = 0
+
+    func associate(runtimeGeneration: UInt64, playback: ProbePlaybackKey) {
+        lock.withLock {
+            guard origins.count < 20_000,
+                  origins[playback] == nil || origins[playback] == runtimeGeneration else {
+                unknownObservations += 1
+                return
+            }
+            origins[playback] = runtimeGeneration
+        }
+    }
+
+    func cleared(playbackGeneration: UInt64?) {
+        lock.withLock {
+            let generations = Set(origins.filter { $0.key.generation == playbackGeneration }.values)
+            guard generations.count == 1, let generation = generations.first else {
+                unknownObservations += 1
+                return
+            }
+            retiredGeneration = max(retiredGeneration ?? 0, generation)
+        }
+    }
+
+    func rendered(_ playback: ProbePlaybackKey?, samples: Int) {
+        lock.withLock {
+            renderedSamples += samples
+            guard let playback, let origin = origins[playback] else {
+                unknownObservations += 1
+                return
+            }
+            renderedChunks.insert(playback)
+            if let retiredGeneration, origin <= retiredGeneration {
+                staleSamples += samples
+                staleRenderedChunks.insert(playback)
+            }
+        }
+    }
+
+    func completion(_ playback: ProbePlaybackKey, accepted: Bool) {
+        lock.withLock {
+            guard let origin = origins[playback], callbackDispositions[playback] == nil else {
+                unknownObservations += 1
+                return
+            }
+            callbackDispositions[playback] = accepted
+            if retiredGeneration.map({ origin <= $0 }) == true || deliveredRetiredCallbacks.contains(playback) {
+                if accepted { staleCallbacksAccepted.insert(playback) }
+                else { staleCallbacksRejected.insert(playback) }
+            }
+        }
+    }
+
+    func deliveredRetiredCallback(_ playback: ProbePlaybackKey?) {
+        lock.withLock {
+            guard let playback, origins[playback] != nil,
+                  deliveredRetiredCallbacks.insert(playback).inserted else {
+                unknownObservations += 1
+                return
+            }
+            // Preserve disposition even if the delivery observation arrives later.
+            if let accepted = callbackDispositions[playback] {
+                if accepted { staleCallbacksAccepted.insert(playback) }
+                else { staleCallbacksRejected.insert(playback) }
+            }
+        }
+    }
+
+    func injectedInput(interrupting generation: UInt64, at timestamp: UInt64) {
+        lock.withLock {
+            if inputStarts[generation] == nil { inputStarts[generation] = timestamp }
+        }
+    }
+
+    func confirmed(_ decision: UUID, interrupting generation: UInt64, at timestamp: UInt64) {
+        lock.withLock {
+            guard decisions.insert(decision).inserted else { return }
+            if inputStarts[generation].map({ $0 <= timestamp }) != true
+                || !confirmedGenerations.insert(generation).inserted {
+                unmatchedConfirmations += 1
+            }
+        }
+    }
+
+    var snapshot: [String: Int] {
+        lock.withLock {
+            ["associated_chunks": origins.count, "rendered_chunks": renderedChunks.count,
+             "rendered_samples": renderedSamples, "stale_playbacks": staleRenderedChunks.count,
+             "stale_rendered_samples": staleSamples, "stale_callbacks_accepted": staleCallbacksAccepted.count,
+             "stale_callbacks_rejected": staleCallbacksRejected.count,
+             "retired_callbacks_delivered": deliveredRetiredCallbacks.count,
+             "retired_callbacks_missing_disposition": deliveredRetiredCallbacks.subtracting(callbackDispositions.keys).count,
+             "unknown_observations": unknownObservations,
+             "input_generations": inputStarts.count, "confirmed_decisions": decisions.count,
+             "unmatched_interruptions": unmatchedConfirmations]
+        }
+    }
+}
+
 // Deadlines are anchored to the sample clock, not the previous wake-up.
 struct ProbeSampleClock {
     let origin: UInt64

@@ -84,6 +84,11 @@ nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {
 }
 
 #if DEBUG
+nonisolated enum MacSpeechAudioOutputObservation: Sendable {
+    case scheduled(generation: UInt64, sequence: UInt64)
+    case completion(generation: UInt64, sequence: UInt64, accepted: Bool)
+}
+
 nonisolated struct MacSpeechAudioOutputHostTimingDebugSnapshot:
     Sendable,
     Equatable {
@@ -129,6 +134,8 @@ actor MacSpeechAudioOutputHost {
     private var providerResponseFinished = false
     private var pendingFadeIn: MacSpeechPCMOutputFadeIn?
     #if DEBUG
+    private var observationForTesting:
+        (@Sendable (MacSpeechAudioOutputObservation) -> Void)?
     private var clearCompletionCount: UInt64 = 0
     private var lastClearCompletedAtNanoseconds: UInt64 = 0
     #endif
@@ -355,6 +362,12 @@ actor MacSpeechAudioOutputHost {
     }
 
     #if DEBUG
+    func observePlaybackForTesting(
+        _ observer: @escaping @Sendable (MacSpeechAudioOutputObservation) -> Void
+    ) {
+        observationForTesting = observer
+    }
+
     func timingDebugSnapshot()
         -> MacSpeechAudioOutputHostTimingDebugSnapshot {
         MacSpeechAudioOutputHostTimingDebugSnapshot(
@@ -395,6 +408,11 @@ actor MacSpeechAudioOutputHost {
             let scheduledSequence = chunk.sequence
             let fadeIn = pendingFadeIn
             do {
+                #if DEBUG
+                observationForTesting?(.scheduled(
+                    generation: scheduledGeneration, sequence: scheduledSequence
+                ))
+                #endif
                 let processing = try player.schedule(
                     pcm16Bytes: chunk.pcm16Bytes,
                     fadeIn: fadeIn
@@ -482,9 +500,20 @@ actor MacSpeechAudioOutputHost {
               inFlightByteCounts.removeValue(forKey: sequence) != nil,
               state == .playing || state == .draining
         else {
+            #if DEBUG
+            observationForTesting?(.completion(
+                generation: completedGeneration, sequence: sequence,
+                accepted: false
+            ))
+            #endif
             rejectedCallbackCount += 1
             return
         }
+        #if DEBUG
+        observationForTesting?(.completion(
+            generation: completedGeneration, sequence: sequence, accepted: true
+        ))
+        #endif
         timeoutTask?.cancel()
         timeoutTask = nil
         switch result {

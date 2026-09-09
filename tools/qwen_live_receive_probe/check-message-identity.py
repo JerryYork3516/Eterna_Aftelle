@@ -131,16 +131,33 @@ def analyze(data):
         terminal_items = next((ids for seq, ids in response["ends"] if seq == terminal), [])
         incomplete = (not terminal or not response["added"]
                       or not terminal_items)
+        # One receive clock, both old terminal events, strict inequalities.
+        item_done = [time for seq, time, event in events
+                     if event["type"] == ITEM_DONE and event.get("response_id") == response_id]
+        done_time = events[terminal - 1][1] if terminal else None
+        created_time = events[response["created"] - 1][1]
+        overlaps = []
+        if item_done and done_time is not None:
+            end = min(min(item_done), done_time)
+            for seq, time, event in events:
+                if event["type"] == "input_audio_buffer.speech_started" and created_time < time < end:
+                    overlaps.append({"speech_sequence": seq, "speech_started_ns": time,
+                                     "output_item_done_ns": min(item_done), "response_done_ns": done_time,
+                                     "overlap_duration_ms": (end - time) / 1_000_000})
         rows.append({
             "response_ordinal": ordinal, "response_id": response_id,
             "created_sequence": response["created"], "done_sequence": terminal,
             "added_item_ids": list(response["added"]), "done_item_ids": terminal_items,
             "incomplete": bool(incomplete), "identity_changes": mismatches,
             "user_item_collisions": collisions,
+            "valid_overlaps": overlaps,
             "evidence": [evidence[seq] for seq in sorted(selected)],
         })
     counts = {
         "responses": len(rows),
+        "valid_overlap_responses": sum(bool(row["valid_overlaps"]) for row in rows),
+        "overlap_gt_1000ms_responses": sum(any(hit["overlap_duration_ms"] > 1000
+            for hit in row["valid_overlaps"]) for row in rows),
         "complete_responses": sum(not row["incomplete"] for row in rows),
         "identity_changed_responses": sum(bool(row["identity_changes"]) for row in rows),
         "final_user_collision_responses": sum(any(
@@ -199,6 +216,19 @@ def encoded(events):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_overlap_requires_both_terminals_on_one_clock(self):
+        events = fixture(user_final=True)
+        events.insert(-1, {"type": ITEM_DONE, "response_id": "id_1", "item": {"id": "id_2"}})
+        data = encoded(events)
+        report = analyze(data)
+        self.assertEqual(report["counts"]["valid_overlap_responses"], 1)
+        overlap = report["responses"][0]["valid_overlaps"][0]
+        self.assertEqual(overlap["overlap_duration_ms"], .002)
+        self.assertEqual(analyze(encoded(fixture(user_final=True)))["counts"]["valid_overlap_responses"], 0)
+        # speech after item.done but before response.done is not overlap.
+        events[3], events[-2] = events[-2], events[3]
+        self.assertEqual(analyze(encoded(events))["counts"]["valid_overlap_responses"], 0)
+
     def test_normal_no_overlap(self):
         self.assertEqual(analyze(encoded(fixture()))["status"], "IDENTITY_CONSISTENT")
 

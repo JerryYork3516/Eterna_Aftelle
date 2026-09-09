@@ -65,7 +65,8 @@
 "particleDebug.provider.error.emptyReply" = "Provider 返回了空回复";
 "particleDebug.provider.error.residentUnavailable" = "请先加载居民";
 "particleDebug.qwen.title" = "Qwen 实时语音（北京）";
-"particleDebug.qwen.configuration" = "开发期实时语音配置";
+"particleDebug.qwen.configuration" = "实时语音模型";
+"particleDebug.qwen.modelSelectionHint" = "用于主界面实时全双工语音；停止后可切换，下次启动生效并记住选择。";
 "particleDebug.qwen.voice" = "音色";
 "particleDebug.qwen.audioFormat" = "输入 / 输出";
 "particleDebug.qwen.turnDetection" = "判停方式";

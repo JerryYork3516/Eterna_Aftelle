@@ -1030,7 +1030,18 @@ nonisolated struct RealtimeResidentBrainEvent: Sendable, Equatable {
     }
 }
 
+// This is a proposal, not permission to reconnect or advance the generation.
+nonisolated struct RealtimeBrainInputRecoveryRequired: Error, Sendable {
+    let identity: RealtimeBrainEventIdentity
+}
+
+nonisolated struct RealtimeBrainRecoverInputCommand: Sendable {
+    let identity: RealtimeBrainEventIdentity
+    let sections: [RealtimeBrainContextSection]
+}
+
 nonisolated protocol RealtimeResidentBrainProvider: Sendable {
+    func recoverInput(_ command: RealtimeBrainRecoverInputCommand) async throws
     func openSession(
         _ command: RealtimeBrainOpenSessionCommand
     ) async throws
@@ -1054,6 +1065,12 @@ nonisolated protocol RealtimeResidentBrainProvider: Sendable {
     func closeSession(
         _ command: RealtimeBrainCloseSessionCommand
     ) async throws
+}
+
+extension RealtimeResidentBrainProvider {
+    func recoverInput(_ command: RealtimeBrainRecoverInputCommand) async throws {
+        throw RealtimeResidentBrainError.invalidEvent
+    }
 }
 
 nonisolated enum RealtimeBrainEventDisposition: Sendable, Equatable {
@@ -1362,6 +1379,18 @@ nonisolated final class RuntimeRealtimeBrainSessionGate:
                   ) else { return false }
             return activeTurnIDs.contains(turnID)
                 && activeResponseIDs.contains(responseID)
+        }
+    }
+
+    func canRecoverInput(_ eventIdentity: RealtimeBrainEventIdentity) -> Bool {
+        lock.withLock {
+            guard isReadyLocked(eventIdentity.session),
+                  contextRevision == eventIdentity.contextRevision,
+                  let turnID = eventIdentity.turnID, eventIdentity.responseID == nil,
+                  activeTurnIDs.contains(turnID), !terminalTurnIDs.contains(turnID),
+                  activeResponseIDs.isEmpty, toolResultToken == nil else { return false }
+            return pendingResponseCreate == nil
+                || pendingResponseCreate?.attempt.snapshot().submission == .notSubmitted
         }
     }
 

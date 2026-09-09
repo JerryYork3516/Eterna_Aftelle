@@ -235,10 +235,12 @@ assert_has 'name="QwenRealtimeRuntimeComposition"' \
   "$work_dir/app-controller-release.ast" composition_owner
 assert_has 'field="makeRuntimeCore"' \
   "$work_dir/app-controller-release.ast" composition_factory
-assert_has 'labels="credentialReader:realtimeBrainConfiguration:"' \
+assert_has 'labels="credentialReader:realtimeBrainConfiguration:realtimeBrainConfigurationProvider:"' \
   "$work_dir/app-controller-release.ast" composition_arguments
 assert_has 'qwen3.5-omni-plus-realtime' \
-  "$work_dir/app-controller-release.ast" qwen_model
+  "$work_dir/AppController.release.swift" qwen_plus_model
+assert_has 'qwen3.5-omni-flash-realtime' \
+  "$work_dir/AppController.release.swift" qwen_flash_model
 assert_has 'field="qwenKeyRef"' \
   "$work_dir/app-controller-release.ast" qwen_keychain_ref
 assert_has 'value="Tina"' \
@@ -353,7 +355,7 @@ assert_exact_count 'ensureRealtimeMicrophoneAuthorization()' 1 \
 assert_lacks 'speechAudioHost.requestMicrophoneAuthorization' \
   "$work_dir/debug-permission-wrapper.swift" duplicate_debug_permission_logic
 
-assert_has '"makeRuntimeCore(credentialReader:realtimeBrainConfiguration:)"' \
+assert_has '"makeRuntimeCore(credentialReader:realtimeBrainConfiguration:realtimeBrainConfigurationProvider:)"' \
   "$work_dir/composition-release.ast" production_composition
 assert_has 'name="QwenRealtimeResidentBrainAdapter"' \
   "$work_dir/composition-release.ast" realtime_brain_provider

@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-09-09 · 手动切换实时语音模型
+
+- Qwen 调试面板现有选择器接通主界面实时全双工，使用普通版 `qwen3.5-omni-flash-realtime` / `qwen3.5-omni-plus-realtime`；默认 Plus。本机保存选择，停止后切换，下一次启动读取，运行中禁用选择。Adapter 只在完全关闭时读取新配置，同一会话及恢复连接保持原配置；诊断保留最近启动会话的型号。未更改凭据、中断 authority、身份隔离、DR、Session/Memory 合约或声学策略。
+- Debug build PASS；离线 Qwen 148 cases / 1972 checks PASS，含同一 Adapter 的 Plus→Flash→Plus、活动会话拒绝重新读配置、不支持型号在连接前拒绝、无额外 response.create。Release 路由 guard 与本地化、diff 检查 PASS；guard 更新可选配置来源参数的签名及两种型号断言。SwiftFormat/SwiftLint 不可用。
+- Stage 7 本次范围检查 PASS，未改公共 Runtime API / DR schema，未新增平台或进入 Test 3 / R9，未提交。在线 NOT_RUN；界面自动检查因工具 native pipe 断连未完成。此次不宣称修复此前启动/停止卡住问题。证据：本地忽略目录 `.build/manual-model-selection/`。
+
 ## 📌 当前状态 · 2026-09-07 · RB1 摘要基线与完整 A7
 
 - **stop 后 committed item 换绑：离线 IMPLEMENTED / REVIEW_REQUIRED**：保留真实在线 `aftelle-qwen-continuous.6HgLc8` 第 2 次 `canonical_content_not_preserved` 失败（仅第 1 次通过，后续未执行）。wire 427 的 start/partial 为 `id_8`，583 为空 ID stop，584–588 的 partial/final 改为 `id_9`；旧代码只允许 stop 当下换绑，stop 后未知 final 被拒，500ms fallback 交出旧 partial。先用相同因果顺序的脱敏最小反例证明修复前 `请解释下雨，每一点都举。` 不等于 Provider 完整 final（不是整个线上会话 bit-exact replay）。本地回滚点 `de93186d`，不推送。唯一生产文件 QwenRealtimeResidentBrainAdapter.swift 仅在已验证的空 ID timed stop、原有 fallback 有效期限、同 session/generation/context、唯一候选 partial 与 final 一致且无歧义/既往换绑时一次换绑原 turn，取消原 fallback，复用既有 final 接纳；不创建 turn、不重发文本、不新增回答 authority。保持 500ms debounce/音频尾窗、AEC/classifier/source gate/eligibility、Runtime/DR/Store/公开 API 不变。

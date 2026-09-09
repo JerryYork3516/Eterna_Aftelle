@@ -4,6 +4,8 @@ nonisolated struct QwenRealtimeResidentBrainConfiguration:
     Sendable,
     Equatable {
     static let supportedModelID = "qwen3.5-omni-plus-realtime"
+    static let flashModelID = "qwen3.5-omni-flash-realtime"
+    static let supportedModelIDs: Set<String> = [supportedModelID, flashModelID]
 
     let endpoint: URL
     let modelID: String
@@ -106,6 +108,19 @@ nonisolated private func invalidQwenReceiveEvent(
 }
 
 nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
+    struct OutputItem: Sendable {
+        let index: Int?
+        let id: String?
+        let type: String?
+        let role: String?
+    }
+
+    struct DecodedEvent: Sendable {
+        let event: QwenRealtimeBrainWireEvent
+        let responseID: String?
+        let outputItems: [OutputItem]
+    }
+
     func initialSessionUpdate(
         instructions: String,
         tools: [RealtimeBrainToolAdvertisement],
@@ -214,7 +229,7 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
     }
 
     func decode(_ frame: RealtimeWebSocketFrame) throws
-        -> QwenRealtimeBrainWireEvent {
+        -> DecodedEvent {
         let data: Data = switch frame {
         case .text(let text): Data(text.utf8)
         case .binary(let bytes): bytes
@@ -230,6 +245,34 @@ nonisolated private struct QwenRealtimeResidentBrainCodec: Sendable {
             throw invalidQwenReceiveEvent("object_or_type")
         }
 
+        var outputItems: [OutputItem] = []
+        if type == "response.output_item.added" || type == "response.output_item.done" {
+            let item = object["item"] as? [String: Any] ?? [:]
+            outputItems = [OutputItem(index: object["output_index"] as? Int,
+                id: item["id"] as? String, type: item["type"] as? String, role: item["role"] as? String)]
+        } else if type == "response.done",
+                  let response = object["response"] as? [String: Any],
+                  let output = response["output"] as? [Any] {
+            outputItems = output.enumerated().map { index, value in
+                let item = value as? [String: Any] ?? [:]
+                return OutputItem(index: index, id: item["id"] as? String,
+                    type: item["type"] as? String, role: item["role"] as? String)
+            }
+        } else if type.hasPrefix("response."), object["item_id"] != nil {
+            let tool = type.hasPrefix("response.function_call_arguments.")
+            outputItems = [OutputItem(index: object["output_index"] as? Int,
+                id: object["item_id"] as? String, type: tool ? "function_call" : "message",
+                role: tool ? nil : "assistant")]
+        }
+        let wireResponseID = type == "response.done"
+            ? (object["response"] as? [String: Any])?["id"] as? String
+            : try? responseID(in: object)
+        return DecodedEvent(event: try decodeEvent(object, type: type),
+            responseID: wireResponseID, outputItems: outputItems)
+    }
+
+    private func decodeEvent(_ object: [String: Any], type: String) throws
+        -> QwenRealtimeBrainWireEvent {
         switch type {
         case "session.created":
             return .sessionCreated
@@ -576,6 +619,43 @@ nonisolated private struct QwenRealtimeInputAudioBatcher {
     }
 }
 
+// 15 seconds of 16 kHz mono PCM16. The offset uses the provider audio clock,
+// not wall time; an unavailable prefix makes recovery ineligible.
+nonisolated private struct QwenRealtimeInputReplay {
+    static let limit = 480_000
+    private(set) var bytes = Data()
+    private(set) var endOffset = 0
+    private var startOffset: Int?
+    var canReplay: Bool {
+        guard let startOffset else { return false }
+        return startOffset >= endOffset - bytes.count && startOffset < endOffset
+    }
+    mutating func append(_ data: Data) {
+        endOffset += data.count
+        bytes.append(data)
+        if bytes.count > Self.limit { bytes = Data(bytes.suffix(Self.limit)) }
+    }
+    mutating func start(milliseconds: Int?) {
+        startOffset = milliseconds.flatMap { $0 >= 0 && $0 <= Int.max / 32 ? $0 * 32 : nil }
+    }
+    func remaining(after offset: Int?) -> Data? {
+        guard canReplay, let startOffset else { return nil }
+        let from = offset ?? startOffset
+        guard from >= endOffset - bytes.count, from <= endOffset else { return nil }
+        return Data(bytes.suffix(endOffset - from).prefix(3_200))
+    }
+    var replayStart: Int? { canReplay ? startOffset : nil }
+    mutating func discardUtterance() {
+        bytes = Data()
+        startOffset = nil
+    }
+    mutating func rebase(after prefix: Int) {
+        endOffset -= prefix
+        if bytes.count > endOffset { bytes = Data(bytes.suffix(endOffset)) }
+        startOffset = 0
+    }
+}
+
 actor QwenRealtimeResidentBrainAdapter:
     RealtimeResidentBrainProvider {
     private static let maximumPendingEventCount = 256
@@ -593,6 +673,7 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private enum Acknowledgement: Hashable, Sendable {
+        case inputRecovered(RealtimeBrainTurnID)
         case sessionUpdated(UInt64)
         case responseDone(String)
         case inputAudioCleared(UInt64)
@@ -610,6 +691,7 @@ actor QwenRealtimeResidentBrainAdapter:
         let turnID: RealtimeBrainTurnID
         let sessionIdentity: RealtimeBrainSessionIdentity
         let contextRevision: UInt64
+        var outputItemIDs: [Int: String] = [:]
         var text = ""
         var finalText: String?
         var residentTextWireSource: ResidentTextWireSource?
@@ -669,7 +751,9 @@ actor QwenRealtimeResidentBrainAdapter:
 
     private let credentialReader: ProviderCredentialReading
     private let transport: RealtimeWebSocketTransport
-    private let configuration: QwenRealtimeResidentBrainConfiguration
+    private var configuration: QwenRealtimeResidentBrainConfiguration
+    private let configurationProvider:
+        (@Sendable () -> QwenRealtimeResidentBrainConfiguration)?
     private let diagnosticBuffer: NativeSpeechDiagnosticBuffer?
     private let codec = QwenRealtimeResidentBrainCodec()
 
@@ -718,6 +802,14 @@ actor QwenRealtimeResidentBrainAdapter:
     private var outputAudioSequence: UInt64 = 0
     private var outputAudioSampleFrames: UInt64 = 0
     private var inputAudioBatcher = QwenRealtimeInputAudioBatcher()
+    private var inputReplay = QwenRealtimeInputReplay()
+    private var inputRecovery: RealtimeBrainInputRecoveryRequired?
+    private var recoveredInputTurnID: RealtimeBrainTurnID?
+    private var replayingInput = false
+    private var recoveredTranscriptAccepted = false
+    private var awaitingRecoveredUserAlias = false
+    private var recoveryExpiryTask: Task<Void, Never>?
+    private var inputRecoveryDeadline: ContinuousClock.Instant?
     private var preservingUserInputDuringTransition = false
     private var contextSectionsByScope: [String: String] = [:]
     private var runtimeTools: [RealtimeBrainToolAdvertisement] = []
@@ -751,11 +843,14 @@ actor QwenRealtimeResidentBrainAdapter:
         credentialReader: ProviderCredentialReading,
         transport: RealtimeWebSocketTransport,
         configuration: QwenRealtimeResidentBrainConfiguration,
-        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil
+        diagnosticBuffer: NativeSpeechDiagnosticBuffer? = nil,
+        configurationProvider:
+            (@Sendable () -> QwenRealtimeResidentBrainConfiguration)? = nil
     ) {
         self.credentialReader = credentialReader
         self.transport = transport
         self.configuration = configuration
+        self.configurationProvider = configurationProvider
         self.diagnosticBuffer = diagnosticBuffer
     }
 
@@ -764,9 +859,13 @@ actor QwenRealtimeResidentBrainAdapter:
     ) async throws {
         guard lifecycle == .closed,
               identity == nil,
-              terminalTransportCloseTask == nil,
-              configuration.modelID
-                == QwenRealtimeResidentBrainConfiguration.supportedModelID,
+              terminalTransportCloseTask == nil else {
+            throw RealtimeResidentBrainError.unavailable
+        }
+        // Freeze the selected configuration until this session is fully closed.
+        configuration = configurationProvider?() ?? configuration
+        guard QwenRealtimeResidentBrainConfiguration.supportedModelIDs
+                .contains(configuration.modelID),
               !configuration.keyRef.isEmpty else {
             throw RealtimeResidentBrainError.unavailable
         }
@@ -874,19 +973,32 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     func appendAudio(_ frame: RealtimeBrainAudioFrame) async throws {
-        try requireActive(frame.identity)
+        guard frame.identity == identity else { throw RealtimeResidentBrainError.invalidIdentity }
         guard frame.provenance != .providerGenerated else {
             throw RealtimeResidentBrainError.invalidAudioFrame
         }
+        let bytes = try QwenRealtimePCM16Converter.mono16k(frame)
+        inputReplay.append(bytes)
+        if frame.provenance != .acousticEchoProcessed { inputReplay.discardUtterance() }
+        if inputRecovery != nil || replayingInput {
+            guard inputReplay.canReplay else {
+                expireInputRecovery()
+                throw RealtimeResidentBrainError.invalidAudioFrame
+            }
+            return
+        }
+        try requireActive(frame.identity)
         let operationID = beginMutationOperation()
         defer { finishMutationOperation(operationID) }
         do {
             let batches = inputAudioBatcher.append(
-                try QwenRealtimePCM16Converter.mono16k(frame),
+                bytes,
                 isAcousticEchoProcessed:
                     frame.provenance == .acousticEchoProcessed
             )
+            let token = connectionToken
             for batch in batches {
+                guard connectionToken == token else { return }
                 let hadActiveResponse = activeResponse != nil
                 try await send(codec.audioAppend(batch.bytes))
                 #if DEBUG
@@ -918,6 +1030,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 }
             }
         } catch {
+            if inputRecovery != nil || replayingInput { return }
             throw Self.map(error)
         }
     }
@@ -925,6 +1038,10 @@ actor QwenRealtimeResidentBrainAdapter:
     func createResponse(
         _ command: RealtimeBrainCreateResponseCommand
     ) async throws {
+        if recoveryExpiryTask != nil, command.identity.turnID == activeUserInputTurn?.turn.runtimeID,
+           let turnID = command.identity.turnID {
+            try await waitForAcknowledgement(.inputRecovered(turnID), timeout: .seconds(15))
+        }
         try requireActive(command.identity.session)
         guard command.identity.responseID == nil,
               command.sourceEventSequence > 0,
@@ -1008,6 +1125,12 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     func interrupt(_ command: RealtimeBrainInterruptCommand) async throws {
+        if identity == command.identity, inputRecovery != nil {
+            guard activeMutationOperations.isEmpty else {
+                throw RealtimeResidentBrainError.operationInFlight
+            }
+            _ = prepareQuarantinedInterruption(expected: command.identity)
+        }
         try requireActive(command.identity)
         let next = Self.nextIdentity(
             from: command.identity,
@@ -1020,11 +1143,38 @@ actor QwenRealtimeResidentBrainAdapter:
             reconnect: false,
             preserveInterruptingUserInput: true
         )
+        if replayingInput, let user = activeUserInputTurn {
+            replayingInput = false
+            proposeInputRecovery(for: user)
+            lifecycle = .failed
+            terminalError = .invalidEvent
+        }
+    }
+
+    private func prepareQuarantinedInterruption(expected: RealtimeBrainSessionIdentity) -> Bool {
+        guard identity == expected, lifecycle == .failed, terminalError == .invalidEvent,
+              inputRecovery?.identity.session == expected,
+              inputRecovery?.identity.contextRevision == contextRevision,
+              let deadline = inputRecoveryDeadline, ContinuousClock.now < deadline,
+              activeResponse != nil,
+              activeResponse?.turnID != activeUserInputTurn?.turn.runtimeID else { return false }
+        // Runtime owns this cancellation; quarantine must survive any await in it.
+        connectionToken = nil
+        receiverTask?.cancel()
+        inputRecovery = nil
+        replayingInput = true
+        terminalError = nil
+        lifecycle = .active
+        return true
     }
 
     func receiveEvent(
         session: RealtimeBrainSessionIdentity
     ) async throws -> RealtimeResidentBrainEvent {
+        if identity == session, let inputRecovery {
+            if !pendingEvents.isEmpty { return pendingEvents.removeFirst() }
+            throw inputRecovery
+        }
         try requireActive(session)
         if !pendingEvents.isEmpty {
             let event = pendingEvents.removeFirst()
@@ -1075,6 +1225,10 @@ actor QwenRealtimeResidentBrainAdapter:
     ) -> RealtimeResidentBrainError? {
         guard identity == session else { return nil }
         return terminalError
+    }
+
+    func expireInputRecoveryForTesting(matching expected: RealtimeBrainEventIdentity? = nil) {
+        expireInputRecovery(matching: expected)
     }
 
     func isClosingForTesting(
@@ -1145,7 +1299,8 @@ actor QwenRealtimeResidentBrainAdapter:
               ) else {
             throw RealtimeResidentBrainError.invalidIdentity
         }
-        guard activeMutationOperations.isEmpty else {
+        guard activeMutationOperations.isEmpty,
+              recoveryExpiryTask == nil || (preserveInterruptingUserInput && replayingInput) else {
             throw RealtimeResidentBrainError.operationInFlight
         }
         let interruptingTurnID = preserveInterruptingUserInput
@@ -1163,6 +1318,9 @@ actor QwenRealtimeResidentBrainAdapter:
                 } else {
                     // Omni does not guarantee a response.done acknowledgement for cancel.
                     // Fence old output locally so the interrupting input can keep flowing.
+                    if preserveInterruptingUserInput, prepareQuarantinedInterruption(expected: current) {
+                        lifecycle = .transitioning
+                    }
                     if let terminalError { throw terminalError }
                     try requireOwnedGenerationTransition(current)
                     finishActiveResponse(responseID)
@@ -1233,6 +1391,100 @@ actor QwenRealtimeResidentBrainAdapter:
                 failWaiters(with: mapped)
             }
             throw mapped
+        }
+    }
+
+    func recoverInput(_ command: RealtimeBrainRecoverInputCommand) async throws {
+        guard inputRecovery?.identity == command.identity,
+              command.identity.session == identity, command.identity.contextRevision == contextRevision,
+              let user = activeUserInputTurn, user.turn.runtimeID == command.identity.turnID,
+              recoveredInputTurnID != user.turn.runtimeID, lifecycle == .failed,
+              let deadline = inputRecoveryDeadline, ContinuousClock.now < deadline,
+              let prefix = inputReplay.replayStart else { throw RealtimeResidentBrainError.invalidEvent }
+        recoveredInputTurnID = user.turn.runtimeID
+        recoveredTranscriptAccepted = false
+        let operationID = beginMutationOperation()
+        defer { finishMutationOperation(operationID) }
+        replayingInput = true
+        lifecycle = .transitioning
+        terminalError = nil
+        contextSectionsByScope = Dictionary(uniqueKeysWithValues: command.sections.map { ($0.scope.rawValue, $0.content) })
+        do {
+            let token = try await reconnectForGeneration(expectedIdentity: command.identity.session)
+            try requireOwnedGenerationTransition(command.identity.session)
+            connectionToken = token
+            inputRecovery = nil
+            awaitingRecoveredUserAlias = true
+            inputAudioBatcher.reset()
+            lifecycle = .active
+            startReceiver(connectionToken: token)
+            var cursor = prefix
+            while let bytes = inputReplay.remaining(after: cursor), !bytes.isEmpty {
+                try requireActive(command.identity.session)
+                guard command.identity.contextRevision == contextRevision else {
+                    throw RealtimeResidentBrainError.invalidContextRevision
+                }
+                try await send(codec.audioAppend(bytes))
+                cursor += bytes.count
+            }
+            try requireActive(command.identity.session)
+            guard inputReplay.canReplay else { throw RealtimeResidentBrainError.invalidAudioFrame }
+            inputReplay.rebase(after: prefix)
+            replayingInput = false
+            if recoveredTranscriptAccepted { finishInputRecovery() }
+            diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+                source: .adapter, category: "qwen_input_recovery_replayed", routeKind: .realtimeBrain,
+                turnGeneration: identity?.generation, disposition: "runtime_authorized", byteCount: cursor - prefix))
+        } catch {
+            if identity == command.identity.session, contextRevision == command.identity.contextRevision,
+               activeUserInputTurn?.turn.runtimeID == command.identity.turnID {
+                expireInputRecovery()
+            }
+            throw Self.map(error)
+        }
+    }
+
+    private func finishInputRecovery() {
+        guard recoveryExpiryTask != nil else { return }
+        recoveredTranscriptAccepted = true
+        guard !replayingInput else { return }
+        recoveryExpiryTask?.cancel()
+        recoveryExpiryTask = nil
+        inputRecoveryDeadline = nil
+        if let turnID = recoveredInputTurnID { deliverIfWaiting(.inputRecovered(turnID)) }
+        if let retired = retiringWireResponseID {
+            retiringWireResponseID = nil
+            retiringResponseAttempt?.providerBecameReady()
+            retiringResponseAttempt = nil
+            deliver(.responseDone(retired))
+        }
+    }
+
+    private func expireInputRecovery(matching expected: RealtimeBrainEventIdentity? = nil) {
+        if let expected {
+            guard expected.session == identity, expected.contextRevision == contextRevision,
+                  expected.turnID == activeUserInputTurn?.turn.runtimeID else { return }
+        }
+        guard lifecycle != .closing, lifecycle != .closed else { return }
+        guard inputRecovery != nil || replayingInput || recoveryExpiryTask != nil else { return }
+        recoveryExpiryTask?.cancel()
+        recoveryExpiryTask = nil
+        inputRecoveryDeadline = nil
+        inputRecovery = nil
+        replayingInput = false
+        awaitingRecoveredUserAlias = false
+        inputReplay = QwenRealtimeInputReplay()
+        terminalError = .invalidEvent
+        lifecycle = .failed
+        failWaiters(with: .invalidEvent)
+        connectionToken = nil
+        let oldReceiver = receiverTask
+        receiverTask = nil
+        oldReceiver?.cancel()
+        let transport = self.transport
+        terminalTransportCloseTask = Task {
+            await transport.close(reason: .cancelled)
+            _ = await oldReceiver?.value
         }
     }
 
@@ -1328,15 +1580,16 @@ actor QwenRealtimeResidentBrainAdapter:
         _ frame: RealtimeWebSocketFrame,
         connectionToken token: UUID
     ) {
-        guard connectionToken == token else { return }
+        guard connectionToken == token, terminalError == nil else { return }
         #if DEBUG
         receivedWireSequence &+= 1
         #endif
         var phase = "decode"
         do {
-            let event = try codec.decode(frame)
+            let decoded = try codec.decode(frame)
             phase = "state"
-            try handle(event)
+            try validateAssistantOutput(decoded)
+            try handle(decoded.event)
         } catch {
             handleReceiverFailure(
                 error, connectionToken: token, phase: phase, frame: frame
@@ -1355,6 +1608,7 @@ actor QwenRealtimeResidentBrainAdapter:
                 deliver(acknowledgement)
             }
         case .inputAudioCleared:
+            inputReplay = QwenRealtimeInputReplay()
             if let acknowledgement = expectedInputClear {
                 deliver(acknowledgement)
             }
@@ -1372,6 +1626,19 @@ actor QwenRealtimeResidentBrainAdapter:
             )
             guard lifecycle == .active,
                   !completedUserInputItemIDs.contains(itemID) else { return }
+            if awaitingRecoveredUserAlias, var restored = activeUserInputTurn {
+                guard !retiredItemIDs.contains(itemID),
+                      activeResponse?.outputItemIDs.values.contains(itemID) != true else {
+                    throw invalidQwenReceiveEvent("assistant_output_identity")
+                }
+                turnsByWireItemID[itemID] = restored.turn
+                restored.wireItemID = itemID
+                restored.audioStartMilliseconds = audioStartMilliseconds
+                activeUserInputTurn = restored
+                awaitingRecoveredUserAlias = false
+                return
+            }
+            inputReplay.start(milliseconds: audioStartMilliseconds)
             guard let turn = turnBinding(for: itemID, createsIfNeeded: true)
             else { return }
             activeUserInputTurn = ActiveUserInputTurn(
@@ -1440,6 +1707,8 @@ actor QwenRealtimeResidentBrainAdapter:
             )
             scheduleTranscriptFinalFallback(itemID: itemID)
         case .inputTranscriptDelta(let itemID, let preview):
+            if recoveredInputTurnID == activeUserInputTurn?.turn.runtimeID,
+               activeUserInputTurn?.transcriptFinal != nil { return }
             recordUserInputWireDiagnostic(
                 category: "qwen_transcript_partial_received",
                 itemID: itemID
@@ -1483,6 +1752,19 @@ actor QwenRealtimeResidentBrainAdapter:
                 scheduleTranscriptFinalFallback(itemID: itemID)
             }
         case .inputTranscriptCompleted(let itemID, let transcript):
+            if recoveredInputTurnID == activeUserInputTurn?.turn.runtimeID,
+               activeUserInputTurn?.wireItemID == itemID {
+                if let original = activeUserInputTurn?.transcriptFinal,
+                   original.trimmingCharacters(in: .whitespacesAndNewlines)
+                    != transcript.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    throw invalidQwenReceiveEvent("recovered_transcript_mismatch")
+                }
+                finishInputRecovery()
+                if activeUserInputTurn?.transcriptFinal != nil {
+                    markUserInputCompleted(itemID)
+                    return
+                }
+            }
             recordUserInputWireDiagnostic(
                 category: "qwen_transcript_final_received",
                 itemID: itemID
@@ -1687,7 +1969,9 @@ actor QwenRealtimeResidentBrainAdapter:
             }
             guard lifecycle == .active,
                   var response = activeResponse,
-                  response.wireID == responseID else {
+                  response.wireID == responseID,
+                  response.sessionIdentity == identity,
+                  response.contextRevision == contextRevision else {
                 if retiredResponseIDs.contains(responseID) { return }
                 return
             }
@@ -1782,6 +2066,14 @@ actor QwenRealtimeResidentBrainAdapter:
         #endif
         lifecycle = .failed
         terminalError = mapped
+        if let inputRecovery {
+            cancelTranscriptFinalFallbacks(reason: "input_recovery")
+            if let waiter = eventWaiter {
+                eventWaiter = nil
+                waiter.continuation.resume(throwing: inputRecovery)
+            }
+            return
+        }
         failWaiters(with: mapped)
     }
 
@@ -1813,6 +2105,7 @@ actor QwenRealtimeResidentBrainAdapter:
             "response.created", "response.text.delta", "response.text.done",
             "response.audio_transcript.delta", "response.audio_transcript.done",
             "response.audio.delta", "response.audio.done",
+            "response.output_item.added", "response.output_item.done",
             "response.function_call_arguments.done", "response.done", "error"
         ].contains(value): wireType = value
         default: wireType = frame == nil ? "none" : "unknown"
@@ -1831,6 +2124,9 @@ actor QwenRealtimeResidentBrainAdapter:
                 + ";authorization_session_matches=\(pendingResponseAuthorization?.turn.sessionIdentity == identity)"
                 + ";authorization_context_matches=\(pendingResponseAuthorization?.turn.contextRevision == contextRevision)"
                 + ";user_input=\(activeUserInputTurn != nil)"
+                + ";input_recovery=\(inputRecovery != nil)"
+                + ";replay_available=\(inputReplay.canReplay)"
+                + ";active_mutations=\(activeMutationOperations.count)"
                 + ";text_string=\(object?["text"] is String)"
                 + ";stash_string=\(object?["stash"] is String)",
             wireSequence: receivedWireSequence,
@@ -1859,7 +2155,7 @@ actor QwenRealtimeResidentBrainAdapter:
             group.cancelAll()
             return first
         }
-        let event = try codec.decode(frame)
+        let event = try codec.decode(frame).event
         if case .providerError = event {
             throw RealtimeResidentBrainError.providerFailure
         }
@@ -1876,13 +2172,14 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func waitForAcknowledgement(
-        _ acknowledgement: Acknowledgement
+        _ acknowledgement: Acknowledgement,
+        timeout recoveryTimeout: Duration? = nil
     ) async throws {
         if deliveredAcknowledgements.remove(acknowledgement) != nil {
             return
         }
         let token = connectionToken
-        let timeout = configuration.acknowledgementTimeout
+        let timeout = recoveryTimeout ?? configuration.acknowledgementTimeout
         let waiterID = UUID()
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -2329,7 +2626,8 @@ actor QwenRealtimeResidentBrainAdapter:
         for wireItemID: String,
         createsIfNeeded: Bool
     ) -> TurnBinding? {
-        guard !retiredItemIDs.contains(wireItemID) else { return nil }
+        guard !retiredItemIDs.contains(wireItemID),
+              activeResponse?.outputItemIDs.values.contains(wireItemID) != true else { return nil }
         if let existing = turnsByWireItemID[wireItemID] {
             latestTurnBinding = existing
             return existing
@@ -2343,6 +2641,65 @@ actor QwenRealtimeResidentBrainAdapter:
         turnsByWireItemID[wireItemID] = value
         latestTurnBinding = value
         return value
+    }
+
+    private func validateAssistantOutput(_ decoded: QwenRealtimeResidentBrainCodec.DecodedEvent) throws {
+        guard !decoded.outputItems.isEmpty else { return }
+        // A cross-role collision makes the provider conversation unsafe even when its response is retired.
+        if decoded.outputItems.contains(where: { item in
+            guard let itemID = item.id else { return false }
+            return turnsByWireItemID[itemID] != nil || completedUserInputItemIDs.contains(itemID)
+        }) {
+            if let user = activeUserInputTurn, user.turn.sessionIdentity == identity,
+               user.turn.contextRevision == contextRevision,
+               activeResponse == nil || activeResponse?.turnID != user.turn.runtimeID,
+               pendingResponseAuthorization?.wasSubmitted != true,
+               recoveredInputTurnID != user.turn.runtimeID, inputRecovery == nil,
+               inputReplay.canReplay {
+                proposeInputRecovery(for: user)
+            }
+            throw invalidQwenReceiveEvent("assistant_output_identity")
+        }
+        // Retired output may release a response.done waiter, but cannot acquire item ownership.
+        guard var response = activeResponse,
+              response.wireID == decoded.responseID,
+              response.sessionIdentity == identity,
+              response.contextRevision == contextRevision,
+              !retiredResponseIDs.contains(response.wireID),
+              locallyCancellingResponseID != response.wireID else {
+            diagnosticBuffer?.append(NativeSpeechInternalDiagnosticEvent(
+                source: .adapter, category: "qwen_assistant_output_rejected", routeKind: .realtimeBrain,
+                turnGeneration: identity?.generation, disposition: "stale_response"))
+            return
+        }
+        for item in decoded.outputItems {
+            guard let index = item.index, index >= 0,
+                  let itemID = item.id, !itemID.isEmpty,
+                  (item.type == "message" && item.role == "assistant")
+                    || (item.type == "function_call" && item.role == nil),
+                  turnsByWireItemID[itemID] == nil,
+                  !completedUserInputItemIDs.contains(itemID),
+                  !retiredItemIDs.contains(itemID),
+                  response.outputItemIDs[index] == nil || response.outputItemIDs[index] == itemID,
+                  !response.outputItemIDs.contains(where: { $0.key != index && $0.value == itemID }) else {
+                throw invalidQwenReceiveEvent("assistant_output_identity")
+            }
+            response.outputItemIDs[index] = itemID
+        }
+        activeResponse = response
+    }
+
+    private func proposeInputRecovery(for user: ActiveUserInputTurn) {
+        cancelTranscriptFinalFallbacks(reason: "input_recovery")
+        recoveryExpiryTask?.cancel()
+        let proposal = RealtimeBrainInputRecoveryRequired(identity: makeEventIdentity(for: user.turn))
+        inputRecovery = proposal
+        let deadline = inputRecoveryDeadline ?? ContinuousClock.now.advanced(by: .seconds(15))
+        inputRecoveryDeadline = deadline
+        recoveryExpiryTask = Task { [weak self] in
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            await self?.expireInputRecovery(matching: proposal.identity)
+        }
     }
 
     @discardableResult
@@ -2408,6 +2765,10 @@ actor QwenRealtimeResidentBrainAdapter:
 
     private func finishActiveResponse(_ responseID: String) {
         guard activeResponse?.wireID == responseID else { return }
+        if activeResponse?.turnID == activeUserInputTurn?.turn.runtimeID {
+            inputReplay.discardUtterance()
+        }
+        activeResponse?.outputItemIDs.values.forEach { retire(itemID: $0) }
         retire(responseID: responseID)
         activeResponse = nil
     }
@@ -2435,6 +2796,7 @@ actor QwenRealtimeResidentBrainAdapter:
             .filter { $0 != preservingItemID }
             .forEach { retire(itemID: $0) }
         if let responseID = activeResponse?.wireID {
+            activeResponse?.outputItemIDs.values.forEach { retire(itemID: $0) }
             retire(responseID: responseID)
         }
     }
@@ -2502,6 +2864,7 @@ actor QwenRealtimeResidentBrainAdapter:
 
     private func recordUnboundUserTranscript(_ preview: String, itemID: String) {
         guard canAssociateUserInput,
+              activeResponse?.outputItemIDs.values.contains(itemID) != true,
               turnsByWireItemID[itemID] == nil,
               !retiredItemIDs.contains(itemID),
               !completedUserInputItemIDs.contains(itemID),
@@ -2530,6 +2893,7 @@ actor QwenRealtimeResidentBrainAdapter:
 
     private func reassociateUserInputAfterUnidentifiedStop(itemID: String, transcript: String) {
         guard lifecycle == .active, turnsByWireItemID[itemID] == nil,
+              activeResponse?.outputItemIDs.values.contains(itemID) != true,
               !retiredItemIDs.contains(itemID), !completedUserInputItemIDs.contains(itemID),
               let state = activeUserInputTurn,
               state.turn.sessionIdentity == identity, state.turn.contextRevision == contextRevision,
@@ -2572,6 +2936,7 @@ actor QwenRealtimeResidentBrainAdapter:
         audioEndMilliseconds: Int?
     ) {
         guard canAssociateUserInput, turnsByWireItemID[itemID] == nil,
+              activeResponse?.outputItemIDs.values.contains(itemID) != true,
               !retiredItemIDs.contains(itemID),
               !completedUserInputItemIDs.contains(itemID),
               let state = activeUserInputTurn,
@@ -2652,6 +3017,7 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func scheduleTranscriptFinalFallback(itemID: String) {
+        guard recoveryExpiryTask == nil else { return }
         cancelTranscriptFinalFallback(
             itemID: itemID,
             reason: "rescheduled"
@@ -2986,6 +3352,15 @@ actor QwenRealtimeResidentBrainAdapter:
     }
 
     private func resetSessionState() {
+        recoveryExpiryTask?.cancel()
+        recoveryExpiryTask = nil
+        inputRecoveryDeadline = nil
+        inputRecovery = nil
+        replayingInput = false
+        awaitingRecoveredUserAlias = false
+        recoveredInputTurnID = nil
+        recoveredTranscriptAccepted = false
+        inputReplay = QwenRealtimeInputReplay()
         resetGenerationStatePreservingTombstones()
         resetWireTombstones()
         contextSectionsByScope.removeAll(keepingCapacity: true)

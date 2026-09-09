@@ -4,6 +4,13 @@ probe_build() {
   local variant="$1" log="$2"
   shift 2
   local identity="${AFTELLE_PROBE_SIGNING_IDENTITY:-}" compiler sdk digest cache staging requirement argument
+  local identity_file="$repo_root/.build/qwen-live-probes/signing-identity"
+  if [ -z "$identity" ] && [ -f "$identity_file" ]; then
+    identity="$(cat "$identity_file")" || return
+    if [ -z "$identity" ]; then
+      echo 'probe_build_error=invalid_signing_identity' >&2; return 2
+    fi
+  fi
   if [ -n "$identity" ] && [[ ! "$identity" =~ ^[0-9A-Fa-f]{40}$ ]]; then
     echo 'probe_build_error=invalid_signing_identity' >&2; return 2
   fi

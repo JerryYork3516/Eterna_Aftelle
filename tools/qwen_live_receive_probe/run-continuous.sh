@@ -21,21 +21,27 @@ pcm_start=""
 pcm_end=""
 transcript_reference=""
 record_audio=false
+event_driven_overlap=false
+prompt_pcm=""
+interrupt_pcm=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --allow-audio-upload) upload=true; shift ;;
     --allow-keychain-interaction) interaction=true; shift ;;
     --inject-response-error) inject_error=true; shift ;;
     --terminal-responses) terminal_responses=true; shift ;;
+    --event-driven-overlap) event_driven_overlap=true; shift ;;
     --omit-provisional-preview) omit_preview=true; shift ;;
     --require-active-cancel) require_active_cancel=true; shift ;;
     --record-audio-evidence) record_audio=true; shift ;;
-    --rounds|--seconds|--pcm|--reassociate-at-round|--pcm-start-ms|--pcm-end-ms|--transcript-reference)
+    --rounds|--seconds|--pcm|--prompt-pcm|--interrupt-pcm|--reassociate-at-round|--pcm-start-ms|--pcm-end-ms|--transcript-reference)
       if [ "$#" -lt 2 ]; then echo 'continuous_error=arguments' >&2; exit 2; fi
       case "$1" in
         --rounds) rounds="$2" ;;
         --seconds) seconds="$2" ;;
         --pcm) pcm="$2" ;;
+        --prompt-pcm) prompt_pcm="$2" ;;
+        --interrupt-pcm) interrupt_pcm="$2" ;;
         --reassociate-at-round) reassociate_round="$2" ;;
         --pcm-start-ms) pcm_start="$2" ;;
         --pcm-end-ms) pcm_end="$2" ;;
@@ -62,7 +68,7 @@ fi
 if [ "$omit_preview" = true ] && [ -z "$reassociate_round" ]; then
   echo 'continuous_error=missing_reassociation_round' >&2; exit 2
 fi
-if [ "$mode" = --live ] && { [ "$upload" != true ] || [ ! -f "$pcm" ]; }; then
+if [ "$mode" = --live ] && { [ "$upload" != true ] || { [ ! -f "$pcm" ] && { [ "$event_driven_overlap" != true ] || [ ! -f "$prompt_pcm" ] || [ ! -f "$interrupt_pcm" ]; }; } }; then
   echo 'continuous_error=audio_upload_not_authorized_or_missing_pcm' >&2; exit 2
 fi
 if [ "$mode" = --provider-boundary ] && { [ "$upload" != true ] || [ ! -f "$pcm" ]; }; then
@@ -158,7 +164,16 @@ if [ "$mode" = --provider-boundary ]; then
 fi
 arguments=("$mode" --rounds "$rounds" --seconds "$seconds" --output "$work_dir"
   --fixture "$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident")
-if [ "$upload" = true ]; then arguments+=(--allow-audio-upload --pcm "$pcm"); fi
+if [ "$event_driven_overlap" = true ]; then arguments+=(--event-driven-overlap); fi
+if [ -n "$prompt_pcm" ]; then arguments+=(--prompt-pcm "$prompt_pcm"); fi
+if [ -n "$interrupt_pcm" ]; then arguments+=(--interrupt-pcm "$interrupt_pcm"); fi
+if [ "$upload" = true ]; then
+  if [ "$event_driven_overlap" = true ]; then
+    arguments+=(--allow-audio-upload)
+  else
+    arguments+=(--allow-audio-upload --pcm "$pcm")
+  fi
+fi
 if [ "$interaction" = true ]; then arguments+=(--allow-keychain-interaction); fi
 if [ "$inject_error" = true ]; then arguments+=(--inject-response-error); fi
 if [ "$terminal_responses" = true ]; then arguments+=(--terminal-responses); fi

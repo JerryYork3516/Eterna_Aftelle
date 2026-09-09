@@ -35,6 +35,8 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
     private var failsNextAudioAppend = false
     private var failsNextResponseCreate = false
     private var responseCreateWriteBarrier: (@Sendable () async -> Void)?
+    private var responseCancelWriteBarrier: (@Sendable () async -> Void)?
+    private var audioAppendWriteBarrier: (@Sendable () async -> Void)?
     private var holdsResponseCancellation = false
     private var heldResponseCancellationFrames: [String] = []
     private var turnDetectionAcknowledgementMode:
@@ -69,6 +71,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
         case "conversation.item.create":
             break
         case "input_audio_buffer.append":
+            await audioAppendWriteBarrier?()
             if failsNextAudioAppend {
                 failsNextAudioAppend = false
                 throw RealtimeResidentBrainError.transportFailure
@@ -91,6 +94,7 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
                 enqueueText(event)
             }
         case "response.cancel":
+            await responseCancelWriteBarrier?()
             if failsNextResponseCancel {
                 failsNextResponseCancel = false
                 enqueueText(#"{"type":"error","error":{"code":"cancel_failed"}}"#)
@@ -217,6 +221,14 @@ actor R3FakeRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
     func setResponseCreateWriteBarrier(_ barrier: (@Sendable () async -> Void)?) {
         responseCreateWriteBarrier = barrier
+    }
+
+    func setResponseCancelWriteBarrier(_ barrier: (@Sendable () async -> Void)?) {
+        responseCancelWriteBarrier = barrier
+    }
+
+    func setAudioAppendWriteBarrier(_ barrier: (@Sendable () async -> Void)?) {
+        audioAppendWriteBarrier = barrier
     }
 
     func releaseResponseCreationAcknowledgements() {

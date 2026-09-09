@@ -65,7 +65,8 @@
 "particleDebug.provider.error.emptyReply" = "Provider returned an empty reply";
 "particleDebug.provider.error.residentUnavailable" = "Load a resident before testing";
 "particleDebug.qwen.title" = "Qwen Realtime (Beijing)";
-"particleDebug.qwen.configuration" = "Development Realtime Profile";
+"particleDebug.qwen.configuration" = "Realtime Speech Model";
+"particleDebug.qwen.modelSelectionHint" = "Controls full-duplex speech. Stop before switching; the selection is saved and applied on the next start.";
 "particleDebug.qwen.voice" = "Voice";
 "particleDebug.qwen.audioFormat" = "Input / Output";
 "particleDebug.qwen.turnDetection" = "Turn Detection";

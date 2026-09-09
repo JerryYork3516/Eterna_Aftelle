@@ -3,13 +3,16 @@ import Foundation
 enum QwenRealtimeRuntimeComposition {
     static func makeRuntimeCore(
         credentialReader: ProviderCredentialReading,
-        realtimeBrainConfiguration: QwenRealtimeResidentBrainConfiguration
+        realtimeBrainConfiguration: QwenRealtimeResidentBrainConfiguration,
+        realtimeBrainConfigurationProvider:
+            (@Sendable () -> QwenRealtimeResidentBrainConfiguration)? = nil
     ) -> RuntimeCore {
         let realtimeResidentBrainProvider =
             QwenRealtimeResidentBrainAdapter(
                 credentialReader: credentialReader,
                 transport: URLSessionRealtimeWebSocketTransport(),
-                configuration: realtimeBrainConfiguration
+                configuration: realtimeBrainConfiguration,
+                configurationProvider: realtimeBrainConfigurationProvider
             )
         let router = ProviderRouter(
             credentialReader: credentialReader,
@@ -24,7 +27,9 @@ enum QwenRealtimeRuntimeComposition {
         diagnosticBuffer: NativeSpeechDiagnosticBuffer,
         realtimeBrainConfiguration: QwenRealtimeResidentBrainConfiguration,
         asrConfiguration: QwenRealtimeASRConfiguration,
-        ttsConfiguration: QwenRealtimeTTSConfiguration
+        ttsConfiguration: QwenRealtimeTTSConfiguration,
+        realtimeBrainConfigurationProvider:
+            (@Sendable () -> QwenRealtimeResidentBrainConfiguration)? = nil
     ) -> RuntimeCore {
         let realtimeResidentBrainProvider =
             QwenRealtimeResidentBrainAdapter(
@@ -34,7 +39,8 @@ enum QwenRealtimeRuntimeComposition {
                     diagnosticRouteKind: .realtimeBrain
                 ),
                 configuration: realtimeBrainConfiguration,
-                diagnosticBuffer: diagnosticBuffer
+                diagnosticBuffer: diagnosticBuffer,
+                configurationProvider: realtimeBrainConfigurationProvider
             )
         let nativeSpeechProvider = QwenRealtimeAdapter(
             credentialReader: credentialReader,

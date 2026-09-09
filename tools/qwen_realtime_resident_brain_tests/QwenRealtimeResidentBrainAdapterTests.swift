@@ -1,5 +1,26 @@
 import Foundation
 
+nonisolated private final class R3ModelSelection: @unchecked Sendable {
+    private let lock = NSLock()
+    private var modelID = QwenRealtimeResidentBrainConfiguration.supportedModelID
+    private var reads = 0
+
+    func select(_ modelID: String) { lock.withLock { self.modelID = modelID } }
+    var readCount: Int { lock.withLock { reads } }
+    func configuration() -> QwenRealtimeResidentBrainConfiguration {
+        lock.withLock {
+            reads += 1
+            return QwenRealtimeResidentBrainConfiguration(
+                endpoint: URL(string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=\(modelID)")!,
+                modelID: modelID,
+                keyRef: "keychain://test/qwen",
+                defaultProviderVoiceID: "R6FixtureVoice",
+                acknowledgementTimeout: .seconds(1)
+            )
+        }
+    }
+}
+
 private actor R3ResponseCatchBarrier {
     private var entered = false
     private var entryWaiter: CheckedContinuation<Void, Never>?
@@ -22,6 +43,11 @@ private actor R3ResponseCatchBarrier {
 
 private enum R3PendingAnswerCase: String, CaseIterable {
     case doneBeforeTimeout, doneBeforeCatch, lateDone, stop, expiry, speechPause, supersede, supersedeDuringWait, generation, context
+    case identityCollision, identityCollisionAfterSubmission, inputRecovery, inputRecoveryFinal, inputRecoverySecondCollision
+    case inputRecoveryChangedFinal, inputRecoveryStop, inputRecoveryOverflow, inputRecoveryTimeout
+    case inputRecoveryStopDuringReconnect, inputRecoveryConcurrentReceive
+    case inputRecoveryBeforeConfirmation, inputRecoveryDuringCancellation, inputRecoveryDuringAudioAppend
+    case inputRecoveryStopDuringCancellation, inputRecoveryCancellationDeadline
     case expiryAfterSubmission, expiryDuringWrite, expiryBeforeSubmission
     case cancelledOperationDrain, cancelledStopDrain, cancelledContextDrain, cancelledContextGenerationDrain
 }
@@ -137,6 +163,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let fixture = try Data(
             contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])
         )
+        try await testAssistantOutputIdentityOwnership()
         try await testPostStopCommittedItem()
         try await testPostStopCommittedItemFences()
         try await testUnidentifiedStopRecoversBoundTurn()
@@ -169,6 +196,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             return
         }
         try await testPendingAnswerMatrix(fixture: fixture)
+        try await testModelSelectionBetweenSessions()
         try await testHandshakeAndBootstrap()
         try await testProviderListeningInputAudioDiagnostics()
         try await testUnsafeTurnDetectionAcknowledgementFailsClosed()
@@ -219,6 +247,111 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         print("qwen_realtime_resident_brain_cases=\(cases)")
         print("qwen_realtime_resident_brain_checks=\(checks)")
         print("qwen_realtime_resident_brain_network_dependency=ZERO")
+    }
+
+    private static func testAssistantOutputIdentityOwnership() async throws {
+        for defect in ["finalized_user", "wrong_role", "changed_item", "missing_identity"] {
+            cases += 1
+            let diagnostics = NativeSpeechDiagnosticBuffer()
+            let stack = try makeStack(diagnosticBuffer: diagnostics)
+            let identity = sessionIdentity(generation: 4)
+            try await openAndBootstrap(stack, identity: identity)
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"user-B"}"#)
+            let started = try await stack.adapter.receiveEvent(session: identity)
+            await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"user-B","transcript":"user question B"}"#)
+            let final = try await stack.adapter.receiveEvent(session: identity)
+            expect(final.kind == .userTranscriptFinal("user question B")
+                && final.identity.turnID == started.identity.turnID, "B has finalized user ownership")
+            try await authorizeResponse(stack, from: final, responseID: "response-A")
+            await stack.transport.enqueueText(#"{"type":"response.output_item.added","response_id":"response-A","output_index":0,"item":{"id":"assistant-A","type":"message","role":"assistant"}}"#)
+            let itemID = defect == "finalized_user" ? "user-B" : defect == "changed_item" ? "assistant-C" : "assistant-A"
+            let role = defect == "wrong_role" ? "user" : "assistant"
+            let fields = defect == "missing_identity" ? "" : #""id":"\#(itemID)","role":"\#(role)","#
+            await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-A","status":"completed","output":[{\#(fields)"type":"message","content":[{"type":"text","text":"must not become canonical"}]}]}}"#)
+            await expectRealtimeError(.invalidEvent) {
+                _ = try await stack.adapter.receiveEvent(session: identity)
+            }
+            expect(diagnostics.drain().events.contains {
+                $0.category == "qwen_receive_failure"
+                    && ($0.disposition ?? "").contains("branch=assistant_output_identity")
+            }, "invalid output identity fails at the production ownership boundary")
+            let sent = try await sentTypes(stack.transport)
+            expect(sent.filter { $0 == "response.create" }.count == 1
+                && !sent.contains("response.cancel"), "identity validation does not own interruption or authorize a second response")
+            try? await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+        }
+        print("assistant_output_identity_defects=4 PASS")
+        let stack = try makeStack()
+        let identity = sessionIdentity(generation: 4)
+        try await openAndBootstrap(stack, identity: identity)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"user-B"}"#)
+        let user = try await stack.adapter.receiveEvent(session: identity)
+        try await authorizeResponse(stack, from: user, responseID: "response-A")
+        await stack.transport.enqueueText(#"{"type":"response.output_item.added","response_id":"response-A","output_index":0,"item":{"id":"assistant-A","type":"message","role":"assistant"}}"#)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"assistant-A"}"#)
+        await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"assistant-A","transcript":"resident words relabeled as user"}"#)
+        await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-A","status":"completed","output":[{"id":"assistant-A","type":"message","role":"assistant","content":[{"type":"text","text":"valid assistant answer"}]}]}}"#)
+        let final = try await stack.adapter.receiveEvent(session: identity)
+        expect(final.kind == .residentTextFinal("valid assistant answer"),
+            "assistant item cannot acquire a user turn, proposal or transcript ownership")
+        _ = try await stack.adapter.receiveEvent(session: identity)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"assistant-A"}"#)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"user-C"}"#)
+        let next = try await stack.adapter.receiveEvent(session: identity)
+        expect(next.kind == .userSpeechStarted && next.identity.turnID != user.identity.turnID,
+            "retired assistant item cannot become a later user turn")
+        try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+    }
+
+    private static func testModelSelectionBetweenSessions() async throws {
+        cases += 1
+        let selection = R3ModelSelection()
+        let transport = R3FakeRealtimeWebSocketTransport()
+        let adapter = QwenRealtimeResidentBrainAdapter(
+            credentialReader: try credentialReader(),
+            transport: transport,
+            configuration: selection.configuration(),
+            configurationProvider: { selection.configuration() }
+        )
+        let models = [
+            QwenRealtimeResidentBrainConfiguration.supportedModelID,
+            QwenRealtimeResidentBrainConfiguration.flashModelID,
+            QwenRealtimeResidentBrainConfiguration.supportedModelID
+        ]
+        for (index, model) in models.enumerated() {
+            selection.select(model)
+            let identity = sessionIdentity(generation: UInt64(index + 1))
+            try await adapter.openSession(RealtimeBrainOpenSessionCommand(identity: identity))
+            try await adapter.updateRuntimeContext(RealtimeBrainRuntimeContextUpdate(
+                identity: identity, kind: .bootstrap, contextRevision: 1,
+                sections: [RealtimeBrainContextSection(scope: .stableResident, content: "model fixture")]
+            ))
+            let ready = try await adapter.receiveEvent(session: identity)
+            expect(ready.kind == .sessionReady, "selected model completes bootstrap")
+            let endpoints = await transport.connectedEndpoints
+            let queryModel = URLComponents(url: endpoints[index], resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "model" })?.value
+            expect(queryModel == model, "next session uses selected model in actual transport URL")
+            expect(endpoints.count == index + 1, "switching opens only one connection per session")
+            let reads = selection.readCount
+            selection.select("unsupported-model-fixture")
+            await expectRealtimeError(.unavailable) {
+                try await adapter.openSession(RealtimeBrainOpenSessionCommand(identity: identity))
+            }
+            expect(selection.readCount == reads, "active session never reloads changed configuration")
+            try await adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity))
+        }
+        let count = await transport.connectedEndpoints.count
+        await expectRealtimeError(.unavailable) {
+            try await adapter.openSession(RealtimeBrainOpenSessionCommand(identity: sessionIdentity(generation: 4)))
+        }
+        let rejectedCount = await transport.connectedEndpoints.count
+        expect(count == rejectedCount, "unsupported model fails before any connection")
+        let objects = try await sentObjects(transport)
+        expect(!objects.contains { $0["type"] as? String == "response.create" },
+               "model selection cannot create a response")
+        let closeCount = await transport.closeCount()
+        expect(closeCount == 3, "all model sessions settle before reuse")
     }
 
     private static func testHandshakeAndBootstrap() async throws {
@@ -411,7 +544,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "listening-diagnostic-response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"listening-diagnostic-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"done"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"listening-diagnostic-response","status":"completed","output":[{"id":"fixture-output-449-0","role":"assistant","type":"message","content":[{"type":"text","text":"done"}]}]}}"#
         )
         _ = try await stack.adapter.receiveEvent(session: identity)
         _ = diagnostics.drain()
@@ -1017,7 +1150,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(speakingStopped.kind == .residentSpeakingStopped, "audio.done stops speaking only")
 
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"response-1","status":"completed","output":[{"type":"message","content":[{"type":"audio","transcript":"你好呀"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"response-1","status":"completed","output":[{"id":"fixture-output-1055-0","role":"assistant","type":"message","content":[{"type":"audio","transcript":"你好呀"}]}]}}"#
         )
         let semantic = try await stack.adapter.receiveEvent(session: identity)
         expect(
@@ -1357,7 +1490,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         _ = try await stack.adapter.receiveEvent(session: identity)
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"audio-response-1","status":"completed","output":[{"type":"message","content":[{"type":"audio","transcript":"first"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"audio-response-1","status":"completed","output":[{"id":"fixture-output-1395-0","role":"assistant","type":"message","content":[{"type":"audio","transcript":"first"}]}]}}"#
         )
         _ = try await stack.adapter.receiveEvent(session: identity)
         _ = try await stack.adapter.receiveEvent(session: identity)
@@ -2001,7 +2134,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                        "old drain completion does not automatically retry the expired user turn")
                 try await authorizeResponse(stack, from: fresh, responseID: "after-timeout-response")
                 await stack.transport.enqueueText(
-                    #"{"type":"response.done","response":{"id":"after-timeout-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"fresh reply"}]}]}}"#
+                    #"{"type":"response.done","response":{"id":"after-timeout-response","status":"completed","output":[{"id":"fixture-output-2039-0","role":"assistant","type":"message","content":[{"type":"text","text":"fresh reply"}]}]}}"#
                 )
                 let freshText = try await stack.adapter.receiveEvent(session: nextIdentity)
                 let freshFinal = try await stack.adapter.receiveEvent(session: nextIdentity)
@@ -2018,7 +2151,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         try await reboundResponse.value
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"response-barge-in","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"我在听"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"response-barge-in","status":"completed","output":[{"id":"fixture-output-2056-0","role":"assistant","type":"message","content":[{"type":"text","text":"我在听"}]}]}}"#
         )
         let reboundResidentText = try await stack.adapter.receiveEvent(
             session: nextIdentity
@@ -2047,7 +2180,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             #"{"type":"response.audio.delta","response_id":"response-interrupt","delta":"AA=="}"#
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"response-interrupt","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"late old final"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"response-interrupt","status":"completed","output":[{"id":"fixture-output-2085-0","role":"assistant","type":"message","content":[{"type":"text","text":"late old final"}]}]}}"#
         )
         for _ in 0 ..< 3 {
             await stack.transport.enqueueText(
@@ -2115,7 +2248,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "context-source-response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"context-source-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"context refresh"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"context-source-response","status":"completed","output":[{"id":"fixture-output-2153-0","role":"assistant","type":"message","content":[{"type":"text","text":"context refresh"}]}]}}"#
         )
         let ingressLowerBound = DispatchTime.now().uptimeNanoseconds
         await stack.transport.enqueueText(
@@ -2206,7 +2339,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "the rebound turn remains authorized for its next response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"pending-barge-in-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"继续"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"pending-barge-in-response","status":"completed","output":[{"id":"fixture-output-2244-0","role":"assistant","type":"message","content":[{"type":"text","text":"继续"}]}]}}"#
         )
         _ = try await stack.adapter.receiveEvent(session: identity)
         _ = try await stack.adapter.receiveEvent(session: identity)
@@ -2889,7 +3022,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "tool-response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"tool-response","item_id":"tool-item","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
+            #"{"type":"response.function_call_arguments.done","response_id":"tool-response","output_index":0,"item_id":"tool-item","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
         )
         let toolEvent = try await stack.adapter.receiveEvent(session: identity)
         guard case .toolCall(let candidate) = toolEvent.kind else {
@@ -2905,7 +3038,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         expect(candidate.identity == toolEvent.identity, "tool candidate carries exact Runtime identity")
 
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"tool-response","status":"completed","output":[{"type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}]}}"#
+            #"{"type":"response.done","response":{"id":"tool-response","status":"completed","output":[{"id":"tool-item","type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}]}}"#
         )
         await stack.transport.enqueueText(
             #"{"type":"input_audio_buffer.speech_started","item_id":"tool-collision-user"}"#
@@ -2919,7 +3052,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "tool-collision-response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"tool-collision-response","item_id":"tool-collision-item","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}"#
+            #"{"type":"response.function_call_arguments.done","response_id":"tool-collision-response","output_index":0,"item_id":"tool-collision-item","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}"#
         )
         let collisionEvent = try await stack.adapter.receiveEvent(
             session: identity
@@ -2933,7 +3066,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "duplicate callID remains a distinct Runtime candidate"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"tool-collision-response","status":"completed","output":[{"type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}]}}"#
+            #"{"type":"response.done","response":{"id":"tool-collision-response","status":"completed","output":[{"id":"tool-collision-item","type":"function_call","call_id":"call-weather","name":"weather_lookup","arguments":"{\"city\":\"Suzhou\"}"}]}}"#
         )
         await stack.transport.holdResponseCreationAcknowledgements()
         await stack.transport.useNextResponseID("response-tool-1")
@@ -3001,7 +3134,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         let finalText = try await stack.adapter.receiveEvent(session: identity)
         expect(finalText.kind == .residentTextFinal("杭州现在 25 度。"), "tool continuation remains normal resident output")
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"response-tool-1","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"杭州现在 25 度。"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"response-tool-1","status":"completed","output":[{"id":"fixture-output-3039-0","role":"assistant","type":"message","content":[{"type":"text","text":"杭州现在 25 度。"}]}]}}"#
         )
         let semantic = try await stack.adapter.receiveEvent(session: identity)
         expect(
@@ -3036,7 +3169,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "fast-tool-response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"fast-tool-response","item_id":"fast-tool-item","call_id":"fast-tool-call","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
+            #"{"type":"response.function_call_arguments.done","response_id":"fast-tool-response","output_index":0,"item_id":"fast-tool-item","call_id":"fast-tool-call","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
         )
         let toolEvent = try await stack.adapter.receiveEvent(session: identity)
         guard case .toolCall(let candidate) = toolEvent.kind else {
@@ -3074,7 +3207,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
 
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"fast-tool-response","status":"completed","output":[{"type":"function_call","call_id":"fast-tool-call","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}]}}"#
+            #"{"type":"response.done","response":{"id":"fast-tool-response","status":"completed","output":[{"id":"fast-tool-item","type":"function_call","call_id":"fast-tool-call","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}]}}"#
         )
         await stack.transport.waitUntilSent(type: "conversation.item.create")
         await stack.transport.waitUntilSent(type: "response.create", count: 2)
@@ -3098,7 +3231,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             "fast tool continuation remains bound to the original Runtime turn"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"fast-tool-continuation","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"杭州现在 25 度。"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"fast-tool-continuation","status":"completed","output":[{"id":"fixture-output-3136-0","role":"assistant","type":"message","content":[{"type":"text","text":"杭州现在 25 度。"}]}]}}"#
         )
         let semantic = try await stack.adapter.receiveEvent(session: identity)
         expect(
@@ -3132,10 +3265,10 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "multi-tool-response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"multi-tool-response","item_id":"multi-tool-item-1","call_id":"multi-tool-call-1","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
+            #"{"type":"response.function_call_arguments.done","response_id":"multi-tool-response","output_index":0,"item_id":"multi-tool-item-1","call_id":"multi-tool-call-1","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"}"#
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"multi-tool-response","item_id":"multi-tool-item-2","call_id":"multi-tool-call-2","name":"weather_lookup","arguments":"{\"city\":\"Shanghai\"}"}"#
+            #"{"type":"response.function_call_arguments.done","response_id":"multi-tool-response","output_index":1,"item_id":"multi-tool-item-2","call_id":"multi-tool-call-2","name":"weather_lookup","arguments":"{\"city\":\"Shanghai\"}"}"#
         )
         let firstEvent = try await stack.adapter.receiveEvent(session: identity)
         let secondEvent = try await stack.adapter.receiveEvent(session: identity)
@@ -3144,7 +3277,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             fatalError("two tool candidates expected")
         }
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"multi-tool-response","status":"completed","output":[{"type":"function_call","call_id":"multi-tool-call-1","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"},{"type":"function_call","call_id":"multi-tool-call-2","name":"weather_lookup","arguments":"{\"city\":\"Shanghai\"}"}]}}"#
+            #"{"type":"response.done","response":{"id":"multi-tool-response","status":"completed","output":[{"id":"multi-tool-item-1","type":"function_call","call_id":"multi-tool-call-1","name":"weather_lookup","arguments":"{\"city\":\"Hangzhou\"}"},{"id":"multi-tool-item-2","type":"function_call","call_id":"multi-tool-call-2","name":"weather_lookup","arguments":"{\"city\":\"Shanghai\"}"}]}}"#
         )
 
         let before = try await sentTypes(stack.transport)
@@ -3199,7 +3332,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         _ = try await stack.adapter.receiveEvent(session: identity)
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"multi-tool-continuation","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"两座城市都已查询。"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"multi-tool-continuation","status":"completed","output":[{"id":"fixture-output-3237-0","role":"assistant","type":"message","content":[{"type":"text","text":"两座城市都已查询。"}]}]}}"#
         )
         let semantic = try await stack.adapter.receiveEvent(session: identity)
         expect(
@@ -3232,7 +3365,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "failed-tool-response"
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"failed-tool-response","item_id":"failed-tool-item","call_id":"failed-tool-call","name":"weather_lookup","arguments":"{}"}"#
+            #"{"type":"response.function_call_arguments.done","response_id":"failed-tool-response","output_index":0,"item_id":"failed-tool-item","call_id":"failed-tool-call","name":"weather_lookup","arguments":"{}"}"#
         )
         let toolEvent = try await stack.adapter.receiveEvent(session: identity)
         guard case .toolCall(let candidate) = toolEvent.kind else {
@@ -3301,7 +3434,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             responseID: "late-failed-tool-response"
         )
         await lateStack.transport.enqueueText(
-            #"{"type":"response.function_call_arguments.done","response_id":"late-failed-tool-response","item_id":"late-failed-tool-item","call_id":"late-failed-tool-call","name":"weather_lookup","arguments":"{}"}"#
+            #"{"type":"response.function_call_arguments.done","response_id":"late-failed-tool-response","output_index":0,"item_id":"late-failed-tool-item","call_id":"late-failed-tool-call","name":"weather_lookup","arguments":"{}"}"#
         )
         let lateToolEvent = try await lateStack.adapter.receiveEvent(
             session: lateIdentity
@@ -3970,10 +4103,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         postStopCommittedItem: Bool = false
     ) async throws {
         cases += 1
+        print("handoff_case=\(pendingCase.rawValue) unidentified_stop=\(unidentifiedStop) committed_item=\(postStopCommittedItem)")
         let diagnostics = NativeSpeechDiagnosticBuffer()
         let stack = try makeStack(diagnosticBuffer: diagnostics)
         let catchBarrier = R3ResponseCatchBarrier()
-        if drainTimeout && pendingCase != .doneBeforeTimeout && pendingCase != .supersedeDuringWait {
+        let recoversInput = pendingCase.rawValue.hasPrefix("inputRecovery")
+        if drainTimeout && pendingCase != .doneBeforeTimeout && pendingCase != .supersedeDuringWait && !recoversInput {
             await stack.adapter.setResponseCatchBarrierForTesting { await catchBarrier.suspend() }
         }
         let router = ProviderRouter(
@@ -4090,6 +4225,9 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         )
         await stack.transport.waitUntilSent(type: "response.create")
         await stack.transport.enqueueText(
+            #"{"type":"response.output_item.added","response_id":"response-tool-1","output_index":0,"item":{"id":"assistant-old","type":"message","role":"assistant"}}"#
+        )
+        await stack.transport.enqueueText(
             #"{"type":"response.audio.delta","response_id":"response-tool-1","delta":"AAA="}"#
         )
         let residentSpeaking = try await runtime
@@ -4133,9 +4271,52 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
 
         await stack.transport.holdResponseCancellationAcknowledgements()
+        let cancelWriteBarrier = R3ResponseCatchBarrier()
+        if pendingCase == .inputRecoveryDuringCancellation || pendingCase == .inputRecoveryStopDuringCancellation
+            || pendingCase == .inputRecoveryCancellationDeadline {
+            await stack.transport.setResponseCancelWriteBarrier { await cancelWriteBarrier.suspend() }
+        }
+        if recoversInput {
+            try await stack.adapter.appendAudio(RealtimeBrainAudioFrame(
+                identity: identity, sequence: 6, timestampNanoseconds: timestamp + 1,
+                format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
+                provenance: .acousticEchoProcessed, bytes: pcm16(Array(repeating: 700, count: 1_600))))
+        }
+        let audioWriteBarrier = R3ResponseCatchBarrier()
+        var heldAppend: Task<Result<Void, RealtimeResidentBrainError>, Never>?
+        let heldAudio = pcm16(Array(repeating: 900, count: 1_600))
+        if pendingCase == .inputRecoveryDuringAudioAppend {
+            await stack.transport.setAudioAppendWriteBarrier { await audioWriteBarrier.suspend() }
+            heldAppend = Task {
+                await runtime.appendRealtimeResidentBrainAudio(RealtimeBrainAudioFrame(
+                    identity: identity, sequence: 6, timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
+                    provenance: .acousticEchoProcessed, bytes: heldAudio), activity: listeningActivity)
+            }
+            await audioWriteBarrier.waitForEntry()
+        }
         await stack.transport.enqueueText(
-            #"{"type":"input_audio_buffer.speech_started","item_id":"interrupting-user","audio_start_ms":125760}"#
+            #"{"type":"input_audio_buffer.speech_started","item_id":"interrupting-user","audio_start_ms":\#(recoversInput ? 100 : 125760)}"#
         )
+        if pendingCase == .inputRecoveryBeforeConfirmation || pendingCase == .inputRecoveryDuringAudioAppend
+            || pendingCase == .inputRecoveryCancellationDeadline {
+            await stack.transport.enqueueText(#"{"type":"response.audio_transcript.delta","response_id":"response-tool-1","item_id":"interrupting-user","output_index":0,"delta":"old resident words"}"#)
+            await waitForCondition("collision precedes Runtime confirmation") {
+                await stack.adapter.terminalErrorForTesting(session: identity) == .invalidEvent
+            }
+        }
+        if pendingCase == .inputRecoveryDuringAudioAppend {
+            do {
+                try await stack.adapter.interrupt(RealtimeBrainInterruptCommand(
+                    identity: identity, nextGeneration: identity.generation + 1, reason: .runtimeDecision))
+                fatalError("an in-flight append must defer generation transition")
+            } catch {
+                expect(error as? RealtimeResidentBrainError == .operationInFlight,
+                       "in-flight append defers the interrupt without dismantling quarantine")
+            }
+            let retainedError = await stack.adapter.terminalErrorForTesting(session: identity)
+            expect(retainedError == .invalidEvent, "deferred transition retains the quarantined generation")
+        }
         let proposalDisposition = try await runtime
             .receiveRealtimeResidentBrainEvent(session: identity)
         guard case .accepted(let proposalEvent) = proposalDisposition,
@@ -4145,6 +4326,56 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                     for: proposalEvent
                 ) else {
             fatalError("confirmed-handoff interruption must be Runtime-confirmed")
+        }
+        if pendingCase == .inputRecoveryDuringAudioAppend {
+            await waitForCondition("Runtime drains the old append before cancelling") {
+                runtime.realtimeProviderOperationsForTesting().waiters > 0
+            }
+            let operations = runtime.realtimeProviderOperationsForTesting()
+            expect(operations.operations >= 2, "Runtime retains append and generation transition ownership")
+            let beforeRelease = try await sentTypes(stack.transport)
+            expect(!beforeRelease.contains("response.cancel"), "cancel cannot overtake an in-flight append")
+            await audioWriteBarrier.release()
+            let appendResult = await heldAppend?.value
+            guard case .failure(.cancelled)? = appendResult else {
+                fatalError("invalidated append must finish without settling the new turn")
+            }
+            await stack.transport.setAudioAppendWriteBarrier(nil)
+        }
+        if pendingCase == .inputRecoveryCancellationDeadline {
+            await cancelWriteBarrier.waitForEntry()
+            try await Task.sleep(for: .seconds(16))
+            let closes = await stack.transport.closeCount()
+            expect(closes == 1, "the original recovery deadline closes a stalled cancel write")
+            await cancelWriteBarrier.release()
+            let result = await runtime.completeRealtimeResidentBrainInterruption(decision)
+            guard case .failure = result else { fatalError("expired cancellation cannot recover") }
+            expect(runtime.activeBrainLeaseForTesting() == nil, "deadline releases the session without submitting a new answer")
+            return
+        }
+        if pendingCase == .inputRecoveryDuringCancellation || pendingCase == .inputRecoveryStopDuringCancellation {
+            await cancelWriteBarrier.waitForEntry()
+            await stack.transport.enqueueText(#"{"type":"response.audio_transcript.delta","response_id":"response-tool-1","item_id":"interrupting-user","output_index":0,"delta":"old resident words"}"#)
+            await waitForCondition("collision arrives during response.cancel send") {
+                await stack.adapter.terminalErrorForTesting(session: identity) == .invalidEvent
+            }
+            if pendingCase == .inputRecoveryStopDuringCancellation {
+                await stack.transport.holdNextCloseCompletion()
+                let closed = Task { try await stack.adapter.closeSession(RealtimeBrainCloseSessionCommand(identity: identity)) }
+                await waitForCondition("Stop fences the quarantined cancellation") {
+                    await stack.adapter.isClosingForTesting(session: identity)
+                }
+                await cancelWriteBarrier.release()
+                let result = await runtime.completeRealtimeResidentBrainInterruption(decision)
+                guard case .failure = result else { fatalError("Stop must prevent cancellation from reviving the session") }
+                await stack.transport.releaseHeldCloseCompletion()
+                try await closed.value
+                expect(runtime.activeBrainLeaseForTesting() == nil, "Stop wins over the suspended cancellation")
+                let sent = try await sentTypes(stack.transport)
+                expect(sent.filter { $0 == "response.create" }.count == 1, "Stop cannot submit a recovered response")
+                return
+            }
+            await cancelWriteBarrier.release()
         }
         try await waitUntilSentTypeCount(
             stack.transport,
@@ -4168,6 +4399,136 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 && reboundStartEvent.sequence == 1,
             "Runtime consumes the confirmed-interruption handoff once"
         )
+        if recoversInput {
+            if pendingCase == .inputRecoveryFinal || pendingCase == .inputRecoveryChangedFinal {
+                await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"interrupting-user"}"#)
+                _ = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity)
+                _ = try await receiveRuntimeTranscript(stack, runtime: runtime, identity: nextIdentity,
+                                                      itemID: "interrupting-user", transcript: "原始完整问题")
+            }
+            await stack.transport.enqueueText(#"{"type":"response.audio_transcript.delta","response_id":"response-tool-1","item_id":"interrupting-user","output_index":0,"delta":"old resident words"}"#)
+            for _ in 0..<100 {
+                if await stack.adapter.terminalErrorForTesting(session: nextIdentity) != nil { break }
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            let quarantinedError = await stack.adapter.terminalErrorForTesting(session: nextIdentity)
+            expect(quarantinedError == .invalidEvent,
+                   "collision quarantines old wire before a partial or final exists")
+            await stack.adapter.expireInputRecoveryForTesting(matching: residentAudioEvent.identity)
+            if pendingCase == .inputRecoveryStop {
+                _ = await runtime.closeRealtimeResidentBrainSession(identity: nextIdentity)
+                expect(runtime.activeBrainLeaseForTesting() == nil, "Stop discards retained input and recovery permission")
+                let connections = await stack.transport.connectedEndpoints.count
+                expect(connections == 1, "Stop cannot reconnect a quarantined session")
+                return
+            }
+            if pendingCase == .inputRecoveryTimeout {
+                await stack.adapter.expireInputRecoveryForTesting()
+                do { _ = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity); fatalError("expired recovery must fail") }
+                catch { expect(runtime.activeBrainLeaseForTesting() == nil, "deadline fails closed without reconnecting") }
+                return
+            }
+            if pendingCase == .inputRecoveryOverflow {
+                let result = await runtime.appendRealtimeResidentBrainAudio(RealtimeBrainAudioFrame(
+                    identity: nextIdentity, sequence: 1, timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
+                    provenance: .acousticEchoProcessed, bytes: Data(repeating: 0, count: 480_002)), activity: listeningActivity)
+                guard case .failure = result else { fatalError("oversized recovery input must fail") }
+                expect(runtime.activeBrainLeaseForTesting() == nil, "overflow closes instead of replaying a truncated utterance")
+                return
+            }
+            expectRealtimeSuccess(await runtime.appendRealtimeResidentBrainAudio(RealtimeBrainAudioFrame(
+                identity: nextIdentity, sequence: 1, timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                format: RealtimeBrainAudioFormat(encoding: .pcm16LittleEndian, sampleRate: 16_000, channelCount: 1),
+                provenance: .acousticEchoProcessed, bytes: frameBytes), activity: listeningActivity),
+                "quarantine retains continuing input without failing Host capture")
+            let holdsReconnect = pendingCase == .inputRecoveryStopDuringReconnect || pendingCase == .inputRecoveryConcurrentReceive
+            if holdsReconnect { await stack.transport.holdNextCloseCompletion() }
+            let recovered = Task { try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity) }
+            if holdsReconnect {
+                await waitForCondition("old connection closes before reconnect") { await stack.transport.closeCount() == 1 }
+                if pendingCase == .inputRecoveryStopDuringReconnect {
+                    let stopped = Task { await runtime.closeRealtimeResidentBrainSession(identity: nextIdentity) }
+                    await Task.yield()
+                    await stack.transport.releaseHeldCloseCompletion()
+                    _ = await stopped.value
+                    do { _ = try await recovered.value } catch { /* Stop owns the terminal outcome. */ }
+                    expect(runtime.activeBrainLeaseForTesting() == nil, "Stop during reconnect cannot revive the lease")
+                    let sent = try await sentTypes(stack.transport)
+                    expect(sent.filter { $0 == "response.create" }.count == 1, "Stop during reconnect cannot submit an answer")
+                    return
+                }
+                let duplicateReceive = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity)
+                expect(duplicateReceive == .rejectedReceiveInFlight, "one Runtime receive reservation coalesces recovery")
+                await stack.transport.releaseHeldCloseCompletion()
+            }
+            try await waitUntilSentTypeCount(stack.transport, type: "input_audio_buffer.append",
+                                            minimum: pendingCase == .inputRecoveryDuringAudioAppend ? 6 : 4)
+            let objects = try await sentObjects(stack.transport)
+            let audio = objects.filter { $0["type"] as? String == "input_audio_buffer.append" }
+                .compactMap { ($0["audio"] as? String).flatMap { Data(base64Encoded: $0) } }
+            let heldPrefix = pendingCase == .inputRecoveryDuringAudioAppend ? heldAudio : Data()
+            expect(audio.suffix(heldPrefix.isEmpty ? 2 : 3).reduce(Data(), +) == pcm16(Array(repeating: 700, count: 1_600)) + heldPrefix + frameBytes,
+                   "replay is exactly the new utterance prefix plus quarantine continuation")
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"recovered-user","audio_start_ms":0}"#)
+            if pendingCase == .inputRecoverySecondCollision {
+                await stack.transport.enqueueText(#"{"type":"response.output_item.done","response_id":"response-tool-1","output_index":0,"item":{"id":"recovered-user","type":"message","role":"assistant"}}"#)
+                do { _ = try await recovered.value; fatalError("second collision must fail closed") }
+                catch { expect(runtime.activeBrainLeaseForTesting() == nil, "second collision safely releases lease") }
+                let connections = await stack.transport.connectedEndpoints.count
+                let sent = try await sentTypes(stack.transport)
+                expect(connections == 2 && sent.filter { $0 == "response.create" }.count == 1,
+                       "second collision cannot retry or produce another response")
+                return
+            }
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_stopped","item_id":"recovered-user"}"#)
+            if pendingCase == .inputRecoveryFinal || pendingCase == .inputRecoveryChangedFinal {
+                let recoveredText = pendingCase == .inputRecoveryFinal ? "原始完整问题" : "重放后的不同转写不得覆盖"
+                await stack.transport.enqueueText(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"recovered-user","transcript":"\#(recoveredText)"}"#)
+                if pendingCase == .inputRecoveryChangedFinal {
+                    do { _ = try await recovered.value; fatalError("changed canonical final must fail closed") }
+                    catch { expect(runtime.activeBrainLeaseForTesting() == nil, "changed replay final cannot reach subsequent model context") }
+                    let sent = try await sentTypes(stack.transport)
+                    expect(sent.filter { $0 == "response.create" }.count == 1, "mismatched final cannot release response authorization")
+                    return
+                }
+                try await waitUntilSentTypeCount(stack.transport, type: "response.create", minimum: 2)
+                expect(runtime.realtimePendingUserInputForTesting(reboundStartEvent.identity) == "原始完整问题",
+                       "replayed final cannot replace the finalized canonical user text")
+                await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-tool-2","status":"completed","output":[{"id":"answer-new","type":"message","role":"assistant","content":[{"type":"text","text":"恢复后的回答。"}]}]}}"#)
+                expectAccepted(try await recovered.value, kind: .residentTextFinal("恢复后的回答。"),
+                               "existing pending answer resumes after recovered input acknowledgement")
+                _ = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity)
+                try await verifyRecoveredPersistence(stack, runtime: runtime, identity: nextIdentity,
+                                                     question: "原始完整问题", answer: "恢复后的回答。")
+                _ = await runtime.closeRealtimeResidentBrainSession(identity: nextIdentity)
+                return
+            }
+            expectAccepted(try await recovered.value, kind: .userSpeechStopped,
+                           "replayed speech start reuses the existing turn without a second start")
+            let final = try await receiveRuntimeTranscript(stack, runtime: runtime, identity: nextIdentity,
+                                                          itemID: "recovered-user", transcript: "解释地球和火星的区别")
+            guard case .accepted(let event) = final else { fatalError("recovered final must be accepted") }
+            expect(event.identity.turnID == reboundStartEvent.identity.turnID && event.identity.responseID == nil,
+                   "new wire alias retains original canonical user ownership")
+            try await waitUntilSentTypeCount(stack.transport, type: "response.create", minimum: 2)
+            expect(runtime.realtimePendingUserInputForTesting(event.identity) == "解释地球和火星的区别",
+                   "only actual recovered final becomes canonical")
+            let connectionCount = await stack.transport.connectedEndpoints.count
+            expect(connectionCount == 2, "Runtime authorizes exactly one reconnection")
+            expect(runtime.activeBrainLeaseForTesting()?.generation == .realtimeResidentBrain(nextIdentity.generation),
+                   "recovery does not advance the Runtime generation")
+            await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-tool-2","status":"completed","output":[{"id":"answer-new","type":"message","role":"assistant","content":[{"type":"text","text":"地球有海洋，火星较寒冷。"}]}]}}"#)
+            _ = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity)
+            _ = try await runtime.receiveRealtimeResidentBrainEvent(session: nextIdentity)
+            try await verifyRecoveredPersistence(stack, runtime: runtime, identity: nextIdentity,
+                                                 question: "解释地球和火星的区别", answer: "地球有海洋，火星较寒冷。")
+            let sent = try await sentTypes(stack.transport)
+            expect(sent.filter { $0 == "response.create" }.count == 2 && sent.filter { $0 == "response.cancel" }.count == 1,
+                   "one initial response and one recovered answer, one original interruption")
+            _ = await runtime.closeRealtimeResidentBrainSession(identity: nextIdentity)
+            return
+        }
         for preview in ["找", "找点", "找点乐子", "找点乐子是什么"] {
             await stack.transport.enqueueText(
                 #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"interrupting-user","text":"\#(preview)","stash":""}"#
@@ -4186,6 +4547,25 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             minimum: 5,
             label: "pre-final interrupting turn burst"
         )
+        let finalItemID = postStopCommittedItem ? "committed-after-stop" : "interrupting-user"
+        for preview in ["找点乐子是", "找点乐子是什么", "找点乐子是什么呢"] {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"\#(finalItemID)","text":"\#(preview)","stash":""}"#
+            )
+        }
+        let expectedFinal = unidentifiedStop ? "找点乐子是什么呢" : "找点乐子是什么"
+        if !unidentifiedStop || postStopCommittedItem {
+            await stack.transport.enqueueText(
+                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(finalItemID)","transcript":"\#(expectedFinal)"}"#
+            )
+        }
+        let postStopCount = postStopCommittedItem ? 1 : 4
+        await waitUntilPendingEventCount(
+            stack.adapter,
+            session: nextIdentity,
+            minimum: 5 + postStopCount,
+            label: "complete interrupting turn before slow consumption"
+        )
         var preFinalEvents: [RealtimeResidentBrainEvent] = []
         for _ in 0 ..< 5 {
             let disposition = try await runtime
@@ -4203,19 +4583,6 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             } && preFinalEvents.last?.kind == .userSpeechStopped,
             "queued N+1 partials and stop remain ordered under slow consumption"
         )
-        let finalItemID = postStopCommittedItem ? "committed-after-stop" : "interrupting-user"
-        for preview in ["找点乐子是", "找点乐子是什么", "找点乐子是什么呢"] {
-            await stack.transport.enqueueText(
-                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"\#(finalItemID)","text":"\#(preview)","stash":""}"#
-            )
-        }
-        let expectedFinal = unidentifiedStop ? "找点乐子是什么呢" : "找点乐子是什么"
-        if !unidentifiedStop || postStopCommittedItem {
-            await stack.transport.enqueueText(
-                #"{"type":"conversation.item.input_audio_transcription.completed","item_id":"\#(finalItemID)","transcript":"\#(expectedFinal)"}"#
-            )
-        }
-        let postStopCount = postStopCommittedItem ? 1 : 4
         await waitUntilPendingEventCount(
             stack.adapter,
             session: nextIdentity,
@@ -4327,6 +4694,23 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             ),
             "confirmed-handoff fixture closes"
         )
+    }
+
+    private static func verifyRecoveredPersistence(
+        _ stack: (adapter: QwenRealtimeResidentBrainAdapter, transport: R3FakeRealtimeWebSocketTransport),
+        runtime: RuntimeCore, identity: RealtimeBrainSessionIdentity, question: String, answer: String
+    ) async throws {
+        let history = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+        expect(history.map(\.role) == ["user", "resident"] && history.map(\.text) == [question, answer],
+               "recovery persists exactly one original user turn and one valid resident answer")
+        let memory = runtime.narrativeMemoryDebugSnapshot()
+        await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-tool-2","status":"completed","output":[{"id":"answer-new","type":"message","role":"assistant","content":[{"type":"text","text":"duplicate must not persist"}]}]}}"#)
+        await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"after-recovery-marker"}"#)
+        expectAccepted(try await runtime.receiveRealtimeResidentBrainEvent(session: identity), kind: .userSpeechStarted,
+                       "duplicate completion cannot emit a second canonical response")
+        let after = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+        expect(after == history && runtime.narrativeMemoryDebugSnapshot() == memory,
+               "duplicate recovered completion cannot write Session or Memory again")
     }
 
     private static func waitForCondition(
@@ -4498,6 +4882,58 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                    "not-submitted question is not sent while the old response is unresolved")
         }
 
+        if scenario == .identityCollision || scenario == .identityCollisionAfterSubmission {
+            let submitted = scenario == .identityCollisionAfterSubmission
+            if submitted {
+                await stack.transport.releaseResponseCancellationAcknowledgements()
+                try await waitUntilSentTypeCount(stack.transport, type: "response.create", minimum: 2)
+                await waitForCondition("new question submitted before late collision") {
+                    runtime.realtimePendingAnswerForTesting() == nil
+                }
+            }
+            let memoryBefore = runtime.narrativeMemoryDebugSnapshot()
+            expect(runtime.realtimeUserTurnDispositionDebugSnapshot().lastCanonicalTranscript == "找点乐子是什么",
+                   "finalized user B is canonical before the late collision")
+            let collision = submitted
+                ? #"{"type":"response.audio_transcript.delta","response_id":"response-tool-1","output_index":0,"item_id":"interrupting-user","delta":"old assistant words"}"#
+                : #"{"type":"response.output_item.done","response_id":"response-tool-1","output_index":0,"item":{"id":"interrupting-user","type":"message","role":"assistant"}}"#
+            await stack.transport.enqueueText(collision)
+            await waitForCondition("cross-role collision makes the wire session terminal") {
+                await stack.adapter.terminalErrorForTesting(session: identity) == .invalidEvent
+                    || runtime.activeBrainLeaseForTesting() == nil
+            }
+            await stack.transport.releaseResponseCancellationAcknowledgements()
+            await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-tool-2","status":"completed","output":[{"id":"new-assistant-output","type":"message","role":"assistant","content":[{"type":"text","text":"you said the old assistant words"}]}]}}"#)
+            do {
+                let disposition = try await runtime.receiveRealtimeResidentBrainEvent(session: identity)
+                expect(disposition == .rejectedClosed, "a failed wire cannot deliver a new resident completion")
+            } catch {
+                expect(error as? RealtimeResidentBrainError == .invalidEvent,
+                       "Runtime receives the terminal identity error")
+            }
+            await waitForCondition("Runtime closes the failed provider session") {
+                runtime.activeBrainLeaseForTesting() == nil
+            }
+            expect(runtime.realtimePendingAnswerForTesting() == nil,
+                   "failed session cannot retain an automatic response retry")
+            expect(runtime.realtimeUserTurnDispositionDebugSnapshot().lastCanonicalTranscript == "找点乐子是什么",
+                   "session failure does not overwrite or reclassify canonical user B")
+            expect(runtime.narrativeMemoryDebugSnapshot() == memoryBefore,
+                   "new response from the corrupt session cannot write Memory")
+            let history = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+            expect(history == historyBefore, "neither old nor new corrupt-session output persists")
+            let types = try await sentTypes(stack.transport)
+            expect(types.filter { $0 == "response.create" }.count == (submitted ? 2 : 1)
+                && types.filter { $0 == "response.cancel" }.count == 1,
+                "failure creates no extra response or interruption")
+            expect(diagnostics.drain().events.contains {
+                $0.category == "qwen_receive_failure"
+                    && ($0.disposition ?? "").contains("branch=assistant_output_identity")
+            }, "late user collision is a terminal protocol failure, not only stale diagnostics")
+            print("corrupt_wire_session=PASS case=\(scenario.rawValue) canonical_user=preserved persistence_delta=0 extra_response=0")
+            return
+        }
+
         func append(_ sequence: UInt64) async {
             expectRealtimeSuccess(await runtime.appendRealtimeResidentBrainAudio(RealtimeBrainAudioFrame(
                 identity: identity, sequence: sequence, timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
@@ -4604,10 +5040,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             await stack.transport.releaseResponseCancellationAcknowledgements()
             try await waitUntilSentTypeCount(stack.transport, type: "response.create", minimum: 2)
             await waitForCondition("pending question successfully submitted once") { runtime.realtimePendingAnswerForTesting() == nil }
+            let memoryBefore = runtime.narrativeMemoryDebugSnapshot()
             for _ in 0 ..< 20 {
+                await stack.transport.enqueueText(#"{"type":"response.output_item.done","response_id":"response-tool-1","output_index":0,"item":{"id":"assistant-old","type":"message","role":"assistant"}}"#)
                 await stack.transport.enqueueText(#"{"type":"response.audio.delta","response_id":"response-tool-1","delta":"AAA="}"#)
                 await stack.transport.enqueueText(#"{"type":"response.audio_transcript.delta","response_id":"response-tool-1","delta":"stale"}"#)
-                await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-tool-1","status":"completed","output":[]}}"#)
+                await stack.transport.enqueueText(#"{"type":"response.done","response":{"id":"response-tool-1","status":"completed","output":[{"id":"assistant-old","type":"message","role":"assistant","content":[{"type":"text","text":"old assistant pollution"}]}]}}"#)
             }
             await stack.transport.enqueueText(#"{"type":"response.audio_transcript.delta","response_id":"response-tool-2","delta":"new reply"}"#)
             guard case .accepted(let text) = try await runtime.receiveRealtimeResidentBrainEvent(session: identity) else {
@@ -4617,7 +5055,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                    "late old audio/text/done cannot resurrect or cross-bind the response")
             expect(runtime.realtimePendingUserInputForTesting(expectedIdentity) == expectedQuestion,
                    "exact canonical question survives until a real accepted answer")
-            let completed = #"{"type":"response.done","response":{"id":"response-tool-2","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"new reply"}]}]}}"#
+            expect(runtime.narrativeMemoryDebugSnapshot() == memoryBefore,
+                "late retired output cannot write Memory")
+            let historyAfterLateOutput = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
+            expect(historyAfterLateOutput == historyBefore,
+                "late retired output cannot persist or reclassify a finalized user")
+            let completed = #"{"type":"response.done","response":{"id":"response-tool-2","status":"completed","output":[{"id":"fixture-output-4655-0","role":"assistant","type":"message","content":[{"type":"text","text":"new reply"}]}]}}"#
             await stack.transport.enqueueText(completed)
             guard case .accepted(let finalText) = try await runtime.receiveRealtimeResidentBrainEvent(session: identity),
                   case .accepted(let semantic) = try await runtime.receiveRealtimeResidentBrainEvent(session: identity) else {
@@ -4627,11 +5070,17 @@ private struct QwenRealtimeResidentBrainAdapterTests {
                 && semantic.kind == .residentSemanticFinal(RealtimeBrainSemanticOutput(canonicalText: "new reply")),
                    "exact new answer completes once")
             await stack.transport.enqueueText(completed)
+            await stack.transport.enqueueText(#"{"type":"input_audio_buffer.speech_started","item_id":"after-duplicate-marker"}"#)
+            expectAccepted(try await runtime.receiveRealtimeResidentBrainEvent(session: identity),
+                kind: .userSpeechStarted, "duplicate completion emits no semantic event before the next input marker")
             let history = try SessionStore().loadMostRecentDialogueEntries(limit: 10_000)
             expect(history.suffix(2).map(\.text) == [expectedQuestion, "new reply"],
                    "only the correct question and actual answer reach canonical history")
+            expect(history.map(\.role) == ["user", "resident"],
+                "finalized B retains user role and only the new response has resident role")
             expect(history.count == 2, "this new Runtime session stores exactly one history exchange, never a stale write")
             expect(runtime.activeBrainLeaseForTesting() == lease, "re-authorization uses the same lease and generation")
+            print("late_retired_output=PASS case=\(scenario.rawValue) generation_delta=0 extra_response=0 history_rows=2")
             expectRealtimeSuccess(await runtime.closeRealtimeResidentBrainSession(identity: identity), "retained question test closes")
         }
         let types = try await sentTypes(stack.transport)
@@ -4642,7 +5091,12 @@ private struct QwenRealtimeResidentBrainAdapterTests {
         }
         expect(types.filter { $0 == "response.create" }.count == (shouldAnswer ? 2 : 1),
                "exactly one valid submission, zero duplicate or revived old answers")
-        let dispositions = diagnostics.drain().events.filter { $0.category == "runtime_pending_answer" }.map(\.disposition)
+        let finalDiagnostics = diagnostics.drain().events
+        if shouldAnswer {
+            expect(finalDiagnostics.contains { $0.category == "qwen_assistant_output_rejected" },
+                "late output identity is explicitly rejected before ownership mutation")
+        }
+        let dispositions = finalDiagnostics.filter { $0.category == "runtime_pending_answer" }.map(\.disposition)
         if supersedes { expect(dispositions.filter { $0 == "superseded" }.count == 1, "superseded is explicit exactly once") }
         if scenario == .expiry || scenario == .speechPause { expect(dispositions.filter { $0 == "expired" }.count == 1, "expiry is explicit exactly once") }
         print("pending_answer_\(scenario.rawValue)=PASS duplicate_answer=0 stale_output=0")
@@ -4790,7 +5244,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             #"{"type":"response.audio.done","response_id":"near-tail-old-response"}"#
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"near-tail-old-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"旧回答"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"near-tail-old-response","status":"completed","output":[{"id":"fixture-output-4828-0","role":"assistant","type":"message","content":[{"type":"text","text":"旧回答"}]}]}}"#
         )
         let residentStopped = try await runtime
             .receiveRealtimeResidentBrainEvent(session: identity)
@@ -5383,7 +5837,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             await stack.transport.enqueueText(event)
         }
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"\#(responseID)","status":"completed","output":[{"type":"message","content":[\#(responseDoneContent)]}]}}"#
+            #"{"type":"response.done","response":{"id":"\#(responseID)","status":"completed","output":[{"id":"fixture-output-5421-0","role":"assistant","type":"message","content":[\#(responseDoneContent)]}]}}"#
         )
 
         var events: [RealtimeResidentBrainEventKind] = []

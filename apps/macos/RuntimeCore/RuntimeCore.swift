@@ -6004,6 +6004,38 @@ public final class RuntimeCore {
         do {
             event = try await executionEngine
                 .receiveRealtimeResidentBrainEvent(session: identity)
+        } catch let proposal as RealtimeBrainInputRecoveryRequired {
+            do {
+                guard activeBrainLeaseGate.isCurrent(brainLease),
+                      proposal.identity.session == identity,
+                      realtimeBrainSessionGate.canRecoverInput(proposal.identity) else {
+                    throw RealtimeResidentBrainError.invalidIdentity
+                }
+                let scopes = try compileRealtimeBrainContextScopes(
+                    currentUserInput: "", includesDynamicContent: true
+                )
+                try await executionEngine.recoverRealtimeResidentBrainInput(
+                    RealtimeBrainRecoverInputCommand(
+                        identity: proposal.identity,
+                        sections: realtimeBrainContextUpdateSections(scopes: scopes, previous: nil)
+                    )
+                )
+                guard activeBrainLeaseGate.isCurrent(brainLease),
+                      realtimeBrainSessionGate.isCurrent(proposal.identity) else {
+                    throw RealtimeResidentBrainError.cancelled
+                }
+                realtimeBrainContextBridgeState = RealtimeBrainContextBridgeState(
+                    identity: identity, contextRevision: proposal.identity.contextRevision,
+                    sectionsByScope: scopes, sourceRevision: realtimeSpeechContextSourceRevision,
+                    currentUserInput: ""
+                )
+                realtimeBrainSessionGate.cancelReceiving(token: token)
+                return try await receiveRealtimeResidentBrainEvent(session: identity)
+            } catch {
+                realtimeBrainSessionGate.cancelReceiving(token: token)
+                await settleFailedRealtimeBrainSession(identity: identity, lease: brainLease)
+                throw Self.realtimeBrainError(error)
+            }
         } catch {
             realtimeBrainSessionGate.cancelReceiving(token: token)
             await settleFailedRealtimeBrainSession(

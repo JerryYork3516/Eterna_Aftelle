@@ -1413,7 +1413,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             #"{"type":"response.audio.done","response_id":"r853-old-response"}"#
         )
         await stack.transport.enqueueText(
-            #"{"type":"response.done","response":{"id":"r853-old-response","status":"completed","output":[{"type":"message","content":[{"type":"text","text":"旧回答"}]}]}}"#
+            #"{"type":"response.done","response":{"id":"r853-old-response","status":"completed","output":[{"id":"r853-old-output","type":"message","role":"assistant","content":[{"type":"text","text":"旧回答"}]}]}}"#
         )
         let terminalDeadline = monotonicNow() + 3_000_000_000
         while true {

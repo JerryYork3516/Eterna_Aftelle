@@ -23,23 +23,36 @@ private enum DefaultTextProviderConfiguration {
 }
 
 nonisolated private enum ProductionQwenRealtimeBrainConfiguration {
-    static let value = QwenRealtimeResidentBrainConfiguration(
-        endpoint: URL(
-            string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
-        )!,
-        keyRef: ProviderKeychainStore.qwenKeyRef,
-        defaultProviderVoiceID: "Tina"
-    )
+    static let preferenceKey = "aftelle.realtimeSpeech.modelID"
+
+    static var selectedModel: Stage75QwenRealtimeModel {
+        UserDefaults.standard.string(forKey: preferenceKey)
+            .flatMap(Stage75QwenRealtimeModel.init(rawValue:)) ?? .plus
+    }
+
+    static var value: QwenRealtimeResidentBrainConfiguration {
+        let modelID = selectedModel.rawValue
+        return QwenRealtimeResidentBrainConfiguration(
+            endpoint: URL(
+                string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=\(modelID)"
+            )!,
+            modelID: modelID,
+            keyRef: ProviderKeychainStore.qwenKeyRef,
+            defaultProviderVoiceID: "Tina"
+        )
+    }
 }
 
-#if DEBUG
 nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
     case flash = "qwen3.5-omni-flash-realtime"
     case plus = "qwen3.5-omni-plus-realtime"
 }
 
+#if DEBUG
 nonisolated private enum Stage75NativeSpeechConfiguration {
-    static let profile = makeProfile(model: .flash)
+    static var profile: NativeSpeechProviderProfile {
+        makeProfile(model: ProductionQwenRealtimeBrainConfiguration.selectedModel)
+    }
 
     static func makeProfile(
         model: Stage75QwenRealtimeModel
@@ -495,6 +508,8 @@ final class AppController: ObservableObject {
     private var realtimeBrainPlaybackGeneration: UInt64?
     private var realtimeBrainPlaybackDrainWaiter:
         CheckedContinuation<Bool, Never>?
+    private var realtimeBrainSessionConfiguration =
+        ProductionQwenRealtimeBrainConfiguration.value
     private var realtimeBrainRouteAttemptID: UUID?
     private var realtimeBrainPreparedCaptureGeneration: UInt64?
     private var realtimeBrainStartInFlight = false
@@ -610,6 +625,8 @@ final class AppController: ObservableObject {
             }
         )
     #if DEBUG
+    var realtimePlaybackEnqueueObserverForTesting:
+        ((UInt64, UInt64, UInt64) -> Void)?
     private let nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer
     private let realtimeSpeechDiagnosticAudioEngine:
         SystemMacSpeechVoiceProcessingEngine?
@@ -733,13 +750,19 @@ final class AppController: ObservableObject {
             realtimeBrainConfiguration:
                 ProductionQwenRealtimeBrainConfiguration.value,
             asrConfiguration: Stage7511QwenASRConfiguration.value,
-            ttsConfiguration: Stage7511QwenTTSConfiguration.value
+            ttsConfiguration: Stage7511QwenTTSConfiguration.value,
+            realtimeBrainConfigurationProvider: {
+                ProductionQwenRealtimeBrainConfiguration.value
+            }
         )
         #else
         runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
             credentialReader: credentialStore,
             realtimeBrainConfiguration:
+                ProductionQwenRealtimeBrainConfiguration.value,
+            realtimeBrainConfigurationProvider: {
                 ProductionQwenRealtimeBrainConfiguration.value
+            }
         )
         #endif
         providerKeychainStore = credentialStore
@@ -1567,7 +1590,7 @@ final class AppController: ObservableObject {
             ? 0
             : writeSnapshot.audioAppendWriteTotalDurationMilliseconds
                 / writeSnapshot.completedAudioAppendCount
-        let configuration = ProductionQwenRealtimeBrainConfiguration.value
+        let configuration = realtimeBrainSessionConfiguration
         let writeWindowCapacity = writeSnapshot.writeWindowCapacity == 0
             ? NativeSpeechTransportWriteDiagnosticSnapshot
                 .defaultWebSocketWriteWindowCapacity
@@ -2844,13 +2867,25 @@ final class AppController: ObservableObject {
         }
     }
 
+    var canSelectRealtimeSpeechModel: Bool {
+        !nativeSpeechProviderDebugState.isTesting
+            && !speechInputBridgeSnapshot.hasActivePump
+            && !speechOutputBridgeSnapshot.hasActiveReceiveLoop
+            && realtimeBrainRouteAttemptID == nil
+            && !realtimeBrainStartInFlight
+            && !realtimeBrainStopping
+            && realtimeBrainInputBinding == nil
+            && speechHostLifecycleOperationCount == 0
+            && speechAudioHostShutdownOperation == nil
+    }
+
     func selectNativeSpeechModel(_ modelID: String) {
         guard let model = Stage75QwenRealtimeModel(rawValue: modelID),
-              !nativeSpeechProviderDebugState.isTesting,
-              !speechInputBridgeSnapshot.hasActivePump,
-              !speechOutputBridgeSnapshot.hasActiveReceiveLoop else {
-            return
-        }
+              canSelectRealtimeSpeechModel else { return }
+        UserDefaults.standard.set(
+            model.rawValue,
+            forKey: ProductionQwenRealtimeBrainConfiguration.preferenceKey
+        )
         let currentState = nativeSpeechProviderDebugState
         nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
             profile: Stage75NativeSpeechConfiguration.makeProfile(
@@ -3023,6 +3058,7 @@ final class AppController: ObservableObject {
 
         let attemptID = UUID()
         realtimeBrainRouteAttemptID = attemptID
+        realtimeBrainSessionConfiguration = ProductionQwenRealtimeBrainConfiguration.value
         resetRealtimeBrainMissingSpeechStopPresentation()
         realtimePassiveBackchannelPresentation = nil
         realtimeBrainSubtitlePresentation.reset()
@@ -3778,6 +3814,11 @@ final class AppController: ObservableObject {
             )
             return
         }
+        #if DEBUG
+        realtimePlaybackEnqueueObserverForTesting?(
+            identity.session.generation, playbackGeneration, audio.sequence
+        )
+        #endif
         var snapshot = await speechAudioOutputHost.enqueue(
             pcm16Bytes: audio.bytes,
             sequence: audio.sequence,

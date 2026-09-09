@@ -140,7 +140,7 @@ actor ProbeTransport: RealtimeWebSocketTransport {
             let allowed = Set(["type", "item_id", "response_id", "response", "id", "status", "session",
                 "turn_detection", "threshold", "silence_duration_ms", "create_response", "interrupt_response",
                 "text", "stash", "transcript", "delta", "arguments", "name", "call_id", "output", "content",
-                "audio_start_ms", "audio_end_ms", "item", "role", "previous_item_id", "content_index"])
+                "audio_start_ms", "audio_end_ms", "item", "role", "previous_item_id", "content_index", "output_index"])
             return object.reduce(into: [String: Any]()) { result, entry in
                 if allowed.contains(entry.key) {
                     result[entry.key] = sanitize(entry.value, key: entry.key, eventType: type, depth: depth + 1)

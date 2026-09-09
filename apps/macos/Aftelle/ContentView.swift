@@ -709,6 +709,7 @@ struct ParticleDebugWindow: View {
                 controller.deleteNativeSpeechProviderCredential,
             selectNativeSpeechModel:
                 controller.selectNativeSpeechModel,
+            canSelectRealtimeSpeechModel: controller.canSelectRealtimeSpeechModel,
             testNativeSpeechProviderConnectivity:
                 controller.testNativeSpeechProviderConnectivity,
             refreshMicrophoneAuthorization:
@@ -891,6 +892,7 @@ private struct ParticleDebugPanel: View {
     let saveNativeSpeechProviderCredential: (String, String) -> Void
     let deleteNativeSpeechProviderCredential: () -> Void
     let selectNativeSpeechModel: (String) -> Void
+    let canSelectRealtimeSpeechModel: Bool
     let testNativeSpeechProviderConnectivity: () async -> Void
     let refreshMicrophoneAuthorization: () async -> Void
     let requestMicrophoneAuthorization: () async -> Void
@@ -1119,9 +1121,7 @@ private struct ParticleDebugPanel: View {
                             NativeSpeechProviderDebugView(
                                 state: nativeSpeechProviderState,
                                 modelSelectionDisabled:
-                                    speechInputBridgeSnapshot.hasActivePump
-                                        || speechOutputBridgeSnapshot
-                                            .hasActiveReceiveLoop,
+                                    !canSelectRealtimeSpeechModel,
                                 selectModel: selectNativeSpeechModel,
                                 saveCredential:
                                     saveNativeSpeechProviderCredential,
@@ -2061,6 +2061,9 @@ private struct NativeSpeechProviderDebugView: View {
                         }
                         .pickerStyle(.segmented)
                         .disabled(state.isTesting || modelSelectionDisabled)
+                        Text(String(localized: "particleDebug.qwen.modelSelectionHint"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         ParticleDiagnosticsRow(
                             labelKey: "particleDebug.provider.providerID",
                             value: state.profile.providerID
