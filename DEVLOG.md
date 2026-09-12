@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-09-13 · Test 3 / 03 参考失效边界局部修复
+
+- 先按用户授权提交检查点 `904613c1`，保存02/03与11组独立失败对照；私有PCM未纳入提交。然后只修Host现有参考关联与近端证据边界。
+- 非单调capture标签不提供参考；已锁定关联可以沿用原有高置信raw证据；不匹配的当前参考须排除已有播放历史对raw/clean/linear的回声解释，不能直接授予近端身份。历史低相关性与线性活动不单独确认近端，沿用原缓存与确认/退休/关门常量。
+- 首个宽候选使一份纯回声误门2→39帧，明确拒绝；收窄后Host1410 checks、11组时间/路径对照、24转换时间、Runtime62/163 checks、App Debug编译均PASS。Host self-replay/guards与secret guard PASS。
+- 7组合成既有判据PASS，三个完整结束段缺失/重复/超时关门均0；原连续正常/较大缺失3/13→3/3，剩余3帧没有删标签或宣告完整性通过。
+- 8录音仍3 PASS / 5 FAIL；较早较大纯回声误门306→285、非零放行314→293；逐帧核对全部用例无新增开门/非零源帧，四份正控的非零源帧集合不变。原输入SHA保持，Replay不替代真实声场。
+- architecture guard仍命中与检查点一致的原Test3LocalAudioRunner依赖装配，脚本FAIL已记录；SwiftFormat/SwiftLint未安装，NOT_RUN。人工阶段越界检查PASS，未修改Runtime API、DR/Store、Provider、声学常量或平台target。
+- 本项是局部修复，Test 3仍FAIL / REVIEW_REQUIRED。未调用Qwen、打开设备、执行完整A7或进入04；未推送。验证范围与复跑命令见 `tools/speech_aec_host_tests/REFERENCE_VALIDITY.md`，本机完整证据 `.build/test3-reference-validity/`。
+
 ## 2026-09-12 · Test 3 / 03 补充：时序候选联合反证
 
 - 本轮生产和测试代码均未改，原02/03修改完整保留。只在ignored `.build/test3-step03-supplement`编译两个Host候选并完成各自7组合成、8份录音Replay；候选均拒绝，不进入04。

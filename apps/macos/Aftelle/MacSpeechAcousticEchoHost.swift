@@ -1136,7 +1136,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     )
                     let gatedSpans = gatedCaptureSpans(
                         processedFrame,
-                        classificationTimingMatch: timingMatch,
+                        classificationTimingMatch: hasAlternativeEchoReference(
+                            rawCapture: frame,
+                            processedCapture: processedFrame,
+                            linearOutput: captureResult.linearOutputSamples,
+                            timingMatch: timingMatch
+                        ) ? nil : timingMatch,
                         reportedTimingMatch: reportedTimingMatch,
                         captureFrameIndex: captureFrameCount &+ 1
                     )
@@ -1688,6 +1693,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     ) -> TimingMatch? {
         guard isPlaybackActive,
               let captureHostTimeNanoseconds,
+              latestCaptureHostTimeNanoseconds.map({
+                  captureHostTimeNanoseconds > $0
+              }) ?? true,
               signalRMS(captureSamples) >= Self.minimumTimingRMS else {
             return nil
         }
@@ -1840,7 +1848,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private func updateTimingLock(with timingMatch: TimingMatch?) {
         guard let timingMatch,
-              timingMatchSupportsEchoAssociation(timingMatch) else {
+              timingMatchSupportsEchoAssociation(timingMatch)
+                || (timingLockedDelayMilliseconds != nil
+                    && timingMatch.associationOrigin == .locked
+                    && timingMatch.correlation >= Self.minimumResidentOnlyRawCorrelation) else {
             if timingLockedDelayMilliseconds != nil {
                 sourceAlignmentMissCount &+= 1
                 timingLockConsecutiveMissFrameCount += 1
@@ -2073,6 +2084,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             classification = .nearEndSpeech
             freezeResidualEchoBaseline()
         } else if (timingMatch.associationOrigin == .historicalDiscovery
+                    && residualEchoBaselineFrameCount == 0
                     || timingLockedDelayMilliseconds != nil),
                   timingMatch.correlation
                     <= Self.maximumNearEndCorrelation,
@@ -2081,8 +2093,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     <= Self.maximumLinearNearEndCorrelation,
                   processedLinearCorrelation
                     >= Self.minimumProcessedLinearNearEndCorrelation,
-                  max(cleanRMS, linearAECOutputRMS)
-                    >= Self.minimumNearEndRMS {
+                  cleanRMS >= Self.minimumNearEndRMS {
             classification = .nearEndSpeech
             freezeResidualEchoBaseline()
         } else if timingLockedDelayMilliseconds != nil,
@@ -2097,6 +2108,46 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             timingMatch: timingMatch
         )
         return classification
+    }
+
+    private func hasAlternativeEchoReference(
+        rawCapture: [Float],
+        processedCapture: [Float],
+        linearOutput: [Float],
+        timingMatch: TimingMatch?
+    ) -> Bool {
+        guard let timingMatch,
+              timingMatch.correlation <= Self.maximumNearEndCorrelation else {
+            return false
+        }
+        // A mismatched reference cannot turn explainable resident echo into user evidence.
+        return renderTimingHistory.contains { frame in
+            guard frame.hostTimeNanoseconds <= timingMatch.captureHostTimeNanoseconds,
+                  timingMatch.captureHostTimeNanoseconds - frame.hostTimeNanoseconds
+                    <= UInt64(Self.maximumDelayMilliseconds) * 1_000_000,
+                  frame.rms >= Self.minimumTimingRMS,
+                  normalizedCorrelation(rawCapture, frame.samples)
+                    >= Self.minimumResidentOnlyRawCorrelation else { return false }
+            let reference = TimingMatch(
+                renderSamples: frame.samples,
+                captureHostTimeNanoseconds: timingMatch.captureHostTimeNanoseconds,
+                renderHostTimeNanoseconds: frame.hostTimeNanoseconds,
+                renderRMS: frame.rms,
+                delayMilliseconds: Double(timingMatch.captureHostTimeNanoseconds
+                    - frame.hostTimeNanoseconds) / 1_000_000,
+                correlation: 0,
+                associationOrigin: .historicalDiscovery
+            )
+            guard let cleanReference = delayedRenderReference(
+                reference, delaySamples: (backend?.processedOutputDelaySamples ?? 0) * 3
+            ), let linearReference = delayedRenderReference(
+                reference, delaySamples: (backend?.linearOutputDelaySamples ?? 0) * 3
+            ) else { return false }
+            return normalizedCorrelation(processedCapture, cleanReference)
+                    >= Self.minimumResidentOnlyResidualCorrelation
+                && normalizedCorrelation(linearOutput, downsampleToSixteenKilohertz(linearReference))
+                    >= Self.minimumResidentOnlyResidualCorrelation
+        }
     }
 
     private func hasUnalignedIsolatedNearEndEvidence(
