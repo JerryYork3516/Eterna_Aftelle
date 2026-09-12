@@ -1331,6 +1331,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             #endif
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
+            if !sourceGateOpen {
+                resetSourceGate(keepingClassification: true)
+            }
         }
     }
 
@@ -1977,11 +1980,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 captureFrameIndex: captureFrameIndex
             )
         case .uncertain:
+            if canRetainSuppressedNearEndOnset {
+                return retainSuppressedNearEndOnset(
+                    processedFrame,
+                    captureFrameIndex: captureFrameIndex
+                )
+            }
             return suppressClosedGateFrame(
                 captureFrameIndex: captureFrameIndex
             )
         case .nearEndSpeech, .doubleTalk:
-            appendSourceGatePreRoll(captureSpan(
+            let expired = appendSourceGatePreRoll(captureSpan(
                 samples: processedFrame,
                 captureFrameIndex: captureFrameIndex
             ))
@@ -1993,7 +2002,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             sourceGateConfirmationFrameCount += 1
             guard sourceGateConfirmationFrameCount
                     >= Self.requiredSourceGateConfirmationFrames else {
-                return []
+                return expired
             }
             sourceGateOpen = true
             sourceGateOpenCount &+= 1
@@ -2007,7 +2016,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 currentSourceGateOpenFrameCount
             )
             beginSourceGateEpoch()
-            return drainSourceGatePreRoll()
+            return expired + drainSourceGatePreRoll()
         }
     }
 
@@ -2340,6 +2349,16 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             sourceGateNonUserHangoverFrameCount += 1
             if sourceGateNonUserHangoverFrameCount
                 >= Self.maximumSourceGateNonUserHangoverFrames {
+                if canRetainSuppressedNearEndOnset {
+                    resetSourceGate(
+                        keepingClassification: true,
+                        closeReason: .nonUserHangover
+                    )
+                    return retainSuppressedNearEndOnset(
+                        processedFrame,
+                        captureFrameIndex: captureFrameIndex
+                    )
+                }
                 return suppressCaptureFrameAndCloseGate(
                     reason: .nonUserHangover,
                     captureFrameIndex: captureFrameIndex
@@ -2395,15 +2414,51 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
     }
 
+    private var canRetainSuppressedNearEndOnset: Bool {
+        inputClassification == .uncertain
+            && latestCaptureHostTimeNanoseconds != nil
+            && rawCaptureRMS >= Self.minimumNearEndRMS
+            && linearAECOutputRMS >= Self.minimumNearEndRMS
+            && processedCaptureRMS < Self.minimumNearEndRMS
+            && (renderCaptureIsolationEstablished
+                || (outputTimingReferenceAvailable
+                    && (timingLockedDelayMilliseconds != nil
+                        || sourceGatePreRoll.first?.observation
+                            .sourceAlignmentLocked == true)
+                    && residualEchoBaselineFrameCount
+                        >= Self.minimumResidualEchoBaselineFrameCount
+                    && linearRenderCorrelation
+                        <= Self.maximumAdaptiveDoubleTalkResidualCorrelation))
+    }
+
+    private func retainSuppressedNearEndOnset(
+        _ frame: [Float],
+        captureFrameIndex: UInt64
+    ) -> [MacSpeechAcousticCaptureSpan] {
+        // Retain audio without promoting uncertain evidence or renewing confirmation.
+        sourceGateConfirmationFrameCount = 0
+        return appendSourceGatePreRoll(captureSpan(
+            samples: frame,
+            captureFrameIndex: captureFrameIndex
+        ))
+    }
+
     private func appendSourceGatePreRoll(
         _ span: MacSpeechAcousticCaptureSpan
-    ) {
-        if sourceGatePreRoll.count
-            == Self.sourceGatePreRollFrameCapacity {
-            sourceGatePreRoll.removeFirst()
+    ) -> [MacSpeechAcousticCaptureSpan] {
+        var expired: [MacSpeechAcousticCaptureSpan] = []
+        if sourceGatePreRoll.count == Self.sourceGatePreRollFrameCapacity {
+            let first = sourceGatePreRoll.removeFirst()
+            expired = [silencedCaptureSpan(first)]
+            if first.observation.inputClassification == .nearEndSpeech {
+                sourceGateCandidateNearEndFrameCount -= 1
+            } else if first.observation.inputClassification == .doubleTalk {
+                sourceGateCandidateDoubleTalkFrameCount -= 1
+            }
             recordSuppressedSourceFrames(1)
         }
         sourceGatePreRoll.append(span)
+        return expired
     }
 
     private func suppressClosedGateFrame(
@@ -2508,7 +2563,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             doubleTalkFrameCountAtOpen:
                 doubleTalkFrameCount
                     &- sourceGateCandidateDoubleTalkFrameCount,
-            uncertainFrameCountAtOpen: uncertainFrameCount,
+            uncertainFrameCountAtOpen: uncertainFrameCount
+                &- UInt64(sourceGatePreRoll.filter {
+                    $0.observation.inputClassification == .uncertain
+                }.count),
             rawEchoGainBaselineAtOpen: rawEchoGainBaseline,
             residualEchoGainBaselineAtOpen: residualEchoGainBaseline,
             linearAECOutputGainBaselineAtOpen:

@@ -617,6 +617,17 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         var supplied = false
     }
 
+    struct Output {
+        var samples: [Float]
+        let hostTimeNanoseconds: UInt64?
+    }
+
+    private struct InputTime {
+        let start: Double
+        let end: Double
+        let hostTimeNanoseconds: UInt64?
+    }
+
     static func makeBuffer(samples: [Float]) throws -> AVAudioPCMBuffer {
         guard !samples.isEmpty,
               let format = AVAudioFormat(
@@ -641,6 +652,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let inputSampleRate: Double
+    private var inputFrameCount: UInt64 = 0
+    private var outputSampleCount: UInt64 = 0
+    private var inputTimes: [InputTime] = []
 
     init(inputFormat: AVAudioFormat) throws {
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
@@ -663,6 +677,13 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     }
 
     func convert(_ inputBuffer: AVAudioPCMBuffer) throws -> [Float] {
+        try convert(inputBuffer, hostTimeNanoseconds: nil).samples
+    }
+
+    func convert(
+        _ inputBuffer: AVAudioPCMBuffer,
+        hostTimeNanoseconds: UInt64?
+    ) throws -> Output {
         try lock.withLock {
             let ratio = outputFormat.sampleRate / inputSampleRate
             let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio)
@@ -690,21 +711,55 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
                 inputStatus.pointee = .haveData
                 return inputBuffer
             }
+            if inputState.supplied {
+                let start = Double(inputFrameCount) * ratio
+                inputFrameCount += UInt64(inputBuffer.frameLength)
+                inputTimes.append(InputTime(
+                    start: start, end: Double(inputFrameCount) * ratio,
+                    hostTimeNanoseconds: hostTimeNanoseconds
+                ))
+            }
             guard conversionError == nil,
                   status != .error,
                   outputBuffer.frameLength > 0,
                   let samples = outputBuffer.floatChannelData?[0] else {
                 throw MacSpeechAudioCaptureError.conversionFailed
             }
-            return Array(UnsafeBufferPointer(
+            let count = Int(outputBuffer.frameLength)
+            let timestamp = outputHostTime(sampleCount: count)
+            outputSampleCount += UInt64(count)
+            inputTimes.removeAll { $0.end <= Double(outputSampleCount) }
+            return Output(samples: Array(UnsafeBufferPointer(
                 start: samples,
-                count: Int(outputBuffer.frameLength)
-            ))
+                count: count
+            )), hostTimeNanoseconds: timestamp)
         }
     }
 
+    private func outputHostTime(sampleCount: Int) -> UInt64? {
+        let start = Double(outputSampleCount)
+        let end = start + Double(sampleCount)
+        let intervals = inputTimes.filter { $0.end > start && $0.start < end }
+        guard let first = intervals.first, first.start <= start,
+              let firstTime = first.hostTimeNanoseconds else { return nil }
+        let nanosecondsPerSample = 1_000_000_000 / outputFormat.sampleRate
+        let timestamp = Double(firstTime) + (start - first.start) * nanosecondsPerSample
+        // Buffered output may span input callbacks. A gap or unknown time cannot become a continuous clock.
+        for interval in intervals {
+            guard let time = interval.hostTimeNanoseconds else { return nil }
+            let expected = timestamp + (interval.start - start) * nanosecondsPerSample
+            guard abs(Double(time) - expected) <= 1_000_000_000 / inputSampleRate else { return nil }
+        }
+        return UInt64(timestamp.rounded())
+    }
+
     func resetForGenerationTransition() {
-        lock.withLock { converter.reset() }
+        lock.withLock {
+            converter.reset()
+            inputFrameCount = 0
+            outputSampleCount = 0
+            inputTimes.removeAll(keepingCapacity: true)
+        }
     }
 }
 
@@ -1202,18 +1257,20 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
         guard let inputConverter = converters.0,
               let outputConverter = converters.1,
-              var inputSamples = try? inputConverter.convert(buffer) else {
+              var converted = try? inputConverter.convert(
+                  buffer, hostTimeNanoseconds: hostTimeNanoseconds
+              ) else {
             return
         }
         #if DEBUG
         test3NearEndInjection?.mix(
-            into: &inputSamples,
-            hostTimeNanoseconds: hostTimeNanoseconds ?? startedAt
+            into: &converted.samples,
+            hostTimeNanoseconds: converted.hostTimeNanoseconds ?? startedAt
         )
         #endif
         let captureSpans = acousticEchoHost.processCaptureSpans(
-            inputSamples,
-            hostTimeNanoseconds: hostTimeNanoseconds
+            converted.samples,
+            hostTimeNanoseconds: converted.hostTimeNanoseconds
         )
         let acoustic = acousticEchoHost.acousticObservationSnapshot()
         if !captureSpans.isEmpty,
@@ -1322,9 +1379,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             return
         }
         do {
+            let converted = try converter.convert(
+                buffer, hostTimeNanoseconds: hostTimeNanoseconds
+            )
             acousticEchoHost.processRender(
-                try converter.convert(buffer),
-                hostTimeNanoseconds: hostTimeNanoseconds
+                converted.samples,
+                hostTimeNanoseconds: converted.hostTimeNanoseconds
             )
         } catch {
             acousticEchoHost.renderConversionFailed()

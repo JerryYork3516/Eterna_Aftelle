@@ -46,7 +46,8 @@ private final class ReferenceInput: @unchecked Sendable {
         let converter = AVAudioConverter(from: format(rate), to: format(48_000))!
         converter.channelMap = [0]
         let source = ReferenceInput(buffer(input, rate: rate))
-        let output = AVAudioPCMBuffer(pcmFormat: format(48_000), frameCapacity: 16_384)!
+        let capacity = max(16_384, Int(ceil(Double(input.count) * 48_000 / rate)) + 1_024)
+        let output = AVAudioPCMBuffer(pcmFormat: format(48_000), frameCapacity: AVAudioFrameCount(capacity))!
         var error: NSError?
         let status = converter.convert(to: output, error: &error) { _, state in
             guard let next = source.take() else { state.pointee = .endOfStream; return nil }
@@ -128,6 +129,62 @@ private final class ReferenceInput: @unchecked Sendable {
                 "pass": failures.isEmpty, "failures": failures, "epochs": epochs]
     }
 
+    private static func clockBoundary(rate: Double, scenario: String) throws -> [String: Any] {
+        let base: UInt64 = 10_000_000_000
+        var times: [UInt64?] = (0..<4).map { base + UInt64($0) * 100_000_000 }
+        var known = [true, true, true, true]
+        switch scenario {
+        case "missing-start": times[0] = nil; known = [false, false, true, true]
+        case "missing-middle": times[1] = nil; known = [true, false, false, true]
+        case "forward-gap", "backward-jump":
+            for index in 1..<4 {
+                times[index] = scenario == "forward-gap"
+                    ? times[index]! + 50_000_000 : times[index]! - 50_000_000
+            }
+            known = [true, false, true, true]
+        case "sub-sample-jitter":
+            for index in 1..<4 { times[index]! += 100 }
+        default: break
+        }
+        let converter = try MacSpeechFloatMono48kConverter(inputFormat: format(rate))
+        if scenario == "reset-unknown" {
+            _ = try converter.convert(buffer(Array(repeating: 0.5, count: Int(rate / 10)), rate: rate),
+                                      hostTimeNanoseconds: nil)
+            converter.resetForGenerationTransition()
+        }
+        let inputCount = Int(rate / 10)
+        let input = (0..<(inputCount * 4)).map { Float($0) / 1_000_000 }
+        var samples = [Float](), failures = [String](), outputs = [[String: Any]]()
+        for index in 0..<4 {
+            let offset = samples.count
+            let converted = try converter.convert(
+                buffer(Array(input[index * inputCount..<(index + 1) * inputCount]), rate: rate),
+                hostTimeNanoseconds: times[index])
+            if (converted.hostTimeNanoseconds != nil) != known[index] {
+                failures.append("callback \(index): unexpected clock validity")
+            }
+            if known[index] {
+                // Source position, independently identified by the waveform, selects the input clock.
+                let sourceBatch = offset / 4_800
+                if let time = times[sourceBatch], let actual = converted.hostTimeNanoseconds {
+                    let expected = time + UInt64((Double(offset % 4_800) * 1_000_000_000 / 48_000).rounded())
+                    if abs(Double(actual) - Double(expected)) > 1 {
+                        failures.append("callback \(index): wrong source clock after boundary")
+                    }
+                } else { failures.append("callback \(index): missing expected source clock") }
+            }
+            outputs.append(["source_offset": offset, "output_count": converted.samples.count,
+                            "timestamp_known": converted.hostTimeNanoseconds != nil])
+            samples.append(contentsOf: converted.samples)
+        }
+        let expectedSamples = rate == 48_000 ? input : try reference(input, rate: rate)
+        let matches = !samples.isEmpty && samples.count <= expectedSamples.count
+            && samples == Array(expectedSamples.prefix(samples.count))
+        if !matches { failures.append("clock boundary changed audio samples") }
+        return ["scenario": scenario, "rate": rate, "pass": failures.isEmpty,
+                "failures": failures, "source_prefix_matches": matches, "outputs": outputs]
+    }
+
     static func main() throws {
         var results = [[String: Any]]()
         for rate in [48_000.0, 44_100.0] {
@@ -137,6 +194,14 @@ private final class ReferenceInput: @unchecked Sendable {
                     catch { results.append(["rate": rate, "render": render, "reset": reset,
                                             "pass": false, "error": String(describing: error)]) }
                 }
+            }
+        }
+        for rate in [48_000.0, 44_100.0] {
+            for scenario in ["missing-start", "missing-middle", "forward-gap", "backward-jump",
+                             "sub-sample-jitter", "reset-unknown"] {
+                do { results.append(try clockBoundary(rate: rate, scenario: scenario)) }
+                catch { results.append(["rate": rate, "scenario": scenario,
+                                        "pass": false, "error": String(describing: error)]) }
             }
         }
         let passed = results.allSatisfy { $0["pass"] as? Bool == true }

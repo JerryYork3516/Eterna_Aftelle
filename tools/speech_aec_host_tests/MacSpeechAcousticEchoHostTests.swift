@@ -120,6 +120,9 @@ private struct MacSpeechAcousticEchoHostTests {
     private static var checks = 0
 
     static func main() {
+        if CommandLine.arguments.contains("--timing-controls-only") {
+            exit(runTimingControls() ? 0 : 1)
+        }
         testConfigureAndSerializedFraming()
         testArbitraryRenderCallbackFraming()
         testArbitraryCaptureCallbackFraming()
@@ -140,6 +143,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testEchoOnlySourceGate()
         testNearEndSourceGateAndPreRoll()
         testAbortedSourceGatePreRollPreservesCadence()
+        testSuppressedOnsetPreRollBoundaries()
         testDoubleTalkSourceGate()
         testDelayedAECOutputEvidence()
         testMissingAECReferenceCannotRenewHangover()
@@ -164,6 +168,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testSixteenToFortyEightCaptureFraming()
         testTwentyFourToFortyEightResamplingRoundTrip()
         print("speech_aec_host_checks=\(checks)")
+        if !runTimingControls() { exit(1) }
     }
 
     #if DEBUG
@@ -956,10 +961,10 @@ private struct MacSpeechAcousticEchoHostTests {
             hostTimeNanoseconds: 2_310_000_000
         )), "sustained resident-only evidence closes the speech epoch")
         snapshot = host.snapshot()
-        expect(!snapshot.sourceGateOpen
-                   && snapshot.lastSourceGateCloseReason
-                       == .nonUserHangover,
+        expect(!snapshot.sourceGateOpen,
                "200 ms without user evidence closes the source gate")
+        expect(snapshot.lastSourceGateCloseReason == .nonUserHangover,
+               "bounded non-user closure reports its reason independently")
         expect(snapshot.nearEndSpeechFrameCount == 4
                    && snapshot.sourceForwardedFrameCount == 23,
                "epoch diagnostics count pre-roll and continuous hangover")
@@ -1660,6 +1665,87 @@ private struct MacSpeechAcousticEchoHostTests {
                "diagnostic reset preserves the live echo baseline")
     }
 
+    private static func testSuppressedOnsetPreRollBoundaries() {
+        for scenario in ["confirm", "expire-confirm", "abort", "weak-timeout", "stop", "generation", "route"] {
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+            _ = host.configure()
+            host.playbackStarted()
+            let silence = [Float](repeating: 0, count: 480)
+            let user = testSignal(seed: 7_100, amplitude: 0.25)
+            let suppressed = user.map { $0 * 0.02 }
+            var frame = 0
+            func drive(_ kind: String) -> [MacSpeechAcousticCaptureSpan] {
+                let time = UInt64(80_000_000_000) + UInt64(frame) * 10_000_000
+                let far = testSignal(seed: UInt32(7_200 + frame), amplitude: 0.3)
+                backend.setCaptureOutput(kind == "quiet" ? silence : kind == "strong" ? user : suppressed)
+                backend.setLinearOutput(kind == "quiet" ? [Float](repeating: 0, count: 160) : linearOutput(user))
+                host.processRender(far, hostTimeNanoseconds: time)
+                frame += 1
+                return host.processCaptureSpans(kind == "quiet" ? silence : user,
+                                               hostTimeNanoseconds: time + 80_000_000)
+            }
+            for _ in 0..<50 { _ = drive("quiet") }
+            expect(host.snapshot().renderCaptureIsolationEstablished, "onset fixture establishes acoustic isolation")
+            var emitted = [MacSpeechAcousticCaptureSpan]()
+            let weakCount = scenario == "expire-confirm" ? 18 : scenario == "weak-timeout" ? 30 : 8
+            for _ in 0..<weakCount {
+                emitted += drive("weak")
+                let state = host.snapshot()
+                expect(!state.sourceGateOpen && state.inputClassification == .uncertain,
+                       "linear onset alone never opens or classifies a user turn")
+                expect(state.sourceGatePreRollFrameCount <= 15, "pending onset stays within 150 ms")
+            }
+            expect(emitted.allSatisfy { isSilence($0.samples) }, "unconfirmed onset emits no microphone audio")
+            if scenario == "confirm" || scenario == "expire-confirm" {
+                for index in 0..<3 {
+                    emitted += drive("strong")
+                    expect(host.snapshot().sourceGateOpen == (index == 2),
+                           "retained onset still requires three consecutive strong frames")
+                }
+                expect(emitted.count == weakCount + 3, "overflow silence and confirmed pre-roll preserve every source position")
+                expect(emitted.map { $0.observation.captureFrameIndex } == Array(UInt64(51)...UInt64(frame)),
+                       "retained frames keep source order without duplication")
+                let released = emitted.filter { !isSilence($0.samples) }
+                expect(released.count == min(weakCount + 3, 15), "only the bounded pending window is released")
+                expect(released.dropLast(3).allSatisfy {
+                    $0.samples == suppressed && $0.observation.inputClassification == .uncertain
+                        && MacSpeechAudioActivityEvidenceKind.classify(observation: $0.observation) == .none
+                }, "confirmed onset retains PCM and uncertain role evidence without reclassification")
+                expect(host.snapshot().sourceGateOpenCount == 1, "one confirmation opens only one epoch")
+                let epoch = host.acousticObservationSnapshot().sourceGateEpoch
+                host.discardPendingCaptureForGenerationTransition()
+                expect(host.snapshot().sourceGateOpen && host.acousticObservationSnapshot().sourceGateEpoch == epoch,
+                       "generation fence preserves already-confirmed active near-end ownership")
+                expect(drive("strong").count == 1, "generation fence does not cut continuing confirmed speech")
+            } else if scenario == "abort" {
+                for kind in ["strong", "strong", "weak", "strong", "strong", "quiet"] { emitted += drive(kind) }
+                expect(!host.snapshot().sourceGateOpen && host.snapshot().sourceGateOpenCount == 0,
+                       "weak interruption resets consecutive confirmation")
+                expect(emitted.count == weakCount + 6 && emitted.allSatisfy { isSilence($0.samples) },
+                       "aborted onset and partial confirmations become equal-duration silence")
+            } else if scenario == "weak-timeout" {
+                emitted += drive("quiet")
+                expect(emitted.count == weakCount + 1 && emitted.allSatisfy { isSilence($0.samples) },
+                       "weak-only pending audio expires without loss of cadence or user audio")
+                expect(host.snapshot().sourceGateOpenCount == 0, "weak-only timeout creates no user epoch")
+            } else {
+                expect(host.snapshot().sourceGatePreRollFrameCount == 8, "lifecycle fixture has pending onset")
+                if scenario == "stop" { host.playbackStopped() }
+                else if scenario == "generation" { host.discardPendingCaptureForGenerationTransition() }
+                else { host.routeWillRebuild() }
+                expect(host.snapshot().sourceGatePreRollFrameCount == 0, "lifecycle boundary discards pending onset")
+                expect(host.snapshot().sourceForwardedFrameCount == 0, "lifecycle reset does not release stale onset")
+                if scenario == "generation" {
+                    var fresh = [MacSpeechAcousticCaptureSpan]()
+                    for _ in 0..<3 { fresh += drive("strong") }
+                    expect(fresh.count == 3 && fresh.allSatisfy { $0.observation.captureFrameIndex > 58 },
+                           "only fresh post-fence source frames reach the new confirmation")
+                }
+            }
+        }
+    }
+
     private static func testUncertainSourceGateIsBoundedAndRecoverable() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
@@ -2225,6 +2311,187 @@ private struct MacSpeechAcousticEchoHostTests {
         } catch {
             fatalError("FAILED: 24/48 kHz conversion: \(error)")
         }
+    }
+
+    // Signal truth and callback clocks vary independently. Fake AEC isolates
+    // Host association/gating; these controls do not validate WebRTC acoustics.
+    private static func runTimingControls() -> Bool {
+        let cases: [(String, Float, Bool, String)] = [
+            ("isolated-double-talk", 0, true, "continuous"),
+            ("speaker-normal-double-talk", 0.3, true, "continuous"),
+            ("speaker-loud-double-talk", 0.6, true, "continuous"),
+            ("speaker-normal-echo", 0.3, false, "continuous"),
+            ("speaker-loud-echo", 0.6, false, "continuous"),
+            ("physical-delay-shift", 0.3, false, "path-shift"),
+            ("render-time-missing", 0.3, false, "render-missing"),
+            ("capture-time-missing", 0.3, false, "missing"),
+            ("capture-time-duplicate", 0.3, false, "duplicate"),
+            ("capture-time-backward", 0.3, false, "backward"),
+            ("capture-time-jump", 0.3, false, "jump")
+        ]
+        var failedCases = 0
+        for (name, amplitude, hasNear, variation) in cases {
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+            _ = host.configure()
+            host.updateDelay(outputPresentationLatencySeconds: 0.08,
+                             capturePresentationLatencySeconds: 0)
+            host.playbackStarted()
+            let start: UInt64 = 50_000_000_000
+            let step: UInt64 = 10_000_000
+            let nearTicks = amplitude == 0 ? 80 ..< 110 : 50 ..< 80
+            let render = (0 ..< 166).map {
+                testSignal(seed: UInt32(6_000 + $0), amplitude: max(amplitude, 0.3))
+            }
+            var rows: [[String: Any]] = []
+            var forwarded: [UInt64: [[Float]]] = [:]
+            var expectedNear: [UInt64: [Float]] = [:]
+            var missingReferences = 0
+            var wrongReferences = 0
+            var nonCausalReferences = 0
+            var invalidClockLocks = 0
+            var firstUnlock: Int?
+            var firstClose: Int?
+            var gateEverOpened = false
+            var previousCaptureTime: UInt64?
+            var failures: [String] = []
+            func require(_ condition: Bool, _ label: String) {
+                if !condition { failures.append(label) }
+            }
+            for tick in 0 ..< render.count {
+                let physicalTime = start + UInt64(tick) * step
+                let renderTime = variation == "render-missing" && (52 ..< 60).contains(tick)
+                    ? nil : Optional(physicalTime)
+                host.processRender(render[tick], hostTimeNanoseconds: renderTime)
+                guard tick >= 16 else { continue }
+                if tick == (hasNear ? nearTicks.lowerBound : 60) {
+                    let state = host.snapshot()
+                    require(amplitude == 0 ? state.renderCaptureIsolationEstablished
+                                : state.sourceAlignmentLocked
+                                    && state.sourceAlignmentDelayMilliseconds == 80,
+                            "fixture_must_establish_initial_path_before_perturbation")
+                }
+                let delayFrames = variation == "path-shift" && tick >= 60 ? 14 : 8
+                let truthReference = start + UInt64(tick - delayFrames) * step
+                let echo = amplitude == 0
+                    ? [Float](repeating: 0, count: 480) : render[tick - delayFrames]
+                let near = hasNear && nearTicks.contains(tick)
+                    ? testSignal(seed: UInt32(9_000 + tick), amplitude: 0.25)
+                    : [Float](repeating: 0, count: 480)
+                let raw = zip(echo, near).map { $0 * 0.9 + $1 }
+                let clean = zip(echo, near).map { $0 * 0.12 + $1 }
+                backend.setCaptureOutput(clean)
+                backend.setLinearOutput(linearOutput(clean))
+                var captureTime: UInt64? = physicalTime
+                if variation == "missing" && (60 ..< 68).contains(tick) {
+                    captureTime = nil
+                } else if tick == 60 {
+                    if variation == "duplicate" { captureTime = physicalTime - step }
+                    if variation == "backward" { captureTime = physicalTime - 2 * step }
+                    if variation == "jump" { captureTime = physicalTime + 6 * step }
+                }
+                let spans = host.processCaptureSpans(raw, hostTimeNanoseconds: captureTime)
+                let observation = host.acousticObservationSnapshot()
+                let snapshot = host.snapshot()
+                let frameID = UInt64(tick - 15)
+                if hasNear && nearTicks.contains(tick) { expectedNear[frameID] = clean }
+                for span in spans where span.samples.contains(where: { $0 != 0 }) {
+                    forwarded[span.observation.captureFrameIndex, default: []].append(span.samples)
+                }
+                let reference = observation.renderHostTimeNanoseconds
+                if let reference, let captureTime, reference > captureTime {
+                    nonCausalReferences += 1
+                }
+                if hasNear && amplitude > 0 && nearTicks.contains(tick) {
+                    if reference == nil { missingReferences += 1 }
+                    else if reference != truthReference { wrongReferences += 1 }
+                    if !snapshot.sourceAlignmentLocked && firstUnlock == nil { firstUnlock = tick }
+                }
+                if let captureTime, let previousCaptureTime,
+                   captureTime <= previousCaptureTime,
+                   snapshot.sourceAlignmentLocked, reference != nil {
+                    invalidClockLocks += 1
+                }
+                previousCaptureTime = captureTime
+                gateEverOpened = gateEverOpened || snapshot.sourceGateOpen
+                if hasNear && tick >= nearTicks.upperBound && gateEverOpened,
+                   !snapshot.sourceGateOpen && firstClose == nil { firstClose = tick }
+                rows.append([
+                    "tick": tick, "physical_capture_ns": physicalTime,
+                    "capture_ns": captureTime.map { Int64($0) } ?? -1,
+                    "truth_render_ns": truthReference,
+                    "reported_render_ns": reference.map { Int64($0) } ?? -1,
+                    "near_present": hasNear && nearTicks.contains(tick),
+                    "locked": snapshot.sourceAlignmentLocked,
+                    "delay_ms": snapshot.sourceAlignmentDelayMilliseconds ?? -1,
+                    "misses": snapshot.sourceAlignmentMissCount,
+                    "reacquisitions": snapshot.sourceAlignmentReacquisitionCount,
+                    "classification": observation.inputClassification.rawValue,
+                    "gate_open": snapshot.sourceGateOpen,
+                    "close_reason": snapshot.lastSourceGateCloseReason?.rawValue ?? "none",
+                    "emitted_frame_ids": spans.map { $0.observation.captureFrameIndex },
+                    "nonzero_frame_ids": spans.filter { $0.samples.contains { $0 != 0 } }
+                        .map { $0.observation.captureFrameIndex }
+                ])
+            }
+            let snapshot = host.snapshot()
+            let missingNear = expectedNear.keys.filter { forwarded[$0] == nil }.sorted()
+            let duplicateNear = expectedNear.keys.filter { (forwarded[$0]?.count ?? 0) > 1 }.sorted()
+            let alteredNear = expectedNear.keys.filter {
+                guard let emitted = forwarded[$0]?.first else { return false }
+                return emitted != expectedNear[$0]
+            }.sorted()
+            require(nonCausalReferences == 0, "reported_reference_must_be_capture_causal")
+            if hasNear {
+                require(missingNear.isEmpty, "every_near_frame_must_be_forwarded")
+                require(duplicateNear.isEmpty, "near_frames_must_not_repeat")
+                require(alteredNear.isEmpty, "gate_must_preserve_aec_output_samples")
+                require(forwarded.keys.allSatisfy { $0 >= UInt64(nearTicks.lowerBound - 15) },
+                        "echo_warmup_must_be_silent")
+                require(snapshot.sourceGateOpenCount == 1, "one_near_segment_one_gate_epoch")
+                require(firstClose.map { $0 <= nearTicks.upperBound + 19 } == true,
+                        "close_within_20_non_user_frames")
+                require(!snapshot.sourceGateOpen, "gate_must_finish_closed")
+                require(forwarded.keys.allSatisfy { $0 < UInt64(nearTicks.upperBound + 19 - 15) },
+                        "no_nonzero_output_after_close_budget")
+                if amplitude > 0 {
+                    require(missingReferences == 0 && wrongReferences == 0,
+                            "fixed_path_double_talk_must_keep_correct_reference")
+                }
+            } else {
+                require(snapshot.sourceGateOpenCount == 0, "echo_must_not_open_gate")
+                require(forwarded.isEmpty, "echo_must_not_forward_nonzero_pcm")
+                require(snapshot.nearEndSpeechFrameCount == 0 && snapshot.doubleTalkFrameCount == 0,
+                        "echo_must_not_become_user_evidence")
+                require(invalidClockLocks == 0, "nonmonotonic_capture_must_not_claim_locked_reference")
+                require(snapshot.sourceAlignmentLocked, "fresh_echo_must_reacquire_by_fixture_end")
+                let expectedDelay = variation == "path-shift" ? 140 : 80
+                require(snapshot.sourceAlignmentDelayMilliseconds == expectedDelay,
+                        "reacquired_delay_must_match_physical_truth")
+            }
+            if !failures.isEmpty { failedCases += 1 }
+            let result: [String: Any] = [
+                "case": name, "status": failures.isEmpty ? "PASS" : "FAIL",
+                "backend": "FakeAECBackend", "failures": failures,
+                "missing_near_ids": missingNear, "duplicate_near_ids": duplicateNear,
+                "altered_near_ids": alteredNear,
+                "missing_near_references": missingReferences,
+                "wrong_near_references": wrongReferences,
+                "first_near_unlock_tick": firstUnlock ?? -1,
+                "first_close_tick": firstClose ?? -1,
+                "final_close_reason": snapshot.lastSourceGateCloseReason?.rawValue ?? "none",
+                "invalid_clock_locked_references": invalidClockLocks,
+                "gate_opens": snapshot.sourceGateOpenCount,
+                "nonzero_frames": forwarded.values.reduce(0) { $0 + $1.count },
+                "frames": rows
+            ]
+            do {
+                let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+                print(String(decoding: data, as: UTF8.self))
+            } catch { fatalError("FAILED: timing control evidence serialization: \(error)") }
+        }
+        print("timing_controls=\(cases.count) failed=\(failedCases)")
+        return failedCases == 0
     }
 
     private static func convertedPackets(
