@@ -65,7 +65,12 @@ nonisolated enum RealtimeSpeechConversationPacingPolicy {
     static let instruction = """
     For realtime voice replies, give the direct conclusion or answer first.
     By default, reply in one to three concise spoken sentences, then stop naturally so the user can respond.
+    Keep each sentence short; do not pack a paragraph into a sentence with commas or semicolons.
+    For ordinary Chinese conversation, aim for 20-60 Chinese characters total; for other languages, use a similarly brief spoken turn. This is a flexible target, not a truncation rule.
+    Address one main point per turn. For a greeting or a simple question, one short sentence is usually enough.
     Expand beyond three sentences only when the user explicitly asks for detail.
+    Preserve the resident's identity and safety boundaries, but do not recite the full profile or repeat identity disclosures unless relevant to the user's question.
+    Do not add a follow-up question to every reply; ask at most one when it is useful.
     Avoid long monologues, repeated summaries, written-answer recitation, and generic assistant filler.
     """
 }

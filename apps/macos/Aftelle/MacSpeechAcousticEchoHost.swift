@@ -88,6 +88,9 @@ nonisolated enum MacSpeechAECBackendError: Error, Sendable, Equatable {
 }
 
 nonisolated protocol MacSpeechAECBackend: AnyObject, Sendable {
+    // Delays relative to raw capture, in 16 kHz samples.
+    var linearOutputDelaySamples: Int { get }
+    var processedOutputDelaySamples: Int { get }
     func configure() throws
     func processRender(_ samples: [Float]) throws
     func processCapture(_ samples: [Float]) throws
@@ -95,6 +98,11 @@ nonisolated protocol MacSpeechAECBackend: AnyObject, Sendable {
     func setDelay(milliseconds: Int) throws
     func reset() throws
     func stats() throws -> MacSpeechAECBackendStats
+}
+
+extension MacSpeechAECBackend {
+    var linearOutputDelaySamples: Int { 0 }
+    var processedOutputDelaySamples: Int { 0 }
 }
 
 nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
@@ -348,6 +356,8 @@ nonisolated struct MacSpeechAcousticReplayInitialStateSnapshot:
     let playbackActive: Bool
     let routeRebuilding: Bool
     let fallbackReason: String?
+    let linearOutputDelaySamples: Int?
+    let processedOutputDelaySamples: Int?
 
     var exactReplayEligible: Bool {
         mode == MacSpeechAudioProcessingMode.webRTCAEC3.rawValue
@@ -781,6 +791,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var linearAECOutputRMS = 0.0
     private var linearRenderCorrelation = 0.0
     private var processedLinearCorrelation = 0.0
+    private var outputTimingReferenceAvailable = false
     private var inputClassification: MacSpeechAcousticInputClassification =
         .uncertain
     private var sourceGateOpen = false
@@ -1451,6 +1462,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             guard state.exactReplayEligible,
                   mode.rawValue == state.mode,
                   fifoSampleCapacity == state.fifoSampleCapacity,
+                  (backend?.linearOutputDelaySamples ?? 0)
+                    == (state.linearOutputDelaySamples ?? 0),
+                  (backend?.processedOutputDelaySamples ?? 0)
+                    == (state.processedOutputDelaySamples ?? 0),
                   !isPlaybackActive else { return false }
             renderFIFO = state.renderFIFOSamples
             captureFIFO = state.captureFIFOSamples
@@ -2009,10 +2024,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             }
             return .uncertain
         }
-        let residualCorrelation = normalizedCorrelation(
-            processedFrame,
-            timingMatch.renderSamples
-        )
+        let residualCorrelation = residualRenderCorrelation
         let residentOnlyEvidence = hasHighConfidenceResidentOnlyEvidence(
             cleanRMS: cleanRMS,
             residualCorrelation: residualCorrelation,
@@ -2184,7 +2196,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         residualCorrelation: Double,
         timingMatch: TimingMatch
     ) -> Bool {
-        guard residualEchoBaselineFrameCount
+        guard outputTimingReferenceAvailable,
+              residualEchoBaselineFrameCount
                 >= Self.minimumResidualEchoBaselineFrameCount,
               residualCorrelation
                 <= Self.maximumAdaptiveDoubleTalkResidualCorrelation,
@@ -2288,7 +2301,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private func freezeResidualEchoBaseline() {
-        guard !residualEchoBaselineFrozen else { return }
+        guard !residualEchoBaselineFrozen,
+              residualEchoBaselineFrameCount
+                >= Self.minimumResidualEchoBaselineFrameCount else { return }
         residualEchoBaselineFrozen = true
         residualEchoBaselineFreezeCount &+= 1
     }
@@ -2648,30 +2663,76 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         rawCaptureRMS = signalRMS(rawCapture)
         processedCaptureRMS = signalRMS(processedCapture)
         linearAECOutputRMS = signalRMS(linearAECOutput)
-        processedLinearCorrelation = normalizedCorrelation(
-            downsampleToSixteenKilohertz(processedCapture),
-            linearAECOutput
-        )
+        outputTimingReferenceAvailable = true
+        let linearDelay = backend?.linearOutputDelaySamples ?? 0
+        let processedDelay = backend?.processedOutputDelaySamples ?? 0
+        let comparisonDelay = processedDelay - linearDelay
+        let processedLowBand = downsampleToSixteenKilohertz(processedCapture)
+        if (0 ..< Self.linearOutputFrameSampleCount).contains(comparisonDelay) {
+            processedLinearCorrelation = normalizedCorrelation(
+                Array(processedLowBand.dropFirst(comparisonDelay)),
+                Array(linearAECOutput.dropLast(comparisonDelay))
+            )
+        } else {
+            processedLinearCorrelation = 0
+            outputTimingReferenceAvailable = false
+        }
         if let timingMatch {
             matchedRenderHostTimeNanoseconds =
                 timingMatch.renderHostTimeNanoseconds
             matchedRenderReferenceRMS = timingMatch.renderRMS
             renderCaptureCorrelation = timingMatch.correlation
-            residualRenderCorrelation = normalizedCorrelation(
-                processedCapture,
-                timingMatch.renderSamples
-            )
-            linearRenderCorrelation = normalizedCorrelation(
-                linearAECOutput,
-                downsampleToSixteenKilohertz(timingMatch.renderSamples)
-            )
+            if let processedReference = delayedRenderReference(
+                timingMatch, delaySamples: processedDelay * 3
+            ), let linearReference = delayedRenderReference(
+                timingMatch, delaySamples: linearDelay * 3
+            ) {
+                residualRenderCorrelation = normalizedCorrelation(
+                    processedCapture, processedReference
+                )
+                linearRenderCorrelation = normalizedCorrelation(
+                    linearAECOutput,
+                    downsampleToSixteenKilohertz(linearReference)
+                )
+            } else {
+                residualRenderCorrelation = 0
+                linearRenderCorrelation = 0
+                processedLinearCorrelation = 0
+                outputTimingReferenceAvailable = false
+            }
         } else {
             matchedRenderHostTimeNanoseconds = nil
             matchedRenderReferenceRMS = 0
             renderCaptureCorrelation = 0
             residualRenderCorrelation = 0
             linearRenderCorrelation = 0
+            outputTimingReferenceAvailable = false
         }
+    }
+
+    private func delayedRenderReference(
+        _ match: TimingMatch,
+        delaySamples: Int
+    ) -> [Float]? {
+        guard delaySamples != 0 else { return match.renderSamples }
+        guard (1 ..< Self.frameSampleCount).contains(delaySamples),
+              let index = renderTimingHistory.lastIndex(where: {
+                  $0.hostTimeNanoseconds == match.renderHostTimeNanoseconds
+              }), index > 0 else { return nil }
+        let previous = renderTimingHistory[index - 1]
+        let current = renderTimingHistory[index]
+        guard current.hostTimeNanoseconds > previous.hostTimeNanoseconds else {
+            return nil
+        }
+        let advanceMilliseconds = Double(
+            current.hostTimeNanoseconds - previous.hostTimeNanoseconds
+        ) / 1_000_000
+        guard abs(advanceMilliseconds - 10)
+                <= Self.timingAssociationProgressToleranceMilliseconds else {
+            return nil
+        }
+        return Array(previous.samples.suffix(delaySamples))
+            + Array(current.samples.prefix(Self.frameSampleCount - delaySamples))
     }
 
     private func downsampleToSixteenKilohertz(_ samples: [Float]) -> [Float] {
@@ -2751,7 +2812,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             sourceGateEpochSequence: sourceGateEpochSequence,
             playbackActive: isPlaybackActive,
             routeRebuilding: isRouteRebuilding,
-            fallbackReason: fallbackReason?.rawValue
+            fallbackReason: fallbackReason?.rawValue,
+            linearOutputDelaySamples: backend?.linearOutputDelaySamples == 0
+                ? nil : backend?.linearOutputDelaySamples,
+            processedOutputDelaySamples: backend?.processedOutputDelaySamples == 0
+                ? nil : backend?.processedOutputDelaySamples
         )
     }
 

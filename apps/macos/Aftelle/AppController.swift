@@ -317,6 +317,7 @@ nonisolated struct RealtimeBrainSubtitlePresentation: Sendable, Equatable {
     private static let retiredIdentityCapacity = 64
 
     private(set) var identity: RealtimeBrainEventIdentity?
+    private(set) var direction: RealtimeSpeechSubtitleDirection?
     private(set) var text = ""
     private var isFinal = false
     private var retiredIdentities: Set<RealtimeBrainEventIdentity> = []
@@ -345,30 +346,55 @@ nonisolated struct RealtimeBrainSubtitlePresentation: Sendable, Equatable {
                 retiredIdentities.remove(retiredIdentityOrder.removeFirst())
             }
         }
-        clearCurrent()
+        if eventIdentity == nil || identity == eventIdentity {
+            clearCurrent()
+        }
     }
 
     private mutating func clearCurrent() {
         identity = nil
+        direction = nil
         text = ""
         isFinal = false
     }
 
     @discardableResult
     mutating func consume(_ event: RealtimeResidentBrainEvent) -> Bool {
-        guard event.identity.turnID != nil,
-              event.identity.responseID != nil,
-              !retiredIdentities.contains(event.identity) else {
+        let incomingDirection: RealtimeSpeechSubtitleDirection
+        switch event.kind {
+        case .userTranscriptPartial, .userTranscriptFinal:
+            guard event.identity.responseID == nil else { return false }
+            incomingDirection = .user
+        case .residentTextDelta, .residentTextFinal, .residentSemanticFinal,
+             .residentSpeakingStarted, .residentAudioDelta:
+            guard event.identity.responseID != nil else { return false }
+            incomingDirection = .resident
+        default:
             return false
         }
-        if let identity {
-            guard identity == event.identity else { return false }
-        } else {
-            identity = event.identity
-        }
-
+        guard event.identity.turnID != nil,
+              !retiredIdentities.contains(event.identity) else { return false }
         let previous = displayText
+        if let identity, identity != event.identity {
+            guard identity.session == event.identity.session else { return false }
+            if incomingDirection == .resident {
+                guard direction == .user,
+                      identity.turnID == event.identity.turnID else { return false }
+            } else {
+                // A late user final cannot replace the reply to that same turn.
+                guard identity.turnID != event.identity.turnID else { return false }
+            }
+            retire()
+        }
+        identity = event.identity
+        direction = incomingDirection
         switch event.kind {
+        case .userTranscriptPartial(let partial):
+            guard !isFinal else { return false }
+            text = partial
+        case .userTranscriptFinal(let final):
+            text = final
+            isFinal = true
         case .residentTextDelta(let delta):
             guard !isFinal else { return false }
             text.append(delta)
@@ -379,10 +405,11 @@ nonisolated struct RealtimeBrainSubtitlePresentation: Sendable, Equatable {
             text = semantic.canonicalText
             isFinal = true
         default:
-            return false
+            break
         }
         return displayText != previous
     }
+
 }
 
 enum ParticleColorSource: String, CaseIterable, Identifiable {
@@ -810,7 +837,8 @@ final class AppController: ObservableObject {
         nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer =
             NativeSpeechDiagnosticBuffer(),
         realtimeSpeechDiagnosticAudioEngine:
-            SystemMacSpeechVoiceProcessingEngine? = nil
+            SystemMacSpeechVoiceProcessingEngine? = nil,
+        restoreProviderSettings: Bool = true
     ) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
@@ -822,8 +850,10 @@ final class AppController: ObservableObject {
         nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
             profile: nativeSpeechProfile
         )
-        restoreProviderConfiguration()
-        refreshNativeSpeechProviderDebugState()
+        if restoreProviderSettings {
+            restoreProviderConfiguration()
+            refreshNativeSpeechProviderDebugState()
+        }
     }
     #endif
 
@@ -2683,7 +2713,11 @@ final class AppController: ObservableObject {
         refreshParticleDebugSnapshot()
     }
 
-    func debugImportResident(from url: URL) {
+    func debugImportTestResident(from url: URL) {
+        debugImportResident(from: url, persistBookmark: false)
+    }
+
+    func debugImportResident(from url: URL, persistBookmark: Bool = true) {
         guard speechHostAllowsSessionReplacement else {
             fixtureStatus = "Debug DR: stop speech before import"
             recordRealtimeSpeechDiagnostic(
@@ -2708,7 +2742,7 @@ final class AppController: ObservableObject {
         }
 
         let result = orchestrationKernel.loadResident(fixtureData: drData)
-        if result.isLoaded {
+        if result.isLoaded && persistBookmark {
             saveResidentBookmark(for: url)
         }
         applyLoadResult(
@@ -3426,6 +3460,11 @@ final class AppController: ObservableObject {
                 lastErrorCode: nil
             )
         case .userTranscriptFinal:
+            if realtimeBrainPlaybackResponseID == nil,
+               realtimeBrainGenerationTransitionID == nil,
+               realtimeBrainSubtitlePresentation.consume(event) {
+                syncRealtimeBrainSubtitlePresentation()
+            }
             if realtimePassiveBackchannelPresentation?.contains(
                 event.identity
             ) == true {
@@ -3446,6 +3485,9 @@ final class AppController: ObservableObject {
                 )
             }
         case .residentAudioDelta(let audio):
+            if realtimeBrainSubtitlePresentation.consume(event) {
+                syncRealtimeBrainSubtitlePresentation()
+            }
             cancelRealtimeBrainMissingSpeechStopPresentation()
             await enqueueRealtimeResidentBrainAudio(
                 audio,
@@ -3540,8 +3582,17 @@ final class AppController: ObservableObject {
         case .userSpeechStopped:
             observeRealtimeBrainUserSpeechStopped(event.identity)
         case .residentSpeakingStarted:
+            if realtimeBrainSubtitlePresentation.consume(event) {
+                syncRealtimeBrainSubtitlePresentation()
+            }
             cancelRealtimeBrainMissingSpeechStopPresentation()
-        case .userTranscriptPartial, .toolCall:
+        case .userTranscriptPartial:
+            if realtimeBrainPlaybackResponseID == nil,
+               realtimeBrainGenerationTransitionID == nil,
+               realtimeBrainSubtitlePresentation.consume(event) {
+                syncRealtimeBrainSubtitlePresentation()
+            }
+        case .toolCall:
             break
         }
         if isCurrentRealtimeBrainRoute(
@@ -4375,7 +4426,7 @@ final class AppController: ObservableObject {
                 routeKind: .realtimeBrain,
                 turnGeneration: identity?.session.generation
                     ?? realtimeBrainInputBinding?.session.generation,
-                disposition: "accepted_formal_realtime_event",
+                disposition: "accepted_formal_realtime_event;direction=\(realtimeBrainSubtitlePresentation.direction?.rawValue ?? "none")",
                 responseCorrelationHash: identity?.responseID.map {
                     String($0.rawValue.uuidString.prefix(8))
                 },

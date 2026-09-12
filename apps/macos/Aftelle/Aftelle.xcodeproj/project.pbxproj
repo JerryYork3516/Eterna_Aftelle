@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A073E3000000000000000001 /* Test3LocalAudioRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A073E3000000000000000002 /* Test3LocalAudioRunner.swift */; };
 		A070C0000000000000000001 /* AftelleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000002 /* AftelleApp.swift */; };
 		A070C0000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000005 /* ContentView.swift */; };
 		A070C0000000000000000101 /* ParticleSimulation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000102 /* ParticleSimulation.swift */; };
@@ -71,6 +72,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A073E3000000000000000002 /* Test3LocalAudioRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Test3LocalAudioRunner.swift; sourceTree = "<group>"; };
 		A070C0000000000000000002 /* AftelleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AftelleApp.swift; sourceTree = "<group>"; };
 		A070C0000000000000000005 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A070C0000000000000000116 /* Aftelle.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Aftelle.entitlements; sourceTree = "<group>"; };
@@ -154,6 +156,7 @@
 			isa = PBXGroup;
 			children = (
 				A070C0000000000000000002 /* AftelleApp.swift */,
+				A073E3000000000000000002 /* Test3LocalAudioRunner.swift */,
 				A070C0000000000000000005 /* ContentView.swift */,
 				A0759A100000000000000012 /* RealtimeSpeechPresentationMapper.swift */,
 				A076A100000000000000011 /* MacSpeechAcousticEchoHost.swift */,
@@ -360,6 +363,7 @@
 				A077A100000000000000001 /* RealtimeResidentBrainProvider.swift in Sources */,
 				A078A100000000000000001 /* QwenRealtimeResidentBrainAdapter.swift in Sources */,
 				A070C0000000000000000001 /* AftelleApp.swift in Sources */,
+				A073E3000000000000000001 /* Test3LocalAudioRunner.swift in Sources */,
 				A070C0000000000000000003 /* ContentView.swift in Sources */,
 				A070C0000000000000000028 /* AppController.swift in Sources */,
 				A070C0000000000000000120 /* ProviderKeychainStore.swift in Sources */,

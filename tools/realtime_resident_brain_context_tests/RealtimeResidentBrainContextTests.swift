@@ -215,6 +215,8 @@ private struct RealtimeResidentBrainContextTests {
             scope: .stableResident,
             update: bootstrap
         )
+        expect(stableContent.contains(RealtimeSpeechConversationPacingPolicy.instruction),
+               "formal Realtime bootstrap includes the current concise voice policy")
         expect(!stableContent.isEmpty
                 && stableContent.contains("[identity.core]")
                 && stableContent.contains("[safety.boundary]")

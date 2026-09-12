@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 #if AFTELLE_REPLAY_INPUT_CHAIN
 import AVFoundation
@@ -15,15 +16,21 @@ private final class RecordedAECBackend:
     private var captureFrameIndex = 0
     private var currentStats: MacSpeechAECBackendStats
     private(set) var underflowCount = 0
+    let linearOutputDelaySamples: Int
+    let processedOutputDelaySamples: Int
 
     init(
         cleanSamples: [Float],
         linearSamples: [Float],
-        initialStats: MacSpeechAECBackendStats
+        initialStats: MacSpeechAECBackendStats,
+        linearOutputDelaySamples: Int,
+        processedOutputDelaySamples: Int
     ) {
         self.cleanSamples = cleanSamples
         self.linearSamples = linearSamples
         currentStats = initialStats
+        self.linearOutputDelaySamples = linearOutputDelaySamples
+        self.processedOutputDelaySamples = processedOutputDelaySamples
     }
 
     func configure() throws {}
@@ -190,6 +197,19 @@ private struct RecordedAcousticReplay {
         sourceGatePreRollFrameCount
 
     static func main() async throws {
+        if CommandLine.arguments.count == 4,
+           CommandLine.arguments[1] == "--local-capsule" {
+            do {
+                try replayLocalCapsule(
+                    at: URL(fileURLWithPath: CommandLine.arguments[2]),
+                    output: URL(fileURLWithPath: CommandLine.arguments[3])
+                )
+            } catch {
+                FileHandle.standardError.write(Data("local_capsule_replay=ERROR\n".utf8))
+                exit(2)
+            }
+            return
+        }
 #if AFTELLE_REPLAY_INPUT_CHAIN
         if CommandLine.arguments.count == 4,
            CommandLine.arguments[2] == "--input-chain" {
@@ -523,12 +543,17 @@ private struct RecordedAcousticReplay {
     }
 
     private static func replay(
-        _ recorded: MacSpeechAcousticReplayCaptureSnapshot
+        _ recorded: MacSpeechAcousticReplayCaptureSnapshot,
+        manualSeal: Bool = false
     ) throws -> MacSpeechAcousticReplayCaptureSnapshot {
         let backend = RecordedAECBackend(
             cleanSamples: recorded.aecCleanSamples,
             linearSamples: recorded.aecLinearSamples,
-            initialStats: recorded.initialState.backendStats.backendStats
+            initialStats: recorded.initialState.backendStats.backendStats,
+            linearOutputDelaySamples:
+                recorded.initialState.linearOutputDelaySamples ?? 0,
+            processedOutputDelaySamples:
+                recorded.initialState.processedOutputDelaySamples ?? 0
         )
         let host = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,
@@ -577,14 +602,130 @@ private struct RecordedAcousticReplay {
             }
         }
 
+        if manualSeal { host.sealAcousticReplayCapture(reason: .manual) }
         guard backend.underflowCount == 0,
               backend.consumedCaptureFrameCount
                 == recorded.captureFrames.count,
               let replayed = host.acousticReplayCaptureSnapshot(),
-              replayed.isExactReplayReady else {
+              manualSeal || replayed.isExactReplayReady else {
             throw ReplayError.backendFrameMismatch
         }
         return replayed
+    }
+
+    private static func replayLocalCapsule(at directory: URL, output: URL) throws {
+        guard !FileManager.default.fileExists(atPath: output.path) else {
+            throw ReplayError.invalidTimeline
+        }
+        let decoder = JSONDecoder()
+        func decode<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+            try decoder.decode(type, from: Data(contentsOf: directory.appendingPathComponent(name)))
+        }
+        func track(_ name: String) throws -> [Float] {
+            let data = try Data(contentsOf: directory.appendingPathComponent(name + ".f32le.pcm"))
+            guard !data.isEmpty, data.count.isMultiple(of: 4) else { throw ReplayError.invalidAudioFile }
+            let samples = data.withUnsafeBytes { bytes in
+                stride(from: 0, to: bytes.count, by: 4).map {
+                    Float(bitPattern: UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: $0, as: UInt32.self)))
+                }
+            }
+            guard samples.allSatisfy(\.isFinite) else { throw ReplayError.invalidAudioFile }
+            return samples
+        }
+        let frames = try decode("capture-frames.json", as: [MacSpeechAcousticReplayFrameSnapshot].self)
+        let audio = try decode("audio-calls.json", as: [MacSpeechAcousticReplayAudioCallSnapshot].self)
+        let controls = try decode("control-events.json", as: [MacSpeechAcousticReplayControlEventSnapshot].self)
+        let raw = try track("raw-mic-48k")
+        let render = try track("render-48k")
+        let clean = try track("clean-48k")
+        let linear = try track("linear-16k")
+        let original = try JSONSerialization.jsonObject(with: Data(contentsOf:
+            directory.appendingPathComponent("result.json"))) as? [String: Any] ?? [:]
+        let caseName = original["case"] as? String ?? ""
+        let injectionAt = (original["injection_started_at_ns"] as? NSNumber)?.uint64Value
+        let positive = ["normal_software_near", "higher_software_near"].contains(caseName)
+        let ordinals = (audio.map(\.ordinal) + controls.map(\.ordinal)).sorted()
+        guard !frames.isEmpty,
+              positive || ["normal_echo_only", "higher_echo_only"].contains(caseName),
+              positive == (injectionAt != nil),
+              ordinals.enumerated().allSatisfy({ $0.element == UInt64($0.offset + 1) }),
+              audio.filter({ $0.kind == .capture }).reduce(0, { $0 + $1.sampleCount }) == raw.count,
+              audio.filter({ $0.kind == .render }).reduce(0, { $0 + $1.sampleCount }) == render.count,
+              frames.enumerated().allSatisfy({
+                  $0.element.aecCleanSampleOffset == $0.offset * 480
+                      && $0.element.aecLinearSampleOffset == $0.offset * 160
+              }), clean.count == frames.count * 480, linear.count == frames.count * 160 else {
+            throw ReplayError.invalidTimeline
+        }
+        // Local device runs end manually. Do not relabel them as target-reached recordings.
+        let recorded = MacSpeechAcousticReplayCaptureSnapshot(
+            attemptID: UUID(), armedAt: Date(timeIntervalSince1970: 0), startedAt: nil, endedAt: nil,
+            targetPostPlaybackCaptureFrameCount: frames.count + 1,
+            postPlaybackCaptureFrameCount: frames.filter(\.isPlaybackActive).count,
+            initialState: try decode("initial-state.json", as: MacSpeechAcousticReplayInitialStateSnapshot.self),
+            finalState: try decode("final-state.json", as: MacSpeechAcousticReplayInitialStateSnapshot.self),
+            rawMicrophoneSamples: raw, chronologicalRenderSamples: render,
+            aecCleanSamples: clean, aecLinearSamples: linear, audioCalls: audio, controlEvents: controls,
+            renderFrames: try decode("render-frames.json", as: [MacSpeechAcousticReplayRenderFrameSnapshot].self),
+            captureFrames: frames, isSealed: true, sealReason: .manual
+        )
+        let current = try replay(recorded, manualSeal: true)
+        let repeated = try replay(recorded, manualSeal: true)
+        let inputsMatch = recorded.initialState == current.initialState
+            && raw == current.rawMicrophoneSamples && render == current.chronologicalRenderSamples
+            && clean == current.aecCleanSamples && linear == current.aecLinearSamples
+            && controls == current.controlEvents && audio.count == current.audioCalls.count
+            && zip(audio, current.audioCalls).allSatisfy {
+                $0.ordinal == $1.ordinal && $0.kind == $1.kind
+                    && $0.sampleOffset == $1.sampleOffset && $0.sampleCount == $1.sampleCount
+                    && $0.hostTimeNanoseconds == $1.hostTimeNanoseconds
+                    && $0.firstFrameIndex == $1.firstFrameIndex && $0.frameCount == $1.frameCount
+            }
+        guard compare(current, repeated).isExact,
+              inputsMatch else {
+            printComparison(compare(current, repeated))
+            printComparison(compare(recorded, current))
+            print("recorded_input_match=\(replayInputMatches(recorded, current))")
+            throw ReplayError.liveReplayMismatch
+        }
+        let playback = current.captureFrames.filter(\.isPlaybackActive)
+        let echo = playback.filter {
+            guard let injectionAt else { return true }
+            return ($0.captureHostTimeNanoseconds ?? $0.timestampNanoseconds) < injectionAt
+        }
+        let near = playback.filter {
+            guard let injectionAt else { return false }
+            return ($0.captureHostTimeNanoseconds ?? $0.timestampNanoseconds) >= injectionAt
+        }
+        guard !echo.isEmpty, !positive || !near.isEmpty else {
+            throw ReplayError.invalidTimeline
+        }
+        let echoGate = echo.filter(\.sourceGateOpen).count
+        let echoForward = echo.flatMap(\.emittedSpans).filter { !$0.silenced }.count
+        let nearForward = near.flatMap(\.emittedSpans).filter { !$0.silenced }.count
+        let negativePassed = echoGate == 0 && echoForward == 0
+        let positivePassed = injectionAt == nil || nearForward > 0
+        let delta = compare(recorded, current)
+        let summary: [String: Any] = [
+            "schema_version": 1, "source": directory.path, "case": caseName,
+            "status": negativePassed && positivePassed ? "PASS" : "FAIL",
+            "deterministic_repeat": true, "recorded_input_preserved": true,
+            "mode": "recorded_aec_outputs_current_host", "qwen_calls": 0, "device_playback": false,
+            "echo_frames": echo.count, "echo_gate_frames": echoGate, "echo_forwarded_spans": echoForward,
+            "near_frames": near.count, "near_gate_frames": near.filter(\.sourceGateOpen).count,
+            "near_forwarded_spans": nearForward,
+            "recorded_classifier_mismatches": delta.classifierMismatches.count,
+            "recorded_gate_mismatches": delta.gateMismatches.count,
+            "recorded_backend_call_metadata_matches": recorded.audioCalls == current.audioCalls,
+            "limits": "Fixed recorded AEC outputs; does not rerun WebRTC, room, semantic events, or playback-clear feedback. Initial device configure stats are not encoded in capsule controls."
+        ]
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(current.captureFrames).write(to: output.appendingPathComponent("capture-frames.json"))
+        try JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys])
+            .write(to: output.appendingPathComponent("result.json"))
+        print("local_capsule=\(directory.lastPathComponent) status=\(summary["status"]!) echo_gate=\(echoGate) echo_forward=\(echoForward) near_forward=\(nearForward) deterministic=true")
     }
 
     private static func apply(
@@ -1513,7 +1654,9 @@ extension RecordedAcousticReplay {
         let reference = try replay(recorded)
         let backend = RecordedAECBackend(cleanSamples: recorded.aecCleanSamples,
             linearSamples: recorded.aecLinearSamples,
-            initialStats: recorded.initialState.backendStats.backendStats)
+            initialStats: recorded.initialState.backendStats.backendStats,
+            linearOutputDelaySamples: recorded.initialState.linearOutputDelaySamples ?? 0,
+            processedOutputDelaySamples: recorded.initialState.processedOutputDelaySamples ?? 0)
         let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
         guard host.configure() == .webRTCAEC3 else { throw ReplayError.hostConfigurationFailed }
         let capture = try ReplayInputCapture(host: host)

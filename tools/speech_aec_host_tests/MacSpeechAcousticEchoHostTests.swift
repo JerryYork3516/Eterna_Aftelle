@@ -3,6 +3,8 @@ import Foundation
 
 private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
     private let lock = NSLock()
+    let linearOutputDelaySamples: Int
+    let processedOutputDelaySamples: Int
     var configureError: MacSpeechAECBackendError?
     var renderError: MacSpeechAECBackendError?
     var captureError: MacSpeechAECBackendError?
@@ -15,6 +17,11 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
     private var captureOutput: [Float]?
     private var captureOutputQueue: [[Float]] = []
     private var linearOutput: [Float]?
+
+    init(linearOutputDelaySamples: Int = 0, processedOutputDelaySamples: Int = 0) {
+        self.linearOutputDelaySamples = linearOutputDelaySamples
+        self.processedOutputDelaySamples = processedOutputDelaySamples
+    }
 
     func configure() throws {
         if let configureError { throw configureError }
@@ -122,6 +129,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testHostTimeAlignedDelayAndDiagnostics()
         #if DEBUG
         testAcousticReplayCapture()
+        testLocalNearEndInjectionTiming()
         #endif
         testFutureRenderTimestampIsCaptureCausal()
         testTimingLockDoesNotJumpOnRepeatedRender()
@@ -133,9 +141,12 @@ private struct MacSpeechAcousticEchoHostTests {
         testNearEndSourceGateAndPreRoll()
         testAbortedSourceGatePreRollPreservesCadence()
         testDoubleTalkSourceGate()
+        testDelayedAECOutputEvidence()
+        testMissingAECReferenceCannotRenewHangover()
         testRouteIndependentBargeInHysteresis()
         testAdaptiveExternalOutputDoubleTalk()
         testBaselineFreezesBeforeQuieterUserSpeech()
+        testAbortedCandidateDoesNotFreezeUntrainedBaseline()
         testAdaptiveGateRejectsResidualEchoVariation()
         testMixedResidentRenderIsOneFarEndReference()
         testLongLoudEchoStaysSuppressed()
@@ -154,6 +165,36 @@ private struct MacSpeechAcousticEchoHostTests {
         testTwentyFourToFortyEightResamplingRoundTrip()
         print("speech_aec_host_checks=\(checks)")
     }
+
+    #if DEBUG
+    private static func testLocalNearEndInjectionTiming() {
+        let start: UInt64 = 1_000_000_000
+        let source = (0..<720).map { Float($0) / 2_000 }
+        var injection = Test3NearEndInjection(
+            samples: source, startAtNanoseconds: start + 5_000_000
+        )
+        var early = [Float](repeating: 0.1, count: 480)
+        injection.mix(into: &early, hostTimeNanoseconds: start - 10_000_000)
+        expect(early.allSatisfy { $0 == 0.1 }, "near fixture does not precede its start")
+        expect(injection.injectedSampleCount == 0, "early callback consumes no fixture")
+        var first = [Float](repeating: 0, count: 480)
+        injection.mix(into: &first, hostTimeNanoseconds: start)
+        expect(first.prefix(240).allSatisfy { $0 == 0 }, "start offset preserves real mic prefix")
+        expect(Array(first.suffix(240)) == Array(source.prefix(240)), "fixture begins at sample offset")
+        expect(injection.startedAtNanoseconds == start + 5_000_000, "actual injection time recorded")
+        var second = [Float](repeating: 0, count: 480)
+        injection.mix(into: &second, hostTimeNanoseconds: start + 10_500_000)
+        expect(second == Array(source.suffix(480)), "callback jitter does not skip or repeat fixture samples")
+        expect(injection.injectedSampleCount == 720, "fixture consumption is bounded")
+        var after = [Float](repeating: 0.2, count: 480)
+        injection.mix(into: &after, hostTimeNanoseconds: start + 20_000_000)
+        expect(after.allSatisfy { $0 == 0.2 }, "completed injection leaves microphone unchanged")
+        var clipping = Test3NearEndInjection(samples: [0.8, -0.8], startAtNanoseconds: start)
+        var loud: [Float] = [0.8, -0.8]
+        clipping.mix(into: &loud, hostTimeNanoseconds: start)
+        expect(loud == [1, -1], "software mix stays within PCM range")
+    }
+    #endif
 
     private static func testConfigureAndSerializedFraming() {
         let backend = FakeAECBackend()
@@ -555,6 +596,39 @@ private struct MacSpeechAcousticEchoHostTests {
         host.clearAcousticReplayCapture(matchingAttemptID: attemptID)
         expect(host.acousticReplayCaptureSnapshot() == nil,
                "matching replay capture clears exactly once")
+
+        do {
+            let encoded = try JSONEncoder().encode(capture.initialState)
+            let decoded = try JSONDecoder().decode(
+                MacSpeechAcousticReplayInitialStateSnapshot.self, from: encoded
+            )
+            expect(decoded.linearOutputDelaySamples == nil
+                       && decoded.processedOutputDelaySamples == nil,
+                   "legacy replay metadata keeps zero-delay behavior")
+            let delayedHost = MacSpeechAcousticEchoHost(
+                mode: .webRTCAEC3,
+                backend: FakeAECBackend(
+                    linearOutputDelaySamples: 72, processedOutputDelaySamples: 144
+                )
+            )
+            _ = delayedHost.configure()
+            expect(!delayedHost.restoreAcousticReplayInitialState(decoded),
+                   "replay rejects a backend with different output timing")
+            _ = delayedHost.armAcousticReplayCapture(
+                attemptID: UUID(), targetCaptureFrameCount: 1
+            )
+            guard let state = delayedHost.acousticReplayCaptureSnapshot()?.initialState
+            else { fatalError("FAILED: delayed replay initial state exists") }
+            let roundTrip = try JSONDecoder().decode(
+                MacSpeechAcousticReplayInitialStateSnapshot.self,
+                from: JSONEncoder().encode(state)
+            )
+            expect(roundTrip.linearOutputDelaySamples == 72
+                       && roundTrip.processedOutputDelaySamples == 144,
+                   "replay records both AEC output delays")
+        } catch {
+            fatalError("FAILED: AEC output timing metadata round trip: \(error)")
+        }
     }
     #endif
 
@@ -968,6 +1042,108 @@ private struct MacSpeechAcousticEchoHostTests {
                "bounded non-user hangover closes the post-barge gate")
     }
 
+    private static func testDelayedAECOutputEvidence() {
+        func delayed(_ samples: [Float], by count: Int) -> [Float] {
+            (0 ..< samples.count).map {
+                samples[($0 + samples.count - count) % samples.count]
+            }
+        }
+        for nearEndPresent in [false, true] {
+            for echoGain: Float in [1, 2] {
+                let backend = FakeAECBackend(
+                    linearOutputDelaySamples: 72, processedOutputDelaySamples: 144
+                )
+                let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+                _ = host.configure()
+                host.playbackStarted()
+                let renderLow = Array(testSignal(seed: 981, amplitude: 0.4 * echoGain).prefix(160))
+                let userLow = Array(testSignal(seed: 752, amplitude: 0.25).prefix(160))
+                let render = renderLow.flatMap { [$0, $0, $0] }
+                let linear = nearEndPresent ? userLow : renderLow.map { $0 * 0.8 }
+                let clean = nearEndPresent ? userLow : renderLow.map { $0 * 0.2 }
+                let processed = delayed(clean, by: 144).flatMap { [$0, $0, $0] }
+                backend.setLinearOutput(delayed(linear, by: 72))
+                backend.setCaptureOutput(processed)
+                let raw = zip(renderLow, userLow).flatMap { echo, user -> [Float] in
+                    let sample = echo * 0.8 + (nearEndPresent ? user : 0)
+                    return [sample, sample, sample]
+                }
+                var output: [Float] = []
+                for index in 0 ..< 10 {
+                    let time = UInt64(1_000_000_000 + index * 10_000_000)
+                    host.processRender(render, hostTimeNanoseconds: time)
+                    output = host.processCapture(raw, hostTimeNanoseconds: time + 80_000_000)
+                    if index == 0 {
+                        expect(!host.snapshot().sourceGateOpen,
+                               "missing past render cannot establish near-end evidence")
+                    }
+                    if !nearEndPresent {
+                        expect(!host.snapshot().sourceGateOpen && isSilence(output),
+                               "energetic delayed residual echo never opens the source gate")
+                    }
+                }
+                let state = host.snapshot()
+                expect(state.processedLinearCorrelation > 0.99,
+                       "linear and processed evidence compares the same source samples")
+                if nearEndPresent {
+                    expect(state.sourceGateOpen && state.inputClassification == .doubleTalk,
+                           "independent near-end speech survives delayed AEC evidence")
+                    expect(output == processed,
+                           "timing compensation changes evidence without shifting output PCM")
+                } else {
+                    expect(state.residualRenderCorrelation > 0.99
+                               && state.linearRenderCorrelation > 0.99,
+                           "both delayed echo outputs retain their render association")
+                    expect(state.sourceForwardedFrameCount == 0,
+                           "delayed residual echo cannot become a user epoch")
+                }
+            }
+        }
+    }
+
+    private static func testMissingAECReferenceCannotRenewHangover() {
+        let backend = FakeAECBackend(
+            linearOutputDelaySamples: 72, processedOutputDelaySamples: 144
+        )
+        let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+        _ = host.configure()
+        host.playbackStarted()
+        let renderLow = Array(testSignal(seed: 981, amplitude: 0.4).prefix(160))
+        let userLow = Array(testSignal(seed: 752, amplitude: 0.25).prefix(160))
+        let render = renderLow.flatMap { [$0, $0, $0] }
+        var time: UInt64 = 2_000_000_000
+        for index in 0 ..< 53 {
+            let speech = index >= 10
+            let quiet = index >= 13 && index % 2 == 0
+            let source = quiet ? [Float](repeating: 0, count: 160)
+                : speech ? userLow : renderLow.map { $0 * 0.1 }
+            let linear = (0 ..< 160).map { source[($0 + 160 - 72) % 160] }
+            let clean = (0 ..< 160).flatMap { offset -> [Float] in
+                let sample = source[(offset + 160 - 144) % 160]
+                return [sample, sample, sample]
+            }
+            backend.setLinearOutput(linear)
+            backend.setCaptureOutput(clean)
+            let raw = zip(renderLow, userLow).flatMap { echo, user -> [Float] in
+                let sample = quiet ? 0 : echo * 0.9 + (speech ? user : 0)
+                return [sample, sample, sample]
+            }
+            // A discontinuous render timeline has no usable delayed reference.
+            time += index < 13 ? 10_000_000 : 20_000_000
+            host.processRender(render, hostTimeNanoseconds: time)
+            _ = host.processCapture(raw, hostTimeNanoseconds: time + 80_000_000)
+            if index == 12 {
+                expect(host.snapshot().sourceGateOpen
+                           && host.snapshot().residualEchoBaselineFrozen,
+                       "fixture opens a valid user epoch with a mature baseline")
+            }
+        }
+        expect(!host.snapshot().sourceGateOpen,
+               "missing references mixed with silence cannot renew user hangover")
+        expect(host.snapshot().maximumSourceGateOpenFrameCount <= 23,
+               "reference loss retains the existing bounded hangover")
+    }
+
     private static func testAbortedSourceGatePreRollPreservesCadence() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
@@ -1287,6 +1463,46 @@ private struct MacSpeechAcousticEchoHostTests {
                    && snapshot.residualEchoGainBaseline == residualBaseline
                    && snapshot.linearAECOutputGainBaseline == linearBaseline,
                "double-talk cannot poison any learned echo gain")
+    }
+
+    private static func testAbortedCandidateDoesNotFreezeUntrainedBaseline() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+        _ = host.configure()
+        host.playbackStarted()
+        var renderTime: UInt64 = 60_000_000_000
+        func capture(index: Int, nearEnd: Bool) {
+            let render = testSignal(seed: UInt32(4_000 + index), amplitude: 0.55)
+            let user = testSignal(seed: UInt32(5_000 + index), amplitude: 0.2)
+            let clean = nearEnd ? user : render.map { $0 * 0.1 }
+            backend.setCaptureOutput(clean)
+            backend.setLinearOutput(linearOutput(clean))
+            host.processRender(render, hostTimeNanoseconds: renderTime)
+            _ = host.processCapture(zip(render, user).map {
+                $0.0 * 0.9 + (nearEnd ? $0.1 : 0)
+            }, hostTimeNanoseconds: renderTime + 120_000_000)
+            renderTime += 10_000_000
+        }
+        for index in 0 ..< 4 { capture(index: index, nearEnd: false) }
+        expect(host.snapshot().residualEchoBaselineFrameCount == 2,
+               "fixture has an incomplete two-frame echo baseline")
+        capture(index: 4, nearEnd: true)
+        expect(host.snapshot().sourceGatePreRollFrameCount == 1
+                   && !host.snapshot().sourceGateOpen,
+               "single near-end candidate has no user epoch ownership")
+        capture(index: 5, nearEnd: false)
+        expect(host.snapshot().sourceGatePreRollFrameCount == 0
+                   && host.snapshot().sourceForwardedFrameCount == 0,
+               "aborted near-end candidate is silenced")
+        for index in 6 ..< 9 { capture(index: index, nearEnd: false) }
+        expect(host.snapshot().residualEchoBaselineFrameCount == 5
+                   && !host.snapshot().residualEchoBaselineFrozen,
+               "trusted echo can finish training after an aborted candidate")
+        for index in 9 ..< 12 { capture(index: index, nearEnd: true) }
+        expect(host.snapshot().sourceGateOpen
+                   && host.snapshot().residualEchoBaselineFrozen
+                   && host.snapshot().residualEchoBaselineFrameCount == 5,
+               "confirmed speech preserves the completed echo baseline")
     }
 
     private static func testAdaptiveGateRejectsResidualEchoVariation() {

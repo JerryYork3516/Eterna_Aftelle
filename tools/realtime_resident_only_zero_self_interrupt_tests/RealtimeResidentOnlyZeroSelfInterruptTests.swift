@@ -9400,6 +9400,87 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         try await testR852SubtitlePlaybackCompletion(fixture: fixture)
         cases += 1
         try await testR852AudioFirstCompletionFence(fixture: fixture)
+        cases += 1
+        try await testAlternatingUserAndResidentSubtitles(fixture: fixture)
+        cases += 1
+        testSubtitleRoleOwnership()
+    }
+
+    private static func testAlternatingUserAndResidentSubtitles(fixture: Data) async throws {
+        let stack = try await makeControllerStack(fixture: fixture, startsResidentPlayback: false)
+        let user = RealtimeBrainEventIdentity(
+            session: stack.session, turnID: stack.target.turnID,
+            responseID: nil, contextRevision: 1
+        )
+        try await admitR843ListeningTurn(
+            stack: stack, sourceTurnID: stack.target.turnID, sequence: 2,
+            seed: 58_000, label: "alternating subtitles"
+        )
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(identity: user, sequence: 3, kind: .userTranscriptPartial("今天")))
+        await waitUntilOnMainActor("user partial appears in the single subtitle area") {
+            stack.controller.particleSubtitleState.text == "今天"
+        }
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(identity: user, sequence: 4, kind: .userTranscriptFinal("今天过得怎么样？")))
+        await waitUntilOnMainActor("final corrects the user subtitle") {
+            stack.controller.particleSubtitleState.text == "今天过得怎么样？"
+        }
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(identity: user, sequence: 5, kind: .userSpeechStopped))
+        await waitUntil("finalized user turn authorizes its normal response") {
+            await stack.provider.createCount() == 1
+        }
+        let creates = await stack.provider.createCount()
+        expect(creates == 1, "user final has exactly one normal response authorization")
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target), sequence: 6,
+            kind: .residentAudioDelta(audioDelta(sequence: 1))
+        ))
+        await waitUntil("audio-only resident start hides user subtitle") { stack.outputPlayer.startCount == 1 }
+        expect(stack.controller.particleSubtitleState == .hidden, "user text never appears under resident audio")
+        await stack.provider.enqueue(RealtimeResidentBrainEvent(
+            identity: eventIdentity(stack.target), sequence: 7, kind: .residentTextFinal("还不错，你呢？")
+        ))
+        await waitUntilOnMainActor("resident subtitle replaces the user subtitle") {
+            stack.controller.particleSubtitleState.text == "还不错，你呢？"
+        }
+        let records = stack.controller.realtimeSpeechDiagnosticTimeline.events.filter {
+            $0.category == "formal_subtitle_presented"
+        }
+        expect(records.contains { $0.disposition?.contains("direction=user") == true }, "diagnostics identify user captions")
+        expect(records.contains { $0.disposition?.contains("direction=resident") == true }, "diagnostics identify resident captions")
+        expect(stack.outputPlayer.clearScheduledPlaybackCount == 0, "captions never clear playback")
+        expect(stack.controller.formalSpeechRouteDebugSnapshot.generation == stack.session.generation,
+               "captions never advance generation")
+        let finalCreates = await stack.provider.createCount()
+        expect(finalCreates == creates, "caption handoff never creates another response")
+        try await close(stack)
+        expect(stack.controller.particleSubtitleState == .hidden, "Stop clears both caption roles")
+    }
+
+    private static func testSubtitleRoleOwnership() {
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "subtitle-fixture", runtimeSessionID: "subtitle-session",
+            brainLeaseID: UUID(), routeEpoch: 1, generation: 1
+        )
+        let turn = RealtimeBrainTurnID()
+        let user = RealtimeBrainEventIdentity(session: session, turnID: turn, responseID: nil, contextRevision: 1)
+        let resident = RealtimeBrainEventIdentity(session: session, turnID: turn, responseID: RealtimeBrainResponseID(), contextRevision: 1)
+        var presentation = RealtimeBrainSubtitlePresentation()
+        _ = presentation.consume(RealtimeResidentBrainEvent(identity: user, sequence: 1, kind: .userTranscriptFinal("用户字幕")))
+        expect(presentation.direction == .user && presentation.displayText == "用户字幕", "finalized caption owns user role")
+        _ = presentation.consume(RealtimeResidentBrainEvent(identity: user, sequence: 2, kind: .residentTextFinal("错误角色")))
+        expect(presentation.direction == .user && presentation.displayText == "用户字幕", "assistant event with user identity cannot take caption ownership")
+        _ = presentation.consume(RealtimeResidentBrainEvent(identity: resident, sequence: 3, kind: .residentTextDelta("居民字幕")))
+        expect(presentation.direction == .resident && presentation.displayText == "居民字幕", "resident reply replaces instead of appending user text")
+        _ = presentation.consume(RealtimeResidentBrainEvent(identity: user, sequence: 4, kind: .userTranscriptFinal("迟到用户字幕")))
+        expect(presentation.displayText == "居民字幕", "late final cannot resurrect the previous speaker")
+        let nextUser = RealtimeBrainEventIdentity(session: session, turnID: RealtimeBrainTurnID(), responseID: nil, contextRevision: 1)
+        _ = presentation.consume(RealtimeResidentBrainEvent(identity: nextUser, sequence: 5, kind: .userTranscriptPartial("新用户")))
+        presentation.retire(resident)
+        expect(presentation.direction == .user && presentation.displayText == "新用户", "old playback completion cannot clear a new user caption")
+        _ = presentation.consume(RealtimeResidentBrainEvent(identity: resident, sequence: 6, kind: .residentTextFinal("迟到居民字幕")))
+        expect(presentation.displayText == "新用户", "retired resident callback cannot replace new user text")
+        presentation.reset()
+        expect(presentation.displayText == nil && presentation.direction == nil, "reset removes both roles")
     }
 
     private static func testR852AudioFirstCompletionFence(
@@ -9675,8 +9756,9 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         await waitUntil("R8.5.2 response create rebounds after error") {
             await stack.provider.createCount() == baselineCreateCount + 1
         }
-        expect(stack.controller.particleSubtitleState == .hidden,
-               "R8.5.2 post-error userFinal never becomes resident subtitle")
+        await waitUntilOnMainActor("post-error user final is presented as user speech") {
+            stack.controller.particleSubtitleState.text == "错误后新用户轮次"
+        }
 
         let nextIdentity = RealtimeBrainEventIdentity(
             session: stack.session,

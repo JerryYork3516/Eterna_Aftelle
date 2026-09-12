@@ -351,7 +351,7 @@ elif [ "$test_mode" = "r851-randomized-only" ]; then
   rg -qx 'r851_randomized_generation_drift=0' "$output"
   rg -qx 'r851_randomized_lease_drift=0' "$output"
 elif [ "$test_mode" = "r852-subtitle-diagnostics-only" ]; then
-  rg -qx 'realtime_formal_subtitle_diagnostics_cases=4' "$output"
+  rg -qx 'realtime_formal_subtitle_diagnostics_cases=6' "$output"
   subtitle_checks="$(
     awk -F= '/^realtime_formal_subtitle_diagnostics_checks=/ { print $2 }' \
       "$output"

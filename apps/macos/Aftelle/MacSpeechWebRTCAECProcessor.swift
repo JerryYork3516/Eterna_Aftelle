@@ -4,6 +4,10 @@ nonisolated final class MacSpeechWebRTCAECProcessor:
     MacSpeechAECBackend, @unchecked Sendable
 {
     private var bridge: OpaquePointer?
+    // Current 48 kHz AEC3: analysis + framing = 72 low-band samples;
+    // suppression overlap-add (64) + synthesis (8) adds another 72.
+    let linearOutputDelaySamples = 72
+    let processedOutputDelaySamples = 144
 
     deinit {
         AftelleAECBridgeDestroy(bridge)

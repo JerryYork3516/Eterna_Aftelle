@@ -219,7 +219,11 @@ private struct RealtimeSpeechContextProjectionTests {
             "stop naturally so the user can respond",
             "explicitly asks for detail",
             "Avoid long monologues",
-            "generic assistant filler"
+            "generic assistant filler",
+            "20-60 Chinese characters total",
+            "not a truncation rule",
+            "do not pack a paragraph into a sentence",
+            "Do not add a follow-up question to every reply"
         ] {
             expect(
                 instruction.contains(phrase),

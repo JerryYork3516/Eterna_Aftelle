@@ -28,6 +28,19 @@ private final class AftelleApplicationDelegate: NSObject,
 }
 
 @main
+@MainActor
+private enum AftelleEntryPoint {
+    static func main() {
+        #if DEBUG
+        if Test3LocalAudioRunner.isRequested {
+            Test3LocalAudioRunner.start()
+            return
+        }
+        #endif
+        AftelleApp.main()
+    }
+}
+
 struct AftelleApp: App {
     @NSApplicationDelegateAdaptor(AftelleApplicationDelegate.self)
     private var appDelegate

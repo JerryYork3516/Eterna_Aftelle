@@ -2,6 +2,37 @@
 import Foundation
 #if DEBUG
 import OSLog
+
+nonisolated struct Test3NearEndInjection {
+    let samples: [Float]
+    let startAtNanoseconds: UInt64
+    private(set) var startedAtNanoseconds: UInt64?
+    private(set) var injectedSampleCount = 0
+
+    mutating func mix(into capture: inout [Float], hostTimeNanoseconds: UInt64) {
+        guard injectedSampleCount < samples.count, !capture.isEmpty else { return }
+        let offset: Int
+        if startedAtNanoseconds == nil, hostTimeNanoseconds < startAtNanoseconds {
+            let remaining = Double(startAtNanoseconds - hostTimeNanoseconds)
+                * 48_000 / 1_000_000_000
+            guard remaining < Double(capture.count) else { return }
+            offset = Int(remaining.rounded(.up))
+        } else {
+            offset = 0
+        }
+        guard offset < capture.count else { return }
+        if startedAtNanoseconds == nil {
+            startedAtNanoseconds = hostTimeNanoseconds
+                + UInt64(Double(offset) * 1_000_000_000 / 48_000)
+        }
+        let count = min(capture.count - offset, samples.count - injectedSampleCount)
+        for index in 0..<count {
+            capture[offset + index] = min(1, max(-1,
+                capture[offset + index] + samples[injectedSampleCount + index]))
+        }
+        injectedSampleCount += count
+    }
+}
 #endif
 
 nonisolated enum MacSpeechAudioInputFormat {
@@ -705,6 +736,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var captureGenerationFence =
         MacSpeechCaptureGenerationFence()
     #if DEBUG
+    private var test3NearEndInjection: Test3NearEndInjection?
     private static let audioUnitDiagnosticLogger = Logger(
         subsystem: "com.eterna.aftelle",
         category: "AudioUnitAttribution"
@@ -1087,6 +1119,26 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     #if DEBUG
+    func setTest3NearEndInjection(samples: [Float], startAtNanoseconds: UInt64) {
+        captureProcessingLock.withLock {
+            test3NearEndInjection = Test3NearEndInjection(
+                samples: samples, startAtNanoseconds: startAtNanoseconds
+            )
+        }
+    }
+
+    func clearTest3NearEndInjection() {
+        captureProcessingLock.withLock { test3NearEndInjection = nil }
+    }
+
+    func test3NearEndInjectionSnapshot()
+        -> (startedAtNanoseconds: UInt64?, injectedSampleCount: Int) {
+        captureProcessingLock.withLock {
+            (test3NearEndInjection?.startedAtNanoseconds,
+             test3NearEndInjection?.injectedSampleCount ?? 0)
+        }
+    }
+
     func armAcousticReplayCapture(
         attemptID: UUID,
         targetCaptureFrameCount: Int = 1_000
@@ -1150,9 +1202,15 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
         guard let inputConverter = converters.0,
               let outputConverter = converters.1,
-              let inputSamples = try? inputConverter.convert(buffer) else {
+              var inputSamples = try? inputConverter.convert(buffer) else {
             return
         }
+        #if DEBUG
+        test3NearEndInjection?.mix(
+            into: &inputSamples,
+            hostTimeNanoseconds: hostTimeNanoseconds ?? startedAt
+        )
+        #endif
         let captureSpans = acousticEchoHost.processCaptureSpans(
             inputSamples,
             hostTimeNanoseconds: hostTimeNanoseconds

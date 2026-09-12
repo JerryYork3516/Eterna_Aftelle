@@ -8,6 +8,42 @@
 
 ---
 
+## 2026-09-12 · Test 3 / 01 最小失败测试与独立预期
+
+- 本轮仅测试/说明，生产未修改。新增 `tools/speech_aec_host_tests/check-timeline.sh` 和转换时间测试，使用实际生产capture/render方法的仅可见性开放临时副本。48k/44.1k、两条链和reset后均校验源样本位置；12例中4个单回调对照PASS、8个跨回调/reset用例RED，波形前缀全部正确，明确是时间归属失败，不是测试崩溃。
+- 现有合成入口保留4组旧用例，新增正常/2x/隔离输入三组十个完整音节及远端持续播放尾段。4组旧用例PASS；三组新用例分别有7/10/8个有效近端帧未完整通过Gate，完整性RED；重复帧0、停说后关门检查PASS。标签来自生成源并补偿已知AEC延迟，不以旧输出或nearForward>0当预期。隔离组不冒充实际耳机/外置麦克风验收。
+- 当前原声学1185 checks / replay self-check与静态guards PASS。新测试编译通过；没有跑完整A7、Qwen或设备测试。生产SHA前后不变，保留全部原改动、未提交推送。01完成指失败基线建立，Test 3仍FAIL / REVIEW_REQUIRED；未开始02。证据 `.build/test3-step01/report.md`。
+
+## 2026-09-09 · Test 3 静音回放与修复候选反证
+
+- 新增 `tools/test3_local_audio/replay.sh` 和 `silent_doubletalk/run.sh`：前者重放已有四轨到当前Host，后者公开合成信号直接跑生产WebRTC+Host。均不打开音频设备、不启动App、不访问网络/Qwen/凭据；失败继续完成各case并保留证据，原录音不改。
+- 当前Host 1185 checks / 原replay self-check PASS；两批8份实机capsule的输入、分类、gate精确重现且双次一致，其验收结果仍3 PASS / 5 FAIL。强远端合成4组PASS：纯回声各2000帧零gate/forward，双讲590个共同有声帧放行580/577。合成结果不是实机Test 3 PASS。
+- 确定性证明转换输出连续但沿用当前输入when会产生周期时间错配（48k最高14.667ms）；单独连续化时间反事实不能消除误门。只禁historicalDiscovery参与adaptive判断虽清除最近2/118帧误门，却破坏合法双讲连续回归；保留near时序的补充候选又违反弱证据按时关闭回归。所有声学候选仅在ignored `.build`，均未部署，生产逻辑本轮未改。
+- Test 3仍 **FAIL / REVIEW_REQUIRED**。需要修正已有参考关联，并同时守住真双讲持续放行与弱证据总退出预算；不改阈值挑PASS。原修改保留、未提交推送、未进入下一项。边界检查PASS。详见 `.build/test3-silent-repair/report.md`，录音回放证据 `.build/test3-silent-replay/20260909T154543Z-62d80628/`，强双讲证据 `.build/test3-local-automation/silent-doubletalk/run.RpzbTX/`。
+
+## 2026-09-09 · Test 3 无 Qwen 本地设备自动测试
+
+- 新增 DEBUG App runner 和 `tools/test3_local_audio/run.sh`，使用当前编译 App、真实共享播放/采集/AEC 链及隔离测试 Store。复用本地 PCM，两档增益分别跑纯回声和 AEC 前软件近端注入；不改系统音量、不请求麦克风权限、不读凭据、不调用 Qwen。普通启动保持原链路；新测试导入不写居民书签。
+- Debug build、无弹窗 authorized 预检、AEC 1185 checks / replay self-check、R832 已确认中断 1 case / 62 checks PASS。首批测试语义序号错误跳到 10000，被 Runtime 正确拒绝；只修测试序号后重跑全部四组，首批失败证据保留。
+- 当前有效批次 `.build/test3-local-automation/runs/20260909T150609Z-09de7663/`：Mac mini 扬声器 + USB 麦克风，两组软件近端 PASS，各 generation 1→2、interrupt/clear 各一次，确认到 clear 1.202 / 0.966 ms（原门槛 50 ms），额外 response / stale playback / 重复会话与记忆写入均 0。从首个注入样本到 Runtime 声学证据约 1 秒，不把 clear 耗时当整体插话延迟，也不把软件混音当真实声场双讲。
+- 纯回声两组 FAIL：正常档 2 帧开门、较高档 118 帧开门，各向 Runtime 发出一次声学证据；两窗均约 10.505 秒、1051 个播放期采集帧、丢帧 0。self-interrupt=0 不能掩盖声学误放行，因为本地 stub 在负对照不发语义提议。首次批次正常档 PASS、较高档 306 帧开门，保留设备波动。当前 Test 3 **FAIL / REVIEW_REQUIRED**，需基于这些四轨证据继续离线定位，不修改阈值来追求通过。
+- 本次未再修改生产声学判断与参数、Runtime 中断/身份保护、DR 或 Session/Memory 契约。完整报告 `.build/test3-local-automation/report.md`。Stage 7 越界检查 PASS：无红线变更、无公共 Runtime API/DR schema/新平台/Stage 8，不进入下一项；所有现有修改保留，未提交或推送。
+
+## 2026-09-09 · Test 3 自回声与外放插话离线修复
+
+- 当前外放录制包完整性通过，原版重放 3 次与录制分类/门控一致；播放期间 1000 帧全部未开门。用户只提供大致插话时刻，不把临时区间标签当作真人正负对照。
+- 修复 Host 声学证据的时间比较：当前 48 kHz WebRTC 的 linear/clean 相对 raw 延迟为 16 kHz 下 72/144 samples，三项相关同时使用对应时刻，复用既有 render history，不移动输出 PCM。缺少连续参考不得建立 adaptive continuation，保留既有有界 hangover；私有重放元数据记录延迟，旧包缺字段按零延迟指标解释。
+- 修复未确认候选永久冻结不足 5 帧的 echo baseline：原录音一次 1 帧候选 abort 后仍冻在 2，成熟基线继续在候选出现时冻结。新增回归先观察到失败再修复通过；延迟强回声与交错缺参考/静音也有确定性负对照。未改 AEC 参数、声学准入阈值、Runtime 中断 authority 或公共合约。
+- Debug build PASS；AEC Host 1176 checks 与 replay self-check PASS；居民独播 12 cases / 126 checks、已确认插话 1 / 62、double-talk 正负对照 1 / 163 PASS。Runtime 正对照 generation 1→2、clear 一次，无额外写入。真实 WebRTC 合成轨道经当前 Host：正常/2倍纯回声均零开门，近端分别放行 775/800、772/800 帧。批量 100 ms 与交替 10 ms 的 16 组 AEC 对照未复现真实录音持续弱 clean，不调整回调节奏。
+- 实录的修正指标反事实重放为 372/1000 帧开门、首次约播放后 1.938 s，基线恢复到 7；开门不等于有效真人插话，临时 3–6 s 正对照仍 FAIL。原 PCM 不变，重放不模拟提前清播放后的声场，不能代替新版同设备实机验收。Test 3 保持 REVIEW_REQUIRED，未使用 Qwen、未进入下一项、未提交。证据在 `.build/test3-self-echo/210209/report.md`。Stage 7 越界检查 PASS；未改 DR、Session/Memory、Provider 或其他平台。
+
+## 2026-09-09 · 交替字幕与短语音回复
+
+- 先按用户授权提交推送 `72842381`，本地/upstream/远端一致；此后本项改动暂不提交。实时全双工复用唯一字幕位置，接入 Runtime 接纳的用户 partial/final，居民文本或音频开始时切换为居民方向；运行中的旧回复不被用户回调抢占，迟到旧播放完成不清掉新的用户字幕，Stop 清空。只改展示，不写 canonical / Memory，不改中断或声学门槛。
+- 原有 1–3 句语音规则进一步要求短分句、日常中文通常 20–60 字、一轮一个重点，避免朗读整份身份介绍及每轮机械反问；详细请求可展开，不截断输出，不改 DR 人格或安全边界。此为生成指导，不保证模型每次遵守或固定 token 消耗。
+- Debug build PASS；正式字幕 6 cases / 60 checks PASS（用户/居民单位置交替、audio-first、Stop、插话及迟到事件）；上下文投影 97 checks、正式 Runtime 上下文 4 cases / 82 checks PASS。新字幕夹具补齐已有近端准入及正常结束流程后通过，前两次失败日志保留。初次上下文编译因 sandbox 默认缓存路径不可写失败，改用工作区缓存后通过。证据：`.build/cinema-subtitles/`。未执行在线，真实语音长短仍需后续体验验证；SwiftFormat/SwiftLint 不可用。
+- Stage 7 检查 PASS，触碰红线无；修改 AppController、既有 RealtimeSpeechContextProjection、对应字幕/上下文测试及此日志。未改公共 Runtime API、DR schema、Session/Memory 合约，未新增平台、进入 Test 3 / R9 / Stage 8，无需额外确认。
+
 ## 2026-09-09 · 手动切换实时语音模型
 
 - Qwen 调试面板现有选择器接通主界面实时全双工，使用普通版 `qwen3.5-omni-flash-realtime` / `qwen3.5-omni-plus-realtime`；默认 Plus。本机保存选择，停止后切换，下一次启动读取，运行中禁用选择。Adapter 只在完全关闭时读取新配置，同一会话及恢复连接保持原配置；诊断保留最近启动会话的型号。未更改凭据、中断 authority、身份隔离、DR、Session/Memory 合约或声学策略。
