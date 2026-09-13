@@ -90,10 +90,10 @@ import Foundation
         expect(knownFar.filter { $0 >= 1200 }.count == 800, "far-end must remain audible throughout evaluation")
         if positive {
             expect(gates.allSatisfy { $0 >= 1200 } && forwarded.allSatisfy { $0 >= 1200 }, "echo warmup must not open or forward")
+            expect(missingNearFrames.isEmpty, "every known active near-end frame must survive source gating, including onset and tail")
+            expect(duplicateForwardedFrames == 0, "near-end source frames must not be emitted twice")
             if ending {
                 expect(!knownNear.isEmpty && simultaneous == knownNear, "known near-end must overlap audible far-end")
-                expect(missingNearFrames.isEmpty, "every known active near-end frame must survive source gating, including onset and tail")
-                expect(duplicateForwardedFrames == 0, "near-end source frames must not be emitted twice")
                 expect(near[(1780 * 480)...].allSatisfy { $0 == 0 }, "all ten near-end syllable periods finish by 17.8 seconds")
                 expect(knownFar.filter { $0 >= 1780 }.count == 220, "resident remains audible after near-end stops")
                 expect(gates.allSatisfy { $0 < closureDeadline } && forwarded.allSatisfy { $0 < closureDeadline },

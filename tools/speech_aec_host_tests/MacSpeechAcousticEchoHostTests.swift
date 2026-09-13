@@ -120,6 +120,9 @@ private struct MacSpeechAcousticEchoHostTests {
     private static var checks = 0
 
     static func main() {
+        if CommandLine.arguments.contains("--weak-budget-only") {
+            exit(testAlternatingWeakEvidenceCloseBudget() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--timing-controls-only") {
             exit(runTimingControls() ? 0 : 1)
         }
@@ -168,7 +171,9 @@ private struct MacSpeechAcousticEchoHostTests {
         testSixteenToFortyEightCaptureFraming()
         testTwentyFourToFortyEightResamplingRoundTrip()
         print("speech_aec_host_checks=\(checks)")
-        if !runTimingControls() { exit(1) }
+        let timingPassed = runTimingControls()
+        let budgetPassed = testAlternatingWeakEvidenceCloseBudget()
+        if !timingPassed || !budgetPassed { exit(1) }
     }
 
     #if DEBUG
@@ -2311,6 +2316,54 @@ private struct MacSpeechAcousticEchoHostTests {
         } catch {
             fatalError("FAILED: 24/48 kHz conversion: \(error)")
         }
+    }
+
+    private static func testAlternatingWeakEvidenceCloseBudget() -> Bool {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+        _ = host.configure()
+        host.playbackStarted()
+        let tailReference = testSignal(seed: 42_001, amplitude: 0.3)
+        let user = testSignal(seed: 42_002, amplitude: 0.25)
+        var rows: [[String: Any]] = []
+        var failures: [String] = []
+        var firstClose: Int?
+        for tick in 0 ..< 83 {
+            let far = tick == 0 ? tailReference : testSignal(seed: UInt32(43_000 + tick), amplitude: 0.3)
+            let time = UInt64(60_000_000_000) + UInt64(tick) * 10_000_000
+            let isUser = (30 ..< 33).contains(tick)
+            let weakIndex = tick - 33
+            let residual = weakIndex >= 0 && weakIndex.isMultiple(of: 2) ? tailReference : far
+            let raw = isUser ? zip(far, user).map { $0 * 0.9 + $1 }
+                : far.map { $0 * (weakIndex >= 0 ? 1.2 : 0.9) }
+            let clean = isUser ? user : residual.map { $0 * (weakIndex >= 0 ? 0.01 : 0.12) }
+            let linear = weakIndex >= 0 ? linearOutput(residual.map { $0 * 0.5 }) : linearOutput(clean)
+            backend.setCaptureOutput(clean)
+            backend.setLinearOutput(linear)
+            host.processRender(far, hostTimeNanoseconds: time)
+            let emitted = host.processCaptureSpans(raw, hostTimeNanoseconds: time + 80_000_000)
+            let state = host.snapshot()
+            if tick == 32 && !state.sourceGateOpen { failures.append("fixture_user_must_open_gate") }
+            guard weakIndex >= 0 else { continue }
+            let expected: MacSpeechAcousticInputClassification = weakIndex.isMultiple(of: 2) ? .uncertain : .echoOnly
+            if state.inputClassification != expected { failures.append("fixture_classification_\(weakIndex)") }
+            if !state.sourceGateOpen && firstClose == nil { firstClose = weakIndex }
+            if weakIndex >= 19 && emitted.contains(where: { $0.samples.contains { $0 != 0 } }) {
+                failures.append("nonzero_after_20_non_user_frames_\(weakIndex)")
+            }
+            rows.append(["non_user_index": weakIndex, "classification": state.inputClassification.rawValue,
+                         "gate_open": state.sourceGateOpen, "gate_opens": state.sourceGateOpenCount,
+                         "adaptive_evaluations": state.adaptiveEvidenceCandidateFrameCount])
+        }
+        let state = host.snapshot()
+        if firstClose.map({ $0 <= 19 }) != true { failures.append("close_within_20_non_user_frames") }
+        if state.sourceGateOpenCount != 1 { failures.append("weak_evidence_must_not_reopen_gate") }
+        let result: [String: Any] = ["case": "alternating-weak-close-budget", "backend": "FakeAECBackend",
+                                     "pass": failures.isEmpty, "first_close_non_user_index": firstClose ?? -1,
+                                     "failures": failures, "frames": rows]
+        let data = try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
+        return failures.isEmpty
     }
 
     // Signal truth and callback clocks vary independently. Fake AEC isolates
