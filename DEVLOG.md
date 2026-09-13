@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-09-13 · Test 3 / 03 历史参考自适应资格
+
+- 基线 `818ce54d`，本轮新增成对纯回声对照，音频完全相同、只改变播放时间戳可用性；完整参考PASS，缺口组在基线错误放行36帧。
+- 首个全面拒绝historical自适应的候选造成两份正控少放行5/14帧，已拒绝。最终沿用0.35最小timing相关性要求历史参考具有raw支持，再允许自适应能量比较；不改任何声学常量、预算、Runtime authority、Provider或DR/Store。
+- Host1410 checks、13/13独立对照、self-replay/Host guards、7组合成、Runtime62/163 checks及当前App Debug编译PASS。旧连续双讲仍各缺3帧，完整结束段缺失/重复/超时关门均0。
+- 8Replay从3 PASS / 5 FAIL改善为5 PASS / 3 FAIL，最近正常/较大纯回声误门2/118→0；其余主要计数不变。逐帧无新增开门或非零源帧，四份正控输出源帧集合不变，88个原录音输入SHA保持。
+- Test 3仍FAIL / REVIEW_REQUIRED：旧较大纯回声285误门帧、两份旧正控纯回声前段22/104误门帧待解决；未进04，未调用Qwen或设备，未跑完整A7。人工阶段越界检查PASS。
+- 未重跑转换器时间及仓库级guard；原architecture扫描命中和缺失SwiftFormat/SwiftLint限制保持，未报全门禁PASS。未提交推送。详见 `tools/speech_aec_host_tests/REFERENCE_VALIDITY.md` 后续记录及 `.build/test3-adaptive-reference/`。
+
 ## 2026-09-13 · Test 3 / 03 参考失效边界局部修复
 
 - 先按用户授权提交检查点 `904613c1`，保存02/03与11组独立失败对照；私有PCM未纳入提交。然后只修Host现有参考关联与近端证据边界。

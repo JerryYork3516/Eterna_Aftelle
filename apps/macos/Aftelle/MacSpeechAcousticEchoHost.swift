@@ -2256,7 +2256,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         residualCorrelation: Double,
         timingMatch: TimingMatch
     ) -> Bool {
-        guard outputTimingReferenceAvailable,
+        guard timingMatch.associationOrigin != .historicalDiscovery
+                || timingMatch.correlation >= Self.minimumTimingCorrelation,
+              outputTimingReferenceAvailable,
               residualEchoBaselineFrameCount
                 >= Self.minimumResidualEchoBaselineFrameCount,
               residualCorrelation

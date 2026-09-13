@@ -2324,6 +2324,8 @@ private struct MacSpeechAcousticEchoHostTests {
             ("speaker-loud-echo", 0.6, false, "continuous"),
             ("physical-delay-shift", 0.3, false, "path-shift"),
             ("render-time-missing", 0.3, false, "render-missing"),
+            ("varying-echo-reference-present", 0.3, false, "varying-echo"),
+            ("varying-echo-reference-gap", 0.3, false, "varying-echo-gap"),
             ("capture-time-missing", 0.3, false, "missing"),
             ("capture-time-duplicate", 0.3, false, "duplicate"),
             ("capture-time-backward", 0.3, false, "backward"),
@@ -2341,7 +2343,9 @@ private struct MacSpeechAcousticEchoHostTests {
             let step: UInt64 = 10_000_000
             let nearTicks = amplitude == 0 ? 80 ..< 110 : 50 ..< 80
             let render = (0 ..< 166).map {
-                testSignal(seed: UInt32(6_000 + $0), amplitude: max(amplitude, 0.3))
+                let gain: Float = variation.hasPrefix("varying-echo")
+                    ? ($0 % 80 < 52 ? 0.5 : 2) : 1
+                return testSignal(seed: UInt32(6_000 + $0), amplitude: max(amplitude, 0.3) * gain)
             }
             var rows: [[String: Any]] = []
             var forwarded: [UInt64: [[Float]]] = [:]
@@ -2360,8 +2364,9 @@ private struct MacSpeechAcousticEchoHostTests {
             }
             for tick in 0 ..< render.count {
                 let physicalTime = start + UInt64(tick) * step
-                let renderTime = variation == "render-missing" && (52 ..< 60).contains(tick)
-                    ? nil : Optional(physicalTime)
+                let missingRenderTime = variation == "render-missing" && (52 ..< 60).contains(tick)
+                    || variation == "varying-echo-gap" && (52 ..< 76).contains(tick)
+                let renderTime = missingRenderTime ? nil : Optional(physicalTime)
                 host.processRender(render[tick], hostTimeNanoseconds: renderTime)
                 guard tick >= 16 else { continue }
                 if tick == (hasNear ? nearTicks.lowerBound : 60) {
