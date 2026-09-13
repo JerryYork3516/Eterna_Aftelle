@@ -8,6 +8,14 @@
 
 ---
 
+## 2026-09-13 · Test 3 / 03 共同回声参考检查入口
+
+- 先保存现有红色回归/日志为本地检查点 `e415e2c3`，未推送，私有PCM排除。新增最小伪造信号成对用例：两条render路径的纯回声在基线错误取得近端身份并放行31–33帧；同等能量独立近端对照通过。
+- Host仅收窄替代参考检查的入口：保留现有可信回声分类，其他情况不再因当前raw相关性大于0.25而跳过共同回声检查。没有修改判据常量、确认次数、关门/缓存预算或Runtime authority；帧内对齐未混入。
+- 新成对回归2/2 PASS：纯回声不取得近端身份、不放行；近端31–33三个源帧原样且仅一次放行。既有1410检查、13时间/参考对照、独立self-replay/Host静态guards、两项Runtime回归及当前App Debug编译PASS。SwiftFormat/SwiftLint不可用，NOT_RUN。
+- 八份Replay仍5 PASS / 3 FAIL，旧较大纯回声误门285→278；全部用例无新增开门/非零源帧，四份正控输出源帧集合不变，88个原输入SHA保持。实际WebRTC七组合成的全部result字段与基线一致，仍5 PASS / 2 FAIL，旧连续双讲各缺3帧；完整结束三组无缺失/重复/超时关门。
+- 交替弱证据负控仍FAIL，故Host check.sh整体仍FAIL；上述self-replay/静态guards是单独补跑，未将脚本失败冒充通过。Test 3仍FAIL / REVIEW_REQUIRED，不进04。未调用Qwen、运行App/音频设备或完整A7；未提交本轮修复、未推送。阶段越界检查PASS，详情 `.build/test3-competing-reference-fix/report.md`。
+
 ## 2026-09-13 · Test 3 / 03 剩余误门与起始三帧联合反证
 
 - 按1–4执行，先将上一轮四个已验证文件保存为本地检查点 `c5000a77`，未推送，私有PCM未纳入。当前生产Host与检查点逐字节一致。

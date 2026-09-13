@@ -2117,7 +2117,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         timingMatch: TimingMatch?
     ) -> Bool {
         guard let timingMatch,
-              timingMatch.correlation <= Self.maximumNearEndCorrelation else {
+              !hasHighConfidenceResidentOnlyEvidence(
+                cleanRMS: processedCaptureRMS,
+                residualCorrelation: residualRenderCorrelation,
+                timingMatch: timingMatch
+              ) else {
             return false
         }
         // A mismatched reference cannot turn explainable resident echo into user evidence.

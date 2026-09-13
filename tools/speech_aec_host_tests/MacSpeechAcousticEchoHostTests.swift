@@ -120,6 +120,9 @@ private struct MacSpeechAcousticEchoHostTests {
     private static var checks = 0
 
     static func main() {
+        if CommandLine.arguments.contains("--competing-reference-only") {
+            exit(testCompetingEchoReference() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--weak-budget-only") {
             exit(testAlternatingWeakEvidenceCloseBudget() ? 0 : 1)
         }
@@ -172,8 +175,9 @@ private struct MacSpeechAcousticEchoHostTests {
         testTwentyFourToFortyEightResamplingRoundTrip()
         print("speech_aec_host_checks=\(checks)")
         let timingPassed = runTimingControls()
+        let referencePassed = testCompetingEchoReference()
         let budgetPassed = testAlternatingWeakEvidenceCloseBudget()
-        if !timingPassed || !budgetPassed { exit(1) }
+        if !timingPassed || !referencePassed || !budgetPassed { exit(1) }
     }
 
     #if DEBUG
@@ -2316,6 +2320,57 @@ private struct MacSpeechAcousticEchoHostTests {
         } catch {
             fatalError("FAILED: 24/48 kHz conversion: \(error)")
         }
+    }
+
+    private static func testCompetingEchoReference() -> Bool {
+        var allPassed = true
+        for userPresent in [false, true] {
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+            _ = host.configure()
+            host.playbackStarted()
+            let oldRender = testSignal(seed: 70_001, amplitude: 0.3)
+            let user = testSignal(seed: 70_002, amplitude: 0.3)
+            let residual = userPresent ? user : oldRender
+            var failures: [String] = []
+            var forwarded: [UInt64] = []
+            for tick in 0 ..< 33 {
+                let far = tick == 0 ? oldRender : testSignal(seed: UInt32(71_000 + tick), amplitude: 0.3)
+                let active = tick >= 30
+                // The negative contains only two render paths; the positive replaces
+                // the delayed echo with independent near-end audio of the same level.
+                let raw = active ? zip(far, residual).map { $0 * 0.6 + $1 * 0.8 } : far.map { $0 * 0.9 }
+                let clean = active ? residual : far.map { $0 * 0.02 }
+                backend.setCaptureOutput(clean)
+                backend.setLinearOutput(linearOutput(clean))
+                let time = UInt64(90_000_000_000) + UInt64(tick) * 10_000_000
+                host.processRender(far, hostTimeNanoseconds: time)
+                let spans = host.processCaptureSpans(raw, hostTimeNanoseconds: time + 80_000_000)
+                let state = host.snapshot()
+                if tick == 29 && (state.residualEchoBaselineFrameCount < 5 || state.sourceGateOpen) {
+                    failures.append("trusted_echo_warmup")
+                }
+                guard active else { continue }
+                if state.renderCaptureCorrelation <= 0.25 { failures.append("fixture_must_exercise_skipped_scan") }
+                if !userPresent && (state.sourceGateOpen || state.inputClassification == .doubleTalk
+                    || state.inputClassification == .nearEndSpeech) { failures.append("echo_gained_near_identity_\(tick)") }
+                for span in spans where span.samples.contains(where: { $0 != 0 }) {
+                    forwarded.append(span.observation.captureFrameIndex)
+                    if userPresent && span.samples != user { failures.append("near_audio_altered") }
+                }
+            }
+            if userPresent {
+                if forwarded != [31, 32, 33] { failures.append("near_onset_missing_or_duplicated") }
+                if host.snapshot().sourceGateOpenCount != 1 { failures.append("one_near_open") }
+            } else if !forwarded.isEmpty { failures.append("echo_forwarded") }
+            let result: [String: Any] = ["case": userPresent ? "competing-reference-near" : "competing-reference-echo",
+                "backend": "FakeAECBackend", "pass": failures.isEmpty, "failures": failures,
+                "nonzero_source_ids": forwarded]
+            let data = try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+            print(String(decoding: data, as: UTF8.self))
+            allPassed = allPassed && failures.isEmpty
+        }
+        return allPassed
     }
 
     private static func testAlternatingWeakEvidenceCloseBudget() -> Bool {
