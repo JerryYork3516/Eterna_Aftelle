@@ -120,6 +120,9 @@ private struct MacSpeechAcousticEchoHostTests {
     private static var checks = 0
 
     static func main() {
+        if CommandLine.arguments.contains("--subframe-reference-only") {
+            exit(testSubframeEchoReference() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--competing-reference-only") {
             exit(testCompetingEchoReference() ? 0 : 1)
         }
@@ -175,9 +178,10 @@ private struct MacSpeechAcousticEchoHostTests {
         testTwentyFourToFortyEightResamplingRoundTrip()
         print("speech_aec_host_checks=\(checks)")
         let timingPassed = runTimingControls()
+        let subframePassed = testSubframeEchoReference()
         let referencePassed = testCompetingEchoReference()
         let budgetPassed = testAlternatingWeakEvidenceCloseBudget()
-        if !timingPassed || !referencePassed || !budgetPassed { exit(1) }
+        if !timingPassed || !subframePassed || !referencePassed || !budgetPassed { exit(1) }
     }
 
     #if DEBUG
@@ -2320,6 +2324,56 @@ private struct MacSpeechAcousticEchoHostTests {
         } catch {
             fatalError("FAILED: 24/48 kHz conversion: \(error)")
         }
+    }
+
+    private static func testSubframeEchoReference() -> Bool {
+        var passed = true
+        let render = (0 ..< 33).map { testSignal(seed: UInt32(81_000 + $0), amplitude: 0.3) }
+        for offset in [0, 1, 72, 144, 216, 240, 432, 479] {
+            for userPresent in [false, true] {
+                let backend = FakeAECBackend()
+                let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+                _ = host.configure()
+                host.playbackStarted()
+                var failures: [String] = [], forwarded: [UInt64] = []
+                for tick in 0 ..< 33 {
+                    let active = tick >= 30
+                    let echo = active ? Array((render[tick - 20] + render[tick - 19])[offset ..< offset + 480]) : render[tick]
+                    let near = testSignal(seed: UInt32(82_000 + tick), amplitude: 0.3)
+                    let residual = userPresent ? near : echo
+                    let raw = active ? zip(render[tick], residual).map { $0 * 0.6 + $1 * 0.8 } : render[tick].map { $0 * 0.9 }
+                    let clean = active ? residual : render[tick].map { $0 * 0.02 }
+                    backend.setCaptureOutput(clean)
+                    backend.setLinearOutput(linearOutput(clean))
+                    let time = UInt64(100_000_000_000) + UInt64(tick) * 10_000_000
+                    host.processRender(render[tick], hostTimeNanoseconds: time)
+                    let spans = host.processCaptureSpans(raw, hostTimeNanoseconds: time + 80_000_000)
+                    let state = host.snapshot()
+                    if tick == 29 && (state.residualEchoBaselineFrameCount < 5 || state.sourceGateOpen) {
+                        failures.append("trusted_echo_warmup")
+                    }
+                    guard active else { continue }
+                    if !userPresent && (state.sourceGateOpen || state.inputClassification == .doubleTalk
+                        || state.inputClassification == .nearEndSpeech) { failures.append("echo_gained_near_identity_\(tick)") }
+                    for span in spans where span.samples.contains(where: { $0 != 0 }) {
+                        forwarded.append(span.observation.captureFrameIndex)
+                        let originalTick = Int(span.observation.captureFrameIndex) - 1
+                        if userPresent && span.samples != testSignal(seed: UInt32(82_000 + originalTick), amplitude: 0.3) {
+                            failures.append("near_audio_altered")
+                        }
+                    }
+                }
+                if forwarded != (userPresent ? [31, 32, 33] : []) { failures.append("source_frame_coverage") }
+                if host.snapshot().sourceGateOpenCount != (userPresent ? 1 : 0) { failures.append("gate_ownership") }
+                let result: [String: Any] = ["case": "subframe-reference", "offset_samples": offset,
+                    "user_present": userPresent, "backend": "FakeAECBackend", "pass": failures.isEmpty,
+                    "failures": failures, "nonzero_source_ids": forwarded]
+                let data = try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+                print(String(decoding: data, as: UTF8.self))
+                passed = passed && failures.isEmpty
+            }
+        }
+        return passed
     }
 
     private static func testCompetingEchoReference() -> Bool {
