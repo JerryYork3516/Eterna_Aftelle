@@ -756,7 +756,9 @@ final class AppController: ObservableObject {
     init() {
         let credentialStore = ProviderKeychainStore()
         let runtimeCore: RuntimeCore
-        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
+        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine(
+            audioProcessingMode: .appleVoiceProcessing
+        )
         speechAudioHost = MacSpeechAudioHost(
             capture: SystemMacSpeechAudioCapture(
                 audioEngine: speechAudioEngine
@@ -805,7 +807,9 @@ final class AppController: ObservableObject {
     init(orchestrationKernel: OrchestrationKernel) {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
-        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
+        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine(
+            audioProcessingMode: .appleVoiceProcessing
+        )
         speechAudioHost = MacSpeechAudioHost(
             capture: SystemMacSpeechAudioCapture(
                 audioEngine: speechAudioEngine

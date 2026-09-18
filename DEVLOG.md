@@ -8,6 +8,57 @@
 
 ---
 
+## 2026-09-18 · Test 3 / 03 未验收工作检查点与交接
+
+- 按用户要求保存并推送现有工作，**Test 3 仍为 REVIEW_REQUIRED，未修好，不进入 04**。本检查点包含此前未提交的 Apple Voice Processing 默认选择、系统 VAD、分帧/时间戳修复及本地测试入口，不代表这些候选已通过真实声场联合验收。
+- 9 月 16 日的三组静音虚拟输入与八次当前 Host 离线回放确认：新双讲 377 个 VAD/RMS 有效帧中，现生产 player 参考路径拒绝 366 帧；仅在测试中改用 Audio Unit 渲染后参考仍拒绝 357 帧，首次开门由 187 帧推迟至 192 帧，不能以“只换参考”作为生产修复。
+- 渲染后参考在受控纯回声 1163 个有效 10ms 检查块中，原始输入投影残差最大 RMS 4.32e-9；双讲原始残差与两段已知注入人声的相关性/增益约为 1。它只证明参考和独立近端证据可取得，未证明完整资格规则、真实声场或 Runtime 中断通过。观测代码仍仅在 ignored `.build/test3-render-reference-observation`，未接入生产。
+- 9 月 18 日重新运行 `speech_aec_host_tests/check.sh`：主体 1624 checks，完整脚本 exit 1，保留 7 个 subframe-reference 纯回声失败与 1 个 alternating-weak-close-budget 失败。当前无签名 Debug App 构建 exit 65，日志报告缺少 Metal Toolchain；未重新安装工具链、未启动 App、未调用 Qwen。SwiftFormat / SwiftLint 当前未安装，格式检查未执行；没有绕过 Git hooks。
+- 原始录音、设备驱动、`.build` 证据和两个未跟踪 PCM 留在本机，不进入提交。后续交接须区分当前代码、历史成功子项、已否决候选与未完成项；旧验证脚本中的固定 HEAD/diff 断言在本次提交后需按源码哈希核对，不能把版本快照不匹配误报为新的声学失败。
+- Stage 7 越界检查 PASS：本轮没有新增生产修复、Runtime API / DR / Store 变更，也没有进入后续节点。
+
+## 2026-09-15 · Test 3 / 03 播放参考时间戳取整修复
+
+- 修正 FloatMono48kConverter 的一采样点时间容差：输入时间戳是整数纳秒，容差同样向上取整；48kHz 的20834ns不再因比20833.333ns多0.667ns而丢失时间信息。既有纯回声记录19个播放回调的时间戳全部恢复，转换后PCM逐样本不变；没有调整AEC、VAD或Gate门槛。
+- 新增16/24/44.1/48kHz边界回归，覆盖正负容差、超界1ns、两采样点跳变、未知时间戳和generation重置；修复前失败，修复后64项通过。Apple分帧合计229项、13个时序对照通过；当前代码无签名Debug App构建通过，未部署或启动。
+- 完整Host回归仍FAIL：原8个帧内参考/交替弱证据负控与修复前结构化结果相同；没有宣布完整A7通过。只读样本上的连续100ms、采样点参考搜索候选仍有1帧纯回声误开门，未放入生产，不叠加调参。
+- 生产仍然无法通过双讲和隔离人声资格验收；修复时间戳后，原VAD纯回声零开门，但模拟VAD恒true仍36帧误开门。此处只收口确定的时间戳缺陷，不代表Test3修好。证据`.build/test3-continuous-reference-repair/report.md`；保留原修改，无Qwen、无commit/push，不进入04，越界检查PASS。
+
+## 2026-09-15 · Test 3 / 03 Apple capture 分帧局部修复
+
+- Apple capture 复用现有10ms分帧器，保留余数/时间戳，并逐帧更新资格；修正4096/4816等转换块被480倍数条件直接拒绝及确认依赖回调尺寸的问题。漂移诊断移至分帧后，避免inout缓冲独占访问冲突。生产仅修改MacSpeechAcousticEchoHost，未调AEC/VAD/Gate阈值。
+- 新增失败基线复现；分块、余数、逐样本保留、时间戳、纯回声、隔离及真实Converter相关165 checks PASS。未跑完整A7或重建/部署App。
+- 三组真实系统VAD的虚拟验证为1 PASS / 2 FAIL：纯回声1249帧零开门；双讲及零回声隔离输入仍零开门。首个剩余阻断为最大历史参考相关性超过0.25；分别390/396、361/374个满足VAD/能量条件的帧被拒绝。隔离raw mic与注入人声相关性/增益均1.000，不能归为人工回声混入。
+- 三组Host已输出音频均与Converter输入前缀逐样本相等，尾320样本保留等待组帧。补丁保留待审核，②整体尚未通过；按本轮范围停止扩大排查，不继续①或调参。证据`.build/test3-apple-framing-fix/report.md`。
+- 原修改保留，HEAD仍7944041；Qwen=0、设备已恢复，无提交推送，不进入04。Stage 7越界检查PASS，Test 3仍REVIEW_REQUIRED。
+
+## 2026-09-15 · Test 3 / 03 验收纠正与基线恢复
+
+- 当前总状态为 **REVIEW_REQUIRED**；撤回此前对话中的“Test 3 PASS”。联合门槛仍含纯回声、外放双讲和隔离输入的完整语音保留，不进入04。
+- 仅撤回上轮重新引入的两块已否决WebRTC候选：帧内替代参考搜索、删除弱证据续开分支。Apple候选和所有失败测试保留。恢复前原始diff、九个改动文件副本及私有PCM哈希存于 `.build/test3-acceptance-correction`，无commit/push。
+- 上轮完整合成结果实际为3/7，正常/较大完整双讲新增10/19帧缺失；不能统称“旧路径历史失败”。恢复后实测5/7：两组纯回声、三组完整结束场景通过；两组连续双讲仍缺1200–1202帧（30ms），没有将剩余失败标成通过。
+- Apple正控在消回声之后注入，强制提供系统VAD真值并模拟Provider插话提议，只验证Host/Runtime链。其0.6ms左右延迟是确认后的播放清除时间；并未验证真人起音检测、人声通过AEC或整体插话延迟。
+- `20260915T023848Z-0c7652fd` 注入前2次开门、80帧放行仍是未解释失败。高能量和后续未复现均不能排除回声误判，也不能将其确定归为环境异常。Apple路径没有原始mic/render耦合或静音状态的等价验收，因此成功批次不能单独证明完整物理声场通过。
+- 当前8份旧胶囊严格回放仍为3/8；Host主体1417项、13个时序对照、2个竞争参考、回放自检和静态契约通过。完整Host脚本仍FAIL：16个帧内用例中的7个纯回声负控失败，交替弱证据关门负控失败；失败断言原样保留。382项双工回归和当前工作区无签名Debug构建通过，未启动App或声场测试。
+- Apple SDK及本机最小API检查一致：manual rendering登记输入成功，但offline/realtime两模式开启Voice Processing均返回`-10863`，引擎从未启动。当前AVAudioEngine手动输入路线不能用作处理前AEC回归；不是断言所有系统虚拟输入路线都不可行。runner新增验收范围与`REVIEW_REQUIRED`标签。完整证据：`.build/test3-acceptance-correction/report.md`；Qwen调用0，Stage 7越界检查PASS，总体验收未通过。
+
+## 2026-09-15 · Test 3 / 03 上轮自动化结果（总体验收结论已纠正）
+
+- 生产候选改用 Apple Voice Processing 全双工采集，删除播放期输入静音；Host 以系统 VAD、处理后能量和播放参考分离共同确认近端声音。RuntimeCore 继续拥有中断、generation、播放清除、Session/Memory 权限；未改 Qwen、语义 VAD、DR、Store 或 Provider 架构。
+- 上轮重新引入的WebRTC fallback帧内历史参考搜索及弱证据关门改动，虽使1417项主体、13个时序对照、16个帧内成对用例、竞争参考和关门预算通过，却在联合音频回归新增人声缺失；已在上方纠正轮撤回，不能保留为生产修复。上轮`native_speech_duplex_tests` 382项及Runtime中断边界通过。
+- 旧 WebRTC 证据仍如实失败：8 份旧胶囊严格回放 3/8 PASS，2026-09-09 真人失败录音的纯回声负控 PASS、用户正控 FAIL。它们证明旧链会压掉真实双讲，不能作为当前 Apple 主路径的通过证据，也不再通过调门槛挽救。
+- 上轮签名Debug App使用Mac mini扬声器和TinyUSB麦克风运行正常/较大音量纯回声及两个软件近端正控。最后批次`.build/test3-local-automation/runs/20260915T024752Z-3fa950ad`记录4/4局部检查PASS：纯回声gate/forward/interrupt均0、generation 1→1；正控各一次gate/interrupt/clear、generation 1→2，确认到清除0.656/0.589ms；response.create、Dialogue/Memory/Relationship写入和stale playback均0。另有连续三批12/12局部检查PASS；一批较大音量正控注入前捕获来源未确定的RMS 0.20–0.38输入，整批3项通过、1项失败。该失败未解释，不能用后续成功排除。
+- runner 现由四个 case 的检查状态决定进程结果，任一 FAIL 会返回非零；正控标注为 Apple Voice Processing 后、Host Gate 前注入。全部自动化 `qwen_calls=0`。这些结果仅支持受测批次的无错误开门观察和受控Host/Runtime链；不证明完整物理自回声、真人双讲或可懂度验收通过。
+- Stage 7 越界检查 PASS：无 Runtime API/DR schema/fixture/Store/Memory/Provider secret/平台 target 变更，未进入 04 或 Stage 8。本轮修改保留在工作区，未提交、未推送。
+
+## 2026-09-14 · Test 3 / 03 Apple Voice Processing 全双工候选
+
+- 真实房间四份纯回声录音对 AEC3 内部 `dominantNearend` 的预注册 go/no-go 全部失败：2697/665、2677/253、2697/267、2677/288（总块/误触发块）。因此否决“按 AEC3 near-end 状态切换透明/线性输出”的候选，未削弱现有 Source Gate。
+- 根因转移到项目已有 Apple Voice Processing 兜底链。审计发现旧实现会在居民播放开始时设置 `isVoiceProcessingInputMuted = true`，只有静音语音活动回调触发后才恢复上行；这会让外置设备上的真实用户在回调前无法插话。Apple 的该回调用于 muted-talker detection，不是全双工回声消除的必要门槛。
+- 最小候选：App 的共享采集/播放引擎选择 `.appleVoiceProcessing`；删除播放期输入静音和对应回调状态机，让 Apple voice-processing unit 持续提供已处理的麦克风上行。RuntimeCore 仍是中断 ownership authority；未改 Qwen、语义 VAD、DR、Store、Memory、AEC3 参数或 Gate 参数。
+- 无声验证：播放期输入静音静态约束 PASS；`native_speech_duplex_tests` 382 项 PASS；现有 DerivedData 的无签名 Debug App 增量构建 PASS。`speech_aec_host_tests` 的 1410 项主体通过，完整脚本仍保留既有 alternating-weak 关门负控失败；`speech_audio_host_tests` 仍保留既有 `Test3LocalAudioRunner.swift` AVFoundation boundary 失败，均非本候选新增。全新 DerivedData 构建因本机 Metal Toolchain 组件不可用失败，不影响本次 Swift/App 增量构建结论。
+- 当前候选尚未做真实扬声器 + 外置麦克风声场验收，不能据此宣布 Test 3 PASS。下一次实机只需验证：纯回声不产生用户轮次、播放期间用户能及时插话、耳机输入不退化；诊断中 `capture_aec.acoustic_echo.mode` 应为 `appleVoiceProcessing`。
+
 ## 2026-09-13 · Test 3 / 03 单一残余估计候选否决
 
 - 按四步授权执行候选和验收门禁：仅ignored副本在既有线性可用、非饱和、近端成立时选择ErleUnbounded估计R2（+3/-1行），保留混响/饱和/增益/检测逻辑。无生产修改、commit/push。

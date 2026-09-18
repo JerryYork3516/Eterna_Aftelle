@@ -120,6 +120,22 @@ private struct MacSpeechAcousticEchoHostTests {
     private static var checks = 0
 
     static func main() {
+        if CommandLine.arguments.contains("--converter-timing-only") {
+            testConverterTimestampQuantization()
+            print("converter_timing_checks=\(checks)")
+            return
+        }
+        if CommandLine.arguments.contains("--apple-framing-only") {
+            testAppleModeDoesNotUseWebRTC()
+            testAppleCaptureFraming()
+            testAppleConvertedCaptureFraming()
+            testNativeTenMillisecondTapFraming()
+            testSixteenToFortyEightCaptureFraming()
+            testTwentyFourToFortyEightResamplingRoundTrip()
+            testConverterTimestampQuantization()
+            print("apple_framing_checks=\(checks)")
+            return
+        }
         if CommandLine.arguments.contains("--subframe-reference-only") {
             exit(testSubframeEchoReference() ? 0 : 1)
         }
@@ -173,6 +189,9 @@ private struct MacSpeechAcousticEchoHostTests {
         testPlaybackStopClearsSourceGateState()
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
+        testAppleCaptureFraming()
+        testAppleConvertedCaptureFraming()
+        testConverterTimestampQuantization()
         testNativeTenMillisecondTapFraming()
         testSixteenToFortyEightCaptureFraming()
         testTwentyFourToFortyEightResamplingRoundTrip()
@@ -2222,8 +2241,260 @@ private struct MacSpeechAcousticEchoHostTests {
         )
         expect(host.configure() == .appleVoiceProcessing,
                "Apple voice processing is selectable")
+        let configured = host.snapshot()
+        expect(configured.enabled && configured.active,
+               "Apple voice processing reports active system AEC")
+        host.playbackStarted()
+        let render = testSignal(seed: 91, amplitude: 0.3)
+        let capture = [Float](
+            repeating: 0.1,
+            count: MacSpeechAcousticEchoHost.frameSampleCount
+        )
+        host.processRender(
+            render,
+            hostTimeNanoseconds: 8_000_000_000
+        )
+        host.updateSystemVoiceActivity(false)
+        _ = host.processCaptureSpans(
+            capture,
+            hostTimeNanoseconds: 8_080_000_000
+        )
+        let echoOnly = host.snapshot()
+        expect(echoOnly.inputClassification == .echoOnly
+                   && !echoOnly.sourceGateOpen,
+               "Apple VAD keeps playback-only capture source-gated")
+        host.updateSystemVoiceActivity(true)
+        for index in 0..<3 {
+            _ = host.processCaptureSpans(
+                render,
+                hostTimeNanoseconds:
+                    8_090_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        expect(!host.snapshot().sourceGateOpen,
+               "Apple VAD rejects capture that still matches playback")
+        for (index, signal) in [capture, render, render, capture, render]
+            .enumerated() {
+            _ = host.processCaptureSpans(
+                signal,
+                hostTimeNanoseconds:
+                    8_120_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        expect(!host.snapshot().sourceGateOpen,
+               "Apple VAD rejects isolated low-correlation pulses")
+        host.playbackStopped()
+        host.playbackStarted()
+        host.processRender(
+            render,
+            hostTimeNanoseconds: 9_000_000_000
+        )
+        host.updateSystemVoiceActivity(false)
+        _ = host.processCaptureSpans(
+            capture,
+            hostTimeNanoseconds: 9_080_000_000
+        )
+        host.updateSystemVoiceActivity(true)
+        var doubleTalkSpans: [MacSpeechAcousticCaptureSpan] = []
+        for index in 0..<3 {
+            doubleTalkSpans = host.processCaptureSpans(
+                capture,
+                hostTimeNanoseconds:
+                    9_090_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        let doubleTalk = host.snapshot()
+        let doubleTalkObservation = host.acousticObservationSnapshot()
+        expect(doubleTalk.inputClassification == .doubleTalk
+                   && doubleTalk.sourceGateOpen
+                   && doubleTalkObservation.sourceGateEpoch > 0,
+               "Apple VAD opens one source-gate epoch for double-talk")
+        expect(!doubleTalkSpans.isEmpty
+                   && doubleTalk.processedCaptureRMS > 0,
+               "Apple-processed double-talk capture remains available")
+        host.updateSystemVoiceActivity(false)
+        _ = host.processCaptureSpans(
+            capture,
+            hostTimeNanoseconds: 9_120_000_000
+        )
+        let closed = host.snapshot()
+        expect(!closed.sourceGateOpen
+                   && closed.lastSourceGateCloseReason
+                        == .sourceEvidenceReset,
+               "Apple VAD closes the source gate when voice ends")
         expect(backend.recordedOperations.isEmpty,
                "Apple and WebRTC AEC are mutually exclusive")
+    }
+
+    private static func testAppleCaptureFraming() {
+        let render = testSignal(seed: 91, amplitude: 0.3)
+        let start: UInt64 = 8_080_000_000
+        for chunkSize in [480, 4800, 4816, 4096, 137] {
+            for scenario in ["double_talk", "echo_only", "isolated"] {
+                let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+                _ = host.configure()
+                if scenario != "isolated" {
+                    host.playbackStarted()
+                    host.processRender(
+                        Array(repeating: render, count: 20).flatMap { $0 },
+                        hostTimeNanoseconds: 7_880_000_000
+                    )
+                }
+                host.updateSystemVoiceActivity(true)
+                let samples = (0..<10_080).map { index in
+                    scenario == "echo_only" ? render[index % 480]
+                        : 0.1 + Float(index % 127) * 0.0001
+                }
+                var spans: [MacSpeechAcousticCaptureSpan] = []
+                var offset = 0
+                while offset < 9_737 {
+                    let end = min(offset + chunkSize, 9_737)
+                    spans += host.processCaptureSpans(
+                        Array(samples[offset..<end]),
+                        hostTimeNanoseconds: start + UInt64((
+                            Double(offset) * 1_000_000_000 / 48_000
+                        ).rounded())
+                    )
+                    offset = end
+                }
+                let label = "Apple \(scenario) chunk=\(chunkSize)"
+                expect(spans.count == 20 && spans.allSatisfy {
+                    $0.samples.count == 480
+                }, "\(label) emits complete 10 ms frames")
+                expect(host.snapshot().captureFIFOSampleCount == 137,
+                       "\(label) retains partial capture")
+                spans += host.processCaptureSpans(
+                    Array(samples[9_737...]),
+                    hostTimeNanoseconds: start + 202_854_167
+                )
+                expect(spans.flatMap(\.samples) == samples,
+                       "\(label) preserves every sample in order")
+                expect(host.snapshot().captureFIFOSampleCount == 0,
+                       "\(label) completes the retained frame")
+                expect(spans.map(\.observation.captureFrameIndex)
+                    == Array(UInt64(1)...21), "\(label) counts audio frames")
+                expect(spans.enumerated().allSatisfy { index, span in
+                    guard let timestamp = span.observation
+                        .captureHostTimeNanoseconds else { return false }
+                    let expected = start + UInt64(index) * 10_000_000
+                    return abs(Int64(timestamp) - Int64(expected)) <= 1
+                }, "\(label) preserves frame timestamps across callbacks")
+                if scenario == "double_talk" {
+                    expect(spans.firstIndex(where: {
+                        $0.observation.sourceGateOpen
+                    }) == 2, "\(label) confirms after 30 ms of audio")
+                    expect(spans.dropFirst(2).allSatisfy {
+                        $0.observation.sourceGateOpen
+                    }, "\(label) keeps qualified speech open")
+                } else if scenario == "echo_only" {
+                    expect(spans.allSatisfy { !$0.observation.sourceGateOpen },
+                           "\(label) rejects echo even with VAD true")
+                } else {
+                    expect(spans.allSatisfy {
+                        MacSpeechAudioActivityEvidenceKind.classify(
+                            observation: $0.observation
+                        ) == .listeningNearEnd
+                    }, "\(label) retains isolated near-end evidence")
+                }
+                host.updateSystemVoiceActivity(false)
+                _ = host.processCaptureSpans(
+                    render, hostTimeNanoseconds: start + 210_000_000
+                )
+                expect(!host.snapshot().sourceGateOpen,
+                       "\(label) closes when near-end evidence ends")
+                _ = host.processCaptureSpans(
+                    [Float](repeating: 0.3, count: 137),
+                    hostTimeNanoseconds: start + 220_000_000
+                )
+                host.discardPendingCaptureForGenerationTransition()
+                expect(host.snapshot().captureFIFOSampleCount == 0,
+                       "\(label) discards prior generation remainder")
+            }
+        }
+    }
+
+    private static func testAppleConvertedCaptureFraming() {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+        let converter = try! MacSpeechFloatMono48kConverter(inputFormat: format)
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        host.playbackStarted()
+        host.processRender(
+            testSignal(seed: 91, amplitude: 0.3),
+            hostTimeNanoseconds: 8_000_000_000
+        )
+        host.updateSystemVoiceActivity(true)
+        var convertedSamples: [Float] = []
+        var spans: [MacSpeechAcousticCaptureSpan] = []
+        for index in 0..<5 {
+            let buffer = try! MacSpeechFloatMono48kConverter.makeBuffer(
+                samples: [Float](repeating: 0.1, count: 4800)
+            )
+            let converted = try! converter.convert(
+                buffer,
+                hostTimeNanoseconds: 8_080_000_000 + UInt64(index) * 100_000_000
+            )
+            convertedSamples += converted.samples
+            spans += host.processCaptureSpans(
+                converted.samples,
+                hostTimeNanoseconds: converted.hostTimeNanoseconds
+            )
+        }
+        expect(spans.firstIndex(where: { $0.observation.sourceGateOpen }) == 2,
+               "Apple real converter output qualifies at audio frame three")
+        expect(spans.flatMap(\.samples)
+            == Array(convertedSamples.prefix(spans.count * 480)),
+               "Apple converter output is preserved through Host framing")
+        expect(host.snapshot().captureFIFOSampleCount == convertedSamples.count % 480,
+               "Apple converter remainder is retained")
+    }
+
+    private static func testConverterTimestampQuantization() {
+        let start: UInt64 = 1_119_613_984_460_750
+        for rate in [16_000.0, 24_000.0, 44_100.0, 48_000.0] {
+            let format = AVAudioFormat(
+                standardFormatWithSampleRate: rate, channels: 1
+            )!
+            let count = AVAudioFrameCount(rate / 10)
+            let input = AVAudioPCMBuffer(
+                pcmFormat: format, frameCapacity: count
+            )!
+            input.frameLength = count
+            for index in 0..<Int(count) {
+                input.floatChannelData![0][index] = sin(Float(index) * 0.04) * 0.2
+            }
+            let tolerance = Int64((1_000_000_000 / rate).rounded(.up))
+            do {
+                let reference = try MacSpeechFloatMono48kConverter(inputFormat: format)
+                _ = try reference.convert(input, hostTimeNanoseconds: start)
+                let unchangedPCM = try reference.convert(
+                    input, hostTimeNanoseconds: start + 100_000_000
+                ).samples
+                for displacement in [Int64(0), tolerance, -tolerance,
+                                     tolerance + 1, -tolerance - 1,
+                                     tolerance * 2, -tolerance * 2] {
+                    let converter = try MacSpeechFloatMono48kConverter(inputFormat: format)
+                    _ = try converter.convert(input, hostTimeNanoseconds: start)
+                    let timestamp = UInt64(Int64(start) + 100_000_000 + displacement)
+                    let output = try converter.convert(input, hostTimeNanoseconds: timestamp)
+                    expect((output.hostTimeNanoseconds != nil) == (abs(displacement) <= tolerance),
+                           "\(Int(rate)) Hz timestamp displacement \(displacement) respects a quantized sample")
+                    expect(output.samples == unchangedPCM,
+                           "timestamp quantization does not change converted PCM")
+                }
+                let converter = try MacSpeechFloatMono48kConverter(inputFormat: format)
+                _ = try converter.convert(input, hostTimeNanoseconds: start)
+                let unknown = try converter.convert(input, hostTimeNanoseconds: nil)
+                expect(unknown.hostTimeNanoseconds == nil,
+                       "unknown callback time cannot acquire a timestamp")
+                converter.resetForGenerationTransition()
+                let restarted = try converter.convert(input, hostTimeNanoseconds: start + 1_000_000_000)
+                expect(restarted.hostTimeNanoseconds == start + 1_000_000_000,
+                       "generation transition clears prior timing uncertainty")
+            } catch {
+                fatalError("FAILED: converter timestamp quantization: \(error)")
+            }
+        }
     }
 
     private static func testNativeTenMillisecondTapFraming() {

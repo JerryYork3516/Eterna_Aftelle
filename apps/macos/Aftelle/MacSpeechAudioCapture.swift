@@ -744,11 +744,13 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
               let firstTime = first.hostTimeNanoseconds else { return nil }
         let nanosecondsPerSample = 1_000_000_000 / outputFormat.sampleRate
         let timestamp = Double(firstTime) + (start - first.start) * nanosecondsPerSample
+        // Host timestamps use whole nanoseconds, including a one-sample clock offset.
+        let timestampTolerance = (1_000_000_000 / inputSampleRate).rounded(.up)
         // Buffered output may span input callbacks. A gap or unknown time cannot become a continuous clock.
         for interval in intervals {
             guard let time = interval.hostTimeNanoseconds else { return nil }
             let expected = timestamp + (interval.start - start) * nanosecondsPerSample
-            guard abs(Double(time) - expected) <= 1_000_000_000 / inputSampleRate else { return nil }
+            guard abs(Double(time) - expected) <= timestampTolerance else { return nil }
         }
         return UInt64(timestamp.rounded())
     }
@@ -771,6 +773,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private let renderConverterLock = NSLock()
     private let audioProcessingMode: MacSpeechAudioProcessingMode
     private let acousticEchoHost: MacSpeechAcousticEchoHost
+    private let voiceActivityDetector: any MacSpeechVoiceActivityDetecting
     private let stopPlayerNode:
         @Sendable (AVAudioPlayerNode?) -> Void
     private var engine: AVAudioEngine?
@@ -782,7 +785,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var isCaptureActive = false
     private var isOutputPrepared = false
     private var isOutputPlaying = false
-    private var isInputMutedForOutput = false
     private var isRenderReferenceTapInstalled = false
     private var outputFormat: AVAudioFormat?
     private var routeRebuildWasConfigured = false
@@ -801,11 +803,14 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     init(
         audioProcessingMode: MacSpeechAudioProcessingMode = .webRTCAEC3,
         acousticEchoHost: MacSpeechAcousticEchoHost? = nil,
+        voiceActivityDetector: any MacSpeechVoiceActivityDetecting =
+            SystemMacSpeechVoiceActivityDetector(),
         stopPlayerNode: @escaping @Sendable (
             AVAudioPlayerNode?
         ) -> Void = { $0?.stop() }
     ) {
         self.audioProcessingMode = audioProcessingMode
+        self.voiceActivityDetector = voiceActivityDetector
         self.stopPlayerNode = stopPlayerNode
         if let acousticEchoHost {
             self.acousticEchoHost = acousticEchoHost
@@ -873,21 +878,20 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 throw MacSpeechAudioCaptureError.engineStartFailed
             }
             refreshAcousticEchoPresentationLatencyLocked()
-            if !isOutputPlaying,
-               audioProcessingMode == .appleVoiceProcessing {
-                inputNode.isVoiceProcessingInputMuted = false
-                isInputMutedForOutput = false
-            }
             isCaptureActive = true
             return describe(inputFormat)
         }
     }
 
     func stopCapture() {
-        lock.withLock {
-            guard isCaptureActive, let engine else { return }
-            engine.inputNode.removeTap(onBus: 0)
+        let runningEngine = lock.withLock { () -> AVAudioEngine? in
+            guard isCaptureActive, let activeEngine = engine else { return nil }
             isCaptureActive = false
+            return activeEngine
+        }
+        guard let runningEngine else { return }
+        runningEngine.inputNode.removeTap(onBus: 0)
+        lock.withLock {
             logAudioUnitLifecycle("capture_tap_removed")
             tearDownIfIdle()
         }
@@ -941,12 +945,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                   let playerNode else {
                 throw MacSpeechAudioCaptureError.engineStartFailed
             }
-            let inputNode = engine.inputNode
             acousticEchoHost.playbackStarted()
-            if audioProcessingMode == .appleVoiceProcessing {
-                inputNode.isVoiceProcessingInputMuted = true
-                isInputMutedForOutput = true
-            }
             isOutputPlaying = true
             do {
                 if !engine.isRunning {
@@ -960,7 +959,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             } catch {
                 isOutputPlaying = false
                 acousticEchoHost.playbackStopped()
-                unmuteInput()
                 throw error
             }
         }
@@ -970,7 +968,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             isOutputPlaying = false
             acousticEchoHost.playbackCompleted()
-            unmuteInput()
         }
     }
 
@@ -980,7 +977,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             isOutputPlaying = false
             acousticEchoHost.playbackStopped()
-            unmuteInput()
         }
     }
 
@@ -990,7 +986,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             isOutputPlaying = false
             acousticEchoHost.playbackStopped()
-            unmuteInput()
             if !isCaptureActive {
                 engine?.stop()
             }
@@ -1003,7 +998,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock {
             isOutputPlaying = false
             acousticEchoHost.playbackStopped()
-            unmuteInput()
             isOutputPrepared = false
             tearDownIfIdle()
         }
@@ -1050,11 +1044,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
             }
             guard inputNode.isVoiceProcessingEnabled,
-                  engine.outputNode.isVoiceProcessingEnabled,
-                  inputNode.setMutedSpeechActivityEventListener({
-                    [weak self] event in
-                    self?.handleMutedSpeechActivity(event)
-                  }) else {
+                  engine.outputNode.isVoiceProcessingEnabled else {
                 throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
             }
         } else if inputNode.isVoiceProcessingEnabled
@@ -1067,6 +1057,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             format: localFormat
         )
         _ = acousticEchoHost.configure()
+        guard audioProcessingMode != .appleVoiceProcessing
+                || voiceActivityDetector.start() else {
+            removeRenderReferenceTapLocked(playerNode: playerNode)
+            throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
+        }
         self.engine = engine
         self.playerNode = playerNode
         outputFormat = localFormat
@@ -1075,7 +1070,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     private func tearDownIfIdle() {
         guard !isCaptureActive, !isOutputPrepared else { return }
-        unmuteInput()
+        voiceActivityDetector.stop()
         engine?.stop()
         if isConfigured,
            let engine,
@@ -1095,16 +1090,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         isConfigured = false
     }
 
-    private func handleMutedSpeechActivity(
-        _ event: AVAudioVoiceProcessingSpeechActivityEvent
-    ) {
-        guard event == .started else { return }
-        lock.withLock {
-            guard isOutputPlaying, isInputMutedForOutput else { return }
-            unmuteInput()
-        }
-    }
-
     func routeWillRebuild() {
         lock.withLock {
             guard isConfigured else { return }
@@ -1113,6 +1098,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             if let playerNode {
                 removeRenderReferenceTapLocked(playerNode: playerNode)
             }
+            voiceActivityDetector.stop()
             acousticEchoHost.routeWillRebuild()
             resetAcousticEchoPresentationLatencyLocked()
             captureAECConverter = nil
@@ -1140,6 +1126,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                             format: localFormat
                         )
                     }
+                }
+                guard audioProcessingMode != .appleVoiceProcessing
+                        || voiceActivityDetector.start() else {
+                    throw MacSpeechAudioCaptureError
+                        .voiceProcessingUnavailable
                 }
                 _ = acousticEchoHost.routeDidRebuild()
                 if let engine, engine.isRunning {
@@ -1192,6 +1183,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             (test3NearEndInjection?.startedAtNanoseconds,
              test3NearEndInjection?.injectedSampleCount ?? 0)
         }
+    }
+
+    func systemVoiceActivityForTesting() -> Bool {
+        acousticEchoHost.systemVoiceActivityForTesting()
     }
 
     func armAcousticReplayCapture(
@@ -1263,11 +1258,27 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             return
         }
         #if DEBUG
+        let injectedSampleCountBefore =
+            test3NearEndInjection?.injectedSampleCount ?? 0
         test3NearEndInjection?.mix(
             into: &converted.samples,
             hostTimeNanoseconds: converted.hostTimeNanoseconds ?? startedAt
         )
+        let injectedNearEndInThisCapture =
+            (test3NearEndInjection?.injectedSampleCount ?? 0)
+                > injectedSampleCountBefore
         #endif
+        if audioProcessingMode == .appleVoiceProcessing {
+            var voiceActivityDetected =
+                voiceActivityDetector.isVoiceDetected()
+            #if DEBUG
+            voiceActivityDetected = voiceActivityDetected
+                || injectedNearEndInThisCapture
+            #endif
+            acousticEchoHost.updateSystemVoiceActivity(
+                voiceActivityDetected
+            )
+        }
         let captureSpans = acousticEchoHost.processCaptureSpans(
             converted.samples,
             hostTimeNanoseconds: converted.hostTimeNanoseconds
@@ -1451,12 +1462,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         let seconds = AVAudioTime.seconds(forHostTime: time.hostTime)
         guard seconds.isFinite, seconds >= 0 else { return nil }
         return UInt64((seconds * 1_000_000_000).rounded())
-    }
-
-    private func unmuteInput() {
-        guard isInputMutedForOutput else { return }
-        engine?.inputNode.isVoiceProcessingInputMuted = false
-        isInputMutedForOutput = false
     }
 
     private func describe(

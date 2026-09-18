@@ -746,6 +746,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let timingAssociationProgressToleranceMilliseconds = 5.0
     private static let timingLockMissFrameCount = 5
     private static let requiredSourceGateConfirmationFrames = 3
+    private static let appleVoiceActivityQualificationWindowCapacity =
+        requiredSourceGateConfirmationFrames * 2 - 1
     private static let maximumSourceGateNonUserHangoverFrames = 20
     private static let sourceGatePreRollFrameCapacity = 15
     private static let sourceGateEpochDiagnosticCapacity = 16
@@ -799,6 +801,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var sourceGateCandidateNearEndFrameCount: UInt64 = 0
     private var sourceGateCandidateDoubleTalkFrameCount: UInt64 = 0
     private var sourceGateConfirmationFrameCount = 0
+    private var appleVoiceActivityQualificationWindow: [Bool] = []
     private var sourceGateNonUserHangoverFrameCount = 0
     private var consecutiveSourceAlignmentUnavailableFrameCount = 0
     private var consecutiveSourceUncertainFrameCount = 0
@@ -857,6 +860,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var isPlaybackActive = false
     private var lastAudibleRenderHostTimeNanoseconds: UInt64?
     private var isRouteRebuilding = false
+    private var systemVoiceActivityDetected = false
     private var hasReliableEchoCancellation = false
     private var poorResidualEchoFrameCount: UInt64 = 0
     private var backendStats = MacSpeechAECBackendStats(
@@ -965,6 +969,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             resetTimingState()
             resetDiagnosticCounters()
             isRouteRebuilding = false
+            systemVoiceActivityDetected = false
             lastAudibleRenderHostTimeNanoseconds = nil
             lastDriftSkew = 0
             driftTrend = "stable"
@@ -987,7 +992,13 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 }
             case .appleVoiceProcessing:
                 mode = .appleVoiceProcessing
-                backendStats = disabledStats()
+                backendStats = MacSpeechAECBackendStats(
+                    enabled: true,
+                    active: true,
+                    estimatedDelayMilliseconds: 0,
+                    erlDecibels: 0,
+                    erleDecibels: 0
+                )
                 logConfiguration()
             case .halfDuplexFallback:
                 enterFallback(.requested)
@@ -1002,6 +1013,35 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     ) {
         guard !samples.isEmpty else { return }
         queue.sync {
+            if mode == .appleVoiceProcessing {
+                do {
+                    try processFrames(
+                        samples,
+                        hostTimeNanoseconds: hostTimeNanoseconds,
+                        remainder: &renderFIFO,
+                        remainderHostTimeNanoseconds:
+                            &renderRemainderHostTimeNanoseconds
+                    ) { frame, frameHostTimeNanoseconds in
+                        renderFrameCount &+= 1
+                        if isPlaybackActive,
+                           let frameHostTimeNanoseconds {
+                            appendRenderTimingFrame(
+                                frame,
+                                hostTimeNanoseconds:
+                                    frameHostTimeNanoseconds
+                            )
+                        } else {
+                            latestRenderHostTimeNanoseconds =
+                                frameHostTimeNanoseconds
+                            latestRenderReferenceRMS = signalRMS(frame)
+                        }
+                    }
+                } catch {
+                    enterFallback(.fifoOverflow)
+                }
+                updateDrift()
+                return
+            }
             guard mode == .webRTCAEC3, let backend else { return }
             #if DEBUG
             let replayCall = beginAcousticReplayAudioCall(
@@ -1075,15 +1115,33 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     samples,
                     hostTimeNanoseconds: hostTimeNanoseconds
                 )
+                updateDrift()
                 return isPlaybackActive || isRouteRebuilding
                     ? [] : [captureSpan(samples: samples)]
             }
             guard mode == .webRTCAEC3, let backend else {
-                recordUnavailableCaptureObservation(
-                    samples,
-                    hostTimeNanoseconds: hostTimeNanoseconds
-                )
-                return [captureSpan(samples: samples)]
+                var spans: [MacSpeechAcousticCaptureSpan] = []
+                do {
+                    try processFrames(
+                        samples,
+                        hostTimeNanoseconds: hostTimeNanoseconds,
+                        remainder: &captureFIFO,
+                        remainderHostTimeNanoseconds:
+                            &captureRemainderHostTimeNanoseconds
+                    ) { frame, frameHostTimeNanoseconds in
+                        recordUnavailableCaptureObservation(
+                            frame,
+                            hostTimeNanoseconds: frameHostTimeNanoseconds
+                        )
+                        spans.append(captureSpan(samples: frame))
+                    }
+                } catch {
+                    enterFallback(.fifoOverflow)
+                    return isPlaybackActive || isRouteRebuilding
+                        ? [] : [captureSpan(samples: samples)]
+                }
+                updateDrift()
+                return spans
             }
             #if DEBUG
             let replayCall = beginAcousticReplayAudioCall(
@@ -1210,15 +1268,155 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             $0 &+ UInt64(frameCount - 1) * 10_000_000
         }
         rawCaptureRMS = signalRMS(samples)
-        processedCaptureRMS = isPlaybackActive ? 0 : rawCaptureRMS
+        processedCaptureRMS = mode == .appleVoiceProcessing
+            ? rawCaptureRMS : (isPlaybackActive ? 0 : rawCaptureRMS)
         linearAECOutputRMS = 0
-        renderCaptureCorrelation = 0
+        if mode == .appleVoiceProcessing,
+           let match = appleVoiceProcessingRenderMatch(
+            samples,
+            captureHostTimeNanoseconds: hostTimeNanoseconds
+           ) {
+            renderCaptureCorrelation = match.correlation
+            alignedDelayMilliseconds = match.delayMilliseconds
+            outputTimingReferenceAvailable = true
+        } else {
+            renderCaptureCorrelation = 0
+            alignedDelayMilliseconds = nil
+            outputTimingReferenceAvailable = false
+        }
         residualRenderCorrelation = 0
         linearRenderCorrelation = 0
-        inputClassification = .uncertain
+        if mode == .appleVoiceProcessing {
+            let separatesFromPlayback = !isPlaybackActive
+                || (outputTimingReferenceAvailable
+                    && renderCaptureCorrelation
+                        <= Self.maximumNearEndCorrelation)
+            let qualifiesAsNearEnd = systemVoiceActivityDetected
+                && processedCaptureRMS >= Self.minimumNearEndRMS
+                && separatesFromPlayback
+            inputClassification = qualifiesAsNearEnd
+                ? (isPlaybackActive ? .doubleTalk : .nearEndSpeech)
+                : (isPlaybackActive ? .echoOnly : .uncertain)
+            if isPlaybackActive {
+                if !sourceGateOpen {
+                    appleVoiceActivityQualificationWindow.append(
+                        qualifiesAsNearEnd
+                    )
+                    if appleVoiceActivityQualificationWindow.count
+                        > Self.appleVoiceActivityQualificationWindowCapacity {
+                        appleVoiceActivityQualificationWindow.removeFirst()
+                    }
+                    sourceGateConfirmationFrameCount =
+                        appleVoiceActivityQualificationWindow
+                            .filter { $0 }.count
+                    if sourceGateConfirmationFrameCount
+                        >= Self.requiredSourceGateConfirmationFrames {
+                        sourceGateOpen = true
+                        sourceGateOpenCount &+= 1
+                        sourceGateConfirmationFrameCount = 0
+                        appleVoiceActivityQualificationWindow
+                            .removeAll(keepingCapacity: true)
+                        sourceGateNonUserHangoverFrameCount = 0
+                        currentSourceGateOpenFrameCount = 0
+                        beginSourceGateEpoch()
+                    }
+                } else if !qualifiesAsNearEnd {
+                    resetSourceGate(
+                        keepingClassification: true,
+                        closeReason: .sourceEvidenceReset
+                    )
+                }
+            } else if sourceGateOpen {
+                resetSourceGate(
+                    keepingClassification: true,
+                    closeReason: .sourceEvidenceReset
+                )
+            }
+            let count = UInt64(frameCount)
+            switch inputClassification {
+            case .echoOnly:
+                echoOnlyFrameCount &+= count
+            case .nearEndSpeech:
+                nearEndSpeechFrameCount &+= count
+            case .doubleTalk:
+                doubleTalkFrameCount &+= count
+            case .uncertain:
+                uncertainFrameCount &+= count
+            }
+            if isPlaybackActive {
+                if sourceGateOpen {
+                    recordForwardedSourceFrames(frameCount)
+                    currentSourceGateOpenFrameCount &+= count
+                    maximumSourceGateOpenFrameCount = max(
+                        maximumSourceGateOpenFrameCount,
+                        currentSourceGateOpenFrameCount
+                    )
+                } else {
+                    recordSuppressedSourceFrames(frameCount)
+                }
+            }
+        } else {
+            inputClassification = .uncertain
+        }
         captureFrameCount &+= UInt64(frameCount)
-        updateDrift()
     }
+
+    private func appleVoiceProcessingRenderMatch(
+        _ captureSamples: [Float],
+        captureHostTimeNanoseconds: UInt64?
+    ) -> (correlation: Double, delayMilliseconds: Double)? {
+        guard isPlaybackActive,
+              let captureHostTimeNanoseconds,
+              captureSamples.count >= Self.frameSampleCount,
+              captureSamples.count.isMultiple(of: Self.frameSampleCount) else {
+            return nil
+        }
+        let neededFrames = captureSamples.count / Self.frameSampleCount
+        guard neededFrames <= renderTimingHistory.count else { return nil }
+        var bestMatch: (correlation: Double, delayMilliseconds: Double)?
+        for start in 0 ... renderTimingHistory.count - neededFrames {
+            let renderStart = renderTimingHistory[start]
+                .hostTimeNanoseconds
+            guard captureHostTimeNanoseconds >= renderStart else {
+                continue
+            }
+            var reference: [Float] = []
+            reference.reserveCapacity(captureSamples.count)
+            for frame in renderTimingHistory[start ..< start + neededFrames] {
+                reference.append(contentsOf: frame.samples)
+            }
+            guard signalRMS(reference) >= Self.minimumTimingRMS else {
+                continue
+            }
+            let correlation = normalizedCorrelation(
+                captureSamples,
+                reference
+            )
+            if bestMatch == nil
+                || correlation > (bestMatch?.correlation ?? 0) {
+                bestMatch = (
+                    correlation,
+                    Double(captureHostTimeNanoseconds - renderStart)
+                        / 1_000_000
+                )
+            }
+        }
+        return bestMatch
+    }
+
+    func updateSystemVoiceActivity(_ active: Bool) {
+        queue.sync {
+            guard mode == .appleVoiceProcessing,
+                  !isRouteRebuilding else { return }
+            systemVoiceActivityDetected = active
+        }
+    }
+
+    #if DEBUG
+    func systemVoiceActivityForTesting() -> Bool {
+        queue.sync { systemVoiceActivityDetected }
+    }
+    #endif
 
     func updateDelay(
         outputPresentationLatencySeconds: Double,
@@ -1276,6 +1474,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             #endif
             playbackSequence &+= 1
             isPlaybackActive = true
+            systemVoiceActivityDetected = false
             lastAudibleRenderHostTimeNanoseconds = nil
             clearTimingHistory()
             alignedDelayMilliseconds = nil
@@ -1350,6 +1549,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             routeResetCount &+= 1
             lastAudibleRenderHostTimeNanoseconds = nil
             isRouteRebuilding = true
+            systemVoiceActivityDetected = false
             hasReliableEchoCancellation = false
             poorResidualEchoFrameCount = 0
             clearFIFOs()
@@ -1370,6 +1570,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             isRouteRebuilding = false
             guard requestedMode == .webRTCAEC3, let backend else {
                 mode = requestedMode
+                if requestedMode == .appleVoiceProcessing {
+                    backendStats = MacSpeechAECBackendStats(
+                        enabled: true,
+                        active: true,
+                        estimatedDelayMilliseconds: 0,
+                        erlDecibels: 0,
+                        erleDecibels: 0
+                    )
+                }
                 return mode
             }
             do {
@@ -3333,6 +3542,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         sourceGateCandidateNearEndFrameCount = 0
         sourceGateCandidateDoubleTalkFrameCount = 0
         sourceGateConfirmationFrameCount = 0
+        appleVoiceActivityQualificationWindow
+            .removeAll(keepingCapacity: true)
         sourceGateNonUserHangoverFrameCount = 0
         consecutiveSourceAlignmentUnavailableFrameCount = 0
         consecutiveSourceUncertainFrameCount = 0

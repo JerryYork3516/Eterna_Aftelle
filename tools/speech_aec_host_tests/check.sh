@@ -7,6 +7,7 @@ trap 'rm -rf "$build_dir"' EXIT
 
 aec_host="$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
 capture="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
+device_monitor="$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
 tests="$repo_root/tools/speech_aec_host_tests/MacSpeechAcousticEchoHostTests.swift"
 replay="$repo_root/tools/speech_aec_host_tests/RecordedAcousticReplay.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
@@ -18,7 +19,9 @@ swiftc \
   -strict-concurrency=complete \
   -module-cache-path "$build_dir/module-cache" \
   -framework AVFoundation \
+  -framework CoreAudio \
   "$aec_host" \
+  "$device_monitor" \
   "$capture" \
   "$tests" \
   -o "$build_dir/speech_aec_host_tests"

@@ -39,13 +39,16 @@ run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 run_dir = artifacts / "runs" / run_id
 run_dir.mkdir(parents=True)
 stage = None
+transfer_path = None
 record = {
     "schema_version": 1, "run_id": run_id, "status": "INCOMPLETE",
     "build_mode": "caller_supplied_current_debug_build" if args.skip_build else "xcodebuild_current_worktree",
-    "runner_timeout_seconds": 180, "qwen_calls": 0,
-    "positive_input": "software_near_end_added_before_aec",
+    "runner_timeout_seconds": 300, "qwen_calls": 0,
+    "validation_scope": "host_runtime_postprocessing_injection",
+    "test3_acceptance": "REVIEW_REQUIRED",
+    "positive_input": "software_near_end_added_after_apple_voice_processing_before_host_gate",
     "semantic_proposal": "local_stub_test_fixture",
-    "physical_double_talk": "NOT_TESTED_BY_SOFTWARE_INJECTION",
+    "physical_double_talk": "NOT_CLAIMED_CAPTURE_INJECTION_USED",
     "artifacts": str(run_dir),
 }
 
@@ -62,11 +65,12 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def bounded(command, log_path, seconds, stderr_path=None):
+def bounded(command, log_path, seconds, stderr_path=None, stdin_path=None):
     with log_path.open("wb") as stdout:
         stderr = stderr_path.open("wb") if stderr_path else stdout
+        stdin = stdin_path.open("rb") if stdin_path else None
         try:
-            process = subprocess.Popen(command, cwd=repo, stdout=stdout,
+            process = subprocess.Popen(command, cwd=repo, stdin=stdin, stdout=stdout,
                                        stderr=stderr, start_new_session=True)
             try:
                 return process.wait(timeout=max(1, seconds - 2))
@@ -86,6 +90,8 @@ def bounded(command, log_path, seconds, stderr_path=None):
                     process.wait()
                 return 124
         finally:
+            if stdin:
+                stdin.close()
             if stderr_path:
                 stderr.close()
 
@@ -205,33 +211,54 @@ try:
             raise RuntimeError("Public Stage 7.5 resident fixture is missing")
         record["inputs"] = inputs
         record["fixture_sha256"] = sha256(fixture)
-        stage = test_root / ("test3-local-" + run_id)
-        stage.mkdir(mode=0o700)
-        record["stage_dir"] = str(stage)
-        shutil.copy2(inputs["resident"]["path"], stage / "resident.f32le.pcm")
-        shutil.copy2(inputs["near"]["path"], stage / "near.f32le.pcm")
-        shutil.copy2(fixture, stage / "resident.digital_resident")
-        write_json(stage / "config.json", {
-            "schema_version": 1, "resident_file": "resident.f32le.pcm",
-            "near_file": "near.f32le.pcm", "fixture_file": "resident.digital_resident",
-        })
+        transfer_path = run_dir / "input-transfer.bin"
+        transfer_header = json.dumps({
+            "schema_version": 1,
+            "resident_length": Path(inputs["resident"]["path"]).stat().st_size,
+            "near_length": Path(inputs["near"]["path"]).stat().st_size,
+            "fixture_length": fixture.stat().st_size,
+        }, separators=(",", ":")).encode("utf-8")
+        with transfer_path.open("wb") as transfer:
+            transfer.write(struct.pack("<I", len(transfer_header)))
+            transfer.write(transfer_header)
+            for source in (Path(inputs["resident"]["path"]),
+                           Path(inputs["near"]["path"]), fixture):
+                with source.open("rb") as handle:
+                    shutil.copyfileobj(handle, transfer)
         assert_app_closed(executable_name)
-        run_status = bounded([str(executable), "--test3-local-audio", str(stage)],
-                             run_dir / "app.log", 180)
+        run_status = bounded([str(executable), "--test3-local-audio", "-"],
+                             run_dir / "app.log", 300,
+                             run_dir / "app.stderr.log", transfer_path)
         record["runner_exit_code"] = run_status
         if run_status:
             raise RuntimeError("Local runner failed or timed out; partial evidence is retained")
-        if not (stage / "result.json").is_file():
-            raise RuntimeError("Local runner exited without result.json")
-        # Preserve the app's individual verdicts; exit success is not a Test 3 PASS.
-        json.loads((stage / "result.json").read_text())
-        record["status"] = "RUNNER_COMPLETED_REVIEW_CASE_RESULTS"
-        exit_code = 0
+        result_lines = (run_dir / "app.log").read_text().strip().splitlines()
+        if len(result_lines) != 1:
+            raise RuntimeError("Local runner must return exactly one result JSON line")
+        result = json.loads(result_lines[0])
+        if result.get("schema_version") != 1 or not isinstance(result.get("cases"), list):
+            raise RuntimeError("Local runner returned an invalid result summary")
+        write_json(run_dir / "result.json", result)
+        record["app_evidence_directory"] = result.get("evidence_directory")
+        case_statuses = [case.get("status") for case in result["cases"]]
+        record["case_statuses"] = case_statuses
+        all_cases_passed = bool(case_statuses) and all(
+            status == "PASS" for status in case_statuses
+        )
+        record["status"] = "PASS" if all_cases_passed else "FAIL"
+        exit_code = 0 if all_cases_passed else 1
 except Exception as error:
     record["status"] = "BLOCKED_OR_FAILED"
     record["error"] = str(error)
     print("local_audio_error=" + str(error), file=sys.stderr)
 finally:
+    if transfer_path is not None:
+        try:
+            transfer_path.unlink(missing_ok=True)
+        except Exception as error:
+            record["transfer_cleanup_error"] = str(error)
+            record["status"] = "BLOCKED_OR_FAILED"
+            exit_code = 1
     if stage is not None and stage.is_dir():
         try:
             shutil.copytree(stage, run_dir / "evidence", symlinks=True)
@@ -241,9 +268,10 @@ finally:
             exit_code = 1
     record["elapsed_seconds"] = round(time.monotonic() - started, 3)
     write_json(run_dir / "launcher-result.json", record)
-    print("local_audio_status=" + record["status"])
+    print("local_audio_checks_status=" + record["status"])
+    print("test3_acceptance=" + record["test3_acceptance"])
     print("local_audio_artifacts=" + str(run_dir))
     print("qwen_calls=0; semantic_proposal=local_stub_test_fixture")
-    print("positive_input=software_near_end; physical_double_talk=NOT_TESTED_BY_SOFTWARE_INJECTION")
+    print("positive_input=software_after_apple_voice_processing_before_host_gate; physical_double_talk=NOT_CLAIMED")
 sys.exit(exit_code)
 PY

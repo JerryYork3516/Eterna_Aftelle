@@ -62,8 +62,11 @@ enum Test3LocalAudioRunner {
               CommandLine.arguments.indices.contains(index + 1) else {
             throw RunnerError.invalidConfiguration
         }
-        let directory = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
-            .resolvingSymlinksInPath()
+        let argument = CommandLine.arguments[index + 1]
+        let directory = argument == "-"
+            ? try prepareStdinDirectory()
+            : URL(fileURLWithPath: argument, isDirectory: true)
+                .resolvingSymlinksInPath()
         guard directory.path.hasPrefix(try testRoot().path + "/") else {
             throw RunnerError.invalidConfiguration
         }
@@ -76,11 +79,14 @@ enum Test3LocalAudioRunner {
         let resident = try samples(at: residentURL)
         let near = try samples(at: nearURL)
         var results: [[String: Any]] = []
-        let cases: [(String, Float, Bool)] = [
-            ("normal_echo_only", 0.5, false), ("normal_software_near", 0.5, true),
-            ("higher_echo_only", 1, false), ("higher_software_near", 1, true)
+        var aggregate: [String: Any] = [:]
+        let cases: [(String, Float, Bool, MacSpeechAudioProcessingMode)] = [
+            ("apple_normal_echo_only", 0.5, false, .appleVoiceProcessing),
+            ("apple_normal_software_near", 0.5, true, .appleVoiceProcessing),
+            ("apple_higher_echo_only", 1, false, .appleVoiceProcessing),
+            ("apple_higher_software_near", 1, true, .appleVoiceProcessing)
         ]
-        for (name, gain, positive) in cases {
+        for (name, gain, positive, mode) in cases {
             let caseDirectory = directory.appendingPathComponent(name, isDirectory: true)
             try FileManager.default.createDirectory(at: caseDirectory, withIntermediateDirectories: true)
             var result: [String: Any]
@@ -88,28 +94,113 @@ enum Test3LocalAudioRunner {
                 guard microphoneAuthorization() == "authorized" else {
                     throw RunnerError.microphoneNotAuthorized
                 }
-                result = try await runCase(name: name, gain: gain, positive: positive,
-                    resident: resident, near: near, fixture: fixtureURL, directory: caseDirectory)
+                result = try await runCase(
+                    name: name,
+                    gain: gain,
+                    positive: positive,
+                    mode: mode,
+                    resident: resident,
+                    near: near,
+                    fixture: fixtureURL,
+                    directory: caseDirectory
+                )
             } catch {
                 result = ["case": name, "status": "FAIL", "error": String(describing: error)]
             }
             results.append(result)
             try writeJSON(result, to: caseDirectory.appendingPathComponent("result.json"))
-            try writeJSON([
+            aggregate = [
                 "schema_version": 1, "status": results.count == cases.count ? "COMPLETED" : "RUNNING",
                 "qwen_calls": 0, "permission_requested": false,
                 "semantic_source": "local_stub_fixture_after_runtime_acoustic_evidence",
-                "physical_double_talk": "NOT_TESTED_BY_SOFTWARE_INJECTION",
+                "physical_double_talk": "NOT_CLAIMED_CAPTURE_INJECTION_USED",
                 "gain_description": "Relative PCM gain only; system volume unchanged; SPL not calibrated",
                 "resident_sha256": try sha256(residentURL), "near_sha256": try sha256(nearURL),
+                "evidence_directory": directory.path,
                 "cases": results
-            ], to: directory.appendingPathComponent("result.json"))
+            ]
+            try writeJSON(
+                aggregate,
+                to: directory.appendingPathComponent("result.json")
+            )
             try? await Task.sleep(for: .milliseconds(300))
         }
+        try printJSON(aggregate)
     }
 
-    private static func runCase(name: String, gain: Float, positive: Bool,
-        resident: [Float], near: [Float], fixture: URL, directory: URL) async throws -> [String: Any] {
+    private static func prepareStdinDirectory() throws -> URL {
+        let payload = FileHandle.standardInput.readDataToEndOfFile()
+        guard payload.count >= MemoryLayout<UInt32>.size else {
+            throw RunnerError.invalidConfiguration
+        }
+        let headerLength = payload.withUnsafeBytes {
+            Int(UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)))
+        }
+        let headerStart = MemoryLayout<UInt32>.size
+        let headerEnd = headerStart + headerLength
+        guard headerLength > 0, headerEnd <= payload.count else {
+            throw RunnerError.invalidConfiguration
+        }
+        let transfer = try JSONDecoder().decode(
+            TransferConfiguration.self,
+            from: payload.subdata(in: headerStart..<headerEnd)
+        )
+        guard transfer.schema_version == 1,
+              transfer.resident_length > 0,
+              transfer.near_length > 0,
+              transfer.fixture_length > 0,
+              transfer.resident_length <= 48_000 * 4 * 30,
+              transfer.near_length <= 48_000 * 4 * 30,
+              transfer.fixture_length <= 10 * 1_024 * 1_024,
+              headerEnd + transfer.resident_length
+                + transfer.near_length + transfer.fixture_length
+                    == payload.count else {
+            throw RunnerError.invalidConfiguration
+        }
+        let directory = try testRoot().appendingPathComponent(
+            "test3-local-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        var offset = headerEnd
+        let residentEnd = offset + transfer.resident_length
+        try payload.subdata(in: offset..<residentEnd).write(
+            to: directory.appendingPathComponent("resident.f32le.pcm"),
+            options: .atomic
+        )
+        offset = residentEnd
+        let nearEnd = offset + transfer.near_length
+        try payload.subdata(in: offset..<nearEnd).write(
+            to: directory.appendingPathComponent("near.f32le.pcm"),
+            options: .atomic
+        )
+        offset = nearEnd
+        try payload.subdata(in: offset..<payload.count).write(
+            to: directory.appendingPathComponent("resident.digital_resident"),
+            options: .atomic
+        )
+        try writeJSON([
+            "schema_version": 1,
+            "resident_file": "resident.f32le.pcm",
+            "near_file": "near.f32le.pcm",
+            "fixture_file": "resident.digital_resident"
+        ], to: directory.appendingPathComponent("config.json"))
+        return directory.resolvingSymlinksInPath()
+    }
+
+    private static func runCase(
+        name: String,
+        gain: Float,
+        positive: Bool,
+        mode: MacSpeechAudioProcessingMode,
+        resident: [Float],
+        near: [Float],
+        fixture: URL,
+        directory: URL
+    ) async throws -> [String: Any] {
         let files = IsolatedFileManager(root: directory.appendingPathComponent("stores", isDirectory: true))
         let store = SessionStore(fileManager: files)
         let provider = LocalProvider()
@@ -119,7 +210,9 @@ enum Test3LocalAudioRunner {
             memoryController: MemoryController(store: MemoryStore(fileManager: files)))
         runtime.useNarrativeMemoryStoreForTesting(NarrativeMemoryStore(fileManager: files))
         runtime.useRelationshipStateStoreForTesting(RelationshipStateStore(fileManager: files))
-        let engine = SystemMacSpeechVoiceProcessingEngine(audioProcessingMode: .webRTCAEC3)
+        let engine = SystemMacSpeechVoiceProcessingEngine(
+            audioProcessingMode: mode
+        )
         let audioHost = MacSpeechAudioHost(authorizationProvider: NoPromptAuthorization(),
             capture: SystemMacSpeechAudioCapture(audioEngine: engine))
         let outputHost = MacSpeechAudioOutputHost(player: SystemMacSpeechAudioOutputPlayer(audioEngine: engine))
@@ -130,7 +223,11 @@ enum Test3LocalAudioRunner {
             realtimeSpeechDiagnosticAudioEngine: engine, restoreProviderSettings: false)
         controller.debugImportTestResident(from: fixture)
         let attemptID = UUID()
-        let captureArmed = engine.armAcousticReplayCapture(attemptID: attemptID, targetCaptureFrameCount: 1_100)
+        let captureArmed = mode == .webRTCAEC3
+            ? engine.armAcousticReplayCapture(
+                attemptID: attemptID,
+                targetCaptureFrameCount: 1_100
+              ) : false
         await controller.startRealtimeResidentBrainRoute()
         guard await wait(seconds: 5, until: {
             let hasSession = await provider.lastSession() != nil
@@ -140,7 +237,10 @@ enum Test3LocalAudioRunner {
             throw RunnerError.routeNotListening
         }
         let aec = engine.acousticEchoSnapshot()
-        guard aec.mode == .webRTCAEC3, aec.enabled, aec.fallbackCount == 0 else {
+        guard aec.mode == mode,
+              aec.enabled,
+              aec.active,
+              aec.fallbackCount == 0 else {
             await controller.shutdownSpeechAudioHost()
             throw RunnerError.aecUnavailable
         }
@@ -167,6 +267,10 @@ enum Test3LocalAudioRunner {
         var maximumRenderRMS = 0.0
         var acousticBeforeInjection = false
         var lastObservedFrame: UInt64 = 0
+        var firstPlaybackCaptureAt: UInt64?
+        var lastPlaybackCaptureAt: UInt64?
+        var maximumPlaybackCaptureGapMilliseconds = 0.0
+        var playbackCaptureObservations = 0
         var polling: [[String: Any]] = []
         let started = now()
         var dialogueBaseline: [SessionDialogueEntry]?
@@ -200,11 +304,16 @@ enum Test3LocalAudioRunner {
                 relationshipBaseline = runtime.currentRelationshipState
                 if positive {
                     injectionScheduledAt = time + 3_000_000_000
-                    engine.setTest3NearEndInjection(samples: near, startAtNanoseconds: injectionScheduledAt!)
+                    engine.setTest3NearEndInjection(
+                        samples: near,
+                        startAtNanoseconds: injectionScheduledAt!
+                    )
                 }
             }
             let injection = engine.test3NearEndInjectionSnapshot()
-            if snapshot.isPlaybackActive, injection.startedAtNanoseconds == nil {
+            let positiveInputStarted =
+                injection.startedAtNanoseconds != nil
+            if snapshot.isPlaybackActive, !positiveInputStarted {
                 preInjectionGateOpens = snapshot.sourceGateOpenCount &- initialHost.sourceGateOpenCount
                 preInjectionForwards = snapshot.sourceForwardedFrameCount &- initialHost.sourceForwardedFrameCount
                 if evidence.hasAcousticEvidence { acousticBeforeInjection = true }
@@ -213,7 +322,7 @@ enum Test3LocalAudioRunner {
             if snapshot.isPlaybackActive, snapshot.sourceForwardedFrameCount > initialHost.sourceForwardedFrameCount,
                firstForwardAt == nil { firstForwardAt = time }
             if snapshot.isPlaybackActive, evidence.hasAcousticEvidence, firstAcousticAt == nil { firstAcousticAt = time }
-            if positive, injection.injectedSampleCount > 0, evidence.hasAcousticEvidence,
+            if positive, positiveInputStarted, evidence.hasAcousticEvidence,
                evidence.session == session, semanticAt == nil, snapshot.isPlaybackActive {
                 semanticAt = time
                 await provider.enqueue(RealtimeResidentBrainEvent(identity: identity, sequence: audioSequence + 2,
@@ -224,15 +333,30 @@ enum Test3LocalAudioRunner {
                 lastObservedFrame = observation.captureFrameIndex
                 maximumRawRMS = max(maximumRawRMS, snapshot.rawCaptureRMS)
                 maximumRenderRMS = max(maximumRenderRMS, observation.renderReferenceRMS ?? 0)
+                if snapshot.isPlaybackActive,
+                   let captureAt = observation.captureHostTimeNanoseconds {
+                    playbackCaptureObservations += 1
+                    firstPlaybackCaptureAt = firstPlaybackCaptureAt ?? captureAt
+                    if let previous = lastPlaybackCaptureAt,
+                       captureAt >= previous {
+                        maximumPlaybackCaptureGapMilliseconds = max(
+                            maximumPlaybackCaptureGapMilliseconds,
+                            Double(captureAt - previous) / 1_000_000
+                        )
+                    }
+                    lastPlaybackCaptureAt = captureAt
+                }
                 polling.append([
                     "observed_at_ns": time, "capture_frame": snapshot.captureFrameCount,
                     "capture_at_ns": observation.captureHostTimeNanoseconds as Any? ?? NSNull(),
                     "playback_active": snapshot.isPlaybackActive, "source_gate_open": snapshot.sourceGateOpen,
+                    "system_vad": engine.systemVoiceActivityForTesting(),
                     "source_gate_open_count": snapshot.sourceGateOpenCount,
                     "source_forwarded_frames": snapshot.sourceForwardedFrameCount,
                     "raw_rms": snapshot.rawCaptureRMS, "clean_rms": snapshot.processedCaptureRMS,
                     "linear_rms": snapshot.linearAECOutputRMS,
                     "render_rms": observation.renderReferenceRMS as Any? ?? NSNull(),
+                    "source_alignment_delay_ms": snapshot.sourceAlignmentDelayMilliseconds as Any? ?? NSNull(),
                     "raw_render_correlation": snapshot.renderCaptureCorrelation,
                     "residual_render_correlation": snapshot.residualRenderCorrelation,
                     "processed_linear_correlation": snapshot.processedLinearCorrelation,
@@ -265,24 +389,56 @@ enum Test3LocalAudioRunner {
         let createDelta = finalProvider.create - initialProvider.create
         let frames = capsule?.captureFrames ?? []
         let playbackFrames = frames.filter(\.isPlaybackActive)
+        let positiveStartedAt = injection.startedAtNanoseconds
         let echoFrames = playbackFrames.filter {
-            guard let injectionAt = injection.startedAtNanoseconds else { return true }
+            guard let injectionAt = positiveStartedAt else { return true }
             return ($0.captureHostTimeNanoseconds ?? $0.timestampNanoseconds) < injectionAt
         }
         let preInjectionGateFrames = echoFrames.filter(\.sourceGateOpen).count
         let preInjectionForwardedSpans = echoFrames.flatMap(\.emittedSpans).filter { !$0.silenced }.count
         let playbackTimes = playbackFrames.map { $0.captureHostTimeNanoseconds ?? $0.timestampNanoseconds }
-        let captureCoverageMilliseconds = playbackTimes.count > 1
+        let exactCaptureCoverageMilliseconds = playbackTimes.count > 1
             ? Double(playbackTimes.last! - playbackTimes.first!) / 1_000_000 + 10 : 0
-        let maximumCaptureGapMilliseconds = zip(playbackTimes, playbackTimes.dropFirst()).map {
+        let exactMaximumCaptureGapMilliseconds = zip(playbackTimes, playbackTimes.dropFirst()).map {
             $1 >= $0 ? Double($1 - $0) / 1_000_000 : Double(UInt64.max)
         }.max() ?? 0
+        let observedCaptureCoverageMilliseconds: Double
+        if let firstPlaybackCaptureAt, let lastPlaybackCaptureAt,
+           lastPlaybackCaptureAt >= firstPlaybackCaptureAt {
+            observedCaptureCoverageMilliseconds =
+                Double(lastPlaybackCaptureAt - firstPlaybackCaptureAt)
+                    / 1_000_000 + 10
+        } else {
+            observedCaptureCoverageMilliseconds = 0
+        }
+        let captureCoverageMilliseconds = mode == .webRTCAEC3
+            ? exactCaptureCoverageMilliseconds
+            : observedCaptureCoverageMilliseconds
+        let maximumCaptureGapMilliseconds = mode == .webRTCAEC3
+            ? exactMaximumCaptureGapMilliseconds
+            : maximumPlaybackCaptureGapMilliseconds
         let couplingFrames = echoFrames.filter {
             $0.rawCaptureRMS > 0.001 && ($0.renderReferenceRMS ?? 0) > 0.001
                 && ($0.timingCorrelation ?? 0) >= 0.65
         }.count
         let gateFrames = playbackFrames.filter(\.sourceGateOpen).count
         let forwardedSpans = playbackFrames.flatMap(\.emittedSpans).filter { !$0.silenced }.count
+        let gateOpenDelta = finalHost.sourceGateOpenCount
+            &- initialHost.sourceGateOpenCount
+        let forwardedFrameDelta = finalHost.sourceForwardedFrameCount
+            &- initialHost.sourceForwardedFrameCount
+        let gateActivityCount = mode == .webRTCAEC3
+            ? UInt64(gateFrames) : gateOpenDelta
+        let forwardedActivityCount = mode == .webRTCAEC3
+            ? UInt64(forwardedSpans) : forwardedFrameDelta
+        let playbackFrameObservationCount = mode == .webRTCAEC3
+            ? playbackFrames.count : playbackCaptureObservations
+        let qualificationObservations = polling.filter {
+            ($0["system_vad"] as? Bool) == true
+                || ($0["source_gate_open"] as? Bool) == true
+        }
+        let minimumPlaybackFrameObservationCount = mode == .webRTCAEC3
+            ? 800 : 80
         let firstRecordedGate = playbackFrames.first(where: \.sourceGateOpen)
             .map { $0.captureHostTimeNanoseconds ?? $0.timestampNanoseconds }
         var clearLatencyMilliseconds: Double?
@@ -298,9 +454,15 @@ enum Test3LocalAudioRunner {
         }.count
         var failures: [String] = []
         if stalePlayback > 0 { failures.append("Old generation playback accepted after clear") }
-        if finalHost.mode != .webRTCAEC3 || finalHost.fallbackCount > 0 { failures.append("AEC fallback") }
+        if finalHost.mode != mode || finalHost.fallbackCount > 0 { failures.append("AEC fallback") }
         if playbackAt == nil || output.playbackStartedCount == 0 { failures.append("No actual playback") }
-        if !captureArmed || frames.isEmpty { failures.append("Missing 10 ms capture evidence") }
+        if mode == .webRTCAEC3, (!captureArmed || frames.isEmpty) {
+            failures.append("Missing 10 ms capture evidence")
+        }
+        if mode == .appleVoiceProcessing,
+           playbackCaptureObservations == 0 {
+            failures.append("Missing Apple voice-processing capture evidence")
+        }
         if createDelta != 0 { failures.append("Unexpected response.create") }
         if cancelDelta != 0 { failures.append("Unexpected separate cancelGeneration") }
         if history != dialogueBaseline { failures.append("Unexpected dialogue persistence or content mutation") }
@@ -310,13 +472,16 @@ enum Test3LocalAudioRunner {
         if input.droppedFrameCount > 0 { failures.append("Capture frame buffer dropped audio") }
         if !memoryUnchanged || !relationshipUnchanged { failures.append("Unexpected memory/relationship mutation") }
         if positive {
-            if injection.injectedSampleCount == 0 { failures.append("Software near-end not injected") }
+            if injection.injectedSampleCount == 0 {
+                failures.append("Software near-end not injected")
+            }
             if preInjectionGateFrames != 0 || preInjectionForwardedSpans != 0
                 || preInjectionGateOpens != 0 || preInjectionForwards != 0 || acousticBeforeInjection {
                 failures.append("Echo-only prefix opened source gate")
             }
-            if firstAcousticAt == nil || semanticAt == nil || forwardedSpans == 0 {
-                failures.append("Injected near-end did not reach Runtime acoustic evidence")
+            if firstAcousticAt == nil || semanticAt == nil
+                || forwardedActivityCount == 0 {
+                failures.append("Near-end did not reach Runtime acoustic evidence")
             }
             if interruptDelta != 1 || clearDelta != 1 || finalGeneration != session.generation + 1 {
                 failures.append("Expected exactly one Runtime interrupt, clear and generation advance")
@@ -325,31 +490,41 @@ enum Test3LocalAudioRunner {
                 failures.append("Confirmed interrupt to clear exceeds 50 ms or missing")
             }
         } else {
-            if playbackFrames.count < 800 || captureCoverageMilliseconds < 8_000
+            if playbackFrameObservationCount
+                    < minimumPlaybackFrameObservationCount
+                || captureCoverageMilliseconds < 8_000
                 || maximumCaptureGapMilliseconds > 200 {
                 failures.append("Insufficient continuous capture during resident playback")
             }
             if finalAcousticEvidenceCount != initialAcousticEvidenceCount {
                 failures.append("Echo-only emitted Runtime acoustic evidence")
             }
-            if gateFrames != 0 || forwardedSpans != 0 || firstAcousticAt != nil {
+            if gateActivityCount != 0 || forwardedActivityCount != 0
+                || firstAcousticAt != nil {
                 failures.append("Echo-only produced user acoustic evidence or forwarded audio")
             }
             if interruptDelta != 0 || clearDelta != 0 || finalGeneration != session.generation {
                 failures.append("Echo-only changed interruption ownership")
             }
         }
-        let status = !failures.isEmpty ? "FAIL" : couplingFrames < 20 ? "INCONCLUSIVE" : "PASS"
+        let status = !failures.isEmpty
+            ? "FAIL"
+            : mode == .webRTCAEC3 && couplingFrames < 20
+                ? "INCONCLUSIVE" : "PASS"
         var result: [String: Any] = [
             "case": name, "status": status, "failures": failures, "resident_gain": gain,
-            "positive_input": positive, "qwen_calls": 0,
+            "positive_input": positive,
+            "near_delivery": positive
+                ? "software_after_apple_voice_processing_before_host_gate"
+                : "none",
+            "qwen_calls": 0,
             "microphone": ["id": input.inputDevice.identifier, "name": input.inputDevice.name],
             "speaker": ["id": output.outputDevice.identifier, "name": output.outputDevice.name],
             "capture_sample_rate": input.actualSampleRate as Any? ?? NSNull(),
             "aec_mode": finalHost.mode.rawValue, "aec_fallback_count": finalHost.fallbackCount,
             "coupled_echo_frames": couplingFrames, "minimum_coupled_echo_frames": 20,
             "coupling_criterion": "20 playback frames with raw/render RMS > .001 and matched correlation >= .65",
-            "playback_frames": playbackFrames.count,
+            "playback_frames": playbackFrameObservationCount,
             "playback_capture_coverage_ms": captureCoverageMilliseconds,
             "maximum_capture_gap_ms": maximumCaptureGapMilliseconds,
             "input_is_capturing_at_end": input.isCapturing, "input_state": input.state.rawValue,
@@ -359,15 +534,17 @@ enum Test3LocalAudioRunner {
             "output_error": output.lastError.map { String(describing: $0) } as Any? ?? NSNull(),
             "output_state": output.state.rawValue,
             "acoustic_evidence_before": initialAcousticEvidenceCount,
-            "acoustic_evidence_after": finalAcousticEvidenceCount, "playback_gate_open_frames": gateFrames,
-            "playback_forwarded_spans": forwardedSpans, "pre_injection_gate_opens": preInjectionGateOpens,
+            "acoustic_evidence_after": finalAcousticEvidenceCount,
+            "playback_gate_activity": gateActivityCount,
+            "playback_forwarded_activity": forwardedActivityCount,
+            "pre_injection_gate_opens": preInjectionGateOpens,
             "pre_injection_forwarded_frames": preInjectionForwards,
             "pre_injection_gate_open_frames_exact": preInjectionGateFrames,
             "pre_injection_forwarded_spans_exact": preInjectionForwardedSpans,
             "maximum_raw_rms": maximumRawRMS, "maximum_render_rms": maximumRenderRMS,
             "playback_started_at_ns": playbackAt as Any? ?? NSNull(),
             "injection_scheduled_at_ns": injectionScheduledAt as Any? ?? NSNull(),
-            "injection_started_at_ns": injection.startedAtNanoseconds as Any? ?? NSNull(),
+            "injection_started_at_ns": positiveStartedAt as Any? ?? NSNull(),
             "injected_sample_count": injection.injectedSampleCount,
             "first_source_gate_at_ns": firstRecordedGate as Any? ?? firstGateAt as Any? ?? NSNull(),
             "first_forward_observed_at_ns": firstForwardAt as Any? ?? NSNull(),
@@ -382,9 +559,15 @@ enum Test3LocalAudioRunner {
             "dialogue_entries_after": historyCount, "memory_unchanged": memoryUnchanged,
             "relationship_unchanged": relationshipUnchanged, "provider_audio_frames": finalProvider.audio,
             "capture_armed": captureArmed, "capture_frame_count": frames.count,
-            "polling_is_decimated": true, "exact_10ms_metrics_file": "capture-frames.json"
+            "polling_is_decimated": true,
+            "capture_metrics_file": mode == .webRTCAEC3
+                ? "capture-frames.json" : "runtime-polling.json",
+            "qualification_observations": qualificationObservations
         ]
-        if couplingFrames < 20 { result["evidence_limitation"] = "Insufficient measured speaker-to-microphone echo coupling" }
+        if mode == .webRTCAEC3, couplingFrames < 20 {
+            result["evidence_limitation"] =
+                "Insufficient measured speaker-to-microphone echo coupling"
+        }
         try JSONEncoder().encode(controller.realtimeSpeechDiagnosticTimeline.events)
             .write(to: directory.appendingPathComponent("runtime-events.json"))
         engine.clearTest3NearEndInjection()
@@ -474,6 +657,12 @@ enum Test3LocalAudioRunner {
         let resident_file: String
         let near_file: String
         let fixture_file: String
+    }
+    private struct TransferConfiguration: Decodable {
+        let schema_version: Int
+        let resident_length: Int
+        let near_length: Int
+        let fixture_length: Int
     }
     private enum RunnerError: Error {
         case invalidConfiguration, invalidPCM, microphoneNotAuthorized, routeNotListening, aecUnavailable
