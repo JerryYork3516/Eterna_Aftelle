@@ -46,6 +46,7 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
     private var originalEnableValue: UInt32?
     private var listener: AudioObjectPropertyListenerBlock?
     private var isRunning = false
+    private var lifecycle: UInt64 = 0
     private var voiceDetected = false
 
     func start() -> Bool {
@@ -122,6 +123,7 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
             originalEnableValue = nil
             listener = nil
             isRunning = false
+            lifecycle &+= 1
             voiceDetected = false
             return state
         }
@@ -151,16 +153,17 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
     }
 
     private func refreshState() {
-        let inputDevice = lock.withLock {
-            isRunning ? deviceID : AudioDeviceID(kAudioObjectUnknown)
+        let (inputDevice, currentLifecycle) = lock.withLock {
+            (isRunning ? deviceID : AudioDeviceID(kAudioObjectUnknown), lifecycle)
         }
-        guard inputDevice != kAudioObjectUnknown,
-              let state = Self.uint32Property(
-                kAudioDevicePropertyVoiceActivityDetectionState,
-                deviceID: inputDevice
-              ) else { return }
+        guard inputDevice != kAudioObjectUnknown else { return }
+        let state = Self.uint32Property(
+            kAudioDevicePropertyVoiceActivityDetectionState,
+            deviceID: inputDevice
+        )
         lock.withLock {
-            guard isRunning, deviceID == inputDevice else { return }
+            guard isRunning, deviceID == inputDevice,
+                  lifecycle == currentLifecycle else { return }
             voiceDetected = state == 1
         }
     }
