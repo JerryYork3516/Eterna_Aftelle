@@ -774,6 +774,7 @@ nonisolated struct RealtimeInterruptionAcousticFacts:
     Equatable {
     let sourceGateEpoch: UInt64
     let nearEndDetected: Bool
+    let sourceAttributionConfirmed: Bool
     let farEndActive: Bool
     let sourceGateOpen: Bool
     let renderReferenceConfidence: Double

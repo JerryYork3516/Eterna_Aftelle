@@ -106,12 +106,15 @@ actor MacSpeechAudioOutputHost {
     private let configuration: MacSpeechPCMPlaybackConfiguration
     private var state: MacSpeechAudioOutputHostState = .idle
     private var generation: UInt64 = 0
+    private var provisionalPauseID: UUID?
+    var isProvisionallyPaused: Bool { provisionalPauseID != nil }
     private var outputDevice = MacSpeechAudioDevice.unavailable
     private var localFormat = "current default output / not prepared"
     private var queue: MacSpeechPCMPlaybackBuffer
     private var inFlightByteCounts: [UInt64: Int] = [:]
     private var waitingEnqueueContinuation: CheckedContinuation<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
+    private var consumerWatchdogID: UUID?
     private var enqueuedChunkCount = 0
     private var enqueuedByteCount = 0
     private var playedChunkCount = 0
@@ -185,6 +188,7 @@ actor MacSpeechAudioOutputHost {
             pendingFadeIn = .initial
             timeoutTask?.cancel()
             timeoutTask = nil
+            consumerWatchdogID = nil
             localFormat = preparedFormat.description
             state = .prepared
             lastError = nil
@@ -313,6 +317,7 @@ actor MacSpeechAudioOutputHost {
         }
         guard !providerResponseFinished else { return snapshot() }
         providerResponseFinished = true
+        if provisionalPauseID != nil { return snapshot() }
         if state == .prepared, !queue.isEmpty {
             return start()
         }
@@ -326,6 +331,49 @@ actor MacSpeechAudioOutputHost {
             state = .draining
         }
         return snapshot()
+    }
+
+    func pauseForProvisionalInterruption(
+        id: UUID,
+        generation expectedGeneration: UInt64
+    ) -> Bool {
+        guard generation == expectedGeneration,
+              state == .playing || state == .draining
+                || state == .stalled else {
+            return false
+        }
+        if let provisionalPauseID {
+            return provisionalPauseID == id
+        }
+        do {
+            try player.pausePlayback()
+        } catch {
+            return false
+        }
+        provisionalPauseID = id
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        consumerWatchdogID = nil
+        return true
+    }
+
+    func resumeProvisionalInterruption(
+        id: UUID,
+        generation expectedGeneration: UInt64
+    ) -> Bool {
+        guard generation == expectedGeneration,
+              provisionalPauseID == id else {
+            return false
+        }
+        do {
+            try player.resumePlayback()
+        } catch {
+            return false
+        }
+        provisionalPauseID = nil
+        state = providerResponseFinished ? .draining : .playing
+        scheduleAvailableChunks()
+        return state != .failed
     }
 
     func stop() -> MacSpeechAudioOutputHostSnapshot {
@@ -396,6 +444,7 @@ actor MacSpeechAudioOutputHost {
     }
 
     private func scheduleAvailableChunks() {
+        guard provisionalPauseID == nil else { return }
         guard state == .playing || state == .draining else { return }
         while inFlightByteCounts.count < configuration.scheduleAheadCount,
               let chunk = queue.dequeue() {
@@ -459,6 +508,7 @@ actor MacSpeechAudioOutputHost {
         guard state != .stalled else { return }
         timeoutTask?.cancel()
         timeoutTask = nil
+        consumerWatchdogID = nil
         state = .stalled
         pendingFadeIn = .stalledResume
         underrunCount += 1
@@ -481,11 +531,13 @@ actor MacSpeechAudioOutputHost {
 
     private func completePlaybackIfNeeded() {
         guard state != .completed else { return }
-        guard providerResponseFinished,
+        guard provisionalPauseID == nil,
+              providerResponseFinished,
               queue.isEmpty,
               inFlightByteCounts.isEmpty else { return }
         timeoutTask?.cancel()
         timeoutTask = nil
+        consumerWatchdogID = nil
         player.finishPlayback()
         state = .completed
         appendEvent(.playbackCompleted)
@@ -516,6 +568,7 @@ actor MacSpeechAudioOutputHost {
         #endif
         timeoutTask?.cancel()
         timeoutTask = nil
+        consumerWatchdogID = nil
         switch result {
         case .success(let byteCount):
             playedChunkCount += 1
@@ -528,9 +581,12 @@ actor MacSpeechAudioOutputHost {
     }
 
     private func handleConsumerTimeout(
-        generation timedOutGeneration: UInt64
+        generation timedOutGeneration: UInt64,
+        watchdogID: UUID
     ) {
-        guard timedOutGeneration == generation,
+        guard consumerWatchdogID == watchdogID,
+              provisionalPauseID == nil,
+              timedOutGeneration == generation,
               !inFlightByteCounts.isEmpty,
               state == .playing || state == .draining
         else {
@@ -541,12 +597,16 @@ actor MacSpeechAudioOutputHost {
     }
 
     private func restartConsumerWatchdog() {
+        guard provisionalPauseID == nil else { return }
         timeoutTask?.cancel()
         guard !inFlightByteCounts.isEmpty else {
             timeoutTask = nil
+            consumerWatchdogID = nil
             return
         }
         let watchedGeneration = generation
+        let watchdogID = UUID()
+        consumerWatchdogID = watchdogID
         let timeoutNanoseconds = Self.consumerWatchdogNanoseconds(
             inFlightByteCount: inFlightByteCounts.values.reduce(0, +),
             safetyMarginNanoseconds:
@@ -556,7 +616,8 @@ actor MacSpeechAudioOutputHost {
             try? await Task.sleep(nanoseconds: timeoutNanoseconds)
             guard !Task.isCancelled else { return }
             await self?.handleConsumerTimeout(
-                generation: watchedGeneration
+                generation: watchedGeneration,
+                watchdogID: watchdogID
             )
         }
     }
@@ -605,6 +666,8 @@ actor MacSpeechAudioOutputHost {
     ) -> MacSpeechAudioOutputHostSnapshot {
         timeoutTask?.cancel()
         timeoutTask = nil
+        consumerWatchdogID = nil
+        provisionalPauseID = nil
         player.stop()
         inFlightByteCounts.removeAll(keepingCapacity: true)
         queue.reset(generation: generation)
@@ -621,9 +684,11 @@ actor MacSpeechAudioOutputHost {
     private func invalidatePlayback(
         keepsEngineRunning: Bool = false
     ) {
+        provisionalPauseID = nil
         resetEventDelivery()
         timeoutTask?.cancel()
         timeoutTask = nil
+        consumerWatchdogID = nil
         if keepsEngineRunning {
             player.clearScheduledPlayback()
         } else {
@@ -670,6 +735,8 @@ actor MacSpeechAudioOutputHost {
         }
         timeoutTask?.cancel()
         timeoutTask = nil
+        consumerWatchdogID = nil
+        provisionalPauseID = nil
         player.resetForRouteChange()
         player.stop()
         player.close()

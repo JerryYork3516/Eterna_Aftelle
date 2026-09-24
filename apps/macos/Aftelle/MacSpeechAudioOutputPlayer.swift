@@ -303,6 +303,8 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
     ) throws -> MacSpeechPCMOutputEnvelope.ProcessingResult
     func resetForPlaybackGeneration()
     func start() throws
+    func pausePlayback() throws
+    func resumePlayback() throws
     func finishPlayback()
     func clearScheduledPlayback()
     func resetForRouteChange()
@@ -311,6 +313,14 @@ nonisolated protocol MacSpeechAudioOutputPlaying: AnyObject, Sendable {
 }
 
 nonisolated extension MacSpeechAudioOutputPlaying {
+    func pausePlayback() throws {
+        throw MacSpeechAudioOutputHostError.invalidState
+    }
+
+    func resumePlayback() throws {
+        throw MacSpeechAudioOutputHostError.invalidState
+    }
+
     func resetForRouteChange() {}
 }
 
@@ -403,6 +413,14 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
         } catch {
             throw MacSpeechAudioOutputHostError.playbackFailed
         }
+    }
+
+    func pausePlayback() throws {
+        try audioEngine.pauseOutput()
+    }
+
+    func resumePlayback() throws {
+        try audioEngine.resumeOutput()
     }
 
     func finishPlayback() {

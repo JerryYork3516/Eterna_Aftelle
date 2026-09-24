@@ -15,6 +15,7 @@ project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 entitlements="$repo_root/apps/macos/Aftelle/Aftelle.entitlements"
 content_view="$repo_root/apps/macos/Aftelle/ContentView.swift"
 controller="$repo_root/apps/macos/Aftelle/AppController.swift"
+test3_local_audio_runner="$repo_root/apps/macos/Aftelle/Test3LocalAudioRunner.swift"
 
 swiftc \
   -parse-as-library \
@@ -37,11 +38,22 @@ if rg -q 'import AVFoundation' "$repo_root/apps/macos/RuntimeCore" -g '*.swift';
 fi
 echo "speech_audio_host_runtime_boundary=PASS"
 
+first_test3_runner_line="$(awk 'NF { print; exit }' "$test3_local_audio_runner")"
+last_test3_runner_line="$(awk 'NF { line = $0 } END { print line }' "$test3_local_audio_runner")"
+if [ "$first_test3_runner_line" != '#if DEBUG' ] \
+  || [ "$last_test3_runner_line" != '#endif' ] \
+  || rg -q '^[[:space:]]*#(else|elseif)([[:space:]]|$)' "$test3_local_audio_runner"; then
+  echo "speech_audio_host_test3_runner_debug_envelope=FAIL"
+  exit 1
+fi
+echo "speech_audio_host_test3_runner_debug_envelope=PASS"
+
 unexpected_audio_api="$(rg -l 'AVCaptureDevice|AVAuthorizationStatus|AVAudioEngine|AVAudioConverter|import AVFoundation|import CoreAudio|AudioObjectGetPropertyData' \
   "$repo_root/apps/macos/Aftelle" -g '*.swift' \
   | rg -v '/MacSpeechAudio(Host|Capture)\.swift$' \
   | rg -v '/MacSpeechAudioOutputPlayer\.swift$' \
-  | rg -v '/MacSpeechDeviceMonitor\.swift$' || true)"
+  | rg -v '/MacSpeechDeviceMonitor\.swift$' \
+  | rg -v '/Test3LocalAudioRunner\.swift$' || true)"
 if [ -n "$unexpected_audio_api" ]; then
   echo "speech_audio_host_avfoundation_boundary=FAIL"
   printf '%s\n' "$unexpected_audio_api"
@@ -71,7 +83,7 @@ fi
 echo "speech_audio_host_voice_processing=PASS"
 
 test "$(rg -n 'AVAudioEngine\(\)' "$capture" "$player" | wc -l)" -eq 1
-test "$(rg -c 'let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine\(\)' "$controller")" -eq 2
+test "$(rg -c 'let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine\(' "$controller")" -eq 2
 test "$(rg -c 'SystemMacSpeechAudioCapture\(' "$controller")" -eq 2
 test "$(rg -c 'SystemMacSpeechAudioOutputPlayer\(' "$controller")" -eq 2
 rg -q 'engine\.attach\(playerNode\)' "$capture"
@@ -82,11 +94,14 @@ test "$player_attach_line" -lt "$voice_processing_enable_line"
 rg -q 'audioEngine\.scheduleOutput' "$player"
 echo "speech_audio_host_shared_voice_processing_graph=PASS"
 
-rg -q 'setMutedSpeechActivityEventListener' "$capture"
-rg -q 'isVoiceProcessingInputMuted = true' "$capture"
-rg -q 'event == \.started' "$capture"
 rg -q 'func finishOutputPlayback\(\)' "$capture"
-rg -q 'unmuteInput\(\)' "$capture"
+rg -q 'acousticEchoHost\.playbackStarted\(\)' "$capture"
+rg -q 'acousticEchoHost\.playbackCompleted\(\)' "$capture"
+rg -q 'acousticEchoHost\.playbackStopped\(\)' "$capture"
+rg -q 'func playbackStarted\(\)' "$aec_host"
+rg -q 'func playbackCompleted\(\)' "$aec_host"
+rg -q 'func playbackStopped\(\)' "$aec_host"
+rg -q 'if !sourceGateOpen' "$aec_host"
 echo "speech_audio_host_playback_echo_gate=PASS"
 
 rg -q 'currentAcousticEchoSnapshot' "$host"

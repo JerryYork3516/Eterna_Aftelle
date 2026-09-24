@@ -155,6 +155,12 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         )
     }
 
+    func causalInterruptionObservation() async
+        -> MacSpeechCausalInterruptionObservation? {
+        guard isCapturing, generation > 0 else { return nil }
+        return capture.causalInterruptionObservation()
+    }
+
     func residentAcousticSnapshot() async
         -> MacSpeechResidentAcousticSnapshot? {
         guard isCapturing,

@@ -159,8 +159,12 @@ struct ContentView: View {
                         controller.canStartRealtimeFullDuplexSpeech,
                     canStop:
                         controller.canStopRealtimeFullDuplexSpeech,
+                    canInterrupt:
+                        controller.canRequestExplicitRealtimeBargeIn,
                     start: controller.startRealtimeFullDuplexSpeech,
-                    stop: controller.stopRealtimeFullDuplexSpeech
+                    stop: controller.stopRealtimeFullDuplexSpeech,
+                    interrupt:
+                        controller.requestExplicitRealtimeBargeIn
                 )
                 ResidentTextInputBar(
                     text: $residentInputText,
@@ -334,12 +338,15 @@ private struct RealtimeFullDuplexSpeechControlBar: View {
     let isResidentAvailable: Bool
     let canStart: Bool
     let canStop: Bool
+    let canInterrupt: Bool
     let start: () async -> Void
     let stop: () async -> Void
+    let interrupt: () async -> Void
 
     @State private var isStartPending = false
     @State private var isStopPending = false
     @State private var isCancellingPendingStart = false
+    @State private var isInterruptPending = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -357,6 +364,15 @@ private struct RealtimeFullDuplexSpeechControlBar: View {
             }
 
             Spacer(minLength: 12)
+
+            Button(
+                String(localized: "realtimeSpeech.interrupt"),
+                action: performInterrupt
+            )
+            .disabled(isInterruptDisabled)
+            .accessibilityLabel(
+                String(localized: "realtimeSpeech.interrupt")
+            )
 
             Button(actionTitle, action: performAction)
                 .disabled(isActionDisabled)
@@ -382,6 +398,10 @@ private struct RealtimeFullDuplexSpeechControlBar: View {
             return isStopPending || !canStop
         }
         return isStartPending || isStopPending || !canStart
+    }
+
+    private var isInterruptDisabled: Bool {
+        isInterruptPending || isStartPending || isStopPending || !canInterrupt
     }
 
     private var localizedStatus: String {
@@ -425,6 +445,15 @@ private struct RealtimeFullDuplexSpeechControlBar: View {
                 isStartPending = false
                 isCancellingPendingStart = false
             }
+        }
+    }
+
+    private func performInterrupt() {
+        guard !isInterruptDisabled else { return }
+        isInterruptPending = true
+        Task { @MainActor in
+            await interrupt()
+            isInterruptPending = false
         }
     }
 }

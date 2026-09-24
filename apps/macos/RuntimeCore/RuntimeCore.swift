@@ -5598,6 +5598,27 @@ public final class RuntimeCore {
     }
 
     @MainActor
+    func requestRealtimeResidentBrainExplicitInterruption(
+        target: RealtimeBrainEventIdentity
+    ) -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        guard realtimePlaybackInterruptionTarget == target,
+              let turnID = target.turnID,
+              let responseID = target.responseID,
+              pendingRealtimeInterruption == nil else {
+            return .success(.ignored(.staleEvidence))
+        }
+        return beginConfirmedRealtimeResidentBrainInterruption(
+            session: target.session,
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: target.contextRevision
+        )
+    }
+
+    @MainActor
     func submitRealtimeResidentBrainEligibleAcousticEvidence(
         observation: RealtimeAcousticObservation,
         evidence: RealtimeInterruptionEvidence
@@ -5679,6 +5700,25 @@ public final class RuntimeCore {
         return decision
     }
 
+    @MainActor
+    @discardableResult
+    func discardRealtimeResidentBrainProvisionalInterruptionEvidence(
+        session: RealtimeBrainSessionIdentity
+    ) -> Bool {
+        guard currentRealtimeBrainLease(identity: session) != nil,
+              realtimeBrainSessionGate.isActive(session),
+              pendingRealtimeInterruption == nil else { return false }
+        guard var state = realtimeInterruptionEvidenceState else {
+            return true
+        }
+        guard state.session == session else { return false }
+
+        state.semantic = nil
+        state.semanticReceivedAtNanoseconds = 0
+        realtimeInterruptionEvidenceState = state
+        return true
+    }
+
     #if DEBUG
     @MainActor
     func submitRealtimeResidentBrainAcousticEvidenceForTesting(
@@ -5687,7 +5727,9 @@ public final class RuntimeCore {
         RealtimeInterruptionDecision,
         RealtimeResidentBrainError
     > {
-        guard case .acousticHost = evidence.source else {
+        guard Self.interruptionAcousticSourceIsEligible(
+            evidence.source
+        ) else {
             return .success(.ignored(.invalidEvidence))
         }
         return consumeRealtimeResidentBrainInterruptionEvidence(
@@ -5724,7 +5766,11 @@ public final class RuntimeCore {
               pendingRealtimeInterruption.decision == decision else {
             return .failure(.invalidIdentity)
         }
-        return await pendingRealtimeInterruption.task.value
+        let result = await pendingRealtimeInterruption.task.value
+        if self.pendingRealtimeInterruption?.decision == decision {
+            self.pendingRealtimeInterruption = nil
+        }
+        return result
     }
 
     @MainActor
@@ -5767,10 +5813,10 @@ public final class RuntimeCore {
         }
 
         switch evidence.source {
-        case .acousticHost(let facts):
-            guard facts.renderReferenceConfidence.isFinite,
-                  facts.renderReferenceConfidence > 0,
-                  facts.renderReferenceConfidence <= 1 else {
+        case .acousticHost:
+            guard Self.interruptionAcousticSourceIsEligible(
+                evidence.source
+            ) else {
                 return .success(.ignored(.invalidEvidence))
             }
             if evidence.identity.sequence == state.lastAcousticSequence {
@@ -5826,17 +5872,31 @@ public final class RuntimeCore {
               ),
               let turnID = semantic.identity.turnID,
               let responseID = semantic.identity.responseID,
-              case .acousticHost(let acousticFacts) = acoustic.source,
-              acousticFacts.nearEndDetected,
-              acousticFacts.farEndActive,
-              acousticFacts.sourceGateOpen,
-              acousticFacts.routeStable,
-              acousticFacts.inputDeviceAvailable,
-              acousticFacts.outputDeviceAvailable else {
+              Self.interruptionAcousticSourceIsEligible(
+                  acoustic.source
+              ) else {
             return .success(.observed)
         }
 
         realtimeInterruptionEvidenceState = nil
+        return beginConfirmedRealtimeResidentBrainInterruption(
+            session: session,
+            turnID: turnID,
+            responseID: responseID,
+            contextRevision: semantic.identity.contextRevision
+        )
+    }
+
+    @MainActor
+    private func beginConfirmedRealtimeResidentBrainInterruption(
+        session: RealtimeBrainSessionIdentity,
+        turnID: RealtimeBrainTurnID,
+        responseID: RealtimeBrainResponseID,
+        contextRevision: UInt64
+    ) -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
         let transition: RealtimeBrainGenerationTransition
         switch beginRealtimeBrainGenerationTransition(from: session) {
         case .failure(let error):
@@ -5848,7 +5908,7 @@ public final class RuntimeCore {
             RealtimeConfirmedInterruptionUserTurnHandoff(
                 interruptedSession: session,
                 nextSession: transition.nextIdentity,
-                contextRevision: semantic.identity.contextRevision,
+                contextRevision: contextRevision,
                 expectedTurnID: nil
             )
         let decision = RealtimeConfirmedInterruption(
@@ -5885,6 +5945,27 @@ public final class RuntimeCore {
             )
         #endif
         return .success(.confirmed(decision))
+    }
+
+    private static func interruptionAcousticSourceIsEligible(
+        _ source: RealtimeInterruptionEvidenceSource
+    ) -> Bool {
+        switch source {
+        case .acousticHost(let facts):
+            return facts.renderReferenceConfidence.isFinite
+                && facts.renderReferenceConfidence > 0
+                && facts.renderReferenceConfidence <= 1
+                && facts.nearEndDetected
+                && facts.sourceAttributionConfirmed
+                && facts.farEndActive
+                && facts.sourceGateOpen
+                && facts.sourceGateEpoch > 0
+                && facts.routeStable
+                && facts.inputDeviceAvailable
+                && facts.outputDeviceAvailable
+        case .realtimeBrain:
+            return false
+        }
     }
 
     private static func timestampsAreCorrelated(

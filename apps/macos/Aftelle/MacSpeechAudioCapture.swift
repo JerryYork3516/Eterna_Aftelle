@@ -117,6 +117,8 @@ nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
     func discardPendingAudioForGenerationTransition() async
     func interruptionAcousticSnapshot() async
         -> MacSpeechInterruptionAcousticSnapshot?
+    func causalInterruptionObservation() async
+        -> MacSpeechCausalInterruptionObservation?
     func residentAcousticSnapshot() async
         -> MacSpeechResidentAcousticSnapshot?
 }
@@ -125,6 +127,8 @@ nonisolated extension MacSpeechAudioFrameSourcing {
     func discardPendingAudioForGenerationTransition() async {}
     func interruptionAcousticSnapshot() async
         -> MacSpeechInterruptionAcousticSnapshot? { nil }
+    func causalInterruptionObservation() async
+        -> MacSpeechCausalInterruptionObservation? { nil }
     func residentAcousticSnapshot() async
         -> MacSpeechResidentAcousticSnapshot? { nil }
 }
@@ -489,6 +493,8 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
     func routeWillRebuild()
     func routeDidRebuild()
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot?
+    func causalInterruptionObservation()
+        -> MacSpeechCausalInterruptionObservation?
     func acousticObservationSnapshot()
         -> MacSpeechAcousticObservationSnapshot?
     func resetAcousticEchoDiagnostics()
@@ -499,6 +505,8 @@ nonisolated extension MacSpeechAudioCapturing {
     func routeWillRebuild() {}
     func routeDidRebuild() {}
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? { nil }
+    func causalInterruptionObservation()
+        -> MacSpeechCausalInterruptionObservation? { nil }
     func acousticObservationSnapshot()
         -> MacSpeechAcousticObservationSnapshot? { nil }
     func resetAcousticEchoDiagnostics() {}
@@ -964,6 +972,24 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
     }
 
+    func pauseOutput() throws {
+        try lock.withLock {
+            guard isOutputPrepared, isOutputPlaying, let playerNode else {
+                throw MacSpeechAudioCaptureError.engineStartFailed
+            }
+            playerNode.pause()
+        }
+    }
+
+    func resumeOutput() throws {
+        try lock.withLock {
+            guard isOutputPrepared, isOutputPlaying, let playerNode else {
+                throw MacSpeechAudioCaptureError.engineStartFailed
+            }
+            playerNode.play()
+        }
+    }
+
     func finishOutputPlayback() {
         lock.withLock {
             isOutputPlaying = false
@@ -1153,6 +1179,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot {
         acousticEchoHost.snapshot()
+    }
+
+    func causalInterruptionObservation()
+        -> MacSpeechCausalInterruptionObservation {
+        acousticEchoHost.causalInterruptionObservation()
     }
 
     func acousticObservationSnapshot()
@@ -1514,6 +1545,11 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? {
         audioEngine.acousticEchoSnapshot()
+    }
+
+    func causalInterruptionObservation()
+        -> MacSpeechCausalInterruptionObservation? {
+        audioEngine.causalInterruptionObservation()
     }
 
     func acousticObservationSnapshot()

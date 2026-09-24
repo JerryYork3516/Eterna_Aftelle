@@ -1394,6 +1394,7 @@ private struct RealtimeAcousticEligibilityTests {
                 sourceGateEpoch: metrics.sourceGateEpoch,
                 nearEndDetected:
                     observation.classification == .nearEndCandidate,
+                sourceAttributionConfirmed: true,
                 farEndActive: metrics.residentPlaybackActive,
                 sourceGateOpen: metrics.sourceGateOpen,
                 renderReferenceConfidence:

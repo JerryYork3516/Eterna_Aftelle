@@ -195,6 +195,11 @@ private final class R81AudioCapture:
         acousticEchoHost.acousticObservationSnapshot()
     }
 
+    func causalInterruptionObservation()
+        -> MacSpeechCausalInterruptionObservation? {
+        acousticEchoHost.causalInterruptionObservation()
+    }
+
     func resetAcousticEchoDiagnostics() {
         acousticEchoHost.resetDiagnostics()
     }
@@ -569,6 +574,17 @@ private struct RealtimeInterruptionEvidenceTests {
             ),
             equals: .ignored(.invalidEvidence),
             "zero render-reference confidence cannot confirm interruption"
+        )
+        expectDecision(
+            await primary.runtime.submitRealtimeResidentBrainAcousticEvidenceForTesting(
+                acoustic(
+                    primary.target,
+                    sequence: 1,
+                    sourceAttributionConfirmed: false
+                )
+            ),
+            equals: .ignored(.invalidEvidence),
+            "near-end classification cannot authorize interruption without source attribution"
         )
         let invalidInterruptCount = await primary.provider.interruptCount()
         expect(invalidInterruptCount == 0,
@@ -1150,9 +1166,15 @@ private struct RealtimeInterruptionEvidenceTests {
             "memory control session closes"
         )
 
+        try await testExplicitInterruptionRuntimeAuthority(fixture: fixture)
         try await testControllerMicrophoneAuthorization(fixture: fixture)
         try await testControllerSemanticFirstInterruption(fixture: fixture)
-        try await testControllerPlaybackCompletionAndStopRace(fixture: fixture)
+        try await testControllerCausalYieldInterruption(fixture: fixture)
+        try await testControllerExplicitInterruptionFallback(fixture: fixture)
+        try await testControllerExplicitInterruptionStopRace(fixture: fixture)
+        try await testControllerPlaybackCompletionRejectsExplicitFallback(
+            fixture: fixture
+        )
         try await testControllerInterruptFailureCanRestart(fixture: fixture)
 
         cases += 1
@@ -1205,6 +1227,157 @@ private struct RealtimeInterruptionEvidenceTests {
         print("r855r1r1_stale_permission_prepare_calls=\(stalePermissionPrepareCalls)")
         print("r855r1r1_duplicate_start_permission_requests=\(duplicateStartPermissionRequests)")
         print("r855r1r1_duplicate_start_provider_sessions=\(duplicateStartProviderSessions)")
+    }
+
+    private static func testExplicitInterruptionRuntimeAuthority(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        let stack = try await makeStack(fixture: fixture)
+        let dialogueBefore = try stack.sessionStore.loadMostRecentDialogueEntries()
+        let narrativeBefore = stack.runtime.narrativeMemoryDebugSnapshot()
+        let relationshipBefore = stack.runtime.currentRelationshipState
+        let target = eventIdentity(stack.target)
+        expectRealtimeSuccess(
+            stack.runtime.registerRealtimeResidentBrainPlaybackTarget(target),
+            "explicit interruption fixture registers physical Playback"
+        )
+        let wrongTarget = RealtimeBrainEventIdentity(
+            session: target.session,
+            turnID: target.turnID,
+            responseID: RealtimeBrainResponseID(),
+            contextRevision: target.contextRevision
+        )
+        expectDecision(
+            stack.runtime.requestRealtimeResidentBrainExplicitInterruption(
+                target: wrongTarget
+            ),
+            equals: .ignored(.staleEvidence),
+            "explicit interruption requires the exact active playback target"
+        )
+        let rejectedInterruptCount = await stack.provider.interruptCount()
+        expect(
+            rejectedInterruptCount == 0,
+            "mismatched explicit interruption has no Provider side effect"
+        )
+        let decision = confirmedDecision(
+            stack.runtime.requestRealtimeResidentBrainExplicitInterruption(
+                target: target
+            ),
+            message: "explicit user intent is confirmed only by Runtime"
+        )
+        let next = expectRealtimeIdentity(
+            await stack.runtime.completeRealtimeResidentBrainInterruption(
+                decision
+            ),
+            "explicit Runtime interruption settles"
+        )
+        let interruptCount = await stack.provider.interruptCount()
+        expect(
+            next.generation == stack.target.session.generation + 1
+                && interruptCount == 1,
+            "explicit Runtime interruption advances one generation once"
+        )
+        expectDecision(
+            stack.runtime.requestRealtimeResidentBrainExplicitInterruption(
+                target: target
+            ),
+            equals: .ignored(.staleEvidence),
+            "old explicit target is stale after generation transition"
+        )
+        let duplicateInterruptCount = await stack.provider.interruptCount()
+        expect(
+            duplicateInterruptCount == 1,
+            "repeated explicit intent cannot duplicate Provider interruption"
+        )
+        let secondTurnID = RealtimeBrainTurnID()
+        let secondResponseID = RealtimeBrainResponseID()
+        let secondTarget = RealtimeBrainEventIdentity(
+            session: next,
+            turnID: secondTurnID,
+            responseID: secondResponseID,
+            contextRevision: target.contextRevision
+        )
+        let secondUserFinal = RealtimeResidentBrainEvent(
+            identity: RealtimeBrainEventIdentity(
+                session: next,
+                turnID: secondTurnID,
+                responseID: nil,
+                contextRevision: target.contextRevision
+            ),
+            sequence: 1,
+            kind: .userTranscriptFinal("interrupt the resident again")
+        )
+        await stack.provider.enqueue(secondUserFinal)
+        guard case .accepted = try await stack.runtime
+                .receiveRealtimeResidentBrainEvent(session: next) else {
+            fatalError("second explicit turn did not activate")
+        }
+        let secondAudio = RealtimeResidentBrainEvent(
+            identity: secondTarget,
+            sequence: 2,
+            kind: .residentAudioDelta(audioDelta(sequence: 1))
+        )
+        await stack.provider.enqueue(secondAudio)
+        guard case .accepted = try await stack.runtime
+                .receiveRealtimeResidentBrainEvent(session: next) else {
+            fatalError("second explicit response did not activate")
+        }
+        expectRealtimeSuccess(
+            stack.runtime.registerRealtimeResidentBrainPlaybackTarget(
+                secondTarget
+            ),
+            "next generation registers a new physical Playback target"
+        )
+        let secondDecision = confirmedDecision(
+            stack.runtime.requestRealtimeResidentBrainExplicitInterruption(
+                target: secondTarget
+            ),
+            message: "second explicit interruption is independently confirmed"
+        )
+        let finalIdentity = expectRealtimeIdentity(
+            await stack.runtime.completeRealtimeResidentBrainInterruption(
+                secondDecision
+            ),
+            "second explicit Runtime interruption settles"
+        )
+        let secondInterruptCount = await stack.provider.interruptCount()
+        expect(
+            finalIdentity.generation == stack.target.session.generation + 2
+                && secondInterruptCount == 2,
+            "two explicit turns advance two generations exactly once each"
+        )
+        expectDecision(
+            stack.runtime.requestRealtimeResidentBrainExplicitInterruption(
+                target: secondTarget
+            ),
+            equals: .ignored(.staleEvidence),
+            "completed second explicit target cannot trigger twice"
+        )
+        let finalInterruptCount = await stack.provider.interruptCount()
+        expect(
+            finalInterruptCount == 2,
+            "completed explicit turns cannot duplicate Provider interruption"
+        )
+        let dialogueAfter = try stack.sessionStore.loadMostRecentDialogueEntries()
+        expect(
+            dialogueAfter == dialogueBefore,
+            "explicit interruption alone creates no dialogue history"
+        )
+        expect(
+            stack.runtime.narrativeMemoryDebugSnapshot() == narrativeBefore,
+            "explicit interruption alone writes no Narrative Memory"
+        )
+        expect(
+            stack.runtime.currentRelationshipState == relationshipBefore,
+            "explicit interruption alone writes no Relationship state"
+        )
+        expectRealtimeSuccess(
+            await stack.runtime.closeRealtimeResidentBrainSession(
+                identity: finalIdentity
+            ),
+            "explicit interruption fixture closes"
+        )
     }
 
     private static func testControllerMicrophoneAuthorization(
@@ -1576,18 +1749,150 @@ private struct RealtimeInterruptionEvidenceTests {
             "semantic evidence alone preserves Provider session and Capture"
         )
 
-        await stack.provider.holdInterrupt()
         await emitNearEndEvidence(stack, marker: 0x31, expectedAudioCount: 3)
-        await waitUntil("Host clear before held Provider settlement") {
+        let supportOnlyInterruptCount = await stack.provider.interruptCount()
+        expect(
+            supportOnlyInterruptCount == 0
+                && stack.outputPlayer.clearScheduledPlaybackCount == 0
+                && stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == stack.session.generation,
+            "semantic plus support-only acoustics cannot formally interrupt"
+        )
+        expect(
+            stack.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+                && stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop
+                && stack.capture.isStarted,
+            "support-only evidence preserves the active speech session"
+        )
+        await stack.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testControllerCausalYieldInterruption(
+        fixture: Data
+    ) async throws {
+        cases += 1
+
+        let echo = try await makeControllerStack(fixture: fixture)
+        echo.acousticEchoHost.playbackStarted()
+        let echoRender = signal(seed: 101, amplitude: 0.3)
+        let echoBase = monotonicNow() - 120_000_000
+        echo.aecBackend.setCaptureOutput(
+            Array(repeating: 0, count: echoRender.count)
+        )
+        for index in 0..<5 {
+            let timestamp = echoBase + UInt64(index) * 10_000_000
+            echo.acousticEchoHost.processRender(
+                echoRender,
+                hostTimeNanoseconds: timestamp
+            )
+            _ = echo.acousticEchoHost.processCapture(
+                echoRender,
+                hostTimeNanoseconds: timestamp
+            )
+        }
+        await echo.provider.enqueue(proposalEvent(echo.target, sequence: 4))
+        await waitUntil("causal echo enters reversible pause") {
+            echo.outputPlayer.pauseCount == 1
+        }
+        echo.acousticEchoHost.processRender(
+            Array(repeating: 0, count: echoRender.count),
+            hostTimeNanoseconds: echoBase + 50_000_000
+        )
+        await waitUntil("causal echo recovers playback") {
+            echo.outputPlayer.resumeCount == 1
+        }
+        let echoInterruptCount = await echo.provider.interruptCount()
+        expect(
+            echoInterruptCount == 0
+                && echo.outputPlayer.clearScheduledPlaybackCount == 0
+                && echo.controller.formalSpeechRouteDebugSnapshot.generation
+                    == echo.session.generation,
+            "pure echo recovery has no formal interruption side effect"
+        )
+        await echo.controller.stopSpeechAudioCapture()
+
+        let human = try await makeControllerStack(fixture: fixture)
+        human.acousticEchoHost.playbackStarted()
+        let humanRender = signal(seed: 201, amplitude: 0.3)
+        let humanNear = signal(seed: 202, amplitude: 0.25)
+        let humanBase = monotonicNow() - 120_000_000
+        human.aecBackend.setCaptureOutput(humanNear)
+        for index in 0..<5 {
+            let timestamp = humanBase + UInt64(index) * 10_000_000
+            human.acousticEchoHost.processRender(
+                humanRender,
+                hostTimeNanoseconds: timestamp
+            )
+            _ = human.acousticEchoHost.processCapture(
+                zip(humanRender, humanNear).map(+),
+                hostTimeNanoseconds: timestamp
+            )
+        }
+        await human.provider.enqueue(proposalEvent(human.target, sequence: 4))
+        await waitUntil("causal human enters reversible pause") {
+            human.outputPlayer.pauseCount == 1
+        }
+        let provisionalHumanInterruptCount = await human.provider
+            .interruptCount()
+        expect(
+            provisionalHumanInterruptCount == 0
+                && human.outputPlayer.clearScheduledPlaybackCount == 0,
+            "provisional human pause has no formal side effect"
+        )
+        human.acousticEchoHost.processRender(
+            Array(repeating: 0, count: humanRender.count),
+            hostTimeNanoseconds: humanBase + 50_000_000
+        )
+        await waitUntil("causal near-end support recovers without attribution") {
+            human.outputPlayer.resumeCount == 1
+        }
+        let supportOnlyInterruptCount = await human.provider.interruptCount()
+        expect(
+            supportOnlyInterruptCount == 0
+                && human.outputPlayer.clearScheduledPlaybackCount == 0
+                && human.controller.formalSpeechRouteDebugSnapshot.generation
+                    == human.session.generation,
+            "near-end support without source attribution has no formal side effect"
+        )
+        expect(
+            human.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+                && human.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop,
+            "support-only recovery keeps both bridges active"
+        )
+        await human.controller.stopSpeechAudioCapture()
+    }
+
+    private static func testControllerExplicitInterruptionFallback(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        let stack = try await makeControllerStack(fixture: fixture)
+        expect(
+            stack.controller.canRequestExplicitRealtimeBargeIn,
+            "speaking Playback exposes the explicit interruption intent"
+        )
+        await stack.provider.holdInterrupt()
+        let interruption = Task { @MainActor in
+            await stack.controller.requestExplicitRealtimeBargeIn()
+        }
+        await waitUntil("explicit fallback reaches Runtime interruption") {
             await stack.provider.isInterruptHeld()
                 && stack.outputPlayer.clearScheduledPlaybackCount == 1
         }
         expect(
-            stack.outputPlayer.clearScheduledPlaybackCount == 1,
-            "Runtime-issued command pre-clears Playback before Provider ACK"
+            stack.controller.formalSpeechRouteDebugSnapshot.generation
+                == stack.session.generation,
+            "Host waits for Runtime Provider settlement before rebinding"
+        )
+        expect(
+            !stack.controller.canRequestExplicitRealtimeBargeIn,
+            "generation transition closes the explicit interruption gate"
         )
         await stack.provider.releaseInterrupt()
-        await waitUntil("semantic-first interruption rebound") {
+        await interruption.value
+        await waitUntil("explicit fallback rebinds the next generation") {
             stack.controller.formalSpeechRouteDebugSnapshot.phase == .listening
                 && stack.controller.formalSpeechRouteDebugSnapshot.generation
                     == stack.session.generation + 1
@@ -1596,81 +1901,81 @@ private struct RealtimeInterruptionEvidenceTests {
                 && stack.controller.realtimeBrainOutputBridgeSnapshot
                     .hasActiveReceiveLoop
         }
-        guard let interruptCommand = await stack.provider
-                .lastInterruptCommand() else {
-            fatalError("confirmed Host interruption command missing")
-        }
-        let nextSession = nextSession(
-            after: stack.session,
-            generation: interruptCommand.nextGeneration
-        )
-        stack.outputPlayer.completeStoppedChunk()
-        expect(stack.capture.emit(0x41),
-               "persistent Capture submits the next-generation frame")
-        await waitUntil("next-generation input reaches Provider") {
-            await stack.provider.audioCount() == 4
-        }
-        let nextInput = await stack.provider.lastAudioFrame()
+        let interruptCount = await stack.provider.interruptCount()
         expect(
-            nextInput?.identity == nextSession && nextInput?.sequence == 1,
-            "next interaction reuses Capture with sequence reset to one"
+            interruptCount == 1
+                && stack.outputPlayer.clearScheduledPlaybackCount == 1,
+            "explicit fallback performs one Runtime-owned interrupt and clear"
         )
-
-        let nextTarget = R81Target(
-            session: nextSession,
-            turnID: RealtimeBrainTurnID(),
-            responseID: RealtimeBrainResponseID(),
-            contextRevision: 1
-        )
-        await stack.provider.enqueue(RealtimeResidentBrainEvent(
-            identity: RealtimeBrainEventIdentity(
-                session: nextSession,
-                turnID: nextTarget.turnID,
-                responseID: nil,
-                contextRevision: 1
-            ),
-            sequence: 1,
-            kind: .userTranscriptFinal("next turn")
-        ))
-        await stack.provider.enqueue(RealtimeResidentBrainEvent(
-            identity: eventIdentity(nextTarget),
-            sequence: 2,
-            kind: .residentAudioDelta(audioDelta(sequence: 1))
-        ))
-        await waitUntil("next-generation response speaking") {
-            stack.outputPlayer.startCount == 2
-                && stack.controller.formalSpeechRouteDebugSnapshot.phase
-                    == .speaking
-        }
-        let responseCreateCount = await stack.provider.responseCreateCount()
         expect(
-            responseCreateCount == 2,
-            "two accepted user finals receive exactly two Runtime create commands"
+            !stack.controller.canRequestExplicitRealtimeBargeIn,
+            "listening state keeps the explicit interruption gate closed"
         )
-        await stack.provider.enqueue(RealtimeResidentBrainEvent(
-            identity: eventIdentity(nextTarget),
-            sequence: 3,
-            kind: .residentSpeakingStopped
-        ))
-        await waitUntil("next response marked draining") {
-            stack.controller.speechAudioOutputHostSnapshot.state == .draining
-        }
-        stack.outputPlayer.completeScheduledChunk()
-        await waitUntil("next response returns listening") {
-            stack.outputPlayer.finishPlaybackCount == 1
-                && stack.controller.formalSpeechRouteDebugSnapshot.phase
-                    == .listening
-                && stack.controller.formalSpeechRouteDebugSnapshot.generation
-                    == nextSession.generation
-        }
-        let openCount = await stack.provider.openCount()
-        let closeCount = await stack.provider.closeCount()
-        expect(openCount == 1 && closeCount == 0 && stack.capture.isStarted,
-               "two turns keep one Provider session and persistent Capture")
+        await stack.controller.requestExplicitRealtimeBargeIn()
+        let duplicateInterruptCount = await stack.provider.interruptCount()
+        expect(
+            duplicateInterruptCount == 1
+                && stack.outputPlayer.clearScheduledPlaybackCount == 1,
+            "stale explicit fallback cannot repeat the transition"
+        )
         await stack.controller.stopSpeechAudioCapture()
     }
 
-    private static func testControllerPlaybackCompletionAndStopRace(
+    private static func testControllerExplicitInterruptionStopRace(
+        fixture: Data
+    ) async throws {
+        cases += 1
+        let stack = try await makeControllerStack(fixture: fixture)
+        await stack.provider.holdInterrupt()
+        let interruption = Task { @MainActor in
+            await stack.controller.requestExplicitRealtimeBargeIn()
+        }
+        await waitUntil("explicit Stop race reaches Provider") {
+            await stack.provider.isInterruptHeld()
+                && stack.outputPlayer.clearScheduledPlaybackCount == 1
+        }
+        let stopTask = Task { @MainActor in
+            await stack.controller.stopSpeechAudioCapture()
+        }
+        await waitUntil("explicit Stop race halts Capture") {
+            !stack.capture.isStarted
+        }
+        await stack.provider.releaseInterrupt()
+        await interruption.value
+        await stopTask.value
+
+        let closeCommand = await stack.provider.lastCloseCommand()
+        let interruptCount = await stack.provider.interruptCount()
+        let openCount = await stack.provider.openCount()
+        let closeCount = await stack.provider.closeCount()
+        expect(
+            closeCommand?.identity.generation
+                == stack.session.generation + 1,
+            "Stop closes the Runtime-confirmed next identity"
+        )
+        expect(
+            interruptCount == 1
+                && stack.outputPlayer.clearScheduledPlaybackCount == 1,
+            "Stop race keeps one Provider interrupt and one Playback clear"
+        )
+        expect(
+            openCount == 1
+                && closeCount == 1
+                && !stack.capture.isStarted
+                && stack.runtime.activeBrainLeaseForTesting() == nil,
+            "Stop race leaves no Provider lease or Capture leak"
+        )
+        expect(
+            stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle
+                && !stack.controller.realtimeBrainInputBridgeSnapshot
+                    .hasActivePump
+                && !stack.controller.realtimeBrainOutputBridgeSnapshot
+                    .hasActiveReceiveLoop,
+            "Stop race retires both bridges and the formal route"
+        )
+    }
+
+    private static func testControllerPlaybackCompletionRejectsExplicitFallback(
         fixture: Data
     ) async throws {
         cases += 1
@@ -1703,40 +2008,26 @@ private struct RealtimeInterruptionEvidenceTests {
         }
         expect(stack.outputPlayer.clearScheduledPlaybackCount == 0,
                "natural completion does not impersonate interruption clear")
+        expect(
+            !stack.controller.canRequestExplicitRealtimeBargeIn,
+            "completed Playback closes the explicit interruption gate"
+        )
 
-        await stack.provider.holdInterrupt()
-        await stack.provider.enqueue(proposalEvent(stack.target, sequence: 5))
-        await waitUntil("completed Playback still receives confirmed command") {
-            await stack.provider.isInterruptHeld()
-                && stack.outputPlayer.clearScheduledPlaybackCount == 1
-        }
+        await stack.controller.requestExplicitRealtimeBargeIn()
+        let interruptCount = await stack.provider.interruptCount()
         expect(
-            stack.controller.formalSpeechRouteDebugSnapshot.generation
-                == stack.session.generation,
-            "Host does not bind the next generation before Provider settlement"
+            interruptCount == 0
+                && stack.outputPlayer.clearScheduledPlaybackCount == 0
+                && stack.controller.formalSpeechRouteDebugSnapshot.generation
+                    == stack.session.generation,
+            "explicit fallback cannot revive completed Playback"
         )
-        let stopTask = Task { @MainActor in
-            await stack.controller.stopSpeechAudioCapture()
-        }
-        await waitUntil("Stop halts Capture while Provider is held") {
-            !stack.capture.isStarted
-        }
-        await stack.provider.releaseInterrupt()
-        await stopTask.value
-        let closeCommand = await stack.provider.lastCloseCommand()
-        expect(
-            closeCommand?.identity.generation == stack.session.generation + 1,
-            "Stop closes the Runtime-confirmed next identity, not the stale one"
-        )
+        await stack.controller.stopSpeechAudioCapture()
         let openCount = await stack.provider.openCount()
         let closeCount = await stack.provider.closeCount()
         expect(
             openCount == 1 && closeCount == 1 && !stack.capture.isStarted,
-            "Stop during confirmation leaves no Provider lease or Capture leak"
-        )
-        expect(
-            stack.controller.formalSpeechRouteDebugSnapshot.phase == .idle,
-            "Stop during confirmation settles the formal Realtime route"
+            "natural completion and Stop leave no Provider or Capture leak"
         )
     }
 
@@ -1746,9 +2037,8 @@ private struct RealtimeInterruptionEvidenceTests {
         cases += 1
         let stack = try await makeControllerStack(fixture: fixture)
         await stack.provider.failNextInterrupt(.transportFailure)
-        await emitNearEndEvidence(stack, marker: 0x61, expectedAudioCount: 3)
-        await stack.provider.enqueue(proposalEvent(stack.target, sequence: 4))
-        await waitUntil("failed Provider interruption settles Host route") {
+        await stack.controller.requestExplicitRealtimeBargeIn()
+        await waitUntil("failed explicit interruption settles Host route") {
             let closeCount = await stack.provider.closeCount()
             return closeCount == 2
                 && !stack.capture.isStarted
@@ -2147,7 +2437,8 @@ private struct RealtimeInterruptionEvidenceTests {
         _ target: R81Target,
         sequence: UInt64,
         timestamp: UInt64? = nil,
-        confidence: Double = 1
+        confidence: Double = 1,
+        sourceAttributionConfirmed: Bool = true
     ) -> RealtimeInterruptionEvidence {
         RealtimeInterruptionEvidence(
             identity: RealtimeInterruptionEvidenceIdentity(
@@ -2161,6 +2452,7 @@ private struct RealtimeInterruptionEvidenceTests {
             source: .acousticHost(RealtimeInterruptionAcousticFacts(
                 sourceGateEpoch: 1,
                 nearEndDetected: true,
+                sourceAttributionConfirmed: sourceAttributionConfirmed,
                 farEndActive: true,
                 sourceGateOpen: true,
                 renderReferenceConfidence: confidence,

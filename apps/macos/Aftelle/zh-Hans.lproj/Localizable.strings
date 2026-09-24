@@ -597,6 +597,7 @@
 "realtimeSpeech.title" = "实时全双工语音";
 "realtimeSpeech.start" = "开始";
 "realtimeSpeech.stop" = "停止";
+"realtimeSpeech.interrupt" = "插话";
 "realtimeSpeech.status.idle" = "已就绪";
 "realtimeSpeech.status.starting" = "启动中";
 "realtimeSpeech.status.listening" = "聆听中";

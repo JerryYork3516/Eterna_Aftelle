@@ -31,6 +31,9 @@ private struct MacSpeechAudioOutputHostTests {
         testConsumerWatchdogIncludesScheduledPCMDuration()
         testOutputStopDoesNotBlockCaptureStateTransition()
         await testStopAndCloseAreIdempotent()
+        await testProvisionalPausePreservesPlaybackIdentity()
+        await testProvisionalResumePreservesChunkCursor()
+        await testProvisionalResumeCompletesTerminalPlaybackOnce()
         await testSpeechStartClearKeepsEngineAvailable()
         await testGenerationRejectsLateInputAndCompletion()
         await testStaleResponseCompletionCannotFinishNewGeneration()
@@ -780,6 +783,208 @@ private struct MacSpeechAudioOutputHostTests {
         expect(closed.state == .closed, "closed state")
         expect(closedAgain.generation == closed.generation, "close idempotent")
         expect(player.closeCount == 1, "single close side effect")
+    }
+
+    private static func testProvisionalPausePreservesPlaybackIdentity() async {
+        let (host, player) = makeHost()
+        let generation = await host.prepare().generation
+        let audible = pcm16Data(
+            samples: [Int16](repeating: 3_000, count: 12_000)
+        )
+        _ = await host.enqueue(
+            pcm16Bytes: audible,
+            sequence: 1,
+            generation: generation
+        )
+        _ = await host.finishProviderResponse(generation: generation)
+        let before = await host.currentSnapshot()
+        let pauseID = UUID()
+        expect(
+            await host.pauseForProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            ),
+            "provisional pause accepted"
+        )
+        let paused = await host.currentSnapshot()
+        let isPaused = await host.isProvisionallyPaused
+        expect(isPaused, "provisional pause is observable")
+        expect(player.pauseCount == 1 && player.paused,
+               "player paused exactly once")
+        expect(paused.generation == generation,
+               "pause does not advance playback generation")
+        expect(paused.scheduledChunkCount == before.scheduledChunkCount,
+               "pause preserves scheduled playback")
+        expect(
+            await host.pauseForProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            ),
+            "same pause is idempotent"
+        )
+        expect(player.pauseCount == 1,
+               "idempotent pause has no player side effect")
+        expect(
+            !(await host.resumeProvisionalInterruption(
+                id: UUID(),
+                generation: generation
+            )),
+            "foreign provisional identity rejected"
+        )
+        expect(
+            await host.resumeProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            ),
+            "matching provisional identity resumes"
+        )
+        let resumed = await host.currentSnapshot()
+        let remainsPausedAfterResume = await host.isProvisionallyPaused
+        expect(!remainsPausedAfterResume,
+               "resume clears provisional state")
+        expect(player.resumeCount == 1 && !player.paused,
+               "player resumes exactly once")
+        expect(resumed.generation == generation,
+               "false recovery preserves playback generation")
+        expect(resumed.scheduledChunkCount == before.scheduledChunkCount,
+               "false recovery preserves scheduled playback")
+        let confirmedPauseID = UUID()
+        expect(
+            await host.pauseForProvisionalInterruption(
+                id: confirmedPauseID,
+                generation: generation
+            ),
+            "second provisional pause accepted"
+        )
+        let cleared = await host.clear()
+        expect(cleared.generation > generation,
+               "confirmed clear advances playback generation")
+        let remainsPausedAfterClear = await host.isProvisionallyPaused
+        expect(!remainsPausedAfterClear,
+               "confirmed clear retires provisional state")
+        expect(player.clearScheduledPlaybackCount == 1,
+               "confirmed clear removes scheduled playback once")
+        expect(
+            !(await host.resumeProvisionalInterruption(
+                id: confirmedPauseID,
+                generation: generation
+            )),
+            "stale pause cannot resume cleared playback"
+        )
+        expect(player.resumeCount == 1,
+               "stale recovery has no player side effect")
+    }
+
+    private static func testProvisionalResumePreservesChunkCursor() async {
+        let (host, player) = makeHost()
+        let generation = await host.prepare().generation
+        let payloads = [Data([1, 0]), Data([2, 0]), Data([3, 0])]
+        for (index, payload) in payloads.enumerated() {
+            _ = await host.enqueue(
+                pcm16Bytes: payload,
+                sequence: UInt64(index + 1),
+                generation: generation
+            )
+        }
+        _ = await host.finishProviderResponse(generation: generation)
+        player.completeScheduledChunk()
+        await waitUntil {
+            await host.currentSnapshot().playedChunkCount == 1
+        }
+        let pauseID = UUID()
+        expect(
+            await host.pauseForProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            ),
+            "cursor fixture pauses after the first chunk"
+        )
+        expect(
+            player.payloads == payloads && player.pendingCount == 2,
+            "pause retains the two unplayed chunks in order"
+        )
+        expect(
+            await host.resumeProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            ),
+            "cursor fixture resumes the same playback"
+        )
+        player.completeScheduledChunk()
+        player.completeScheduledChunk()
+        await waitUntil {
+            await host.currentSnapshot().state == .completed
+        }
+        let completed = await host.currentSnapshot()
+        expect(
+            player.payloads == payloads
+                && completed.playedChunkCount == 3
+                && completed.generation == generation,
+            "resume completes every chunk once without reordering"
+        )
+        expect(
+            player.pauseCount == 1
+                && player.resumeCount == 1
+                && player.clearScheduledPlaybackCount == 0,
+            "false recovery does not clear or replay scheduled audio"
+        )
+    }
+
+    private static func testProvisionalResumeCompletesTerminalPlaybackOnce()
+        async {
+        let (host, player) = makeHost()
+        let generation = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        )
+        _ = await host.finishProviderResponse(generation: generation)
+        let pauseID = UUID()
+        expect(
+            await host.pauseForProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            ),
+            "terminal fixture pauses with its final chunk in flight"
+        )
+        player.completeScheduledChunk()
+        await waitUntil {
+            await host.currentSnapshot().playedChunkCount == 1
+        }
+        let paused = await host.currentSnapshot()
+        expect(
+            paused.state == .draining
+                && paused.playbackCompletedCount == 0
+                && player.finishPlaybackCount == 0,
+            "completion remains reversible while playback is paused"
+        )
+        expect(
+            await host.resumeProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            ),
+            "terminal fixture resumes the same playback"
+        )
+        await waitUntil {
+            await host.currentSnapshot().state == .completed
+        }
+        let completed = await host.currentSnapshot()
+        expect(
+            completed.playbackCompletedCount == 1
+                && player.finishPlaybackCount == 1,
+            "resume completes terminal playback exactly once"
+        )
+        expect(
+            !(await host.resumeProvisionalInterruption(
+                id: pauseID,
+                generation: generation
+            )),
+            "completed provisional identity cannot resume twice"
+        )
+        expect(
+            (await host.currentSnapshot()).playbackCompletedCount == 1
+                && player.finishPlaybackCount == 1,
+            "duplicate resume cannot duplicate completion"
+        )
     }
 
     private static func testSpeechStartClearKeepsEngineAvailable() async {

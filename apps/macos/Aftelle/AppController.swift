@@ -632,7 +632,26 @@ final class AppController: ObservableObject {
                 observation
             )
         },
-        recordAcousticDiagnostic: realtimeBrainAcousticDiagnosticRecorder
+        recordAcousticDiagnostic: realtimeBrainAcousticDiagnosticRecorder,
+        beginCausalProvisional: { [weak self] id, binding, playbackSequence in
+            await self?.beginRealtimeResidentBrainCausalProvisional(
+                id: id,
+                binding: binding,
+                playbackSequence: playbackSequence
+            ) ?? false
+        },
+        recoverCausalProvisional: { [weak self] id, binding in
+            await self?.recoverRealtimeResidentBrainCausalProvisional(
+                id: id,
+                binding: binding
+            )
+        },
+        discardCausalEvidence: { [weak self] binding in
+            _ = self?.orchestrationKernel
+                .discardRealtimeResidentBrainProvisionalInterruptionEvidence(
+                    session: binding.session
+                )
+        }
     )
     private lazy var realtimeBrainOutputBridge =
         MacSpeechRealtimeBrainOutputBridge(
@@ -977,6 +996,28 @@ final class AppController: ObservableObject {
             && (realtimeBrainInputBinding != nil
                 || realtimeBrainRouteAttemptID != nil
                 || realtimeBrainPreparedCaptureGeneration != nil)
+    }
+
+    var canRequestExplicitRealtimeBargeIn: Bool {
+        guard let attemptID = realtimeBrainRouteAttemptID,
+              let binding = realtimeBrainInputBinding,
+              let playbackIdentity = realtimeBrainPlaybackEventIdentity,
+              let playbackResponseID = playbackIdentity.responseID,
+              let playbackGeneration = realtimeBrainPlaybackGeneration else {
+            return false
+        }
+        return realtimeFullDuplexSpeechStatus.phase == .speaking
+            && !realtimeBrainStopping
+            && playbackIdentity.session == binding.session
+            && playbackIdentity.turnID != nil
+            && realtimeBrainPlaybackResponseID == playbackResponseID
+            && speechAudioOutputHostSnapshot.generation == playbackGeneration
+            && realtimeBrainGenerationTransitionID == nil
+            && realtimeBrainGenerationTransitionTask == nil
+            && isCurrentRealtimeBrainRoute(
+                attemptID: attemptID,
+                session: binding.session
+            )
     }
 
     private var hasActiveAlternateSpeechRoute: Bool {
@@ -2975,6 +3016,24 @@ final class AppController: ObservableObject {
         )
     }
 
+    func requestExplicitRealtimeBargeIn() async {
+        guard canRequestExplicitRealtimeBargeIn,
+              let attemptID = realtimeBrainRouteAttemptID,
+              let binding = realtimeBrainInputBinding,
+              let playbackIdentity = realtimeBrainPlaybackEventIdentity else {
+            return
+        }
+        let result = orchestrationKernel
+            .requestRealtimeResidentBrainExplicitInterruption(
+                target: playbackIdentity
+            )
+        await consumeRealtimeResidentBrainInterruptionDecision(
+            result,
+            attemptID: attemptID,
+            expectedSession: binding.session
+        )
+    }
+
     func stopSpeechAudioCapture() async {
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
@@ -3559,6 +3618,8 @@ final class AppController: ObservableObject {
                 visualStateMode: ResidentVisualIntent.listening.rawValue
             )
         case .interruptionProposed:
+            _ = await realtimeBrainInputBridge
+                .beginProviderCausalCandidate(session: binding.session)
             await consumeRealtimeResidentBrainInterruptionDecision(
                 await orchestrationKernel
                     .claimRealtimeResidentBrainInterruptionDecision(
@@ -3575,6 +3636,8 @@ final class AppController: ObservableObject {
             syncRealtimeBrainSubtitlePresentation()
         case .userSpeechStarted:
             observeRealtimeBrainUserSpeechStarted()
+            _ = await realtimeBrainInputBridge
+                .beginProviderCausalCandidate(session: binding.session)
             await consumeRealtimeResidentBrainInterruptionDecision(
                 await orchestrationKernel
                     .claimRealtimeResidentBrainInterruptionDecision(
@@ -3663,6 +3726,61 @@ final class AppController: ObservableObject {
             .observeRealtimeResidentBrainAcoustics(observation)
     }
 
+    private func beginRealtimeResidentBrainCausalProvisional(
+        id: UUID,
+        binding: MacSpeechRealtimeBrainInputBinding,
+        playbackSequence: UInt64
+    ) async -> Bool {
+        guard let attemptID = realtimeBrainRouteAttemptID,
+              realtimeBrainInputBinding == binding,
+              realtimeBrainGenerationTransitionID == nil,
+              realtimeBrainPlaybackEventIdentity?.session == binding.session,
+              let playbackGeneration = realtimeBrainPlaybackGeneration,
+              isCurrentRealtimeBrainRoute(
+                  attemptID: attemptID,
+                  session: binding.session
+              ),
+              let acoustic = await speechAudioHost
+                .residentAcousticSnapshot(),
+              acoustic.captureGeneration == binding.captureGeneration,
+              acoustic.residentPlaybackActive,
+              acoustic.playbackSequence == playbackSequence,
+              acoustic.routeStable,
+              acoustic.inputDeviceAvailable,
+              acoustic.outputDeviceAvailable else { return false }
+        let paused = await speechAudioOutputHost
+            .pauseForProvisionalInterruption(
+                id: id,
+                generation: playbackGeneration
+            )
+        if paused {
+            speechAudioOutputHostSnapshot = await speechAudioOutputHost
+                .currentSnapshot()
+        }
+        return paused
+    }
+
+    private func recoverRealtimeResidentBrainCausalProvisional(
+        id: UUID,
+        binding: MacSpeechRealtimeBrainInputBinding
+    ) async {
+        guard let attemptID = realtimeBrainRouteAttemptID,
+              realtimeBrainInputBinding == binding,
+              realtimeBrainGenerationTransitionID == nil,
+              let playbackGeneration = realtimeBrainPlaybackGeneration,
+              isCurrentRealtimeBrainRoute(
+                  attemptID: attemptID,
+                  session: binding.session
+              ) else { return }
+        if await speechAudioOutputHost.resumeProvisionalInterruption(
+            id: id,
+            generation: playbackGeneration
+        ) {
+            speechAudioOutputHostSnapshot = await speechAudioOutputHost
+                .currentSnapshot()
+        }
+    }
+
     private func consumeRealtimeResidentBrainAcousticObservation(
         _ observation: MacSpeechRealtimeBrainAcousticObservation
     ) async {
@@ -3703,15 +3821,48 @@ final class AppController: ObservableObject {
                 ),
                 source: .acousticHost(observation.facts)
         )
-        await consumeRealtimeResidentBrainInterruptionDecision(
-            await orchestrationKernel
-                .submitRealtimeResidentBrainEligibleAcousticEvidence(
-                    observation: observation.observation,
-                    evidence: evidence
-                ),
+        let result = await orchestrationKernel
+            .submitRealtimeResidentBrainEligibleAcousticEvidence(
+                observation: observation.observation,
+                evidence: evidence
+            )
+        consumeRealtimeResidentBrainInterruptionDecisionFromInputPump(
+            result,
             attemptID: attemptID,
             expectedSession: binding.session
         )
+    }
+
+    private func consumeRealtimeResidentBrainInterruptionDecisionFromInputPump(
+        _ result: Result<
+            RealtimeInterruptionDecision,
+            RealtimeResidentBrainError
+        >,
+        attemptID: UUID,
+        expectedSession: RealtimeBrainSessionIdentity
+    ) {
+        guard isCurrentRealtimeBrainRoute(
+            attemptID: attemptID,
+            session: expectedSession
+        ) else { return }
+        switch result {
+        case .success(.ignored), .success(.observed):
+            return
+        case .success(.confirmed(let decision)):
+            Task { @MainActor [weak self] in
+                await self?.applyConfirmedRealtimeResidentBrainInterruption(
+                    decision,
+                    attemptID: attemptID
+                )
+            }
+        case .failure(let error):
+            Task { @MainActor [weak self] in
+                await self?.stopRealtimeResidentBrainRoute(
+                    expectedAttemptID: attemptID,
+                    errorCode: Self.realtimeResidentBrainErrorCode(error)
+                )
+            }
+        }
     }
 
     private func consumeRealtimeResidentBrainInterruptionDecision(
@@ -4097,7 +4248,10 @@ final class AppController: ObservableObject {
         syncRealtimeBrainSubtitlePresentation()
 
         realtimeBrainInputBridgeSnapshot = await realtimeBrainInputBridge
-            .suspendForGenerationTransition(session: binding.session)
+            .suspendForGenerationTransition(
+                session: binding.session,
+                preserving: decision
+            )
         guard realtimeBrainGenerationTransitionID == transitionID,
               isCurrentRealtimeBrainRoute(
                   attemptID: attemptID,

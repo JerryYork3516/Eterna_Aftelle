@@ -11,6 +11,7 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
     private var frames: [MacSpeechAudioFrame] = []
     private var nextSequence: UInt64 = 0
     private var residentSnapshot: MacSpeechResidentAcousticSnapshot?
+    private var causalObservation: MacSpeechCausalInterruptionObservation?
     private var generationBoundaryDiscardCount = 0
 
     func activeCaptureGeneration() async -> UInt64? {
@@ -44,14 +45,51 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
         lock.withLock { residentSnapshot }
     }
 
+    func causalInterruptionObservation() async
+        -> MacSpeechCausalInterruptionObservation? {
+        lock.withLock { causalObservation }
+    }
+
     func setActiveGeneration(_ generation: UInt64) {
         lock.withLock { activeGeneration = generation }
+    }
+
+    func clearActiveGeneration() {
+        lock.withLock { activeGeneration = nil }
     }
 
     func setResidentSnapshot(
         _ snapshot: MacSpeechResidentAcousticSnapshot?
     ) {
         lock.withLock { residentSnapshot = snapshot }
+    }
+
+    func setCausalObservation(
+        _ observation: MacSpeechCausalInterruptionObservation?
+    ) {
+        lock.withLock { causalObservation = observation }
+    }
+
+    func appendCausalPlaybackFrame(
+        pcm16Bytes: Data,
+        activity: Float,
+        generation: UInt64,
+        playbackSequence: UInt64
+    ) {
+        lock.withLock {
+            guard activeGeneration == generation else { return }
+            nextSequence &+= 1
+            frames.append(MacSpeechAudioFrame(
+                captureGeneration: generation,
+                sequenceNumber: nextSequence,
+                monotonicTimestampNanoseconds:
+                    UInt64(nextSequence) * 20_000_000,
+                pcm16Bytes: pcm16Bytes,
+                activity: activity,
+                residentPlaybackSequence: playbackSequence,
+                residentPlaybackActive: true
+            ))
+        }
     }
 
     func appendFrame(
@@ -424,6 +462,7 @@ private actor R7BlockedOutputConsumer {
 
 private actor R7HeldAudioSend {
     private var started = false
+    private var frames: [RealtimeBrainAudioFrame] = []
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var continuation:
         CheckedContinuation<Result<Void, RealtimeResidentBrainError>, Never>?
@@ -431,7 +470,7 @@ private actor R7HeldAudioSend {
     func send(
         _ frame: RealtimeBrainAudioFrame
     ) async -> Result<Void, RealtimeResidentBrainError> {
-        _ = frame
+        frames.append(frame)
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
             started = true
@@ -461,6 +500,10 @@ private actor R7HeldAudioSend {
         self.continuation = nil
         continuation.resume(returning: result)
     }
+
+    func count() -> Int { frames.count }
+
+    func recordedFrames() -> [RealtimeBrainAudioFrame] { frames }
 }
 
 private actor R7LocalActivityConfirmationRecorder {
@@ -619,6 +662,24 @@ private actor R85AcousticPacketDiagnosticSink {
     }
 }
 
+private actor R7CausalProvisionalRecorder {
+    private var beginCount = 0
+    private var recoverCount = 0
+    private var discardCount = 0
+
+    func begin() -> Bool {
+        beginCount += 1
+        return true
+    }
+
+    func recover() { recoverCount += 1 }
+    func discard() { discardCount += 1 }
+
+    func counts() -> (begin: Int, recover: Int, discard: Int) {
+        (beginCount, recoverCount, discardCount)
+    }
+}
+
 @MainActor
 private final class R7OutputBridgeHolder {
     var bridge: MacSpeechRealtimeBrainOutputBridge?
@@ -649,6 +710,10 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testBridgeRejectsExpiredEvidenceAfterSend()
         testControllerSourceGateEpochFence()
         await testBridgeSnapshot()
+        await testCausalProvisionalEvidenceAndRecovery()
+        await testCausalCandidateRearmsForNextPlaybackSequence()
+        await testCausalCandidateRearmsAcrossGenerationTransition()
+        await testCaptureEndRecoversCausalProvisional()
         await testAudioFrameConversion()
         await testStopFailsClosedAndRetries()
         await testOutputRejectsLateAudioAfterAudioDone()
@@ -672,6 +737,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         await testProviderSpeechIntervalFailsClosedForPlaybackAndTail(
             fixture: fixture
         )
+        await testConfirmedGenerationTransitionPreservesCapture()
         await testGenerationTransitionRebindsHost(
             fixture: fixture
         )
@@ -679,6 +745,466 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
 
         print("mac_speech_realtime_brain_input_bridge_cases=\(cases)")
         print("mac_speech_realtime_brain_input_bridge_checks=\(checks)")
+    }
+
+    private static func testCausalProvisionalEvidenceAndRecovery() async {
+        cases += 1
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "causal-resident",
+            runtimeSessionID: "causal-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 501
+        let playbackSequence: UInt64 = 9
+        let supportedFrames = (0..<5).map { offset in
+            MacSpeechCausalFrameObservation(
+                index: UInt64(offset + 1),
+                hostTimeNanoseconds:
+                    1_000_000_000 + UInt64(offset) * 10_000_000,
+                rms: offset < 3 ? 0.02 : 0.004
+            )
+        }
+        let audibleRender = MacSpeechCausalFrameObservation(
+            index: 100,
+            hostTimeNanoseconds: 1_100_000_000,
+            rms: 0.1
+        )
+        let initial = MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence,
+            isPlaybackActive: true,
+            latestRenderFrame: audibleRender,
+            recentCaptureFrames: supportedFrames
+        )
+
+        let positiveSource = FakeMacSpeechAudioFrameSource()
+        positiveSource.setActiveGeneration(captureGeneration)
+        positiveSource.setCausalObservation(initial)
+        let positiveRecorder = R7CausalProvisionalRecorder()
+        let positiveBridge = MacSpeechRealtimeBrainInputBridge(
+            source: positiveSource,
+            sendFrame: { _ in .success(()) },
+            stopInput: { _ in .success(()) },
+            beginCausalProvisional: { _, _, _ in
+                await positiveRecorder.begin()
+            },
+            recoverCausalProvisional: { _, _ in
+                await positiveRecorder.recover()
+            },
+            discardCausalEvidence: { _ in
+                await positiveRecorder.discard()
+            }
+        )
+        _ = await positiveBridge.start(binding: .init(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        positiveSource.appendCausalPlaybackFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            activity: 0.02,
+            generation: captureGeneration,
+            playbackSequence: playbackSequence
+        )
+        await waitUntil(label: "causal provisional begins") {
+            await positiveRecorder.counts().begin == 1
+        }
+        positiveSource.setCausalObservation(
+            MacSpeechCausalInterruptionObservation(
+                playbackSequence: playbackSequence,
+                isPlaybackActive: true,
+                latestRenderFrame: MacSpeechCausalFrameObservation(
+                    index: 101,
+                    hostTimeNanoseconds: 1_120_000_000,
+                    rms: 0
+                ),
+                recentCaptureFrames: supportedFrames
+            )
+        )
+        await waitUntil(label: "support-only causal recovery") {
+            let counts = await positiveRecorder.counts()
+            return counts.recover == 1 && counts.discard == 1
+        }
+        let positiveCounts = await positiveRecorder.counts()
+        expect(positiveCounts.begin == 1, "support-only episode begins once")
+        expect(positiveCounts.recover == 1, "support-only episode recovers once")
+        expect(positiveCounts.discard == 1, "support-only episode discards formal evidence")
+        _ = await positiveBridge.stop()
+
+        let echoSource = FakeMacSpeechAudioFrameSource()
+        echoSource.setActiveGeneration(captureGeneration)
+        echoSource.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence,
+            isPlaybackActive: true,
+            latestRenderFrame: audibleRender,
+            recentCaptureFrames: supportedFrames.map {
+                MacSpeechCausalFrameObservation(
+                    index: $0.index,
+                    hostTimeNanoseconds: $0.hostTimeNanoseconds,
+                    rms: 0.004
+                )
+            }
+        ))
+        let echoRecorder = R7CausalProvisionalRecorder()
+        let echoBridge = MacSpeechRealtimeBrainInputBridge(
+            source: echoSource,
+            sendFrame: { _ in .success(()) },
+            stopInput: { _ in .success(()) },
+            beginCausalProvisional: { _, _, _ in
+                await echoRecorder.begin()
+            },
+            recoverCausalProvisional: { _, _ in
+                await echoRecorder.recover()
+            },
+            discardCausalEvidence: { _ in
+                await echoRecorder.discard()
+            }
+        )
+        _ = await echoBridge.start(binding: .init(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        expect(
+            await echoBridge.beginProviderCausalCandidate(session: session),
+            "provider candidate starts reversible causal observation"
+        )
+        echoSource.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 101,
+                hostTimeNanoseconds: 1_120_000_000,
+                rms: 0
+            ),
+            recentCaptureFrames: []
+        ))
+        await waitUntil(label: "echo causal recovery") {
+            let counts = await echoRecorder.counts()
+            return counts.recover == 1 && counts.discard == 1
+        }
+        _ = await echoBridge.stop()
+    }
+
+    private static func testCausalCandidateRearmsForNextPlaybackSequence()
+        async {
+        cases += 1
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "causal-rearm-resident",
+            runtimeSessionID: "causal-rearm-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 503
+        let playbackSequence: UInt64 = 11
+        let supportedFrames = (0..<5).map { offset in
+            MacSpeechCausalFrameObservation(
+                index: UInt64(offset + 1),
+                hostTimeNanoseconds:
+                    1_000_000_000 + UInt64(offset) * 10_000_000,
+                rms: offset < 3 ? 0.02 : 0.004
+            )
+        }
+        let source = FakeMacSpeechAudioFrameSource()
+        source.setActiveGeneration(captureGeneration)
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 100,
+                hostTimeNanoseconds: 1_100_000_000,
+                rms: 0.1
+            ),
+            recentCaptureFrames: supportedFrames
+        ))
+        let recorder = R7CausalProvisionalRecorder()
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { _ in .success(()) },
+            stopInput: { _ in .success(()) },
+            beginCausalProvisional: { _, _, _ in
+                await recorder.begin()
+            },
+            recoverCausalProvisional: { _, _ in
+                await recorder.recover()
+            },
+            discardCausalEvidence: { _ in
+                await recorder.discard()
+            }
+        )
+        _ = await bridge.start(binding: .init(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        expect(
+            await bridge.beginProviderCausalCandidate(session: session),
+            "first causal episode enters provisional"
+        )
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 101,
+                hostTimeNanoseconds: 1_120_000_000,
+                rms: 0
+            ),
+            recentCaptureFrames: supportedFrames
+        ))
+        await waitUntil(label: "first causal episode recovers") {
+            let counts = await recorder.counts()
+            return counts.recover == 1 && counts.discard == 1
+        }
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 102,
+                hostTimeNanoseconds: 1_140_000_000,
+                rms: 0.1
+            ),
+            recentCaptureFrames: supportedFrames
+        ))
+        source.appendCausalPlaybackFrame(
+            pcm16Bytes: Data(repeating: 2, count: 960),
+            activity: 0.02,
+            generation: captureGeneration,
+            playbackSequence: playbackSequence
+        )
+        try? await Task.sleep(for: .milliseconds(30))
+        expect(
+            await recorder.counts().begin == 1,
+            "automatic evidence cannot repeat a consumed playback sequence"
+        )
+        expect(
+            !(await bridge.beginProviderCausalCandidate(session: session)),
+            "provider evidence cannot repeat a consumed playback sequence"
+        )
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence + 1,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 103,
+                hostTimeNanoseconds: 1_160_000_000,
+                rms: 0.1
+            ),
+            recentCaptureFrames: supportedFrames
+        ))
+        expect(
+            await bridge.beginProviderCausalCandidate(session: session),
+            "a new playback sequence rearms a distinct causal episode"
+        )
+        await waitUntil(label: "second causal episode begins") {
+            await recorder.counts().begin == 2
+        }
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence + 1,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 104,
+                hostTimeNanoseconds: 1_180_000_000,
+                rms: 0
+            ),
+            recentCaptureFrames: supportedFrames
+        ))
+        await waitUntil(label: "second causal episode recovers") {
+            let counts = await recorder.counts()
+            return counts.recover == 2 && counts.discard == 2
+        }
+        _ = await bridge.stop()
+    }
+
+    private static func testCausalCandidateRearmsAcrossGenerationTransition()
+        async {
+        cases += 1
+        let leaseID = UUID()
+        let firstSession = RealtimeBrainSessionIdentity(
+            residentID: "causal-generation-resident",
+            runtimeSessionID: "causal-generation-session",
+            brainLeaseID: leaseID,
+            routeEpoch: 1,
+            generation: 1
+        )
+        let nextSession = RealtimeBrainSessionIdentity(
+            residentID: firstSession.residentID,
+            runtimeSessionID: firstSession.runtimeSessionID,
+            brainLeaseID: leaseID,
+            routeEpoch: firstSession.routeEpoch,
+            generation: 2
+        )
+        let decision = RealtimeConfirmedInterruption(
+            decisionID: UUID(),
+            interruptedIdentity: firstSession,
+            nextIdentity: nextSession,
+            turnID: RealtimeBrainTurnID(),
+            responseID: RealtimeBrainResponseID(),
+            hostCommand: .clearPlayback
+        )
+        let captureGeneration: UInt64 = 504
+        let source = FakeMacSpeechAudioFrameSource()
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(listeningSnapshot(
+            generation: captureGeneration,
+            timestampNanoseconds: 1_000_000_000
+        ))
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: 12,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 100,
+                hostTimeNanoseconds: 1_100_000_000,
+                rms: 0.1
+            ),
+            recentCaptureFrames: []
+        ))
+        let recorder = R7CausalProvisionalRecorder()
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { _ in .success(()) },
+            stopInput: { _ in .success(()) },
+            beginCausalProvisional: { _, _, _ in
+                await recorder.begin()
+            },
+            recoverCausalProvisional: { _, _ in
+                await recorder.recover()
+            },
+            discardCausalEvidence: { _ in
+                await recorder.discard()
+            }
+        )
+        _ = await bridge.start(binding: .init(
+            session: firstSession,
+            captureGeneration: captureGeneration
+        ))
+        expect(
+            await bridge.beginProviderCausalCandidate(session: firstSession),
+            "first generation enters provisional"
+        )
+        let suspended = await bridge.suspendForGenerationTransition(
+            session: firstSession,
+            preserving: decision
+        )
+        expect(
+            !suspended.hasActivePump,
+            "generation transition retires the provisional pump"
+        )
+        let resumed = await bridge.resumeAfterGenerationTransition(
+            session: nextSession
+        )
+        expect(
+            resumed.hasActivePump,
+            "next generation restores the causal candidate pump"
+        )
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: 13,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 200,
+                hostTimeNanoseconds: 1_300_000_000,
+                rms: 0.1
+            ),
+            recentCaptureFrames: []
+        ))
+        expect(
+            await bridge.beginProviderCausalCandidate(session: nextSession),
+            "next generation can enter a new provisional episode"
+        )
+        expect(
+            await recorder.counts().begin == 2,
+            "generation transition rearms exactly one new episode"
+        )
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: 13,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 201,
+                hostTimeNanoseconds: 1_320_000_000,
+                rms: 0
+            ),
+            recentCaptureFrames: []
+        ))
+        await waitUntil(label: "next-generation causal episode recovers") {
+            let counts = await recorder.counts()
+            return counts.recover == 1 && counts.discard == 1
+        }
+        _ = await bridge.stop(expectedSession: nextSession)
+    }
+
+    private static func testCaptureEndRecoversCausalProvisional() async {
+        cases += 1
+        let session = RealtimeBrainSessionIdentity(
+            residentID: "causal-capture-end-resident",
+            runtimeSessionID: "causal-capture-end-session",
+            brainLeaseID: UUID(),
+            routeEpoch: 1,
+            generation: 1
+        )
+        let captureGeneration: UInt64 = 502
+        let playbackSequence: UInt64 = 10
+        let source = FakeMacSpeechAudioFrameSource()
+        source.setActiveGeneration(captureGeneration)
+        source.setCausalObservation(MacSpeechCausalInterruptionObservation(
+            playbackSequence: playbackSequence,
+            isPlaybackActive: true,
+            latestRenderFrame: MacSpeechCausalFrameObservation(
+                index: 100,
+                hostTimeNanoseconds: 1_100_000_000,
+                rms: 0.1
+            ),
+            recentCaptureFrames: (0..<5).map { offset in
+                MacSpeechCausalFrameObservation(
+                    index: UInt64(offset + 1),
+                    hostTimeNanoseconds:
+                        1_000_000_000 + UInt64(offset) * 10_000_000,
+                    rms: offset < 3 ? 0.02 : 0.004
+                )
+            }
+        ))
+        let recorder = R7CausalProvisionalRecorder()
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { _ in .success(()) },
+            stopInput: { _ in .success(()) },
+            beginCausalProvisional: { _, _, _ in
+                await recorder.begin()
+            },
+            recoverCausalProvisional: { _, _ in
+                await recorder.recover()
+            },
+            discardCausalEvidence: { _ in
+                await recorder.discard()
+            }
+        )
+        _ = await bridge.start(binding: .init(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        source.appendCausalPlaybackFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            activity: 0.02,
+            generation: captureGeneration,
+            playbackSequence: playbackSequence
+        )
+        await waitUntil(label: "capture-end causal provisional begins") {
+            await recorder.counts().begin == 1
+        }
+
+        source.clearActiveGeneration()
+        await waitUntil(label: "capture-end causal provisional recovers") {
+            let counts = await recorder.counts()
+            return counts.recover == 1 && counts.discard == 1
+        }
+        let snapshot = await bridge.currentSnapshot()
+        let counts = await recorder.counts()
+        expect(
+            snapshot.state == .stopped && !snapshot.hasActivePump,
+            "capture end stops the input pump"
+        )
+        expect(
+            counts.begin == 1
+                && counts.recover == 1
+                && counts.discard == 1,
+            "capture end releases provisional Playback without formal evidence"
+        )
     }
 
     private static func testBridgeForwardsFrames() async {
@@ -904,6 +1430,10 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
                "acoustic evidence carries submitted sequence and monotonic time")
         expect(first.facts.nearEndDetected && first.facts.farEndActive,
                "acoustic evidence preserves near-end and render facts")
+        expect(
+            !first.facts.sourceAttributionConfirmed,
+            "Host classification remains support-only until source attribution"
+        )
 
         source.setResidentSnapshot(residentSnapshot(
             generation: captureGeneration,
@@ -1762,6 +2292,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             facts: RealtimeInterruptionAcousticFacts(
                 sourceGateEpoch: 9,
                 nearEndDetected: true,
+                sourceAttributionConfirmed: true,
                 farEndActive: true,
                 sourceGateOpen: true,
                 renderReferenceConfidence: 1,
@@ -2646,6 +3177,9 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         )
         await waitUntil(label: "second-turn input frame") {
             await input.currentSnapshot().forwardedFrameCount == 3
+        }
+        await waitUntil(label: "second-turn context refresh") {
+            await provider.latestContextRevision() > 1
         }
         let secondTurnContextRevision = await provider
             .latestContextRevision()
@@ -3577,6 +4111,88 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
                 identity: session
             )
         }
+    }
+
+    private static func testConfirmedGenerationTransitionPreservesCapture() async {
+        cases += 1
+        let leaseID = UUID()
+        let firstSession = RealtimeBrainSessionIdentity(
+            residentID: "handoff-resident",
+            runtimeSessionID: "handoff-session",
+            brainLeaseID: leaseID,
+            routeEpoch: 1,
+            generation: 1
+        )
+        let nextSession = RealtimeBrainSessionIdentity(
+            residentID: firstSession.residentID,
+            runtimeSessionID: firstSession.runtimeSessionID,
+            brainLeaseID: leaseID,
+            routeEpoch: firstSession.routeEpoch,
+            generation: 2
+        )
+        let decision = RealtimeConfirmedInterruption(
+            decisionID: UUID(),
+            interruptedIdentity: firstSession,
+            nextIdentity: nextSession,
+            turnID: RealtimeBrainTurnID(),
+            responseID: RealtimeBrainResponseID(),
+            hostCommand: .clearPlayback
+        )
+        let captureGeneration: UInt64 = 801
+        let source = FakeMacSpeechAudioFrameSource()
+        source.setActiveGeneration(captureGeneration)
+        source.setResidentSnapshot(listeningSnapshot(
+            generation: captureGeneration,
+            timestampNanoseconds: 1_000_000_000
+        ))
+        let heldSend = R7HeldAudioSend()
+        let bridge = MacSpeechRealtimeBrainInputBridge(
+            source: source,
+            sendFrame: { frame in await heldSend.send(frame) },
+            stopInput: { _ in .success(()) }
+        )
+        _ = await bridge.start(binding: .init(
+            session: firstSession,
+            captureGeneration: captureGeneration
+        ))
+        source.appendFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            generation: captureGeneration
+        )
+        await heldSend.waitUntilStarted()
+        source.appendFrame(
+            pcm16Bytes: Data(repeating: 2, count: 960),
+            generation: captureGeneration
+        )
+        let suspending = Task {
+            await bridge.suspendForGenerationTransition(
+                session: firstSession,
+                preserving: decision
+            )
+        }
+        try? await Task.sleep(for: .milliseconds(10))
+        await heldSend.resume(.success(()))
+        let suspended = await suspending.value
+        expect(!suspended.hasActivePump, "confirmed handoff fences old pump")
+
+        let resumed = await bridge.resumeAfterGenerationTransition(
+            session: nextSession
+        )
+        expect(resumed.hasActivePump, "confirmed handoff resumes next generation")
+        await waitUntil(label: "retained capture reaches next generation") {
+            await heldSend.count() == 2
+        }
+        let sent = await heldSend.recordedFrames()
+        expect(sent[0].identity == firstSession, "in-flight frame stays on old generation")
+        expect(sent[1].identity == nextSession, "retained frame binds next generation")
+        expect(sent[0].bytes.first == 1 && sent[1].bytes.first == 2,
+               "retained onset PCM remains ordered and byte exact")
+        expect(sent[0].timestampNanoseconds <= sent[1].timestampNanoseconds,
+               "retained onset timestamps remain monotonic")
+        expect(source.discardedGenerationBoundaryCount() == 0,
+               "confirmed handoff does not discard onset capture")
+        await heldSend.resume(.success(()))
+        _ = await bridge.stop(expectedSession: nextSession)
     }
 
     private static func testGenerationTransitionRebindsHost(

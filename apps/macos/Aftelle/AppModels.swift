@@ -2045,6 +2045,26 @@ public final class OrchestrationKernel {
         )
     }
 
+    func requestRealtimeResidentBrainExplicitInterruption(
+        target: RealtimeBrainEventIdentity
+    ) -> Result<
+        RealtimeInterruptionDecision,
+        RealtimeResidentBrainError
+    > {
+        runtimeCore.requestRealtimeResidentBrainExplicitInterruption(
+            target: target
+        )
+    }
+
+    func discardRealtimeResidentBrainProvisionalInterruptionEvidence(
+        session: RealtimeBrainSessionIdentity
+    ) -> Bool {
+        runtimeCore
+            .discardRealtimeResidentBrainProvisionalInterruptionEvidence(
+                session: session
+            )
+    }
+
     func observeRealtimeResidentBrainAcoustics(
         _ observation: RealtimeAcousticObservation
     ) -> RealtimeAcousticObservationDisposition {

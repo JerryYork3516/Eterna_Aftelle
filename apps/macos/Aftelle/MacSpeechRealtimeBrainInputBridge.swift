@@ -173,6 +173,14 @@ nonisolated struct MacSpeechRealtimeBrainInputStopOutcome: Sendable {
     let closeResult: Result<Void, RealtimeResidentBrainError>?
 }
 
+private struct MacSpeechCausalProvisionalEpisode: Sendable {
+    let id: UUID
+    let binding: MacSpeechRealtimeBrainInputBinding
+    let playbackSequence: UInt64
+    let deadlineNanoseconds: UInt64
+    let preYieldRenderFrame: MacSpeechCausalFrameObservation
+}
+
 actor MacSpeechRealtimeBrainInputBridge {
     typealias SendFrame = @Sendable (
         RealtimeBrainAudioFrame
@@ -204,6 +212,21 @@ actor MacSpeechRealtimeBrainInputBridge {
         MacSpeechRealtimeBrainAcousticDiagnostic
     ) -> Void
 
+    typealias BeginCausalProvisional = @MainActor @Sendable (
+        UUID,
+        MacSpeechRealtimeBrainInputBinding,
+        UInt64
+    ) async -> Bool
+
+    typealias RecoverCausalProvisional = @MainActor @Sendable (
+        UUID,
+        MacSpeechRealtimeBrainInputBinding
+    ) async -> Void
+
+    typealias DiscardCausalEvidence = @MainActor @Sendable (
+        MacSpeechRealtimeBrainInputBinding
+    ) async -> Void
+
     typealias MonotonicNow = @Sendable () -> UInt64
 
     private let source: any MacSpeechAudioFrameSourcing
@@ -214,11 +237,21 @@ actor MacSpeechRealtimeBrainInputBridge {
     private let observeResidentAcoustics: ObserveResidentAcoustics?
     private let consumeAcousticObservation: ConsumeAcousticObservation?
     private let recordAcousticDiagnostic: RecordAcousticDiagnostic?
+    private let beginCausalProvisional: BeginCausalProvisional?
+    private let recoverCausalProvisional: RecoverCausalProvisional?
+    private let discardCausalEvidence: DiscardCausalEvidence?
     private let monotonicNow: MonotonicNow
     private var pumpTask: Task<Void, Never>?
     private var activePumpID: UUID?
     private var activeBinding: MacSpeechRealtimeBrainInputBinding?
     private var suspendedBinding: MacSpeechRealtimeBrainInputBinding?
+    private var suspendedPumpID: UUID?
+    private var retainedCapture: [MacSpeechAudioFrame] = []
+    private var lastSubmittedCaptureSequence: UInt64 = 0
+    private var lastSubmittedCaptureTimestamp: UInt64 = 0
+    private var retainedCaptureExpectedSession: RealtimeBrainSessionIdentity?
+    private var retainedCaptureAmbiguous = false
+    private var enforceCaptureContinuity = false
     private var generationTransitionID: UUID?
     private var pendingCloseBinding: MacSpeechRealtimeBrainInputBinding?
     private var closeTask:
@@ -265,6 +298,12 @@ actor MacSpeechRealtimeBrainInputBridge {
     private var lastAcousticEligibilityDisposition: String?
     private var lastAcousticEvidenceForwardDisposition: String?
     private var lastError: String?
+    private var causalEpisode: MacSpeechCausalProvisionalEpisode?
+    private var causalCandidateConsumedPlaybackSequence: UInt64?
+    private static let causalActivityRMS = 0.012
+    private static let causalFarEndPowerRatioMaximum = 0.25
+    private static let causalEvidenceDeadlineNanoseconds: UInt64 =
+        1_000_000_000
 
     init(
         source: any MacSpeechAudioFrameSourcing,
@@ -273,6 +312,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         observeResidentAcoustics: ObserveResidentAcoustics? = nil,
         consumeAcousticObservation: ConsumeAcousticObservation? = nil,
         recordAcousticDiagnostic: RecordAcousticDiagnostic? = nil,
+        beginCausalProvisional: BeginCausalProvisional? = nil,
+        recoverCausalProvisional: RecoverCausalProvisional? = nil,
+        discardCausalEvidence: DiscardCausalEvidence? = nil,
         monotonicNow: @escaping MonotonicNow = {
             DispatchTime.now().uptimeNanoseconds
         }
@@ -286,6 +328,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         self.observeResidentAcoustics = observeResidentAcoustics
         self.consumeAcousticObservation = consumeAcousticObservation
         self.recordAcousticDiagnostic = recordAcousticDiagnostic
+        self.beginCausalProvisional = beginCausalProvisional
+        self.recoverCausalProvisional = recoverCausalProvisional
+        self.discardCausalEvidence = discardCausalEvidence
         self.monotonicNow = monotonicNow
     }
 
@@ -298,6 +343,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         observeResidentAcoustics: ObserveResidentAcoustics? = nil,
         consumeAcousticObservation: ConsumeAcousticObservation? = nil,
         recordAcousticDiagnostic: RecordAcousticDiagnostic? = nil,
+        beginCausalProvisional: BeginCausalProvisional? = nil,
+        recoverCausalProvisional: RecoverCausalProvisional? = nil,
+        discardCausalEvidence: DiscardCausalEvidence? = nil,
         monotonicNow: @escaping MonotonicNow = {
             DispatchTime.now().uptimeNanoseconds
         }
@@ -309,6 +357,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         self.observeResidentAcoustics = observeResidentAcoustics
         self.consumeAcousticObservation = consumeAcousticObservation
         self.recordAcousticDiagnostic = recordAcousticDiagnostic
+        self.beginCausalProvisional = beginCausalProvisional
+        self.recoverCausalProvisional = recoverCausalProvisional
+        self.discardCausalEvidence = discardCausalEvidence
         self.monotonicNow = monotonicNow
     }
 
@@ -346,6 +397,15 @@ actor MacSpeechRealtimeBrainInputBridge {
         totalSendDurationMilliseconds = 0
         maximumSendDurationMilliseconds = 0
         nextSubmittedSequence = 1
+        suspendedPumpID = nil
+        retainedCapture.removeAll(keepingCapacity: true)
+        lastSubmittedCaptureSequence = 0
+        lastSubmittedCaptureTimestamp = 0
+        retainedCaptureExpectedSession = nil
+        retainedCaptureAmbiguous = false
+        enforceCaptureContinuity = false
+        causalEpisode = nil
+        causalCandidateConsumedPlaybackSequence = nil
         resetResidentAcousticObservationState(binding: binding)
         lastError = nil
         let pumpID = UUID()
@@ -357,19 +417,30 @@ actor MacSpeechRealtimeBrainInputBridge {
     }
 
     func suspendForGenerationTransition(
-        session: RealtimeBrainSessionIdentity
-    ) -> MacSpeechRealtimeBrainInputBridgeSnapshot {
+        session: RealtimeBrainSessionIdentity,
+        preserving decision: RealtimeConfirmedInterruption? = nil
+    ) async -> MacSpeechRealtimeBrainInputBridgeSnapshot {
+        if let decision,
+           decision.interruptedIdentity != session {
+            return makeSnapshot()
+        }
         guard let binding = activeBinding,
               binding.session == session,
               suspendedBinding == nil else { return makeSnapshot() }
+        let retiringPump = pumpTask
+        suspendedPumpID = activePumpID
+        retainedCaptureExpectedSession = decision?.nextIdentity
+        retainedCaptureAmbiguous = false
         pumpTask?.cancel()
         pumpTask = nil
         activePumpID = nil
         activeBinding = nil
         suspendedBinding = binding
         generationTransitionID = UUID()
+        causalEpisode = nil
         resetResidentAcousticObservationState()
         state = .stopped
+        await retiringPump?.value
         return makeSnapshot()
     }
 
@@ -384,10 +455,65 @@ actor MacSpeechRealtimeBrainInputBridge {
             lastError = "invalid_identity"
             return makeSnapshot()
         }
-        await source.discardPendingAudioForGenerationTransition()
-        _ = await source.drainFrames(
-            maxCount: MacSpeechAudioInputFormat.frameCapacity
-        )
+        let keepsCapture = retainedCaptureExpectedSession == session
+        if keepsCapture {
+            let captureActive = await source.isCaptureGenerationActive(
+                previous.captureGeneration
+            )
+            let observedRoute = await source.residentAcousticSnapshot()
+            guard suspendedBinding == previous,
+                  generationTransitionID == transitionID else {
+                return makeSnapshot()
+            }
+            guard !retainedCaptureAmbiguous,
+                  captureActive,
+                  let observedRoute,
+                  observedRoute.captureGeneration
+                    == previous.captureGeneration,
+                  observedRoute.routeStable,
+                  observedRoute.inputDeviceAvailable,
+                  observedRoute.outputDeviceAvailable else {
+                state = .failed
+                generationTransitionID = nil
+                retainedCapture.removeAll()
+                lastError = "capture_handoff_invalid"
+                return makeSnapshot()
+            }
+            let pendingFrames = await source.drainFrames(
+                maxCount: MacSpeechAudioInputFormat.frameCapacity
+            )
+            guard suspendedBinding == previous,
+                  generationTransitionID == transitionID else {
+                return makeSnapshot()
+            }
+            retainedCapture.append(contentsOf: pendingFrames)
+            var sequence = lastSubmittedCaptureSequence
+            var timestamp = lastSubmittedCaptureTimestamp
+            guard retainedCapture.count
+                    <= MacSpeechAudioInputFormat.frameCapacity,
+                  retainedCapture.allSatisfy({ frame in
+                      defer {
+                          sequence = frame.sequenceNumber
+                          timestamp = frame.monotonicTimestampNanoseconds
+                      }
+                      return frame.captureGeneration
+                            == previous.captureGeneration
+                          && frame.sequenceNumber == sequence &+ 1
+                          && frame.monotonicTimestampNanoseconds >= timestamp
+                  }) else {
+                state = .failed
+                generationTransitionID = nil
+                retainedCapture.removeAll()
+                lastError = "capture_handoff_gap"
+                return makeSnapshot()
+            }
+        } else {
+            retainedCapture.removeAll()
+            await source.discardPendingAudioForGenerationTransition()
+            _ = await source.drainFrames(
+                maxCount: MacSpeechAudioInputFormat.frameCapacity
+            )
+        }
         guard suspendedBinding == previous,
               generationTransitionID == transitionID else {
             return makeSnapshot()
@@ -397,9 +523,14 @@ actor MacSpeechRealtimeBrainInputBridge {
             captureGeneration: previous.captureGeneration
         )
         suspendedBinding = nil
+        suspendedPumpID = nil
         generationTransitionID = nil
         activeBinding = binding
         nextSubmittedSequence = 1
+        retainedCaptureExpectedSession = nil
+        causalEpisode = nil
+        causalCandidateConsumedPlaybackSequence = nil
+        enforceCaptureContinuity = keepsCapture
         resetResidentAcousticObservationState(binding: binding)
         state = .running
         lastError = nil
@@ -435,8 +566,15 @@ actor MacSpeechRealtimeBrainInputBridge {
         task?.cancel()
         activeBinding = nil
         suspendedBinding = nil
+        suspendedPumpID = nil
         generationTransitionID = nil
+        retainedCapture.removeAll()
+        retainedCaptureExpectedSession = nil
+        retainedCaptureAmbiguous = false
+        enforceCaptureContinuity = false
         state = .stopped
+        causalEpisode = nil
+        causalCandidateConsumedPlaybackSequence = nil
         resetResidentAcousticObservationState()
         let closeResult = await close(binding: binding)
         switch closeResult {
@@ -464,10 +602,27 @@ actor MacSpeechRealtimeBrainInputBridge {
         activePumpID = nil
         activeBinding = nil
         suspendedBinding = nil
+        suspendedPumpID = nil
         generationTransitionID = nil
+        retainedCapture.removeAll()
+        retainedCaptureExpectedSession = nil
+        retainedCaptureAmbiguous = false
+        enforceCaptureContinuity = false
+        causalEpisode = nil
+        causalCandidateConsumedPlaybackSequence = nil
         resetResidentAcousticObservationState()
         if state != .failed { state = .stopped }
         return makeSnapshot()
+    }
+
+    private func ownsCaptureCompletion(
+        binding: MacSpeechRealtimeBrainInputBinding,
+        pumpID: UUID
+    ) -> Bool {
+        (activeBinding == binding && activePumpID == pumpID)
+            || (suspendedBinding == binding
+                && suspendedPumpID == pumpID
+                && generationTransitionID != nil)
     }
 
     func currentSnapshot() -> MacSpeechRealtimeBrainInputBridgeSnapshot {
@@ -526,10 +681,21 @@ actor MacSpeechRealtimeBrainInputBridge {
                 return
             }
 
-            let frames = await source.drainFrames(
-                maxCount: MacSpeechAudioInputFormat.frameCapacity
-            )
-            if frames.isEmpty {
+            if retainedCapture.isEmpty {
+                let drained = await source.drainFrames(
+                    maxCount: MacSpeechAudioInputFormat.frameCapacity
+                )
+                guard ownsCaptureCompletion(
+                    binding: binding,
+                    pumpID: pumpID
+                ) else { return }
+                retainedCapture.append(contentsOf: drained)
+            }
+            if retainedCapture.isEmpty {
+                await advanceCausalProvisionalIfNeeded(
+                    binding: binding,
+                    pumpID: pumpID
+                )
                 await observeResidentAcousticsIfNeeded(
                     fallbackTimestampNanoseconds:
                         DispatchTime.now().uptimeNanoseconds,
@@ -542,13 +708,39 @@ actor MacSpeechRealtimeBrainInputBridge {
                 continue
             }
 
-            for frame in frames {
+            while let frame = retainedCapture.first {
                 guard !Task.isCancelled,
                       activeBinding == binding,
                       activePumpID == pumpID else { return }
                 guard frame.captureGeneration == binding.captureGeneration else {
+                    retainedCapture.removeFirst()
                     runtimeRejectedFrameCount &+= 1
                     continue
+                }
+                if enforceCaptureContinuity,
+                   frame.sequenceNumber != lastSubmittedCaptureSequence &+ 1
+                    || frame.monotonicTimestampNanoseconds
+                        < lastSubmittedCaptureTimestamp {
+                    await finish(
+                        binding: binding,
+                        pumpID: pumpID,
+                        state: .failed,
+                        error: RealtimeResidentBrainError.invalidAudioFrame
+                    )
+                    return
+                }
+
+                await advanceCausalProvisionalIfNeeded(
+                    binding: binding,
+                    pumpID: pumpID
+                )
+                if causalEpisode == nil,
+                   frame.residentPlaybackActive,
+                   frame.activity >= Float(Self.causalActivityRMS) {
+                    _ = await beginCausalProvisionalIfSupported(
+                        binding: binding,
+                        requiresNearEndSupport: true
+                    )
                 }
 
                 let realtimeFrame = RealtimeBrainAudioFrame(
@@ -617,6 +809,7 @@ actor MacSpeechRealtimeBrainInputBridge {
                 guard !Task.isCancelled,
                       activeBinding == binding,
                       activePumpID == pumpID else { return }
+                retainedCapture.removeFirst()
                 let sendStartedAt = DispatchTime.now().uptimeNanoseconds
                 let result = await sendFrame(
                     realtimeFrame,
@@ -625,6 +818,18 @@ actor MacSpeechRealtimeBrainInputBridge {
                 let sendDuration = (
                     DispatchTime.now().uptimeNanoseconds &- sendStartedAt
                 ) / 1_000_000
+                guard ownsCaptureCompletion(
+                    binding: binding,
+                    pumpID: pumpID
+                ) else { return }
+                if case .success = result {
+                    lastSubmittedCaptureSequence = frame.sequenceNumber
+                    lastSubmittedCaptureTimestamp =
+                        frame.monotonicTimestampNanoseconds
+                } else if suspendedBinding == binding,
+                          retainedCaptureExpectedSession != nil {
+                    retainedCaptureAmbiguous = true
+                }
                 guard activeBinding == binding,
                       activePumpID == pumpID else { return }
                 sendOperationCount &+= 1
@@ -672,6 +877,163 @@ actor MacSpeechRealtimeBrainInputBridge {
                 }
             }
         }
+    }
+
+    func beginProviderCausalCandidate(
+        session: RealtimeBrainSessionIdentity
+    ) async -> Bool {
+        guard let binding = activeBinding,
+              binding.session == session else { return false }
+        return await beginCausalProvisionalIfSupported(
+            binding: binding,
+            requiresNearEndSupport: false
+        )
+    }
+
+    private func beginCausalProvisionalIfSupported(
+        binding: MacSpeechRealtimeBrainInputBinding,
+        requiresNearEndSupport: Bool
+    ) async -> Bool {
+        guard causalEpisode == nil,
+              activeBinding == binding,
+              let beginCausalProvisional,
+              let observation = await source.causalInterruptionObservation(),
+              causalEpisode == nil,
+              activeBinding == binding else { return false }
+        guard observation.isPlaybackActive,
+              observation.playbackSequence > 0,
+              observation.playbackSequence
+                != causalCandidateConsumedPlaybackSequence,
+              let render = observation.latestRenderFrame,
+              render.rms >= Self.causalActivityRMS,
+              render.hostTimeNanoseconds != nil else { return false }
+        let nearEndSupported = Self.hasCausalNearEndSupport(
+            observation.recentCaptureFrames,
+            throughNanoseconds: nil
+        )
+        guard !requiresNearEndSupport || nearEndSupported else {
+            return false
+        }
+        let now = monotonicNow()
+        let id = UUID()
+        let episode = MacSpeechCausalProvisionalEpisode(
+            id: id,
+            binding: binding,
+            playbackSequence: observation.playbackSequence,
+            deadlineNanoseconds:
+                now &+ Self.causalEvidenceDeadlineNanoseconds,
+            preYieldRenderFrame: render
+        )
+        causalCandidateConsumedPlaybackSequence = observation.playbackSequence
+        guard await beginCausalProvisional(
+            id,
+            binding,
+            observation.playbackSequence
+        ), activeBinding == binding,
+           causalEpisode == nil else {
+            if activeBinding == binding,
+               causalEpisode == nil,
+               causalCandidateConsumedPlaybackSequence
+                == observation.playbackSequence {
+                causalCandidateConsumedPlaybackSequence = nil
+            }
+            return false
+        }
+        causalEpisode = episode
+        return true
+    }
+
+    private func advanceCausalProvisionalIfNeeded(
+        binding: MacSpeechRealtimeBrainInputBinding,
+        pumpID: UUID
+    ) async {
+        guard let episode = causalEpisode,
+              episode.binding == binding,
+              activeBinding == binding,
+              activePumpID == pumpID else { return }
+        let now = monotonicNow()
+        guard let observation = await source.causalInterruptionObservation(),
+              activeBinding == binding,
+              activePumpID == pumpID,
+              causalEpisode?.id == episode.id,
+              observation.isPlaybackActive,
+              observation.playbackSequence == episode.playbackSequence,
+              let latestRender = observation.latestRenderFrame else {
+            await recoverCausalEpisode(episode, binding: binding)
+            return
+        }
+
+        if Self.actualFarEndDrop(
+            from: episode.preYieldRenderFrame,
+            to: latestRender
+        ) != nil {
+            // Gate 1 support preserves a candidate; it does not identify a
+            // user source and therefore cannot become formal evidence.
+            await recoverCausalEpisode(episode, binding: binding)
+            return
+        }
+
+        if now >= episode.deadlineNanoseconds {
+            await recoverCausalEpisode(episode, binding: binding)
+        }
+    }
+
+    private func recoverCausalEpisode(
+        _ episode: MacSpeechCausalProvisionalEpisode,
+        binding: MacSpeechRealtimeBrainInputBinding
+    ) async {
+        guard causalEpisode?.id == episode.id else { return }
+        causalEpisode = nil
+        await recoverCausalProvisional?(episode.id, binding)
+        await discardCausalEvidence?(binding)
+        guard activeBinding == binding,
+              causalEpisode == nil else { return }
+        causalCandidateConsumedPlaybackSequence = episode.playbackSequence
+    }
+
+    private static func actualFarEndDrop(
+        from before: MacSpeechCausalFrameObservation,
+        to after: MacSpeechCausalFrameObservation
+    ) -> MacSpeechCausalFrameObservation? {
+        guard after.index > before.index,
+              after.hostTimeNanoseconds != nil,
+              before.rms >= causalActivityRMS else { return nil }
+        let beforePower = before.rms * before.rms
+        let afterPower = after.rms * after.rms
+        guard beforePower > 0,
+              afterPower / beforePower
+                <= causalFarEndPowerRatioMaximum else { return nil }
+        return after
+    }
+
+    private static func hasCausalNearEndSupport(
+        _ frames: [MacSpeechCausalFrameObservation],
+        throughNanoseconds: UInt64?
+    ) -> Bool {
+        let eligible = frames.filter { frame in
+            guard let throughNanoseconds else { return true }
+            return frame.hostTimeNanoseconds.map {
+                $0 <= throughNanoseconds
+            } ?? false
+        }
+        guard eligible.count >= 5 else { return false }
+        for start in 0...(eligible.count - 5) {
+            let group = Array(eligible[start..<(start + 5)])
+            let contiguous = zip(group, group.dropFirst()).allSatisfy {
+                previous, next in
+                guard next.index == previous.index &+ 1,
+                      let previousTime = previous.hostTimeNanoseconds,
+                      let nextTime = next.hostTimeNanoseconds,
+                      nextTime >= previousTime else { return false }
+                let delta = nextTime - previousTime
+                return delta >= 9_999_999 && delta <= 10_000_001
+            }
+            if contiguous,
+               group.filter({ $0.rms >= causalActivityRMS }).count >= 3 {
+                return true
+            }
+        }
+        return false
     }
 
     private func makeInputActivity(
@@ -1204,6 +1566,7 @@ actor MacSpeechRealtimeBrainInputBridge {
                     sourceGateEpoch: metrics.sourceGateEpoch,
                     nearEndDetected:
                         observation.classification == .nearEndCandidate,
+                    sourceAttributionConfirmed: false,
                     farEndActive: metrics.residentPlaybackActive,
                     sourceGateOpen: metrics.sourceGateOpen,
                     renderReferenceConfidence:
@@ -1335,9 +1698,23 @@ actor MacSpeechRealtimeBrainInputBridge {
     ) async {
         guard activeBinding == binding,
               activePumpID == pumpID else { return }
+        let endingCausalEpisode = causalEpisode
+        causalEpisode = nil
+        if let endingCausalEpisode {
+            await recoverCausalProvisional?(
+                endingCausalEpisode.id,
+                binding
+            )
+            await discardCausalEvidence?(binding)
+        }
         activeBinding = nil
         pumpTask = nil
         activePumpID = nil
+        suspendedPumpID = nil
+        retainedCapture.removeAll()
+        retainedCaptureExpectedSession = nil
+        retainedCaptureAmbiguous = false
+        enforceCaptureContinuity = false
         self.state = state
         resetResidentAcousticObservationState()
         lastError = error.map(Self.standardErrorName)

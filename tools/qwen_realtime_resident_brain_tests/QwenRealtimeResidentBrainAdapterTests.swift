@@ -4255,6 +4255,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             source: .acousticHost(RealtimeInterruptionAcousticFacts(
                 sourceGateEpoch: 1,
                 nearEndDetected: true,
+                sourceAttributionConfirmed: true,
                 farEndActive: true,
                 sourceGateOpen: true,
                 renderReferenceConfidence: 1,
@@ -5294,6 +5295,7 @@ private struct QwenRealtimeResidentBrainAdapterTests {
             source: .acousticHost(RealtimeInterruptionAcousticFacts(
                 sourceGateEpoch: 1,
                 nearEndDetected: true,
+                sourceAttributionConfirmed: true,
                 farEndActive: true,
                 sourceGateOpen: true,
                 renderReferenceConfidence: 1,

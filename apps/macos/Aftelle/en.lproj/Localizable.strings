@@ -597,6 +597,7 @@
 "realtimeSpeech.title" = "Realtime full-duplex speech";
 "realtimeSpeech.start" = "Start";
 "realtimeSpeech.stop" = "Stop";
+"realtimeSpeech.interrupt" = "Interrupt";
 "realtimeSpeech.status.idle" = "Ready";
 "realtimeSpeech.status.starting" = "Starting";
 "realtimeSpeech.status.listening" = "Listening";

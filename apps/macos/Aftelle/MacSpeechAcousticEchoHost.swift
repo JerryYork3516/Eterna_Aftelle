@@ -176,6 +176,23 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let isPlaybackActive: Bool
 }
 
+nonisolated struct MacSpeechCausalFrameObservation:
+    Sendable,
+    Equatable {
+    let index: UInt64
+    let hostTimeNanoseconds: UInt64?
+    let rms: Double
+}
+
+nonisolated struct MacSpeechCausalInterruptionObservation:
+    Sendable,
+    Equatable {
+    let playbackSequence: UInt64
+    let isPlaybackActive: Bool
+    let latestRenderFrame: MacSpeechCausalFrameObservation?
+    let recentCaptureFrames: [MacSpeechCausalFrameObservation]
+}
+
 nonisolated struct MacSpeechAcousticObservationSnapshot:
     Sendable,
     Equatable {
@@ -757,6 +774,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let reliableERLEDecibels = 3.0
     private static let failedERLEDecibels = 1.0
     private static let residualEchoGateResetFrameCount: UInt64 = 5
+    private static let causalCaptureHistoryCapacity = 30
 
     private let queue = DispatchQueue(
         label: "com.eterna.aftelle.speech-aec-processing"
@@ -784,6 +802,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var latestCaptureHostTimeNanoseconds: UInt64?
     private var latestRenderHostTimeNanoseconds: UInt64?
     private var latestRenderReferenceRMS = 0.0
+    private var causalCaptureHistory: [MacSpeechCausalFrameObservation] = []
     private var matchedRenderHostTimeNanoseconds: UInt64?
     private var matchedRenderReferenceRMS = 0.0
     private var rawCaptureRMS = 0.0
@@ -951,6 +970,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         renderFIFO.reserveCapacity(fifoSampleCapacity)
         captureFIFO.reserveCapacity(fifoSampleCapacity)
         renderTimingHistory.reserveCapacity(Self.timingHistoryFrameCapacity)
+        causalCaptureHistory.reserveCapacity(
+            Self.causalCaptureHistoryCapacity
+        )
         sourceGatePreRoll.reserveCapacity(
             Self.sourceGatePreRollFrameCapacity
         )
@@ -1089,6 +1111,25 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
     }
 
+    func causalInterruptionObservation()
+        -> MacSpeechCausalInterruptionObservation {
+        queue.sync {
+            let latestRender = latestRenderHostTimeNanoseconds.map {
+                MacSpeechCausalFrameObservation(
+                    index: renderFrameCount,
+                    hostTimeNanoseconds: $0,
+                    rms: latestRenderReferenceRMS
+                )
+            }
+            return MacSpeechCausalInterruptionObservation(
+                playbackSequence: playbackSequence,
+                isPlaybackActive: isPlaybackActive,
+                latestRenderFrame: latestRender,
+                recentCaptureFrames: causalCaptureHistory
+            )
+        }
+    }
+
     func renderConversionFailed() {
         queue.sync { enterFallback(.renderProcessingFailed) }
     }
@@ -1180,6 +1221,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                             frameHostTimeNanoseconds,
                         timingMatch: timingMatch
                     )
+                    appendCausalCaptureFrame(
+                        index: captureFrameCount &+ 1,
+                        hostTimeNanoseconds: frameHostTimeNanoseconds,
+                        rms: processedCaptureRMS
+                    )
                     let reportedTimingMatch: TimingMatch?
                     if let timingMatch,
                        timingMatch.associationOrigin == .historicalDiscovery,
@@ -1270,6 +1316,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         rawCaptureRMS = signalRMS(samples)
         processedCaptureRMS = mode == .appleVoiceProcessing
             ? rawCaptureRMS : (isPlaybackActive ? 0 : rawCaptureRMS)
+        for offset in 0..<frameCount {
+            appendCausalCaptureFrame(
+                index: captureFrameCount &+ UInt64(offset + 1),
+                hostTimeNanoseconds: hostTimeNanoseconds.map {
+                    $0 &+ UInt64(offset) * 10_000_000
+                },
+                rms: processedCaptureRMS
+            )
+        }
         linearAECOutputRMS = 0
         if mode == .appleVoiceProcessing,
            let match = appleVoiceProcessingRenderMatch(
@@ -1359,6 +1414,24 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             inputClassification = .uncertain
         }
         captureFrameCount &+= UInt64(frameCount)
+    }
+
+    private func appendCausalCaptureFrame(
+        index: UInt64,
+        hostTimeNanoseconds: UInt64?,
+        rms: Double
+    ) {
+        if causalCaptureHistory.count
+            == Self.causalCaptureHistoryCapacity {
+            causalCaptureHistory.removeFirst()
+        }
+        causalCaptureHistory.append(
+            MacSpeechCausalFrameObservation(
+                index: index,
+                hostTimeNanoseconds: hostTimeNanoseconds,
+                rms: rms
+            )
+        )
     }
 
     private func appleVoiceProcessingRenderMatch(
@@ -3489,6 +3562,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private func clearTimingHistory() {
         renderTimingHistory.removeAll(keepingCapacity: true)
+        causalCaptureHistory.removeAll(keepingCapacity: true)
         latestRenderHostTimeNanoseconds = nil
         latestRenderReferenceRMS = 0
         matchedRenderHostTimeNanoseconds = nil

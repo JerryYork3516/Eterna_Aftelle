@@ -25,6 +25,9 @@ final class FakeMacSpeechAudioOutputPlayer:
     private var stopCalls = 0
     private var closeCalls = 0
     private var resetForPlaybackGenerationCalls = 0
+    private var pauseCalls = 0
+    private var resumeCalls = 0
+    private var isPaused = false
     var prepareError: MacSpeechAudioOutputHostError?
     var scheduleError: MacSpeechAudioOutputHostError?
     var startError: MacSpeechAudioOutputHostError?
@@ -83,6 +86,20 @@ final class FakeMacSpeechAudioOutputPlayer:
         try lock.withLock {
             startCalls += 1
             if let startError { throw startError }
+        }
+    }
+
+    func pausePlayback() throws {
+        lock.withLock {
+            pauseCalls += 1
+            isPaused = true
+        }
+    }
+
+    func resumePlayback() throws {
+        lock.withLock {
+            resumeCalls += 1
+            isPaused = false
         }
     }
 
@@ -147,6 +164,9 @@ final class FakeMacSpeechAudioOutputPlayer:
     var routeResetCount: Int { lock.withLock { routeResetCalls } }
     var stopCount: Int { lock.withLock { stopCalls } }
     var closeCount: Int { lock.withLock { closeCalls } }
+    var pauseCount: Int { lock.withLock { pauseCalls } }
+    var resumeCount: Int { lock.withLock { resumeCalls } }
+    var paused: Bool { lock.withLock { isPaused } }
     var scheduledCount: Int { lock.withLock { scheduledPayloads.count } }
     var pendingCount: Int { lock.withLock { pendingPlaybacks.count } }
     var payloads: [Data] { lock.withLock { scheduledPayloads } }

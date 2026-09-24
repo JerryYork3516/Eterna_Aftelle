@@ -54,7 +54,7 @@ echo "realtime_acoustic_identity_trace=PASS"
 
 runtime_observer_block="$build_dir/runtime-observer.txt"
 awk \
-  '/func observeRealtimeResidentBrainAcoustics/ { active = 1 } /func submitRealtimeResidentBrainEligibleAcousticEvidence|func submitRealtimeResidentBrainAcousticEvidence/ { active = 0 } active' \
+  '/func observeRealtimeResidentBrainAcoustics/ { active = 1 } /private func appendRealtimeAcousticObservationTrace/ { active = 0 } active' \
   "$runtime" > "$runtime_observer_block"
 if rg -q \
   'consumeRealtimeResidentBrainInterruptionEvidence|beginRealtimeBrainGenerationTransition|executionEngine|pendingRealtimeInterruption|cancelRealtimeResidentBrain|interruptRealtimeResidentBrain|clearPlayback|confirmed' \
@@ -104,7 +104,7 @@ echo "realtime_acoustic_provider_authority=PASS"
 rg -q 'lastResidentObservationFrameIndex &\+ 10' "$bridge"
 rg -q 'residentAcousticObservationTask == nil' "$bridge"
 rg -q 'droppedResidentAcousticObservationCount' "$bridge"
-rg -q 'if frames\.isEmpty' "$bridge"
+rg -q 'if (frames|retainedCapture)\.isEmpty' "$bridge"
 echo "realtime_acoustic_bounded_delivery=PASS"
 
 if rg -q 'URLSession|WebSocket|FileHandle|write\(to:' \
