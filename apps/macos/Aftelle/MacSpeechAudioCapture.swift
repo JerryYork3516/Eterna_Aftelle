@@ -1078,10 +1078,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
         }
         try rebuildAudioFormatsLocked(engine: engine, localFormat: localFormat)
-        installRenderReferenceTapLocked(
-            playerNode: playerNode,
-            format: localFormat
-        )
+        installRenderReferenceTapLocked(playerNode: playerNode)
         _ = acousticEchoHost.configure()
         guard audioProcessingMode != .appleVoiceProcessing
                 || voiceActivityDetector.start() else {
@@ -1148,8 +1145,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     )
                     if let playerNode {
                         installRenderReferenceTapLocked(
-                            playerNode: playerNode,
-                            format: localFormat
+                            playerNode: playerNode
                         )
                     }
                 }
@@ -1382,8 +1378,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     private func installRenderReferenceTapLocked(
-        playerNode: AVAudioPlayerNode,
-        format: AVAudioFormat
+        playerNode: AVAudioPlayerNode
     ) {
         guard !isRenderReferenceTapInstalled else { return }
         playerNode.installTap(
@@ -1391,7 +1386,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             bufferSize: AVAudioFrameCount(
                 MacSpeechAcousticEchoHost.frameSampleCount
             ),
-            format: format
+            format: nil
         ) { [weak self] buffer, when in
             self?.processRenderedOutput(
                 buffer,

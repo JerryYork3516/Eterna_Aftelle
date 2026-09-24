@@ -88,6 +88,15 @@ test "$(rg -c 'SystemMacSpeechAudioCapture\(' "$controller")" -eq 2
 test "$(rg -c 'SystemMacSpeechAudioOutputPlayer\(' "$controller")" -eq 2
 rg -q 'engine\.attach\(playerNode\)' "$capture"
 rg -q 'engine\.connect\(' "$capture"
+render_tap_function="$(sed -n \
+  '/private func installRenderReferenceTapLocked(/,/private func removeRenderReferenceTapLocked(/p' \
+  "$capture")"
+if ! printf '%s\n' "$render_tap_function" | rg -q 'playerNode\.installTap' \
+  || ! printf '%s\n' "$render_tap_function" | rg -q 'format: nil'; then
+  echo "speech_audio_host_render_tap_format=FAIL"
+  exit 1
+fi
+echo "speech_audio_host_render_tap_format=PASS"
 player_attach_line="$(rg -n -m 1 'engine\.attach\(playerNode\)' "$capture" | cut -d: -f1)"
 voice_processing_enable_line="$(rg -n -m 1 'setVoiceProcessingEnabled\(true\)' "$capture" | cut -d: -f1)"
 test "$player_attach_line" -lt "$voice_processing_enable_line"
