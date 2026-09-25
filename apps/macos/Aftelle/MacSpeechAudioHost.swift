@@ -102,14 +102,17 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
     private let capture: any MacSpeechAudioCapturing
     private let deviceMonitor: any MacSpeechDeviceRouteMonitoring
     private let frameBuffer: MacSpeechAudioFrameBuffer
+    private let tier2RouteEnrollment: MacSpeechTier2RouteEnrollment?
     private var permissionRequestInFlight = false
     private var authorization = MicrophoneAuthorizationState.notDetermined
     private var state = MacSpeechAudioHostState.idle
     private var route = MacSpeechDeviceRoute.unavailable
+    private var routeRevision: UInt64 = 0
     private var isCapturing = false
     private var isMonitoringRoute = false
     private var generation: UInt64 = 0
     private var preparedGeneration: UInt64?
+    private var routeMonitoredGeneration: UInt64?
     private var actualInputFormat = MacSpeechNativeInputFormat(
         sampleRate: 0,
         channelCount: 0
@@ -123,16 +126,71 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
             SystemMacSpeechAudioCapture(),
         deviceMonitor: any MacSpeechDeviceRouteMonitoring =
             SystemMacSpeechDeviceMonitor(),
-        frameCapacity: Int = MacSpeechAudioInputFormat.frameCapacity
+        frameCapacity: Int = MacSpeechAudioInputFormat.frameCapacity,
+        tier2RouteEnrollment: MacSpeechTier2RouteEnrollment? = nil
     ) {
         self.authorizationProvider = authorizationProvider
         self.capture = capture
         self.deviceMonitor = deviceMonitor
+        self.tier2RouteEnrollment = tier2RouteEnrollment
         frameBuffer = MacSpeechAudioFrameBuffer(capacity: frameCapacity)
     }
 
     func currentSnapshot() -> MacSpeechAudioHostSnapshot {
         makeSnapshot()
+    }
+
+    func tier2RouteCaptureLease() async
+        -> MacSpeechTier2RouteCaptureLease? {
+        let monitoringActiveBefore = deviceMonitor
+            .hasActiveRouteChangeMonitoring()
+        let liveRevisionBefore = deviceMonitor.currentRouteRevision()
+        let liveRoute = deviceMonitor.currentRoute()
+        let liveRevisionAfter = deviceMonitor.currentRouteRevision()
+        let monitoringActiveAfter = deviceMonitor
+            .hasActiveRouteChangeMonitoring()
+        guard isMonitoringRoute,
+              monitoringActiveBefore,
+              monitoringActiveAfter,
+              isCapturing,
+              state == .capturing,
+              lastError == nil,
+              generation > 0,
+              routeMonitoredGeneration == generation,
+              liveRevisionBefore == liveRevisionAfter,
+              liveRevisionAfter == routeRevision,
+              liveRoute.input.hasSameCaptureBinding(as: route.input),
+              liveRoute.output.hasSameCaptureBinding(as: route.output),
+              let enrollment = tier2RouteEnrollment,
+              enrollment.decisionRevision ==
+                MacSpeechTier2RouteCaptureLease
+                    .frozenDecisionRevision,
+              !enrollment.evidenceRecordID.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ).isEmpty,
+              enrollment.audioProcessingMode == .appleVoiceProcessing,
+              capture.currentAudioProcessingMode() == .appleVoiceProcessing,
+              let inputDeviceUID = liveRoute.input.exactDeviceUID,
+              let outputDeviceUID = liveRoute.output.exactDeviceUID,
+              enrollment.inputDeviceUID == inputDeviceUID,
+              enrollment.outputDeviceUID == outputDeviceUID else {
+            return nil
+        }
+        return MacSpeechTier2RouteCaptureLease(
+            inputDeviceUID: inputDeviceUID,
+            outputDeviceUID: outputDeviceUID,
+            audioProcessingMode: .appleVoiceProcessing,
+            decisionRevision: enrollment.decisionRevision,
+            evidenceRecordID: enrollment.evidenceRecordID,
+            captureGeneration: generation,
+            routeRevision: liveRevisionAfter
+        )
+    }
+
+    func isTier2RouteCaptureLeaseActive(
+        _ lease: MacSpeechTier2RouteCaptureLease
+    ) async -> Bool {
+        await tier2RouteCaptureLease() == lease
     }
 
     func interruptionAcousticSnapshot() async
@@ -298,6 +356,9 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         generation &+= 1
         let captureGeneration = generation
         preparedGeneration = captureGeneration
+        routeMonitoredGeneration = isMonitoringRoute
+                && deviceMonitor.hasActiveRouteChangeMonitoring()
+            ? captureGeneration : nil
         frameBuffer.begin(generation: captureGeneration)
         state = hostState(for: authorization)
         lastError = nil
@@ -316,6 +377,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         guard authorization == .authorized else {
             frameBuffer.end(generation: captureGeneration)
             preparedGeneration = nil
+            routeMonitoredGeneration = nil
             lastError = "microphone_not_authorized"
             state = hostState(for: authorization)
             return makeSnapshot()
@@ -323,6 +385,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         guard route.input.isAvailable else {
             frameBuffer.end(generation: captureGeneration)
             preparedGeneration = nil
+            routeMonitoredGeneration = nil
             state = .deviceUnavailable
             lastError = "input_device_unavailable"
             return makeSnapshot()
@@ -339,12 +402,14 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         } catch let error as MacSpeechAudioCaptureError {
             frameBuffer.end(generation: captureGeneration)
             preparedGeneration = nil
+            routeMonitoredGeneration = nil
             capture.stop()
             state = .failed
             lastError = error.rawValue
         } catch {
             frameBuffer.end(generation: captureGeneration)
             preparedGeneration = nil
+            routeMonitoredGeneration = nil
             capture.stop()
             state = .failed
             lastError = "audio_engine_start_failed"
@@ -360,6 +425,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         }
         frameBuffer.end(generation: captureGeneration)
         preparedGeneration = nil
+        routeMonitoredGeneration = nil
         state = hostState(for: authorization)
         lastError = nil
         return makeSnapshot()
@@ -372,15 +438,27 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
 
     func refreshDeviceRoute() {
         let previousRoute = route
-        route = deviceMonitor.currentRoute()
-        let inputChanged = previousRoute.input.identifier != route.input.identifier
-        let outputChanged = previousRoute.output.identifier
-            != route.output.identifier
-        if inputChanged || outputChanged {
+        let previousRouteRevision = routeRevision
+        let revisionBefore = deviceMonitor.currentRouteRevision()
+        let refreshedRoute = deviceMonitor.currentRoute()
+        let revisionAfter = deviceMonitor.currentRouteRevision()
+        route = refreshedRoute
+        routeRevision = revisionAfter
+        let inputChanged = !previousRoute.input.hasSameCaptureBinding(
+            as: refreshedRoute.input
+        )
+        let outputChanged = !previousRoute.output.hasSameCaptureBinding(
+            as: refreshedRoute.output
+        )
+        let routeChangedDuringRead = revisionBefore != revisionAfter
+        let routeRevisionAdvanced = revisionAfter != previousRouteRevision
+        let routeInvalidated = inputChanged || outputChanged
+            || routeChangedDuringRead || routeRevisionAdvanced
+        if routeInvalidated {
             capture.routeWillRebuild()
         }
-        if isCapturing,
-           inputChanged || outputChanged || !route.input.isAvailable {
+        if (isCapturing || preparedGeneration != nil),
+           routeInvalidated || !route.input.isAvailable {
             stopCapture(
                 lastError: route.input.isAvailable
                     ? "audio_route_changed"
@@ -389,7 +467,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         } else if !isCapturing {
             state = hostState(for: authorization)
         }
-        if inputChanged || outputChanged {
+        if routeInvalidated {
             capture.routeDidRebuild()
         }
     }
@@ -468,18 +546,23 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
             frameBuffer.end(generation: preparedGeneration)
             self.preparedGeneration = nil
         }
+        routeMonitoredGeneration = nil
         self.lastError = lastError
         state = hostState(for: authorization)
     }
 
     private func ensureRouteMonitoring() {
-        guard !isMonitoringRoute else { return }
+        if isMonitoringRoute,
+           deviceMonitor.hasActiveRouteChangeMonitoring() {
+            return
+        }
+        isMonitoringRoute = false
         deviceMonitor.start { [weak self] in
             Task {
                 await self?.refreshDeviceRoute()
             }
         }
-        isMonitoringRoute = true
+        isMonitoringRoute = deviceMonitor.hasActiveRouteChangeMonitoring()
     }
 
     private func makeSnapshot() -> MacSpeechAudioHostSnapshot {

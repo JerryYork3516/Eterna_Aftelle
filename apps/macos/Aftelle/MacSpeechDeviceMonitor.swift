@@ -5,11 +5,38 @@ nonisolated struct MacSpeechAudioDevice: Sendable, Equatable {
     let identifier: String
     let name: String
     let isAvailable: Bool
+    let hasExactDeviceUID: Bool
+
+    init(
+        identifier: String,
+        name: String,
+        isAvailable: Bool,
+        hasExactDeviceUID: Bool = false
+    ) {
+        self.identifier = identifier
+        self.name = name
+        self.isAvailable = isAvailable
+        self.hasExactDeviceUID = hasExactDeviceUID
+    }
+
+    var exactDeviceUID: String? {
+        guard isAvailable, hasExactDeviceUID, !identifier.isEmpty else {
+            return nil
+        }
+        return identifier
+    }
+
+    func hasSameCaptureBinding(as other: MacSpeechAudioDevice) -> Bool {
+        identifier == other.identifier
+            && isAvailable == other.isAvailable
+            && hasExactDeviceUID == other.hasExactDeviceUID
+    }
 
     static let unavailable = MacSpeechAudioDevice(
         identifier: "unavailable",
         name: "—",
-        isAvailable: false
+        isAvailable: false,
+        hasExactDeviceUID: false
     )
 }
 
@@ -25,8 +52,15 @@ nonisolated struct MacSpeechDeviceRoute: Sendable, Equatable {
 
 nonisolated protocol MacSpeechDeviceRouteMonitoring: AnyObject, Sendable {
     func currentRoute() -> MacSpeechDeviceRoute
+    func currentRouteRevision() -> UInt64
+    func hasActiveRouteChangeMonitoring() -> Bool
     func start(onChange: @escaping @Sendable () -> Void)
     func stop()
+}
+
+nonisolated extension MacSpeechDeviceRouteMonitoring {
+    func currentRouteRevision() -> UInt64 { 0 }
+    func hasActiveRouteChangeMonitoring() -> Bool { false }
 }
 
 nonisolated protocol MacSpeechVoiceActivityDetecting: AnyObject, Sendable {
@@ -247,6 +281,7 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
     MacSpeechDeviceRouteMonitoring, @unchecked Sendable
 {
     private let lock = NSLock()
+    private let revisionLock = NSLock()
     private let callbackQueue = DispatchQueue(
         label: "com.eterna.aftelle.audio-device-route"
     )
@@ -254,6 +289,7 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
         AudioObjectPropertySelector: AudioObjectPropertyListenerBlock
     ] = [:]
     private var isMonitoring = false
+    private var routeRevision: UInt64 = 0
 
     func currentRoute() -> MacSpeechDeviceRoute {
         MacSpeechDeviceRoute(
@@ -264,6 +300,14 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
                 for: kAudioHardwarePropertyDefaultOutputDevice
             )
         )
+    }
+
+    func currentRouteRevision() -> UInt64 {
+        revisionLock.withLock { routeRevision }
+    }
+
+    func hasActiveRouteChangeMonitoring() -> Bool {
+        lock.withLock { isMonitoring }
     }
 
     func start(onChange: @escaping @Sendable () -> Void) {
@@ -280,7 +324,9 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
                     mScope: kAudioObjectPropertyScopeGlobal,
                     mElement: kAudioObjectPropertyElementMain
                 )
-                let listener: AudioObjectPropertyListenerBlock = { _, _ in
+                let listener: AudioObjectPropertyListenerBlock = {
+                    [weak self] _, _ in
+                    self?.recordRouteChange()
                     onChange()
                 }
                 let status = AudioObjectAddPropertyListenerBlock(
@@ -291,6 +337,7 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
                 )
                 guard status == noErr else {
                     removeListeners()
+                    isMonitoring = false
                     return
                 }
                 listeners[selector] = listener
@@ -301,7 +348,6 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
 
     func stop() {
         lock.withLock {
-            guard isMonitoring else { return }
             removeListeners()
             isMonitoring = false
         }
@@ -328,17 +374,23 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
         guard status == noErr, deviceID != kAudioObjectUnknown else {
             return .unavailable
         }
+        let deviceUID = stringProperty(
+            kAudioDevicePropertyDeviceUID,
+            deviceID: deviceID
+        )
         return MacSpeechAudioDevice(
-            identifier: stringProperty(
-                kAudioDevicePropertyDeviceUID,
-                deviceID: deviceID
-            ) ?? "audio-device-\(deviceID)",
+            identifier: deviceUID ?? "audio-device-\(deviceID)",
             name: stringProperty(
                 kAudioObjectPropertyName,
                 deviceID: deviceID
             ) ?? "Audio Device \(deviceID)",
-            isAvailable: isAlive(deviceID)
+            isAvailable: isAlive(deviceID),
+            hasExactDeviceUID: deviceUID != nil
         )
+    }
+
+    private func recordRouteChange() {
+        revisionLock.withLock { routeRevision &+= 1 }
     }
 
     private func stringProperty(

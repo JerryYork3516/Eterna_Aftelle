@@ -46,6 +46,7 @@ private final class FakeMacSpeechAudioCapture:
 {
     private let lock = NSLock()
     private let startError: MacSpeechAudioCaptureError?
+    private let processingMode: MacSpeechAudioProcessingMode?
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
@@ -56,8 +57,12 @@ private final class FakeMacSpeechAudioCapture:
     private var routeRebuildCompletionsWhileStarted = 0
     private var acousticDiagnosticResets = 0
 
-    init(startError: MacSpeechAudioCaptureError? = nil) {
+    init(
+        startError: MacSpeechAudioCaptureError? = nil,
+        processingMode: MacSpeechAudioProcessingMode? = nil
+    ) {
         self.startError = startError
+        self.processingMode = processingMode
     }
 
     func start(
@@ -102,6 +107,10 @@ private final class FakeMacSpeechAudioCapture:
         }
     }
 
+    func currentAudioProcessingMode() -> MacSpeechAudioProcessingMode? {
+        processingMode
+    }
+
     func resetAcousticEchoDiagnostics() {
         lock.withLock { acousticDiagnosticResets += 1 }
     }
@@ -139,27 +148,53 @@ private final class FakeMacSpeechAudioCapture:
     var isStarted: Bool { lock.withLock { started } }
 }
 
+private struct DefaultCaptureLeaseAudioFrameSource:
+    MacSpeechAudioFrameSourcing {
+    func activeCaptureGeneration() async -> UInt64? { nil }
+
+    func isCaptureGenerationActive(_ generation: UInt64) async -> Bool {
+        false
+    }
+
+    func drainFrames(maxCount: Int) async -> [MacSpeechAudioFrame] { [] }
+}
+
 private final class FakeMacSpeechDeviceMonitor:
     MacSpeechDeviceRouteMonitoring, @unchecked Sendable
 {
     private let lock = NSLock()
+    private let monitoringStartsSuccessfully: Bool
     private var route: MacSpeechDeviceRoute
+    private var routeRevision: UInt64 = 0
     private var onChange: (@Sendable () -> Void)?
     private var starts = 0
 
-    init(route: MacSpeechDeviceRoute) {
+    init(
+        route: MacSpeechDeviceRoute,
+        monitoringStartsSuccessfully: Bool = true
+    ) {
         self.route = route
+        self.monitoringStartsSuccessfully = monitoringStartsSuccessfully
     }
 
     func currentRoute() -> MacSpeechDeviceRoute {
         lock.withLock { route }
     }
 
+    func currentRouteRevision() -> UInt64 {
+        lock.withLock { routeRevision }
+    }
+
+    func hasActiveRouteChangeMonitoring() -> Bool {
+        lock.withLock { onChange != nil }
+    }
+
     func start(onChange: @escaping @Sendable () -> Void) {
         lock.withLock {
             guard self.onChange == nil else { return }
-            self.onChange = onChange
             starts += 1
+            guard monitoringStartsSuccessfully else { return }
+            self.onChange = onChange
         }
     }
 
@@ -168,7 +203,19 @@ private final class FakeMacSpeechDeviceMonitor:
     }
 
     func setRoute(_ route: MacSpeechDeviceRoute) {
-        lock.withLock { self.route = route }
+        lock.withLock {
+            self.route = route
+            routeRevision &+= 1
+        }
+    }
+
+    func notifyRouteChange(_ route: MacSpeechDeviceRoute) {
+        let callback = lock.withLock { () -> (@Sendable () -> Void)? in
+            self.route = route
+            routeRevision &+= 1
+            return onChange
+        }
+        callback?()
     }
 
     var startCount: Int { lock.withLock { starts } }
@@ -182,22 +229,26 @@ private struct MacSpeechAudioHostTests {
     private static let inputA = MacSpeechAudioDevice(
         identifier: "input-a",
         name: "Built-in Microphone",
-        isAvailable: true
+        isAvailable: true,
+        hasExactDeviceUID: true
     )
     private static let inputB = MacSpeechAudioDevice(
         identifier: "input-b",
         name: "AirPods Pro Microphone",
-        isAvailable: true
+        isAvailable: true,
+        hasExactDeviceUID: true
     )
     private static let outputA = MacSpeechAudioDevice(
         identifier: "output-a",
         name: "Built-in Output",
-        isAvailable: true
+        isAvailable: true,
+        hasExactDeviceUID: true
     )
     private static let outputB = MacSpeechAudioDevice(
         identifier: "output-b",
         name: "AirPods Pro",
-        isAvailable: true
+        isAvailable: true,
+        hasExactDeviceUID: true
     )
 
     static func main() async {
@@ -210,6 +261,13 @@ private struct MacSpeechAudioHostTests {
         await testVoiceProcessingUnavailableFailsClosed()
         await testStartStopRestartAreIdempotent()
         await testPreparedCaptureDefersProducerAndResetsGenerationStats()
+        await testTier2RouteCaptureLeaseDefaultsToNil()
+        await testTier2RouteCaptureLeaseRequiresExactBindings()
+        await testTier2RouteCaptureLeaseTracksCaptureLifecycle()
+        await testTier2RouteCaptureLeaseRequiresActiveMonitoring()
+        await testTier2RouteCaptureLeaseRejectsBindingFlips()
+        await testTier2RouteCaptureLeaseRejectsFoldedRouteChanges()
+        await testNotificationDrivenRouteInvalidation()
         testPCM16Encoding()
         testExactTwentyMillisecondPacketization()
         do {
@@ -233,7 +291,10 @@ private struct MacSpeechAudioHostTests {
     private static func makeHost(
         authorization: MicrophoneAuthorizationState,
         route: MacSpeechDeviceRoute = availableRoute,
-        frameCapacity: Int = MacSpeechAudioInputFormat.frameCapacity
+        frameCapacity: Int = MacSpeechAudioInputFormat.frameCapacity,
+        processingMode: MacSpeechAudioProcessingMode? = nil,
+        tier2RouteEnrollment: MacSpeechTier2RouteEnrollment? = nil,
+        monitoringStartsSuccessfully: Bool = true
     ) -> (
         MacSpeechAudioHost,
         FakeMicrophoneAuthorizationProvider,
@@ -243,14 +304,20 @@ private struct MacSpeechAudioHostTests {
         let provider = FakeMicrophoneAuthorizationProvider(
             authorization: authorization
         )
-        let capture = FakeMacSpeechAudioCapture()
-        let monitor = FakeMacSpeechDeviceMonitor(route: route)
+        let capture = FakeMacSpeechAudioCapture(
+            processingMode: processingMode
+        )
+        let monitor = FakeMacSpeechDeviceMonitor(
+            route: route,
+            monitoringStartsSuccessfully: monitoringStartsSuccessfully
+        )
         return (
             MacSpeechAudioHost(
                 authorizationProvider: provider,
                 capture: capture,
                 deviceMonitor: monitor,
-                frameCapacity: frameCapacity
+                frameCapacity: frameCapacity,
+                tier2RouteEnrollment: tier2RouteEnrollment
             ),
             provider,
             capture,
@@ -260,6 +327,24 @@ private struct MacSpeechAudioHostTests {
 
     private static var availableRoute: MacSpeechDeviceRoute {
         MacSpeechDeviceRoute(input: inputA, output: outputA)
+    }
+
+    private static func makeTier2RouteEnrollment(
+        inputDeviceUID: String = inputA.identifier,
+        outputDeviceUID: String = outputA.identifier,
+        audioProcessingMode: MacSpeechAudioProcessingMode =
+            .appleVoiceProcessing,
+        decisionRevision: String =
+            MacSpeechTier2RouteCaptureLease.frozenDecisionRevision,
+        evidenceRecordID: String = "test3-tier2-route-evidence"
+    ) -> MacSpeechTier2RouteEnrollment {
+        MacSpeechTier2RouteEnrollment(
+            inputDeviceUID: inputDeviceUID,
+            outputDeviceUID: outputDeviceUID,
+            audioProcessingMode: audioProcessingMode,
+            decisionRevision: decisionRevision,
+            evidenceRecordID: evidenceRecordID
+        )
     }
 
     private static func testInitialStateDoesNotQueryOrRequest() async {
@@ -433,6 +518,515 @@ private struct MacSpeechAudioHostTests {
         expect(
             await host.activeCaptureGeneration() == generation,
             "active capture keeps the prepared generation"
+        )
+        _ = await host.stopCapture()
+    }
+
+    private static func testTier2RouteCaptureLeaseDefaultsToNil() async {
+        let defaultSource: any MacSpeechAudioFrameSourcing =
+            DefaultCaptureLeaseAudioFrameSource()
+        expect(
+            await defaultSource.tier2RouteCaptureLease() == nil,
+            "frame source protocol defaults to no automatic capture lease"
+        )
+        let inactiveLease = MacSpeechTier2RouteCaptureLease(
+            inputDeviceUID: inputA.identifier,
+            outputDeviceUID: outputA.identifier,
+            audioProcessingMode: .appleVoiceProcessing,
+            decisionRevision:
+                MacSpeechTier2RouteCaptureLease.frozenDecisionRevision,
+            evidenceRecordID: "default-source-test",
+            captureGeneration: 1,
+            routeRevision: 0
+        )
+        expect(
+            !(await defaultSource.isTier2RouteCaptureLeaseActive(inactiveLease)),
+            "frame source protocol cannot validate a route lease by default"
+        )
+
+        let (host, _, _, _) = makeHost(
+            authorization: .authorized,
+            processingMode: .appleVoiceProcessing
+        )
+        _ = await host.startCapture()
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "unenrolled physical route remains explicit-only"
+        )
+        _ = await host.stopCapture()
+    }
+
+    private static func testTier2RouteCaptureLeaseRequiresExactBindings()
+        async
+    {
+        let enrollment = makeTier2RouteEnrollment()
+        let (qualifiedHost, _, _, _) = makeHost(
+            authorization: .authorized,
+            processingMode: .appleVoiceProcessing,
+            tier2RouteEnrollment: enrollment
+        )
+        _ = await qualifiedHost.startCapture()
+        let lease = await qualifiedHost.tier2RouteCaptureLease()
+        expect(
+            lease?.inputDeviceUID == enrollment.inputDeviceUID
+                && lease?.outputDeviceUID == enrollment.outputDeviceUID
+                && lease?.audioProcessingMode
+                    == enrollment.audioProcessingMode
+                && lease?.decisionRevision == enrollment.decisionRevision
+                && lease?.evidenceRecordID == enrollment.evidenceRecordID
+                && lease?.captureGeneration == 1
+                && lease?.routeRevision == 0,
+            "exact enrolled route, mode, evidence, and generation lease"
+        )
+        _ = await qualifiedHost.stopCapture()
+
+        let fallbackInput = MacSpeechAudioDevice(
+            identifier: inputA.identifier,
+            name: inputA.name,
+            isAvailable: true
+        )
+        let fallbackOutput = MacSpeechAudioDevice(
+            identifier: outputA.identifier,
+            name: outputA.name,
+            isAvailable: true
+        )
+        let mismatches: [(
+            String,
+            MacSpeechTier2RouteEnrollment,
+            MacSpeechAudioProcessingMode?,
+            MacSpeechDeviceRoute
+        )] = [
+            (
+                "input UID mismatch",
+                makeTier2RouteEnrollment(inputDeviceUID: "input-b"),
+                .appleVoiceProcessing,
+                availableRoute
+            ),
+            (
+                "output UID mismatch",
+                makeTier2RouteEnrollment(outputDeviceUID: "output-b"),
+                .appleVoiceProcessing,
+                availableRoute
+            ),
+            (
+                "enrolled mode mismatch",
+                makeTier2RouteEnrollment(
+                    audioProcessingMode: .webRTCAEC3
+                ),
+                .appleVoiceProcessing,
+                availableRoute
+            ),
+            (
+                "runtime mode mismatch",
+                makeTier2RouteEnrollment(),
+                .webRTCAEC3,
+                availableRoute
+            ),
+            (
+                "unreported runtime mode",
+                makeTier2RouteEnrollment(),
+                nil,
+                availableRoute
+            ),
+            (
+                "decision revision mismatch",
+                makeTier2RouteEnrollment(
+                    decisionRevision: "test3_tier2_capture_lease_other"
+                ),
+                .appleVoiceProcessing,
+                availableRoute
+            ),
+            (
+                "fallback input identity",
+                makeTier2RouteEnrollment(),
+                .appleVoiceProcessing,
+                MacSpeechDeviceRoute(input: fallbackInput, output: outputA)
+            ),
+            (
+                "fallback output identity",
+                makeTier2RouteEnrollment(),
+                .appleVoiceProcessing,
+                MacSpeechDeviceRoute(input: inputA, output: fallbackOutput)
+            ),
+            (
+                "unavailable output",
+                makeTier2RouteEnrollment(),
+                .appleVoiceProcessing,
+                MacSpeechDeviceRoute(input: inputA, output: .unavailable)
+            ),
+            (
+                "missing evidence record",
+                makeTier2RouteEnrollment(evidenceRecordID: " \n"),
+                .appleVoiceProcessing,
+                availableRoute
+            )
+        ]
+        for (name, candidate, processingMode, route) in mismatches {
+            let (host, _, _, _) = makeHost(
+                authorization: .authorized,
+                route: route,
+                processingMode: processingMode,
+                tier2RouteEnrollment: candidate
+            )
+            _ = await host.startCapture()
+            expect(
+                await host.tier2RouteCaptureLease() == nil,
+                "\(name) cannot obtain a capture lease"
+            )
+            _ = await host.stopCapture()
+        }
+    }
+
+    private static func testTier2RouteCaptureLeaseTracksCaptureLifecycle()
+        async
+    {
+        let enrollment = makeTier2RouteEnrollment()
+        let (host, _, _, monitor) = makeHost(
+            authorization: .authorized,
+            processingMode: .appleVoiceProcessing,
+            tier2RouteEnrollment: enrollment
+        )
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "idle host does not expose a capture lease"
+        )
+        guard let preparedGeneration = await host.prepareCaptureGeneration() else {
+            fatalError("FAILED: enrolled route prepares a capture generation")
+        }
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "prepared but inactive generation does not expose a lease"
+        )
+        _ = await host.startPreparedCapture(generation: preparedGeneration)
+        guard let firstLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: active enrolled route exposes a capture lease")
+        }
+        expect(
+            firstLease.captureGeneration == preparedGeneration,
+            "lease binds the active prepared generation"
+        )
+        expect(
+            await host.isTier2RouteCaptureLeaseActive(firstLease),
+            "newly issued route lease revalidates while capture is unchanged"
+        )
+        _ = await host.stopCapture()
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "stopped generation retires its lease"
+        )
+        expect(
+            !(await host.isTier2RouteCaptureLeaseActive(firstLease)),
+            "stopped generation invalidates its issued route lease"
+        )
+
+        _ = await host.startCapture()
+        guard let restartedLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: restarted enrolled route exposes a lease")
+        }
+        expect(
+            restartedLease.captureGeneration == preparedGeneration + 1
+                && restartedLease != firstLease,
+            "restart issues a fresh generation-bound lease"
+        )
+        let firstLeaseAfterRestart = await host
+            .isTier2RouteCaptureLeaseActive(firstLease)
+        let restartedLeaseIsActive = await host
+            .isTier2RouteCaptureLeaseActive(restartedLease)
+        expect(
+            !firstLeaseAfterRestart && restartedLeaseIsActive,
+            "restart rejects the old lease and validates only the new lease"
+        )
+
+        monitor.setRoute(MacSpeechDeviceRoute(input: inputB, output: outputB))
+        await host.refreshDeviceRoute()
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "route change retires the prior capture lease"
+        )
+        expect(
+            !(await host.isTier2RouteCaptureLeaseActive(restartedLease)),
+            "route revision change invalidates the issued lease"
+        )
+        monitor.setRoute(availableRoute)
+        await host.refreshDeviceRoute()
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "restored route remains lease-free until a fresh capture starts"
+        )
+        _ = await host.startCapture()
+        guard let restoredLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: restored route exposes a fresh capture lease")
+        }
+        expect(
+            restoredLease.captureGeneration == restartedLease.captureGeneration + 1,
+            "restored exact route uses a new generation"
+        )
+        expect(
+            await host.isTier2RouteCaptureLeaseActive(restoredLease),
+            "restored route validates only its fresh lease"
+        )
+        _ = await host.stopCapture()
+    }
+
+    private static func testTier2RouteCaptureLeaseRequiresActiveMonitoring()
+        async
+    {
+        let (host, _, _, monitor) = makeHost(
+            authorization: .authorized,
+            processingMode: .appleVoiceProcessing,
+            tier2RouteEnrollment: makeTier2RouteEnrollment(),
+            monitoringStartsSuccessfully: false
+        )
+        let snapshot = await host.startCapture()
+        expect(
+            snapshot.isCapturing,
+            "route listener failure does not disable explicit Tier1 capture"
+        )
+        expect(
+            monitor.startCount == 1
+                && !monitor.hasActiveRouteChangeMonitoring(),
+            "failed route listener registration is observable as inactive"
+        )
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "inactive route monitoring cannot issue a Tier2 capture lease"
+        )
+        _ = await host.stopCapture()
+    }
+
+    private static func testTier2RouteCaptureLeaseRejectsBindingFlips() async {
+        let enrollment = makeTier2RouteEnrollment()
+        let (host, _, _, monitor) = makeHost(
+            authorization: .authorized,
+            processingMode: .appleVoiceProcessing,
+            tier2RouteEnrollment: enrollment
+        )
+        _ = await host.startCapture()
+        guard let firstLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: exact route starts with a capture lease")
+        }
+
+        let fallbackInput = MacSpeechAudioDevice(
+            identifier: inputA.identifier,
+            name: inputA.name,
+            isAvailable: true
+        )
+        monitor.setRoute(
+            MacSpeechDeviceRoute(input: fallbackInput, output: outputA)
+        )
+        await host.refreshDeviceRoute()
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "same UID with fallback provenance retires the capture lease"
+        )
+
+        monitor.setRoute(availableRoute)
+        await host.refreshDeviceRoute()
+        _ = await host.startCapture()
+        guard let restoredLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: restored exact route starts a new lease")
+        }
+        expect(
+            restoredLease.captureGeneration == firstLease.captureGeneration + 1,
+            "provenance flip requires a fresh capture generation"
+        )
+
+        let unavailableInput = MacSpeechAudioDevice(
+            identifier: inputA.identifier,
+            name: inputA.name,
+            isAvailable: false,
+            hasExactDeviceUID: true
+        )
+        monitor.setRoute(
+            MacSpeechDeviceRoute(input: unavailableInput, output: outputA)
+        )
+        await host.refreshDeviceRoute()
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "same UID becoming unavailable retires the capture lease"
+        )
+
+        monitor.setRoute(availableRoute)
+        await host.refreshDeviceRoute()
+        _ = await host.startCapture()
+        guard let exactOutputLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: restored exact output starts a new lease")
+        }
+        let fallbackOutput = MacSpeechAudioDevice(
+            identifier: outputA.identifier,
+            name: outputA.name,
+            isAvailable: true
+        )
+        monitor.setRoute(
+            MacSpeechDeviceRoute(input: inputA, output: fallbackOutput)
+        )
+        await host.refreshDeviceRoute()
+        let exactOutputLeaseIsActive = await host
+            .isTier2RouteCaptureLeaseActive(exactOutputLease)
+        let fallbackOutputGeneration = await host.activeCaptureGeneration()
+        expect(
+            await host.tier2RouteCaptureLease() == nil
+                && !exactOutputLeaseIsActive
+                && fallbackOutputGeneration == nil,
+            "same output UID with fallback provenance retires its lease"
+        )
+
+        monitor.setRoute(availableRoute)
+        await host.refreshDeviceRoute()
+        _ = await host.startCapture()
+        guard let availableOutputLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: available exact output starts a new lease")
+        }
+        let exactOutputLeaseAfterRestart = await host
+            .isTier2RouteCaptureLeaseActive(exactOutputLease)
+        let availableOutputLeaseIsInitiallyActive = await host
+            .isTier2RouteCaptureLeaseActive(availableOutputLease)
+        expect(
+            availableOutputLease.captureGeneration
+                == exactOutputLease.captureGeneration + 1
+                && !exactOutputLeaseAfterRestart
+                && availableOutputLeaseIsInitiallyActive,
+            "fallback output recovery requires and validates a fresh generation"
+        )
+        let unavailableOutput = MacSpeechAudioDevice(
+            identifier: outputA.identifier,
+            name: outputA.name,
+            isAvailable: false,
+            hasExactDeviceUID: true
+        )
+        monitor.setRoute(
+            MacSpeechDeviceRoute(input: inputA, output: unavailableOutput)
+        )
+        await host.refreshDeviceRoute()
+        let availableOutputLeaseIsActive = await host
+            .isTier2RouteCaptureLeaseActive(availableOutputLease)
+        let unavailableOutputGeneration = await host.activeCaptureGeneration()
+        expect(
+            await host.tier2RouteCaptureLease() == nil
+                && !availableOutputLeaseIsActive
+                && unavailableOutputGeneration == nil,
+            "same output UID becoming unavailable retires its lease"
+        )
+
+        monitor.setRoute(availableRoute)
+        await host.refreshDeviceRoute()
+        _ = await host.startCapture()
+        guard let restoredOutputLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: restored available output starts a new lease")
+        }
+        let unavailableOldLeaseIsActive = await host
+            .isTier2RouteCaptureLeaseActive(availableOutputLease)
+        let restoredOutputLeaseIsActive = await host
+            .isTier2RouteCaptureLeaseActive(restoredOutputLease)
+        expect(
+            restoredOutputLease.captureGeneration
+                == availableOutputLease.captureGeneration + 1
+                && !unavailableOldLeaseIsActive
+                && restoredOutputLeaseIsActive,
+            "unavailable output recovery requires and validates a fresh generation"
+        )
+        _ = await host.stopCapture()
+    }
+
+    private static func testTier2RouteCaptureLeaseRejectsFoldedRouteChanges()
+        async
+    {
+        let enrollment = makeTier2RouteEnrollment()
+        let (host, _, capture, monitor) = makeHost(
+            authorization: .authorized,
+            processingMode: .appleVoiceProcessing,
+            tier2RouteEnrollment: enrollment
+        )
+        _ = await host.startCapture()
+        guard let originalLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: exact route starts with a capture lease")
+        }
+
+        monitor.setRoute(MacSpeechDeviceRoute(input: inputB, output: outputB))
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "live route mismatch closes the lease before actor refresh"
+        )
+        monitor.setRoute(availableRoute)
+        expect(
+            await host.tier2RouteCaptureLease() == nil,
+            "A-to-B-to-A notifications cannot revive the old route revision"
+        )
+
+        await host.refreshDeviceRoute()
+        let foldedLease = await host.tier2RouteCaptureLease()
+        let foldedGeneration = await host.activeCaptureGeneration()
+        expect(
+            foldedLease == nil
+                && foldedGeneration == nil
+                && capture.stopCount == 1,
+            "folded route changes invalidate the active capture generation"
+        )
+        _ = await host.startCapture()
+        guard let revisedLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: fresh capture exposes a revised route lease")
+        }
+        expect(
+            revisedLease.captureGeneration == originalLease.captureGeneration + 1
+                && revisedLease.routeRevision
+                    == originalLease.routeRevision + 2
+                && revisedLease.routeRevision
+                    == monitor.currentRouteRevision(),
+            "folded route changes require a fresh generation and lease revision"
+        )
+        let originalLeaseIsActive = await host
+            .isTier2RouteCaptureLeaseActive(originalLease)
+        let revisedLeaseIsActive = await host
+            .isTier2RouteCaptureLeaseActive(revisedLease)
+        expect(
+            !originalLeaseIsActive && revisedLeaseIsActive,
+            "folded route validates only its fresh generation lease"
+        )
+        _ = await host.stopCapture()
+    }
+
+    private static func testNotificationDrivenRouteInvalidation() async {
+        let (host, _, capture, monitor) = makeHost(
+            authorization: .authorized,
+            processingMode: .appleVoiceProcessing,
+            tier2RouteEnrollment: makeTier2RouteEnrollment()
+        )
+        _ = await host.startCapture()
+        guard let originalLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: notification test starts with a route lease")
+        }
+
+        monitor.notifyRouteChange(
+            MacSpeechDeviceRoute(input: inputB, output: outputB)
+        )
+        monitor.notifyRouteChange(availableRoute)
+        for _ in 0..<100 {
+            if await host.activeCaptureGeneration() == nil { break }
+            await Task.yield()
+        }
+        let invalidatedGeneration = await host.activeCaptureGeneration()
+        expect(
+            invalidatedGeneration == nil
+                && capture.stopCount == 1
+                && monitor.currentRouteRevision()
+                    == originalLease.routeRevision + 2,
+            "stored route callback invalidates folded route generation"
+        )
+        expect(
+            !(await host.isTier2RouteCaptureLeaseActive(originalLease)),
+            "notification-driven route change invalidates the issued lease"
+        )
+
+        _ = await host.startCapture()
+        guard let restartedLease = await host.tier2RouteCaptureLease() else {
+            fatalError("FAILED: notification route can restart with a lease")
+        }
+        expect(
+            restartedLease.captureGeneration
+                == originalLease.captureGeneration + 1
+                && restartedLease.routeRevision
+                    == monitor.currentRouteRevision(),
+            "notification route restart uses new generation and exact revision"
         )
         _ = await host.stopCapture()
     }

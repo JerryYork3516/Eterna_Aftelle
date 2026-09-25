@@ -110,9 +110,40 @@ nonisolated struct MacSpeechCaptureGenerationFence: Sendable {
     }
 }
 
+/// Authorizes a later Tier2 decision on one route and capture generation.
+/// It never confirms that a captured source is a near-end speaker.
+nonisolated struct MacSpeechTier2RouteCaptureLease:
+    Sendable,
+    Equatable {
+    static let frozenDecisionRevision = "test3_tier2_capture_lease_v1"
+
+    let inputDeviceUID: String
+    let outputDeviceUID: String
+    let audioProcessingMode: MacSpeechAudioProcessingMode
+    let decisionRevision: String
+    let evidenceRecordID: String
+    let captureGeneration: UInt64
+    let routeRevision: UInt64
+}
+
+nonisolated struct MacSpeechTier2RouteEnrollment:
+    Sendable,
+    Equatable {
+    let inputDeviceUID: String
+    let outputDeviceUID: String
+    let audioProcessingMode: MacSpeechAudioProcessingMode
+    let decisionRevision: String
+    let evidenceRecordID: String
+}
+
 nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
     func activeCaptureGeneration() async -> UInt64?
     func isCaptureGenerationActive(_ generation: UInt64) async -> Bool
+    func tier2RouteCaptureLease() async
+        -> MacSpeechTier2RouteCaptureLease?
+    func isTier2RouteCaptureLeaseActive(
+        _ lease: MacSpeechTier2RouteCaptureLease
+    ) async -> Bool
     func drainFrames(maxCount: Int) async -> [MacSpeechAudioFrame]
     func discardPendingAudioForGenerationTransition() async
     func interruptionAcousticSnapshot() async
@@ -124,6 +155,11 @@ nonisolated protocol MacSpeechAudioFrameSourcing: Sendable {
 }
 
 nonisolated extension MacSpeechAudioFrameSourcing {
+    func tier2RouteCaptureLease() async
+        -> MacSpeechTier2RouteCaptureLease? { nil }
+    func isTier2RouteCaptureLeaseActive(
+        _ lease: MacSpeechTier2RouteCaptureLease
+    ) async -> Bool { false }
     func discardPendingAudioForGenerationTransition() async {}
     func interruptionAcousticSnapshot() async
         -> MacSpeechInterruptionAcousticSnapshot? { nil }
@@ -492,6 +528,7 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
     func discardPendingAudioForGenerationTransition()
     func routeWillRebuild()
     func routeDidRebuild()
+    func currentAudioProcessingMode() -> MacSpeechAudioProcessingMode?
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot?
     func causalInterruptionObservation()
         -> MacSpeechCausalInterruptionObservation?
@@ -504,6 +541,7 @@ nonisolated extension MacSpeechAudioCapturing {
     func discardPendingAudioForGenerationTransition() {}
     func routeWillRebuild() {}
     func routeDidRebuild() {}
+    func currentAudioProcessingMode() -> MacSpeechAudioProcessingMode? { nil }
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? { nil }
     func causalInterruptionObservation()
         -> MacSpeechCausalInterruptionObservation? { nil }
@@ -1173,6 +1211,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         routeDidRebuild()
     }
 
+    func currentAudioProcessingMode() -> MacSpeechAudioProcessingMode {
+        audioProcessingMode
+    }
+
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot {
         acousticEchoHost.snapshot()
     }
@@ -1536,6 +1578,10 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
     func routeDidRebuild() {
         audioEngine.routeDidRebuild()
+    }
+
+    func currentAudioProcessingMode() -> MacSpeechAudioProcessingMode? {
+        audioEngine.currentAudioProcessingMode()
     }
 
     func acousticEchoSnapshot() -> MacSpeechAcousticEchoSnapshot? {
