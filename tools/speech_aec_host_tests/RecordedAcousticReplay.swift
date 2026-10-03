@@ -642,11 +642,13 @@ private struct RecordedAcousticReplay {
         let original = try JSONSerialization.jsonObject(with: Data(contentsOf:
             directory.appendingPathComponent("result.json"))) as? [String: Any] ?? [:]
         let caseName = original["case"] as? String ?? ""
+        let replayCaseName = caseName.hasPrefix("webrtc_")
+            ? String(caseName.dropFirst("webrtc_".count)) : caseName
         let injectionAt = (original["injection_started_at_ns"] as? NSNumber)?.uint64Value
-        let positive = ["normal_software_near", "higher_software_near"].contains(caseName)
+        let positive = ["normal_software_near", "higher_software_near"].contains(replayCaseName)
         let ordinals = (audio.map(\.ordinal) + controls.map(\.ordinal)).sorted()
         guard !frames.isEmpty,
-              positive || ["normal_echo_only", "higher_echo_only"].contains(caseName),
+              positive || ["normal_echo_only", "higher_echo_only"].contains(replayCaseName),
               positive == (injectionAt != nil),
               ordinals.enumerated().allSatisfy({ $0.element == UInt64($0.offset + 1) }),
               audio.filter({ $0.kind == .capture }).reduce(0, { $0 + $1.sampleCount }) == raw.count,

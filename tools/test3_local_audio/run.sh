@@ -25,6 +25,7 @@ parser = argparse.ArgumentParser(description="Local Test 3 audio checks; no Qwen
 parser.add_argument("--app", type=Path, help="Current Debug .app built in this worktree")
 parser.add_argument("--skip-build", action="store_true", help="Use the explicitly supplied current build")
 parser.add_argument("--preflight-only", action="store_true")
+parser.add_argument("--aec-mode", choices=("webrtc", "apple"), default="webrtc")
 parser.add_argument("--resident-pcm", type=Path,
                     default=repo / ".build/test3-local-automation/fixtures/resident-window-48k.f32le.pcm")
 parser.add_argument("--near-pcm", type=Path,
@@ -42,11 +43,15 @@ stage = None
 transfer_path = None
 record = {
     "schema_version": 1, "run_id": run_id, "status": "INCOMPLETE",
-    "build_mode": "caller_supplied_current_debug_build" if args.skip_build else "xcodebuild_current_worktree",
+    "audio_processing_mode": args.aec_mode,
+    "build_mode": "caller_supplied_current_debug_build" if args.skip_build else "xcodebuild_optimized_debug_current_worktree",
+    "swift_optimization_level": "CALLER_SUPPLIED_UNVERIFIED" if args.skip_build else "-O",
     "runner_timeout_seconds": 300, "qwen_calls": 0,
-    "validation_scope": "host_runtime_postprocessing_injection",
-    "test3_acceptance": "REVIEW_REQUIRED",
-    "positive_input": "software_near_end_added_after_apple_voice_processing_before_host_gate",
+    "validation_scope": "host_runtime_software_near_injection",
+    "test3_acceptance": "NOT_ESTABLISHED",
+    "positive_input": "software_before_webrtc_aec3_before_host_gate"
+        if args.aec_mode == "webrtc"
+        else "software_after_apple_voice_processing_before_host_gate",
     "semantic_proposal": "local_stub_test_fixture",
     "physical_double_talk": "NOT_CLAIMED_CAPTURE_INJECTION_USED",
     "artifacts": str(run_dir),
@@ -147,7 +152,8 @@ try:
             str(repo / "apps/macos/Aftelle/Aftelle.xcodeproj"),
             "-scheme", "Aftelle", "-configuration", "Debug",
             "-derivedDataPath", str(derived),
-            "-disableAutomaticPackageResolution", "-skipPackageUpdates", "build",
+            "-disableAutomaticPackageResolution", "-skipPackageUpdates",
+            "SWIFT_OPTIMIZATION_LEVEL=-O", "build",
         ], run_dir / "build.log", 180)
         record["build_exit_code"] = build_status
         if build_status:
@@ -226,7 +232,9 @@ try:
                 with source.open("rb") as handle:
                     shutil.copyfileobj(handle, transfer)
         assert_app_closed(executable_name)
-        run_status = bounded([str(executable), "--test3-local-audio", "-"],
+        runner_flag = ("--test3-webrtc-local-audio" if args.aec_mode == "webrtc"
+                       else "--test3-local-audio")
+        run_status = bounded([str(executable), runner_flag, "-"],
                              run_dir / "app.log", 300,
                              run_dir / "app.stderr.log", transfer_path)
         record["runner_exit_code"] = run_status
@@ -238,15 +246,25 @@ try:
         result = json.loads(result_lines[0])
         if result.get("schema_version") != 1 or not isinstance(result.get("cases"), list):
             raise RuntimeError("Local runner returned an invalid result summary")
+        evidence_directory = result.get("evidence_directory")
+        if not isinstance(evidence_directory, str):
+            raise RuntimeError("Local runner omitted its evidence directory")
+        stage = Path(evidence_directory).resolve(strict=True)
+        if stage.parent != test_root or not stage.is_dir():
+            raise RuntimeError("Local runner evidence is outside the app test root")
         write_json(run_dir / "result.json", result)
-        record["app_evidence_directory"] = result.get("evidence_directory")
+        record["app_evidence_directory"] = str(stage)
         case_statuses = [case.get("status") for case in result["cases"]]
         record["case_statuses"] = case_statuses
         all_cases_passed = bool(case_statuses) and all(
             status == "PASS" for status in case_statuses
         )
-        record["status"] = "PASS" if all_cases_passed else "FAIL"
-        exit_code = 0 if all_cases_passed else 1
+        all_candidate_only = bool(case_statuses) and all(
+            status == "CANDIDATE_ONLY" for status in case_statuses
+        )
+        record["status"] = ("PASS" if all_cases_passed else
+                            "CANDIDATE_ONLY" if all_candidate_only else "FAIL")
+        exit_code = 0 if all_cases_passed or all_candidate_only else 1
 except Exception as error:
     record["status"] = "BLOCKED_OR_FAILED"
     record["error"] = str(error)
@@ -272,6 +290,6 @@ finally:
     print("test3_acceptance=" + record["test3_acceptance"])
     print("local_audio_artifacts=" + str(run_dir))
     print("qwen_calls=0; semantic_proposal=local_stub_test_fixture")
-    print("positive_input=software_after_apple_voice_processing_before_host_gate; physical_double_talk=NOT_CLAIMED")
+    print("positive_input=" + record["positive_input"] + "; physical_double_talk=NOT_CLAIMED")
 sys.exit(exit_code)
 PY

@@ -688,6 +688,7 @@ final class AppController: ObservableObject {
     private var formalSpeechRouteTask: Task<Void, Never>?
     private var formalSpeechPlaybackCommitted = false
     private var formalSpeechASRAcceptsAudio = false
+    private let formalSpeechSourceAttributionVerified = false
     private var formalSpeechFailingGeneration: UInt64?
     private var formalSpeechObservedSourceGateOpenCount: UInt64 = 0
     private var formalSpeechInterruptingGeneration: UInt64?
@@ -776,7 +777,7 @@ final class AppController: ObservableObject {
         let credentialStore = ProviderKeychainStore()
         let runtimeCore: RuntimeCore
         let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine(
-            audioProcessingMode: .appleVoiceProcessing
+            audioProcessingMode: .webRTCAEC3
         )
         speechAudioHost = MacSpeechAudioHost(
             capture: SystemMacSpeechAudioCapture(
@@ -827,7 +828,7 @@ final class AppController: ObservableObject {
         self.orchestrationKernel = orchestrationKernel
         providerKeychainStore = ProviderKeychainStore()
         let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine(
-            audioProcessingMode: .appleVoiceProcessing
+            audioProcessingMode: .webRTCAEC3
         )
         speechAudioHost = MacSpeechAudioHost(
             capture: SystemMacSpeechAudioCapture(
@@ -5075,7 +5076,8 @@ final class AppController: ObservableObject {
     }
 
     private func handleFormalNearEndSpeechStartedIfNeeded() async -> Bool {
-        guard let snapshot = speechAudioHost.currentAcousticEchoSnapshot()
+        guard formalSpeechSourceAttributionVerified,
+              let snapshot = speechAudioHost.currentAcousticEchoSnapshot()
         else { return false }
         if snapshot.sourceGateOpenCount
                 < formalSpeechObservedSourceGateOpenCount {

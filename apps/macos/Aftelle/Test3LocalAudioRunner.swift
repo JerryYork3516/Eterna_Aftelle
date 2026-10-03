@@ -102,8 +102,11 @@ enum Test3LocalAudioRunner {
     static var isRequested: Bool {
         CommandLine.arguments.contains("--test3-local-audio-preflight")
             || CommandLine.arguments.contains("--test3-local-audio")
+            || CommandLine.arguments.contains("--test3-webrtc-local-audio")
             || CommandLine.arguments.contains("--test3-physical-echo")
             || CommandLine.arguments.contains("--test3-physical-observe")
+            || CommandLine.arguments.contains("--test3-webrtc-physical-echo")
+            || CommandLine.arguments.contains("--test3-webrtc-physical-observe")
             || CommandLine.arguments.contains("--test3-physical-yield-tail")
     }
 
@@ -159,23 +162,36 @@ enum Test3LocalAudioRunner {
     }
 
     private static func run() async throws {
-        let physicalEchoOnly = CommandLine.arguments.contains(
-            "--test3-physical-echo"
+        let webRTCLocalAudio = CommandLine.arguments.contains(
+            "--test3-webrtc-local-audio"
         )
-        let physicalObservation = CommandLine.arguments.contains(
-            "--test3-physical-observe"
+        let webRTCPhysicalEchoOnly = CommandLine.arguments.contains(
+            "--test3-webrtc-physical-echo"
         )
+        let webRTCPhysicalObservation = CommandLine.arguments.contains(
+            "--test3-webrtc-physical-observe"
+        )
+        let physicalEchoOnly = webRTCPhysicalEchoOnly
+            || CommandLine.arguments.contains("--test3-physical-echo")
+        let physicalObservation = webRTCPhysicalObservation
+            || CommandLine.arguments.contains("--test3-physical-observe")
         let physicalYieldTail = CommandLine.arguments.contains(
             "--test3-physical-yield-tail"
         )
         let physicalRouteOnly = physicalEchoOnly || physicalObservation
             || physicalYieldTail
-        let flag = physicalYieldTail
+        let flag = webRTCPhysicalEchoOnly
+            ? "--test3-webrtc-physical-echo"
+            : webRTCPhysicalObservation
+            ? "--test3-webrtc-physical-observe"
+            : physicalYieldTail
             ? "--test3-physical-yield-tail"
             : physicalEchoOnly
             ? "--test3-physical-echo"
             : physicalObservation
-                ? "--test3-physical-observe" : "--test3-local-audio"
+                ? "--test3-physical-observe"
+                : webRTCLocalAudio
+                    ? "--test3-webrtc-local-audio" : "--test3-local-audio"
         guard let index = CommandLine.arguments.firstIndex(of: flag),
               CommandLine.arguments.indices.contains(index + 1) else {
             throw RunnerError.invalidConfiguration
@@ -216,12 +232,24 @@ enum Test3LocalAudioRunner {
             ("apple_higher_echo_only", 1, false, .appleVoiceProcessing),
             ("apple_higher_software_near", 1, true, .appleVoiceProcessing)
         ]
+        let webRTCCases: [(String, Float, Bool, MacSpeechAudioProcessingMode)] = [
+            ("webrtc_normal_echo_only", 0.5, false, .webRTCAEC3),
+            ("webrtc_normal_software_near", 0.5, true, .webRTCAEC3),
+            ("webrtc_higher_echo_only", 1, false, .webRTCAEC3),
+            ("webrtc_higher_software_near", 1, true, .webRTCAEC3)
+        ]
+        let physicalMode: MacSpeechAudioProcessingMode =
+            webRTCPhysicalEchoOnly || webRTCPhysicalObservation
+                ? .webRTCAEC3 : .appleVoiceProcessing
+        let physicalCasePrefix = physicalMode == .webRTCAEC3
+            ? "webrtc" : "apple"
         let cases = physicalRouteOnly
             ? [(physicalYieldTail ? "apple_physical_yield_tail"
-                : physicalEchoOnly ? "apple_physical_echo_only"
-                : "apple_physical_observation", 0.5, false,
-                MacSpeechAudioProcessingMode.appleVoiceProcessing)]
-            : existingCases
+                : physicalEchoOnly
+                    ? "\(physicalCasePrefix)_physical_echo_only"
+                    : "\(physicalCasePrefix)_physical_observation",
+                0.5, false, physicalMode)]
+            : webRTCLocalAudio ? webRTCCases : existingCases
         for (name, gain, positive, mode) in cases {
             let caseDirectory = directory.appendingPathComponent(name, isDirectory: true)
             if physicalRouteOnly,
@@ -1042,15 +1070,26 @@ enum Test3LocalAudioRunner {
                 || preInjectionGateOpens != 0 || preInjectionForwards != 0 || acousticBeforeInjection {
                 failures.append("Echo-only prefix opened source gate")
             }
-            if firstAcousticAt == nil || semanticAt == nil
-                || forwardedActivityCount == 0 {
-                failures.append("Near-end did not reach Runtime acoustic evidence")
-            }
-            if interruptDelta != 1 || clearDelta != 1 || finalGeneration != session.generation + 1 {
-                failures.append("Expected exactly one Runtime interrupt, clear and generation advance")
-            }
-            if clearLatencyMilliseconds == nil || clearLatencyMilliseconds! > 50 {
-                failures.append("Confirmed interrupt to clear exceeds 50 ms or missing")
+            if mode == .webRTCAEC3 {
+                if forwardedActivityCount == 0 {
+                    failures.append("Software near-end did not reach the candidate gate")
+                }
+                if firstAcousticAt != nil || interruptDelta != 0
+                    || clearDelta != 0 || finalGeneration != session.generation {
+                    failures.append("Unverified source gained formal interruption authority")
+                }
+            } else {
+                if firstAcousticAt == nil || semanticAt == nil
+                    || forwardedActivityCount == 0 {
+                    failures.append("Near-end did not reach Runtime acoustic evidence")
+                }
+                if interruptDelta != 1 || clearDelta != 1
+                    || finalGeneration != session.generation + 1 {
+                    failures.append("Expected exactly one Runtime interrupt, clear and generation advance")
+                }
+                if clearLatencyMilliseconds == nil || clearLatencyMilliseconds! > 50 {
+                    failures.append("Confirmed interrupt to clear exceeds 50 ms or missing")
+                }
             }
         } else if !physicalObservation {
             if playbackFrameObservationCount
@@ -1084,13 +1123,16 @@ enum Test3LocalAudioRunner {
             ? "FAIL"
             : physicalRouteOnly ? "UNVERIFIED"
             : mode == .webRTCAEC3 && couplingFrames < 20
-                ? "INCONCLUSIVE" : "PASS"
+                ? "INCONCLUSIVE"
+                : mode == .webRTCAEC3 ? "CANDIDATE_ONLY" : "PASS"
         var result: [String: Any] = [
             "case": name, "status": status, "failures": failures, "resident_gain": gain,
             "test3_acceptance": "NOT_ESTABLISHED",
             "positive_input": positive,
             "near_delivery": positive
-                ? "software_after_apple_voice_processing_before_host_gate"
+                ? mode == .webRTCAEC3
+                    ? "software_before_webrtc_aec3_before_host_gate"
+                    : "software_after_apple_voice_processing_before_host_gate"
                 : physicalObservation ? "external_source_unverified" : "none",
             "qwen_calls": 0,
             "microphone": ["id": input.inputDevice.identifier, "name": input.inputDevice.name],

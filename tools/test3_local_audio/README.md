@@ -32,6 +32,12 @@ bash tools/test3_local_audio/silent_doubletalk/run.sh
 bash tools/test3_local_audio/run.sh
 ```
 
+默认测试当前 WebRTC AEC3 路由；需要复查保留的 Apple 路由时传入
+`--aec-mode apple`。两种模式的结果分别记录实际 `aec_mode`，
+软件近端注入仅用于链路测试，不是实体真人声源验收。
+WebRTC 正控只检查候选转发与正式中断保持为零；无失败时结果为
+`CANDIDATE_ONLY`，Test3 验收仍为 `NOT_ESTABLISHED`。
+
 默认先用当前工作区的 Xcode 工程编译 Debug，再执行无弹窗预检和本地测试。构建和测试各自最多 180 秒，预检最多 15 秒。保留工程原有签名设置；不自动申请麦克风权限。若预检不是 `authorized`，输出具体状态并停止。
 
 若本轮已通过 Xcode 编译当前代码，可以指定该次产物：

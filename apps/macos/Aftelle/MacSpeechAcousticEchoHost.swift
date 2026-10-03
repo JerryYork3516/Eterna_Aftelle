@@ -530,6 +530,19 @@ nonisolated struct MacSpeechAcousticReplayFrameSnapshot:
     let timingDelayMilliseconds: Double?
     let timingCorrelation: Double?
     let renderReferenceRMS: Double?
+    let classificationBranch: String?
+    let classificationMatchAvailable: Bool?
+    let classificationRenderHostTimeNanoseconds: UInt64?
+    let classificationRenderFrameHostTimeNanoseconds: UInt64?
+    let classificationRenderSampleOffset: Int?
+    let classificationDelayMilliseconds: Double?
+    let classificationCorrelation: Double?
+    let classificationRenderRMS: Double?
+    let classificationAssociationOrigin: String?
+    let adaptivePreconditionsPassed: Bool?
+    let adaptiveRawExcessPower: Double?
+    let adaptiveResidualExcessPower: Double?
+    let adaptiveLinearExcessPower: Double?
     let aecBufferDelayMilliseconds: Int
     let sourceAlignmentLocked: Bool
     let sourceAlignmentDelayMilliseconds: Int?
@@ -1040,6 +1053,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private static let acousticReplayCaptureFrameCapacity = 1_000
     private var acousticReplayCapture: AcousticReplayCapture?
+    private var lastClassificationBranch: String?
+    private var lastAdaptivePreconditionsPassed: Bool?
+    private var lastAdaptiveRawExcessPower: Double?
+    private var lastAdaptiveResidualExcessPower: Double?
+    private var lastAdaptiveLinearExcessPower: Double?
     #endif
 
     init(
@@ -1353,10 +1371,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         timingMatch: timingMatch,
                         rawReferenceSearch: rawReferenceSearch
                     )
+                    let classificationTimingMatch = alternativeEchoReference
+                        ? nil : timingMatch
                     let gatedSpans = gatedCaptureSpans(
                         processedFrame,
-                        classificationTimingMatch:
-                            alternativeEchoReference ? nil : timingMatch,
+                        classificationTimingMatch: classificationTimingMatch,
                         alternativeEchoReference: alternativeEchoReference,
                         reportedTimingMatch: reportedTimingMatch,
                         captureFrameIndex: captureFrameCount &+ 1
@@ -1369,6 +1388,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         processedCapture: processedFrame,
                         linearAECOutput: captureResult.linearOutputSamples,
                         timingMatch: reportedTimingMatch,
+                        classificationTimingMatch: classificationTimingMatch,
                         observation: makeAcousticObservationSnapshot(
                             captureFrameIndex: captureFrameCount &+ 1
                         ),
@@ -2715,7 +2735,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         reportedTimingMatch: TimingMatch?,
         captureFrameIndex: UInt64
     ) -> [MacSpeechAcousticCaptureSpan] {
+        #if DEBUG
+        lastClassificationBranch = nil
+        lastAdaptivePreconditionsPassed = nil
+        lastAdaptiveRawExcessPower = nil
+        lastAdaptiveResidualExcessPower = nil
+        lastAdaptiveLinearExcessPower = nil
+        #endif
         guard isPlaybackActive else {
+            #if DEBUG
+            lastClassificationBranch = "playback_inactive"
+            #endif
             inputClassification = .nearEndSpeech
             resetSourceGate(
                 keepingClassification: true,
@@ -2728,6 +2758,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
 
         if alternativeEchoReference {
+            #if DEBUG
+            lastClassificationBranch = "alternative_echo_reference"
+            #endif
             adaptiveNearEndContinuationCandidate = false
             revokeRenderCaptureIsolationEvidence()
             inputClassification = .echoOnly
@@ -2812,9 +2845,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         let cleanRMS = signalRMS(processedFrame)
         guard let timingMatch else {
             if hasUnalignedIsolatedNearEndEvidence(cleanRMS: cleanRMS) {
+                #if DEBUG
+                lastClassificationBranch = "no_match_isolated_near_end"
+                #endif
                 freezeResidualEchoBaseline()
                 return .nearEndSpeech
             }
+            #if DEBUG
+            lastClassificationBranch = "no_match_uncertain"
+            #endif
             return .uncertain
         }
         let residualCorrelation = residualRenderCorrelation
@@ -2828,12 +2867,18 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
         let classification: MacSpeechAcousticInputClassification
         if residentOnlyEvidence {
+            #if DEBUG
+            lastClassificationBranch = "resident_only"
+            #endif
             classification = .echoOnly
         } else if hasImmediateDoubleTalkEvidence(
             cleanRMS: cleanRMS,
             residualCorrelation: residualCorrelation,
             timingMatch: timingMatch
         ) {
+            #if DEBUG
+            lastClassificationBranch = "immediate_double_talk"
+            #endif
             classification = .doubleTalk
             freezeResidualEchoBaseline()
         } else if hasAdaptiveDoubleTalkEvidence(
@@ -2841,6 +2886,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             residualCorrelation: residualCorrelation,
             timingMatch: timingMatch
         ) {
+            #if DEBUG
+            lastClassificationBranch = "adaptive_double_talk"
+            #endif
             classification = .doubleTalk
             adaptiveDoubleTalkFrameCount &+= 1
             freezeResidualEchoBaseline()
@@ -2849,11 +2897,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             residualCorrelation: residualCorrelation,
             timingMatch: timingMatch
         ) {
+            #if DEBUG
+            lastClassificationBranch = "isolated_near_end"
+            #endif
             classification = .nearEndSpeech
             freezeResidualEchoBaseline()
         } else if hasUnalignedIsolatedNearEndEvidence(
             cleanRMS: cleanRMS
         ) {
+            #if DEBUG
+            lastClassificationBranch = "unaligned_isolated_near_end"
+            #endif
             classification = .nearEndSpeech
             freezeResidualEchoBaseline()
         } else if (timingMatch.associationOrigin == .historicalDiscovery
@@ -2867,12 +2921,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                   processedLinearCorrelation
                     >= Self.minimumProcessedLinearNearEndCorrelation,
                   cleanRMS >= Self.minimumNearEndRMS {
+            #if DEBUG
+            lastClassificationBranch = "low_correlation_near_end"
+            #endif
             classification = .nearEndSpeech
             freezeResidualEchoBaseline()
         } else if timingLockedDelayMilliseconds != nil,
                   timingMatchSupportsEchoAssociation(timingMatch) {
+            #if DEBUG
+            lastClassificationBranch = "locked_echo"
+            #endif
             classification = .echoOnly
         } else {
+            #if DEBUG
+            lastClassificationBranch = "uncertain"
+            #endif
             classification = .uncertain
         }
         updateResidualEchoBaseline(
@@ -3410,6 +3473,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         residualCorrelation: Double,
         timingMatch: TimingMatch
     ) -> Bool {
+        #if DEBUG
+        lastAdaptivePreconditionsPassed = false
+        #endif
         guard timingMatch.associationOrigin != .historicalDiscovery
                 || timingMatch.correlation >= Self.minimumTimingCorrelation,
               outputTimingReferenceAvailable,
@@ -3423,6 +3489,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
         let renderRMS = signalRMS(timingMatch.renderSamples)
         guard renderRMS >= Self.minimumTimingRMS else { return false }
+        #if DEBUG
+        lastAdaptivePreconditionsPassed = true
+        #endif
         let expectedRawEchoRMS = rawEchoGainBaseline * renderRMS
         let expectedEchoRMS = residualEchoGainBaseline * renderRMS
         let expectedLinearRMS = linearAECOutputGainBaseline * renderRMS
@@ -3432,6 +3501,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             - expectedEchoRMS * expectedEchoRMS
         let linearExcessPower = linearAECOutputRMS * linearAECOutputRMS
             - expectedLinearRMS * expectedLinearRMS
+        #if DEBUG
+        lastAdaptiveRawExcessPower = rawExcessPower
+        lastAdaptiveResidualExcessPower = excessPower
+        lastAdaptiveLinearExcessPower = linearExcessPower
+        #endif
         let rawExcessRMS = sqrt(max(0, rawExcessPower))
         let residualExcessRMS = sqrt(max(0, excessPower))
         let linearExcessRMS = sqrt(max(0, linearExcessPower))
@@ -4169,6 +4243,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         processedCapture: [Float],
         linearAECOutput: [Float],
         timingMatch: TimingMatch?,
+        classificationTimingMatch: TimingMatch?,
         observation: MacSpeechAcousticObservationSnapshot,
         emittedSpans: [MacSpeechAcousticCaptureSpan]
     ) {
@@ -4183,6 +4258,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         let linearOffset = capture.aecLinearSamples.count
         capture.aecCleanSamples.append(contentsOf: processedCapture)
         capture.aecLinearSamples.append(contentsOf: linearAECOutput)
+        let classificationAssociationOrigin: String?
+        if let classificationTimingMatch {
+            switch classificationTimingMatch.associationOrigin {
+            case .expected:
+                classificationAssociationOrigin = "expected"
+            case .trackedCandidate:
+                classificationAssociationOrigin = "tracked_candidate"
+            case .locked:
+                classificationAssociationOrigin = "locked"
+            case .historicalDiscovery:
+                classificationAssociationOrigin = "historical_discovery"
+            }
+        } else {
+            classificationAssociationOrigin = nil
+        }
         capture.captureFrames.append(MacSpeechAcousticReplayFrameSnapshot(
             callOrdinal: call.ordinal,
             frameInCall: capture.captureFrames.count - call.firstFrameIndex,
@@ -4205,6 +4295,27 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             timingDelayMilliseconds: timingMatch?.delayMilliseconds,
             timingCorrelation: timingMatch?.correlation,
             renderReferenceRMS: timingMatch?.renderRMS,
+            classificationBranch: lastClassificationBranch,
+            classificationMatchAvailable: classificationTimingMatch != nil,
+            classificationRenderHostTimeNanoseconds:
+                classificationTimingMatch?.renderHostTimeNanoseconds,
+            classificationRenderFrameHostTimeNanoseconds:
+                classificationTimingMatch?.renderFrameHostTimeNanoseconds,
+            classificationRenderSampleOffset:
+                classificationTimingMatch?.renderSampleOffset,
+            classificationDelayMilliseconds:
+                classificationTimingMatch?.delayMilliseconds,
+            classificationCorrelation:
+                classificationTimingMatch?.correlation,
+            classificationRenderRMS:
+                classificationTimingMatch?.renderRMS,
+            classificationAssociationOrigin:
+                classificationAssociationOrigin,
+            adaptivePreconditionsPassed: lastAdaptivePreconditionsPassed,
+            adaptiveRawExcessPower: lastAdaptiveRawExcessPower,
+            adaptiveResidualExcessPower:
+                lastAdaptiveResidualExcessPower,
+            adaptiveLinearExcessPower: lastAdaptiveLinearExcessPower,
             aecBufferDelayMilliseconds: delayMilliseconds,
             sourceAlignmentLocked: observation.sourceAlignmentLocked,
             sourceAlignmentDelayMilliseconds:
