@@ -1,0 +1,38 @@
+> Published historical report. Source: `.build/test3-webrtc-optimized-freeze-20261003/replay-isolated/aec3-internal-divergence/temporal-support-review.md`.
+> Local home/device identifiers are redacted; relative artifact links are rendered as text.
+> Read [README](README.md) for chronology and corrections. Referenced PCM, traces and binaries remain local and are not part of this publication.
+> Statements such as "no commit/push" describe the original experiment, not this later publication.
+
+# Test3/03 AEC3 delay temporal-support audit
+
+Status: **read-only diagnostic complete; no delay rule accepted; Test3/03 BLOCKED**. This audit reuses the pinned-source logging replays in this directory. No playback, recording, threshold change, product-code change or Runtime interruption occurred. The normal/higher positive signals are software injections and do not count as physical-human acceptance.
+
+## Method and reproducibility
+
+`temporal_support_audit.py` reads only the baseline `aggregate.csv` and candidate `controller.csv` for the frozen physical pure-echo, normal software-near and higher-volume software-near capsules. It reproduces the **exact-sample** 250-update AEC3 highest-peak histogram and the separate 250-update pre-echo **block** histogram from `matched_filter_lag_aggregator.cc`, including 8 downsampled-sample headroom. Every logged valid exact-lag candidate/count and every emitted baseline pre-echo delay matched the independent reconstruction. Observable histogram resets are physical frame/call 252/628 and 711/1777; normal 355/886 and 606/1514; higher 342/828. The audit labels these as *inferred* resets because no separate reset event was logged. It does not claim to reconstruct other hidden AEC state.
+
+For a descriptive continuity view, it also groups adjusted lags into the **actual AEC block width**, 16 downsampled samples = 64 samples at 16 kHz = 4 ms. This grouping is not the production histogram, which counts individual lag samples; it is not a proposed gate. `temporal-support-summary.json` saves each witness, last-250-update block count, same-block reliable-update run and consecutive-call run. No result was selected by scanning a new threshold.
+
+## Decisive witnesses
+
+| Frozen capsule / point | Current reliable main lag and 4 ms block | Production historical exact-lag winner | Structural support after last reset | Candidate controller result |
+| --- | --- | --- | --- | --- |
+| Physical pure echo, frame 240/call 600 | 443 ds, block 27 | 39 ds, count 90 | block 27: 31/153 retained reliable updates; 31-update run | 27 blocks |
+| Physical pure echo, frame 636/call 1589 | 438 ds, block 26 | 45 ds, count 139 | block 26: 19/223; this call starts a new consecutive run | 26 blocks |
+| Physical pure echo, frame 688/call 1718 | 437 ds, block 26 | 45 ds, count 139 | block 26: 49/250; 31-update run | 26 blocks |
+| Higher software-near, frame 444/call 1084 | 798 ds, block 49 | 55 ds, count 22 | block 49: **1/52** | jumps 3 → 49 blocks |
+| Higher software-near, frame 445/call 1087 | 1594 ds, block 99 | 55 ds, count 22 | block 99: **1/54** | jumps 49 → 99 blocks |
+
+The production quality bit at higher frame 444/445 belongs to the **55 ds historical winner**, not the new 798/1594 ds main lag. The separate pre-echo histogram also favors its old block 3: 36 retained votes at frame 445 versus **one** vote for new block 99. The rejected candidate borrowed the historical quality bit for an unrelated lag. Its 99-block controller value persists from frame 445 through frame 563; in that interval there is only **one** reliable block-99 update, at the start. At frame 580 the controller still holds a different 91-block long delay; by frame 589 it moves to block 27. Prior replay evidence records candidate near forwarding 0 and loss of near-dominant output in the higher-volume interval. This is a concrete stale-delay amplification mechanism, not proof that any single alternative rule will pass.
+
+The physical negative contains genuinely repeated later-lag evidence, including a 31-update block-27 run at frames 219–240 and a 31-update block-26 run at frames 636–688. At frame 688 the pre-echo block histogram still has **152** votes for old block 2 and only **36** for block 26, so the unchanged selector's short 32 ds result is reproduced, not a log/rounding error. Its candidate block-26 delay is still held at frame 650, 36 AEC calls (about 144 ms) after the last reliable lag update. The prior split-band identity audit found that this candidate selected unique, causal 120 ms render content and brought isolated replay Gate/forwarded to 0/0. That finding supports the physical-negative mechanism only; it is not a physical-human positive.
+
+## Why temporal support alone is not a fix
+
+The two one-update jumps at higher frames 444–445 are visibly different from the repeated physical long-lag observations. However, a simple rule that only delays those jumps leaves another failure untouched: the same rejected candidate falsely opens the higher-volume **pre-injection pure-echo** segment at Host frame 232, while the controller is on block 3 and before either jump. At frame 231, unchanged Host logic sees `processedLinearCorrelation` 0.706520 in the candidate versus 0.644496 baseline, crossing the existing 0.65 condition; three classifications then confirm a false opening. The baseline itself has a separate 18-frame pre-injection false opening beginning at frame 326. Thus even perfect rejection of the frame-444/445 jumps would not establish zero pure-echo formal eligibility.
+
+The unchanged baseline physical negative also opens at frames 652–673 and 694–735 (64 Gate-open frames, 68 forwarded spans). Its first opening follows adaptive double-talk classifications at frames 650–652 while the baseline controller is at 2 blocks; the rejected candidate's controller is at 26 blocks there. This is the actual unresolved device-route failure. No WebRTC physical-human long/short positive capsule exists to check whether a new delay rule preserves real interruption, and the normal software-near pass has no applied AEC delay during its positive interval.
+
+**Decision:** the temporal trace explains why instantaneous main-lag substitution failed and supplies a falsifiable consistency witness. The unchanged short selection is likewise reproduced from its own histogram. It does not justify a third heuristic, a threshold change, a claim that long lag is always the right echo path, or a source-attribution PASS. Earlier frozen audits have already checked the first false-confirmation chain, adaptive-branch ablation, fresh ERLE, buffer events and continuous raw correlation; none yielded a safe Gate rule. The next engineering step is a **bounded correction proposal** that names both mechanisms up front: stale short AEC selection on the physical negative and unsupported long jumps plus the pre-injection false Gate in the higher-volume regression. It must specify a source-backed rule and fixed stop criteria against all existing capsules before any code change. If no such rule can be stated without choosing constants from these failures, stop the single-mic delay-rule path rather than run another fitted variant. Any later successful isolated result still needs a labelled physical-human check. Until then no formal Runtime generation/cancel/clear connection.
+
+Stage 7 forbidden checklist: **PASS**. Touched red lines: none. Modified files: this ignored report plus `temporal_support_audit.py` and its ignored JSON output. Product code: no. Runtime API: no. DR schema: no. New platform target: no. Stage 8: no. User confirmation needed for this read-only work: no.

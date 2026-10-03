@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "purpose": "Read-only Apple Voice Processing versus WebRTC AEC3 repair and route review",
+  "test3_decision": "BLOCKED",
+  "source_commit": "1163a887e6820cdd4c70ee58ba71b4b66aea66fc",
+  "frozen_run_head": "fbe7b77ec663832954d428bac90694447cecfba7",
+  "frozen_run_worktree_diff_sha256": "8ba526b0f6a6f93401318919ab4b28465852e94bbe48ea9fc1248fbdac0ce47b",
+  "pinned_webrtc_revision": "9f30e83c018647b05804571699cf22b1f0f3409e",
+  "private_audio_included": false,
+  "reports": [
+    {
+      "published": "apple-status.md",
+      "local_source": ".build/test3-apple-status-20261002/report.md",
+      "local_original_sha256": "eebfbc0b660a6c1517ba7dfe23100c78d6b9f11518ed3b6f883b4bedf913a7b4",
+      "published_sha256": "f4caf38a0c1e25d8560969bae7b923eff19dae3d6fe64cfd029f9df90b4c7b47"
+    },
+    {
+      "published": "apple-acoustic-effect.md",
+      "local_source": ".build/test3-apple-acoustic-effect-20261002/report.md",
+      "local_original_sha256": "69574cd05f7d207756bca121aa437765bbf90eb5479e0a4fe414ee481a74ad45",
+      "published_sha256": "5e9629866c6bca2b337fad531dc9c2eed34bfef1bce58ea9a29bf035f535714b"
+    },
+    {
+      "published": "apple-graph-audit.md",
+      "local_source": ".build/test3-apple-graph-audit-20261003/report.md",
+      "local_original_sha256": "ad2dfe3cd73b865b470df3a5e70ccb221ea13f03046a038b0347809c0a32e511",
+      "published_sha256": "174ad717eb18e035ea35c28a3914a5c403d3c01b9728cbc311f058c3047bab07"
+    },
+    {
+      "published": "webrtc-negative.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/negative-review.md",
+      "local_original_sha256": "da0a94b158f66347785124574e11754885050da14e4b237a8a7e5b5fc7edf3b4",
+      "published_sha256": "52ce79a39077365071c29db5ea14fe9e468fdfe82d0a08b7a320136d934d62b1"
+    },
+    {
+      "published": "webrtc-software-suite.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/optimized-software-suite-review.md",
+      "local_original_sha256": "a4976eb96df492bdead03358528bbd646f041a2ae1e5001a35d6ba351ea8e170",
+      "published_sha256": "32c2a4395e82fb79cc336974ab3594b0dedf9d900f72fca47be4eb974979d609"
+    },
+    {
+      "published": "webrtc-feasibility.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/replay-isolated/correction-feasibility-review-20261004.md",
+      "local_original_sha256": "615b6f49ae9f7232c0cddf6a6447aa357d7ac03e63de7b3c66ededf67742e425",
+      "published_sha256": "e429adce98614a4da28f671e2ec4df88e99cf077c5e26cd496b9241c44ea7ec6"
+    },
+    {
+      "published": "webrtc-internal-divergence.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/replay-isolated/aec3-internal-divergence/result.md",
+      "local_original_sha256": "ddb032a764ed4540e907271b006ab614455bda3c4c1ed14b466cc6e18f71eee2",
+      "published_sha256": "336d601f2afd4b56dc2716a643988fff0eb60b8d08603403f23eaf76804ed21c"
+    },
+    {
+      "published": "webrtc-temporal-support.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/replay-isolated/aec3-internal-divergence/temporal-support-review.md",
+      "local_original_sha256": "0b6831d80742dff42599d99a3412f35598f6bd55a9afdeeb5a8f402816966a65",
+      "published_sha256": "b3d4e8b90ac5fed38e2ff214e43e8028560d78815225e72e4a3b120f4b9d9c88"
+    },
+    {
+      "published": "rejected-main-lag-result.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/replay-isolated/fresh-main-lag-candidate/result.md",
+      "local_original_sha256": "a1a1cbdadd1293315834745ac480ce03b7702f0e9e9e34bc5723674e6a8464f9",
+      "published_sha256": "3e8902eb5f81cabc4a6b7acdcff20b8bd67f7a4b3f12b5c32f83f37935cb7337"
+    },
+    {
+      "published": "rejected-main-lag-host-divergence.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/replay-isolated/fresh-main-lag-candidate/divergence-review.md",
+      "local_original_sha256": "99135be83e4a0d140ea5a39f41c2875f69ec76bd3b12c68aa73afa21a2106f37",
+      "published_sha256": "d666ed155ec38650d404cbd3b9f0157b764774c09b7d8decb77dfd08c9b7ab23"
+    },
+    {
+      "published": "rejected-erle-screen.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/replay-isolated/erle-preclass-candidate-screen.md",
+      "local_original_sha256": "46ef897e679a7c0b020f9f2ca6fccac1c42fe554626604a38bb0c9ee50f5741a",
+      "published_sha256": "229e926bc056dca332c96e7e510463cbda70ec76b068ea3f67fb7c5a83026165"
+    },
+    {
+      "published": "fresh-aec-metrics.md",
+      "local_source": ".build/test3-webrtc-optimized-freeze-20261003/replay-isolated/adaptive-ablation/fresh-aec-metrics-review.md",
+      "local_original_sha256": "afaaf3d91912068b923563519a793fa57672da4d2459fa7223df7647bb53fc24",
+      "published_sha256": "b76a271e523f90f1c8978229a59d2fb18f978cf116dee6f29aa85f8bddf37343"
+    }
+  ],
+  "code_sha256": {
+    "apps/macos/Aftelle/AppController.swift": "2f04a9ffb1c071e50c919933c1c46852f1e0f3fa86481d79debea9ed962d9598",
+    "apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift": "51cbfbb9f6b2aefedc8af37c74b8892a68d2919bf260fcc082a07ca287a1df85",
+    "apps/macos/Aftelle/MacSpeechAudioCapture.swift": "ef09463cc03fac9e90d177d3d05e5c05ce4d1e6abec9d7a203f3a3608d13fc41",
+    "apps/macos/Aftelle/MacSpeechDeviceMonitor.swift": "1b0a2e85b6b2b3e635c19580198bf88c836a4428e83ee2446025827178b7666f",
+    "apps/macos/Aftelle/MacSpeechWebRTCAECProcessor.swift": "370261422bbd280df5169b76b849b7b62355a25403def60d3aed68399e7034ff",
+    "apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift": "8becf334f6cdee299a97d1a75451638440e5013b9fd560cbd71c84379a013c19",
+    "apps/macos/Aftelle/Test3LocalAudioRunner.swift": "732997a055ca47fc061e57f8feef959f3cabc289bdbbd4b4076ebf4bebe42332",
+    "tools/speech_aec_host_tests/RecordedAcousticReplay.swift": "c6221f0b978891cff665dbc7d0d567e42f9ceccaab871d4173d5fd397814c199",
+    "tools/test3_local_audio/run.sh": "189007601dbb339ec72f905b7b65db4f85d6a29fad8b35420d57eaa1cfa0ef7e",
+    "tools/test3_local_audio/replay.sh": "a8e18a325aee79fbf62995770a8f950246fe6af70195980b3556796ac787b21b",
+    "tools/webrtc_aec3/bridge/AftelleAECBridge.mm": "1d1cb45377b5b2252af49a6abbb03026502aba408d98d90476c4611c9be9c45d",
+    "tools/webrtc_aec3/bridge/AftelleAECBridge.h": "0d35fe64cfd2c5e9a342a519a9d024a0a7a84c916f68d8041f31e3df3f4cd66f",
+    "tools/webrtc_aec3/WebRTCAEC3.hpp": "b5c33021b193cbf352f245f3b0385951aa00301beafeae94441a93327878180f",
+    "tools/webrtc_aec3/minimal_aec3.patch": "fdb84f62fbb066349207663e8f7aa8c8447d6eeecf62f664c7ca47fbfdb5e95b",
+    "tools/webrtc_aec3/build.sh": "d8ac3a72a50014e424c7f78a9d6cc0b9e981b19ba7002a94c4859da05eb86b14",
+    "tools/webrtc_aec3/sync.sh": "272203c8cd92ea405a94618380435a6be72dbe2fd7bb94aa199ee436766423f8"
+  },
+  "validation": {
+    "date_local": "2026-10-04",
+    "host_check": {
+      "command": "bash tools/speech_aec_host_tests/check.sh",
+      "exit_code": 0,
+      "log_sha256": "a08e833b88f0f96da33f5cd07b90a63351f1c8c0046b0b097453e3a3a650511f",
+      "pass_markers": [
+        "live_replay=PASS",
+        "speech_aec_capture_callback_latency_read=PASS",
+        "speech_aec_hardware_delay=PASS",
+        "speech_aec_render_source=PASS",
+        "speech_aec_render_timing=PASS",
+        "speech_aec_host_contract=PASS",
+        "speech_aec_target_membership=PASS",
+        "speech_aec_host_ownership_privacy=PASS"
+      ]
+    },
+    "optimized_debug_build": {
+      "command": "xcodebuild -project apps/macos/Aftelle/Aftelle.xcodeproj -scheme Aftelle -configuration Debug -derivedDataPath .build/test3-review-delivery-20261004/DerivedData -disableAutomaticPackageResolution -skipPackageUpdates SWIFT_OPTIMIZATION_LEVEL=-O build",
+      "exit_code": 0,
+      "result": "BUILD SUCCEEDED",
+      "log_sha256": "216523ec4fa815a97dd1e34b8794b396c59fe4edca24756948243108100c5e58"
+    },
+    "new_physical_test": "NOT_RUN",
+    "device_capture": false,
+    "device_playback": false,
+    "qualification": "Build and synthetic/replay checks are not Test3 physical source-attribution acceptance."
+  }
+}
