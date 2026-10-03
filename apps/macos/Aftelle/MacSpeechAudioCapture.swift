@@ -628,6 +628,8 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     struct Output {
         var samples: [Float]
         let hostTimeNanoseconds: UInt64?
+        let timestampFailureReason: String?
+        let timestampErrorNanoseconds: Double?
     }
 
     private struct InputTime {
@@ -663,6 +665,12 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     private var inputFrameCount: UInt64 = 0
     private var outputSampleCount: UInt64 = 0
     private var inputTimes: [InputTime] = []
+    private var sampleTimeAnchor: Int64?
+    private var hostTimeAnchor: UInt64?
+    private var nextInputSampleTime: Int64?
+    private var sampleTimeContinuityValid = true
+    private var previousInputHostTime: UInt64?
+    private var previousInputFrameCount = 0
 
     init(inputFormat: AVAudioFormat) throws {
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
@@ -690,12 +698,12 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
 
     func convert(
         _ inputBuffer: AVAudioPCMBuffer,
-        hostTimeNanoseconds: UInt64?
+        hostTimeNanoseconds: UInt64?,
+        sampleTime: Int64? = nil
     ) throws -> Output {
         try lock.withLock {
             let ratio = outputFormat.sampleRate / inputSampleRate
             let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio)
-                + 16
             let capacity = AVAudioFrameCount(
                 max(1, min(estimatedFrames, 16_384))
             )
@@ -721,10 +729,15 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
             }
             if inputState.supplied {
                 let start = Double(inputFrameCount) * ratio
+                let inputTime = anchoredInputHostTime(
+                    sampleTime: sampleTime,
+                    hostTimeNanoseconds: hostTimeNanoseconds,
+                    inputFrameCount: Int(inputBuffer.frameLength)
+                )
                 inputFrameCount += UInt64(inputBuffer.frameLength)
                 inputTimes.append(InputTime(
                     start: start, end: Double(inputFrameCount) * ratio,
-                    hostTimeNanoseconds: hostTimeNanoseconds
+                    hostTimeNanoseconds: inputTime
                 ))
             }
             guard conversionError == nil,
@@ -734,33 +747,99 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
                 throw MacSpeechAudioCaptureError.conversionFailed
             }
             let count = Int(outputBuffer.frameLength)
-            let timestamp = outputHostTime(sampleCount: count)
+            let timing = outputHostTime(sampleCount: count)
             outputSampleCount += UInt64(count)
             inputTimes.removeAll { $0.end <= Double(outputSampleCount) }
             return Output(samples: Array(UnsafeBufferPointer(
                 start: samples,
                 count: count
-            )), hostTimeNanoseconds: timestamp)
+            )), hostTimeNanoseconds: timing.0,
+                timestampFailureReason: timing.1,
+                timestampErrorNanoseconds: timing.2)
         }
     }
 
-    private func outputHostTime(sampleCount: Int) -> UInt64? {
+    private func outputHostTime(sampleCount: Int)
+        -> (UInt64?, String?, Double?) {
         let start = Double(outputSampleCount)
         let end = start + Double(sampleCount)
         let intervals = inputTimes.filter { $0.end > start && $0.start < end }
-        guard let first = intervals.first, first.start <= start,
-              let firstTime = first.hostTimeNanoseconds else { return nil }
+        guard let last = intervals.last,
+              last.end + 0.000_001 >= end else {
+            return (nil, "output_cursor_ahead_of_input", nil)
+        }
+        guard let first = intervals.first,
+              first.start <= start else {
+            return (nil, "output_cursor_uncovered", nil)
+        }
+        guard let firstTime = first.hostTimeNanoseconds else {
+            return (nil, "first_input_time_missing", nil)
+        }
         let nanosecondsPerSample = 1_000_000_000 / outputFormat.sampleRate
         let timestamp = Double(firstTime) + (start - first.start) * nanosecondsPerSample
         // Host timestamps use whole nanoseconds, including a one-sample clock offset.
         let timestampTolerance = (1_000_000_000 / inputSampleRate).rounded(.up)
         // Buffered output may span input callbacks. A gap or unknown time cannot become a continuous clock.
         for interval in intervals {
-            guard let time = interval.hostTimeNanoseconds else { return nil }
+            guard let time = interval.hostTimeNanoseconds else {
+                return (nil, "input_time_missing", nil)
+            }
             let expected = timestamp + (interval.start - start) * nanosecondsPerSample
-            guard abs(Double(time) - expected) <= timestampTolerance else { return nil }
+            let error = Double(time) - expected
+            guard abs(error) <= timestampTolerance else {
+                return (nil, "input_time_discontinuity", error)
+            }
         }
-        return UInt64(timestamp.rounded())
+        return (UInt64(timestamp.rounded()), nil, nil)
+    }
+
+    private func anchoredInputHostTime(
+        sampleTime: Int64?,
+        hostTimeNanoseconds: UInt64?,
+        inputFrameCount: Int
+    ) -> UInt64? {
+        guard let sampleTime else {
+            if sampleTimeAnchor != nil || hostTimeNanoseconds == nil {
+                sampleTimeContinuityValid = false
+            }
+            if let previousInputHostTime,
+               let hostTimeNanoseconds {
+                let expected = Double(previousInputHostTime)
+                    + Double(previousInputFrameCount)
+                        * 1_000_000_000 / inputSampleRate
+                let tolerance = (1_000_000_000 / inputSampleRate)
+                    .rounded(.up)
+                if abs(Double(hostTimeNanoseconds) - expected)
+                    > tolerance {
+                    sampleTimeContinuityValid = false
+                }
+            }
+            previousInputHostTime = hostTimeNanoseconds
+            previousInputFrameCount = inputFrameCount
+            return sampleTimeContinuityValid ? hostTimeNanoseconds : nil
+        }
+        if sampleTimeAnchor == nil {
+            guard self.inputFrameCount == 0,
+                  let hostTimeNanoseconds else {
+                sampleTimeContinuityValid = false
+                return nil
+            }
+            sampleTimeAnchor = sampleTime
+            hostTimeAnchor = hostTimeNanoseconds
+        } else if nextInputSampleTime != sampleTime {
+            sampleTimeContinuityValid = false
+        }
+        let (next, overflow) = sampleTime.addingReportingOverflow(
+            Int64(inputFrameCount)
+        )
+        if overflow { sampleTimeContinuityValid = false }
+        nextInputSampleTime = overflow ? nil : next
+        guard sampleTimeContinuityValid,
+              let sampleTimeAnchor,
+              let hostTimeAnchor else { return nil }
+        let elapsed = Double(sampleTime - sampleTimeAnchor)
+            * 1_000_000_000 / inputSampleRate
+        return UInt64((Double(hostTimeAnchor) + elapsed).rounded())
     }
 
     func resetForGenerationTransition() {
@@ -769,6 +848,12 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
             inputFrameCount = 0
             outputSampleCount = 0
             inputTimes.removeAll(keepingCapacity: true)
+            sampleTimeAnchor = nil
+            hostTimeAnchor = nil
+            nextInputSampleTime = nil
+            sampleTimeContinuityValid = true
+            previousInputHostTime = nil
+            previousInputFrameCount = 0
         }
     }
 }
@@ -776,6 +861,103 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
 nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     @unchecked Sendable
 {
+    #if DEBUG
+    struct Test3AppleVADReadTrace: Codable, Sendable {
+        struct Read: Codable, Sendable {
+            let sequence: UInt64
+            let captureHostTimeNanoseconds: UInt64?
+            let sampledAtNanoseconds: UInt64
+            let sampleCount: Int
+            let detectorEventSequence: UInt64?
+            let detectorEventNanoseconds: UInt64?
+            let detectorReadNanoseconds: UInt64?
+            let detectorReadStatus: OSStatus?
+            let detectorVoiceDetected: Bool?
+            let effectiveVoiceDetected: Bool?
+        }
+
+        let schemaVersion: Int
+        let reads: [Read]
+        let detector: MacSpeechTest3VADTrace?
+        let truncated: Bool
+    }
+
+    struct Test3CaptureCallbackTrace: Codable, Sendable {
+        struct Callback: Codable, Sendable {
+            let contentHostTimeNanoseconds: UInt64?
+            let nativeSampleTime: Int64?
+            let enteredAtNanoseconds: UInt64
+            let previousEntryIntervalNanoseconds: UInt64?
+            let inputFrameLength: Int
+            let inputSampleRate: Double
+            let convertedSampleCount: Int
+            let convertedHostTimeNanoseconds: UInt64?
+            let lockWaitNanoseconds: UInt64
+            let conversionNanoseconds: UInt64?
+            let hostNanoseconds: UInt64?
+            let postHostNanoseconds: UInt64?
+            let totalNanoseconds: UInt64
+        }
+
+        let schemaVersion: Int
+        let callbacks: [Callback]
+        let truncated: Bool
+    }
+
+    struct Test3RenderCallbackTrace: Codable, Sendable {
+        struct Callback: Codable, Sendable {
+            let enteredAtNanoseconds: UInt64
+            let inputHostTimeNanoseconds: UInt64?
+            let nativeSampleTime: Int64?
+            let inputFrameLength: Int
+            let inputSampleRate: Double
+            let convertedHostTimeNanoseconds: UInt64?
+            let convertedSampleCount: Int
+            let convertedRMS: Double?
+            let timestampFailureReason: String?
+            let timestampErrorNanoseconds: Double?
+            let status: String
+        }
+
+        let schemaVersion: Int
+        let callbacks: [Callback]
+        let truncated: Bool
+    }
+
+    struct Test3AppleInputTrace: Codable, Sendable {
+        struct VoiceProcessingState: Codable, Sendable {
+            let inputEnabled: Bool
+            let outputEnabled: Bool
+            let inputBypassed: Bool
+            let inputAGCEnabled: Bool
+        }
+
+        struct Callback: Codable, Sendable {
+            let contentHostTimeNanoseconds: UInt64?
+            let nativeSampleTime: Int64?
+            let inputFrameLength: Int
+            let inputSampleRate: Double
+            let inputChannelCount: UInt32
+            let inputCommonFormat: String
+            let inputIsInterleaved: Bool
+            let sampleOffset: Int
+            let copiedSampleCount: Int
+            let copyNanoseconds: UInt64
+        }
+
+        let schemaVersion: Int
+        let callbacks: [Callback]
+        let sampleCount: Int
+        let capturedChannelCount: Int
+        let channelSampleCounts: [Int]
+        let allChannelsComplete: Bool
+        let truncated: Bool
+        let unsupportedFormat: Bool
+        let atConfiguration: VoiceProcessingState?
+        let atCaptureStart: VoiceProcessingState?
+    }
+    #endif
+
     private let lock = NSLock()
     private let captureProcessingLock = NSLock()
     private let renderConverterLock = NSLock()
@@ -802,6 +984,32 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         MacSpeechCaptureGenerationFence()
     #if DEBUG
     private var test3NearEndInjection: Test3NearEndInjection?
+    private var test3TimingTraceEnabled = false
+    private var test3VADReadSequence: UInt64 = 0
+    private var test3VADReads: [Test3AppleVADReadTrace.Read] = []
+    private var test3VADReadsTruncated = false
+    private var test3SealedVADTrace: MacSpeechTest3VADTrace?
+    private static let test3VADReadCapacity = 2_000
+    private var test3CaptureCallbacks: [Test3CaptureCallbackTrace.Callback] = []
+    private var test3CaptureCallbacksTruncated = false
+    private var test3PreviousCaptureCallbackEntry: UInt64?
+    private static let test3CaptureCallbackCapacity = 2_500
+    private let test3RenderTraceLock = NSLock()
+    private var test3RenderTraceEnabled = false
+    private var test3RenderCallbacks: [Test3RenderCallbackTrace.Callback] = []
+    private var test3RenderCallbacksTruncated = false
+    private static let test3RenderCallbackCapacity = 2_500
+    private var test3AppleInputCallbacks: [Test3AppleInputTrace.Callback] = []
+    private var test3AppleInputSamples: [Float] = []
+    private var test3AppleInputAdditionalChannels: [[Float]] = []
+    private var test3AppleInputChannelCount = 0
+    private var test3AppleInputTruncated = false
+    private var test3AppleInputUnsupportedFormat = false
+    private var test3VoiceProcessingAtConfiguration:
+        Test3AppleInputTrace.VoiceProcessingState?
+    private var test3VoiceProcessingAtCaptureStart:
+        Test3AppleInputTrace.VoiceProcessingState?
+    private static let test3AppleInputSampleCapacity = 960_000
     private static let audioUnitDiagnosticLogger = Logger(
         subsystem: "com.eterna.aftelle",
         category: "AudioUnitAttribution"
@@ -870,6 +1078,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 self?.processCapture(
                     buffer,
                     hostTimeNanoseconds: Self.hostTimeNanoseconds(when),
+                    nativeSampleTime: when.isSampleTimeValid
+                        ? when.sampleTime : nil,
                     generation: generation,
                     frameBuffer: frameBuffer
                 )
@@ -885,6 +1095,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 tearDownIfIdle()
                 throw MacSpeechAudioCaptureError.engineStartFailed
             }
+            #if DEBUG
+            if audioProcessingMode == .appleVoiceProcessing {
+                test3VoiceProcessingAtCaptureStart =
+                    test3VoiceProcessingState(engine)
+            }
+            #endif
             refreshAcousticEchoPresentationLatencyLocked()
             isCaptureActive = true
             return describe(inputFormat)
@@ -1040,6 +1256,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         )
         #endif
         stopPlayerNode(playerNode)
+        let renderConverter = renderConverterLock.withLock { renderAECConverter }
+        renderConverter?.resetForGenerationTransition()
         #if DEBUG
         Self.audioUnitDiagnosticLogger.debug(
             "event=audio_output_node_stop phase=did_stop reason=\(reason, privacy: .public) sample=\(DispatchTime.now().uptimeNanoseconds)"
@@ -1073,6 +1291,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                   engine.outputNode.isVoiceProcessingEnabled else {
                 throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
             }
+            #if DEBUG
+            test3VoiceProcessingAtConfiguration =
+                test3VoiceProcessingState(engine)
+            test3VoiceProcessingAtCaptureStart = nil
+            #endif
         } else if inputNode.isVoiceProcessingEnabled
                     || engine.outputNode.isVoiceProcessingEnabled {
             throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
@@ -1216,6 +1439,148 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         acousticEchoHost.systemVoiceActivityForTesting()
     }
 
+    func armTest3TimingTrace() -> Bool {
+        captureProcessingLock.withLock {
+            let channelCount = lock.withLock {
+                Int(engine?.inputNode.outputFormat(forBus: 0).channelCount ?? 0)
+            }
+            guard (1...8).contains(channelCount) else { return false }
+            guard acousticEchoHost.armTest3TimingTrace() else {
+                return false
+            }
+            test3TimingTraceEnabled = true
+            test3VADReadSequence = 0
+            test3VADReads = []
+            test3VADReads.reserveCapacity(Self.test3VADReadCapacity)
+            test3VADReadsTruncated = false
+            test3SealedVADTrace = nil
+            test3CaptureCallbacks = []
+            test3CaptureCallbacks.reserveCapacity(
+                Self.test3CaptureCallbackCapacity
+            )
+            test3CaptureCallbacksTruncated = false
+            test3PreviousCaptureCallbackEntry = nil
+            test3AppleInputCallbacks = []
+            test3AppleInputCallbacks.reserveCapacity(
+                Self.test3CaptureCallbackCapacity
+            )
+            test3AppleInputSamples = []
+            test3AppleInputSamples.reserveCapacity(
+                Self.test3AppleInputSampleCapacity
+            )
+            test3AppleInputChannelCount = channelCount
+            test3AppleInputAdditionalChannels = []
+            test3AppleInputAdditionalChannels.reserveCapacity(channelCount - 1)
+            for _ in 1..<channelCount {
+                var samples: [Float] = []
+                samples.reserveCapacity(Self.test3AppleInputSampleCapacity)
+                test3AppleInputAdditionalChannels.append(samples)
+            }
+            test3AppleInputTruncated = false
+            test3AppleInputUnsupportedFormat = false
+            test3RenderTraceLock.withLock {
+                test3RenderTraceEnabled = true
+                test3RenderCallbacks = []
+                test3RenderCallbacks.reserveCapacity(
+                    Self.test3RenderCallbackCapacity
+                )
+                test3RenderCallbacksTruncated = false
+            }
+            return true
+        }
+    }
+
+    func test3TimingTraceSnapshot() -> MacSpeechTest3TimingTrace {
+        acousticEchoHost.test3TimingTraceSnapshot()
+    }
+
+    func test3RenderTimingBounds() -> (firstContent: UInt64?, latest: UInt64?) {
+        acousticEchoHost.test3RenderTimingBounds()
+    }
+
+    func sealTest3TimingTrace() {
+        captureProcessingLock.withLock {
+            test3TimingTraceEnabled = false
+            test3RenderTraceLock.withLock {
+                test3RenderTraceEnabled = false
+            }
+            test3SealedVADTrace = (voiceActivityDetector
+                as? SystemMacSpeechVoiceActivityDetector)?
+                .test3TraceSnapshot()
+            acousticEchoHost.sealTest3TimingTrace()
+        }
+    }
+
+    func test3AppleDecisionSnapshot() -> (
+        trace: MacSpeechTest3AppleDecisionTrace,
+        processedSamples: [Float]
+    ) {
+        acousticEchoHost.test3AppleDecisionSnapshot()
+    }
+
+    func test3AppleVADReadSnapshot() -> Test3AppleVADReadTrace {
+        captureProcessingLock.withLock {
+            Test3AppleVADReadTrace(
+                schemaVersion: 1,
+                reads: test3VADReads,
+                detector: test3SealedVADTrace ?? (voiceActivityDetector
+                    as? SystemMacSpeechVoiceActivityDetector)?
+                    .test3TraceSnapshot(),
+                truncated: test3VADReadsTruncated
+            )
+        }
+    }
+
+    func test3CaptureCallbackSnapshot() -> Test3CaptureCallbackTrace {
+        captureProcessingLock.withLock {
+            Test3CaptureCallbackTrace(
+                schemaVersion: 1,
+                callbacks: test3CaptureCallbacks,
+                truncated: test3CaptureCallbacksTruncated
+            )
+        }
+    }
+
+    func test3AppleInputSnapshot() -> (
+        trace: Test3AppleInputTrace,
+        samples: [Float],
+        additionalChannels: [[Float]]
+    ) {
+        captureProcessingLock.withLock {
+            let counts = [test3AppleInputSamples.count]
+                + test3AppleInputAdditionalChannels.map(\.count)
+            let complete = !test3AppleInputTruncated
+                && !test3AppleInputUnsupportedFormat
+                && counts.count == test3AppleInputChannelCount
+                && counts.allSatisfy { $0 == test3AppleInputSamples.count }
+                && test3AppleInputCallbacks.allSatisfy {
+                    $0.copiedSampleCount == $0.inputFrameLength
+                }
+            return (Test3AppleInputTrace(
+                schemaVersion: 3,
+                callbacks: test3AppleInputCallbacks,
+                sampleCount: test3AppleInputSamples.count,
+                capturedChannelCount: test3AppleInputChannelCount,
+                channelSampleCounts: counts,
+                allChannelsComplete: complete,
+                truncated: test3AppleInputTruncated,
+                unsupportedFormat: test3AppleInputUnsupportedFormat,
+                atConfiguration: test3VoiceProcessingAtConfiguration,
+                atCaptureStart: test3VoiceProcessingAtCaptureStart
+            ), test3AppleInputSamples, test3AppleInputAdditionalChannels)
+        }
+    }
+
+    func test3RenderCallbackSnapshot() -> Test3RenderCallbackTrace {
+        test3RenderTraceLock.withLock {
+            Test3RenderCallbackTrace(
+                schemaVersion: 2,
+                callbacks: test3RenderCallbacks,
+                truncated: test3RenderCallbacksTruncated
+            )
+        }
+    }
+
     func armAcousticReplayCapture(
         attemptID: UUID,
         targetCaptureFrameCount: Int = 1_000
@@ -1251,38 +1616,96 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private func processCapture(
         _ buffer: AVAudioPCMBuffer,
         hostTimeNanoseconds: UInt64?,
+        nativeSampleTime: Int64?,
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) {
+        #if DEBUG
+        let enteredAt = DispatchTime.now().uptimeNanoseconds
+        #endif
         captureProcessingLock.withLock {
+            #if DEBUG
+            let acquiredAt = DispatchTime.now().uptimeNanoseconds
+            #endif
             guard captureGenerationFence.accepts(
                 hostTimeNanoseconds: hostTimeNanoseconds
             ) else { return }
-            processCaptureLocked(
+            let stages = processCaptureLocked(
                 buffer,
                 hostTimeNanoseconds: hostTimeNanoseconds,
+                nativeSampleTime: nativeSampleTime,
                 generation: generation,
                 frameBuffer: frameBuffer
             )
+            #if DEBUG
+            if test3TimingTraceEnabled {
+                let completedAt = DispatchTime.now().uptimeNanoseconds
+                if test3CaptureCallbacks.count
+                    < Self.test3CaptureCallbackCapacity {
+                    test3CaptureCallbacks.append(.init(
+                        contentHostTimeNanoseconds: hostTimeNanoseconds,
+                        nativeSampleTime: nativeSampleTime,
+                        enteredAtNanoseconds: enteredAt,
+                        previousEntryIntervalNanoseconds:
+                            test3PreviousCaptureCallbackEntry.map {
+                                enteredAt &- $0
+                            },
+                        inputFrameLength: Int(buffer.frameLength),
+                        inputSampleRate: buffer.format.sampleRate,
+                        convertedSampleCount: stages?.convertedSampleCount ?? 0,
+                        convertedHostTimeNanoseconds:
+                            stages?.convertedHostTimeNanoseconds,
+                        lockWaitNanoseconds: acquiredAt &- enteredAt,
+                        conversionNanoseconds: stages.map {
+                            $0.convertedAt &- acquiredAt
+                        },
+                        hostNanoseconds: stages.map {
+                            $0.hostCompletedAt &- $0.convertedAt
+                        },
+                        postHostNanoseconds: stages.map {
+                            completedAt &- $0.hostCompletedAt
+                        },
+                        totalNanoseconds: completedAt &- enteredAt
+                    ))
+                } else {
+                    test3CaptureCallbacksTruncated = true
+                }
+                test3PreviousCaptureCallbackEntry = enteredAt
+            }
+            #endif
         }
     }
 
     private func processCaptureLocked(
         _ buffer: AVAudioPCMBuffer,
         hostTimeNanoseconds: UInt64?,
+        nativeSampleTime: Int64?,
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
-    ) {
+    ) -> (
+        convertedAt: UInt64,
+        hostCompletedAt: UInt64,
+        convertedSampleCount: Int,
+        convertedHostTimeNanoseconds: UInt64?
+    )? {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let converters = lock.withLock {
             (captureAECConverter, captureOutputConverter)
         }
+        #if DEBUG
+        recordTest3AppleInput(
+            buffer,
+            hostTimeNanoseconds: hostTimeNanoseconds,
+            nativeSampleTime: nativeSampleTime
+        )
+        #endif
         guard let inputConverter = converters.0,
               let outputConverter = converters.1,
               var converted = try? inputConverter.convert(
-                  buffer, hostTimeNanoseconds: hostTimeNanoseconds
+                  buffer, hostTimeNanoseconds: hostTimeNanoseconds,
+                  sampleTime: nativeSampleTime
               ) else {
-            return
+            return nil
         }
         #if DEBUG
         let injectedSampleCountBefore =
@@ -1295,21 +1718,80 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             (test3NearEndInjection?.injectedSampleCount ?? 0)
                 > injectedSampleCountBefore
         #endif
+        #if DEBUG
+        let convertedAt = test3TimingTraceEnabled
+            ? DispatchTime.now().uptimeNanoseconds : 0
+        #else
+        let convertedAt: UInt64 = 0
+        #endif
+        var systemVoiceActivityForFrame: ((UInt64?) -> (Bool?, UInt64?))?
         if audioProcessingMode == .appleVoiceProcessing {
-            var voiceActivityDetected =
-                voiceActivityDetector.isVoiceDetected()
-            #if DEBUG
-            voiceActivityDetected = voiceActivityDetected
-                || injectedNearEndInThisCapture
-            #endif
-            acousticEchoHost.updateSystemVoiceActivity(
-                voiceActivityDetected
-            )
+            systemVoiceActivityForFrame = { [self] frameHostTimeNanoseconds in
+                #if DEBUG
+                let detectorRead = test3TimingTraceEnabled
+                    ? (voiceActivityDetector
+                        as? SystemMacSpeechVoiceActivityDetector)?
+                        .test3CaptureRead(at: frameHostTimeNanoseconds)
+                    : nil
+                let detectorState: Bool?
+                if let detectorRead {
+                    detectorState = detectorRead.detected
+                } else {
+                    detectorState = voiceActivityDetector.voiceActivityState(
+                        at: frameHostTimeNanoseconds
+                    )
+                }
+                let voiceActivityDetected: Bool? =
+                    injectedNearEndInThisCapture ? true : detectorState
+                let readSequence: UInt64?
+                if test3TimingTraceEnabled {
+                    test3VADReadSequence &+= 1
+                    readSequence = test3VADReadSequence
+                    if test3VADReads.count < Self.test3VADReadCapacity {
+                        test3VADReads.append(.init(
+                            sequence: test3VADReadSequence,
+                            captureHostTimeNanoseconds:
+                                frameHostTimeNanoseconds,
+                            sampledAtNanoseconds:
+                                DispatchTime.now().uptimeNanoseconds,
+                            sampleCount:
+                                MacSpeechAcousticEchoHost.frameSampleCount,
+                            detectorEventSequence:
+                                detectorRead?.eventSequence,
+                            detectorEventNanoseconds:
+                                detectorRead?.lastEventNanoseconds,
+                            detectorReadNanoseconds:
+                                detectorRead?.lastReadNanoseconds,
+                            detectorReadStatus:
+                                detectorRead?.lastReadStatus,
+                            detectorVoiceDetected: detectorState,
+                            effectiveVoiceDetected: voiceActivityDetected
+                        ))
+                    } else {
+                        test3VADReadsTruncated = true
+                    }
+                } else {
+                    readSequence = nil
+                }
+                #else
+                let voiceActivityDetected = voiceActivityDetector
+                    .voiceActivityState(at: frameHostTimeNanoseconds)
+                let readSequence: UInt64? = nil
+                #endif
+                return (voiceActivityDetected, readSequence)
+            }
         }
         let captureSpans = acousticEchoHost.processCaptureSpans(
             converted.samples,
-            hostTimeNanoseconds: converted.hostTimeNanoseconds
+            hostTimeNanoseconds: converted.hostTimeNanoseconds,
+            systemVoiceActivityForFrame: systemVoiceActivityForFrame
         )
+        #if DEBUG
+        let hostCompletedAt = test3TimingTraceEnabled
+            ? DispatchTime.now().uptimeNanoseconds : 0
+        #else
+        let hostCompletedAt: UInt64 = 0
+        #endif
         let acoustic = acousticEchoHost.acousticObservationSnapshot()
         if !captureSpans.isEmpty,
            let packets = try? outputConverter.convert(
@@ -1343,7 +1825,74 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             nanoseconds: DispatchTime.now().uptimeNanoseconds &- startedAt
         )
         lock.withLock { updateAcousticEchoDelayLocked() }
+        return (
+            convertedAt,
+            hostCompletedAt,
+            converted.samples.count,
+            converted.hostTimeNanoseconds
+        )
     }
+
+    #if DEBUG
+    private func recordTest3AppleInput(
+        _ buffer: AVAudioPCMBuffer,
+        hostTimeNanoseconds: UInt64?,
+        nativeSampleTime: Int64?
+    ) {
+        guard test3TimingTraceEnabled,
+              audioProcessingMode == .appleVoiceProcessing else { return }
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let count = Int(buffer.frameLength)
+        let sampleOffset = test3AppleInputSamples.count
+        let channels = buffer.floatChannelData
+        let formatSupported = buffer.format.commonFormat == .pcmFormatFloat32
+            && !buffer.format.isInterleaved && channels != nil
+            && Int(buffer.format.channelCount) == test3AppleInputChannelCount
+        var copied = 0
+        if formatSupported,
+           let channels,
+           sampleOffset + count <= Self.test3AppleInputSampleCapacity,
+           !test3AppleInputTruncated,
+           !test3AppleInputUnsupportedFormat,
+           test3AppleInputAdditionalChannels.allSatisfy({
+               $0.count == sampleOffset
+                   && $0.count + count <= Self.test3AppleInputSampleCapacity
+           }) {
+            test3AppleInputSamples.append(contentsOf: UnsafeBufferPointer(
+                start: channels[0], count: count
+            ))
+            for index in test3AppleInputAdditionalChannels.indices {
+                test3AppleInputAdditionalChannels[index].append(
+                    contentsOf: UnsafeBufferPointer(
+                        start: channels[index + 1], count: count
+                    )
+                )
+            }
+            copied = count
+        } else if !formatSupported {
+            test3AppleInputUnsupportedFormat = true
+        } else {
+            test3AppleInputTruncated = true
+        }
+        guard test3AppleInputCallbacks.count
+            < Self.test3CaptureCallbackCapacity else {
+            test3AppleInputTruncated = true
+            return
+        }
+        test3AppleInputCallbacks.append(.init(
+            contentHostTimeNanoseconds: hostTimeNanoseconds,
+            nativeSampleTime: nativeSampleTime,
+            inputFrameLength: count,
+            inputSampleRate: buffer.format.sampleRate,
+            inputChannelCount: buffer.format.channelCount,
+            inputCommonFormat: String(describing: buffer.format.commonFormat),
+            inputIsInterleaved: buffer.format.isInterleaved,
+            sampleOffset: sampleOffset,
+            copiedSampleCount: copied,
+            copyNanoseconds: DispatchTime.now().uptimeNanoseconds &- startedAt
+        ))
+    }
+    #endif
 
     private func rebuildAudioFormatsLocked(
         engine: AVAudioEngine,
@@ -1390,7 +1939,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         ) { [weak self] buffer, when in
             self?.processRenderedOutput(
                 buffer,
-                hostTimeNanoseconds: Self.hostTimeNanoseconds(when)
+                hostTimeNanoseconds: Self.hostTimeNanoseconds(when),
+                nativeSampleTime: when.isSampleTimeValid
+                    ? when.sampleTime : nil
             )
         }
         isRenderReferenceTapInstalled = true
@@ -1408,25 +1959,98 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     private func processRenderedOutput(
         _ buffer: AVAudioPCMBuffer,
-        hostTimeNanoseconds: UInt64?
+        hostTimeNanoseconds: UInt64?,
+        nativeSampleTime: Int64?
     ) {
+        #if DEBUG
+        let enteredAtNanoseconds = DispatchTime.now().uptimeNanoseconds
+        #endif
         let converter = renderConverterLock.withLock { renderAECConverter }
         guard let converter else {
+            #if DEBUG
+            recordTest3RenderCallback(
+                buffer, enteredAtNanoseconds: enteredAtNanoseconds,
+                hostTimeNanoseconds: hostTimeNanoseconds,
+                nativeSampleTime: nativeSampleTime,
+                converted: nil, status: "converter_unavailable"
+            )
+            #endif
             acousticEchoHost.renderConversionFailed()
             return
         }
         do {
             let converted = try converter.convert(
-                buffer, hostTimeNanoseconds: hostTimeNanoseconds
+                buffer, hostTimeNanoseconds: hostTimeNanoseconds,
+                sampleTime: nativeSampleTime
             )
+            #if DEBUG
+            recordTest3RenderCallback(
+                buffer, enteredAtNanoseconds: enteredAtNanoseconds,
+                hostTimeNanoseconds: hostTimeNanoseconds,
+                nativeSampleTime: nativeSampleTime,
+                converted: converted,
+                status: converted.hostTimeNanoseconds == nil
+                    ? "converted_timestamp_missing" : "ok"
+            )
+            #endif
             acousticEchoHost.processRender(
                 converted.samples,
                 hostTimeNanoseconds: converted.hostTimeNanoseconds
             )
         } catch {
+            #if DEBUG
+            recordTest3RenderCallback(
+                buffer, enteredAtNanoseconds: enteredAtNanoseconds,
+                hostTimeNanoseconds: hostTimeNanoseconds,
+                nativeSampleTime: nativeSampleTime,
+                converted: nil, status: "conversion_failed"
+            )
+            #endif
             acousticEchoHost.renderConversionFailed()
         }
     }
+
+    #if DEBUG
+    private func recordTest3RenderCallback(
+        _ buffer: AVAudioPCMBuffer,
+        enteredAtNanoseconds: UInt64,
+        hostTimeNanoseconds: UInt64?,
+        nativeSampleTime: Int64?,
+        converted: MacSpeechFloatMono48kConverter.Output?,
+        status: String
+    ) {
+        test3RenderTraceLock.withLock {
+            guard test3RenderTraceEnabled else { return }
+            guard test3RenderCallbacks.count
+                < Self.test3RenderCallbackCapacity else {
+                test3RenderCallbacksTruncated = true
+                return
+            }
+            test3RenderCallbacks.append(.init(
+                enteredAtNanoseconds: enteredAtNanoseconds,
+                inputHostTimeNanoseconds: hostTimeNanoseconds,
+                nativeSampleTime: nativeSampleTime,
+                inputFrameLength: Int(buffer.frameLength),
+                inputSampleRate: buffer.format.sampleRate,
+                convertedHostTimeNanoseconds:
+                    converted?.hostTimeNanoseconds,
+                convertedSampleCount: converted?.samples.count ?? 0,
+                convertedRMS: converted.map { output in
+                    guard !output.samples.isEmpty else { return 0 }
+                    let sum = output.samples.reduce(0.0) {
+                        $0 + Double($1) * Double($1)
+                    }
+                    return sqrt(sum / Double(output.samples.count))
+                },
+                timestampFailureReason:
+                    converted?.timestampFailureReason,
+                timestampErrorNanoseconds:
+                    converted?.timestampErrorNanoseconds,
+                status: status
+            ))
+        }
+    }
+    #endif
 
     private func updateAcousticEchoDelayLocked() {
         acousticEchoHost.updateDelay(
@@ -1482,6 +2106,19 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         )
         #endif
     }
+
+    #if DEBUG
+    private func test3VoiceProcessingState(
+        _ engine: AVAudioEngine
+    ) -> Test3AppleInputTrace.VoiceProcessingState {
+        Test3AppleInputTrace.VoiceProcessingState(
+            inputEnabled: engine.inputNode.isVoiceProcessingEnabled,
+            outputEnabled: engine.outputNode.isVoiceProcessingEnabled,
+            inputBypassed: engine.inputNode.isVoiceProcessingBypassed,
+            inputAGCEnabled: engine.inputNode.isVoiceProcessingAGCEnabled
+        )
+    }
+    #endif
 
     private static func hostTimeNanoseconds(_ time: AVAudioTime) -> UInt64? {
         guard time.isHostTimeValid else { return nil }

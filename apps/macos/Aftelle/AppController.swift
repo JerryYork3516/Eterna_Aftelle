@@ -999,6 +999,7 @@ final class AppController: ObservableObject {
     }
 
     var canRequestExplicitRealtimeBargeIn: Bool {
+        #if DEBUG
         guard let attemptID = realtimeBrainRouteAttemptID,
               let binding = realtimeBrainInputBinding,
               let playbackIdentity = realtimeBrainPlaybackEventIdentity,
@@ -1018,6 +1019,9 @@ final class AppController: ObservableObject {
                 attemptID: attemptID,
                 session: binding.session
             )
+        #else
+        return false
+        #endif
     }
 
     private var hasActiveAlternateSpeechRoute: Bool {
@@ -2762,6 +2766,13 @@ final class AppController: ObservableObject {
         debugImportResident(from: url, persistBookmark: false)
     }
 
+    #if DEBUG
+    func test3CausalCandidateDebugSnapshot() async
+        -> [MacSpeechCausalCandidateDebugEvent] {
+        await realtimeBrainInputBridge.causalCandidateDebugSnapshot()
+    }
+    #endif
+
     func debugImportResident(from url: URL, persistBookmark: Bool = true) {
         guard speechHostAllowsSessionReplacement else {
             fixtureStatus = "Debug DR: stop speech before import"
@@ -3016,24 +3027,6 @@ final class AppController: ObservableObject {
         )
     }
 
-    func requestExplicitRealtimeBargeIn() async {
-        guard canRequestExplicitRealtimeBargeIn,
-              let attemptID = realtimeBrainRouteAttemptID,
-              let binding = realtimeBrainInputBinding,
-              let playbackIdentity = realtimeBrainPlaybackEventIdentity else {
-            return
-        }
-        let result = orchestrationKernel
-            .requestRealtimeResidentBrainExplicitInterruption(
-                target: playbackIdentity
-            )
-        await consumeRealtimeResidentBrainInterruptionDecision(
-            result,
-            attemptID: attemptID,
-            expectedSession: binding.session
-        )
-    }
-
     func stopSpeechAudioCapture() async {
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
@@ -3084,6 +3077,24 @@ final class AppController: ObservableObject {
         )
     }
     #endif
+
+    func requestExplicitRealtimeBargeIn() async {
+        guard canRequestExplicitRealtimeBargeIn,
+              let attemptID = realtimeBrainRouteAttemptID,
+              let binding = realtimeBrainInputBinding,
+              let playbackIdentity = realtimeBrainPlaybackEventIdentity else {
+            return
+        }
+        let result = orchestrationKernel
+            .requestRealtimeResidentBrainExplicitInterruption(
+                target: playbackIdentity
+            )
+        await consumeRealtimeResidentBrainInterruptionDecision(
+            result,
+            attemptID: attemptID,
+            expectedSession: binding.session
+        )
+    }
 
     func shutdownSpeechAudioHost() async {
         guard !speechAudioHostShutdownCompleted else { return }
@@ -3756,6 +3767,17 @@ final class AppController: ObservableObject {
         if paused {
             speechAudioOutputHostSnapshot = await speechAudioOutputHost
                 .currentSnapshot()
+            #if DEBUG
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "causal_provisional_paused",
+                routeKind: .realtimeBrain,
+                interactionShortID: String(id.uuidString.prefix(8)),
+                turnGeneration: binding.session.generation,
+                disposition: "provisional_only",
+                audioSequence: playbackSequence
+            )
+            #endif
         }
         return paused
     }
@@ -3778,6 +3800,16 @@ final class AppController: ObservableObject {
         ) {
             speechAudioOutputHostSnapshot = await speechAudioOutputHost
                 .currentSnapshot()
+            #if DEBUG
+            recordRealtimeSpeechDiagnostic(
+                source: .lifecycle,
+                category: "causal_provisional_resumed",
+                routeKind: .realtimeBrain,
+                interactionShortID: String(id.uuidString.prefix(8)),
+                turnGeneration: binding.session.generation,
+                disposition: "recovered_without_formal_confirmation"
+            )
+            #endif
         }
     }
 

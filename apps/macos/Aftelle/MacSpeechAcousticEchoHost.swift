@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import OSLog
 
@@ -184,11 +185,79 @@ nonisolated struct MacSpeechCausalFrameObservation:
     let rms: Double
 }
 
+#if DEBUG
+nonisolated struct MacSpeechTest3TimingTrace: Codable, Sendable {
+    struct Frame: Codable, Sendable {
+        let index: UInt64
+        let hostTimeNanoseconds: UInt64?
+        let rms: Double
+        let arrivalOrdinal: UInt64
+        let renderHistoryFrameCount: Int
+    }
+
+    struct Discontinuity: Codable, Sendable {
+        let stream: String
+        let previousFrameStartNanoseconds: UInt64?
+        let remainderSampleCount: Int
+        let expectedNextSampleNanoseconds: UInt64?
+        let actualNextSampleNanoseconds: UInt64?
+    }
+
+    let schemaVersion: Int
+    let renderFrames: [Frame]
+    let captureFrames: [Frame]
+    let renderPCMFormat: String
+    let renderSampleRate: Int
+    let renderFrameSampleCount: Int
+    let renderSampleCount: Int
+    let renderPCM: Data
+    let discontinuities: [Discontinuity]
+    let truncated: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case renderFrames, captureFrames, renderPCMFormat, renderSampleRate
+        case renderFrameSampleCount, renderSampleCount, renderPCM
+        case discontinuities, truncated
+    }
+}
+
+nonisolated struct MacSpeechTest3AppleDecisionTrace: Codable, Sendable {
+    struct Frame: Codable, Sendable {
+        let captureFrameIndex: UInt64
+        let hostTimeNanoseconds: UInt64?
+        let processedSampleOffset: Int
+        let processedRMS: Double
+        let vadSampleSequence: UInt64?
+        let systemVoiceActivityDetected: Bool
+        let systemVoiceActivityReadValid: Bool
+        let playbackActive: Bool
+        let renderMatchAvailable: Bool
+        let renderMatchMissingReason: String?
+        let renderCaptureCorrelation: Double?
+        let renderMatchStartHostTimeNanoseconds: UInt64?
+        let renderMatchDelayMilliseconds: Double?
+        let voiceActivityQualified: Bool
+        let levelQualified: Bool
+        let separationQualified: Bool
+        let nearEndQualified: Bool
+        let qualificationWindowCount: Int
+        let sourceGateOpen: Bool
+    }
+
+    let schemaVersion: Int
+    let frames: [Frame]
+    let processedSampleCount: Int
+    let truncated: Bool
+}
+#endif
+
 nonisolated struct MacSpeechCausalInterruptionObservation:
     Sendable,
     Equatable {
     let playbackSequence: UInt64
     let isPlaybackActive: Bool
+    let systemVoiceActivityDetected: Bool
     let latestRenderFrame: MacSpeechCausalFrameObservation?
     let recentCaptureFrames: [MacSpeechCausalFrameObservation]
 }
@@ -744,7 +813,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     static let maximumDelayMilliseconds = 500
     static let standardFIFOFrameCapacity = 12
     private static let timingHistoryFrameCapacity =
-        maximumDelayMilliseconds / frameDurationMilliseconds
+        maximumDelayMilliseconds / frameDurationMilliseconds + 1
     private static let minimumTimingCorrelation = 0.35
     private static let minimumTimingRMS = 0.005
     static let minimumNearEndRMS = 0.012
@@ -770,7 +839,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private static let sourceGateEpochDiagnosticCapacity = 16
     private static let sourceGateResetFrameCount = 20
     private static let renderCaptureIsolationWarmupFrameCount =
-        timingHistoryFrameCapacity
+        maximumDelayMilliseconds / frameDurationMilliseconds
     private static let reliableERLEDecibels = 3.0
     private static let failedERLEDecibels = 1.0
     private static let residualEchoGateResetFrameCount: UInt64 = 5
@@ -803,6 +872,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var latestRenderHostTimeNanoseconds: UInt64?
     private var latestRenderReferenceRMS = 0.0
     private var causalCaptureHistory: [MacSpeechCausalFrameObservation] = []
+    #if DEBUG
+    private var test3TimingTraceArmed = false
+    private var test3RenderFrames: [MacSpeechTest3TimingTrace.Frame] = []
+    private var test3CaptureFrames: [MacSpeechTest3TimingTrace.Frame] = []
+    private var test3RenderSamples: [Float] = []
+    private var test3TraceArrivalOrdinal: UInt64 = 0
+    private var test3Discontinuities: [MacSpeechTest3TimingTrace.Discontinuity] = []
+    private var test3TimingTraceTruncated = false
+    private static let test3TimingTraceFrameCapacity = 2_000
+    private var test3AppleDecisionFrames: [MacSpeechTest3AppleDecisionTrace.Frame] = []
+    private var test3AppleProcessedSamples: [Float] = []
+    private var test3AppleDecisionTraceTruncated = false
+    private var test3VADSampleSequence: UInt64?
+    private var test3AppleRenderMatchMissingReason: String?
+    #endif
     private var matchedRenderHostTimeNanoseconds: UInt64?
     private var matchedRenderReferenceRMS = 0.0
     private var rawCaptureRMS = 0.0
@@ -880,6 +964,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var lastAudibleRenderHostTimeNanoseconds: UInt64?
     private var isRouteRebuilding = false
     private var systemVoiceActivityDetected = false
+    private var systemVoiceActivityReadValid = false
     private var hasReliableEchoCancellation = false
     private var poorResidualEchoFrameCount: UInt64 = 0
     private var backendStats = MacSpeechAECBackendStats(
@@ -992,6 +1077,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             resetDiagnosticCounters()
             isRouteRebuilding = false
             systemVoiceActivityDetected = false
+            systemVoiceActivityReadValid = false
             lastAudibleRenderHostTimeNanoseconds = nil
             lastDriftSkew = 0
             driftTrend = "stable"
@@ -1040,6 +1126,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     try processFrames(
                         samples,
                         hostTimeNanoseconds: hostTimeNanoseconds,
+                        stream: "apple_render",
                         remainder: &renderFIFO,
                         remainderHostTimeNanoseconds:
                             &renderRemainderHostTimeNanoseconds
@@ -1058,6 +1145,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                             latestRenderReferenceRMS = signalRMS(frame)
                         }
                     }
+                } catch FrameProcessingError.discontinuousInput {
+                    enterFallback(.sourceAlignmentUnavailable)
                 } catch {
                     enterFallback(.fifoOverflow)
                 }
@@ -1096,6 +1185,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         )
                     }
                 }
+            } catch FrameProcessingError.discontinuousInput {
+                enterFallback(.sourceAlignmentUnavailable)
+                return
             } catch FrameProcessingError.fifoOverflow {
                 enterFallback(.fifoOverflow)
                 return
@@ -1124,6 +1216,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             return MacSpeechCausalInterruptionObservation(
                 playbackSequence: playbackSequence,
                 isPlaybackActive: isPlaybackActive,
+                systemVoiceActivityDetected: systemVoiceActivityDetected,
                 latestRenderFrame: latestRender,
                 recentCaptureFrames: causalCaptureHistory
             )
@@ -1146,7 +1239,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     func processCaptureSpans(
         _ samples: [Float],
-        hostTimeNanoseconds: UInt64? = nil
+        hostTimeNanoseconds: UInt64? = nil,
+        systemVoiceActivityForFrame: ((UInt64?) -> (Bool?, UInt64?))? = nil
     ) -> [MacSpeechAcousticCaptureSpan] {
         guard !samples.isEmpty else { return [] }
         return queue.sync {
@@ -1166,16 +1260,28 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     try processFrames(
                         samples,
                         hostTimeNanoseconds: hostTimeNanoseconds,
+                        stream: "apple_capture",
                         remainder: &captureFIFO,
                         remainderHostTimeNanoseconds:
                             &captureRemainderHostTimeNanoseconds
                     ) { frame, frameHostTimeNanoseconds in
+                        if mode == .appleVoiceProcessing,
+                           let systemVoiceActivityForFrame {
+                            let (active, sequence) = systemVoiceActivityForFrame(
+                                frameHostTimeNanoseconds
+                            )
+                            applySystemVoiceActivity(active, test3SampleSequence: sequence)
+                        }
                         recordUnavailableCaptureObservation(
                             frame,
                             hostTimeNanoseconds: frameHostTimeNanoseconds
                         )
                         spans.append(captureSpan(samples: frame))
                     }
+                } catch FrameProcessingError.discontinuousInput {
+                    enterFallback(.sourceAlignmentUnavailable)
+                    return isPlaybackActive || isRouteRebuilding
+                        ? [] : [captureSpan(samples: samples)]
                 } catch {
                     enterFallback(.fifoOverflow)
                     return isPlaybackActive || isRouteRebuilding
@@ -1201,9 +1307,11 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     remainderHostTimeNanoseconds:
                         &captureRemainderHostTimeNanoseconds
                 ) { frame, frameHostTimeNanoseconds in
+                    let rawReferenceSearch = rawEchoReferenceSearch(for: frame)
                     let timingMatch = timingMatch(
                         for: frame,
-                        captureHostTimeNanoseconds: frameHostTimeNanoseconds
+                        captureHostTimeNanoseconds: frameHostTimeNanoseconds,
+                        rawReferenceSearch: rawReferenceSearch
                     )
                     let captureResult = try backend.processCapture(frame)
                     guard captureResult.processedSamples.count
@@ -1238,14 +1346,18 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     updateRenderCaptureIsolationEvidence(
                         timingMatch: timingMatch
                     )
+                    let alternativeEchoReference = hasAlternativeEchoReference(
+                        processedCapture: processedFrame,
+                        linearOutput: captureResult.linearOutputSamples,
+                        captureHostTimeNanoseconds: frameHostTimeNanoseconds,
+                        timingMatch: timingMatch,
+                        rawReferenceSearch: rawReferenceSearch
+                    )
                     let gatedSpans = gatedCaptureSpans(
                         processedFrame,
-                        classificationTimingMatch: hasAlternativeEchoReference(
-                            rawCapture: frame,
-                            processedCapture: processedFrame,
-                            linearOutput: captureResult.linearOutputSamples,
-                            timingMatch: timingMatch
-                        ) ? nil : timingMatch,
+                        classificationTimingMatch:
+                            alternativeEchoReference ? nil : timingMatch,
+                        alternativeEchoReference: alternativeEchoReference,
                         reportedTimingMatch: reportedTimingMatch,
                         captureFrameIndex: captureFrameCount &+ 1
                     )
@@ -1265,6 +1377,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     #endif
                     captureFrameCount &+= 1
                 }
+            } catch FrameProcessingError.discontinuousInput {
+                enterFallback(.sourceAlignmentUnavailable)
+                return isPlaybackActive || isRouteRebuilding
+                    ? [] : [captureSpan(samples: samples)]
             } catch FrameProcessingError.fifoOverflow {
                 enterFallback(.fifoOverflow)
                 return isPlaybackActive || isRouteRebuilding
@@ -1326,11 +1442,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             )
         }
         linearAECOutputRMS = 0
-        if mode == .appleVoiceProcessing,
-           let match = appleVoiceProcessingRenderMatch(
+        let appleMatch = mode == .appleVoiceProcessing
+            ? appleVoiceProcessingRenderMatch(
             samples,
             captureHostTimeNanoseconds: hostTimeNanoseconds
-           ) {
+            ) : nil
+        if let match = appleMatch {
             renderCaptureCorrelation = match.correlation
             alignedDelayMilliseconds = match.delayMilliseconds
             outputTimingReferenceAvailable = true
@@ -1346,7 +1463,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 || (outputTimingReferenceAvailable
                     && renderCaptureCorrelation
                         <= Self.maximumNearEndCorrelation)
-            let qualifiesAsNearEnd = systemVoiceActivityDetected
+            let qualifiesAsNearEnd = systemVoiceActivityReadValid
+                && systemVoiceActivityDetected
                 && processedCaptureRMS >= Self.minimumNearEndRMS
                 && separatesFromPlayback
             inputClassification = qualifiesAsNearEnd
@@ -1375,11 +1493,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         currentSourceGateOpenFrameCount = 0
                         beginSourceGateEpoch()
                     }
-                } else if !qualifiesAsNearEnd {
-                    resetSourceGate(
-                        keepingClassification: true,
-                        closeReason: .sourceEvidenceReset
-                    )
+                } else if qualifiesAsNearEnd {
+                    sourceGateNonUserHangoverFrameCount = 0
+                } else {
+                    sourceGateNonUserHangoverFrameCount += frameCount
+                    if sourceGateNonUserHangoverFrameCount
+                        >= Self.maximumSourceGateNonUserHangoverFrames {
+                        resetSourceGate(
+                            keepingClassification: true,
+                            closeReason: .nonUserHangover
+                        )
+                    }
                 }
             } else if sourceGateOpen {
                 resetSourceGate(
@@ -1410,11 +1534,71 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     recordSuppressedSourceFrames(frameCount)
                 }
             }
+            #if DEBUG
+            recordTest3AppleDecision(
+                samples,
+                hostTimeNanoseconds: hostTimeNanoseconds,
+                frameCount: frameCount,
+                match: appleMatch,
+                qualifiesAsNearEnd: qualifiesAsNearEnd,
+                separatesFromPlayback: separatesFromPlayback
+            )
+            #endif
         } else {
             inputClassification = .uncertain
         }
         captureFrameCount &+= UInt64(frameCount)
     }
+
+    #if DEBUG
+    private func recordTest3AppleDecision(
+        _ samples: [Float],
+        hostTimeNanoseconds: UInt64?,
+        frameCount: Int,
+        match: (
+            correlation: Double,
+            delayMilliseconds: Double,
+            renderStartHostTimeNanoseconds: UInt64
+        )?,
+        qualifiesAsNearEnd: Bool,
+        separatesFromPlayback: Bool
+    ) {
+        guard test3TimingTraceArmed else { return }
+        guard samples.count == Self.frameSampleCount,
+              frameCount == 1,
+              test3AppleDecisionFrames.count
+                < Self.test3TimingTraceFrameCapacity else {
+            test3AppleDecisionTraceTruncated = true
+            return
+        }
+        let offset = test3AppleProcessedSamples.count
+        test3AppleProcessedSamples.append(contentsOf: samples)
+        test3AppleDecisionFrames.append(.init(
+            captureFrameIndex: self.captureFrameCount &+ 1,
+            hostTimeNanoseconds: hostTimeNanoseconds,
+            processedSampleOffset: offset,
+            processedRMS: processedCaptureRMS,
+            vadSampleSequence: test3VADSampleSequence,
+            systemVoiceActivityDetected: systemVoiceActivityDetected,
+            systemVoiceActivityReadValid: systemVoiceActivityReadValid,
+            playbackActive: isPlaybackActive,
+            renderMatchAvailable: match != nil,
+            renderMatchMissingReason: match == nil
+                ? test3AppleRenderMatchMissingReason : nil,
+            renderCaptureCorrelation: match?.correlation,
+            renderMatchStartHostTimeNanoseconds:
+                match?.renderStartHostTimeNanoseconds,
+            renderMatchDelayMilliseconds: match?.delayMilliseconds,
+            voiceActivityQualified: systemVoiceActivityReadValid
+                && systemVoiceActivityDetected,
+            levelQualified: processedCaptureRMS >= Self.minimumNearEndRMS,
+            separationQualified: separatesFromPlayback,
+            nearEndQualified: qualifiesAsNearEnd,
+            qualificationWindowCount: sourceGateConfirmationFrameCount,
+            sourceGateOpen: sourceGateOpen
+        ))
+    }
+    #endif
 
     private func appendCausalCaptureFrame(
         index: UInt64,
@@ -1432,57 +1616,134 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 rms: rms
             )
         )
+        #if DEBUG
+        if test3TimingTraceArmed {
+            if test3CaptureFrames.count < Self.test3TimingTraceFrameCapacity {
+                test3TraceArrivalOrdinal &+= 1
+                test3CaptureFrames.append(.init(
+                    index: index,
+                    hostTimeNanoseconds: hostTimeNanoseconds,
+                    rms: rms,
+                    arrivalOrdinal: test3TraceArrivalOrdinal,
+                    renderHistoryFrameCount: renderTimingHistory.count
+                ))
+            } else {
+                test3TimingTraceTruncated = true
+            }
+        }
+        #endif
     }
 
     private func appleVoiceProcessingRenderMatch(
         _ captureSamples: [Float],
         captureHostTimeNanoseconds: UInt64?
-    ) -> (correlation: Double, delayMilliseconds: Double)? {
-        guard isPlaybackActive,
-              let captureHostTimeNanoseconds,
-              captureSamples.count >= Self.frameSampleCount,
-              captureSamples.count.isMultiple(of: Self.frameSampleCount) else {
+    ) -> (
+        correlation: Double,
+        delayMilliseconds: Double,
+        renderStartHostTimeNanoseconds: UInt64
+    )? {
+        guard isPlaybackActive else {
+            #if DEBUG
+            test3AppleRenderMatchMissingReason = "playback_inactive"
+            #endif
             return nil
         }
-        let neededFrames = captureSamples.count / Self.frameSampleCount
-        guard neededFrames <= renderTimingHistory.count else { return nil }
-        var bestMatch: (correlation: Double, delayMilliseconds: Double)?
-        for start in 0 ... renderTimingHistory.count - neededFrames {
-            let renderStart = renderTimingHistory[start]
-                .hostTimeNanoseconds
-            guard captureHostTimeNanoseconds >= renderStart else {
+        guard let captureHostTimeNanoseconds else {
+            #if DEBUG
+            test3AppleRenderMatchMissingReason = "capture_time_missing"
+            #endif
+            return nil
+        }
+        guard captureSamples.count == Self.frameSampleCount else {
+            #if DEBUG
+            test3AppleRenderMatchMissingReason = "invalid_capture_frame"
+            #endif
+            return nil
+        }
+        guard let rawReferenceSearch = rawEchoReferenceSearch(
+            for: captureSamples
+        ) else {
+            #if DEBUG
+            test3AppleRenderMatchMissingReason = "insufficient_render_history"
+            #endif
+            return nil
+        }
+        var bestStart: Int?
+        var bestScore = -1.0
+        #if DEBUG
+        var eligibleRenderTimeFound = false
+        #endif
+        for start in 0 ..< rawReferenceSearch.windowCount {
+            #if DEBUG
+            if renderTimingHistory[start / Self.frameSampleCount]
+                .hostTimeNanoseconds <= captureHostTimeNanoseconds {
+                eligibleRenderTimeFound = true
+            }
+            #endif
+            guard validRenderReferenceStart(
+                start,
+                captureHostTimeNanoseconds: captureHostTimeNanoseconds,
+                rawReferenceSearch: rawReferenceSearch
+            ) != nil,
+                rawReferenceSearch.hasVariance(at: start) else {
                 continue
             }
-            var reference: [Float] = []
-            reference.reserveCapacity(captureSamples.count)
-            for frame in renderTimingHistory[start ..< start + neededFrames] {
-                reference.append(contentsOf: frame.samples)
-            }
-            guard signalRMS(reference) >= Self.minimumTimingRMS else {
-                continue
-            }
-            let correlation = normalizedCorrelation(
-                captureSamples,
-                reference
-            )
-            if bestMatch == nil
-                || correlation > (bestMatch?.correlation ?? 0) {
-                bestMatch = (
-                    correlation,
-                    Double(captureHostTimeNanoseconds - renderStart)
-                        / 1_000_000
-                )
+            let product = rawReferenceSearch.products[start]
+            let score = product * product
+                / rawReferenceSearch.windowEnergy[start]
+            if score > bestScore {
+                bestStart = start
+                bestScore = score
             }
         }
-        return bestMatch
+        #if DEBUG
+        test3AppleRenderMatchMissingReason = bestStart == nil
+            ? (eligibleRenderTimeFound
+                ? "no_valid_render_window" : "render_after_capture")
+            : nil
+        #endif
+        guard let bestStart,
+              let renderStart = validRenderReferenceStart(
+                bestStart,
+                captureHostTimeNanoseconds: captureHostTimeNanoseconds,
+                rawReferenceSearch: rawReferenceSearch
+              ) else { return nil }
+        return (
+            rawReferenceSearch.correlation(at: bestStart),
+            Double(captureHostTimeNanoseconds - renderStart) / 1_000_000,
+            renderStart
+        )
     }
 
-    func updateSystemVoiceActivity(_ active: Bool) {
+    func updateSystemVoiceActivity(
+        _ active: Bool?,
+        test3SampleSequence: UInt64? = nil
+    ) {
         queue.sync {
-            guard mode == .appleVoiceProcessing,
-                  !isRouteRebuilding else { return }
-            systemVoiceActivityDetected = active
+            applySystemVoiceActivity(
+                active,
+                test3SampleSequence: test3SampleSequence
+            )
         }
+    }
+
+    private func applySystemVoiceActivity(
+        _ active: Bool?,
+        test3SampleSequence: UInt64?
+    ) {
+        guard mode == .appleVoiceProcessing,
+              !isRouteRebuilding else { return }
+        systemVoiceActivityDetected = active == true
+        systemVoiceActivityReadValid = active != nil
+        if active == nil, sourceGateOpen {
+            resetSourceGate(
+                keepingClassification: false,
+                closeReason: .sourceEvidenceReset
+            )
+        }
+        #if DEBUG
+        test3VADSampleSequence = test3SampleSequence
+        #endif
     }
 
     #if DEBUG
@@ -1548,7 +1809,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             playbackSequence &+= 1
             isPlaybackActive = true
             systemVoiceActivityDetected = false
+            systemVoiceActivityReadValid = false
             lastAudibleRenderHostTimeNanoseconds = nil
+            renderFIFO.removeAll(keepingCapacity: true)
+            renderRemainderHostTimeNanoseconds = nil
+            captureFIFO.removeAll(keepingCapacity: true)
+            captureRemainderHostTimeNanoseconds = nil
             clearTimingHistory()
             alignedDelayMilliseconds = nil
             resetSignalDiagnostics()
@@ -1623,6 +1889,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             lastAudibleRenderHostTimeNanoseconds = nil
             isRouteRebuilding = true
             systemVoiceActivityDetected = false
+            systemVoiceActivityReadValid = false
             hasReliableEchoCancellation = false
             poorResidualEchoFrameCount = 0
             clearFIFOs()
@@ -1680,6 +1947,75 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     #if DEBUG
+    func armTest3TimingTrace() -> Bool {
+        queue.sync {
+            guard !test3TimingTraceArmed,
+                  !isPlaybackActive else { return false }
+            test3TimingTraceArmed = true
+            test3RenderFrames = []
+            test3CaptureFrames = []
+            test3RenderSamples = []
+            test3RenderSamples.reserveCapacity(
+                Self.test3TimingTraceFrameCapacity * Self.frameSampleCount
+            )
+            test3TraceArrivalOrdinal = 0
+            test3Discontinuities = []
+            test3TimingTraceTruncated = false
+            test3AppleDecisionFrames = []
+            test3AppleProcessedSamples = []
+            test3AppleDecisionTraceTruncated = false
+            test3VADSampleSequence = nil
+            test3AppleRenderMatchMissingReason = nil
+            return true
+        }
+    }
+
+    func test3TimingTraceSnapshot() -> MacSpeechTest3TimingTrace {
+        queue.sync {
+            MacSpeechTest3TimingTrace(
+                schemaVersion: 2,
+                renderFrames: test3RenderFrames,
+                captureFrames: test3CaptureFrames,
+                renderPCMFormat: "f32le",
+                renderSampleRate: Self.sampleRate,
+                renderFrameSampleCount: Self.frameSampleCount,
+                renderSampleCount: test3RenderSamples.count,
+                renderPCM: test3RenderSamples.withUnsafeBytes { Data($0) },
+                discontinuities: test3Discontinuities,
+                truncated: test3TimingTraceTruncated
+                    || test3RenderSamples.count
+                        != test3RenderFrames.count * Self.frameSampleCount
+            )
+        }
+    }
+
+    func test3RenderTimingBounds() -> (firstContent: UInt64?, latest: UInt64?) {
+        queue.sync {
+            (
+                test3RenderFrames.first(where: { $0.rms > 0 })?.hostTimeNanoseconds,
+                test3RenderFrames.last?.hostTimeNanoseconds
+            )
+        }
+    }
+
+    func sealTest3TimingTrace() {
+        queue.sync { test3TimingTraceArmed = false }
+    }
+
+    func test3AppleDecisionSnapshot() -> (
+        trace: MacSpeechTest3AppleDecisionTrace,
+        processedSamples: [Float]
+    ) {
+        queue.sync {
+            (MacSpeechTest3AppleDecisionTrace(
+                schemaVersion: 1,
+                frames: test3AppleDecisionFrames,
+                processedSampleCount: test3AppleProcessedSamples.count,
+                truncated: test3AppleDecisionTraceTruncated
+            ), test3AppleProcessedSamples)
+        }
+    }
+
     func armAcousticReplayCapture(
         attemptID: UUID,
         targetCaptureFrameCount: Int = acousticReplayCaptureFrameCapacity
@@ -1837,6 +2173,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private enum FrameProcessingError: Error {
         case fifoOverflow
+        case discontinuousInput
     }
 
     private struct TimedRenderFrame {
@@ -1856,10 +2193,38 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         let renderSamples: [Float]
         let captureHostTimeNanoseconds: UInt64
         let renderHostTimeNanoseconds: UInt64
+        let renderFrameHostTimeNanoseconds: UInt64
+        let renderSampleOffset: Int
         let renderRMS: Double
         let delayMilliseconds: Double
         let correlation: Double
         let associationOrigin: AssociationOrigin
+    }
+
+    private struct RawEchoReferenceSearch {
+        let samples: [Float]
+        let history: [Double]
+        let products: [Double]
+        let windowSquares: [Double]
+        let windowEnergy: [Double]
+        let captureEnergy: Double
+
+        var windowCount: Int { products.count }
+
+        func hasVariance(at start: Int) -> Bool {
+            windowEnergy[start] > windowSquares[start]
+                * (64 * Double.ulpOfOne * Double(samples.count))
+        }
+
+        func correlation(at start: Int) -> Double {
+            guard hasVariance(at: start) else { return 0 }
+            return min(abs(products[start])
+                / sqrt(captureEnergy * windowEnergy[start]), 1)
+        }
+
+        func rms(at start: Int) -> Double {
+            sqrt(windowSquares[start] / Double(MacSpeechAcousticEchoHost.frameSampleCount))
+        }
     }
 
     private struct SourceGateEpochAccumulator {
@@ -1883,6 +2248,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private func processFrames(
         _ samples: [Float],
         hostTimeNanoseconds: UInt64?,
+        stream: String = "other",
         remainder: inout [Float],
         remainderHostTimeNanoseconds: inout UInt64?,
         process: ([Float], UInt64?) throws -> Void
@@ -1894,6 +2260,53 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
         var offset = 0
         if !remainder.isEmpty {
+            if let remainderHostTimeNanoseconds,
+               let hostTimeNanoseconds {
+                let expected = advancedHostTime(
+                    remainderHostTimeNanoseconds,
+                    sampleOffset: remainder.count
+                )!
+                let difference = hostTimeNanoseconds >= expected
+                    ? hostTimeNanoseconds - expected
+                    : expected - hostTimeNanoseconds
+                guard difference <= 2 * 1_000_000_000
+                    / UInt64(Self.sampleRate) else {
+                    #if DEBUG
+                    if test3TimingTraceArmed,
+                       test3Discontinuities.count < 32 {
+                        test3Discontinuities.append(.init(
+                            stream: stream,
+                            previousFrameStartNanoseconds:
+                                remainderHostTimeNanoseconds,
+                            remainderSampleCount: remainder.count,
+                            expectedNextSampleNanoseconds: expected,
+                            actualNextSampleNanoseconds: hostTimeNanoseconds
+                        ))
+                    }
+                    #endif
+                    throw FrameProcessingError.discontinuousInput
+                }
+            } else if remainderHostTimeNanoseconds != nil
+                || hostTimeNanoseconds != nil {
+                #if DEBUG
+                if test3TimingTraceArmed,
+                   test3Discontinuities.count < 32 {
+                    test3Discontinuities.append(.init(
+                        stream: stream,
+                        previousFrameStartNanoseconds:
+                            remainderHostTimeNanoseconds,
+                        remainderSampleCount: remainder.count,
+                        expectedNextSampleNanoseconds:
+                            advancedHostTime(
+                                remainderHostTimeNanoseconds,
+                                sampleOffset: remainder.count
+                            ),
+                        actualNextSampleNanoseconds: hostTimeNanoseconds
+                    ))
+                }
+                #endif
+                throw FrameProcessingError.discontinuousInput
+            }
             let needed = Self.frameSampleCount - remainder.count
             let consumed = min(needed, samples.count)
             remainder.append(contentsOf: samples.prefix(consumed))
@@ -1961,6 +2374,23 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         renderTimingHistory.append(frame)
         latestRenderHostTimeNanoseconds = frame.hostTimeNanoseconds
         latestRenderReferenceRMS = frame.rms
+        #if DEBUG
+        if test3TimingTraceArmed {
+            if test3RenderFrames.count < Self.test3TimingTraceFrameCapacity {
+                test3TraceArrivalOrdinal &+= 1
+                test3RenderFrames.append(.init(
+                    index: renderFrameCount,
+                    hostTimeNanoseconds: frame.hostTimeNanoseconds,
+                    rms: frame.rms,
+                    arrivalOrdinal: test3TraceArrivalOrdinal,
+                    renderHistoryFrameCount: renderTimingHistory.count
+                ))
+                test3RenderSamples.append(contentsOf: frame.samples)
+            } else {
+                test3TimingTraceTruncated = true
+            }
+        }
+        #endif
         if frame.rms >= Self.minimumTimingRMS {
             lastAudibleRenderHostTimeNanoseconds = max(
                 lastAudibleRenderHostTimeNanoseconds ?? 0,
@@ -1971,10 +2401,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
     private func timingMatch(
         for captureSamples: [Float],
-        captureHostTimeNanoseconds: UInt64?
+        captureHostTimeNanoseconds: UInt64?,
+        rawReferenceSearch: RawEchoReferenceSearch?
     ) -> TimingMatch? {
         guard isPlaybackActive,
               let captureHostTimeNanoseconds,
+              let rawReferenceSearch,
               latestCaptureHostTimeNanoseconds.map({
                   captureHostTimeNanoseconds > $0
               }) ?? true,
@@ -2021,50 +2453,61 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 ? captureHostTimeNanoseconds - preferredDelayNanoseconds
                 : 0
         }
-        var bestMatch: TimingMatch?
+        var bestStart: Int?
+        var bestScore = -1.0
         var bestDistanceNanoseconds: UInt64?
-        var fallbackMatch: TimingMatch?
-        for renderFrame in renderTimingHistory {
-            guard captureHostTimeNanoseconds >= renderFrame.hostTimeNanoseconds
-            else { continue }
-            let delayMilliseconds = Double(
-                captureHostTimeNanoseconds - renderFrame.hostTimeNanoseconds
-            ) / 1_000_000
-            guard delayMilliseconds <= Double(Self.maximumDelayMilliseconds),
-                  renderFrame.rms >= Self.minimumTimingRMS else {
+        var fallbackStart: Int?
+        var fallbackScore = -1.0
+        let minimumWindowSquares = Self.minimumTimingRMS
+            * Self.minimumTimingRMS * Double(Self.frameSampleCount)
+        let continuousFramePairs = (0 ..< renderTimingHistory.count - 1)
+            .map { index in
+                hasContiguousRenderHistoryWindow(
+                    start: index * Self.frameSampleCount + 1
+                )
+            }
+        for start in 0 ..< rawReferenceSearch.windowCount {
+            let frameIndex = start / Self.frameSampleCount
+            let offset = start % Self.frameSampleCount
+            guard rawReferenceSearch.windowSquares[start]
+                    >= minimumWindowSquares,
+                  rawReferenceSearch.hasVariance(at: start),
+                  offset == 0 || continuousFramePairs[frameIndex] else {
+                continue
+            }
+            let renderHostTimeNanoseconds =
+                renderTimingHistory[frameIndex].hostTimeNanoseconds
+                + UInt64(offset) * 1_000_000_000 / UInt64(Self.sampleRate)
+            guard renderHostTimeNanoseconds <= captureHostTimeNanoseconds,
+                  captureHostTimeNanoseconds - renderHostTimeNanoseconds
+                    <= UInt64(Self.maximumDelayMilliseconds) * 1_000_000,
+                  offset == 0
+                    || renderTimingHistory[frameIndex + 1].hostTimeNanoseconds
+                        <= captureHostTimeNanoseconds
+                            + UInt64(Self.frameSampleCount - offset)
+                                * 1_000_000_000 / UInt64(Self.sampleRate) else {
                 continue
             }
             if followsExistingAssociation {
                 guard timingAssociationIsContinuous(
                     captureHostTimeNanoseconds: captureHostTimeNanoseconds,
-                    renderHostTimeNanoseconds: renderFrame.hostTimeNanoseconds
+                    renderHostTimeNanoseconds: renderHostTimeNanoseconds
                 ) else { continue }
             }
-            let correlation = normalizedCorrelation(
-                captureSamples,
-                renderFrame.samples
-            )
+            let product = rawReferenceSearch.products[start]
+            let score = product * product
+                / rawReferenceSearch.windowEnergy[start]
             if !followsExistingAssociation,
-               fallbackMatch == nil
-                    || correlation >= (fallbackMatch?.correlation ?? 0) {
-                fallbackMatch = TimingMatch(
-                    renderSamples: renderFrame.samples,
-                    captureHostTimeNanoseconds:
-                        captureHostTimeNanoseconds,
-                    renderHostTimeNanoseconds:
-                        renderFrame.hostTimeNanoseconds,
-                    renderRMS: renderFrame.rms,
-                    delayMilliseconds: delayMilliseconds,
-                    correlation: correlation,
-                    associationOrigin: .historicalDiscovery
-                )
+               score >= fallbackScore {
+                fallbackStart = start
+                fallbackScore = score
             }
-            let distanceNanoseconds = renderFrame.hostTimeNanoseconds
+            let distanceNanoseconds = renderHostTimeNanoseconds
                     >= targetRenderHostTimeNanoseconds
-                ? renderFrame.hostTimeNanoseconds
+                ? renderHostTimeNanoseconds
                     - targetRenderHostTimeNanoseconds
                 : targetRenderHostTimeNanoseconds
-                    - renderFrame.hostTimeNanoseconds
+                    - renderHostTimeNanoseconds
             let maximumDistanceMilliseconds =
                 followsExistingAssociation
                 ? Self.timingAssociationProgressToleranceMilliseconds
@@ -2076,32 +2519,73 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             if bestDistanceNanoseconds == nil
                 || distanceNanoseconds < (bestDistanceNanoseconds ?? .max)
                 || (distanceNanoseconds == bestDistanceNanoseconds
-                    && correlation >= (bestMatch?.correlation ?? 0)) {
+                    && score >= bestScore) {
                 bestDistanceNanoseconds = distanceNanoseconds
-                bestMatch = TimingMatch(
-                    renderSamples: renderFrame.samples,
-                    captureHostTimeNanoseconds:
-                        captureHostTimeNanoseconds,
-                    renderHostTimeNanoseconds:
-                        renderFrame.hostTimeNanoseconds,
-                    renderRMS: renderFrame.rms,
-                    delayMilliseconds: delayMilliseconds,
-                    correlation: correlation,
-                    associationOrigin:
-                        timingLockedDelayMilliseconds != nil
-                        ? .locked
-                        : followsExistingAssociation
-                            ? .trackedCandidate
-                            : .expected
-                )
+                bestStart = start
+                bestScore = score
             }
         }
-        if (bestMatch == nil || shouldDiscoverHistoricalAssociation),
-           !followsExistingAssociation,
-           !renderCaptureIsolationEstablished {
-            bestMatch = fallbackMatch
+        let useFallback = (bestStart == nil || shouldDiscoverHistoricalAssociation)
+            && !followsExistingAssociation && !renderCaptureIsolationEstablished
+        guard let chosenStart = useFallback ? fallbackStart : bestStart,
+              let renderHostTimeNanoseconds = validRenderReferenceStart(
+                chosenStart,
+                captureHostTimeNanoseconds: captureHostTimeNanoseconds,
+                rawReferenceSearch: rawReferenceSearch
+              ) else { return nil }
+        let frameIndex = chosenStart / Self.frameSampleCount
+        let offset = chosenStart % Self.frameSampleCount
+        return TimingMatch(
+            renderSamples: Array(rawReferenceSearch.samples[
+                chosenStart ..< chosenStart + Self.frameSampleCount
+            ]),
+            captureHostTimeNanoseconds: captureHostTimeNanoseconds,
+            renderHostTimeNanoseconds: renderHostTimeNanoseconds,
+            renderFrameHostTimeNanoseconds:
+                renderTimingHistory[frameIndex].hostTimeNanoseconds,
+            renderSampleOffset: offset,
+            renderRMS: rawReferenceSearch.rms(at: chosenStart),
+            delayMilliseconds: Double(
+                captureHostTimeNanoseconds - renderHostTimeNanoseconds
+            ) / 1_000_000,
+            correlation: rawReferenceSearch.correlation(at: chosenStart),
+            associationOrigin: useFallback ? .historicalDiscovery
+                : timingLockedDelayMilliseconds != nil ? .locked
+                : followsExistingAssociation ? .trackedCandidate : .expected
+        )
+    }
+
+    private func validRenderReferenceStart(
+        _ start: Int,
+        captureHostTimeNanoseconds: UInt64,
+        rawReferenceSearch: RawEchoReferenceSearch
+    ) -> UInt64? {
+        guard rawReferenceSearch.rms(at: start) >= Self.minimumTimingRMS,
+              rawReferenceSearch.hasVariance(at: start),
+              hasContiguousRenderHistoryWindow(start: start) else {
+            return nil
         }
-        return bestMatch
+        let frameIndex = start / Self.frameSampleCount
+        let offset = start % Self.frameSampleCount
+        let frame = renderTimingHistory[frameIndex]
+        let startTime = frame.hostTimeNanoseconds
+            + UInt64(offset) * 1_000_000_000 / UInt64(Self.sampleRate)
+        guard startTime <= captureHostTimeNanoseconds,
+              captureHostTimeNanoseconds - startTime
+                <= UInt64(Self.maximumDelayMilliseconds) * 1_000_000 else {
+            return nil
+        }
+        let lastFrameIndex =
+            (start + Self.frameSampleCount - 1) / Self.frameSampleCount
+        let nextSegmentCaptureTime = captureHostTimeNanoseconds
+            + UInt64(Self.frameSampleCount - offset)
+                * 1_000_000_000 / UInt64(Self.sampleRate)
+        guard lastFrameIndex == frameIndex
+                || renderTimingHistory[lastFrameIndex].hostTimeNanoseconds
+                    <= nextSegmentCaptureTime else {
+            return nil
+        }
+        return startTime
     }
 
     private func timingAssociationIsContinuous(
@@ -2227,6 +2711,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private func gatedCaptureSpans(
         _ processedFrame: [Float],
         classificationTimingMatch: TimingMatch?,
+        alternativeEchoReference: Bool,
         reportedTimingMatch: TimingMatch?,
         captureFrameIndex: UInt64
     ) -> [MacSpeechAcousticCaptureSpan] {
@@ -2242,10 +2727,16 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             )]
         }
 
-        inputClassification = classifyCapture(
-            processedFrame,
-            timingMatch: classificationTimingMatch
-        )
+        if alternativeEchoReference {
+            adaptiveNearEndContinuationCandidate = false
+            revokeRenderCaptureIsolationEvidence()
+            inputClassification = .echoOnly
+        } else {
+            inputClassification = classifyCapture(
+                processedFrame,
+                timingMatch: classificationTimingMatch
+            )
+        }
         if classificationTimingMatch != nil,
            reportedTimingMatch == nil {
             clearTimingMatchIdentity()
@@ -2392,54 +2883,431 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         return classification
     }
 
+    private func rawEchoReferenceSearch(
+        for rawCapture: [Float]
+    ) -> RawEchoReferenceSearch? {
+        guard !renderTimingHistory.isEmpty,
+              let firstSample = rawCapture.first,
+              rawCapture.contains(where: { $0 != firstSample }) else {
+            return nil
+        }
+        let samples = renderTimingHistory.flatMap(\.samples)
+        guard samples.count >= Self.frameSampleCount else { return nil }
+        let rawMean = rawCapture.reduce(0.0) { $0 + Double($1) }
+            / Double(rawCapture.count)
+        let centeredRaw = rawCapture.map { Double($0) - rawMean }
+        let rawEnergy = centeredRaw.reduce(0.0) { $0 + $1 * $1 }
+        let rawTotalEnergy = rawCapture.reduce(0.0) {
+            $0 + Double($1) * Double($1)
+        }
+        guard rawEnergy > rawTotalEnergy
+                * (64 * Double.ulpOfOne * Double(rawCapture.count)) else {
+            return nil
+        }
+        var history = [Double](repeating: 0, count: samples.count + 1)
+        samples.withUnsafeBufferPointer { source in
+            history.withUnsafeMutableBufferPointer { destination in
+                vDSP_vspdp(
+                    source.baseAddress!, 1,
+                    destination.baseAddress!.advanced(by: 1), 1,
+                    vDSP_Length(samples.count)
+                )
+            }
+        }
+        let windowCount = samples.count - Self.frameSampleCount + 1
+        var products = [Double](repeating: 0, count: windowCount)
+        history.withUnsafeBufferPointer { historyBuffer in
+            centeredRaw.withUnsafeBufferPointer { captureBuffer in
+                products.withUnsafeMutableBufferPointer { outputBuffer in
+                    vDSP_convD(
+                        historyBuffer.baseAddress!.advanced(by: 1), 1,
+                        captureBuffer.baseAddress!, 1,
+                        outputBuffer.baseAddress!, 1,
+                        vDSP_Length(windowCount),
+                        vDSP_Length(Self.frameSampleCount)
+                    )
+                }
+            }
+        }
+        var sums = [Double](repeating: 0, count: history.count)
+        var squareSamples = [Double](repeating: 0, count: history.count)
+        var squares = [Double](repeating: 0, count: history.count)
+        var one = 1.0
+        history.withUnsafeBufferPointer { historyBuffer in
+            sums.withUnsafeMutableBufferPointer { output in
+                vDSP_vrsumD(
+                    historyBuffer.baseAddress!, 1, &one,
+                    output.baseAddress!, 1, vDSP_Length(history.count)
+                )
+            }
+            squareSamples.withUnsafeMutableBufferPointer { output in
+                vDSP_vsqD(
+                    historyBuffer.baseAddress!.advanced(by: 1), 1,
+                    output.baseAddress!.advanced(by: 1), 1,
+                    vDSP_Length(samples.count)
+                )
+            }
+        }
+        squareSamples.withUnsafeBufferPointer { input in
+            squares.withUnsafeMutableBufferPointer { output in
+                vDSP_vrsumD(
+                    input.baseAddress!, 1, &one,
+                    output.baseAddress!, 1, vDSP_Length(squareSamples.count)
+                )
+            }
+        }
+        var windowSums = [Double](repeating: 0, count: windowCount)
+        var windowSquares = [Double](repeating: 0, count: windowCount)
+        var meanSquare = [Double](repeating: 0, count: windowCount)
+        var windowEnergy = [Double](repeating: 0, count: windowCount)
+        sums.withUnsafeBufferPointer { input in
+            windowSums.withUnsafeMutableBufferPointer { output in
+                vDSP_vsubD(
+                    input.baseAddress!, 1,
+                    input.baseAddress!.advanced(by: Self.frameSampleCount), 1,
+                    output.baseAddress!, 1, vDSP_Length(windowCount)
+                )
+            }
+        }
+        squares.withUnsafeBufferPointer { input in
+            windowSquares.withUnsafeMutableBufferPointer { output in
+                vDSP_vsubD(
+                    input.baseAddress!, 1,
+                    input.baseAddress!.advanced(by: Self.frameSampleCount), 1,
+                    output.baseAddress!, 1, vDSP_Length(windowCount)
+                )
+            }
+        }
+        windowSums.withUnsafeBufferPointer { input in
+            meanSquare.withUnsafeMutableBufferPointer { output in
+                vDSP_vsqD(
+                    input.baseAddress!, 1, output.baseAddress!, 1,
+                    vDSP_Length(windowCount)
+                )
+            }
+        }
+        var reciprocalFrameCount = 1 / Double(Self.frameSampleCount)
+        meanSquare.withUnsafeBufferPointer { input in
+            windowEnergy.withUnsafeMutableBufferPointer { output in
+                vDSP_vsmulD(
+                    input.baseAddress!, 1, &reciprocalFrameCount,
+                    output.baseAddress!, 1, vDSP_Length(windowCount)
+                )
+            }
+        }
+        windowSquares.withUnsafeBufferPointer { input in
+            windowEnergy.withUnsafeMutableBufferPointer { output in
+                vDSP_vsubD(
+                    output.baseAddress!, 1, input.baseAddress!, 1,
+                    output.baseAddress!, 1, vDSP_Length(windowCount)
+                )
+            }
+        }
+        return RawEchoReferenceSearch(
+            samples: samples,
+            history: history,
+            products: products,
+            windowSquares: windowSquares,
+            windowEnergy: windowEnergy,
+            captureEnergy: rawEnergy
+        )
+    }
+
     private func hasAlternativeEchoReference(
-        rawCapture: [Float],
         processedCapture: [Float],
         linearOutput: [Float],
-        timingMatch: TimingMatch?
+        captureHostTimeNanoseconds: UInt64?,
+        timingMatch: TimingMatch?,
+        rawReferenceSearch: RawEchoReferenceSearch?
     ) -> Bool {
-        guard let timingMatch,
-              !hasHighConfidenceResidentOnlyEvidence(
+        guard let captureHostTimeNanoseconds,
+              let rawReferenceSearch else { return false }
+        if let timingMatch,
+           hasHighConfidenceResidentOnlyEvidence(
                 cleanRMS: processedCaptureRMS,
                 residualCorrelation: residualRenderCorrelation,
                 timingMatch: timingMatch
-              ) else {
+           ) {
             return false
         }
-        // A mismatched reference cannot turn explainable resident echo into user evidence.
-        return renderTimingHistory.contains { frame in
-            guard frame.hostTimeNanoseconds <= timingMatch.captureHostTimeNanoseconds,
-                  timingMatch.captureHostTimeNanoseconds - frame.hostTimeNanoseconds
-                    <= UInt64(Self.maximumDelayMilliseconds) * 1_000_000,
-                  frame.rms >= Self.minimumTimingRMS,
-                  normalizedCorrelation(rawCapture, frame.samples)
-                    >= Self.minimumResidentOnlyRawCorrelation else { return false }
-            let reference = TimingMatch(
-                renderSamples: frame.samples,
-                captureHostTimeNanoseconds: timingMatch.captureHostTimeNanoseconds,
-                renderHostTimeNanoseconds: frame.hostTimeNanoseconds,
-                renderRMS: frame.rms,
-                delayMilliseconds: Double(timingMatch.captureHostTimeNanoseconds
-                    - frame.hostTimeNanoseconds) / 1_000_000,
-                correlation: 0,
-                associationOrigin: .historicalDiscovery
-            )
-            guard let cleanReference = delayedRenderReference(
-                reference, delaySamples: (backend?.processedOutputDelaySamples ?? 0) * 3
-            ), let linearReference = delayedRenderReference(
-                reference, delaySamples: (backend?.linearOutputDelaySamples ?? 0) * 3
-            ) else { return false }
-            return normalizedCorrelation(processedCapture, cleanReference)
-                    >= Self.minimumResidentOnlyResidualCorrelation
-                && normalizedCorrelation(linearOutput, downsampleToSixteenKilohertz(linearReference))
-                    >= Self.minimumResidentOnlyResidualCorrelation
+        guard renderTimingHistory.count
+                >= Self.timingLockAcquisitionFrameCount else { return false }
+        let samples = rawReferenceSearch.samples
+        let history = rawReferenceSearch.history
+        let products = rawReferenceSearch.products
+        let windowCount = rawReferenceSearch.windowCount
+        let windowEnergy = rawReferenceSearch.windowEnergy
+        let rawEnergy = rawReferenceSearch.captureEnergy
+        let cleanDelay = (backend?.processedOutputDelaySamples ?? 0) * 3
+        let linearDelay = (backend?.linearOutputDelaySamples ?? 0) * 3
+        guard (0 ..< Self.frameSampleCount).contains(cleanDelay),
+              (0 ..< Self.frameSampleCount).contains(linearDelay) else {
+            return false
         }
+        let minimumCovarianceSquared =
+            Self.minimumResidentOnlyRawCorrelation
+            * Self.minimumResidentOnlyRawCorrelation * rawEnergy
+        var covarianceSquares = [Double](repeating: 0, count: windowCount)
+        var requiredSquares = [Double](repeating: 0, count: windowCount)
+        var candidateMargins = [Double](repeating: 0, count: windowCount)
+        products.withUnsafeBufferPointer { input in
+            covarianceSquares.withUnsafeMutableBufferPointer { output in
+                vDSP_vsqD(
+                    input.baseAddress!, 1, output.baseAddress!, 1,
+                    vDSP_Length(windowCount)
+                )
+            }
+        }
+        var minimumCovarianceSquaredScale = minimumCovarianceSquared
+        windowEnergy.withUnsafeBufferPointer { input in
+            requiredSquares.withUnsafeMutableBufferPointer { output in
+                vDSP_vsmulD(
+                    input.baseAddress!, 1, &minimumCovarianceSquaredScale,
+                    output.baseAddress!, 1, vDSP_Length(windowCount)
+                )
+            }
+        }
+        requiredSquares.withUnsafeBufferPointer { required in
+            covarianceSquares.withUnsafeBufferPointer { observed in
+                candidateMargins.withUnsafeMutableBufferPointer { output in
+                    vDSP_vsubD(
+                        required.baseAddress!, 1,
+                        observed.baseAddress!, 1,
+                        output.baseAddress!, 1,
+                        vDSP_Length(windowCount)
+                    )
+                }
+            }
+        }
+        var hasRawCandidate = false
+        windowEnergy.withUnsafeBufferPointer { energies in
+            candidateMargins.withUnsafeBufferPointer { margins in
+                let energy = energies.baseAddress!
+                let margin = margins.baseAddress!
+                for start in 0 ..< windowCount {
+                    if energy[start] > 0, margin[start] >= 0 {
+                        hasRawCandidate = true
+                        break
+                    }
+                }
+            }
+        }
+        guard hasRawCandidate else { return false }
+        let processedMean = processedCapture.reduce(0.0) { $0 + Double($1) }
+            / Double(processedCapture.count)
+        let centeredProcessed = processedCapture.map {
+            Double($0) - processedMean
+        }
+        let processedEnergy = centeredProcessed.reduce(0.0) { $0 + $1 * $1 }
+        guard processedEnergy > 0 else { return false }
+        var processedProducts = [Double](repeating: 0, count: windowCount)
+        history.withUnsafeBufferPointer { historyBuffer in
+            centeredProcessed.withUnsafeBufferPointer { captureBuffer in
+                processedProducts.withUnsafeMutableBufferPointer { outputBuffer in
+                    vDSP_convD(
+                        historyBuffer.baseAddress!.advanced(by: 1), 1,
+                        captureBuffer.baseAddress!, 1,
+                        outputBuffer.baseAddress!, 1,
+                        vDSP_Length(windowCount),
+                        vDSP_Length(Self.frameSampleCount)
+                    )
+                }
+            }
+        }
+        let minimumProcessedCovarianceSquared =
+            Self.minimumResidentOnlyResidualCorrelation
+            * Self.minimumResidentOnlyResidualCorrelation * processedEnergy
+        let maximumUnexplainedEnergy =
+            Self.minimumNearEndRMS * Self.minimumNearEndRMS
+            * Double(Self.frameSampleCount)
+        let linearMean = linearOutput.reduce(0.0) { $0 + Double($1) }
+            / Double(linearOutput.count)
+        let centeredLinear = linearOutput.map { Double($0) - linearMean }
+        let linearEnergy = centeredLinear.reduce(0.0) { $0 + $1 * $1 }
+        guard linearEnergy > 0 else { return false }
+        let tripletCount = samples.count - 2
+        var tripletFloats = [Float](repeating: 0, count: tripletCount)
+        var tripletMeans = [Double](repeating: 0, count: tripletCount)
+        var three: Float = 3
+        var one = 1.0
+        samples.withUnsafeBufferPointer { input in
+            tripletFloats.withUnsafeMutableBufferPointer { output in
+                vDSP_vadd(
+                    input.baseAddress!, 1,
+                    input.baseAddress!.advanced(by: 1), 1,
+                    output.baseAddress!, 1,
+                    vDSP_Length(tripletCount)
+                )
+                vDSP_vadd(
+                    output.baseAddress!, 1,
+                    input.baseAddress!.advanced(by: 2), 1,
+                    output.baseAddress!, 1,
+                    vDSP_Length(tripletCount)
+                )
+                vDSP_vsdiv(
+                    output.baseAddress!, 1, &three,
+                    output.baseAddress!, 1,
+                    vDSP_Length(tripletCount)
+                )
+                tripletMeans.withUnsafeMutableBufferPointer { converted in
+                    vDSP_vspdp(
+                        output.baseAddress!, 1,
+                        converted.baseAddress!, 1,
+                        vDSP_Length(tripletCount)
+                    )
+                }
+            }
+        }
+        var linearProducts = [Double](repeating: 0, count: windowCount)
+        tripletMeans.withUnsafeBufferPointer { historyBuffer in
+            centeredLinear.withUnsafeBufferPointer { linearBuffer in
+                linearProducts.withUnsafeMutableBufferPointer { outputBuffer in
+                    for phase in 0 ..< 3 {
+                        let count = (windowCount - phase + 2) / 3
+                        vDSP_convD(
+                            historyBuffer.baseAddress!.advanced(by: phase), 3,
+                            linearBuffer.baseAddress!, 1,
+                            outputBuffer.baseAddress!.advanced(by: phase), 3,
+                            vDSP_Length(count),
+                            vDSP_Length(Self.linearOutputFrameSampleCount)
+                        )
+                    }
+                }
+            }
+        }
+        var phaseSums: [[Double]] = []
+        var phaseSquares: [[Double]] = []
+        tripletMeans.withUnsafeBufferPointer { input in
+            for phase in 0 ..< 3 {
+                let count = (tripletCount - phase + 2) / 3
+                var sums = [Double](repeating: 0, count: count + 1)
+                var squares = [Double](repeating: 0, count: count + 1)
+                var squaredSamples = [Double](repeating: 0, count: count)
+                sums.withUnsafeMutableBufferPointer { output in
+                    vDSP_vrsumD(
+                        input.baseAddress!.advanced(by: phase), 3, &one,
+                        output.baseAddress!.advanced(by: 1), 1,
+                        vDSP_Length(count)
+                    )
+                }
+                squaredSamples.withUnsafeMutableBufferPointer { output in
+                    vDSP_vsqD(
+                        input.baseAddress!.advanced(by: phase), 3,
+                        output.baseAddress!, 1,
+                        vDSP_Length(count)
+                    )
+                }
+                squaredSamples.withUnsafeBufferPointer { squared in
+                    squares.withUnsafeMutableBufferPointer { output in
+                        vDSP_vrsumD(
+                            squared.baseAddress!, 1, &one,
+                            output.baseAddress!.advanced(by: 1), 1,
+                            vDSP_Length(count)
+                        )
+                    }
+                }
+                phaseSums.append(sums)
+                phaseSquares.append(squares)
+            }
+        }
+        let minimumLinearCovarianceSquared =
+            Self.minimumResidentOnlyResidualCorrelation
+            * Self.minimumResidentOnlyResidualCorrelation * linearEnergy
+        let maximumLinearUnexplainedEnergy =
+            Self.minimumNearEndRMS * Self.minimumNearEndRMS
+            * Double(Self.linearOutputFrameSampleCount)
+        for start in 0 ..< windowCount {
+            guard rawReferenceSearch.hasVariance(at: start),
+                  candidateMargins[start] >= 0 else { continue }
+            let cleanStart = start - cleanDelay
+            let linearStart = start - linearDelay
+            guard cleanStart >= 0, linearStart >= 0 else { continue }
+            let cleanEnergy = windowEnergy[cleanStart]
+            let cleanCovarianceSquared =
+                processedProducts[cleanStart] * processedProducts[cleanStart]
+            guard cleanEnergy > 0,
+                  cleanCovarianceSquared
+                    >= minimumProcessedCovarianceSquared * cleanEnergy,
+                  max(0, processedEnergy - cleanCovarianceSquared / cleanEnergy)
+                    < maximumUnexplainedEnergy else { continue }
+            let phase = linearStart % 3
+            let linearIndex = linearStart / 3
+            let linearWindowSum = phaseSums[phase][
+                linearIndex + Self.linearOutputFrameSampleCount
+            ] - phaseSums[phase][linearIndex]
+            let linearWindowSquares = phaseSquares[phase][
+                linearIndex + Self.linearOutputFrameSampleCount
+            ] - phaseSquares[phase][linearIndex]
+            let linearReferenceEnergy = max(
+                0,
+                linearWindowSquares - linearWindowSum * linearWindowSum
+                    / Double(Self.linearOutputFrameSampleCount)
+            )
+            let linearCovarianceSquared =
+                linearProducts[linearStart] * linearProducts[linearStart]
+            guard linearReferenceEnergy > 0,
+                  linearCovarianceSquared
+                    >= minimumLinearCovarianceSquared * linearReferenceEnergy,
+                  max(
+                    0, linearEnergy
+                        - linearCovarianceSquared / linearReferenceEnergy
+                  ) < maximumLinearUnexplainedEnergy else { continue }
+            guard validRenderReferenceStart(
+                start,
+                captureHostTimeNanoseconds: captureHostTimeNanoseconds,
+                rawReferenceSearch: rawReferenceSearch
+            ) != nil,
+                  hasContiguousRenderHistoryWindow(start: cleanStart),
+                  hasContiguousRenderHistoryWindow(start: linearStart) else {
+                continue
+            }
+            return true
+        }
+        return false
+    }
+
+    private func hasContiguousRenderHistoryWindow(start: Int) -> Bool {
+        guard start >= 0,
+              start + Self.frameSampleCount
+                <= renderTimingHistory.count * Self.frameSampleCount else {
+            return false
+        }
+        let firstFrame = start / Self.frameSampleCount
+        let lastFrame = (start + Self.frameSampleCount - 1) / Self.frameSampleCount
+        if firstFrame != lastFrame {
+            let first = renderTimingHistory[firstFrame]
+            let last = renderTimingHistory[lastFrame]
+            guard last.hostTimeNanoseconds > first.hostTimeNanoseconds else {
+                return false
+            }
+            let expected = first.hostTimeNanoseconds
+                + UInt64(Self.frameSampleCount) * 1_000_000_000
+                    / UInt64(Self.sampleRate)
+            let difference = last.hostTimeNanoseconds >= expected
+                ? last.hostTimeNanoseconds - expected
+                : expected - last.hostTimeNanoseconds
+            guard difference <= 2 * 1_000_000_000
+                / UInt64(Self.sampleRate) else {
+                return false
+            }
+        }
+        return true
     }
 
     private func hasUnalignedIsolatedNearEndEvidence(
         cleanRMS: Double
     ) -> Bool {
-        timingLockedDelayMilliseconds == nil
+        guard let captureTime = latestCaptureHostTimeNanoseconds else {
+            return false
+        }
+        let hasRecentRender = renderTimingHistory.contains { frame in
+            frame.hostTimeNanoseconds <= captureTime
+                && captureTime - frame.hostTimeNanoseconds
+                    <= UInt64(Self.maximumDelayMilliseconds) * 1_000_000
+                && frame.rms >= Self.minimumTimingRMS
+        }
+        return hasRecentRender
+            && timingLockedDelayMilliseconds == nil
             && timingLockCandidateFrameCount == 0
             && renderCaptureIsolationEstablished
             && rawCaptureRMS >= Self.minimumNearEndRMS
@@ -2467,7 +3335,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         guard renderCaptureIsolationQuietFrameCount
                 >= Self.renderCaptureIsolationWarmupFrameCount,
               renderTimingHistory.count
-                == Self.timingHistoryFrameCapacity else {
+                >= Self.renderCaptureIsolationWarmupFrameCount else {
             return
         }
         renderCaptureIsolationEstablished = true
@@ -2677,14 +3545,6 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 captureFrameIndex: captureFrameIndex
             )]
         case .uncertain, .echoOnly:
-            if adaptiveNearEndContinuationCandidate {
-                sourceGateNonUserHangoverFrameCount = 0
-                recordForwardedSourceFrames(1)
-                return [captureSpan(
-                    samples: processedFrame,
-                    captureFrameIndex: captureFrameIndex
-                )]
-            }
             sourceGateNonUserHangoverFrameCount += 1
             if sourceGateNonUserHangoverFrameCount
                 >= Self.maximumSourceGateNonUserHangoverFrames {
@@ -3114,22 +3974,17 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         guard delaySamples != 0 else { return match.renderSamples }
         guard (1 ..< Self.frameSampleCount).contains(delaySamples),
               let index = renderTimingHistory.lastIndex(where: {
-                  $0.hostTimeNanoseconds == match.renderHostTimeNanoseconds
-              }), index > 0 else { return nil }
-        let previous = renderTimingHistory[index - 1]
-        let current = renderTimingHistory[index]
-        guard current.hostTimeNanoseconds > previous.hostTimeNanoseconds else {
-            return nil
-        }
-        let advanceMilliseconds = Double(
-            current.hostTimeNanoseconds - previous.hostTimeNanoseconds
-        ) / 1_000_000
-        guard abs(advanceMilliseconds - 10)
-                <= Self.timingAssociationProgressToleranceMilliseconds else {
-            return nil
-        }
-        return Array(previous.samples.suffix(delaySamples))
-            + Array(current.samples.prefix(Self.frameSampleCount - delaySamples))
+                  $0.hostTimeNanoseconds
+                      == match.renderFrameHostTimeNanoseconds
+              }) else { return nil }
+        let start = index * Self.frameSampleCount
+            + match.renderSampleOffset - delaySamples
+        guard hasContiguousRenderHistoryWindow(start: start) else { return nil }
+        let firstFrame = start / Self.frameSampleCount
+        let offset = start % Self.frameSampleCount
+        if offset == 0 { return renderTimingHistory[firstFrame].samples }
+        return Array(renderTimingHistory[firstFrame].samples[offset...])
+            + Array(renderTimingHistory[firstFrame + 1].samples[..<offset])
     }
 
     private func downsampleToSixteenKilohertz(_ samples: [Float]) -> [Float] {
@@ -3342,7 +4197,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             timingMatchAvailable: timingMatch != nil,
             matchedRenderCallOrdinal: timingMatch.flatMap {
                 capture.renderCallOrdinalByHostTime[
-                    $0.renderHostTimeNanoseconds
+                    $0.renderFrameHostTimeNanoseconds
                 ]
             },
             matchedRenderHostTimeNanoseconds:

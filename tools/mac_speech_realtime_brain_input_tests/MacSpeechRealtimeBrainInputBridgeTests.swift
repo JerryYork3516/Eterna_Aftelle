@@ -74,7 +74,8 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
         pcm16Bytes: Data,
         activity: Float,
         generation: UInt64,
-        playbackSequence: UInt64
+        playbackSequence: UInt64,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
     ) {
         lock.withLock {
             guard activeGeneration == generation else { return }
@@ -83,11 +84,21 @@ private final class FakeMacSpeechAudioFrameSource: MacSpeechAudioFrameSourcing, 
                 captureGeneration: generation,
                 sequenceNumber: nextSequence,
                 monotonicTimestampNanoseconds:
-                    UInt64(nextSequence) * 20_000_000,
+                    acousticSnapshot?.captureHostTimeNanoseconds
+                        ?? UInt64(nextSequence) * 20_000_000,
                 pcm16Bytes: pcm16Bytes,
                 activity: activity,
+                activityEvidenceKind: acousticSnapshot.map {
+                    MacSpeechAudioActivityEvidenceKind.classify(
+                        observation: $0
+                    )
+                } ?? .none,
                 residentPlaybackSequence: playbackSequence,
-                residentPlaybackActive: true
+                residentPlaybackActive: true,
+                lastAudibleResidentRenderTimestampNanoseconds:
+                    acousticSnapshot?.lastAudibleRenderHostTimeNanoseconds,
+                sourceGateEpoch: acousticSnapshot?.sourceGateEpoch ?? 0,
+                acousticSnapshot: acousticSnapshot
             ))
         }
     }
@@ -774,9 +785,85 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         let initial = MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: audibleRender,
             recentCaptureFrames: supportedFrames
         )
+
+        let echoOnlySource = FakeMacSpeechAudioFrameSource()
+        echoOnlySource.setActiveGeneration(captureGeneration)
+        echoOnlySource.setCausalObservation(initial)
+        let echoOnlyRecorder = R7CausalProvisionalRecorder()
+        let echoOnlyBridge = MacSpeechRealtimeBrainInputBridge(
+            source: echoOnlySource,
+            sendFrame: { _ in .success(()) },
+            stopInput: { _ in .success(()) },
+            beginCausalProvisional: { _, _, _ in
+                await echoOnlyRecorder.begin()
+            }
+        )
+        _ = await echoOnlyBridge.start(binding: .init(
+            session: session,
+            captureGeneration: captureGeneration
+        ))
+        echoOnlySource.appendCausalPlaybackFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            activity: 0.02,
+            generation: captureGeneration,
+            playbackSequence: playbackSequence,
+            acousticSnapshot: acousticSnapshot(
+                frameIndex: 6,
+                classification: .echoOnly,
+                sourceGateOpen: false,
+                playbackSequence: playbackSequence,
+                captureTimestampNanoseconds: 1_050_000_000,
+                renderTimestampNanoseconds: 1_030_000_000
+            )
+        )
+        await waitUntil(label: "echo-only packet is forwarded") {
+            await echoOnlyBridge.currentSnapshot().forwardedFrameCount == 1
+        }
+        expect(await echoOnlyRecorder.counts().begin == 0,
+               "echo-only energy cannot start an automatic pause")
+        echoOnlySource.appendCausalPlaybackFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            activity: 0.02,
+            generation: captureGeneration,
+            playbackSequence: playbackSequence,
+            acousticSnapshot: acousticSnapshot(
+                frameIndex: 8,
+                classification: .nearEndSpeech,
+                sourceGateOpen: true,
+                playbackSequence: playbackSequence,
+                captureTimestampNanoseconds: 1_080_000_000,
+                renderTimestampNanoseconds: 1_060_000_000
+            )
+        )
+        await waitUntil(label: "stale-support packet is forwarded") {
+            await echoOnlyBridge.currentSnapshot().forwardedFrameCount == 2
+        }
+        expect(await echoOnlyRecorder.counts().begin == 0,
+               "old capture support cannot start an automatic pause")
+        echoOnlySource.appendCausalPlaybackFrame(
+            pcm16Bytes: Data(repeating: 1, count: 960),
+            activity: 0.02,
+            generation: captureGeneration,
+            playbackSequence: playbackSequence + 1,
+            acousticSnapshot: acousticSnapshot(
+                frameIndex: 9,
+                classification: .nearEndSpeech,
+                sourceGateOpen: true,
+                playbackSequence: playbackSequence + 1,
+                captureTimestampNanoseconds: 1_090_000_000,
+                renderTimestampNanoseconds: 1_070_000_000
+            )
+        )
+        await waitUntil(label: "wrong-playback packet is forwarded") {
+            await echoOnlyBridge.currentSnapshot().forwardedFrameCount == 3
+        }
+        expect(await echoOnlyRecorder.counts().begin == 0,
+               "a different playback sequence cannot start a pause")
+        _ = await echoOnlyBridge.stop()
 
         let positiveSource = FakeMacSpeechAudioFrameSource()
         positiveSource.setActiveGeneration(captureGeneration)
@@ -804,7 +891,15 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             pcm16Bytes: Data(repeating: 1, count: 960),
             activity: 0.02,
             generation: captureGeneration,
-            playbackSequence: playbackSequence
+            playbackSequence: playbackSequence,
+            acousticSnapshot: acousticSnapshot(
+                frameIndex: 6,
+                classification: .nearEndSpeech,
+                sourceGateOpen: true,
+                playbackSequence: playbackSequence,
+                captureTimestampNanoseconds: 1_050_000_000,
+                renderTimestampNanoseconds: 1_030_000_000
+            )
         )
         await waitUntil(label: "causal provisional begins") {
             await positiveRecorder.counts().begin == 1
@@ -813,12 +908,20 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             MacSpeechCausalInterruptionObservation(
                 playbackSequence: playbackSequence,
                 isPlaybackActive: true,
+                systemVoiceActivityDetected: false,
                 latestRenderFrame: MacSpeechCausalFrameObservation(
                     index: 101,
                     hostTimeNanoseconds: 1_120_000_000,
                     rms: 0
                 ),
-                recentCaptureFrames: supportedFrames
+                recentCaptureFrames: supportedFrames + (5..<10).map { offset in
+                    MacSpeechCausalFrameObservation(
+                        index: UInt64(offset + 1),
+                        hostTimeNanoseconds:
+                            1_000_000_000 + UInt64(offset) * 10_000_000,
+                        rms: 0.004
+                    )
+                }
             )
         )
         await waitUntil(label: "support-only causal recovery") {
@@ -829,6 +932,39 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         expect(positiveCounts.begin == 1, "support-only episode begins once")
         expect(positiveCounts.recover == 1, "support-only episode recovers once")
         expect(positiveCounts.discard == 1, "support-only episode discards formal evidence")
+        let automaticEvents = await positiveBridge.causalCandidateDebugSnapshot()
+        expect(automaticEvents.count == 1,
+               "automatic candidate records one diagnostic event")
+        guard let event = automaticEvents.first else {
+            fatalError("FAILED: missing automatic candidate diagnostic event")
+        }
+        expect(event.playbackSequence == playbackSequence
+                && event.packetSequence == 1
+                && event.packetTimestampNanoseconds == 1_050_000_000
+                && event.packetActivity == 0.02
+                && event.packetEvidenceKind
+                    == MacSpeechAudioActivityEvidenceKind
+                        .sourceGatedNearEnd.rawValue,
+               "automatic event retains its trigger packet")
+        expect(event.latestRenderFrame.index == 100
+                && event.recentPreCaptureFrames.map(\.index)
+                    == [1, 2, 3, 4, 5]
+                && event.qualifyingFiveFrames.map(\.index)
+                    == [1, 2, 3, 4, 5],
+               "automatic event retains render and five-frame support")
+        expect(event.pauseAccepted == true
+                && event.postCaptureFrames.map(\.index)
+                    == [6, 7, 8, 9, 10],
+               "automatic event retains pause and recovery evidence")
+        let encodedEvents = try? JSONEncoder().encode(automaticEvents)
+        let decodedEvents = encodedEvents.flatMap {
+            try? JSONDecoder().decode(
+                [MacSpeechCausalCandidateDebugEvent].self,
+                from: $0
+            )
+        }
+        expect(decodedEvents?.first?.id == event.id,
+               "automatic event survives JSON export")
         _ = await positiveBridge.stop()
 
         let echoSource = FakeMacSpeechAudioFrameSource()
@@ -836,6 +972,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         echoSource.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: audibleRender,
             recentCaptureFrames: supportedFrames.map {
                 MacSpeechCausalFrameObservation(
@@ -868,9 +1005,12 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             await echoBridge.beginProviderCausalCandidate(session: session),
             "provider candidate starts reversible causal observation"
         )
+        expect((await echoBridge.causalCandidateDebugSnapshot()).isEmpty,
+               "provider candidate is not labeled automatic packet evidence")
         echoSource.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 101,
                 hostTimeNanoseconds: 1_120_000_000,
@@ -910,6 +1050,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 100,
                 hostTimeNanoseconds: 1_100_000_000,
@@ -943,6 +1084,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 101,
                 hostTimeNanoseconds: 1_120_000_000,
@@ -957,6 +1099,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 102,
                 hostTimeNanoseconds: 1_140_000_000,
@@ -982,6 +1125,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence + 1,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 103,
                 hostTimeNanoseconds: 1_160_000_000,
@@ -999,6 +1143,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence + 1,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 104,
                 hostTimeNanoseconds: 1_180_000_000,
@@ -1049,6 +1194,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: 12,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 100,
                 hostTimeNanoseconds: 1_100_000_000,
@@ -1097,6 +1243,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: 13,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 200,
                 hostTimeNanoseconds: 1_300_000_000,
@@ -1115,6 +1262,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: 13,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 201,
                 hostTimeNanoseconds: 1_320_000_000,
@@ -1145,6 +1293,7 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         source.setCausalObservation(MacSpeechCausalInterruptionObservation(
             playbackSequence: playbackSequence,
             isPlaybackActive: true,
+            systemVoiceActivityDetected: false,
             latestRenderFrame: MacSpeechCausalFrameObservation(
                 index: 100,
                 hostTimeNanoseconds: 1_100_000_000,
@@ -1182,7 +1331,15 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
             pcm16Bytes: Data(repeating: 1, count: 960),
             activity: 0.02,
             generation: captureGeneration,
-            playbackSequence: playbackSequence
+            playbackSequence: playbackSequence,
+            acousticSnapshot: acousticSnapshot(
+                frameIndex: 6,
+                classification: .nearEndSpeech,
+                sourceGateOpen: true,
+                playbackSequence: playbackSequence,
+                captureTimestampNanoseconds: 1_050_000_000,
+                renderTimestampNanoseconds: 1_030_000_000
+            )
         )
         await waitUntil(label: "capture-end causal provisional begins") {
             await recorder.counts().begin == 1
@@ -2231,16 +2388,21 @@ private struct MacSpeechRealtimeBrainInputBridgeTests {
         classification: MacSpeechAcousticInputClassification,
         sourceGateOpen: Bool,
         sourceGateEpoch: UInt64? = nil,
-        erleDecibels: Double = 10
+        erleDecibels: Double = 10,
+        playbackSequence: UInt64 = 1,
+        captureTimestampNanoseconds: UInt64? = nil,
+        renderTimestampNanoseconds: UInt64? = nil
     ) -> MacSpeechAcousticObservationSnapshot {
-        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
-        let renderTimestamp = captureTimestamp - 80_000_000
+        let captureTimestamp = captureTimestampNanoseconds
+            ?? DispatchTime.now().uptimeNanoseconds
+        let renderTimestamp = renderTimestampNanoseconds
+            ?? captureTimestamp - 80_000_000
         let isNearEnd = classification == .nearEndSpeech
             || classification == .doubleTalk
         return MacSpeechAcousticObservationSnapshot(
             captureFrameIndex: frameIndex,
             captureHostTimeNanoseconds: captureTimestamp,
-            playbackSequence: 1,
+            playbackSequence: playbackSequence,
             isPlaybackActive: true,
             lastAudibleRenderHostTimeNanoseconds: renderTimestamp,
             renderReferenceAvailable: true,

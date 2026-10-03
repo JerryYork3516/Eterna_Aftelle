@@ -120,8 +120,20 @@ private struct MacSpeechAcousticEchoHostTests {
     private static var checks = 0
 
     static func main() {
+        if CommandLine.arguments.contains("--multipath-tail-only") {
+            exit(testMultipathEchoTailClosure() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--test3-timing-only") {
+            #if DEBUG
+            testTest3TimingTrace()
+            #endif
+            print("test3_timing_trace_checks=\(checks)")
+            return
+        }
         if CommandLine.arguments.contains("--converter-timing-only") {
             testConverterTimestampQuantization()
+            testNativeSampleTimeControlsRenderContinuity()
+            testPlaybackStartDiscardsPreviousCaptureRemainder()
             print("converter_timing_checks=\(checks)")
             return
         }
@@ -136,14 +148,53 @@ private struct MacSpeechAcousticEchoHostTests {
             print("apple_framing_checks=\(checks)")
             return
         }
+        if CommandLine.arguments.contains("--apple-subframe-only") {
+            exit(testAppleSubframeEchoCannotOpenGate() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--apple-subframe-exhaustive-only") {
+            exit(testAppleSubframeEchoCannotOpenGate(
+                offsets: Array(0 ..< 480)
+            ) ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--subframe-reference-only") {
             exit(testSubframeEchoReference() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--primary-subframe-only") {
+            exit(testPrimarySubframeTimingIdentity() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--primary-subframe-exhaustive-only") {
+            exit(testPrimarySubframeTimingIdentity(offsets: Array(0 ..< 480)) ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--callback-budget-only") {
+            measureCallbackBudget()
+            return
+        }
+        if CommandLine.arguments.contains("--subframe-exhaustive-only") {
+            exit(testSubframeEchoReference(offsets: Array(0 ..< 480)) ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--subframe-mixed-only") {
+            exit(testSubframeMixedEchoAndNearEnd() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--low-delay-subframe-only") {
+            exit(testLowDelaySubframeEchoAndNearEnd() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--isolated-delayed-subframe-only") {
+            exit(testIsolatedDelayedSubframeEchoAndNearEnd() ? 0 : 1)
         }
         if CommandLine.arguments.contains("--competing-reference-only") {
             exit(testCompetingEchoReference() ? 0 : 1)
         }
         if CommandLine.arguments.contains("--weak-budget-only") {
             exit(testAlternatingWeakEvidenceCloseBudget() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--non-user-hangover-only") {
+            testAppleUnknownVADClosesGate()
+            testAppleNonUserHangoverDoesNotCloseOnSingleBadFrame()
+            testAppleNonUserHangoverClearsAfterGoodFrame()
+            testAppleNonUserHangoverClosesAfterTwentyBadFrames()
+            testApplePureEchoStillDoesNotOpenGate()
+            print("apple_non_user_hangover_checks=\(checks)")
+            return
         }
         if CommandLine.arguments.contains("--timing-controls-only") {
             exit(runTimingControls() ? 0 : 1)
@@ -153,11 +204,13 @@ private struct MacSpeechAcousticEchoHostTests {
         testArbitraryCaptureCallbackFraming()
         testMultiFrameCaptureCallbackPreservesGateEvidence()
         testFIFORemainderIsBounded()
+        testSplitCallbackDiscontinuityFailsClosed()
         testRenderAlignedDelay()
         testHostTimeAlignedDelayAndDiagnostics()
         #if DEBUG
         testAcousticReplayCapture()
         testLocalNearEndInjectionTiming()
+        testTest3TimingTrace()
         #endif
         testFutureRenderTimestampIsCaptureCausal()
         testTimingLockDoesNotJumpOnRepeatedRender()
@@ -189,18 +242,29 @@ private struct MacSpeechAcousticEchoHostTests {
         testPlaybackStopClearsSourceGateState()
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
+        testTimedAppleVoiceStateAndMultiFrameCapture()
+        if !testAppleSubframeEchoCannotOpenGate() { exit(1) }
+        testAppleZeroVarianceCannotAuthorizeSource()
+        testAppleUnknownVADClosesGate()
         testAppleCaptureFraming()
         testAppleConvertedCaptureFraming()
         testConverterTimestampQuantization()
+        testNativeSampleTimeControlsRenderContinuity()
+        testPlaybackStartDiscardsPreviousCaptureRemainder()
         testNativeTenMillisecondTapFraming()
         testSixteenToFortyEightCaptureFraming()
         testTwentyFourToFortyEightResamplingRoundTrip()
         print("speech_aec_host_checks=\(checks)")
         let timingPassed = runTimingControls()
+        let primarySubframePassed = testPrimarySubframeTimingIdentity()
         let subframePassed = testSubframeEchoReference()
+        let mixedSubframePassed = testSubframeMixedEchoAndNearEnd()
+        let lowDelaySubframePassed = testLowDelaySubframeEchoAndNearEnd()
+        let isolatedSubframePassed = testIsolatedDelayedSubframeEchoAndNearEnd()
         let referencePassed = testCompetingEchoReference()
         let budgetPassed = testAlternatingWeakEvidenceCloseBudget()
-        if !timingPassed || !subframePassed || !referencePassed || !budgetPassed { exit(1) }
+        let multipathPassed = testMultipathEchoTailClosure()
+        if !timingPassed || !primarySubframePassed || !subframePassed || !mixedSubframePassed || !lowDelaySubframePassed || !isolatedSubframePassed || !referencePassed || !budgetPassed || !multipathPassed { exit(1) }
     }
 
     #if DEBUG
@@ -230,6 +294,54 @@ private struct MacSpeechAcousticEchoHostTests {
         var loud: [Float] = [0.8, -0.8]
         clipping.mix(into: &loud, hostTimeNanoseconds: start)
         expect(loud == [1, -1], "software mix stays within PCM range")
+    }
+    #endif
+
+    #if DEBUG
+    private static func testTest3TimingTrace() {
+        let host = MacSpeechAcousticEchoHost(
+            mode: .appleVoiceProcessing,
+            backend: nil
+        )
+        expect(host.configure() == .appleVoiceProcessing,
+               "Apple voice processing host configures without a device")
+        expect(host.armTest3TimingTrace(),
+               "Test3 numeric timing trace arms before playback")
+        expect(!host.armTest3TimingTrace(),
+               "Test3 timing trace cannot be armed twice")
+        host.playbackStarted()
+        host.processRender(
+            [Float](repeating: 0.2, count: 480),
+            hostTimeNanoseconds: 1_000_000_000
+        )
+        _ = host.processCapture(
+            [Float](repeating: 0.1, count: 480),
+            hostTimeNanoseconds: 1_080_000_000
+        )
+        let trace = host.test3TimingTraceSnapshot()
+        expect(trace.renderFrames.count == 1
+                && trace.renderFrames[0].hostTimeNanoseconds == 1_000_000_000
+                && trace.renderFrames[0].rms > 0,
+               "Test3 trace retains the active render frame")
+        expect(trace.captureFrames.count == 1
+                && trace.captureFrames[0].hostTimeNanoseconds == 1_080_000_000
+                && trace.captureFrames[0].rms > 0
+                && !trace.truncated,
+               "Test3 trace retains the processed capture frame")
+        expect((try? JSONEncoder().encode(trace)) != nil,
+               "Test3 timing trace exports as JSON")
+        host.updateSystemVoiceActivity(true, test3SampleSequence: 42)
+        host.sealTest3TimingTrace()
+        host.playbackStopped()
+        expect(host.armTest3TimingTrace(),
+               "Test3 timing trace can arm for a later playback")
+        _ = host.processCapture(
+            [Float](repeating: 0.1, count: 480),
+            hostTimeNanoseconds: 2_000_000_000
+        )
+        expect(host.test3AppleDecisionSnapshot().trace.frames.first?
+                   .vadSampleSequence == nil,
+               "a new trace cannot inherit the previous VAD event sequence")
     }
     #endif
 
@@ -326,9 +438,9 @@ private struct MacSpeechAcousticEchoHostTests {
         expect(snapshot.captureFrameCount == 4
                    && snapshot.captureFIFOSampleCount == 137,
                "irregular callback keeps only its incomplete remainder")
-        expect(snapshot.inputClassification == .uncertain
+        expect(snapshot.inputClassification == .echoOnly
                    && snapshot.sourceGateOpen,
-               "one historical echo frame stays uncertain during hangover")
+               "one historical echo frame is identified during hangover")
         expect(spans.count == 4,
                "confirmed pre-roll and trailing echo retain four 10 ms spans")
         expect(spans.map(\.observation.captureFrameIndex) == [1, 2, 3, 4],
@@ -353,7 +465,7 @@ private struct MacSpeechAcousticEchoHostTests {
                    },
                "confirmed pre-roll binds exact positive frames to one epoch")
         let trailingObservation = spans.last?.observation
-        expect(trailingObservation?.inputClassification == .uncertain
+        expect(trailingObservation?.inputClassification == .echoOnly
                    && trailingObservation.map {
                        MacSpeechAudioActivityEvidenceKind.classify(
                            observation: $0
@@ -467,6 +579,33 @@ private struct MacSpeechAcousticEchoHostTests {
                "capture remainder stays below one frame")
         expect(snapshot.mode == .webRTCAEC3,
                "legal large callbacks never report FIFO overflow")
+    }
+
+    private static func testSplitCallbackDiscontinuityFailsClosed() {
+        let frame = testSignal(seed: 91_001, amplitude: 0.3)
+        let base: UInt64 = 150_000_000_000
+        for splitRender in [true, false] {
+            let host = MacSpeechAcousticEchoHost(
+                mode: .webRTCAEC3, backend: FakeAECBackend()
+            )
+            _ = host.configure()
+            host.playbackStarted()
+            if splitRender {
+                host.processRender(Array(frame.prefix(200)),
+                    hostTimeNanoseconds: base)
+                host.processRender(Array(frame.suffix(280)),
+                    hostTimeNanoseconds: base + 24_166_667)
+            } else {
+                _ = host.processCaptureSpans(Array(frame.prefix(200)),
+                    hostTimeNanoseconds: base)
+                _ = host.processCaptureSpans(Array(frame.suffix(280)),
+                    hostTimeNanoseconds: base + 24_166_667)
+            }
+            let state = host.snapshot()
+            expect(state.fallbackReason == .sourceAlignmentUnavailable
+                    && !state.sourceGateOpen,
+                   "split callback time gap revokes source qualification")
+        }
     }
 
     private static func testRenderAlignedDelay() {
@@ -725,8 +864,8 @@ private struct MacSpeechAcousticEchoHostTests {
                     1_000_000_000 + UInt64(index * 10_000_000)
             )
         }
-        expect(host.snapshot().renderTimingFrameCount == 50,
-               "timing history is bounded to the 500 ms delay window")
+        expect(host.snapshot().renderTimingFrameCount == 51,
+               "timing history retains a complete 500 ms window")
         host.playbackCompleted()
         expect(host.snapshot().renderTimingFrameCount == 0,
                "playback completion clears old render timing")
@@ -2246,10 +2385,7 @@ private struct MacSpeechAcousticEchoHostTests {
                "Apple voice processing reports active system AEC")
         host.playbackStarted()
         let render = testSignal(seed: 91, amplitude: 0.3)
-        let capture = [Float](
-            repeating: 0.1,
-            count: MacSpeechAcousticEchoHost.frameSampleCount
-        )
+        let capture = testSignal(seed: 92, amplitude: 0.2)
         host.processRender(
             render,
             hostTimeNanoseconds: 8_000_000_000
@@ -2317,13 +2453,183 @@ private struct MacSpeechAcousticEchoHostTests {
             capture,
             hostTimeNanoseconds: 9_120_000_000
         )
+        let hanging = host.snapshot()
+        expect(hanging.sourceGateOpen
+                   && hanging.lastSourceGateCloseReason == nil
+                   && MacSpeechAudioActivityEvidenceKind.classify(
+                       observation: host.acousticObservationSnapshot()
+                   ) == .none,
+               "Apple echo hangover retains the gate without user evidence")
+        for index in 1..<20 {
+            _ = host.processCaptureSpans(
+                capture,
+                hostTimeNanoseconds:
+                    9_120_000_000 + UInt64(index * 10_000_000)
+            )
+        }
         let closed = host.snapshot()
         expect(!closed.sourceGateOpen
-                   && closed.lastSourceGateCloseReason
-                        == .sourceEvidenceReset,
-               "Apple VAD closes the source gate when voice ends")
+                   && closed.lastSourceGateCloseReason == .nonUserHangover,
+               "Apple VAD closes after twenty non-user frames")
         expect(backend.recordedOperations.isEmpty,
                "Apple and WebRTC AEC are mutually exclusive")
+    }
+
+    private static func testTimedAppleVoiceStateAndMultiFrameCapture() {
+        var states = MacSpeechTimedVoiceActivityState()
+        states.append(.init(
+            atNanoseconds: 1_000_000_000,
+            state: true,
+            status: 0,
+            sequence: 1
+        ))
+        states.append(.init(
+            atNanoseconds: 1_015_000_000,
+            state: false,
+            status: 0,
+            sequence: 2
+        ))
+        expect(states.read(at: 999_000_000) == nil,
+               "Apple VAD does not backfill before its first read")
+        expect(states.read(at: 1_010_000_000)?.state == true,
+               "delayed capture retains the earlier true VAD read")
+        expect(states.read(at: 1_020_000_000)?.state == false,
+               "later capture uses the later false VAD read")
+        states.append(.init(
+            atNanoseconds: 1_025_000_000,
+            state: nil,
+            status: -1,
+            sequence: 3
+        ))
+        expect(states.read(at: 1_030_000_000)?.state == nil,
+               "failed HAL read invalidates later capture evidence")
+
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        expect(host.configure() == .appleVoiceProcessing,
+               "Apple frame VAD test configures voice processing")
+        let signal = testSignal(seed: 314, amplitude: 0.2)
+        let twoFrames = signal + signal
+        let firstTime: UInt64 = 1_010_000_000
+        let secondCallbackTime = firstTime + 4_166_667
+        var queriedTimes: [UInt64?] = []
+        let query: (UInt64?) -> (Bool?, UInt64?) = { time in
+            queriedTimes.append(time)
+            let read = states.read(at: time)
+            return (read?.state, read?.sequence)
+        }
+        let prefix = host.processCaptureSpans(
+            Array(twoFrames.prefix(200)),
+            hostTimeNanoseconds: firstTime,
+            systemVoiceActivityForFrame: query
+        )
+        let spans = host.processCaptureSpans(
+            Array(twoFrames.dropFirst(200)),
+            hostTimeNanoseconds: secondCallbackTime,
+            systemVoiceActivityForFrame: query
+        )
+        expect(prefix.isEmpty && spans.count == 2,
+               "split callback emits both complete Apple frames")
+        expect(queriedTimes == [firstTime, firstTime + 10_000_000],
+               "Apple VAD is sampled at each frame content time")
+        expect(spans.first?.observation.inputClassification == .nearEndSpeech,
+               "first frame uses the earlier true state")
+        expect(spans.last?.observation.inputClassification == .uncertain,
+               "second frame uses the later false state")
+        states.clear()
+        expect(states.read(at: firstTime) == nil,
+               "detector lifecycle reset discards prior VAD reads")
+    }
+
+    private static func testAppleSubframeEchoCannotOpenGate(
+        offsets: [Int] = [1, 240, 479]
+    ) -> Bool {
+        let render = (0 ..< 54).map {
+            testSignal(seed: UInt32(95_000 + $0), amplitude: 0.3)
+        }
+        let base: UInt64 = 180_000_000_000
+        var passed = true
+        for offset in offsets {
+            let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+            _ = host.configure()
+            host.playbackStarted()
+            host.updateSystemVoiceActivity(true)
+            for tick in 0 ..< 54 {
+                let time = base + UInt64(tick) * 10_000_000
+                host.processRender(render[tick], hostTimeNanoseconds: time)
+                guard tick >= 51 else { continue }
+                let echo = Array((render[tick - 20] + render[tick - 19])[
+                    offset ..< offset + 480
+                ])
+                _ = host.processCaptureSpans(echo,
+                    hostTimeNanoseconds: time + 80_000_000)
+            }
+            let state = host.snapshot()
+            let correct = !state.sourceGateOpen
+                && state.inputClassification == .echoOnly
+                && state.renderCaptureCorrelation > 0.99
+            print("apple_subframe_echo_offset=\(offset) correlation=\(state.renderCaptureCorrelation) gate=\(state.sourceGateOpen) classification=\(state.inputClassification.rawValue) pass=\(correct)")
+            passed = passed && correct
+        }
+        return passed
+    }
+
+    private static func testAppleZeroVarianceCannotAuthorizeSource() {
+        let base: UInt64 = 181_000_000_000
+        let signal = testSignal(seed: 98_001, amplitude: 0.2)
+        let constant = [Float](repeating: 0.1, count: 480)
+        for constantIsRender in [true, false] {
+            let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+            _ = host.configure()
+            host.playbackStarted()
+            host.updateSystemVoiceActivity(true)
+            for index in 0 ..< 4 {
+                let time = base + UInt64(index) * 10_000_000
+                host.processRender(constantIsRender ? constant : signal,
+                    hostTimeNanoseconds: time)
+                if index > 0 {
+                    _ = host.processCaptureSpans(
+                        constantIsRender ? signal : constant,
+                        hostTimeNanoseconds: time + 80_000_000
+                    )
+                }
+            }
+            let state = host.snapshot()
+            expect(!state.sourceGateOpen
+                    && state.renderCaptureCorrelation == 0,
+                   "zero-variance capture or render cannot authorize source")
+        }
+    }
+
+    private static func testAppleUnknownVADClosesGate() {
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        expect(host.armTest3TimingTrace(),
+               "Apple unavailable VAD trace is armed")
+        host.playbackStarted()
+        let render = testSignal(seed: 92_001, amplitude: 0.3)
+        let near = testSignal(seed: 92_002, amplitude: 0.2)
+        let base: UInt64 = 160_000_000_000
+        host.processRender(render, hostTimeNanoseconds: base)
+        host.updateSystemVoiceActivity(true)
+        for index in 0 ..< 3 {
+            _ = host.processCaptureSpans(near,
+                hostTimeNanoseconds: base + 80_000_000
+                    + UInt64(index) * 10_000_000)
+        }
+        expect(host.snapshot().sourceGateOpen,
+               "known Apple VAD can open the candidate gate")
+        host.updateSystemVoiceActivity(nil, test3SampleSequence: 9)
+        _ = host.processCaptureSpans(near,
+            hostTimeNanoseconds: base + 110_000_000)
+        let state = host.snapshot()
+        let decision = host.test3AppleDecisionSnapshot().trace.frames.last
+        expect(!state.sourceGateOpen
+                && state.lastSourceGateCloseReason == .sourceEvidenceReset,
+               "unknown Apple VAD closes the existing candidate gate")
+        expect(decision?.systemVoiceActivityReadValid == false
+                && decision?.voiceActivityQualified == false
+                && decision?.vadSampleSequence == 9,
+               "unknown Apple VAD is not recorded as a negative read")
     }
 
     private static func testAppleCaptureFraming() {
@@ -2333,6 +2639,8 @@ private struct MacSpeechAcousticEchoHostTests {
             for scenario in ["double_talk", "echo_only", "isolated"] {
                 let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
                 _ = host.configure()
+                expect(host.armTest3TimingTrace(),
+                       "Apple \(scenario) chunk=\(chunkSize) arms diagnostic trace")
                 if scenario != "isolated" {
                     host.playbackStarted()
                     host.processRender(
@@ -2340,7 +2648,7 @@ private struct MacSpeechAcousticEchoHostTests {
                         hostTimeNanoseconds: 7_880_000_000
                     )
                 }
-                host.updateSystemVoiceActivity(true)
+                host.updateSystemVoiceActivity(true, test3SampleSequence: 7)
                 let samples = (0..<10_080).map { index in
                     scenario == "echo_only" ? render[index % 480]
                         : 0.1 + Float(index % 127) * 0.0001
@@ -2396,12 +2704,37 @@ private struct MacSpeechAcousticEchoHostTests {
                         ) == .listeningNearEnd
                     }, "\(label) retains isolated near-end evidence")
                 }
-                host.updateSystemVoiceActivity(false)
+                host.updateSystemVoiceActivity(false, test3SampleSequence: 8)
                 _ = host.processCaptureSpans(
                     render, hostTimeNanoseconds: start + 210_000_000
                 )
-                expect(!host.snapshot().sourceGateOpen,
-                       "\(label) closes when near-end evidence ends")
+                let decision = host.test3AppleDecisionSnapshot()
+                expect(decision.trace.frames.count == 22
+                    && decision.trace.processedSampleCount == 22 * 480
+                    && !decision.trace.truncated,
+                    "\(label) retains one decision and PCM block per 10 ms frame")
+                expect(decision.processedSamples == samples + render,
+                       "\(label) diagnostic PCM preserves processed input")
+                expect(decision.trace.frames.enumerated().allSatisfy {
+                    index, frame in
+                    frame.captureFrameIndex == UInt64(index + 1)
+                        && frame.processedSampleOffset == index * 480
+                        && frame.vadSampleSequence == (index == 21 ? 8 : 7)
+                }, "\(label) aligns decision, PCM and VAD sample sequence")
+                if scenario == "double_talk" {
+                    expect(host.snapshot().sourceGateOpen
+                           && MacSpeechAudioActivityEvidenceKind.classify(
+                               observation: spans.last!.observation
+                           ) == .sourceGatedNearEnd,
+                           "\(label) retains qualified speech before hangover")
+                    expect(MacSpeechAudioActivityEvidenceKind.classify(
+                        observation: host.acousticObservationSnapshot()
+                    ) == .none,
+                    "\(label) does not promote the first echo hangover frame")
+                } else {
+                    expect(!host.snapshot().sourceGateOpen,
+                           "\(label) remains closed without a playback user epoch")
+                }
                 _ = host.processCaptureSpans(
                     [Float](repeating: 0.3, count: 137),
                     hostTimeNanoseconds: start + 220_000_000
@@ -2409,6 +2742,13 @@ private struct MacSpeechAcousticEchoHostTests {
                 host.discardPendingCaptureForGenerationTransition()
                 expect(host.snapshot().captureFIFOSampleCount == 0,
                        "\(label) discards prior generation remainder")
+                host.sealTest3TimingTrace()
+                _ = host.processCaptureSpans(
+                    render, hostTimeNanoseconds: start + 230_000_000
+                )
+                expect(host.test3AppleDecisionSnapshot().trace.frames.count
+                    == decision.trace.frames.count,
+                    "\(label) sealed diagnostic trace stays immutable")
             }
         }
     }
@@ -2427,8 +2767,14 @@ private struct MacSpeechAcousticEchoHostTests {
         var convertedSamples: [Float] = []
         var spans: [MacSpeechAcousticCaptureSpan] = []
         for index in 0..<5 {
+            let nearChunk = (0..<10).flatMap { frame in
+                testSignal(
+                    seed: UInt32(96_000 + index * 10 + frame),
+                    amplitude: 0.2
+                )
+            }
             let buffer = try! MacSpeechFloatMono48kConverter.makeBuffer(
-                samples: [Float](repeating: 0.1, count: 4800)
+                samples: nearChunk
             )
             let converted = try! converter.convert(
                 buffer,
@@ -2447,6 +2793,118 @@ private struct MacSpeechAcousticEchoHostTests {
                "Apple converter output is preserved through Host framing")
         expect(host.snapshot().captureFIFOSampleCount == convertedSamples.count % 480,
                "Apple converter remainder is retained")
+    }
+
+    private static func testAppleNonUserHangoverDoesNotCloseOnSingleBadFrame() {
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 91, amplitude: 0.3)
+        let capture = testSignal(seed: 97_001, amplitude: 0.2)
+        host.processRender(render, hostTimeNanoseconds: 8_000_000_000)
+        host.updateSystemVoiceActivity(true)
+        for index in 0..<3 {
+            _ = host.processCaptureSpans(
+                capture,
+                hostTimeNanoseconds: 8_080_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        expect(host.snapshot().sourceGateOpen,
+               "Apple 3/5 window opens after three consecutive qualified frames")
+        _ = host.processCaptureSpans(
+            render,
+            hostTimeNanoseconds: 8_110_000_000
+        )
+        expect(host.snapshot().sourceGateOpen,
+               "Apple gate stays open after exactly one non-qualified frame")
+        expect(host.snapshot().lastSourceGateCloseReason == nil,
+               "Apple gate has not recorded a close reason yet")
+    }
+
+    private static func testAppleNonUserHangoverClearsAfterGoodFrame() {
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 91, amplitude: 0.3)
+        let capture = testSignal(seed: 97_002, amplitude: 0.2)
+        host.processRender(render, hostTimeNanoseconds: 8_000_000_000)
+        host.updateSystemVoiceActivity(true)
+        for index in 0..<3 {
+            _ = host.processCaptureSpans(
+                capture,
+                hostTimeNanoseconds: 8_080_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        expect(host.snapshot().sourceGateOpen,
+               "Apple gate opens for hangover-clear scenario")
+        for bad in 0..<5 {
+            _ = host.processCaptureSpans(
+                render,
+                hostTimeNanoseconds: 8_110_000_000 + UInt64(bad * 10_000_000)
+            )
+        }
+        expect(host.snapshot().sourceGateOpen,
+               "Apple gate survives five non-qualified frames (below budget)")
+        _ = host.processCaptureSpans(
+            capture,
+            hostTimeNanoseconds: 8_160_000_000
+        )
+        expect(host.snapshot().sourceGateOpen,
+               "Apple gate stays open after a good frame clears hangover")
+    }
+
+    private static func testAppleNonUserHangoverClosesAfterTwentyBadFrames() {
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 91, amplitude: 0.3)
+        let capture = testSignal(seed: 97_003, amplitude: 0.2)
+        host.processRender(render, hostTimeNanoseconds: 8_000_000_000)
+        host.updateSystemVoiceActivity(true)
+        for index in 0..<3 {
+            _ = host.processCaptureSpans(
+                capture,
+                hostTimeNanoseconds: 8_080_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        expect(host.snapshot().sourceGateOpen,
+               "Apple gate opens for 20-frame hangover scenario")
+        for bad in 0..<19 {
+            _ = host.processCaptureSpans(
+                render,
+                hostTimeNanoseconds: 8_110_000_000 + UInt64(bad * 10_000_000)
+            )
+        }
+        expect(host.snapshot().sourceGateOpen,
+               "Apple gate still open at frame 19 of bad streak")
+        _ = host.processCaptureSpans(
+            render,
+            hostTimeNanoseconds: 8_300_000_000
+        )
+        expect(!host.snapshot().sourceGateOpen,
+               "Apple gate closes once hangover reaches the budget of 20")
+        expect(host.snapshot().lastSourceGateCloseReason == .nonUserHangover,
+               "Apple gate close reason is non-user hangover (not source evidence reset)")
+    }
+
+    private static func testApplePureEchoStillDoesNotOpenGate() {
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        host.playbackStarted()
+        let render = testSignal(seed: 91, amplitude: 0.3)
+        host.processRender(render, hostTimeNanoseconds: 8_000_000_000)
+        host.updateSystemVoiceActivity(true)
+        for index in 0..<40 {
+            _ = host.processCaptureSpans(
+                render,
+                hostTimeNanoseconds: 8_080_000_000 + UInt64(index * 10_000_000)
+            )
+        }
+        let snapshot = host.snapshot()
+        expect(!snapshot.sourceGateOpen,
+               "Apple pure echo (forced VAD) does not open gate across 40 frames")
+        expect(snapshot.sourceGateOpenCount == 0,
+               "Apple pure echo records zero open epochs")
     }
 
     private static func testConverterTimestampQuantization() {
@@ -2495,6 +2953,110 @@ private struct MacSpeechAcousticEchoHostTests {
                 fatalError("FAILED: converter timestamp quantization: \(error)")
             }
         }
+    }
+
+    private static func testNativeSampleTimeControlsRenderContinuity() {
+        let format = AVAudioFormat(
+            standardFormatWithSampleRate: 44_100, channels: 1
+        )!
+        let input = AVAudioPCMBuffer(
+            pcmFormat: format, frameCapacity: 4_410
+        )!
+        input.frameLength = 4_410
+        for index in 0..<4_410 {
+            input.floatChannelData![0][index] =
+                sin(Float(index) * 0.04) * 0.2
+        }
+        do {
+            let converter = try MacSpeechFloatMono48kConverter(
+                inputFormat: format
+            )
+            let host = MacSpeechAcousticEchoHost(
+                mode: .appleVoiceProcessing
+            )
+            _ = host.configure()
+            host.playbackStarted()
+            let base: UInt64 = 1_119_613_984_460_750
+            let jitter: [Int64] = [0, -54_416, -86_166,
+                                   -72_541, -86_291, -96_166]
+            var convertedCount = 0
+            for (index, offset) in jitter.enumerated() {
+                let inputTime = UInt64(Int64(base)
+                    + Int64(index) * 100_000_000 + offset)
+                let converted = try converter.convert(
+                    input,
+                    hostTimeNanoseconds: inputTime,
+                    sampleTime: 1_196 + Int64(index * 4_410)
+                )
+                convertedCount += converted.samples.count
+                expect(converted.hostTimeNanoseconds != nil,
+                       "continuous native sample time survives HAL host-time jitter")
+                expect(convertedCount <= (index + 1) * 4_800,
+                       "converted render does not run ahead of arrived input")
+                host.processRender(
+                    converted.samples,
+                    hostTimeNanoseconds: converted.hostTimeNanoseconds
+                )
+            }
+            expect(host.snapshot().fallbackCount == 0,
+                   "continuous 44.1 kHz render does not enter alignment fallback")
+            expect(host.snapshot().renderFrameCount >= 50,
+                   "continuous 44.1 kHz render retains full frames")
+            let discontinuous = try converter.convert(
+                input,
+                hostTimeNanoseconds: base + 600_000_000,
+                sampleTime: 1_196 + 6 * 4_410 + 1
+            )
+            expect(discontinuous.hostTimeNanoseconds == nil,
+                   "native sample-time gap cannot acquire render content time")
+            host.playbackStopped()
+            converter.resetForGenerationTransition()
+            host.playbackStarted()
+            for index in 0..<6 {
+                let restarted = try converter.convert(
+                    input,
+                    hostTimeNanoseconds: base + 2_000_000_000
+                        + UInt64(index * 100_000_000),
+                    sampleTime: Int64(index * 4_410)
+                )
+                expect(restarted.hostTimeNanoseconds != nil,
+                       "player-stop reset accepts a new native sample-time epoch")
+                host.processRender(
+                    restarted.samples,
+                    hostTimeNanoseconds: restarted.hostTimeNanoseconds
+                )
+            }
+            expect(host.snapshot().fallbackCount == 0,
+                   "second playback keeps a continuous render reference")
+        } catch {
+            fatalError("FAILED: native sample-time render continuity: \(error)")
+        }
+    }
+
+    private static func testPlaybackStartDiscardsPreviousCaptureRemainder() {
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        let oldTime: UInt64 = 8_000_000_000
+        let newTime = oldTime + 1_000_000_000
+        let old = host.processCaptureSpans(
+            [Float](repeating: 0.1, count: 120),
+            hostTimeNanoseconds: oldTime
+        )
+        expect(old.isEmpty && host.snapshot().captureFIFOSampleCount == 120,
+               "partial capture remains buffered before playback")
+        host.playbackStarted()
+        expect(host.snapshot().captureFIFOSampleCount == 0,
+               "playback start discards capture from the previous epoch")
+        let fresh = host.processCaptureSpans(
+            [Float](repeating: 0.2, count: 480),
+            hostTimeNanoseconds: newTime
+        )
+        expect(fresh.count == 1
+                   && fresh[0].samples.allSatisfy { $0 == 0.2 }
+                   && fresh[0].observation.captureHostTimeNanoseconds == newTime,
+               "new playback captures only its own samples and timestamp")
+        expect(host.snapshot().fallbackCount == 0,
+               "new playback capture has no timing fallback")
     }
 
     private static func testNativeTenMillisecondTapFraming() {
@@ -2597,10 +3159,119 @@ private struct MacSpeechAcousticEchoHostTests {
         }
     }
 
-    private static func testSubframeEchoReference() -> Bool {
+    private static func testPrimarySubframeTimingIdentity(
+        offsets: [Int] = [0, 1, 239, 479]
+    ) -> Bool {
+        let render = (0 ..< 51).map {
+            testSignal(seed: UInt32(90_000 + $0), amplitude: 0.3)
+        }
+        let base: UInt64 = 140_000_000_000
+        var passed = true
+        for offset in offsets {
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+            _ = host.configure()
+            host.updateDelay(outputPresentationLatencySeconds: 0.28,
+                             capturePresentationLatencySeconds: 0)
+            host.playbackStarted()
+            for index in render.indices {
+                host.processRender(render[index], hostTimeNanoseconds:
+                    base + UInt64(index) * 10_000_000)
+            }
+            let echo = Array((render[30] + render[31])[
+                offset ..< offset + 480
+            ])
+            let clean = echo.map { $0 * 0.02 }
+            backend.setCaptureOutput(clean)
+            backend.setLinearOutput(linearOutput(clean))
+            let expectedStart = base + 300_000_000
+                + UInt64(offset) * 1_000_000_000 / 48_000
+            _ = host.processCaptureSpans(echo,
+                hostTimeNanoseconds: expectedStart + 280_000_000)
+            let observed = host.acousticObservationSnapshot()
+            let correct = observed.renderHostTimeNanoseconds == expectedStart
+                && observed.renderCaptureCorrelation > 0.99
+            print("primary_subframe_offset=\(offset) match=\(String(describing: observed.renderHostTimeNanoseconds)) pass=\(correct)")
+            passed = passed && correct
+        }
+        return passed
+    }
+
+    private static func measureCallbackBudget() {
+        let render = (0 ..< 310).map {
+            testSignal(seed: UInt32(93_000 + $0), amplitude: 0.3)
+        }
+        let linear = (0 ..< 310).map {
+            linearOutput(testSignal(seed: UInt32(94_000 + $0), amplitude: 0.3))
+        }
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+        _ = host.configure()
+        host.playbackStarted()
+        let base: UInt64 = 170_000_000_000
+        for index in 0 ..< 51 {
+            host.processRender(render[index],
+                hostTimeNanoseconds: base + UInt64(index) * 10_000_000)
+        }
+        var durations: [Double] = []
+        for index in 51 ..< 301 {
+            let time = base + UInt64(index) * 10_000_000
+            host.processRender(render[index], hostTimeNanoseconds: time)
+            backend.setCaptureOutput(render[index])
+            backend.setLinearOutput(linear[index])
+            let started = DispatchTime.now().uptimeNanoseconds
+            _ = host.processCaptureSpans(render[index],
+                hostTimeNanoseconds: time + 80_000_000)
+            durations.append(Double(
+                DispatchTime.now().uptimeNanoseconds - started
+            ) / 1_000_000)
+        }
+        let ordered = durations.sorted()
+        let p99 = ordered[Int(Double(ordered.count - 1) * 0.99)]
+        let maxDuration = ordered.last ?? 0
+        print("callback_budget_debug_frames=\(durations.count) p99_ms=\(p99) max_ms=\(maxDuration) over_10ms=\(durations.filter { $0 >= 10 }.count)")
+        let burst = Array(render[301 ..< 306].joined())
+        host.processRender(burst,
+            hostTimeNanoseconds: base + 301 * 10_000_000)
+        backend.setCaptureOutputQueue(Array(render[301 ..< 306]))
+        backend.setLinearOutput(linear[301])
+        let burstStarted = DispatchTime.now().uptimeNanoseconds
+        _ = host.processCaptureSpans(burst,
+            hostTimeNanoseconds: base + 301 * 10_000_000 + 80_000_000)
+        print("callback_budget_five_frame_ms=\(Double(DispatchTime.now().uptimeNanoseconds - burstStarted) / 1_000_000)")
+
+        let apple = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = apple.configure()
+        apple.playbackStarted()
+        apple.updateSystemVoiceActivity(true)
+        for index in 0 ..< 51 {
+            apple.processRender(render[index],
+                hostTimeNanoseconds: base + UInt64(index) * 10_000_000)
+        }
+        var appleDurations: [Double] = []
+        for index in 51 ..< 301 {
+            let time = base + UInt64(index) * 10_000_000
+            apple.processRender(render[index], hostTimeNanoseconds: time)
+            let echo = Array((render[index - 20] + render[index - 19])[
+                240 ..< 720
+            ])
+            let started = DispatchTime.now().uptimeNanoseconds
+            _ = apple.processCaptureSpans(echo,
+                hostTimeNanoseconds: time + 80_000_000)
+            appleDurations.append(Double(
+                DispatchTime.now().uptimeNanoseconds - started
+            ) / 1_000_000)
+        }
+        let appleOrdered = appleDurations.sorted()
+        print("callback_budget_apple_frames=\(appleDurations.count) p99_ms=\(appleOrdered[Int(Double(appleOrdered.count - 1) * 0.99)]) max_ms=\(appleOrdered.last ?? 0) over_10ms=\(appleDurations.filter { $0 >= 10 }.count)")
+    }
+
+    private static func testSubframeEchoReference(
+        offsets: [Int] = [0, 1, 72, 144, 216, 240, 432, 479]
+    ) -> Bool {
         var passed = true
         let render = (0 ..< 33).map { testSignal(seed: UInt32(81_000 + $0), amplitude: 0.3) }
-        for offset in [0, 1, 72, 144, 216, 240, 432, 479] {
+        for offset in offsets {
             for userPresent in [false, true] {
                 let backend = FakeAECBackend()
                 let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
@@ -2643,6 +3314,204 @@ private struct MacSpeechAcousticEchoHostTests {
                 print(String(decoding: data, as: UTF8.self))
                 passed = passed && failures.isEmpty
             }
+        }
+        return passed
+    }
+
+    private static func testSubframeMixedEchoAndNearEnd() -> Bool {
+        var passed = true
+        let render = (0 ..< 33).map { testSignal(seed: UInt32(81_000 + $0), amplitude: 0.3) }
+        let seededOffset = Int((UInt32(0xA11CE) &* 1_664_525 &+ 1_013_904_223) % 480)
+        for offset in [0, 240, seededOffset] {
+            for userPresent in [false, true] {
+                let backend = FakeAECBackend()
+                let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+                _ = host.configure()
+                host.playbackStarted()
+                var failures: [String] = [], forwarded: [UInt64] = []
+                for tick in 0 ..< 33 {
+                    let active = tick >= 30
+                    let echo = active
+                        ? Array((render[tick - 20] + render[tick - 19])[offset ..< offset + 480])
+                        : render[tick]
+                    let near = testSignal(seed: UInt32(82_000 + tick), amplitude: 0.3)
+                    let clean = zip(echo, near).map { echoSample, nearSample in
+                        echoSample * (active ? (userPresent ? 0.9 : 1) : 0.02)
+                            + (active && userPresent ? nearSample * 0.25 : 0)
+                    }
+                    let raw = active
+                        ? zip(render[tick], clean).map { $0 * 0.6 + $1 * 0.8 }
+                        : render[tick].map { $0 * 0.9 }
+                    backend.setCaptureOutput(clean)
+                    backend.setLinearOutput(linearOutput(clean))
+                    let time = UInt64(110_000_000_000) + UInt64(tick) * 10_000_000
+                    host.processRender(render[tick], hostTimeNanoseconds: time)
+                    let spans = host.processCaptureSpans(raw, hostTimeNanoseconds: time + 80_000_000)
+                    let state = host.snapshot()
+                    if tick == 29 && (state.residualEchoBaselineFrameCount < 5 || state.sourceGateOpen) {
+                        failures.append("trusted_echo_warmup")
+                    }
+                    guard active else { continue }
+                    if !userPresent && (state.sourceGateOpen || state.inputClassification == .doubleTalk
+                        || state.inputClassification == .nearEndSpeech) { failures.append("echo_gained_near_identity_\(tick)") }
+                    for span in spans where span.samples.contains(where: { $0 != 0 }) {
+                        forwarded.append(span.observation.captureFrameIndex)
+                        guard userPresent else { continue }
+                        let originalTick = Int(span.observation.captureFrameIndex) - 1
+                        guard (30 ..< 33).contains(originalTick) else {
+                            failures.append("echo_warmup_forwarded")
+                            continue
+                        }
+                        let originalEcho = Array((render[originalTick - 20] + render[originalTick - 19])[offset ..< offset + 480])
+                        let originalNear = testSignal(seed: UInt32(82_000 + originalTick), amplitude: 0.3)
+                        let expected = zip(originalEcho, originalNear).map { $0 * 0.9 + $1 * 0.25 }
+                        if span.samples != expected { failures.append("mixed_audio_altered") }
+                    }
+                }
+                if forwarded != (userPresent ? [31, 32, 33] : []) { failures.append("source_frame_coverage") }
+                if host.snapshot().sourceGateOpenCount != (userPresent ? 1 : 0) { failures.append("gate_ownership") }
+                let result: [String: Any] = ["case": "subframe-mixed-echo-near", "offset_samples": offset,
+                    "user_present": userPresent, "backend": "FakeAECBackend", "pass": failures.isEmpty,
+                    "failures": failures, "nonzero_source_ids": forwarded]
+                let data = try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+                print(String(decoding: data, as: UTF8.self))
+                passed = passed && failures.isEmpty
+            }
+        }
+        return passed
+    }
+
+    private static func testLowDelaySubframeEchoAndNearEnd() -> Bool {
+        let render = (0 ..< 34).map { testSignal(seed: UInt32(83_000 + $0), amplitude: 0.3) }
+        let offset = 240
+        var passed = true
+        for userPresent in [false, true] {
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+            _ = host.configure()
+            host.updateDelay(outputPresentationLatencySeconds: 0.003, capturePresentationLatencySeconds: 0)
+            host.playbackStarted()
+            var failures: [String] = [], forwarded: [UInt64] = []
+            for tick in 0 ..< 33 {
+                let time = UInt64(120_000_000_000) + UInt64(tick) * 10_000_000
+                if tick == 0 { host.processRender(render[0], hostTimeNanoseconds: time) }
+                host.processRender(render[tick + 1], hostTimeNanoseconds: time + 10_000_000)
+                let active = tick >= 30
+                let echo = Array((render[tick] + render[tick + 1])[offset ..< offset + 480])
+                let near = testSignal(seed: UInt32(84_000 + tick), amplitude: 0.3)
+                let clean = active
+                    ? zip(echo, near).map { $0 * (userPresent ? 0.9 : 1) + (userPresent ? $1 * 0.25 : 0) }
+                    : render[tick].map { $0 * 0.02 }
+                let raw = active
+                    ? zip(render[tick], clean).map { $0 * 0.6 + $1 * 0.8 }
+                    : render[tick].map { $0 * 0.9 }
+                backend.setCaptureOutput(clean)
+                backend.setLinearOutput(linearOutput(clean))
+                let spans = host.processCaptureSpans(raw, hostTimeNanoseconds: time + 8_000_000)
+                let state = host.snapshot()
+                if tick == 29 && (state.residualEchoBaselineFrameCount < 5 || state.sourceGateOpen) {
+                    failures.append("trusted_echo_warmup")
+                }
+                if active && !userPresent && (state.sourceGateOpen || state.inputClassification == .doubleTalk
+                    || state.inputClassification == .nearEndSpeech) { failures.append("echo_gained_near_identity_\(tick)") }
+                for span in spans where span.samples.contains(where: { $0 != 0 }) {
+                    forwarded.append(span.observation.captureFrameIndex)
+                    guard userPresent else { continue }
+                    let originalTick = Int(span.observation.captureFrameIndex) - 1
+                    guard (30 ..< 33).contains(originalTick) else {
+                        failures.append("echo_warmup_forwarded")
+                        continue
+                    }
+                    let originalEcho = Array((render[originalTick] + render[originalTick + 1])[offset ..< offset + 480])
+                    let originalNear = testSignal(seed: UInt32(84_000 + originalTick), amplitude: 0.3)
+                    if span.samples != zip(originalEcho, originalNear).map({ $0 * 0.9 + $1 * 0.25 }) {
+                        failures.append("mixed_audio_altered")
+                    }
+                }
+            }
+            if forwarded != (userPresent ? [31, 32, 33] : []) { failures.append("source_frame_coverage") }
+            if host.snapshot().sourceGateOpenCount != (userPresent ? 1 : 0) { failures.append("gate_ownership") }
+            let result: [String: Any] = ["case": "low-delay-subframe-echo-near", "offset_samples": offset,
+                "delay_ms": 3, "user_present": userPresent, "backend": "FakeAECBackend",
+                "pass": failures.isEmpty, "failures": failures, "nonzero_source_ids": forwarded]
+            let data = try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+            print(String(decoding: data, as: UTF8.self))
+            passed = passed && failures.isEmpty
+        }
+        return passed
+    }
+
+    private static func testIsolatedDelayedSubframeEchoAndNearEnd() -> Bool {
+        let render = (0 ..< 50).map { testSignal(seed: UInt32(85_000 + $0), amplitude: 0.3) }
+        let silence = [Float](repeating: 0, count: 480)
+        let start: UInt64 = 130_000_000_000
+        var passed = true
+        for scenario in ["pure_echo", "pure_echo_no_clock", "pure_echo_stale", "mixed_near", "near_only"] {
+            let userPresent = scenario == "mixed_near" || scenario == "near_only"
+            let echoGain: Float = scenario == "near_only" ? 0 : 0.9
+            let nearGain: Float = scenario == "mixed_near" ? 0.25 : scenario == "near_only" ? 1 : 0
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+            _ = host.configure()
+            host.updateDelay(outputPresentationLatencySeconds: 0.08, capturePresentationLatencySeconds: 0)
+            host.playbackStarted()
+            backend.setCaptureOutput(silence)
+            backend.setLinearOutput([Float](repeating: 0, count: 160))
+            for tick in 0 ..< 50 {
+                let time = start + UInt64(tick) * 10_000_000
+                host.processRender(render[tick], hostTimeNanoseconds: time)
+                _ = host.processCaptureSpans(silence, hostTimeNanoseconds: time + 80_000_000)
+            }
+            var failures: [String] = [], forwarded: [UInt64] = []
+            let warmup = host.snapshot()
+            if !warmup.renderCaptureIsolationEstablished || warmup.sourceGateOpen {
+                failures.append("quiet_capture_must_establish_isolation")
+            }
+            for tick in 0 ..< 3 {
+                let echo = Array((render[29 + tick] + render[30 + tick])[240 ..< 720])
+                let near = testSignal(seed: UInt32(86_000 + tick), amplitude: 0.3)
+                let processed = zip(echo, near).map {
+                    $0 * echoGain + $1 * nearGain
+                }
+                backend.setCaptureOutput(processed)
+                backend.setLinearOutput(linearOutput(processed))
+                let spans = host.processCaptureSpans(
+                    processed,
+                    hostTimeNanoseconds: scenario == "pure_echo_no_clock"
+                        ? nil : start + UInt64(
+                            (scenario == "pure_echo_stale" ? 110 : 60) + tick
+                        ) * 10_000_000
+                )
+                let state = host.snapshot()
+                if tick == 0 && (state.renderCaptureCorrelation != 0 || state.sourceAlignmentLocked) {
+                    failures.append("primary_timing_match_must_be_absent_at_onset")
+                }
+                if !userPresent && state.sourceGateOpen {
+                    failures.append("old_echo_opened_gate_\(tick)")
+                }
+                for span in spans where span.samples.contains(where: { $0 != 0 }) {
+                    forwarded.append(span.observation.captureFrameIndex)
+                    guard userPresent else { continue }
+                    let originalTick = Int(span.observation.captureFrameIndex) - 51
+                    guard (0 ..< 3).contains(originalTick) else {
+                        failures.append("unexpected_source_frame")
+                        continue
+                    }
+                    let originalEcho = Array((render[29 + originalTick] + render[30 + originalTick])[240 ..< 720])
+                    let originalNear = testSignal(seed: UInt32(86_000 + originalTick), amplitude: 0.3)
+                    if span.samples != zip(originalEcho, originalNear).map({ $0 * echoGain + $1 * nearGain }) {
+                        failures.append("mixed_audio_altered")
+                    }
+                }
+            }
+            if forwarded != (userPresent ? [51, 52, 53] : []) { failures.append("source_frame_coverage") }
+            if host.snapshot().sourceGateOpenCount != (userPresent ? 1 : 0) { failures.append("gate_ownership") }
+            let result: [String: Any] = ["case": "isolated-delayed-subframe-echo-near",
+                "scenario": scenario, "backend": "FakeAECBackend", "pass": failures.isEmpty,
+                "failures": failures, "nonzero_source_ids": forwarded]
+            let data = try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+            print(String(decoding: data, as: UTF8.self))
+            passed = passed && failures.isEmpty
         }
         return passed
     }
@@ -2696,6 +3565,70 @@ private struct MacSpeechAcousticEchoHostTests {
             allPassed = allPassed && failures.isEmpty
         }
         return allPassed
+    }
+
+    private static func testMultipathEchoTailClosure() -> Bool {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+        _ = host.configure()
+        host.playbackStarted()
+        var farHistory = [[Float]]()
+        var firstClose: Int?
+        var lowCorrelationUncertain = 0
+        var lateNonzero = 0
+        var openedOnUser = false
+        for tick in 0 ..< 90 {
+            let far = testSignal(seed: UInt32(53_000 + tick), amplitude: 0.3)
+            farHistory.append(far)
+            let user = testSignal(seed: UInt32(54_000 + tick), amplitude: 0.25)
+            let time = UInt64(70_000_000_000) + UInt64(tick) * 10_000_000
+            let weakIndex = tick - 33
+            let raw: [Float]
+            let clean: [Float]
+            let linear: [Float]
+            if (30 ..< 33).contains(tick) {
+                raw = zip(far, user).map { $0 * 0.9 + $1 }
+                clean = user
+                linear = user
+            } else if weakIndex >= 0 && weakIndex.isMultiple(of: 2) {
+                let a = farHistory[tick - 1], b = farHistory[tick - 2]
+                raw = (0 ..< 480).map { (far[$0] + a[$0] + b[$0]) * 1.35 }
+                clean = raw.map { $0 * 0.005 }
+                linear = raw.map { $0 * 0.5 }
+            } else {
+                raw = far.map { $0 * 0.9 }
+                clean = far.map { $0 * (weakIndex >= 0 ? 0.005 : 0.12) }
+                linear = far.map { $0 * (weakIndex >= 0 ? 0.5 : 0.12) }
+            }
+            backend.setCaptureOutput(clean)
+            backend.setLinearOutput(linearOutput(linear))
+            host.processRender(far, hostTimeNanoseconds: time)
+            let spans = host.processCaptureSpans(raw, hostTimeNanoseconds: time + 80_000_000)
+            let state = host.snapshot()
+            if tick == 32 { openedOnUser = state.sourceGateOpen }
+            if weakIndex < 0 { continue }
+            if state.inputClassification == .uncertain
+                && state.renderCaptureCorrelation < 0.7 {
+                lowCorrelationUncertain += 1
+            }
+            if !state.sourceGateOpen && firstClose == nil { firstClose = weakIndex }
+            if weakIndex >= 19 && spans.contains(where: {
+                $0.samples.contains { $0 != 0 }
+            }) { lateNonzero += 1 }
+        }
+        let state = host.snapshot()
+        let pass = openedOnUser && lowCorrelationUncertain >= 5
+            && firstClose.map { $0 <= 19 } == true
+            && lateNonzero == 0 && state.sourceGateOpenCount == 1
+        let result: [String: Any] = ["case": "multipath-echo-after-user",
+            "pass": pass, "opened_on_user": openedOnUser,
+            "low_correlation_uncertain_frames": lowCorrelationUncertain,
+            "first_close_non_user_index": firstClose ?? -1,
+            "late_nonzero_frames": lateNonzero,
+            "gate_opens": state.sourceGateOpenCount]
+        let data = try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
+        return pass
     }
 
     private static func testAlternatingWeakEvidenceCloseBudget() -> Bool {

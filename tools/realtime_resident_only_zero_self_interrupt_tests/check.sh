@@ -25,6 +25,7 @@ branch_before="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD || true)"
 trap 'rm -rf "$build_dir"' EXIT
 
 if [ "$test_mode" != "r823-full" ] \
+    && [ "$test_mode" != "test3-unattributed-only" ] \
     && [ "$test_mode" != "r831-positive-only" ] \
     && [ "$test_mode" != "r832-confirmed-only" ] \
     && [ "$test_mode" != "r833-latency-stale-only" ] \
@@ -155,7 +156,9 @@ validate_r853_output() {
 }
 
 runner_arguments=("$fixture")
-if [ "$test_mode" = "r831-positive-only" ]; then
+if [ "$test_mode" = "test3-unattributed-only" ]; then
+  runner_arguments+=("--test3-unattributed-only")
+elif [ "$test_mode" = "r831-positive-only" ]; then
   runner_arguments+=("--r831-positive-only")
 elif [ "$test_mode" = "r832-confirmed-only" ]; then
   runner_arguments+=("--r832-confirmed-only")
@@ -816,12 +819,20 @@ elif [ "$test_mode" = "r841-double-talk-only" ]; then
   rg -q 'pendingEligibleAcousticObservation == nil' \
     "$repo_root/apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift"
   echo "r841_production_chain_fixture=PASS"
+elif [ "$test_mode" = "test3-unattributed-only" ]; then
+  rg -qx 'test3_unattributed_route_cases=1' "$output"
+  rg -qx 'test3_unattributed_route_checks=23' "$output"
+  rg -q '^test3_unattributed_bridge_evidence=[1-9][0-9]*$' "$output"
+  rg -qx 'test3_unattributed_runtime_acoustic_evidence=0' "$output"
+  rg -qx 'test3_unattributed_provider_interrupts=0' "$output"
+  rg -qx 'test3_unattributed_playback_clears=0' "$output"
 elif [ "$test_mode" = "r831-positive-only" ]; then
   rg -qx 'realtime_true_near_end_opening_cases=1' "$output"
   rg -qx 'realtime_true_near_end_opening_checks=29' "$output"
+  rg -qx 'r831_source_truth=SYNTHETIC_UNATTRIBUTED' "$output"
   rg -qx 'r831_positive_control_acoustic_eligibility=1' "$output"
   rg -qx 'r831_runtime_near_end_observations=1' "$output"
-  rg -qx 'r831_runtime_acoustic_evidence=1' "$output"
+  rg -qx 'r831_runtime_acoustic_evidence=0' "$output"
   rg -qx 'r831_confirmed_interruptions=0' "$output"
   rg -qx 'r831_provider_interrupts=0' "$output"
   rg -qx 'r831_provider_cancels=0' "$output"
@@ -1053,9 +1064,10 @@ else
   rg -qx 'r823_long_stress_provider_cancels=0' "$output"
   rg -qx 'r823_long_stress_host_clears=0' "$output"
 
+  rg -qx 'positive_control_source_truth=SYNTHETIC_UNATTRIBUTED' "$output"
   rg -qx 'positive_control_eligible_evidence=1' "$output"
   rg -qx 'positive_control_runtime_observed=1' "$output"
-  rg -qx 'positive_control_runtime_acoustic_evidence=1' "$output"
+  rg -qx 'positive_control_runtime_acoustic_evidence=0' "$output"
   rg -qx 'positive_control_confirmed_interruptions=0' "$output"
   rg -qx 'positive_control_provider_interrupts=0' "$output"
   rg -qx 'positive_control_provider_cancels=0' "$output"
@@ -1115,7 +1127,9 @@ if [ "$status_before" != "$status_after" ] \
   exit 1
 fi
 echo "r823_repository_mutation=PASS"
-if [ "$test_mode" = "r831-positive-only" ]; then
+if [ "$test_mode" = "test3-unattributed-only" ]; then
+  echo "test3_unattributed_production_chain=PASS"
+elif [ "$test_mode" = "r831-positive-only" ]; then
   echo "realtime_true_near_end_opening=PASS"
 elif [ "$test_mode" = "r832-confirmed-only" ]; then
   echo "realtime_confirmed_interruption=PASS"

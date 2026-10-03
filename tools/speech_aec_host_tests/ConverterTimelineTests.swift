@@ -89,10 +89,21 @@ private final class ReferenceInput: @unchecked Sendable {
             for batch in 0..<batches {
                 let frame = buffer(Array(input[batch * inputCount..<(batch + 1) * inputCount]), rate: rate)
                 let timestamp = anchor + UInt64(batch) * 100_000_000
-                if render { engine.processRenderedOutput(frame, hostTimeNanoseconds: timestamp) }
-                else {
-                    engine.processCapture(frame, hostTimeNanoseconds: timestamp,
-                        generation: UInt64(epoch + 1), frameBuffer: queue)
+                let sampleTime = Int64(batch * inputCount)
+                if render {
+                    engine.processRenderedOutput(
+                        frame,
+                        hostTimeNanoseconds: timestamp,
+                        nativeSampleTime: sampleTime
+                    )
+                } else {
+                    engine.processCapture(
+                        frame,
+                        hostTimeNanoseconds: timestamp,
+                        nativeSampleTime: sampleTime,
+                        generation: UInt64(epoch + 1),
+                        frameBuffer: queue
+                    )
                 }
             }
             host.sealAcousticReplayCapture(reason: .manual)
@@ -133,15 +144,16 @@ private final class ReferenceInput: @unchecked Sendable {
         let base: UInt64 = 10_000_000_000
         var times: [UInt64?] = (0..<4).map { base + UInt64($0) * 100_000_000 }
         var known = [true, true, true, true]
+        // A lost clock stays invalid until a generation reset.
         switch scenario {
-        case "missing-start": times[0] = nil; known = [false, false, true, true]
-        case "missing-middle": times[1] = nil; known = [true, false, false, true]
+        case "missing-start": times[0] = nil; known = [false, false, false, false]
+        case "missing-middle": times[1] = nil; known = [true, false, false, false]
         case "forward-gap", "backward-jump":
             for index in 1..<4 {
                 times[index] = scenario == "forward-gap"
                     ? times[index]! + 50_000_000 : times[index]! - 50_000_000
             }
-            known = [true, false, true, true]
+            known = [true, false, false, false]
         case "sub-sample-jitter":
             for index in 1..<4 { times[index]! += 100 }
         default: break

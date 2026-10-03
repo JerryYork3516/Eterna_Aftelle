@@ -32,8 +32,60 @@ nonisolated protocol MacSpeechDeviceRouteMonitoring: AnyObject, Sendable {
 nonisolated protocol MacSpeechVoiceActivityDetecting: AnyObject, Sendable {
     func start() -> Bool
     func stop()
-    func isVoiceDetected() -> Bool
+    func voiceActivityState(at captureHostTimeNanoseconds: UInt64?) -> Bool?
 }
+
+nonisolated struct MacSpeechTimedVoiceActivityState {
+    struct Read {
+        let atNanoseconds: UInt64
+        let state: Bool?
+        let status: OSStatus
+        let sequence: UInt64
+    }
+
+    private(set) var reads: [Read] = []
+    private static let capacity = 256
+
+    mutating func append(_ read: Read) {
+        if reads.count == Self.capacity {
+            reads.removeFirst()
+        }
+        reads.append(read)
+    }
+
+    func read(at captureHostTimeNanoseconds: UInt64?) -> Read? {
+        guard let captureHostTimeNanoseconds else { return nil }
+        return reads.reversed().first {
+            $0.atNanoseconds <= captureHostTimeNanoseconds
+        }
+    }
+
+    mutating func clear() {
+        reads.removeAll(keepingCapacity: true)
+    }
+}
+
+#if DEBUG
+nonisolated struct MacSpeechTest3VADTrace: Codable, Sendable {
+    struct Event: Codable, Sendable {
+        let sequence: UInt64
+        let notifiedAtNanoseconds: UInt64
+        let readAtNanoseconds: UInt64
+        let state: Bool?
+        let readStatus: OSStatus
+    }
+
+    let deviceID: UInt32
+    let deviceUID: String?
+    let lifecycle: UInt64
+    let eventCount: UInt64
+    let events: [Event]
+    let lastReadAtNanoseconds: UInt64?
+    let lastReadStatus: OSStatus?
+    let state: Bool?
+    let truncated: Bool
+}
+#endif
 
 nonisolated final class SystemMacSpeechVoiceActivityDetector:
     MacSpeechVoiceActivityDetecting, @unchecked Sendable
@@ -47,7 +99,19 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
     private var listener: AudioObjectPropertyListenerBlock?
     private var isRunning = false
     private var lifecycle: UInt64 = 0
-    private var voiceDetected = false
+    private var voiceDetected: Bool?
+    private var lastReadAtNanoseconds: UInt64?
+    private var lastReadStatus: OSStatus?
+    private var timedVoiceState = MacSpeechTimedVoiceActivityState()
+    private var readSequence: UInt64 = 0
+    #if DEBUG
+    private var test3DeviceUID: String?
+    private var test3EventCount: UInt64 = 0
+    private var test3Events: [MacSpeechTest3VADTrace.Event] = []
+    private var test3EventsTruncated = false
+    private var test3LastEventNanoseconds: UInt64?
+    private static let test3EventCapacity = 256
+    #endif
 
     func start() -> Bool {
         lock.withLock {
@@ -103,10 +167,42 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
             deviceID = inputDevice
             originalEnableValue = previousEnable
             self.listener = listener
-            voiceDetected = Self.uint32Property(
-                kAudioDevicePropertyVoiceActivityDetectionState,
-                deviceID: inputDevice
-            ) == 1
+            #if DEBUG
+            test3DeviceUID = Self.deviceUID(inputDevice)
+            test3EventCount = 0
+            test3Events = []
+            test3EventsTruncated = false
+            test3LastEventNanoseconds = nil
+            #endif
+            timedVoiceState.clear()
+            readSequence = 0
+            let initialRead = Self.readVoiceState(deviceID: inputDevice)
+            guard let initialState = initialRead.state else {
+                AudioObjectRemovePropertyListenerBlock(
+                    inputDevice, &address, callbackQueue, listener
+                )
+                if previousEnable == 0 {
+                    _ = Self.setUInt32Property(
+                        0,
+                        selector: kAudioDevicePropertyVoiceActivityDetectionEnable,
+                        deviceID: inputDevice
+                    )
+                }
+                deviceID = AudioDeviceID(kAudioObjectUnknown)
+                originalEnableValue = nil
+                self.listener = nil
+                return false
+            }
+            let initialReadAt = DispatchTime.now().uptimeNanoseconds
+            voiceDetected = initialState
+            lastReadAtNanoseconds = initialReadAt
+            lastReadStatus = initialRead.status
+            timedVoiceState.append(.init(
+                atNanoseconds: initialReadAt,
+                state: initialState,
+                status: initialRead.status,
+                sequence: 0
+            ))
             isRunning = true
             return true
         }
@@ -124,7 +220,11 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
             listener = nil
             isRunning = false
             lifecycle &+= 1
-            voiceDetected = false
+            voiceDetected = nil
+            lastReadAtNanoseconds = nil
+            lastReadStatus = nil
+            timedVoiceState.clear()
+            readSequence = 0
             return state
         }
         guard state.0 != kAudioObjectUnknown else { return }
@@ -148,25 +248,110 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
         }
     }
 
-    func isVoiceDetected() -> Bool {
-        lock.withLock { isRunning && voiceDetected }
+    func voiceActivityState(at captureHostTimeNanoseconds: UInt64?) -> Bool? {
+        lock.withLock {
+            guard isRunning else { return nil }
+            return timedVoiceState.read(
+                at: captureHostTimeNanoseconds
+            )?.state
+        }
     }
 
+    #if DEBUG
+    func test3CaptureRead(at captureHostTimeNanoseconds: UInt64?) -> (
+        detected: Bool?,
+        eventSequence: UInt64,
+        lastEventNanoseconds: UInt64?,
+        lastReadNanoseconds: UInt64?,
+        lastReadStatus: OSStatus?
+    ) {
+        lock.withLock {
+            let read = isRunning ? timedVoiceState.read(
+                at: captureHostTimeNanoseconds
+            ) : nil
+            return (read?.state,
+             read?.sequence ?? 0,
+             read?.atNanoseconds,
+             read?.atNanoseconds,
+             read?.status)
+        }
+    }
+
+    func test3TraceSnapshot() -> MacSpeechTest3VADTrace {
+        lock.withLock {
+            MacSpeechTest3VADTrace(
+                deviceID: deviceID,
+                deviceUID: test3DeviceUID,
+                lifecycle: lifecycle,
+                eventCount: test3EventCount,
+                events: test3Events,
+                lastReadAtNanoseconds: lastReadAtNanoseconds,
+                lastReadStatus: lastReadStatus,
+                state: voiceDetected,
+                truncated: test3EventsTruncated
+            )
+        }
+    }
+    #endif
+
     private func refreshState() {
+        #if DEBUG
+        let notifiedAt = DispatchTime.now().uptimeNanoseconds
+        #endif
         let (inputDevice, currentLifecycle) = lock.withLock {
             (isRunning ? deviceID : AudioDeviceID(kAudioObjectUnknown), lifecycle)
         }
         guard inputDevice != kAudioObjectUnknown else { return }
-        let state = Self.uint32Property(
-            kAudioDevicePropertyVoiceActivityDetectionState,
-            deviceID: inputDevice
-        )
+        let read = Self.readVoiceState(deviceID: inputDevice)
+        let readAt = DispatchTime.now().uptimeNanoseconds
         lock.withLock {
             guard isRunning, deviceID == inputDevice,
                   lifecycle == currentLifecycle else { return }
-            voiceDetected = state == 1
+            voiceDetected = read.state
+            lastReadAtNanoseconds = readAt
+            lastReadStatus = read.status
+            readSequence &+= 1
+            #if DEBUG
+            test3EventCount &+= 1
+            test3LastEventNanoseconds = readAt
+            #endif
+            timedVoiceState.append(.init(
+                atNanoseconds: readAt,
+                state: read.state,
+                status: read.status,
+                sequence: readSequence
+            ))
+            #if DEBUG
+            if test3Events.count < Self.test3EventCapacity {
+                test3Events.append(.init(
+                    sequence: test3EventCount,
+                    notifiedAtNanoseconds: notifiedAt,
+                    readAtNanoseconds: readAt,
+                    state: read.state,
+                    readStatus: read.status
+                ))
+            } else {
+                test3EventsTruncated = true
+            }
+            #endif
         }
     }
+
+    #if DEBUG
+    private static func deviceUID(_ deviceID: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(
+            deviceID, &address, 0, nil, &size, &value
+        ) == noErr, let value else { return nil }
+        return value.takeUnretainedValue() as String
+    }
+    #endif
 
     private static func defaultInputDevice() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
@@ -222,6 +407,19 @@ nonisolated final class SystemMacSpeechVoiceActivityDetector:
             &value
         )
         return status == noErr ? value : nil
+    }
+
+    private static func readVoiceState(deviceID: AudioDeviceID)
+        -> (state: Bool?, status: OSStatus) {
+        var address = propertyAddress(
+            kAudioDevicePropertyVoiceActivityDetectionState
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID, &address, 0, nil, &size, &value
+        )
+        return (status == noErr && value <= 1 ? value == 1 : nil, status)
     }
 
     private static func setUInt32Property(

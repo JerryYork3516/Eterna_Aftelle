@@ -738,6 +738,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                 || (CommandLine.arguments.count == 3
                     && [
                         "--r831-positive-only",
+                        "--test3-unattributed-only",
                         "--r832-confirmed-only",
                         "--r833-latency-stale-only",
                         "--r841-double-talk-only",
@@ -761,6 +762,13 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         if CommandLine.arguments.count == 3 {
+            if CommandLine.arguments[2] == "--test3-unattributed-only" {
+                cases += 1
+                try await testTest3UnattributedRouteFailsClosed(fixture: fixture)
+                print("test3_unattributed_route_cases=\(cases)")
+                print("test3_unattributed_route_checks=\(checks)")
+                return
+            }
             if CommandLine.arguments[2]
                     == "--r852-subtitle-diagnostics-only" {
                 try await testR852FormalRealtimeSubtitleAndDiagnostics(
@@ -1049,6 +1057,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             try await testPositiveNearEndControl(fixture: fixture)
             print("realtime_true_near_end_opening_cases=\(cases)")
             print("realtime_true_near_end_opening_checks=\(checks)")
+            print("r831_source_truth=SYNTHETIC_UNATTRIBUTED")
             print("r831_positive_control_acoustic_eligibility=\(positiveControlEligible)")
             print("r831_runtime_near_end_observations=\(positiveControlRuntimeObserved)")
             print("r831_runtime_acoustic_evidence=\(positiveControlRuntimeAcousticEvidence)")
@@ -1117,6 +1126,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         print("r823_long_stress_provider_interrupts=\(longStressProviderInterrupts)")
         print("r823_long_stress_provider_cancels=\(longStressProviderCancels)")
         print("r823_long_stress_host_clears=\(longStressHostClears)")
+        print("positive_control_source_truth=SYNTHETIC_UNATTRIBUTED")
         print("positive_control_eligible_evidence=\(positiveControlEligible)")
         print("positive_control_runtime_observed=\(positiveControlRuntimeObserved)")
         print("positive_control_runtime_acoustic_evidence=\(positiveControlRuntimeAcousticEvidence)")
@@ -10924,24 +10934,8 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             }
         let runtimeEvidenceAfter = stack.runtime
             .realtimeInterruptionEvidenceDebugSnapshot()
-        let runtimeObserved = acceptedNearEndRecords.filter { record in
-            record.observation.identity.sequence
-                == runtimeEvidenceAfter.lastAcousticSequence
-                && record.observation.identity.timestampNanoseconds
-                    == runtimeEvidenceAfter.lastAcousticTimestampNanoseconds
-        }.count
-        let runtimeAcousticEvidenceAccepted =
-            !runtimeEvidenceBefore.hasAcousticEvidence
-            && runtimeEvidenceAfter.hasAcousticEvidence
-            && !runtimeEvidenceAfter.hasSemanticEvidence
-            && runtimeEvidenceAfter.session == stack.session
-            && acceptedNearEndRecords.contains { record in
-                record.observation.identity.sequence
-                    == runtimeEvidenceAfter.lastAcousticSequence
-                    && record.observation.identity.timestampNanoseconds
-                        == runtimeEvidenceAfter
-                            .lastAcousticTimestampNanoseconds
-            }
+        let runtimeObserved = acceptedNearEndRecords.count
+        let runtimeAcousticEvidenceAccepted = runtimeEvidenceAfter.hasAcousticEvidence
         let dialogueAfter = try stack.sessionStore
             .loadMostRecentDialogueEntries()
         let narrativeAfter = stack.runtime.narrativeMemoryDebugSnapshot()
@@ -10969,8 +10963,10 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                "Positive: production chain near-end produces acoustic eligibility")
         expect(runtimeObserved == 1,
                "Positive: Runtime observes the eligible near-end candidate")
-        expect(runtimeAcousticEvidenceAccepted,
-               "Positive: Runtime atomically records acoustic-only evidence")
+        expect(!runtimeEvidenceBefore.hasAcousticEvidence
+                && !runtimeAcousticEvidenceAccepted
+                && !runtimeEvidenceAfter.hasSemanticEvidence,
+               "Positive: unattributed candidate creates no formal Runtime evidence")
         expect(generationChanged == false,
                "Positive: production chain near-end preserves Runtime generation")
         expect(leaseChanged == false,
@@ -10987,6 +10983,66 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
                "Positive: acoustic-only near-end writes no Narrative Memory")
         expect(relationshipChanges == 0,
                "Positive: acoustic-only near-end preserves Relationship")
+        try await close(stack)
+    }
+
+    private static func testTest3UnattributedRouteFailsClosed(
+        fixture: Data
+    ) async throws {
+        let stack = try await makeControllerStack(fixture: fixture)
+        let baselineInput = stack.controller.realtimeBrainInputBridgeSnapshot
+        let baselineRecords = stack.runtime
+            .realtimeAcousticObservationDebugSnapshot().records.count
+        let baselineLease = stack.runtime.activeBrainLeaseForTesting()
+        let baselineInterrupts = await stack.provider.interruptCount()
+        let baselineCancels = await stack.provider.cancelCount()
+        let baselineClears = stack.outputPlayer.clearScheduledPlaybackCount
+
+        let emittedPacketCount = try await
+            submitTrueNearEndThroughProductionChain(stack: stack)
+        await waitUntil("Test3 unattributed capture reaches Bridge") {
+            await stack.controller.refreshMicrophoneAuthorization()
+            return await stack.controller.realtimeBrainInputBridgeSnapshot
+                .forwardedFrameCount
+                >= baselineInput.forwardedFrameCount + emittedPacketCount
+        }
+        await stack.controller.refreshMicrophoneAuthorization()
+        let bridgeEvidence = stack.controller.realtimeBrainInputBridgeSnapshot
+            .acousticEvidenceCount &- baselineInput.acousticEvidenceCount
+        expect(bridgeEvidence > 0,
+               "Test3 fake near-end reaches production acoustic Bridge")
+        await waitUntilOnMainActor("Test3 unattributed near-end reaches Runtime") {
+            stack.runtime.realtimeAcousticObservationDebugSnapshot()
+                .records.dropFirst(baselineRecords)
+                .contains { record in
+                    record.observation.classification == .nearEndCandidate
+                        && record.disposition == .observed
+                }
+        }
+
+        await stack.provider.enqueue(semanticProposal(stack: stack, sequence: 4))
+        await waitUntilOnMainActor("Test3 unattributed semantic evidence settles") {
+            let evidence = stack.runtime.realtimeInterruptionEvidenceDebugSnapshot()
+            return evidence.hasSemanticEvidence && !evidence.hasAcousticEvidence
+        }
+        let evidence = stack.runtime.realtimeInterruptionEvidenceDebugSnapshot()
+        let interrupts = await stack.provider.interruptCount() &- baselineInterrupts
+        let cancels = await stack.provider.cancelCount() &- baselineCancels
+        let clears = stack.outputPlayer.clearScheduledPlaybackCount - baselineClears
+        expect(!evidence.hasAcousticEvidence,
+               "Test3 unattributed acoustics do not enter formal Runtime evidence")
+        expect(interrupts == 0,
+               "Test3 unattributed proposal cannot interrupt Provider")
+        expect(cancels == 0,
+               "Test3 unattributed proposal cannot separately cancel Provider")
+        expect(clears == 0,
+               "Test3 unattributed proposal cannot clear Playback")
+        expect(stack.runtime.activeBrainLeaseForTesting() == baselineLease,
+               "Test3 unattributed proposal cannot advance Runtime generation")
+        print("test3_unattributed_bridge_evidence=\(bridgeEvidence)")
+        print("test3_unattributed_runtime_acoustic_evidence=0")
+        print("test3_unattributed_provider_interrupts=\(interrupts)")
+        print("test3_unattributed_playback_clears=\(clears)")
         try await close(stack)
     }
 

@@ -181,6 +181,59 @@ private struct MacSpeechCausalProvisionalEpisode: Sendable {
     let preYieldRenderFrame: MacSpeechCausalFrameObservation
 }
 
+#if DEBUG
+nonisolated struct MacSpeechCausalCandidateDebugEvent: Codable, Sendable {
+    struct Frame: Codable, Sendable {
+        let index: UInt64
+        let hostTimeNanoseconds: UInt64?
+        let rms: Double
+
+        init(_ frame: MacSpeechCausalFrameObservation) {
+            index = frame.index
+            hostTimeNanoseconds = frame.hostTimeNanoseconds
+            rms = frame.rms
+        }
+    }
+
+    struct Acoustic: Codable, Sendable {
+        let captureFrameIndex: UInt64
+        let captureHostTimeNanoseconds: UInt64?
+        let classification: String
+        let sourceGateOpen: Bool
+        let sourceGateEpoch: UInt64
+        let hostInputRMSAfterApple: Double
+        let renderReferenceRMS: Double?
+        let renderCaptureCorrelation: Double
+
+        init(_ snapshot: MacSpeechAcousticObservationSnapshot) {
+            captureFrameIndex = snapshot.captureFrameIndex
+            captureHostTimeNanoseconds = snapshot.captureHostTimeNanoseconds
+            classification = snapshot.inputClassification.rawValue
+            sourceGateOpen = snapshot.sourceGateOpen
+            sourceGateEpoch = snapshot.sourceGateEpoch
+            hostInputRMSAfterApple = snapshot.rawCaptureRMS
+            renderReferenceRMS = snapshot.renderReferenceRMS
+            renderCaptureCorrelation = snapshot.renderCaptureCorrelation
+        }
+    }
+
+    let id: String
+    let triggerAtNanoseconds: UInt64
+    let playbackSequence: UInt64
+    let packetSequence: UInt64
+    let packetTimestampNanoseconds: UInt64
+    let packetActivity: Float
+    let packetEvidenceKind: String
+    let packetAcoustic: Acoustic?
+    let systemVADAtDecision: Bool
+    let latestRenderFrame: Frame
+    let recentPreCaptureFrames: [Frame]
+    let qualifyingFiveFrames: [Frame]
+    var postCaptureFrames: [Frame]
+    var pauseAccepted: Bool?
+}
+#endif
+
 actor MacSpeechRealtimeBrainInputBridge {
     typealias SendFrame = @Sendable (
         RealtimeBrainAudioFrame
@@ -300,6 +353,13 @@ actor MacSpeechRealtimeBrainInputBridge {
     private var lastError: String?
     private var causalEpisode: MacSpeechCausalProvisionalEpisode?
     private var causalCandidateConsumedPlaybackSequence: UInt64?
+    #if DEBUG
+    private var causalCandidateDebugEvents: [MacSpeechCausalCandidateDebugEvent] = []
+
+    func causalCandidateDebugSnapshot() -> [MacSpeechCausalCandidateDebugEvent] {
+        causalCandidateDebugEvents
+    }
+    #endif
     private static let causalActivityRMS = 0.012
     private static let causalFarEndPowerRatioMaximum = 0.25
     private static let causalEvidenceDeadlineNanoseconds: UInt64 =
@@ -736,10 +796,12 @@ actor MacSpeechRealtimeBrainInputBridge {
                 )
                 if causalEpisode == nil,
                    frame.residentPlaybackActive,
+                   frame.activityEvidenceKind == .sourceGatedNearEnd,
                    frame.activity >= Float(Self.causalActivityRMS) {
                     _ = await beginCausalProvisionalIfSupported(
                         binding: binding,
-                        requiresNearEndSupport: true
+                        requiresNearEndSupport: true,
+                        triggerFrame: frame
                     )
                 }
 
@@ -892,7 +954,8 @@ actor MacSpeechRealtimeBrainInputBridge {
 
     private func beginCausalProvisionalIfSupported(
         binding: MacSpeechRealtimeBrainInputBinding,
-        requiresNearEndSupport: Bool
+        requiresNearEndSupport: Bool,
+        triggerFrame: MacSpeechAudioFrame? = nil
     ) async -> Bool {
         guard causalEpisode == nil,
               activeBinding == binding,
@@ -907,15 +970,75 @@ actor MacSpeechRealtimeBrainInputBridge {
               let render = observation.latestRenderFrame,
               render.rms >= Self.causalActivityRMS,
               render.hostTimeNanoseconds != nil else { return false }
-        let nearEndSupported = Self.hasCausalNearEndSupport(
+        if requiresNearEndSupport {
+            guard let triggerFrame,
+                  triggerFrame.residentPlaybackSequence
+                    == observation.playbackSequence,
+                  triggerFrame.activityEvidenceKind == .sourceGatedNearEnd,
+                  triggerFrame.sourceGateEpoch > 0,
+                  let acoustic = triggerFrame.acousticSnapshot,
+                  acoustic.playbackSequence == observation.playbackSequence,
+                  acoustic.sourceGateOpen,
+                  acoustic.sourceGateEpoch == triggerFrame.sourceGateEpoch,
+                  acoustic.captureHostTimeNanoseconds
+                    == triggerFrame.monotonicTimestampNanoseconds,
+                  acoustic.inputClassification == .nearEndSpeech
+                    || acoustic.inputClassification == .doubleTalk else {
+                return false
+            }
+        }
+        let supportWindow = Self.causalNearEndSupportWindow(
             observation.recentCaptureFrames,
-            throughNanoseconds: nil
+            throughNanoseconds: triggerFrame?.monotonicTimestampNanoseconds
         )
-        guard !requiresNearEndSupport || nearEndSupported else {
+        guard !requiresNearEndSupport || supportWindow != nil else {
             return false
+        }
+        if requiresNearEndSupport,
+           let captureTime = triggerFrame?.monotonicTimestampNanoseconds,
+           let supportTime = supportWindow?.last?.hostTimeNanoseconds {
+            guard captureTime >= supportTime,
+                  captureTime - supportTime <= 20_000_000 else {
+                return false
+            }
         }
         let now = monotonicNow()
         let id = UUID()
+        #if DEBUG
+        if let triggerFrame {
+            let event = MacSpeechCausalCandidateDebugEvent(
+                id: id.uuidString,
+                triggerAtNanoseconds: now,
+                playbackSequence: observation.playbackSequence,
+                packetSequence: triggerFrame.sequenceNumber,
+                packetTimestampNanoseconds:
+                    triggerFrame.monotonicTimestampNanoseconds,
+                packetActivity: triggerFrame.activity,
+                packetEvidenceKind:
+                    triggerFrame.activityEvidenceKind.rawValue,
+                packetAcoustic: triggerFrame.acousticSnapshot.map(
+                    MacSpeechCausalCandidateDebugEvent.Acoustic.init
+                ),
+                systemVADAtDecision:
+                    observation.systemVoiceActivityDetected,
+                latestRenderFrame:
+                    MacSpeechCausalCandidateDebugEvent.Frame(render),
+                recentPreCaptureFrames:
+                    observation.recentCaptureFrames.map(
+                        MacSpeechCausalCandidateDebugEvent.Frame.init
+                    ),
+                qualifyingFiveFrames: (supportWindow ?? []).map(
+                    MacSpeechCausalCandidateDebugEvent.Frame.init
+                ),
+                postCaptureFrames: [],
+                pauseAccepted: nil
+            )
+            if causalCandidateDebugEvents.count == 16 {
+                causalCandidateDebugEvents.removeFirst()
+            }
+            causalCandidateDebugEvents.append(event)
+        }
+        #endif
         let episode = MacSpeechCausalProvisionalEpisode(
             id: id,
             binding: binding,
@@ -925,11 +1048,19 @@ actor MacSpeechRealtimeBrainInputBridge {
             preYieldRenderFrame: render
         )
         causalCandidateConsumedPlaybackSequence = observation.playbackSequence
-        guard await beginCausalProvisional(
+        let pauseAccepted = await beginCausalProvisional(
             id,
             binding,
             observation.playbackSequence
-        ), activeBinding == binding,
+        )
+        #if DEBUG
+        if let index = causalCandidateDebugEvents.lastIndex(where: {
+            $0.id == id.uuidString
+        }) {
+            causalCandidateDebugEvents[index].pauseAccepted = pauseAccepted
+        }
+        #endif
+        guard pauseAccepted, activeBinding == binding,
            causalEpisode == nil else {
             if activeBinding == binding,
                causalEpisode == nil,
@@ -984,6 +1115,20 @@ actor MacSpeechRealtimeBrainInputBridge {
     ) async {
         guard causalEpisode?.id == episode.id else { return }
         causalEpisode = nil
+        #if DEBUG
+        if let index = causalCandidateDebugEvents.lastIndex(where: {
+            $0.id == episode.id.uuidString
+        }),
+           let observation = await source.causalInterruptionObservation() {
+            let lastPreIndex = causalCandidateDebugEvents[index]
+                .recentPreCaptureFrames.last?.index ?? 0
+            causalCandidateDebugEvents[index].postCaptureFrames =
+                observation.recentCaptureFrames
+                    .filter { $0.index > lastPreIndex }
+                    .prefix(5)
+                    .map(MacSpeechCausalCandidateDebugEvent.Frame.init)
+        }
+        #endif
         await recoverCausalProvisional?(episode.id, binding)
         await discardCausalEvidence?(binding)
         guard activeBinding == binding,
@@ -1006,18 +1151,18 @@ actor MacSpeechRealtimeBrainInputBridge {
         return after
     }
 
-    private static func hasCausalNearEndSupport(
+    private static func causalNearEndSupportWindow(
         _ frames: [MacSpeechCausalFrameObservation],
         throughNanoseconds: UInt64?
-    ) -> Bool {
+    ) -> [MacSpeechCausalFrameObservation]? {
         let eligible = frames.filter { frame in
             guard let throughNanoseconds else { return true }
             return frame.hostTimeNanoseconds.map {
                 $0 <= throughNanoseconds
             } ?? false
         }
-        guard eligible.count >= 5 else { return false }
-        for start in 0...(eligible.count - 5) {
+        guard eligible.count >= 5 else { return nil }
+        for start in (0...(eligible.count - 5)).reversed() {
             let group = Array(eligible[start..<(start + 5)])
             let contiguous = zip(group, group.dropFirst()).allSatisfy {
                 previous, next in
@@ -1030,10 +1175,10 @@ actor MacSpeechRealtimeBrainInputBridge {
             }
             if contiguous,
                group.filter({ $0.rms >= causalActivityRMS }).count >= 3 {
-                return true
+                return group
             }
         }
-        return false
+        return nil
     }
 
     private func makeInputActivity(

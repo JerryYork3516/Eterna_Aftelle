@@ -27,6 +27,7 @@ swiftc \
   -o "$build_dir/speech_aec_host_tests"
 
 "$build_dir/speech_aec_host_tests"
+"$build_dir/speech_aec_host_tests" --non-user-hangover-only
 
 swiftc \
   -D DEBUG \
@@ -120,7 +121,7 @@ test "$(rg -c '/\* WebRTCAEC3\.xcframework( in Frameworks)? \*/' "$project")" -e
 rg -q 'SWIFT_OBJC_BRIDGING_HEADER = "Aftelle-Bridging-Header.h"' "$project"
 echo "speech_aec_target_membership=PASS"
 
-if rg -q 'RuntimeCore|ProviderRouter|Qwen|SessionStore|MemoryController|Keychain|transcript|pcm16Bytes|response\.cancel|Interrupt' "$aec_host"; then
+if rg -q 'RuntimeCore|ProviderRouter|Qwen|SessionStore|MemoryController|Keychain|transcript|pcm16Bytes|response\.cancel|InterruptionDecision|claimRealtimeResidentBrainInterruptionDecision' "$aec_host"; then
   echo "speech_aec_host_ownership_privacy=FAIL"
   exit 1
 fi
