@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "status": "IDENTITY_VERIFIED_NO_PRODUCT_PATCH",
+  "full_clean_linear_bit_exact": true,
+  "writes": 2772,
+  "reads": 2800,
+  "ring_size": [
+    167
+  ],
+  "internal_resets": 6,
+  "consumed_render_frames": 1109,
+  "terminal_queued_render_frames": 10,
+  "terminal_render_blocker_samples": 32,
+  "all_write_payloads_bit_exact_input_band0": true,
+  "all_y_payloads_bit_exact_input_band0": true,
+  "all_actual_x_payloads_bit_exact_latest_preceding_same_slot_write": true,
+  "future_call_reads": 0,
+  "all_run_cross_reset_reads": 73,
+  "all_run_negative_recorded_content_lag_reads": 83,
+  "windows": [
+    {
+      "source_frames": [
+        372,
+        374
+      ],
+      "aec_blocks": 8,
+      "ring_verified_blocks": 8,
+      "actual_render_input_frame_range": [
+        359,
+        362
+      ],
+      "recorded_host_lag_ms": [
+        99.843
+      ],
+      "input_band_index_difference_ms": [
+        128.0
+      ],
+      "cross_reset_blocks": 0,
+      "context_cross_reset_blocks": 0,
+      "context_future_call_blocks": 0,
+      "context_resets": []
+    },
+    {
+      "source_frames": [
+        972,
+        974
+      ],
+      "aec_blocks": 8,
+      "ring_verified_blocks": 8,
+      "actual_render_input_frame_range": [
+        959,
+        962
+      ],
+      "recorded_host_lag_ms": [
+        99.843
+      ],
+      "input_band_index_difference_ms": [
+        128.0
+      ],
+      "cross_reset_blocks": 0,
+      "context_cross_reset_blocks": 0,
+      "context_future_call_blocks": 0,
+      "context_resets": []
+    },
+    {
+      "source_frames": [
+        1014,
+        1016
+      ],
+      "aec_blocks": 8,
+      "ring_verified_blocks": 8,
+      "actual_render_input_frame_range": [
+        1010,
+        1013
+      ],
+      "recorded_host_lag_ms": [
+        3.843
+      ],
+      "input_band_index_difference_ms": [
+        32.0
+      ],
+      "cross_reset_blocks": 0,
+      "context_cross_reset_blocks": 6,
+      "context_future_call_blocks": 0,
+      "context_resets": [
+        {
+          "event": 5002,
+          "buffer": "0xb2b2c0298",
+          "read": 129,
+          "write": 159,
+          "size": 167,
+          "render_frame": 999,
+          "capture_frame": 1000
+        }
+      ]
+    },
+    {
+      "source_frames": [
+        1063,
+        1065
+      ],
+      "aec_blocks": 7,
+      "ring_verified_blocks": 7,
+      "actual_render_input_frame_range": [
+        1059,
+        1062
+      ],
+      "recorded_host_lag_ms": [
+        3.843
+      ],
+      "input_band_index_difference_ms": [
+        32.0
+      ],
+      "cross_reset_blocks": 0,
+      "context_cross_reset_blocks": 0,
+      "context_future_call_blocks": 0,
+      "context_resets": []
+    }
+  ],
+  "test3_decision": "BLOCKED",
+  "product_patch": "NO_PATCH",
+  "limitations": [
+    "Ring source identity proves which already-arrived band0 samples GetBlock(0) read; it does not prove the entire adaptive FIR history or physical echo alignment",
+    "Shared non-atomic event counter is valid only for this serialized offline replay",
+    "Recorded Host sample/content times are preserved; their absolute relation to actual loudspeaker radiation was not independently measured",
+    "No human positive, realtime performance, or detector threshold change in this diagnostic"
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "baseline_contributors": [
+    {
+      "captureFrameIndex": 98,
+      "captureHostTimeNanoseconds": 152175121620583,
+      "classificationRenderHostTimeNanoseconds": 152175008965083,
+      "classificationAssociationOrigin": "tracked_candidate",
+      "classificationDelayMilliseconds": 112.6555,
+      "classificationCorrelation": 0.9898884817422549,
+      "classificationBranch": "resident_only",
+      "residualEchoBaselineFrameCount": 1,
+      "rawEchoGainBaseline": 3.2554526371206154,
+      "residualEchoGainBaseline": 0.10141532786989649,
+      "linearAECOutputGainBaseline": 4.309715361011267
+    },
+    {
+      "captureFrameIndex": 99,
+      "captureHostTimeNanoseconds": 152175131620583,
+      "classificationRenderHostTimeNanoseconds": 152175018965083,
+      "classificationAssociationOrigin": "locked",
+      "classificationDelayMilliseconds": 112.6555,
+      "classificationCorrelation": 0.79065876883904,
+      "classificationBranch": "resident_only",
+      "residualEchoBaselineFrameCount": 2,
+      "rawEchoGainBaseline": 3.165787055873395,
+      "residualEchoGainBaseline": 0.1039507110666439,
+      "linearAECOutputGainBaseline": 4.278974108240556
+    },
+    {
+      "captureFrameIndex": 333,
+      "captureHostTimeNanoseconds": 152177471620583,
+      "classificationRenderHostTimeNanoseconds": 152177364590083,
+      "classificationAssociationOrigin": "tracked_candidate",
+      "classificationDelayMilliseconds": 107.0305,
+      "classificationCorrelation": 0.7122248171188575,
+      "classificationBranch": "resident_only",
+      "residualEchoBaselineFrameCount": 3,
+      "rawEchoGainBaseline": 3.24493173227023,
+      "residualEchoGainBaseline": 0.10118438284387762,
+      "linearAECOutputGainBaseline": 4.257010183093715
+    },
+    {
+      "captureFrameIndex": 370,
+      "captureHostTimeNanoseconds": 152177841620583,
+      "classificationRenderHostTimeNanoseconds": 152177726840083,
+      "classificationAssociationOrigin": "tracked_candidate",
+      "classificationDelayMilliseconds": 114.7805,
+      "classificationCorrelation": 0.9473793014433014,
+      "classificationBranch": "resident_only",
+      "residualEchoBaselineFrameCount": 4,
+      "rawEchoGainBaseline": 3.3260550255769856,
+      "residualEchoGainBaseline": 0.10371399241497456,
+      "linearAECOutputGainBaseline": 4.363435437671058
+    },
+    {
+      "captureFrameIndex": 700,
+      "captureHostTimeNanoseconds": 152181141620583,
+      "classificationRenderHostTimeNanoseconds": 152181023006749,
+      "classificationAssociationOrigin": "tracked_candidate",
+      "classificationDelayMilliseconds": 118.613834,
+      "classificationCorrelation": 0.9007055724033165,
+      "classificationBranch": "resident_only",
+      "residualEchoBaselineFrameCount": 5,
+      "rawEchoGainBaseline": 3.3654555446713186,
+      "residualEchoGainBaseline": 0.09496663200720454,
+      "linearAECOutputGainBaseline": 4.247672020994997
+    }
+  ],
+  "first_baseline_freeze": {
+    "captureFrameIndex": 704,
+    "classificationBranch": "uncertain",
+    "adaptiveRawExcessPower": 0.031509758867809164,
+    "adaptiveResidualExcessPower": 0.0023364711402466577,
+    "adaptiveLinearExcessPower": -0.06722463734693954
+  },
+  "confirmation_frames": [
+    {
+      "source_frame": 372,
+      "actual_branch": "low_correlation_near_end",
+      "origin": "locked",
+      "baseline_count": 4,
+      "main_lag_ms": 114.7805,
+      "lock_misses": 2,
+      "lock_present_after_update": true
+    },
+    {
+      "source_frame": 373,
+      "actual_branch": "low_correlation_near_end",
+      "origin": "locked",
+      "baseline_count": 4,
+      "main_lag_ms": 114.7805,
+      "lock_misses": 3,
+      "lock_present_after_update": true
+    },
+    {
+      "source_frame": 374,
+      "actual_branch": "low_correlation_near_end",
+      "origin": "locked",
+      "baseline_count": 4,
+      "main_lag_ms": 114.7805,
+      "lock_misses": 4,
+      "lock_present_after_update": true
+    },
+    {
+      "source_frame": 972,
+      "actual_branch": "adaptive_double_talk",
+      "origin": "expected",
+      "baseline_count": 5,
+      "main_lag_ms": 15.009667,
+      "lock_misses": 2,
+      "lock_present_after_update": false,
+      "raw_excess_power_scalar": 0.05829304379581935,
+      "clean_excess_power_scalar": 0.0015072970932694788,
+      "linear_excess_power_scalar": 0.007986811332330153
+    },
+    {
+      "source_frame": 973,
+      "actual_branch": "immediate_double_talk",
+      "origin": "expected",
+      "baseline_count": 5,
+      "main_lag_ms": 15.009667,
+      "lock_misses": 3,
+      "lock_present_after_update": false
+    },
+    {
+      "source_frame": 974,
+      "actual_branch": "immediate_double_talk",
+      "origin": "expected",
+      "baseline_count": 5,
+      "main_lag_ms": 15.009667,
+      "lock_misses": 4,
+      "lock_present_after_update": false
+    },
+    {
+      "source_frame": 1014,
+      "actual_branch": "adaptive_double_talk",
+      "origin": "expected",
+      "baseline_count": 5,
+      "main_lag_ms": 15.009667,
+      "lock_misses": 3,
+      "lock_present_after_update": false,
+      "raw_excess_power_scalar": 0.06432008282745548,
+      "clean_excess_power_scalar": 0.0002255555672050153,
+      "linear_excess_power_scalar": 0.07423480951586772
+    },
+    {
+      "source_frame": 1015,
+      "actual_branch": "adaptive_double_talk",
+      "origin": "expected",
+      "baseline_count": 5,
+      "main_lag_ms": 15.009667,
+      "lock_misses": 4,
+      "lock_present_after_update": false,
+      "raw_excess_power_scalar": 0.02461744972063452,
+      "clean_excess_power_scalar": 0.0001794686883621746,
+      "linear_excess_power_scalar": 0.041932007558997036
+    },
+    {
+      "source_frame": 1016,
+      "actual_branch": "adaptive_double_talk",
+      "origin": "expected",
+      "baseline_count": 5,
+      "main_lag_ms": 15.009667,
+      "lock_misses": 5,
+      "lock_present_after_update": false,
+      "raw_excess_power_scalar": 0.0033086151625971788,
+      "clean_excess_power_scalar": 0.0003815081806184876,
+      "linear_excess_power_scalar": 0.0063720424652067365
+    },
+    {
+      "source_frame": 1063,
+      "actual_branch": "adaptive_double_talk",
+      "origin": "locked",
+      "baseline_count": 5,
+      "main_lag_ms": 114.9055,
+      "lock_misses": 3,
+      "lock_present_after_update": true,
+      "raw_excess_power_scalar": 0.05631582172000284,
+      "clean_excess_power_scalar": 0.002408839792612491,
+      "linear_excess_power_scalar": 0.012505573804981025
+    },
+    {
+      "source_frame": 1064,
+      "actual_branch": "adaptive_double_talk",
+      "origin": "locked",
+      "baseline_count": 5,
+      "main_lag_ms": 114.9055,
+      "lock_misses": 4,
+      "lock_present_after_update": true,
+      "raw_excess_power_scalar": 0.037544115833981886,
+      "clean_excess_power_scalar": 0.018268844161210232,
+      "linear_excess_power_scalar": 0.02891727120963415
+    },
+    {
+      "source_frame": 1065,
+      "actual_branch": "adaptive_double_talk",
+      "origin": "locked",
+      "baseline_count": 5,
+      "main_lag_ms": 114.9055,
+      "lock_misses": 0,
+      "lock_present_after_update": false,
+      "raw_excess_power_scalar": 0.029681717906263075,
+      "clean_excess_power_scalar": 0.020935683166517022,
+      "linear_excess_power_scalar": 0.01971664426438784
+    }
+  ],
+  "meaning": "Frozen baseline has no association identity and remains across lock releases. Existing adaptive expected/locked path permits weak current raw correlation. This is current rule semantics, not proven index/reset implementation error.",
+  "AEC_or_device_run": false
+}

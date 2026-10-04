@@ -1,0 +1,963 @@
+[
+  {
+    "capture_processing_frame": 372,
+    "aec_block": 928,
+    "read_event": 1878,
+    "read_slot": 61,
+    "last_write_event": 1774,
+    "render_insert_ordinal": 896,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57280,
+    "capture_band0_start": 59328,
+    "render_input_frames": [
+      359,
+      359
+    ],
+    "capture_input_frames": [
+      371,
+      372
+    ],
+    "render_call_ordinals": [
+      144,
+      144
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 372,
+    "aec_block": 929,
+    "read_event": 1879,
+    "read_slot": 62,
+    "last_write_event": 1775,
+    "render_insert_ordinal": 897,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57344,
+    "capture_band0_start": 59392,
+    "render_input_frames": [
+      359,
+      359
+    ],
+    "capture_input_frames": [
+      372,
+      372
+    ],
+    "render_call_ordinals": [
+      144,
+      144
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 372,
+    "aec_block": 930,
+    "read_event": 1880,
+    "read_slot": 63,
+    "last_write_event": 1801,
+    "render_insert_ordinal": 898,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57408,
+    "capture_band0_start": 59456,
+    "render_input_frames": [
+      359,
+      360
+    ],
+    "capture_input_frames": [
+      372,
+      372
+    ],
+    "render_call_ordinals": [
+      144,
+      148
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 373,
+    "aec_block": 931,
+    "read_event": 1881,
+    "read_slot": 64,
+    "last_write_event": 1802,
+    "render_insert_ordinal": 899,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57472,
+    "capture_band0_start": 59520,
+    "render_input_frames": [
+      360,
+      360
+    ],
+    "capture_input_frames": [
+      373,
+      373
+    ],
+    "render_call_ordinals": [
+      148,
+      148
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 373,
+    "aec_block": 932,
+    "read_event": 1882,
+    "read_slot": 65,
+    "last_write_event": 1803,
+    "render_insert_ordinal": 900,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57536,
+    "capture_band0_start": 59584,
+    "render_input_frames": [
+      360,
+      360
+    ],
+    "capture_input_frames": [
+      373,
+      373
+    ],
+    "render_call_ordinals": [
+      148,
+      148
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 374,
+    "aec_block": 933,
+    "read_event": 1883,
+    "read_slot": 66,
+    "last_write_event": 1804,
+    "render_insert_ordinal": 901,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57600,
+    "capture_band0_start": 59648,
+    "render_input_frames": [
+      361,
+      361
+    ],
+    "capture_input_frames": [
+      373,
+      374
+    ],
+    "render_call_ordinals": [
+      148,
+      148
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 374,
+    "aec_block": 934,
+    "read_event": 1884,
+    "read_slot": 67,
+    "last_write_event": 1805,
+    "render_insert_ordinal": 902,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57664,
+    "capture_band0_start": 59712,
+    "render_input_frames": [
+      361,
+      361
+    ],
+    "capture_input_frames": [
+      374,
+      374
+    ],
+    "render_call_ordinals": [
+      148,
+      148
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 374,
+    "aec_block": 935,
+    "read_event": 1885,
+    "read_slot": 68,
+    "last_write_event": 1806,
+    "render_insert_ordinal": 903,
+    "write_epoch": 2,
+    "read_epoch": 2,
+    "crossed_reset": false,
+    "render_band0_start": 57728,
+    "capture_band0_start": 59776,
+    "render_input_frames": [
+      361,
+      362
+    ],
+    "capture_input_frames": [
+      374,
+      374
+    ],
+    "render_call_ordinals": [
+      148,
+      148
+    ],
+    "processing_capture_call_ordinal": 153,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 972,
+    "aec_block": 2428,
+    "read_event": 4880,
+    "read_slot": 58,
+    "last_write_event": 4776,
+    "render_insert_ordinal": 2396,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153280,
+    "capture_band0_start": 155328,
+    "render_input_frames": [
+      959,
+      959
+    ],
+    "capture_input_frames": [
+      971,
+      972
+    ],
+    "render_call_ordinals": [
+      384,
+      384
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 972,
+    "aec_block": 2429,
+    "read_event": 4881,
+    "read_slot": 59,
+    "last_write_event": 4777,
+    "render_insert_ordinal": 2397,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153344,
+    "capture_band0_start": 155392,
+    "render_input_frames": [
+      959,
+      959
+    ],
+    "capture_input_frames": [
+      972,
+      972
+    ],
+    "render_call_ordinals": [
+      384,
+      384
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 972,
+    "aec_block": 2430,
+    "read_event": 4882,
+    "read_slot": 60,
+    "last_write_event": 4803,
+    "render_insert_ordinal": 2398,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153408,
+    "capture_band0_start": 155456,
+    "render_input_frames": [
+      959,
+      960
+    ],
+    "capture_input_frames": [
+      972,
+      972
+    ],
+    "render_call_ordinals": [
+      384,
+      388
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 973,
+    "aec_block": 2431,
+    "read_event": 4883,
+    "read_slot": 61,
+    "last_write_event": 4804,
+    "render_insert_ordinal": 2399,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153472,
+    "capture_band0_start": 155520,
+    "render_input_frames": [
+      960,
+      960
+    ],
+    "capture_input_frames": [
+      973,
+      973
+    ],
+    "render_call_ordinals": [
+      388,
+      388
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 973,
+    "aec_block": 2432,
+    "read_event": 4884,
+    "read_slot": 62,
+    "last_write_event": 4805,
+    "render_insert_ordinal": 2400,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153536,
+    "capture_band0_start": 155584,
+    "render_input_frames": [
+      960,
+      960
+    ],
+    "capture_input_frames": [
+      973,
+      973
+    ],
+    "render_call_ordinals": [
+      388,
+      388
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 974,
+    "aec_block": 2433,
+    "read_event": 4885,
+    "read_slot": 63,
+    "last_write_event": 4806,
+    "render_insert_ordinal": 2401,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153600,
+    "capture_band0_start": 155648,
+    "render_input_frames": [
+      961,
+      961
+    ],
+    "capture_input_frames": [
+      973,
+      974
+    ],
+    "render_call_ordinals": [
+      388,
+      388
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 974,
+    "aec_block": 2434,
+    "read_event": 4886,
+    "read_slot": 64,
+    "last_write_event": 4807,
+    "render_insert_ordinal": 2402,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153664,
+    "capture_band0_start": 155712,
+    "render_input_frames": [
+      961,
+      961
+    ],
+    "capture_input_frames": [
+      974,
+      974
+    ],
+    "render_call_ordinals": [
+      388,
+      388
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 974,
+    "aec_block": 2435,
+    "read_event": 4887,
+    "read_slot": 65,
+    "last_write_event": 4808,
+    "render_insert_ordinal": 2403,
+    "write_epoch": 4,
+    "read_epoch": 4,
+    "crossed_reset": false,
+    "render_band0_start": 153728,
+    "capture_band0_start": 155776,
+    "render_input_frames": [
+      961,
+      962
+    ],
+    "capture_input_frames": [
+      974,
+      974
+    ],
+    "render_call_ordinals": [
+      388,
+      388
+    ],
+    "processing_capture_call_ordinal": 393,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 99.843,
+    "input_band_index_difference_ms": 128.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1014,
+    "aec_block": 2533,
+    "read_event": 5086,
+    "read_slot": 20,
+    "last_write_event": 5056,
+    "render_insert_ordinal": 2525,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161536,
+    "capture_band0_start": 162048,
+    "render_input_frames": [
+      1010,
+      1010
+    ],
+    "capture_input_frames": [
+      1013,
+      1014
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1014,
+    "aec_block": 2534,
+    "read_event": 5087,
+    "read_slot": 21,
+    "last_write_event": 5057,
+    "render_insert_ordinal": 2526,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161600,
+    "capture_band0_start": 162112,
+    "render_input_frames": [
+      1011,
+      1011
+    ],
+    "capture_input_frames": [
+      1014,
+      1014
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1014,
+    "aec_block": 2535,
+    "read_event": 5088,
+    "read_slot": 22,
+    "last_write_event": 5058,
+    "render_insert_ordinal": 2527,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161664,
+    "capture_band0_start": 162176,
+    "render_input_frames": [
+      1011,
+      1011
+    ],
+    "capture_input_frames": [
+      1014,
+      1014
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1015,
+    "aec_block": 2536,
+    "read_event": 5089,
+    "read_slot": 23,
+    "last_write_event": 5059,
+    "render_insert_ordinal": 2528,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161728,
+    "capture_band0_start": 162240,
+    "render_input_frames": [
+      1011,
+      1012
+    ],
+    "capture_input_frames": [
+      1015,
+      1015
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1015,
+    "aec_block": 2537,
+    "read_event": 5090,
+    "read_slot": 24,
+    "last_write_event": 5060,
+    "render_insert_ordinal": 2529,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161792,
+    "capture_band0_start": 162304,
+    "render_input_frames": [
+      1012,
+      1012
+    ],
+    "capture_input_frames": [
+      1015,
+      1015
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1016,
+    "aec_block": 2538,
+    "read_event": 5091,
+    "read_slot": 25,
+    "last_write_event": 5061,
+    "render_insert_ordinal": 2530,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161856,
+    "capture_band0_start": 162368,
+    "render_input_frames": [
+      1012,
+      1012
+    ],
+    "capture_input_frames": [
+      1015,
+      1016
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1016,
+    "aec_block": 2539,
+    "read_event": 5092,
+    "read_slot": 26,
+    "last_write_event": 5062,
+    "render_insert_ordinal": 2531,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161920,
+    "capture_band0_start": 162432,
+    "render_input_frames": [
+      1013,
+      1013
+    ],
+    "capture_input_frames": [
+      1016,
+      1016
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1016,
+    "aec_block": 2540,
+    "read_event": 5093,
+    "read_slot": 27,
+    "last_write_event": 5063,
+    "render_insert_ordinal": 2532,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 161984,
+    "capture_band0_start": 162496,
+    "render_input_frames": [
+      1013,
+      1013
+    ],
+    "capture_input_frames": [
+      1016,
+      1016
+    ],
+    "render_call_ordinals": [
+      408,
+      408
+    ],
+    "processing_capture_call_ordinal": 409,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1063,
+    "aec_block": 2656,
+    "read_event": 5334,
+    "read_slot": 143,
+    "last_write_event": 5304,
+    "render_insert_ordinal": 2648,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 169408,
+    "capture_band0_start": 169920,
+    "render_input_frames": [
+      1059,
+      1060
+    ],
+    "capture_input_frames": [
+      1063,
+      1063
+    ],
+    "render_call_ordinals": [
+      424,
+      428
+    ],
+    "processing_capture_call_ordinal": 429,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1063,
+    "aec_block": 2657,
+    "read_event": 5335,
+    "read_slot": 144,
+    "last_write_event": 5305,
+    "render_insert_ordinal": 2649,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 169472,
+    "capture_band0_start": 169984,
+    "render_input_frames": [
+      1060,
+      1060
+    ],
+    "capture_input_frames": [
+      1063,
+      1063
+    ],
+    "render_call_ordinals": [
+      428,
+      428
+    ],
+    "processing_capture_call_ordinal": 429,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1064,
+    "aec_block": 2658,
+    "read_event": 5336,
+    "read_slot": 145,
+    "last_write_event": 5306,
+    "render_insert_ordinal": 2650,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 169536,
+    "capture_band0_start": 170048,
+    "render_input_frames": [
+      1060,
+      1060
+    ],
+    "capture_input_frames": [
+      1063,
+      1064
+    ],
+    "render_call_ordinals": [
+      428,
+      428
+    ],
+    "processing_capture_call_ordinal": 429,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1064,
+    "aec_block": 2659,
+    "read_event": 5337,
+    "read_slot": 146,
+    "last_write_event": 5307,
+    "render_insert_ordinal": 2651,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 169600,
+    "capture_band0_start": 170112,
+    "render_input_frames": [
+      1061,
+      1061
+    ],
+    "capture_input_frames": [
+      1064,
+      1064
+    ],
+    "render_call_ordinals": [
+      428,
+      428
+    ],
+    "processing_capture_call_ordinal": 429,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1064,
+    "aec_block": 2660,
+    "read_event": 5338,
+    "read_slot": 147,
+    "last_write_event": 5308,
+    "render_insert_ordinal": 2652,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 169664,
+    "capture_band0_start": 170176,
+    "render_input_frames": [
+      1061,
+      1061
+    ],
+    "capture_input_frames": [
+      1064,
+      1064
+    ],
+    "render_call_ordinals": [
+      428,
+      428
+    ],
+    "processing_capture_call_ordinal": 429,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1065,
+    "aec_block": 2661,
+    "read_event": 5339,
+    "read_slot": 148,
+    "last_write_event": 5309,
+    "render_insert_ordinal": 2653,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 169728,
+    "capture_band0_start": 170240,
+    "render_input_frames": [
+      1061,
+      1062
+    ],
+    "capture_input_frames": [
+      1065,
+      1065
+    ],
+    "render_call_ordinals": [
+      428,
+      428
+    ],
+    "processing_capture_call_ordinal": 429,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  },
+  {
+    "capture_processing_frame": 1065,
+    "aec_block": 2662,
+    "read_event": 5340,
+    "read_slot": 149,
+    "last_write_event": 5310,
+    "render_insert_ordinal": 2654,
+    "write_epoch": 5,
+    "read_epoch": 5,
+    "crossed_reset": false,
+    "render_band0_start": 169792,
+    "capture_band0_start": 170304,
+    "render_input_frames": [
+      1062,
+      1062
+    ],
+    "capture_input_frames": [
+      1065,
+      1065
+    ],
+    "render_call_ordinals": [
+      428,
+      428
+    ],
+    "processing_capture_call_ordinal": 429,
+    "render_already_arrived": true,
+    "capture_already_arrived": true,
+    "recorded_host_time_lag_ms": 3.843,
+    "input_band_index_difference_ms": 32.0,
+    "identity": "VERIFIED_RING_WRITE_IDENTITY"
+  }
+]

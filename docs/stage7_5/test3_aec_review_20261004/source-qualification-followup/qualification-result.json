@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "main_scalar_statistics_match": true,
+  "maximum_absolute_difference": 2.701172618913006e-13,
+  "audited_frames": 17,
+  "confirmation_frames": 12,
+  "confirmation_frames_with_alternative_witness": 0,
+  "raw_fit_candidate": "REJECTED: no witness in 12 confirmation frames",
+  "fifo_reset_accounted": [
+    {
+      "ordinal": 18,
+      "kind": "playback_started",
+      "render_samples": 120,
+      "capture_samples": 0
+    },
+    {
+      "ordinal": 444,
+      "kind": "playback_completed",
+      "render_samples": 0,
+      "capture_samples": 0
+    }
+  ],
+  "input_hashes_still_match": true,
+  "test3_decision": "BLOCKED",
+  "product_patch": "NO_PATCH",
+  "qualification_changes": 0,
+  "no_devices_or_AEC": true
+}

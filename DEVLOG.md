@@ -8,6 +8,13 @@
 
 ---
 
+## 2026-10-04 · Test3/03 最新声源资格复审资料发布
+
+- 新的完整Timesintelli USB＋Mac内置扬声器实体负控已保存，用户独立确认静默。原运行42错误资格帧/4确认链/48Gate帧/56播放源非零转发帧，正式interrupt/cancel/clear/new generation均0，Test3保持BLOCKED。
+- 17帧标量复算及完整AEC输出位复现未发现具体索引/计算差异；真实环形槽核对了四链31个AEC块的已到达身份。4次内部excess-render Reset由5572条事件占用模型精确解释，但不是已证明的API错误。
+- 旧lock资格消融仍有3次错误确认且软件资格49→48，拒绝；一次保序因果FIFO排程对照消除4次非启动Reset，原Host时序事后仍有41错误资格/104Gate/3开闸，按负控条件停止，不作为产品修法或实时验收。
+- 发布 `docs/stage7_5/test3_aec_review_20261004/source-qualification-followup/` 的脱敏JSON、方法和Runner保存修复工作区diff。Runner源码本轮不提交（SwiftFormat/SwiftLint未安装），旧PCM/录音/DR/binary留本机。App/Host测试本次NOT_RUN，正式资格逻辑未改，Stage7边界PASS。
+
 ## 2026-09-18 · Test 3 / 03 未验收工作检查点与交接
 
 - 按用户要求保存并推送现有工作，**Test 3 仍为 REVIEW_REQUIRED，未修好，不进入 04**。本检查点包含此前未提交的 Apple Voice Processing 默认选择、系统 VAD、分帧/时间戳修复及本地测试入口，不代表这些候选已通过真实声场联合验收。

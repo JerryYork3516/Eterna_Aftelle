@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "status": "EXISTING_INTERNAL_RULE_EXECUTION_CONFIRMED",
+  "buffer_event_comparisons": 5572,
+  "event_discrepancies": 0,
+  "overrun_causes": [
+    {
+      "capture_frame": 200,
+      "aec_block": 500,
+      "kind": "DETECT_EXCESS_RENDER_BLOCKS",
+      "reset_event": 999,
+      "pre_read_latency_blocks": 26,
+      "window_minimum_blocks": 26,
+      "threshold_blocks": 8,
+      "window_range": [
+        251,
+        500
+      ],
+      "window_latency_range_blocks": [
+        26,
+        50
+      ],
+      "previous_read_slot": 134,
+      "actual_read_slot": 159,
+      "read_extra_advance_blocks": 24
+    },
+    {
+      "capture_frame": 600,
+      "aec_block": 1500,
+      "kind": "DETECT_EXCESS_RENDER_BLOCKS",
+      "reset_event": 3000,
+      "pre_read_latency_blocks": 26,
+      "window_minimum_blocks": 26,
+      "threshold_blocks": 8,
+      "window_range": [
+        1251,
+        1500
+      ],
+      "window_latency_range_blocks": [
+        26,
+        50
+      ],
+      "previous_read_slot": 131,
+      "actual_read_slot": 156,
+      "read_extra_advance_blocks": 24
+    },
+    {
+      "capture_frame": 800,
+      "aec_block": 2000,
+      "kind": "DETECT_EXCESS_RENDER_BLOCKS",
+      "reset_event": 4001,
+      "pre_read_latency_blocks": 26,
+      "window_minimum_blocks": 26,
+      "threshold_blocks": 8,
+      "window_range": [
+        1751,
+        2000
+      ],
+      "window_latency_range_blocks": [
+        26,
+        50
+      ],
+      "previous_read_slot": 130,
+      "actual_read_slot": 155,
+      "read_extra_advance_blocks": 24
+    },
+    {
+      "capture_frame": 1000,
+      "aec_block": 2500,
+      "kind": "DETECT_EXCESS_RENDER_BLOCKS",
+      "reset_event": 5002,
+      "pre_read_latency_blocks": 26,
+      "window_minimum_blocks": 26,
+      "threshold_blocks": 8,
+      "window_range": [
+        2251,
+        2500
+      ],
+      "window_latency_range_blocks": [
+        26,
+        50
+      ],
+      "previous_read_slot": 129,
+      "actual_read_slot": 154,
+      "read_extra_advance_blocks": 24
+    }
+  ],
+  "upstream_internal_underrun_events": 145,
+  "host_io_underrun_is_different_metric": true,
+  "product_patch": "NO_PATCH",
+  "test3_decision": "BLOCKED",
+  "limitations": [
+    "This explains internal reset identity and threshold arithmetic, not a proven illegal API call or full FIR acoustic misalignment",
+    "First two false source confirmations occur before last reset; suppressing resets alone is not a demonstrated repair"
+  ]
+}

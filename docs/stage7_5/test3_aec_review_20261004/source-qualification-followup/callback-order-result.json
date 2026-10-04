@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "status": "ARRIVAL_ORDER_OBSERVED_NO_THREAD_CAUSE_PROVEN",
+  "matched_capture_callbacks": 112,
+  "matched_render_callbacks": 112,
+  "capture_native_sample_rate_hz": [
+    48000
+  ],
+  "render_native_sample_rate_hz": [
+    44100
+  ],
+  "capture_frame_lengths": [
+    4800
+  ],
+  "render_frame_lengths": [
+    4410
+  ],
+  "same_sequence_render_began_after_capture_completed": 13,
+  "missing_render_batch_context": [
+    {
+      "callback_sequence": 84,
+      "capture_call_ordinal": 337,
+      "render_call_ordinal": 336,
+      "capture_first_source_frame": 831,
+      "render_first_source_frame": 830,
+      "capture_duration_ms": 100.0,
+      "render_duration_ms": 100.0,
+      "capture_entered_ns": 152182560394125,
+      "capture_completed_ns": 152182579914541,
+      "capture_host_processing_ms": 19.453167,
+      "render_entered_ns": 152182560287500,
+      "render_minus_capture_entry_ms": -0.106625,
+      "render_minus_capture_completion_ms": -19.627041,
+      "render_callback_began_after_capture_completion": false
+    },
+    {
+      "callback_sequence": 85,
+      "capture_call_ordinal": 341,
+      "render_call_ordinal": 340,
+      "capture_first_source_frame": 841,
+      "render_first_source_frame": 840,
+      "capture_duration_ms": 100.0,
+      "render_duration_ms": 100.0,
+      "capture_entered_ns": 152182656249208,
+      "capture_completed_ns": 152182675521375,
+      "capture_host_processing_ms": 19.182458,
+      "render_entered_ns": 152182656178291,
+      "render_minus_capture_entry_ms": -0.070917,
+      "render_minus_capture_completion_ms": -19.343084,
+      "render_callback_began_after_capture_completion": false
+    },
+    {
+      "callback_sequence": 86,
+      "capture_call_ordinal": 344,
+      "render_call_ordinal": 347,
+      "capture_first_source_frame": 851,
+      "render_first_source_frame": 850,
+      "capture_duration_ms": 100.0,
+      "render_duration_ms": 100.0,
+      "capture_entered_ns": 152182762880250,
+      "capture_completed_ns": 152182782423500,
+      "capture_host_processing_ms": 19.421459,
+      "render_entered_ns": 152182782433791,
+      "render_minus_capture_entry_ms": 19.553541,
+      "render_minus_capture_completion_ms": 0.010291,
+      "render_callback_began_after_capture_completion": true
+    },
+    {
+      "callback_sequence": 87,
+      "capture_call_ordinal": 349,
+      "render_call_ordinal": 348,
+      "capture_first_source_frame": 861,
+      "render_first_source_frame": 860,
+      "capture_duration_ms": 100.0,
+      "render_duration_ms": 100.0,
+      "capture_entered_ns": 152182858912333,
+      "capture_completed_ns": 152182875798541,
+      "capture_host_processing_ms": 16.771125,
+      "render_entered_ns": 152182858840750,
+      "render_minus_capture_entry_ms": -0.071583,
+      "render_minus_capture_completion_ms": -16.957791,
+      "render_callback_began_after_capture_completion": false
+    }
+  ],
+  "product_patch": "NO_PATCH",
+  "test3_decision": "BLOCKED",
+  "limitations": [
+    "Both production taps request approximately10ms; this route delivered native100ms batches. No Runner override found in relevant execution path",
+    "Times can show callback ordering and coincidence with long Host processing. Thread/queue identity and a counterfactual are absent, so blocking causation remains UNVERIFIED",
+    "No unlabelled software run substitutes for physical pure-echo or real-human acceptance"
+  ]
+}

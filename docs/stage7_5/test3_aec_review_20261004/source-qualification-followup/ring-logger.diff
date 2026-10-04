@@ -1,0 +1,197 @@
+--- pinned-webrtc/render_delay_buffer.cc
++++ diagnostic-only/render_delay_buffer_ring.cc
+@@ -36,6 +36,13 @@
+ #include "modules/audio_processing/logging/apm_data_dumper.h"
+ #include "rtc_base/checks.h"
+ #include "rtc_base/logging.h"
++
++
++#include <cstdio>
++#include <cstdlib>
++extern "C" int aftelle_probe_capture_frame;
++extern "C" int aftelle_probe_render_frame;
++extern "C" unsigned long long aftelle_probe_ring_sequence;
+ 
+ namespace webrtc {
+ namespace {
+@@ -159,6 +166,17 @@
+ 
+ // Resets the buffer delays and clears the reported delays.
+ void RenderDelayBufferImpl::Reset() {
++  static FILE* ring_reset = []() {
++    const char* path = std::getenv("AFTELLE_RING_RESET");
++    FILE* f = path ? std::fopen(path, "w") : nullptr;
++    if (f) std::fprintf(f, "event,buffer,read,write,size,render_frame,capture_frame\n");
++    return f;
++  }();
++  const auto reset_event = ++aftelle_probe_ring_sequence;
++  if (ring_reset) std::fprintf(ring_reset, "%llu,%p,%d,%d,%zu,%d,%d\n",
++      reset_event, static_cast<const void*>(&blocks_), blocks_.read, blocks_.write,
++      blocks_.buffer.size(), aftelle_probe_render_frame, aftelle_probe_capture_frame);
++
+   last_call_was_render_ = false;
+   num_api_calls_in_a_row_ = 1;
+   min_latency_blocks_ = 0;
+@@ -233,6 +251,25 @@
+ 
+   // Insert the new render block into the specified position.
+   InsertBlock(block, previous_write);
++  static FILE* ring_write = []() {
++    const char* path = std::getenv("AFTELLE_RING_WRITE");
++    FILE* f = path ? std::fopen(path, "w") : nullptr;
++    if (f) std::fprintf(f, "event,buffer,insert,write,previous_write,read,size,render_frame,capture_frame\n");
++    return f;
++  }();
++  static FILE* ring_payload = []() {
++    const char* path = std::getenv("AFTELLE_RING_PAYLOAD");
++    return path ? std::fopen(path, "wb") : nullptr;
++  }();
++  const auto write_event = ++aftelle_probe_ring_sequence;
++  if (ring_write) std::fprintf(ring_write, "%llu,%p,%lld,%d,%d,%d,%zu,%d,%d\n",
++      write_event, static_cast<const void*>(&blocks_),
++      static_cast<long long>(render_call_counter_), blocks_.write, previous_write,
++      blocks_.read, blocks_.buffer.size(), aftelle_probe_render_frame,
++      aftelle_probe_capture_frame);
++  if (ring_payload) std::fwrite(blocks_.buffer[blocks_.write].View(0, 0).data(),
++                               sizeof(float), kBlockSize, ring_payload);
++
+ 
+   if (event != BufferingEvent::kNone) {
+     Reset();
+--- pinned-webrtc/echo_remover.cc
++++ diagnostic-only/echo_remover_ring.cc
+@@ -18,6 +18,12 @@
+ #include <optional>
+ #include <span>
+ #include <vector>
++#include <cstdio>
++#include <cstdlib>
++#include <cstdint>
++#include <numeric>
++
++extern "C" int aftelle_probe_capture_frame;
+ 
+ #include "api/audio/echo_canceller3_config.h"
+ #include "api/audio/echo_control.h"
+@@ -42,6 +48,13 @@
+ #include "modules/audio_processing/logging/apm_data_dumper.h"
+ #include "rtc_base/checks.h"
+ #include "rtc_base/logging.h"
++
++
++#include <cstdio>
++#include <cstdlib>
++extern "C" int aftelle_probe_capture_frame;
++extern "C" int aftelle_probe_render_frame;
++extern "C" unsigned long long aftelle_probe_ring_sequence;
+ 
+ namespace webrtc {
+ 
+@@ -300,9 +313,38 @@
+     Block* capture) {
+   ++block_counter_;
+   const Block& x = render_buffer->GetBlock(0);
++  static FILE* ring_read = []() {
++    const char* path = std::getenv("AFTELLE_RING_READ");
++    FILE* f = path ? std::fopen(path, "w") : nullptr;
++    if (f) std::fprintf(f, "event,buffer,block,read,write,size,render_frame,capture_frame\n");
++    return f;
++  }();
++  const auto read_event = ++aftelle_probe_ring_sequence;
++  const auto& ring = render_buffer->GetBlockBuffer();
++  if (ring_read) std::fprintf(ring_read, "%llu,%p,%zu,%d,%d,%zu,%d,%d\n",
++      read_event, static_cast<const void*>(&ring), block_counter_, ring.read,
++      ring.write, ring.buffer.size(), aftelle_probe_render_frame,
++      aftelle_probe_capture_frame);
++
+   Block* y = capture;
+   RTC_DCHECK(render_buffer);
+   RTC_DCHECK(y);
++  if ((aftelle_probe_capture_frame >= 1 && aftelle_probe_capture_frame <= 1120)) {
++    static FILE* aligned_witness = []() {
++      const char* path = std::getenv("AFTELLE_AEC3_X_DUMP");
++      return path ? std::fopen(path, "wb") : nullptr;
++    }();
++    if (aligned_witness) {
++      const uint32_t frame = static_cast<uint32_t>(aftelle_probe_capture_frame);
++      const uint32_t block = static_cast<uint32_t>(block_counter_);
++      std::fwrite(&frame, sizeof(frame), 1, aligned_witness);
++      std::fwrite(&block, sizeof(block), 1, aligned_witness);
++      std::fwrite(x.View(/*band=*/0, /*channel=*/0).data(), sizeof(float),
++                  kBlockSize, aligned_witness);
++      std::fwrite(y->View(/*band=*/0, /*channel=*/0).data(), sizeof(float),
++                  kBlockSize, aligned_witness);
++    }
++  }
+   RTC_DCHECK_EQ(x.NumBands(), NumBandsForRate(sample_rate_hz_));
+   RTC_DCHECK_EQ(y->NumBands(), NumBandsForRate(sample_rate_hz_));
+   RTC_DCHECK_EQ(x.NumChannels(), num_render_channels_);
+@@ -535,6 +577,68 @@
+ 
+   // Update the metrics.
+   metrics_.Update(aec_state_, cng_.NoiseSpectrum()[0], G);
++  // Isolated diagnostic only: all reads occur after normal AEC processing.
++  if ((aftelle_probe_capture_frame >= 1 && aftelle_probe_capture_frame <= 1120)) {
++    static FILE* witness = []() {
++      const char* path = std::getenv("AFTELLE_AEC3_INTERNAL_WITNESS");
++      FILE* file = path ? std::fopen(path, "w") : nullptr;
++      if (file) {
++        std::fprintf(file,
++            "frame,block,y2,s2_refined,s2_coarse,e2_refined,e2_coarse,"
++            "e_selected2,usable_linear,linear_used,dominant_nearend,"
++            "filter_delay_blocks,r2_sum,y2_spectrum_sum,g_min,g_mean,g_max,"
++            "post2,aligned_x2,detector_ne_lf,detector_echo_lf,"
++            "detector_noise_lf,ml_ree_active\n");
++      }
++      return file;
++    }();
++    if (witness) {
++      float selected2 = 0.f;
++      float post2 = 0.f;
++      for (size_t k = 0; k < kBlockSize; ++k) {
++        selected2 += e[0][k] * e[0][k];
++        const float sample = y->View(/*band=*/0, /*channel=*/0)[k];
++        post2 += sample * sample;
++      }
++      const auto extrema = std::minmax_element(G.begin(), G.end());
++      const double g_mean =
++          std::accumulate(G.begin(), G.end(), 0.0) / G.size();
++      const double r2_sum =
++          std::accumulate(R2[0].begin(), R2[0].end(), 0.0);
++      const double y2_sum =
++          std::accumulate(Y2[0].begin(), Y2[0].end(), 0.0);
++      double aligned_x2 = 0.0;
++      for (float sample : x.View(/*band=*/0, /*channel=*/0)) {
++        aligned_x2 += static_cast<double>(sample) * sample;
++      }
++      const auto low_frequency_power = [](std::span<const float> spectrum) {
++        return std::accumulate(spectrum.begin() + 1,
++                               spectrum.begin() + 16, 0.0);
++      };
++      const auto& detected_echo =
++          config_.suppressor.dominant_nearend_detection
++                  .use_unbounded_echo_spectrum
++              ? R2_unbounded[0]
++              : R2[0];
++      const double detector_ne_lf = low_frequency_power(nearend_spectrum[0]);
++      const double detector_echo_lf = low_frequency_power(detected_echo);
++      const double detector_noise_lf =
++          low_frequency_power(cng_.NoiseSpectrum()[0]);
++      const SubtractorOutput& sub = subtractor_output[0];
++      std::fprintf(witness,
++          "%d,%zu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%d,%d,%d,%d,"
++          "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%d\n",
++          aftelle_probe_capture_frame, block_counter_, sub.y2,
++          sub.s2_refined, sub.s2_coarse, sub.e2_refined, sub.e2_coarse,
++          selected2, aec_state_.UsableLinearEstimate() ? 1 : 0,
++          aec_state_.UseLinearFilterOutput() ? 1 : 0,
++          suppression_gain_.IsDominantNearend() ? 1 : 0,
++          aec_state_.MinDirectPathFilterDelay(), r2_sum, y2_sum,
++          *extrema.first, g_mean, *extrema.second, post2, aligned_x2,
++          detector_ne_lf, detector_echo_lf, detector_noise_lf,
++          ml_ree_is_active ? 1 : 0);
++    }
++  }
+ 
+   // Debug outputs for the purpose of development and analysis.
+   data_dumper_->DumpWav("aec3_echo_estimate", kBlockSize,

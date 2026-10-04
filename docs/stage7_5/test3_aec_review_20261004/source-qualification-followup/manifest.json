@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "product_source_commit": "85db493c95fd3e1864296038209317e1cf4409be",
+  "checkpoint_commit": "ac89fa5ead067c25333710ec575b0bec33f59bb4",
+  "test3_decision": "BLOCKED",
+  "source_qualification_patch": "NO_PATCH",
+  "publication_scope": "Docs, sanitized numerical evidence, isolated diagnostic source snapshots, uncommitted Runner diff only",
+  "product_source_files_sha256": {
+    "apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift": "51cbfbb9f6b2aefedc8af37c74b8892a68d2919bf260fcc082a07ca287a1df85",
+    "apps/macos/Aftelle/MacSpeechAudioCapture.swift": "ef09463cc03fac9e90d177d3d05e5c05ce4d1e6abec9d7a203f3a3608d13fc41",
+    "apps/macos/Aftelle/MacSpeechWebRTCAECProcessor.swift": "370261422bbd280df5169b76b849b7b62355a25403def60d3aed68399e7034ff",
+    "tools/webrtc_aec3/bridge/AftelleAECBridge.mm": "1d1cb45377b5b2252af49a6abbb03026502aba408d98d90476c4611c9be9c45d",
+    "tools/webrtc_aec3/bridge/AftelleAECBridge.h": "0d35fe64cfd2c5e9a342a519a9d024a0a7a84c916f68d8041f31e3df3f4cd66f",
+    "tools/speech_aec_host_tests/RecordedAcousticReplay.swift": "c6221f0b978891cff665dbc7d0d567e42f9ceccaab871d4173d5fd397814c199",
+    "apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift": "8becf334f6cdee299a97d1a75451638440e5013b9fd560cbd71c84379a013c19",
+    "AGENTS.md": "0b5fbc726ba78a84b29b3b4720d82d47069042bdead11a77641de200d6ad2f1a",
+    "docs/stage7_forbidden_checklist.md": "45ff0a238ccc590a041e3ff54af917413a36475a92598e9803cb0148489dc9b6"
+  },
+  "runner_patch_snapshot": {
+    "base_commit": "85db493c95fd3e1864296038209317e1cf4409be",
+    "working_tree_sha256": "50da4a4be7d8420ff8497f4db6918feb52ca279f9705d6cb78e7a635bbe7a71b",
+    "committed_product_change": false,
+    "swiftformat": "NOT_RUN_TOOL_UNAVAILABLE",
+    "swiftlint": "NOT_RUN_TOOL_UNAVAILABLE"
+  },
+  "private_pcm_resident_binary_upload": false,
+  "evidence_limits": {
+    "private_waveform_independent_remote_recalculation": false,
+    "paired_host_results": "RETROSPECTIVE_ORIGINAL_HOST_TIMELINE",
+    "real_human_positive_this_run": false,
+    "formal_runtime_source_authority": false
+  },
+  "verification": {
+    "exported_numerical_json_source_comparison": "PASS",
+    "source_identity_hashes": "PASS",
+    "json_utf8_and_markdown_links": "PASS",
+    "publication_private_asset_and_path_scan": "PASS",
+    "original_local_assets_rehash": "27 files unchanged",
+    "full_host_test_this_docs_delivery": "NOT_RUN",
+    "app_build_this_docs_delivery": "NOT_RUN",
+    "stage7_forbidden_checklist": "PASS",
+    "git_staged_document_whitespace": "PASS; unified-diff snapshots preserve 11 valid single-space blank context lines, checked separately"
+  },
+  "files": {
+    "README.md": "3fbc3e42509f5cac9fdb0c1e4386bd9e300bf66febfb6b39a0915f909a388c5a",
+    "aec-original-replay.json": "352b8ece6ea4a247655098db6ad4228bb216f91f4a45e1dd165caffc8645ee31",
+    "baseline-witnesses.json": "eec3e8b8287e1f49ba4ea984ccf4e715e4c01871d864414cc7e097f01465c7a7",
+    "callback-order-result.json": "872f355380215657a4d985790ed89fe76cb82a920d5cac990955541b6a716dba",
+    "confirmation-witnesses.json": "cc9540ef4c9265a30104ad953c05cd66336c61ee9526e7118680b2d354ab41fb",
+    "findings.md": "ea57905ff6a35f92c96c03edbdd39392bf45a7755e3709108994b6406d9b6591",
+    "locked-arm-ablation.json": "6f9bf7168ce4bfd2d0838ddaebd7bc592c769b19782584a2bc7fdb84660da295",
+    "locked-arm-diagnostic.diff": "3ecfe0d53e9bd3c5eba7f3c2bd5f8ba523b46b2ae9e5475ee362b09a8b6dbbe3",
+    "paired-assessment.py.txt": "db12b5153e967c26867d51a77d939dc63134ddaa62cb9c3613b8544989783122",
+    "paired-scheduling-protocol.json": "e91f825bdad3364b13874e2eb6c2f7f40ed34920dfc72a55962cea085cbe11cf",
+    "paired-scheduling-result.json": "9b98059ca5aae53dd470c9888b380e716a5ab1d845f2090318a43dc27433b47c",
+    "paired-scheduling.py.txt": "ac6b8db522be857667f2036a29a3b34cba4279b4c5079d9fe55a4c95ec6a05c0",
+    "paired-stats-observer.json": "5017f637345560b64ba94115cb3e02b6b431cc0cc7fc0eaa52d47dff7bc28985",
+    "physical-negative.json": "e160dde4c988a1cbafd9c0c032853ecb15148b286a22bf11f8d5afafa9d086de",
+    "publication-provenance.json": "bb7a8a1a893b76fd8265bebc9386a27200da02fb5e2ecac7f665bb20471ee590",
+    "qualification-result.json": "d7e5b2c53d0f8c416a0add606b4607b80285dd1d851097da9647b0d0574c5729",
+    "qualification-scalar-audit.py.txt": "08264e8cc9e20ae87fd97ad2351f4bf401f3eed97c89d7775a7fc71096ea2521",
+    "qualification-witnesses.json": "e56dd95e29dae97c104799377bd7dcc740db0dd9c3795ac1b37cda58c8f94f41",
+    "reset-cause-audit.py.txt": "ae026f04765084672d8681b112cee4b9a00325a06b4f6e5353492e0799c3a0b0",
+    "reset-cause-result.json": "3dc59f973f18996e21a0a5ad02c7bb1c53f1d0bf9717c716295be59abbe0646a",
+    "ring-identity-audit.py.txt": "c9866de5dd54184d760a55ad9fec6a1f6fc0fd0075a40313672d2e3a488c5409",
+    "ring-identity-result.json": "706ea4864783bc296d58eaed5d4ec4b9352420c554ba82b2e2e83e3c028a3ead",
+    "ring-logger.diff": "ce1464354ecdd6f57cd380ba714399d564393f92cb93fc4ce6099089b749c104",
+    "ring-selected-identities.json": "5cdccf795f18e6e1e61b97169afe415015b0cb0e624c45e79999637587fcddad",
+    "runner-retention-working-tree.diff": "850a813b0835c4b1d2cd20e77f5bf044ac3afa0201308242ea4b3eda00a28d0c"
+  }
+}

@@ -14,7 +14,40 @@
 
 ## 阅读顺序
 
-材料和清单由本检查点之后的资料提交补齐。先读本页与 findings / manifest，再根据具体疑点读取见证及计算方法，最后核对正式源码相关函数。
+先读本页、[findings.md](findings.md)、[manifest.json](manifest.json)，再读取下列数字见证。方法源码按具体疑点阅读，不一次加载全部代码。
+
+|材料|用途|
+|---|---|
+|[physical-negative.json](physical-negative.json)|独立静默标签、实际路由、42/4/48/56、正式权限0、保存/性能边界|
+|[confirmation-witnesses.json](confirmation-witnesses.json)|四条确认链实际Host字段，资格计数及原始源身份|
+|[qualification-result.json](qualification-result.json)、[qualification-witnesses.json](qualification-witnesses.json)|17帧标量复算，12个确认帧的主窗口及alternative完整合法域统计|
+|[baseline-witnesses.json](baseline-witnesses.json)|五个基线来源、冻结事件、三类资格分支见证|
+|[locked-arm-ablation.json](locked-arm-ablation.json)、[诊断diff](locked-arm-diagnostic.diff)|第一臂消融仍失败且软件49→48，未接产品|
+|[aec-original-replay.json](aec-original-replay.json)|未改AEC的完整clean/linear逐位复现与内部状态|
+|[ring-identity-result.json](ring-identity-result.json)、[31块身份](ring-selected-identities.json)|实际环形写读位置、已到达样本、锚点时间；不是完整FIR声学对齐证明|
+|[reset-cause-result.json](reset-cause-result.json)、[callback-order-result.json](callback-order-result.json)|5572事件算术一致、批次到达/重置及未证明的阻塞因果|
+|[paired-scheduling-protocol.json](paired-scheduling-protocol.json)、[paired-scheduling-result.json](paired-scheduling-result.json)、[观察不扰动证明](paired-stats-observer.json)|一次冻结排程对照、原Host时序事后41/3/104/110，停止扩大|
+|[publication-provenance.json](publication-provenance.json)|本地原件哈希及每份发布材料的转换说明|
+|[Runner工作区补丁](runner-retention-working-tree.diff)|尚未产品提交的保存修复；请基于产品基线核对diff，不能称已在正式源码生效|
+
+方法快照：`qualification-scalar-audit.py.txt`、`ring-identity-audit.py.txt`、`reset-cause-audit.py.txt`、`ring-logger.diff`、`paired-scheduling.py.txt`、`paired-assessment.py.txt`。它们保留运算/插桩逻辑，路径替换为匿名占位符，仅供审核；远端没有所需PCM，不能用它们冒充已运行样本复算。`ring-logger.diff`基于固定上游，不是产品改动。`findings.md`保留的本地资产名应按本表找对应发布件，不代表远端存在同名本地目录。
+
+## 源码首读范围与修复要求
+
+实际阅读 `MacSpeechAcousticEchoHost.swift` 的 classifyCapture、timingMatchSupportsEchoAssociation、updateTimingLock、updateResidualEchoBaseline、adaptive/immediate double-talk、alternative、三帧确认和pre-roll/span源身份。再核对 `MacSpeechAudioCapture.swift` 的tap尺寸与两路送入顺序、`MacSpeechWebRTCAECProcessor.swift`、`AftelleAECBridge.mm`的输出/延迟契约，以及 `RecordedAcousticReplay.swift` 的评价归账。
+
+希望复审者输出一份函数级最小伪diff、因果输入、状态生命周期、独立人声保护与可证伪反例。没有足够支持时输出NO_PATCH并指定一个最小无声实验。不要把“索引计算一致”扩大为“方案不可行”，也不要把单项改善扩大为“整体必然可行”。
+
+最低保护：实体负控错误near/double资格与确认均0，分别统计Gate/源span，不用HAL或正式权限guard掩盖；软件固定源mask raw[164779,320779)、clean[165211,321211)，保持原49资格/165转发并检查起音/有效PCM。后续候选需要因果可用时间和目标Mac性能检查；软件通过后仍需要真人长句/约400ms短句关键验收。本轮排程对照触发负控停止条件，未扩大到软件正控。
+
+不重开D2、水印、AudioSeal、通用VAD、HPF变体、固定110ms提示；不调阈值、不用手机评价真值当运行时输入。保持现有WebRTC路线，不直接切Apple。
+
+## 发布验证
+
+- 本次只新增文档、脱敏JSON和诊断方法/工作区diff快照；正式产品源码没有修改。
+- 原实体包27个文件及归档原件均重核哈希一致；新材料的数值与本地来源一致，清单逐文件SHA-256见manifest。
+- Runner补丁的旧文件hash、工作区hash与diff已绑定；工作区仍保留该修改。当前缺SwiftFormat/SwiftLint，未将该产品修改提交。完整App构建和Host回归本次NOT_RUN（文档发布）；以前的实际构建/实体保存见运行身份，不能冒充本次重测。
+- 不上传PCM、私人人声、真实DR、binary、secret或用户绝对路径；本地原资产保留。
 
 ## 审查边界
 

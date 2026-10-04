@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "verdict": "REJECTED_AS_SUFFICIENT_REPAIR",
+  "test3_decision": "BLOCKED",
+  "product_patch": "NO_PATCH",
+  "original": {
+    "qualified_source_frames": 42,
+    "qualification_by_branch": {
+      "adaptive_double_talk": 24,
+      "immediate_double_talk": 10,
+      "low_correlation_near_end": 8
+    },
+    "gate_open_frames": 48,
+    "gate_openings": [
+      374,
+      974,
+      1016,
+      1065
+    ],
+    "unique_unsilenced_playback_source_spans": 56
+  },
+  "retrospective_paired": {
+    "qualified_source_frames": 41,
+    "qualification_by_branch": {
+      "adaptive_double_talk": 25,
+      "immediate_double_talk": 10,
+      "low_correlation_near_end": 6
+    },
+    "gate_open_frames": 104,
+    "gate_openings": [
+      232,
+      500,
+      630
+    ],
+    "unique_unsilenced_playback_source_spans": 110
+  },
+  "retrospective_host_deterministic": true,
+  "paired_internal_resets": 2,
+  "paired_nonstartup_internal_resets": 0,
+  "observed_arrival_wait_max_ms": 126.380375,
+  "source_frames_waited_for_later_arrival": 229,
+  "original_four_triplet_clean_signal": [
+    {
+      "source_frames": [
+        372,
+        374
+      ],
+      "original_clean_rms": 0.059132912339836426,
+      "paired_clean_rms": 0.004223586470302098
+    },
+    {
+      "source_frames": [
+        972,
+        974
+      ],
+      "original_clean_rms": 0.11874063622092731,
+      "paired_clean_rms": 0.0781530229828261
+    },
+    {
+      "source_frames": [
+        1014,
+        1016
+      ],
+      "original_clean_rms": 0.016214451876862726,
+      "paired_clean_rms": 0.00012668677126436136
+    },
+    {
+      "source_frames": [
+        1063,
+        1065
+      ],
+      "original_clean_rms": 0.11785313156616982,
+      "paired_clean_rms": 0.016672208631017923
+    }
+  ],
+  "inputs_preserved": true,
+  "actual_formal_runtime_actions": 0,
+  "software_positive_trial": "NOT_RUN_BY_PREREGISTERED_NEGATIVE_STOP",
+  "limitations": [
+    "This is a scheduling counterfactual on physical recorded input, not a new live physical acceptance",
+    "Host reference history and control timing are original; source-indexed new DSP stats are observed but decisions are retrospective, not validated causal availability times",
+    "Waiting is calculated from recorded callback-entry times. New scheduler/DSP cost and original DSP cost are not compared; actual new decision latency is unmeasured",
+    "Removing excess resets alone is insufficient for current source qualification; this does not reject all possible scheduling repairs"
+  ]
+}

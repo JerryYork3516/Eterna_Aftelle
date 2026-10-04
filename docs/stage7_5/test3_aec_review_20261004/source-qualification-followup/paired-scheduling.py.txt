@@ -1,0 +1,143 @@
+import collections
+import ctypes as C
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path('LOCAL_REPOSITORY')
+WORK = Path(__file__).resolve().parent
+protocol = json.loads((WORK / 'protocol.json').read_text())
+for path, h in protocol['input_hashes'].items():
+    assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == h, path
+SOURCE = Path(protocol['source'])
+OUT = WORK / 'paired-aec-with-stats'
+assert not OUT.exists()
+OUT.mkdir()
+for name, file in [('RENDER_DUMP', 'render16.pcm'), ('CAPTURE_DUMP', 'capture16.pcm'),
+                   ('X_DUMP', 'aligned-blocks.bin'), ('INTERNAL_WITNESS', 'block-witness.csv'),
+                   ('MATCHED_WITNESS', 'matched.csv'), ('AGGREGATE_WITNESS', 'aggregate.csv'),
+                   ('CONTROLLER_WITNESS', 'controller.csv')]:
+    os.environ['AFTELLE_AEC3_' + name] = str(OUT / file)
+for name, file in [('WRITE', 'ring-write.csv'), ('PAYLOAD', 'ring-payload.bin'), ('READ', 'ring-read.csv'), ('RESET', 'ring-reset.csv')]:
+    os.environ['AFTELLE_RING_' + name] = str(OUT / file)
+
+lib = C.CDLL(protocol['library'])
+p, f = C.c_void_p, C.POINTER(C.c_float)
+def bind(name, arguments, result=C.c_int):
+    function = getattr(lib, name)
+    function.argtypes, function.restype = arguments, result
+    return function
+
+create = bind('AftelleAECBridgeCreate', [C.POINTER(p)])
+configure = bind('AftelleAECBridgeConfigure', [p, C.c_int32, C.c_int32, C.c_size_t])
+set_delay = bind('AftelleAECBridgeSetDelayMs', [p, C.c_int32])
+render = bind('AftelleAECBridgeProcessRender', [p, f, C.c_size_t])
+capture = bind('AftelleAECBridgeProcessCaptureWithLinearOutput', [p, f, f, C.c_size_t, f, C.c_size_t])
+destroy = bind('AftelleAECBridgeDestroy', [p], None)
+class Stats(C.Structure):
+    _fields_ = [('enabled', C.c_int32), ('active', C.c_int32), ('estimated_delay_ms', C.c_int32), ('erl_db', C.c_double), ('erle_db', C.c_double)]
+get_stats = bind('AftelleAECBridgeGetStats', [p, C.POINTER(Stats)])
+output_stats = []
+bridge = p()
+assert create(C.byref(bridge)) == configure(bridge, 48000, 1, 480) == 0
+
+def j(name):
+    return json.loads((SOURCE / name).read_text())
+
+calls, controls = j('audio-calls.json'), j('control-events.json')
+frames = {k: j(k + '-frames.json') for k in ['capture', 'render']}
+streams = {k: np.fromfile(SOURCE / n, dtype='<f4') for k, n in [
+    ('capture', 'raw-mic-48k.f32le.pcm'), ('render', 'render-48k.f32le.pcm')]}
+fifos = {k: np.empty(0, dtype='<f4') for k in streams}
+indices = dict.fromkeys(streams, 0)
+offsets = dict.fromkeys(streams, 0)
+pending = {k: collections.deque() for k in streams}
+fed = {k: [] for k in streams}
+clean, linear, dispatch = [], [], []
+duration_ms, delay_ms = 0, 0
+
+def capture_one(item, ordinal, paired_render=None):
+    index, frame, arrival = item
+    assert index == len(clean)
+    output, low = np.zeros(480, dtype='<f4'), np.zeros(160, dtype='<f4')
+    assert capture(bridge, frame.ctypes.data_as(f), output.ctypes.data_as(f), 480, low.ctypes.data_as(f), 160) == 0
+    assert np.isfinite(output).all() and np.isfinite(low).all()
+    fed['capture'].append(frame)
+    clean.append(output)
+    linear.append(low)
+    stat = Stats()
+    assert get_stats(bridge, C.byref(stat)) == 0
+    output_stats.append({'enabled': bool(stat.enabled), 'active': bool(stat.active), 'estimatedDelayMilliseconds': stat.estimated_delay_ms, 'erlDecibels': stat.erl_db, 'erleDecibels': stat.erle_db})
+    dispatch.append({'source_capture_frame': index + 1, 'capture_arrived_ordinal': arrival,
+        'processing_ordinal': ordinal, 'paired_render_frame': None if paired_render is None else paired_render[0] + 1,
+        'render_arrived_ordinal': None if paired_render is None else paired_render[2], 'current_delay_hint_ms': delay_ms,
+        'terminal_unmatched_capture': paired_render is None})
+    assert arrival <= ordinal and (paired_render is None or paired_render[2] <= ordinal)
+
+def drain(ordinal):
+    while pending['render'] and pending['capture']:
+        rr, cc = pending['render'].popleft(), pending['capture'].popleft()
+        assert rr[0] == len(fed['render'])
+        assert render(bridge, rr[1].ctypes.data_as(f), 480) == 0
+        fed['render'].append(rr[1])
+        capture_one(cc, ordinal, rr)
+
+try:
+    for event in sorted(calls + controls, key=lambda row: row['ordinal']):
+        kind, ordinal = event['kind'], event['ordinal']
+        if kind == 'capture_processing_duration':
+            duration_ms = event['captureProcessingDurationNanoseconds'] / 1e6
+            continue
+        if kind == 'delay_updated':
+            presentation_ms = math.floor(1000 * (max(0, event['outputPresentationLatencySeconds']) + max(0, event['capturePresentationLatencySeconds'])) + 0.5)
+            updated = math.floor(presentation_ms + max(0, duration_ms) + 0.5)
+            if updated != delay_ms:
+                delay_ms = updated
+                assert set_delay(bridge, delay_ms) == 0
+            continue
+        if kind == 'playback_started':
+            fifos = {k: np.empty(0, dtype='<f4') for k in streams}
+            continue
+        if kind == 'playback_completed':
+            fifos['capture'] = np.empty(0, dtype='<f4')
+            continue
+        assert kind in streams and event['sampleOffset'] == offsets[kind]
+        chunk = streams[kind][offsets[kind]:offsets[kind] + event['sampleCount']]
+        assert len(chunk) == event['sampleCount']
+        offsets[kind] += len(chunk)
+        fifos[kind] = np.concatenate([fifos[kind], chunk])
+        count = len(fifos[kind]) // 480
+        assert count == event['frameCount'] and indices[kind] == event['firstFrameIndex']
+        for slot in range(count):
+            index = indices[kind]
+            frame = np.ascontiguousarray(fifos[kind][slot * 480:(slot + 1) * 480])
+            assert frames[kind][index]['callOrdinal'] == ordinal
+            pending[kind].append((index, frame, ordinal))
+            indices[kind] += 1
+            drain(ordinal)
+        fifos[kind] = fifos[kind][count * 480:].copy()
+    assert not pending['render'] and len(pending['capture']) == 1
+    capture_one(pending['capture'].popleft(), ordinal)
+    assert indices == {'capture': 1120, 'render': 1119}
+    assert all(len(x) == 0 for x in fifos.values())
+    assert np.array_equal(np.concatenate(fed['capture']).view('<u4'), streams['capture'].view('<u4'))
+    source_render = np.concatenate([streams['render'][:39 * 480], streams['render'][39 * 480 + 120:]])
+    assert np.array_equal(np.concatenate(fed['render']).view('<u4'), source_render.view('<u4'))
+finally:
+    destroy(bridge)
+C.CDLL(None).fflush(C.c_void_p(0))
+np.concatenate(clean).tofile(OUT / 'clean-48k.f32le.pcm')
+np.concatenate(linear).tofile(OUT / 'linear-16k.f32le.pcm')
+(OUT / 'dispatch-ledger.json').write_text(json.dumps(dispatch, indent=2) + '\n')
+(OUT / 'input-identity-guard.json').write_text(json.dumps({'schema_version': 1,
+    'raw_input_all_samples_bit_exact': True, 'render_input_all_real_frame_samples_bit_exact': True,
+    'original_render_fifo_boundary_discard_samples': 120, 'source_capture_frames': len(clean),
+    'source_render_frames': len(fed['render']), 'processing_uses_only_arrived_frames': True,
+    'formal_or_causal_gate_admission': False, 'terminal_unmatched_capture_frames': 1}, indent=2) + '\n')
+print('Paired AEC completed; inputs preserved, availability ledger saved. No product admission.')
+
+(OUT / 'output-stats.json').write_text(json.dumps(output_stats, indent=2) + '\n')

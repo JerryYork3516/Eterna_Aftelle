@@ -1,0 +1,168 @@
+import json
+import hashlib
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path('LOCAL_REPOSITORY')
+WORK = Path(__file__).resolve().parent
+CASE = WORK.parent / 'evidence/webrtc_physical_echo_only'
+
+def read(p):
+    return json.loads(p.read_text())
+
+def sha(p):
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+def save(name, value):
+    p = WORK / name
+    assert not p.exists(), 'Never overwrite a completed audit'
+    p.write_text(json.dumps(value, indent=2, allow_nan=False, default=lambda x: x.item() if isinstance(x, np.generic) else str(x)) + '\n')
+
+protocol = read(WORK / 'protocol.json')
+for path, expected in protocol['input_hashes'].items():
+    assert sha(ROOT / path) == expected, 'INPUT_CHANGED: ' + path
+save('calculator-binding.json', {'schema_version': 1, 'protocol_sha256': sha(WORK / 'protocol.json'), 'calculator_sha256': sha(Path(__file__)), 'numpy_version': np.__version__})
+rows = read(CASE / 'capture-frames.json')
+render_rows = read(CASE / 'render-frames.json')
+calls = read(CASE / 'audio-calls.json')
+controls = read(CASE / 'control-events.json')
+streams = {k: np.fromfile(CASE / f, '<f4') for k, f in {
+    'raw': 'raw-mic-48k.f32le.pcm', 'render': 'render-48k.f32le.pcm',
+    'clean': 'clean-48k.f32le.pcm', 'linear': 'linear-16k.f32le.pcm'
+}.items()}
+selected = set(protocol['first_lock_context_frames']) | {i for group in protocol['confirmation_frames'] for i in group}
+histories, raw_frames = {}, {}
+history = []
+fifo = {'render': np.empty(0, np.float32), 'capture': np.empty(0, np.float32)}
+discard_events = []
+for event in sorted(calls + controls, key=lambda x: x['ordinal']):
+    kind = event['kind']
+    if kind in ('playback_started', 'playback_completed', 'playback_stopped'):
+        discard_events.append({'ordinal': event['ordinal'], 'kind': kind, 'render_samples': len(fifo['render']) if kind == 'playback_started' else 0, 'capture_samples': len(fifo['capture'])})
+        fifo['capture'] = np.empty(0, np.float32)
+        if kind == 'playback_started':
+            fifo['render'] = np.empty(0, np.float32)
+        history = []
+    elif kind in ('render', 'capture'):
+        stream = streams['render' if kind == 'render' else 'raw']
+        begin, count = event['sampleOffset'], event['sampleCount']
+        assert begin + count <= len(stream)
+        fifo[kind] = np.concatenate((fifo[kind], stream[begin:begin + count]))
+        assert len(fifo[kind]) // 480 == event['frameCount'], 'FRAME_COUNT_MISMATCH'
+        for j in range(event['frameCount']):
+            samples = fifo[kind][:480].copy()
+            fifo[kind] = fifo[kind][480:]
+            index = event['firstFrameIndex'] + j
+            row = (render_rows if kind == 'render' else rows)[index]
+            assert row['callOrdinal'] == event['ordinal'] and row['frameInCall'] == j
+            assert row['renderFrameIndex' if kind == 'render' else 'captureFrameIndex'] == index + 1
+            if kind == 'render':
+                history.append((row, samples))
+                history = history[-51:]
+            elif index + 1 in selected:
+                histories[index + 1] = list(history)
+                raw_frames[index + 1] = samples
+assert len(histories) == len(selected)
+
+def metrics(y, x):
+    y, x = np.asarray(y, np.float64), np.asarray(x, np.float64)
+    assert len(y) == len(x) and np.isfinite(x).all() and np.isfinite(y).all()
+    xc, yc = x - x.mean(), y - y.mean()
+    xx, yy, xy = float(xc @ xc), float(yc @ yc), float(xc @ yc)
+    return {'correlation': min(abs(xy) / np.sqrt(xx * yy), 1) if xx > 0 and yy > 0 else 0.0,
+            'rms': float(np.sqrt(x @ x / len(x))), 'reference_energy': xx,
+            'unexplained_energy': max(0.0, yy - xy * xy / xx) if xx > 0 else yy}
+
+def downsample(x):
+    x = np.asarray(x, np.float32).reshape(-1, 3)
+    return ((x[:, 0] + x[:, 1]) + x[:, 2]) / np.float32(3)
+
+def contiguous(history, start):
+    if start < 0 or start + 480 > len(history) * 480:
+        return False
+    first, last = start // 480, (start + 479) // 480
+    if first == last:
+        return True
+    a, b = history[first][0]['hostTimeNanoseconds'], history[last][0]['hostTimeNanoseconds']
+    return b > a and abs(b - a - 10_000_000) <= 2_000_000_000 // 48000
+
+def valid(history, start, captime, squares, energy):
+    if squares < .005**2 * 480 or energy <= squares * (64 * np.finfo(np.float64).eps * len(history) * 480) or not contiguous(history, start):
+        return False
+    first, offset = divmod(start, 480)
+    last = (start + 479) // 480
+    timestamp = history[first][0]['hostTimeNanoseconds'] + offset * 1_000_000_000 // 48000
+    return 0 <= captime - timestamp <= 500_000_000 and (first == last or history[last][0]['hostTimeNanoseconds'] <= captime + (480 - offset) * 1_000_000_000 // 48000)
+
+results = []
+max_diff = 0.0
+for sid in sorted(selected):
+    row, hist = rows[sid - 1], histories[sid]
+    ref = np.concatenate([s for _, s in hist])
+    captime = row['captureHostTimeNanoseconds']
+    raw = raw_frames[sid]
+    clean = streams['clean'][row['aecCleanSampleOffset']:row['aecCleanSampleOffset'] + 480]
+    linear = streams['linear'][row['aecLinearSampleOffset']:row['aecLinearSampleOffset'] + 160]
+    match_frame = row.get('classificationRenderFrameHostTimeNanoseconds')
+    assert row['classificationMatchAvailable'] and match_frame is not None
+    frame_index = next(i for i, (r, _) in enumerate(hist) if r['hostTimeNanoseconds'] == match_frame)
+    start = frame_index * 480 + row['classificationRenderSampleOffset']
+    raw_m = metrics(raw, ref[start:start + 480])
+    clean_m = metrics(clean, ref[start - 432:start - 432 + 480])
+    linear_m = metrics(linear, downsample(ref[start - 216:start - 216 + 480]))
+    pl = metrics(downsample(clean)[72:], linear[:-72])['correlation']
+    actual = {'classificationCorrelation': raw_m['correlation'], 'residualRenderCorrelation': clean_m['correlation'], 'linearRenderCorrelation': linear_m['correlation'], 'processedLinearCorrelation': pl, 'classificationRenderRMS': raw_m['rms']}
+    diffs = {k: abs(v - row[k]) for k, v in actual.items()}
+    max_diff = max(max_diff, max(diffs.values()))
+    assert max(diffs.values()) <= protocol['absolute_scalar_numeric_tolerance'], (sid, diffs)
+    assert contiguous(hist, start - 432) and contiguous(hist, start - 216)
+    # Independent complete integer-domain correlation. Host prefix/convolution buffers are not reused.
+    dref = ref.astype(np.float64)
+    r = raw.astype(np.float64); rc = r - r.mean(); re = float(rc @ rc)
+    sums = np.concatenate(([0.0], np.cumsum(dref)))
+    squares = np.concatenate(([0.0], np.cumsum(dref * dref)))
+    ws = sums[480:] - sums[:-480]
+    wq = squares[480:] - squares[:-480]
+    we = wq - ws * ws / 480
+    products = np.correlate(dref, rc, mode='valid')
+    corr = np.sqrt(np.maximum(0, products * products / np.maximum(we, 1e-300) / re))
+    legal = [i for i in range(len(products)) if valid(hist, i, captime, wq[i], we[i])]
+    assert start in legal
+    best = max(legal, key=lambda i: corr[i])
+    direct_best = metrics(raw, ref[best:best + 480])
+    assert abs(direct_best['correlation'] - corr[best]) <= 1e-6
+    raw_candidates = [i for i in legal if corr[i] >= .7]
+    minimum_fit = min(np.sqrt(max(0.0, re - products[i]**2 / we[i]) / 480) for i in legal)
+    raw_fit_witnesses = [i for i in raw_candidates if np.sqrt(max(0.0, re - products[i]**2 / we[i]) / 480) < .012]
+    counts = {'legal': len(legal), 'raw_correlation_ge_0_7': len(raw_candidates), 'delayed_contiguous': 0, 'clean_correlation_ge_0_55': 0, 'clean_unexplained_rms_lt_0_012': 0, 'linear_correlation_ge_0_55': 0, 'linear_unexplained_rms_lt_0_012': 0}
+    alternative_witnesses = []
+    for i in raw_candidates:
+        cs, ls = i - 432, i - 216
+        if not contiguous(hist, cs) or not contiguous(hist, ls):
+            continue
+        counts['delayed_contiguous'] += 1
+        cm = metrics(clean, ref[cs:cs + 480])
+        if cm['reference_energy'] <= 0 or cm['correlation'] < .55:
+            continue
+        counts['clean_correlation_ge_0_55'] += 1
+        if cm['unexplained_energy'] >= .012**2 * 480:
+            continue
+        counts['clean_unexplained_rms_lt_0_012'] += 1
+        lm = metrics(linear, downsample(ref[ls:ls + 480]))
+        if lm['reference_energy'] <= 0 or lm['correlation'] < .55:
+            continue
+        counts['linear_correlation_ge_0_55'] += 1
+        if lm['unexplained_energy'] >= .012**2 * 160:
+            continue
+        counts['linear_unexplained_rms_lt_0_012'] += 1
+        alternative_witnesses.append(i)
+    assert not alternative_witnesses, 'ALTERNATIVE_SCALAR_CONTRADICTS_ACTUAL_BRANCH'
+    association_support = actual['classificationCorrelation'] >= .35 and ((row['processedCaptureRMS'] < .012 and row['linearAECOutputRMS'] < .012) or (actual['residualRenderCorrelation'] >= .55 and actual['linearRenderCorrelation'] >= .55))
+    best_frame, best_offset = divmod(best, 480)
+    best_time = hist[best_frame][0]['hostTimeNanoseconds'] + best_offset * 1_000_000_000 // 48000
+    results.append({'source_frame': sid, 'capture_sample_range': [row['aecCleanSampleOffset'], row['aecCleanSampleOffset'] + 480], 'capture_call_ordinal': row['callOrdinal'], 'capture_time_ns': captime, 'history_frame_ids': [h[0]['renderFrameIndex'] for h in hist], 'history_call_ordinals': sorted(set(h[0]['callOrdinal'] for h in hist)), 'actual_main_window': {'start_in_actual_history': start, 'render_frame_id': hist[frame_index][0]['renderFrameIndex'], 'render_sample_offset': row['classificationRenderSampleOffset'], 'delay_ms': row['classificationDelayMilliseconds'], 'origin': row['classificationAssociationOrigin']}, 'scalar_main_statistics': actual, 'scalar_absolute_differences': diffs, 'association_support': association_support, 'lock_survives': row['sourceAlignmentLocked'], 'lock_misses_after_update': row['timingLockConsecutiveMissFrameCount'], 'baseline_count': row['residualEchoBaselineFrameCount'], 'actual_branch': row['classificationBranch'], 'actual_classification': row['inputClassification'], 'gate_open': row['sourceGateOpen'], 'all_legal_domain_peak': {'correlation': direct_best['correlation'], 'start_in_history': best, 'render_frame_id': hist[best_frame][0]['renderFrameIndex'], 'offset': best_offset, 'delay_ms': (captime - best_time) / 1e6, 'raw_centered_fit_residual_rms': np.sqrt(direct_best['unexplained_energy'] / 480)}, 'alternative_stage_counts': counts, 'alternative_return': False, 'raw_fit_candidate_witness_count': len(raw_fit_witnesses), 'minimum_legal_raw_fit_rms': minimum_fit})
+summary = {'schema_version': 1, 'main_scalar_statistics_match': True, 'maximum_absolute_difference': max_diff, 'audited_frames': len(results), 'confirmation_frames': 12, 'confirmation_frames_with_alternative_witness': sum(bool(r['alternative_return']) for r in results if r['source_frame'] not in (368, 369, 370, 371, 375)), 'raw_fit_candidate': 'REJECTED: no witness in 12 confirmation frames', 'fifo_reset_accounted': discard_events, 'input_hashes_still_match': all(sha(ROOT / p) == h for p, h in protocol['input_hashes'].items()), 'test3_decision': 'BLOCKED', 'product_patch': 'NO_PATCH', 'qualification_changes': 0, 'no_devices_or_AEC': True}
+save('scalar-witnesses.json', results)
+save('result.json', summary)
+print(json.dumps(summary, indent=2))

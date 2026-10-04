@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "frozen_at": "2026-10-04T08:57:55.419382+00:00",
+  "source": "LOCAL_RUN/evidence/webrtc_physical_echo_only",
+  "library": "LOCAL_RUN/aec3-reference-identity-01/ring-identity-01/ring-probe.dylib",
+  "input_hashes": {
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/audio-calls.json": "7bb12f83c838e9110c0c3aabeb7a82e69f4151bd560ed49b820b50f9a55b217e",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/control-events.json": "7ad3ca2f1420eda06e0274eb645a2336e0f566d417a92aca2d4677ffc83ad652",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/capture-frames.json": "be06a8fe2fc8a3cd838ff0660cac7d942124ce10eb42cf36c031592644787a2b",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/render-frames.json": "ef930db9c43c6d5df0743cda9fb85f4b7f59a0d88501672f3865f66ff559909b",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/raw-mic-48k.f32le.pcm": "bca8896a1d4e22a4c7566c1ea525c3e92948290b38d2f2283060cb5cd14780fb",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/render-48k.f32le.pcm": "de9eb873efa6cbec276f180f53e1b3a633ebd4e3040fc128016b77331403a5da",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/clean-48k.f32le.pcm": "c109f2ca8f55468c5e36ecc2f5e7210db7692d1e86023891a899769f6d93193e",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/linear-16k.f32le.pcm": "cd3b560bdb81a6f5342b9d91a9fd4bbc478613700cd8fd507c5df1852c5cf064",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/capture-callbacks.json": "45378399d2d3cd042b3a6658a72889f38890bf614c834573d36f3bb92694830d",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/evidence/webrtc_physical_echo_only/render-callbacks.json": "b95c1cea53facef8e2e09d61d74c4f40ab952e8f63ef006347b654e0f8834825",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/aec3-reference-identity-01/ring-identity-01/ring-probe.dylib": "4bfaa3aa2db131a4e1b557364a470f5e68be7f805ba7c64a21301313331c8f97",
+    ".build/test3-physical-echo-retained-20261004/run-d5711932/host-recorded-replay": "9fd38619cf96e92949c059e380e5188e5261447b5df0fa4202b3d35396703772",
+    "apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift": "51cbfbb9f6b2aefedc8af37c74b8892a68d2919bf260fcc082a07ca287a1df85"
+  },
+  "hypothesis": "Causal per-channel FIFO paired frame consumption may remove arrival-order excess-render resets. This is not a proven API bug or product patch.",
+  "single_change": "Buffer already-arrived complete10ms render/capture frames, feed one oldest render followed by one oldest capture whenever both exist; preserve intra-channel order, all real samples and existing FIFO reset/SetDelay sequence. Flush final unmatched capture only at recording end; no input injection or label-driven pairing.",
+  "controls": "Use original recorded available SetDelay control sequence; not an independently optimized hint.",
+  "evaluation": "Same labelled pure-echo input. Count internal resets and current Host retrospective source qualifications using new saved AEC outputs. Host diagnostic keeps original timeline, so delayed-decision admission is NOT established.",
+  "stop": "Any nonzero pure-echo qualification/confirmation => reject scheduling as a sufficient repair; do not run parameter variants. If zero, require causal decision-timeline reconstruction plus frozen software positives before candidate admission.",
+  "formal_runtime_allowed": false,
+  "device_playback": false,
+  "device_capture": false,
+  "product_patch": "NONE",
+  "test3_decision": "BLOCKED"
+}

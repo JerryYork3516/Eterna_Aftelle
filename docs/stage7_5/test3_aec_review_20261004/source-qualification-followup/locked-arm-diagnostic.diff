@@ -1,0 +1,12 @@
+--- LOCAL_REPOSITORY/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift
++++ ignored/diagnostic-only/MacSpeechAcousticEchoHost.swift
+@@ -2912,7 +2912,8 @@
+             freezeResidualEchoBaseline()
+         } else if (timingMatch.associationOrigin == .historicalDiscovery
+                     && residualEchoBaselineFrameCount == 0
+-                    || timingLockedDelayMilliseconds != nil),
++                    || (timingLockedDelayMilliseconds != nil
++                        && timingMatchSupportsEchoAssociation(timingMatch))),
+                   timingMatch.correlation
+                     <= Self.maximumNearEndCorrelation,
+                   residualCorrelation <= Self.maximumNearEndCorrelation,

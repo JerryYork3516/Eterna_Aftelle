@@ -1,0 +1,119 @@
+import csv
+import hashlib
+import json
+import struct
+from pathlib import Path
+
+ROOT = Path('LOCAL_REPOSITORY')
+WORK = Path(__file__).resolve().parent
+PROBE = WORK.parent / 'ring_probe'
+SOURCE = WORK.parent.parent / 'evidence/webrtc_physical_echo_only'
+protocol = json.loads((WORK / 'protocol.json').read_text())
+for name, expected in protocol['input_hashes'].items():
+    assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == expected, name
+assert json.loads((PROBE / 'bit-exact-guard.json').read_text())['interpretation_allowed']
+
+def rows(name):
+    with (PROBE / name).open() as f:
+        return [{k: (v if k == 'buffer' else int(v)) for k, v in r.items()}
+                for r in csv.DictReader(f)]
+
+writes, reads, resets = [rows('ring-' + name + '.csv') for name in ['write', 'read', 'reset']]
+render = (PROBE / 'ring-probe-render16.pcm').read_bytes()
+capture = (PROBE / 'ring-probe-capture16.pcm').read_bytes()
+payload = (PROBE / 'ring-payload.bin').read_bytes()
+aligned = (PROBE / 'ring-probe-aligned-blocks.bin').read_bytes()
+rf = json.loads((SOURCE / 'render-frames.json').read_text())
+cf = json.loads((SOURCE / 'capture-frames.json').read_text())
+controls = json.loads((SOURCE / 'control-events.json').read_text())
+assert not any(e['kind'] == 'route_reset' for e in controls)
+assert len({r['buffer'] for r in writes + reads + resets}) == 1
+assert len(render) == len(rf) * 160 * 4
+assert len(capture) == len(cf) * 160 * 4
+assert len(payload) == len(writes) * 256
+assert len(aligned) == len(reads) * 520
+consumed_render_frames = sum(r['callOrdinal'] < cf[-1]['callOrdinal'] for r in rf)
+assert len(writes) == consumed_render_frames * 160 // 64
+assert len(rf) - consumed_render_frames == 10
+assert len(reads) == len(capture) // 256
+for i, w in enumerate(writes):
+    assert w['insert'] == i + 1
+    w['payload_index'] = i
+    assert payload[i * 256:(i + 1) * 256] == render[i * 256:(i + 1) * 256], ('write-payload', i)
+for i, r in enumerate(reads):
+    frame, block = struct.unpack_from('<II', aligned, i * 520)
+    assert frame == r['capture_frame'] and block == r['block'] == i + 1
+    assert aligned[i * 520 + 264:(i + 1) * 520] == capture[i * 256:(i + 1) * 256], ('capture-payload', i)
+    r['aligned_index'] = i
+
+events = sorted([(r['event'], kind, r) for kind, rr in [('write', writes), ('read', reads), ('reset', resets)] for r in rr])
+assert [e[0] for e in events] == list(range(1, len(events) + 1))
+latest, epochs, identity = {}, {}, []
+for seq, kind, e in events:
+    buffer = e['buffer']
+    if kind == 'reset':
+        epochs[buffer] = epochs.get(buffer, -1) + 1
+        continue
+    epoch = epochs[buffer]
+    if kind == 'write':
+        latest[(buffer, e['write'])] = {**e, 'epoch': epoch}
+        continue
+    write = latest.get((buffer, e['read']))
+    assert write is not None, ('unwritten-read', seq)
+    pi, ai = write['payload_index'], e['aligned_index']
+    assert aligned[ai * 520 + 8:ai * 520 + 264] == payload[pi * 256:(pi + 1) * 256], ('mapped-x', seq)
+    xi, yi = pi * 64, ai * 64
+    first_r, last_r = rf[xi // 160], rf[(xi + 63) // 160]
+    first_c, last_c = cf[yi // 160], cf[(yi + 63) // 160]
+    processing = cf[e['capture_frame'] - 1]
+    render_arrived = max(first_r['callOrdinal'], last_r['callOrdinal']) < processing['callOrdinal']
+    capture_arrived = max(first_c['callOrdinal'], last_c['callOrdinal']) <= processing['callOrdinal']
+    rt = first_r['hostTimeNanoseconds'] + (xi % 160) * 62500
+    ct = first_c['captureHostTimeNanoseconds'] + (yi % 160) * 62500
+    identity.append({'capture_processing_frame': e['capture_frame'], 'aec_block': e['block'],
+        'read_event': seq, 'read_slot': e['read'], 'last_write_event': write['event'],
+        'render_insert_ordinal': write['insert'], 'write_epoch': write['epoch'], 'read_epoch': epoch,
+        'crossed_reset': write['epoch'] != epoch,
+        'render_band0_start': xi, 'capture_band0_start': yi,
+        'render_input_frames': [first_r['renderFrameIndex'], last_r['renderFrameIndex']],
+        'capture_input_frames': [first_c['captureFrameIndex'], last_c['captureFrameIndex']],
+        'render_call_ordinals': [first_r['callOrdinal'], last_r['callOrdinal']],
+        'processing_capture_call_ordinal': processing['callOrdinal'],
+        'render_already_arrived': render_arrived, 'capture_already_arrived': capture_arrived,
+        'recorded_host_time_lag_ms': (ct - rt) / 1e6,
+        'input_band_index_difference_ms': (yi - xi) / 16,
+        'identity': 'VERIFIED_RING_WRITE_IDENTITY' if render_arrived and capture_arrived else 'FAILED_FUTURE_CALL_IDENTITY'})
+
+windows = []
+for first, last in protocol['evaluation_windows']:
+    selected = [r for r in identity if first <= r['capture_processing_frame'] <= last]
+    context = [r for r in identity if first - 20 <= r['capture_processing_frame'] <= last]
+    windows.append({'source_frames': [first, last], 'aec_blocks': len(selected),
+        'ring_verified_blocks': sum(r['identity'] == 'VERIFIED_RING_WRITE_IDENTITY' for r in selected),
+        'actual_render_input_frame_range': [min(r['render_input_frames'][0] for r in selected), max(r['render_input_frames'][1] for r in selected)],
+        'recorded_host_lag_ms': sorted({r['recorded_host_time_lag_ms'] for r in selected}),
+        'input_band_index_difference_ms': sorted({r['input_band_index_difference_ms'] for r in selected}),
+        'cross_reset_blocks': sum(r['crossed_reset'] for r in selected),
+        'context_cross_reset_blocks': sum(r['crossed_reset'] for r in context),
+        'context_future_call_blocks': sum(r['identity'] == 'FAILED_FUTURE_CALL_IDENTITY' for r in context),
+        'context_resets': [r for r in resets if first - 20 <= r['capture_frame'] <= last]})
+result = {'schema_version': 1, 'status': 'IDENTITY_VERIFIED_NO_PRODUCT_PATCH',
+    'full_clean_linear_bit_exact': True, 'writes': len(writes), 'reads': len(reads),
+    'ring_size': sorted({r['size'] for r in reads}), 'internal_resets': len(resets),
+    'consumed_render_frames': consumed_render_frames, 'terminal_queued_render_frames': len(rf) - consumed_render_frames,
+    'terminal_render_blocker_samples': consumed_render_frames * 160 % 64,
+    'all_write_payloads_bit_exact_input_band0': True, 'all_y_payloads_bit_exact_input_band0': True,
+    'all_actual_x_payloads_bit_exact_latest_preceding_same_slot_write': True,
+    'future_call_reads': sum(r['identity'] == 'FAILED_FUTURE_CALL_IDENTITY' for r in identity),
+    'all_run_cross_reset_reads': sum(r['crossed_reset'] for r in identity),
+    'all_run_negative_recorded_content_lag_reads': sum(r['recorded_host_time_lag_ms'] < 0 for r in identity),
+    'windows': windows, 'test3_decision': 'BLOCKED', 'product_patch': 'NO_PATCH',
+    'limitations': ['Ring source identity proves which already-arrived band0 samples GetBlock(0) read; it does not prove the entire adaptive FIR history or physical echo alignment',
+        'Shared non-atomic event counter is valid only for this serialized offline replay',
+        'Recorded Host sample/content times are preserved; their absolute relation to actual loudspeaker radiation was not independently measured',
+        'No human positive, realtime performance, or detector threshold change in this diagnostic']}
+for name, value in [('ring-identities.json', identity), ('result.json', result)]:
+    p = WORK / name
+    assert not p.exists()
+    p.write_text(json.dumps(value, indent=2) + '\n')
+print(json.dumps(result, indent=2))

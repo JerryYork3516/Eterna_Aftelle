@@ -1,0 +1,76 @@
+import csv
+import hashlib
+import json
+from pathlib import Path
+
+ROOT = Path('LOCAL_REPOSITORY')
+WORK = Path(__file__).resolve().parent
+PROBE = WORK.parent / 'ring_probe'
+EVENTS = WORK.parent / 'buffer_events_logged/buffer-events.csv'
+
+def csvrows(path):
+    with path.open() as f:
+        return [{k: (v if k in ['operation', 'buffer'] else int(v)) for k, v in r.items()}
+                for r in csv.DictReader(f)]
+
+writes, reads, resets = [csvrows(PROBE / ('ring-' + k + '.csv')) for k in ['write', 'read', 'reset']]
+events = csvrows(EVENTS)
+capture_events = {r['aec_capture_block']: r for r in events if r['operation'] == 'capture_prepare'}
+render_events = [r for r in events if r['operation'] == 'render_insert']
+assert len(render_events) == len(writes) and all(r['event'] == 0 for r in render_events)
+sequence = sorted([(r['event'], k, r) for k, rr in [('write', writes), ('read', reads), ('reset', resets)] for r in rr])
+occupancy, minimum, count = 0, 0, 0
+pending_reset = None
+points, predictions, causes = [], [], []
+for seq, kind, r in sequence:
+    if kind == 'reset':
+        if r['capture_frame'] <= 1:
+            occupancy, minimum, count = 1, 0, 0
+        else:
+            assert pending_reset is None
+            pending_reset = r
+        continue
+    if kind == 'write':
+        occupancy += 1
+        continue
+    pre = occupancy
+    minimum = min(minimum, occupancy)
+    count += 1
+    point = {'aec_block': r['block'], 'capture_frame': r['capture_frame'], 'pre_read_latency_blocks': pre}
+    points.append(point)
+    overrun = count >= 250 and minimum > 8
+    window_min = minimum
+    if count >= 250:
+        minimum, count = occupancy, 0
+    predicted = 2 if overrun else (1 if occupancy == 0 else 0)
+    actual = capture_events[r['block']]
+    assert actual['capture_frame'] == r['capture_frame'] and actual['event'] == predicted, (r, predicted, actual)
+    predictions.append({'aec_block': r['block'], 'predicted_event': predicted, 'actual_event': actual['event']})
+    if overrun:
+        assert pending_reset is not None and pending_reset['capture_frame'] == r['capture_frame']
+        window = points[-250:]
+        causes.append({'capture_frame': r['capture_frame'], 'aec_block': r['block'],
+            'kind': 'DETECT_EXCESS_RENDER_BLOCKS', 'reset_event': pending_reset['event'],
+            'pre_read_latency_blocks': pre, 'window_minimum_blocks': window_min,
+            'threshold_blocks': 8, 'window_range': [window[0]['aec_block'], window[-1]['aec_block']],
+            'window_latency_range_blocks': [min(p['pre_read_latency_blocks'] for p in window), max(p['pre_read_latency_blocks'] for p in window)],
+            'previous_read_slot': reads[r['block'] - 2]['read'], 'actual_read_slot': r['read'],
+            'read_extra_advance_blocks': (r['read'] - reads[r['block'] - 2]['read'] - 1) % r['size']})
+        occupancy, minimum, count, pending_reset = 1, 0, 0, None
+    else:
+        assert pending_reset is None
+        if occupancy > 0:
+            occupancy -= 1
+
+assert pending_reset is None
+result = {'schema_version': 1, 'status': 'EXISTING_INTERNAL_RULE_EXECUTION_CONFIRMED',
+    'buffer_event_comparisons': len(events), 'event_discrepancies': 0, 'overrun_causes': causes,
+    'upstream_internal_underrun_events': sum(r['event'] == 1 for r in capture_events.values()),
+    'host_io_underrun_is_different_metric': True, 'product_patch': 'NO_PATCH', 'test3_decision': 'BLOCKED',
+    'limitations': ['This explains internal reset identity and threshold arithmetic, not a proven illegal API call or full FIR acoustic misalignment',
+        'First two false source confirmations occur before last reset; suppressing resets alone is not a demonstrated repair']}
+for name, data in [('reset-cause-result.json', result), ('low-rate-occupancy.json', points)]:
+    p = WORK / name
+    assert not p.exists()
+    p.write_text(json.dumps(data, indent=2) + '\n')
+print(json.dumps(result, indent=2))

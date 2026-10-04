@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "clean_and_linear_bit_exact_first_trial": true,
+  "no_second_scheduling_variant": true
+}

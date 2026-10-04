@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "full_clean_linear_bit_exact": true,
+  "windows": [
+    {
+      "source_frames": [
+        372,
+        374
+      ],
+      "aec_blocks": 8,
+      "unique_arrived_aligned_blocks": 8,
+      "ambiguous_or_missing_blocks": 0,
+      "future_call_blocks": 0,
+      "aligned_host_lag_ms": [
+        99.843
+      ],
+      "controller_applied_blocks": [
+        4
+      ],
+      "fresh_delay_16k_samples": [
+        -1
+      ],
+      "held_delay_16k_samples": [
+        256
+      ],
+      "fresh_aggregator_raw_lags_ds_samples": [
+        -1
+      ],
+      "dominant_nearend_blocks": 7,
+      "usable_linear_blocks": 8,
+      "refined_echo_to_capture_power": 0.011989595038454126,
+      "refined_residual_to_capture_power": 0.9272057884291711,
+      "post_suppression_to_capture_power": 0.6244524955508808,
+      "median_suppressor_gain": 0.718741097,
+      "buffer_events_nonzero": [],
+      "controller_resets": []
+    },
+    {
+      "source_frames": [
+        972,
+        974
+      ],
+      "aec_blocks": 8,
+      "unique_arrived_aligned_blocks": 0,
+      "ambiguous_or_missing_blocks": 8,
+      "future_call_blocks": 0,
+      "aligned_host_lag_ms": [],
+      "controller_applied_blocks": [
+        4
+      ],
+      "fresh_delay_16k_samples": [
+        -1,
+        256
+      ],
+      "held_delay_16k_samples": [
+        256
+      ],
+      "fresh_aggregator_raw_lags_ds_samples": [
+        -1,
+        78
+      ],
+      "dominant_nearend_blocks": 8,
+      "usable_linear_blocks": 8,
+      "refined_echo_to_capture_power": 0.2938319027047895,
+      "refined_residual_to_capture_power": 0.5183573088736977,
+      "post_suppression_to_capture_power": 0.2100372918596014,
+      "median_suppressor_gain": 0.05579745905,
+      "buffer_events_nonzero": [],
+      "controller_resets": []
+    },
+    {
+      "source_frames": [
+        1014,
+        1016
+      ],
+      "aec_blocks": 8,
+      "unique_arrived_aligned_blocks": 0,
+      "ambiguous_or_missing_blocks": 8,
+      "future_call_blocks": 0,
+      "aligned_host_lag_ms": [],
+      "controller_applied_blocks": [
+        4
+      ],
+      "fresh_delay_16k_samples": [
+        -1
+      ],
+      "held_delay_16k_samples": [
+        256
+      ],
+      "fresh_aggregator_raw_lags_ds_samples": [
+        -1
+      ],
+      "dominant_nearend_blocks": 4,
+      "usable_linear_blocks": 0,
+      "refined_echo_to_capture_power": 0.004748346955917094,
+      "refined_residual_to_capture_power": 1.0029285820147242,
+      "post_suppression_to_capture_power": 0.007994188824544292,
+      "median_suppressor_gain": 0.025483533949999998,
+      "buffer_events_nonzero": [],
+      "controller_resets": []
+    },
+    {
+      "source_frames": [
+        1063,
+        1065
+      ],
+      "aec_blocks": 7,
+      "unique_arrived_aligned_blocks": 0,
+      "ambiguous_or_missing_blocks": 7,
+      "future_call_blocks": 0,
+      "aligned_host_lag_ms": [],
+      "controller_applied_blocks": [
+        4
+      ],
+      "fresh_delay_16k_samples": [
+        -1
+      ],
+      "held_delay_16k_samples": [
+        256
+      ],
+      "fresh_aggregator_raw_lags_ds_samples": [
+        -1
+      ],
+      "dominant_nearend_blocks": 3,
+      "usable_linear_blocks": 7,
+      "refined_echo_to_capture_power": 0.003691071756398868,
+      "refined_residual_to_capture_power": 1.0018028793740292,
+      "post_suppression_to_capture_power": 0.2957689525262354,
+      "median_suppressor_gain": 0.0276643464,
+      "buffer_events_nonzero": [],
+      "controller_resets": []
+    }
+  ],
+  "future_call_identity_blocks": 0,
+  "status": "DIAGNOSTIC_ONLY",
+  "test3_decision": "BLOCKED",
+  "product_patch": "NO_PATCH",
+  "limitations": [
+    "Aligned input identity is band0 sample identity, not proof that selected lag represents physical echo source",
+    "No realtime performance or human positive acceptance; offline log instrumentation only",
+    "Ambiguous reference matches remain UNVERIFIED; no peak selection used"
+  ],
+  "all_inputs_still_match": true
+}

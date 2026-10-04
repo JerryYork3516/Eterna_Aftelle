@@ -1,0 +1,58 @@
+import csv
+import hashlib
+import json
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path('LOCAL_REPOSITORY')
+WORK = Path(__file__).resolve().parent
+protocol = json.loads((WORK / 'protocol.json').read_text())
+SOURCE = Path(protocol['source'])
+for path, h in protocol['input_hashes'].items():
+    assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == h
+frames = json.loads((WORK / 'retrospective-host/capture-frames.json').read_text())
+summary = json.loads((WORK / 'retrospective-host/result.json').read_text())
+original = json.loads((SOURCE / 'capture-frames.json').read_text())
+qualifies = lambda f: f['isPlaybackActive'] and f['inputClassification'] in ['near_end_speech', 'double_talk']
+def counts(rr):
+    active = [f for f in rr if f['isPlaybackActive']]
+    qualified = [f for f in active if qualifies(f)]
+    openings = [f['captureFrameIndex'] for i, f in enumerate(rr) if f['isPlaybackActive'] and f['sourceGateOpen'] and (i == 0 or not rr[i-1]['sourceGateOpen'])]
+    span_ids = {s['captureFrameIndex'] for f in rr for s in f['emittedSpans'] if not s['silenced'] and original[s['captureFrameIndex'] - 1]['isPlaybackActive']}
+    return {'qualified_source_frames': len(qualified), 'qualification_by_branch': {k: sum(f['classificationBranch'] == k for f in qualified) for k in sorted({f['classificationBranch'] for f in qualified})},
+        'gate_open_frames': sum(f['sourceGateOpen'] for f in active), 'gate_openings': openings, 'unique_unsilenced_playback_source_spans': len(span_ids)}
+dispatch = json.loads((WORK / 'paired-aec-with-stats/dispatch-ledger.json').read_text())
+call_arrival = {}
+calls = json.loads((SOURCE / 'audio-calls.json').read_text())
+for kind in ['capture','render']:
+    callbacks = json.loads((SOURCE / (kind + '-callbacks.json')).read_text())['callbacks']
+    kk = [c for c in calls if c['kind'] == kind]
+    for cb, c in zip(callbacks, kk):
+        assert cb['convertedHostTimeNanoseconds'] == c['hostTimeNanoseconds']
+        call_arrival[c['ordinal']] = cb['enteredAtNanoseconds']
+observed_waits = [(call_arrival[r['processing_ordinal']] - call_arrival[r['capture_arrived_ordinal']]) / 1e6 for r in dispatch]
+assert min(observed_waits) >= 0
+with (WORK / 'paired-aec-with-stats/ring-reset.csv').open() as f:
+    resets = list(csv.DictReader(f))
+old_clean = np.fromfile(SOURCE / 'clean-48k.f32le.pcm', dtype='<f4').astype(float)
+new_clean = np.fromfile(WORK / 'paired-aec-with-stats/clean-48k.f32le.pcm', dtype='<f4').astype(float)
+windows = []
+for first, last in [[372,374],[972,974],[1014,1016],[1063,1065]]:
+    sl = slice((first - 1) * 480, last * 480)
+    windows.append({'source_frames':[first,last], 'original_clean_rms':float(np.sqrt(np.mean(old_clean[sl] ** 2))),
+        'paired_clean_rms':float(np.sqrt(np.mean(new_clean[sl] ** 2)))})
+result = {'schema_version':1,'verdict':'REJECTED_AS_SUFFICIENT_REPAIR', 'test3_decision':'BLOCKED', 'product_patch':'NO_PATCH',
+    'original':counts(original), 'retrospective_paired':counts(frames), 'retrospective_host_deterministic':summary['deterministic_repeat'],
+    'paired_internal_resets':len(resets), 'paired_nonstartup_internal_resets':sum(int(r['capture_frame']) > 1 for r in resets),
+    'observed_arrival_wait_max_ms':max(observed_waits), 'source_frames_waited_for_later_arrival':sum(x > 0 for x in observed_waits),
+    'original_four_triplet_clean_signal':windows, 'inputs_preserved':True,
+    'actual_formal_runtime_actions':0, 'software_positive_trial':'NOT_RUN_BY_PREREGISTERED_NEGATIVE_STOP',
+    'limitations':['This is a scheduling counterfactual on physical recorded input, not a new live physical acceptance',
+        'Host reference history and control timing are original; source-indexed new DSP stats are observed but decisions are retrospective, not validated causal availability times',
+        'Waiting is calculated from recorded callback-entry times. New scheduler/DSP cost and original DSP cost are not compared; actual new decision latency is unmeasured',
+        'Removing excess resets alone is insufficient for current source qualification; this does not reject all possible scheduling repairs']}
+path = WORK / 'assessment-final.json'
+assert not path.exists()
+path.write_text(json.dumps(result,indent=2)+'\n')
+print(json.dumps(result,indent=2))

@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "source_label": "CONFIRMED_PURE_ECHO_BY_USER",
+  "human_answer": "确认",
+  "independent_label": {
+    "participant_silent": true,
+    "no_tapping": true,
+    "iphone_and_other_devices_not_playing": true,
+    "mac_resident_audible": true
+  },
+  "route": {
+    "input": "Timesintelli USB",
+    "output": "Mac built-in speaker",
+    "uid_verified_and_stable": true,
+    "aec": "WebRTC AEC3",
+    "capture_sample_rate_hz": 48000,
+    "injection_samples": 0
+  },
+  "frames": {
+    "capture": 1120,
+    "render": 1119,
+    "playback_capture": 1060,
+    "post_start_capture": 1080,
+    "target_post_start_capture": 1100,
+    "seal": "manual",
+    "exact_replay_ready": false
+  },
+  "original_actual_playback_result": {
+    "source_qualified_frames": 42,
+    "near_end_frames": 8,
+    "double_talk_frames": 34,
+    "confirmation_chains": [
+      [
+        372,
+        374
+      ],
+      [
+        972,
+        974
+      ],
+      [
+        1014,
+        1016
+      ],
+      [
+        1063,
+        1065
+      ]
+    ],
+    "gate_open_frames": 48,
+    "unique_nonzero_playback_source_forwarded_frames": 56,
+    "runtime_acoustic_evidence_increments": 4,
+    "provisional_pause_resume": [
+      1,
+      1
+    ],
+    "formal_interrupt_cancel_clear_new_generation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "generation": [
+      1,
+      1
+    ]
+  },
+  "integrity": {
+    "ten_core_files_hash_rechecked": true,
+    "archive_original_byte_identical_files": 27,
+    "raw_samples": 537600,
+    "clean_samples": 537600,
+    "linear_samples": 179200,
+    "render_samples": 537240,
+    "render_boundary_discard_samples": 120
+  },
+  "performance": {
+    "capture_callback_count": 112,
+    "native_samples_per_callback": 4800,
+    "native_callback_content_ms": 100,
+    "callback_total_p99_ms": 19.937458,
+    "callback_total_max_ms": 20.012167,
+    "callback_arrival_max_ms": 106.95475,
+    "full_realtime_certification": false
+  },
+  "test3_decision": "BLOCKED",
+  "waveforms_available_remote": false
+}

@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "base_product_commit": "85db493c95fd3e1864296038209317e1cf4409be",
+  "source_records": {
+    "qualification-result.json": {
+      "local_evidence_id": "qualification-witness-audit-01/result.json",
+      "local_source_sha256": "d7e5b2c53d0f8c416a0add606b4607b80285dd1d851097da9647b0d0574c5729",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "qualification-witnesses.json": {
+      "local_evidence_id": "qualification-witness-audit-01/scalar-witnesses.json",
+      "local_source_sha256": "e56dd95e29dae97c104799377bd7dcc740db0dd9c3795ac1b37cda58c8f94f41",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "baseline-witnesses.json": {
+      "local_evidence_id": "qualification-witness-audit-01/baseline-and-branch-witnesses.json",
+      "local_source_sha256": "eec3e8b8287e1f49ba4ea984ccf4e715e4c01871d864414cc7e097f01465c7a7",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "confirmation-witnesses.json": {
+      "local_evidence_id": "confirmation-witnesses.json",
+      "local_source_sha256": "cc9540ef4c9265a30104ad953c05cd66336c61ee9526e7118680b2d354ab41fb",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "locked-arm-ablation.json": {
+      "local_evidence_id": "lock-authority-ablation-01/comparison.json",
+      "local_source_sha256": "6f9bf7168ce4bfd2d0838ddaebd7bc592c769b19782584a2bc7fdb84660da295",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "aec-original-replay.json": {
+      "local_evidence_id": "aec3-reference-identity-01/result.json",
+      "local_source_sha256": "352b8ece6ea4a247655098db6ad4228bb216f91f4a45e1dd165caffc8645ee31",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "ring-identity-result.json": {
+      "local_evidence_id": "aec3-reference-identity-01/ring-identity-01/result.json",
+      "local_source_sha256": "706ea4864783bc296d58eaed5d4ec4b9352420c554ba82b2e2e83e3c028a3ead",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "reset-cause-result.json": {
+      "local_evidence_id": "aec3-reference-identity-01/ring-identity-01/reset-cause-result.json",
+      "local_source_sha256": "3dc59f973f18996e21a0a5ad02c7bb1c53f1d0bf9717c716295be59abbe0646a",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "callback-order-result.json": {
+      "local_evidence_id": "aec3-reference-identity-01/ring-identity-01/callback-order-result.json",
+      "local_source_sha256": "872f355380215657a4d985790ed89fe76cb82a920d5cac990955541b6a716dba",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "paired-scheduling-result.json": {
+      "local_evidence_id": "causal-pair-scheduling-01/assessment-final.json",
+      "local_source_sha256": "9b98059ca5aae53dd470c9888b380e716a5ab1d845f2090318a43dc27433b47c",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "paired-scheduling-protocol.json": {
+      "local_evidence_id": "causal-pair-scheduling-01/protocol.json",
+      "local_source_sha256": "1a5fc374ce27b3a8486c5eabce0b032ca872964f813754f299c300ed8cee6b26",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "paired-stats-observer.json": {
+      "local_evidence_id": "causal-pair-scheduling-01/stats-observer-guard.json",
+      "local_source_sha256": "5017f637345560b64ba94115cb3e02b6b431cc0cc7fc0eaa52d47dff7bc28985",
+      "publication": "JSON string paths replaced by LOCAL_RUN/LOCAL_REPOSITORY/LOCAL_USER; numeric evidence unchanged"
+    },
+    "ring-selected-identities.json": {
+      "local_evidence_id": "aec3-reference-identity-01/ring-identity-01/ring-identities.json",
+      "local_source_sha256": "e6a81999dfd734460d87fe5d3515e61065ff3e9d7546fda458e8b9b760fd3f43",
+      "publication": "31 preregistered confirmation blocks selected; no new selection of lag or samples"
+    },
+    "qualification-scalar-audit.py.txt": {
+      "local_evidence_id": "qualification-witness-audit-01/audit.py",
+      "local_source_sha256": "0aba0e4df7fb62c8cbeaebec38648558426fe6e5ce73ee636b6159c468c72861",
+      "publication": "Review-only source snapshot; local path literals anonymized; no PCM content"
+    },
+    "ring-identity-audit.py.txt": {
+      "local_evidence_id": "aec3-reference-identity-01/ring-identity-01/analyze.py",
+      "local_source_sha256": "32231c2825087166529d328632f93ed3286484691bfd0d4f2f52eaa7f48ab07e",
+      "publication": "Review-only source snapshot; local path literals anonymized; no PCM content"
+    },
+    "reset-cause-audit.py.txt": {
+      "local_evidence_id": "aec3-reference-identity-01/ring-identity-01/reset-cause-audit.py",
+      "local_source_sha256": "f8464bc4efd60f66593b8f1d94a656fd79ca8f3443e81032ba942e1c374a7d80",
+      "publication": "Review-only source snapshot; local path literals anonymized; no PCM content"
+    },
+    "paired-scheduling.py.txt": {
+      "local_evidence_id": "causal-pair-scheduling-01/replay-with-stats.py",
+      "local_source_sha256": "ac3f3c284d0b3fa906befe40fa95a04f0e86ed1aad4b24a1366f66f0ce54c48d",
+      "publication": "Review-only source snapshot; local path literals anonymized; no PCM content"
+    },
+    "paired-assessment.py.txt": {
+      "local_evidence_id": "causal-pair-scheduling-01/assess-final.py",
+      "local_source_sha256": "9dc14a30af4fa3f7c0b3975676b53d6c8b6ca2bcaa3bee8514c4477630010b3f",
+      "publication": "Review-only source snapshot; local path literals anonymized; no PCM content"
+    },
+    "locked-arm-diagnostic.diff": {
+      "local_evidence_id": "lock-authority-ablation-01/diagnostic-only.diff",
+      "local_source_sha256": "ab0e739441ab341640864e95999579876e3bb7b3d424ee4abc7a0828ebbfaa81",
+      "publication": "Review-only source snapshot; local path literals anonymized; no PCM content"
+    },
+    "ring-logger.diff": {
+      "pinned_webrtc_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "original_sha256": {
+        "render_delay_buffer.cc": "a496acd1456a19b5b9a65770ba1e04af00c0c5b9b3acd5a12abe2ad5c93e9cf0",
+        "echo_remover.cc": "946e604a5fa0a87982d36d9328f71abdf086df5f54f346e7b83671b62e9d06d0"
+      },
+      "publication": "Generated against pinned upstream; diagnostic only, no product patch"
+    },
+    "runner-retention-working-tree.diff": {
+      "base_product_commit": "85db493c95fd3e1864296038209317e1cf4409be",
+      "base_runner_sha256": "b7d5dc657bcc1cc931e7cb32f576ca8683b2c082fd754968efd95e15f937eef8",
+      "working_tree_runner_sha256": "50da4a4be7d8420ff8497f4db6918feb52ca279f9705d6cb78e7a635bbe7a71b",
+      "product_commit_status": "NOT_COMMITTED; review snapshot only",
+      "reason": "Required SwiftFormat/SwiftLint tools unavailable locally; no format-gate bypass for product delivery"
+    },
+    "physical-negative.json": {
+      "local_sources": {
+        "confirmed-user-label.json": "3f207e52991e3d388fe62168c17f10a212c4220be39b01a5075e902d0770db28",
+        "capture-integrity-and-events.json": "61394cc78c33c2a66334e6b4f4abe838803f65ea2e91a6f1db69c635ff38bc05",
+        "archive-integrity.json": "603d62cf9c28fab3290cf15f735ba4ed60e12bc03f81045538bc193e4719b0ee",
+        "binary-binding.json": "955ee46559c3f209193cc5c5cb30aaefcfd7a70de01651c6ffdca4ad112597a4"
+      },
+      "publication": "Selected technical aggregates only; no recording, real resident, serial UID or local absolute path"
+    },
+    "findings.md": {
+      "local_evidence_id": "continued-audit.md",
+      "local_source_sha256": "3dde85c23982ea1ce159f2175629d4c1c150b97a759335aee8a2acd4e1bbd022",
+      "publication": "Report snapshot with local paths redacted; publication-time disclaimer and README pointer added; numeric evidence unchanged"
+    }
+  }
+}
