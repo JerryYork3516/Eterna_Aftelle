@@ -1,0 +1,135 @@
+"""One frozen same-witness diagnostic; no AEC/gate/device execution."""
+import ctypes
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+import numpy as np
+
+ROOT = Path('LOCAL_REPOSITORY')
+WORK = ROOT / '.build/test3-hpf-reference-domain-20261004'
+TRIAL = ROOT / '.build/test3-capture-hpf-shadow-20261004/normal'
+SRC = ROOT / '.build/webrtc-aec3/checkout/src'
+PIN = '9f30e83c018647b05804571699cf22b1f0f3409e'
+
+def read(p):
+    return json.loads(p.read_text())
+
+def sha(p):
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+def corr(x, y):
+    assert len(x) == len(y) and np.isfinite(x).all() and np.isfinite(y).all()
+    x, y = np.asarray(x, np.float64), np.asarray(y, np.float64)
+    x, y = x-x.mean(), y-y.mean()
+    return abs(float(x@y)) / np.sqrt(float(x@x)*float(y@y))
+
+def low_band(x):
+    # Match Swift's Float additions/division before Double correlation.
+    x = np.asarray(x, dtype=np.float32).reshape(-1, 3)
+    return np.asarray((x[:, 0]+x[:, 1]+x[:, 2])/np.float32(3), dtype=np.float32)
+
+host = ROOT / 'apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift'
+source = host.read_text()
+names = ['minimumTimingCorrelation', 'minimumResidentOnlyRawCorrelation',
+         'minimumResidentOnlyResidualCorrelation', 'minimumNearEndRMS',
+         'minimumResidualEchoBaselineFrameCount']
+thresholds = {n: float(re.search(r'let '+n+r'(?:\s*:\s*UInt64)?\s*=\s*([\d.]+)', source)[1]) for n in names}
+assert subprocess.check_output(['git', '-C', str(SRC), 'rev-parse', 'HEAD'], text=True).strip() == PIN
+files = [host, WORK/'pinned-filter.cc', SRC/'modules/audio_processing/high_pass_filter.cc']
+inputs = {}
+for variant in ['baseline', 'capture_hpf']:
+    capsule = TRIAL/variant/'capsule'
+    for name in ['initial-state.json','audio-calls.json','control-events.json','render-frames.json',
+                 'raw-mic-48k.f32le.pcm','render-48k.f32le.pcm','clean-48k.f32le.pcm','linear-16k.f32le.pcm']:
+        inputs[str(capsule/name)] = sha(capsule/name)
+    inputs[str(TRIAL/variant/'host-replay/capture-frames.json')] = sha(TRIAL/variant/'host-replay/capture-frames.json')
+protocol = {'schema_version': 1, 'pinned_webrtc': PIN,
+            'source_hashes': {str(p): sha(p) for p in files}, 'input_hashes': inputs,
+            'frame': 85, 'thresholds_from_actual_source': thresholds,
+            'correlation_tolerance': 1e-6,
+            'question': 'Does fixed HPF reference restore BOTH output correlations >= existing 0.55 at the earliest frozen same-identity witness?',
+            'stop': 'If either remains below 0.55, reject this explanation as a sufficient repair for this witness. No alternate lag, filter, threshold or gate trial.',
+            'scope': 'Same witness only. Diagnostic HPF applied to actual processed render frames continuously; no AEC rerun, PCM forwarding, devices, phone input or Runtime decision.'}
+(WORK/'protocol.json').write_text(json.dumps(protocol, indent=2)+'\n')
+
+sdk = subprocess.check_output(['xcrun','--show-sdk-path'], text=True).strip()
+args = [str(SRC/'third_party/llvm-build/Release+Asserts/bin/clang++'), '-dynamiclib','-O0','-std=c++20',
+        '-mmacosx-version-min=14.0','-DWEBRTC_APM_DEBUG_DUMP=0','-isysroot',sdk,
+        '-I'+str(SRC),'-I'+str(SRC/'out/aftelle_aec3_arm64/gen'),'-I'+str(SRC/'third_party/abseil-cpp'),
+        str(WORK/'pinned-filter.cc'),str(ROOT/'.build/webrtc-aec3/artifacts/arm64/libWebRTCAEC3.a'),
+        '-framework','Foundation','-o',str(WORK/'pinned-filter.dylib')]
+with (WORK/'build.log').open('w') as log:
+    subprocess.run(args, stdout=log, stderr=subprocess.STDOUT, check=True)
+
+capsule = TRIAL/'baseline/capsule'
+render = np.fromfile(capsule/'render-48k.f32le.pcm', dtype='<f4')
+raw = np.fromfile(capsule/'raw-mic-48k.f32le.pcm', dtype='<f4')
+initial = read(capsule/'initial-state.json')
+assert not initial['renderFIFOSamples'] and not initial['captureFIFOSamples']
+positions, pending = {'capture': [], 'render': []}, {'capture': [], 'render': []}
+events = read(capsule/'audio-calls.json') + read(capsule/'control-events.json')
+for event in sorted(events, key=lambda x: x['ordinal']):
+    kind = event['kind']
+    if kind == 'playback_started':
+        for queue in pending.values(): queue.clear()
+    elif kind in pending:
+        pending[kind].extend(range(event['sampleOffset'], event['sampleOffset']+event['sampleCount']))
+        assert len(pending[kind])//480 == event['frameCount']
+        assert len(positions[kind]) == event['firstFrameIndex']
+        while len(pending[kind]) >= 480:
+            frame = pending[kind][:480]
+            assert frame == list(range(frame[0], frame[0]+480))
+            positions[kind].append(frame[0]); del pending[kind][:480]
+    else:
+        assert kind in ['delay_updated','capture_processing_duration']
+render_frames = read(capsule/'render-frames.json')
+assert len(render_frames) == len(positions['render'])
+frame_stream = np.concatenate([render[p:p+480] for p in positions['render']])
+filtered = np.empty_like(frame_stream)
+lib = ctypes.CDLL(str(WORK/'pinned-filter.dylib'))
+filter_fn = lib.AftelleDiagnosticHighPass
+ptr = ctypes.POINTER(ctypes.c_float)
+filter_fn.argtypes = [ptr, ptr, ctypes.c_size_t]
+filter_fn.restype = ctypes.c_int
+assert filter_fn(frame_stream.ctypes.data_as(ptr),filtered.ctypes.data_as(ptr),len(frame_stream)) == 0
+assert np.isfinite(filtered).all()
+
+by_time = {f['hostTimeNanoseconds']: i for i,f in enumerate(render_frames)}
+results, identities = {}, []
+for variant in ['baseline','capture_hpf']:
+    r = next(x for x in read(TRIAL/variant/'host-replay/capture-frames.json') if x['captureFrameIndex'] == 85)
+    i = by_time[r['classificationRenderFrameHostTimeNanoseconds']]
+    offset = r['classificationRenderSampleOffset']
+    identities.append([r[k] for k in ['captureHostTimeNanoseconds','classificationRenderFrameHostTimeNanoseconds',
+                                     'classificationRenderSampleOffset','classificationRenderHostTimeNanoseconds','classificationCorrelation']])
+    start = i*480 + offset
+    clean_delay, linear_delay = initial['processedOutputDelaySamples']*3, initial['linearOutputDelaySamples']*3
+    assert clean_delay == 432 and linear_delay == 216
+    for j in range((start-clean_delay)//480, (start+480)//480+1):
+        if j>0: assert render_frames[j]['hostTimeNanoseconds']-render_frames[j-1]['hostTimeNanoseconds'] == 10_000_000
+        assert render_frames[j]['callOrdinal'] < r['callOrdinal']
+    clean = np.fromfile(TRIAL/variant/'capsule/clean-48k.f32le.pcm', dtype='<f4')[r['aecCleanSampleOffset']:r['aecCleanSampleOffset']+480]
+    linear = np.fromfile(TRIAL/variant/'capsule/linear-16k.f32le.pcm', dtype='<f4')[r['aecLinearSampleOffset']:r['aecLinearSampleOffset']+160]
+    original = {'raw': corr(raw[positions['capture'][84]:positions['capture'][84]+480],frame_stream[start:start+480]),
+                'processed': corr(clean,frame_stream[start-clean_delay:start-clean_delay+480]),
+                'linear': corr(linear,low_band(frame_stream[start-linear_delay:start-linear_delay+480]))}
+    for k, key in [('raw','classificationCorrelation'),('processed','residualRenderCorrelation'),('linear','linearRenderCorrelation')]:
+        assert abs(original[k]-r[key]) <= protocol['correlation_tolerance'], (variant,k,original[k],r[key])
+    diagnostic = {'processed': corr(clean,filtered[start-clean_delay:start-clean_delay+480]),
+                  'linear': corr(linear,low_band(filtered[start-linear_delay:start-linear_delay+480]))}
+    results[variant] = {'original_scalar': original, 'pinned_hpf_reference': diagnostic,
+                        'both_outputs_track_original': bool(min(original['processed'],original['linear']) >= thresholds['minimumResidentOnlyResidualCorrelation']),
+                        'both_outputs_track_filtered': bool(min(diagnostic.values()) >= thresholds['minimumResidentOnlyResidualCorrelation']),
+                        'classification_witness': {k:r.get(k) for k in ['captureFrameIndex','classificationRenderFrameHostTimeNanoseconds',
+                            'classificationRenderSampleOffset','classificationDelayMilliseconds','classificationBranch','timingLockCandidateFrameCount']}}
+assert identities[0] == identities[1]
+assert all(sha(Path(p)) == h for p,h in inputs.items())
+assert all(sha(p) == protocol['source_hashes'][str(p)] for p in files)
+decision = 'DIAGNOSTIC_RECOVERED_NOT_A_GATE_PATCH' if results['capture_hpf']['both_outputs_track_filtered'] else 'REJECTED_AS_SUFFICIENT_REPAIR_FOR_WITNESS'
+summary = {'schema_version':1,'same_witness':True,'scalar_recomputation':'PASS',
+           'variants':results,'hypothesis_status':decision,'product_changed':False,
+           'gate_candidate_executed':False,'test3_decision':'BLOCKED'}
+(WORK/'result.json').write_text(json.dumps(summary,indent=2)+'\n')
+print(json.dumps(summary))

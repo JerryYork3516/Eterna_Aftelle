@@ -1,0 +1,50 @@
+--- baseline.mm
++++ capture_hpf.mm
+@@ -6,6 +6,7 @@
+ #include "api/audio/echo_canceller3_factory.h"
+ #include "api/environment/environment_factory.h"
+ #include "modules/audio_processing/audio_buffer.h"
++#include "modules/audio_processing/high_pass_filter.h"
+ 
+ namespace {
+ 
+@@ -33,6 +34,7 @@
+   webrtc::StreamConfig linear_output_stream_config{kLinearOutputSampleRateHz,
+                                                      kChannelCount};
+   std::unique_ptr<webrtc::EchoControl> aec;
++  std::unique_ptr<webrtc::HighPassFilter> capture_high_pass;
+   std::unique_ptr<webrtc::AudioBuffer> render;
+   std::unique_ptr<webrtc::AudioBuffer> capture;
+   std::unique_ptr<webrtc::AudioBuffer> linear_output;
+@@ -64,6 +66,7 @@
+ 
+   try {
+     auto aec = CreateAEC();
++    auto capture_high_pass = std::make_unique<webrtc::HighPassFilter>(kSampleRateHz, kChannelCount);
+     auto render = std::make_unique<webrtc::AudioBuffer>(
+         kSampleRateHz, kChannelCount, kSampleRateHz, kChannelCount, kSampleRateHz, kChannelCount);
+     auto capture = std::make_unique<webrtc::AudioBuffer>(
+@@ -74,6 +77,7 @@
+         kLinearOutputSampleRateHz, kChannelCount);
+     aec->SetAudioBufferDelay(bridge->delay_ms);
+     bridge->aec = std::move(aec);
++    bridge->capture_high_pass = std::move(capture_high_pass);
+     bridge->render = std::move(render);
+     bridge->capture = std::move(capture);
+     bridge->linear_output = std::move(linear_output);
+@@ -128,6 +132,7 @@
+   try {
+     const float* input_channels[] = {input_mono_pcm};
+     bridge->capture->CopyFrom(input_channels, bridge->stream_config);
++    bridge->capture_high_pass->Process(bridge->capture.get(), false);
+     bridge->aec->AnalyzeCapture(bridge->capture.get());
+     bridge->capture->SplitIntoFrequencyBands();
+     bridge->aec->ProcessCapture(bridge->capture.get(),
+@@ -193,6 +198,7 @@
+     auto aec = CreateAEC();
+     aec->SetAudioBufferDelay(bridge->delay_ms);
+     bridge->aec = std::move(aec);
++    bridge->capture_high_pass->Reset();
+     return AFTELLE_AEC_BRIDGE_OK;
+   } catch (...) {
+     return AFTELLE_AEC_BRIDGE_INTERNAL_ERROR;

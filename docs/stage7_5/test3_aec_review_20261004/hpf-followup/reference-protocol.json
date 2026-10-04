@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "pinned_webrtc": "9f30e83c018647b05804571699cf22b1f0f3409e",
+  "source_hashes": {
+    "${REPO}/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift": "51cbfbb9f6b2aefedc8af37c74b8892a68d2919bf260fcc082a07ca287a1df85",
+    "${REPO}/.build/test3-hpf-reference-domain-20261004/pinned-filter.cc": "0e516715c0e2bbceaee511bde2faa19e7e3b0f3898de59124616cdfe1f3734a6",
+    "${REPO}/.build/webrtc-aec3/checkout/src/modules/audio_processing/high_pass_filter.cc": "1dbed149c32d037d25096f604398029ff5112c59f2d5f278ce8aad5c713305db"
+  },
+  "input_hashes": {
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/initial-state.json": "6e6d0a0619a55566f6ee65abbbc6ab6cdc3852b8f308fc7e129f894acf41b416",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/audio-calls.json": "e359592f7c5683f781aa437a8ca4b868391d353b43e981063ef5701580657185",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/control-events.json": "12cb061aee83d2e5f339a17efcef201fbd8a4b3a43acee747d6425dcf9eb7ca8",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/render-frames.json": "3154a4853bf6ba59ddf2ba40f12ef1c1c520882c76553b985618c667c0b5012b",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/raw-mic-48k.f32le.pcm": "8d18a6ffbc83bf8b63f9f741a79c81f40055a39cb50874a7c2c2c07507f91d70",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/render-48k.f32le.pcm": "8e0815df591ce5c6f30e7449a781b37027f54bb64ff35301f4e78e96f592ac12",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/clean-48k.f32le.pcm": "c3f2d34bbb51bfaa6e7481e5332ffdcda654e3ce852ecc69f2c5bf760ff8b200",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/capsule/linear-16k.f32le.pcm": "db3ab38b0ad75dd0c7b22e6abb41af57929c10cfd6c8024adefac8eb8ca34d62",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/baseline/host-replay/capture-frames.json": "c03e79759a82d6f2eca5b3cd7174043995dfdb7db308f72ebfc2c62ab82b7ded",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/initial-state.json": "6e6d0a0619a55566f6ee65abbbc6ab6cdc3852b8f308fc7e129f894acf41b416",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/audio-calls.json": "a9f70566695e9a7386b84800efecee3e92407e05f7e65df89171ed2aba84e3a3",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/control-events.json": "12cb061aee83d2e5f339a17efcef201fbd8a4b3a43acee747d6425dcf9eb7ca8",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/render-frames.json": "3154a4853bf6ba59ddf2ba40f12ef1c1c520882c76553b985618c667c0b5012b",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/raw-mic-48k.f32le.pcm": "8d18a6ffbc83bf8b63f9f741a79c81f40055a39cb50874a7c2c2c07507f91d70",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/render-48k.f32le.pcm": "8e0815df591ce5c6f30e7449a781b37027f54bb64ff35301f4e78e96f592ac12",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/clean-48k.f32le.pcm": "878324643d6b592ba737763cfead92539f4bef5f15ec841dc6b54f9b4613b931",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/capsule/linear-16k.f32le.pcm": "6794d136fa9d8a9a533879bedb1083d190dc718b3b7684c95743be2e455bd162",
+    "${REPO}/.build/test3-capture-hpf-shadow-20261004/normal/capture_hpf/host-replay/capture-frames.json": "ff78a16575e2e502dcb83cd3a2e149e69854cc2f334c1d391864bcd9eef5ee56"
+  },
+  "frame": 85,
+  "thresholds_from_actual_source": {
+    "minimumTimingCorrelation": 0.35,
+    "minimumResidentOnlyRawCorrelation": 0.7,
+    "minimumResidentOnlyResidualCorrelation": 0.55,
+    "minimumNearEndRMS": 0.012,
+    "minimumResidualEchoBaselineFrameCount": 5.0
+  },
+  "correlation_tolerance": 1e-06,
+  "question": "Does fixed HPF reference restore BOTH output correlations >= existing 0.55 at the earliest frozen same-identity witness?",
+  "stop": "If either remains below 0.55, reject this explanation as a sufficient repair for this witness. No alternate lag, filter, threshold or gate trial.",
+  "scope": "Same witness only. Diagnostic HPF applied to actual processed render frames continuously; no AEC rerun, PCM forwarding, devices, phone input or Runtime decision."
+}

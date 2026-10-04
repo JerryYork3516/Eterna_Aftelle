@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "created_date": "2026-10-04",
+  "source_commit": "1dd85df6128510629a2fd3f608095d811ac96ce0",
+  "previous_remote_commit": "bdd71e3cd7007346ed7ceab399fef7efea0b6195",
+  "pinned_webrtc": "9f30e83c018647b05804571699cf22b1f0f3409e",
+  "test3_decision": "BLOCKED",
+  "code_sha256": {
+    "apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift": "51cbfbb9f6b2aefedc8af37c74b8892a68d2919bf260fcc082a07ca287a1df85",
+    "apps/macos/Aftelle/MacSpeechWebRTCAECProcessor.swift": "370261422bbd280df5169b76b849b7b62355a25403def60d3aed68399e7034ff",
+    "apps/macos/Aftelle/MacSpeechAudioCapture.swift": "ef09463cc03fac9e90d177d3d05e5c05ce4d1e6abec9d7a203f3a3608d13fc41",
+    "apps/macos/Aftelle/MacSpeechDeviceMonitor.swift": "1b0a2e85b6b2b3e635c19580198bf88c836a4428e83ee2446025827178b7666f",
+    "apps/macos/Aftelle/Test3LocalAudioRunner.swift": "b7d5dc657bcc1cc931e7cb32f576ca8683b2c082fd754968efd95e15f937eef8",
+    "apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift": "8becf334f6cdee299a97d1a75451638440e5013b9fd560cbd71c84379a013c19",
+    "apps/macos/Aftelle/AppController.swift": "2f04a9ffb1c071e50c919933c1c46852f1e0f3fa86481d79debea9ed962d9598",
+    "tools/webrtc_aec3/bridge/AftelleAECBridge.mm": "1d1cb45377b5b2252af49a6abbb03026502aba408d98d90476c4611c9be9c45d",
+    "tools/speech_aec_host_tests/RecordedAcousticReplay.swift": "c6221f0b978891cff665dbc7d0d567e42f9ceccaab871d4173d5fd397814c199"
+  },
+  "local_to_published_provenance": [
+    {
+      "published": "reference-protocol.json",
+      "local_source_role": ".build/test3-hpf-reference-domain-20261004/protocol.json",
+      "local_source_sha256": "45ab45765640964bb1177d9293e70d07b4c3e0e90d8011353417530cb3bfc55a"
+    },
+    {
+      "published": "reference-result.json",
+      "local_source_role": ".build/test3-hpf-reference-domain-20261004/result.json",
+      "local_source_sha256": "0a633c160ae7428969de7f98a51fbad49e5cd5d0f26987d240ee3ca661a1671a"
+    },
+    {
+      "published": "findings.md",
+      "local_source_role": ".build/test3-hpf-reference-domain-20261004/report.md",
+      "local_source_sha256": "4c25e9538b8cfd041305837de5083fad1f7aa580a19449debe8ca97231865219"
+    },
+    {
+      "published": "readonly-review.md",
+      "local_source_role": ".build/test3-hpf-reference-domain-20261004/readonly-review.md",
+      "local_source_sha256": "2aea0342ae707a5e92f4ca5fe04800c0338e642e11e306614bd830f685d58f7e"
+    },
+    {
+      "published": "pinned-filter.cc",
+      "local_source_role": ".build/test3-hpf-reference-domain-20261004/pinned-filter.cc",
+      "local_source_sha256": "0e516715c0e2bbceaee511bde2faa19e7e3b0f3898de59124616cdfe1f3734a6"
+    },
+    {
+      "published": "reference-domain-diagnostic.py.txt",
+      "local_source_role": ".build/test3-hpf-reference-domain-20261004/run.py",
+      "local_source_sha256": "17d50405500f0d7e16977108cc7fbc563cf2dd7859927832a47c619af6b987ad",
+      "redaction": "ROOT placeholder and WORK explicitly local; text snapshot for read-only review"
+    }
+  ],
+  "privacy": "No raw PCM, phone files, waveforms, binaries, private absolute paths or full trace exported. Selected numeric technical witnesses and hashes only.",
+  "remote_verification_limit": "Remote reviewer can inspect code and recorded witnesses; cannot independently recompute correlations without local PCM.",
+  "published_sha256": {
+    "README.md": "8712fa8fddcc6f881d16af0cafa5a839fec6390b95bc1bbeecc6d5554245d02b",
+    "calibration-witnesses.json": "881b02ac95a394a45e35167c8f34be75fec7f925c580ac0a877e1b71160aa33f",
+    "capture-hpf-candidate.diff": "1d4b3134b6f1b88eb4d0c8b1dfd2c3756c9c7940f4495c70ceea9ea6f92666cc",
+    "findings.md": "2ec3e65ca72f3ec6acf00fdde92b05c20bef8c697da0f87273d9c81fd664f4f3",
+    "pinned-filter.cc": "0e516715c0e2bbceaee511bde2faa19e7e3b0f3898de59124616cdfe1f3734a6",
+    "readonly-review.md": "2aea0342ae707a5e92f4ca5fe04800c0338e642e11e306614bd830f685d58f7e",
+    "reference-domain-diagnostic.py.txt": "761d97583dd9b2ba8b3050b8e121c2f590801d6441a1acea43a8a7198f3296ef",
+    "reference-protocol.json": "39efd30d2eb445a0b51e7963573436b4a41ef4ca9f3a901d1b0c3be72aaf2cad",
+    "reference-result.json": "0a633c160ae7428969de7f98a51fbad49e5cd5d0f26987d240ee3ca661a1671a",
+    "validation.json": "2da3d0ae99521d913850b91699296eb12d643962ce11a4700ca6a9b8cf3eba91"
+  }
+}

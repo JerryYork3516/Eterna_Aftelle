@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "same_witness": true,
+  "scalar_recomputation": "PASS",
+  "variants": {
+    "baseline": {
+      "original_scalar": {
+        "raw": 0.946265410689745,
+        "processed": 0.846430687038932,
+        "linear": 0.6250091990834525
+      },
+      "pinned_hpf_reference": {
+        "processed": 0.25437196226726344,
+        "linear": 0.18300207478495126
+      },
+      "both_outputs_track_original": true,
+      "both_outputs_track_filtered": false,
+      "classification_witness": {
+        "captureFrameIndex": 85,
+        "classificationRenderFrameHostTimeNanoseconds": 71157159429958,
+        "classificationRenderSampleOffset": 391,
+        "classificationDelayMilliseconds": 73.697167,
+        "classificationBranch": "uncertain",
+        "timingLockCandidateFrameCount": 1
+      }
+    },
+    "capture_hpf": {
+      "original_scalar": {
+        "raw": 0.946265410689745,
+        "processed": 0.0979684045216256,
+        "linear": 0.013116285117495576
+      },
+      "pinned_hpf_reference": {
+        "processed": 0.8434279713547315,
+        "linear": 0.45791796123013395
+      },
+      "both_outputs_track_original": false,
+      "both_outputs_track_filtered": false,
+      "classification_witness": {
+        "captureFrameIndex": 85,
+        "classificationRenderFrameHostTimeNanoseconds": 71157159429958,
+        "classificationRenderSampleOffset": 391,
+        "classificationDelayMilliseconds": 73.697167,
+        "classificationBranch": "uncertain",
+        "timingLockCandidateFrameCount": 0
+      }
+    }
+  },
+  "hypothesis_status": "REJECTED_AS_SUFFICIENT_REPAIR_FOR_WITNESS",
+  "product_changed": false,
+  "gate_candidate_executed": false,
+  "test3_decision": "BLOCKED"
+}
