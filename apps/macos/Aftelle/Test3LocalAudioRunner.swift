@@ -145,7 +145,13 @@ enum Test3LocalAudioRunner {
     }
 
     private static func testRoot() throws -> URL {
-        let root = FileManager.default.temporaryDirectory
+        let root = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+            .appendingPathComponent("Aftelle", isDirectory: true)
             .appendingPathComponent("test3-local-audio", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root.resolvingSymlinksInPath()
