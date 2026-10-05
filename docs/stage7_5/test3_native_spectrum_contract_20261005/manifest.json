@@ -1,0 +1,581 @@
+{
+  "schema_version": 1,
+  "task": "Test3 Native Spectral Evidence Contract",
+  "project_commit": "0d4191fc224c4e6f5049ad329650a8161bfe9a0f",
+  "webrtc_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+  "read_source": "Fixed Git objects only; upstream checkout has pre-existing local build changes excluded",
+  "review_attachment_sha256": "47dcdbb74d56dc0a859b4e9047628e5ea6d8f0c0fff7c083baaccde3fbf7a021",
+  "sources": [
+    {
+      "path": "upstream/modules/audio_processing/aec3/echo_remover.cc",
+      "repository_path": "modules/audio_processing/aec3/echo_remover.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "9919b6fe4ff19225eeb8d0136e84dfcc843c47cb",
+      "sha256": "946e604a5fa0a87982d36d9328f71abdf086df5f54f346e7b83671b62e9d06d0",
+      "bytes": 24947,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/echo_remover.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/echo_remover.h",
+      "repository_path": "modules/audio_processing/aec3/echo_remover.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "afacbdbe30d8e6e1a1e549f890f90e320a22a7bc",
+      "sha256": "77ca7d19e16946667ff4d824b75ef39f8cc2f5f676129ac16083f16ac0a25789",
+      "bytes": 2500,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/echo_remover.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/aec_state.cc",
+      "repository_path": "modules/audio_processing/aec3/aec_state.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "0ee49f0606b03a706d70ceedd0b384f71d19ea2b",
+      "sha256": "4901cf3cf71d8e6d38b002cc5db7d18b056705ec7de855b860f3f62f64c91b10",
+      "bytes": 19388,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/aec_state.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/aec_state.h",
+      "repository_path": "modules/audio_processing/aec3/aec_state.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "17649bfcbc71fd8b38e6333d9e653159429fce45",
+      "sha256": "3a9fb70e8dc26ab4fb882f354ab314acd82a42718b18071e8e157c2cb7c75d66",
+      "bytes": 11413,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/aec_state.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/residual_echo_estimator.cc",
+      "repository_path": "modules/audio_processing/aec3/residual_echo_estimator.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "29776e88e941905af90d88011488fba25aa0dbc2",
+      "sha256": "8da9cd2f9ecccaee7c655c4ce4d994d3b8c5ea5785053a064608fc3ed9ac3106",
+      "bytes": 17057,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/residual_echo_estimator.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/residual_echo_estimator.h",
+      "repository_path": "modules/audio_processing/aec3/residual_echo_estimator.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "2d7a3378d0e55c4967dd0ba44c56945b761e9586",
+      "sha256": "0555537334d6ed96d0e471fe4e858922c7fa0f33a63aaf225d818e25b6bb4b98",
+      "bytes": 4039,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/residual_echo_estimator.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/suppression_gain.cc",
+      "repository_path": "modules/audio_processing/aec3/suppression_gain.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "fe9c46efad467752c467d77bb6672c4f270a6e98",
+      "sha256": "0231899e1a57f97149414068fed651630e33bc9e747b02601f1e90758eaf253d",
+      "bytes": 20626,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/suppression_gain.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/suppression_gain.h",
+      "repository_path": "modules/audio_processing/aec3/suppression_gain.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "6d0920774c0391365eec1318a5e3285e4632cd07",
+      "sha256": "b058ab26033746a6f143084472df192bc26f5d1dd2d8b02cf9a3ca2f7f051775",
+      "bytes": 6067,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/suppression_gain.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/dominant_nearend_detector.cc",
+      "repository_path": "modules/audio_processing/aec3/dominant_nearend_detector.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "d7e01fbaeb57c3aaff8404c04273b812a27d27de",
+      "sha256": "391e504392aa355e83b9e7281bb103e026e4190986e9d39089c4fa7f6b6183fc",
+      "bytes": 3154,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/dominant_nearend_detector.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/dominant_nearend_detector.h",
+      "repository_path": "modules/audio_processing/aec3/dominant_nearend_detector.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "877697c2e4ffcc16260366f1f582f9fa1b7cb00c",
+      "sha256": "3e1a650fc7e717effc33ac1374fb657e84320c8fadf142bda3b307c92e4bf0d9",
+      "bytes": 2034,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/dominant_nearend_detector.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/comfort_noise_generator.cc",
+      "repository_path": "modules/audio_processing/aec3/comfort_noise_generator.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "58b2323d25bbabc312f355d222b12b477ee2068b",
+      "sha256": "ad35f82812b48ac6f13369721f3bfd2ead52132f316b048819a84aa0e7b80509",
+      "bytes": 7883,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/comfort_noise_generator.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/comfort_noise_generator.h",
+      "repository_path": "modules/audio_processing/aec3/comfort_noise_generator.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "05cd43e79a947313a38a29b737310e8c0b7905f1",
+      "sha256": "c5fc3d6a21052abd2dad38a9b7706dda6f59da26206452ce974363f132dbcfc6",
+      "bytes": 2619,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/comfort_noise_generator.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/aec3_fft.cc",
+      "repository_path": "modules/audio_processing/aec3/aec3_fft.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "360590e358f0210472425895fe98b5e8f4cf4ca0",
+      "sha256": "955493abad5f2bb4572f7fc4bc7a4a8f9d4020d87de058b35e84cb6c7bf87468",
+      "bytes": 6484,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/aec3_fft.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/aec3_fft.h",
+      "repository_path": "modules/audio_processing/aec3/aec3_fft.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "2362a51df0219b91f33a3d991296ccfbb4654fa0",
+      "sha256": "f43d1ac80c58aa09fe386c97d4e42875d3daf6291ad7012e27fbcfc9eca8edee",
+      "bytes": 2335,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/aec3_fft.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/subtractor.cc",
+      "repository_path": "modules/audio_processing/aec3/subtractor.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "d1f715d8b67636ed58d2f6ad5f281f0854c97650",
+      "sha256": "acfdb2cac718c50df72bb4ec0f1f1bd0ba5f47a6f6b57d8762080933be6552dc",
+      "bytes": 14689,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/subtractor.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/subtractor.h",
+      "repository_path": "modules/audio_processing/aec3/subtractor.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "33a1ebf27ff3ef894ae0e7c65958283cf932fa19",
+      "sha256": "2e7c590107b04d217dbc043a7a01004fc8aeb91178b07a07ed2b864aea0bd9a7",
+      "bytes": 5691,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/subtractor.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/subtractor_output.cc",
+      "repository_path": "modules/audio_processing/aec3/subtractor_output.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "811014c90cfcaaadcab3484155b136df5ac19463",
+      "sha256": "75122a5c96d21adbfd7a44c188aa5529fa2b245b29a673281c1efb4d96e8c0e8",
+      "bytes": 1966,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/subtractor_output.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/subtractor_output.h",
+      "repository_path": "modules/audio_processing/aec3/subtractor_output.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "6fb1d0d8be9947409e186d99de50aba2c31b4450",
+      "sha256": "d45f3035edae2d32fd6332145bb129536c6188d3ecb216f23d66dbbcfd625870",
+      "bytes": 1568,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/subtractor_output.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/echo_canceller3.cc",
+      "repository_path": "modules/audio_processing/aec3/echo_canceller3.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "5e99a5b3bc3556544793ad577de7ad85ec605a2b",
+      "sha256": "ecd6b52a94076b760f6f16a938f7c750cdb147e66aad3e1d0a049ec02de45e4b",
+      "bytes": 43043,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/echo_canceller3.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/echo_canceller3.h",
+      "repository_path": "modules/audio_processing/aec3/echo_canceller3.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "e12ee0abe9cb6a0e6d28d9a0c403996ea44bce9b",
+      "sha256": "405714e7974de0382868b4e3ea8bec135814f9f5f825c383b052370ff8c22659",
+      "bytes": 9347,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/echo_canceller3.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/frame_blocker.cc",
+      "repository_path": "modules/audio_processing/aec3/frame_blocker.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "2b93e7a65b80a7407bd4c410fa4af1a726d7fbd6",
+      "sha256": "5c522ae862069d1a0cc80c2d8d9db2577cecc7e2cff2911963aad3b2602f90db",
+      "bytes": 3102,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/frame_blocker.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/frame_blocker.h",
+      "repository_path": "modules/audio_processing/aec3/frame_blocker.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "f035fed33fcd6927c19fc1ef927183dc564c778e",
+      "sha256": "d0cc71245e54204fd4505694a147f68397ba9651f0572fc37dace01de9c68553",
+      "bytes": 1622,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/frame_blocker.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/block_processor.cc",
+      "repository_path": "modules/audio_processing/aec3/block_processor.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "c3eaa3cbf833a9e20f4cccc15cf5050024e5ba39",
+      "sha256": "ea289bb9fe5b5e50da54b73473b27509a3e80881d4b2780f5f72323476f94a45",
+      "bytes": 11681,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/block_processor.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/block_processor.h",
+      "repository_path": "modules/audio_processing/aec3/block_processor.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "52b8794f0098ccc1484380bc6bfb4c0ea07b690a",
+      "sha256": "40e6eb1f9016c8c55fcb0ab7b4b8ed0331dff717d613dd2c70ecf66387813186",
+      "bytes": 3349,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/block_processor.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/block_framer.cc",
+      "repository_path": "modules/audio_processing/aec3/block_framer.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "f9cadb9a8ae0041e49f8aecf27990ce192899bdc",
+      "sha256": "6c6f346a0f823dfb249da06ab68519a5e5ff53fe5ec2fa6fdd2fc065ff065bea",
+      "bytes": 3302,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/block_framer.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/block_framer.h",
+      "repository_path": "modules/audio_processing/aec3/block_framer.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "896bc6b5ddd9370cb76fa13f9b07587a9e02d576",
+      "sha256": "943e08ed25075674441c4a0def8c21e5a3992a1d44812745bb2a5a5e6cefa5ce",
+      "bytes": 1804,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/block_framer.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/render_delay_buffer.cc",
+      "repository_path": "modules/audio_processing/aec3/render_delay_buffer.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "ecc7431fa4805c48c2ba21489fd67f749f0afa5a",
+      "sha256": "a496acd1456a19b5b9a65770ba1e04af00c0c5b9b3acd5a12abe2ad5c93e9cf0",
+      "bytes": 19448,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/render_delay_buffer.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/render_delay_buffer.h",
+      "repository_path": "modules/audio_processing/aec3/render_delay_buffer.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "e0488d6d66aa11a30c2aa90944ca32626b16df51",
+      "sha256": "87cbfb4806100107ac0f650b82454f371f03864d96e7a9055fa233f8a07613b5",
+      "bytes": 2914,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/render_delay_buffer.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/render_buffer.cc",
+      "repository_path": "modules/audio_processing/aec3/render_buffer.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "32d4314e397bd2429691bb0fafe2c0aca9a51652",
+      "sha256": "a1349ffd5d1be9089315daf22cb71bc2842dc1635357c27f13b85a35a578e866",
+      "bytes": 2978,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/render_buffer.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/render_buffer.h",
+      "repository_path": "modules/audio_processing/aec3/render_buffer.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "6fc0317c6b2ab0974085599616521ad74e00ed45",
+      "sha256": "ef343c0cf3d498df6b159be5d4472d191224df9a3d6ca268eaa914f090f3c4bb",
+      "bytes": 4031,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/render_buffer.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/fft_data.h",
+      "repository_path": "modules/audio_processing/aec3/fft_data.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "6bab8c9c1aabc2bccd61f8c73c7bc5bfe6e019e0",
+      "sha256": "33c45c409d9432df52b5c559eccac085c8eb8052baa1580616d28a0b5066989c",
+      "bytes": 3361,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/fft_data.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/aec3_common.h",
+      "repository_path": "modules/audio_processing/aec3/aec3_common.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "650a62d607920c531a21abb99504fe09cc1e7c49",
+      "sha256": "3a34f6ea7a463cd767e03e2cc191a1b89ff53fe3fb72e49eaf3570eb7df55356",
+      "bytes": 4256,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/aec3_common.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/spectrum_buffer.h",
+      "repository_path": "modules/audio_processing/aec3/spectrum_buffer.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "51e1317f55850eaf08ba465bd7afa449142f9604",
+      "sha256": "ce959fbc4994c8d05f566bb95560eacbdae9aa058e9d0fa4aedcc3b8048d8bc1",
+      "bytes": 2000,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/spectrum_buffer.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/block_buffer.h",
+      "repository_path": "modules/audio_processing/aec3/block_buffer.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "3489d51646023059f5e4eb424a85b45f5d05fc6e",
+      "sha256": "f346c3b718b67c78aa5bf60e65b4abe84d9107472825119f919b1d8edc903c00",
+      "bytes": 1887,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/block_buffer.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/fft_buffer.h",
+      "repository_path": "modules/audio_processing/aec3/fft_buffer.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "4187315863fca19f4216f1e8b61ab24c241ab7de",
+      "sha256": "0623441c166889bf4ec6dc71cc82e0e3a84e147c4abe0cf4db08817bc956a616",
+      "bytes": 1869,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/fft_buffer.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/audio_buffer.cc",
+      "repository_path": "modules/audio_processing/audio_buffer.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "f4ad8ad2c82a03658e4f5b680abda06b7ffd01a9",
+      "sha256": "fe74407080c12bff16ffc6866bbdc6b63cf7e1ca2be462293d1f94922e196fcd",
+      "bytes": 18994,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/audio_buffer.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/audio_buffer.h",
+      "repository_path": "modules/audio_processing/audio_buffer.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "c53df4a2d9b4d15133aba23c5564502680811c80",
+      "sha256": "0bf97cc9bba9c37164419190726ac94ee085d4ada34add53b139910552156d20",
+      "bytes": 6945,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/audio_buffer.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/splitting_filter.cc",
+      "repository_path": "modules/audio_processing/splitting_filter.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "76d77abec374651da782e1a5c85b06aa1fb759c2",
+      "sha256": "d80c3755599732211946711e751168c6efa8c4936da390515e1f09c7a29dfbb8",
+      "bytes": 6248,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/splitting_filter.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/splitting_filter.h",
+      "repository_path": "modules/audio_processing/splitting_filter.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "79ed9f458b865fb04a57b6ecce5380cc25dd668c",
+      "sha256": "cf9b214915c4633150593391aa7604f6c00f63398a96132e395351eb2beb11d1",
+      "bytes": 2631,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/splitting_filter.h"
+    },
+    {
+      "path": "upstream/modules/audio_processing/three_band_filter_bank.cc",
+      "repository_path": "modules/audio_processing/three_band_filter_bank.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "0b12b938b8111485c9ec28a47efa35cd3749951b",
+      "sha256": "9eeae7dae27553f0c51c40a3dac29fec6df2b2ebb17233f44cb8924db42736a1",
+      "bytes": 11405,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/three_band_filter_bank.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/three_band_filter_bank.h",
+      "repository_path": "modules/audio_processing/three_band_filter_bank.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "2ee95f8502a68c59761d1bf86296867f3165ca2f",
+      "sha256": "67aaa21360a108d6549b9989321de9fc429bdb647cb0dc16b86e3098b8f38455",
+      "bytes": 2804,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/three_band_filter_bank.h"
+    },
+    {
+      "path": "upstream/api/audio/echo_canceller3_factory.cc",
+      "repository_path": "api/audio/echo_canceller3_factory.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "b615c633c4d2e74e144c0408481f9e78c4d2f2e2",
+      "sha256": "c8feaf73261625311158e7e3f6820a2199297228d03f49558b5bbc534e56cf22",
+      "bytes": 2052,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/api/audio/echo_canceller3_factory.cc"
+    },
+    {
+      "path": "upstream/api/audio/echo_canceller3_factory.h",
+      "repository_path": "api/audio/echo_canceller3_factory.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "387ef9b0f50673774a4bf23d21d5af4110c3acf2",
+      "sha256": "e4e04851a53f9ba330e400e2c5ae1ae957dd28443908c283a8ca18fca2252b9d",
+      "bytes": 2288,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/api/audio/echo_canceller3_factory.h"
+    },
+    {
+      "path": "upstream/api/audio/echo_canceller3_config.h",
+      "repository_path": "api/audio/echo_canceller3_config.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "caf767bc445c4b34a3d2e9573a4bb26eff5c4967",
+      "sha256": "17fd43c9ea3df9fd1c2598e557e8cd30ef63e37e4167026cb061a48aad317dfa",
+      "bytes": 9407,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/api/audio/echo_canceller3_config.h"
+    },
+    {
+      "path": "upstream/common_audio/include/audio_util.h",
+      "repository_path": "common_audio/include/audio_util.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "0b04f812bb87db22902fea18f27cb72fbe8fc418",
+      "sha256": "65c32b14348ace455b759288017ca480c949e799f3002a8179da9d6f7d2ce17a",
+      "bytes": 7212,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/common_audio/include/audio_util.h"
+    },
+    {
+      "path": "upstream/common_audio/third_party/ooura/fft_size_128/ooura_fft.cc",
+      "repository_path": "common_audio/third_party/ooura/fft_size_128/ooura_fft.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "98a8f02ed1588d8df1d3f23aab9ef1243df0cc84",
+      "sha256": "b8a5f10c7e1cd9479cdfddad11bc9b973e0aa3ec8e4da67d4eeee1c33f8cffb7",
+      "bytes": 13838,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/common_audio/third_party/ooura/fft_size_128/ooura_fft.cc"
+    },
+    {
+      "path": "upstream/LICENSE",
+      "repository_path": "LICENSE",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "4c41b7b251e2f7606c70fad48eb92c8a2bc8e357",
+      "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482",
+      "bytes": 1511,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/LICENSE"
+    },
+    {
+      "path": "upstream/PATENTS",
+      "repository_path": "PATENTS",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "190607ac2619bcb28f5c3af61a2fda3953364f7c",
+      "sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145",
+      "bytes": 1388,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/PATENTS"
+    },
+    {
+      "path": "upstream/AUTHORS",
+      "repository_path": "AUTHORS",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "fc3625b267e5855494e9a3c66122b1657f6f9017",
+      "sha256": "8f2721d288f65f4dee92c5794b1d7c084649c76c78923b83f089723f114e120f",
+      "bytes": 8084,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/AUTHORS"
+    },
+    {
+      "path": "project/tools/webrtc_aec3/bridge/AftelleAECBridge.mm",
+      "repository_path": "tools/webrtc_aec3/bridge/AftelleAECBridge.mm",
+      "commit": "0d4191fc224c4e6f5049ad329650a8161bfe9a0f",
+      "git_blob": "b9af1de2e85cff543614b01b86d4e4f4c677cf00",
+      "sha256": "1d1cb45377b5b2252af49a6abbb03026502aba408d98d90476c4611c9be9c45d",
+      "bytes": 8590,
+      "provenance": "Exact project git object; current byte identity checked"
+    },
+    {
+      "path": "project/tools/webrtc_aec3/bridge/AftelleAECBridge.h",
+      "repository_path": "tools/webrtc_aec3/bridge/AftelleAECBridge.h",
+      "commit": "0d4191fc224c4e6f5049ad329650a8161bfe9a0f",
+      "git_blob": "5d7d022ae240c79b21685ccc8264daa4b7a32dfe",
+      "sha256": "0d35fe64cfd2c5e9a342a519a9d024a0a7a84c916f68d8041f31e3df3f4cd66f",
+      "bytes": 2236,
+      "provenance": "Exact project git object; current byte identity checked"
+    },
+    {
+      "path": "project/apps/macos/Aftelle/MacSpeechWebRTCAECProcessor.swift",
+      "repository_path": "apps/macos/Aftelle/MacSpeechWebRTCAECProcessor.swift",
+      "commit": "0d4191fc224c4e6f5049ad329650a8161bfe9a0f",
+      "git_blob": "a94340602fd84c99bce37e2ba14c2d6bab74b3e2",
+      "sha256": "370261422bbd280df5169b76b849b7b62355a25403def60d3aed68399e7034ff",
+      "bytes": 4238,
+      "provenance": "Exact project git object; current byte identity checked"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/suppression_filter.cc",
+      "repository_path": "modules/audio_processing/aec3/suppression_filter.cc",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "bd895e8c5a5f0ef6825b1246d17a4eac1d84b24e",
+      "sha256": "cf4f1d167f9fb20787a78122a62d1c436d695429e833f237e5b5d967f33537f2",
+      "bytes": 7739,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/suppression_filter.cc"
+    },
+    {
+      "path": "upstream/modules/audio_processing/aec3/suppression_filter.h",
+      "repository_path": "modules/audio_processing/aec3/suppression_filter.h",
+      "commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "git_blob": "a37d783551a7ebdfcc28bdb1605529686f6a69fc",
+      "sha256": "8ff7c41d31fce3c6dc6c2c2279d6c9c09500642c849216b209a4b973b8522015",
+      "bytes": 1798,
+      "provenance": "Exact fixed git object, not mutable checkout file",
+      "official_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/suppression_filter.h"
+    }
+  ],
+  "no_private_PCM_tensors_weights": true,
+  "no_model_or_device_execution": true,
+  "product_code_change": false,
+  "Runtime_authority": "UNCHANGED_NOT_GRANTED",
+  "Stage7": "PASS",
+  "Test3": "BLOCKED",
+  "disposition": "INPUT_CONTRACT_READY_FOR_ISOLATED_DESIGN; observer not implemented",
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "d419eab844cd569e6ff404f23dd5e72a0c8a00c929fb5c56a425cb71ad845ded",
+      "bytes": 2516
+    },
+    {
+      "path": "native-spectrum-contract.md",
+      "sha256": "2b75573de5491e36cd0809a526ec71850ec8d757ffb014b5b702876c2324b3c6",
+      "bytes": 19925
+    },
+    {
+      "path": "proposed-passive-snapshot.json",
+      "sha256": "6c3fd54284e30d35b7ab2d00482ff97523dce46f820aa97fd7ed629f0f3f29a0",
+      "bytes": 11650
+    },
+    {
+      "path": "independent-review.json",
+      "sha256": "64363bddaa71d95f076c2162e37b2b108ab3312195d423cecce00b7032364e02",
+      "bytes": 1599
+    },
+    {
+      "path": "source-extraction-verification.json",
+      "sha256": "c03b1535ad9fd86984c293dfbd650ac4582416e4eb5df1fad8323b3e0b2572d0",
+      "bytes": 564
+    }
+  ]
+}

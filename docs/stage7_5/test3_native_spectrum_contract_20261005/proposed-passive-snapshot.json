@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "kind": "PROPOSED_ONLY_NOT_IMPLEMENTED",
+  "scope": "Mono Bridge480 call, not a hardware callback; six arrays only valid when producer executed; no source algorithm",
+  "arrays": [
+    {
+      "name": "Y2",
+      "dtype": "Float32",
+      "shape": [
+        1,
+        65
+      ],
+      "unit": "native unnormalized FFT magnitude-squared/bin in FloatS16 amplitude convention; N2/R2 are persistent model estimates",
+      "read_at": "echo_remover443-449",
+      "ownership": "copied owned preallocated batch; never retained source span"
+    },
+    {
+      "name": "E2_ree_input",
+      "dtype": "Float32",
+      "shape": [
+        1,
+        65
+      ],
+      "unit": "native unnormalized FFT magnitude-squared/bin in FloatS16 amplitude convention; N2/R2 are persistent model estimates",
+      "read_at": "echo_remover443-449 before495",
+      "ownership": "copied owned preallocated batch; never retained source span"
+    },
+    {
+      "name": "S2_linear",
+      "dtype": "Float32",
+      "shape": [
+        1,
+        65
+      ],
+      "unit": "native unnormalized FFT magnitude-squared/bin in FloatS16 amplitude convention; N2/R2 are persistent model estimates",
+      "read_at": "LinearEchoPower at447",
+      "ownership": "copied owned preallocated batch; never retained source span"
+    },
+    {
+      "name": "R2",
+      "dtype": "Float32",
+      "shape": [
+        1,
+        65
+      ],
+      "unit": "native unnormalized FFT magnitude-squared/bin in FloatS16 amplitude convention; N2/R2 are persistent model estimates",
+      "read_at": "Estimate returned492",
+      "ownership": "copied owned preallocated batch; never retained source span"
+    },
+    {
+      "name": "R2_unbounded",
+      "dtype": "Float32",
+      "shape": [
+        1,
+        65
+      ],
+      "unit": "native unnormalized FFT magnitude-squared/bin in FloatS16 amplitude convention; N2/R2 are persistent model estimates",
+      "read_at": "Estimate returned492",
+      "ownership": "copied owned preallocated batch; never retained source span"
+    },
+    {
+      "name": "N2_background_estimate",
+      "dtype": "Float32",
+      "shape": [
+        1,
+        65
+      ],
+      "unit": "native unnormalized FFT magnitude-squared/bin in FloatS16 amplitude convention; N2/R2 are persistent model estimates",
+      "read_at": "NoiseSpectrum afterCompute482",
+      "ownership": "copied owned preallocated batch; never retained source span"
+    }
+  ],
+  "metadata_fields": [
+    {
+      "field": "schema_version",
+      "type": "uint32",
+      "unit_or_meaning": "schema1",
+      "producer": "constant"
+    },
+    {
+      "field": "aec_instance_epoch / analysis_filter_epoch / route_epoch",
+      "type": "uint64 each",
+      "unit_or_meaning": "ownership IDs",
+      "producer": "Bridge Configure/Reset and caller route ledger; reset AEC does not reset filter epoch"
+    },
+    {
+      "field": "backend_call / generated_q / remover_execution / block_in_call",
+      "type": "uint64",
+      "unit_or_meaning": "ordered counters",
+      "producer": "EchoCanceller3 block production; independent EchoRemover actual execution counter"
+    },
+    {
+      "field": "capture_band_intervals / previous_executed_band_interval",
+      "type": "integer half-open interval list",
+      "unit_or_meaning": "16k band0 coordinates",
+      "producer": "FrameBlocker sidecar; actual previous EchoRemover block (not presumed q-1)"
+    },
+    {
+      "field": "blocker_epoch_B16 / analysis_filter_epoch_raw48_origin / actual_capture_source_map",
+      "type": "int64 bases + ordered source metadata",
+      "unit_or_meaning": "Blocker-local64q translated into persistent analysis/filter coordinate; source identities then mapped to actual raw stream",
+      "producer": "Capture/FrameBlocker passive sidecar: actual band interval=[B16+64q,B16+64(q+1)); B16 advances afterAEC-only reset; filter/raw origin resets only when that buffer/filter is recreated"
+    },
+    {
+      "field": "raw_capture_support_envelopes",
+      "type": "integer half-open interval list",
+      "unit_or_meaning": "48k input coordinate",
+      "producer": "Translate blocker coordinates via actualB16 into analysis/filter band coordinates, then [3A-45,3B) relative to filter raw48 origin and actual source-ID sidecar; previous/current execution support may be disjoint. Do not treat resetq as global raw coordinates."
+    },
+    {
+      "field": "capture_padding / cross_filter_epoch_history / echo_removal_executed / ree_executed",
+      "type": "bool/status",
+      "unit_or_meaning": "support validity",
+      "producer": "Constructors, skip branches and capture_output_used path"
+    },
+    {
+      "field": "render_entries_used / ring_generations / insertion_availability",
+      "type": "bounded metadata spans",
+      "unit_or_meaning": "render source block/FFT IDs and arrival clocks",
+      "producer": "Sidecar tracking actual render insertion/index movement/overwrite/reset; record actual nonlinear neighborhood and reverb partition, no future data"
+    },
+    {
+      "field": "recursive_model_history_epoch / model_reset_event",
+      "type": "uint64 / enum",
+      "unit_or_meaning": "persistent state provenance",
+      "producer": "AEC construction plus explicit local reset event; noise/reverb/ERLE history not one fixed window"
+    },
+    {
+      "field": "capture_call_entry / spectral_snapshot_completed / capture_call_exit / batch_published / consumer_ready",
+      "type": "clock values plus clock ID",
+      "unit_or_meaning": "monotonic ticks",
+      "producer": "Caller and passive read points; snapshot completed afterGetGain is NOT candidate readiness. Batch becomes available only after actual Bridge completion/publication; no content-time backdating"
+    },
+    {
+      "field": "effective_fixed_capture_delay_samples",
+      "type": "int",
+      "unit_or_meaning": "16k band samples; currently scoped to zero",
+      "producer": "Actual constructed AEC3 config; assertzero before using direct B16/FIR source map. NonzeroDelaySignal path -> INVALID_UNSUPPORTED_FIXED_DELAY until separately contracted"
+    },
+    {
+      "field": "config_and_field_trial_identity / selected_detector / unbounded_for_detector",
+      "type": "fingerprint / enum / bool",
+      "unit_or_meaning": "active native configuration",
+      "producer": "Actual constructed active config and cached selected config inputs; no default-only assumptions"
+    },
+    {
+      "field": "usable_linear_pre_update / usable_linear_post_update",
+      "type": "bool",
+      "unit_or_meaning": "native quality/config state",
+      "producer": "Before echo_remover.cc:470 and after472"
+    },
+    {
+      "field": "nearend_input_kind / e2_clamp_applied",
+      "type": "enum / bool",
+      "unit_or_meaning": "E2 orY2 selector and stage",
+      "producer": "452 selector, 495 condition; selected E2 alias observes later clamp"
+    },
+    {
+      "field": "native_nearend_state_pre / native_nearend_state_post / state_last_GetGain_execution_id",
+      "type": "bool / bool / optionaluint64 execution ID",
+      "unit_or_meaning": "suppressor state",
+      "producer": "BeforeEstimate at490 and afterGetGain527; input feedback comes from most recent GetGain invocation, which may precede several executed EchoRemover blocks with output unused"
+    },
+    {
+      "field": "capture_saturation_input / capture_saturation_state / saturated_echo",
+      "type": "bool each",
+      "unit_or_meaning": "heuristic native flags",
+      "producer": "Input parameter and current AecState; not evidence of speaker identity"
+    },
+    {
+      "field": "aec_initial_state_post_update / suppressor_initial_state_at_GetGain / transparent_mode / current_render_active / accumulated_render_active",
+      "type": "bool each",
+      "unit_or_meaning": "Two distinct initial-state owners, plus native render/transparent flags",
+      "producer": "AecState private InitialStateActive afterUpdate; SuppressionGain private initial_state_ used byGetGain; native current activity local vs accumulated getter; passive private exposure, no update call"
+    },
+    {
+      "field": "external_delay_current / external_delay_latched / min_filter_delay",
+      "type": "optional+quality / optional+quality / int",
+      "unit_or_meaning": "blocks64@16k",
+      "producer": "BlockProcessor input vs AecState latch; not physical ground truth"
+    },
+    {
+      "field": "path_change_input / path_change_effective / buffer_event / output_used",
+      "type": "enum/flags",
+      "unit_or_meaning": "native lifecycle",
+      "producer": "BlockProcessor/EchoRemover existing values; retain changes and skips"
+    },
+    {
+      "field": "ree_branch / neural_estimator_supplied / stationarity_scaled / reverb_mode",
+      "type": "enum / bool / bool / enum",
+      "unit_or_meaning": "actual estimator branch",
+      "producer": "ResidualEchoEstimator current invocation and constructed factory; current factory passesnull"
+    },
+    {
+      "field": "native_noise_startup_counter / noise_initial_generator_active / noise_tracking_update_executed",
+      "type": "native counter capped at1000 / bool / bool",
+      "unit_or_meaning": "N2 startup and exact per-block tracking branch; counter is NOT total noise update count",
+      "producer": "ComfortNoiseGenerator: N2_counter_ increments only while N2_initial_ exists, stops at1000; tracking executes when pre-Compute counter>50 and !saturated; passive exposure of existing branch/counter needed"
+    },
+    {
+      "field": "validity / invalid_reason",
+      "type": "enum / enum",
+      "unit_or_meaning": "VALID_NATIVE_OBSERVATION orINVALID/UNAVAILABLE",
+      "producer": "Completeness/finite/support/epoch/sequence/branch validity only; NOT source qualification"
+    }
+  ],
+  "capacity": {
+    "records_per_backend_call_max": 3,
+    "array_bytes_per_valid_record": 1560,
+    "array_bytes_per_backend_call_max": 4680,
+    "metadata_capacity": "Preallocate sidecar capacity N equal to the actual constructed native render-ring capacity; no more than N entry identities per block and3N per batch. N/config fingerprint frozen at construction; record count or capacity mismatch -> INVALID. Recursive history is summarized by epoch/events, not an unbounded log.",
+    "host_batch": "drain after EACH backend480 call, retain every2/3 generatedq including status-only skip records",
+    "overflow": "mark entire batchINVALID; never evict to manufacture zero source errors"
+  },
+  "read_points": [
+    "449/452: save pre-update usable/selector and source identities",
+    "after492 before495: copy raw spectra, returned residual estimates, N2 and post-update state; whenREE skipped emitUNAVAILABLE",
+    "after527: append updated suppressor state to SAME owned record and record spectral_snapshot_completed; finalize actual batch consumer readiness ONLY after successful Bridge call exit and publication (remaining ApplyGain/metrics/framing/Merge/CopyTo must finish)"
+  ],
+  "forbidden": [
+    "ReinvokeEstimate/Update/Compute/GetGain/reset for observation",
+    "retain live stack/scratch spans",
+    "use truth labels or future inputs",
+    "single last-block getter",
+    "reinterpretR2 as an upper confidence bound or posterior"
+  ],
+  "implementation_gates": [
+    "Record effective config and assert mono48k + fixed_capture_delay_samples==0 for this direct support contract; any mismatch stops, no implicit fallback",
+    "Local observed-vs-unobserved byte-exact audio/state parity under frozen inputs/arrival schedule",
+    "Generated/processed/status coverage and support ledger exactness",
+    "Actual copy/compute/queue P99,max,backlog budget; cost here not measured"
+  ]
+}

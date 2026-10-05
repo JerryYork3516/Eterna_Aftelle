@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "source_git_objects": 54,
+  "all_blob_sha256_bytes_verified": true,
+  "project_source_checkpoint": "0d4191fc224c4e6f5049ad329650a8161bfe9a0f",
+  "initial_generated_q": [
+    [
+      0,
+      1
+    ],
+    [
+      2,
+      3,
+      4
+    ],
+    [
+      5,
+      6
+    ],
+    [
+      7,
+      8,
+      9
+    ]
+  ],
+  "static_polyphase_support_offsets": [
+    -45,
+    3
+  ],
+  "static_integer_checks_only": true,
+  "new_waveform_model_or_device_execution": false,
+  "product_code_changes": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED"
+}

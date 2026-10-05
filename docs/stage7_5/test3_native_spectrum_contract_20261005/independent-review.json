@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "scope": "Fixed source production contract and proposed observer only; no PCM/candidate/device execution",
+  "independent_checks": [
+    {
+      "area": "spectrum domain/call order",
+      "result": "NO_FINDING after corrections",
+      "corrected": [
+        "consumer readiness measured after actual Bridge completion/publication, notGetGain completion",
+        "nearend feedback from most recentGetGain invocation, not everyEchoRemover execution",
+        "effective fixed_capture_delay_samples==0 required by direct support map"
+      ]
+    },
+    {
+      "area": "frame/source binding",
+      "result": "Root applied both requested corrections; independent54Git-object byte review passed",
+      "corrected": [
+        "B16 blocker epoch base maps q into persistent analysis-filter coordinates",
+        "128payload samples are continuous8ms only for adjacent executed blocks"
+      ]
+    },
+    {
+      "area": "state/noise lifecycle",
+      "result": "Root corrected one requested field; remainder independent source audit had nofinding",
+      "corrected": [
+        "N2_counter_ is capped startup counter not total update count",
+        "explicit separate AecState and SuppressionGain initial-state fields"
+      ]
+    }
+  ],
+  "source_bytes_verified": 54,
+  "readonly_source_inspection": true,
+  "no_new_gate_or_audio_result": true,
+  "Build": "NOT_RUN_DOCUMENTATION_AND_EXACT_SOURCE_EXTRACTION_ONLY",
+  "Runtime_API_changed": false,
+  "DR_schema_changed": false,
+  "platform_target_added": false,
+  "Stage8": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED"
+}
