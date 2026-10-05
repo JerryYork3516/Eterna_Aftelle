@@ -258,8 +258,7 @@ enum Test3LocalAudioRunner {
             : webRTCLocalAudio ? webRTCCases : existingCases
         for (name, gain, positive, mode) in cases {
             let caseDirectory = directory.appendingPathComponent(name, isDirectory: true)
-            if physicalRouteOnly,
-               FileManager.default.fileExists(atPath: caseDirectory.path) {
+            if FileManager.default.fileExists(atPath: caseDirectory.path) {
                 throw RunnerError.evidenceDirectoryExists
             }
             try FileManager.default.createDirectory(at: caseDirectory, withIntermediateDirectories: true)
@@ -1312,6 +1311,7 @@ enum Test3LocalAudioRunner {
         engine.clearTest3NearEndInjection()
         await controller.stopRealtimeFullDuplexSpeech()
         await controller.shutdownSpeechAudioHost()
+        if let capsule { try save(capsule, directory: directory) }
         try JSONEncoder().encode(runtimeEvents)
             .write(to: directory.appendingPathComponent("runtime-events.json"))
         if physicalRouteOnly {
@@ -1374,25 +1374,41 @@ enum Test3LocalAudioRunner {
             to: directory.appendingPathComponent("provider-audio-events.json")
         )
         try JSONEncoder().encode(playbackEvents).write(to: directory.appendingPathComponent("playback-events.json"))
-        if let capsule { try save(capsule, directory: directory) }
         return result
     }
 
     private static func save(_ capture: MacSpeechAcousticReplayCaptureSnapshot, directory: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(capture.captureFrames).write(to: directory.appendingPathComponent("capture-frames.json"))
-        try encoder.encode(capture.renderFrames).write(to: directory.appendingPathComponent("render-frames.json"))
-        try encoder.encode(capture.audioCalls).write(to: directory.appendingPathComponent("audio-calls.json"))
-        try encoder.encode(capture.controlEvents).write(to: directory.appendingPathComponent("control-events.json"))
-        try encoder.encode(capture.initialState).write(to: directory.appendingPathComponent("initial-state.json"))
-        try encoder.encode(capture.finalState).write(to: directory.appendingPathComponent("final-state.json"))
+        var files: [String: Any] = [:]
+        func write(_ data: Data, name: String) throws {
+            let url = directory.appendingPathComponent(name)
+            try data.write(to: url, options: .atomic)
+            let expected = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            guard try sha256(url) == expected else { throw RunnerError.evidenceWriteMismatch }
+            files[name] = ["sha256": expected, "byte_count": data.count]
+        }
+        try write(encoder.encode(capture.captureFrames), name: "capture-frames.json")
+        try write(encoder.encode(capture.renderFrames), name: "render-frames.json")
+        try write(encoder.encode(capture.audioCalls), name: "audio-calls.json")
+        try write(encoder.encode(capture.controlEvents), name: "control-events.json")
+        try write(encoder.encode(capture.initialState), name: "initial-state.json")
+        try write(encoder.encode(capture.finalState), name: "final-state.json")
         for (name, samples) in [("raw-mic-48k", capture.rawMicrophoneSamples),
             ("render-48k", capture.chronologicalRenderSamples), ("clean-48k", capture.aecCleanSamples),
             ("linear-16k", capture.aecLinearSamples)] {
-            try samples.withUnsafeBytes { Data($0) }
-                .write(to: directory.appendingPathComponent(name + ".f32le.pcm"))
+            try write(samples.withUnsafeBytes { Data($0) }, name: name + ".f32le.pcm")
         }
+        try writeJSON([
+            "schema_version": 1, "attempt_id": capture.attemptID.uuidString,
+            "is_sealed": capture.isSealed,
+            "seal_reason": capture.sealReason?.rawValue as Any? ?? NSNull(),
+            "target_post_playback_capture_frames": capture.targetPostPlaybackCaptureFrameCount,
+            "post_playback_capture_frames": capture.postPlaybackCaptureFrameCount,
+            "capture_frames": capture.captureFrames.count, "render_frames": capture.renderFrames.count,
+            "exact_replay_ready": capture.isExactReplayReady,
+            "test3_acceptance": "NOT_ESTABLISHED", "files": files
+        ], to: directory.appendingPathComponent("capsule-integrity.json"))
     }
 
     private static func pcmChunk(_ samples: [Float], offset: Int, sampleCount: Int, gain: Float) -> Data {
@@ -1479,7 +1495,7 @@ enum Test3LocalAudioRunner {
     }
     private enum RunnerError: Error {
         case invalidConfiguration, invalidPCM, evidenceDirectoryExists,
-            microphoneNotAuthorized, timingTraceUnavailable,
+            evidenceWriteMismatch, microphoneNotAuthorized, timingTraceUnavailable,
             routeNotListening, aecUnavailable
         case wrongPhysicalRoute(String)
     }
