@@ -1,0 +1,708 @@
+{
+  "schema_version": 1,
+  "scope": "Exact metadata extraction only; no tensor values, waveforms or inference. Original record identifiers are 0-based.",
+  "arms": {
+    "mixed": {
+      "binding_source_sha256": "2feef376fbc7a85c01defd41412889b1bf4709d2af766a08cb75805721fd03a9",
+      "state_source_sha256": "f3afc818cda508e79acf373b6c26eab96ca435c91b8f23b480757f4855fdd56a",
+      "records": [
+        {
+          "record": 332,
+          "source_binding": {
+            "record": 332,
+            "real_hop": 329,
+            "phase": "real",
+            "source16": [
+              54528,
+              54656
+            ],
+            "mic512_nominal_source16": [
+              54528,
+              55040
+            ],
+            "mic512_actual_real_source16": [
+              54528,
+              55040
+            ],
+            "ref512_nominal_source16": [
+              52967,
+              53479
+            ],
+            "ref512_actual_real_source16": [
+              52967,
+              53479
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              332,
+              331,
+              330,
+              329
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "8eaa2e3c746da1f1b588a94525dc24960b4bceb15bebdcc330b4b473dfccb8e9",
+              "41ca010662370e2bf116631fc9f353289b10d7b7aca270a5df42c7e52c439466"
+            ],
+            "state_out": [
+              "8079913d463705a6001994b5fce9c8f290c1478cde58592a053b4102260159f4",
+              "c5a3a8a3569e4c3c64a5a8f4cfd0cbed8cfb32ad3798aaf4421630cc49034292"
+            ],
+            "mic_fft_sha256": "a91e6d85d925de91689eaff816c82b56c9abeb749169b70afd67fb6cf2c5e459",
+            "ref_fft_sha256": "f0dcde55dd538d6f3c7ee8628cd710946b79c89d3ff13b8e41021ac1a57228f8"
+          }
+        },
+        {
+          "record": 333,
+          "source_binding": {
+            "record": 333,
+            "real_hop": 330,
+            "phase": "real",
+            "source16": [
+              54656,
+              54784
+            ],
+            "mic512_nominal_source16": [
+              54656,
+              55168
+            ],
+            "mic512_actual_real_source16": [
+              54656,
+              55168
+            ],
+            "ref512_nominal_source16": [
+              53095,
+              53607
+            ],
+            "ref512_actual_real_source16": [
+              53095,
+              53607
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              333,
+              332,
+              331,
+              330
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "8079913d463705a6001994b5fce9c8f290c1478cde58592a053b4102260159f4",
+              "c5a3a8a3569e4c3c64a5a8f4cfd0cbed8cfb32ad3798aaf4421630cc49034292"
+            ],
+            "state_out": [
+              "0a3921afbf59e8d61cbdccf8576f0a5acbc98c4564676b3474d0a84aa93a52a0",
+              "8e7fcdc64faa4521e7b5620eeff6309d17196dfc824a49adccaef8795cf51808"
+            ],
+            "mic_fft_sha256": "b18de98c139d320f453426b724eefb74fd11485d0fb7817f7f327ef0406f215f",
+            "ref_fft_sha256": "930e8f121e9234bd708c28e55fcc5896ea601d3afc06a0285019786817b16752"
+          }
+        },
+        {
+          "record": 334,
+          "source_binding": {
+            "record": 334,
+            "real_hop": 331,
+            "phase": "real",
+            "source16": [
+              54784,
+              54912
+            ],
+            "mic512_nominal_source16": [
+              54784,
+              55296
+            ],
+            "mic512_actual_real_source16": [
+              54784,
+              55296
+            ],
+            "ref512_nominal_source16": [
+              53223,
+              53735
+            ],
+            "ref512_actual_real_source16": [
+              53223,
+              53735
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              334,
+              333,
+              332,
+              331
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "0a3921afbf59e8d61cbdccf8576f0a5acbc98c4564676b3474d0a84aa93a52a0",
+              "8e7fcdc64faa4521e7b5620eeff6309d17196dfc824a49adccaef8795cf51808"
+            ],
+            "state_out": [
+              "0df9c9d8ad31075951d9f4c0b3f04b32c9f3405e8a2ba99ad864192072c67711",
+              "fe4c0170bb7485cbdd910872dcb8d2d2c94b4e2cfe43e3c4e36624982c95cb17"
+            ],
+            "mic_fft_sha256": "3d3a914e643d333e0377a4692aab2fb1afea571d08931222faa959ca64c2941e",
+            "ref_fft_sha256": "7f0c0d128f5d6b9f37679fde7b587bb9d58356e07bdf148771eca9bc6dae7f3d"
+          }
+        },
+        {
+          "record": 335,
+          "source_binding": {
+            "record": 335,
+            "real_hop": 332,
+            "phase": "real",
+            "source16": [
+              54912,
+              55040
+            ],
+            "mic512_nominal_source16": [
+              54912,
+              55424
+            ],
+            "mic512_actual_real_source16": [
+              54912,
+              55424
+            ],
+            "ref512_nominal_source16": [
+              53351,
+              53863
+            ],
+            "ref512_actual_real_source16": [
+              53351,
+              53863
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              335,
+              334,
+              333,
+              332
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "0df9c9d8ad31075951d9f4c0b3f04b32c9f3405e8a2ba99ad864192072c67711",
+              "fe4c0170bb7485cbdd910872dcb8d2d2c94b4e2cfe43e3c4e36624982c95cb17"
+            ],
+            "state_out": [
+              "2ae29cc6dae8d5ccc536e4d55ece94add344ed751e873cf18b60b4efffb3e68e",
+              "7b25b8b2c938f42710bef655e5a0a51de885b9d6f8d79d03cdab57f567ed786e"
+            ],
+            "mic_fft_sha256": "18eecf66f3e6397016563e70f5e7da6a63a84b27df803ce0e9d6b011777336ee",
+            "ref_fft_sha256": "18aa84f21fa9c3d8c4ba34edcd11c939b73463f35a0f58daf74ecdde2c68e4fa"
+          }
+        },
+        {
+          "record": 336,
+          "source_binding": {
+            "record": 336,
+            "real_hop": 333,
+            "phase": "real",
+            "source16": [
+              55040,
+              55168
+            ],
+            "mic512_nominal_source16": [
+              55040,
+              55552
+            ],
+            "mic512_actual_real_source16": [
+              55040,
+              55552
+            ],
+            "ref512_nominal_source16": [
+              53479,
+              53991
+            ],
+            "ref512_actual_real_source16": [
+              53479,
+              53991
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              336,
+              335,
+              334,
+              333
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "2ae29cc6dae8d5ccc536e4d55ece94add344ed751e873cf18b60b4efffb3e68e",
+              "7b25b8b2c938f42710bef655e5a0a51de885b9d6f8d79d03cdab57f567ed786e"
+            ],
+            "state_out": [
+              "8a778bea34d8dbc61ca0bf3e53c634df8f1941715b8da476c68f8cf7dfebb88e",
+              "a606b80a75e8e7c68c86168b979a02893b13dea9a709e34c0cf7b70d0d9015ea"
+            ],
+            "mic_fft_sha256": "bf26f43f49c08a10cb3067b7975e3a9a7873b4cf09330db10280a10acf906e55",
+            "ref_fft_sha256": "18aa84f21fa9c3d8c4ba34edcd11c939b73463f35a0f58daf74ecdde2c68e4fa"
+          }
+        }
+      ]
+    },
+    "background": {
+      "binding_source_sha256": "2feef376fbc7a85c01defd41412889b1bf4709d2af766a08cb75805721fd03a9",
+      "state_source_sha256": "a1bcae622bbd62463f317bfae6191ab067699c8240cff298c10807226c45f47e",
+      "records": [
+        {
+          "record": 332,
+          "source_binding": {
+            "record": 332,
+            "real_hop": 329,
+            "phase": "real",
+            "source16": [
+              54528,
+              54656
+            ],
+            "mic512_nominal_source16": [
+              54528,
+              55040
+            ],
+            "mic512_actual_real_source16": [
+              54528,
+              55040
+            ],
+            "ref512_nominal_source16": [
+              52967,
+              53479
+            ],
+            "ref512_actual_real_source16": [
+              52967,
+              53479
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              332,
+              331,
+              330,
+              329
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "8eaa2e3c746da1f1b588a94525dc24960b4bceb15bebdcc330b4b473dfccb8e9",
+              "41ca010662370e2bf116631fc9f353289b10d7b7aca270a5df42c7e52c439466"
+            ],
+            "state_out": [
+              "75ad710c7b0638f369adddfdc9d3265c63d21b88ae7273820e71f7560ce47065",
+              "15c992b35b46f190da269292f3aa32715a32f71761c6c479eca155f7ce29f66a"
+            ],
+            "mic_fft_sha256": "0126cb6306b9d9a2886d4f15c64a53192094d4412c81107a8b71da0f36f2bbc0",
+            "ref_fft_sha256": "f0dcde55dd538d6f3c7ee8628cd710946b79c89d3ff13b8e41021ac1a57228f8"
+          }
+        },
+        {
+          "record": 333,
+          "source_binding": {
+            "record": 333,
+            "real_hop": 330,
+            "phase": "real",
+            "source16": [
+              54656,
+              54784
+            ],
+            "mic512_nominal_source16": [
+              54656,
+              55168
+            ],
+            "mic512_actual_real_source16": [
+              54656,
+              55168
+            ],
+            "ref512_nominal_source16": [
+              53095,
+              53607
+            ],
+            "ref512_actual_real_source16": [
+              53095,
+              53607
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              333,
+              332,
+              331,
+              330
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "75ad710c7b0638f369adddfdc9d3265c63d21b88ae7273820e71f7560ce47065",
+              "15c992b35b46f190da269292f3aa32715a32f71761c6c479eca155f7ce29f66a"
+            ],
+            "state_out": [
+              "dbf1cc0a54904ded8914eb1dea5bcc393f7f4c34c94a317222322b712e8b0aa5",
+              "a77dfadbd6d57eef92a0d2b92d3dc6a1413a7c51650195dd5c7b2842f07b2c95"
+            ],
+            "mic_fft_sha256": "0e56e74fd15fb9ed48369178f1a1426b7e7a546f0aa523cdf6dee5621902a66c",
+            "ref_fft_sha256": "930e8f121e9234bd708c28e55fcc5896ea601d3afc06a0285019786817b16752"
+          }
+        },
+        {
+          "record": 334,
+          "source_binding": {
+            "record": 334,
+            "real_hop": 331,
+            "phase": "real",
+            "source16": [
+              54784,
+              54912
+            ],
+            "mic512_nominal_source16": [
+              54784,
+              55296
+            ],
+            "mic512_actual_real_source16": [
+              54784,
+              55296
+            ],
+            "ref512_nominal_source16": [
+              53223,
+              53735
+            ],
+            "ref512_actual_real_source16": [
+              53223,
+              53735
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              334,
+              333,
+              332,
+              331
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "dbf1cc0a54904ded8914eb1dea5bcc393f7f4c34c94a317222322b712e8b0aa5",
+              "a77dfadbd6d57eef92a0d2b92d3dc6a1413a7c51650195dd5c7b2842f07b2c95"
+            ],
+            "state_out": [
+              "0b7fa9c488855724c78b4206418d00494ce3b1e4e2943995687698d2da22d2cb",
+              "a22de03b3a5c1b4b3451e8023d0797b3f0d269750903ed0687c49c854720decd"
+            ],
+            "mic_fft_sha256": "6ad6b2726b2fd9b367e5b26d908be354f59ce622b4033b11584af144cce28f58",
+            "ref_fft_sha256": "7f0c0d128f5d6b9f37679fde7b587bb9d58356e07bdf148771eca9bc6dae7f3d"
+          }
+        },
+        {
+          "record": 335,
+          "source_binding": {
+            "record": 335,
+            "real_hop": 332,
+            "phase": "real",
+            "source16": [
+              54912,
+              55040
+            ],
+            "mic512_nominal_source16": [
+              54912,
+              55424
+            ],
+            "mic512_actual_real_source16": [
+              54912,
+              55424
+            ],
+            "ref512_nominal_source16": [
+              53351,
+              53863
+            ],
+            "ref512_actual_real_source16": [
+              53351,
+              53863
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              335,
+              334,
+              333,
+              332
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "0b7fa9c488855724c78b4206418d00494ce3b1e4e2943995687698d2da22d2cb",
+              "a22de03b3a5c1b4b3451e8023d0797b3f0d269750903ed0687c49c854720decd"
+            ],
+            "state_out": [
+              "db35ed3572f8af761115d8ada4ed62b7a52d2df9824cffa2df15d383d972cfcb",
+              "e33ece6562493fec80b79a6ac25a7a49d867a40291e0054f75d871439b1d430a"
+            ],
+            "mic_fft_sha256": "00cd20485352cf2fce19422d49ef6b11722a6c286f96b3513186d9b1807b1332",
+            "ref_fft_sha256": "18aa84f21fa9c3d8c4ba34edcd11c939b73463f35a0f58daf74ecdde2c68e4fa"
+          }
+        },
+        {
+          "record": 336,
+          "source_binding": {
+            "record": 336,
+            "real_hop": 333,
+            "phase": "real",
+            "source16": [
+              55040,
+              55168
+            ],
+            "mic512_nominal_source16": [
+              55040,
+              55552
+            ],
+            "mic512_actual_real_source16": [
+              55040,
+              55552
+            ],
+            "ref512_nominal_source16": [
+              53479,
+              53991
+            ],
+            "ref512_actual_real_source16": [
+              53479,
+              53991
+            ],
+            "virtual_zero_prefix_samples": 0,
+            "final_eligible": true,
+            "input_ready_call": 141,
+            "compute_complete_at_Host_decision": "UNVERIFIED",
+            "OLA_decoder_records": [
+              336,
+              335,
+              334,
+              333
+            ],
+            "OLA_decoder_segments": [
+              [
+                0,
+                128
+              ],
+              [
+                128,
+                256
+              ],
+              [
+                256,
+                384
+              ],
+              [
+                384,
+                512
+              ]
+            ],
+            "qualified_source_evidence": "UNDEFINED"
+          },
+          "state_binding": {
+            "state_in": [
+              "db35ed3572f8af761115d8ada4ed62b7a52d2df9824cffa2df15d383d972cfcb",
+              "e33ece6562493fec80b79a6ac25a7a49d867a40291e0054f75d871439b1d430a"
+            ],
+            "state_out": [
+              "f0db8d666e857c01c283331fb97b50399f92106d2c09be3b29b7fc8ead054859",
+              "61d750b2dd0ea644240ff1ce5ea19212426616a448276d6fe92c8dc8d018abc6"
+            ],
+            "mic_fft_sha256": "8822181ab41e574f6ad91532110ee4937e52184278aa1e19c04bbd90fead54d3",
+            "ref_fft_sha256": "18aa84f21fa9c3d8c4ba34edcd11c939b73463f35a0f58daf74ecdde2c68e4fa"
+          }
+        }
+      ]
+    }
+  }
+}

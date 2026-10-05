@@ -1,0 +1,29 @@
+in_buffer[:-block_shift] = in_buffer[block_shift:]
+in_buffer[-block_shift:] = audio[idx * block_shift:idx * block_shift + block_shift]
+in_buffer_lpb[:-block_shift] = in_buffer_lpb[block_shift:]
+in_buffer_lpb[-block_shift:] = lpb[idx * block_shift:idx * block_shift + block_shift]
+in_block_fft = np.fft.rfft(np.squeeze(in_buffer)).astype('complex64')
+in_mag = np.abs(in_block_fft)
+in_mag = np.reshape(in_mag, (1, 1, -1)).astype('float32')
+lpb_block_fft = np.fft.rfft(np.squeeze(in_buffer_lpb)).astype('complex64')
+lpb_mag = np.abs(lpb_block_fft)
+lpb_mag = np.reshape(lpb_mag, (1, 1, -1)).astype('float32')
+interpreter_1.set_tensor(input_details_1[0]['index'], in_mag)
+interpreter_1.set_tensor(input_details_1[2]['index'], lpb_mag)
+interpreter_1.set_tensor(input_details_1[1]['index'], states_1)
+interpreter_1.invoke()
+out_mask = interpreter_1.get_tensor(output_details_1[0]['index'])
+states_1 = interpreter_1.get_tensor(output_details_1[1]['index'])
+estimated_block = np.fft.irfft(in_block_fft * out_mask)
+estimated_block = np.reshape(estimated_block, (1, 1, -1)).astype('float32')
+in_lpb = np.reshape(in_buffer_lpb, (1, 1, -1)).astype('float32')
+interpreter_2.set_tensor(input_details_2[1]['index'], states_2)
+interpreter_2.set_tensor(input_details_2[0]['index'], estimated_block)
+interpreter_2.set_tensor(input_details_2[2]['index'], in_lpb)
+interpreter_2.invoke()
+out_block = interpreter_2.get_tensor(output_details_2[0]['index'])
+states_2 = interpreter_2.get_tensor(output_details_2[1]['index'])
+out_buffer[:-block_shift] = out_buffer[block_shift:]
+out_buffer[-block_shift:] = np.zeros(block_shift)
+out_buffer += np.squeeze(out_block)
+out_file[idx * block_shift:idx * block_shift + block_shift] = out_buffer[:block_shift]

@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "input_hashes": {
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/audit.py": "9170c0329b3089e0d81b22122790d68e3fe3adecac59a44838924122638d2c58",
+    "<LOCAL_REVIEW_ATTACHMENTS>/d490fa69-dcf6-40f9-ad24-7436f5254846/\u5df2\u7c98\u8d34\u7684\u6587\u672c.txt": "4cc257f3d62f07a6aa69b90716e62852a0d990000be3f226286045cf624497a5",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/run.py": "5c4b8f0d14d25df95f7c5b65e1f6b5494d84c8b34e51a75727065e3f9d7846d1",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/result.json": "58685afb2a7365550c8bcba033cb418c35438e36ad167f275f363b5069648e0d",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/final-integrity.json": "4982f5c81ac3a8ef9dc2fd02b8556f1aa9bbc51c126b20edf3c8090028c65e5c",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/final-integrity.json": "c0bfdb7a1485af471751e3d19df9f6cdf58bf799c4562e664e02c1c155f10fef",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/final-integrity.json": "6a72538d45e4abed40bd9dff83295aaf77ba1e97a46f903dd8eb035875277d41",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/result.json": "d4dd9ea35ee980805ef3c417ee0148faf7ac154d23cf8d965668e4de93653f2c",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-frame-contract.json": "89ce5ffd6da5857775b50cef22e5e3835ba5294374798d8c049ff5357b3c25f4",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-baseline-source-metrics.json": "cd0ffce40c8834d02aaabd341a6c29d1cc9c8b0ad378796c66829769822a8963",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-candidate-source-metrics.json": "addf2d6a5e9e348d1f9eaab014e5d8b93b61e0d244e8036dca5083f4aaf04594",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-baseline-audit-1.json": "a663d75c9ff0887ca727f790dc1fc913d893e1c8d0b8488413795e4fe0c1d020",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-candidate-audit-1.json": "51b9ccb3fea8ae06ddbf8b023c26c21622f15581bbb4504b7d12cee15ca3ad07",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/raw-mic-48k.f32le.pcm": "8d18a6ffbc83bf8b63f9f741a79c81f40055a39cb50874a7c2c2c07507f91d70",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/render-48k.f32le.pcm": "8e0815df591ce5c6f30e7449a781b37027f54bb64ff35301f4e78e96f592ac12",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/clean-48k.f32le.pcm": "c3f2d34bbb51bfaa6e7481e5332ffdcda654e3ce852ecc69f2c5bf760ff8b200",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/audio-calls.json": "92ed26679fbc9c04b476750fc9080df534516e94204fb36c76e7cad2d810c44e",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/control-events.json": "12cb061aee83d2e5f339a17efcef201fbd8a4b3a43acee747d6425dcf9eb7ca8",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/mixed-source-indexed-output16.f32le.pcm": "2290829d4a6e1bd2b96864cb370e18dca2f703db5184068aa4db01517e935a19",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/mixed-valid-source.u8": "b6eb150375a0d25c05887f893612596a04be2c04b2a62da94c1082db0fad0bd2",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/mixed-availability-ledger.json": "970ae95746c55aae1151ab5a5913a5ab9b3b0ef055c76398215a289671be17e3",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/raw-mic-48k.f32le.pcm": "2927aad25f2d08339bb31906d035ed1688c07dec975682d63be1a8cf9de47c71",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/render-48k.f32le.pcm": "8e0815df591ce5c6f30e7449a781b37027f54bb64ff35301f4e78e96f592ac12",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/clean-48k.f32le.pcm": "5c01155ea804649be58e40b6b033ed773df0fd3a6b65c1d4677926ef557317b1",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/audio-calls.json": "a0601def5faaf6306b1e3888803f2b5e9a8cd49d9412a9c90f06e14d9c19f858",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/control-events.json": "12cb061aee83d2e5f339a17efcef201fbd8a4b3a43acee747d6425dcf9eb7ca8",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/background-source-indexed-output16.f32le.pcm": "c463b4d4dd8584f118da7a77190eb2e8eb0a3ba5d12a6a82d2a9cfc09015bbbb",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/background-valid-source.u8": "b6eb150375a0d25c05887f893612596a04be2c04b2a62da94c1082db0fad0bd2",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/background-availability-ledger.json": "2336c25601164c5df4089df530396e451dce45222262592df6533d0bf81ecc9f"
+  },
+  "GPT_Pro_review_sha256": "4cc257f3d62f07a6aa69b90716e62852a0d990000be3f226286045cf624497a5",
+  "source_activity_raw48": [
+    164779,
+    320779
+  ],
+  "source_activity16": [
+    54926,
+    106927
+  ],
+  "raw_input_onset_frame1based": 344,
+  "content_compensated_Host_onset_frame1based": 345,
+  "Host_source_mapping": "Inclusive frames a..b -> D16 core[(a-1)*160-144,b*160-144); clip only to original activity mask[54926,106927). FIR support is availability only, not the scoring interval.",
+  "fixed_intervals": [
+    {
+      "name": "loss448_479",
+      "Host_frameIDs_inclusive": [
+        448,
+        479
+      ],
+      "nominal_source16": [
+        71376,
+        76496
+      ],
+      "scored_source16": [
+        71376,
+        76496
+      ]
+    },
+    {
+      "name": "loss529_554",
+      "Host_frameIDs_inclusive": [
+        529,
+        554
+      ],
+      "nominal_source16": [
+        84336,
+        88496
+      ],
+      "scored_source16": [
+        84336,
+        88496
+      ]
+    },
+    {
+      "name": "loss578_643",
+      "Host_frameIDs_inclusive": [
+        578,
+        643
+      ],
+      "nominal_source16": [
+        92176,
+        102736
+      ],
+      "scored_source16": [
+        92176,
+        102736
+      ]
+    },
+    {
+      "name": "loss653_670",
+      "Host_frameIDs_inclusive": [
+        653,
+        670
+      ],
+      "nominal_source16": [
+        104176,
+        107056
+      ],
+      "scored_source16": [
+        104176,
+        106927
+      ]
+    },
+    {
+      "name": "onset345",
+      "Host_frameIDs_inclusive": [
+        345,
+        345
+      ],
+      "nominal_source16": [
+        54896,
+        55056
+      ],
+      "scored_source16": [
+        54926,
+        55056
+      ]
+    }
+  ],
+  "complete_mask": [
+    54926,
+    106927
+  ],
+  "source_definition": "u=resample_poly(raw_mixed_f32-raw_background_f32,1,3).astype(Float64), Float32 subtraction before unchanged SciPy resampling",
+  "DT_definition": "saved DTLN16 mixed.astype(Float64)-background.astype(Float64); no new inference/filter/scaling",
+  "AEC_definition": "each original clean48_f32[432:] separately resample_poly(1,3).astype(Float64), then subtract",
+  "paired_call_identity": "All audio-calls fields equal except backendStatsAfter: separate AEC outcome diagnostics, not consumed by DTLN. Strictly retain ordinal/kind/sample offsets/counts/frame IDs/host time and every other field.",
+  "E": "sum((delta_output-u)^2)/sum(u^2)",
+  "g": "dot(delta_output,u)/sum(u^2), diagnostic only; never rescale output",
+  "zero_source_energy": "NO_ACTIVE_SOURCE; no division or fidelity conclusion",
+  "whole_metric_reproduction_absolute_tolerance": 1e-12,
+  "segment_comparison": "E_D <= E_A, exact pre-fixed comparison, no added acceptance margin",
+  "stops": [
+    "input/source/state/schedule mismatch",
+    "old whole metric mismatch",
+    "required mask support missing",
+    "any fixed loss/onset E_D>E_A",
+    "nonfinite",
+    "window/lag/filter/normalization change"
+  ],
+  "scope": "Software paired response location audit, not source qualification or isolated real speech fidelity",
+  "DTLN_or_AEC_rerun": false,
+  "Gate_rerun": false,
+  "product_patch": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED"
+}

@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "input_hashes": {
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-onset-stage-localization-01/audit.py": "894a737d88b4f25a14ad5d9760a57c57a0f1202d52b846b87dad550b12804550",
+    "<LOCAL_REVIEW_ATTACHMENTS>/4ad1bc6c-4cc3-49ac-a57c-e20c3ca599a4/\u5df2\u7c98\u8d34\u7684\u6587\u672c.txt": "277413875500dba3edda7bd57e29bc97a6704509e7f4e2c3626fb35d826aea29",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/final-integrity.json": "c0bfdb7a1485af471751e3d19df9f6cdf58bf799c4562e664e02c1c155f10fef",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/final-integrity.json": "4982f5c81ac3a8ef9dc2fd02b8556f1aa9bbc51c126b20edf3c8090028c65e5c",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/final-integrity.json": "d31a24d58b93a80258bd6a1810716acab82d0cb04cce9777198473b814862d4b",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/source-interval-ledger.json": "5fe9cdf6c30e63b08a6a1659f3fd9d17aa3395600b456086334c9cd2916c26fd",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/paired-response-source-hashes.json": "05b255df9e68245b74aaa349ef57d89c313bf855a6e216752db2c46f7762b974",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/final-integrity.json": "6a72538d45e4abed40bd9dff83295aaf77ba1e97a46f903dd8eb035875277d41",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-native-mic.f32le.pcm": "70fab24b12437dca49f0a9d461ffed8eb6d48454d229c42c92ac0f3cc657bd38",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-native-ref.f32le.pcm": "43d2972ca42fb45da76098b08677a469c5899c98064a0cc267eac83942769a67",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-native-mask.f32le.pcm": "3ce4fa1dc8477fb94d3b77545a30f1b535a2651933e1a2c2ff89df6afe1e294f",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-native-stage1.f32le.pcm": "bce7265eb93d642d2544f368259a39a1f161f6016771a825b94ed69b14c296bb",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-native-stage2.f32le.pcm": "42122f4b5862477dbbf205dd45c5c6cc6eb594169173e6277da1ba0dd223719a",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-native-final.f32le.pcm": "428c983870c592abab14b765cb055254c70dd3791893f365f0c72566f2ba75b8",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-native-state-binding.json": "f3afc818cda508e79acf373b6c26eab96ca435c91b8f23b480757f4855fdd56a",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/mixed-record-source-binding.json": "2feef376fbc7a85c01defd41412889b1bf4709d2af766a08cb75805721fd03a9",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/mixed-source-indexed-output16.f32le.pcm": "2290829d4a6e1bd2b96864cb370e18dca2f703db5184068aa4db01517e935a19",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/mixed-valid-source.u8": "b6eb150375a0d25c05887f893612596a04be2c04b2a62da94c1082db0fad0bd2",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/audio-calls.json": "92ed26679fbc9c04b476750fc9080df534516e94204fb36c76e7cad2d810c44e",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/raw-mic-48k.f32le.pcm": "8d18a6ffbc83bf8b63f9f741a79c81f40055a39cb50874a7c2c2c07507f91d70",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule/render-48k.f32le.pcm": "8e0815df591ce5c6f30e7449a781b37027f54bb64ff35301f4e78e96f592ac12",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-native-mic.f32le.pcm": "2c0334beb90d14d30f71e0189e6816ce9e5110faf0f22463c912085fc29aee2a",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-native-ref.f32le.pcm": "43d2972ca42fb45da76098b08677a469c5899c98064a0cc267eac83942769a67",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-native-mask.f32le.pcm": "cab6c8b4bb6fefd719558553bf2034388509b5960ddca83ec69bfd51f58d1a67",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-native-stage1.f32le.pcm": "dcd15088a1c9c7f2f92588b6b777efa3f2e6c7c9d359e2111750def2971c0c5d",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-native-stage2.f32le.pcm": "1c062c3cde6c945b10d58faf74026c76eabea11fede29fa945fa4046bddb2663",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-native-final.f32le.pcm": "9361d664cf453c3c1bc657c619ef010b6a28818f54693d01f53f33e3e3a7fe6c",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-native-state-binding.json": "a1bcae622bbd62463f317bfae6191ab067699c8240cff298c10807226c45f47e",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/background-record-source-binding.json": "2feef376fbc7a85c01defd41412889b1bf4709d2af766a08cb75805721fd03a9",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/background-source-indexed-output16.f32le.pcm": "c463b4d4dd8584f118da7a77190eb2e8eb0a3ba5d12a6a82d2a9cfc09015bbbb",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-online-align-02/background-valid-source.u8": "b6eb150375a0d25c05887f893612596a04be2c04b2a62da94c1082db0fad0bd2",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/audio-calls.json": "a0601def5faaf6306b1e3888803f2b5e9a8cd49d9412a9c90f06e14d9c19f858",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/raw-mic-48k.f32le.pcm": "2927aad25f2d08339bb31906d035ed1688c07dec975682d63be1a8cf9de47c71",
+    "<LOCAL_REPO>/.build/test3-original-source-causality-20261004/software_background_reconstruction/capsule/render-48k.f32le.pcm": "8e0815df591ce5c6f30e7449a781b37027f54bb64ff35301f4e78e96f592ac12"
+  },
+  "J_source16": [
+    54926,
+    55056
+  ],
+  "records0based": [
+    332,
+    333,
+    334,
+    335,
+    336
+  ],
+  "final_slices0based": [
+    [
+      335,
+      14,
+      128
+    ],
+    [
+      336,
+      0,
+      16
+    ]
+  ],
+  "mic512_support_union16": [
+    54528,
+    55552
+  ],
+  "reference_held_offset16": 1561,
+  "Stage1_views": "For each unique contributor record, use block intersection with J, retain all5 distinct contexts; no average, best-hop selection or Stage1 OLA",
+  "input_identity": "Reconstruct original immutable already-arrived Float32 caches only through ready call141; require5 recorded mic/ref buffers bit exact. Reference is identical across arms. Neither arm state is reset; cross-arm state differences after first perturbed input are allowed.",
+  "u": "Unchanged previous full-file R(rawMixed_F32-rawBackground_F32).astype(F64), same hash; never replaced by cached mic difference",
+  "precision_explanation": "DeltaMic-u=(prefix_cached_pair-full_separate_pair)+(full_separate_pair-u); original separate full resampling only quantifies old arithmetic-order discrepancy, not a new detector/model input",
+  "Stage1_actual": "rfft(mic512).astype(complex64)*actual_maskF32; irfft then F32 bit exact to actual saved Stage1 input to model2",
+  "mask_algebra": "(XM-XB)*WB + XM*(WM-WB), all spectral products/subtractions complex64/maskF32; each irfft castF32; compare actual paired Stage1 in F64 and preserve rounding residual. Algebra only, no mask replacement/model call.",
+  "OLA": "Each arm separately original Float32 shift/add oldest-to-current for all4 decoder blocks; entire final128 bit exact before F64 paired difference.4 rank contributions stitched across both final slices; retain rounding rho.",
+  "metrics": "Same E=sum((response-u)^2)/sum(u^2), g=dot(response,u)/sum(u^2); zero denominator NO_ACTIVE_SOURCE_VIEW. Projection/energy only for algebra parts and decoder contributions, no rescaling.",
+  "reconstruction_tolerance": "BIT_EXACT",
+  "scalar_closure_absolute_tolerance": 1e-12,
+  "final_E_g_reproduction_tolerance": 1e-12,
+  "Stage1_first_boundary_sufficient_rule": "Only if native input/cache identity and precision explanation close, and every nonzero view has g_Stage1<g_mic AND E_Stage1>E_mic. This is sufficient not necessary; absence does not prove Stage1 intact. Never claim sole final cause.",
+  "mixed_rule": "Inconsistent views -> MIXED_STAGE_NOT_UNIQUELY_LOCALIZED; zero source view -> NO_ACTIVE_SOURCE_VIEW; no observed Stage1 decrease plus weak final -> LATER_STAGE_OR_OLA_COMBINATION, not network/OLA bug",
+  "stops": [
+    "fixed ID/source/support mismatch",
+    "state handoff failure",
+    "native cache/FFT/IFFT/OLA bit mismatch",
+    "missing tensor/nonfinite",
+    "u/final old metric mismatch",
+    "new window/lag/scaling",
+    "new model/Gate"
+  ],
+  "scope": "Software paired response at observable boundaries; not isolated human speech, source classifier or network-state causal identification",
+  "waveform_export": false,
+  "model_Gate_execution": false,
+  "product_patch": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED"
+}

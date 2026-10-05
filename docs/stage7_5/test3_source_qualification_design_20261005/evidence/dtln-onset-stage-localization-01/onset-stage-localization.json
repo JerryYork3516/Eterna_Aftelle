@@ -1,0 +1,728 @@
+{
+  "schema_version": 1,
+  "verdict": "OBSERVABLE_STAGE_LEDGER_CLOSED_NO_PATCH",
+  "source16": [
+    54926,
+    55056
+  ],
+  "samples": 130,
+  "native_records0based": [
+    332,
+    333,
+    334,
+    335,
+    336
+  ],
+  "final_records_and_slices": [
+    [
+      335,
+      14,
+      128
+    ],
+    [
+      336,
+      0,
+      16
+    ]
+  ],
+  "actual_cache_FFT_IFFT_OLA_bit_exact": true,
+  "within_arm_state_handoff": true,
+  "first332_input_states_match_between_arms": true,
+  "input_precision_difference_explained_by_frozen_arithmetic": true,
+  "Stage1_views": [
+    {
+      "record": 332,
+      "source16": [
+        54926,
+        55040
+      ],
+      "local512_slice": [
+        398,
+        512
+      ],
+      "J_slice": [
+        0,
+        114
+      ],
+      "input_ready_call": 141,
+      "mic_pair": {
+        "status": "VALID",
+        "samples": 114,
+        "source_energy": 0.0008360156223310521,
+        "g_signed_projection": 0.9999999358184757,
+        "energy": 0.0008360155150578129,
+        "energy_to_source_ratio": 0.999999871685126,
+        "RMS": 0.0027080379300024014,
+        "max_abs": 0.009086452424526215,
+        "E": 4.817469054036704e-11
+      },
+      "Stage1_pair": {
+        "status": "VALID",
+        "samples": 114,
+        "source_energy": 0.0008360156223310521,
+        "g_signed_projection": 0.42561803370922724,
+        "energy": 0.00017027599426380465,
+        "energy_to_source_ratio": 0.20367561288989575,
+        "RMS": 0.0012221493658671654,
+        "max_abs": 0.0033299364149570465,
+        "E": 0.35243954547144124
+      },
+      "Stage1_added_decrease_witness": true,
+      "input_precision": {
+        "cache_vs_separate_full": {
+          "status": "VALID",
+          "samples": 114,
+          "source_energy": 0.0008360156223310521,
+          "g_signed_projection": 0.0,
+          "energy": 0.0,
+          "energy_to_source_ratio": 0.0,
+          "RMS": 0.0,
+          "max_abs": 0.0
+        },
+        "separate_full_vs_original_u": {
+          "status": "VALID",
+          "samples": 114,
+          "source_energy": 0.0008360156223310521,
+          "g_signed_projection": -6.418152435871354e-08,
+          "energy": 4.02747938927108e-14,
+          "energy_to_source_ratio": 4.817469054036704e-11,
+          "RMS": 1.879594811988832e-08,
+          "max_abs": 5.4147676564753056e-08
+        },
+        "closure_max_abs": 0.0,
+        "u_changed": false,
+        "actual_cache_bit_exact": true
+      },
+      "mask_algebra": {
+        "actual_contexts_and_masks_only": true,
+        "input_change_under_saved_background_mask": {
+          "status": "VALID",
+          "samples": 114,
+          "source_energy": 0.0008360156223310521,
+          "g_signed_projection": 0.4718557922388243,
+          "energy": 0.00019689007351150493,
+          "energy_to_source_ratio": 0.23551004102353823,
+          "RMS": 0.0013141940145943662,
+          "max_abs": 0.0034335569944232702
+        },
+        "actual_mask_change_term": {
+          "status": "VALID",
+          "samples": 114,
+          "source_energy": 0.0008360156223310521,
+          "g_signed_projection": -0.04623818406656996,
+          "energy": 2.5852097192504288e-05,
+          "energy_to_source_ratio": 0.030922983377297666,
+          "RMS": 0.0004762066593301573,
+          "max_abs": 0.0008990642963908613
+        },
+        "Float32_spectral_rounding_max_abs": 8.531646796016981e-07,
+        "time_domain_rounding_residual": {
+          "status": "VALID",
+          "samples": 114,
+          "source_energy": 0.0008360156223310521,
+          "g_signed_projection": 4.255369729702672e-07,
+          "energy": 2.415467333579533e-15,
+          "energy_to_source_ratio": 2.8892610007029718e-12,
+          "RMS": 4.60307613924429e-09,
+          "max_abs": 1.1546035239007324e-08
+        },
+        "not_a_mask_substitution_model_experiment": true
+      }
+    },
+    {
+      "record": 333,
+      "source16": [
+        54926,
+        55056
+      ],
+      "local512_slice": [
+        270,
+        400
+      ],
+      "J_slice": [
+        0,
+        130
+      ],
+      "input_ready_call": 141,
+      "mic_pair": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 1.0000003024276585,
+        "energy": 0.002607346057988307,
+        "energy_to_source_ratio": 1.000000604872585,
+        "RMS": 0.004478449300636504,
+        "max_abs": 0.011014401912689209,
+        "E": 1.726799037810737e-11
+      },
+      "Stage1_pair": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 0.38697405107849353,
+        "energy": 0.00047207689640831816,
+        "energy_to_source_ratio": 0.18105658836822033,
+        "RMS": 0.0019056129569255261,
+        "max_abs": 0.0044296979904174805,
+        "E": 0.4071084862112333
+      },
+      "Stage1_added_decrease_witness": true,
+      "input_precision": {
+        "cache_vs_separate_full": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 0.0,
+          "energy": 0.0,
+          "energy_to_source_ratio": 0.0,
+          "RMS": 0.0,
+          "max_abs": 0.0
+        },
+        "separate_full_vs_original_u": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 3.0242765840586337e-07,
+          "energy": 4.502359940819731e-14,
+          "energy_to_source_ratio": 1.726799037810737e-11,
+          "RMS": 1.861008812614965e-08,
+          "max_abs": 5.4147676564753056e-08
+        },
+        "closure_max_abs": 0.0,
+        "u_changed": false,
+        "actual_cache_bit_exact": true
+      },
+      "mask_algebra": {
+        "actual_contexts_and_masks_only": true,
+        "input_change_under_saved_background_mask": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 0.4665475871478759,
+          "energy": 0.00062612363777963,
+          "energy_to_source_ratio": 0.2401384406133408,
+          "RMS": 0.002194615154241837,
+          "max_abs": 0.005300272721797228
+        },
+        "actual_mask_change_term": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": -0.0795735782802169,
+          "energy": 8.147231522306133e-05,
+          "energy_to_source_ratio": 0.031247238644758608,
+          "RMS": 0.0007916502492265582,
+          "max_abs": 0.001556475181132555
+        },
+        "Float32_spectral_rounding_max_abs": 4.085099734265602e-07,
+        "time_domain_rounding_residual": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 4.221083451311676e-08,
+          "energy": 1.1414543974583016e-15,
+          "energy_to_source_ratio": 4.3778426894873375e-13,
+          "RMS": 2.9631770858298254e-09,
+          "max_abs": 8.352799341082573e-09
+        },
+        "not_a_mask_substitution_model_experiment": true
+      }
+    },
+    {
+      "record": 334,
+      "source16": [
+        54926,
+        55056
+      ],
+      "local512_slice": [
+        142,
+        272
+      ],
+      "J_slice": [
+        0,
+        130
+      ],
+      "input_ready_call": 141,
+      "mic_pair": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 1.0000003024276585,
+        "energy": 0.002607346057988307,
+        "energy_to_source_ratio": 1.000000604872585,
+        "RMS": 0.004478449300636504,
+        "max_abs": 0.011014401912689209,
+        "E": 1.726799037810737e-11
+      },
+      "Stage1_pair": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 0.4165277392625102,
+        "energy": 0.0009228935501634278,
+        "energy_to_source_ratio": 0.3539591937053773,
+        "RMS": 0.002664428860957502,
+        "max_abs": 0.005317091941833496,
+        "E": 0.5209037151803569
+      },
+      "Stage1_added_decrease_witness": true,
+      "input_precision": {
+        "cache_vs_separate_full": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 0.0,
+          "energy": 0.0,
+          "energy_to_source_ratio": 0.0,
+          "RMS": 0.0,
+          "max_abs": 0.0
+        },
+        "separate_full_vs_original_u": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 3.0242765840586337e-07,
+          "energy": 4.502359940819731e-14,
+          "energy_to_source_ratio": 1.726799037810737e-11,
+          "RMS": 1.861008812614965e-08,
+          "max_abs": 5.4147676564753056e-08
+        },
+        "closure_max_abs": 0.0,
+        "u_changed": false,
+        "actual_cache_bit_exact": true
+      },
+      "mask_algebra": {
+        "actual_contexts_and_masks_only": true,
+        "input_change_under_saved_background_mask": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 0.44520514393061483,
+          "energy": 0.0010466549540142868,
+          "energy_to_source_ratio": 0.40142565038517347,
+          "RMS": 0.0028374622383312968,
+          "max_abs": 0.005717454943805933
+        },
+        "actual_mask_change_term": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": -0.028677751305477766,
+          "energy": 2.8503844819804518e-05,
+          "energy_to_source_ratio": 0.010932136136539896,
+          "RMS": 0.0004682524370120534,
+          "max_abs": 0.0010247910395264626
+        },
+        "Float32_spectral_rounding_max_abs": 6.290834525177479e-07,
+        "time_domain_rounding_residual": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 3.4663737304666975e-07,
+          "energy": 1.5593227158064318e-15,
+          "energy_to_source_ratio": 5.980501338595181e-13,
+          "RMS": 3.463349552324734e-09,
+          "max_abs": 1.1496013030409813e-08
+        },
+        "not_a_mask_substitution_model_experiment": true
+      }
+    },
+    {
+      "record": 335,
+      "source16": [
+        54926,
+        55056
+      ],
+      "local512_slice": [
+        14,
+        144
+      ],
+      "J_slice": [
+        0,
+        130
+      ],
+      "input_ready_call": 141,
+      "mic_pair": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 1.0000003024276585,
+        "energy": 0.002607346057988307,
+        "energy_to_source_ratio": 1.000000604872585,
+        "RMS": 0.004478449300636504,
+        "max_abs": 0.011014401912689209,
+        "E": 1.726799037810737e-11
+      },
+      "Stage1_pair": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 0.6959267177839444,
+        "energy": 0.0020146596333588725,
+        "energy_to_source_ratio": 0.7726864049360831,
+        "RMS": 0.003936671410604173,
+        "max_abs": 0.008225470781326294,
+        "E": 0.38083296936819416
+      },
+      "Stage1_added_decrease_witness": true,
+      "input_precision": {
+        "cache_vs_separate_full": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 0.0,
+          "energy": 0.0,
+          "energy_to_source_ratio": 0.0,
+          "RMS": 0.0,
+          "max_abs": 0.0
+        },
+        "separate_full_vs_original_u": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 3.0242765840586337e-07,
+          "energy": 4.502359940819731e-14,
+          "energy_to_source_ratio": 1.726799037810737e-11,
+          "RMS": 1.861008812614965e-08,
+          "max_abs": 5.4147676564753056e-08
+        },
+        "closure_max_abs": 0.0,
+        "u_changed": false,
+        "actual_cache_bit_exact": true
+      },
+      "mask_algebra": {
+        "actual_contexts_and_masks_only": true,
+        "input_change_under_saved_background_mask": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 0.6981410053361884,
+          "energy": 0.001967037743614104,
+          "energy_to_source_ratio": 0.7544218871118987,
+          "RMS": 0.003889866265858293,
+          "max_abs": 0.008510450832545757
+        },
+        "actual_mask_change_term": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": -0.0022143988228377986,
+          "energy": 1.4427104207570127e-05,
+          "energy_to_source_ratio": 0.005533255890574478,
+          "RMS": 0.00033313319359321784,
+          "max_abs": 0.0006917823338881135
+        },
+        "Float32_spectral_rounding_max_abs": 2.2754669358704523e-07,
+        "time_domain_rounding_residual": {
+          "status": "VALID",
+          "samples": 130,
+          "source_energy": 0.002607344480877111,
+          "g_signed_projection": 1.1127059386752279e-07,
+          "energy": 7.891540960319412e-16,
+          "energy_to_source_ratio": 3.0266583561159117e-13,
+          "RMS": 2.463821447126927e-09,
+          "max_abs": 7.557900971733034e-09
+        },
+        "not_a_mask_substitution_model_experiment": true
+      }
+    },
+    {
+      "record": 336,
+      "source16": [
+        55040,
+        55056
+      ],
+      "local512_slice": [
+        0,
+        16
+      ],
+      "J_slice": [
+        114,
+        130
+      ],
+      "input_ready_call": 141,
+      "mic_pair": {
+        "status": "VALID",
+        "samples": 16,
+        "source_energy": 0.0017713288585460589,
+        "g_signed_projection": 1.0000004754565133,
+        "energy": 0.0017713305429304937,
+        "energy_to_source_ratio": 1.0000009509157075,
+        "RMS": 0.010521794473052392,
+        "max_abs": 0.011014401912689209,
+        "E": 2.680928215319893e-12
+      },
+      "Stage1_pair": {
+        "status": "VALID",
+        "samples": 16,
+        "source_energy": 0.0017713288585460589,
+        "g_signed_projection": 0.7924349702799149,
+        "energy": 0.0012556718961759007,
+        "energy_to_source_ratio": 0.7088869410768708,
+        "RMS": 0.008858865249623893,
+        "max_abs": 0.010861210525035858,
+        "E": 0.1240170005170408
+      },
+      "Stage1_added_decrease_witness": true,
+      "input_precision": {
+        "cache_vs_separate_full": {
+          "status": "VALID",
+          "samples": 16,
+          "source_energy": 0.0017713288585460589,
+          "g_signed_projection": 0.0,
+          "energy": 0.0,
+          "energy_to_source_ratio": 0.0,
+          "RMS": 0.0,
+          "max_abs": 0.0
+        },
+        "separate_full_vs_original_u": {
+          "status": "VALID",
+          "samples": 16,
+          "source_energy": 0.0017713288585460589,
+          "g_signed_projection": 4.754565133259937e-07,
+          "energy": 4.7488055154865094e-15,
+          "energy_to_source_ratio": 2.680928215319893e-12,
+          "RMS": 1.7227894378533518e-08,
+          "max_abs": 3.4458935260772705e-08
+        },
+        "closure_max_abs": 0.0,
+        "u_changed": false,
+        "actual_cache_bit_exact": true
+      },
+      "mask_algebra": {
+        "actual_contexts_and_masks_only": true,
+        "input_change_under_saved_background_mask": {
+          "status": "VALID",
+          "samples": 16,
+          "source_energy": 0.0017713288585460589,
+          "g_signed_projection": 0.7357063898732444,
+          "energy": 0.0010784683242601404,
+          "energy_to_source_ratio": 0.60884703540898,
+          "RMS": 0.008210010369436738,
+          "max_abs": 0.010312083177268505
+        },
+        "actual_mask_change_term": {
+          "status": "VALID",
+          "samples": 16,
+          "source_energy": 0.0017713288585460589,
+          "g_signed_projection": 0.05672852467669624,
+          "energy": 8.068944524164593e-06,
+          "energy_to_source_ratio": 0.0045553057441788305,
+          "RMS": 0.000710147190912058,
+          "max_abs": 0.0008421719539910555
+        },
+        "Float32_spectral_rounding_max_abs": 2.2236972069667866e-07,
+        "time_domain_rounding_residual": {
+          "status": "VALID",
+          "samples": 16,
+          "source_energy": 0.0017713288585460589,
+          "g_signed_projection": 5.5729974310552006e-08,
+          "energy": 7.921303891956447e-17,
+          "energy_to_source_ratio": 4.471955534252633e-14,
+          "RMS": 2.2250426810451927e-09,
+          "max_abs": 4.0745362639427185e-09
+        },
+        "not_a_mask_substitution_model_experiment": true
+      }
+    }
+  ],
+  "first_observable_boundary": "FIRST_OBSERVABLE_ADDITIONAL_RESPONSE_DECREASE_AT_STAGE1",
+  "Stage1_views_are_not_independent_votes": true,
+  "unique_network_internal_cause": "NOT_ESTABLISHED",
+  "final_pair": {
+    "status": "VALID",
+    "samples": 130,
+    "source_energy": 0.002607344480877111,
+    "g_signed_projection": 0.1394462059364652,
+    "energy": 8.032342133191799e-05,
+    "energy_to_source_ratio": 0.030806601092041808,
+    "RMS": 0.0007860486446677359,
+    "max_abs": 0.002090528141707182,
+    "E": 0.7519141892191115
+  },
+  "final_original_E_g_reproduced": true,
+  "OLA_contributions": [
+    {
+      "rank_oldest_to_current": 0,
+      "pieces": [
+        {
+          "record": 332,
+          "local512_slice": [
+            398,
+            512
+          ]
+        },
+        {
+          "record": 333,
+          "local512_slice": [
+            384,
+            400
+          ]
+        }
+      ],
+      "paired_contribution": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 0.011829148350917917,
+        "energy": 5.436221467233452e-07,
+        "energy_to_source_ratio": 0.00020849648012006097,
+        "RMS": 6.466613349311067e-05,
+        "max_abs": 0.00021023920271545649
+      }
+    },
+    {
+      "rank_oldest_to_current": 1,
+      "pieces": [
+        {
+          "record": 333,
+          "local512_slice": [
+            270,
+            384
+          ]
+        },
+        {
+          "record": 334,
+          "local512_slice": [
+            256,
+            272
+          ]
+        }
+      ],
+      "paired_contribution": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 0.033766848707840094,
+        "energy": 4.155437586772779e-06,
+        "energy_to_source_ratio": 0.0015937432192983144,
+        "RMS": 0.0001787873164227171,
+        "max_abs": 0.00041548180161044
+      }
+    },
+    {
+      "rank_oldest_to_current": 2,
+      "pieces": [
+        {
+          "record": 334,
+          "local512_slice": [
+            142,
+            256
+          ]
+        },
+        {
+          "record": 335,
+          "local512_slice": [
+            128,
+            144
+          ]
+        }
+      ],
+      "paired_contribution": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": 0.09551348600795839,
+        "energy": 3.805842273038976e-05,
+        "energy_to_source_ratio": 0.014596622352558073,
+        "RMS": 0.0005410703262294792,
+        "max_abs": 0.001431173412129283
+      }
+    },
+    {
+      "rank_oldest_to_current": 3,
+      "pieces": [
+        {
+          "record": 335,
+          "local512_slice": [
+            14,
+            128
+          ]
+        },
+        {
+          "record": 336,
+          "local512_slice": [
+            0,
+            16
+          ]
+        }
+      ],
+      "paired_contribution": {
+        "status": "VALID",
+        "samples": 130,
+        "source_energy": 0.002607344480877111,
+        "g_signed_projection": -0.0016632773681593172,
+        "energy": 2.251584152174479e-05,
+        "energy_to_source_ratio": 0.008635545355391804,
+        "RMS": 0.00041617157631978954,
+        "max_abs": 0.0008228662190958858
+      }
+    }
+  ],
+  "OLA_rounding_rho": {
+    "status": "VALID",
+    "samples": 130,
+    "source_energy": 0.002607344480877111,
+    "g_signed_projection": 2.3790810248834434e-10,
+    "energy": 7.468183616822759e-19,
+    "energy_to_source_ratio": 2.8642872745033143e-16,
+    "RMS": 7.579417278607373e-11,
+    "max_abs": 2.6193447411060333e-10
+  },
+  "OLA_energy": {
+    "sum_individual_energy": 6.527332398563067e-05,
+    "six_cross_terms": [
+      {
+        "i": 0,
+        "j": 1,
+        "twice_dot": 1.9719349857408767e-06
+      },
+      {
+        "i": 0,
+        "j": 2,
+        "twice_dot": 8.20459354270063e-06
+      },
+      {
+        "i": 0,
+        "j": 3,
+        "twice_dot": -1.5298194314858073e-06
+      },
+      {
+        "i": 1,
+        "j": 2,
+        "twice_dot": 1.684230654764776e-05
+      },
+      {
+        "i": 1,
+        "j": 3,
+        "twice_dot": -6.203925746257695e-06
+      },
+      {
+        "i": 2,
+        "j": 3,
+        "twice_dot": -4.234991654092086e-06
+      }
+    ],
+    "sum_cross_terms": 1.5050098244253678e-05,
+    "sum_contributions_energy": 8.032342222988434e-05,
+    "rho_energy": 7.468183616822759e-19,
+    "twice_dot_sum_with_rho": -8.979671084153454e-13,
+    "actual_final_energy": 8.032342133191799e-05,
+    "energy_closure_abs_error": 5.241016361135983e-21
+  },
+  "OLA_projection": {
+    "sum_contribution_projection": 0.1394462056985571,
+    "rounding_projection": 2.3790810248834434e-10,
+    "actual_final_projection": 0.1394462059364652
+  },
+  "OLA_code_bug": "NOT_SUPPORTED_ORIGINAL_ARITHMETIC_BIT_EXACT",
+  "physical_error_qualifications_unchanged": 14,
+  "software_forward_losses_unchanged": 142,
+  "new_Gate": "NOT_RUN",
+  "prior_onset_STOP": "RETAINED_NOT_ACCEPTANCE_PASS",
+  "live_budget": "UNVERIFIED_PRIOR20MS_CORE_FAILURE_RETAINED",
+  "physical400ms": "UNVERIFIED",
+  "product_patch": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED"
+}

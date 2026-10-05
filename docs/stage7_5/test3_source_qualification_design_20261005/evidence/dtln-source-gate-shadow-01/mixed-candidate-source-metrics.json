@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "capture_frames": 1090,
+  "playback_frames": 1050,
+  "qualified": 26,
+  "qualified_source_ids": [
+    260,
+    316,
+    351,
+    393,
+    439,
+    445,
+    457,
+    459,
+    546,
+    555,
+    556,
+    557,
+    558,
+    587,
+    603,
+    613,
+    616,
+    636,
+    640,
+    646,
+    657,
+    718,
+    719,
+    726,
+    729,
+    736
+  ],
+  "qualification_branches": {
+    "immediate_double_talk": 26
+  },
+  "confirmation_chains": [
+    {
+      "sourceFrames": [
+        555,
+        556,
+        557,
+        558
+      ],
+      "roles": [
+        "DTLN_FINAL",
+        "DTLN_FINAL",
+        "DTLN_FINAL",
+        "DTLN_FINAL"
+      ],
+      "all_DTLN": true
+    }
+  ],
+  "Gate_frames": 21,
+  "Gate_source_ids": [
+    557,
+    558,
+    559,
+    560,
+    561,
+    562,
+    563,
+    564,
+    565,
+    566,
+    567,
+    568,
+    569,
+    570,
+    571,
+    572,
+    573,
+    574,
+    575,
+    576,
+    577
+  ],
+  "unique_nonzero_playback_forwarded": 23,
+  "forwarded_source_ids": [
+    555,
+    556,
+    557,
+    558,
+    559,
+    560,
+    561,
+    562,
+    563,
+    564,
+    565,
+    566,
+    567,
+    568,
+    569,
+    570,
+    571,
+    572,
+    573,
+    574,
+    575,
+    576,
+    577
+  ],
+  "roles": {
+    "DTLN_FINAL": {
+      "active": 1007,
+      "qualified": 26,
+      "Gate": 21,
+      "forwarded": 23
+    },
+    "ORIGINAL_AEC_FALLBACK": {
+      "active": 43,
+      "qualified": 0,
+      "Gate": 0,
+      "forwarded": 0
+    }
+  },
+  "baseline_update_sources": [
+    {
+      "sourceFrame": 107,
+      "role": "DTLN_FINAL"
+    },
+    {
+      "sourceFrame": 125,
+      "role": "DTLN_FINAL"
+    },
+    {
+      "sourceFrame": 864,
+      "role": "DTLN_FINAL"
+    },
+    {
+      "sourceFrame": 1068,
+      "role": "DTLN_FINAL"
+    }
+  ],
+  "protected_qualified": [
+    351,
+    393,
+    439,
+    445,
+    457,
+    459,
+    546,
+    555,
+    556,
+    557,
+    558,
+    587,
+    603,
+    613,
+    616,
+    636,
+    640,
+    646,
+    657
+  ],
+  "protected_forwarded": [
+    555,
+    556,
+    557,
+    558,
+    559,
+    560,
+    561,
+    562,
+    563,
+    564,
+    565,
+    566,
+    567,
+    568,
+    569,
+    570,
+    571,
+    572,
+    573,
+    574,
+    575,
+    576,
+    577
+  ],
+  "forwarded_PCM_matches_own_candidate_source_frame": true,
+  "duplicate_forwarded_source_ids": {},
+  "source_origin_not_independent_sensor": true,
+  "all_frame_input_ready_logical_guards_verified": true,
+  "real_compute_completion_and_decision_latency": "UNVERIFIED"
+}

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "method_sha256": "697bf1143d76d3bef83389d7f2d0b749b54bec6599b1882975978ae7b5025361",
+  "source": "No software label enters Host; physical human silence label fixed from original user confirmation.",
+  "scoring": "All playback-active frames: independent near_end_speech/double_talk, >=3 consecutive evidence chains, Gate open source IDs, unique nonzero emitted original source IDs. Entire recording emitted IDs are also retained.",
+  "software": "Preserve original forwarded whole source activity frames345..670; report old-minus-new ID set, activity qualifications, first qualification/Gate/forward source frame. Prior audio-quality response evidence is distinct.",
+  "availability": "Candidate guard separates original source event from a monotonic logical input-ready cutoff, blocks until all frames in a capture call are ready. Real completion, wall latency and live backlog remain UNVERIFIED.",
+  "acceptance": "No physical false qualification; no software protected losses; full candidate route never PASS due explicit fallback and no physical400ms.",
+  "stop": "One fixed candidate only. Any source-qualification or protected-loss failure rejects advancement; no threshold variants."
+}

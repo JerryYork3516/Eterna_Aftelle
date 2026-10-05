@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "task": "Stage7.5/Test3/03 current fixed DTLN hybrid closeout",
+  "HEAD": "0684c3fb674495134d765bc8ae98b2526d3ae06e",
+  "branch": "7.5.11",
+  "git_status": " M apps/macos/Aftelle/Test3LocalAudioRunner.swift\n?? tools/qwen_live_receive_probe/interrupt_segment.pcm\n?? tools/qwen_live_receive_probe/prompt_segment.pcm\n",
+  "source_review": {
+    "path": "<LOCAL_REVIEW_ATTACHMENTS>/697d1d8f-a6a8-4a1f-991f-bb6d1ffb0b14/已粘贴的文本.txt",
+    "sha256": "54b8aa4c594ec83af6d7bb28174b0a1c4d7f57e7c8e85f910f582965d4a5f279",
+    "instructions_treated_as": "External technical advice; disposition independently checked against local sealed evidence"
+  },
+  "reviewed_package": {
+    "path": "<LOCAL_REPO>/.build/test3-gptpro-review-20261005-04/GPT-Pro-fixed-model-conformance.zip",
+    "sha256": "a88c70543fedf7455fb65e94f5ad6f56546c5882f9b0b3a9684b999abcb25792",
+    "manifest_sha256": "fe859fa4883996193511bc14f8fc244663517dcfb673061a0f701caa6a107e8b",
+    "all11_files_and8_sealed_artifacts_verified": true
+  },
+  "candidate": "Current fixed DTLN512 + old Host hybrid only",
+  "candidate_disposition": "REJECTED_FOR_INTEGRATION",
+  "kernel_repair_direction": "CLOSED_FOR_THE_TWO_FIXED_LiteRT_RESOLVERS",
+  "next_candidate": "NO_ADMISSIBLE_NEXT_CANDIDATE_IN_THIS_REVIEWED_SCOPE",
+  "numerical_evidence": {
+    "source16": [
+      54926,
+      55056
+    ],
+    "original_optimized_reproduced": true,
+    "reference_execution": "COMPLETED",
+    "optimized_J": {
+      "samples": 130,
+      "source_energy": 0.002607344480877111,
+      "E": 0.7519141892191115,
+      "g": 0.1394462059364652
+    },
+    "reference_J": {
+      "samples": 130,
+      "source_energy": 0.002607344480877111,
+      "E": 0.7519151278840992,
+      "g": 0.13944575240744234
+    },
+    "E_AEC3": 0.004203665508248569
+  },
+  "independent_readonly_review": {
+    "agent": "aec3_bridge_semantics",
+    "verdict": "NO_FINDING",
+    "scope": "Attached review and local conformance metadata only; no fresh external source/model/PCM review"
+  },
+  "no_new_experiment": true,
+  "no_user_recording_needed_for_current_blocker": true,
+  "remaining_ledgers": {
+    "audio": "Fixed software130-sample onset STOP retained; not physical human syllable damage proof",
+    "source": "14 physical pure-echo wrong qualifications /1wrong chain; software19qualifications/23forwarded spans and142added losses unresolved",
+    "time": "Prior20.120208ms core-hop failure retained; complete live readiness/backlog unverified"
+  },
+  "future_candidate_required_before_test": {
+    "input": "Decision-time already-arrived raw/render/linear and legal history only",
+    "rule": "Explicit implementable source-qualification rule distinguishing echo-model mismatch from additional near-end speech",
+    "lifecycle": "Invalid states, route/state lifetime and actual evidence ready time defined",
+    "screening": "Frozen labeled physical pure-echo and software paired controls first; real400ms acceptance later with user confirmation"
+  },
+  "limits": [
+    "No conclusion about allDTLN/model families or industry feasibility",
+    "No proof that a new posterior/training head/hardware is necessary",
+    "No fresh independent audit of external NKF/WebRTC-mainline/NN3A assets",
+    "No new Gate, physical acceptance or performance pass"
+  ],
+  "formal_route": "WebRTC AEC3 unchanged",
+  "Runtime_interruption_authority": "UNCHANGED_NOT_GRANTED",
+  "Stage7": "PASS",
+  "Test3": "BLOCKED",
+  "product_patch": false,
+  "commit_push_reset_clean": false
+}

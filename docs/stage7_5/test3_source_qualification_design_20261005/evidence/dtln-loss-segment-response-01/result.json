@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "verdict": "FIXED_SOFTWARE_RESPONSE_STOP_AUDIO_DAMAGE_NOT_EXCLUDED",
+  "old_whole_metrics_reproduced": true,
+  "whole_E_D": 0.08103923606032613,
+  "whole_E_A": 0.7937524401235182,
+  "four_loss_segments_plus_onset_pass": false,
+  "stops": [
+    {
+      "name": "onset345",
+      "reason": "SOURCE_RESPONSE_DEGRADED_STOP"
+    }
+  ],
+  "rows": [
+    {
+      "name": "loss448_479",
+      "source16": [
+        71376,
+        76496
+      ],
+      "samples": 5120,
+      "status": "SOURCE_RESPONSE_NO_WORSE",
+      "DTLN": {
+        "E": 0.0021762309352444096,
+        "g": 0.9924133618237486,
+        "response_RMS": 0.14739320784984303,
+        "correlation": 0.9989261369276936
+      },
+      "AEC3": {
+        "E": 0.008396175995204067,
+        "g": 0.9447451294555088,
+        "response_RMS": 0.1405817514526569,
+        "correlation": 0.9970201978779856
+      }
+    },
+    {
+      "name": "loss529_554",
+      "source16": [
+        84336,
+        88496
+      ],
+      "samples": 4160,
+      "status": "SOURCE_RESPONSE_NO_WORSE",
+      "DTLN": {
+        "E": 0.03554035323695993,
+        "g": 0.9799524438225157,
+        "response_RMS": 0.1355444010000847,
+        "correlation": 0.982191820262306
+      },
+      "AEC3": {
+        "E": 0.8140639199295434,
+        "g": 0.6387319074495639,
+        "response_RMS": 0.141935255206884,
+        "correlation": 0.6113659175219653
+      }
+    },
+    {
+      "name": "loss578_643",
+      "source16": [
+        92176,
+        102736
+      ],
+      "samples": 10560,
+      "status": "SOURCE_RESPONSE_NO_WORSE",
+      "DTLN": {
+        "E": 0.10018115809941629,
+        "g": 0.9268023415307736,
+        "response_RMS": 0.11297098597157369,
+        "correlation": 0.9489901108629033
+      },
+      "AEC3": {
+        "E": 1.3787927380413694,
+        "g": 0.3954255153172011,
+        "response_RMS": 0.12510316275791367,
+        "correlation": 0.36562668386974745
+      }
+    },
+    {
+      "name": "loss653_670",
+      "source16": [
+        104176,
+        106927
+      ],
+      "samples": 2751,
+      "status": "SOURCE_RESPONSE_NO_WORSE",
+      "DTLN": {
+        "E": 0.05304333065192372,
+        "g": 0.9807212588094993,
+        "response_RMS": 0.04928902504229126,
+        "correlation": 0.973694222076858
+      },
+      "AEC3": {
+        "E": 2.008429160486055,
+        "g": 0.032542455937425455,
+        "response_RMS": 0.05070270177799051,
+        "correlation": 0.031408446382063436
+      }
+    },
+    {
+      "name": "onset345",
+      "source16": [
+        54926,
+        55056
+      ],
+      "samples": 130,
+      "status": "SOURCE_RESPONSE_DEGRADED_STOP",
+      "DTLN": {
+        "E": 0.7519141892191115,
+        "g": 0.1394462059364652,
+        "response_RMS": 0.0007860486446677359,
+        "correlation": 0.7944833679400848
+      },
+      "AEC3": {
+        "E": 0.004203665508248569,
+        "g": 0.9467721055463396,
+        "response_RMS": 0.004243309640140831,
+        "correlation": 0.9992364336284207
+      }
+    }
+  ],
+  "not_source_classification_or_human_fidelity": true,
+  "new_Gate": "NOT_RUN",
+  "physical_negative_qualified_unchanged": 14,
+  "protected_forwarded_unchanged": 23,
+  "physical400ms": "UNVERIFIED",
+  "live_budget": "UNVERIFIED_PRIOR_CORE20MS_STOP_RETAINED",
+  "new_head_is_required": "NOT_ESTABLISHED",
+  "formal_product_change": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED"
+}

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "u_Float64_sha256": "e462ee8edf06f316a3e30590a73486315e3b4850b7285e90817e303353b0d639",
+  "delta_D_Float64_sha256": "e3767f854cdfd5f45ce67ef599d7322410811f2926091ca70491b54af63e1977",
+  "delta_A_Float64_sha256": "16e7f3836c1a79e78d19fb1b08ac177b5945ac81919d518aa9b898e59e7f5a55",
+  "NumPy_version": "1.26.4",
+  "SciPy_version": "1.14.1",
+  "no_audio_arrays_written": true,
+  "model_invocation": false
+}

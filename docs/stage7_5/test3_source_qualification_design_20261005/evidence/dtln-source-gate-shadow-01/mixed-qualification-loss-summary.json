@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "audited_source_frames": 142,
+  "branches": {
+    "uncertain": 113,
+    "immediate_double_talk": 10,
+    "no_match_uncertain": 19
+  },
+  "first_immediate_failure_histogram": {
+    "processed_render_corr_gt_025": 15,
+    "linear_render_corr_gt_035": 17,
+    "ALL_IMMEDIATE_CONDITIONS_TRUE": 10,
+    "NO_MATCH": 19,
+    "raw_correlation_lt_035": 69,
+    "processed_linear_corr_lt_065": 8,
+    "processed_RMS_lt_0012": 4
+  },
+  "processed_RMS_ge_0012": 131,
+  "processed_linear_corr_ge_065": 86,
+  "baseline_lt_5": 142,
+  "not_a_new_classifier": true
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "scope": "Read-only pre-execution code review and post-execution JSON/log review; no model invocation or raw waveform access by reviewers",
+  "reviewers": [
+    {
+      "agent": "dtln_causal_binding",
+      "before_execution": "NO_FINDING",
+      "after_execution": "NO_FINDING",
+      "confirmed": [
+        "337 records include3 actual padding invokes; each arm/resolver has independent zero initialization and its own recurrent Stage1/Stage2 outputs",
+        "Saved128 incremental inputs reconstruct512 bit-exact; original optimized mask, Stage1, decoder, final, state and FFT checks precede reference interpretation",
+        "All4 runs reached337 records and stderr is empty",
+        "Reference E .7519151278840992 remains above original .004203665508248569; old STOP remains valid"
+      ],
+      "limits": "Closing this fixed kernel repair direction is supported. Not all runtimes are proven correct, not all DTLN configurations are rejected, and no new physical/source/performance acceptance follows."
+    },
+    {
+      "agent": "aec3_bridge_semantics",
+      "before_execution": "NO_FINDING",
+      "after_execution": "NO_FINDING",
+      "confirmed": [
+        "resolver3 vs2 is the only explicit execution endpoint variable, LiteRT2.2.0/arm64/thread setting and tensors match, no delegates are present",
+        "Reference graphs actually completed, not merely API enumeration support",
+        "First numeric difference is at record0 padding mask; final paired response maximum difference2.898741513490677e-8 does not rescue the fixed onset",
+        "Result preserves NO_PATCH, Test3 BLOCKED and independent source/audio/time ledgers"
+      ],
+      "limits": "Reference numeric differences are not kernel bugs. The generic reference failure branch would require failure.detail to distinguish unsupported execution from audit assertion failure; no failure occurred here."
+    }
+  ],
+  "product_patch": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED"
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "command": "xcodebuild -project apps/macos/Aftelle/Aftelle.xcodeproj -scheme Aftelle -configuration Debug -derivedDataPath .build/test3-design-delivery-20261005/DerivedData -disableAutomaticPackageResolution -skipPackageUpdates SWIFT_OPTIMIZATION_LEVEL=-O build",
+  "exit_code": 0,
+  "result": "BUILD SUCCEEDED",
+  "Runner_in_build": true,
+  "log_sha256": "2a6a289bb3f9d323decde8b7c0b7f319177015ad3455a8ad37ef832a734e9b42",
+  "stderr_sha256": "ea90fe77a94760e50dcf60f15f9f714a62ea75a791e086a895ecd897b5ed8d22",
+  "source_sha256": "50da4a4be7d8420ff8497f4db6918feb52ca279f9705d6cb78e7a635bbe7a71b",
+  "new_recording_playback": false,
+  "SwiftFormat": "UNAVAILABLE",
+  "SwiftLint": "UNAVAILABLE",
+  "Xcode_MCP": "Unavailable because agent not approved; existing xcodebuild CLI used"
+}

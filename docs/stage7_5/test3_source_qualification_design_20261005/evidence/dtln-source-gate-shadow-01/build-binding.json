@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "command": [
+    "xcrun",
+    "swiftc",
+    "-D",
+    "DEBUG",
+    "-D",
+    "AFTELLE_CONDITION_AUDIT",
+    "-parse-as-library",
+    "-O",
+    "-warn-concurrency",
+    "-strict-concurrency=complete",
+    "-module-cache-path",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/module-cache",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/MacSpeechAcousticEchoHost.swift",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/RecordedAcousticReplay.swift",
+    "-o",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/shadow-replay"
+  ],
+  "exit": 0,
+  "compiler": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)\nTarget: arm64-apple-macosx26.0\n",
+  "sources": {
+    "MacSpeechAcousticEchoHost.swift": "2745cdd582111cdccf1e135d7a18d417ece570546e3b81fb9a678965de85e116",
+    "RecordedAcousticReplay.swift": "0c71125fc38ba404f102f0ae1033b77d963622b67335aa8a6bf825fdfd183222"
+  }
+}

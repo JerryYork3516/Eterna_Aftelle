@@ -1,0 +1,205 @@
+"""Frozen segment paired response evaluation only; no model or Gate execution."""
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import scipy
+from scipy.signal import resample_poly
+
+os.umask(0o077)
+ROOT = Path('<LOCAL_REPO>')
+WORK = Path(__file__).resolve().parent
+RUN = WORK.parent
+DT = RUN / 'dtln-online-align-02'
+NATIVE = RUN / 'dtln-stage-witness-01'
+GATE = RUN / 'dtln-source-gate-shadow-01'
+SOFT = ROOT / '.build/test3-original-source-causality-20261004'
+CAPS = {'mixed': SOFT / 'original_mixed/capsule',
+        'background': SOFT / 'software_background_reconstruction/capsule'}
+REVIEW = Path('<LOCAL_REVIEW_ATTACHMENTS>/d490fa69-dcf6-40f9-ad24-7436f5254846/已粘贴的文本.txt')
+read = lambda p: json.loads(p.read_text())
+sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def save(name, data):
+    p = WORK / name
+    assert not p.exists(), 'Do not overwrite frozen evidence'
+    p.write_text(json.dumps(data, indent=2, allow_nan=False) + '\n')
+
+
+# All requested intervals and arithmetic are frozen before loading waveforms.
+mask_lo, mask_hi = 164779 // 3, (320779 + 2) // 3
+onset_frame = (164779 + 432) // 480 + 1
+segments = [('loss448_479', 448, 479), ('loss529_554', 529, 554),
+            ('loss578_643', 578, 643), ('loss653_670', 653, 670),
+            ('onset345', onset_frame, onset_frame)]
+paths = [Path(__file__), REVIEW, DT / 'run.py', DT / 'result.json',
+         DT / 'final-integrity.json', NATIVE / 'final-integrity.json',
+         GATE / 'final-integrity.json', GATE / 'result.json', GATE / 'mixed-frame-contract.json',
+         GATE / 'mixed-baseline-source-metrics.json', GATE / 'mixed-candidate-source-metrics.json',
+         GATE / 'mixed-baseline-audit-1.json', GATE / 'mixed-candidate-audit-1.json']
+for arm, capsule in CAPS.items():
+    paths += [capsule / name for name in ['raw-mic-48k.f32le.pcm', 'render-48k.f32le.pcm',
+               'clean-48k.f32le.pcm', 'audio-calls.json', 'control-events.json']]
+    paths += [DT / f'{arm}-{suffix}' for suffix in ['source-indexed-output16.f32le.pcm',
+              'valid-source.u8', 'availability-ledger.json']]
+hashes = {str(p): sha(p) for p in paths}
+protocol = {'schema_version': 1, 'input_hashes': hashes,
+    'GPT_Pro_review_sha256': sha(REVIEW), 'source_activity_raw48': [164779, 320779],
+    'source_activity16': [mask_lo, mask_hi], 'raw_input_onset_frame1based': 164779 // 480 + 1,
+    'content_compensated_Host_onset_frame1based': onset_frame,
+    'Host_source_mapping': 'Inclusive frames a..b -> D16 core[(a-1)*160-144,b*160-144); clip only to original activity mask[54926,106927). FIR support is availability only, not the scoring interval.',
+    'fixed_intervals': [{'name': name, 'Host_frameIDs_inclusive': [a, b],
+        'nominal_source16': [(a - 1) * 160 - 144, b * 160 - 144],
+        'scored_source16': [max(mask_lo, (a - 1) * 160 - 144), min(mask_hi, b * 160 - 144)]}
+        for name, a, b in segments],
+    'complete_mask': [mask_lo, mask_hi],
+    'source_definition': 'u=resample_poly(raw_mixed_f32-raw_background_f32,1,3).astype(Float64), Float32 subtraction before unchanged SciPy resampling',
+    'DT_definition': 'saved DTLN16 mixed.astype(Float64)-background.astype(Float64); no new inference/filter/scaling',
+    'AEC_definition': 'each original clean48_f32[432:] separately resample_poly(1,3).astype(Float64), then subtract',
+    'paired_call_identity': 'All audio-calls fields equal except backendStatsAfter: separate AEC outcome diagnostics, not consumed by DTLN. Strictly retain ordinal/kind/sample offsets/counts/frame IDs/host time and every other field.',
+    'E': 'sum((delta_output-u)^2)/sum(u^2)',
+    'g': 'dot(delta_output,u)/sum(u^2), diagnostic only; never rescale output',
+    'zero_source_energy': 'NO_ACTIVE_SOURCE; no division or fidelity conclusion',
+    'whole_metric_reproduction_absolute_tolerance': 1e-12,
+    'segment_comparison': 'E_D <= E_A, exact pre-fixed comparison, no added acceptance margin',
+    'stops': ['input/source/state/schedule mismatch', 'old whole metric mismatch',
+              'required mask support missing', 'any fixed loss/onset E_D>E_A',
+              'nonfinite', 'window/lag/filter/normalization change'],
+    'scope': 'Software paired response location audit, not source qualification or isolated real speech fidelity',
+    'DTLN_or_AEC_rerun': False, 'Gate_rerun': False, 'product_patch': False,
+    'Stage7': 'PASS', 'Test3': 'BLOCKED'}
+save('protocol.json', protocol)
+
+for directory in [DT, NATIVE, GATE]:
+    for relative, h in read(directory / 'final-integrity.json')['artifact_hashes'].items():
+        assert sha(directory / relative) == h, ('Frozen evidence changed', directory.name, relative)
+for path, h in read(GATE / 'final-integrity.json')['formal_hashes'].items():
+    assert sha(ROOT / path) == h
+old = read(DT / 'result.json')
+ledgers = {arm: read(DT / f'{arm}-availability-ledger.json') for arm in CAPS}
+def without_duration(ledger):
+    return {'alignment': {k: v for k, v in ledger['alignment'].items() if k != 'GCC_seconds'},
+        'chunks': [{k: v for k, v in c.items() if k != 'full_hop_seconds'} for c in ledger['chunks']]}
+assert without_duration(ledgers['mixed']) == without_duration(ledgers['background'])
+paired_calls = {arm: read(CAPS[arm] / 'audio-calls.json') for arm in CAPS}
+assert len(paired_calls['mixed']) == len(paired_calls['background'])
+assert [{k: v for k, v in c.items() if k != 'backendStatsAfter'} for c in paired_calls['mixed']] == [
+    {k: v for k, v in c.items() if k != 'backendStatsAfter'} for c in paired_calls['background']]
+assert sha(CAPS['mixed'] / 'render-48k.f32le.pcm') == sha(CAPS['background'] / 'render-48k.f32le.pcm')
+for arm in CAPS:
+    assert not any(e['kind'] == 'route_reset' for e in read(CAPS[arm] / 'control-events.json'))
+raw = {arm: np.fromfile(capsule / 'raw-mic-48k.f32le.pcm', dtype='<f4') for arm, capsule in CAPS.items()}
+assert raw['mixed'].shape == raw['background'].shape
+u = resample_poly(raw['mixed'] - raw['background'], 1, 3).astype(float)
+d = {arm: np.fromfile(DT / f'{arm}-source-indexed-output16.f32le.pcm', dtype='<f4').astype(float) for arm in CAPS}
+v = {arm: np.fromfile(DT / f'{arm}-valid-source.u8', dtype='u1') for arm in CAPS}
+a = {arm: resample_poly(np.fromfile(capsule / 'clean-48k.f32le.pcm', dtype='<f4')[432:], 1, 3).astype(float)
+     for arm, capsule in CAPS.items()}
+delta_d, delta_a = d['mixed'] - d['background'], a['mixed'] - a['background']
+assert all(np.isfinite(z).all() for z in [u, delta_d, delta_a])
+metrics = {role: read(GATE / f'mixed-{role}-source-metrics.json') for role in ['baseline', 'candidate']}
+traces = {role: {row['sourceFrame']: row for row in read(GATE / f'mixed-{role}-audit-1.json')['conditionFrames']}
+          for role in metrics}
+contracts = {row['sourceFrame']: row for row in read(GATE / 'mixed-frame-contract.json')}
+lost = set(metrics['baseline']['protected_forwarded']) - set(metrics['candidate']['protected_forwarded'])
+assert sorted(lost) == [f for _, start, end in segments[:4] for f in range(start, end + 1)]
+assert len(lost) == 142
+
+
+def evaluate(lo, hi):
+    expected = hi - lo
+    assert expected > 0 and hi <= min(len(u), len(delta_d), len(delta_a))
+    valid = (v['mixed'][lo:hi] != 0) & (v['background'][lo:hi] != 0)
+    support_complete = len(valid) == expected and bool(valid.all())
+    energy = float(np.sum(u[lo:hi] ** 2))
+    result = {'source16': [lo, hi], 'samples': expected, 'source_energy': energy,
+        'full_DTLN_mask_support': support_complete, 'valid_samples': int(valid.sum()),
+        'AEC_domain_in_bounds': True, 'unscaled_source_RMS': float(np.sqrt(energy / expected))}
+    if not support_complete:
+        result['status'] = 'UNAVAILABLE_SUPPORT_STOP'
+        return result
+    if energy == 0:
+        result['status'] = 'NO_ACTIVE_SOURCE'
+        return result
+    for name, response in [('DTLN', delta_d), ('AEC3', delta_a)]:
+        z = response[lo:hi]
+        response_energy = float(np.sum(z ** 2))
+        result[name] = {'E': float(np.sum((z - u[lo:hi]) ** 2) / energy),
+            'g': float(np.dot(z, u[lo:hi]) / energy),
+            'response_RMS': float(np.sqrt(response_energy / expected)),
+            'correlation': None if response_energy == 0 else float(np.dot(z, u[lo:hi]) / np.sqrt(response_energy * energy))}
+    result['DTLN_E_not_above_AEC3'] = result['DTLN']['E'] <= result['AEC3']['E']
+    result['status'] = 'SOURCE_RESPONSE_NO_WORSE' if result['DTLN_E_not_above_AEC3'] else 'SOURCE_RESPONSE_DEGRADED_STOP'
+    return result
+
+
+def ledger_for_frames(frame_ids):
+    report = {}
+    for role, m in metrics.items():
+        frame_ids = set(frame_ids)
+        chains = [{'original_full_chain': c['sourceFrames'],
+                   'frames_in_interval': sorted(frame_ids & set(c['sourceFrames']))}
+                  for c in m['confirmation_chains'] if frame_ids & set(c['sourceFrames'])]
+        states = [traces[role][f] for f in sorted(frame_ids)]
+        branches = {}
+        for state in states:
+            name = state['actualBranch']
+            branches[name] = branches.get(name, 0) + 1
+        report[role] = {'qualified': sorted(frame_ids & set(m['qualified_source_ids'])),
+            'Gate': sorted(frame_ids & set(m['Gate_source_ids'])),
+            'forwarded_by_own_sourceID': sorted(frame_ids & set(m['forwarded_source_ids'])),
+            'confirm_chain_intersections': chains, 'branches': branches,
+            'confirmationCount_after_by_sourceID': {str(s['sourceFrame']): s['afterGate']['confirmationCount'] for s in states},
+            'origin': 'Frozen prior Host replay, not rerun or new qualifications'}
+    return report
+
+
+whole = evaluate(mask_lo, mask_hi)
+assert whole['status'] in ['SOURCE_RESPONSE_NO_WORSE', 'SOURCE_RESPONSE_DEGRADED_STOP']
+for name, original in [('DTLN', 'candidate'), ('AEC3', 'AEC3_clean')]:
+    expected = old['software_source_response'][original]
+    assert abs(whole[name]['E'] - expected['normalized_squared_error']) <= 1e-12
+    assert abs(whole[name]['correlation'] - expected['response_source_correlation']) <= 1e-12
+whole['name'] = 'complete_original_activity_mask'
+whole['Host_ledger'] = ledger_for_frames(range(345, 671))
+rows = []
+for frozen in protocol['fixed_intervals']:
+    name = frozen['name']
+    start, end = frozen['Host_frameIDs_inclusive']
+    # Verify mapping against the existing Host contract; do not use expanded FIR bounds for scoring.
+    assert contracts[start]['nominal_raw48'][0] == frozen['nominal_source16'][0] * 3
+    assert contracts[end]['nominal_raw48'][1] == frozen['nominal_source16'][1] * 3
+    assert all(contracts[i]['role'] == 'DTLN_FINAL' for i in range(start, end + 1))
+    row = evaluate(*frozen['scored_source16'])
+    row.update({'name': name, 'Host_frameIDs_inclusive': [start, end],
+        'nominal_source16': frozen['nominal_source16'], 'scored_source16': frozen['scored_source16'],
+        'clipped_by_original_activity_mask_samples': frozen['nominal_source16'][1] - frozen['nominal_source16'][0] - row['samples'],
+        'Host_ledger': ledger_for_frames(range(start, end + 1)),
+        'input_ready_clock': 'Previous logical support only; actual model completion/live queue remains UNVERIFIED'})
+    rows.append(row)
+save('source-interval-ledger.json', {'schema_version': 1, 'complete_original_mask': whole, 'fixed_intervals': rows})
+save('paired-response-source-hashes.json', {'schema_version': 1,
+    'u_Float64_sha256': hashlib.sha256(u.tobytes()).hexdigest(),
+    'delta_D_Float64_sha256': hashlib.sha256(delta_d.tobytes()).hexdigest(),
+    'delta_A_Float64_sha256': hashlib.sha256(delta_a.tobytes()).hexdigest(),
+    'NumPy_version': np.__version__, 'SciPy_version': scipy.__version__,
+    'no_audio_arrays_written': True, 'model_invocation': False})
+for p, h in hashes.items():
+    assert sha(Path(p)) == h
+all_pass = all(r['status'] == 'SOURCE_RESPONSE_NO_WORSE' for r in rows)
+stops = [{'name': r['name'], 'reason': r['status']} for r in rows if r['status'] != 'SOURCE_RESPONSE_NO_WORSE']
+summary = {'schema_version': 1, 'verdict': 'FIXED_SOFTWARE_RESPONSE_SUPPORTS_QUALIFICATION_LAYER_REVIEW' if all_pass else 'FIXED_SOFTWARE_RESPONSE_STOP_AUDIO_DAMAGE_NOT_EXCLUDED',
+    'old_whole_metrics_reproduced': True, 'whole_E_D': whole['DTLN']['E'], 'whole_E_A': whole['AEC3']['E'],
+    'four_loss_segments_plus_onset_pass': all_pass, 'stops': stops,
+    'rows': [{k: r.get(k) for k in ['name', 'source16', 'samples', 'status', 'DTLN', 'AEC3']} for r in rows],
+    'not_source_classification_or_human_fidelity': True,
+    'new_Gate': 'NOT_RUN', 'physical_negative_qualified_unchanged': 14,
+    'protected_forwarded_unchanged': 23, 'physical400ms': 'UNVERIFIED',
+    'live_budget': 'UNVERIFIED_PRIOR_CORE20MS_STOP_RETAINED',
+    'new_head_is_required': 'NOT_ESTABLISHED', 'formal_product_change': False,
+    'Stage7': 'PASS', 'Test3': 'BLOCKED'}
+save('result.json', summary)
+print(json.dumps(summary, indent=2, allow_nan=False))

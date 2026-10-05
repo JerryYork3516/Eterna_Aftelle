@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "audited_source_frames": 14,
+  "branches": {
+    "immediate_double_talk": 10,
+    "low_correlation_near_end": 4
+  },
+  "first_immediate_failure_histogram": {
+    "ALL_IMMEDIATE_CONDITIONS_TRUE": 10,
+    "raw_correlation_lt_035": 4
+  },
+  "processed_RMS_ge_0012": 14,
+  "processed_linear_corr_ge_065": 14,
+  "baseline_lt_5": 14,
+  "not_a_new_classifier": true
+}

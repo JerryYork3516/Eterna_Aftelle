@@ -1,0 +1,285 @@
+"""One fixed resolver3/resolver2 execution comparison; no Host, Gate or devices."""
+import ast
+import hashlib
+import importlib.metadata
+import json
+import os
+import platform
+import sys
+from pathlib import Path
+
+import ai_edge_litert.interpreter as tflite
+import numpy as np
+from scipy.signal import resample_poly
+
+os.umask(0o077)
+ROOT = Path('<LOCAL_REPO>')
+WORK = Path(__file__).resolve().parent
+RUN = WORK.parent
+NATIVE = RUN / 'dtln-stage-witness-01'
+ONSET = RUN / 'dtln-onset-stage-localization-01'
+PREV = RUN / 'dtln-loss-segment-response-01'
+OFFICIAL = RUN / 'dtln-offline-01/official'
+SOFT = ROOT / '.build/test3-original-source-causality-20261004'
+CAPS = {'background': SOFT / 'software_background_reconstruction/capsule',
+        'mixed': SOFT / 'original_mixed/capsule'}
+ROLES = {'mic': 512, 'ref': 512, 'mask': 257, 'stage1': 512, 'stage2': 512, 'final': 128}
+J = (54926, 55056)
+FINALS = [(335, 14, 128), (336, 0, 16)]
+E_AEC3 = 0.004203665508248569
+read = lambda p: json.loads(p.read_text())
+digest = lambda a: hashlib.sha256(np.asarray(a).tobytes()).hexdigest()
+sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def save(name, value):
+    p = WORK / name
+    assert not p.exists(), 'Do not overwrite frozen evidence'
+    p.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+
+
+def bit_exact(a, b):
+    return np.array_equal(np.asarray(a, dtype='<f4').view('<u4'),
+                          np.asarray(b, dtype='<f4').view('<u4'))
+
+
+paths = [Path(__file__), Path(tflite.__file__),
+         Path(tflite._interpreter_wrapper.__file__), OFFICIAL / 'run_aec.py',
+         OFFICIAL / 'dtln_aec_512_1.tflite', OFFICIAL / 'dtln_aec_512_2.tflite',
+         RUN / 'dtln-offline-01/model-metadata.json', NATIVE / 'run.py',
+         NATIVE / 'author-hop-body.py.txt', NATIVE / 'final-integrity.json',
+         ONSET / 'protocol.json', ONSET / 'onset-stage-localization.json',
+         ONSET / 'final-integrity.json', PREV / 'paired-response-source-hashes.json',
+         PREV / 'result.json', RUN / 'dtln-source-gate-shadow-01/final-integrity.json']
+for arm, c in CAPS.items():
+    paths += [NATIVE / f'{arm}-native-{role}.f32le.pcm' for role in ROLES]
+    paths += [NATIVE / f'{arm}-{name}' for name in ['native-state-binding.json', 'record-source-binding.json']]
+    paths += [c / 'raw-mic-48k.f32le.pcm']
+frozen = {str(p): sha(p) for p in paths}
+environment = {'python': sys.version, 'executable': sys.executable,
+    'architecture': platform.machine(), 'LiteRT': importlib.metadata.version('ai-edge-litert'),
+    'numpy': np.__version__, 'scipy': importlib.metadata.version('scipy'),
+    'interpreter_source': tflite.__file__, 'wrapper_binary': tflite._interpreter_wrapper.__file__}
+save('protocol.json', {'schema_version': 1, 'input_hashes': frozen, 'environment': environment,
+    'records0based': [0, 336], 'records_per_arm': 337,
+    'endpoints': ['BUILTIN_WITHOUT_DEFAULT_DELEGATES=3', 'BUILTIN_REF=2'], 'num_threads': 1,
+    'only_variable': 'OpResolverType. Same weights, interpreter version, thread setting, author AST, native mic/ref input, independent zero initialization, recurrent update and OLA.',
+    'input': 'For each saved record0..336 feed only its final128 mic/ref samples as newly arrived input; assert complete reconstructed512 buffers bit-exact to saved record. No lag estimate or input resampling.',
+    'state': 'Fresh two zero recurrent states and three zero512 buffers for each arm/resolver. Actually invoke all3 zero-padding hops, then334 real hops. Never reset at332, borrow other resolver states or reuse other resolver Stage1.',
+    'original_endpoint_required': 'All0..336 mask, actual Stage1, decoder, final128, both state_in/out hashes and FFT hashes reproduce saved optimized run BIT_EXACT before reference execution.',
+    'reference_support': 'One fixed version only. Allocate both original model graphs. Any reference construction/allocation/invoke failure stops as NOT_RUN with first failure; no install, graph rewrite or resolver fallback.',
+    'evaluation': 'Original J54926:55056, final335[14:128]+336[0:16], original u definition/hash and E/g. u is recomputed only as an evaluation identity using the old full-file formula, never used as model input.',
+    'original_u': 'R(rawMixed_F32-rawBackground_F32).astype(F64); frozen old hash required.',
+    'original_reconstruction': 'BIT_EXACT', 'old_E_g_reproduction_absolute_tolerance': 1e-12,
+    'onset_stop': 'E_REFERENCE(J) > original E_AEC3(J); unchanged numerical boundary, no gain or scale normalization.',
+    'E_AEC3': E_AEC3,
+    'decisions': ['Original replay mismatch: INVALID_ORIGINAL_REPLAY; no reference interpretation',
+        'Reference graph cannot execute: NOT_RUN_REFERENCE_EXECUTION_FAILED; NO_PATCH',
+        'Reference E still > E_AEC3: CURRENT_FIXED_CANDIDATE_ONSET_STOP_RETAINED; close this runtime repair direction',
+        'Reference E <= E_AEC3 while original fails: RUNTIME_DEPENDENT_RESULT; investigate concrete divergence only, not a kernel bug or permission to integrate'],
+    'no_waveform_or_state_tensor_export': True, 'Host_Gate': 'NOT_RUN', 'devices': 'NOT_RUN',
+    'reference_timing_is_not_production_performance': True, 'product_patch': False,
+    'Stage7': 'PASS', 'Test3': 'BLOCKED'})
+
+for folder in [NATIVE, ONSET, PREV, RUN / 'dtln-source-gate-shadow-01']:
+    seal = read(folder / 'final-integrity.json')
+    for p, h in seal['artifact_hashes'].items():
+        assert sha(folder / p) == h, ('Prior sealed asset changed', folder.name, p)
+for p, h in read(RUN / 'dtln-source-gate-shadow-01/final-integrity.json')['formal_hashes'].items():
+    assert sha(ROOT / p) == h
+assert environment['LiteRT'] == '2.2.0'
+assert sha(OFFICIAL / 'dtln_aec_512_1.tflite') == '569f7c3cfac96b1e093229c3ca10b5d892f5b1906105b644e457f8245b4f7383'
+assert sha(OFFICIAL / 'dtln_aec_512_2.tflite') == 'fb423d867ab25d5f4716bd369c7126b6c84926175c019b832e71bf21de0e9907'
+tree = ast.parse((OFFICIAL / 'run_aec.py').read_text())
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'process_file')
+body = ast.Module(body=next(n for n in fn.body if isinstance(n, ast.For)).body, type_ignores=[])
+assert ast.dump(body) == ast.dump(ast.parse((NATIVE / 'author-hop-body.py.txt').read_text()))
+core = compile(ast.fix_missing_locations(body), str(OFFICIAL / 'run_aec.py'), 'exec')
+metadata = read(RUN / 'dtln-offline-01/model-metadata.json')
+arrays, bindings, old_states = {}, {}, {}
+for arm in CAPS:
+    bindings[arm] = read(NATIVE / f'{arm}-record-source-binding.json')
+    old_states[arm] = read(NATIVE / f'{arm}-native-state-binding.json')
+    arrays[arm] = {role: np.memmap(NATIVE / f'{arm}-native-{role}.f32le.pcm', dtype='<f4',
+        mode='r', shape=(len(bindings[arm]), size)) for role, size in ROLES.items()}
+    for r in range(337):
+        b = bindings[arm][r]
+        assert b['record'] == r
+        if r < 3:
+            assert b['phase'] == 'author_padding' and b['source16'] is None
+            assert not np.any(arrays[arm]['mic'][r]) and not np.any(arrays[arm]['ref'][r])
+        else:
+            lo = 12800 + (r - 3) * 128
+            assert b['real_hop'] == r - 3
+            assert b['source16'] == [lo - 384, lo - 256]
+            assert b['mic512_nominal_source16'] == [lo - 384, lo + 128]
+            assert b['ref512_nominal_source16'] == [lo - 384 - 1561, lo + 128 - 1561]
+            assert b['virtual_zero_prefix_samples'] == max(0, 384 - (r - 3) * 128)
+        assert all(np.isfinite(a[r]).all() for a in arrays[arm].values())
+        if r > 0:
+            assert old_states[arm][r - 1]['state_out'] == old_states[arm][r]['state_in']
+raw = {arm: np.fromfile(c / 'raw-mic-48k.f32le.pcm', dtype='<f4') for arm, c in CAPS.items()}
+u_full = resample_poly(raw['mixed'] - raw['background'], 1, 3).astype(float)
+assert digest(u_full) == read(PREV / 'paired-response-source-hashes.json')['u_Float64_sha256']
+u = u_full[slice(*J)]
+assert np.isfinite(u).all() and np.dot(u, u) > 0
+
+
+def tensor_contract(details):
+    return [{k: (v.tolist() if isinstance(v, np.ndarray) else str(v) if k == 'dtype' else v)
+             for k, v in d.items() if k in ['name', 'index', 'shape', 'shape_signature', 'dtype']}
+            for d in details]
+
+
+def metrics(pair):
+    den = float(np.dot(u, u))
+    return {'samples': len(pair), 'source_energy': den,
+        'E': float(np.dot(pair - u, pair - u) / den),
+        'g': float(np.dot(pair, u) / den)}
+
+
+class CheckedInterpreter:
+    def __init__(self, role, resolver):
+        self.role, self.record = role, None
+        try:
+            self.i = tflite.Interpreter(model_path=str(OFFICIAL / f'dtln_aec_512_{role}.tflite'),
+                num_threads=1, experimental_op_resolver_type=resolver)
+            self.i.allocate_tensors()
+        except Exception as exc:
+            raise RuntimeError(f'Stage{role} initialize/allocate: {type(exc).__name__}: {exc}') from exc
+        self.ins, self.outs = self.i.get_input_details(), self.i.get_output_details()
+        assert tensor_contract(self.ins) == metadata[str(role)]['inputs']
+        assert tensor_contract(self.outs) == metadata[str(role)]['outputs']
+        self.prior = None
+
+    def set_tensor(self, index, value):
+        assert np.isfinite(value).all()
+        if index == self.ins[1]['index']:
+            assert not np.any(value) if self.prior is None else bit_exact(value, self.prior)
+        self.i.set_tensor(index, value)
+
+    def invoke(self):
+        try:
+            self.i.invoke()
+        except Exception as exc:
+            raise RuntimeError(f'Stage{self.role} record{self.record} invoke: {type(exc).__name__}: {exc}') from exc
+
+    def get_tensor(self, index):
+        value = self.i.get_tensor(index)
+        assert np.isfinite(value).all()
+        if index == self.outs[1]['index']:
+            self.prior = value.copy()
+        return value
+
+
+def namespace(resolver):
+    a, b = CheckedInterpreter(1, resolver), CheckedInterpreter(2, resolver)
+    contracts = {str(role): {'inputs': tensor_contract(i.ins), 'outputs': tensor_contract(i.outs),
+        'ops': [d['op_name'] for d in i.i._get_ops_details()]}
+        for role, i in [(1, a), (2, b)]}
+    assert not any('DELEGATE' in v['ops'] for v in contracts.values())
+    return {'np': np, 'interpreter_1': a, 'interpreter_2': b,
+        'input_details_1': a.ins, 'output_details_1': a.outs,
+        'input_details_2': b.ins, 'output_details_2': b.outs,
+        'states_1': np.zeros(a.ins[1]['shape'], dtype=np.float32),
+        'states_2': np.zeros(b.ins[1]['shape'], dtype=np.float32),
+        'in_buffer': np.zeros(512, dtype=np.float32), 'in_buffer_lpb': np.zeros(512, dtype=np.float32),
+        'out_buffer': np.zeros(512, dtype=np.float32), 'out_file': np.zeros(128),
+        'block_len': 512, 'block_shift': 128, 'idx': 0}, contracts
+
+
+def run_arm(arm, resolver, original, optimized=None):
+    ns, contracts = namespace(resolver)
+    rows, differences = [], []
+    for r in range(337):
+        ns['interpreter_1'].record = ns['interpreter_2'].record = r
+        incoming = [ns[k].copy() for k in ['states_1', 'states_2']]
+        ns['audio'], ns['lpb'] = arrays[arm]['mic'][r][-128:].copy(), arrays[arm]['ref'][r][-128:].copy()
+        exec(core, ns)
+        values = {role: np.asarray(ns[name], dtype='<f4').reshape(-1).copy() for role, name in
+            [('mic', 'in_buffer'), ('ref', 'in_buffer_lpb'), ('mask', 'out_mask'),
+             ('stage1', 'estimated_block'), ('stage2', 'out_block'), ('final', 'out_file')]}
+        values.update({f'state_in_{k}': incoming[k - 1] for k in [1, 2]})
+        values.update({f'state_out_{k}': ns[f'states_{k}'].copy() for k in [1, 2]})
+        assert all(np.isfinite(v).all() for v in values.values())
+        for role in ['mic', 'ref']:
+            assert bit_exact(values[role], arrays[arm][role][r]), ('Rebuilt input', arm, r, role)
+        for role, name in [('mic', 'in_block_fft'), ('ref', 'lpb_block_fft')]:
+            assert digest(ns[name]) == old_states[arm][r][f'{role}_fft_sha256']
+        if original:
+            for role in ROLES:
+                assert bit_exact(values[role], arrays[arm][role][r]), ('Original output', arm, r, role)
+            for direction in ['in', 'out']:
+                for k in [1, 2]:
+                    assert digest(values[f'state_{direction}_{k}']) == old_states[arm][r][f'state_{direction}'][k - 1], ('Original state', arm, r, direction, k)
+        else:
+            for role in ['mask', 'state_out_1', 'stage1', 'stage2', 'state_out_2', 'final']:
+                a, b = values[role], optimized[r][role]
+                if not bit_exact(a, b):
+                    indices = np.flatnonzero(a.reshape(-1).view('<u4') != b.reshape(-1).view('<u4'))
+                    delta = a.astype(float) - b.astype(float)
+                    differences.append({'record': r, 'role': role, 'shape': list(a.shape),
+                        'different_elements': int(len(indices)), 'first_flat_index': int(indices[0]),
+                        'maximum_absolute_difference': float(np.max(np.abs(delta))),
+                        'reference_sha256': digest(a), 'optimized_sha256': digest(b)})
+        rows.append(values)
+        if r in [0, 112, 224, 336]:
+            print(json.dumps({'endpoint': resolver.name, 'arm': arm, 'records_completed': r + 1}), flush=True)
+    return rows, contracts, differences
+
+
+def joined(rows):
+    return np.concatenate([rows[r]['final'][p:q] for r, p, q in FINALS]).astype(float)
+
+
+result = {'schema_version': 1, 'environment': environment, 'records_per_arm': 337,
+    'source16': list(J), 'final_records_and_slices': FINALS, 'E_AEC3': E_AEC3,
+    'input_and_u_identity': True, 'original_optimized_reproduction': False,
+    'reference_execution': 'NOT_RUN', 'verdict': 'NOT_RUN', 'product_patch': False,
+    'Host_Gate': 'NOT_RUN', 'live_devices': 'NOT_RUN', 'waveform_or_state_tensor_export': False,
+    'physical_error_qualifications_unchanged': 14, 'software_forward_losses_unchanged': 142,
+    'live_performance': 'UNVERIFIED_PRIOR20MS_CORE_FAILURE_RETAINED', 'Stage7': 'PASS', 'Test3': 'BLOCKED'}
+optimized, reference = {}, {}
+phase = 'original_optimized_replay'
+try:
+    for arm in CAPS:
+        rows, contracts, _ = run_arm(arm, tflite.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES, True)
+        optimized[arm] = rows
+        result.setdefault('tensor_contracts', {})[f'optimized_{arm}'] = contracts
+    result['original_optimized_reproduction'] = True
+    opt_pair = joined(optimized['mixed']) - joined(optimized['background'])
+    result['optimized_J'] = metrics(opt_pair)
+    old = read(ONSET / 'onset-stage-localization.json')['final_pair']
+    assert abs(result['optimized_J']['E'] - old['E']) <= 1e-12
+    assert abs(result['optimized_J']['g'] - old['g_signed_projection']) <= 1e-12
+    result['original_E_g_reproduced'] = True
+    phase = 'reference_execution'
+    all_differences = {}
+    for arm in CAPS:
+        rows, contracts, differences = run_arm(arm, tflite.OpResolverType.BUILTIN_REF, False, optimized[arm])
+        reference[arm] = rows
+        result['tensor_contracts'][f'reference_{arm}'] = contracts
+        all_differences[arm] = {'first_divergence': differences[0] if differences else None,
+            'different_record_role_pairs': len(differences), 'all_differences': differences}
+    result['reference_execution'] = 'COMPLETED'
+    result['output_differences'] = all_differences
+    ref_pair = joined(reference['mixed']) - joined(reference['background'])
+    result['reference_J'] = metrics(ref_pair)
+    result['paired_final_maximum_absolute_difference'] = float(np.max(np.abs(ref_pair - opt_pair)))
+    result['onset_stop_retained'] = result['reference_J']['E'] > E_AEC3
+    result['verdict'] = ('CURRENT_FIXED_CANDIDATE_ONSET_STOP_RETAINED' if result['onset_stop_retained']
+                         else 'RUNTIME_DEPENDENT_RESULT_NO_PATCH')
+    result['kernel_bug'] = 'NOT_ESTABLISHED'
+    result['decision'] = ('Close this runtime-kernel repair direction for the current fixed DTLN hybrid; no additional J decomposition, kernel combinations, gain or mask change.'
+        if result['onset_stop_retained'] else 'Only the concrete runtime-dependent divergence may be investigated next. Not permission to switch production backend or integrate the candidate.')
+except Exception as exc:
+    result['verdict'] = ('INVALID_ORIGINAL_REPLAY' if phase == 'original_optimized_replay'
+                         else 'NOT_RUN_REFERENCE_EXECUTION_FAILED')
+    result['failure'] = {'phase': phase, 'arm': arm, 'exception': type(exc).__name__, 'detail': str(exc)}
+    result['reference_execution'] = 'NOT_INTERPRETABLE'
+for p, h in frozen.items():
+    assert sha(Path(p)) == h, ('Frozen input changed', p)
+save('fixed-model-execution-conformance.json', result)
+print(json.dumps({k: result[k] for k in ['verdict', 'original_optimized_reproduction', 'reference_execution',
+    'optimized_J', 'reference_J', 'onset_stop_retained', 'failure'] if k in result}, indent=2), flush=True)
+sys.exit(0 if result['reference_execution'] == 'COMPLETED' else 2)

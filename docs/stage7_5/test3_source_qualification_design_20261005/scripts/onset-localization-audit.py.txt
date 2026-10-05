@@ -1,0 +1,295 @@
+"""One fixed 130-sample native-stage/OLA audit, without model or Gate execution."""
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+from scipy.signal import resample_poly
+
+os.umask(0o077)
+ROOT = Path('<LOCAL_REPO>')
+WORK = Path(__file__).resolve().parent
+RUN = WORK.parent
+NATIVE = RUN / 'dtln-stage-witness-01'
+DT = RUN / 'dtln-online-align-02'
+PREV = RUN / 'dtln-loss-segment-response-01'
+GATE = RUN / 'dtln-source-gate-shadow-01'
+SOFT = ROOT / '.build/test3-original-source-causality-20261004'
+CAPS = {'mixed': SOFT / 'original_mixed/capsule',
+        'background': SOFT / 'software_background_reconstruction/capsule'}
+REVIEW = Path('<LOCAL_REVIEW_ATTACHMENTS>/4ad1bc6c-4cc3-49ac-a57c-e20c3ca599a4/已粘贴的文本.txt')
+J = (54926, 55056)
+RECORDS = list(range(332, 337))
+FINALS = [(335, 14, 128), (336, 0, 16)]
+ROLES = {'mic': 512, 'ref': 512, 'mask': 257, 'stage1': 512, 'stage2': 512, 'final': 128}
+read = lambda p: json.loads(p.read_text())
+sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def save(name, data):
+    path = WORK / name
+    assert not path.exists(), 'Do not overwrite frozen evidence'
+    path.write_text(json.dumps(data, indent=2, allow_nan=False) + '\n')
+
+
+def exact(a, b):
+    return np.array_equal(np.asarray(a, dtype='<f4').view('<u4'), np.asarray(b, dtype='<f4').view('<u4'))
+
+
+paths = [Path(__file__), REVIEW, NATIVE / 'final-integrity.json', DT / 'final-integrity.json',
+         PREV / 'final-integrity.json', PREV / 'source-interval-ledger.json',
+         PREV / 'paired-response-source-hashes.json', GATE / 'final-integrity.json']
+for arm, capsule in CAPS.items():
+    paths += [NATIVE / f'{arm}-native-{role}.f32le.pcm' for role in ROLES]
+    paths += [NATIVE / f'{arm}-{suffix}' for suffix in ['native-state-binding.json', 'record-source-binding.json']]
+    paths += [DT / f'{arm}-{suffix}' for suffix in ['source-indexed-output16.f32le.pcm', 'valid-source.u8']]
+    paths += [capsule / name for name in ['audio-calls.json', 'raw-mic-48k.f32le.pcm', 'render-48k.f32le.pcm']]
+frozen = {str(p): sha(p) for p in paths}
+save('protocol.json', {'schema_version': 1, 'input_hashes': frozen,
+    'J_source16': list(J), 'records0based': RECORDS, 'final_slices0based': FINALS,
+    'mic512_support_union16': [54528, 55552], 'reference_held_offset16': 1561,
+    'Stage1_views': 'For each unique contributor record, use block intersection with J, retain all5 distinct contexts; no average, best-hop selection or Stage1 OLA',
+    'input_identity': 'Reconstruct original immutable already-arrived Float32 caches only through ready call141; require5 recorded mic/ref buffers bit exact. Reference is identical across arms. Neither arm state is reset; cross-arm state differences after first perturbed input are allowed.',
+    'u': 'Unchanged previous full-file R(rawMixed_F32-rawBackground_F32).astype(F64), same hash; never replaced by cached mic difference',
+    'precision_explanation': 'DeltaMic-u=(prefix_cached_pair-full_separate_pair)+(full_separate_pair-u); original separate full resampling only quantifies old arithmetic-order discrepancy, not a new detector/model input',
+    'Stage1_actual': 'rfft(mic512).astype(complex64)*actual_maskF32; irfft then F32 bit exact to actual saved Stage1 input to model2',
+    'mask_algebra': '(XM-XB)*WB + XM*(WM-WB), all spectral products/subtractions complex64/maskF32; each irfft castF32; compare actual paired Stage1 in F64 and preserve rounding residual. Algebra only, no mask replacement/model call.',
+    'OLA': 'Each arm separately original Float32 shift/add oldest-to-current for all4 decoder blocks; entire final128 bit exact before F64 paired difference.4 rank contributions stitched across both final slices; retain rounding rho.',
+    'metrics': 'Same E=sum((response-u)^2)/sum(u^2), g=dot(response,u)/sum(u^2); zero denominator NO_ACTIVE_SOURCE_VIEW. Projection/energy only for algebra parts and decoder contributions, no rescaling.',
+    'reconstruction_tolerance': 'BIT_EXACT', 'scalar_closure_absolute_tolerance': 1e-12,
+    'final_E_g_reproduction_tolerance': 1e-12,
+    'Stage1_first_boundary_sufficient_rule': 'Only if native input/cache identity and precision explanation close, and every nonzero view has g_Stage1<g_mic AND E_Stage1>E_mic. This is sufficient not necessary; absence does not prove Stage1 intact. Never claim sole final cause.',
+    'mixed_rule': 'Inconsistent views -> MIXED_STAGE_NOT_UNIQUELY_LOCALIZED; zero source view -> NO_ACTIVE_SOURCE_VIEW; no observed Stage1 decrease plus weak final -> LATER_STAGE_OR_OLA_COMBINATION, not network/OLA bug',
+    'stops': ['fixed ID/source/support mismatch', 'state handoff failure', 'native cache/FFT/IFFT/OLA bit mismatch', 'missing tensor/nonfinite', 'u/final old metric mismatch', 'new window/lag/scaling', 'new model/Gate'],
+    'scope': 'Software paired response at observable boundaries; not isolated human speech, source classifier or network-state causal identification',
+    'waveform_export': False, 'model_Gate_execution': False, 'product_patch': False,
+    'Stage7': 'PASS', 'Test3': 'BLOCKED'})
+
+for folder in [NATIVE, DT, PREV, GATE]:
+    for name, h in read(folder / 'final-integrity.json')['artifact_hashes'].items():
+        assert sha(folder / name) == h, ('Old evidence changed', folder.name, name)
+for name, h in read(GATE / 'final-integrity.json')['formal_hashes'].items():
+    assert sha(ROOT / name) == h
+
+arrays, bindings, state_rows = {}, {}, {}
+for arm in CAPS:
+    bindings[arm] = read(NATIVE / f'{arm}-record-source-binding.json')
+    state_rows[arm] = read(NATIVE / f'{arm}-native-state-binding.json')
+    count = len(bindings[arm])
+    arrays[arm] = {role: np.memmap(NATIVE / f'{arm}-native-{role}.f32le.pcm', dtype='<f4',
+                   mode='r', shape=(count, size)) for role, size in ROLES.items()}
+    for i in RECORDS:
+        b = bindings[arm][i]
+        assert b['record'] == i and b['phase'] == 'real' and b['final_eligible']
+        assert b['virtual_zero_prefix_samples'] == 0 and b['input_ready_call'] == 141
+        assert b['mic512_actual_real_source16'] == [54528 + (i - 332) * 128, 55040 + (i - 332) * 128]
+        assert b['ref512_actual_real_source16'] == [v - 1561 for v in b['mic512_actual_real_source16']]
+        assert all(np.isfinite(data[i]).all() for data in arrays[arm].values())
+        for role in ['mic', 'ref']:
+            fft = np.fft.rfft(arrays[arm][role][i]).astype('complex64')
+            assert hashlib.sha256(fft.tobytes()).hexdigest() == state_rows[arm][i][f'{role}_fft_sha256']
+        fft = np.fft.rfft(arrays[arm]['mic'][i]).astype('complex64')
+        predicted = np.fft.irfft(fft * arrays[arm]['mask'][i]).astype('<f4')
+        assert exact(predicted, arrays[arm]['stage1'][i]), ('Stage1 reconstruction', arm, i)
+        if i > 332:
+            assert state_rows[arm][i - 1]['state_out'] == state_rows[arm][i]['state_in']
+    for r, _, _ in FINALS:
+        assert bindings[arm][r]['OLA_decoder_records'] == [r, r - 1, r - 2, r - 3]
+        buf = np.zeros(512, dtype='<f4')
+        for i in range(r - 3, r + 1):
+            buf[:-128] = buf[128:]
+            buf[-128:] = 0
+            buf += arrays[arm]['stage2'][i]
+        assert exact(buf[:128], arrays[arm]['final'][r]), ('OLA reconstruction', arm, r)
+assert [bindings['mixed'][i] for i in RECORDS] == [bindings['background'][i] for i in RECORDS]
+assert state_rows['mixed'][332]['state_in'] == state_rows['background'][332]['state_in']
+assert all(exact(arrays['mixed']['ref'][i], arrays['background']['ref'][i]) for i in RECORDS)
+assert bindings['mixed'][335]['source16'] == [54912, 55040]
+assert bindings['mixed'][336]['source16'] == [55040, 55168]
+
+# Rebuild previously consumed inputs. This is an identity check, not inference.
+raw, cache, full_separate = {}, {}, {}
+for arm, capsule in CAPS.items():
+    raw[arm] = {kind: np.fromfile(capsule / name, dtype='<f4') for kind, name in
+                [('capture', 'raw-mic-48k.f32le.pcm'), ('render', 'render-48k.f32le.pcm')]}
+    assert all(np.isfinite(a).all() for a in raw[arm].values())
+    available = dict(capture=0, render=0)
+    low = {kind: np.zeros(0, dtype='<f4') for kind in available}
+    reached = False
+    for call in read(capsule / 'audio-calls.json'):
+        kind = call['kind']
+        assert call['sampleOffset'] == available[kind]
+        available[kind] += call['sampleCount']
+        safe_end = max(0, (available[kind] - 31) // 3 + 1)
+        now = resample_poly(raw[arm][kind][:available[kind]], 1, 3).astype('<f4')[:safe_end]
+        low[kind] = np.concatenate((low[kind], now[len(low[kind]):]))
+        if call['ordinal'] == 141:
+            reached = True
+            break
+    assert reached
+    for i in RECORDS:
+        b = bindings[arm][i]
+        for role, kind, source_range in [('mic', 'capture', b['mic512_actual_real_source16']),
+                                         ('ref', 'render', b['ref512_actual_real_source16'])]:
+            lo, hi = source_range
+            assert 3 * (hi - 1) + 30 < available[kind]
+            assert exact(low[kind][lo:hi], arrays[arm][role][i]), ('cache identity', arm, i, role)
+    cache[arm] = low['capture'].astype(float)
+    full_separate[arm] = resample_poly(raw[arm]['capture'], 1, 3).astype('<f4').astype(float)
+u_full = resample_poly(raw['mixed']['capture'] - raw['background']['capture'], 1, 3).astype(float)
+assert hashlib.sha256(u_full.tobytes()).hexdigest() == read(PREV / 'paired-response-source-hashes.json')['u_Float64_sha256']
+u = u_full[slice(*J)]
+cached_pair = cache['mixed'] - cache['background']
+separate_pair = full_separate['mixed'] - full_separate['background']
+assert np.sum(u ** 2) > 0
+
+
+def parts(z, target):
+    z, target = np.asarray(z, dtype=float), np.asarray(target, dtype=float)
+    den = float(np.sum(target ** 2))
+    if den == 0:
+        return {'status': 'NO_ACTIVE_SOURCE_VIEW', 'samples': len(target), 'source_energy': 0}
+    energy = float(np.sum(z ** 2))
+    return {'status': 'VALID', 'samples': len(target), 'source_energy': den,
+            'g_signed_projection': float(np.dot(z, target) / den), 'energy': energy,
+            'energy_to_source_ratio': energy / den,
+            'RMS': float(np.sqrt(energy / len(z))), 'max_abs': float(np.max(np.abs(z)))}
+
+
+def response(z, target):
+    r = parts(z, target)
+    if r['status'] == 'VALID':
+        r['E'] = float(np.sum((np.asarray(z, dtype=float) - target) ** 2) / r['source_energy'])
+    return r
+
+
+views = []
+for i in RECORDS:
+    b = bindings['mixed'][i]
+    block_lo, block_hi = b['mic512_actual_real_source16']
+    lo, hi = max(J[0], block_lo), min(J[1], block_hi)
+    local = slice(lo - block_lo, hi - block_lo)
+    target = u_full[lo:hi]
+    mic_delta = arrays['mixed']['mic'][i][local].astype(float) - arrays['background']['mic'][i][local].astype(float)
+    expected_input = cached_pair[lo:hi]
+    assert np.array_equal(mic_delta, expected_input)
+    cache_difference = cached_pair[lo:hi] - separate_pair[lo:hi]
+    order_difference = separate_pair[lo:hi] - target
+    input_residual = mic_delta - target - (cache_difference + order_difference)
+    assert np.max(np.abs(input_residual)) <= 1e-12
+    stage_delta = arrays['mixed']['stage1'][i][local].astype(float) - arrays['background']['stage1'][i][local].astype(float)
+    xm = np.fft.rfft(arrays['mixed']['mic'][i]).astype('complex64')
+    xb = np.fft.rfft(arrays['background']['mic'][i]).astype('complex64')
+    wm, wb = arrays['mixed']['mask'][i], arrays['background']['mask'][i]
+    input_term_spectrum = (xm - xb) * wb
+    mask_term_spectrum = xm * (wm - wb)
+    actual_spectrum_difference = (xm * wm) - (xb * wb)
+    spectral_rounding = actual_spectrum_difference.astype('complex128') - (input_term_spectrum.astype('complex128') + mask_term_spectrum.astype('complex128'))
+    input_term = np.fft.irfft(input_term_spectrum).astype('<f4')[local].astype(float)
+    mask_term = np.fft.irfft(mask_term_spectrum).astype('<f4')[local].astype(float)
+    stage_rounding = stage_delta - (input_term + mask_term)
+    assert np.max(np.abs(stage_delta - (input_term + mask_term + stage_rounding))) <= 1e-12
+    rm, rs = response(mic_delta, target), response(stage_delta, target)
+    observed = None if rm['status'] != 'VALID' else (
+        rs['g_signed_projection'] < rm['g_signed_projection'] and rs['E'] > rm['E'])
+    views.append({'record': i, 'source16': [lo, hi], 'local512_slice': [local.start, local.stop],
+        'J_slice': [lo - J[0], hi - J[0]], 'input_ready_call': 141,
+        'mic_pair': rm, 'Stage1_pair': rs, 'Stage1_added_decrease_witness': observed,
+        'input_precision': {'cache_vs_separate_full': parts(cache_difference, target),
+            'separate_full_vs_original_u': parts(order_difference, target),
+            'closure_max_abs': float(np.max(np.abs(input_residual))),
+            'u_changed': False, 'actual_cache_bit_exact': True},
+        'mask_algebra': {'actual_contexts_and_masks_only': True,
+            'input_change_under_saved_background_mask': parts(input_term, target),
+            'actual_mask_change_term': parts(mask_term, target),
+            'Float32_spectral_rounding_max_abs': float(np.max(np.abs(spectral_rounding))),
+            'time_domain_rounding_residual': parts(stage_rounding, target),
+            'not_a_mask_substitution_model_experiment': True}})
+
+# Each arm's source-indexed final must match the same saved two final slices.
+final_arms = {}
+for arm in CAPS:
+    joined = np.concatenate([arrays[arm]['final'][r][p:q] for r, p, q in FINALS])
+    saved = np.fromfile(DT / f'{arm}-source-indexed-output16.f32le.pcm', dtype='<f4')
+    valid = np.fromfile(DT / f'{arm}-valid-source.u8', dtype='u1')
+    assert len(joined) == 130 and exact(joined, saved[slice(*J)]) and valid[slice(*J)].all()
+    final_arms[arm] = joined.astype(float)
+delta_final = final_arms['mixed'] - final_arms['background']
+final_metrics = response(delta_final, u)
+old_onset = next(r for r in read(PREV / 'source-interval-ledger.json')['fixed_intervals'] if r['name'] == 'onset345')
+assert abs(final_metrics['E'] - old_onset['DTLN']['E']) <= 1e-12
+assert abs(final_metrics['g_signed_projection'] - old_onset['DTLN']['g']) <= 1e-12
+contributions, details = [], []
+for rank in range(4):
+    per_arm = {}
+    pieces = []
+    for arm in CAPS:
+        segments = []
+        for r, p, q in FINALS:
+            index = r - 3 + rank
+            offset = (3 - rank) * 128
+            segments.append(arrays[arm]['stage2'][index][p + offset:q + offset].astype(float))
+            if arm == 'mixed':
+                pieces.append({'record': index, 'local512_slice': [p + offset, q + offset]})
+        per_arm[arm] = np.concatenate(segments)
+    c = per_arm['mixed'] - per_arm['background']
+    contributions.append(c)
+    details.append({'rank_oldest_to_current': rank, 'pieces': pieces, 'paired_contribution': parts(c, u)})
+sum_c = sum(contributions, np.zeros(130, dtype=float))
+rho = delta_final - sum_c
+assert np.max(np.abs(delta_final - (sum_c + rho))) <= 1e-12
+cross = [{'i': i, 'j': j, 'twice_dot': float(2 * np.dot(contributions[i], contributions[j]))}
+         for i in range(4) for j in range(i + 1, 4)]
+diagonal_energy = float(sum(np.dot(c, c) for c in contributions))
+cross_energy = float(sum(c['twice_dot'] for c in cross))
+sum_energy = float(np.sum(sum_c ** 2))
+rho_energy = float(np.sum(rho ** 2))
+rho_cross = float(2 * np.dot(sum_c, rho))
+final_energy = float(np.sum(delta_final ** 2))
+assert abs(sum_energy - diagonal_energy - cross_energy) <= 1e-12
+assert abs(final_energy - sum_energy - rho_cross - rho_energy) <= 1e-12
+projection_sum = float(sum(d['paired_contribution']['g_signed_projection'] for d in details))
+rho_metrics = parts(rho, u)
+assert abs(projection_sum + rho_metrics['g_signed_projection'] - final_metrics['g_signed_projection']) <= 1e-12
+statuses = [v['Stage1_added_decrease_witness'] for v in views]
+if any(s is None for s in statuses):
+    boundary = 'NO_ACTIVE_SOURCE_VIEW_NOT_UNIQUELY_LOCALIZED'
+elif all(statuses):
+    boundary = 'FIRST_OBSERVABLE_ADDITIONAL_RESPONSE_DECREASE_AT_STAGE1'
+elif not any(statuses):
+    boundary = 'LATER_STAGE_OR_OLA_COMBINATION_NOT_NETWORK_BUG'
+else:
+    boundary = 'MIXED_STAGE_NOT_UNIQUELY_LOCALIZED'
+result = {'schema_version': 1, 'verdict': 'OBSERVABLE_STAGE_LEDGER_CLOSED_NO_PATCH',
+    'source16': list(J), 'samples': 130, 'native_records0based': RECORDS,
+    'final_records_and_slices': FINALS, 'actual_cache_FFT_IFFT_OLA_bit_exact': True,
+    'within_arm_state_handoff': True, 'first332_input_states_match_between_arms': True,
+    'input_precision_difference_explained_by_frozen_arithmetic': True,
+    'Stage1_views': views, 'first_observable_boundary': boundary,
+    'Stage1_views_are_not_independent_votes': True, 'unique_network_internal_cause': 'NOT_ESTABLISHED',
+    'final_pair': final_metrics, 'final_original_E_g_reproduced': True,
+    'OLA_contributions': details, 'OLA_rounding_rho': rho_metrics,
+    'OLA_energy': {'sum_individual_energy': diagonal_energy, 'six_cross_terms': cross,
+        'sum_cross_terms': cross_energy, 'sum_contributions_energy': sum_energy,
+        'rho_energy': rho_energy, 'twice_dot_sum_with_rho': rho_cross,
+        'actual_final_energy': final_energy,
+        'energy_closure_abs_error': abs(final_energy - diagonal_energy - cross_energy - rho_cross - rho_energy)},
+    'OLA_projection': {'sum_contribution_projection': projection_sum,
+        'rounding_projection': rho_metrics['g_signed_projection'],
+        'actual_final_projection': final_metrics['g_signed_projection']},
+    'OLA_code_bug': 'NOT_SUPPORTED_ORIGINAL_ARITHMETIC_BIT_EXACT',
+    'physical_error_qualifications_unchanged': 14, 'software_forward_losses_unchanged': 142,
+    'new_Gate': 'NOT_RUN', 'prior_onset_STOP': 'RETAINED_NOT_ACCEPTANCE_PASS',
+    'live_budget': 'UNVERIFIED_PRIOR20MS_CORE_FAILURE_RETAINED', 'physical400ms': 'UNVERIFIED',
+    'product_patch': False, 'Stage7': 'PASS', 'Test3': 'BLOCKED'}
+assert all(np.isfinite(z).all() for z in [u, delta_final, *contributions, rho])
+for p, h in frozen.items():
+    assert sha(Path(p)) == h
+save('onset-stage-localization.json', result)
+print(json.dumps({'verdict': result['verdict'], 'boundary': boundary,
+    'views': [{'record': v['record'], 'source16': v['source16'], 'mic_E': v['mic_pair'].get('E'),
+        'mic_g': v['mic_pair'].get('g_signed_projection'), 'Stage1_E': v['Stage1_pair'].get('E'),
+        'Stage1_g': v['Stage1_pair'].get('g_signed_projection'),
+        'additional_decrease': v['Stage1_added_decrease_witness']} for v in views],
+    'final': final_metrics, 'OLA_energy': result['OLA_energy'], 'OLA_projection': result['OLA_projection']}, indent=2))

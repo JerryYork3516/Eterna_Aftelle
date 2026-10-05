@@ -1,0 +1,83 @@
+"""Read-only replay-output audit; correct provenance labels without new DSP."""
+import ast
+import collections
+import hashlib
+import json
+import shutil
+from pathlib import Path
+
+WORK = Path(__file__).resolve().parent
+read = lambda name: json.loads((WORK / name).read_text())
+sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def save(name, value):
+    assert not (WORK / name).exists()
+    (WORK / name).write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+
+
+source = WORK / 'run-and-assess.py'
+tree = ast.parse(source.read_text())
+method = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'metrics')
+scope = {'WORK': WORK, 'read': lambda p: json.loads(p.read_text()), 'save': save,
+         'collections': collections, 'hashlib': hashlib,
+         'CAPS': {'physical': WORK.parent / 'evidence/webrtc_physical_echo_only',
+                  'mixed': Path('<LOCAL_REPO>/.build/test3-original-source-causality-20261004/original_mixed/capsule')}}
+exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), scope)
+archive = WORK / 'before-baseline-role-label-correction'
+archive.mkdir()
+for key in ['physical', 'mixed']:
+    name = f'{key}-baseline-source-metrics.json'
+    shutil.move(WORK / name, archive / name)
+    old = json.loads((archive / name).read_text())
+    frames = read(f'{key}-baseline-host/capture-frames.json')
+    ledger = read(f'{key}-baseline-audit-1.json')
+    new = scope['metrics'](frames, ledger, key, False)
+    for field in ['qualified', 'confirmation_chains', 'Gate_frames', 'unique_nonzero_playback_forwarded',
+                  'protected_qualified', 'protected_forwarded']:
+        assert new[field] == old[field], field
+save('baseline-role-label-correction.json', {'schema_version': 1,
+     'defect': 'Baseline update and region metrics were incorrectly tagged by candidate eligibility; baseline actually uses original AEC3 clean throughout.',
+     'corrected': 'baseline_update_sources and role counts now ORIGINAL_AEC_BASELINE; candidate metrics unchanged',
+     'all_qualification_Gate_forwarding_and_activity_counts_unchanged': True,
+     'scoring_protocol_bound_original_method': sha(WORK / 'run-and-assess-before-role-label-fix.py'),
+     'corrected_method_sha256': sha(source), 'rerun_DSP': False})
+
+result = read('result.json')
+case_rows = {}
+for key, ids in [('physical', read('physical-candidate-source-metrics.json')['qualified_source_ids']),
+                 ('mixed', result['software_protected']['lost_source_ids'])]:
+    traces = {r['sourceFrame']: r for r in read(f'{key}-candidate-audit-1.json')['conditionFrames']}
+    rows = []
+    for n in ids:
+        r = traces[n]
+        s = r['beforeGate']
+        first_immediate = 'NO_MATCH' if not s['matchPresent'] else next((reason for passed, reason in [
+            (s['rawCorrelation'] >= .35, 'raw_correlation_lt_035'),
+            (s['cleanRMS'] >= .012, 'processed_RMS_lt_0012'),
+            (s['linearRMS'] >= .012, 'linear_RMS_lt_0012'),
+            (s['residualCorrelation'] <= .25, 'processed_render_corr_gt_025'),
+            (s['linearCorrelation'] <= .35, 'linear_render_corr_gt_035'),
+            (s['processedLinearCorrelation'] >= .65, 'processed_linear_corr_lt_065')]
+            if not passed), 'ALL_IMMEDIATE_CONDITIONS_TRUE')
+        rows.append({'sourceFrame': n, 'branch': r['actualBranch'], 'classification': r['actualClassification'],
+             'first_immediate_condition_false': first_immediate,
+             'adaptive_baseline_count': s['baselineCount'], 'adaptive_baseline_lt_5': s['baselineCount'] < 5,
+             'processed_RMS': s['cleanRMS'], 'linear_RMS': s['linearRMS'],
+             'processed_linear_correlation': s['processedLinearCorrelation'],
+             'processed_render_correlation': s['residualCorrelation'],
+             'linear_render_correlation': s['linearCorrelation'],
+             'raw_correlation': s.get('rawCorrelation'), 'alternative_echo': r['alternativeEchoReference'],
+             'confirmation_after': r['afterGate']['confirmationCount'],
+             'Gate_after': r['afterGate']['gateOpen']})
+    case_rows[key] = rows
+    save(f'{key}-qualification-loss-witnesses.json', rows)
+    save(f'{key}-qualification-loss-summary.json', {'schema_version': 1,
+          'audited_source_frames': len(rows),
+          'branches': dict(collections.Counter(r['branch'] for r in rows)),
+          'first_immediate_failure_histogram': dict(collections.Counter(r['first_immediate_condition_false'] for r in rows)),
+          'processed_RMS_ge_0012': sum(r['processed_RMS'] >= .012 for r in rows),
+          'processed_linear_corr_ge_065': sum(r['processed_linear_correlation'] >= .65 for r in rows),
+          'baseline_lt_5': sum(r['adaptive_baseline_lt_5'] for r in rows),
+          'not_a_new_classifier': True})
+print('Provenance label corrected; zero count changes; exact loss and false-qualification witnesses saved')

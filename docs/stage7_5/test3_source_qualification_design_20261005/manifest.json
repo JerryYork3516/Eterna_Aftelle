@@ -1,0 +1,453 @@
+{
+  "schema_version": 1,
+  "purpose": "One implementable and falsifiable source-qualification design from actual current code and frozen evidence. Not a product patch or acceptance.",
+  "product_source_checkpoint": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545",
+  "previous_delivery_commit": "0684c3fb674495134d765bc8ae98b2526d3ae06e",
+  "branch": "7.5.11",
+  "webrtc_pin": "9f30e83c018647b05804571699cf22b1f0f3409e",
+  "product_files": [
+    {
+      "path": "apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift",
+      "sha256": "51cbfbb9f6b2aefedc8af37c74b8892a68d2919bf260fcc082a07ca287a1df85",
+      "bytes": 199998,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "apps/macos/Aftelle/MacSpeechWebRTCAECProcessor.swift",
+      "sha256": "370261422bbd280df5169b76b849b7b62355a25403def60d3aed68399e7034ff",
+      "bytes": 4238,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "apps/macos/Aftelle/MacSpeechAudioCapture.swift",
+      "sha256": "ef09463cc03fac9e90d177d3d05e5c05ce4d1e6abec9d7a203f3a3608d13fc41",
+      "bytes": 83186,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift",
+      "sha256": "8becf334f6cdee299a97d1a75451638440e5013b9fd560cbd71c84379a013c19",
+      "bytes": 83602,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "apps/macos/Aftelle/AppController.swift",
+      "sha256": "2f04a9ffb1c071e50c919933c1c46852f1e0f3fa86481d79debea9ed962d9598",
+      "bytes": 296493,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "apps/macos/Aftelle/Test3LocalAudioRunner.swift",
+      "sha256": "50da4a4be7d8420ff8497f4db6918feb52ca279f9705d6cb78e7a635bbe7a71b",
+      "bytes": 86612,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "apps/macos/Aftelle/MacSpeechDeviceMonitor.swift",
+      "sha256": "1b0a2e85b6b2b3e635c19580198bf88c836a4428e83ee2446025827178b7666f",
+      "bytes": 19681,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "tools/webrtc_aec3/bridge/AftelleAECBridge.mm",
+      "sha256": "1d1cb45377b5b2252af49a6abbb03026502aba408d98d90476c4611c9be9c45d",
+      "bytes": 8590,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "tools/webrtc_aec3/bridge/AftelleAECBridge.h",
+      "sha256": "0d35fe64cfd2c5e9a342a519a9d024a0a7a84c916f68d8041f31e3df3f4cd66f",
+      "bytes": 2236,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "tools/speech_aec_host_tests/RecordedAcousticReplay.swift",
+      "sha256": "c6221f0b978891cff665dbc7d0d567e42f9ceccaab871d4173d5fd397814c199",
+      "bytes": 85816,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    },
+    {
+      "path": "tools/webrtc_aec3/sync.sh",
+      "sha256": "272203c8cd92ea405a94618380435a6be72dbe2fd7bb94aa199ee436766423f8",
+      "bytes": 1251,
+      "source_commit": "8a2373298b84247af0cb64a4dc9ce94e3fdcb545"
+    }
+  ],
+  "artifacts": [
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/result.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/result.json",
+      "source_sha256": "d4dd9ea35ee980805ef3c417ee0148faf7ac154d23cf8d965668e4de93653f2c",
+      "source_bytes": 3281,
+      "published_sha256": "d4dd9ea35ee980805ef3c417ee0148faf7ac154d23cf8d965668e4de93653f2c",
+      "published_bytes": 3281,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/scoring-protocol.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/scoring-protocol.json",
+      "source_sha256": "09c84a7cdb95ed20bbc3d82314d01a9eadb8f9deea6e799f0e49db16d8d436e1",
+      "source_bytes": 1219,
+      "published_sha256": "09c84a7cdb95ed20bbc3d82314d01a9eadb8f9deea6e799f0e49db16d8d436e1",
+      "published_bytes": 1219,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/physical-baseline-source-metrics.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/physical-baseline-source-metrics.json",
+      "source_sha256": "b8054177c69f52f516491433abfd39a69f8228483cca8fa3909b9f5d2cd1ac3d",
+      "source_bytes": 3631,
+      "published_sha256": "b8054177c69f52f516491433abfd39a69f8228483cca8fa3909b9f5d2cd1ac3d",
+      "published_bytes": 3631,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/physical-candidate-source-metrics.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/physical-candidate-source-metrics.json",
+      "source_sha256": "2e5751440dddd773eb31685c93d98ae884baaddd4d632e761ecc1ed77e150de6",
+      "source_bytes": 1649,
+      "published_sha256": "2e5751440dddd773eb31685c93d98ae884baaddd4d632e761ecc1ed77e150de6",
+      "published_bytes": 1649,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/mixed-baseline-source-metrics.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-baseline-source-metrics.json",
+      "source_sha256": "cd0ffce40c8834d02aaabd341a6c29d1cc9c8b0ad378796c66829769822a8963",
+      "source_bytes": 14303,
+      "published_sha256": "cd0ffce40c8834d02aaabd341a6c29d1cc9c8b0ad378796c66829769822a8963",
+      "published_bytes": 14303,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/mixed-candidate-source-metrics.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-candidate-source-metrics.json",
+      "source_sha256": "addf2d6a5e9e348d1f9eaab014e5d8b93b61e0d244e8036dca5083f4aaf04594",
+      "source_bytes": 2470,
+      "published_sha256": "addf2d6a5e9e348d1f9eaab014e5d8b93b61e0d244e8036dca5083f4aaf04594",
+      "published_bytes": 2470,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/physical-qualification-loss-witnesses.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/physical-qualification-loss-witnesses.json",
+      "source_sha256": "a062176c6b49630c65d5400b78a070d96071cf378158fbc78ac141c1091d58ec",
+      "source_bytes": 8779,
+      "published_sha256": "a062176c6b49630c65d5400b78a070d96071cf378158fbc78ac141c1091d58ec",
+      "published_bytes": 8779,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/mixed-qualification-loss-witnesses.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-qualification-loss-witnesses.json",
+      "source_sha256": "d4fa94131279affbeee06ad405a40875704283d6f3bac3ce740fbfa4486bea32",
+      "source_bytes": 85296,
+      "published_sha256": "d4fa94131279affbeee06ad405a40875704283d6f3bac3ce740fbfa4486bea32",
+      "published_bytes": 85296,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/physical-qualification-loss-summary.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/physical-qualification-loss-summary.json",
+      "source_sha256": "f27e52c06245c55263b9f2d32c4ac1e85fb727c43ed8b4479be434537f830e18",
+      "source_bytes": 388,
+      "published_sha256": "f27e52c06245c55263b9f2d32c4ac1e85fb727c43ed8b4479be434537f830e18",
+      "published_bytes": 388,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/mixed-qualification-loss-summary.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/mixed-qualification-loss-summary.json",
+      "source_sha256": "e34d4717d7b1189089a8c446983eadb99103e13ee184cca5fb1baf3b95afa584",
+      "source_bytes": 577,
+      "published_sha256": "e34d4717d7b1189089a8c446983eadb99103e13ee184cca5fb1baf3b95afa584",
+      "published_bytes": 577,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/build-binding.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/build-binding.json",
+      "source_sha256": "83e26a391637891d7815d406f8ad028a6d98f367112bbd7ce8fa7a48ab8c21f3",
+      "source_bytes": 1211,
+      "published_sha256": "36ee02d76336c431401c099cf66c54b8b1e78119fd1bda13a206dd816bd29f50",
+      "published_bytes": 1135,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/dtln-source-gate-shadow-01/clock-build-binding.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/clock-build-binding.json",
+      "source_sha256": "b25218888bffcb948718f245146aefb0f41c6f1f6454d05c88f6907b6df65061",
+      "source_bytes": 1288,
+      "published_sha256": "4e4b05290b0d24570504814a54dbff8a48ca23da6bcb242ce7f186cd99cd6dd9",
+      "published_bytes": 1212,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/dtln-loss-segment-response-01/protocol.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/protocol.json",
+      "source_sha256": "452f5da461178b4f5e0422066d1f7c9f177a6871b22f161a0fa43260628ed3d6",
+      "source_bytes": 9388,
+      "published_sha256": "1be31806dfeec68d1b6ec2eca132c7dee3f74148cb1a1eab084b3161d5a974ba",
+      "published_bytes": 8847,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/dtln-loss-segment-response-01/result.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/result.json",
+      "source_sha256": "fad964fecdd00f38cd38f4bef28581a76d3e50c0da43f4416bb693d96b512641",
+      "source_bytes": 3381,
+      "published_sha256": "fad964fecdd00f38cd38f4bef28581a76d3e50c0da43f4416bb693d96b512641",
+      "published_bytes": 3381,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-loss-segment-response-01/source-interval-ledger.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/source-interval-ledger.json",
+      "source_sha256": "5fe9cdf6c30e63b08a6a1659f3fd9d17aa3395600b456086334c9cd2916c26fd",
+      "source_bytes": 47460,
+      "published_sha256": "5fe9cdf6c30e63b08a6a1659f3fd9d17aa3395600b456086334c9cd2916c26fd",
+      "published_bytes": 47460,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-loss-segment-response-01/paired-response-source-hashes.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/paired-response-source-hashes.json",
+      "source_sha256": "05b255df9e68245b74aaa349ef57d89c313bf855a6e216752db2c46f7762b974",
+      "source_bytes": 430,
+      "published_sha256": "05b255df9e68245b74aaa349ef57d89c313bf855a6e216752db2c46f7762b974",
+      "published_bytes": 430,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-onset-stage-localization-01/protocol.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-onset-stage-localization-01/protocol.json",
+      "source_sha256": "d29fbbb702df549279a55d52b201052d51130fc71163db6f00d046db311837ef",
+      "source_bytes": 10471,
+      "published_sha256": "fbd88bd2c013005965c9d8d2ba122eaee0198d941731c3f31d220619568e4a57",
+      "published_bytes": 9835,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/dtln-onset-stage-localization-01/onset-stage-localization.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-onset-stage-localization-01/onset-stage-localization.json",
+      "source_sha256": "bf0e8e6fdd665e35649be1318c03c2c26c303c0fcbf02d4787d061094b60f7c8",
+      "source_bytes": 22231,
+      "published_sha256": "bf0e8e6fdd665e35649be1318c03c2c26c303c0fcbf02d4787d061094b60f7c8",
+      "published_bytes": 22231,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-onset-stage-localization-01/fixed-native-binding-extract.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-onset-stage-localization-01/fixed-native-binding-extract.json",
+      "source_sha256": "90549f27e6375f2c99de2a391570c457cc1235b4e27cadefc4bf6da26a3c18ec",
+      "source_bytes": 20714,
+      "published_sha256": "90549f27e6375f2c99de2a391570c457cc1235b4e27cadefc4bf6da26a3c18ec",
+      "published_bytes": 20714,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-fixed-model-conformance-01/protocol.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-fixed-model-conformance-01/protocol.json",
+      "source_sha256": "a23a867057fb70f5f591f12c3c773af340859a7b6524dd2f5dbb687a7c9e1c55",
+      "source_bytes": 10438,
+      "published_sha256": "2fea250207a0144d60285f48bbaec6c1705a7541798fb03cab3e95932f62a6ab",
+      "published_bytes": 9735,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/dtln-fixed-model-conformance-01/fixed-model-execution-conformance.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-fixed-model-conformance-01/fixed-model-execution-conformance.json",
+      "source_sha256": "06de8e11b314d13912fd0c525967ea58b5779258d100712d36b046b8ec2a6d34",
+      "source_bytes": 1914775,
+      "published_sha256": "99d3b9b8cedd08bd10406d4e978593325806a3c4aaa6209ce020cbb89edea3fc",
+      "published_bytes": 1914718,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/dtln-fixed-model-conformance-01/report.md",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-fixed-model-conformance-01/report.md",
+      "source_sha256": "f8c1b0fb3a8f85b1f45c7098f8d62ed9ba38c66a1a49415b149cdd6804616538",
+      "source_bytes": 6021,
+      "published_sha256": "9e63f206a5b058081f1cd1d1f50674c9cde4619ecae2e0b80d3d3ecc9d3176e8",
+      "published_bytes": 6002,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/dtln-fixed-model-conformance-01/independent-review.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-fixed-model-conformance-01/independent-review.json",
+      "source_sha256": "381fcc106603f7d8f3b2e44612a8a75279a3d1990a05028051e15aefc4db6e74",
+      "source_bytes": 1994,
+      "published_sha256": "381fcc106603f7d8f3b2e44612a8a75279a3d1990a05028051e15aefc4db6e74",
+      "published_bytes": 1994,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-fixed-model-conformance-01/run.stdout.log.txt",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-fixed-model-conformance-01/run.stdout.log",
+      "source_sha256": "85d881002fc3a271cf7906fd57f49302af6f7887e4a0ddf185d5e1010f8d1cbf",
+      "source_bytes": 1792,
+      "published_sha256": "85d881002fc3a271cf7906fd57f49302af6f7887e4a0ddf185d5e1010f8d1cbf",
+      "published_bytes": 1792,
+      "transformation": "none"
+    },
+    {
+      "published_path": "evidence/dtln-candidate-closeout-01/closeout.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-candidate-closeout-01/closeout.json",
+      "source_sha256": "89fd2d714c6eb2adb06d18444b25efd7b951d81293836823c0400dc8eb174895",
+      "source_bytes": 3547,
+      "published_sha256": "755fbe43029e77627691e4c3e5f86ffc3a8a32cac586ab95966fddf2d3c6cef0",
+      "published_bytes": 3519,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "scripts/source-loss-audit.py.txt",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/loss-audit.py",
+      "source_sha256": "ea5e16899e729fae787524ac6aba26ab6907b43dc90b819bd3a72ef449b034c6",
+      "source_bytes": 4961,
+      "published_sha256": "603f9119d0ad50923ea696745b97542f40b8da784c1aaa35dcf1d266295cdbf2",
+      "published_bytes": 4942,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "scripts/native-collector.py.txt",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/run.py",
+      "source_sha256": "afd5a63e0b56cd1b57240fdb3c3857dafdb634814bac7f65c7210d1f9f9fbf56",
+      "source_bytes": 18605,
+      "published_sha256": "058363c35ede622e497c0fd9b1eddc5ed09f8c63c446d052e293fd4bad6a8ee8",
+      "published_bytes": 18586,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "scripts/author-hop-body.py.txt",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-stage-witness-01/author-hop-body.py.txt",
+      "source_sha256": "d486308fe62abefff7100d5888e6b04df667cf94bc4affe4d3ae02d5dc736d84",
+      "source_bytes": 1725,
+      "published_sha256": "d486308fe62abefff7100d5888e6b04df667cf94bc4affe4d3ae02d5dc736d84",
+      "published_bytes": 1725,
+      "transformation": "none"
+    },
+    {
+      "published_path": "scripts/segment-response-audit.py.txt",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-loss-segment-response-01/audit.py",
+      "source_sha256": "9170c0329b3089e0d81b22122790d68e3fe3adecac59a44838924122638d2c58",
+      "source_bytes": 12964,
+      "published_sha256": "0951cc7abc6c896d851903a26dd26b67587a7206be0ea7c0d82bda2558fa004b",
+      "published_bytes": 12936,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "scripts/onset-localization-audit.py.txt",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-onset-stage-localization-01/audit.py",
+      "source_sha256": "894a737d88b4f25a14ad5d9760a57c57a0f1202d52b846b87dad550b12804550",
+      "source_bytes": 18652,
+      "published_sha256": "1e95ad2ef36326d6075bbbe29b85a858204c3c924d3f68731c87d13294688c88",
+      "published_bytes": 18624,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "scripts/fixed-model-conformance-run.py.txt",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-fixed-model-conformance-01/run.py",
+      "source_sha256": "7d47062ffd3c1d695ebc80e2a3facecee1847a52b20d531dbd5a8d5650de2185",
+      "source_bytes": 17045,
+      "published_sha256": "b592a52bc6de4373e97963c6c540cb7eaf2c49e691d41bebc3d0b210746dbd37",
+      "published_bytes": 17026,
+      "transformation": "local absolute paths replaced with explicit placeholders"
+    },
+    {
+      "published_path": "evidence/original-aec3-42-qualification-witnesses.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/physical-baseline-audit-1.json",
+      "source_sha256": "63dc17c76b862b05523102ad8bb003ad9d9b513f3ced6bd37833c940ef1370cc",
+      "published_sha256": "48fee80f026eb7667430e40e7f33ebf2cf87d72c8115beb2c9fd34b2845df84a",
+      "published_bytes": 203602,
+      "transformation": "Exact 42 conditionFrames selected by original frozen qualified_source_ids, plus original confirmation chains; no numerical modification"
+    },
+    {
+      "published_path": "pinned-webrtc/modules/audio_processing/aec3/dominant_nearend_detector.cc",
+      "source_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/dominant_nearend_detector.cc",
+      "source_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "source_sha256": "391e504392aa355e83b9e7281bb103e026e4190986e9d39089c4fa7f6b6183fc",
+      "published_sha256": "391e504392aa355e83b9e7281bb103e026e4190986e9d39089c4fa7f6b6183fc",
+      "published_bytes": 3154,
+      "transformation": "none; exact git object and local byte identity verified; reference only"
+    },
+    {
+      "published_path": "pinned-webrtc/modules/audio_processing/aec3/dominant_nearend_detector.h",
+      "source_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/dominant_nearend_detector.h",
+      "source_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "source_sha256": "3e1a650fc7e717effc33ac1374fb657e84320c8fadf142bda3b307c92e4bf0d9",
+      "published_sha256": "3e1a650fc7e717effc33ac1374fb657e84320c8fadf142bda3b307c92e4bf0d9",
+      "published_bytes": 2034,
+      "transformation": "none; exact git object and local byte identity verified; reference only"
+    },
+    {
+      "published_path": "pinned-webrtc/modules/audio_processing/aec3/residual_echo_estimator.cc",
+      "source_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/residual_echo_estimator.cc",
+      "source_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "source_sha256": "8da9cd2f9ecccaee7c655c4ce4d994d3b8c5ea5785053a064608fc3ed9ac3106",
+      "published_sha256": "8da9cd2f9ecccaee7c655c4ce4d994d3b8c5ea5785053a064608fc3ed9ac3106",
+      "published_bytes": 17057,
+      "transformation": "none; exact git object and local byte identity verified; reference only"
+    },
+    {
+      "published_path": "pinned-webrtc/modules/audio_processing/aec3/residual_echo_estimator.h",
+      "source_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/modules/audio_processing/aec3/residual_echo_estimator.h",
+      "source_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "source_sha256": "0555537334d6ed96d0e471fe4e858922c7fa0f33a63aaf225d818e25b6bb4b98",
+      "published_sha256": "0555537334d6ed96d0e471fe4e858922c7fa0f33a63aaf225d818e25b6bb4b98",
+      "published_bytes": 4039,
+      "transformation": "none; exact git object and local byte identity verified; reference only"
+    },
+    {
+      "published_path": "pinned-webrtc/LICENSE",
+      "source_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/LICENSE",
+      "source_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "source_sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482",
+      "published_sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482",
+      "published_bytes": 1511,
+      "transformation": "none; exact git object and local byte identity verified; reference only"
+    },
+    {
+      "published_path": "pinned-webrtc/PATENTS",
+      "source_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/PATENTS",
+      "source_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "source_sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145",
+      "published_sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145",
+      "published_bytes": 1388,
+      "transformation": "none; exact git object and local byte identity verified; reference only"
+    },
+    {
+      "published_path": "pinned-webrtc/AUTHORS",
+      "source_url": "https://webrtc.googlesource.com/src/+/9f30e83c018647b05804571699cf22b1f0f3409e/AUTHORS",
+      "source_commit": "9f30e83c018647b05804571699cf22b1f0f3409e",
+      "source_sha256": "8f2721d288f65f4dee92c5794b1d7c084649c76c78923b83f089723f114e120f",
+      "published_sha256": "8f2721d288f65f4dee92c5794b1d7c084649c76c78923b83f089723f114e120f",
+      "published_bytes": 8084,
+      "transformation": "none; exact git object and local byte identity verified; reference only"
+    },
+    {
+      "published_path": "build-verification.json",
+      "source_local_path": "<LOCAL_REPO>/.build/test3-design-delivery-20261005/build-verification.json",
+      "source_sha256": "82f4ee910cf026bea2d46e1b05402fbb753f355bcc00650a905c1d446fb54dfb",
+      "published_sha256": "82f4ee910cf026bea2d46e1b05402fbb753f355bcc00650a905c1d446fb54dfb",
+      "published_bytes": 810,
+      "transformation": "none"
+    },
+    {
+      "published_path": "README.md",
+      "published_sha256": "4f0485f47b8d39a9fc8f18a279b211f84532663406a40ecbab5982ce304c31e6",
+      "published_bytes": 8576,
+      "transformation": "new design brief; no fresh experiment"
+    },
+    {
+      "published_path": "design-contract.md",
+      "published_sha256": "5228f79d31098d799d781e6a2e73f163546519fb4012bf3cd268dfff5df60037",
+      "published_bytes": 5340,
+      "transformation": "new design brief; no fresh experiment"
+    }
+  ],
+  "privacy": "No PCM, recordings, tensor/state arrays, model weights, DR or secrets. Local paths are placeholders; hashes of omitted local data are provenance only.",
+  "evidence_limits": "Remote reviewers cannot replay private signals; published excerpts and old protocols are read-only history, not current execution authorization. Final delivery SHA supplied in user prompt.",
+  "Test3": "BLOCKED",
+  "Stage7": "PASS",
+  "runtime_authority": "UNCHANGED_NOT_GRANTED"
+}

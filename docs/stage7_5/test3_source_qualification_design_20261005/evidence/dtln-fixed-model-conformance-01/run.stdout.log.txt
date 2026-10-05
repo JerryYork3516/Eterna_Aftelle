@@ -1,0 +1,34 @@
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "background", "records_completed": 1}
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "background", "records_completed": 113}
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "background", "records_completed": 225}
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "background", "records_completed": 337}
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "mixed", "records_completed": 1}
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "mixed", "records_completed": 113}
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "mixed", "records_completed": 225}
+{"endpoint": "BUILTIN_WITHOUT_DEFAULT_DELEGATES", "arm": "mixed", "records_completed": 337}
+{"endpoint": "BUILTIN_REF", "arm": "background", "records_completed": 1}
+{"endpoint": "BUILTIN_REF", "arm": "background", "records_completed": 113}
+{"endpoint": "BUILTIN_REF", "arm": "background", "records_completed": 225}
+{"endpoint": "BUILTIN_REF", "arm": "background", "records_completed": 337}
+{"endpoint": "BUILTIN_REF", "arm": "mixed", "records_completed": 1}
+{"endpoint": "BUILTIN_REF", "arm": "mixed", "records_completed": 113}
+{"endpoint": "BUILTIN_REF", "arm": "mixed", "records_completed": 225}
+{"endpoint": "BUILTIN_REF", "arm": "mixed", "records_completed": 337}
+{
+  "verdict": "CURRENT_FIXED_CANDIDATE_ONSET_STOP_RETAINED",
+  "original_optimized_reproduction": true,
+  "reference_execution": "COMPLETED",
+  "optimized_J": {
+    "samples": 130,
+    "source_energy": 0.002607344480877111,
+    "E": 0.7519141892191115,
+    "g": 0.1394462059364652
+  },
+  "reference_J": {
+    "samples": 130,
+    "source_energy": 0.002607344480877111,
+    "E": 0.7519151278840992,
+    "g": 0.13944575240744234
+  },
+  "onset_stop_retained": true
+}

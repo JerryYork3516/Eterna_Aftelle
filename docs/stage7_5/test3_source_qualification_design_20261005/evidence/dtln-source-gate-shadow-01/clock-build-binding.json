@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "command": [
+    "xcrun",
+    "swiftc",
+    "-D",
+    "DEBUG",
+    "-D",
+    "AFTELLE_CONDITION_AUDIT",
+    "-parse-as-library",
+    "-O",
+    "-warn-concurrency",
+    "-strict-concurrency=complete",
+    "-module-cache-path",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/module-cache",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/MacSpeechAcousticEchoHost.swift",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/RecordedAcousticReplay.swift",
+    "-o",
+    "<LOCAL_REPO>/.build/test3-physical-echo-retained-20261004/run-d5711932/dtln-source-gate-shadow-01/shadow-clock-replay"
+  ],
+  "exit": 0,
+  "script_sha256": "4ebb66a107670fa99c7a9d3685e04b85a9a0a5b4081a12ae3f7b800b55eeef17",
+  "driver_sha256": "b1184e6b16dab655e23e5dae6b974b59ee92c03bd2e43aec95a0d971931fe7ce",
+  "scipy_version": "1.14.1",
+  "resample_poly_source_sha256": "d187cde6f33079be04ca1b6a10adfa74c757e27b00221e218bd59a24013bb602",
+  "clock": "Input-ready logical ordinal guard; not historical wallclock completion or live backlog measurement"
+}

@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "capture_frames": 1120,
+  "playback_frames": 1060,
+  "qualified": 42,
+  "qualified_source_ids": [
+    101,
+    220,
+    253,
+    261,
+    266,
+    372,
+    373,
+    374,
+    485,
+    486,
+    814,
+    817,
+    839,
+    840,
+    842,
+    857,
+    858,
+    887,
+    889,
+    894,
+    896,
+    972,
+    973,
+    974,
+    975,
+    977,
+    981,
+    1009,
+    1014,
+    1015,
+    1016,
+    1034,
+    1063,
+    1064,
+    1065,
+    1066,
+    1067,
+    1070,
+    1071,
+    1094,
+    1095,
+    1100
+  ],
+  "qualification_branches": {
+    "immediate_double_talk": 10,
+    "adaptive_double_talk": 24,
+    "low_correlation_near_end": 8
+  },
+  "confirmation_chains": [
+    {
+      "sourceFrames": [
+        372,
+        373,
+        374
+      ],
+      "roles": [
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE"
+      ],
+      "all_DTLN": false
+    },
+    {
+      "sourceFrames": [
+        972,
+        973,
+        974,
+        975
+      ],
+      "roles": [
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE"
+      ],
+      "all_DTLN": false
+    },
+    {
+      "sourceFrames": [
+        1014,
+        1015,
+        1016
+      ],
+      "roles": [
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE"
+      ],
+      "all_DTLN": false
+    },
+    {
+      "sourceFrames": [
+        1063,
+        1064,
+        1065,
+        1066,
+        1067
+      ],
+      "roles": [
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE",
+        "ORIGINAL_AEC_BASELINE"
+      ],
+      "all_DTLN": false
+    }
+  ],
+  "Gate_frames": 48,
+  "Gate_source_ids": [
+    374,
+    375,
+    376,
+    377,
+    378,
+    379,
+    380,
+    381,
+    382,
+    383,
+    384,
+    385,
+    386,
+    387,
+    388,
+    389,
+    390,
+    391,
+    392,
+    393,
+    974,
+    975,
+    976,
+    977,
+    978,
+    979,
+    980,
+    1016,
+    1017,
+    1018,
+    1019,
+    1020,
+    1065,
+    1066,
+    1067,
+    1068,
+    1069,
+    1070,
+    1071,
+    1072,
+    1073,
+    1074,
+    1075,
+    1076,
+    1077,
+    1078,
+    1079,
+    1080
+  ],
+  "unique_nonzero_playback_forwarded": 56,
+  "forwarded_source_ids": [
+    372,
+    373,
+    374,
+    375,
+    376,
+    377,
+    378,
+    379,
+    380,
+    381,
+    382,
+    383,
+    384,
+    385,
+    386,
+    387,
+    388,
+    389,
+    390,
+    391,
+    392,
+    393,
+    972,
+    973,
+    974,
+    975,
+    976,
+    977,
+    978,
+    979,
+    980,
+    1014,
+    1015,
+    1016,
+    1017,
+    1018,
+    1019,
+    1020,
+    1063,
+    1064,
+    1065,
+    1066,
+    1067,
+    1068,
+    1069,
+    1070,
+    1071,
+    1072,
+    1073,
+    1074,
+    1075,
+    1076,
+    1077,
+    1078,
+    1079,
+    1080
+  ],
+  "roles": {
+    "ORIGINAL_AEC_BASELINE": {
+      "active": 1060,
+      "qualified": 42,
+      "Gate": 48,
+      "forwarded": 56
+    }
+  },
+  "baseline_update_sources": [
+    {
+      "sourceFrame": 98,
+      "role": "ORIGINAL_AEC_BASELINE"
+    },
+    {
+      "sourceFrame": 99,
+      "role": "ORIGINAL_AEC_BASELINE"
+    },
+    {
+      "sourceFrame": 333,
+      "role": "ORIGINAL_AEC_BASELINE"
+    },
+    {
+      "sourceFrame": 370,
+      "role": "ORIGINAL_AEC_BASELINE"
+    },
+    {
+      "sourceFrame": 700,
+      "role": "ORIGINAL_AEC_BASELINE"
+    }
+  ],
+  "protected_qualified": [],
+  "protected_forwarded": [],
+  "forwarded_PCM_matches_own_candidate_source_frame": true,
+  "duplicate_forwarded_source_ids": {},
+  "source_origin_not_independent_sensor": true
+}

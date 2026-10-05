@@ -1,0 +1,305 @@
+"""One frozen causal GCC start estimate and continuous DTLN512 shadow audio."""
+import ast
+import hashlib
+import json
+import math
+import os
+import time
+from fractions import Fraction
+from pathlib import Path
+
+import ai_edge_litert.interpreter as tflite
+import numpy as np
+from scipy.signal import resample_poly
+
+os.umask(0o077)
+ROOT = Path('<LOCAL_REPO>')
+WORK = Path(__file__).resolve().parent
+RUN = WORK.parent
+OLD = RUN / 'dtln-offline-01'
+SOFT = ROOT / '.build/test3-original-source-causality-20261004'
+CAPS = {'physical': RUN / 'evidence/webrtc_physical_echo_only',
+        'background': SOFT / 'software_background_reconstruction/capsule',
+        'mixed': SOFT / 'original_mixed/capsule'}
+read = lambda p: json.loads(p.read_text())
+sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def save(name, value):
+    p = WORK / name
+    assert not p.exists(), 'Do not overwrite a frozen run'
+    p.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+
+
+paths = [Path(__file__), RUN / 'continuous-fifo-input-contract-01/final-integrity.json',
+         OLD / 'source-binding.json', OLD / 'model-metadata.json', OLD / 'official/run_aec.py',
+         OLD / 'official/dtln_aec_512_1.tflite', OLD / 'official/dtln_aec_512_2.tflite',
+         RUN / 'nkf-offline-01/official/utils.py', RUN / 'dtln-online-align-01/final-integrity.json']
+for c in CAPS.values():
+    paths += [c / name for name in ['audio-calls.json', 'raw-mic-48k.f32le.pcm',
+              'render-48k.f32le.pcm', 'clean-48k.f32le.pcm', 'capture-frames.json',
+              'control-events.json']]
+hashes = {str(p.relative_to(ROOT)): sha(p) for p in paths}
+save('protocol.json', {'schema_version': 1, 'input_hashes': hashes,
+    'model': 'same official default512 / existing LiteRT CPU builtin, one thread, fresh state per arm',
+    'producer': 'actual original tap call order, complete real samples; resample_poly every already-arrived prefix only; retain indices with full30raw-sample lookahead support; append each new eligible sample once, preserve past emitted Float32 cache; no amplitude normalization',
+    'alignment_candidate': 'one startup long-reference GCC-PHAT score,4000capture samples, all legal integer render starts with rational content-lag0..8000low samples; NKF R=C*conj(X), epsilon1e-15, nFFT=4000+referenceLength, interp1; candidate shift=-(j-Jmin). This is not independently windowed PHAT and not a source detector',
+    'calibration': 'first capture callback whose newest4000sample microphone window and entire legal real reference domain have arrived; require both nonconstant and PHAT legal maxabs>0; if no observable peak then STOP rather than selecting/retrying. Exact ties prefer largestj/smallestlag. Estimate once and hold until true route/time discontinuity; none allowed in these frozen cases',
+    'no_external_offset': 'do not use2056/1551, author NKF -1ms or clamp; background and mixed estimate independently using their actual arrived prefixes',
+    'startup': 'start next128aligned microphone index at/after calibration end; do not back-process old microphone audio as current output; model history/states start0, author3virtual-padding hops retained; only real source with512actual support is counted',
+    'DTLN_core': 'execute exact author AST loop body per hop, idx0/current128input buffers; no full-file output normalization permitted; any clipping or normalization need STOP',
+    'availability': 'source chunk requires512real samples at its end, actual current arrivalcutoff and compute time recorded; all resample inputs and selected reference arrived before invoke; no source-time backfill',
+    'advance_condition': 'all guards; four same-content physical old false-chain powers lower than existing AEC3clean; complete software source-response error no worse; all128real-hop loop processing<=8ms. Startup/tails separately unavailable; no physical short/Gate PASS even on audio success',
+    'stops': ['input/time/source mismatch', 'no first observable alignment', 'future support or reference',
+              'nonfinite/clipping', 'state handoff differs', 'full software activity unavailable',
+              'lag/model/window/threshold variant', 'evaluation labels/background offset become detector input'],
+    'Gate': 'NOT_RUN', 'source_qualification': 'NOT_RUN', 'product_change': False,
+    'recording_playback': False, 'private_upload': False, 'Test3': 'BLOCKED'})
+
+for file in read(OLD / 'source-binding.json')['files']:
+    assert sha(OLD / 'official' / file['file']) == file['sha256']
+
+# Preserve the author arithmetic; each observed hop operates on current input only.
+tree = ast.parse((OLD / 'official/run_aec.py').read_text())
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'process_file')
+loop = next(n for n in fn.body if isinstance(n, ast.For))
+body = ast.Module(body=loop.body, type_ignores=[])
+core = compile(ast.fix_missing_locations(body), str(OLD / 'official/run_aec.py'), 'exec')
+(WORK / 'author-hop-body.py.txt').write_text(ast.unparse(body) + '\n')
+
+
+class CheckedInterpreter:
+    def __init__(self, role):
+        self.i = tflite.Interpreter(model_path=str(OLD / 'official' / f'dtln_aec_512_{role}.tflite'),
+            num_threads=1, experimental_op_resolver_type=tflite.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES)
+        self.i.allocate_tensors()
+        self.ins = self.i.get_input_details()
+        self.outs = self.i.get_output_details()
+        self.prior = None
+
+    def set_tensor(self, index, value):
+        assert np.isfinite(value).all()
+        if index == self.ins[1]['index']:
+            assert (not np.any(value) if self.prior is None
+                    else np.array_equal(value.view('<u4'), self.prior.view('<u4')))
+        self.i.set_tensor(index, value)
+
+    def invoke(self):
+        self.i.invoke()
+
+    def get_tensor(self, index):
+        value = self.i.get_tensor(index)
+        assert np.isfinite(value).all()
+        if index == self.outs[1]['index']:
+            self.prior = value.copy()
+        return value
+
+
+def model_state():
+    a, b = CheckedInterpreter(1), CheckedInterpreter(2)
+    return {'np': np, 'interpreter_1': a, 'interpreter_2': b,
+            'input_details_1': a.ins, 'output_details_1': a.outs,
+            'input_details_2': b.ins, 'output_details_2': b.outs,
+            'states_1': np.zeros(a.ins[1]['shape'], dtype=np.float32),
+            'states_2': np.zeros(b.ins[1]['shape'], dtype=np.float32),
+            'in_buffer': np.zeros(512, dtype=np.float32),
+            'in_buffer_lpb': np.zeros(512, dtype=np.float32),
+            'out_buffer': np.zeros(512, dtype=np.float32),
+            'out_file': np.zeros(128), 'block_len': 512, 'block_shift': 128, 'idx': 0}
+
+
+STAGE_RECORDS = []
+
+
+def hop(ns, mic, ref):
+    incoming = [hashlib.sha256(ns[k].tobytes()).hexdigest() for k in ['states_1', 'states_2']]
+    start = time.perf_counter()
+    ns['audio'], ns['lpb'] = mic, ref
+    exec(core, ns)
+    out = ns['out_file'].astype('<f4').copy()
+    assert np.isfinite(out).all() and np.max(np.abs(out)) < 1
+    duration = time.perf_counter() - start
+    values = {k: np.asarray(ns[v], dtype='<f4').reshape(-1).copy() for k, v in [
+        ('mask', 'out_mask'), ('stage1', 'estimated_block'), ('stage2', 'out_block'),
+        ('mic', 'in_buffer'), ('ref', 'in_buffer_lpb')]}
+    values['final'] = out.copy()
+    values['state_in'] = incoming
+    values['state_out'] = [hashlib.sha256(ns[k].tobytes()).hexdigest() for k in ['states_1', 'states_2']]
+    values['mic_fft_sha256'] = hashlib.sha256(ns['in_block_fft'].tobytes()).hexdigest()
+    values['ref_fft_sha256'] = hashlib.sha256(ns['lpb_block_fft'].tobytes()).hexdigest()
+    assert all(np.isfinite(values[k]).all() for k in ['mask', 'stage1', 'stage2', 'mic', 'ref', 'final'])
+    STAGE_RECORDS.append(values)
+    return out, duration
+
+
+results = {}
+outputs = {}
+masks = {}
+alignments = {}
+for name, capsule in CAPS.items():
+    STAGE_RECORDS = []
+    raw = {kind: np.fromfile(capsule / file, dtype='<f4')
+           for kind, file in [('capture', 'raw-mic-48k.f32le.pcm'), ('render', 'render-48k.f32le.pcm')]}
+    assert all(np.isfinite(v).all() and np.max(np.abs(v)) < 1 for v in raw.values())
+    calls = read(capsule / 'audio-calls.json')
+    assert not any(e['kind'] == 'route_reset' for e in read(capsule / 'control-events.json'))
+    origins = {kind: next(c['hostTimeNanoseconds'] for c in calls if c['kind'] == kind) for kind in raw}
+    delta = Fraction((origins['capture'] - origins['render']) * 16000, 1000000000)
+    low = {kind: np.zeros(0, dtype='<f4') for kind in raw}
+    available = dict(capture=0, render=0)
+    alignment = None
+    ns = None
+    chunks = []
+    setups = []
+    resampling = []
+    prefix_rounding = []
+    output = np.zeros((len(raw['capture']) + 2) // 3, dtype='<f4')
+    valid = np.zeros(len(output), dtype=bool)
+    consumed = 0
+    for call in calls:
+        kind = call['kind']
+        assert call['sampleOffset'] == available[kind]
+        time_error = (call['hostTimeNanoseconds'] - origins[kind]) * 48000 - available[kind] * 1000000000
+        assert abs(time_error) <= 48000
+        available[kind] += call['sampleCount']
+        assert available[kind] <= len(raw[kind])
+        tick = time.perf_counter()
+        safe_end = max(0, (available[kind] - 31) // 3 + 1)
+        current = np.asarray(resample_poly(raw[kind][:available[kind]], 1, 3), dtype='<f4')[:safe_end]
+        previous = low[kind]
+        different = np.flatnonzero(current[:len(previous)].view('<u4') != previous.view('<u4'))
+        if len(different):
+            prefix_rounding.append({'call': call['ordinal'], 'kind': kind,
+                'recomputed_older_differences': int(len(different)),
+                'first_changed_low_index': int(different[0]),
+                'max_absolute_difference': float(np.max(np.abs(current[:len(previous)] - previous))),
+                'cache_overwritten': False})
+        low[kind] = np.concatenate((previous, current[len(previous):]))
+        assert np.array_equal(low[kind][:len(previous)].view('<u4'), previous.view('<u4'))
+        resampling.append({'call': call['ordinal'], 'kind': kind,
+                           'seconds': time.perf_counter() - tick, 'safe_end16': safe_end})
+        if alignment is None and kind == 'capture':
+            i = len(low['capture']) - 4000
+            jmin = math.ceil(Fraction(i) + delta - 8000)
+            jmax = math.floor(Fraction(i) + delta)
+            if i >= 10 and jmin >= 10 and jmax + 4000 <= len(low['render']):
+                calibration_tick = time.perf_counter()
+                mic = low['capture'][i:i + 4000].astype(float)
+                ref = low['render'][jmin:jmax + 4000].astype(float)
+                assert np.var(mic) > 0 and np.var(ref) > 0, 'NO_FIRST_OBSERVABLE_ALIGNMENT'
+                n = len(mic) + len(ref)
+                r = np.fft.rfft(mic, n) * np.conj(np.fft.rfft(ref, n))
+                cc = np.fft.irfft(r / (np.abs(r) + 1e-15), n)
+                offsets = np.arange(jmax - jmin + 1)
+                scores = np.abs(cc[(-offsets) % n])
+                best = scores.max()
+                assert best > 0 and np.isfinite(scores).all(), 'NO_FIRST_OBSERVABLE_ALIGNMENT'
+                offset = int(np.flatnonzero(scores == best)[-1])
+                j = jmin + offset
+                d = i - j
+                content_lag = delta + d
+                assert 0 <= content_lag <= 8000
+                start_source = ((len(low['capture']) + 127) // 128) * 128
+                alignment = {'capture_window16': [i, i + 4000],
+                    'legal_reference_starts16': [jmin, jmax], 'selected_reference_start16': j,
+                    'array_offset16': d, 'content_lag16_rational': [content_lag.numerator, content_lag.denominator],
+                    'content_lag_milliseconds': float(content_lag / 16), 'GCC_absolute_peak': float(best),
+                    'GCC_seconds': time.perf_counter() - calibration_tick,
+                    'available_call': call['ordinal'], 'source_start16': start_source,
+                    'external_offset_used': False}
+                tick = time.perf_counter()
+                ns = model_state()
+                padding_durations = []
+                for _ in range(3):
+                    _, duration = hop(ns, np.zeros(128, dtype='<f4'), np.zeros(128, dtype='<f4'))
+                    padding_durations.append(duration)
+                setups.append({'call': call['ordinal'], 'allocation_and_author_padding_seconds': time.perf_counter() - tick,
+                               'padding_hop_seconds': padding_durations})
+        if alignment is not None:
+            start_source = alignment['source_start16']
+            d = alignment['array_offset16']
+            while start_source + consumed + 128 <= len(low['capture']) and start_source + consumed + 128 - d <= len(low['render']):
+                lo = start_source + consumed
+                assert lo - d >= 10
+                assert 3 * (lo + 127) + 30 < available['capture']
+                assert 3 * (lo + 127 - d) + 30 < available['render']
+                out, duration = hop(ns, low['capture'][lo:lo + 128], low['render'][lo - d:lo + 128 - d])
+                consumed += 128
+                source_lo = start_source + consumed - 512
+                eligible = source_lo >= start_source
+                if eligible:
+                    assert not valid[source_lo:source_lo + 128].any()
+                    output[source_lo:source_lo + 128] = out
+                    valid[source_lo:source_lo + 128] = True
+                chunks.append({'source16': [source_lo, source_lo + 128], 'real_support_end16': lo + 128,
+                    'available_call': call['ordinal'], 'full_hop_seconds': duration,
+                    'eligible_real_source_output': eligible})
+    assert alignment is not None
+    output.tofile(WORK / (name + '-source-indexed-output16.f32le.pcm'))
+    valid.astype('u1').tofile(WORK / (name + '-valid-source.u8'))
+    assert len(STAGE_RECORDS) == len(chunks) + 3
+    native_shapes = dict(mask=257, stage1=512, stage2=512, mic=512, ref=512, final=128)
+    for role, size in native_shapes.items():
+        array = np.stack([r[role] for r in STAGE_RECORDS])
+        assert array.shape == (len(STAGE_RECORDS), size)
+        array.astype('<f4').tofile(WORK / f'{name}-native-{role}.f32le.pcm')
+    save(name + '-native-state-binding.json', [
+        {k: r[k] for k in ['state_in', 'state_out', 'mic_fft_sha256', 'ref_fft_sha256']}
+        for r in STAGE_RECORDS])
+    save(name + '-availability-ledger.json', {'schema_version': 1, 'alignment': alignment,
+         'chunks': chunks, 'setup': setups, 'resampling': resampling,
+         'past_prefix_recompute_rounding_diagnostic': prefix_rounding})
+    durations = np.array([c['full_hop_seconds'] for c in chunks])
+    results[name] = {'alignment': alignment, 'real_hops': len(chunks),
+        'valid_source_samples': int(valid.sum()), 'unavailable_source_samples': int((~valid).sum()),
+        'p99_seconds': float(np.quantile(durations, .99)), 'maximum_seconds': float(durations.max()),
+        'over_8ms': int(np.sum(durations > .008)), 'setup': setups,
+        'resampling_max_seconds': max(c['seconds'] for c in resampling),
+        'scope': 'offline actual-arrival event replay; setup/resampling separate; no live I/O backlog claim'}
+    outputs[name], masks[name], alignments[name] = output, valid, alignment
+    for suffix in ['source-indexed-output16.f32le.pcm', 'valid-source.u8']:
+        assert sha(WORK / f'{name}-{suffix}') == sha(RUN / 'dtln-online-align-02' / f'{name}-{suffix}'), 'PASSIVE_OBSERVER_CHANGED_OUTPUT'
+
+    print(json.dumps({'arm': name, 'alignment': alignment, 'performance': results[name]}), flush=True)
+save('performance-and-alignment.json', results)
+assert alignments['background'] == alignments['mixed'] or (
+    {k: v for k, v in alignments['background'].items() if k != 'GCC_seconds'} ==
+    {k: v for k, v in alignments['mixed'].items() if k != 'GCC_seconds'})
+
+def baseline(c):
+    return resample_poly(np.fromfile(c / 'clean-48k.f32le.pcm', dtype='<f4')[432:], 1, 3).astype(float)
+
+physical_baseline = baseline(CAPS['physical'])
+chains = []
+for first in [372, 972, 1014, 1063]:
+    lo, hi = (first - 1) * 160 - 144, (first + 2) * 160 - 144
+    assert masks['physical'][lo:hi].all(), 'PHYSICAL_OLD_CHAIN_UNAVAILABLE'
+    power = float(np.mean(outputs['physical'][lo:hi].astype(float) ** 2))
+    original = float(np.mean(physical_baseline[lo:hi] ** 2))
+    chains.append({'old_output_frames': [first, first + 2], 'raw_source16': [lo, hi],
+                   'new_power': power, 'original_AEC3_clean_power': original, 'power_ratio': power / original})
+lo, hi = 164779 // 3, (320779 + 2) // 3
+assert masks['mixed'][lo:hi].all() and masks['background'][lo:hi].all(), 'FULL_SOFTWARE_ACTIVITY_UNAVAILABLE'
+source = resample_poly(np.fromfile(CAPS['mixed'] / 'raw-mic-48k.f32le.pcm', dtype='<f4') -
+                       np.fromfile(CAPS['background'] / 'raw-mic-48k.f32le.pcm', dtype='<f4'), 1, 3)[lo:hi].astype(float)
+den = np.sum(source ** 2)
+
+def score(v):
+    v = v[lo:hi]
+    return {'samples': hi - lo, 'normalized_squared_error': float(np.sum((v - source) ** 2) / den),
+            'response_source_correlation': float(np.dot(v, source) / np.sqrt(np.sum(v ** 2) * den)),
+            'scope': 'paired software perturbation response, not isolated human fidelity or physical400ms'}
+
+software = {'candidate': score(outputs['mixed'].astype(float) - outputs['background'].astype(float)),
+            'AEC3_clean': score(baseline(CAPS['mixed']) - baseline(CAPS['background']))}
+audio_pass = all(c['power_ratio'] < 1 for c in chains) and software['candidate']['normalized_squared_error'] <= software['AEC3_clean']['normalized_squared_error']
+budget_pass = all(v['over_8ms'] == 0 for v in results.values())
+assert all(sha(ROOT / p) == h for p, h in hashes.items())
+save('result.json', {'schema_version': 1, 'verdict': 'CAUSAL_AUDIO_RESEARCH_ONLY' if audio_pass and budget_pass else 'FIXED_ONLINE_ALIGN_DTLN_NOT_ADVANCED',
+     'audio_comparison_pass': audio_pass, 'fixed_hop_budget_pass': budget_pass,
+     'actual_input_causality': 'VERIFIED_BY_PREFIX_SUPPORT_AND_EVENT_ORDER',
+     'physical_chains': chains, 'software_source_response': software,
+     'performance': results, 'live_walltime_backlog': 'UNVERIFIED',
+     'startup_and_tail_coverage': 'EXPLICITLY_UNAVAILABLE_NOT_ZERO_QUALIFICATION',
+     'source_qualification': 'NOT_RUN', 'Gate': 'NOT_RUN', 'formal_Runtime': 'UNCHANGED',
+     'physical400ms': 'UNVERIFIED', 'product_patch': False, 'Test3': 'BLOCKED'})
