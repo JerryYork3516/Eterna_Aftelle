@@ -1,0 +1,80 @@
+{
+  "DEV": false,
+  "DSP": false,
+  "Runtime": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED",
+  "auth_guard_fixture": {
+    "actual_child_exit": 0,
+    "actual_child_pid": 45536,
+    "actual_tool_chunk": "01beee",
+    "actual_tool_exit": 0,
+    "guard_cases": 32,
+    "tests": 6,
+    "whole_seconds": 0.08043879100000001
+  },
+  "authorization_guard": "PRO_GO_REVIEW_CLOSED",
+  "capture": false,
+  "execution_admitted": false,
+  "external_result_review": {
+    "FIT_vs_CHECK": "UNVERIFIED",
+    "closed": true,
+    "patch": "NO_PATCH",
+    "path": "/Users/jerryyork/.codex/review-packages/Aftelle-RBT1-Pro-result-closure-20261011/external-Pro-review-closure.json",
+    "sha256": "7c6503e32c6c320052d6c865ccb08fe168338efbc3eaf2edbcf541ae30723789",
+    "verdict": "REJECT_RBT1_MECHANISM_PILOT"
+  },
+  "fixture": {
+    "actual_child_exit": 0,
+    "actual_child_pid": 41969,
+    "actual_tool_chunk": "792123",
+    "actual_tool_exit": 0,
+    "tests": 11,
+    "whole_seconds": 0.089480166
+  },
+  "grid": false,
+  "guard_integrity": "final-integrity-auth-guard.json",
+  "latest_integrity": "runner-final-actual-tool-receipt.json",
+  "latest_outcome": "run-01/pipeline-result.json",
+  "long_activity_above": 1069,
+  "long_activity_total": 4478,
+  "long_hits": 6,
+  "long_total": 20,
+  "model": false,
+  "next_stage_started": false,
+  "one_item_authorized": false,
+  "proposal": false,
+  "python_modules_compile": 15,
+  "review": "External GPT Pro saved-result review CLOSED; no concrete error found that changes REJECT; final FIT mechanism UNVERIFIED",
+  "saved_only_outcome_review": {
+    "all_readonly_actual_tool_exits": 0,
+    "hard_constraint_tools": [
+      "5f546c",
+      "29c04d"
+    ],
+    "no_model_or_extra_experiment": true,
+    "resource_tools": [
+      "b90874",
+      "471da9"
+    ],
+    "status": "NO_FINDING_TECHNICAL_COMPLETION_MECHANISM_REJECT"
+  },
+  "schema_version": 1,
+  "short_hits": 5,
+  "short_total": 20,
+  "status": "RBT1_CLOSED_REJECTED_NO_PATCH",
+  "stop": "Fixed RBT-1 combination closed. No extra experiments, training, tuning or FIT prediction supplementation. Further research requires separate mechanism evidence and decision.",
+  "training": false,
+  "trial_actual_tool_receipt": "runner-final-actual-tool-receipt.json",
+  "trial_attempts": 1,
+  "trial_authorization_SHA256": "c166d22dc9486616bf47c7b3227d1128b98763436702d7952fde75d98b0aca73",
+  "trial_consumed": true,
+  "trial_contract_SHA256": "aa91dd68f88627c02646d1b7c149f7eaad4765237911ba82196e096c0b1dca58",
+  "trial_final_actual_tool_chunk": "d483a4",
+  "trial_final_actual_tool_exit": 0,
+  "trial_owner_completion": "run-01/owner-completion.json",
+  "trial_result": "run-01/pipeline-result.json",
+  "trial_status": "REJECT_RBT1_MECHANISM_PILOT",
+  "weak_short_hits": 0,
+  "weak_short_total": 10
+}

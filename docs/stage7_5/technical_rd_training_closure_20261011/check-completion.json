@@ -1,0 +1,393 @@
+{
+  "schema_version": 1,
+  "arm_forwards": 120,
+  "checkpoint": {
+    "bytes": 24329,
+    "sha256": "aaa40bd8d33df0024ea23dbdd0c838d6935ca70b66eb590534ee7d71ec83736b"
+  },
+  "binding": {
+    "contract_sha256": "aa91dd68f88627c02646d1b7c149f7eaad4765237911ba82196e096c0b1dca58",
+    "authorization_sha256": "c166d22dc9486616bf47c7b3227d1128b98763436702d7952fde75d98b0aca73"
+  },
+  "result": {
+    "status": "REJECT_RBT1_MECHANISM_PILOT",
+    "n_BE": 0.9964888095855713,
+    "events": [
+      {
+        "id": "RBT1:CHECK:0000",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.24878576397895813,
+        "separated": false,
+        "pre_max": 0.9321150183677673,
+        "post_max": 0.8253342509269714
+      },
+      {
+        "id": "RBT1:CHECK:0001",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.9991071820259094,
+        "separated": true,
+        "pre_max": 0.8404984474182129,
+        "post_max": 0.9989798665046692
+      },
+      {
+        "id": "RBT1:CHECK:0002",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.9994872808456421,
+        "separated": true,
+        "pre_max": 0.738483726978302,
+        "post_max": 0.9994219541549683
+      },
+      {
+        "id": "RBT1:CHECK:0003",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.517940104007721,
+        "separated": false,
+        "pre_max": 0.5167352557182312,
+        "post_max": 0.7912724614143372
+      },
+      {
+        "id": "RBT1:CHECK:0004",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.9999617338180542,
+        "separated": true,
+        "pre_max": 0.46827641129493713,
+        "post_max": 0.9511560797691345
+      },
+      {
+        "id": "RBT1:CHECK:0005",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.9999828338623047,
+        "separated": true,
+        "pre_max": 0.8710893392562866,
+        "post_max": 0.9696310758590698
+      },
+      {
+        "id": "RBT1:CHECK:0006",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.45956650376319885,
+        "separated": false,
+        "pre_max": 0.9475387334823608,
+        "post_max": 0.6975406408309937
+      },
+      {
+        "id": "RBT1:CHECK:0007",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.6609159111976624,
+        "separated": false,
+        "pre_max": 0.5924843549728394,
+        "post_max": 0.739590048789978
+      },
+      {
+        "id": "RBT1:CHECK:0008",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.9999499320983887,
+        "separated": true,
+        "pre_max": 0.5163118243217468,
+        "post_max": 0.9843959808349609
+      },
+      {
+        "id": "RBT1:CHECK:0009",
+        "kind": "short",
+        "weak": false,
+        "evidence": 0.7067686915397644,
+        "separated": false,
+        "pre_max": 0.8684738278388977,
+        "post_max": 0.649607241153717
+      },
+      {
+        "id": "RBT1:CHECK:0010",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.9895732998847961,
+        "separated": false,
+        "pre_max": 0.8727617263793945,
+        "post_max": 0.9528865218162537
+      },
+      {
+        "id": "RBT1:CHECK:0011",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.769789457321167,
+        "separated": false,
+        "pre_max": 0.9132119417190552,
+        "post_max": 0.9983920454978943
+      },
+      {
+        "id": "RBT1:CHECK:0012",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.4057856798171997,
+        "separated": false,
+        "pre_max": 0.9573388695716858,
+        "post_max": 0.8949440717697144
+      },
+      {
+        "id": "RBT1:CHECK:0013",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.8948215246200562,
+        "separated": false,
+        "pre_max": 0.5919549465179443,
+        "post_max": 0.995102047920227
+      },
+      {
+        "id": "RBT1:CHECK:0014",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.4008141756057739,
+        "separated": false,
+        "pre_max": 0.5302118062973022,
+        "post_max": 0.5990318059921265
+      },
+      {
+        "id": "RBT1:CHECK:0015",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.3353208601474762,
+        "separated": false,
+        "pre_max": 0.7178072333335876,
+        "post_max": 0.7864397168159485
+      },
+      {
+        "id": "RBT1:CHECK:0016",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.20241622626781464,
+        "separated": false,
+        "pre_max": 0.777660608291626,
+        "post_max": 0.5891327261924744
+      },
+      {
+        "id": "RBT1:CHECK:0017",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.3070980906486511,
+        "separated": false,
+        "pre_max": 0.43200138211250305,
+        "post_max": 0.9918869137763977
+      },
+      {
+        "id": "RBT1:CHECK:0018",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.1398070752620697,
+        "separated": false,
+        "pre_max": 0.4286130964756012,
+        "post_max": 0.2547708749771118
+      },
+      {
+        "id": "RBT1:CHECK:0019",
+        "kind": "short",
+        "weak": true,
+        "evidence": 0.3439396023750305,
+        "separated": false,
+        "pre_max": 0.9942904710769653,
+        "post_max": 0.5386595726013184
+      },
+      {
+        "id": "RBT1:CHECK:0020",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.410137414932251,
+        "separated": false,
+        "pre_max": 0.5704633593559265,
+        "post_max": 0.9772170186042786
+      },
+      {
+        "id": "RBT1:CHECK:0021",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.2509011924266815,
+        "separated": false,
+        "pre_max": 0.4242241680622101,
+        "post_max": 0.8224984407424927
+      },
+      {
+        "id": "RBT1:CHECK:0022",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.9999988079071045,
+        "separated": true,
+        "pre_max": 0.7485854625701904,
+        "post_max": 0.6243332624435425
+      },
+      {
+        "id": "RBT1:CHECK:0023",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.17711302638053894,
+        "separated": false,
+        "pre_max": 0.886985182762146,
+        "post_max": 0.976249098777771
+      },
+      {
+        "id": "RBT1:CHECK:0024",
+        "kind": "long",
+        "weak": false,
+        "evidence": 1.0,
+        "separated": true,
+        "pre_max": 0.5378556251525879,
+        "post_max": 0.6012058258056641
+      },
+      {
+        "id": "RBT1:CHECK:0025",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.3279111385345459,
+        "separated": false,
+        "pre_max": 0.6400299072265625,
+        "post_max": 0.5649693608283997
+      },
+      {
+        "id": "RBT1:CHECK:0026",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.4014458656311035,
+        "separated": false,
+        "pre_max": 0.914667010307312,
+        "post_max": 0.7785053849220276
+      },
+      {
+        "id": "RBT1:CHECK:0027",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.9999853372573853,
+        "separated": true,
+        "pre_max": 0.3385064899921417,
+        "post_max": 0.2894570529460907
+      },
+      {
+        "id": "RBT1:CHECK:0028",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.9999264478683472,
+        "separated": true,
+        "pre_max": 0.8370373249053955,
+        "post_max": 0.95109623670578
+      },
+      {
+        "id": "RBT1:CHECK:0029",
+        "kind": "long",
+        "weak": false,
+        "evidence": 0.9797964692115784,
+        "separated": false,
+        "pre_max": 0.5612062811851501,
+        "post_max": 0.7366254329681396
+      },
+      {
+        "id": "RBT1:CHECK:0030",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.2890375852584839,
+        "separated": false,
+        "pre_max": 0.8542433381080627,
+        "post_max": 0.6254101991653442
+      },
+      {
+        "id": "RBT1:CHECK:0031",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.528656542301178,
+        "separated": false,
+        "pre_max": 0.7976409196853638,
+        "post_max": 0.47040626406669617
+      },
+      {
+        "id": "RBT1:CHECK:0032",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.982155978679657,
+        "separated": false,
+        "pre_max": 0.7158296704292297,
+        "post_max": 0.7427013516426086
+      },
+      {
+        "id": "RBT1:CHECK:0033",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.14890612661838531,
+        "separated": false,
+        "pre_max": 0.6215306520462036,
+        "post_max": 0.9734616279602051
+      },
+      {
+        "id": "RBT1:CHECK:0034",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.9998891353607178,
+        "separated": true,
+        "pre_max": 0.9362825751304626,
+        "post_max": 0.794578492641449
+      },
+      {
+        "id": "RBT1:CHECK:0035",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.2612205445766449,
+        "separated": false,
+        "pre_max": 0.8839356899261475,
+        "post_max": 0.9192594885826111
+      },
+      {
+        "id": "RBT1:CHECK:0036",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.14820529520511627,
+        "separated": false,
+        "pre_max": 0.9963871240615845,
+        "post_max": 0.5752527117729187
+      },
+      {
+        "id": "RBT1:CHECK:0037",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.11527238041162491,
+        "separated": false,
+        "pre_max": 0.7455183267593384,
+        "post_max": 0.37876656651496887
+      },
+      {
+        "id": "RBT1:CHECK:0038",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.2420642226934433,
+        "separated": false,
+        "pre_max": 0.9680950045585632,
+        "post_max": 0.7594655752182007
+      },
+      {
+        "id": "RBT1:CHECK:0039",
+        "kind": "long",
+        "weak": true,
+        "evidence": 0.9999991655349731,
+        "separated": true,
+        "pre_max": 0.6846587657928467,
+        "post_max": 0.9080531597137451
+      }
+    ],
+    "short_hits": 5,
+    "short_total": 20,
+    "weak_short_hits": 0,
+    "weak_short_total": 10,
+    "long_hits": 6,
+    "long_total": 20,
+    "long_activity_above": 1069,
+    "long_activity_total": 4478,
+    "tau": null,
+    "grid": "NOT_RUN",
+    "Gate": "NOT_RUN",
+    "qualification": "NOT_RUN",
+    "confirmation": "NOT_RUN",
+    "original_clean": "NOT_RUN",
+    "actual_ready": "NOT_RUN"
+  }
+}

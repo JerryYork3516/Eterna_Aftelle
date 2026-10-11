@@ -1,0 +1,18 @@
+{
+  "DR_schema_changed": false,
+  "Runtime_API_changed": false,
+  "Stage8": false,
+  "Test3": "BLOCKED",
+  "baseline": "561d530cc3fee3e93d4f5a0970e2da6f513d61f4",
+  "changed_production_code": false,
+  "forbidden_audio_weights_secret_payloads": 0,
+  "new_platform_target": false,
+  "permissions": false,
+  "publication_authorized_by_user": true,
+  "requires_confirmation": false,
+  "result": "PASS",
+  "schema_version": 1,
+  "scientific_execution": false,
+  "scope": "Documentation-only publication of closed fixed RBT-1 evidence",
+  "snapshot_zip_sha256": "cef5166c3e57cbf4920b194d22b3ed2eae13aec70e3d0da8c609c4b2750e717d"
+}

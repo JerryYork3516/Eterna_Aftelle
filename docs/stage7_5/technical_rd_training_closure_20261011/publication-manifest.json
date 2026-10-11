@@ -1,0 +1,72 @@
+{
+  "Test3": "BLOCKED",
+  "all_current_permissions_false": true,
+  "baseline": "561d530cc3fee3e93d4f5a0970e2da6f513d61f4",
+  "files": [
+    {
+      "bytes": 3254446,
+      "path": "RBT1-result-review.zip",
+      "sha256": "cef5166c3e57cbf4920b194d22b3ed2eae13aec70e3d0da8c609c4b2750e717d",
+      "source_path": "/Users/jerryyork/.codex/review-packages/Aftelle-RBT1-result-review-20261011.zip",
+      "source_sha256": "cef5166c3e57cbf4920b194d22b3ed2eae13aec70e3d0da8c609c4b2750e717d"
+    },
+    {
+      "bytes": 1551,
+      "path": "RBT1-Pro-review-closure.json",
+      "sha256": "7c6503e32c6c320052d6c865ccb08fe168338efbc3eaf2edbcf541ae30723789",
+      "source_path": "/Users/jerryyork/.codex/review-packages/Aftelle-RBT1-Pro-result-closure-20261011/external-Pro-review-closure.json",
+      "source_sha256": "7c6503e32c6c320052d6c865ccb08fe168338efbc3eaf2edbcf541ae30723789"
+    },
+    {
+      "bytes": 1465,
+      "path": "closure-integrity.json",
+      "sha256": "3f3bc6af5d6f30c1e6238c9febb4843229156d4eb1be2a60b0cf7b644ec94a3e",
+      "source_path": "/Users/jerryyork/.codex/review-packages/Aftelle-RBT1-Pro-result-closure-20261011/closure-integrity.json",
+      "source_sha256": "3f3bc6af5d6f30c1e6238c9febb4843229156d4eb1be2a60b0cf7b644ec94a3e"
+    },
+    {
+      "bytes": 2786,
+      "path": "current-state.json",
+      "sha256": "7986c86946b784599bceff638b098b1ed694b0507f74ffcff6eb898189018241",
+      "source_path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/current-state.json",
+      "source_sha256": "7986c86946b784599bceff638b098b1ed694b0507f74ffcff6eb898189018241"
+    },
+    {
+      "bytes": 41218,
+      "path": "updates.jsonl",
+      "sha256": "76918d68b9f8b0a65134fa1642515864583bb914046129de331845f962239b37",
+      "source_path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/updates.jsonl",
+      "source_sha256": "76918d68b9f8b0a65134fa1642515864583bb914046129de331845f962239b37"
+    },
+    {
+      "bytes": 10581,
+      "path": "check-completion.json",
+      "sha256": "51341094baaa227357571c32ab832c2540b5d9b9ceb73447586f110bd52100d3",
+      "source_path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/check-completion.json",
+      "source_sha256": "51341094baaa227357571c32ab832c2540b5d9b9ceb73447586f110bd52100d3"
+    },
+    {
+      "bytes": 5603,
+      "path": "runner-final-actual-tool-receipt.json",
+      "sha256": "d35f397b391536eb572061608d46344810ef2c843aba32543d2af69b0c46259b",
+      "source_path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/runner-final-actual-tool-receipt.json",
+      "source_sha256": "d35f397b391536eb572061608d46344810ef2c843aba32543d2af69b0c46259b"
+    },
+    {
+      "bytes": 4093,
+      "path": "README.md",
+      "sha256": "ee5d62ff98e461befd4133c53c499f9cac45defae90b7366760e883a49cfcc75"
+    },
+    {
+      "bytes": 625,
+      "path": "stage7-publication-check.json",
+      "sha256": "825ebe676b5365aaa9b0427a841e4898891a05e76d95877a90b92141f9166d92"
+    }
+  ],
+  "items": 9,
+  "manifest_self_excluded": true,
+  "payload_bytes": 3322368,
+  "publication_only": true,
+  "schema_version": 1,
+  "title": "技术研发训练收口"
+}

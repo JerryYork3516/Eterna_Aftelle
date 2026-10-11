@@ -1,0 +1,20 @@
+{
+  "Stage7": "PASS",
+  "Test3": "BLOCKED",
+  "no_commit_push": true,
+  "no_new_scientific_execution": true,
+  "original_asset_retention": true,
+  "previous_state_sha256": "619ef00967b23cd8d648e43c468949e252e55d42ec718c9cc6953350475bce7a",
+  "review_sha256": "7c6503e32c6c320052d6c865ccb08fe168338efbc3eaf2edbcf541ae30723789",
+  "schema_version": 1,
+  "scientific_control_and_outputs_unchanged": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry-contract.json": "46d631af1c5113fee1a3cf3563b56f5f45d15ef7d8e2282c9f42a97017afc82c",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/execution-authorization.json": "3e2ab4aadcc5ec8695e27e95f307260a214c29be8438d3631b1a5a6bb4ea2361",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/pipeline-result.json": "5aa9f60a456a10d76d001e2b070d44348bcb2fddcd05e60ae6631dbf947b1d6c",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/runner-final-actual-tool-receipt.json": "d35f397b391536eb572061608d46344810ef2c843aba32543d2af69b0c46259b"
+  },
+  "state_bytes": 2786,
+  "state_path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/current-state.json",
+  "state_sha256": "7986c86946b784599bceff638b098b1ed694b0507f74ffcff6eb898189018241",
+  "status": "RBT1_CLOSED_REJECTED_NO_PATCH"
+}

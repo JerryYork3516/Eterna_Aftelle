@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "status": "COMPLETED_REJECTED_AWAITING_REVIEW",
+  "actual_tool_session": 51526,
+  "initial_actual_tool_chunk": "547596",
+  "final_actual_tool_chunk": "d483a4",
+  "actual_tool_exit": 0,
+  "arming_actual_tool_chunk": "912aec",
+  "arming_actual_tool_exit": 0,
+  "actual_child_returncode": 0,
+  "child_exit_source": "Popen.wait",
+  "native_actual_subprocess_exit": 0,
+  "no_timeout_or_monitor_stop": true,
+  "binding": {
+    "contract_sha256": "aa91dd68f88627c02646d1b7c149f7eaad4765237911ba82196e096c0b1dca58",
+    "authorization_sha256": "c166d22dc9486616bf47c7b3227d1128b98763436702d7952fde75d98b0aca73"
+  },
+  "progress": {
+    "completed_updates": 200,
+    "triple_visits": 1600,
+    "arm_forwards": 4800
+  },
+  "capture_arms": 312,
+  "prefix_fit_arms": 192,
+  "check_arm_forwards": 120,
+  "checkpoint": {
+    "bytes": 24329,
+    "sha256": "aaa40bd8d33df0024ea23dbdd0c838d6935ca70b66eb590534ee7d71ec83736b"
+  },
+  "result": {
+    "status": "REJECT_RBT1_MECHANISM_PILOT",
+    "n_BE": 0.9964888095855713,
+    "short_hits": 5,
+    "short_total": 20,
+    "weak_short_hits": 0,
+    "weak_short_total": 10,
+    "long_hits": 6,
+    "long_total": 20,
+    "long_activity_above": 1069,
+    "long_activity_total": 4478,
+    "tau": null,
+    "grid": "NOT_RUN",
+    "Gate": "NOT_RUN",
+    "qualification": "NOT_RUN",
+    "confirmation": "NOT_RUN",
+    "original_clean": "NOT_RUN",
+    "actual_ready": "NOT_RUN"
+  },
+  "owner": {
+    "schema_version": 1,
+    "binding": {
+      "contract_sha256": "aa91dd68f88627c02646d1b7c149f7eaad4765237911ba82196e096c0b1dca58",
+      "authorization_sha256": "c166d22dc9486616bf47c7b3227d1128b98763436702d7952fde75d98b0aca73"
+    },
+    "actual_command": [
+      "/Users/jerryyork/Eterna_Aftelle/.build/test3-mindaec-rosetta-probe-20261006-01/venv/bin/python",
+      "-B",
+      "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_driver.py"
+    ],
+    "actual_child_returncode": 0,
+    "exit_source": "Popen.wait",
+    "failure": null,
+    "timeout": false,
+    "interrupted": false,
+    "aggregate_RSS_sampled_peak_bytes": 1032634368,
+    "aggregate_RSS_continuous_peak_proven": false,
+    "residual_group": [],
+    "stdout_eof": true,
+    "stderr_eof": true,
+    "elapsed_seconds": 93.28557224999531,
+    "resources": {
+      "public_logical_bytes": 64171631929,
+      "public_files": 282273,
+      "public_cap": 64424509440,
+      "new_public_bytes": 0,
+      "local_available_bytes": 3294580736,
+      "local_required_reserve": 0,
+      "public_available_bytes": 946417090560
+    },
+    "tau": null,
+    "status": "ONE_FIXED_ITEM_COMPLETED"
+  },
+  "retained_actual_buckets_before_administrative_close": {
+    "binary": 30453145,
+    "metadata": 523693,
+    "streams": 234,
+    "source_and_receipts": 1256941
+  },
+  "record_bindings": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/candidate-started.json": {
+      "bytes": 404,
+      "SHA256": "65492a5c490dd87f7fa106a47f8acf08df9ed5dd0d4c8922e3f14afc9835b6c4"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/capture-completion.json": {
+      "bytes": 846,
+      "SHA256": "380e138e6c9a046967fc17958f25cefd94c3107779f3edcb8e7097de86677b09"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/train-completion.json": {
+      "bytes": 546,
+      "SHA256": "fc8c973dc12d09623258748a48ccf0b9a795add343ddbd27ababcadf1eed843f"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/check-completion.json": {
+      "bytes": 10581,
+      "SHA256": "51341094baaa227357571c32ab832c2540b5d9b9ceb73447586f110bd52100d3"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/pipeline-result.json": {
+      "bytes": 11482,
+      "SHA256": "5aa9f60a456a10d76d001e2b070d44348bcb2fddcd05e60ae6631dbf947b1d6c"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/owner-completion.json": {
+      "bytes": 1136,
+      "SHA256": "93fe225448f77dee9b89672601152dd021826d0a02dfeeaf43b1d9dc12c0ed43"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/final-checkpoint.pt": {
+      "bytes": 24329,
+      "SHA256": "aaa40bd8d33df0024ea23dbdd0c838d6935ca70b66eb590534ee7d71ec83736b"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run-01/updates.jsonl": {
+      "bytes": 41218,
+      "SHA256": "76918d68b9f8b0a65134fa1642515864583bb914046129de331845f962239b37"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-execution-control/entry-contract.json": {
+      "bytes": 173383,
+      "SHA256": "aa91dd68f88627c02646d1b7c149f7eaad4765237911ba82196e096c0b1dca58"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-execution-control/execution-authorization.json": {
+      "bytes": 43207,
+      "SHA256": "c166d22dc9486616bf47c7b3227d1128b98763436702d7952fde75d98b0aca73"
+    }
+  },
+  "asset_verification": "Original owner authorize() full246 SHA before child and end verifies; no separate rerun",
+  "scientific_attempts": 1,
+  "retry": false,
+  "tuning": false,
+  "additional_experiment": false,
+  "DEV": false,
+  "grid": false,
+  "Runtime": false,
+  "Test3": "BLOCKED",
+  "Stage7": "PASS_ISOLATED_BOUNDARY_ONLY"
+}

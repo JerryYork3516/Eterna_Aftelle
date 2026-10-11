@@ -1,0 +1,43 @@
+{
+  "DEV": false,
+  "FIT_reason": "Final full FIT probabilities/mechanism evaluation were not saved; per-batch pre-update training risk is insufficient",
+  "FIT_vs_CHECK": "UNVERIFIED",
+  "Runtime": false,
+  "Stage7": "PASS_READONLY_ISOLATED_BOUNDARY",
+  "Test3": "BLOCKED",
+  "concrete_execution_evaluation_error_found": false,
+  "decision": "CLOSE_THIS_FIXED_COMBINATION_NO_MORE_EXPERIMENTS",
+  "execution_permissions": false,
+  "family_impossibility_proven": false,
+  "followup_research": "Separate mechanism basis and explicit decision required; none started",
+  "grid": false,
+  "patch": "NO_PATCH",
+  "review_boundary": {
+    "checkpoint_payload_obtained": false,
+    "model_DSP_training_executed_by_reviewer": false,
+    "omitted_assets": 222,
+    "provided_assets": 24,
+    "required_assets": 246
+  },
+  "reviewer_reported_manifest": {
+    "bytes": 111000,
+    "payloads_verified": 247,
+    "sha256": "e39de36d552d0d6e3baf3bac0761c0cfe0e6afa3f8c23faff6d2725eba861dc8"
+  },
+  "reviewer_reported_recomputed_result": {
+    "long_activity_above": 1069,
+    "long_activity_total": 4478,
+    "long_hits": 6,
+    "long_total": 20,
+    "n_BE": 0.9964888095855713,
+    "short_hits": 5,
+    "short_total": 20,
+    "weak_short_hits": 0,
+    "weak_short_total": 10
+  },
+  "reviewer_reported_saved_probability_values": 119760,
+  "reviewer_reported_source_rows": 119880,
+  "schema_version": 1,
+  "source": "External GPT Pro review pasted directly by user; no new independent recomputation in this closure turn",
+  "verdict": "REJECT_RBT1_MECHANISM_PILOT"
+}
