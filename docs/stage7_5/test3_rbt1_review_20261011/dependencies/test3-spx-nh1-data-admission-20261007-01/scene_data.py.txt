@@ -1,0 +1,365 @@
+"""Unexecuted SPX-NH1 public-source scene draft; no SPX, model or Test3 input."""
+
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import wave
+
+import numpy as np
+
+
+SEED = 20261006
+RATE = 48000
+SAMPLES = 10 * RATE
+NUMPY_VERSION = "2.2.6"
+SOURCE_WORK_BYTES_MAX = 2 * 1024 ** 3
+COUNTS = {"TRAIN": 2400, "DEV-CAL": 500, "DEV-LOCK": 500, "PUBLIC-TEST": 500}
+PUBLISHED_SPLITS = {"TRAIN": "train", "DEV": "dev", "PUBLIC-TEST": "test"}
+PROJECT = Path(__file__).resolve().parents[2]
+
+
+def canonical_bytes(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def load_admitted_manifest(path):
+    admitted = json.loads(Path(path).read_text(encoding="utf-8"))
+    admitted["manifest_file_sha256"] = digest(path)
+    _validate_admitted(admitted)
+    admitted["files"] = sorted(admitted["files"], key=lambda row: row["relative_path"])
+    return admitted
+
+
+def _validate_admitted(admitted):
+    if (admitted.get("schema_version") != 1 or
+            admitted.get("status") != "ADMITTED_PUBLIC_AISHELL_ONLY" or
+            admitted.get("dataset") != "AISHELL-1" or
+            admitted.get("license_admitted") is not True or
+            not isinstance(admitted.get("corpus_identity"), dict) or
+            not admitted["corpus_identity"]):
+        raise ValueError("Public source and license admission is required")
+    if not Path(admitted["root"]).is_absolute():
+        raise ValueError("Admitted public root must be absolute")
+    root = Path(admitted["root"]).resolve(strict=True)
+    if root == PROJECT or PROJECT in root.parents:
+        raise ValueError("Corpus must be separate from the retained Test3 checkout")
+    owners, names = {}, set()
+    for row in admitted["files"]:
+        source = _source_path(root, row)
+        name = re.fullmatch(r"BAC009(S\d{4})W\d{4}\.wav", source.name)
+        if (not name or name.group(1) != row["speaker_id"] or
+                row["partition"] not in PUBLISHED_SPLITS or
+                row.get("rate") != 16000 or row.get("channels") != 1 or
+                row.get("sample_width") != 2 or type(row["frames"]) is not int or
+                row["frames"] <= 0 or row["frames"] * 32 > SOURCE_WORK_BYTES_MAX or
+                not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])):
+            raise ValueError("Invalid admitted AISHELL waveform descriptor")
+        if row["path"] in names:
+            raise ValueError("Duplicate source file")
+        names.add(row["path"])
+        prior = owners.setdefault(row["speaker_id"], row["partition"])
+        if prior != row["partition"]:
+            raise ValueError("Speaker crosses published splits")
+
+
+def _source_path(root, row):
+    relative = Path(row["relative_path"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("Source path must be relative to the admitted corpus")
+    source = (root / relative).resolve(strict=True)
+    if root not in source.parents:
+        raise ValueError("Source symlink escapes admitted corpus")
+    if (len(relative.parts) != 3 or
+            relative.parts[:2] != (PUBLISHED_SPLITS.get(row["partition"]), row["speaker_id"])):
+        raise ValueError("Waveform path does not match source split/speaker")
+    if not Path(row["path"]).is_absolute() or Path(row["path"]).resolve(strict=True) != source:
+        raise ValueError("Absolute source path does not match the admitted relative path")
+    return source
+
+
+def _wave(admitted, row):
+    source = _source_path(Path(admitted["root"]).resolve(), row)
+    if digest(source) != row["sha256"]:
+        raise ValueError("Public waveform hash mismatch")
+    with wave.open(str(source), "rb") as stream:
+        if (stream.getnchannels(), stream.getsampwidth(), stream.getframerate(),
+                stream.getnframes(), stream.getcomptype()) != (
+                    1, 2, 16000, row["frames"], "NONE"):
+            raise ValueError("Public waveform layout mismatch")
+        raw = stream.readframes(stream.getnframes())
+    if len(raw) != row["frames"] * 2:
+        raise ValueError("Truncated public waveform")
+    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / np.float32(32768)
+
+
+def _upsample(values):
+    following = np.concatenate((values[1:], values[-1:])).astype(np.float64)
+    current = values.astype(np.float64)
+    output = np.empty(3 * len(values), dtype=np.float32)
+    output[0::3] = values
+    output[1::3] = (2 * current + following) / 3
+    output[2::3] = (current + 2 * following) / 3
+    return output
+
+
+def _activity(values):
+    if len(values) % 240:
+        raise ValueError("Clean source clip is not a whole number of 5ms blocks")
+    rms = np.sqrt(np.mean(values.astype(np.float64).reshape(-1, 240) ** 2, axis=1))
+    a95 = float(np.quantile(rms, 0.95, method="linear"))
+    if not np.isfinite(a95) or a95 <= 0:
+        raise ValueError("SOURCE_ACTIVITY_REJECTED: zero clean-source A95")
+    active = np.repeat(rms > 0.01 * a95, 240)
+    if not active.any():
+        raise ValueError("SOURCE_ACTIVITY_REJECTED: no clean activity")
+    return active, a95
+
+
+def _seed(text):
+    return int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "little")
+
+
+def _path(rng):
+    delay = int(rng.integers(0, 9601))
+    t60 = float(rng.uniform(0.1, 0.7))
+    offsets = np.sort(rng.choice(np.arange(1, 28801), 32, replace=False))
+    gains = rng.uniform(-1, 1, 32) * np.exp(-3 * math.log(10) * offsets / RATE / t60)
+    return {"delay_raw48": delay, "T60_seconds": t60,
+            "taps": [[delay, 1.0]] + [[delay + int(o), float(g)]
+                                      for o, g in zip(offsets, gains)]}
+
+
+def make_manifest(admitted):
+    if np.__version__ != NUMPY_VERSION:
+        raise ValueError("Freeze uses NumPy2.2.6; no alternate RNG/math endpoint")
+    _validate_admitted(admitted)
+    if not re.fullmatch(r"[0-9a-f]{64}", admitted.get("manifest_file_sha256", "")):
+        raise ValueError("Load the frozen source manifest through load_admitted_manifest")
+    generator_hash = digest(__file__)
+    contract_hash = digest(Path(__file__).with_name("scene-contract.json"))
+    speakers = sorted({r["speaker_id"] for r in admitted["files"] if r["partition"] == "DEV"},
+                      key=lambda s: hashlib.sha256(("SPX-NH1-DEV:" + s).encode()).digest())
+    half = len(speakers) // 2
+    cal = set(speakers[:half])
+    pools = {key: [] for key in COUNTS}
+    for row in sorted(admitted["files"], key=lambda row: row["relative_path"]):
+        partition = {"TRAIN": "TRAIN", "PUBLIC-TEST": "PUBLIC-TEST"}.get(row["partition"])
+        if partition is None:
+            partition = "DEV-CAL" if row["speaker_id"] in cal else "DEV-LOCK"
+        pools[partition].append(row)
+    scenes = []
+    for partition, count in COUNTS.items():
+        pool = pools[partition]
+        if len({r["speaker_id"] for r in pool}) < 2:
+            raise ValueError("Each partition needs at least two admitted speakers")
+        rng = np.random.Generator(np.random.PCG64(_seed(f"SPX-NH1:{SEED}:{partition}")))
+        kinds = (["echo"] * (count * 40 // 100) + ["noise"] * (count * 10 // 100) +
+                 ["long_double"] * (count * 25 // 100) + ["short_double"] * (count * 20 // 100) +
+                 ["near_only"] * (count * 5 // 100))
+        rng.shuffle(kinds)
+        double = [i for i, kind in enumerate(kinds) if kind.endswith("double")]
+        weak = set(int(i) for i in rng.permutation(double)[:(len(double) + 1) // 2])
+        eligible = [i for i, kind in enumerate(kinds) if kind in ("echo", "long_double", "short_double")]
+        changes = set(int(i) for i in rng.permutation(eligible)[:count // 4])
+        short_index = 0
+        far_transform_index = 0
+        for index, kind in enumerate(kinds):
+            seed = _seed(f"SPX-NH1-SCENE:{SEED}:{partition}:{index}")
+            srng = np.random.Generator(np.random.PCG64(seed))
+            far = pool[int(srng.integers(len(pool)))] if kind not in ("noise", "near_only") else None
+            duration = (320, 400, 480)[short_index % 3] if kind == "short_double" else int(srng.integers(100, 401)) * 10
+            short_index += kind == "short_double"
+            near = None
+            if kind not in ("echo", "noise"):
+                candidates = [r for r in pool if r["frames"] >= duration * 16 and
+                              (far is None or r["speaker_id"] != far["speaker_id"])]
+                if not candidates:
+                    raise ValueError("No source long enough in its partition")
+                near = candidates[int(srng.integers(len(candidates)))].copy()
+                samples = _wave(admitted, near)
+                complete = samples[:len(samples) // 80 * 80].astype(np.float64).reshape(-1, 80)
+                center = int(np.argmax(np.mean(complete ** 2, axis=1))) * 80 + 40
+                near["offset16"] = max(0, min(len(samples) - duration * 16, center - duration * 8))
+                clip = _upsample(samples[near["offset16"]:near["offset16"] + duration * 16])
+                _, near["clean_clip_A95"] = _activity(clip)
+            near_start = 0 if index % 5 == 0 else int(srng.integers(4800, SAMPLES - duration * 48 + 1))
+            nonlinear = ("linear", "tanh", "clip")[far_transform_index % 3] if far else "linear"
+            far_transform_index += far is not None
+            scene = {"schema_version": 1, "id": f"{partition}:{index:04d}",
+                     "partition": partition, "seed": seed, "kind": kind,
+                     "generator_sha256": generator_hash, "contract_sha256": contract_hash,
+                     "source_manifest_file_sha256": admitted["manifest_file_sha256"],
+                     "room_family": f"{partition}:room:{index:04d}", "far": far, "near": near,
+                     "far_offset16": int(srng.integers(far["frames"])) if far else None,
+                     "near_start_raw48": near_start if near else None,
+                     "near_duration_ms": duration if near else None, "weak_double": index in weak,
+                     "near_echo_db": float(srng.uniform(-20, -10) if index in weak else srng.uniform(-10, 10)),
+                     "echo_target_dbfs": float(srng.uniform(-35, -12)), "SNR_db": float(srng.uniform(5, 35)),
+                     "nonlinear": nonlinear, "nonlinear_a": float((0.03, 0.1, 0.3)[int(srng.integers(3))]),
+                     "noise_kind": ("white", "lowpass", "impulse")[index % 3],
+                     "noise_seed": int(srng.integers(0, 2**63)), "echo_paths": [_path(srng)],
+                     "path_change_raw48": None, "path_change_samples": 960}
+            if index in changes:
+                scene["echo_paths"].append(_path(srng))
+                scene["path_change_raw48"] = int(srng.integers(RATE, 9 * RATE + 1))
+            scene["recipe_sha256"] = hashlib.sha256(canonical_bytes(scene)).hexdigest()
+            scenes.append(scene)
+    return {"schema_version": 1, "status": "PUBLIC_SCENES_GENERATED_NOT_TRAINING_ADMITTED",
+            "seed": SEED, "numpy_version": NUMPY_VERSION, "counts": COUNTS,
+            "generator_sha256": generator_hash, "contract_sha256": contract_hash,
+            "source_manifest_canonical_sha256": hashlib.sha256(canonical_bytes(admitted)).hexdigest(),
+            "source_manifest_file_sha256": admitted.get("manifest_file_sha256"),
+            "dev_cal_speakers": sorted(cal), "dev_lock_speakers": sorted(set(speakers) - cal),
+            "scene_recipe_count": len(scenes), "scenes": scenes,
+            "Test3": "BLOCKED", "source_meaning": "SYNTHETIC_LABEL_PROXY_ONLY"}
+
+
+def _echo(render, path):
+    result = np.zeros(SAMPLES, dtype=np.float64)
+    for delay, gain in path["taps"]:
+        result[delay:] += gain * render[:SAMPLES - delay]
+    return result
+
+
+def _active_rms(values):
+    active, _ = _activity(values)
+    return float(np.sqrt(np.mean(values[active].astype(np.float64) ** 2)))
+
+
+def rebuild_scene(scene, admitted):
+    if np.__version__ != NUMPY_VERSION:
+        raise ValueError("NumPy identity mismatch")
+    if (admitted.get("dataset") != "AISHELL-1" or
+            admitted.get("status") != "ADMITTED_PUBLIC_AISHELL_ONLY" or
+            admitted.get("license_admitted") is not True):
+        raise ValueError("Public source admission is required")
+    recipe = {k: v for k, v in scene.items() if k != "recipe_sha256"}
+    if hashlib.sha256(canonical_bytes(recipe)).hexdigest() != scene["recipe_sha256"]:
+        raise ValueError("Scene recipe identity mismatch")
+    if scene["source_manifest_file_sha256"] != admitted.get("manifest_file_sha256"):
+        raise ValueError("Scene does not belong to this frozen source manifest")
+    if (scene["generator_sha256"] != digest(__file__) or
+            scene["contract_sha256"] != digest(Path(__file__).with_name("scene-contract.json"))):
+        raise ValueError("Generator/contract changed after scene recipe freeze")
+    if (scene["partition"] not in COUNTS or
+            not scene["id"].startswith(scene["partition"] + ":") or
+            scene["room_family"] != scene["id"].replace(":", ":room:")):
+        raise ValueError("Scene room family is not owned by its partition")
+    dev = sorted({r["speaker_id"] for r in admitted["files"] if r["partition"] == "DEV"},
+                 key=lambda s: hashlib.sha256(("SPX-NH1-DEV:" + s).encode()).digest())
+    cal = set(dev[:len(dev) // 2])
+    admitted_rows = {row["path"]: row for row in admitted["files"]}
+    for descriptor in (scene["near"], scene["far"]):
+        if descriptor is None:
+            continue
+        original = admitted_rows.get(descriptor["path"])
+        if original is None or any(descriptor[k] != original[k] for k in original):
+            raise ValueError("Scene source is not the admitted descriptor")
+        partition = descriptor["partition"]
+        if partition == "DEV":
+            partition = "DEV-CAL" if descriptor["speaker_id"] in cal else "DEV-LOCK"
+        if partition != scene["partition"]:
+            raise ValueError("Scene source speaker crosses partitions")
+    if (scene["near"] is not None and scene["far"] is not None and
+            scene["near"]["speaker_id"] == scene["far"]["speaker_id"]):
+        raise ValueError("Near and far source speaker identities must differ")
+    reference = np.zeros(SAMPLES, dtype=np.float32)
+    if scene["far"] is not None:
+        source = _wave(admitted, scene["far"])
+        offset = scene["far_offset16"]
+        indices = (np.arange(160000) + offset) % len(source)
+        reference[:] = _upsample(source[indices])
+    speaker = reference.astype(np.float64)
+    a = scene["nonlinear_a"]
+    if scene["nonlinear"] == "tanh":
+        speaker = a * np.tanh(speaker / a)
+    elif scene["nonlinear"] == "clip":
+        speaker = np.clip(speaker, -a, a)
+    echo = _echo(speaker, scene["echo_paths"][0])
+    change = scene["path_change_raw48"]
+    if change is not None:
+        other = _echo(speaker, scene["echo_paths"][1])
+        end = change + scene["path_change_samples"]
+        blend = np.linspace(0, 1, scene["path_change_samples"], dtype=np.float64)
+        echo[change:end] = echo[change:end] * (1 - blend) + other[change:end] * blend
+        echo[end:] = other[end:]
+    level = 10 ** (scene["echo_target_dbfs"] / 20)
+    if scene["far"] is not None:
+        echo *= level / _active_rms(echo)
+    near = np.zeros(SAMPLES, dtype=np.float64)
+    activity = np.zeros(SAMPLES, dtype=np.bool_)
+    a95 = None
+    if scene["near"] is not None:
+        descriptor = scene["near"]
+        count = scene["near_duration_ms"] * 16
+        source = _wave(admitted, descriptor)
+        clean = _upsample(source[descriptor["offset16"]:descriptor["offset16"] + count])
+        active, a95 = _activity(clean)
+        if a95 != descriptor["clean_clip_A95"]:
+            raise ValueError("Clean label proxy changed after recipe freeze")
+        gain = (level if scene["kind"] == "near_only" else level * 10 ** (scene["near_echo_db"] / 20))
+        begin = scene["near_start_raw48"]
+        end = begin + len(clean)
+        near[begin:end] = clean.astype(np.float64) * gain / _active_rms(clean)
+        activity[begin:end] = active
+    rng = np.random.Generator(np.random.PCG64(scene["noise_seed"]))
+    noise = rng.standard_normal(SAMPLES)
+    if scene["noise_kind"] == "lowpass":
+        noise = np.convolve(noise, np.full(31, 1 / 31), mode="same")
+    elif scene["noise_kind"] == "impulse":
+        noise = np.zeros(SAMPLES, dtype=np.float64)
+        points = rng.choice(SAMPLES, 100, replace=False)
+        noise[points] = rng.uniform(-1, 1, 100)
+    signal = echo + near
+    signal_rms = _active_rms(signal) if scene["kind"] != "noise" else level
+    noise *= signal_rms * 10 ** (-scene["SNR_db"] / 20) / math.sqrt(float(np.mean(noise ** 2)))
+    mixed = signal + noise
+    clipped = int(np.count_nonzero(np.abs(mixed) > 0.95))
+    audio = np.stack((np.clip(mixed, -0.95, 0.95).astype(np.float32), reference))
+    if not np.isfinite(audio).all():
+        raise ValueError("Nonfinite synthesized scene")
+    boundaries = np.diff(np.concatenate(([False], activity, [False])).astype(np.int8))
+    intervals = [[int(start), int(end)] for start, end in
+                 zip(np.flatnonzero(boundaries == 1), np.flatnonzero(boundaries == -1))]
+    event = None if not intervals else {
+        "first_active_raw48": intervals[0][0],
+        "last_active_raw48": intervals[-1][1] - 1,
+        "end_exclusive_raw48": intervals[-1][1],
+        "active_samples": int(np.count_nonzero(activity)),
+        "definition": "Independent clean source 5ms RMS proxy before gain; identity near path"}
+    metadata = {"schema_version": 1, "scene_id": scene["id"], "clean_clip_A95": a95,
+                "ADC_clipped_samples": clipped, "ADC_clipped": bool(clipped), "raw48_samples": SAMPLES,
+                "recipe_sha256": scene["recipe_sha256"], "partition": scene["partition"],
+                "subtype": scene["kind"], "weak_double": scene["weak_double"],
+                "near_duration_ms": scene["near_duration_ms"], "near_event": event,
+                "active_intervals_raw48": intervals,
+                "audio_sha256": hashlib.sha256(audio.astype("<f4", copy=False).tobytes()).hexdigest(),
+                "activity_sha256": hashlib.sha256(activity.tobytes()).hexdigest(),
+                "meaning": "SYNTHETIC_CLEAN_SOURCE_ACTIVITY_PROXY_NOT_PHYSICAL_PASS"}
+    return audio, activity, metadata
+
+
+def target_labels(activity, intervals):
+    activity = np.asarray(activity)
+    if activity.ndim != 1 or activity.dtype != np.bool_:
+        raise ValueError("Raw48 clean activity boolean vector required")
+    intervals = np.asarray(intervals)
+    if intervals.ndim != 2 or intervals.shape[1] != 2 or intervals.dtype.kind not in "iu":
+        raise ValueError("Exact integer raw48 half-open target intervals required")
+    if (np.any(intervals[:, 0] < 0) or np.any(intervals[:, 1] > len(activity)) or
+            np.any(intervals[:, 1] <= intervals[:, 0])):
+        raise ValueError("Target interval is outside arrived scene content")
+    prefix = np.concatenate((np.zeros(1, dtype=np.int64), np.cumsum(activity, dtype=np.int64)))
+    return ((prefix[intervals[:, 1]] - prefix[intervals[:, 0]]) /
+            (intervals[:, 1] - intervals[:, 0])).astype(np.float32)

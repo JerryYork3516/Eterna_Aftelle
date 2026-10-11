@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "scope": "only one stdlib synthetic fixture supervisor",
+  "actual_tool_exit_code": 0,
+  "actual_tool_chunk_id": "792123",
+  "actual_child_returncode": 0,
+  "actual_child_pid": 41969,
+  "timeout": false,
+  "elapsed_seconds": 0.089480166,
+  "scientific_execution": false,
+  "test_result_path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-result.json",
+  "historical_source_protocol_unchanged": true
+}

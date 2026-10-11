@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "status": "OUTCOME_PASS_ONLY_NO_FINDING",
+  "readonly_chunks": [
+    {
+      "chunk_id": "141320",
+      "exit_code": 0
+    },
+    {
+      "chunk_id": "a04c43",
+      "exit_code": 0
+    }
+  ],
+  "actual_outer_tool": "de2e0d exit0 observed by root",
+  "actual_child_pid": 40121,
+  "actual_child_exit_code": 0,
+  "tests": 10,
+  "elapsed_seconds": 0.03342275,
+  "timeout": false,
+  "protocol_current_source_and_v2_contract_match": true,
+  "stream_bytes": 1063,
+  "completed_peak_sum_bytes": 54099968,
+  "not_proven": [
+    "real PCM/source activity",
+    "frontend/probability sequence",
+    "model training",
+    "source attribution",
+    "product acceptance"
+  ]
+}

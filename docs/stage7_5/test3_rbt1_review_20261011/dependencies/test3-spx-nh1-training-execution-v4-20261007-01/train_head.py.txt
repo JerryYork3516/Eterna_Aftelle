@@ -1,0 +1,480 @@
+"""Frozen public-scene training component; no producer, audio or Runtime access."""
+import argparse
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import resource
+import signal
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent
+CONTRACT = ROOT / 'training-contract.json'
+ENDPOINT = Path('/Users/jerryyork/Eterna_Aftelle/.build/test3-mindaec-rosetta-probe-20261006-01/venv/bin/python')
+PUBLIC_ROOT = Path('/Volumes/SSD/Aftelle-Test3-Public-20261007-01')
+SEED, STEPS, BATCH, SCORE, CONTEXT = 20261006, 5000, 16, 200, 62
+DILATIONS = (1, 2, 4, 8, 16)
+PARTITIONS = ('TRAIN', 'DEV-CAL', 'DEV-LOCK', 'PUBLIC-TEST')
+RSS_LIMIT, TIME_LIMIT = 8 * 1024**3, 4 * 3600
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with Path(path).open('rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def publish_json(path, value):
+    path = Path(path)
+    pending = path.with_name(path.name + '.pending')
+    with pending.open('x') as f:
+        json.dump(value, f, indent=2, allow_nan=False)
+        f.write('\n')
+        f.flush()
+        os.fsync(f.fileno())
+    os.link(pending, path)
+
+
+def admission(field):
+    contract = json.loads(CONTRACT.read_text())
+    require(contract['schema_version'] == 1 and contract[field] is True, 'NOT_AUTHORIZED_' + field)
+    return contract
+
+
+def environment():
+    require(sys.platform == 'darwin' and platform.machine() == 'arm64', 'CPU_ENDPOINT_PLATFORM')
+    require(Path(sys.executable).resolve() == ENDPOINT.resolve(), 'CPU_ENDPOINT_IDENTITY')
+    venv = ENDPOINT.parent.parent.resolve(strict=True)
+    require(Path(sys.prefix).resolve(strict=True) == venv, 'VENV_PREFIX_IDENTITY')
+    for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+                'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        os.environ[key] = '1'
+    import numpy as np
+    import torch
+    require(Path(torch.__file__).resolve(strict=True).is_relative_to(venv)
+            and Path(torch._C.__file__).resolve(strict=True).is_relative_to(venv), 'TORCH_MODULE_ENDPOINT')
+    require(torch.__version__.split('+')[0] == '2.10.0', 'TORCH_VERSION')
+    torch.set_num_threads(1)
+    if torch.get_num_interop_threads() != 1:
+        torch.set_num_interop_threads(1)
+    torch.set_default_dtype(torch.float32)
+    torch.set_default_device('cpu')
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.manual_seed(SEED)
+    return np, torch
+
+
+def peak_rss():
+    value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # macOS reports bytes.
+    require(value <= RSS_LIMIT, 'STOP_RSS_LIMIT')
+    return value
+
+
+def public_path(value):
+    path = Path(value)
+    require(path.is_absolute(), 'ABSOLUTE_PUBLIC_PATH_REQUIRED')
+    resolved = path.resolve(strict=True)
+    require(resolved.is_relative_to(PUBLIC_ROOT.resolve(strict=True)), 'PRIVATE_OR_HOLDOUT_PATH_REJECTED')
+    return resolved
+
+
+def array_file(np, path, dtype, shape):
+    value = np.load(path, mmap_mode='r', allow_pickle=False)
+    if not (value.dtype == np.dtype(dtype) and value.shape == shape and value.flags.c_contiguous):
+        value._mmap.close()
+        raise RuntimeError('ARRAY_CONTRACT_' + str(path))
+    return value
+
+
+def close_arrays(values):
+    for value in values:
+        value._mmap.close()
+
+
+def validate_source_epochs(np, rows, events):
+    require(rows.shape == (999,12), 'SOURCE_ROW_COUNT')
+    valid = rows[:,10] == 1
+    require(((rows[:,10] == 0) | valid).all() and (rows[~valid,6:8] == -1).all()
+            and (rows[~valid,11] == -1).all(), 'INVALID_SOURCE_SENTINEL')
+    require(np.array_equal(rows[valid,11],np.arange(int(valid.sum()))), 'SCORE_INDEX_IDENTITY')
+    require((np.diff(rows[:,2]) == 480).all() and (rows[:,3]-rows[:,2] == 480).all()
+            and (rows[:,4] == rows[:,2]-48).all() and (rows[:,5] == rows[:,3]+46).all()
+            and (rows[:,4] >= rows[:,8]).all() and (rows[:,5] <= rows[:,9]).all()
+            and (np.diff(rows[:,9]) >= 0).all() and (rows[:,9] <= 480000).all(), 'SOURCE_SUPPORT_OR_CAUSALITY')
+    require((np.diff(rows[:,0]) >= 0).all() and rows[0,0] == 0 and rows[0,8] == 0, 'PRODUCER_EPOCH_ORDER')
+    reset_rows = []
+    for e in events:
+        require(len(e) == 8 and e[7] == 2 and e[5] == e[0]+1 and e[6] == e[3]-48, 'RESET_EVENT_CONTRACT')
+        matches = np.flatnonzero((rows[:,0] == e[0]) & (rows[:,1] == e[1]))
+        require(len(matches) == 1, 'RESET_ROW_IDENTITY');i=int(matches[0])
+        require([int(rows[i,2]),int(rows[i,3]),int(rows[i,9])] == e[2:5] and not valid[i], 'RESET_ROW_REJECTED')
+        if i+1 < len(rows):
+            require([int(rows[i+1,0]),int(rows[i+1,8]),int(rows[i+1,1])] == [e[5],e[6],0], 'RESET_SUCCESSOR_EPOCH')
+        reset_rows.append(i)
+    require(len(set(reset_rows)) == len(reset_rows) and reset_rows == sorted(reset_rows), 'DUPLICATE_OR_UNORDERED_RESET_EVENTS')
+    boundaries = np.r_[0,np.flatnonzero(np.diff(rows[:,0]))+1,len(rows)]
+    require(len(boundaries)-2 == sum(i+1<len(rows) for i in reset_rows), 'UNEXPLAINED_EPOCH_CHANGE')
+    segments=[]
+    for a,b in zip(boundaries[:-1],boundaries[1:]):
+        epoch=rows[a:b]
+        require(np.array_equal(epoch[:,1],np.arange(b-a)) and (epoch[:,8] == epoch[0,8]).all(), 'EPOCH_HOP_OR_START')
+        if a: require(rows[a,0] == rows[a-1,0]+1 and rows[a,8] == rows[a,4], 'EPOCH_SOURCE_START')
+        selected=np.flatnonzero(valid[a:b])+a
+        if len(selected):
+            require(np.array_equal(selected,np.arange(selected[0],selected[-1]+1)), 'NONCONTIGUOUS_EPOCH_SCORES')
+            segments.append([int(rows[selected[0],11]),int(rows[selected[-1],11])+1])
+    expected = rows[:,1] > 0
+    expected[reset_rows]=False
+    require(np.array_equal(valid,expected), 'INVALID_RESET_OR_WARMUP_MASK')
+    r=rows[valid]
+    require((r[:,6] == r[:,2]-528).all() and (r[:,7] == r[:,5]).all()
+            and (r[:,6] >= r[:,8]).all(), 'FEATURE_CROSSES_PRODUCER_EPOCH')
+    return segments
+
+
+def predict_epoch_segments(head, normalized, segments, torch):
+    require(normalized.ndim == 3 and normalized.shape[0] == 1, 'ONE_SCENE_PREDICTION')
+    outputs=[];previous=0
+    for a,b in segments:
+        require(a == previous and b>a and b<=normalized.shape[1], 'PREDICTION_SEGMENT_IDENTITY')
+        outputs.append(head(normalized[:,a:b]));previous=b
+    require(previous == normalized.shape[1], 'PREDICTION_SEGMENTS_INCOMPLETE')
+    return torch.cat(outputs,dim=1)
+
+
+def feature_index(path, np, partition='TRAIN'):
+    index = json.loads(Path(path).read_text())
+    require(index['schema_version'] == 1 and Path(index['data_root']).resolve() == PUBLIC_ROOT.resolve(),
+            'PUBLIC_INDEX_DOMAIN')
+    require(tuple(index['partitions']) == PARTITIONS, 'PARTITION_CONTRACT')
+    for key in ('binary_sha', 'spx_sha', 'FIR_sha', 'Hann_sha', 'Mel_sha'):
+        require(len(index['producer_identity'][key]) == 64
+                and all(c in '0123456789abcdef' for c in index['producer_identity'][key]),
+                'PRODUCER_IDENTITY_' + key)
+    seen, selected = set(), []
+    for entry in index['scenes']:
+        sid, split = entry['scene_id'], entry['partition']
+        require(sid not in seen and split in PARTITIONS, 'SCENE_PARTITION_IDENTITY')
+        seen.add(sid)
+        if split != partition:
+            continue  # TRAIN never opens the development/test arrays.
+        n = entry['samples']
+        require(type(n) is int and 0 < n <= 998, 'TEN_SECOND_SCENE_SUPPORT')
+        require(len(entry['scene_manifest_sha256']) == 64, 'SCENE_MANIFEST_IDENTITY')
+        paths = [public_path(entry[k]) for k in ('features_path', 'labels_path', 'rows_path')]
+        for key, asset in zip(('features', 'labels', 'rows'), paths):
+            require(digest(asset) == entry['hashes'][key], 'SCENE_ASSET_HASH_' + sid + '_' + key)
+        values = []
+        try:
+            values.append(array_file(np, paths[0], '<f4', (n, 160)))
+            values.append(array_file(np, paths[1], '<f4', (n,)))
+            values.append(array_file(np, paths[2], '<i8', (999, 12)))
+            x, y, rows = values
+            require(np.isfinite(x).all() and np.isfinite(y).all() and ((y >= 0) & (y <= 1)).all(),
+                    'NONFINITE_OR_INVALID_ACTIVITY_LABEL_' + sid)
+            event_path = public_path(entry['event_meta_path'])
+            require(digest(event_path) == entry['event_meta_sha256'], 'SOURCE_EVENT_IDENTITY_' + sid)
+            event = json.loads(event_path.read_text())
+            require(event['scene_id'] == sid and event['recipe_sha256'] == entry['scene_recipe_sha256'], 'SOURCE_EVENT_BINDING_' + sid)
+            segments = validate_source_epochs(np, rows, event['producer_reset_events'])
+            require(int((rows[:,10] == 1).sum()) == n, 'FEATURE_COUNT_' + sid)
+        finally:
+            close_arrays(values)
+        selected.append({**entry, 'paths': paths, 'producer_segments': segments})
+    selected.sort(key=lambda v: v['scene_id'])
+    require(len(selected) == (2400 if partition == 'TRAIN' else 500), 'FROZEN_PARTITION_SIZE')
+    return index, selected
+
+
+def fit_normalization(index_path, destination):
+    admission('normalization_fitting_authorized')
+    index_path = Path(index_path).resolve(strict=True)
+    np, _ = environment()
+    frozen_index = digest(index_path)
+    _, scenes = feature_index(index_path, np)
+    mean, m2, count = np.zeros(160, np.float64), np.zeros(160, np.float64), 0
+    for scene in scenes:
+        x = array_file(np, scene['paths'][0], '<f4', (scene['samples'], 160))
+        try:
+            a = np.asarray(x, dtype=np.float64)
+            n, batch_mean = len(a), a.mean(axis=0, dtype=np.float64)
+            delta = batch_mean - mean
+            m2 += ((a - batch_mean)**2).sum(axis=0, dtype=np.float64) + delta**2 * count * n / (count + n)
+            mean += delta * n / (count + n)
+            count += n
+        finally:
+            close_arrays([x])
+        peak_rss()
+    std = np.maximum(np.sqrt(m2 / count), 1e-4).astype(np.float32)
+    require(digest(index_path) == frozen_index, 'NORMALIZATION_INDEX_CHANGED')
+    for scene in scenes:
+        require(digest(scene['paths'][0]) == scene['hashes']['features'],
+                'NORMALIZATION_TRAIN_FEATURE_CHANGED_' + scene['scene_id'])
+    publish_json(destination, {'schema_version': 1, 'partition': 'TRAIN',
+        'feature_index_sha256': frozen_index, 'train_scene_ids': [s['scene_id'] for s in scenes],
+        'mean': mean.astype(np.float32).tolist(), 'std': std.tolist(), 'std_floor': 1e-4,
+        'Ncount': count, 'variance_definition': 'population; Float64 parallel moments then frozen Float32'})
+
+
+def normalization(path, index_path, scenes, np):
+    value = json.loads(Path(path).read_text())
+    require(value['schema_version'] == 1 and value['partition'] == 'TRAIN'
+            and value['feature_index_sha256'] == digest(index_path)
+            and value['train_scene_ids'] == [s['scene_id'] for s in scenes]
+            and value['Ncount'] == sum(s['samples'] for s in scenes)
+            and value['std_floor'] == 1e-4, 'TRAIN_NORMALIZATION_IDENTITY')
+    mean, std = np.asarray(value['mean'], np.float32), np.asarray(value['std'], np.float32)
+    require(mean.shape == std.shape == (160,) and np.isfinite(mean).all() and np.isfinite(std).all()
+            and (std >= np.float32(1e-4)).all(), 'NORMALIZATION_FINITE_OR_FLOOR')
+    return mean, std
+
+
+def model(torch):
+    nn, functional = torch.nn, torch.nn.functional
+
+    class Residual(nn.Module):
+        def __init__(self, dilation):
+            super().__init__()
+            self.dilation = dilation
+            self.dw = nn.Conv1d(64, 64, 3, dilation=dilation, groups=64, bias=True)
+            self.pw = nn.Conv1d(64, 64, 1, bias=True)
+
+        def forward(self, z):
+            v = torch.relu(self.dw(functional.pad(z, (2 * self.dilation, 0))))
+            dot = functional.conv1d(v, self.pw.weight, bias=None)
+            return torch.relu((z + dot) + self.pw.bias[None, :, None])
+
+    class Head(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(160, 64, bias=True)
+            self.blocks = nn.ModuleList([Residual(d) for d in DILATIONS])
+            self.out = nn.Linear(64, 1, bias=True)
+            for layer in [self.proj, *(v for b in self.blocks for v in (b.dw, b.pw))]:
+                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+                nn.init.zeros_(layer.bias)
+            nn.init.xavier_uniform_(self.out.weight)
+            nn.init.zeros_(self.out.bias)
+            require(sum(p.numel() for p in self.parameters()) == 32449, 'PARAMETER_COUNT')
+
+        def forward(self, features):
+            z = torch.relu(self.proj(features)).transpose(1, 2)
+            for block in self.blocks:
+                z = block(z)
+            return self.out(z.transpose(1, 2)).squeeze(-1)
+
+    return Head().to(device='cpu', dtype=torch.float32)
+
+
+def learning_rate(step):
+    if step <= 200:
+        return 1e-3 * step / 200
+    return 1e-5 + (1e-3 - 1e-5) * .5 * (1 + math.cos(math.pi * (step - 200) / (STEPS - 200)))
+
+
+def load_schedule(scenes):
+    contract = json.loads(CONTRACT.read_text())
+    path = Path(contract['coverage_schedule']['path']).resolve(strict=True)
+    raw = path.read_bytes()
+    sealed_sha = hashlib.sha256(raw).hexdigest()
+    require(sealed_sha == contract['coverage_schedule']['sha256'], 'COVERAGE_SCHEDULE_IDENTITY')
+    value = json.loads(raw)
+    require(value['schema_version'] == 1 and value['partition'] == 'TRAIN'
+            and len(value['steps']) == STEPS, 'COVERAGE_SCHEDULE_SCHEMA')
+    lookup = {s['scene_id']: s for s in scenes}
+    for step, record in enumerate(value['steps'], 1):
+        require(record['step'] == step and len(record['windows']) == BATCH, 'PLANNED_STEP_OR_BATCH')
+        for w in record['windows']:
+            require(w['scene_id'] in lookup, 'NON_TRAIN_WINDOW')
+            a, b = w['epoch_score_range']
+            start, context = w['local_score_start'], w['real_left_context']
+            require([a,b] in lookup[w['scene_id']]['producer_segments']
+                    and 0 <= start <= b-a-SCORE
+                    and context == min(start,CONTEXT) == record['real_left_context']
+                    and w['input_score_range'] == [a+start-context,a+start+SCORE], 'PLANNED_SOURCE_WINDOW')
+    return path, sealed_sha, lookup, value['steps']
+
+
+def batch(np, torch, lookup, record, mean, std):
+    context = record['real_left_context']
+    batch.last_segments = record['windows']
+    features, labels = [], []
+    starts, ids = [], []
+    for w in record['windows']:
+        scene = lookup[w['scene_id']]
+        epoch_start, epoch_end = w['epoch_score_range']
+        start = w['local_score_start']
+        at = epoch_start + start
+        require(at-context >= epoch_start and at+SCORE <= epoch_end, 'BATCH_CROSSES_PRODUCER_EPOCH')
+        starts.append(start);ids.append(w['scene_id'])
+        values = []
+        try:
+            values.append(array_file(np, scene['paths'][0], '<f4', (scene['samples'], 160)))
+            values.append(array_file(np, scene['paths'][1], '<f4', (scene['samples'],)))
+            features.append(np.array(values[0][at-context:at+SCORE], dtype=np.float32, copy=True))
+            labels.append(np.array(values[1][at:at+SCORE], dtype=np.float32, copy=True))
+        finally:
+            close_arrays(values)
+    x = (np.stack(features) - mean) / std
+    return torch.from_numpy(x), torch.from_numpy(np.stack(labels)), context, starts, ids
+
+
+def train(index_path, norm_path, destination):
+    admission('training_authorized')
+    started = time.monotonic()
+    index_path, norm_path = Path(index_path).resolve(strict=True), Path(norm_path).resolve(strict=True)
+    np, torch = environment()
+    _, scenes = feature_index(index_path, np)
+    mean, std = normalization(norm_path, index_path, scenes, np)
+    schedule_path, schedule_sha, lookup, schedule = load_schedule(scenes)
+    contract = json.loads(CONTRACT.read_text())
+    require(digest(index_path) == contract['coverage_schedule']['feature_index_sha256']
+            and digest(norm_path) == contract['coverage_schedule']['normalization_sha256'], 'PLANNED_INPUT_IDENTITIES')
+    input_hashes = {str(index_path): digest(index_path), str(norm_path): digest(norm_path),
+                    str(CONTRACT): digest(CONTRACT), str(Path(__file__)): digest(__file__),
+                    str(schedule_path): schedule_sha}
+    out = Path(destination)
+    out.mkdir(exist_ok=False)
+    publish_json(out / 'single-training-started.json', {'schema_version': 1, 'training_attempts': 1,
+        'seed': SEED, 'no_resume': True, 'no_best_checkpoint': True, 'inputs': input_hashes})
+    require(time.monotonic() - started < TIME_LIMIT, 'STOP_SETUP_TIME_LIMIT')
+    head = model(torch)
+    optimizer = torch.optim.AdamW(head.parameters(), lr=learning_rate(1), betas=(.9, .999),
+                                 weight_decay=1e-4, foreach=False, fused=False)
+    criterion = torch.nn.BCEWithLogitsLoss()
+    status, completed, failure = 'NOT_COMPLETED', 0, None
+
+    def timeout(_signum, _frame):
+        raise RuntimeError('STOP_TIME_LIMIT_DURING_OPERATION')
+
+    previous = signal.signal(signal.SIGALRM, timeout)
+    signal.setitimer(signal.ITIMER_REAL, max(.001, TIME_LIMIT - (time.monotonic() - started)))
+    try:
+        with (out / 'training-steps.jsonl').open('x') as log:
+            for step in range(1, STEPS + 1):
+                if time.monotonic() - started >= TIME_LIMIT:
+                    status = 'TIME_LIMIT_AT_COMPLETED_STEP'
+                    break
+                rss = peak_rss()
+                x, y, context, starts, ids = batch(np, torch, lookup, schedule[step-1], mean, std)
+                lr = learning_rate(step)
+                for group in optimizer.param_groups:
+                    group['lr'] = lr
+                optimizer.zero_grad(set_to_none=True)
+                loss = criterion(head(x)[:, context:], y)
+                require(bool(torch.isfinite(loss)), 'STOP_NONFINITE_LOSS')
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(head.parameters(), 1, error_if_nonfinite=True)
+                optimizer.step()
+                require(all(bool(torch.isfinite(p).all()) for p in head.parameters()), 'STOP_NONFINITE_PARAMETERS')
+                completed = step
+                rss = max(rss, peak_rss())
+                log.write(json.dumps({'schema_version': 1, 'step': step, 'loss': float(loss.detach()),
+                    'lr': lr, 'gradient_norm_before_clip': float(grad_norm),
+                    'elapsed_seconds': time.monotonic() - started, 'peak_RSS_bytes': rss,
+                    'score_starts': starts, 'real_left_context': context, 'scene_ids': ids,
+                    'score_start_coordinate': 'per-window local within selected producer epoch',
+                    'scheduled_batch_role': schedule[step-1]['batch_role'],
+                    'selected_producer_segments': batch.last_segments}, allow_nan=False) + '\n')
+                log.flush()
+            else:
+                status = 'FINAL_STEP_COMPLETED'
+            log.flush()
+            os.fsync(log.fileno())
+        for path, expected in input_hashes.items():
+            require(digest(path) == expected, 'FROZEN_TRAINING_INPUT_CHANGED')
+        for scene in scenes:
+            for key, path in zip(('features', 'labels', 'rows'), scene['paths']):
+                require(digest(path) == scene['hashes'][key], 'FROZEN_SCENE_CHANGED_' + scene['scene_id'])
+        require(completed > 0 and status in ('FINAL_STEP_COMPLETED', 'TIME_LIMIT_AT_COMPLETED_STEP'),
+                'NO_COMPLETE_CHECKPOINT')
+        checkpoint = out / 'final-checkpoint.pt'
+        pending = checkpoint.with_name(checkpoint.name + '.pending')
+        with pending.open('xb') as f:
+            torch.save({'schema_version': 1, 'completed_steps': completed, 'seed': SEED,
+                'state_dict': head.state_dict(), 'mean': torch.from_numpy(mean.copy()),
+                'std': torch.from_numpy(std.copy()), 'input_hashes': input_hashes}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(pending, checkpoint)
+    except Exception as error:
+        failure, status = str(error), 'STOP_TRAINING_INCOMPLETE'
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    result = {'schema_version': 1, 'status': status, 'completed_steps': completed, 'failure': failure,
+        'elapsed_seconds': time.monotonic() - started,
+        'peak_RSS_bytes': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, 'seed': SEED,
+        'checkpoint_selection': 'final completed step only; no held-out selection',
+        'inputs': input_hashes, 'producer_identity': json.loads(Path(index_path).read_text())['producer_identity'],
+        'environment': {'python': sys.executable, 'python_sha256': digest(sys.executable),
+                        'sys_prefix': sys.prefix,
+                        'torch_version': str(torch.__version__), 'numpy_version': str(np.__version__),
+                        'torch_module_path': str(torch.__file__), 'torch_module_sha256': digest(torch.__file__),
+                        'torch_native_path': str(torch._C.__file__), 'torch_native_sha256': digest(torch._C.__file__),
+                        'numpy_module_path': str(np.__file__), 'numpy_module_sha256': digest(np.__file__),
+                        'device': 'CPU', 'threads': 1, 'Float32': True, 'AMP': False, 'TF32': False},
+        'calibration': 'NOT_RUN', 'public_test': 'NOT_RUN', 'Test3': 'BLOCKED', 'NO_PRODUCT_PATCH': True}
+    if (out / 'final-checkpoint.pt').exists():
+        result['checkpoint_sha256'] = digest(out / 'final-checkpoint.pt')
+    result['steps_sha256'] = digest(out / 'training-steps.jsonl')
+    publish_json(out / 'model-manifest.json', result)
+    return 0 if status == 'FINAL_STEP_COMPLETED' else 1
+
+
+def predict_dev_cal(checkpoint_path, manifest_path, index_path, scene_id):
+    admission('dev_cal_prediction_authorized')
+    checkpoint_path, manifest_path, index_path = (Path(p).resolve(strict=True)
+                                                 for p in (checkpoint_path, manifest_path, index_path))
+    np, torch = environment()
+    manifest = json.loads(Path(manifest_path).read_text())
+    require(manifest['status'] in ('FINAL_STEP_COMPLETED', 'TIME_LIMIT_AT_COMPLETED_STEP')
+            and manifest['failure'] is None
+            and digest(checkpoint_path) == manifest['checkpoint_sha256'], 'FROZEN_CHECKPOINT_IDENTITY')
+    _, scenes = feature_index(index_path, np, 'DEV-CAL')
+    scene = next((s for s in scenes if s['scene_id'] == scene_id), None)
+    require(scene is not None, 'DEV_CAL_SCENE_REQUIRED')
+    saved = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    require(saved['schema_version'] == 1 and saved['completed_steps'] == manifest['completed_steps']
+            and saved['input_hashes'] == manifest['inputs']
+            and saved['input_hashes'][str(index_path)] == digest(index_path), 'CHECKPOINT_DATA_IDENTITY')
+    head = model(torch)
+    head.load_state_dict(saved['state_dict'], strict=True)
+    head.eval()
+    x = array_file(np, scene['paths'][0], '<f4', (scene['samples'], 160))
+    try:
+        features = torch.from_numpy(np.array(x, dtype=np.float32, copy=True))[None]
+    finally:
+        close_arrays([x])
+    with torch.inference_mode():
+        logits = predict_epoch_segments(head, (features - saved['mean']) / saved['std'], scene['producer_segments'], torch)[0]
+    require(bool(torch.isfinite(logits).all()), 'NONFINITE_PREDICTION')
+    peak_rss()
+    return logits.numpy().copy()  # score values only; no gate or calibration success claim.
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest='command', required=True)
+    fit = sub.add_parser('fit-normalization')
+    fit.add_argument('feature_index'); fit.add_argument('new_normalization')
+    run = sub.add_parser('train')
+    run.add_argument('feature_index'); run.add_argument('normalization'); run.add_argument('new_output')
+    run.add_argument('--approved-spx-nh1-single-training', action='store_true', required=True)
+    args = parser.parse_args()
+    if args.command == 'fit-normalization':
+        fit_normalization(Path(args.feature_index), Path(args.new_normalization))
+    else:
+        raise SystemExit(train(Path(args.feature_index), Path(args.normalization), Path(args.new_output)))

@@ -1,0 +1,161 @@
+"""Fail-closed owner. Importing this file never reads scientific assets."""
+import fcntl
+import json
+import os
+import selectors
+import signal
+import subprocess
+import sys
+import time
+import rbt_common as c
+
+
+class Terminal:
+    def __init__(self):
+        self.expired=False
+        self.interrupted=False
+
+    def alarm(self,signum,frame):
+        self.expired=True
+        raise TimeoutError('RBT_OWNER_WHOLE_DEADLINE')
+
+    def check(self,deadline):
+        if self.interrupted:raise InterruptedError('RBT_OWNER_INTERRUPTED')
+        if self.expired or time.monotonic()>=deadline:
+            self.expired=True
+            raise TimeoutError('RBT_OWNER_WHOLE_DEADLINE')
+
+    def interrupt(self,signum,frame):
+        self.interrupted=True
+        raise InterruptedError('RBT_OWNER_INTERRUPTED:'+str(signum))
+
+
+def main():
+    started=time.monotonic()
+    deadline=started+1800;terminal=Terminal()
+    signal.signal(signal.SIGALRM,terminal.alarm)
+    signal.signal(signal.SIGINT,terminal.interrupt)
+    signal.signal(signal.SIGTERM,terminal.interrupt)
+    signal.setitimer(signal.ITIMER_REAL,max(.001,deadline-time.monotonic()))
+    # The fixed timer starts before policy IO; false denies assets, census and children.
+    contract,auth,binding=c.authorize(verify=False)
+    child=None;budget=None;selector=selectors.DefaultSelector();peak=0;residual=[]
+    failure=None;returncode=None;resources=None;stream_eof=set();command=None
+    lock=(c.D/'execution-authorization.json').open('rb')
+    fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+    inode=os.fstat(lock.fileno())
+    try:
+        c.require((inode.st_dev,inode.st_ino)==(os.stat(lock.name).st_dev,os.stat(lock.name).st_ino),
+                  'RBT_AUTH_LOCK_IDENTITY')
+        from rbt_budget import Budget
+        from rbt_resources import storage,process_usage
+        budget=Budget(contract);terminal.check(deadline)
+        c.R.mkdir(exist_ok=False)
+        budget.json(c.R/'candidate-started.json',dict(schema_version=1,binding=binding,
+            started_monotonic=started,deadline_monotonic=deadline,resources='STARTUP_PENDING',
+            attempts_allowed=1,old_budget_refunded=False))
+        contract,auth,verified=c.authorize()
+        c.require(verified==binding,'RBT_START_CONTROL_CHANGED')
+        resources=storage(contract['public_root'],64*2**20)
+        terminal.check(deadline)
+        command=[contract['endpoint'],'-B',str(c.D/'rbt_driver.py')]
+        env=os.environ.copy();env['RBT_ABSOLUTE_DEADLINE']=str(deadline)
+        env['PYTHONDONTWRITEBYTECODE']='1';env['PYTHONUNBUFFERED']='1'
+        child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE,start_new_session=True,env=env)
+        for stream,label in ((child.stdout,'driver.stdout'),(child.stderr,'driver.stderr')):
+            os.set_blocking(stream.fileno(),False);selector.register(stream,selectors.EVENT_READ,label)
+        while selector.get_map() or child.poll() is None:
+            terminal.check(deadline)
+            rss,members=process_usage(os.getpid(),child.pid);peak=max(peak,rss)
+            c.require(rss<=contract['aggregate_RSS_bytes'],'RBT_AGGREGATE_RSS_STOP')
+            for key,_ in selector.select(timeout=min(.05,max(0,deadline-time.monotonic()))):
+                raw=os.read(key.fd,65536)
+                if raw:budget.append(c.R/key.data,raw)
+                else:stream_eof.add(key.data);selector.unregister(key.fileobj);key.fileobj.close()
+            budget.check()
+        returncode=child.wait(timeout=max(.001,deadline-time.monotonic()))
+        terminal.check(deadline)
+        _,residual=process_usage(os.getpid(),child.pid)
+        c.require(returncode==0 and stream_eof=={'driver.stdout','driver.stderr'} and not residual,
+                  'RBT_ACTUAL_CHILD_EXIT_OR_RESIDUAL')
+        c.check_binding(binding);budget.verify_seeds()
+        for path,sha in auth['files'].items():
+            terminal.check(deadline);c.require(c.digest(path)==sha,'RBT_END_INPUT_CHANGED:'+path)
+        saved=c.read(c.R/'pipeline-result.json')
+        c.require(saved['binding']==binding and saved['progress']==c.PROGRESS
+                  and saved['capture_arms']==312 and saved['prefix_fit_arms']==192
+                  and saved['check_arm_forwards']==120 and saved['tau'] is None,
+                  'RBT_COMPLETION_BINDING')
+        c.require(saved['native']['actual_subprocess_exit']==0 and saved['native']['requests']==312
+                  and saved['native']['stdout_EOF'] and saved['native']['stderr_EOF']
+                  and saved['native']['trailing_bytes']==0,
+                  'RBT_NATIVE_ACTUAL_COMPLETION')
+        cp=c.R/'final-checkpoint.pt'
+        c.require(c.digest(cp)==saved['checkpoint']['sha256']
+                  and cp.stat().st_size==saved['checkpoint']['bytes'],'RBT_ACTUAL_CHECKPOINT')
+        c.require(saved['result']['status'] in ('REJECT_RBT1_MECHANISM_PILOT',
+                  'SOURCE_RELATION_PILOT_SUPPORTED_PRODUCT_GATES_NOT_RUN'),'RBT_RESULT_STATUS')
+        resources=storage(contract['public_root'],0)
+        terminal.check(deadline)
+    except BaseException as error:
+        failure=type(error).__name__+':'+str(error)
+    finally:
+        # One bounded cleanup/seal window; no new time is granted after the whole deadline.
+        remaining=deadline-time.monotonic()
+        signal.setitimer(signal.ITIMER_REAL,min(4.,remaining) if remaining>0 else 0)
+        if child is not None:
+            try:os.killpg(child.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            except OSError as error:failure=failure or 'RBT_KILL_GROUP:'+str(error)
+            try:returncode=child.wait(timeout=max(.001,min(.25,deadline-time.monotonic())))
+            except subprocess.TimeoutExpired as error:failure=failure or 'RBT_REAP_TIMEOUT:'+str(error)
+            # Retain bounded bytes still in the pipes; cleanup time cannot restore PASS.
+            end=min(deadline,time.monotonic()+1)
+            while selector.get_map() and time.monotonic()<end:
+                for key,_ in selector.select(timeout=.02):
+                    raw=os.read(key.fd,65536)
+                    if raw:
+                        try:budget.append(c.R/key.data,raw)
+                        except BaseException as error:
+                            if terminal.expired or terminal.interrupted:raise
+                            failure=failure or 'RBT_CLEANUP_STREAM:'+str(error)
+                    else:stream_eof.add(key.data);selector.unregister(key.fileobj);key.fileobj.close()
+            try:
+                _,residual=process_usage(os.getpid(),child.pid)
+                if residual:failure=failure or 'RBT_RESIDUAL_PROCESS_GROUP'
+            except BaseException as error:
+                if terminal.expired or terminal.interrupted:raise
+                failure=failure or 'RBT_TERMINAL_MONITOR:'+str(error)
+        selector.close();fcntl.flock(lock.fileno(),fcntl.LOCK_UN);lock.close()
+    elapsed=time.monotonic()-started
+    if terminal.expired or elapsed>=contract['whole_seconds']:
+        failure=failure or 'RBT_WHOLE_DEADLINE'
+    if elapsed>=contract['whole_seconds']:
+        # Retained partial files and actual outer tool exit remain the closure evidence.
+        raise TimeoutError('RBT_NO_POST_DEADLINE_SEAL')
+    if budget is not None:
+        receipt=dict(schema_version=1,binding=binding,actual_command=command,
+            actual_child_returncode=returncode,exit_source='Popen.wait',failure=failure,
+            timeout=terminal.expired,interrupted=terminal.interrupted,aggregate_RSS_sampled_peak_bytes=peak,
+            aggregate_RSS_continuous_peak_proven=False,residual_group=residual,
+            stdout_eof='driver.stdout' in stream_eof,stderr_eof='driver.stderr' in stream_eof,
+            elapsed_seconds=elapsed,resources=resources,tau=None,
+            status='TECHNICAL_STOP_INCONCLUSIVE' if failure else 'ONE_FIXED_ITEM_COMPLETED')
+        destination=c.R/'owner-completion.json' if c.R.exists() else c.D/'startup-stop.json'
+        budget.json(destination,receipt)
+        if time.monotonic()-started>=contract['whole_seconds']:
+            # A completion sealed after the limit is a stopped item even if the child was zero.
+            failure=failure or 'RBT_COMPLETION_SEAL_DEADLINE'
+            budget.json(c.D/'late-seal-stop.json',dict(schema_version=1,binding=binding,failure=failure))
+    signal.setitimer(signal.ITIMER_REAL,0)
+    if terminal.expired or terminal.interrupted:failure=failure or 'RBT_PERMANENT_TERMINAL_STOP'
+    if failure:raise RuntimeError(failure)
+    print(json.dumps(receipt,allow_nan=False),flush=True)
+
+
+if __name__=='__main__':
+    try:main()
+    except BaseException as error:
+        print(type(error).__name__+':'+str(error),file=sys.stderr,flush=True)
+        raise SystemExit(1)

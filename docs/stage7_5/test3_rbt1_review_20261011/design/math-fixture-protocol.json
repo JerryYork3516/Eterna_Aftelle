@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "scope": "one stdlib 10-case synthetic RBT loss/gradient/span/gate/sharing fixture; metadata split was separately once selected and independently checked",
+  "source_sha256": {
+    "routing_math.py": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695",
+    "math_fixture.py": "3f60b54ef52a34bcb4057d8e7a0899b22aa83a2fef765dc99a4bc39c95f4add2",
+    "design-contract-v2.json": "0b758c4004ef57a112e07b9d522392d00b450bf75b0153fcbc92589dcc1491ab",
+    "static_publish.py": "4734224629f5c584e28f8a9fd024543b8c38f94e6720ddbdb3de3172516d2721",
+    "math-independent-static-review.json": "594518ba9a07a3fc81121642ffce2bacf32a0360e5c4736bb011930193f7fc1f"
+  },
+  "runtime": {
+    "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-mindaec-rosetta-probe-20261006-01/venv/bin/python",
+    "executable_sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e"
+  },
+  "expected_tests": 10,
+  "attempts": 1,
+  "wall_seconds": 5,
+  "completed_parent_plus_child_peak_RSS_upper_bound_bytes": 134217728,
+  "stream_completion_limit_bytes": 32768,
+  "retained_directory_cap_bytes": 1048576,
+  "no_external_source_reads": [
+    "real PCM",
+    "PUBLIC manifest",
+    "features",
+    "J",
+    "H",
+    "weights"
+  ],
+  "no_execution": [
+    "DSP",
+    "FFT",
+    "producer",
+    "model",
+    "Torch",
+    "NumPy",
+    "optimizer",
+    "solver",
+    "grid",
+    "DEV",
+    "Runtime"
+  ],
+  "tau": null,
+  "success_requires": [
+    "actual subprocess exit0",
+    "no timeout",
+    "tests10 successful",
+    "source SHA before-after identical",
+    "retained cap",
+    "completed peak bounds"
+  ],
+  "failure_policy": "retain actual exit and output; no retry without specific implementation defect"
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "tool": "exec_command",
+  "actual_tool_chunk_id": "9af7c6",
+  "actual_tool_exit_code": 0,
+  "completion_path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/metadata-selection-completion.json",
+  "completion_sha256": "4025366b47060ee33ecf8cc7626d822df0640b8a2429c0123a4382a9d981c03b",
+  "exit_not_inferred_from_report": true
+}

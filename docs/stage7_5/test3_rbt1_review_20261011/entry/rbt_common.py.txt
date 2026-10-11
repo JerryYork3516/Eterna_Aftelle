@@ -1,0 +1,89 @@
+"""RBT control gate. Scientific dependencies are loaded only after admission."""
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import time
+
+D = Path(__file__).resolve().parent
+R = D/'run-01'
+ARCHITECTURE = 'SPX_NH1_J40_TEMPORAL_RBT1'
+PROGRESS = dict(completed_updates=200, triple_visits=1600, arm_forwards=4800)
+
+
+def require(value, reason):
+    if not value:
+        raise RuntimeError(reason)
+
+
+def digest(path):
+    h=hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda:stream.read(1048576),b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def read(path):
+    return json.loads(Path(path).read_text())
+
+
+def slots_sha(slots):
+    return hashlib.sha256(json.dumps(slots,sort_keys=True,separators=(',',':'),
+                                   allow_nan=False).encode()).hexdigest()
+
+
+def module(path, name):
+    spec=importlib.util.spec_from_file_location(name,path)
+    value=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(value)
+    return value
+
+
+def admission_fields(contract, auth, contract_sha):
+    require(contract['execution_admitted'] is True and auth['one_item_authorized'] is True
+            and auth['attempts_allowed']==1 and auth['contract_sha256']==contract_sha,
+            'RBT_REVIEW_PENDING_EXECUTION_FALSE')
+    require(contract['architecture']==ARCHITECTURE and contract['steps']==200
+            and contract['seed']==20261006 and contract['FIT']==64 and contract['CHECK']==40
+            and contract['arms']==312 and contract['whole_seconds']==1800
+            and contract['aggregate_RSS_bytes']==2*2**30 and contract['all_retained_bytes']==64*2**20
+            and contract['tau'] is None and not any(contract[k] for k in ('DEV','grid','Runtime','resume')),
+            'RBT_FIXED_CONTRACT')
+
+
+def authorize(verify=True):
+    raw=(D/'entry-contract.json').read_bytes();authorization=(D/'execution-authorization.json').read_bytes()
+    contract=json.loads(raw);auth=json.loads(authorization)
+    binding=dict(contract_sha256=hashlib.sha256(raw).hexdigest(),
+                 authorization_sha256=hashlib.sha256(authorization).hexdigest())
+    admission_fields(contract,auth,binding['contract_sha256'])
+    require(auth['files']==contract['required_files'], 'RBT_COMPLETE_AUTH_MAP')
+    if verify:
+        for path,sha in auth['files'].items():
+            require(digest(path)==sha,'RBT_CHANGED_INPUT:'+path)
+    return contract,auth,binding
+
+
+def check_binding(binding):
+    require(digest(D/'entry-contract.json')==binding['contract_sha256']
+            and digest(D/'execution-authorization.json')==binding['authorization_sha256'],
+            'RBT_CONTROL_CHANGED')
+
+
+def tick():
+    require(time.monotonic()<float(os.environ['RBT_ABSOLUTE_DEADLINE']), 'RBT_WHOLE_DEADLINE')
+
+
+def fixed_population(contract):
+    raw=Path(contract['population']).read_bytes()
+    require(hashlib.sha256(raw).hexdigest()==contract['population_sha256'],'RBT_POPULATION_SHA')
+    rows=json.loads(raw)['triples']
+    require(len(rows)==104 and len({r['id'] for r in rows})==104,'RBT_POPULATION_COUNT')
+    for split,count in (('FIT',16),('CHECK',10)):
+        for kind in ('short','long'):
+            for weak in (False,True):
+                require(sum(r['split']==split and r['kind']==kind and r['weak'] is weak for r in rows)==count,
+                        'RBT_FIXED_POPULATION_CELL')
+    return rows

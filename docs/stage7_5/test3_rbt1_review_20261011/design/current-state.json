@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "state": "RBT1_METADATA_PARTITION_AND_SYNTHETIC_MATH_PASS_MATCHING_ENTRY_RESOURCE_FREEZE_REQUIRED",
+  "Stage7_isolation": "PASS",
+  "Test3": "BLOCKED",
+  "tau": null,
+  "authorities": {
+    "metadata_selection": false,
+    "math_fixture": false,
+    "PUBLIC_DSP": false,
+    "capture": false,
+    "model": false,
+    "training": false,
+    "proposal": false,
+    "solver": false,
+    "grid": false,
+    "DEV": false,
+    "Runtime": false
+  },
+  "historical_once_authorizations": {
+    "metadata_selection": "CONSUMED_CLOSED",
+    "math_fixture": "CONSUMED_CLOSED"
+  },
+  "pasted_GPT_reply_received": true,
+  "GPT_reply_provenance": "user attachment exact local copy; no live browser read, retry, send or upload this turn",
+  "metadata": {
+    "FIT": 64,
+    "CHECK": 40,
+    "unique_files": 208,
+    "unique_path_groups": 104,
+    "old_SOR_speakers_excluded": 207,
+    "population_sha256": "d6c07ba21e544671bdd9eae2770bd7caae97887f7d5eedb633c2ac2dc85938fd",
+    "PCM_verified": false
+  },
+  "math": {
+    "tests": 10,
+    "actual_child_exit": 0,
+    "actual_tool_chunk": "de2e0d",
+    "concrete_preexecution_bug_fixed": "F64 loss log correction cancellation at equal 2**60 logits",
+    "acoustic_efficacy_tested": false
+  },
+  "future_trial_resources_status": "NOT_ADMITTED_1800s_2GiB_64MiB",
+  "new_running_jobs": [],
+  "next": "one isolated matching triple-source/fresh temporal-J RBT entry, complete resource/input/termination/checkpoint gate freeze before any real input execution",
+  "original_product_gates_unchanged": true,
+  "current_contract_sha256": "0b758c4004ef57a112e07b9d522392d00b450bf75b0153fcbc92589dcc1491ab"
+}

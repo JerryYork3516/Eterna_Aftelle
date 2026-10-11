@@ -1,0 +1,103 @@
+"""312 fresh-Core captures. Labels are attached after the worker response."""
+import hashlib
+import json
+import struct
+import rbt_common as c
+from rbt_io import Worker
+from rbt_mapping import join
+from source_origin_triple import public_triple
+
+
+def raw_record(frame, probabilities=b''):
+    return (struct.pack('<8sQQQQ',b'RBTARM01',len(frame['rows']),len(probabilities)//4,
+                        len(frame['resets']),len(frame['conversion']))
+            +frame['rows'].tobytes()+probabilities+frame['conversion'].tobytes()+frame['resets'].tobytes())
+
+
+def capture_all(env,contract,binding,budget):
+    c.check_binding(binding)
+    c.admission_fields(contract,c.read(c.D/'execution-authorization.json'),binding['contract_sha256'])
+    np=env['np'];rows=c.fixed_population(contract)
+    source=c.module(contract['scene_source'],'rbt_public_source')
+    evaluation=c.module(contract['evaluation_source'],'rbt_original_source_mapping')
+    sideband=c.module(contract['sideband_source'],'rbt_original_sideband')
+    admitted=c.read(contract['admitted_manifest'])
+    worker=Worker(contract['worker_command'],float(__import__('os').environ['RBT_ABSOLUTE_DEADLINE']),
+                  budget,c.R/'worker.stderr')
+    captured=[];native_receipt=None
+    try:
+        for ordinal,d in enumerate(rows):
+            c.tick();inputs,metadata=public_triple(np,source,d,admitted)
+            intervals=metadata.pop('intervals_raw48')
+            c.require(len(intervals)<=1000,'RBT_TRUTH_INTERVAL_CAP')
+            budget.publish(c.R/f'truth/{ordinal:04d}.bin',
+                struct.pack('<8sQ',b'RBTTRU01',len(intervals))+np.asarray(intervals,dtype='<i8').tobytes())
+            item=dict(id=d['id'],kind=d['kind'],weak=d['weak'],split=d['split'],event=metadata['near_event'])
+            for name in ('B','E','N'):
+                c.tick();payload=worker.request(inputs[name]['mic'],inputs[name]['render'])
+                frame=sideband.parse_frame(np,payload)
+                segments=env['v4'].validate_source_epochs(np,frame['rows'],frame['resets'].tolist())
+                c.require(len(frame['rows'])==999 and len(frame['old160'])<=999,'RBT_FRAME_COUNT')
+                for count,first in zip(frame['conversion'][:2],frame['conversion'][2:]):
+                    c.require(0<=count<=160000 and ((count==0 and first==-1)
+                              or (count>0 and 0<=first<480000)), 'RBT_NATIVE_CONVERSION')
+                # Same source truth is used for the loss join; it is never sent to the producer or head.
+                slots=evaluation.source_slots(frame['rows'],480000,intervals,frame['resets'].tolist())
+                item[name]=dict(frame=frame,segments=segments,slots=slots,
+                    slots_sha256=c.slots_sha(slots),
+                    rows_sha256=hashlib.sha256(frame['rows'].tobytes()).hexdigest(),
+                    resets_sha256=hashlib.sha256(frame['resets'].tobytes()).hexdigest(),
+                    feature_sha256=hashlib.sha256(frame['old160'].tobytes()).hexdigest(),
+                    j_sha256=hashlib.sha256(frame['raw_j40'].tobytes()).hexdigest())
+                if d['split']=='FIT':
+                    budget.publish(c.R/f'records/{ordinal:04d}-{name}.bin',raw_record(frame))
+                del payload
+            item['join']=join(item)
+            metadata.update(ordinal=ordinal,shared_E_N_mic=True,shared_B_N_render=True,
+                arm_identities={a:dict(feature_sha256=item[a]['feature_sha256'],j_sha256=item[a]['j_sha256'],
+                  slots_sha256=item[a]['slots_sha256'],rows_sha256=item[a]['rows_sha256'],
+                  resets_sha256=item[a]['resets_sha256'],
+                  segments=item[a]['segments'],input_mic_sha256=hashlib.sha256(inputs[a]['mic']).hexdigest(),
+                  input_render_sha256=hashlib.sha256(inputs[a]['render']).hexdigest()) for a in ('B','E','N')})
+            budget.json(c.R/f'triples/{ordinal:04d}.json',metadata)
+            captured.append(item);del inputs,metadata
+        c.require(worker.requests==312,'RBT_CAPTURE_ARM_COUNT')
+        native_receipt=worker.finish()
+        budget.json(c.R/'capture-completion.json',dict(schema_version=1,triples=104,arms=312,
+                    worker_receipt=native_receipt,binding=binding))
+        return captured,native_receipt
+    finally:
+        if native_receipt is None:
+            partial=bytes(getattr(worker,'last_partial',b''))
+            cleanup=worker.cleanup()
+            if partial:budget.publish(c.R/'native-partial.bin',partial)
+            budget.json(c.R/'native-failure.json',dict(schema_version=1,worker_receipt=cleanup,
+                        completed_triples=len(captured),partial_bytes=len(partial),binding=binding))
+
+
+def prepare_fit(env,items,budget):
+    np,torch,head=env['np'],env['torch'],env['head'];details=[]
+    for item in items:
+        c.require(item['split']=='FIT','RBT_PREFIX_FIT_ONLY')
+        for name in ('B','E','N'):
+            c.tick();arm=item[name];frame=arm.pop('frame')
+            normalized=(torch.from_numpy(frame['old160'].copy())[None]-env['norm160']['mean'])/env['norm160']['std']
+            js=env['normalizer'].normalize(np,frame['raw_j40'],env['norm40']['mean'].numpy(),env['norm40']['std'].numpy())
+            epochs=[];hashes=[]
+            with torch.no_grad():
+                for start,end in arm['segments']:
+                    x=normalized[:,start:end];j=torch.from_numpy(js[start:end].copy())[None]
+                    p=head.prefix(x)
+                    baseline=head.base(x);candidate=head.from_prefix(p,j)
+                    c.require(candidate.numpy().tobytes()==baseline.numpy().tobytes(),
+                              'RBT_ZERO_DELTA_TEACHER_BYTE_IDENTITY')
+                    epochs.append((p,j));hashes.append(dict(start=start,end=end,
+                        P_sha256=hashlib.sha256(p.numpy().tobytes()).hexdigest(),
+                        J_sha256=hashlib.sha256(j.numpy().tobytes()).hexdigest(),shape=list(p.shape),
+                        stride=list(p.stride()),storage_bytes=p.untyped_storage().nbytes()))
+            arm['epochs']=epochs;details.append(dict(id=item['id'],arm=name,epochs=hashes))
+    c.require(len(details)==192,'RBT_PREFIX_COUNT')
+    document=dict(schema_version=1,fit_arms=192,source_epochs=details,labels_entered_prefix=False)
+    raw=(json.dumps(document,sort_keys=True,separators=(',',':'))+'\n').encode()
+    c.require(len(raw)<=256*2**10,'RBT_PREFIX_METADATA_CAP')
+    return budget.publish(c.R/'prefix-preparation.json',raw)['sha256']

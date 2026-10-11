@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "UTC": "2026-10-11T02:10:30.149990+00:00",
+  "repository": "/Users/jerryyork/Eterna_Aftelle",
+  "actual_subprocess_read_exit": 0,
+  "repo": {
+    "branch": "7.5.11",
+    "HEAD": "d40fbb26b52453954312a12484b4d4f161baa12e",
+    "status": "?? tools/qwen_live_receive_probe/interrupt_segment.pcm\n?? tools/qwen_live_receive_probe/prompt_segment.pcm"
+  },
+  "AGENTS_sha256": "0b5fbc726ba78a84b29b3b4720d82d47069042bdead11a77641de200d6ad2f1a",
+  "bound_current_sources_match": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/GPT-Pro-RBT1-user-pasted-reply.md": true,
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/math_fixture.py": true,
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/routing_math.py": true,
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/select_metadata.py": true,
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/static_publish.py": true,
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-sor1-entry-implementation-20261010-01/sor_source.py": true,
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/temporal_j40_adapter.py": true,
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/temporal_j40_factory.py": true,
+    "/Users/jerryyork/Eterna_Aftelle/AGENTS.md": true
+  },
+  "Stage7_checklist": "PASS_ISOLATED_STATIC_DESIGN_ONLY",
+  "six_redlines_changed": false,
+  "formal_Runtime_provider_DR_schema_API_scheduler_memory_platform_targets_changed": false,
+  "model_PCM_DSP_training_DEv_performance": "NOT_RUN",
+  "git_commit_push_reset_clean_delete": "NOT_RUN"
+}

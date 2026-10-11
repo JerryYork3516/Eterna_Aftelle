@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "ONE_STDLIB_SYNTHETIC_CHECK_ONLY",
+  "scope": "generated F32 byte buffers/source slots; tiny retained file lock; static AST; false entry gate",
+  "source_sha256": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/check_rbt.py": "4798d11d89c55a974bf40f4dae9e06f30d24868446c6390edef8458f0061a0cc",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_driver.py": "17804df457e770eb71b8c4e21346c36d8a93da914468c7c0af93d619fb8b21e6",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_factory.py": "93b681469572426b484a7eeb08887dee037ee4237dfd3c58dd53bb1395a3f0c4",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_io.py": "c3b4c159c67de52b1d0ebbbb4c21bb2aeaa8a4c04976fb292d8966f0fc71dc03",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/train_rbt.py": "056b0b227473f91aa65c283ace9a84b03678c8fe29deb58b714ae4e41a66c289",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_rbt_once.py": "e9336d38c4d1df45b86a58a28d50a95886fa0ab34f0729b146cb36fc62652b11",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/source_origin_triple.py": "8619a217240e68466ee0f72f86b63dd798eabb7780eb333ba0bc0fb5f47e7ba4",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_common.py": "65cd52742e1eb49a1fca4abeb821a1ec8f6a587da6941d8ca456bc65ac63e7df",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_entry_fixture_once.py": "c1102647922daa7c44ae3f035d73a5904f1b81d3fbfb69dd91f4c504e84af499",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry_fixture.py": "35a05f56106425f60646a69e08461ba0aacf14f00647ef829f558e8c775d5483",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_budget.py": "206c38ee9370bcc100ae34138b36c22dc3ba2ea771e28ddb2964a7fa5d12e79c",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_capture.py": "ffcf323cc8c00d71d68d9d881769537e722ee0460b1f00d55162e342d1b37e6d",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_resources.py": "3def4665e12e2647694f46392bd72a2454367a133bffcefa92186398abfcc3ab",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_mapping.py": "ae7dbe6d518f6b8ca4821dce34f45de6c80928800e52809379f457d45d0f89e5",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/routing_math.py": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695"
+  },
+  "PCM": false,
+  "DSP": false,
+  "model": false,
+  "training": false,
+  "NumPy": false,
+  "Torch": false,
+  "whole_seconds": 10,
+  "retained_fixture_bytes_max": 65536,
+  "repeat": false,
+  "additional_inputs_SHA256": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry-contract.json": "8877df73a8885825a76a812c9f774e862faf77bdbcbe13e47751471662f5d1bb",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/execution-authorization.json": "4a6fdc9173f934afaec726f85b959f531eea8e07c297931dadf153eae3a81b41",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/trs_objective.py": "e46001c64256ed53070ea6378a9d17bc9515bcbfd6eb0e19b02a0958278d8bc7",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/routing_math.py": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695"
+  },
+  "snapshot_directory": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-fixture",
+  "supervisor": "run_entry_fixture_once.py",
+  "stdout_stderr_cap": 57344,
+  "total_new_fixture_retained_cap": 65536
+}

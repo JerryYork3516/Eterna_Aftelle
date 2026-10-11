@@ -1,0 +1,39 @@
+{
+  "CHECK": 40,
+  "FIT": 64,
+  "actual_output_sha256": "d6c07ba21e544671bdd9eae2770bd7caae97887f7d5eedb633c2ac2dc85938fd",
+  "additional_generated_split_fixture_required": false,
+  "fit_check_speakers_disjoint": true,
+  "four_cell_counts_per_partition": {
+    "CHECK": 10,
+    "FIT": 16
+  },
+  "metadata_descriptor_hashes_verified": 104,
+  "not_verified": [
+    "PCM contents",
+    "activity support",
+    "frontend/source epochs",
+    "training"
+  ],
+  "old_SOR_207_speakers_excluded": true,
+  "readonly_chunks": [
+    {
+      "chunk_id": "edf362",
+      "exit_code": 0
+    },
+    {
+      "chunk_id": "52f7fe",
+      "exit_code": 0
+    }
+  ],
+  "reason": "already once selected and independently checked the fixed output; no concrete remaining metadata split risk",
+  "schema_version": 1,
+  "speaker_split": [
+    80,
+    53
+  ],
+  "status": "METADATA_SELECTION_OUTCOME_PASS_ONLY",
+  "unique_file_sha256": 208,
+  "unique_path_groups": 104,
+  "unique_relative_paths": 208
+}

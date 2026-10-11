@@ -1,0 +1,185 @@
+"""Strict J40 entry primitives. Real loading requires a separately admitted entry."""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+I = D
+V4_SHA = 'a2f56ff65ed41a66f0dbfb160a0ff2d647622e8eea25072538d57585c8330d43'
+ANCHOR_SHA = 'd7ba3844c0a8f0744f741959647f2f26efd82156082e8d01c4db60c9b3412a4e'
+N = 2395198
+
+
+def module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    value = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(value)
+    return value
+
+
+adapter = module(I / 'temporal_j40_adapter.py', 'j40_sealed_adapter_for_entry')
+require = adapter.require
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def tensor_sha(value):
+    return hashlib.sha256(value.detach().numpy().tobytes()).hexdigest()
+
+
+def norm160_check(torch, record, expected):
+    require(set(record) == {'mean', 'std'}, 'J40_NORM160_KEYS')
+    for name in ('mean', 'std'):
+        v = record[name]
+        require(isinstance(v, torch.Tensor) and v.shape == (160,) and v.dtype == torch.float32
+                and v.device.type == 'cpu' and not torch.is_inference(v)
+                and bool(torch.isfinite(v).all()) and tensor_sha(v) == expected[name], 'J40_NORM160_IDENTITY')
+    require(bool((record['std'] > 0).all()), 'J40_NORM160_STD')
+
+
+def norm40_check(torch, record, expected):
+    require(set(record) == {'mean', 'std', 'identity'} and record['identity'] == expected, 'J40_NORM40_IDENTITY')
+    identity = record['identity']
+    require(set(identity) == {'schema_version', 'partition', 'count', 'source_map_sha256', 'raw_sha256',
+                             'mean_sha256', 'std_sha256', 'constant_bands', 'algorithm'}
+            and identity['schema_version'] == 1 and identity['partition'] == 'TRAIN'
+            and type(identity['count']) is int and identity['count'] > 0
+            and identity['algorithm'] == 'F64_WELFORD_POPULATION_V1', 'J40_NORM40_CONTRACT')
+    constants = identity['constant_bands']
+    require(isinstance(constants, list) and len(constants) == 40
+            and all(type(v) is bool for v in constants) and not all(constants), 'NO_TRAIN_J_VARIATION')
+    for name in ('mean', 'std'):
+        v = record[name]
+        require(isinstance(v, torch.Tensor) and v.shape == (40,) and v.dtype == torch.float32
+                and v.device.type == 'cpu' and not torch.is_inference(v) and bool(torch.isfinite(v).all())
+                and tensor_sha(v) == identity[name + '_sha256'], 'J40_NORM40_TENSOR')
+    require(bool((record['std'] > 0).all())
+            and all(float(record['std'][i]) == 1.0 for i, fixed in enumerate(constants) if fixed), 'J40_NORM40_STD')
+    for key in ('source_map_sha256', 'raw_sha256', 'mean_sha256', 'std_sha256'):
+        require(isinstance(identity[key], str) and len(identity[key]) == 64
+                and all(c in '0123456789abcdef' for c in identity[key]), 'J40_NORM40_HASH')
+
+
+def assemble(torch, teacher, anchor, norm160, norm40, expected):
+    identity_check(expected)
+    norm160_check(torch, norm160, expected['norm160'])
+    norm40_check(torch, norm40, expected['norm40'])
+    require({k: tensor_sha(v) for k, v in teacher.state_dict().items()} == expected['teacher_state']
+            and {k: tensor_sha(v) for k, v in anchor.items()} == expected['anchor_tensors'], 'J40_FACTORY_FROZEN_IDENTITY')
+    require(expected['scope'] in ('GENERATED_FIXTURE', 'TRAIN'), 'J40_FACTORY_SCOPE')
+    if expected['scope'] == 'TRAIN':
+        require(expected['base_checkpoint_sha256'] == V4_SHA and expected['anchor_file_sha256'] == ANCHOR_SHA
+                and norm40['identity']['count'] == N, 'J40_REAL_FACTORY_IDENTITY')
+    return adapter.build(torch, teacher, anchor)
+
+
+def checkpoint(torch, head, norm160, norm40, expected, progress, lineage):
+    lineage_check(lineage)
+    require(set(progress) == {'completed_updates', 'full_passes'}
+            and all(type(value) is int for value in progress.values())
+            and (progress['completed_updates'], progress['full_passes']) == (200, 400), 'J40_CHECKPOINT_PROGRESS')
+    identity_check(expected)
+    norm160_check(torch, norm160, expected['norm160'])
+    norm40_check(torch, norm40, expected['norm40'])
+    require({k: tensor_sha(v) for k, v in head.base.state_dict().items()} == expected['teacher_state']
+            and {k: tensor_sha(getattr(head, 'anchor_' + k)) for k, _ in adapter.ANCHOR_SHAPES}
+            == expected['anchor_tensors'], 'TEMPORAL_CHECKPOINT_ACTUAL_FROZEN_IDENTITY')
+    adapter.check_frozen(head, adapter.frozen_bytes(head))
+    return dict(schema_version=1, architecture=adapter.ARCHITECTURE, parameter_domain=PARAMETER_DOMAIN, lineage=lineage, **progress,
+                seed=20261006, scope=expected['scope'], identity=expected,
+                deltas=head.delta_state(), norm160=norm160, norm40=norm40)
+
+
+def load_checkpoint(torch, head, saved, expected, lineage):
+    identity_check(expected)
+    lineage_check(lineage)
+    require(set(saved) == {'schema_version', 'architecture', 'completed_updates', 'full_passes', 'seed',
+                          'scope', 'identity', 'deltas', 'norm160', 'norm40', 'parameter_domain', 'lineage'}, 'J40_CHECKPOINT_KEYS')
+    require(saved['parameter_domain'] == PARAMETER_DOMAIN and saved['lineage'] == lineage
+            and type(saved['completed_updates']) is int and type(saved['full_passes']) is int,
+            'TEMPORAL_CHECKPOINT_LINEAGE_AND_INTEGER_PROGRESS')
+    require((saved['schema_version'], saved['architecture'], saved['completed_updates'], saved['full_passes'],
+             saved['seed'], saved['scope']) == (1, adapter.ARCHITECTURE, 200, 400, 20261006, expected['scope'])
+            and saved['identity'] == expected, 'J40_CHECKPOINT_IDENTITY')
+    norm160_check(torch, saved['norm160'], expected['norm160'])
+    norm40_check(torch, saved['norm40'], expected['norm40'])
+    require({k: tensor_sha(v) for k, v in head.base.state_dict().items()} == expected['teacher_state']
+            and {k: tensor_sha(getattr(head, 'anchor_' + k)) for k, _ in adapter.ANCHOR_SHAPES}
+            == expected['anchor_tensors'], 'J40_CHECKPOINT_FROZEN_IDENTITY')
+    # The adapter validates every tensor before its first copy.
+    head.load_deltas(saved['deltas'])
+    return saved['norm160'], saved['norm40']
+
+
+def load_sealed(torch, contract_path, auth_path, resource_path):
+    contract, auth, resource = (json.loads(Path(p).read_text()) for p in (contract_path, auth_path, resource_path))
+    require(contract.get('real_model_execution_admitted') is True and auth.get('one_item_authorized') is True
+            and auth.get('attempts_allowed') == 1 and resource.get('status') == 'TEMPORAL_J_FRESH_STARTUP_PASS',
+            'J40_REAL_ENTRY_NOT_ADMITTED')
+    require(auth['contract_sha256'] == digest(contract_path)
+            and resource['contract_sha256'] == digest(contract_path)
+            and resource['authorization_sha256'] == digest(auth_path)
+            and resource['future_reserve_bytes'] == 512*1024**2
+            and resource['candidate_future_reserve_bytes'] == 96*1024**2
+            and resource['logical_public_bytes'] + resource['future_reserve_bytes'] <= 60*1024**3
+            and resource['physical_available_bytes'] >= resource['future_reserve_bytes']
+            and resource['candidate_physical_available_bytes'] >= resource['candidate_future_reserve_bytes']
+            and contract['architecture'] == adapter.ARCHITECTURE
+            and contract['norm40']['count'] == N and contract['scope'] == 'TRAIN'
+            and not any(contract.get(k) for k in ('DEV', 'Runtime', 'resume')), 'J40_REAL_ENTRY_CONTRACT')
+    for path, sha in auth['files'].items():
+        require(digest(path) == sha, 'TEMPORAL_FACTORY_ADMISSION_SOURCE:' + path)
+    expected = contract['factory_identity']
+    identity_check(expected)
+    require(contract['parameter_domain'] == PARAMETER_DOMAIN, 'TEMPORAL_REAL_PARAMETER_DOMAIN')
+    require(expected['scope'] == contract['scope'] == 'TRAIN' and expected['norm40'] == contract['norm40']
+            and expected['norm160'] == contract['norm160'] and expected['base_checkpoint_sha256'] == V4_SHA
+            and expected['anchor_file_sha256'] == ANCHOR_SHA, 'J40_REAL_FACTORY_CONTRACT_BINDING')
+    require(auth['frozen_inputs'] == contract['frozen_inputs'], 'J40_REAL_ENTRY_INPUT_MAP')
+    paths = [D.parent / path for path in (
+        'test3-spx-nh1-harda1-candidate-20261007-01/harda1_adapter.py',
+        'test3-spx-nh1-harda1-candidate-20261007-01/anchor-identity.json',
+        'test3-spx-nh1-harda1-candidate-20261007-01/anchor-tensors.pt',
+        'test3-spx-nh1-hard1-candidate-20261007-01/hard1_adapter.py',
+        'test3-spx-nh1-nrc1-candidate-20261007-01/nrc1_adapter.py',
+        'test3-spx-nh1-nrc1-candidate-20261007-01/nrc1_objective.py',
+        'test3-spx-nh1-nr1-candidate-20261007-01/nr1_adapter.py',
+        'test3-spx-nh1-hard-oracle-preflight-20261007-02/probe.py',
+        'test3-spx-nh1-training-execution-v4-20261007-01/train_head.py')]
+    checkpoint_path = Path('/Volumes/SSD/Aftelle-Test3-Public-20261007-01/training-coverage-run-01/final-checkpoint.pt')
+    paths += [checkpoint_path, Path(contract['norm40_path']), Path(__file__), I / 'temporal_j40_adapter.py']
+    require(all(str(path) in contract['frozen_inputs'] for path in paths), 'J40_REAL_ENTRY_MISSING_REQUIRED_PATH')
+    require(contract['frozen_inputs'][str(checkpoint_path)] == V4_SHA
+            and contract['frozen_inputs'][str(paths[2])] == ANCHOR_SHA, 'J40_LITERAL_INPUT_MAP')
+    for path, sha in contract['frozen_inputs'].items():
+        require(digest(path) == sha, 'J40_REAL_ENTRY_INPUT:' + path)
+    old_path = D.parent / 'test3-spx-nh1-harda1-candidate-20261007-01/harda1_adapter.py'
+    old = module(old_path, 'sealed_harda1_for_j40_factory')
+    require(old.BASE_SHA == V4_SHA and digest(old.BASE_RUN / 'final-checkpoint.pt') == V4_SHA
+            and digest(old.D / 'anchor-tensors.pt') == ANCHOR_SHA, 'J40_LITERAL_SEALED_IDENTITY')
+    with torch.random.fork_rng(devices=[]):
+        old_head = old.model(torch)
+    saved = torch.load(old.BASE_RUN / 'final-checkpoint.pt', map_location='cpu', weights_only=True)
+    norm160 = dict(mean=saved['mean'], std=saved['std'])
+    norm40 = torch.load(contract['norm40_path'], map_location='cpu', weights_only=True)
+    anchor = {k: getattr(old_head, 'anchor_' + k) for k, _ in adapter.ANCHOR_SHAPES}
+    head = assemble(torch, old_head.base, anchor, norm160, norm40, contract['factory_identity'])
+    require(digest(old.BASE_RUN / 'final-checkpoint.pt') == V4_SHA
+            and digest(old.D / 'anchor-tensors.pt') == ANCHOR_SHA, 'J40_SEALED_CHANGED_DURING_LOAD')
+    return head, norm160, norm40
+
+PARAMETER_DOMAIN = 'FINITE_F32_TEMPORAL_J_INPUT_AND_HEAD_DELTA_V1'
+
+def identity_check(expected):
+    require(expected['architecture'] == adapter.ARCHITECTURE
+            and expected['trainable_parameters'] == 3617
+            and expected['delta_shapes'] == [[key, list(shape)] for key, shape in adapter.DELTA_SHAPES],
+            'TEMPORAL_FACTORY_FAMILY_IDENTITY')
+
+def lineage_check(lineage):
+    require(set(lineage) == {'contract_sha256','authorization_sha256','runtime_sha256','prefix_sha256'}
+            and all(isinstance(v,str) and len(v)==64 and all(c in '0123456789abcdef' for c in v)
+                    for v in lineage.values()), 'TEMPORAL_CHECKPOINT_LINEAGE_FORMAT')

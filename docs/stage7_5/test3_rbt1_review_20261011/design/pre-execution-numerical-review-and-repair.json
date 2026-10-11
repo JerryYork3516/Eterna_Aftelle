@@ -1,0 +1,33 @@
+{
+  "review": "hard_constraint_training_review",
+  "status": "REWORK_BEFORE_FIRST_EXECUTION",
+  "readonly_actual_chunks": [
+    {
+      "chunk_id": "93951a",
+      "exit_code": 0
+    },
+    {
+      "chunk_id": "829956",
+      "exit_code": 0
+    },
+    {
+      "chunk_id": "82a7ed",
+      "exit_code": 0
+    }
+  ],
+  "finding": "F64 top+log(denominator)-y*zN cancels log(3) at equal F32 logits 2**60,y=1",
+  "root_changes": [
+    {
+      "path": "routing_math.py",
+      "old_sha256": "4016ef5b0d791c7944cfcaf3c8e4d0e4ad8f4eab16c78ff247f0fb02a50cbbaf",
+      "new_sha256": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695"
+    },
+    {
+      "path": "math_fixture.py",
+      "old_sha256": "68e4154db9ff14716c5ded6516003c2cb884996bf2639f263b252f5277c9185d",
+      "new_sha256": "f82152e635d24298b39ae642d068dfb6d433942fa6925b2a4fb39c728b368aaf"
+    }
+  ],
+  "fixture_replication_check": "F64 weighted fsum equality checked to 14 decimal places rather than requiring identity across different sums; scientific acceptance has no tolerance",
+  "public_model_or_pcm_execution": false
+}

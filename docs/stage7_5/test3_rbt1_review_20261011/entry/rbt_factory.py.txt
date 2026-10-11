@@ -1,0 +1,64 @@
+"""Unchanged temporal-J function, fresh deltas and strict RBT-only checkpoint."""
+import io
+import rbt_common as c
+
+
+def fresh(contract, binding):
+    c.check_binding(binding)
+    c.admission_fields(contract,c.read(c.D/'execution-authorization.json'),binding['contract_sha256'])
+    v4=c.module(contract['v4_source'],'rbt_original_v4')
+    np,torch=v4.environment()
+    factory=c.module(contract['temporal_factory'],'rbt_original_function_factory')
+    saved=torch.load(contract['base_checkpoint'],map_location='cpu',weights_only=True)
+    anchor=torch.load(contract['anchor_path'],map_location='cpu',weights_only=True)
+    norm160=dict(mean=saved['mean'],std=saved['std'])
+    norm40=torch.load(contract['norm40_path'],map_location='cpu',weights_only=True)
+    with torch.random.fork_rng(devices=[]):
+        teacher=v4.model(torch)
+    teacher.load_state_dict(saved['state_dict'],strict=True)
+    head=factory.assemble(torch,teacher,anchor,norm160,norm40,contract['factory_identity'])
+    params=head.trainable_parameters()
+    c.require(sum(p.numel() for p in params)==3617 and len(params)==5
+              and all(bool((p==0).all()) for p in params),'RBT_FRESH_DELTA')
+    normalizer=c.module(contract['normalization_source'],'rbt_original_J_normalization')
+    return dict(np=np,torch=torch,head=head,norm160=norm160,norm40=norm40,
+                factory=factory,v4=v4,normalizer=normalizer,
+                frozen=factory.adapter.frozen_bytes(head))
+
+
+def norm_check(env,contract):
+    f=env['factory'];torch=env['torch'];expected=contract['factory_identity']
+    f.norm160_check(torch,env['norm160'],expected['norm160'])
+    f.norm40_check(torch,env['norm40'],expected['norm40'])
+    f.adapter.check_frozen(env['head'],env['frozen'])
+
+
+def checkpoint_bytes(env,contract,binding,progress,prefix_sha):
+    c.require(progress==c.PROGRESS,'RBT_CHECKPOINT_PROGRESS')
+    norm_check(env,contract);c.check_binding(binding)
+    saved=dict(schema_version=1,architecture=c.ARCHITECTURE,
+               function_architecture=env['factory'].adapter.ARCHITECTURE, seed=20261006,
+               identity=contract['factory_identity'], population_sha256=contract['population_sha256'],
+               binding=binding, prefix_sha256=prefix_sha, progress=progress,
+               deltas=env['head'].delta_state(),norm160=env['norm160'],norm40=env['norm40'])
+    buffer=io.BytesIO();env['torch'].save(saved,buffer)
+    raw=buffer.getvalue();c.require(len(raw)<=512*2**10,'RBT_CHECKPOINT_BYTE_CAP')
+    return raw
+
+
+def load_final(env,contract,binding,raw,prefix_sha):
+    c.check_binding(binding)
+    c.admission_fields(contract,c.read(c.D/'execution-authorization.json'),binding['contract_sha256'])
+    saved=env['torch'].load(io.BytesIO(raw),map_location='cpu',weights_only=True)
+    keys={'schema_version','architecture','function_architecture','seed','identity','population_sha256',
+          'binding','prefix_sha256','progress','deltas','norm160','norm40'}
+    c.require(set(saved)==keys and saved['schema_version']==1 and saved['architecture']==c.ARCHITECTURE
+              and saved['function_architecture']==env['factory'].adapter.ARCHITECTURE
+              and saved['seed']==20261006 and saved['identity']==contract['factory_identity']
+              and saved['population_sha256']==contract['population_sha256'] and saved['binding']==binding
+              and saved['prefix_sha256']==prefix_sha and saved['progress']==c.PROGRESS,
+              'RBT_CHECKPOINT_IDENTITY')
+    f=env['factory'];torch=env['torch'];identity=contract['factory_identity']
+    f.norm160_check(torch,saved['norm160'],identity['norm160'])
+    f.norm40_check(torch,saved['norm40'],identity['norm40'])
+    env['head'].load_deltas(saved['deltas']);norm_check(env,contract)

@@ -1,0 +1,27 @@
+{
+  "Test3": "BLOCKED",
+  "budget_process_lock": "CLOSED",
+  "control_held_bytes": "CLOSED",
+  "execution_authorized": false,
+  "fixture_actual_tests": 11,
+  "fixture_actual_tool_exit": 0,
+  "fixture_body_rerun": false,
+  "fixture_timeout_branch": "CLOSED_SOURCE_ONLY_AFTER_ACTUAL_FIXTURE",
+  "fixture_tool_chunk": "792123",
+  "limitations": [
+    "No PCM/DSP/model/training/CHECK execution",
+    "Real RSS/time/storage NOT_RUN",
+    "Current helper timeout source repair was statically closed without rerunning consumed fixture",
+    "New scientific once authorization remains false"
+  ],
+  "owner_terminal_boundary": "CLOSED",
+  "review_receipts": [
+    "hard:e8cbab/f53022/640084/9512da/ab9c62/ab1789/6a2cdf/632d11:0",
+    "hard:ec372a/c00df1/1694b9/cab6e0/f68e28:0",
+    "native:472783/6bab14/77eba8:0"
+  ],
+  "schema_version": 1,
+  "scientific_layout": "READONLY_STATIC_NO_OTHER_SCIENTIFIC_BLOCK_FOUND",
+  "source_snapshot_binding": "CLOSED",
+  "status": "STATIC_IMPLEMENTATION_CHECKS_CLOSED_REVIEW_PENDING"
+}

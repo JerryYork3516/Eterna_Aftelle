@@ -1,0 +1,31 @@
+{
+  "aggregate_RSS_bytes": 2147483648,
+  "all_retained_cap": 67108864,
+  "caps": {
+    "binary": 58720256,
+    "metadata": 4194304,
+    "source_and_receipts": 2097152,
+    "streams": 2097152
+  },
+  "execution_admitted": false,
+  "fresh_resource_check": "NOT_RUN",
+  "local_physical_reserve": 67108864,
+  "native_partial_rule": "at most 1MiB failed response evidence may contain old160/J; no reuse as cache",
+  "new_PUBLIC_bytes": 0,
+  "old_design_seed_bytes": 369401,
+  "pending_final_rule": "single-writer same-directory pending->final rename, each existing path counted; no retry/delete",
+  "real_time_and_RSS": "NOT_RUN",
+  "resource_execution_admitted": false,
+  "retained_scope": "original immutable RBT1 design + new entry implementation, controls, failed versions, fixture artifacts, future runtime outputs",
+  "schema_version": 1,
+  "source_control_version_reserve_included": true,
+  "source_seed_ceiling_refresh_required": false,
+  "static_ceilings": {
+    "binary": 53610592,
+    "metadata": 2490368,
+    "source_and_receipts": 1735701,
+    "streams": 2097152
+  },
+  "total_static_upper_bytes": 59933813,
+  "whole_seconds": 1800
+}

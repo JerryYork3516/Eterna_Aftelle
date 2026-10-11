@@ -1,0 +1,77 @@
+"""Float64 source-likelihood reference; no model or data dependency."""
+import math
+import struct
+
+
+def finite_f32(value):
+    if type(value) is not float or not math.isfinite(value):
+        raise ValueError('LOGIT_FORMAT')
+    try:
+        valid = struct.unpack('<f', struct.pack('<f', value))[0] == value
+    except (OverflowError, struct.error):
+        valid = False
+    if not valid:
+        raise ValueError('LOGIT_NOT_F32')
+
+
+def row_loss(z_b, z_e, z_n, y):
+    for value in (z_b, z_e, z_n):
+        finite_f32(value)
+    if type(y) is not float or not math.isfinite(y) or not 0 <= y <= 1:
+        raise ValueError('LABEL_FORMAT')
+    finite_f32(y)
+    top = max(0.0, z_b, z_e, z_n)
+    terms = [math.exp(value-top) for value in (0.0, z_b, z_e, z_n)]
+    denominator = math.fsum(terms)
+    loss = (top - y*z_n) + math.log(denominator)
+    gradient = [terms[1]/denominator, terms[2]/denominator, terms[3]/denominator-y]
+    if not math.isfinite(loss) or not all(map(math.isfinite,gradient)):
+        raise ValueError('SOURCE_LIKELIHOOD_NONFINITE')
+    return loss, gradient
+
+
+def triple_loss(z_b, z_e, z_n, labels):
+    if not labels or not len(z_b) == len(z_e) == len(z_n) == len(labels):
+        raise ValueError('TRIPLE_LENGTH')
+    values = [row_loss(*row) for row in zip(z_b,z_e,z_n,labels)]
+    counts = [sum(y > 0 for y in labels), sum(y == 0 for y in labels)]
+    if min(counts) == 0:
+        raise ValueError('STOP_TRIPLE_ACTIVITY_ADMISSION')
+    weights = [0.5/counts[0 if y>0 else 1] for y in labels]
+    return math.fsum(w*v[0] for w,v in zip(weights,values)), [
+        [w*g for g in v[1]] for w,v in zip(weights,values)]
+
+
+def common_targets(arms, label_by_target):
+    """Join source spans, retaining each arm's independent epoch context."""
+    if set(arms) != {'B','E','N'}:
+        raise ValueError('ARM_IDENTITY')
+    maps = {}
+    for name, rows in arms.items():
+        mapping = {}
+        prior = -1
+        for row in rows:
+            key = (row['target_start'],row['target_end'])
+            if (any(type(x) is not int for x in key) or key[0]<prior or key[0]>=key[1]
+                    or type(row['valid']) is not bool or type(row['epoch']) is not int
+                    or type(row['epoch_start']) is not int or not 0<=row['epoch_start']<=key[0]
+                    or row['epoch']<0 or key in mapping):
+                raise ValueError('SOURCE_MAP_IDENTITY')
+            prior = key[1]
+            mapping[key] = row
+        maps[name] = mapping
+    common = sorted(set.intersection(*(set(m) for m in maps.values())))
+    return [(key, [maps[a][key] for a in ('B','E','N')], label_by_target[key])
+            for key in common if all(maps[a][key]['valid'] for a in ('B','E','N'))]
+
+
+def mechanism_gate(short, weak_short, long, long_above, long_total):
+    if (len(short),len(weak_short),len(long)) != (20,10,20):
+        raise ValueError('MECHANISM_POPULATION')
+    if any(type(x) is not bool for group in (short,weak_short,long) for x in group):
+        raise ValueError('SEPARATION_FORMAT')
+    if (type(long_above) is not int or type(long_total) is not int
+            or not 0 <= long_above <= long_total or long_total<=0):
+        raise ValueError('FULL_ACTIVITY_COUNT')
+    return (sum(short)>=19 and all(weak_short) and sum(long)>=19
+            and 100*long_above>=90*long_total)

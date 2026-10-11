@@ -1,0 +1,57 @@
+"""200 fixed RBT updates. One full-arm forward per batch visit."""
+import math
+import rbt_common as c
+from routing_math import triple_loss
+from rbt_factory import checkpoint_bytes,norm_check
+
+
+def arm_logits(env,arm):
+    torch,head=env['torch'],env['head'];values=[]
+    for p,j in arm['epochs']:
+        c.tick();values.append(head.from_prefix(p,j).reshape(-1))
+    c.require(bool(values),'RBT_EMPTY_ARM')
+    z=torch.cat(values)
+    c.require(z.dtype==torch.float32 and bool(torch.isfinite(z).all()),'RBT_LOGIT_FORMAT')
+    return z
+
+
+def train_entry(env,contract,binding,fit,budget,prefix_sha):
+    c.check_binding(binding)
+    c.admission_fields(contract,c.read(c.D/'execution-authorization.json'),binding['contract_sha256'])
+    c.require([t['id'] for t in fit]==[d['id'] for d in c.fixed_population(contract) if d['split']=='FIT'],
+              'RBT_FIT_IDENTITY')
+    torch,head=env['torch'],env['head'];params=head.trainable_parameters()
+    optimizer=torch.optim.AdamW(params,lr=env['v4'].learning_rate(1),betas=(.9,.999),
+                               weight_decay=1e-4,foreach=False,fused=False)
+    visits=forwards=0
+    for step in range(1,201):
+        c.tick();point=[p.detach().clone() for p in params];optimizer.zero_grad(set_to_none=True)
+        batch=contract['batch_cycle'][(step-1)%8];losses=[]
+        for index in batch:
+            item=fit[index];z=[arm_logits(env,item[a]) for a in ('B','E','N')]
+            forwards+=3;visits+=1
+            ids,y=zip(*item['join']);columns=[[row[a] for row in ids] for a in range(3)]
+            selected=[[float(v) for v in values.detach().tolist()] for values in
+                      [z[a][columns[a]] for a in range(3)]]
+            loss,gradient=triple_loss(*selected,list(y));losses.append(loss/8)
+            for a in range(3):
+                dz=torch.zeros(len(z[a]),dtype=torch.float64)
+                dz[columns[a]]=torch.tensor([row[a]/8 for row in gradient],dtype=torch.float64)
+                (z[a].double()*dz).sum().backward()
+            c.require(all(torch.equal(p,old) for p,old in zip(params,point)), 'RBT_POINT_CHANGED_WITHIN_BATCH')
+        c.require(all(p.grad is not None and bool(torch.isfinite(p.grad).all()) for p in params),
+                  'RBT_GRADIENT_NONFINITE')
+        lr=env['v4'].learning_rate(step)
+        for group in optimizer.param_groups:group['lr']=lr
+        grad=float(torch.nn.utils.clip_grad_norm_(params,1.));c.require(math.isfinite(grad),'RBT_CLIP_NONFINITE')
+        optimizer.step();norm_check(env,contract)
+        c.require(all(bool(torch.isfinite(p).all()) for p in params),'RBT_DELTA_NONFINITE')
+        budget.append(c.R/'updates.jsonl',(__import__('json').dumps(dict(step=step,batch=batch,
+            risk=math.fsum(losses),learning_rate=lr,triple_visits=visits,arm_forwards=forwards,
+            gradient_norm_before_clip=grad),allow_nan=False)+'\n').encode())
+    progress=dict(completed_updates=200,triple_visits=visits,arm_forwards=forwards)
+    raw=checkpoint_bytes(env,contract,binding,progress,prefix_sha)
+    record=budget.publish(c.R/'final-checkpoint.pt',raw)
+    budget.json(c.R/'train-completion.json',dict(schema_version=1,progress=progress,
+                checkpoint=record,binding=binding,prefix_sha256=prefix_sha))
+    return record

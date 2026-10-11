@@ -1,0 +1,127 @@
+--- /Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-sor1-entry-implementation-20261010-01/sor_source.py
++++ /Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/source_origin_triple.py
+@@ -1,28 +1,18 @@
+-"""One source-only construction, before any producer or model execution."""
+-import ast
++"""One construction with B/N render sharing and E/N mic sharing."""
+ import hashlib
+ import math
++from rbt_common import require
+ 
+ 
+-def require(ok, reason):
+-    if not ok:
+-        raise ValueError(reason)
+-
+-
+-def validate_recipe(source, recipe, admitted):
+-    # Preserve the original validator, stopping before audio reconstruction.
+-    tree = ast.parse(open(source.__file__, encoding='utf-8').read())
+-    original = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'rebuild_scene')
+-    boundary = next(i for i, n in enumerate(original.body) if isinstance(n, ast.Assign)
+-                    and any(isinstance(t, ast.Name) and t.id == 'reference' for t in n.targets))
+-    function = ast.FunctionDef(name='validate_recipe_only', args=original.args,
+-                              body=original.body[:boundary], decorator_list=[])
+-    namespace = dict(source.__dict__)
+-    exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+-                 source.__file__, 'exec'), namespace)
+-    namespace['validate_recipe_only'](recipe, admitted)
+-    require(recipe['partition'] == 'TRAIN' and recipe['kind'] == 'short_double'
+-            and recipe['near_duration_ms'] == 400 and recipe['near'] and recipe['far'], 'SOR_COHORT_KIND')
++def shared_arms(mic_b, mic_en, render_bn, render_e):
++    import struct
++    buffers = (mic_b,mic_en,render_bn,render_e)
++    require(all(type(v) is bytes for v in buffers) and len({len(v) for v in buffers})==1
++            and len(mic_b)>0 and len(mic_b)%4==0, 'RBT_SHARED_BYTES_LAYOUT')
++    require(all(math.isfinite(v[0]) for raw in buffers for v in struct.iter_unpack('<f',raw)),
++            'RBT_SHARED_BYTES_NONFINITE')
++    return {'B':{'mic':mic_b,'render':render_bn}, 'E':{'mic':mic_en,'render':render_e},
++            'N':{'mic':mic_en,'render':render_bn}}
+ 
+ 
+ def path_response(np, source, recipe, values):
+@@ -49,24 +39,24 @@
+ 
+ def from_components(np, source, recipe, reference, clean):
+     require(reference.shape == (480000,) and reference.dtype == np.dtype('<f4')
+-            and clean.shape == (19200,) and clean.dtype == np.dtype('<f4') and bool(np.isfinite(reference).all())
++            and clean.shape == (len(clean),) and clean.dtype == np.dtype('<f4') and bool(np.isfinite(reference).all())
+             and bool(np.isfinite(clean).all()), 'SOR_COMPONENT_LAYOUT')
+     begin = recipe['near_start_raw48']
+-    require(type(begin) is int and 0 <= begin <= 480000-19200, 'SOR_STIMULUS_LOCATION')
++    require(type(begin) is int and 0 <= begin <= 480000-len(clean), 'SOR_STIMULUS_LOCATION')
+     paths = recipe['echo_paths']
+     require(len(paths) == (2 if recipe['path_change_raw48'] is not None else 1), 'SOR_PATH_COUNT')
+     delays = [delay for path in paths for delay, gain in path['taps']]
+     require(bool(delays) and all(type(d) is int and 0 <= d < 480000 for d in delays)
+             and all(math.isfinite(g) for path in paths for _, g in path['taps']), 'SOR_PATH_TAPS')
+     start = (begin + min(delays)) // 240 * 240
+-    end = min(480000, ((begin + 19200 + max(delays) + 239) // 240) * 240)
++    end = min(480000, ((begin + len(clean) + max(delays) + 239) // 240) * 240)
+     require(start < end, 'SOR_EMPTY_SUPPORT')
+     with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
+         level = positive(10 ** (recipe['echo_target_dbfs']/20), 'SOR_ECHO_LEVEL')
+         base_echo = path_response(np, source, recipe, reference.astype(np.float64))
+         g0 = positive(level / positive(source._active_rms(base_echo), 'SOR_R_GAIN_DENOMINATOR'), 'SOR_R_GAIN')
+         stimulus = np.zeros(480000, dtype=np.float64)
+-        stimulus[begin:begin+19200] = clean
++        stimulus[begin:begin+len(clean)] = clean
+         response = g0 * path_response(np, source, recipe, stimulus)
+         target = positive(level * 10 ** (recipe['near_echo_db']/20), 'SOR_NEAR_TARGET')
+         gs = positive(target / positive(source._active_rms(response[start:end]), 'SOR_S_GAIN_DENOMINATOR'), 'SOR_S_GAIN')
+@@ -107,12 +97,13 @@
+         mixed = echo_e + noise
+         require(bool(np.isfinite(mixed).all()), 'SOR_PRE_ADC_NONFINITE')
+         mic = np.clip(mixed, -.95, .95).astype('<f4')
++        mic_b = np.clip(echo_n + noise, -.95, .95).astype('<f4')
+     edges = np.diff(np.concatenate(([False], activity, [False])).astype(np.int8))
+     intervals = [[int(s), int(e)] for s, e in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))]
+     event = dict(first_active_raw48=intervals[0][0], last_active_raw48=intervals[-1][1]-1,
+                  end_exclusive_raw48=intervals[-1][1], active_samples=int(activity.sum()),
+                  definition='Independent preADC effective-render v, frozen path support5ms RMS/A95')
+-    arrays = dict(mic=mic, render_E=render_e, render_N=render_n, proposed_s=proposed_s, effective_v=v, noise=noise)
++    arrays = dict(mic_B=mic_b, mic=mic, render_E=render_e, render_N=render_n, proposed_s=proposed_s, effective_v=v, noise=noise)
+     metadata = dict(schema_version=1, scene_id=recipe['id'], recipe_sha256=recipe['recipe_sha256'],
+                     weak=recipe['weak_double'], source_support=[start, end], near_event=event,
+                     intervals_raw48=intervals, g0=g0, preliminary_renderer_gain=gs, noise_gain=noise_gain,
+@@ -120,17 +111,26 @@
+                     decomposition_bound_max=float(bound.max()), ADC_clipped_samples=int((np.abs(mixed)>.95).sum()),
+                     input_hashes={k:hashlib.sha256(a.tobytes()).hexdigest() for k,a in arrays.items()},
+                     renderer_delta_sha256=hashlib.sha256((render_e.astype(np.float64)-render_n).tobytes()).hexdigest())
+-    return mic, render_e, render_n, metadata
++    return shared_arms(mic_b.tobytes(),mic.tobytes(),render_n.tobytes(),render_e.tobytes()), metadata
+ 
+ 
+-def public_pair(np, source, recipe, admitted):
+-    validate_recipe(source, recipe, admitted)
+-    far = source._wave(admitted, recipe['far'])
+-    reference = source._upsample(far[(np.arange(160000) + recipe['far_offset16']) % len(far)])
+-    descriptor = recipe['near']
+-    near = source._wave(admitted, descriptor)
+-    offset = descriptor['offset16']
+-    clean = source._upsample(near[offset:offset+6400])
+-    _, a95 = source._activity(clean)
+-    require(a95 == descriptor['clean_clip_A95'], 'SOR_ORIGINAL_CLIP_LABEL_IDENTITY')
+-    return from_components(np, source, recipe, reference, clean)
++def public_triple(np, source, descriptor, admitted):
++    # File identity is checked by the original admitted public reader before slicing.
++    r = source._wave(admitted,descriptor['r'])
++    s = source._wave(admitted,descriptor['s'])
++    count = descriptor['stimulus_ms']*16
++    offset = descriptor['source_offset16']
++    require(descriptor['stimulus_ms'] in (400,2000) and offset==16000
++            and len(s)>=offset+count and len(r)>=64000, 'STOP_PUBLIC_PAIR_ADMISSION_NO_REPLACEMENT')
++    reference = source._upsample(r[(np.arange(160000)+16000)%len(r)])
++    clean = source._upsample(s[offset:offset+count])
++    source._activity(clean)
++    recipe = dict(**descriptor['path'],**descriptor['scales'], id=descriptor['id'],
++                  recipe_sha256=descriptor['descriptor_sha256'], near_start_raw48=144000,
++                  weak_double=descriptor['weak'])
++    arms,metadata=from_components(np,source,recipe,reference,clean)
++    require(all(len(arms[a][v])==480000*4 for a in ('B','E','N') for v in ('mic','render')),
++            'RBT_PUBLIC_INPUT_LENGTH')
++    metadata['descriptor_sha256']=descriptor['descriptor_sha256']
++    metadata['kind']=descriptor['kind']; metadata['split']=descriptor['split']
++    return arms,metadata
+
+# New files: common/factory/capture/mapping/train/check/driver/owner/resources and entry_fixture; no old source changed.

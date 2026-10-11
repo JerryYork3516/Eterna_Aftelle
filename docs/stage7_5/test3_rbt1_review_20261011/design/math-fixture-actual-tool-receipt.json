@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "tool": "exec_command",
+  "actual_tool_chunk_id": "de2e0d",
+  "actual_tool_exit_code": 0,
+  "actual_child_pid": 40121,
+  "actual_child_exit_code": 0,
+  "exit_source": "actual Popen.communicate/wait and tool return",
+  "completion_sha256": "29d101f4dd8bcde4142172e6e6b44388eb365b68479332d0c33a6329e82614ff",
+  "tests": 10,
+  "model_DSP_PCM_training": false
+}

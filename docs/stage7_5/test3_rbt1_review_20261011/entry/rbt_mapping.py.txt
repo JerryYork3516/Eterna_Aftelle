@@ -1,0 +1,72 @@
+"""Source-only joins and complete CHECK denominators; no model input fields."""
+import math
+import struct
+from rbt_common import require
+from routing_math import finite_f32, mechanism_gate
+
+
+def join(arms):
+    maps=[]
+    for name in ('B','E','N'):
+        slots=arms[name]['slots'];mapping={}
+        valid=[s for s in slots if s['valid']]
+        require([s['score_index'] for s in valid]==list(range(len(valid))), 'RBT_SCORE_MAP')
+        for slot in valid:
+            key=(slot['target_start'],slot['target_end'])
+            require(key not in mapping,'RBT_DUPLICATE_TARGET')
+            mapping[key]=slot
+        maps.append(mapping)
+    keys=sorted(set(maps[0]) & set(maps[1]) & set(maps[2]))
+    result=[]
+    for key in keys:
+        n=maps[2][key]
+        y=struct.unpack('<f',struct.pack('<f',n['activity_samples']/(key[1]-key[0])))[0]
+        result.append((tuple(m[key]['score_index'] for m in maps),y))
+    require(any(y>0 for _,y in result) and any(y==0 for _,y in result),
+            'STOP_TRIPLE_ACTIVITY_ADMISSION_NO_REPLACEMENT')
+    return result
+
+
+def check_probabilities(arm):
+    values=arm['probabilities']
+    require(len(values)==sum(s['valid'] for s in arm['slots']),'RBT_FINAL_PROBABILITY_LENGTH')
+    for value in values:
+        finite_f32(value);require(0<=value<=1,'RBT_PROBABILITY_RANGE')
+    return values
+
+
+def evaluate(triples,expected,legal_triples):
+    require([t['id'] for t in triples]==[d['id'] for d in expected] and len(triples)==40,
+            'RBT_CHECK_COHORT_IDENTITY')
+    for t,d in zip(triples,expected):
+        require((t['kind'],t['weak'])==(d['kind'],d['weak']),'RBT_CHECK_SUBGROUP_IDENTITY')
+        for arm in ('B','E','N'):check_probabilities(t[arm])
+    negative=[p for t in triples for a in ('B','E') for p in t[a]['probabilities']]
+    require(bool(negative),'RBT_EMPTY_COMMON_NEGATIVE_POOL');peak=max(negative)
+    short=[];weak=[];long=[];events=[];above=total=0
+    for t in triples:
+        n=t['N'];evidence=max((min(n['probabilities'][i] for i in ids)
+                 for ids in legal_triples(n['slots'],t['event'],0)),default=None)
+        separated=evidence is not None and evidence>peak
+        if t['kind']=='short':
+            short.append(separated)
+            if t['weak']:weak.append(separated)
+        else:
+            long.append(separated)
+            for s in n['slots']:
+                if s['activity_samples']>0:
+                    total+=1
+                    above+=int(s['valid'] and n['probabilities'][s['score_index']]>peak)
+        pre=[n['probabilities'][s['score_index']] for s in n['slots']
+             if s['valid'] and s['target_end']<=t['event']['first_active_raw48']]
+        post=[n['probabilities'][s['score_index']] for s in n['slots']
+              if s['valid'] and s['target_start']>=t['event']['end_exclusive_raw48']]
+        events.append(dict(id=t['id'],kind=t['kind'],weak=t['weak'],evidence=evidence,
+                           separated=separated,pre_max=max(pre,default=None),post_max=max(post,default=None)))
+    passed=mechanism_gate(short,weak,long,above,total)
+    return dict(status='SOURCE_RELATION_PILOT_SUPPORTED_PRODUCT_GATES_NOT_RUN' if passed
+                else 'REJECT_RBT1_MECHANISM_PILOT',n_BE=peak,events=events,
+                short_hits=sum(short),short_total=len(short),weak_short_hits=sum(weak),weak_short_total=len(weak),
+                long_hits=sum(long),long_total=len(long),long_activity_above=above,long_activity_total=total,
+                tau=None,grid='NOT_RUN',Gate='NOT_RUN',qualification='NOT_RUN',confirmation='NOT_RUN',
+                original_clean='NOT_RUN',actual_ready='NOT_RUN')

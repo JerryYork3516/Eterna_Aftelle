@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "status": "GO_FINITE_STDLIB_MATH_FIXTURE_ONLY",
+  "readonly_actual_chunks": [
+    {
+      "chunk_id": "504c88",
+      "exit_code": 0
+    },
+    {
+      "chunk_id": "caaa44",
+      "exit_code": 0
+    },
+    {
+      "chunk_id": "a4f756",
+      "exit_code": 0
+    }
+  ],
+  "source_sha256": {
+    "routing_math.py": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695",
+    "math_fixture.py": "3f60b54ef52a34bcb4057d8e7a0899b22aa83a2fef765dc99a4bc39c95f4add2"
+  },
+  "tests": 10,
+  "real_PCM_frontend_model_training_admitted": false,
+  "old_contract_hash_map_not_used": true
+}

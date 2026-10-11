@@ -1,0 +1,85 @@
+"""TRAIN-only J40 moments; source spans describe valid scores in canonical order."""
+import hashlib
+import json
+import math
+
+
+def require(ok, reason):
+    if not ok:
+        raise ValueError(reason)
+
+
+def validate_raw(np, raw, spans):
+    require(isinstance(raw, np.ndarray) and raw.dtype == np.dtype('<f4')
+            and raw.ndim == 2 and raw.shape[1] == 40, 'J40_RAW_DTYPE_OR_SHAPE')
+    require(raw.shape[0] > 0 and bool(np.isfinite(raw).all()), 'J40_RAW_EMPTY_OR_NONFINITE')
+    offset, previous = 0, None
+    require(isinstance(spans, list) and bool(spans), 'J40_SOURCE_MAP_EMPTY')
+    for span in spans:
+        require(set(span) == {'scene_index', 'producer_epoch', 'offset', 'n'}, 'J40_SOURCE_MAP_KEYS')
+        require(all(type(v) is int for v in span.values()), 'J40_SOURCE_MAP_INTEGER')
+        key = span['scene_index'], span['producer_epoch']
+        require(min(key) >= 0 and (previous is None or key > previous), 'J40_CANONICAL_SOURCE_ORDER')
+        require(span['offset'] == offset and span['n'] > 0, 'J40_SOURCE_MAP_COVERAGE')
+        offset += span['n']
+        previous = key
+    require(offset == raw.shape[0], 'J40_SOURCE_MAP_LENGTH')
+    encoded = json.dumps(spans, sort_keys=True, separators=(',', ':')).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def finish_band(count, mean, m2, minimum, maximum):
+    require(count > 0 and all(math.isfinite(x) for x in (mean, m2, minimum, maximum)),
+            'J40_MOMENT_EMPTY_OR_NONFINITE')
+    require(m2 >= 0, 'J40_NEGATIVE_M2')
+    constant = minimum == maximum
+    if constant:
+        require(mean == minimum and m2 == 0, 'J40_CONSTANT_MOMENT_IDENTITY')
+        return mean, 1.0, True
+    require(m2 > 0, 'J40_NONCONSTANT_ZERO_M2')
+    std = math.sqrt(m2 / count)
+    require(std > 0 and math.isfinite(std), 'J40_STD_NONFINITE_OR_ZERO')
+    return mean, std, False
+
+
+def fit_train(np, raw, spans):
+    source_sha = validate_raw(np, raw, spans)
+    count = 0
+    mean, m2 = np.zeros(40, dtype=np.float64), np.zeros(40, dtype=np.float64)
+    minimum, maximum = raw[0].copy(), raw[0].copy()
+    with np.errstate(over='raise', invalid='raise', divide='raise'):
+        for values in raw:
+            row = values.astype(np.float64)
+            count += 1
+            delta = row - mean
+            mean += delta / count
+            m2 += delta * (row - mean)
+            minimum = np.minimum(minimum, values)
+            maximum = np.maximum(maximum, values)
+    finished = [finish_band(count, float(mean[b]), float(m2[b]), float(minimum[b]), float(maximum[b]))
+                for b in range(40)]
+    require(not all(v[2] for v in finished), 'NO_TRAIN_J_VARIATION')
+    with np.errstate(over='raise', invalid='raise', under='ignore'):
+        saved_mean = np.asarray([v[0] for v in finished], dtype='<f4')
+        saved_std = np.asarray([v[1] for v in finished], dtype='<f4')
+    require(bool(np.isfinite(saved_mean).all()) and bool(np.isfinite(saved_std).all())
+            and bool((saved_std > 0).all()), 'J40_SAVED_NORM_NONFINITE_OR_ZERO')
+    identity = dict(schema_version=1, partition='TRAIN', count=count, source_map_sha256=source_sha,
+                    raw_sha256=hashlib.sha256(raw.tobytes(order='C')).hexdigest(),
+                    mean_sha256=hashlib.sha256(saved_mean.tobytes()).hexdigest(),
+                    std_sha256=hashlib.sha256(saved_std.tobytes()).hexdigest(),
+                    constant_bands=[v[2] for v in finished], algorithm='F64_WELFORD_POPULATION_V1')
+    return saved_mean, saved_std, identity
+
+
+def normalize(np, raw, mean, std):
+    require(isinstance(raw, np.ndarray) and raw.dtype == np.dtype('<f4')
+            and raw.ndim == 2 and raw.shape[0] > 0 and raw.shape[1] == 40
+            and bool(np.isfinite(raw).all()), 'J40_NORMALIZE_INPUT')
+    require(all(isinstance(v, np.ndarray) and v.dtype == np.dtype('<f4') and v.shape == (40,)
+                and bool(np.isfinite(v).all()) for v in (mean, std))
+            and bool((std > 0).all()), 'J40_NORMALIZE_NORM')
+    with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
+        result = (raw - mean) / std
+    require(result.dtype == np.dtype('<f4') and bool(np.isfinite(result).all()), 'J40_NORMALIZED_NONFINITE')
+    return result

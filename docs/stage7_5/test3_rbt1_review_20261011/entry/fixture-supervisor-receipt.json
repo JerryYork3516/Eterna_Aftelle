@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "actual_command": [
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+    "-B",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry_fixture.py"
+  ],
+  "actual_child_pid": 41969,
+  "actual_child_returncode": 0,
+  "exit_source": "Popen.wait",
+  "timeout": false,
+  "elapsed_seconds": 0.089480166,
+  "retained_stream_bytes": 834,
+  "retained_stream_cap": 57344,
+  "retained_total_cap": 65536,
+  "stream_cap_exceeded": false,
+  "status": "BOUNDED_STDLIB_FIXTURE_PASS",
+  "scientific_execution": false
+}

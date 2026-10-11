@@ -1,0 +1,99 @@
+import math
+import struct
+import unittest
+from routing_math import row_loss, triple_loss, common_targets, mechanism_gate
+
+
+class RoutingTests(unittest.TestCase):
+    def test_zero_logits_fractional_target(self):
+        loss, grad = row_loss(0.,0.,0.,.25)
+        self.assertEqual(loss,math.log(4))
+        self.assertEqual(grad,[.25,.25,0.])
+
+    def test_activity_gradient_sign(self):
+        self.assertLess(row_loss(0.,0.,0.,1.)[1][2],0)
+        self.assertGreater(row_loss(0.,0.,0.,0.)[1][2],0)
+        self.assertEqual(row_loss(0.,0.,0.,.5)[1][2],-.25)
+
+    def test_extreme_stable(self):
+        for values in ((1000.,1000.,1000.,1.),(-1000.,-1000.,-1000.,0.),(1000.,-1000.,0.,.5)):
+            loss,grad=row_loss(*values)
+            self.assertTrue(math.isfinite(loss) and all(map(math.isfinite,grad)))
+        top=float(2**60)
+        loss,grad=row_loss(top,top,top,1.)
+        self.assertEqual(loss,math.log(3))
+        for actual,expected in zip(grad,[1/3,1/3,-2/3]):
+            self.assertAlmostEqual(actual,expected,places=15)
+
+    def test_three_gradients(self):
+        z=[.5,-1.,2.]
+        h=1/1024
+        analytic=row_loss(*z,.25)[1]
+        for i in range(3):
+            plus=z.copy(); minus=z.copy()
+            plus[i]+=h; minus[i]-=h
+            numeric=(row_loss(*plus,.25)[0]-row_loss(*minus,.25)[0])/(2*h)
+            self.assertAlmostEqual(numeric,analytic[i],places=6)
+
+    def test_balance_full_inactive_replication(self):
+        base=triple_loss([0.,0.],[0.,0.],[1.,-1.],[1.,0.])
+        expanded=triple_loss([0.]*101,[0.]*101,[1.]+[-1.]*100,[1.]+[0.]*100)
+        self.assertAlmostEqual(base[0],expanded[0],places=14)
+        self.assertEqual(base[1][0],expanded[1][0])
+        for i in range(3):
+            self.assertAlmostEqual(base[1][1][i],math.fsum(g[i] for g in expanded[1][1:]),places=15)
+
+    def test_bad_or_empty_groups_stop(self):
+        for y in ([0.,0.],[1.,.5],[]):
+            with self.assertRaises(ValueError): triple_loss([0.]*len(y),[0.]*len(y),[0.]*len(y),y)
+        for value in (True,.1,float('inf')):
+            with self.assertRaises(ValueError): row_loss(value,0.,0.,.5)
+        with self.assertRaises(ValueError): row_loss(0.,0.,0.,1.5)
+
+    def test_source_join_not_dense_index_or_local_epoch_id(self):
+        def row(start,valid,epoch):
+            return dict(target_start=start,target_end=start+480,valid=valid,epoch=epoch,epoch_start=0)
+        arms={'B':[row(0,True,0),row(480,False,1),row(960,True,1)],
+              'E':[row(0,False,0),row(960,True,2)],
+              'N':[row(0,True,4),row(480,True,4),row(960,True,4)]}
+        joined=common_targets(arms,{(0,480):0.,(480,960):0.,(960,1440):.5})
+        self.assertEqual(len(joined),1)
+        self.assertEqual(joined[0][0],(960,1440))
+        self.assertEqual([r['epoch'] for r in joined[0][1]],[1,2,4])
+        self.assertEqual(joined[0][2],.5)
+
+    def test_source_malformed_rejected(self):
+        row=dict(target_start=0,target_end=480,valid=True,epoch=0,epoch_start=0)
+        for malformed in (dict(row,valid=1),dict(row,epoch=True),dict(row,epoch_start=480)):
+            with self.assertRaises(ValueError):
+                common_targets({'B':[malformed],'E':[row],'N':[row]},{(0,480):0.})
+        with self.assertRaises(ValueError):
+            common_targets({'B':[row,row],'E':[row],'N':[row]},{(0,480):0.})
+
+    def test_two_byte_sharing_constraints(self):
+        def pack(x):return struct.pack('<'+'f'*len(x),*x)
+        def unpack(x):return struct.unpack('<'+'f'*(len(x)//4),x)
+        r=pack([.25,.5,0.,-.25]); e=pack([.25,.75,.25,-.25])
+        b_echo=[.5*x for x in unpack(r)]; e_echo=[.5*x for x in unpack(e)]
+        noise=[.01,-.02,.03,0.]
+        adc=lambda x:pack([max(-.95,min(.95,a)) for a in x])
+        m0=adc([x+n for x,n in zip(b_echo,noise)])
+        m1=adc([x+n for x,n in zip(e_echo,noise)])
+        arms={'B':(m0,r),'E':(m1,e),'N':(m1,r)}
+        self.assertIs(arms['E'][0],arms['N'][0])
+        self.assertIs(arms['B'][1],arms['N'][1])
+        self.assertNotEqual(m0,m1)
+        self.assertEqual([a-b for a,b in zip(e_echo,b_echo)],[0.,.125,.125,0.])
+
+    def test_full_denominator_and_strict_ties(self):
+        good=[True]*19+[False]; weak=[True]*10
+        self.assertTrue(mechanism_gate(good,weak,good,90,100))
+        self.assertFalse(mechanism_gate(good,weak,good,89,100))
+        self.assertFalse(mechanism_gate(good,[True]*9+[False],good,90,100))
+        tied=[.5>.5]*20
+        self.assertFalse(mechanism_gate(tied,weak,good,90,100))
+        with self.assertRaises(ValueError): mechanism_gate(good[:-1],weak,good,90,100)
+
+
+if __name__=='__main__':
+    unittest.main(verbosity=2)

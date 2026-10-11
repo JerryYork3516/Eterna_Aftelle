@@ -1,0 +1,14 @@
+{
+  "PUBLIC_DSP": false,
+  "attempts_allowed": 1,
+  "read_only_review": "43a98c exit0 GO_STATIC_METADATA_SELECTION_ONLY",
+  "root_admitted": true,
+  "schema_version": 1,
+  "scope": "one static metadata selection; no PCM/model/DSP",
+  "sources": {
+    "design-contract.json": "76f4b8cc99db90eb190d1fc23d630f917af6eac472334da441aed142a177cc79",
+    "select_metadata.py": "f101c099d2508fc1c168979d5d0b251476692cf93dfbfd27cc75327962102fa5",
+    "static_publish.py": "4734224629f5c584e28f8a9fd024543b8c38f94e6720ddbdb3de3172516d2721"
+  },
+  "training": false
+}

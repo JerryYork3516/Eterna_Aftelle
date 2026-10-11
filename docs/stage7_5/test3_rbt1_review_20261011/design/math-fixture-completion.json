@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "status": "SYNTHETIC_MATH_SOURCE_FIXTURE_PASS",
+  "command": [
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-mindaec-rosetta-probe-20261006-01/venv/bin/python",
+    "-B",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/math_fixture.py"
+  ],
+  "actual_child_pid": 40121,
+  "actual_subprocess_exit": 0,
+  "exit_source": "Popen.communicate/wait actual subprocess",
+  "timed_out": false,
+  "elapsed_seconds": 0.03342275,
+  "tests": 10,
+  "stdout": "",
+  "stderr": "test_activity_gradient_sign (__main__.RoutingTests.test_activity_gradient_sign) ... ok\ntest_bad_or_empty_groups_stop (__main__.RoutingTests.test_bad_or_empty_groups_stop) ... ok\ntest_balance_full_inactive_replication (__main__.RoutingTests.test_balance_full_inactive_replication) ... ok\ntest_extreme_stable (__main__.RoutingTests.test_extreme_stable) ... ok\ntest_full_denominator_and_strict_ties (__main__.RoutingTests.test_full_denominator_and_strict_ties) ... ok\ntest_source_join_not_dense_index_or_local_epoch_id (__main__.RoutingTests.test_source_join_not_dense_index_or_local_epoch_id) ... ok\ntest_source_malformed_rejected (__main__.RoutingTests.test_source_malformed_rejected) ... ok\ntest_three_gradients (__main__.RoutingTests.test_three_gradients) ... ok\ntest_two_byte_sharing_constraints (__main__.RoutingTests.test_two_byte_sharing_constraints) ... ok\ntest_zero_logits_fractional_target (__main__.RoutingTests.test_zero_logits_fractional_target) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.000s\n\nOK\n",
+  "stream_bytes": 1063,
+  "source_sha256_before_after_unchanged": true,
+  "completed_child_peak_RSS_bytes": 22560768,
+  "completed_parent_peak_RSS_bytes": 31539200,
+  "sum_of_completed_peaks_upper_bound_bytes": 54099968,
+  "RSS_source": "OS getrusage; Darwin bytes/Linux KiB; parent and child maxima summed conservatively",
+  "protocol_sha256": "d4944db4791b106ee282296afd548bb4432bcabe59956b60936be74ad92514cc",
+  "authorization_sha256": "1cc60b31a018b29505f20ad02d753c907c22b551d2d1d3b2fbffa04e807b8b8a",
+  "PCM_DSP_model_training_run": false,
+  "retained_bytes_before_completion": 352052
+}

@@ -1,0 +1,136 @@
+"""One construction with B/N render sharing and E/N mic sharing."""
+import hashlib
+import math
+from rbt_common import require
+
+
+def shared_arms(mic_b, mic_en, render_bn, render_e):
+    import struct
+    buffers = (mic_b,mic_en,render_bn,render_e)
+    require(all(type(v) is bytes for v in buffers) and len({len(v) for v in buffers})==1
+            and len(mic_b)>0 and len(mic_b)%4==0, 'RBT_SHARED_BYTES_LAYOUT')
+    require(all(math.isfinite(v[0]) for raw in buffers for v in struct.iter_unpack('<f',raw)),
+            'RBT_SHARED_BYTES_NONFINITE')
+    return {'B':{'mic':mic_b,'render':render_bn}, 'E':{'mic':mic_en,'render':render_e},
+            'N':{'mic':mic_en,'render':render_bn}}
+
+
+def path_response(np, source, recipe, values):
+    require(values.shape == (480000,) and values.dtype == np.float64
+            and bool(np.isfinite(values).all()), 'SOR_PATH_INPUT')
+    echo = source._echo(values, recipe['echo_paths'][0])
+    change = recipe['path_change_raw48']
+    if change is not None:
+        other = source._echo(values, recipe['echo_paths'][1])
+        width = recipe['path_change_samples']
+        require(type(change) is int and type(width) is int and 0 <= change < change + width <= 480000,
+                'SOR_PATH_CHANGE')
+        blend = np.linspace(0, 1, width, dtype=np.float64)
+        echo[change:change+width] = echo[change:change+width] * (1-blend) + other[change:change+width] * blend
+        echo[change+width:] = other[change+width:]
+    require(bool(np.isfinite(echo).all()), 'SOR_PATH_NONFINITE')
+    return echo
+
+
+def positive(value, reason):
+    require(math.isfinite(value) and value > 0, reason)
+    return value
+
+
+def from_components(np, source, recipe, reference, clean):
+    require(reference.shape == (480000,) and reference.dtype == np.dtype('<f4')
+            and clean.shape == (len(clean),) and clean.dtype == np.dtype('<f4') and bool(np.isfinite(reference).all())
+            and bool(np.isfinite(clean).all()), 'SOR_COMPONENT_LAYOUT')
+    begin = recipe['near_start_raw48']
+    require(type(begin) is int and 0 <= begin <= 480000-len(clean), 'SOR_STIMULUS_LOCATION')
+    paths = recipe['echo_paths']
+    require(len(paths) == (2 if recipe['path_change_raw48'] is not None else 1), 'SOR_PATH_COUNT')
+    delays = [delay for path in paths for delay, gain in path['taps']]
+    require(bool(delays) and all(type(d) is int and 0 <= d < 480000 for d in delays)
+            and all(math.isfinite(g) for path in paths for _, g in path['taps']), 'SOR_PATH_TAPS')
+    start = (begin + min(delays)) // 240 * 240
+    end = min(480000, ((begin + len(clean) + max(delays) + 239) // 240) * 240)
+    require(start < end, 'SOR_EMPTY_SUPPORT')
+    with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
+        level = positive(10 ** (recipe['echo_target_dbfs']/20), 'SOR_ECHO_LEVEL')
+        base_echo = path_response(np, source, recipe, reference.astype(np.float64))
+        g0 = positive(level / positive(source._active_rms(base_echo), 'SOR_R_GAIN_DENOMINATOR'), 'SOR_R_GAIN')
+        stimulus = np.zeros(480000, dtype=np.float64)
+        stimulus[begin:begin+len(clean)] = clean
+        response = g0 * path_response(np, source, recipe, stimulus)
+        target = positive(level * 10 ** (recipe['near_echo_db']/20), 'SOR_NEAR_TARGET')
+        gs = positive(target / positive(source._active_rms(response[start:end]), 'SOR_S_GAIN_DENOMINATOR'), 'SOR_S_GAIN')
+        render_n = reference.copy()
+        proposed_s = gs * stimulus
+        render_e = (reference.astype(np.float64) + proposed_s).astype('<f4')
+        require(bool(np.isfinite(render_e).all()), 'SOR_RENDER_NONFINITE')
+        echo_e = g0 * path_response(np, source, recipe, render_e.astype(np.float64))
+        echo_n = g0 * base_echo
+        v = echo_e - echo_n
+        require(bool(np.isfinite(v).all()) and bool((v[:start] == 0).all())
+                and bool((v[end:] == 0).all()), 'SOR_TRUTH_SUPPORT')
+        rebuilt = echo_n + v
+        residual = np.abs(rebuilt - echo_e)
+        # One rounded subtraction and reconstruction addition, plus conservative ulps.
+        bound = np.spacing(np.abs(echo_e)) + np.spacing(np.abs(echo_n)) + np.spacing(np.abs(v))
+        require(bool(np.isfinite(rebuilt).all()) and bool(np.isfinite(bound).all())
+                and bool((residual <= bound).all()), 'SOR_DECOMPOSITION_ROUNDING')
+        active, a95 = source._activity(v[start:end])
+        positive(a95, 'SOR_TRUTH_A95')
+        activity = np.zeros(480000, dtype=np.bool_)
+        activity[start:end] = active
+        require(bool(activity.any()), 'SOR_NO_ACTUAL_NEAR_ACTIVITY')
+        rng = np.random.Generator(np.random.PCG64(recipe['noise_seed']))
+        noise = rng.standard_normal(480000)
+        if recipe['noise_kind'] == 'lowpass':
+            noise = np.convolve(noise, np.full(31, 1/31), mode='same')
+        elif recipe['noise_kind'] == 'impulse':
+            noise = np.zeros(480000, dtype=np.float64)
+            points = rng.choice(480000, 100, replace=False)
+            noise[points] = rng.uniform(-1, 1, 100)
+        else:
+            require(recipe['noise_kind'] == 'white', 'SOR_NOISE_KIND')
+        noise_gain = positive(positive(source._active_rms(echo_e), 'SOR_NOISE_SIGNAL_DENOMINATOR')
+                              * 10 ** (-recipe['SNR_db']/20)
+                              / positive(math.sqrt(float(np.mean(noise**2))), 'SOR_NOISE_RMS'), 'SOR_NOISE_GAIN')
+        noise *= noise_gain
+        mixed = echo_e + noise
+        require(bool(np.isfinite(mixed).all()), 'SOR_PRE_ADC_NONFINITE')
+        mic = np.clip(mixed, -.95, .95).astype('<f4')
+        mic_b = np.clip(echo_n + noise, -.95, .95).astype('<f4')
+    edges = np.diff(np.concatenate(([False], activity, [False])).astype(np.int8))
+    intervals = [[int(s), int(e)] for s, e in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))]
+    event = dict(first_active_raw48=intervals[0][0], last_active_raw48=intervals[-1][1]-1,
+                 end_exclusive_raw48=intervals[-1][1], active_samples=int(activity.sum()),
+                 definition='Independent preADC effective-render v, frozen path support5ms RMS/A95')
+    arrays = dict(mic_B=mic_b, mic=mic, render_E=render_e, render_N=render_n, proposed_s=proposed_s, effective_v=v, noise=noise)
+    metadata = dict(schema_version=1, scene_id=recipe['id'], recipe_sha256=recipe['recipe_sha256'],
+                    weak=recipe['weak_double'], source_support=[start, end], near_event=event,
+                    intervals_raw48=intervals, g0=g0, preliminary_renderer_gain=gs, noise_gain=noise_gain,
+                    actual_v_A95=a95, decomposition_residual_max=float(residual.max()),
+                    decomposition_bound_max=float(bound.max()), ADC_clipped_samples=int((np.abs(mixed)>.95).sum()),
+                    input_hashes={k:hashlib.sha256(a.tobytes()).hexdigest() for k,a in arrays.items()},
+                    renderer_delta_sha256=hashlib.sha256((render_e.astype(np.float64)-render_n).tobytes()).hexdigest())
+    return shared_arms(mic_b.tobytes(),mic.tobytes(),render_n.tobytes(),render_e.tobytes()), metadata
+
+
+def public_triple(np, source, descriptor, admitted):
+    # File identity is checked by the original admitted public reader before slicing.
+    r = source._wave(admitted,descriptor['r'])
+    s = source._wave(admitted,descriptor['s'])
+    count = descriptor['stimulus_ms']*16
+    offset = descriptor['source_offset16']
+    require(descriptor['stimulus_ms'] in (400,2000) and offset==16000
+            and len(s)>=offset+count and len(r)>=64000, 'STOP_PUBLIC_PAIR_ADMISSION_NO_REPLACEMENT')
+    reference = source._upsample(r[(np.arange(160000)+16000)%len(r)])
+    clean = source._upsample(s[offset:offset+count])
+    source._activity(clean)
+    recipe = dict(**descriptor['path'],**descriptor['scales'], id=descriptor['id'],
+                  recipe_sha256=descriptor['descriptor_sha256'], near_start_raw48=144000,
+                  weak_double=descriptor['weak'])
+    arms,metadata=from_components(np,source,recipe,reference,clean)
+    require(all(len(arms[a][v])==480000*4 for a in ('B','E','N') for v in ('mic','render')),
+            'RBT_PUBLIC_INPUT_LENGTH')
+    metadata['descriptor_sha256']=descriptor['descriptor_sha256']
+    metadata['kind']=descriptor['kind']; metadata['split']=descriptor['split']
+    return arms,metadata

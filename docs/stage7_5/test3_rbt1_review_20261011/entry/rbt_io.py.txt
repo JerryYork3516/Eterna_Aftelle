@@ -1,0 +1,117 @@
+"""One persistent frozen worker, with fresh native Core for each request."""
+import os
+import selectors
+import struct
+import subprocess
+import time
+
+
+class Worker:
+    def __init__(self, command, deadline, budget, stderr_path):
+        self.command, self.deadline = command, deadline
+        self.budget, self.stderr_path = budget, stderr_path
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        self.selector = selectors.DefaultSelector()
+        for stream, label in ((self.process.stdout,'stdout'),(self.process.stderr,'stderr')):
+            os.set_blocking(stream.fileno(), False)
+            self.selector.register(stream, selectors.EVENT_READ, label)
+        os.set_blocking(self.process.stdin.fileno(), False)
+        self.eof = {'stdout':False, 'stderr':False}
+        self.requests = 0
+
+    def check(self):
+        if time.monotonic() >= self.deadline:
+            raise RuntimeError('SOR_WORKER_DEADLINE')
+
+    def request(self, mic, render):
+        self.check()
+        if self.process.poll() is not None:
+            raise RuntimeError('SOR_WORKER_EARLY_EXIT')
+        parts = [memoryview(struct.pack('<QQqq',480000,1,0,480000)),
+                 memoryview(mic).cast('B'), memoryview(render).cast('B')]
+        index = offset = 0
+        self.selector.register(self.process.stdin, selectors.EVENT_WRITE, 'stdin')
+        output = self.last_partial = bytearray()
+        base_end = target = None
+        while True:
+            self.check()
+            for key,_ in self.selector.select(min(.05, max(0,self.deadline-time.monotonic()))):
+                label = key.data
+                if label == 'stdin':
+                    try:
+                        n = os.write(key.fd, parts[index][offset:offset+65536])
+                    except BlockingIOError:
+                        continue
+                    except BrokenPipeError as error:
+                        raise RuntimeError('SOR_INPUT_TRANSPORT') from error
+                    if n <= 0:
+                        raise RuntimeError('SOR_INPUT_TRANSPORT')
+                    offset += n
+                    if offset == len(parts[index]):
+                        index += 1; offset = 0
+                        if index == len(parts):
+                            self.selector.unregister(self.process.stdin)
+                else:
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except BlockingIOError:
+                        continue
+                    if not data:
+                        self.eof[label] = True
+                        self.selector.unregister(key.fileobj)
+                        raise RuntimeError('SOR_WORKER_EOF_DURING_REQUEST:'+label)
+                    if label == 'stderr':
+                        self.budget.append(self.stderr_path, data)
+                    else:
+                        output.extend(data)
+            if base_end is None and len(output) >= 16:
+                rows, scores = struct.unpack_from('<QQ', output)
+                if rows != 999 or not 0 <= scores <= rows:
+                    raise RuntimeError('SOR_RESPONSE_POPULATION')
+                base_end = 16 + rows*96 + scores*640 + 32 + 8
+            if target is None and base_end is not None and len(output) >= base_end:
+                resets, = struct.unpack_from('<Q',output,base_end-8)
+                if resets > 999:
+                    raise RuntimeError('SOR_RESPONSE_RESET_CAP')
+                target = base_end + resets*64 + 16 + scores*160
+            if target is not None and len(output) >= target:
+                if len(output) != target or index != len(parts):
+                    raise RuntimeError('SOR_RESPONSE_TRAILING_OR_INPUT_INCOMPLETE')
+                self.requests += 1
+                return bytes(output)
+            if len(output) > 16+999*96+999*800+32+8+999*64+16:
+                raise RuntimeError('SOR_RESPONSE_BYTE_CAP')
+
+    def finish(self):
+        self.process.stdin.close()
+        trailing = 0
+        while not all(self.eof.values()):
+            self.check()
+            for key,_ in self.selector.select(.02):
+                data = os.read(key.fd, 65536)
+                if not data:
+                    self.eof[key.data] = True
+                    self.selector.unregister(key.fileobj)
+                elif key.data == 'stderr':
+                    self.budget.append(self.stderr_path, data)
+                else:
+                    trailing += len(data)
+        code = self.process.wait(timeout=max(.001,self.deadline-time.monotonic()))
+        self.selector.close()
+        if trailing or code != 0:
+            raise RuntimeError('SOR_WORKER_FINAL_EXIT_OR_TRAILING')
+        return dict(command=self.command, pid=self.process.pid, actual_subprocess_exit=code,
+                    exit_source='Actual subprocess wait', stdout_EOF=self.eof['stdout'],
+                    stderr_EOF=self.eof['stderr'], trailing_bytes=trailing, requests=self.requests)
+
+    def cleanup(self):
+        if self.process.poll() is None:
+            self.process.kill()
+        code = self.process.wait(timeout=max(.001,min(1.,self.deadline-time.monotonic())))
+        for stream in (self.process.stdin,self.process.stdout,self.process.stderr):
+            if not stream.closed:
+                stream.close()
+        self.selector.close()
+        return dict(pid=self.process.pid, actual_subprocess_exit=code,
+                    exit_source='Actual subprocess wait', reaped=True)

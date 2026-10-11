@@ -1,0 +1,44 @@
+"""One explicitly versioned worker response, with the original160 payload intact."""
+import struct
+
+
+def parse_frame(np, payload):
+    view = memoryview(payload)
+    offset = 0
+
+    def take(n):
+        nonlocal offset
+        if n < 0 or offset + n > len(view):
+            raise ValueError('J40_SIDEBAND_TRUNCATED')
+        part = view[offset:offset+n]
+        offset += n
+        return part
+
+    rows_count, scores_count = struct.unpack('<QQ', take(16))
+    if rows_count > 6000 or scores_count > rows_count:
+        raise ValueError('J40_SIDEBAND_COUNT')
+    rows = np.frombuffer(take(rows_count * 12 * 8), dtype='<i8').reshape(rows_count, 12)
+    old160 = np.frombuffer(take(scores_count * 160 * 4), dtype='<f4').reshape(scores_count, 160)
+    conversion = np.frombuffer(take(4 * 8), dtype='<i8')
+    reset_count, = struct.unpack('<Q', take(8))
+    if reset_count > rows_count:
+        raise ValueError('J40_SIDEBAND_RESET_COUNT')
+    resets = np.frombuffer(take(reset_count * 8 * 8), dtype='<i8').reshape(reset_count, 8)
+    legacy_prefix_bytes = offset
+    if bytes(take(8)) != b'J40V0001':
+        raise ValueError('J40_SIDEBAND_VERSION')
+    j_count, = struct.unpack('<Q', take(8))
+    if j_count != scores_count:
+        raise ValueError('J40_SIDEBAND_SOURCE_COUNT')
+    raw_j = np.frombuffer(take(j_count * 40 * 4), dtype='<f4').reshape(j_count, 40)
+    if offset != len(view):
+        raise ValueError('J40_SIDEBAND_TRAILING_BYTES')
+    if not bool(np.isfinite(old160).all()) or not bool(np.isfinite(raw_j).all()):
+        raise ValueError('J40_SIDEBAND_NONFINITE')
+    valid = rows[:, 10] == 1
+    if not bool(((rows[:, 10] == 0) | valid).all()) or not bool((rows[~valid, 11] == -1).all()):
+        raise ValueError('J40_SIDEBAND_VALID_INDEX')
+    if not np.array_equal(rows[valid, 11], np.arange(scores_count, dtype=np.int64)):
+        raise ValueError('J40_SIDEBAND_VALID_INDEX')
+    return dict(rows=rows, old160=old160, raw_j40=raw_j, conversion=conversion,
+                resets=resets, legacy_prefix_bytes=legacy_prefix_bytes)

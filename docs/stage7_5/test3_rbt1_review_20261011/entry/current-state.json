@@ -1,0 +1,26 @@
+{
+  "DEV": false,
+  "DSP": false,
+  "Runtime": false,
+  "Stage7": "PASS",
+  "Test3": "BLOCKED",
+  "execution_admitted": false,
+  "fixture": {
+    "actual_child_exit": 0,
+    "actual_child_pid": 41969,
+    "actual_tool_chunk": "792123",
+    "actual_tool_exit": 0,
+    "tests": 11,
+    "whole_seconds": 0.089480166
+  },
+  "grid": false,
+  "model": false,
+  "next_stage_started": false,
+  "one_item_authorized": false,
+  "proposal": false,
+  "python_modules_compile": 15,
+  "review": "static/synthetic implementation only; future scientific identity/resource/one-item review required",
+  "schema_version": 1,
+  "status": "REVIEW_PENDING",
+  "training": false
+}

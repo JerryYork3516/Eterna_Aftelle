@@ -1,0 +1,43 @@
+"""One admitted capture, FIT and independently loaded final CHECK."""
+import gc
+import json
+import os
+import signal
+import time
+import rbt_common as c
+
+
+def main():
+    contract,auth,binding=c.authorize()
+    c.tick()
+    from rbt_budget import Budget
+    budget=Budget(contract)
+    def expired(signum,frame):
+        raise TimeoutError('RBT_DRIVER_WHOLE_DEADLINE')
+    signal.signal(signal.SIGALRM,expired)
+    signal.setitimer(signal.ITIMER_REAL,max(.001,float(os.environ['RBT_ABSOLUTE_DEADLINE'])-time.monotonic()))
+    from rbt_factory import fresh
+    from rbt_capture import capture_all,prepare_fit
+    from train_rbt import train_entry
+    from check_rbt import check_entry
+    env=fresh(contract,binding)
+    items,native=capture_all(env,contract,binding,budget)
+    fit=[t for t in items if t['split']=='FIT'];check=[t for t in items if t['split']=='CHECK']
+    c.require(len(fit)==64 and len(check)==40,'RBT_CAPTURE_PARTITION')
+    prefix=prepare_fit(env,fit,budget)
+    checkpoint=train_entry(env,contract,binding,fit,budget,prefix)
+    del fit,items,env
+    gc.collect()
+    result=check_entry(contract,binding,check,budget,prefix,checkpoint)
+    c.tick();c.check_binding(binding);budget.verify_seeds()
+    document=dict(schema_version=1,binding=binding,progress=c.PROGRESS,
+        capture_arms=312,prefix_fit_arms=192,check_arm_forwards=120,native=native,
+        checkpoint=checkpoint,prefix_sha256=prefix,result=result,
+        execution_source='actual subprocess wait required from owner',tau=None)
+    budget.json(c.R/'pipeline-result.json',document)
+    c.tick()
+    print(json.dumps(dict(status=result['status'],binding=binding),allow_nan=False),flush=True)
+
+
+if __name__=='__main__':
+    main()

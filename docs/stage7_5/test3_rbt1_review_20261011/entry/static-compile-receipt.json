@@ -1,0 +1,73 @@
+{
+  "actual_tool_chunk_id": "a0f00b",
+  "actual_tool_exit_code": 0,
+  "actual_tool_receipt_pending": false,
+  "files": [
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/check_rbt.py",
+      "sha256": "4798d11d89c55a974bf40f4dae9e06f30d24868446c6390edef8458f0061a0cc"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_driver.py",
+      "sha256": "17804df457e770eb71b8c4e21346c36d8a93da914468c7c0af93d619fb8b21e6"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_factory.py",
+      "sha256": "93b681469572426b484a7eeb08887dee037ee4237dfd3c58dd53bb1395a3f0c4"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_io.py",
+      "sha256": "c3b4c159c67de52b1d0ebbbb4c21bb2aeaa8a4c04976fb292d8966f0fc71dc03"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/train_rbt.py",
+      "sha256": "056b0b227473f91aa65c283ace9a84b03678c8fe29deb58b714ae4e41a66c289"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_rbt_once.py",
+      "sha256": "e9336d38c4d1df45b86a58a28d50a95886fa0ab34f0729b146cb36fc62652b11"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/source_origin_triple.py",
+      "sha256": "8619a217240e68466ee0f72f86b63dd798eabb7780eb333ba0bc0fb5f47e7ba4"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_common.py",
+      "sha256": "65cd52742e1eb49a1fca4abeb821a1ec8f6a587da6941d8ca456bc65ac63e7df"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_entry_fixture_once.py",
+      "sha256": "6f9a3152a5ec81ed1b382fc8150c11fecc90a017850e2532d0cf9b2b44d11172"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry_fixture.py",
+      "sha256": "35a05f56106425f60646a69e08461ba0aacf14f00647ef829f558e8c775d5483"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_budget.py",
+      "sha256": "206c38ee9370bcc100ae34138b36c22dc3ba2ea771e28ddb2964a7fa5d12e79c"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_capture.py",
+      "sha256": "ffcf323cc8c00d71d68d9d881769537e722ee0460b1f00d55162e342d1b37e6d"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_resources.py",
+      "sha256": "3def4665e12e2647694f46392bd72a2454367a133bffcefa92186398abfcc3ab"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_mapping.py",
+      "sha256": "ae7dbe6d518f6b8ca4821dce34f45de6c80928800e52809379f457d45d0f89e5"
+    },
+    {
+      "path": "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/routing_math.py",
+      "sha256": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695"
+    }
+  ],
+  "fixture_body_not_rerun": true,
+  "python_files": 15,
+  "schema_version": 1,
+  "scientific_execution": false,
+  "status": "PASS_IN_MEMORY_COMPILE_AND_TERMINAL_AST",
+  "timeout_branch_ends_unconditional_raise": true
+}

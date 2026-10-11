@@ -1,0 +1,33 @@
+"""One-writer, retained static design artifacts only; no cleanup or retry."""
+import hashlib
+import os
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+CAP = 1024*1024
+
+
+def retained_bytes():
+    total = 0
+    for base, dirs, names in os.walk(D, followlinks=False):
+        if any((Path(base)/name).is_symlink() for name in dirs+names):
+            raise ValueError('STATIC_SYMLINK')
+        total += sum((Path(base)/name).stat().st_size for name in names)
+    return total
+
+
+def publish(name, raw):
+    if Path(name).name != name or not isinstance(raw, bytes):
+        raise ValueError('STATIC_PATH_OR_PAYLOAD')
+    if retained_bytes()+len(raw)>CAP:
+        raise ValueError('STATIC_RETAINED_CAP')
+    target = D/name
+    with target.open('xb') as stream:
+        if stream.write(raw) != len(raw):
+            raise ValueError('STATIC_SHORT_WRITE')
+        stream.flush()
+        os.fsync(stream.fileno())
+    expected = hashlib.sha256(raw).hexdigest()
+    if hashlib.sha256(target.read_bytes()).hexdigest()!=expected or retained_bytes()>CAP:
+        raise ValueError('STATIC_PUBLISH_IDENTITY_OR_CAP')
+    return expected

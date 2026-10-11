@@ -1,0 +1,115 @@
+"""Freeze public descriptors only; never open waveforms or run a producer."""
+import hashlib
+import json
+from pathlib import Path
+from static_publish import publish
+
+D = Path(__file__).resolve().parent
+ROOT = Path('/Volumes/SSD/Aftelle-Test3-Public-20261007-01')
+APPROVED = {'admitted-wave-manifest.json':'147ac810bd47fd615636c8a71ee2dbff98c61ff1b9540e9ac8795bb7f88544cc',
+            'scene-manifest.json':'047ee653043b422bfb82a21e02e4770d511c027c13fc56f29a66ea35920e1696'}
+
+
+def canonical(x):
+    return json.dumps(x, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+
+
+def sha(x):
+    return hashlib.sha256(x).hexdigest()
+
+
+def ordered(values, prefix):
+    return sorted(values, key=lambda x: (sha((prefix+x).encode()), x))
+
+
+def select(admitted, scenes):
+    if admitted['status'] != 'ADMITTED_PUBLIC_AISHELL_ONLY' or admitted['license_admitted'] is not True:
+        raise ValueError('STOP_PUBLIC_PAIR_ADMISSION')
+    train = [r for r in scenes['scenes'] if r['partition'] == 'TRAIN']
+    old = [r for r in train if r['kind'] == 'short_double' and r['near_duration_ms'] == 400]
+    if len(old) != 160 or sum(r['weak_double'] for r in old) != 83:
+        raise ValueError('OLD_SOR_POPULATION_IDENTITY')
+    excluded = {r[k]['speaker_id'] for r in old for k in ('near', 'far')}
+    if len(excluded)!=207:
+        raise ValueError('OLD_SOR_SPEAKER_IDENTITY')
+    old_paths = {sha(canonical({k:r[k] for k in ('echo_paths', 'path_change_raw48', 'path_change_samples')})) for r in old}
+    pool = {}
+    for row in admitted['files']:
+        if row['partition'] == 'TRAIN' and row['speaker_id'] not in excluded and row['frames'] >= 64000:
+            if (row['rate'], row['channels'], row['sample_width']) != (16000, 1, 2):
+                raise ValueError('PUBLIC_SOURCE_FORMAT')
+            pool.setdefault(row['speaker_id'], []).append(row)
+    speakers = ordered(pool, 'RBT1-SPEAKER:')
+    if len(speakers) != 133:
+        raise ValueError('STOP_PUBLIC_PAIR_ADMISSION')
+    groups = {'FIT': speakers[:80], 'CHECK': speakers[80:]}
+    for rows in pool.values():
+        rows.sort(key=lambda r:r['relative_path'])
+    donors = {True: [], False: []}
+    for recipe in train:
+        if recipe['id'] in {r['id'] for r in old} or not recipe['far'] or not recipe['near']:
+            continue
+        path = {k:recipe[k] for k in ('echo_paths', 'path_change_raw48', 'path_change_samples')}
+        key = sha(canonical(path))
+        if key not in old_paths:
+            donors[recipe['weak_double']].append((key, recipe, path))
+    for values in donors.values():
+        values.sort(key=lambda x:(sha(('RBT1-PATH:'+x[0]).encode()), x[1]['id']))
+    used_files, used_paths = set(), set()
+    triples = []
+    offsets = {True: 0, False: 0}
+    for split, count in (('FIT', 16), ('CHECK', 10)):
+        index = 0
+        for kind in ('short', 'long'):
+            for weak in (False, True):
+                for cell in range(count):
+                    ids = groups[split]
+                    r_id, s_id = ids[(2*index)%len(ids)], ids[(2*index+1)%len(ids)]
+                    selected = []
+                    for speaker in (r_id, s_id):
+                        row = next((r for r in pool[speaker] if r['sha256'] not in used_files), None)
+                        if row is None:
+                            raise ValueError('STOP_PUBLIC_PAIR_ADMISSION')
+                        used_files.add(row['sha256'])
+                        selected.append(row)
+                    values = donors[weak]
+                    while offsets[weak] < len(values) and values[offsets[weak]][0] in used_paths:
+                        offsets[weak] += 1
+                    if offsets[weak] == len(values):
+                        raise ValueError('STOP_PUBLIC_PATH_ADMISSION')
+                    key, donor, path = values[offsets[weak]]
+                    offsets[weak] += 1
+                    used_paths.add(key)
+                    row = dict(id=f'RBT1:{split}:{index:04d}', split=split, kind=kind, weak=weak,
+                               r=selected[0], s=selected[1], source_offset16=16000,
+                               stimulus_start_raw48=144000, stimulus_ms=400 if kind=='short' else 2000,
+                               path_group_sha256=key, path=path, donor_recipe_id=donor['id'],
+                               donor_recipe_sha256=donor['recipe_sha256'],
+                               scales={k:donor[k] for k in ('echo_target_dbfs','near_echo_db','SNR_db','noise_kind','noise_seed')})
+                    row['descriptor_sha256'] = sha(canonical(row))
+                    triples.append(row)
+                    index += 1
+    return dict(schema_version=1, status='METADATA_SELECTION_ONLY_NOT_PCM_ADMITTED', triples=triples,
+                speaker_groups=groups, old_SOR_excluded_speakers=sorted(excluded),
+                unique_source_sha256_count=len(used_files), unique_path_groups=len(used_paths),
+                eligible_source_descriptors=sum(map(len,pool.values())), eligible_speakers=len(pool),
+                source_selection_rule='HASH_SORT_80_FIT_53_CHECK_SPEAKERS_LEX_FILE_UNIQUE_SHA_V1',
+                path_selection_rule='HASH_SORT_NON_SOR_EXACT_LTV_PATH_GROUP_UNIQUE_V1',
+                all_old_SOR_speakers_excluded=True, waveform_opened=False, model_scores_used=False)
+
+
+if __name__ == '__main__':
+    source_paths = [ROOT/'admitted-wave-manifest.json', ROOT/'scene-manifest.json']
+    sources = [p.read_bytes() for p in source_paths]
+    if any(sha(raw)!=APPROVED[p.name] for p,raw in zip(source_paths,sources)):
+        raise ValueError('APPROVED_PUBLIC_MANIFEST_CHANGED')
+    result = select(*(json.loads(raw) for raw in sources))
+    result['input_manifest_sha256'] = {str(p):sha(raw) for p,raw in zip(source_paths,sources)}
+    result['selector_sha256'] = sha(Path(__file__).read_bytes())
+    raw = canonical(result)+b'\n'
+    if len(raw) > 768*1024:
+        raise ValueError('STATIC_POPULATION_BYTE_CAP')
+    publish('population-descriptors.json', raw)
+    print(json.dumps({k:result[k] for k in ('status','unique_source_sha256_count','unique_path_groups',
+          'eligible_source_descriptors','eligible_speakers')}))
+    print(json.dumps({'manifest_bytes':len(raw),'manifest_sha256':sha(raw)}))

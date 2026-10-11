@@ -1,0 +1,52 @@
+"""Independent final checkpoint load; one CHECK forward, no optimizer or grid."""
+import hashlib
+import rbt_common as c
+from rbt_factory import fresh,load_final,norm_check
+from rbt_capture import raw_record
+from rbt_mapping import evaluate
+
+
+def check_entry(contract,binding,check,budget,prefix_sha,checkpoint):
+    c.check_binding(binding)
+    c.admission_fields(contract,c.read(c.D/'execution-authorization.json'),binding['contract_sha256'])
+    raw=(c.R/'final-checkpoint.pt').read_bytes()
+    c.require(hashlib.sha256(raw).hexdigest()==checkpoint['sha256'] and len(raw)==checkpoint['bytes'],
+              'RBT_FINAL_CHECKPOINT_FILE')
+    env=fresh(contract,binding);load_final(env,contract,binding,raw,prefix_sha)
+    np,torch,head=env['np'],env['torch'],env['head'];head.eval()
+    for p in head.parameters():p.requires_grad_(False)
+    initial={k:env['factory'].tensor_sha(v) for k,v in head.state_dict().items()}
+    expected=[d for d in c.fixed_population(contract) if d['split']=='CHECK'];triples=[];forwards=0
+    c.require([t['id'] for t in check]==[d['id'] for d in expected],'RBT_CHECK_INPUT_IDENTITY')
+    for ordinal,item in enumerate(check,64):
+        result={k:item[k] for k in ('id','kind','weak','event')}
+        for a in ('B','E','N'):
+            c.tick();arm=item[a];frame=arm['frame']
+            c.require(hashlib.sha256(frame['old160'].tobytes()).hexdigest()==arm['feature_sha256']
+                and hashlib.sha256(frame['raw_j40'].tobytes()).hexdigest()==arm['j_sha256'],
+                'RBT_CAPTURE_FEATURE_IDENTITY')
+            c.require(c.slots_sha(arm['slots'])==arm['slots_sha256']
+                and hashlib.sha256(frame['rows'].tobytes()).hexdigest()==arm['rows_sha256']
+                and hashlib.sha256(frame['resets'].tobytes()).hexdigest()==arm['resets_sha256'],
+                'RBT_CAPTURE_SOURCE_IDENTITY')
+            segments=env['v4'].validate_source_epochs(np,frame['rows'],frame['resets'].tolist())
+            c.require(segments==arm['segments'],'RBT_CHECK_TRUE_EPOCH')
+            x=(torch.from_numpy(frame['old160'].copy())[None]-env['norm160']['mean'])/env['norm160']['std']
+            j=env['normalizer'].normalize(np,frame['raw_j40'],env['norm40']['mean'].numpy(),env['norm40']['std'].numpy())
+            with torch.no_grad():
+                z=torch.cat([head(x[:,b:e],torch.from_numpy(j[b:e].copy())[None]).reshape(-1) for b,e in segments])
+                c.require(bool(torch.isfinite(z).all()) and z.dtype==torch.float32,'RBT_CHECK_LOGITS')
+                probability=torch.sigmoid(z).numpy().copy()
+            forwards+=1
+            budget.publish(c.R/f'records/{ordinal:04d}-{a}.bin',raw_record(frame,probability.tobytes()))
+            result[a]=dict(probabilities=[float(p) for p in probability],slots=arm['slots'])
+        triples.append(result)
+    c.require(forwards==120,'RBT_CHECK_FORWARD_COUNT')
+    c.require({k:env['factory'].tensor_sha(v) for k,v in head.state_dict().items()}==initial,
+              'RBT_CHECK_MODEL_CHANGED')
+    norm_check(env,contract)
+    objective=c.module(contract['legal_triples_source'],'rbt_original_legal_triples')
+    result=evaluate(triples,expected,objective.legal_triples)
+    budget.json(c.R/'check-completion.json',dict(schema_version=1,arm_forwards=120,
+        checkpoint=checkpoint,binding=binding,result=result))
+    return result

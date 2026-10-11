@@ -1,0 +1,865 @@
+"""Frozen public DEV-CAL audit. Source-time proxies never grant a Runtime decision."""
+import argparse
+import hashlib
+import importlib.util
+import json
+import math
+import os
+from pathlib import Path
+import resource
+import struct
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent
+CONTRACT = ROOT / 'dev-evaluation-contract.json'
+AUTHORIZATION = ROOT / 'evaluation-authorization.json'
+PUBLIC = Path('/Volumes/SSD/Aftelle-Test3-Public-20261007-01')
+SCENE_CODE = ROOT.parent / 'test3-spx-nh1-data-admission-20261007-01/scene_data.py'
+SCENE_CONTRACT = SCENE_CODE.with_name('scene-contract.json')
+PREPARER = ROOT.parent / 'test3-spx-nh1-feature-lifecycle-v3-20261007-01/prepare_features.py'
+LIFECYCLE = PREPARER.with_name('protocol.json')
+LINEAGE = PREPARER.with_name('frozen-continuation-inputs.json')
+TRAINER = ROOT.parent / 'test3-spx-nh1-training-execution-v4-20261007-01/train_head.py'
+HEAD_ADAPTER = ROOT.parent / 'test3-spx-nh1-trained-head-export-v4-20261007-01/head_adapter.py'
+ENDPOINT = ROOT.parent / 'test3-mindaec-rosetta-probe-20261006-01/venv/bin/python'
+HOP, PRE_ROLL, HANGOVER, CONFIRM = 480, 15, 20, 3
+RAW_SAMPLES, TIMELY_SAMPLES = 480000, 9600
+RSS_LIMIT, DISK_LIMIT, OUTPUT_RESERVE = 8 * 1024**3, 60 * 1024**3, 3 * 1024**3
+CONFIRM_COLUMNS = ('tau_index', 'confirmation_slot', 'witness_slot_0', 'witness_slot_1',
+                   'witness_slot_2', 'input_frontier_raw48', 'attributed_to_event',
+                   'proxy_delay_raw48_or_minus1', 'raw_cache_start', 'raw_cache_end')
+EVENT_COLUMNS = ('earliest_confirmation_slot_or_minus1', 'earliest_frontier_or_minus1',
+                 'delay_samples_or_minus1', 'timely_content_proxy', 'raw_onset_retained_proxy')
+METRIC_COLUMNS = ('q_slots', 'confirmations', 'current_forward_slots', 'pre_roll_intersected_slots',
+                  'released_any_slots', 'q_zero_activity_slots', 'unmatched_confirmations',
+                  'q_post_event_slots', 'q_activity_positive_slots')
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def sha(path):
+    h = hashlib.sha256()
+    with Path(path).open('rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
+                      allow_nan=False).encode('utf-8')
+
+
+def load(path):
+    return json.loads(Path(path).read_text())
+
+
+def publish_json(path, value):
+    pending = Path(path).with_name(Path(path).name + '.pending')
+    with pending.open('x') as handle:
+        json.dump(value, handle, indent=2, ensure_ascii=False, allow_nan=False)
+        handle.write('\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.link(pending, path)
+
+
+def publish_array(np, path, array):
+    pending = Path(path).with_name(Path(path).name + '.pending')
+    with pending.open('xb') as handle:
+        np.save(handle, array, allow_pickle=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.link(pending, path)
+
+
+def publish_npz(np, path, **arrays):
+    pending = Path(path).with_name(Path(path).name + '.pending')
+    with pending.open('xb') as handle:
+        np.savez_compressed(handle, **arrays)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.link(pending, path)
+
+
+def public_path(path):
+    resolved = Path(path).resolve(strict=True)
+    require(resolved.is_relative_to(PUBLIC.resolve(strict=True)), 'NONPUBLIC_INPUT_PATH')
+    return resolved
+
+
+def f32(value):
+    return struct.unpack('<f', struct.pack('<f', value))[0]
+
+
+def overlap(intervals, start, end):
+    return sum(max(0, min(end, b) - max(start, a)) for a, b in intervals)
+
+
+def detector_rejections(negative_q, negative_confirmations, event_rates, long_hits, long_total):
+    """Only detector/content conditions; raw cache cannot decide original-clean retention."""
+    require(long_total > 0 and all(event_rates[k]['total'] > 0
+                                  for k in ('short_all', 'short_weak', 'long_all')), 'EMPTY_REQUIRED_DENOMINATOR')
+    rejected = []
+    if negative_q != 0:
+        rejected.append('NEGATIVE_SOURCE_QUALIFICATION_NONZERO')
+    if negative_confirmations != 0:
+        rejected.append('NEGATIVE_CONFIRMATION_NONZERO')
+    for k in ('short_all', 'short_weak', 'long_all'):
+        if 100 * event_rates[k]['hits'] < 95 * event_rates[k]['total']:
+            rejected.append(k.upper() + '_TIMELY_CONTENT_PROXY_BELOW95')
+    if 100 * long_hits < 90 * long_total:
+        rejected.append('LONG_ACTIVITY_FRAME_QUALIFICATION_BELOW90')
+    return rejected
+
+
+def validate_meta(meta, recipe, entry, rows, labels, np):
+    require(meta['schema_version'] == 1 and meta['scene_id'] == entry['scene_id'] == recipe['id']
+            and meta['partition'] == recipe['partition'] == entry['partition'] == 'DEV-CAL'
+            and meta['recipe_sha256'] == recipe['recipe_sha256'] == entry['scene_recipe_sha256'],
+            'EVENT_RECIPE_IDENTITY')
+    body = {k: v for k, v in recipe.items() if k != 'recipe_sha256'}
+    require(hashlib.sha256(canonical(body)).hexdigest() == recipe['recipe_sha256'], 'RECIPE_CONTENT_SHA')
+    require(meta['subtype'] == recipe['kind'] in ('echo', 'noise', 'long_double', 'short_double', 'near_only')
+            and type(meta['weak_double']) is bool and meta['weak_double'] == recipe['weak_double']
+            and meta['near_duration_ms'] == recipe['near_duration_ms']
+            and meta['raw48_samples'] == RAW_SAMPLES, 'EVENT_SUBGROUP_OR_SOURCE_EXTENT')
+    if meta['weak_double']:
+        require(meta['subtype'] in ('long_double', 'short_double')
+                and -20 <= recipe['near_echo_db'] <= -10, 'WEAK_RECIPE_MEMBERSHIP')
+    elif meta['subtype'] in ('long_double', 'short_double'):
+        require(-10 <= recipe['near_echo_db'] <= 10, 'NONWEAK_RECIPE_MEMBERSHIP')
+    require(type(meta['ADC_clipped']) is bool and type(meta['ADC_clipped_samples']) is int
+            and meta['ADC_clipped'] == (meta['ADC_clipped_samples'] > 0), 'ADC_METADATA')
+    intervals = meta['active_intervals_raw48']
+    last, mask = 0, np.zeros(RAW_SAMPLES, dtype=np.bool_)
+    for item in intervals:
+        require(isinstance(item, list) and len(item) == 2
+                and all(type(v) is int for v in item), 'ACTIVITY_INTERVAL_TYPE')
+        a, b = item
+        require(0 <= a < b <= RAW_SAMPLES and a >= last, 'ACTIVITY_INTERVAL_ORDER')
+        mask[a:b] = True
+        last = b
+    count = sum(b - a for a, b in intervals)
+    require(hashlib.sha256(mask.tobytes()).hexdigest() == meta['activity_sha256'], 'ACTIVITY_IDENTITY')
+    require(len(meta['audio_sha256']) == 64 and all(c in '0123456789abcdef' for c in meta['audio_sha256']),
+            'AUDIO_PAYLOAD_IDENTITY_REFERENCE')
+    event = meta['near_event']
+    if meta['subtype'] in ('echo', 'noise'):
+        require(event is None and not intervals and not meta['weak_double'], 'NEGATIVE_SOURCE_HAS_ACTIVITY')
+    else:
+        require(intervals and event is not None and event['first_active_raw48'] == intervals[0][0]
+                and event['last_active_raw48'] == intervals[-1][1] - 1
+                and event['end_exclusive_raw48'] == intervals[-1][1]
+                and event['active_samples'] == count
+                and event['definition'] == 'Independent clean source 5ms RMS proxy before gain; identity near path',
+                'NEAR_EVENT_SOURCE_BINDING')
+    valid = rows[:, 10] == 1
+    expected = np.asarray([overlap(intervals, int(r[2]), int(r[3])) / HOP for r in rows[valid]], '<f4')
+    require(np.array_equal(expected.view('<u4'), labels.view('<u4')), 'SOURCE_LABEL_BITS')
+    represented = sum(overlap(intervals, int(r[2]), int(r[3])) for r in rows[valid])
+    require(meta['producer_valid_score_segments'] == entry['producer_segments']
+            and meta['invalid_hops'] == np.flatnonzero(~valid).tolist() and meta['source_activity_samples'] == count
+            and meta['represented_activity_samples'] == represented
+            and meta['unsupported_activity_samples'] == count - represented,
+            'SOURCE_COVERAGE_METADATA')
+    rounding = float(np.sum(labels, dtype=np.float64) * HOP) - represented
+    require(rounding == meta['fractional_label_rounding_samples'], 'FRACTIONAL_LABEL_ACCOUNTING')
+    require(meta['subtype'] != 'short_double' or meta['near_duration_ms'] in (320, 400, 480),
+            'SHORT_DENOMINATOR_NOMINAL_DURATION')
+    return intervals
+
+
+def source_slots(rows, raw_end, intervals, reset_events=()):
+    """Every native target is retained; EOF truth slots never acquire a score."""
+    reset_rows = {}
+    for event in reset_events:
+        require(len(event) == 8 and event[7] == 2, 'RESET_LEDGER_RETURN')
+        matches = [i for i,r in enumerate(rows) if int(r[0]) == event[0] and int(r[1]) == event[1]]
+        require(len(matches) == 1 and matches[0] not in reset_rows, 'RESET_LEDGER_ROW')
+        i = matches[0]
+        require([int(rows[i][j]) for j in (2,3,9)] == event[2:5]
+                and int(rows[i][10]) == 0 and event[5] == event[0]+1
+                and event[6] == event[3]-48, 'RESET_LEDGER_BINDING')
+        reset_rows[i] = event
+    slots = []
+    for ordinal, row in enumerate(rows):
+        r = [int(v) for v in row]
+        slots.append({'slot_id': ordinal, 'source_row_id': ordinal, 'epoch': r[0], 'hop': r[1],
+                      'target_start': r[2], 'target_end': r[3], 'FIR_start': r[4], 'FIR_end': r[5],
+                      'Feature_start': r[6], 'Feature_end': r[7], 'epoch_start': r[8],
+                      'input_frontier': r[9], 'valid': r[10] == 1, 'score_index': r[11],
+                      'reason': ('VALID' if r[10] == 1 else 'SPX_RESET_CURRENT_REJECTED' if ordinal in reset_rows
+                                 else 'RESET_FEATURE_SUPPORT_UNAVAILABLE' if r[0] != 0
+                                 else 'STARTUP_FEATURE_SUPPORT_UNAVAILABLE')})
+    require(slots and slots[0]['target_start'] >= slots[0]['epoch_start'], 'SOURCE_LATTICE_ORIGIN')
+    start = slots[-1]['target_end']
+    terminal = reset_rows.get(len(rows)-1)
+    eof_epoch = terminal[5] if terminal else slots[-1]['epoch']
+    eof_start = terminal[6] if terminal else slots[-1]['epoch_start']
+    eof_hop = 0 if terminal else slots[-1]['hop']+1
+    while start < raw_end:
+        slots.append({'slot_id': len(slots), 'source_row_id': None, 'epoch': eof_epoch,
+                      'hop': eof_hop, 'target_start': start, 'target_end': start + HOP,
+                      'FIR_start': None, 'FIR_end': None, 'Feature_start': None, 'Feature_end': None,
+                      'epoch_start': eof_start, 'input_frontier': None,
+                      'valid': False, 'score_index': -1, 'reason': 'NOT_READY_AT_EOF',
+                      'identity_status': 'PROSPECTIVE_NOT_EXECUTED'})
+        start += HOP; eof_hop += 1
+    for i, slot in enumerate(slots):
+        require(slot['target_end'] - slot['target_start'] == HOP, 'TARGET_LENGTH')
+        if i:
+            prev = slots[i - 1]
+            require(slot['target_start'] == prev['target_end'], 'SOURCE_TARGET_GAP')
+            if slot['epoch'] != prev['epoch']:
+                event = reset_rows.get(prev['source_row_id'])
+                require(event is not None and [slot['epoch'],slot['epoch_start'],slot['hop']]
+                        == [event[5],event[6],0], 'SOURCE_UNEXPLAINED_EPOCH')
+        if slot['valid']:
+            require(slot['Feature_start'] >= slot['epoch_start']
+                    and max(slot['FIR_end'], slot['Feature_end'], slot['target_end']) <= slot['input_frontier']
+                    and slot['input_frontier'] <= raw_end, 'SOURCE_CAUSAL_FRONTIER')
+        slot['activity_samples'] = overlap(intervals, slot['target_start'], min(raw_end, slot['target_end']))
+        slot['actual_target_end'] = min(raw_end, slot['target_end'])
+    return slots
+
+
+def audit_scores(np, probabilities, slots, event, tau_values):
+    """One fixed score matrix; vectorized state is equivalent to q3/20 scalar steps."""
+    require(probabilities.dtype == np.dtype('<f4') and np.isfinite(probabilities).all()
+            and ((probabilities >= 0) & (probabilities <= 1)).all(), 'PROBABILITY_CONTRACT')
+    t, n = len(tau_values), len(slots)
+    q = np.zeros((t, n), dtype=np.bool_)
+    for i, slot in enumerate(slots):
+        if slot['valid']:
+            require(0 <= slot['score_index'] < len(probabilities), 'SCORE_SOURCE_MAPPING')
+            q[:, i] = probabilities[slot['score_index']] >= tau_values
+    forward, pre_roll = np.zeros_like(q), np.zeros_like(q)
+    pending = np.zeros(t, dtype=np.int16)
+    opened, remaining = np.zeros(t, np.bool_), np.zeros(t, np.int16)
+    confirmations = []
+    event_rows = np.full((t, len(EVENT_COLUMNS)), -1, dtype=np.int64)
+    event_rows[:, 3:] = 0
+    attributed_count = np.zeros(t, np.int64)
+    activity = np.asarray([s['activity_samples'] for s in slots], np.int64)
+    for i, slot in enumerate(slots):
+        if i and (slots[i - 1]['target_end'] != slot['target_start']
+                  or slots[i - 1]['epoch'] != slot['epoch']):
+            pending[:] = 0
+            opened[:] = False
+            remaining[:] = 0
+        if not slot['valid']:
+            pending[:] = 0
+            opened[:] = False
+            remaining[:] = 0
+            continue
+        qualifies = q[:, i]
+        pending = np.where(qualifies, np.minimum(pending + 1, CONFIRM), 0).astype(np.int16)
+        trigger = (~opened) & qualifies & (pending == CONFIRM)
+        if trigger.any():
+            witness = slots[i - 2:i + 1]
+            require(i >= 2 and len(witness) == CONFIRM and all(s['valid'] for s in witness)
+                    and all(witness[j]['target_end'] == witness[j + 1]['target_start']
+                            and witness[j]['epoch'] == witness[j + 1]['epoch'] for j in (0, 1)),
+                    'CONFIRMATION_WITNESS_CAUSALITY')
+            frontier = max(s['input_frontier'] for s in witness)
+            oldest = max(slot['epoch_start'], frontier - PRE_ROLL * HOP)
+            attributable = event is not None and bool(activity[i - 2:i + 1].sum() > 0)
+            delay = frontier - event['first_active_raw48'] if attributable else -1
+            onset_retained = attributable and oldest <= event['first_active_raw48'] < frontier
+            ids = np.flatnonzero(trigger)
+            rows = np.empty((len(ids), len(CONFIRM_COLUMNS)), dtype=np.int64)
+            rows[:] = (0, i, i - 2, i - 1, i, frontier, int(attributable), delay, oldest, frontier)
+            rows[:, 0] = ids + 1
+            confirmations.append(rows)
+            if attributable:
+                attributed_count[ids] += 1
+                first = ids[event_rows[ids, 0] == -1]
+                event_rows[first] = (i, frontier, delay, int(0 <= delay <= TIMELY_SAMPLES), int(onset_retained))
+            # Original target IDs, clipped raw sample bounds remain in the confirmation ledger.
+            retained = [j for j, s in enumerate(slots[:i + 1]) if s['valid'] and s['epoch'] == slot['epoch']
+                        and s['target_start'] < frontier and s['target_end'] > oldest]
+            if retained:
+                pre_roll[np.ix_(ids, retained)] = True
+        live = opened | trigger
+        forward[:, i] = live & (qualifies | (remaining > 0))
+        remaining = np.where(live & qualifies, HANGOVER,
+                             np.where(opened & ~qualifies, np.maximum(remaining - 1, 0), remaining)).astype(np.int16)
+        opened = live & (qualifies | (remaining > 0))
+    conf = (np.concatenate(confirmations) if confirmations
+            else np.empty((0, len(CONFIRM_COLUMNS)), np.int64))
+    confirm_counts = np.bincount(conf[:, 0], minlength=t + 1)[1:].astype(np.int64)
+    metrics = np.column_stack((q.sum(axis=1), confirm_counts, forward.sum(axis=1), pre_roll.sum(axis=1),
+                               (forward | pre_roll).sum(axis=1), q[:, activity == 0].sum(axis=1),
+                               confirm_counts - attributed_count,
+                               q[:, np.asarray([s['target_start'] >= event['end_exclusive_raw48']
+                                                if event else False for s in slots])].sum(axis=1),
+                               q[:, activity > 0].sum(axis=1))).astype(np.int64)
+    return {'q': q, 'current_forward': forward, 'pre_roll_intersection': pre_roll,
+            'confirmations': conf, 'event': event_rows, 'metrics': metrics}
+
+
+def scalar_audit(probabilities, slots, event, tau):
+    """Independent tiny-fixture reference; no NumPy, model or source audio."""
+    q, forward, pre, confirmations = [], [], set(), []
+    pending, opened, remaining = 0, False, 0
+    earliest = [-1, -1, -1, 0, 0]
+    for i, slot in enumerate(slots):
+        if i and (slots[i - 1]['target_end'] != slot['target_start']
+                  or slots[i - 1]['epoch'] != slot['epoch']):
+            pending, opened, remaining = 0, False, 0
+        qualifies = slot['valid'] and probabilities[slot['score_index']] >= tau
+        q.append(bool(qualifies))
+        if not slot['valid']:
+            pending, opened, remaining = 0, False, 0
+            forward.append(False)
+            continue
+        pending = min(pending + 1, CONFIRM) if qualifies else 0
+        trigger = not opened and qualifies and pending == CONFIRM
+        if trigger:
+            frontier = max(s['input_frontier'] for s in slots[i - 2:i + 1])
+            oldest = max(slot['epoch_start'], frontier - PRE_ROLL * HOP)
+            attributable = event is not None and any(s['activity_samples'] > 0 for s in slots[i - 2:i + 1])
+            delay = frontier - event['first_active_raw48'] if attributable else -1
+            confirmations.append([1, i, i - 2, i - 1, i, frontier, int(attributable), delay, oldest, frontier])
+            for j, saved in enumerate(slots[:i + 1]):
+                if (saved['valid'] and saved['epoch'] == slot['epoch']
+                        and saved['target_start'] < frontier and saved['target_end'] > oldest):
+                    pre.add(j)
+            if attributable and earliest[0] == -1:
+                earliest = [i, frontier, delay, int(0 <= delay <= TIMELY_SAMPLES),
+                            int(oldest <= event['first_active_raw48'] < frontier)]
+        live = opened or trigger
+        forward.append(bool(live and (qualifies or remaining > 0)))
+        if live and qualifies:
+            remaining = HANGOVER
+        elif opened and not qualifies:
+            remaining = max(remaining - 1, 0)
+        opened = live and (qualifies or remaining > 0)
+    return q, forward, [i in pre for i in range(len(slots))], confirmations, earliest
+
+
+def fixture_check(destination):
+    # NumPy only: evaluator arithmetic on artificial probabilities, never a Head or DSP import.
+    require(Path(sys.executable).resolve() == ENDPOINT.resolve(), 'FIXTURE_ENDPOINT')
+    import numpy as np
+    out = Path(destination)
+    out.mkdir(parents=True, exist_ok=False)
+    cases = []
+
+    def run_case(name, values, invalid=(), intervals=(), frontier_extra=432, expected=None,
+                 mutate_slots=None):
+        slots = []
+        for i in range(len(values)):
+            start = 48 + HOP * i
+            slots.append({'slot_id': i, 'source_row_id': i, 'epoch': 0, 'hop': i,
+                          'target_start': start, 'target_end': start + HOP, 'epoch_start': 0,
+                          'input_frontier': start + HOP + frontier_extra, 'valid': i not in invalid,
+                          'score_index': i, 'activity_samples': overlap(intervals, start, start + HOP)})
+        if mutate_slots:
+            mutate_slots(slots)
+        event = ({'first_active_raw48': intervals[0][0], 'end_exclusive_raw48': intervals[-1][1]}
+                 if intervals else None)
+        probs = np.asarray(values, '<f4')
+        taus = np.asarray([i / 1000 for i in range(1, 1000)], '<f4')
+        result = audit_scores(np, probs, slots, event, taus)
+        for j, tau in enumerate(taus):
+            truth = scalar_audit([f32(v) for v in values], slots, event, float(tau))
+            actual_conf = result['confirmations'][result['confirmations'][:, 0] == j + 1].copy()
+            actual_conf[:, 0] = 1
+            require(result['q'][j].tolist() == truth[0]
+                    and result['current_forward'][j].tolist() == truth[1]
+                    and result['pre_roll_intersection'][j].tolist() == truth[2]
+                    and actual_conf.tolist() == truth[3] and result['event'][j].tolist() == truth[4],
+                    'FIXTURE_VECTOR_SCALAR_' + name + '_' + str(j + 1))
+        middle = 499
+        if expected:
+            expected(result, middle)
+        cases.append({'name': name, 'thresholds_compared': 999, 'slots': len(slots), 'status': 'PASS'})
+
+    def test_twenty(r, j):
+        require(r['current_forward'][j, 2:23].all() and not r['current_forward'][j, 23], 'HANGOVER_TWENTY')
+        require(r['confirmations'][r['confirmations'][:, 0] == j + 1, 1].tolist() == [2, 25],
+                'REOPEN_REQUIRES_THREE')
+
+    run_case('q3_exact20_false_then_reopen', [.8]*3 + [.1]*20 + [.8]*3, expected=test_twenty)
+    run_case('q2_false_q3', [.8, .8, .1, .8, .8, .8])
+    run_case('invalid_breaks_confirmation_and_open', [.8]*12, invalid=(1, 7))
+    run_case('hangover_true_resets_without_confirmation', [.8]*3 + [.1]*19 + [.8] + [.1]*21)
+    run_case('open_before_near_does_not_credit_event', [.8]*15, intervals=((3000, 4000),),
+             expected=lambda r, j: require(r['event'][j, 0] == -1, 'PRIOR_OPEN_NOT_EVENT'))
+    run_case('activity_islands_not_bounding_box', [.1]*4 + [.8]*3 + [.1]*10,
+             intervals=((50, 100), (7000, 7100)),
+             expected=lambda r, j: require(r['event'][j, 0] == -1, 'ACTIVITY_ISLAND_ATTRIBUTION'))
+    run_case('short_actual_source_onset', [.1]*2 + [.8]*4, intervals=((1100, 1800),))
+    run_case('raw_retention_fail_despite_timely_lower_bound', [.1]*14 + [.8]*3,
+             intervals=((100, 8500),), expected=lambda r, j:
+             require(r['event'][j, 3] == 1 and r['event'][j, 4] == 0, 'RAW_CACHE_NOT_READY_TIME'))
+    run_case('lower_bound_after200ms', [.1]*22 + [.8]*3, intervals=((100, 14000),),
+             expected=lambda r, j: require(r['event'][j, 3] == 0, 'LATE_SOURCE_FRONTIER'))
+    run_case('float32_threshold_equality_and_neighbor', [.5, .5, .5, f32(.5001), f32(.4999)])
+    run_case('actual_batch_available_not_fir_support_end', [.8]*3,
+             intervals=((100, 1800),), expected=lambda r, j:
+             require(r['event'][j, 1] == 1920 and r['event'][j, 2] == 1820,
+                     'ACTUAL_COLUMN9_NOT_COLUMN5'))
+    # Tiny fixture has row1 target[528,1008), FIR_end1054 but actual480-batch available1440.
+    run_case('content200ms_inclusive', [.1]*16 + [.8]*3,
+             intervals=((0, 15000),), expected=lambda r, j:
+             require(r['event'][j, 1] == 9600 and r['event'][j, 2] == 9600,
+                     'COLUMN9_EXACT200_BOUNDARY'))
+    run_case('content200ms_plus_one_fails', [.1]*16 + [.8]*3, frontier_extra=433,
+             intervals=((0, 15000),), expected=lambda r, j:
+             require(r['event'][j, 2] == 9601 and r['event'][j, 3] == 0, 'COLUMN9_AFTER200'))
+    run_case('raw_cache_left_boundary_retained', [.1]*16 + [.8]*3,
+             intervals=((2400, 15000),), expected=lambda r, j:
+             require(r['event'][j, 4] == 1, 'CACHE_LEFT_INCLUSIVE'))
+    run_case('raw_cache_left_boundary_minus_one_lost', [.1]*16 + [.8]*3,
+             intervals=((2399, 15000),), expected=lambda r, j:
+             require(r['event'][j, 4] == 0, 'CACHE_LEFT_MINUS_ONE'))
+    def shift_gap(slots):
+        for slot in slots[2:]:
+            slot['target_start'] += HOP
+            slot['target_end'] += HOP
+            slot['input_frontier'] += HOP
+    run_case('target_gap_clears_pending', [.8]*5, mutate_slots=shift_gap,
+             expected=lambda r, j: require(r['confirmations'][r['confirmations'][:, 0] == j+1, 1].tolist() == [4],
+                                           'GAP_NO_CROSS_CONFIRM'))
+    def epoch_change(slots):
+        for slot in slots[2:]:
+            slot['epoch'] = 1
+            slot['epoch_start'] = slots[2]['target_start']
+    run_case('epoch_change_clears_pending', [.8]*5, mutate_slots=epoch_change,
+             expected=lambda r, j: require(r['confirmations'][r['confirmations'][:, 0] == j+1, 1].tolist() == [4],
+                                           'EPOCH_NO_CROSS_CONFIRM'))
+    def reset_and_warmup(slots):
+        for slot in slots[5:]:
+            slot['epoch'] = 1
+            slot['epoch_start'] = slots[5]['target_start']-48
+    run_case('reset_current_and_new_warmup_clear_head_evidence', [.8]*11, invalid=(4,5),
+             mutate_slots=reset_and_warmup, expected=lambda r,j:
+             require(r['confirmations'][r['confirmations'][:,0] == j+1,1].tolist() == [2,8]
+                     and not r['current_forward'][j,4:6].any(), 'RESET_NO_CROSS_EVIDENCE'))
+    terminal_rows = [[0,0,48,528,0,574,-1,-1,0,960,0,-1],
+                     [0,1,528,1008,480,1054,-1,-1,0,1440,0,-1]]
+    terminal_event = [[0,1,528,1008,1440,1,960,2]]
+    terminal_slots = source_slots(terminal_rows, 1500, [(500,1500)], terminal_event)
+    require(terminal_slots[1]['reason'] == 'SPX_RESET_CURRENT_REJECTED'
+            and terminal_slots[2]['epoch'] == 1 and terminal_slots[2]['epoch_start'] == 960
+            and terminal_slots[2]['hop'] == 0
+            and terminal_slots[2]['identity_status'] == 'PROSPECTIVE_NOT_EXECUTED'
+            and sum(s['activity_samples'] for s in terminal_slots) == 1000,
+            'RESET_AT_EOF_PRESERVES_ACTIVITY_WITHOUT_EXECUTED_HOP')
+    try:
+        source_slots(terminal_rows, 1500, [], [[0,1,528,1008,1440,2,960,2]])
+    except RuntimeError:
+        pass
+    else:
+        require(False, 'MALFORMED_RESET_NOT_REJECTED')
+    # Denominator has a startup invalid target and a missing, clipped EOF target; no score fabrication.
+    rows = [[0, 0, 48, 528, 0, 574, -1, -1, 0, 574, 0, -1],
+            [0, 1, 528, 1008, 480, 1054, 0, 1054, 0, 1054, 1, 0]]
+    intervals = [(0, 100), (1400, 1500)]
+    slots = source_slots(rows, 1500, intervals)
+    require(len(slots) == 4 and [s['reason'] for s in slots] == [
+        'STARTUP_FEATURE_SUPPORT_UNAVAILABLE', 'VALID', 'NOT_READY_AT_EOF', 'NOT_READY_AT_EOF']
+        and sum(s['activity_samples'] > 0 for s in slots) == 3
+        and overlap(intervals, 0, slots[0]['target_start']) == 48, 'INVALID_EOF_PREFIX_DENOMINATOR')
+    # The oldest formed target is partial; frontier may also include raw samples for a future unready target.
+    run_case('raw7200_cache_is_not_15_complete_head_frames', [.1]*17 + [.8]*3,
+             expected=lambda r, j: require(r['pre_roll_intersection'][j].sum() == 15
+                 and r['confirmations'][r['confirmations'][:, 0] == j + 1, 9][0]
+                     - r['confirmations'][r['confirmations'][:, 0] == j + 1, 8][0] == 7200,
+                                           'CACHE_SAMPLE_IDENTITY'))
+    # Arithmetic counterexample only: original-clean availability/cache has not been measured.
+    actual_frontier, onset = 9600, 2200
+    raw_oldest = actual_frontier - 7200
+    hypothetical_compensated_clean_oldest = actual_frontier - 432 - 7200
+    require(raw_oldest > onset >= hypothetical_compensated_clean_oldest,
+            'RAW_MISS_CANNOT_PROVE_COMPENSATED_CLEAN_MISS')
+    rates = {k: {'hits': 19, 'total': 20} for k in ('short_all', 'short_weak', 'long_all')}
+    require(not detector_rejections(0, 0, rates, 90, 100), 'EXACT_95_90_ACCEPT')
+    rates['short_all'] = {'hits': 18, 'total': 19}
+    require('SHORT_ALL_TIMELY_CONTENT_PROXY_BELOW95' in detector_rejections(0, 0, rates, 90, 100),
+            'ROUNDED_95_NOT_ACCEPTED')
+    rates['short_all'] = {'hits': 19, 'total': 20}
+    require('LONG_ACTIVITY_FRAME_QUALIFICATION_BELOW90' in detector_rejections(0, 0, rates, 89, 99),
+            'ROUNDED_90_NOT_ACCEPTED')
+    summary = {'schema_version': 1, 'status': 'PASS_ARTIFICIAL_EVALUATOR_FIXTURE_ONLY',
+               'cases': cases, 'boundary_case': 'startup invalid, two EOF slots, unmapped prefix',
+               'raw_vs_compensated_clean_counterexample': {'frontier': actual_frontier, 'onset': onset,
+                   'raw_oldest': raw_oldest, 'hypothetical_clean_oldest': hypothetical_compensated_clean_oldest,
+                   'meaning': 'Arithmetic counterexample; not measured original-clean retention'},
+               'integer_rate_cases': ['19/20 PASS', '18/19 FAIL', '90/100 PASS', '89/99 FAIL'],
+               'evaluator_sha256': sha(__file__), 'numpy_version': str(np.__version__),
+               'no_model_or_DSP_execution': True, 'actual_ready': 'UNVERIFIED',
+               'original_clean_PCM': 'UNVERIFIED', 'final_frozen_tau': None,
+               'Stage7': 'PASS', 'Test3': 'BLOCKED'}
+    publish_json(out / 'fixture-result.json', summary)
+    print(json.dumps({'status': summary['status'], 'cases': len(cases) + 1,
+                      'threshold_comparisons': len(cases) * 999, 'Test3': 'BLOCKED'}), flush=True)
+    return 0
+
+
+def append_group(groups, name, tau_count, np):
+    if name not in groups:
+        groups[name] = {'events': 0, 'timely_hits': np.zeros(tau_count, np.int64),
+                        'raw_onset_misses_when_timely': np.zeros(tau_count, np.int64)}
+    return groups[name]
+
+
+def scene_groups(meta, recipe):
+    names = [meta['subtype']]
+    if meta['subtype'] == 'short_double':
+        names.extend(('short_all', 'short_' + str(meta['near_duration_ms']) + 'ms'))
+        if meta['weak_double']:
+            names.append('short_weak')
+    if meta['subtype'] == 'long_double':
+        names.append('long_all')
+        if meta['weak_double']:
+            names.append('long_weak')
+    if meta['subtype'] in ('long_double', 'short_double') and meta['weak_double']:
+        names.append('double_weak')
+    if meta['near_event']:
+        names.extend(('ADC_clipped' if meta['ADC_clipped'] else 'ADC_unclipped',
+                      'startup_near' if meta['near_event']['first_active_raw48'] == 0 else 'nonstartup_near'))
+        if recipe['path_change_raw48'] is not None:
+            names.append('path_change_near')
+    return names
+
+
+def calibration(index_path, checkpoint, manifest_path, module_path, destination, authorization_path):
+    out = Path(destination)
+    out.mkdir(parents=True, exist_ok=False)
+    started, failure = time.monotonic(), None
+    frozen, prediction_count, grid_count = {}, 0, 0
+    try:
+        authorization, contract = load(authorization_path), load(CONTRACT)
+        require(authorization['schema_version'] == 1 and authorization['authorized'] is True
+                and authorization['partition'] == 'DEV-CAL'
+                and authorization['scope'] == 'PUBLIC_OFFLINE_CONTENT_PROXY_ONLY'
+                and authorization['evaluator_sha256'] == sha(__file__)
+                and authorization['contract_sha256'] == sha(CONTRACT), 'EVALUATION_AUTHORIZATION')
+        require(contract['schema_version'] == 1 and contract['shadow_state_machine']['confirmation_frames'] == CONFIRM
+                and contract['shadow_state_machine']['pre_roll_frames'] == PRE_ROLL
+                and contract['shadow_state_machine']['hangover_frames'] == HANGOVER, 'FIXED_GATE_CONTRACT')
+        index_path, checkpoint, manifest_path, module_path = map(lambda p: Path(p).resolve(strict=True),
+                                                                (index_path, checkpoint, manifest_path, module_path))
+        index_path = public_path(index_path)
+        manifest = load(manifest_path)
+        require(manifest['schema_version'] == 1 and manifest['failure'] is None
+                and manifest['status'] in ('FINAL_STEP_COMPLETED', 'TIME_LIMIT_AT_COMPLETED_STEP')
+                and 0 < manifest['completed_steps'] <= 5000 and manifest['seed'] == 20261006
+                and sha(checkpoint) == manifest['checkpoint_sha256'], 'FINAL_MODEL_REQUIRED')
+        require(str(module_path) in manifest['inputs'] and manifest['inputs'][str(module_path)] == sha(module_path)
+                and str(index_path) in manifest['inputs'] and manifest['inputs'][str(index_path)] == sha(index_path),
+                'MODEL_IMPLEMENTATION_AND_INDEX_BINDING')
+        frozen[str(HEAD_ADAPTER.resolve(strict=True))] = sha(HEAD_ADAPTER)
+        completion_spec = importlib.util.spec_from_file_location('actual_training_verifier', HEAD_ADAPTER)
+        completion_module = importlib.util.module_from_spec(completion_spec)
+        completion_spec.loader.exec_module(completion_module)
+        execution_binding = completion_module.training_input_identity(
+            manifest['inputs'], index_path, (PUBLIC/'normalization.json').resolve(strict=True))
+        completion = load(execution_binding['candidate_completion_path'])
+        require(completion['checkpoint_sha256'] == sha(checkpoint)
+                and completion['manifest_sha256'] == sha(manifest_path)
+                and completion['completed_steps'] == manifest['completed_steps'], 'ACTUAL_COMPLETED_MODEL_BINDING')
+        for name,path in execution_binding.items():
+            if name.endswith('_path'):
+                expected = execution_binding[name[:-5]+'_sha256']
+                require(sha(path) == expected, 'ACTUAL_EXECUTION_BINDING_CHANGED')
+                frozen[str(Path(path).resolve(strict=True))] = expected
+        for p, expected in manifest['inputs'].items():
+            require(sha(p) == expected, 'TRAINING_INPUT_CHANGED_' + p)
+            frozen[str(Path(p).resolve())] = expected
+        for p in (Path(__file__), Path(authorization_path), CONTRACT, checkpoint, manifest_path,
+                  module_path, index_path, SCENE_CODE, SCENE_CONTRACT, PREPARER, LIFECYCLE, LINEAGE):
+            frozen[str(p.resolve(strict=True))] = sha(p)
+        require(Path(sys.executable).resolve() == ENDPOINT.resolve(), 'PREDICTION_ENDPOINT')
+        require(module_path == TRAINER.resolve(), 'RESET_AWARE_TRAINER_REQUIRED')
+        spec = importlib.util.spec_from_file_location('frozen_train_head', module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        np, torch = module.environment()
+        index, scenes = module.feature_index(index_path, np, 'DEV-CAL')
+        require(index['adapter_format_revision'] == 'SPX-NH1-lifecycle-v3'
+                and sha(LIFECYCLE) == index['adapter_protocol_sha256']
+                and sha(LINEAGE) == index['lineage_manifest_sha256'], 'LIFECYCLE_REVISION_IDENTITY')
+        lineage = load(LINEAGE)
+        for p,h in lineage['files'].items():
+            require(sha(p) == h, 'FROZEN_PRODUCER_OR_TRAINER_CHANGED_'+p)
+            frozen[str(Path(p).resolve())] = h
+        require(index['producer_identity'] == manifest['producer_identity'], 'TRAINED_PRODUCER_IDENTITY')
+        recipes_path = public_path(PUBLIC / 'scene-manifest.json')
+        require(sha(recipes_path) == index['scene_manifest_sha256'], 'SCENE_MANIFEST_BINDING')
+        recipes_doc = load(recipes_path)
+        require(recipes_doc['schema_version'] == 1 and recipes_doc['counts']['DEV-CAL'] == 500
+                and recipes_doc['generator_sha256'] == sha(SCENE_CODE)
+                and recipes_doc['contract_sha256'] == sha(SCENE_CONTRACT), 'PUBLIC_GENERATOR_IDENTITY')
+        frozen[str(recipes_path)] = sha(recipes_path)
+        source_admission = public_path(PUBLIC / 'admitted-wave-manifest.json')
+        admitted = load(source_admission)
+        require(admitted['schema_version'] == 1 and admitted['status'] == 'ADMITTED_PUBLIC_AISHELL_ONLY'
+                and admitted['dataset'] == 'AISHELL-1' and admitted['license_admitted'] is True
+                and sha(source_admission) == recipes_doc['source_manifest_file_sha256'],
+                'PUBLIC_SOURCE_ADMISSION_IDENTITY')
+        frozen[str(source_admission)] = sha(source_admission)
+        recipes = {r['id']: r for r in recipes_doc['scenes'] if r['partition'] == 'DEV-CAL'}
+        require(len(recipes) == 500 and set(recipes) == {s['scene_id'] for s in scenes}, 'FROZEN_CAL_SCENE_IDS')
+        metas, source_ledgers, group_counts = {}, {}, {}
+        for scene in scenes:
+            sid = scene['scene_id']
+            event_path = public_path(scene['event_meta_path'])
+            require(sha(event_path) == scene['event_meta_sha256'], 'EVENT_FILE_HASH_' + sid)
+            frozen[str(event_path)] = sha(event_path)
+            require(scene['scene_manifest_sha256'] == index['scene_manifest_sha256'], 'SCENE_PARENT_BINDING')
+            for key, p in zip(('features', 'labels', 'rows'), scene['paths']):
+                frozen[str(p)] = scene['hashes'][key]
+            rows, labels = module.array_file(np, scene['paths'][2], '<i8', (999, 12)), None
+            try:
+                labels = module.array_file(np, scene['paths'][1], '<f4', (scene['samples'],))
+                require(rows[0, 2] == 48
+                        and (np.diff(rows[:, 9]) >= 0).all() and (rows[:, 9] <= RAW_SAMPLES).all(),
+                        'FIXED_NATIVE_CONTENT_LATTICE_' + sid)
+                meta = load(event_path)
+                intervals = validate_meta(meta, recipes[sid], scene, rows, labels, np)
+                slots = source_slots(rows, RAW_SAMPLES, intervals, meta['producer_reset_events'])
+                require(len(slots) == 1000
+                        and sum(s['valid'] for s in slots) == scene['samples']
+                        and len([s for s in slots if not s['valid']]) == 1000-scene['samples'],
+                        'STARTUP_EOF_FULL_ACCOUNTING_' + sid)
+                metas[sid], source_ledgers[sid] = meta, slots
+                for group in scene_groups(meta, recipes[sid]):
+                    group_counts[group] = group_counts.get(group, 0) + 1
+            finally:
+                module.close_arrays([v for v in (rows, labels) if v is not None])
+        require(all(group_counts.get(k, 0) == v for k, v in
+                    {'echo': 200, 'noise': 50, 'long_double': 125, 'short_double': 100, 'near_only': 25,
+                     'short_320ms': 34, 'short_400ms': 33, 'short_480ms': 33, 'double_weak': 113}.items())
+                and group_counts.get('short_weak', 0) > 0, 'FROZEN_CAL_SUBGROUP_DENOMINATORS')
+        saved = torch.load(checkpoint, map_location='cpu', weights_only=True)
+        require(saved['schema_version'] == 1 and saved['seed'] == 20261006
+                and saved['completed_steps'] == manifest['completed_steps']
+                and saved['input_hashes'] == manifest['inputs'], 'CHECKPOINT_COMPLETION_BINDING')
+        require(all(v.dtype == torch.float32 and v.device.type == 'cpu' and bool(torch.isfinite(v).all())
+                    for v in saved['state_dict'].values()), 'CHECKPOINT_FLOAT32_FINITE_WEIGHTS')
+        norm_paths = [Path(p) for p in manifest['inputs']
+                      if Path(p).resolve() == (PUBLIC / 'normalization.json').resolve(strict=True)]
+        require(len(norm_paths) == 1, 'TRAIN_NORMALIZATION_SIDE_CAR')
+        norm = load(norm_paths[0])
+        train_ids = sorted(s['scene_id'] for s in index['scenes'] if s['partition'] == 'TRAIN')
+        require(norm['schema_version'] == 1 and norm['feature_index_sha256'] == sha(index_path)
+                and norm['train_scene_ids'] == train_ids and len(train_ids) == 2400
+                and norm['Ncount'] == sum(s['samples'] for s in index['scenes'] if s['partition'] == 'TRAIN')
+                and norm['std_floor'] == 1e-4, 'TRAIN_ONLY_NORMALIZATION')
+        mean, std = saved['mean'], saved['std']
+        require(mean.dtype == std.dtype == torch.float32 and tuple(mean.shape) == tuple(std.shape) == (160,)
+                and bool(torch.isfinite(mean).all()) and bool(torch.isfinite(std).all())
+                and bool((std >= 1e-4).all())
+                and np.array_equal(mean.numpy().view('<u4'), np.asarray(norm['mean'], '<f4').view('<u4'))
+                and np.array_equal(std.numpy().view('<u4'), np.asarray(norm['std'], '<f4').view('<u4')),
+                'FROZEN_NORMALIZATION_BITS')
+        environment = {'python': sys.executable, 'python_sha256': sha(sys.executable), 'sys_prefix': sys.prefix,
+                       'torch_version': str(torch.__version__), 'numpy_version': str(np.__version__),
+                       'torch_module_path': str(torch.__file__), 'torch_module_sha256': sha(torch.__file__),
+                       'torch_native_path': str(torch._C.__file__), 'torch_native_sha256': sha(torch._C.__file__),
+                       'numpy_module_path': str(np.__file__), 'numpy_module_sha256': sha(np.__file__),
+                       'device': 'CPU', 'threads': 1, 'Float32': True, 'AMP': False, 'TF32': False}
+        require(environment == manifest['environment'], 'TRAIN_PREDICTION_ENVIRONMENT_IDENTITY')
+        for key in ('python', 'torch_module_path', 'torch_native_path', 'numpy_module_path'):
+            p = Path(environment[key]).resolve(strict=True)
+            frozen[str(p)] = sha(p)
+        known = sum(p.stat().st_size for p in PUBLIC.rglob('*') if p.is_file())
+        require(known + OUTPUT_RESERVE <= DISK_LIMIT, 'PUBLIC_DISK_BUDGET')
+        out_dev = out.stat().st_dev
+        free_bytes = os.statvfs(out).f_bavail * os.statvfs(out).f_frsize
+        require(free_bytes >= OUTPUT_RESERVE, 'OUTPUT_STORAGE_RESERVE')
+        tau_values = np.asarray([i / 1000 for i in range(1, 1000)], '<f4')
+        preflight = {'schema_version': 1, 'status': 'FROZEN_BEFORE_PREDICTIONS', 'inputs': frozen,
+                     'scene_ids': [s['scene_id'] for s in scenes], 'group_counts': group_counts,
+                     'checkpoint_sha256': sha(checkpoint), 'model_manifest_sha256': sha(manifest_path),
+                     'producer_identity': index['producer_identity'], 'environment': environment,
+                     'threshold_decimal': [i / 1000 for i in range(1, 1000)],
+                     'threshold_Float32_bits': tau_values.view('<u4').tolist(),
+                     'output_device_id': out_dev, 'reserved_output_bytes': OUTPUT_RESERVE,
+                     'evaluation_kind': 'PUBLIC_OFFLINE_CONTENT_PROXY_ONLY', 'final_frozen_tau': None}
+        preflight['actual_training_execution_binding'] = execution_binding
+        publish_json(out / 'pre-run-identity.json', preflight)
+        publish_json(out / 'single-calibration-started.json', {'schema_version': 1,
+                     'pre_run_sha256': sha(out / 'pre-run-identity.json'), 'prediction_once_per_scene': True,
+                     'thresholds': 999, 'partition': 'DEV-CAL', 'pid': os.getpid()})
+        head = module.model(torch)
+        head.load_state_dict(saved['state_dict'], strict=True)
+        head.eval()
+        groups, negatives_q, negatives_confirm = {}, np.zeros(999, np.int64), np.zeros(999, np.int64)
+        long_q, long_total, all_timely_retention_misses = np.zeros(999, np.int64), 0, np.zeros(999, np.int64)
+        near_zero_q, unmatched, tail_q = np.zeros(999, np.int64), np.zeros(999, np.int64), np.zeros(999, np.int64)
+        asset_results = []
+        for scene in scenes:
+            require(time.monotonic() - started <= 4 * 3600, 'STOP_EVALUATION_TIME_LIMIT')
+            module.peak_rss()
+            sid, meta = scene['scene_id'], metas[scene['scene_id']]
+            for key, p in zip(('features', 'labels', 'rows'), scene['paths']):
+                require(sha(p) == frozen[str(p)], 'PREDICTION_SOURCE_CHANGED_' + sid + '_' + key)
+            x = module.array_file(np, scene['paths'][0], '<f4', (scene['samples'], 160))
+            try:
+                features = torch.from_numpy(np.array(x, dtype='<f4', copy=True))[None]
+            finally:
+                module.close_arrays([x])
+            with torch.inference_mode():
+                logits_tensor = module.predict_epoch_segments(head, (features - mean) / std,
+                                                            scene['producer_segments'], torch)[0]
+                probabilities_tensor = torch.sigmoid(logits_tensor)
+            logits, probabilities = logits_tensor.numpy().copy(), probabilities_tensor.numpy().copy()
+            require(logits.dtype == np.float32 and logits.shape == (scene['samples'],) and np.isfinite(logits).all(),
+                    'FINITE_COMPLETE_PREDICTION_' + sid)
+            directory = out / ('scene-' + sid.split(':')[1])
+            directory.mkdir()
+            publish_array(np, directory / 'logits.npy', logits)
+            publish_array(np, directory / 'probabilities.npy', probabilities)
+            prediction_count += 1
+            slots = source_ledgers[sid]
+            result = audit_scores(np, probabilities, slots, meta['near_event'], tau_values)
+            ledger = {'schema_version': 1, 'scene_id': sid, 'recipe_sha256': scene['scene_recipe_sha256'],
+                      'event_meta_sha256': scene['event_meta_sha256'], 'source_rows_sha256': scene['hashes']['rows'],
+                      'source_rows': slots, 'source_event': meta['near_event'],
+                      'producer_reset_events': meta['producer_reset_events'],
+                      'producer_valid_score_segments': scene['producer_segments'],
+                      'active_intervals_raw48': meta['active_intervals_raw48'],
+                      'invalid_slots': [s for s in slots if not s['valid']],
+                      'unmapped_prefix': {'start': 0, 'end': slots[0]['target_start'],
+                                          'active_samples': overlap(meta['active_intervals_raw48'], 0,
+                                                                    slots[0]['target_start'])},
+                      'long_activity_positive_denominator': sum(s['activity_samples'] > 0 for s in slots),
+                      'confirmation_columns': CONFIRM_COLUMNS, 'event_columns': EVENT_COLUMNS,
+                      'metric_columns': METRIC_COLUMNS, 'bitset': {'bitorder': 'little',
+                        'rows': 'tau i=1..999', 'columns': 'source slot IDs, including invalid/EOF',
+                        'padding_bits': 'zero; exclude beyond source_rows count'},
+                      'pre_roll_intersection': 'Has raw cache intersection; exact bounds from confirmation ledger. '
+                          'Not full-target/original-clean preservation. Unmapped prefix may also be released.',
+                      'release': 'Union raw cache intervals at confirmation and full valid target intervals from '
+                          'current_forward_bits, by original source coordinates; deduplicate intersections.',
+                      'original_clean_PCM': 'UNVERIFIED', 'actual_ready': 'UNVERIFIED'}
+            publish_json(directory / 'source-ledger.json', ledger)
+            publish_npz(np, directory / 'threshold-ledger.npz',
+                        q_bits=np.packbits(result['q'], axis=1, bitorder='little'),
+                        current_forward_bits=np.packbits(result['current_forward'], axis=1, bitorder='little'),
+                        pre_roll_intersection_bits=np.packbits(result['pre_roll_intersection'], axis=1, bitorder='little'),
+                        confirmations=result['confirmations'], event=result['event'], metrics=result['metrics'])
+            metrics, event_rows = result['metrics'], result['event']
+            if meta['subtype'] in ('echo', 'noise'):
+                negatives_q += metrics[:, 0]
+                negatives_confirm += metrics[:, 1]
+            else:
+                near_zero_q += metrics[:, 5]
+                unmatched += metrics[:, 6]
+                tail_q += metrics[:, 7]
+                hits = event_rows[:, 3]
+                retention_fail = hits * (1 - event_rows[:, 4])
+                all_timely_retention_misses += retention_fail
+                for group_name in scene_groups(meta, recipes[sid]):
+                    group = append_group(groups, group_name, 999, np)
+                    group['events'] += 1
+                    group['timely_hits'] += hits
+                    group['raw_onset_misses_when_timely'] += retention_fail
+                if meta['subtype'] == 'long_double':
+                    long_q += metrics[:, 8]
+                    long_total += ledger['long_activity_positive_denominator']
+            asset_results.append({'scene_id': sid,
+                'logits_sha256': sha(directory / 'logits.npy'),
+                'probabilities_sha256': sha(directory / 'probabilities.npy'),
+                'source_ledger_sha256': sha(directory / 'source-ledger.json'),
+                'threshold_ledger_sha256': sha(directory / 'threshold-ledger.npz')})
+            grid_count += 1
+            if grid_count % 25 == 0:
+                print(json.dumps({'DEV_CAL_scenes_scored': prediction_count, 'scenes_grid_complete': grid_count,
+                                  'elapsed_seconds': time.monotonic() - started,
+                                  'peak_RSS_bytes': module.peak_rss(), 'final_frozen_tau': None}), flush=True)
+        require(all(groups.get(k, {}).get('events', 0) > 0 for k in ('short_all', 'short_weak', 'long_all'))
+                and long_total > 0, 'EMPTY_REQUIRED_DENOMINATOR')
+        table, candidates = [], []
+        for j in range(999):
+            rejected = detector_rejections(int(negatives_q[j]), int(negatives_confirm[j]),
+                {k: {'hits': int(groups[k]['timely_hits'][j]), 'total': groups[k]['events']}
+                 for k in ('short_all', 'short_weak', 'long_all')}, int(long_q[j]), long_total)
+            row = {'tau_index': j + 1, 'tau_decimal': (j + 1) / 1000,
+                   'tau_Float32_bits': int(tau_values.view('<u4')[j]),
+                   'negative_q': int(negatives_q[j]), 'negative_confirmations': int(negatives_confirm[j]),
+                   'long_activity_frames': {'hits': int(long_q[j]), 'total': long_total},
+                   'groups': {k: {'events': v['events'], 'timely_content_proxy_hits': int(v['timely_hits'][j]),
+                                 'raw_onset_misses_when_timely': int(v['raw_onset_misses_when_timely'][j])}
+                              for k, v in groups.items()},
+                   'near_scene_extra_errors': {'zero_activity_q': int(near_zero_q[j]),
+                        'unmatched_confirmations': int(unmatched[j]), 'post_event_q': int(tail_q[j])},
+                   'raw_onset_misses_when_timely': int(all_timely_retention_misses[j]),
+                   'raw_retention_proxy_status': ('ONSET_PROXY_MISS' if all_timely_retention_misses[j]
+                       else 'NO_RAW_ONSET_PROXY_MISS_OBSERVED'), 'raw_retention_proxy_gate_applied': False,
+                   'detector_content_proxy_candidate': not rejected,
+                   'detector_content_proxy_rejected_conditions': rejected,
+                   'complete_original_gates': 'UNVERIFIED', 'final_frozen_tau': None}
+            table.append(row)
+            if not rejected:
+                candidates.append(j + 1)
+        for p, expected in frozen.items():
+            require(sha(p) == expected, 'FROZEN_INPUT_CHANGED_AT_COMPLETION_' + p)
+        require(prediction_count == grid_count == 500 and module.peak_rss() <= RSS_LIMIT,
+                'INCOMPLETE_CAL_OR_RESOURCE_LIMIT')
+        publish_json(out / 'cal-threshold-candidates.json', {'schema_version': 1, 'thresholds': table,
+                     'detector_content_proxy_candidate_tau_indices': candidates, 'final_frozen_tau': None,
+                     'raw_retention_proxy_gate_applied': False})
+        publish_json(out / 'output-identities.json', {'schema_version': 1, 'scenes': asset_results})
+        status = 'PROVISIONAL_CONTENT_PROXY_ONLY' if candidates else 'NO_CONTENT_PROXY_THRESHOLD'
+        result = {'schema_version': 1, 'status': status, 'scene_predictions': prediction_count,
+                  'scenes_grid_complete': grid_count, 'thresholds': 999, 'groups': group_counts,
+                  'min_content_proxy_tau': min(candidates) / 1000 if candidates else None,
+                  'min_content_proxy_tau_Float32_bits': int(tau_values.view('<u4')[min(candidates)-1]) if candidates else None,
+                  'minimum_selection_basis': 'DETECTOR_CONTENT_GATES_ONLY_RAW_RETENTION_DIAGNOSTIC',
+                  'final_frozen_tau': None, 'threshold_frozen': False, 'actual_ready': 'UNVERIFIED',
+                  'original_clean_PCM': 'UNVERIFIED', 'trained_native_performance': 'UNVERIFIED',
+                  'native_sigmoid_qualification_transfer': 'UNVERIFIED', 'DEV_LOCK': 'NOT_ADMITTED',
+                  'PUBLIC_TEST': 'NOT_ADMITTED', 'elapsed_seconds': time.monotonic() - started,
+                  'peak_RSS_bytes': module.peak_rss(), 'pre_run_sha256': sha(out / 'pre-run-identity.json'),
+                  'cal_threshold_candidates_sha256': sha(out / 'cal-threshold-candidates.json'),
+                  'output_identities_sha256': sha(out / 'output-identities.json'),
+                  'failure': None, 'Stage7': 'PASS', 'Test3': 'BLOCKED', 'NO_PRODUCT_PATCH': True}
+        publish_json(out / 'evaluation-result.json', result)
+        print(json.dumps({'status': status, 'min_content_proxy_tau': result['min_content_proxy_tau'],
+                          'final_frozen_tau': None, 'Test3': 'BLOCKED'}), flush=True)
+        return 0
+    except Exception as error:
+        failure = str(error)
+        publish_json(out / 'evaluation-rejected.json', {'schema_version': 1, 'status': 'INSUFFICIENT_EVIDENCE',
+                     'failure': failure, 'scene_predictions': prediction_count, 'scenes_grid_complete': grid_count,
+                     'final_frozen_tau': None, 'elapsed_seconds': time.monotonic() - started,
+                     'actual_ready': 'UNVERIFIED', 'original_clean_PCM': 'UNVERIFIED',
+                     'DEV_LOCK': 'NOT_ADMITTED', 'Test3': 'BLOCKED', 'NO_PRODUCT_PATCH': True})
+        print(json.dumps({'status': 'INSUFFICIENT_EVIDENCE', 'failure': failure}), flush=True)
+        return 1
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest='command', required=True)
+    fixture = sub.add_parser('fixture-check')
+    fixture.add_argument('new_output')
+    cal = sub.add_parser('calibrate')
+    for name in ('feature_index', 'checkpoint', 'model_manifest', 'train_module', 'new_output'):
+        cal.add_argument(name)
+    cal.add_argument('--authorization', default=str(AUTHORIZATION))
+    cal.add_argument('--approved-spx-nh1-dev-cal', action='store_true', required=True)
+    lock = sub.add_parser('dev-lock')
+    lock.add_argument('freeze_manifest')
+    args = parser.parse_args()
+    if args.command == 'fixture-check':
+        return fixture_check(args.new_output)
+    if args.command == 'dev-lock':
+        require(False, 'DEV_LOCK_NOT_ADMITTED_COMPLETE_ORIGINAL_GATES_AND_FINAL_TAU_REQUIRED')
+    return calibration(args.feature_index, args.checkpoint, args.model_manifest, args.train_module,
+                       args.new_output, args.authorization)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

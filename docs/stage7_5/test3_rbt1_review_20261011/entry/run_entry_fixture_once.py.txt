@@ -1,0 +1,64 @@
+"""Bounded supervisor for stdlib synthetic checks; never calls the RBT owner."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+D=Path(__file__).resolve().parent
+
+
+def main():
+    started=time.monotonic();deadline=started+10
+    child=None
+    def expired(signum,frame):
+        if child is not None and child.poll() is None:
+            os.killpg(child.pid,signal.SIGKILL)
+        raise TimeoutError('FIXTURE_WHOLE_10_SECONDS')
+    signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,10)
+    protocol=json.loads((D/'fixture-protocol.json').read_bytes())
+    inputs={**protocol['source_sha256'],**protocol['additional_inputs_SHA256']}
+    def verify():
+        for path,sha in inputs.items():
+            if hashlib.sha256(Path(path).read_bytes()).hexdigest()!=sha:
+                raise RuntimeError('FIXTURE_INPUT_CHANGED:'+path)
+    verify()
+    claim=D/'fixture-attempt.json'
+    with claim.open('x') as stream:json.dump(dict(schema_version=1,attempt=1),stream)
+    command=[sys.executable,'-B',str(D/'entry_fixture.py')]
+    child=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    timedout=False
+    try:
+        stdout,stderr=child.communicate(timeout=max(.001,deadline-time.monotonic()))
+    except (subprocess.TimeoutExpired,TimeoutError):
+        timedout=True
+        child.kill();stdout,stderr=child.communicate(timeout=1)
+        raise TimeoutError('FIXTURE_PERMANENT_STOP_AFTER_KILL_REAP')
+    code=child.wait(timeout=1)
+    retained_cap_error=len(stdout)+len(stderr)>57344
+    (D/'fixture.stdout').write_bytes(stdout[:28672])
+    (D/'fixture.stderr').write_bytes(stderr[:28672])
+    verify()
+    elapsed=time.monotonic()-started
+    passed=code==0 and not timedout and not retained_cap_error and elapsed<10
+    receipt=dict(schema_version=1,actual_command=command,actual_child_pid=child.pid,
+        actual_child_returncode=code,exit_source='Popen.wait',timeout=timedout,
+        elapsed_seconds=elapsed,retained_stream_bytes=min(len(stdout),28672)+min(len(stderr),28672),
+        retained_stream_cap=57344,retained_total_cap=65536,stream_cap_exceeded=retained_cap_error,
+        status='BOUNDED_STDLIB_FIXTURE_PASS' if passed else 'STOP_FIXTURE',scientific_execution=False)
+    with (D/'fixture-supervisor-receipt.json').open('x') as stream:json.dump(receipt,stream,indent=2)
+    print(json.dumps(receipt))
+    retained=[D/name for name in ['fixture.stdout','fixture.stderr','fixture-attempt.json',
+                                  'fixture-result.json','fixture-supervisor-receipt.json']]
+    retained+=list((D/'fixture-retained').glob('*'))
+    if sum(p.stat().st_size for p in retained if p.is_file())>65536 or time.monotonic()>=deadline:
+        raise RuntimeError('FIXTURE_TERMINAL_CAP')
+    signal.setitimer(signal.ITIMER_REAL,0)
+    return 0 if passed else 1
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

@@ -1,0 +1,18 @@
+{
+  "PCM_opened": false,
+  "actual_subprocess_exit": 0,
+  "bound_sources_unchanged": true,
+  "command": [
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-mindaec-rosetta-probe-20261006-01/venv/bin/python",
+    "-B",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/select_metadata.py"
+  ],
+  "elapsed_seconds": 0.775873541017063,
+  "exit_source": "actual subprocess run/wait",
+  "model_DSP_training_run": false,
+  "retained_bytes_before_receipt": 322992,
+  "schema_version": 1,
+  "stderr": "",
+  "stdout": "{\"status\": \"METADATA_SELECTION_ONLY_NOT_PCM_ADMITTED\", \"unique_source_sha256_count\": 208, \"unique_path_groups\": 104, \"eligible_source_descriptors\": 27840, \"eligible_speakers\": 133}\n{\"manifest_bytes\": 281243, \"manifest_sha256\": \"d6c07ba21e544671bdd9eae2770bd7caae97887f7d5eedb633c2ac2dc85938fd\"}\n",
+  "timed_out": false
+}

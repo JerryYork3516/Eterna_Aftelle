@@ -1,0 +1,957 @@
+{
+  "CHECK": 40,
+  "FIT": 64,
+  "PCM_read": false,
+  "anchor_parameters": 1057,
+  "assets": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-mindaec-rosetta-probe-20261006-01/venv/bin/python": {
+      "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-data-admission-20261007-01/scene_data.py": {
+      "sha256": "c3444c89e2abd245a5e0a0508343d0ed35ea87fe9883183309ccd484622c8d73",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-dev-evaluation-v4-20261007-01/evaluate_dev.py": {
+      "sha256": "9d7e98b04f932ac474f46a978d52f913667881dc72664fffd37c7041e0a78fdd",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-harda1-candidate-20261007-01/anchor-tensors.pt": {
+      "sha256": "d7ba3844c0a8f0744f741959647f2f26efd82156082e8d01c4db60c9b3412a4e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-j40-input-implementation-20261008-01/j40_normalization.py": {
+      "sha256": "8083bbef823b8754659a31dcdb8276e51dbe2491d8d10f66345a8be451427470",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-j40-input-implementation-20261008-01/j40_sideband.py": {
+      "sha256": "32e8f6be57e21f3b348c31c7fe109f55a23412fa74203be8b107713ee6b0c8ad",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-j40-recovery-20261008-02/TRAIN-J40-norm.pt": {
+      "sha256": "82a97732cfd9f456cbf8c0d67e2d30e92e21c0b5ecaf1a84a849dbe7fe8c463d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-ne1-execution-20261007-01/fixtures/FIR.f32": {
+      "sha256": "802443b8f02b5a0c69840948be31750c49c5cb15120e0c703b0dc2eea83ad864",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-ne1-execution-20261007-01/fixtures/Hann.f32": {
+      "sha256": "b194cc92d147b57893586133e38cc6e141b02ba514ea727a8c6e2204b1f136dc",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-ne1-execution-20261007-01/fixtures/Mel.f32": {
+      "sha256": "98d88408c275b0928178a6afd65e9c9a61b6a529add6ed295e8fed0fc6ae7580",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/design-contract-v2.json": {
+      "sha256": "0b758c4004ef57a112e07b9d522392d00b450bf75b0153fcbc92589dcc1491ab",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-design-20261011-01/population-descriptors.json": {
+      "sha256": "d6c07ba21e544671bdd9eae2770bd7caae97887f7d5eedb633c2ac2dc85938fd",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/feature_worker_j40": {
+      "sha256": "f933bb3b21afc08ccac82ea6ddd0ecf0113d0e656d82c7a1d90822660d8e5ed2",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/temporal-j40-contract.json": {
+      "sha256": "5ec37c39c6b3c07eac6d3578de8b2d97e3a437587b86171f4e0b30dba44a0b84",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/temporal_j40_adapter.py": {
+      "sha256": "a3520669de18e8cc8ac2eda17fa3ef339c74b598d21f40491d2159d8edaf3980",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/temporal_j40_factory.py": {
+      "sha256": "fec97cca615e8fe7697a768771b115a24d9b17a3986d6707b2446f8bb784d56c",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-temporal-j40-candidate-20261008-01/trs_objective.py": {
+      "sha256": "e46001c64256ed53070ea6378a9d17bc9515bcbfd6eb0e19b02a0958278d8bc7",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-training-execution-v4-20261007-01/train_head.py": {
+      "sha256": "993ce21bc0f5031a59c0483063204bf3740feab21c8d485ac2288d3a3bf26677",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-p1-transfer-20261006-01/libspx-observer.dylib": {
+      "sha256": "b08230a110ec91b43ecc7a8655f5dac54a5cd911de483060b1157ef554d9a49a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/AGENTS.md": {
+      "sha256": "0b5fbc726ba78a84b29b3b4720d82d47069042bdead11a77641de200d6ad2f1a",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/admitted-wave-manifest.json": {
+      "sha256": "147ac810bd47fd615636c8a71ee2dbff98c61ff1b9540e9ac8795bb7f88544cc",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/scene-manifest.json": {
+      "sha256": "047ee653043b422bfb82a21e02e4770d511c027c13fc56f29a66ea35920e1696",
+      "verification_this_turn": "SEALED_SMALL_SOURCE_OR_METADATA_MAP"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/training-coverage-run-01/final-checkpoint.pt": {
+      "sha256": "a2f56ff65ed41a66f0dbfb160a0ff2d647622e8eea25072538d57585c8330d43",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0002/BAC009S0002W0122.wav": {
+      "sha256": "71bc9f1a1cdd3ba115c0fc6cb10c67cfdafa2e104df4c92dd6f29f962b82c0f1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0009/BAC009S0009W0122.wav": {
+      "sha256": "de9d1e1f2519876a778de438c9f93db879060cc2383f5f419345a9da202adee4",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0009/BAC009S0009W0123.wav": {
+      "sha256": "1dc2c6e61638cf5ab2c4542d212911f05722268410edbacc375d2e3cea156bf8",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0010/BAC009S0010W0127.wav": {
+      "sha256": "2c449628ff16ba3039291075586a5400d3e9358e63d52b9d2c3ec7f24871f9fd",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0010/BAC009S0010W0128.wav": {
+      "sha256": "a7ea67f538163660adb5b9673d46aba88d714f2899f0daa2d5f950dc779b3169",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0012/BAC009S0012W0122.wav": {
+      "sha256": "abb9250a9de737e9eda88d6cc8a6b2566f0f8b4722efee0224a54f9be3617d4f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0012/BAC009S0012W0124.wav": {
+      "sha256": "b83511f7fde2318610cad06cb28cb1691ff365afb45a9b75b1348802ef37f23c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0015/BAC009S0015W0121.wav": {
+      "sha256": "c93c40b6058fa0a1c76787073a3d616236b2ea7920e384bd6fa80c040f53a91f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0015/BAC009S0015W0122.wav": {
+      "sha256": "f274e68a17578700b02f104349c59e5e93572b82961da18c424edf84f512f871",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0016/BAC009S0016W0121.wav": {
+      "sha256": "7e414775aab9e0c805ce4ec275f3a05b937a237ffffe38dd554242a468b83907",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0024/BAC009S0024W0123.wav": {
+      "sha256": "01fb16056e3a091957438fa9ad26127788b309649d2a0611a6591834b5803f5d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0026/BAC009S0026W0121.wav": {
+      "sha256": "c6bd2842e554f6466da32c2d372c0e096b01a78ca667d8f3ba8026abcdf382fe",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0026/BAC009S0026W0125.wav": {
+      "sha256": "cb2caf5d7d76f0fffd3937cba9884aa1fd3ccad5e6f41bd4670dfda52ddddba2",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0030/BAC009S0030W0121.wav": {
+      "sha256": "1df8f58ed5a8b18322b7d5878507bf5f6f75bf4da65cd4adcaef5a95d5ba159c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0032/BAC009S0032W0121.wav": {
+      "sha256": "f03fdc955ef3a64cafa56ae597eba8fd568eebf4b11bca1d1e593124769f7b04",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0032/BAC009S0032W0122.wav": {
+      "sha256": "37c60d693106b63115794cdf1ccfb232f5861532003e8d7d82509b137f25db0d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0035/BAC009S0035W0121.wav": {
+      "sha256": "cab08ca46749bdef070ab43260b7520c3c57ece2d67ae58c0073ba7ae2b2bc69",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0039/BAC009S0039W0121.wav": {
+      "sha256": "93bf79fe17b9c69f76aab356b881398693796630461c24d33f069b559f1d47d6",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0041/BAC009S0041W0121.wav": {
+      "sha256": "726ce03f37090afb6c5a4be62f504fab5cfe57610878b5f9c4852605d6bea087",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0041/BAC009S0041W0122.wav": {
+      "sha256": "f5063c1297d3dd298d321f265fa1c6d60288aa2238258c041c616e1c35627dcd",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0043/BAC009S0043W0121.wav": {
+      "sha256": "c02e5a9e1ea5745cfd28fd7425e0e1375805f4138b6101d113cafd9514c0f60b",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0044/BAC009S0044W0121.wav": {
+      "sha256": "141cdd99a1e23563cdefae6a87b2bf7b4449ad296b2bab9cd723d2ad82c1b84e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0044/BAC009S0044W0123.wav": {
+      "sha256": "7856e99bcdcbb21375657662c762c45c061cf0e26bcab8ef4e3cc8c8b656717e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0045/BAC009S0045W0121.wav": {
+      "sha256": "f957cbfa923526e212ae94acef79dce80389aa75f8ad8a6116d0d21c5f57c4a1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0045/BAC009S0045W0123.wav": {
+      "sha256": "992a66f5f7df3add96333b9eb6ee72466c68e28610d0b1a07b21988ea2f9529a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0046/BAC009S0046W0122.wav": {
+      "sha256": "e93c3630a762cd6a6c85acd5d6a344dde493678fd8fcf3930e71e1af5a12663e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0046/BAC009S0046W0126.wav": {
+      "sha256": "c0915f4d784bf5013bc3ef7f8e4428503015325cabfa96c1f67232da97fda7f4",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0047/BAC009S0047W0124.wav": {
+      "sha256": "8f11ff12fb83e75c7b5b76408ef36ae8d24a980608f05934592bc21f6a144219",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0049/BAC009S0049W0121.wav": {
+      "sha256": "851da5210be18c215a1b5cc1c4d2d5cc118ee282eee901880fc7359f67fe8ac7",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0049/BAC009S0049W0122.wav": {
+      "sha256": "37db37badb1498527881fd5a46b1ee4d0b295b2dee8b782e45dcbcfff13301ba",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0051/BAC009S0051W0124.wav": {
+      "sha256": "78c48af7961356bb4588adccfbd03c41e07ff0bfff65ff4831dca8c315396681",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0052/BAC009S0052W0122.wav": {
+      "sha256": "5c6c54f1732fe7a7ea8ea8e0feafd5b8f963a70d33ce76d255a7bc830c16819e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0052/BAC009S0052W0124.wav": {
+      "sha256": "b64f7c4d4026dd525c94e8d64a5b38c17f60eb6d40774f576dee277e73c9d0cc",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0055/BAC009S0055W0124.wav": {
+      "sha256": "1aec18ac345b99aa495a4f2872773925bdd4d87da3cf1922eeb5179c9fc745da",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0056/BAC009S0056W0121.wav": {
+      "sha256": "fda42b33272082d2472c6e407187a09c48b919d107834aa7976553a1cc2d0113",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0056/BAC009S0056W0122.wav": {
+      "sha256": "993cfff6f32f06db037b65bdf2614331bbb93e04e990b25cc839b97b49335604",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0058/BAC009S0058W0122.wav": {
+      "sha256": "6f9a68af0ee7e5fc2b6adeddea51053e399fd6166a096c18ee0492fb563a24fa",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0059/BAC009S0059W0121.wav": {
+      "sha256": "1e96bc9f142186fc992ca14205fd13b94e78a401687017172f09a82bed8ad5d1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0061/BAC009S0061W0122.wav": {
+      "sha256": "633f8f6ae027aab86b875fbb662bf3ad47a321dfd59bb8566d54032febd30600",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0061/BAC009S0061W0123.wav": {
+      "sha256": "141904c9dc7b802bb4d86ca53e43bfa0367c8f94e45eb9562f27cdf323da5e30",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0062/BAC009S0062W0122.wav": {
+      "sha256": "e717c658dc16cce9a03900ea3fb03d322e740bc05231877a166492fded64f3a5",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0062/BAC009S0062W0123.wav": {
+      "sha256": "7c5bbb3398f7ba71d049facafe5c80f0912abb0ff8dc7b389d36587e5380edf7",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0064/BAC009S0064W0123.wav": {
+      "sha256": "840de2164e6adea295d9e27da9e24d9c688536c0738e5a8be365b8522eea6715",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0069/BAC009S0069W0121.wav": {
+      "sha256": "99b9d60be16691207f4f125c6203e87a202154b2824fd250ff363047319ded55",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0073/BAC009S0073W0121.wav": {
+      "sha256": "ce6c1ab4dafc8bf0e2b7a7a3a77ba7812f41b89db3cd3cc38d1cb3f02285fedc",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0075/BAC009S0075W0121.wav": {
+      "sha256": "6734f03166e8cd0bd3aae697aa64944785d803da1d01f484f479e2a89db3f53e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0075/BAC009S0075W0122.wav": {
+      "sha256": "f5dfa3e57eaca806cb141afeb5f01b95a53a9b8631f044466797572f600be12d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0077/BAC009S0077W0125.wav": {
+      "sha256": "ca44e226558c020c834ffd6a96548470f3912e1e3928e07ac7d26fbc6c598c83",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0077/BAC009S0077W0126.wav": {
+      "sha256": "d6e71dbcb61fd7cdb18c07bb4ed6ac6f1384da51acd6e1dfaa07330ac39882fe",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0080/BAC009S0080W0121.wav": {
+      "sha256": "c08e7acf40c8c4c4d8d81ca09931cdc70b357ab8703b8a694c1e4848a581f0f9",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0080/BAC009S0080W0123.wav": {
+      "sha256": "cdcfb7f45a3bda6d76923ae1413b8ac40f8fbcc295033223aecccfe5e54e1544",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0083/BAC009S0083W0122.wav": {
+      "sha256": "440c2083ef9f9d97f2f27673e5996f42995c7c8d4aa37993b73b12e33c856519",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0083/BAC009S0083W0125.wav": {
+      "sha256": "fcd6a9d51ad7eeccf73b3fcdd0a15c4b2de7aeb0247ee0940fb8d539429e3b19",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0084/BAC009S0084W0125.wav": {
+      "sha256": "77abd03e7d9c2e9dc68324e4d7508a81d5f8a333949f5d92edffc7060a98bacd",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0085/BAC009S0085W0124.wav": {
+      "sha256": "0f0dfbae891626e37fd3cdf9a659bbd3c8aa010b5226a64b4d4ba7f9bf71fe5a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0088/BAC009S0088W0121.wav": {
+      "sha256": "969cb161c98d6960599261db48207486ed780d91ee862f31cd6598fa53c5a4c6",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0097/BAC009S0097W0122.wav": {
+      "sha256": "91fb8b001abdfb08ca47c30ea0cc22ac798fc6f376201a25fa96439bf7e08fe5",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0098/BAC009S0098W0121.wav": {
+      "sha256": "d1f57a7e04bf59bfdc6dcb22fdbf1a98a7c453b4d7c3131ec0d36085226ea4c9",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0108/BAC009S0108W0121.wav": {
+      "sha256": "b90975a822297499cd4f8613264c25cc0f1d74123e4caf3a616c067e26e8b826",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0108/BAC009S0108W0122.wav": {
+      "sha256": "c8b1ce3924943293829f5f370e883d6a80cb8fd7e892131dbdfed4d9b8500d02",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0112/BAC009S0112W0121.wav": {
+      "sha256": "11cba7c22e4189d37a5b2e14148c6769e4089dc84c8a5976f54c2d4f8eab5f26",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0117/BAC009S0117W0122.wav": {
+      "sha256": "70c47be6b4fd425a83fdcb5dfc2901c17e98933cab1b8e25483fa34984b80541",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0117/BAC009S0117W0124.wav": {
+      "sha256": "ed48e5394cf67e65481cdcd85bdf2b1d69d633a3434c1c72578675514afae5d3",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0120/BAC009S0120W0121.wav": {
+      "sha256": "fc8632039e0f974ef0d448aaec87e90234a912e0a978a171b3c6c895a38c3090",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0120/BAC009S0120W0122.wav": {
+      "sha256": "c33e78e9fdb89c51366d2030e1d544102a8212fdebc09a9110f0bcbf2add7b1f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0127/BAC009S0127W0128.wav": {
+      "sha256": "b7fd33d206b077241ae9726d9d707bfbc6db51c13ce1b18a90a9f5617a1728b9",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0127/BAC009S0127W0129.wav": {
+      "sha256": "63b9b211aeb3943f4b7702f5df27e82496c7c2744ae69d4eb017b0ae8cd45a48",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0131/BAC009S0131W0121.wav": {
+      "sha256": "078f22a9dde5a62b07368ed5c00312335b6aa2aa2f5184125ca367b39cd29590",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0131/BAC009S0131W0124.wav": {
+      "sha256": "d4974f24494aca9e4745fd69d38644631479eed29c0d431a64625520e572b512",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0133/BAC009S0133W0121.wav": {
+      "sha256": "a1b21cefb9ec7007ce76910b08deb902584e2d8589c4629a516efc639a38cf20",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0136/BAC009S0136W0121.wav": {
+      "sha256": "d5a8fbe6627f6cb03999b839ffd1a9641dd7f756d25323e0ee2a506fe49926bb",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0136/BAC009S0136W0122.wav": {
+      "sha256": "0ccb3b2a2bd5f98ddb0e91dfa88ebed2fc8366f642b737f3b2d7380f43c214f9",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0137/BAC009S0137W0121.wav": {
+      "sha256": "98be45585641d12d2f24090cc5b55617ed0fda32f3e3fbaf445997d2df546be6",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0137/BAC009S0137W0123.wav": {
+      "sha256": "a105414555bf821ee289f802a2e8ac2de6bc3716d4b6b0b35034926b54905ce4",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0138/BAC009S0138W0121.wav": {
+      "sha256": "7b503f2116e115ce414bef4e41fb9f25621d4402d2e0f4c133eb51f6d5e205c0",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0138/BAC009S0138W0122.wav": {
+      "sha256": "5a01ee44f488750bd6bcf231a9bc3ff14d311c7f5321178e84ea304b6a125fc5",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0139/BAC009S0139W0124.wav": {
+      "sha256": "cf61abb6d72f4a7a8e50ae8c37b135ff6715c291931147ba3ea5438be28501e5",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0139/BAC009S0139W0125.wav": {
+      "sha256": "fe5c1575a780c8656573d1393bd6404e505d3fadd84fc44f689f26c5d2a20d1f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0143/BAC009S0143W0121.wav": {
+      "sha256": "e8148e79e0806c27b158bf891e12a233838ae93e77329c16f1505d24db2625ea",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0143/BAC009S0143W0122.wav": {
+      "sha256": "167e9737e32df88e0dfbafdf3b052b37ecb4ddcbece9d00a167260b265074ed8",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0144/BAC009S0144W0122.wav": {
+      "sha256": "3a2a2bf999f6656c5cb45ff69f27e99f5817a8c2b8956887a4c01c3eb1aeea27",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0144/BAC009S0144W0123.wav": {
+      "sha256": "6f972b5d678b55543ede10d2afd13c1262d550f3735db34063edcd063483cb56",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0145/BAC009S0145W0122.wav": {
+      "sha256": "625c4d27ce6b1a45552b7bc64766def9dbb47b27fc353041b7a3a2b57fae14a1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0146/BAC009S0146W0121.wav": {
+      "sha256": "265499758074973c63d3e87833fc2320a3fff93edb002f51fb938d682e5f56e9",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0146/BAC009S0146W0124.wav": {
+      "sha256": "da2fbf21dc732197b559f4785796cc3e3661a4575d9d1347e616aa9325a38276",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0147/BAC009S0147W0122.wav": {
+      "sha256": "0363e5692716429fce5957dd3cf9eee57b58d7ac9f5ac4c4e0a75e52d9643403",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0148/BAC009S0148W0124.wav": {
+      "sha256": "73bdef02a451cf5168f4c3966f46ee719dfb06473221fb820ee4ccd416d43c8f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0148/BAC009S0148W0126.wav": {
+      "sha256": "6fd5c8e33dbf31689a9cdadefb8cacea36e269e7a22a49d3306b7db149e6f2c5",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0149/BAC009S0149W0121.wav": {
+      "sha256": "03195c8f8a98860beab7dda64ec97759d8505f9c35cf32ce4b19175a47e3216f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0149/BAC009S0149W0122.wav": {
+      "sha256": "dea2b983edff81c2a516bfce22bcb444fdd822a322e29b5f1d633956471fcc1a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0152/BAC009S0152W0121.wav": {
+      "sha256": "ca7f71139b0e9aa3ae2ffdee18bfa501884ce0f021ce5f615684b0cd6180f677",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0152/BAC009S0152W0126.wav": {
+      "sha256": "698863fdb24ffe5bfb7281a52941ef0819fa86254363ffb63f43e74220506e0c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0153/BAC009S0153W0122.wav": {
+      "sha256": "7c1c62dfca27c2a7dc561eecf704915d34b8649ea5b168ba801132b7b70eca7d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0153/BAC009S0153W0124.wav": {
+      "sha256": "bfb675c90aed8e7cc312458753db86b1e16be98a118cb55bac5b746b5c13e0d2",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0154/BAC009S0154W0121.wav": {
+      "sha256": "cb532c7e8c144dcf8c37d4d68de7a57d6b8455ecd69e6735389f537066d4fb37",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0154/BAC009S0154W0122.wav": {
+      "sha256": "1580ee27eef977f83c383a4dad6801a8ed558478de1a9c6cc0eb192720de7d75",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0155/BAC009S0155W0122.wav": {
+      "sha256": "c8433b63423eebb6c7189786e9ccba4309fdcce7e80de6878116c7f8ce38985e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0161/BAC009S0161W0121.wav": {
+      "sha256": "8057782a6ac770eca16ece0c19336d24f508e339f51ced436f96cfde06373d09",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0161/BAC009S0161W0122.wav": {
+      "sha256": "51b85706ca8751ace782d9954cce8c4b044c1cce30545cda2b33ff2cd9911635",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0162/BAC009S0162W0121.wav": {
+      "sha256": "3c5411af11829da511b04d41f72118ce505685225adf9f3a944effe3d00df04f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0168/BAC009S0168W0138.wav": {
+      "sha256": "175b6a6e7cb22a8977db3301265edd599e6236f92e327330d5c8f590d75b6e7e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0170/BAC009S0170W0121.wav": {
+      "sha256": "dfe1f1604972490c03492a7967eb3ddab4dca23251df40a4fb56f4119f663533",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0171/BAC009S0171W0122.wav": {
+      "sha256": "3bb2a59028090fe95fad914ece4b0f9a1c81ac2e3b68ff6aca44064f7cbf7538",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0172/BAC009S0172W0121.wav": {
+      "sha256": "b5ca6e167548baa6e6e82397590ec3b0069d8e5002c6d1cdfe5282f6d3fb04b8",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0172/BAC009S0172W0124.wav": {
+      "sha256": "6fe286c4e27e3c26b52e549f20ba6eac55f249861ae036e1752ce83e3c90b9e3",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0176/BAC009S0176W0121.wav": {
+      "sha256": "f19ad33500bfe5f2e9cec2d822cd60543ab97da6a3f3fe7f33c33f60b465fbcc",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0176/BAC009S0176W0122.wav": {
+      "sha256": "497556027a8e4ffc25dee3a9dd41d23f3511a29b9ad7262d09045c95a1efa3eb",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0178/BAC009S0178W0122.wav": {
+      "sha256": "4c78787a16eb384ce98d838119ed82b8dde51efdb26278c2ec1ea67a65bb65d4",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0178/BAC009S0178W0123.wav": {
+      "sha256": "4b1c5cb4ba073287dad9f8871b45b4d821ef36b458b16d94d9cafd7c79a2077e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0179/BAC009S0179W0121.wav": {
+      "sha256": "357dc2d93b5b9ce77791233d7e8e06dcb0075df41bcb85cf3b8024e40ff8181d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0181/BAC009S0181W0121.wav": {
+      "sha256": "b2cd938bbb06cf039244ee2211409e5a23864d8cd5848d7c2ade07e222fad2b7",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0186/BAC009S0186W0121.wav": {
+      "sha256": "371613c47f687bb4f2c187417e663f6741a41a8a0f2d36a63d873db5b5e89b93",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0186/BAC009S0186W0122.wav": {
+      "sha256": "7328b81184e9a409b35a190483312a784711209c4b53779b96bc50d2437678d5",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0192/BAC009S0192W0122.wav": {
+      "sha256": "fb2e3e24bf087cc1444fd002c6210b318503eedc6dccd093f6b058e10491e62f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0192/BAC009S0192W0123.wav": {
+      "sha256": "aca30e137e49b949b0d52a25dd26b039d9b18fc0f6b1a64a39a815444c369aa0",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0196/BAC009S0196W0121.wav": {
+      "sha256": "f1d583948bc428841fa8f0c660d992ec736deef0d0eabac00f9da024ef0c205f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0196/BAC009S0196W0124.wav": {
+      "sha256": "9476a26734185218aeb120a8fb00db23c53be6537b9ef4f9b376a7217b4c7705",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0198/BAC009S0198W0122.wav": {
+      "sha256": "8a00086406453c8cecd1e272b8e4c7bd4d6111799584d611e823a18931c9aafb",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0198/BAC009S0198W0123.wav": {
+      "sha256": "61b8a97dbd95d502a57b03a14684727f8946bda9bc9a6b07389476c616d87dc9",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0200/BAC009S0200W0121.wav": {
+      "sha256": "bb70635135e30de57f435b1f7c1916c8fa17dad9e0872b83e002f29e75fb7d8b",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0200/BAC009S0200W0125.wav": {
+      "sha256": "41a560a00684e5d81a919a69bd1d89051e603307a238897ca347f7c652f94679",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0201/BAC009S0201W0122.wav": {
+      "sha256": "ac8b6071f906ac723a5a793c5cbae65f6245dda5ccccdaa849f9aa7daabe6612",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0201/BAC009S0201W0123.wav": {
+      "sha256": "425b462f360f1c615d24f686a9b4c63231779db481c483cc6b5a97a627c1009d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0203/BAC009S0203W0122.wav": {
+      "sha256": "79fabd3219eef9df49cc9154d09ee1f20e1205d8b193cd3e73d2e8af63931955",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0203/BAC009S0203W0123.wav": {
+      "sha256": "1f8e330e683e04c5c8c4591603001bcc36b4ff034a23a9f4d89e6ccf83b47c35",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0205/BAC009S0205W0121.wav": {
+      "sha256": "f8146c1cee98b06ba7412d9cfe0cf9a7d324ecf6d4e9e4c9f21a966095b3a201",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0207/BAC009S0207W0122.wav": {
+      "sha256": "2d6af7b0859cfe72bdfa6336058196592f8219ae29ad26490d264c722fd67eed",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0207/BAC009S0207W0131.wav": {
+      "sha256": "345d81cb4ebab6518ab263db9cb272717ee2a5113856d38acf7d4b88e0b22935",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0208/BAC009S0208W0121.wav": {
+      "sha256": "68ad6892686c3d42c3329e48272f33dabb1116a0dd9c842a0808ca5eecd32378",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0209/BAC009S0209W0121.wav": {
+      "sha256": "cca54bfbadc186f68d2130b9da77ad5a74a031701e4d13ac03a3b3096c7bc8b3",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0209/BAC009S0209W0123.wav": {
+      "sha256": "f1ce617af96986d44fdb4789bef3d82fffdc3f2c63e1d65e99a722c8a279db65",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0210/BAC009S0210W0121.wav": {
+      "sha256": "7a515b7dacabfe26faacc016558e3b1d13b0808937f844f4f8593c5db3b59cdd",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0210/BAC009S0210W0122.wav": {
+      "sha256": "cf42cb9b2dc296779d35c056325b8101921b8458d2cf57be1a4f81b8534d7845",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0211/BAC009S0211W0121.wav": {
+      "sha256": "bdcd60c53b4f355b15f9ab28c1d0bf38a3e3c47a0b4a3e0796aad43a2884498a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0211/BAC009S0211W0122.wav": {
+      "sha256": "e6b863d7d5ac7660669485f6138783b4fe105e0ce9d7a3d07f1d1cfd963ad1e1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0216/BAC009S0216W0121.wav": {
+      "sha256": "502b832063961fb919169db1dfea3f3b34de04631f918c01c6c91b339e1c0adf",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0217/BAC009S0217W0122.wav": {
+      "sha256": "efb69f8805185f971d01fba1e226a7d26482a7ef432bd517aa8ca0167fcc5019",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0217/BAC009S0217W0124.wav": {
+      "sha256": "6fda650b00e316120603df84fdba46f76053dc83b1c3e4b5bc0db54f92b3465e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0220/BAC009S0220W0121.wav": {
+      "sha256": "41fd947209499a3970a878d4cae755f0f903ba1cd6b6023c8728f9de82b72268",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0223/BAC009S0223W0123.wav": {
+      "sha256": "e33d6848664825b17de693d38d9d24a53f6b02ca92e81cf602b6ae6cd41ea7c3",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0223/BAC009S0223W0128.wav": {
+      "sha256": "a86dc67e572330fd93c98108c027f9ab7fad61da25f135d5dac54a1ab44f22c6",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0228/BAC009S0228W0122.wav": {
+      "sha256": "c0431fb34b844f4ea350ac7171a0564ac66517aeba39ef099e8ca9cc98e1515b",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0228/BAC009S0228W0124.wav": {
+      "sha256": "2a0798db03b58f296e486fbfdc6d504815952ea5fd5c41787a61d2d60ff3a15e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0229/BAC009S0229W0121.wav": {
+      "sha256": "83808bc253f74512bc004d74c07c3793a2dc741b9744c2ebfd2eb669eae11a46",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0230/BAC009S0230W0121.wav": {
+      "sha256": "860d1918186319517a359986223112aa3d5a1a1a3b4ed28a6a78441ef88e8424",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0230/BAC009S0230W0122.wav": {
+      "sha256": "dd466d060a197680f6335a0205a1ca30885f34933b231c281508579471386a9f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0231/BAC009S0231W0121.wav": {
+      "sha256": "15cc7eae6f5a3ad6ce5f86953d3fe1b5c2375dd189fbd09a826545621965221d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0231/BAC009S0231W0122.wav": {
+      "sha256": "a6db1fb3a8f4e470a7d34dbb817454f2f5de63caca8cd7d480181a9d84f9e743",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0233/BAC009S0233W0121.wav": {
+      "sha256": "d2564ebf05300c2579e96c0b93e293e8f0f346f5a87826be87b4eaef9673722f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0233/BAC009S0233W0122.wav": {
+      "sha256": "bc60803de97c6cd6ae5c55552cfb796356aa153c301d1a557ac4057b55a90c5c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0235/BAC009S0235W0122.wav": {
+      "sha256": "050d54463bee0d66cf58de026af5a16c9fbb86f3307dfe2b0d142b1e05489f0b",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0235/BAC009S0235W0123.wav": {
+      "sha256": "c765e1af29a03e016f22762fb75a8b4d9aec536489e6b1b26f1b44895c59d79f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0237/BAC009S0237W0122.wav": {
+      "sha256": "6d2bd20500b98b600c5043a3451df651a810a7fa49d84099c93686def3ea4643",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0240/BAC009S0240W0122.wav": {
+      "sha256": "1c6f919e31e4e4635a34a81210874db0a7317457cf5af5444f61667a8963e3d6",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0241/BAC009S0241W0121.wav": {
+      "sha256": "c3a29221a9c842d6220ef19f240deac5726148b1036ddd4415ee1b2e5be32d3a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0241/BAC009S0241W0122.wav": {
+      "sha256": "357976a4a9310fd6a06e6c197a2d184afe987c81fa6015047bc4aa3da1a70d46",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0242/BAC009S0242W0121.wav": {
+      "sha256": "5a376cd37920923762c52b41b8ce939d34aed1e67811f614a4444009b8aeaa15",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0242/BAC009S0242W0122.wav": {
+      "sha256": "1ae0b2a55aa0e54e22c6d0caf2296352397c6ed91eb2ae786cd20179af375948",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0246/BAC009S0246W0121.wav": {
+      "sha256": "fbaccf9a276612ae3f7f0fa44b6086cce2669c0efc78727110085b262d4b974a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0250/BAC009S0250W0121.wav": {
+      "sha256": "9993a5fc11e96684adc5bd6c74b89d8ed612b4539e2aa8d76b9b871497a4b55d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0334/BAC009S0334W0121.wav": {
+      "sha256": "8fbe386b633ba67b76d301c5f892d1bc788277b806586075bd0c547a3e1be805",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0334/BAC009S0334W0122.wav": {
+      "sha256": "120d7e0848aa7d379f827fc0ad0dc75a9c170f823cb4300c2dbad7bf96e15bbf",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0336/BAC009S0336W0122.wav": {
+      "sha256": "a353d655c212a97835e33754aa713109d497a6113ea7f853cad251ed52d16697",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0340/BAC009S0340W0121.wav": {
+      "sha256": "114a1f581775a8617037edf7091ece612cfc9431f1835e32455757b020725365",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0340/BAC009S0340W0124.wav": {
+      "sha256": "3815a250a4be0f815b08f297602d6f20bdaf9b19b4ead8ee99624b8e9710d8d2",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0346/BAC009S0346W0123.wav": {
+      "sha256": "d97fb55643f70950330f222f95509c617349f3c3d2229ad8911f58e3d6006f1a",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0348/BAC009S0348W0121.wav": {
+      "sha256": "e17e07a0d031e1add3ab7d180606f9132f7cf52c1aa47070e0bce241103aefe5",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0348/BAC009S0348W0122.wav": {
+      "sha256": "3e41722af94afaca7e045e131feb809735bf4ddc97eeb904228108e6569f9c90",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0350/BAC009S0350W0121.wav": {
+      "sha256": "29ea0ed3be289a367f96e857792c00c0f39f89e364abbdd9713a3c1a8bf7a7dd",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0350/BAC009S0350W0122.wav": {
+      "sha256": "2f6b72459bf61c9757fb4194d273deaed959bc6aab108aec0d68387db11482f1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0355/BAC009S0355W0121.wav": {
+      "sha256": "41c0da1a478569276fccca978fe3c22af7fb69a428e24d94ad4f2a01f988f80b",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0358/BAC009S0358W0121.wav": {
+      "sha256": "4da1f032d4cc7c731b8c41a30dbefdc55242047e2b657718d8bea75c9e17eaf3",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0360/BAC009S0360W0121.wav": {
+      "sha256": "c6f604f8c1d6e0472304f1668e37d52c997b31643f1daf4acba0c4afcf517974",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0360/BAC009S0360W0122.wav": {
+      "sha256": "80a41fb391b2dd0cedab1a4b138f64feb91e9201e5f1c299fb6d91cfbd927fc1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0361/BAC009S0361W0121.wav": {
+      "sha256": "b1577926b78ed23700ca8b79cfdd26e3eda48f9b7dee706af0f513450362913e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0421/BAC009S0421W0121.wav": {
+      "sha256": "7aac0c8f60b0fe848c49812060a4f87e7d98ab67ee248ace9e2f64706643a14e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0421/BAC009S0421W0122.wav": {
+      "sha256": "1664890bc33dc88f45e8f50c151e7a3766c8f43d187e414a769734fdecd9fef2",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0510/BAC009S0510W0122.wav": {
+      "sha256": "0f2badc225a8891d2e6222190a7ecb92ab3684bf2b7c079e3751d9cafbb2ab38",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0510/BAC009S0510W0123.wav": {
+      "sha256": "2812474966eb25e67397e97ae1881f69b781ca2c0f4aa23567f482ca81651b24",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0513/BAC009S0513W0122.wav": {
+      "sha256": "eca0b48c1a650c1cb3f721d6932f15b45511469804bd04e557e23c573d957ef2",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0515/BAC009S0515W0121.wav": {
+      "sha256": "4f5c4dabbc8d64f5c9788761146f3404c74db97aa81693fc248aa7d95a492fe1",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0516/BAC009S0516W0123.wav": {
+      "sha256": "071dce5a12e8c03971f916eff21e7614536eeb903b7e7c18bb4c2d5da6c1373b",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0518/BAC009S0518W0121.wav": {
+      "sha256": "0d7b8e1b65ec3e378c08c6b5ac675697c88b26ff4db6b83ee401083d9bb789d0",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0522/BAC009S0522W0121.wav": {
+      "sha256": "c3ee956703fa12c52e351f3716832947494e7f602b024533f096890bf1fcc21c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0523/BAC009S0523W0122.wav": {
+      "sha256": "5550f4767637cc57c0be713e298c6c4153683f5d8c7c7576c8829faa58e67f87",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0599/BAC009S0599W0121.wav": {
+      "sha256": "51c0d52ba9c83b517e879b6b05b07725da5f83080febfdec37c3fa5b2eb77147",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0599/BAC009S0599W0125.wav": {
+      "sha256": "f4e892e98a2385590738749a5b6d6ad1dddfeb1994125bbe86995471dbc05baa",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0601/BAC009S0601W0121.wav": {
+      "sha256": "02fa5872b0bb19293769134e8ec7ef86a48b3cda6bd3a0ff05487a202cec8fba",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0655/BAC009S0655W0121.wav": {
+      "sha256": "e780342c7468a3449400eb6300cbc3e670c208161c0fcf35905ac8ca266c11b8",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0656/BAC009S0656W0121.wav": {
+      "sha256": "bcbfa67c761ab4395e114ea70c1665f5f5871594c3fa03fd1a09d15a2863deab",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0658/BAC009S0658W0121.wav": {
+      "sha256": "816e1c82fb22bccb6046e106388104cc9dfcb3dc86b9f91999f1414520467a53",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0658/BAC009S0658W0122.wav": {
+      "sha256": "4609e30f2e8cbd0ea0c700e3e5bc55ac8413418365e66ade0ec5d86ed7ee098d",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0663/BAC009S0663W0125.wav": {
+      "sha256": "e5f4f29d5c973fdac76fb432829ebc2943d3a18a38c5e45c37c36c5190380a4c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0665/BAC009S0665W0121.wav": {
+      "sha256": "6367739ec0e39d80f6567d18904d0fff268170b49231c6381f91ba97f6603221",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0665/BAC009S0665W0122.wav": {
+      "sha256": "2cd6e05a67742d0d74dfd445967ccf2c609f3305d98d302c8efbf098676f3ee0",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0666/BAC009S0666W0121.wav": {
+      "sha256": "1fd6c85a073d34f750a0e748608dc58576f847dfe0125c3b3a3ef9460530682f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0706/BAC009S0706W0121.wav": {
+      "sha256": "8d5b9ec26e6255d802b02fc1f85428cd4d025c35e5c1b084fcff997bbebb84fd",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0706/BAC009S0706W0122.wav": {
+      "sha256": "4a304a46a4d5f73e44184e7b884e03237bdcf5619d3ff3a7897130c3c0f5742c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0712/BAC009S0712W0122.wav": {
+      "sha256": "b2d68dd443c4eaed338772e2c651d7bdb1cbdf5527bffd385233151cc6cf3e6e",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0713/BAC009S0713W0122.wav": {
+      "sha256": "a5b58a3d4f5b76b6c932cf56ece1e049c02168db4a185dc86b8e16ef50d6839c",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0713/BAC009S0713W0123.wav": {
+      "sha256": "fb58c29703da57cdc81346a077a9779ee6711db426c40a1bf24c2c8af646d870",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0715/BAC009S0715W0122.wav": {
+      "sha256": "b132c217371519e7dc8ce3a9fb815a6435269103b12aed4461f4458cb7bed1db",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0715/BAC009S0715W0125.wav": {
+      "sha256": "2434c7bcf3d1c58b478af4d7d123ba1f803ced223d2f2cb99b2bd8474e72ac62",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0719/BAC009S0719W0122.wav": {
+      "sha256": "edd02475dc7ef880762bd7e64afe2677c8863c73beef97ce404f026a973a38cd",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0720/BAC009S0720W0121.wav": {
+      "sha256": "6b8e398095219a1c5349202412591acd4900f86d1839d29fc86822870a107fef",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0720/BAC009S0720W0125.wav": {
+      "sha256": "a1a5ee927b1c181a66f62f6a2fb3559ada39e61c7848fa8c2194c33c25b6684f",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0723/BAC009S0723W0122.wav": {
+      "sha256": "0d7d800eafe53447948016165b10589a521f4f7e66ee11e8de96f224c5fe64e8",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    },
+    "/Volumes/SSD/Aftelle-Test3-Public-20261007-01/waves-admission-v2/train/S0723/BAC009S0723W0123.wav": {
+      "sha256": "a84272cdbe2121d9656024085cd430748c8ddedd0fd51db5c404784ea13c7cc4",
+      "verification_this_turn": "DECLARED_NOT_OPENED"
+    }
+  },
+  "execution_authorized": false,
+  "fresh_deltas": 3617,
+  "model_load": false,
+  "new_code_current_SHA256": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/check_rbt.py": "4798d11d89c55a974bf40f4dae9e06f30d24868446c6390edef8458f0061a0cc",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry_fixture.py": "35a05f56106425f60646a69e08461ba0aacf14f00647ef829f558e8c775d5483",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_budget.py": "206c38ee9370bcc100ae34138b36c22dc3ba2ea771e28ddb2964a7fa5d12e79c",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_capture.py": "ffcf323cc8c00d71d68d9d881769537e722ee0460b1f00d55162e342d1b37e6d",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_common.py": "65cd52742e1eb49a1fca4abeb821a1ec8f6a587da6941d8ca456bc65ac63e7df",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_driver.py": "17804df457e770eb71b8c4e21346c36d8a93da914468c7c0af93d619fb8b21e6",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_factory.py": "93b681469572426b484a7eeb08887dee037ee4237dfd3c58dd53bb1395a3f0c4",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_io.py": "c3b4c159c67de52b1d0ebbbb4c21bb2aeaa8a4c04976fb292d8966f0fc71dc03",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_mapping.py": "ae7dbe6d518f6b8ca4821dce34f45de6c80928800e52809379f457d45d0f89e5",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_resources.py": "3def4665e12e2647694f46392bd72a2454367a133bffcefa92186398abfcc3ab",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/routing_math.py": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_entry_fixture_once.py": "6f9a3152a5ec81ed1b382fc8150c11fecc90a017850e2532d0cf9b2b44d11172",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_rbt_once.py": "e9336d38c4d1df45b86a58a28d50a95886fa0ab34f0729b146cb36fc62652b11",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/source_origin_triple.py": "8619a217240e68466ee0f72f86b63dd798eabb7780eb333ba0bc0fb5f47e7ba4",
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/train_rbt.py": "056b0b227473f91aa65c283ace9a84b03678c8fe29deb58b714ae4e41a66c289"
+  },
+  "old_557bed_checkpoint_loaded": false,
+  "public_wave_count": 208,
+  "required_files_count": 246,
+  "schema_version": 1,
+  "teacher_parameters": 32449
+}

@@ -1,0 +1,218 @@
+{
+  "Stage7": "PASS",
+  "Test3": "BLOCKED",
+  "all_static_upper_bytes": 59933813,
+  "execution_authorized": false,
+  "files": {
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/check_rbt.py": {
+      "bytes": 3352,
+      "sha256": "4798d11d89c55a974bf40f4dae9e06f30d24868446c6390edef8458f0061a0cc"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/current-state.json": {
+      "bytes": 658,
+      "sha256": "51214c8d84bae668ac02cb52e9c3410841a6acef94874c822f8a4ea1167b5672"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry-contract.json": {
+      "bytes": 170743,
+      "sha256": "19d4a15b7961d5d13911e199ad807f9a71d85e5b7467c19c3f614595dc878c05"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/entry_fixture.py": {
+      "bytes": 7855,
+      "sha256": "35a05f56106425f60646a69e08461ba0aacf14f00647ef829f558e8c775d5483"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/execution-authorization.json": {
+      "bytes": 43081,
+      "sha256": "b6bcc318887dc03a91aead83efdaca2792e03e26a270abb377e7c73624503fb9"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-actual-tool-receipt.json": {
+      "bytes": 483,
+      "sha256": "1a076c91e9563081e3b8282446420acf55f55657d82ed4b33ac5673789a6cc3c"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-attempt.json": {
+      "bytes": 35,
+      "sha256": "34b72eb4c3475c52bb632ad0aa4ce625448e951223d44c1862bc28be0d92bb40"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-protocol.json": {
+      "bytes": 4137,
+      "sha256": "40948257067dffe9543ceb804ba624c06610cab6ab248f067c1ce02f4651802d"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-result.json": {
+      "bytes": 327,
+      "sha256": "83aca766f5e80fb97935e392e23767d9061a308191dde789928c2d7f15e65d57"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-retained/payload.bin": {
+      "bytes": 64,
+      "sha256": "7ce100971f64e7001e8fe5a51973ecdfe1ced42befe7ee8d5fd6219506b5393c"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-retained/retained.lock": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture-supervisor-receipt.json": {
+      "bytes": 591,
+      "sha256": "3f7aed88d0e2003d6664e71e2db63fd821f08a953ea1a0daa647448308ec9512"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture.stderr": {
+      "bytes": 834,
+      "sha256": "1adcfc3e393e591dfb5c9e5c7d6a9b529133bb07573d27d1dad110239e6514d3"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/fixture.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/identity-inventory.json": {
+      "bytes": 61495,
+      "sha256": "29c033d7081d9d1e47fbe550ebf752ca1142e5118564c3cb827bc1ee910b2a33"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/key-diff.patch": {
+      "bytes": 8161,
+      "sha256": "6a47a24e702b30d55c01bebbae429c21a384f58a0208202afab59b2e2c2f0597"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/outcome-report.md": {
+      "bytes": 5686,
+      "sha256": "80399a99b7e789fc6007f6dc70189c6a561b41e1ff8ca71b30d93368351049d3"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-fixture/entry-contract.json": {
+      "bytes": 166887,
+      "sha256": "8877df73a8885825a76a812c9f774e862faf77bdbcbe13e47751471662f5d1bb"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-fixture/execution-authorization.json": {
+      "bytes": 42706,
+      "sha256": "4a6fdc9173f934afaec726f85b959f531eea8e07c297931dadf153eae3a81b41"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/rbt_budget.py": {
+      "bytes": 4674,
+      "sha256": "0f1223958d098efc796c7bf1f04b9eabcf98857016e334dd38c934c9b4accb51"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/rbt_common.py": {
+      "bytes": 3129,
+      "sha256": "488624f6a37345e7afd4788efdc0fd195beecc0b3653dbffbe6db92136702dfc"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/rbt_io.py": {
+      "bytes": 5515,
+      "sha256": "34c3dcf2504879f48a7770e053518ce11163e384ed1855a226b2b2ffe910efa9"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/run_entry_fixture_once-executed.py": {
+      "bytes": 2911,
+      "sha256": "c1102647922daa7c44ae3f035d73a5904f1b81d3fbfb69dd91f4c504e84af499"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/run_rbt_once-native-key-fix.py": {
+      "bytes": 7556,
+      "sha256": "50a16751e795984360dc86487fb3d449618646ebb81bf52a7342645b959cd1bd"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/run_rbt_once-resource-v2.py": {
+      "bytes": 8283,
+      "sha256": "10b24f0b66c06ed3af63ad99ad797a37820e13384cd9114eccb91e490e773863"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/run_rbt_once-terminal-v3.py": {
+      "bytes": 8843,
+      "sha256": "cea36b785a0db47bae41dbdc6b2b22b9401112179236a81ab2e4af9a2d3c1899"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/pre-review/run_rbt_once.py": {
+      "bytes": 7485,
+      "sha256": "8e8d6345e03c3a62a950adaed49b0ba65073598a755bb4bcf46a7e69a04de7f4"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_budget.py": {
+      "bytes": 5857,
+      "sha256": "206c38ee9370bcc100ae34138b36c22dc3ba2ea771e28ddb2964a7fa5d12e79c"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_capture.py": {
+      "bytes": 6517,
+      "sha256": "ffcf323cc8c00d71d68d9d881769537e722ee0460b1f00d55162e342d1b37e6d"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_common.py": {
+      "bytes": 3428,
+      "sha256": "65cd52742e1eb49a1fca4abeb821a1ec8f6a587da6941d8ca456bc65ac63e7df"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_driver.py": {
+      "bytes": 1717,
+      "sha256": "17804df457e770eb71b8c4e21346c36d8a93da914468c7c0af93d619fb8b21e6"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_factory.py": {
+      "bytes": 3743,
+      "sha256": "93b681469572426b484a7eeb08887dee037ee4237dfd3c58dd53bb1395a3f0c4"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_io.py": {
+      "bytes": 5571,
+      "sha256": "c3b4c159c67de52b1d0ebbbb4c21bb2aeaa8a4c04976fb292d8966f0fc71dc03"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_mapping.py": {
+      "bytes": 3641,
+      "sha256": "ae7dbe6d518f6b8ca4821dce34f45de6c80928800e52809379f457d45d0f89e5"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/rbt_resources.py": {
+      "bytes": 1698,
+      "sha256": "3def4665e12e2647694f46392bd72a2454367a133bffcefa92186398abfcc3ab"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/resource-inventory.json": {
+      "bytes": 1141,
+      "sha256": "168e9a4bc05f7a1c53855c7c44136eb12fe7838cfaa9d489fef2f2413928d37d"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/routing_math.py": {
+      "bytes": 3326,
+      "sha256": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_entry_fixture_once.py": {
+      "bytes": 2980,
+      "sha256": "6f9a3152a5ec81ed1b382fc8150c11fecc90a017850e2532d0cf9b2b44d11172"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/run_rbt_once.py": {
+      "bytes": 8711,
+      "sha256": "e9336d38c4d1df45b86a58a28d50a95886fa0ab34f0729b146cb36fc62652b11"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/source_origin_triple.py": {
+      "bytes": 8331,
+      "sha256": "8619a217240e68466ee0f72f86b63dd798eabb7780eb333ba0bc0fb5f47e7ba4"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/stage7-final-check.json": {
+      "bytes": 422,
+      "sha256": "a688655792110e107c7a4e835291956c374e37e8d92f046d481bc070e4afa3b5"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/static-compile-receipt.json": {
+      "bytes": 3643,
+      "sha256": "3ddc1b405b1f96f5dcb6a126b967bcb2c2ebb3e8725dd82a458593b05eacc1ca"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/static-review.json": {
+      "bytes": 1015,
+      "sha256": "75eb69da83250313f19b8e4dbdf243cdfe5360fd94e1302a7a9e1c4372d0ad73"
+    },
+    "/Users/jerryyork/Eterna_Aftelle/.build/test3-spx-nh1-rbt1-entry-implementation-20261011-01/train_rbt.py": {
+      "bytes": 3278,
+      "sha256": "056b0b227473f91aa65c283ace9a84b03678c8fe29deb58b714ae4e41a66c289"
+    }
+  },
+  "final_readonly_review": {
+    "actual_tool_exits_all_zero": true,
+    "resource_static": [
+      "c2993a",
+      "957c59"
+    ],
+    "scientific_static": [
+      "f929e6",
+      "b7cfbd",
+      "fac40d"
+    ],
+    "scope": "saved small files only; no PCM/weights/native/Public census or scientific execution"
+  },
+  "final_saved_binding_tool": {
+    "actual_exit": 0,
+    "chunk_id": "8099de"
+  },
+  "fixture_actual_tool": {
+    "actual_child_exit": 0,
+    "actual_exit": 0,
+    "child_pid": 41969,
+    "chunk_id": "792123",
+    "tests": 11,
+    "whole_seconds": 0.089480166
+  },
+  "no_next_stage": true,
+  "repo_final_tool": {
+    "actual_exit": 0,
+    "chunk_id": "1d5e71"
+  },
+  "schema_version": 1,
+  "scientific_run_exists": false,
+  "status": "REVIEW_PENDING",
+  "upper_cap_bytes": 67108864
+}

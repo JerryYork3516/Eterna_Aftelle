@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "scope": "new static design directory only, no repeat PUBLIC scan",
+  "artifacts": {
+    "GPT-Pro-RBT1-user-pasted-reply.md": {
+      "bytes": 12118,
+      "sha256": "8143d31ff1cbc35540c17634d141d302f160ec2234ae8ed5bc87a077f0d72955"
+    },
+    "current-state.json": {
+      "bytes": 1656,
+      "sha256": "40967bdbbd35717a5c36574637519bb86eeebd50e4f57780e3441e239ca57111"
+    },
+    "design-contract-v2.json": {
+      "bytes": 8907,
+      "sha256": "0b758c4004ef57a112e07b9d522392d00b450bf75b0153fcbc92589dcc1491ab"
+    },
+    "design-contract.json": {
+      "bytes": 8137,
+      "sha256": "76f4b8cc99db90eb190d1fc23d630f917af6eac472334da441aed142a177cc79"
+    },
+    "math-fixture-actual-tool-receipt.json": {
+      "bytes": 385,
+      "sha256": "e489d81af6132b2db222e30e69476de359e588c77bb21844cc9eb9ab7501b5e4"
+    },
+    "math-fixture-authorization.json": {
+      "bytes": 968,
+      "sha256": "1cc60b31a018b29505f20ad02d753c907c22b551d2d1d3b2fbffa04e807b8b8a"
+    },
+    "math-fixture-completion.json": {
+      "bytes": 2200,
+      "sha256": "29d101f4dd8bcde4142172e6e6b44388eb365b68479332d0c33a6329e82614ff"
+    },
+    "math-fixture-protocol.json": {
+      "bytes": 1738,
+      "sha256": "d4944db4791b106ee282296afd548bb4432bcabe59956b60936be74ad92514cc"
+    },
+    "math-fixture-started.json": {
+      "bytes": 943,
+      "sha256": "3d32d30173afa51bf02944df7d370b4a20871b72434320aaad7b2988f3997167"
+    },
+    "math-independent-outcome-review.json": {
+      "bytes": 691,
+      "sha256": "20a36b8a9a902b966dd89c8a445c94f7b1ec4c95bc63f69db8d6d1ecf1782b84"
+    },
+    "math-independent-static-review.json": {
+      "bytes": 614,
+      "sha256": "594518ba9a07a3fc81121642ffce2bacf32a0360e5c4736bb011930193f7fc1f"
+    },
+    "math_fixture.pre-gradient-rounding-assertion.py": {
+      "bytes": 4575,
+      "sha256": "f82152e635d24298b39ae642d068dfb6d433942fa6925b2a4fb39c728b368aaf"
+    },
+    "math_fixture.pre-numerical-review.py": {
+      "bytes": 4402,
+      "sha256": "68e4154db9ff14716c5ded6516003c2cb884996bf2639f263b252f5277c9185d"
+    },
+    "math_fixture.py": {
+      "bytes": 4648,
+      "sha256": "3f60b54ef52a34bcb4057d8e7a0899b22aa83a2fef765dc99a4bc39c95f4add2"
+    },
+    "metadata-independent-outcome-review.json": {
+      "bytes": 975,
+      "sha256": "f2ddc14b54972db9c03da921b27f3311aa1d4767e30630552ca03749bc26063d"
+    },
+    "metadata-selection-actual-tool-receipt.json": {
+      "bytes": 386,
+      "sha256": "de13edfea6512865836ce173b3d09fe25dc0d37980bb3a937f124f57208ca7b1"
+    },
+    "metadata-selection-authorization.json": {
+      "bytes": 556,
+      "sha256": "b6c5cb5a638b926acca26c93a444040a6795fb559a55bc186fa6ffc80eabfece"
+    },
+    "metadata-selection-completion.json": {
+      "bytes": 883,
+      "sha256": "4025366b47060ee33ecf8cc7626d822df0640b8a2429c0123a4382a9d981c03b"
+    },
+    "minimum-matching-entry-freeze-plan.md": {
+      "bytes": 3581,
+      "sha256": "d98d5981cf79db962f7bccc93dc4f8bf9e7e297242b4d7079ac887d07696a709"
+    },
+    "outcome-report.md": {
+      "bytes": 2482,
+      "sha256": "9547da93875b845689ee8f38be0867a83396d2c8577771ae25c2f1cf59b8f617"
+    },
+    "population-descriptors.json": {
+      "bytes": 281243,
+      "sha256": "d6c07ba21e544671bdd9eae2770bd7caae97887f7d5eedb633c2ac2dc85938fd"
+    },
+    "pre-execution-numerical-review-and-repair.json": {
+      "bytes": 1097,
+      "sha256": "c95001268401dd901011bfa12e1cad03e7417f4ad55611cc562507f36089a4de"
+    },
+    "routing_math.pre-numerical-review.py": {
+      "bytes": 3324,
+      "sha256": "4016ef5b0d791c7944cfcaf3c8e4d0e4ad8f4eab16c78ff247f0fb02a50cbbaf"
+    },
+    "routing_math.py": {
+      "bytes": 3326,
+      "sha256": "ee9c84dadec0d6e062ee89cf6e1548f8a2d404d9ff3cc4db99d9fb41ec8cb695"
+    },
+    "select_metadata.pre-review.py": {
+      "bytes": 5833,
+      "sha256": "b04f94a1ab026ffd33feb98a228ec35d9c6cf25527674792cf60fc874a19f496"
+    },
+    "select_metadata.py": {
+      "bytes": 6243,
+      "sha256": "f101c099d2508fc1c168979d5d0b251476692cf93dfbfd27cc75327962102fa5"
+    },
+    "stage7-final-check.json": {
+      "bytes": 1770,
+      "sha256": "47f49d54b571d3353741b3f759ed97252020d9c55b4575fac0bc4bd40aaddd50"
+    },
+    "static_publish.py": {
+      "bytes": 1136,
+      "sha256": "4734224629f5c584e28f8a9fd024543b8c38f94e6720ddbdb3de3172516d2721"
+    }
+  },
+  "retained_bytes_before_inventory": 364817,
+  "cap_bytes": 1048576,
+  "source_bindings_match": true,
+  "metadata_and_fixture_historical_authorizations_consumed": true,
+  "all_new_model_and_training_execution_closed": true,
+  "old_assets_preserved": true
+}

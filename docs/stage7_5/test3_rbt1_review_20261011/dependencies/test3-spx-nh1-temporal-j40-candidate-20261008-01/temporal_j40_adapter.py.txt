@@ -1,0 +1,111 @@
+"""J40 injection before the existing frozen final causal block."""
+ARCHITECTURE = 'SPX_NH1_J40_TEMPORAL_CQM1'
+ANCHOR_SHAPES = (('W', (16, 64)), ('c', (16,)), ('u', (1, 16)), ('d', (1,)))
+DELTA_SHAPES = (('down_weight', (16, 64)), ('down_bias', (16,)),
+                ('up_weight', (1, 16)), ('up_bias', (1,)), ('J_input_weight', (64, 40)))
+
+
+def require(ok, reason):
+    if not ok:
+        raise ValueError(reason)
+
+
+def build(torch, teacher, anchor):
+    require(len(teacher.blocks) == 5
+            and [b.dilation for b in teacher.blocks] == [1, 2, 4, 8, 16]
+            and sum(p.numel() for p in teacher.parameters()) == 32449, 'TEMPORAL_TEACHER_STRUCTURE')
+    require(all(p.dtype == torch.float32 and p.device.type == 'cpu' and not torch.is_inference(p)
+                and bool(torch.isfinite(p).all()) for p in teacher.parameters()), 'TEMPORAL_TEACHER_FORMAT')
+    require(set(anchor) == dict(ANCHOR_SHAPES).keys(), 'TEMPORAL_ANCHOR_KEYS')
+    for key, shape in ANCHOR_SHAPES:
+        value = anchor[key]
+        require(tuple(value.shape) == shape and value.dtype == torch.float32 and value.device.type == 'cpu'
+                and not torch.is_inference(value) and bool(torch.isfinite(value).all()), 'TEMPORAL_ANCHOR_FORMAT')
+
+    class TemporalJ40(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base = teacher.eval().requires_grad_(False)
+            for key, _ in ANCHOR_SHAPES:
+                self.register_buffer('anchor_' + key, anchor[key].detach().clone())
+            for key, shape in DELTA_SHAPES:
+                self.register_parameter('delta_' + key, torch.nn.Parameter(torch.zeros(shape, dtype=torch.float32, device='cpu')))
+
+        def train(self, mode=True):
+            super().train(mode)
+            self.base.eval()
+            return self
+
+        def trainable_parameters(self):
+            return [getattr(self, 'delta_' + key) for key, _ in DELTA_SHAPES]
+
+        def validate(self, value, channels, position):
+            require(value.ndim == 3 and value.shape[0] == 1 and value.shape[position] == channels
+                    and value.shape[3-position] > 0 and value.dtype == torch.float32
+                    and value.device.type == 'cpu' and not torch.is_inference(value)
+                    and bool(torch.isfinite(value).all()), 'TEMPORAL_INPUT_FORMAT')
+
+        def prefix(self, legacy160):
+            self.validate(legacy160, 160, 2)
+            with torch.no_grad():
+                p = torch.relu(self.base.proj(legacy160)).transpose(1, 2)
+                for block in self.base.blocks[:-1]:
+                    p = block(p)
+            return p
+
+        def mixed_prefix(self, p, normalized_j40):
+            self.validate(p, 64, 1)
+            self.validate(normalized_j40, 40, 2)
+            require(normalized_j40.shape[:2] == (1, p.shape[2]), 'TEMPORAL_J_ROW_MISMATCH')
+            injection = torch.nn.functional.linear(normalized_j40, self.delta_J_input_weight, None).transpose(1, 2)
+            return p + injection
+
+        def hidden(self, p, normalized_j40):
+            mixed = self.mixed_prefix(p, normalized_j40)
+            return self.base.blocks[-1](mixed).transpose(1, 2)
+
+        def correction(self, h):
+            linear = torch.nn.functional.linear
+            fixed = linear(torch.relu(linear(h, self.anchor_W, self.anchor_c)), self.anchor_u, self.anchor_d)
+            live = linear(torch.relu(linear(h, self.anchor_W + self.delta_down_weight,
+                                            self.anchor_c + self.delta_down_bias)),
+                          self.anchor_u + self.delta_up_weight, self.anchor_d + self.delta_up_bias)
+            return live - fixed
+
+        def from_hidden(self, h):
+            self.validate(h, 64, 2)
+            z = self.base.out(h) + self.correction(h)
+            require(bool(torch.isfinite(z).all()), 'TEMPORAL_CANDIDATE_NONFINITE')
+            return z.squeeze(-1)
+
+        def from_prefix(self, p, normalized_j40):
+            return self.from_hidden(self.hidden(p, normalized_j40))
+
+        def forward(self, legacy160, normalized_j40):
+            return self.from_prefix(self.prefix(legacy160), normalized_j40)
+
+        def delta_state(self):
+            return {key: getattr(self, 'delta_' + key).detach().clone() for key, _ in DELTA_SHAPES}
+
+        def load_deltas(self, values):
+            require(tuple(values) == tuple(key for key, _ in DELTA_SHAPES), 'TEMPORAL_STRICT_DELTA_ORDER')
+            for key, shape in DELTA_SHAPES:
+                value = values[key]
+                require(tuple(value.shape) == shape and value.dtype == torch.float32 and value.device.type == 'cpu'
+                        and not torch.is_inference(value) and bool(torch.isfinite(value).all()), 'TEMPORAL_STRICT_DELTA_FORMAT')
+            with torch.no_grad():
+                for key, _ in DELTA_SHAPES:
+                    getattr(self, 'delta_' + key).copy_(values[key])
+
+    return TemporalJ40()
+
+
+def frozen_bytes(head):
+    return {k: v.detach().numpy().tobytes() for k, v in head.state_dict().items()
+            if k.startswith(('base.', 'anchor_'))}
+
+
+def check_frozen(head, expected):
+    require(frozen_bytes(head) == expected and all(not p.requires_grad and p.grad is None for p in head.base.parameters())
+            and all(not v.requires_grad and v.grad is None for k, v in head.named_buffers()
+                    if k.startswith('anchor_')), 'TEMPORAL_FROZEN_CHANGED')

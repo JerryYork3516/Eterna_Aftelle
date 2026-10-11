@@ -1,0 +1,1 @@
+请只读审核本次Aftelle Stage7.5/Test3/03 RBT-1材料，先声明实际读取范围。先看README、entry/outcome-report、冻结设计，再核15份入口源码和直接依赖。重点：E/N同mic、B/N同render、标签隔离、64FIT/40CHECK与200步、梯度/完整分母、身份/退出绑定及1800s/2GiB/64MiB失败封存。当前仅11项合成检查通过，科学试验未运行，execution=false、Test3 BLOCKED。只报有证据的问题及行号，给GO_REVIEW/REWORK/STOP和唯一最小下一步、通过/停止条件；不要放宽产品门或自动授权训练。材料打不开请明确，勿据摘要判PASS。

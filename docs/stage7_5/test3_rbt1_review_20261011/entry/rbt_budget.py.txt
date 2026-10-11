@@ -1,0 +1,138 @@
+"""Fixed SOR file census, including retained partial files and earlier designs."""
+import hashlib
+import contextlib
+import fcntl
+import functools
+import json
+import os
+from pathlib import Path
+
+CAPS = dict(binary=56*2**20, metadata=4*2**20, streams=2*2**20,
+            source_and_receipts=2*2**20)
+
+
+def locked(function):
+    @functools.wraps(function)
+    def call(self,*args,**kwargs):
+        with self.transaction():
+            return function(self,*args,**kwargs)
+    return call
+
+
+class Budget:
+    def __init__(self, contract):
+        self.roots = [Path(p) for p in contract['retained_roots']]
+        self.seeds = contract['retained_seeds']
+        self.roles = contract['output_roles']
+        if any(not r.is_absolute() or not r.is_dir() or r.is_symlink() for r in self.roots):
+            raise RuntimeError('SOR_RETAINED_ROOT_IDENTITY')
+        for key in list(self.seeds)+list(self.roles):
+            p=Path(key)
+            if not p.is_absolute() or '..' in p.parts or not any(p.is_relative_to(r) for r in self.roots):
+                raise RuntimeError('SOR_PATH_OUTSIDE_RETAINED_ROOTS')
+        self.lock_path=Path(contract['census_lock'])
+        if str(self.lock_path) not in self.roles or self.lock_path.is_symlink():
+            raise RuntimeError('RBT_CENSUS_LOCK_PATH')
+        fd=os.open(self.lock_path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        self.lock=os.fdopen(fd,'r+b');self.lock_identity=os.fstat(fd)
+        self.depth=0
+        self.verify_seeds()
+        self.check()
+
+    @contextlib.contextmanager
+    def transaction(self):
+        if self.depth==0:
+            fcntl.flock(self.lock.fileno(),fcntl.LOCK_EX)
+        self.depth+=1
+        try:
+            actual=os.stat(self.lock_path,follow_symlinks=False)
+            if (actual.st_dev,actual.st_ino)!=(self.lock_identity.st_dev,self.lock_identity.st_ino):
+                raise RuntimeError('RBT_CENSUS_LOCK_IDENTITY')
+            yield
+        finally:
+            self.depth-=1
+            if self.depth==0:fcntl.flock(self.lock.fileno(),fcntl.LOCK_UN)
+
+    @locked
+    def verify_seeds(self):
+        for key,value in self.seeds.items():
+            p=Path(key)
+            if (not p.is_file() or p.is_symlink() or p.stat().st_size!=value['bytes']
+                    or hashlib.sha256(p.read_bytes()).hexdigest()!=value['sha256']):
+                raise RuntimeError('SOR_SEED_IDENTITY:'+key)
+
+    @locked
+    def check(self, prospective=None, extra=0):
+        totals = dict.fromkeys(CAPS, 0)
+        seen=set()
+        for root in self.roots:
+            if not root.is_dir() or root.is_symlink():
+                raise RuntimeError('SOR_RETAINED_ROOT_IDENTITY')
+            for directory, dirs, files in os.walk(root, followlinks=False):
+                if any((Path(directory)/d).is_symlink() for d in dirs):
+                    raise RuntimeError('SOR_RETAINED_SYMLINK')
+                for name in files:
+                    p = Path(directory)/name
+                    if p.is_symlink():
+                        raise RuntimeError('SOR_RETAINED_SYMLINK')
+                    key = str(p)
+                    seen.add(key)
+                    role = self.roles.get(key.removesuffix('.pending'))
+                    if key in self.seeds:
+                        if p.stat().st_size != self.seeds[key]['bytes']:
+                            raise RuntimeError('SOR_SEED_SIZE_CHANGED:'+key)
+                        bucket = 'source_and_receipts'
+                    elif role:
+                        bucket = role['bucket']
+                        if p.stat().st_size > role['maximum_bytes']:
+                            raise RuntimeError('SOR_FILE_CAP:'+key)
+                    else:
+                        raise RuntimeError('SOR_UNKNOWN_RETAINED_PATH:'+key)
+                    totals[bucket] += p.stat().st_size
+        if set(self.seeds)-seen:
+            raise RuntimeError('SOR_MISSING_RETAINED_SEED')
+        if prospective is not None:
+            role = self.roles[str(prospective)]
+            if extra > role['maximum_bytes']:
+                raise RuntimeError('SOR_FILE_CAP:'+str(prospective))
+            totals[role['bucket']] += extra
+        if any(totals[k] > CAPS[k] for k in CAPS) or sum(totals.values()) > 64*2**20:
+            raise RuntimeError('SOR_RETAINED_CAP')
+        return totals
+
+    @locked
+    def publish(self, path, payload):
+        path = Path(path)
+        temporary = Path(str(path)+'.pending')
+        if path.exists() or temporary.exists():
+            raise RuntimeError('SOR_OUTPUT_ALREADY_EXISTS:'+str(path))
+        self.check(path, len(payload))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with temporary.open('xb') as stream:
+            if stream.write(payload)!=len(payload):
+                raise RuntimeError('SOR_SHORT_PUBLICATION_WRITE')
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Single writer and fresh paths; rename is not an atomic no-clobber API.
+        if path.exists():
+            raise RuntimeError('SOR_OUTPUT_COLLISION:'+str(path))
+        os.rename(temporary, path)
+        self.check()
+        return dict(bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+
+    def json(self, path, value):
+        return self.publish(path, (json.dumps(value, indent=2, allow_nan=False)+'\n').encode())
+
+    @locked
+    def append(self, path, payload):
+        path = Path(path)
+        role = self.roles[str(path)]
+        size = path.stat().st_size if path.exists() else 0
+        if size + len(payload) > role['maximum_bytes']:
+            raise RuntimeError('SOR_STREAM_CAP:'+str(path))
+        self.check(path, len(payload))
+        with path.open('ab') as stream:
+            if stream.write(payload)!=len(payload):
+                raise RuntimeError('SOR_SHORT_STREAM_WRITE')
+            stream.flush()
+        self.check()

@@ -1,0 +1,16 @@
+test_authorization_false_precedes_assets (__main__.EntryFixture) ... ok
+test_common_peak_strict_ties_full_cohort (__main__.EntryFixture) ... ok
+test_fixed_batch_and_frozen_loss (__main__.EntryFixture) ... ok
+test_join_spans_not_local_epochs (__main__.EntryFixture) ... ok
+test_legal_source_frontier_epoch_invalid (__main__.EntryFixture) ... ok
+test_no_eager_scientific_import_and_syntax (__main__.EntryFixture) ... ok
+test_permanent_terminal_state (__main__.EntryFixture) ... ok
+test_retained_lock_and_prospective_cap (__main__.EntryFixture) ... ok
+test_shared_production_bytes (__main__.EntryFixture) ... ok
+test_slots_snapshot (__main__.EntryFixture) ... ok
+test_unavailable_activity_keeps_denominator (__main__.EntryFixture) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.018s
+
+OK

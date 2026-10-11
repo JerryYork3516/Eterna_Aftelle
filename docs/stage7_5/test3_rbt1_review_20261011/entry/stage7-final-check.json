@@ -1,0 +1,15 @@
+{
+  "DR_schema_or_Runtime_API_change": false,
+  "HEAD": "d40fbb26b52453954312a12484b4d4f161baa12e",
+  "Host_Gate_Runtime_change": false,
+  "PCM_DSP_model_training_run": false,
+  "Test3": "BLOCKED",
+  "brain_change": false,
+  "branch": "7.5.11",
+  "commit_push": false,
+  "result": "PASS",
+  "schema_version": 1,
+  "scope": "isolated .build RBT1 entry only",
+  "secrets_logged": false,
+  "target_or_Stage8_change": false
+}

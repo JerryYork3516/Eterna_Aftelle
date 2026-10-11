@@ -1,0 +1,83 @@
+"""Task-risk proxy over frozen source identities, separate from Gate acceptance."""
+import math
+
+GROUPS = ('short_all', 'short_weak', 'long_all', 'near_only', 'long_activity')
+
+
+def legal_triples(slots, event, offset):
+    if event is None:
+        return []
+    result = []
+    onset = event['first_active_raw48']
+    for end in range(2, len(slots)):
+        triple = slots[end-2:end+1]
+        if not all(s['valid'] for s in triple):
+            continue
+        if any(triple[k]['epoch'] != triple[0]['epoch'] for k in (1, 2)):
+            continue
+        if any(triple[k]['target_start'] != triple[k-1]['target_end'] for k in (1, 2)):
+            continue
+        if sum(s['activity_samples'] for s in triple) <= 0:
+            continue
+        delay = max(s['input_frontier'] for s in triple) - onset
+        if 0 <= delay <= 9600:
+            result.append([offset+s['score_index'] for s in triple])
+    return result
+
+
+def risk_gradient(np, logits, population):
+    """Float64 risk/subgradient; Float32 maxima use earliest canonical source ties."""
+    if logits.dtype != np.dtype('<f4') or not np.isfinite(logits).all():
+        raise RuntimeError('TRS_LOGIT_CONTRACT')
+    negative = population['negative']
+    if not len(negative):
+        raise RuntimeError('TRS_EMPTY_NEGATIVE_POPULATION')
+    ni = int(negative[int(np.argmax(logits[negative]))])
+    n = float(logits[ni])
+    values, sources = {}, {}
+    for name in GROUPS[:-1]:
+        ids, evidence = [], []
+        for event in population['events'][name]:
+            triples = np.asarray(event['triples'], dtype=np.int64).reshape(-1, 3)
+            if not len(triples):
+                continue  # Structural failures remain in final all-event denominators.
+            scores = logits[triples]
+            mins = scores.min(axis=1)
+            best = int(np.argmax(mins))
+            bottleneck = int(np.argmin(scores[best]))
+            ids.append(int(triples[best, bottleneck]))
+            evidence.append(float(mins[best]))
+        if not ids:
+            raise RuntimeError('TRS_EMPTY_REACHABLE_GROUP:'+name)
+        sources[name] = np.asarray(ids, dtype=np.int64)
+        values[name] = np.asarray(evidence, dtype=np.float64)
+    sources[GROUPS[-1]] = np.asarray(population['long_activity'], dtype=np.int64)
+    if not len(sources[GROUPS[-1]]):
+        raise RuntimeError('TRS_EMPTY_LONG_ACTIVITY_PROXY')
+    values[GROUPS[-1]] = logits[sources[GROUPS[-1]]].astype(np.float64)
+    risks = [float(np.logaddexp(0., n-values[name]).mean(dtype=np.float64)) for name in GROUPS]
+    if not all(math.isfinite(v) for v in risks):
+        raise RuntimeError('TRS_NONFINITE_RISK')
+    chosen = max(range(len(GROUPS)), key=lambda k: risks[k])
+    group = GROUPS[chosen]
+    differences = n-values[group]
+    # Stable sigmoid derivative; one normalization by the full chosen population.
+    weights = np.exp(-np.logaddexp(0., -differences))/len(differences)
+    dz = np.zeros(len(logits), dtype=np.float64)
+    dz[ni] += float(weights.sum(dtype=np.float64))
+    np.add.at(dz, sources[group], -weights)
+    if not np.isfinite(dz).all():
+        raise RuntimeError('TRS_NONFINITE_SUBGRADIENT')
+    return risks[chosen], dz, dict(group=group, risks=dict(zip(GROUPS, risks)),
+        negative_source=ni, negative_max=n, reachable_counts={k:len(v) for k,v in sources.items()},
+        coefficient_sum=float(dz.sum(dtype=np.float64)))
+
+
+def finite_delta_norm(np, parameters):
+    flat = np.concatenate([p.detach().numpy().reshape(-1) for p in parameters]).astype(np.float64)
+    if not np.isfinite(flat).all():
+        raise RuntimeError('TRS_U1_NONFINITE_PARAMETERS')
+    norm = math.sqrt(math.fsum(float(v)*float(v) for v in flat))
+    if not math.isfinite(norm):
+        raise RuntimeError('TRS_U1_NONFINITE_NORM')
+    return norm
