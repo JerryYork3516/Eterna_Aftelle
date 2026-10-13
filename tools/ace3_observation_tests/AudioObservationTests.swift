@@ -335,6 +335,10 @@ extension AudioObservationTests {
     }
 
     static func main() throws {
+        if CommandLine.arguments.contains("--ledger-only") {
+            try runLedgerTests()
+            return
+        }
         if CommandLine.arguments.contains("--abrupt-exit") {
             let url = directory.appendingPathComponent(UUID().uuidString + ".aborted")
             expect(recorder.arm(at: url), "abrupt-exit arm")

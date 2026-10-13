@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A07ACE2B0000000000000007 /* MacSpeechAudioLedgerCursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07ACE2B0000000000000008 /* MacSpeechAudioLedgerCursor.swift */; };
+        A07ACE2B0000000000000005 /* MacSpeechAudioLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07ACE2B0000000000000006 /* MacSpeechAudioLedger.swift */; };
         A07ACE2A0000000000000001 /* MacSpeechAudioObservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07ACE2A0000000000000002 /* MacSpeechAudioObservation.swift */; };
         A07ACE2A0000000000000003 /* MacSpeechAudioObservationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07ACE2A0000000000000004 /* MacSpeechAudioObservationTypes.swift */; };
 		A073E3000000000000000001 /* Test3LocalAudioRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A073E3000000000000000002 /* Test3LocalAudioRunner.swift */; };
@@ -74,6 +76,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        A07ACE2B0000000000000008 /* MacSpeechAudioLedgerCursor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioLedgerCursor.swift; sourceTree = "<group>"; };
+        A07ACE2B0000000000000006 /* MacSpeechAudioLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioLedger.swift; sourceTree = "<group>"; };
         A07ACE2A0000000000000002 /* MacSpeechAudioObservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioObservation.swift; sourceTree = "<group>"; };
         A07ACE2A0000000000000004 /* MacSpeechAudioObservationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioObservationTypes.swift; sourceTree = "<group>"; };
 		A073E3000000000000000002 /* Test3LocalAudioRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Test3LocalAudioRunner.swift; sourceTree = "<group>"; };
@@ -163,6 +167,8 @@
 				A073E3000000000000000002 /* Test3LocalAudioRunner.swift */,
 				A070C0000000000000000005 /* ContentView.swift */,
 				A0759A100000000000000012 /* RealtimeSpeechPresentationMapper.swift */,
+				A07ACE2B0000000000000006 /* MacSpeechAudioLedger.swift */,
+				A07ACE2B0000000000000008 /* MacSpeechAudioLedgerCursor.swift */,
 				A07ACE2A0000000000000002 /* MacSpeechAudioObservation.swift */,
 				A07ACE2A0000000000000004 /* MacSpeechAudioObservationTypes.swift */,
 				A076A100000000000000011 /* MacSpeechAcousticEchoHost.swift */,
@@ -336,6 +342,8 @@
 			files = (
 				A076A100000000000000003 /* AftelleAECBridge.mm in Sources */,
 				A076A100000000000000002 /* MacSpeechWebRTCAECProcessor.swift in Sources */,
+				A07ACE2B0000000000000005 /* MacSpeechAudioLedger.swift in Sources */,
+				A07ACE2B0000000000000007 /* MacSpeechAudioLedgerCursor.swift in Sources */,
 				A07ACE2A0000000000000001 /* MacSpeechAudioObservation.swift in Sources */,
 				A07ACE2A0000000000000003 /* MacSpeechAudioObservationTypes.swift in Sources */,
 				A076A100000000000000001 /* MacSpeechAcousticEchoHost.swift in Sources */,

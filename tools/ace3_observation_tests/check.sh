@@ -6,11 +6,15 @@ mkdir -p "$build_dir"
 sources=(
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioObservation.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioObservationTypes.swift"
+  "$repo_root/apps/macos/Aftelle/MacSpeechAudioLedger.swift"
+  "$repo_root/apps/macos/Aftelle/MacSpeechAudioLedgerCursor.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
   "$repo_root/tools/ace3_observation_tests/AudioObservationTests.swift"
   "$repo_root/tools/ace3_observation_tests/AudioObservationFixtures.swift"
+  "$repo_root/tools/ace3_observation_tests/AudioLedgerTests.swift"
+  "$repo_root/tools/ace3_observation_tests/AudioLedgerPipelineTests.swift"
 )
 swiftc -D DEBUG -D AFTELLE_AUDIO_OBSERVATION -D AUDIO_OBSERVATION_TESTING \
   -parse-as-library -warn-concurrency -strict-concurrency=complete \

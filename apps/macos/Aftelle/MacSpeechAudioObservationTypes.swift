@@ -36,6 +36,9 @@
         case nativeCallback = 1
         case converter, hostCall, aecFrame, streamReset
         case captureLock, rejected, frameAssembly
+        case gateInput, gateAction, gateDecision, hostOutput, convert24, conversionBatch
+        case packetInput, packetReady, encode16, packetReset, bufferAction, deliveryBatch
+        case gateReset, conversionInputSpan, hostFallback, encodingZeroRange
     }
 
     nonisolated enum MacSpeechAudioObservationStatus: UInt64 {

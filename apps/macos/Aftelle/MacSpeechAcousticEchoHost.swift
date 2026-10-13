@@ -976,6 +976,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private let observationID = MacSpeechAudioObservation.shared.nextObjectID()
     private var observedRender = MacSpeechAudioObservationCursor()
     private var observedCapture = MacSpeechAudioObservationCursor()
+    private var observedAECFrameID: UInt64 = 0
     #endif
     private var routeResetCount: UInt64 = 0
     private var fallbackReason: MacSpeechAECFallbackReason?
@@ -1288,11 +1289,16 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         var observed = beginObservedCall(stream: 1, sampleCount: samples.count)
         defer { observation.finish(observed) }
         #endif
-        guard !samples.isEmpty else { return [] }
+        guard !samples.isEmpty else {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            MacSpeechAudioLedger.hostOutput([], call: observed)
+            #endif
+            return []
+        }
         #if DEBUG && AFTELLE_AUDIO_OBSERVATION
         observed?.entered = observation.now()
         #endif
-        return queue.sync {
+        let result = queue.sync {
             #if DEBUG && AFTELLE_AUDIO_OBSERVATION
             prepareObservedCall(&observed, samples: samples.count, stream: 1,
                                 contentTime: hostTimeNanoseconds, remainder: captureFIFO.count)
@@ -1486,6 +1492,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     && (isPlaybackActive || isRouteRebuilding)
                 ? [] : output
         }
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        MacSpeechAudioLedger.hostOutput(result, call: observed)
+        #endif
+        return result
     }
 
     private func captureSpan(
@@ -2813,6 +2823,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         reportedTimingMatch: TimingMatch?,
         captureFrameIndex: UInt64
     ) -> [MacSpeechAcousticCaptureSpan] {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedGateInput(count: processedFrame.count, frame: captureFrameIndex)
+        defer { recordObservedGateDecision(frame: captureFrameIndex) }
+        #endif
         #if DEBUG
         lastClassificationBranch = nil
         lastAdaptivePreconditionsPassed = nil
@@ -2829,6 +2843,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 keepingClassification: true,
                 closeReason: .playbackLifecycle
             )
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedGate(.pass, frame: captureFrameIndex)
+            #endif
             return [captureSpan(
                 samples: processedFrame,
                 captureFrameIndex: captureFrameIndex
@@ -2858,9 +2875,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
         if pendingSourceGateReset {
             return suppressCaptureFrameAndCloseGate(
-                reason: .sourceEvidenceReset,
-                captureFrameIndex: captureFrameIndex
-            )
+                reason: .sourceEvidenceReset, captureFrameIndex: captureFrameIndex)
         }
         if sourceGateOpen {
             return captureWhileGateIsOpen(
@@ -2871,9 +2886,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
 
         switch inputClassification {
         case .echoOnly:
-            return suppressClosedGateFrame(
-                captureFrameIndex: captureFrameIndex
-            )
+            return suppressClosedGateFrame(captureFrameIndex: captureFrameIndex)
         case .uncertain:
             if canRetainSuppressedNearEndOnset {
                 return retainSuppressedNearEndOnset(
@@ -2881,9 +2894,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     captureFrameIndex: captureFrameIndex
                 )
             }
-            return suppressClosedGateFrame(
-                captureFrameIndex: captureFrameIndex
-            )
+            return suppressClosedGateFrame(captureFrameIndex: captureFrameIndex)
         case .nearEndSpeech, .doubleTalk:
             let expired = appendSourceGatePreRoll(captureSpan(
                 samples: processedFrame,
@@ -3692,6 +3703,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         case .nearEndSpeech, .doubleTalk:
             sourceGateNonUserHangoverFrameCount = 0
             recordForwardedSourceFrames(1)
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedGate(.pass, frame: captureFrameIndex)
+            #endif
             return [captureSpan(
                 samples: processedFrame,
                 captureFrameIndex: captureFrameIndex
@@ -3716,6 +3730,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 )
             }
             recordForwardedSourceFrames(1)
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedGate(.pass, frame: captureFrameIndex)
+            #endif
             return [captureSpan(
                 samples: processedFrame,
                 captureFrameIndex: captureFrameIndex
@@ -3800,6 +3817,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         var expired: [MacSpeechAcousticCaptureSpan] = []
         if sourceGatePreRoll.count == Self.sourceGatePreRollFrameCapacity {
             let first = sourceGatePreRoll.removeFirst()
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedGate(.zero, span: first, context: 1)
+            #endif
             expired = [silencedCaptureSpan(first)]
             if first.observation.inputClassification == .nearEndSpeech {
                 sourceGateCandidateNearEndFrameCount -= 1
@@ -3809,12 +3829,19 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             recordSuppressedSourceFrames(1)
         }
         sourceGatePreRoll.append(span)
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedGate(.retain, span: span)
+        #endif
         return expired
     }
 
     private func suppressClosedGateFrame(
         captureFrameIndex: UInt64
     ) -> [MacSpeechAcousticCaptureSpan] {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedGate(.zero, frame: captureFrameIndex, context: 2)
+        recordObservedGateZeros(context: 2)
+        #endif
         let current = captureSpan(
             samples: [Float](
                 repeating: 0,
@@ -3836,12 +3863,18 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         reason: MacSpeechSourceGateCloseReason,
         captureFrameIndex: UInt64
     ) -> [MacSpeechAcousticCaptureSpan] {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedGateZeros(context: 3)
+        #endif
         let pending = sourceGatePreRoll.map(silencedCaptureSpan)
         recordSuppressedSourceFrames(1)
         resetSourceGate(
             keepingClassification: true,
             closeReason: reason
         )
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedGate(.zero, frame: captureFrameIndex, reason: reason)
+        #endif
         return pending + [captureSpan(
             samples: [Float](
                 repeating: 0,
@@ -3881,7 +3914,10 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private func drainSourceGatePreRoll()
         -> [MacSpeechAcousticCaptureSpan] {
         let output = sourceGatePreRoll.map { span in
-            MacSpeechAcousticCaptureSpan(
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedGate(.release, span: span)
+            #endif
+            return MacSpeechAcousticCaptureSpan(
                 samples: span.samples,
                 observation: span.observation.withSourceGate(
                     open: true,
@@ -4579,6 +4615,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private func enterFallback(_ reason: MacSpeechAECFallbackReason) {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        MacSpeechAudioLedger.fallback(reason, object: observationID)
+        #endif
         #if DEBUG
         sealAcousticReplayCaptureLocked(reason: .hostFallback)
         #endif
@@ -4608,12 +4647,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                                        call: inout MacSpeechAudioObservationEvent?, offset: UInt64) {
         frame?.status = 0
         observation.finish(frame)
+        observedAECFrameID = frame?.stream == 1 ? (frame?.id ?? 0) : 0
         frame = nil
         call?.outputEnd = offset
     }
 
     private func prepareObservedCall(_ event: inout MacSpeechAudioObservationEvent?,
                                      samples: Int, stream: UInt64, contentTime: UInt64?, remainder: Int) {
+        if stream == 1 { observedAECFrameID = 0 }
         guard let run = event?.run else { return }
         event?.began = observation.now()
         event?.object = observationID
@@ -4731,6 +4772,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         keepingClassification: Bool = false,
         closeReason: MacSpeechSourceGateCloseReason? = nil
     ) {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedGateReset(reason: closeReason)
+        #endif
         recordSuppressedSourceFrames(sourceGatePreRoll.count)
         if sourceGateOpen {
             sourceGateCloseCount &+= 1
@@ -4980,3 +5024,104 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         )
     }
 }
+
+#if DEBUG && AFTELLE_AUDIO_OBSERVATION
+private extension MacSpeechAcousticEchoHost {
+    func recordObservedGateInput(count: Int, frame: UInt64, synthetic: Bool = false) {
+        var event = observation.begin(.gateInput, stream: 1, parent: observedAECFrameID)
+        event?.object = observationID
+        event?.reserved = frame
+        event?.contentTime = latestCaptureHostTimeNanoseconds ?? 0
+        event?.detail = playbackSequence
+        event?.epoch = sourceGateEpochSequence
+        event?.inputEnd = UInt64(count)
+        event?.frameCount = UInt64(count)
+        event?.flags = 32 | (synthetic ? 1024 : 0) // No AEC internal epoch; test inputs are explicit.
+        observation.finish(event)
+    }
+
+    func recordObservedGateDecision(frame: UInt64) {
+        var event = observation.begin(.gateDecision, stream: 1)
+        guard event != nil else { return }
+        MacSpeechAudioLedger.snapshot(makeAcousticObservationSnapshot(captureFrameIndex: frame), into: &event)
+        event?.object = observationID
+        event?.status = MacSpeechAudioLedger.branch(lastClassificationBranch)
+        event?.flags |= 16
+        event?.remainderBefore = UInt64(sourceGatePreRoll.count)
+        event?.remainderAfter = UInt64(sourceGateNonUserHangoverFrameCount)
+        observation.finish(event)
+    }
+
+    func recordObservedGate(_ action: MacSpeechAudioLedger.Action, frame: UInt64,
+                            reason: MacSpeechSourceGateCloseReason? = nil, context: UInt64 = 0) {
+        guard observation.activeRun != 0 else { return }
+        MacSpeechAudioLedger.gate(action, object: observationID,
+            snapshot: makeAcousticObservationSnapshot(captureFrameIndex: frame),
+            count: Self.frameSampleCount, currentEpoch: sourceGateEpochSequence, reason: reason, context: context)
+    }
+
+    func recordObservedGate(_ action: MacSpeechAudioLedger.Action, span: MacSpeechAcousticCaptureSpan,
+                            reason: MacSpeechSourceGateCloseReason? = nil, context: UInt64 = 0) {
+        MacSpeechAudioLedger.gate(action, object: observationID, snapshot: span.observation,
+            count: span.samples.count, currentEpoch: sourceGateEpochSequence, reason: reason, context: context)
+    }
+
+    func recordObservedGateZeros(context: UInt64) {
+        for span in sourceGatePreRoll {
+            guard observation.activeRun != 0 else { return }
+            recordObservedGate(.zero, span: span, context: context)
+        }
+    }
+
+    func recordObservedGateReset(reason: MacSpeechSourceGateCloseReason?) {
+        guard observation.activeRun != 0 else { return }
+        var event = observation.begin(.gateReset, stream: 1)
+        event?.object = observationID
+        event?.epoch = sourceGateEpochSequence
+        event?.detail = playbackSequence
+        event?.status = MacSpeechAudioLedger.reason(reason)
+        event?.remainderBefore = UInt64(sourceGatePreRoll.count)
+        observation.finish(event)
+        for span in sourceGatePreRoll {
+            guard observation.activeRun != 0 else { return }
+            recordObservedGate(.reset, span: span, reason: reason)
+        }
+    }
+}
+#endif
+
+#if DEBUG && AFTELLE_AUDIO_OBSERVATION && AUDIO_OBSERVATION_TESTING
+extension MacSpeechAcousticEchoHost {
+    // Synthetic memory fixture for existing Gate branches; no AEC/source truth.
+    func observationTestGate(action: UInt64, frame: UInt64, samples: [Float]) -> [MacSpeechAcousticCaptureSpan] {
+        queue.sync {
+            latestCaptureHostTimeNanoseconds = 1_000_000_000 + frame * 10_000_000
+            if action == 3 {
+                beginSourceGateEpoch()
+                return drainSourceGatePreRoll()
+            }
+            if action == 5 {
+                resetSourceGate(closeReason: .playbackLifecycle)
+                return []
+            }
+            recordObservedGateInput(count: samples.count, frame: frame, synthetic: true)
+            switch action {
+            case 1:
+                inputClassification = .nearEndSpeech
+                sourceGateOpen = true
+                return captureWhileGateIsOpen(samples, captureFrameIndex: frame)
+            case 2:
+                return appendSourceGatePreRoll(captureSpan(samples: samples, captureFrameIndex: frame))
+            case 4:
+                sourceGateOpen = false
+                inputClassification = .echoOnly
+                return suppressClosedGateFrame(captureFrameIndex: frame)
+            default:
+                sourceGateOpen = true
+                inputClassification = .echoOnly
+                return captureWhileGateIsOpen(samples, captureFrameIndex: frame)
+            }
+        }
+    }
+}
+#endif

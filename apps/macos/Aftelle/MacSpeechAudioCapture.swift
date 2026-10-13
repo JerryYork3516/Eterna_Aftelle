@@ -234,6 +234,9 @@ nonisolated struct MacSpeechAudioFrameBufferStats: Sendable, Equatable {
 
 nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
     private let lock = NSLock()
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    private let observedObject = MacSpeechAudioObservation.shared.nextObjectID()
+    #endif
     private let capacity: Int
     private var activeGeneration: UInt64?
     private var frames: [MacSpeechAudioFrame] = []
@@ -252,6 +255,9 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
 
     func begin(generation: UInt64) {
         lock.withLock {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedFrames(frames, action: .clear)
+            #endif
             activeGeneration = generation
             frames.removeAll(keepingCapacity: true)
             nextSequence = 0
@@ -266,6 +272,9 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
     func end(generation: UInt64) {
         lock.withLock {
             guard activeGeneration == generation else { return }
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedFrames(frames, action: .clear)
+            #endif
             activeGeneration = nil
             frames.removeAll(keepingCapacity: true)
         }
@@ -284,19 +293,28 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
         sourceGateEpoch: UInt64 = 0,
         acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
     ) -> Bool {
-        lock.withLock {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = beginObservedBufferAppend(count: pcm16Bytes.count / 2, generation: generation,
+                                                 snapshot: acousticSnapshot)
+        defer { MacSpeechAudioObservation.shared.finish(observed) }
+        #endif
+        return lock.withLock {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            observed?.began = MacSpeechAudioObservation.shared.now()
+            #endif
             guard activeGeneration == generation, !pcm16Bytes.isEmpty else {
                 rejectedStaleCount &+= 1
                 return false
             }
             if frames.count == capacity {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                recordObservedFrame(frames[0], action: .dropOldest)
+                #endif
                 frames.removeFirst()
                 droppedCount &+= 1
             }
             nextSequence &+= 1
-            let monotonicTimestamp = timestamp > lastTimestamp
-                ? timestamp
-                : lastTimestamp &+ 1
+            let monotonicTimestamp = timestamp > lastTimestamp ? timestamp : lastTimestamp &+ 1
             lastTimestamp = monotonicTimestamp
             latestActivity = activity.isFinite
                 ? min(max(activity, 0), 1)
@@ -318,6 +336,11 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
                 )
             )
             generatedCount &+= 1
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            observed?.status = MacSpeechAudioLedger.Action.accepted.rawValue
+            observed?.inputStart = nextSequence
+            observed?.inputEnd = nextSequence + 1
+            #endif
             return true
         }
     }
@@ -328,6 +351,9 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
             let count = min(maxCount, frames.count)
             let drained = Array(frames.prefix(count))
             frames.removeFirst(count)
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedFrames(drained, action: .drain)
+            #endif
             return drained
         }
     }
@@ -347,9 +373,16 @@ nonisolated final class MacSpeechAudioFrameBuffer: @unchecked Sendable {
 
 nonisolated enum MacSpeechPCM16Encoder {
     static func encode(samples: [Float]) -> Data {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = MacSpeechPCMEncodingObservation()
+        defer { observed.finish() }
+        #endif
         var bytes = [UInt8](repeating: 0, count: samples.count * 2)
         for (index, sample) in samples.enumerated() {
             let value = pcm16Value(for: sample)
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            observed.append(sample: sample, encoded: value)
+            #endif
             let bits = UInt16(bitPattern: value)
             bytes[index * 2] = UInt8(truncatingIfNeeded: bits)
             bytes[index * 2 + 1] = UInt8(truncatingIfNeeded: bits >> 8)
@@ -383,12 +416,19 @@ nonisolated struct MacSpeechPCM16Packetizer: Sendable {
 
     private var pendingSamples: [Float] = []
     private var evidenceSpans: [EvidenceSpan] = []
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    private var observedLedger = MacSpeechAudioLedgerCursor()
+    #endif
 
     mutating func append(
         samples: [Float],
         activityEvidenceKind: MacSpeechAudioActivityEvidenceKind = .none,
         acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
     ) -> [MacSpeechPCM16Packet] {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = beginObservedAppend(count: samples.count, snapshot: acousticSnapshot)
+        defer { finishObservedAppend(&observed) }
+        #endif
         pendingSamples.append(contentsOf: samples)
         evidenceSpans.append(EvidenceSpan(
             sampleCount: samples.count,
@@ -414,11 +454,17 @@ nonisolated struct MacSpeechPCM16Packetizer: Sendable {
                 activityEvidenceKind: evidence.kind,
                 acousticSnapshot: evidence.acousticSnapshot
             ))
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedPacket(packets.last!, parent: observed?.id ?? 0)
+            #endif
         }
         return packets
     }
 
     mutating func reset() {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedPacketReset()
+        #endif
         pendingSamples.removeAll(keepingCapacity: true)
         evidenceSpans.removeAll(keepingCapacity: true)
     }
@@ -522,6 +568,19 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
     private let outputFormat: AVAudioFormat
     private let inputSampleRate: Double
     private var packetizer = MacSpeechPCM16Packetizer()
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    private var observedLedger = MacSpeechAudioLedgerCursor()
+    #if AUDIO_OBSERVATION_TESTING
+    var observationTestFailureAfterConversions: Int?
+    #endif
+    #endif
+
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    deinit {
+        recordObservedConversionReset(reason: 3)
+        packetizer.recordObservedPacketReset(reason: 4)
+    }
+    #endif
 
     init(inputFormat: AVAudioFormat) throws {
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
@@ -549,22 +608,26 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
         activityEvidenceKind: MacSpeechAudioActivityEvidenceKind = .none,
         acousticSnapshot: MacSpeechAcousticObservationSnapshot? = nil
     ) throws -> [MacSpeechPCM16Packet] {
-        try lock.withLock {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = MacSpeechAudioObservation.shared.begin(.convert24, stream: 1)
+        defer { MacSpeechAudioObservation.shared.finish(observed) }
+        #endif
+        return try lock.withLock {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            prepareObservedConversion(&observed, snapshot: acousticSnapshot)
+            defer { observedLedger.endpoints(&observed) }
+            #endif
             let ratio = MacSpeechAudioInputFormat.sampleRate / inputSampleRate
             let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio) + 8
             let capacity = AVAudioFrameCount(max(1, min(estimatedFrames, 8_192)))
-            guard let outputBuffer = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: capacity
-            ) else {
+            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
                 throw MacSpeechAudioCaptureError.conversionFailed
             }
 
             let inputState = InputState()
             var conversionError: NSError?
             let status = converter.convert(
-                to: outputBuffer,
-                error: &conversionError
+                to: outputBuffer, error: &conversionError
             ) { _, inputStatus in
                 guard !inputState.supplied else {
                     inputStatus.pointee = .noDataNow
@@ -574,8 +637,11 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
                 inputStatus.pointee = .haveData
                 return inputBuffer
             }
-            guard conversionError == nil,
-                  status != .error,
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedConversion(&observed, input: inputBuffer, output: outputBuffer,
+                                     supplied: inputState.supplied, status: status)
+            #endif
+            guard conversionError == nil, status != .error,
                   outputBuffer.frameLength > 0,
                   let samples = outputBuffer.floatChannelData?[0]
             else {
@@ -584,10 +650,14 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
 
             let count = Int(outputBuffer.frameLength)
             let values = Array(UnsafeBufferPointer(start: samples, count: count))
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            #if AUDIO_OBSERVATION_TESTING
+            try observationTestConversionFailureIfEnabled()
+            #endif
+            observed?.status = 0
+            #endif
             return packetizer.append(
-                samples: values,
-                activityEvidenceKind: activityEvidenceKind,
-                acousticSnapshot: acousticSnapshot
+                samples: values, activityEvidenceKind: activityEvidenceKind, acousticSnapshot: acousticSnapshot
             )
         }
     }
@@ -595,8 +665,18 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
     func convert(
         captureSpans: [MacSpeechAcousticCaptureSpan]
     ) throws -> [MacSpeechPCM16Packet] {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = MacSpeechAudioObservation.shared.begin(.conversionBatch, stream: 1)
+        observed?.frameCount = UInt64(captureSpans.count)
+        observed?.status = MacSpeechAudioObservationStatus.conversionFailed.rawValue
+        defer { MacSpeechAudioObservation.shared.finish(observed) }
+        #endif
         var packets: [MacSpeechPCM16Packet] = []
         for span in captureSpans where !span.samples.isEmpty {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            var inputEvent = beginObservedInputSpan(span, parent: observed?.id ?? 0)
+            defer { MacSpeechAudioObservation.shared.finish(inputEvent) }
+            #endif
             let buffer = try MacSpeechFloatMono48kConverter.makeBuffer(
                 samples: span.samples
             )
@@ -608,12 +688,22 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
                     ),
                 acousticSnapshot: span.observation
             ))
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            inputEvent?.status = 0
+            #endif
         }
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        observed?.status = 0
+        observed?.outputEnd = UInt64(packets.count)
+        #endif
         return packets
     }
 
     func resetForGenerationTransition() {
         lock.withLock {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedConversionReset()
+            #endif
             converter.reset()
             packetizer.reset()
         }
@@ -1917,10 +2007,21 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         let hostCompletedAt: UInt64 = 0
         #endif
         let acoustic = acousticEchoHost.acousticObservationSnapshot()
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var delivery = observation.begin(.deliveryBatch, stream: 1)
+        delivery?.generation = generation
+        delivery?.frameCount = UInt64(captureSpans.count)
+        delivery?.status = captureSpans.isEmpty ? 9 : 3
+        defer { observation.finish(delivery) }
+        #endif
         if !captureSpans.isEmpty,
            let packets = try? outputConverter.convert(
                captureSpans: captureSpans
            ) {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            delivery?.status = 0
+            delivery?.outputEnd = UInt64(packets.count)
+            #endif
             for packet in packets {
                 let packetAcoustic = packet.acousticSnapshot
                     ?? acoustic
@@ -2337,3 +2438,132 @@ nonisolated final class SystemMacSpeechAudioCapture:
         audioEngine.resetAcousticEchoDiagnostics()
     }
 }
+
+#if DEBUG && AFTELLE_AUDIO_OBSERVATION
+private extension MacSpeechPCM16Packetizer {
+    mutating func beginObservedAppend(count: Int, snapshot: MacSpeechAcousticObservationSnapshot?)
+        -> MacSpeechAudioObservationEvent? {
+        var event = MacSpeechAudioObservation.shared.begin(.packetInput, stream: 1)
+        MacSpeechAudioLedger.snapshot(snapshot, into: &event)
+        observedLedger.prepare(&event, pending: pendingSamples.count)
+        event?.frameCount = UInt64(count)
+        event?.sampleRate = Double(24_000).bitPattern
+        if event != nil { observedLedger.input += UInt64(count) }
+        return event
+    }
+
+    mutating func finishObservedAppend(_ event: inout MacSpeechAudioObservationEvent?) {
+        observedLedger.endpoints(&event, pending: pendingSamples.count)
+        MacSpeechAudioObservation.shared.finish(event)
+    }
+
+    mutating func recordObservedPacket(_ packet: MacSpeechPCM16Packet, parent: UInt64) {
+        guard parent != 0 else { return }
+        var event = MacSpeechAudioObservation.shared.begin(.packetReady, stream: 1, parent: parent)
+        MacSpeechAudioLedger.snapshot(packet.acousticSnapshot, into: &event)
+        event?.object = observedLedger.object
+        event?.epoch = observedLedger.epoch
+        event?.inputStart = observedLedger.output
+        event?.outputStart = observedLedger.output
+        observedLedger.output += UInt64(packet.bytes.count / 2)
+        event?.inputEnd = observedLedger.output
+        event?.outputEnd = observedLedger.output
+        event?.frameCount = UInt64(packet.bytes.count / 2)
+        event?.sampleRate = Double(24_000).bitPattern
+        MacSpeechAudioObservation.shared.finish(event)
+    }
+
+    mutating func recordObservedPacketReset(reason: UInt64 = 1) {
+        var event = MacSpeechAudioObservation.shared.begin(.packetReset, stream: 1)
+        observedLedger.prepare(&event, pending: pendingSamples.count)
+        observedLedger.endpoints(&event, pending: pendingSamples.count)
+        event?.status = reason // 1 reset, 4 owner deinit; float24 pending samples.
+        MacSpeechAudioObservation.shared.finish(event)
+        observedLedger.reset()
+    }
+}
+
+private extension MacSpeechAudioConverter {
+    #if AUDIO_OBSERVATION_TESTING
+    func observationTestConversionFailureIfEnabled() throws {
+        if let remaining = observationTestFailureAfterConversions {
+            if remaining == 0 { throw MacSpeechAudioCaptureError.conversionFailed }
+            observationTestFailureAfterConversions = remaining - 1
+        }
+    }
+    #endif
+
+    func beginObservedInputSpan(_ span: MacSpeechAcousticCaptureSpan, parent: UInt64)
+        -> MacSpeechAudioObservationEvent? {
+        var event = MacSpeechAudioObservation.shared.begin(.conversionInputSpan, stream: 1, parent: parent)
+        MacSpeechAudioLedger.snapshot(span.observation, into: &event)
+        event?.frameCount = UInt64(span.samples.count)
+        event?.inputEnd = UInt64(span.samples.count)
+        event?.status = MacSpeechAudioObservationStatus.conversionFailed.rawValue
+        return event
+    }
+
+    func prepareObservedConversion(_ event: inout MacSpeechAudioObservationEvent?,
+                                   snapshot: MacSpeechAcousticObservationSnapshot?) {
+        event?.began = MacSpeechAudioObservation.shared.now()
+        MacSpeechAudioLedger.snapshot(snapshot, into: &event)
+        observedLedger.prepare(&event, stateful: true)
+        event?.sampleRate = inputSampleRate.bitPattern
+        event?.flags |= 64 | (observedLedger.unobservedInput ? 128 : 0)
+        event?.status = MacSpeechAudioObservationStatus.conversionFailed.rawValue
+    }
+
+    func recordObservedConversion(_ event: inout MacSpeechAudioObservationEvent?,
+                                  input: AVAudioPCMBuffer, output: AVAudioPCMBuffer,
+                                  supplied: Bool, status: AVAudioConverterOutputStatus) {
+        if event == nil, supplied { observedLedger.unobservedInput = true }
+        guard event != nil else { return }
+        event?.flags |= supplied ? 256 : 0
+        event?.format = UInt64(bitPattern: Int64(status.rawValue))
+        event?.frameCount = UInt64(input.frameLength)
+        if supplied { observedLedger.input += UInt64(input.frameLength) }
+        observedLedger.output += UInt64(output.frameLength)
+        event?.flags |= output.frameLength > 0 ? 512 : 0
+    }
+
+    func recordObservedConversionReset(reason: UInt64 = 2) {
+        var event = MacSpeechAudioObservation.shared.begin(.packetReset, stream: 1)
+        observedLedger.prepare(&event)
+        observedLedger.endpoints(&event)
+        event?.status = reason // 2 reset, 3 deinit; internal FIR support is unknown.
+        event?.flags |= 64
+        MacSpeechAudioObservation.shared.finish(event)
+        observedLedger.reset()
+    }
+}
+
+private extension MacSpeechAudioFrameBuffer {
+    func beginObservedBufferAppend(count: Int, generation: UInt64,
+                                   snapshot: MacSpeechAcousticObservationSnapshot?)
+        -> MacSpeechAudioObservationEvent? {
+        var event = MacSpeechAudioObservation.shared.begin(.bufferAction, stream: 1)
+        MacSpeechAudioLedger.snapshot(snapshot, into: &event)
+        event?.object = observedObject
+        event?.generation = generation
+        event?.frameCount = UInt64(count)
+        event?.status = MacSpeechAudioLedger.Action.rejected.rawValue
+        return event
+    }
+
+    func recordObservedFrame(_ frame: MacSpeechAudioFrame, action: MacSpeechAudioLedger.Action) {
+        var event = beginObservedBufferAppend(count: frame.pcm16Bytes.count / 2,
+            generation: frame.captureGeneration, snapshot: frame.acousticSnapshot)
+        event?.status = action.rawValue
+        event?.inputStart = frame.sequenceNumber
+        event?.inputEnd = frame.sequenceNumber + 1
+        MacSpeechAudioObservation.shared.finish(event)
+    }
+
+    func recordObservedFrames(_ values: [MacSpeechAudioFrame], action: MacSpeechAudioLedger.Action) {
+        for frame in values {
+            guard MacSpeechAudioObservation.shared.activeRun != 0 else { return }
+            recordObservedFrame(frame, action: action)
+        }
+    }
+}
+#endif
