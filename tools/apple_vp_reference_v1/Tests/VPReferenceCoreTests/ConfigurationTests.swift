@@ -66,7 +66,8 @@ final class ConfigurationTests: XCTestCase {
         let configured = try ConfigurationPlan.configure(mode: .enabled, driver: driver)
         XCTAssertEqual(configured.formats.input, configured.preConnectionFormats.input)
         XCTAssertNotEqual(configured.formats.mixer, configured.preConnectionFormats.mixer)
-        XCTAssertEqual(configured.formats.mixer.sampleRate, 16_000)
+        XCTAssertEqual(configured.preConnectionFormats.mixer.sampleRate, 16_000)
+        XCTAssertEqual(configured.formats.mixer, configured.formats.output)
     }
 
     func testEveryConfigurationUsesItsOwnDriver() throws {
@@ -127,7 +128,7 @@ private final class FakeEngineDriver: EngineConfigurationDriving {
         let rate = invalidFormat ? 0 : (changeFormats && reads > 1 ? 44_100 : 48_000.0)
         let format = makeFormat(rate: rate)
         return AudioFormats(
-            input: format, mixer: mixerNegotiates && reads > 1 ? makeFormat(rate: 16_000) : format,
+            input: format, mixer: mixerNegotiates && reads == 1 ? makeFormat(rate: 16_000) : format,
             output: differentOutput ? makeFormat(rate: 16_000) : format
         )
     }

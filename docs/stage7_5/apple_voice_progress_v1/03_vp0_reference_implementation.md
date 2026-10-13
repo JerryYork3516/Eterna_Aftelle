@@ -1,10 +1,12 @@
-# Apple Voice Progress v1 · VP-0 独立参考程序实现 · v1
+# Apple Voice Progress v1 · VP-0 独立参考程序实现 · v1 / R1
 
 日期：2026-10-13。范围：Test3 外放回声的独立工程对照工具。
 
 基线：`Apple-Voice-Progress-v1` / `a4cf213d5cd92c75e0951339ddb25a4ed0e00b93`。
 
 结论：**IMPLEMENTED_TESTED**。此结论仅表示独立程序通过本轮获准的构建、静态检查、合成内存与离线记录器测试。它不表示 Apple AEC 实际有效、不表示已排除全部工程 Bug，也不表示 Test3 PASS。实际设备行为均为 **NOT_MEASURED**。
+
+VP-0-R1 工程返工结论：**QUALITY_PASS**，依据与限制见第 13 节。R1 基线为 `3f7399bcbf9fb185238c772c8570a60bb99e1c90`；返工阶段未 commit / push。2026-10-14 主控单独授权提交推送本成果，设备实验权限不变。
 
 实现阶段未启动 App、AVAudioEngine、麦克风、扬声器或 HIL；未读取私人 PCM、SSD、quarantine 或历史实验资产；未操作原 ACE3 工作区。实现阶段未 commit / push；主控随后单独批准提交推送本工具和本文档。
 
@@ -46,7 +48,7 @@
 
 | 顺序 | 实际代码行为 |
 |---|---|
-| 前置 | 检查已有麦克风授权，不主动请求授权；加载显式登记的线性 PCM，或居民静默。 |
+| 前置 | record 只检查已有麦克风授权，不主动请求；单独显式 `request-microphone` 才可申请。加载显式登记的线性 PCM，或居民静默。 |
 | 新建 | 新 `AVAudioEngine` 与新 `AVAudioPlayerNode`；引擎尚未运行。 |
 | OFF | `inputNode.setVoiceProcessingEnabled(false)`；两个 I/O enabled 都须为 false。**不以 bypass 代替禁用。** |
 | ON | `inputNode.setVoiceProcessingEnabled(true)`；两个 I/O enabled 都须为 true，bypass=false、inputMuted=false、AGC 读数可获得；不为有利结果修改 AGC。 |
@@ -56,7 +58,7 @@
 | 运行 | 在 prepare/start **之前**以同一 Mach tick arm 记录器和截止窗口；开始后、播放前读运行态与实际格式。 |
 | 结束 | 固定窗口后停止 player/engine、移除 Tap，读明确标注为 post-stop 的路由/格式/VP 状态，seal 与写最终 manifest。 |
 
-配置、权限、路由、状态不可获得或不匹配时明确 BLOCKED/INVALID。可选属性缺失以 `UNAVAILABLE` 编码，不伪造 false。当前路由要求人工事先选择 USB 默认输入和 Mac 内建默认输出，工具不主动设置设备；实际 node 绑定不能与默认设备核对时，`BLOCKED_DEVICE_BINDING_UNAVAILABLE`。aggregate 或 VP 特殊设备呈现尚未实测，不能默认它等同于目标硬件。
+配置、权限、路由、状态不可获得或不匹配时明确 BLOCKED/INVALID。可选属性缺失以 `UNAVAILABLE` 编码，不伪造 false。当前路由要求人工事先选择 USB 默认输入和 Mac 内建默认输出，工具不主动设置设备；实际 node 绑定不能与默认设备核对时，字段记录 `UNAVAILABLE`，诊断为 `DEVICE_BINDING / DEVICE_BINDING_MISMATCH`；设备读取失败为 `DEVICE_READ_FAILED`。aggregate 或 VP 特殊设备呈现尚未实测，不能默认它等同于目标硬件。
 
 工具不修改系统音量、设备增益、默认设备或系统麦克风模式。`Info.plist` 仅提供用途元数据；CLI 的 TCC 归属和人工授权流程仍为 NOT_MEASURED。
 
@@ -117,7 +119,7 @@ seal receipt 的 FNV 整文件校验包括 body/footer，用于发现结构损�
 
 诊断容量/写盘失败只关闭诊断 admission，保留 INVALID；不在 callback 更改引擎生命周期，不因诊断失效提前停止音频，也不做等待写盘的额外播放。正常窗口内不写同步 manifest；结束后的封口可能耗时，但发生在音频停止后。实际 RT 性能、系统调度和 Apple 内部缓冲仍需后续设备测量。
 
-## 7. 已执行的非设备验证
+## 7. VP-0 初始交付的非设备验证（R1 回归见第 13 节）
 
 检查入口：`tools/apple_vp_reference_v1/check.sh`。只在工具目录构建和使用临时合成 fixture；没有运行 live record 命令。
 
@@ -138,7 +140,7 @@ seal receipt 的 FNV 整文件校验包括 body/footer，用于发现结构损�
 
 ## 8. 独立性、冻结组件与 Stage 7 检查
 
-本轮只有独立工具和本文档新增。01/02、正式 Test3 合同、Test2、App、Qwen Realtime 原生全双工链、NativeSpeechProvider/Adapter、实时收发协议、RuntimeCore/generation/授权/cancel、Session/Memory/DR/Studio、ACE3 均未修改。
+初始交付只有独立工具和本文档新增；R1 修改范围见第 13 节。01/02、正式 Test3 合同、Test2、App、Qwen Realtime 原生全双工链、NativeSpeechProvider/Adapter、实时收发协议、RuntimeCore/generation/授权/cancel、Session/Memory/DR/Studio、ACE3 均未修改。
 
 按 [Stage 7 Forbidden Checklist](../../stage7_forbidden_checklist.md) 逐项审核：
 
@@ -213,7 +215,7 @@ ACE3 冻结成果只复用时间身份、有限证据、层次分离和负控的
 
 ## 12. 下一步条件、停止标准与收口
 
-设备准备 GO 需主控审核本工具/协议、单独授权有限 VP-A/B/C，补齐素材/设备/路由/私有保存/真值与评分办法。当前没有这项授权；提交推送授权不扩展设备或声学实验权限，Git 交付后停止。
+设备准备 GO 需主控审核本工具/协议、单独授权有限 VP-A/B/C，补齐素材/设备/路由/私有保存/真值与评分办法。当前没有这项授权；R1 返工阶段仅修改工作副本，随后单独获准提交推送，Git 交付不扩展设备或声学实验权限，完成后停止。
 
 - **证据 NO-GO**：配置或目标 route 不可证明、时钟/声源标签不清、格式/设备改变、诊断失效或覆盖不足。封口保存失效原因，不自动改设备、补跑或扩预算。
 - **PCM 路线停止**：在预登记有限有效对照及反序确认中，正常近端损伤或回声残余按获批评价方法明确阻止产品目标，且参考/Aftelle/设备差异已取得最小可归因证据。停止本目标路线，不继续 VAD/STS 调参掩盖缺失声音，不宣布 Apple 全部路线必然失败。
@@ -225,7 +227,174 @@ ACE3 冻结成果只复用时间身份、有限证据、层次分离和负控的
 
 ```text
 Apple VP-0 = REVIEW_PENDING
-Apple VP-A/B/C = NOT_STARTED
+Apple VP-A/B/C = NOT_AUTHORIZED
+Apple VP-D/E = BLOCKED
+ACE3 Step 2A/2B = FROZEN
+ACE3 Step 2C = PAUSED
+Test3 = BLOCKED
+execution_authorized = false
+```
+
+## 13. VP-0-R1 质量复核
+
+### 13.1 范围、基线与最终裁定
+
+工作分支 `Apple-Voice-Progress-v1`，工程返工期间 HEAD 保持 `3f7399bcbf9fb185238c772c8570a60bb99e1c90`。开工工作区/暂存区干净，未发现未知改动。返工授权只覆盖独立工具和本文档；当时“不 commit、不 push”优先于此前完成后提交推送的通用指令，也未执行 AGENTS 的额外 checkpoint commit。交付后主控另行批准将这 26 个文件提交推送。
+
+| 复核 | 裁定 | 依据及边界 |
+|---|---|---|
+| TECHNICAL_REVIEW | **PASS** | VP 格式/连接/权限有官方 API 与 SDK 依据；R4 保留 I/O 保守条件，补合法最终 mixer 连接检查。R5 源码推导未发现确定竞态、越界、UAF 或死锁。目标设备仍未验证。 |
+| ENGINEERING_REVIEW | **PASS** | R1 状态异常阻止 play/score；单一路径 stop/removeTap 和一次 seal；R2 显式权限命令；R3 分阶段错误，原始原因不被收尾覆盖。独立只读源码复核加非设备测试，非单凭全绿。 |
+| EVIDENCE_REVIEW | **PASS** | 原生 PCM/时间 binary schema 不变；有界脱敏 primary/secondary；写入同步失败不发布正式 manifest；原 57 项保留并执行，新增 30 项。完整性不等于物理/声源真值。 |
+
+最终 **QUALITY_PASS**：具备 VP-0 最终工程审核条件，尚待主控审核。此结论只适用于本轮可验证的工程合同，不批准实体实验、冻结、后端迁移、Runtime 授权或 Test3 PASS。
+
+### 13.2 具体修改文件与函数
+
+以下路径均相对 `tools/apple_vp_reference_v1/`；没有工具目录之外的源码修改。
+
+| 文件/函数 | 修改目的 |
+|---|---|
+| `Sources/VPReferenceAudio/VP0AudioSession.swift`：run、capture、startAndWait、observeRunning、observeAfterStop、finish | 集中失败收口；先配置/启动/验证，再播放/评分；准确阶段与最终封存。 |
+| 新 `Sources/VPReferenceCore/{PlaybackLifecycle,RunningConfigurationPlan}.swift` | 生产控制路径与故障夹具共用的非设备验证/清理逻辑，不是新音频主链。 |
+| 新 `Sources/VPReferenceCore/MicrophonePermissionPlan.swift`、`Sources/VPReferenceAudio/MicrophonePermissionAccess.swift` | Mock 可测权限状态机与独立 AVCaptureDevice 适配器。 |
+| `Sources/VPReferenceCore/CommandLinePlan.swift`、`Sources/VPReferenceAudio/ReferenceTool.swift` | 精确显式权限命令；async CLI 等待权限结果；脱敏阶段输出，不自动请求。 |
+| 新 `Sources/VPReferenceCore/EngineeringDiagnostic.swift` | 阶段/稳定码、首错固定、最多 4 条 secondary 与省略计数。 |
+| `Sources/VPReferenceCore/ConfigurationPlan.swift` | 不重试 VP 配置，阶段化错误；接图后 mixer/output 同格式，保留原 VP I/O 条件。 |
+| `Sources/VPReferenceAudio/AudioRouteSnapshot.swift`、`RecorderOwner.swift`、`AudioRunManifest.swift` | 路由稳定码、幂等 seal 返回真实 Bool、加独立诊断版本与字段。 |
+| `Sources/VPReferenceAudio/PrivateManifestWriter.swift` | 私有 pending 写入和 fsync 成功后 `RENAME_EXCL` 独占发布，避免失败文件呈现有效终态。 |
+| `Tests/VPReferenceCoreTests/ConfigurationTests.swift`、`Tests/VPReferenceAudioTests/ManifestWriterTests.swift` | 保留原用例名，修正合法 mixer 夹具，补同步/发布故障测试。 |
+| 新测试：Core `{MicrophonePermission,PermissionCommand,PlaybackFailure,EngineeringDiagnostic,RecorderStreamIsolation}Tests.swift`、`EngineeringFixture.swift`；Audio `RecorderOwnerLifetimeTests.swift` | 新增故障、权限、独立流与晚提交/所有权夹具。 |
+| `README.md`、`check.sh`、`check_sources.py` | 说明权限/失败边界，加入默认/非法权限命令及静态独立性守卫；检查脚本不运行合法权限或 live record。 |
+
+`VPRecorder.c/h`、`NativePCMTap.swift`、`AppleEngineDriver.swift`、`AudioRunOutcome.swift`、`Info.plist` 和 `Package.swift` 与基线字节相同。修改文件合计 26：14 个已有文件更新、12 个新增文件，其中工具 25 个、本文档 1 个。
+
+### 13.3 R1：启动后配置异常禁止继续播放
+
+原缺口属实：observeRunning 的失败曾只设置 INVALID，后续仍可能执行 player.play。现在 capture 使用同一个 `PlaybackLifecycle.run`：`try startAndValidate` 成功后才执行 play，再进入 score；任何返回的 Swift 错误经 defer 执行唯一 stop/removeTap。
+
+运行快照由 `RunningConfigurationPlan.validate` 分类：VP state、input format、output/mixer format、硬件输出格式。读取失败同样抛稳定阶段错误。配置通知仍在成功的运行快照后注册，保持正常启动时机；播放前若已见格式/config invalid 标志，使用 `VP_CONFIGURATION / PRE_PLAYBACK_CONFIGURATION_INVALID`，不擅自断言一定换了设备。
+
+run 先保留原始 EngineeringFailure，再 INVALID recorder；唯一 finish 收口执行一次显式 seal。RecorderOwner 的幂等保护仍在，已入队证据正常排空保存。失败路径不返回成功 outcome，不继续评分，不重复 stop 或释放。
+
+5 项新增播放故障测试使用实际控制 helper 与实际纯快照验证：状态不符、输入/输出/硬件格式不符、读快照失败、prepare/start 故障、正常顺序。失败时 play=0、score=0、stop=1；状态故障夹具还用合成 recorder 证明已采集合法 record 保存、pending=0、容器完整但 INVALID。
+
+范围限制：Swift do/catch 不拦截底层 Objective-C NSException、native crash 或断电；不宣称实际 AVAudioEngine 故障都能封存。`prepare()` 本身无 Swift 错误返回；ENGINE_PREPARE 诊断覆盖入口条件和可返回错误的控制夹具，实际内部故障未测。
+
+### 13.4 R2：显式首次权限流程与实际身份核验
+
+新增精确命令 `request-microphone`；额外参数直接 COMMAND 拒绝。默认 help、verify、record 均不进入请求分支。record 的 requireAuthorized 在构造 AppleEngineDriver/AVAudioEngine 前执行，只读已有权限。
+
+| 状态 | 显式请求结果 / record 行为 |
+|---|---|
+| authorized | 请求命令直接返回已有授权，不弹窗；record 可继续原逻辑。 |
+| notDetermined | 只有显式命令调用一次 requestAccess；同 actor 在 await 前锁定 requestAttempted，重复未决调用被拒。record 输出 REQUEST_REQUIRED。 |
+| denied / restricted / unavailable | 稳定 PERMISSION 代码，拒绝；不启动音频、不重置 TCC。 |
+| 请求被拒或结果未确认 | 重新读取状态，返回稳定错误；即使 request Bool=true，仍 notDetermined 也不能当授权成功。 |
+
+依据 [Apple requestAccess](https://developer.apple.com/documentation/avfoundation/avcapturedevice/requestaccess(for:completionhandler:)) 和本机 `AVCaptureDevice.h:2134–2194`；10 项 Mock 权限测试、2 项 CLI 分支测试均未调用系统权限 API。工具不点击弹窗、不修改签名或 TCC 数据库。
+
+对 Debug/Release 成品只读 `otool` / `codesign -d`：都真实嵌入 `__TEXT,__info_plist`、`NSMicrophoneUsageDescription` 及 bundle ID `org.eterna.research.apple-vp-reference-v1`。两者均 ad-hoc、TeamIdentifier 未设置；Debug 签名 Identifier 为上述 bundle ID，Release 为 `apple-vp-reference`。不能假定两者共享稳定 TCC 授权。
+
+[Apple DTS 的 responsible-code 说明](https://developer.apple.com/forums/thread/678819) 与 [CLI 嵌入 plist 讨论](https://developer.apple.com/forums/thread/751768) 支持区分用途声明、实际可执行身份与启动宿主归属。静态元数据不足以证明 Terminal/Codex 启动下的首次弹窗、责任进程、授权持久性或重建后的身份连续性。这些全部 **NOT_MEASURED**；未来须登记实际所用 build/签名/启动宿主，不能自动重签或清权限来取得结果。
+
+### 13.5 R3：阶段、稳定错误码与首错保留
+
+所有诊断只在控制路径创建，callback 与 C recorder 未加入字符串/JSON。至少区分以下阶段：
+
+| 阶段 | 代表稳定码 |
+|---|---|
+| PERMISSION | MICROPHONE_REQUEST_REQUIRED / MICROPHONE_DENIED / MICROPHONE_RESTRICTED |
+| VP_CONFIGURATION | VP_ENABLE_FAILED / ENGINE_ALREADY_RUNNING / PRE_PLAYBACK_CONFIGURATION_INVALID |
+| VP_STATE | STATE_READ_FAILED / VP_MODE_MISMATCH / VP_STATE_UNAVAILABLE / VP_STATE_CHANGED |
+| INPUT_FORMAT | INPUT_FORMAT_UNAVAILABLE / INPUT_FORMAT_CHANGED |
+| OUTPUT_FORMAT | OUTPUT_FORMAT_UNAVAILABLE / OUTPUT_FORMAT_CHANGED / VP_IO_FORMAT_MISMATCH / MIXER_FORMAT_MISMATCH |
+| DEVICE_BINDING | DEVICE_READ_FAILED / UNSUPPORTED_ROUTE / DEVICE_BINDING_MISMATCH / ROUTE_CHANGED |
+| ENGINE_PREPARE | ENGINE_PREPARE_FAILED / ENGINE_ALREADY_RUNNING |
+| ENGINE_START | ENGINE_START_FAILED |
+| RECORDER | RECORDER_CREATE_FAILED / RECORDER_ARM_FAILED / RECORDER_INVALID |
+| SEAL | SEAL_FAILED |
+| EVIDENCE_WRITE | IDENTITY_FAILED / PREPARED_WRITE_FAILED / FINAL_WRITE_FAILED / SUMMARY_ENCODING_FAILED |
+
+另有 COMMAND 和 SOURCE_MATERIAL，避免把参数/素材故障误归设备。一次组合格式快照不可精确定位的读取故障使用 `VP_CONFIGURATION / FORMAT_READ_FAILED`；已读到的无效 input/output 则准确分层，不虚构更精细的 SDK 内部原因。
+
+EngineeringFailure.check 每次只执行一次操作；已有类型化原因原样保留，不用通用 RECORDER 或写盘错误覆盖首错。RunDiagnostics 首次错误为 primary，最多 4 条 secondary，其他只累加计数，无无限日志/缓存。CLI 最多输出 primary、4 条 secondary 和省略计数；不输出 NSError 描述、路径、UID、凭据或输入参数。
+
+manifest 添加 `diagnostics_schema_version=1` 与 diagnostics，原字段与 native PCM/time schema 保留。若尚无私有 recorder/run bundle，失败仅由脱敏 stderr 定位；不在配置失败后重新构造引擎或重试 VP 以补诊断。
+
+写入先在新私有目录生成 0600 pending，完整 write/fsync 成功后独占原子发布正式文件；失败不发布新 manifest，也不覆盖已有目标。同步失败的完整 JSON 不再留作正式有效终态。正常异常收尾清理 pending；crash 可能留 pending，不能当正式证据。两项故障测试覆盖失败发布与 primary 保留。
+
+这只证明正常运行的写入发布合同，不证明目录 fsync、断电恢复或完整 bundle 的持久性。最终运行须成功退出且 bundle/控制 seal/覆盖检查齐全；单一 JSON 或 recorder 容器完整性仍不是实验有效或 Apple AEC PASS。
+
+### 13.6 R4：格式约束的技术结论
+
+**CONFIRMED**：本机 `AVAudioIONode.h:155–162` 要求 VP 的 inputNode.output 与 outputNode.input 同格式，两个 I/O 联动、停机配置、实际设备渲染；与 [WWDC 2019 AVAudioEngine](https://developer.apple.com/videos/play/wwdc2019/510/) 一致。本轮保留原 NativeAudioFormat 六字段 I/O 比较，没有因 USB 与内置扬声器硬件不同就删除条件。
+
+区别如下：inputNode 无普通格式转换（`AVAudioIONode.h:179–186`）；output client→hardware 可转换（`:280–287`）；mixer 输入→输出可采样率/声道转换（`AVAudioMixerNode.h:18–20`）。素材/player→mixer input 的连接格式可与最终 mixer output 不同。
+
+`AVAudioEngine.h:230–233` 要求连接的 source.output 与 destination.input 匹配，因此补充**接图后** mixer.output == outputNode.input。原 `testMixerNegotiationUsesFreshFinalFormat` 名称保留，但夹具修正为 pre-mixer16k→final-mixer48k、output48k；原 final-mixer16k/output48k 不能称合法连接。另加最终 mismatch 故障测试。没有追溯更改旧测试结果或宣称旧夹具已证明设备合法协商。
+
+**CONFIRMED 的比较语义差异**：`AVAudioFormat.h:165–175` 的 isEqual 是功能等价，mono interleaving 和不显著 packing/alignment 可被忽略；六字段字面相等更保守，也不包含完整 channel layout/packet 字段。本轮不自行增加正规化或更换证据 schema。目标 USB＋内置输出是否遇到等价但不同字段而被拒，仍 **HYPOTHESIS / DEVICE_UNVERIFIED**；不能把此类拒收判 Apple AEC 能力失败。
+
+读取顺序保留：停止新引擎→启用/禁用→实际状态→新格式→接图→再读→启动后的实际快照；不复用配置前格式，不重新执行配置取得诊断。
+
+### 13.7 R5：并发、所有权与预算审核
+
+未发现确定的数据竞争、内存越界、UAF 或死锁；**不重写 VPRecorder.c/h 或 NativePCMTap**。
+
+- Capture/Render 可能并发；一次 atomic_flag 串行准入，竞争者非等待拒收、lost+INVALID_CONTENTION、关闭后续采集。它是 fail-closed 策略，不是无损多生产者队列；实际频率 **NOT_MEASURED**，可能妨碍实验可用性，不能拿来判 AEC 失败。
+- slot 写入先于 release write_index；writer acquire 后消费，release read_index 后才可复用。token 保护 native stream 状态/slots/PCM 预算。
+- submit/invalidate 的 SC active-entry 与 seal 的 SC close/wait 在单控制线程合同下保护封口。运行中逐字段 snapshot 不是一致事务；完整性/守恒在 seal/join 后判定。
+- Tap 强捕获 RecorderOwner，闭包持有时不销毁 C storage；owner 仍幂等 seal。新离线闭包夹具证明外部 owner 释放后仍存活、seal 后晚 submit 拒收、闭包释放后可销毁。没有宣称 Apple 的实际晚回调时刻或 ARC 释放线程已经测过。
+- 60 秒 continuous clock、输入/Render 共用 64 MiB PCM、8 MiB 诊断预算保留。C resident certificate 重新读数 **4,473,728 bytes**；固定 slots/stack/guard 和 static_assert 不变。新增 ledger 最多 5 个固定码诊断，manifest 仍 ≤64 KiB；不是整个进程或 Apple framework RSS 证明。
+
+新增独立流夹具交替 INPUT/RENDER、不同 native rate 与各自 sampleTime，证明 recorder 不混淆流格式/连续性。它是通用记录器合成测试，不证明实际 VP I/O 可以不同格式。
+
+arm/seal/destroy 的任意多控制线程并发不属于支持合同；实际回调调度、copy最长耗时、最后 ARC release 线程及释放开销仍未测。未开启 TSAN/实体负载实验，也不把已有并发用例全绿当全面无竞态证明。
+
+### 13.8 回归数量、构建与静态结果
+
+原 57 个测试的路径/方法名从冻结 HEAD 提取，确认全部保留并在新日志执行；总计 **87 tests、0 failures**（Core 72，Audio 15）。
+
+| 新增类别 | 数量 |
+|---|---:|
+| R1 播放前故障及正常控制顺序 | 5 |
+| R2 Mock 权限 / 显式命令 | 10 + 2 |
+| R3 阶段/首错/脱敏/有界/不重试 / manifest 同步故障 | 8 + 2 |
+| R4 最终 mixer/output mismatch | 1 |
+| R5 独立流及 owner/晚提交 | 2 |
+| 新增合计 | **30** |
+
+最终 `check.sh`：Debug/Release warnings-as-errors 构建成功；SwiftLint 0.65.1 **error=0 / warning=0**；Apple Swift Format strict 通过；C11 `-Wall -Wextra -Werror` 通过；默认帮助/缺 live flags/非法权限命令与静态分支守卫通过。未使用规则豁免。工具链 Apple Swift 6.4，部署 macOS14；不代表已在 macOS14 实机测试。
+
+日志仍在忽略的 `.build/check-*.log`；额外 `.build/r1-baseline-tests.json`、`r1-metadata.json` 是本地非设备复核材料，不进入 Git。
+
+| 返工前后比较 | 结果 |
+|---|---|
+| 正常路径 | 拓扑、VP切换、素材、原生Tap、窗口预算不变；验证成功才按原顺序播放/等待/stop/seal。 |
+| 异常路径 | 原 silent INVALID 后继续播放改为抛错/单次清理；首错保留且失败退出。 |
+| 状态/格式 | VP I/O 原条件保留，新增最终 mixer 连接约束及更明确阶段；合法协商假夹具纠正。 |
+| PCM/时间 | C/header/Tap/原 outcome 与基线字节相同，旧schema与原生字段不退化；只加私有诊断元数据。 |
+| callback/所有权 | callback字节不变，无新IO/JSON/task/等待；强持有保留，加离线生命周期验证。 |
+| 释放/封存 | stop/removeTap 单一 defer，finish唯一显式seal；seal/write失败不会遮蔽原原因或返回成功。 |
+
+### 13.9 未验证设备行为与 Stage 7
+
+本轮没有启动 AVAudioEngine、App、麦克风、扬声器、HIL，未调用实际 permission request/status API，也未读私人 PCM、SSD/quarantine 或原 ACE3 工作区。所有测试声音均为新生成的内存/离线合成字节。
+
+首次 TCC 弹窗/归属/持久性、实际 VP enabled/bypass/AGC、USB＋内置绑定/格式协商、mic mode影响、NSException/native crash恢复、晚callback/释放线程、并发竞争与RT负载、实际声压/到达时间、AEC抑制/近端保留/双讲均为 **NOT_MEASURED**。
+
+Stage 7 越界检查 **PASS**：六红线无触碰；代码仅独立工具，未改 Runtime API、DR schema/fixture、Qwen/Provider/Test2/生产App/ACE3/正式Test3合同；无新增平台target、Stage8、scheduler/Memory owner、正式source资格或中断权限。本文档之外的冻结报告不变。工程返工阶段未暂存、commit 或 push；本成果随后由主控单独授权进行 Git 交付。
+
+### 13.10 最终审核条件与停止
+
+三项工程缺口已在获准范围内修复；两项技术风险已按官方契约/源码推导核实并明确未测边界。具备 VP-0 最终工程复审条件，**QUALITY_PASS 不等于主控审核批准或物理能力 PASS**。
+
+到此停止；不自动进入设备准备或 VP-A/B/C，不因通过 Mock/编译解锁 sourceAttributionConfirmed，不修改正式全双工/Runtime/Test3验收。
+
+```text
+Apple VP-0 = REVIEW_PENDING
+Apple VP-A/B/C = NOT_AUTHORIZED
 Apple VP-D/E = BLOCKED
 ACE3 Step 2A/2B = FROZEN
 ACE3 Step 2C = PAUSED

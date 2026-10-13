@@ -32,6 +32,8 @@ struct AudioRunManifest: Encodable {
         + "raw AVAudioTime.hostTime retains its separate clock domain"
     var outcome: AudioRunOutcome?
     var terminalStatus: String
+    var diagnostics = RunDiagnostics()
+    let diagnosticsSchemaVersion = 1
 
     static func create(
         configuration: RunConfiguration, configured: ConfiguredEngine,
@@ -110,7 +112,8 @@ struct AudioRunManifest: Encodable {
         case postStopHardwareOutputFormat = "post_stop_hardware_output_format"
         case hardwareOutputFormat = "configured_hardware_output_format"
         case material, materialStatus, renderMeaning, inputMeaning
-        case sampleMapping, snapshotTiming, diagnosticClockOrigin, outcome, terminalStatus
+        case sampleMapping, snapshotTiming, diagnosticClockOrigin, outcome, terminalStatus, diagnostics
+        case diagnosticsSchemaVersion = "diagnostics_schema_version"
     }
 }
 

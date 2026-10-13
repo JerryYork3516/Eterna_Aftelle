@@ -24,8 +24,27 @@ Runtime interruption authority. Each invocation creates and tears down one engin
 The required default input is USB and output is built-in. Actual node-device
 binding must also be established by the available public state; unknown or
 aggregate-only binding is BLOCKED rather than inferred from defaults. TCC behavior
-and this binding on real devices are NOT_MEASURED. The tool does not request
-microphone permission, change defaults, volume, hardware gain or microphone mode.
+and this binding on real devices are NOT_MEASURED. Recording only checks existing
+microphone permission; it never requests access. The tool does not change defaults,
+volume, hardware gain or microphone mode.
+
+## Explicit microphone permission — not exercised in this delivery
+
+`request-microphone` is a separate, exact command. It requests access once only
+when the state is NOT_DETERMINED, then checks the observed authorization result.
+AUTHORIZED does not prompt; DENIED/RESTRICTED/UNAVAILABLE fail. This command never
+constructs an engine or starts recording. It does not reset TCC or click a prompt.
+Actual first-use prompts, permission persistence, signing and Terminal/Codex TCC
+responsibility remain NOT_MEASURED despite the embedded usage description/identity.
+
+Control-path failures emit bounded PRIMARY/SECONDARY stage and stable code values,
+without underlying SDK error text, device UID, paths or credentials. A failed
+post-start state/format check prevents playback and scoring, then stops/removes
+taps and seals admitted evidence. The first failure survives seal/write failures;
+at most four secondary diagnostics are retained. A manifest is published exclusively
+only after its pending file synchronizes successfully. This is not a whole-bundle
+power-loss durability guarantee. Native crashes/Objective-C exceptions are outside
+the tested Swift-error recovery contract.
 
 Native input and digital mixer Render samples are stored unchanged in a private
 binary recorder, with native ASBD and per-buffer layout. Render is not measured

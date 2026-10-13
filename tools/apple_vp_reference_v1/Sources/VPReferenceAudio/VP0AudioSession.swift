@@ -9,71 +9,92 @@ public final class VP0AudioSession {
     public init() {}
 
     public func run(configuration: RunConfiguration) throws -> AudioRunOutcome {
-        try configuration.validateForAudio()
-        guard !used else { throw AudioReferenceError.sessionAlreadyUsed }
-        used = true
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
-            throw AudioReferenceError.permissionRequired
+        try EngineeringFailure.check(stage: .command, code: .invalidArguments) {
+            try configuration.validateForAudio()
         }
-        let material = try configuration.materialURL.map(PCMSourceMaterial.load)
+        guard !used else { throw EngineeringFailure(stage: .recorder, code: .sessionAlreadyUsed) }
+        used = true
+        try MicrophonePermissionPlan.requireAuthorized(status: MicrophonePermissionAccess.currentStatus())
+        let material = try EngineeringFailure.check(stage: .sourceMaterial, code: .materialLoadFailed) {
+            try configuration.materialURL.map(PCMSourceMaterial.load)
+        }
         let driver = AppleEngineDriver(material: material?.buffer)
         let configured = try ConfigurationPlan.configure(mode: configuration.mode, driver: driver)
-        let route = try AudioRouteSnapshot.read(engine: driver.engine)
-        var manifest = try AudioRunManifest.create(
-            configuration: configuration, configured: configured, route: route, driver: driver, material: material
-        )
-        let recorder = try RecorderOwner(configuration: configuration)
-        defer { recorder.seal() }
-        try manifest.writePrepared(directory: configuration.outputDirectory)
-        guard route.deviceBindingStatus == "NODE_IDS_MATCH_DEFAULTS" else {
-            vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT))
-            recorder.seal()
-            manifest.terminalStatus = "BLOCKED_DEVICE_BINDING_UNAVAILABLE"
-            manifest.outcome = recorder.outcome(
-                directory: configuration.outputDirectory, expectsRender: configuration.materialURL != nil
+        let route = try readRoute(driver: driver)
+        var manifest = try EngineeringFailure.check(stage: .evidenceWrite, code: .identityFailed) {
+            try AudioRunManifest.create(
+                configuration: configuration, configured: configured, route: route, driver: driver, material: material
             )
-            try manifest.writeFinal(directory: configuration.outputDirectory)
-            throw AudioReferenceError.unavailableDevice
         }
-        return try capture(configuration: configuration, driver: driver, recorder: recorder, manifest: &manifest)
+        let recorder = try EngineeringFailure.check(stage: .recorder, code: .recorderCreateFailed) {
+            try RecorderOwner(configuration: configuration)
+        }
+        do {
+            try EngineeringFailure.check(stage: .evidenceWrite, code: .preparedWriteFailed) {
+                try manifest.writePrepared(directory: configuration.outputDirectory)
+            }
+            guard route.deviceBindingStatus == "NODE_IDS_MATCH_DEFAULTS" else {
+                throw EngineeringFailure(stage: .deviceBinding, code: .deviceBindingMismatch)
+            }
+            try capture(configuration: configuration, driver: driver, recorder: recorder, manifest: &manifest)
+            try observeAfterStop(driver: driver, manifest: &manifest)
+        } catch {
+            manifest.diagnostics.record(EngineeringFailure.capture(error, stage: .recorder, code: .recorderInvalid))
+            vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT))
+        }
+        return try finish(configuration: configuration, recorder: recorder, manifest: &manifest)
     }
 
     private func capture(
         configuration: RunConfiguration, driver: AppleEngineDriver, recorder: RecorderOwner,
         manifest: inout AudioRunManifest
-    ) throws -> AudioRunOutcome {
+    ) throws {
         installTaps(driver: driver, recorder: recorder)
         var observer: NSObjectProtocol?
-        do {
-            try startAndWait(
-                configuration: configuration, driver: driver, recorder: recorder,
-                manifest: &manifest, observer: &observer
-            )
-        } catch {
-            vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT))
-            stop(driver: driver, observer: observer)
-            recorder.seal()
-            manifest.terminalStatus = "FAILED"
-            manifest.outcome = recorder.outcome(
-                directory: configuration.outputDirectory, expectsRender: configuration.materialURL != nil
-            )
-            do {
-                try manifest.writeFinal(directory: configuration.outputDirectory)
-            } catch {
-                throw AudioReferenceError.evidenceWriteFailed
-            }
-            throw error
-        }
-        stop(driver: driver, observer: observer)
-        observeAfterStop(driver: driver, recorder: recorder, manifest: &manifest)
-        recorder.seal()
-        let outcome = recorder.outcome(
-            directory: configuration.outputDirectory, expectsRender: configuration.materialURL != nil
+        let startTick = vp_recorder_now_tick()
+        try PlaybackLifecycle.run(
+            startAndValidate: {
+                guard vp_recorder_arm(recorder.handle, startTick) else {
+                    throw EngineeringFailure(stage: .recorder, code: .recorderArmFailed)
+                }
+                try startAndWait(driver: driver)
+                try observeRunning(driver: driver, manifest: &manifest)
+                observer = NotificationCenter.default.addObserver(
+                    forName: .AVAudioEngineConfigurationChange, object: driver.engine, queue: nil
+                ) { _ in vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_FORMAT)) }
+                if vp_recorder_snapshot(recorder.handle).invalid_reasons & UInt32(VP_INVALID_FORMAT) != 0 {
+                    throw EngineeringFailure(stage: .vpConfiguration, code: .prePlaybackConfigurationInvalid)
+                }
+            },
+            play: { driver.player.play() },
+            score: { wait(configuration: configuration, recorder: recorder, startTick: startTick) },
+            stop: { stop(driver: driver, observer: observer) }
         )
-        manifest.outcome = outcome
-        manifest.terminalStatus = outcome.status
-        try manifest.writeFinal(directory: configuration.outputDirectory)
-        return outcome
+    }
+
+    private func startAndWait(driver: AppleEngineDriver) throws {
+        driver.schedulePlayback()
+        try EngineeringFailure.check(stage: .enginePrepare, code: .enginePrepareFailed) {
+            guard !driver.engine.isRunning else {
+                throw EngineeringFailure(stage: .enginePrepare, code: .engineAlreadyRunning)
+            }
+            driver.engine.prepare()
+        }
+        try EngineeringFailure.check(stage: .engineStart, code: .engineStartFailed) {
+            try driver.engine.start()
+        }
+    }
+
+    private func wait(configuration: RunConfiguration, recorder: RecorderOwner, startTick: UInt64) {
+        DiagnosticLifecycle.finishWindow(
+            durationSeconds: configuration.durationSeconds,
+            elapsedSeconds: {
+                Double(vp_recorder_now_tick() - startTick) / Double(vp_recorder_ticks_for_seconds(1))
+            },
+            observe: {},
+            onFailure: { _ in vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_WRITE)) },
+            wait: { Thread.sleep(forTimeInterval: $0) }
+        )
     }
 
     private func stop(driver: AppleEngineDriver, observer: NSObjectProtocol?) {
@@ -89,73 +110,64 @@ public final class VP0AudioSession {
         NativePCMTap.install(node: driver.engine.mainMixerNode, stream: UInt32(VP_STREAM_RENDER), recorder: recorder)
     }
 
-    private func startAndWait(
-        configuration: RunConfiguration, driver: AppleEngineDriver,
-        recorder: RecorderOwner, manifest: inout AudioRunManifest, observer: inout NSObjectProtocol?
-    ) throws {
-        let startTick = vp_recorder_now_tick()
-        guard vp_recorder_arm(recorder.handle, startTick) else {
-            throw AudioReferenceError.recorderUnavailable
-        }
-        driver.schedulePlayback()
-        driver.engine.prepare()
-        try driver.engine.start()
-        do {
-            try observeRunning(driver: driver, recorder: recorder, manifest: &manifest)
-        } catch {
-            vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_FORMAT))
-            manifest.terminalStatus = "INVALID_RUNNING_SNAPSHOT"
-        }
-        observer = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: driver.engine, queue: nil
-        ) { _ in vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_FORMAT)) }
-        driver.player.play()
-        DiagnosticLifecycle.finishWindow(
-            durationSeconds: configuration.durationSeconds,
-            elapsedSeconds: {
-                Double(vp_recorder_now_tick() - startTick) / Double(vp_recorder_ticks_for_seconds(1))
-            },
-            observe: {},
-            onFailure: { _ in
-                vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_WRITE))
-                manifest.terminalStatus = "INVALID_DIAGNOSTIC_OBSERVATION"
-            },
-            wait: { Thread.sleep(forTimeInterval: $0) }
-        )
-    }
-
-    private func observeAfterStop(
-        driver: AppleEngineDriver, recorder: RecorderOwner, manifest: inout AudioRunManifest
-    ) {
-        do {
-            manifest.postStopRoute = try AudioRouteSnapshot.read(engine: driver.engine)
-            manifest.postStopFormats = try driver.readFormats()
-            manifest.postStopState = try driver.readVoiceProcessingState()
-            manifest.postStopHardwareOutputFormat = AppleEngineDriver.snapshot(
-                driver.engine.outputNode.outputFormat(forBus: 0)
-            )
-            if manifest.postStopRoute != manifest.routeBefore {
-                vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_FORMAT))
-            }
-        } catch {
-            vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_FORMAT))
-            manifest.terminalStatus = "INVALID_POST_STOP_SNAPSHOT"
+    private func readRoute(driver: AppleEngineDriver) throws -> AudioRouteSnapshot {
+        try EngineeringFailure.check(stage: .deviceBinding, code: .deviceReadFailed) {
+            try AudioRouteSnapshot.read(engine: driver.engine)
         }
     }
 
-    private func observeRunning(
-        driver: AppleEngineDriver, recorder: RecorderOwner, manifest: inout AudioRunManifest
-    ) throws {
-        manifest.runningFormats = try driver.readFormats()
-        manifest.runningState = try driver.readVoiceProcessingState()
-        manifest.runningHardwareOutputFormat = AppleEngineDriver.snapshot(
-            driver.engine.outputNode.outputFormat(forBus: 0)
+    private func observeAfterStop(driver: AppleEngineDriver, manifest: inout AudioRunManifest) throws {
+        manifest.postStopRoute = try readRoute(driver: driver)
+        manifest.postStopFormats = try EngineeringFailure.check(stage: .vpConfiguration, code: .formatReadFailed) {
+            try driver.readFormats()
+        }
+        manifest.postStopState = try EngineeringFailure.check(stage: .vpState, code: .stateReadFailed) {
+            try driver.readVoiceProcessingState()
+        }
+        manifest.postStopHardwareOutputFormat = AppleEngineDriver.snapshot(
+            driver.engine.outputNode.outputFormat(forBus: 0))
+        guard manifest.postStopRoute == manifest.routeBefore else {
+            throw EngineeringFailure(stage: .deviceBinding, code: .routeChanged)
+        }
+    }
+
+    private func observeRunning(driver: AppleEngineDriver, manifest: inout AudioRunManifest) throws {
+        let state = try EngineeringFailure.check(stage: .vpState, code: .stateReadFailed) {
+            try driver.readVoiceProcessingState()
+        }
+        manifest.runningState = state
+        let formats = try EngineeringFailure.check(stage: .vpConfiguration, code: .formatReadFailed) {
+            try driver.readFormats()
+        }
+        manifest.runningFormats = formats
+        let hardwareOutput = AppleEngineDriver.snapshot(driver.engine.outputNode.outputFormat(forBus: 0))
+        manifest.runningHardwareOutputFormat = hardwareOutput
+        try RunningConfigurationPlan.validate(
+            configured: manifest.configured, expectedHardwareOutput: manifest.hardwareOutputFormat,
+            actual: RunningConfigurationSnapshot(state: state, formats: formats, hardwareOutput: hardwareOutput)
         )
-        let consistent =
-            manifest.runningFormats == manifest.configured.formats
-            && manifest.runningState == manifest.configured.state
-            && manifest.runningHardwareOutputFormat == manifest.hardwareOutputFormat
-        if !consistent { vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_FORMAT)) }
-        manifest.terminalStatus = consistent ? "RUNNING" : "INVALID_RUNNING_CONFIGURATION"
+        manifest.terminalStatus = "RUNNING"
+    }
+
+    private func finish(
+        configuration: RunConfiguration, recorder: RecorderOwner, manifest: inout AudioRunManifest
+    ) throws -> AudioRunOutcome {
+        if !recorder.seal() {
+            manifest.diagnostics.record(EngineeringDiagnostic(stage: .seal, code: .sealFailed))
+        }
+        let outcome = recorder.outcome(
+            directory: configuration.outputDirectory, expectsRender: configuration.materialURL != nil)
+        if !outcome.isCompleteForReference, manifest.diagnostics.primary == nil {
+            manifest.diagnostics.record(EngineeringDiagnostic(stage: .recorder, code: .recorderInvalid))
+        }
+        manifest.outcome = outcome
+        manifest.terminalStatus = manifest.diagnostics.primary == nil ? outcome.status : "INVALID"
+        do {
+            try manifest.writeFinal(directory: configuration.outputDirectory)
+        } catch {
+            manifest.diagnostics.record(EngineeringDiagnostic(stage: .evidenceWrite, code: .finalWriteFailed))
+        }
+        if manifest.diagnostics.primary != nil { throw EngineeringFailure(diagnostics: manifest.diagnostics) }
+        return outcome
     }
 }

@@ -103,41 +103,62 @@ public enum ConfigurationPlan {
         mode: VPMode, driver: any EngineConfigurationDriving
     ) throws -> ConfiguredEngine {
         guard !driver.isRunning else {
-            throw ReferenceFailure.blocked("VP configuration requires a stopped fresh engine")
+            throw EngineeringFailure(stage: .vpConfiguration, code: .engineAlreadyRunning)
         }
-        try driver.setVoiceProcessingEnabled(mode.isEnabled)
-        let state = try driver.readVoiceProcessingState()
+        try EngineeringFailure.check(stage: .vpConfiguration, code: .vpEnableFailed) {
+            try driver.setVoiceProcessingEnabled(mode.isEnabled)
+        }
+        let state = try EngineeringFailure.check(stage: .vpState, code: .stateReadFailed) {
+            try driver.readVoiceProcessingState()
+        }
         try validate(state: state, mode: mode)
-        let formats = try driver.readFormats()
+        let formats = try readFormats(driver: driver)
         try validate(formats: formats, mode: mode)
-        try driver.connectPlayback(using: formats)
-        let connectedFormats = try driver.readFormats()
+        try EngineeringFailure.check(stage: .outputFormat, code: .graphConnectionFailed) {
+            try driver.connectPlayback(using: formats)
+        }
+        let connectedFormats = try readFormats(driver: driver)
         try validate(formats: connectedFormats, mode: mode)
-        guard connectedFormats.input == formats.input, connectedFormats.output == formats.output else {
-            throw ReferenceFailure.blocked("Graph connection changed I/O formats; do not use stale formats")
+        guard connectedFormats.input == formats.input else {
+            throw EngineeringFailure(stage: .inputFormat, code: .inputFormatChanged)
+        }
+        guard connectedFormats.output == formats.output else {
+            throw EngineeringFailure(stage: .outputFormat, code: .outputFormatChanged)
+        }
+        guard connectedFormats.mixer == connectedFormats.output else {
+            throw EngineeringFailure(stage: .outputFormat, code: .mixerFormatMismatch)
         }
         return ConfiguredEngine(
             mode: mode, state: state, formats: connectedFormats, preConnectionFormats: formats
         )
     }
 
+    private static func readFormats(driver: any EngineConfigurationDriving) throws -> AudioFormats {
+        try EngineeringFailure.check(stage: .vpConfiguration, code: .formatReadFailed) {
+            try driver.readFormats()
+        }
+    }
+
     public static func validate(state: VoiceProcessingState, mode: VPMode) throws {
         guard state.inputEnabled == mode.isEnabled, state.outputEnabled == mode.isEnabled else {
-            throw ReferenceFailure.blocked("Actual I/O voice-processing mode does not match requested mode")
+            throw EngineeringFailure(stage: .vpState, code: .vpModeMismatch)
         }
         if mode == .enabled {
             guard state.bypassed == false, state.inputMuted == false, state.agcEnabled != nil else {
-                throw ReferenceFailure.blocked("VP ON state is bypassed, muted, or unavailable")
+                throw EngineeringFailure(stage: .vpState, code: .vpStateUnavailable)
             }
         }
     }
 
     public static func validate(formats: AudioFormats, mode: VPMode) throws {
-        guard formats.input.isValidPCM, formats.mixer.isValidPCM, formats.output.isValidPCM else {
-            throw ReferenceFailure.blocked("A required native PCM format is unavailable")
+        guard formats.input.isValidPCM else {
+            throw EngineeringFailure(stage: .inputFormat, code: .inputFormatUnavailable)
+        }
+        guard formats.mixer.isValidPCM, formats.output.isValidPCM else {
+            throw EngineeringFailure(stage: .outputFormat, code: .outputFormatUnavailable)
         }
         if mode == .enabled, formats.input != formats.output {
-            throw ReferenceFailure.blocked("VP I/O formats differ")
+            throw EngineeringFailure(stage: .outputFormat, code: .vpIOFormatMismatch)
         }
     }
 }

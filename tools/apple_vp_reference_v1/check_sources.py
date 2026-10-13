@@ -21,7 +21,21 @@ assert not re.search(r"Data\(|Array\(|Task\s*\{|async|\.write\(|JSON|SHA|FFT|\.s
 entry = (root / "Sources/VPReferenceAudio/ReferenceTool.swift").read_text()
 assert entry.count("VP0AudioSession()") == 1
 assert entry.index("case .record") < entry.index("VP0AudioSession()")
+assert entry.count("case .requestMicrophone") == 1
+assert entry.count("requestExplicitly(") == 1
+request_sources = [
+    source.name for source in (root / "Sources").rglob("*.swift")
+    if "AVCaptureDevice.requestAccess" in source.read_text()
+]
+assert request_sources == ["MicrophonePermissionAccess.swift"], request_sources
+session = (root / "Sources/VPReferenceAudio/VP0AudioSession.swift").read_text()
+assert "requestExplicitly" not in session and "requestAccess" not in session
+assert session.index("requireAuthorized") < session.index("AppleEngineDriver(")
+assert session.count("recorder.seal()") == 1
+lifecycle = (root / "Sources/VPReferenceCore/PlaybackLifecycle.swift").read_text()
+assert lifecycle.index("try startAndValidate()") < lifecycle.index("play()\n")
+assert "defer { stop() }" in lifecycle
 manifest = (root / "Package.swift").read_text()
 assert "dependencies: [" in manifest and ".package(" not in manifest
 assert not any(name in manifest for name in [".iOS", ".visionOS", ".watchOS", ".tvOS"])
-print("PASS: independent SDK-only sources, explicit live branch, bounded tap entry")
+print("PASS: SDK-only sources, explicit permission/live branches, fail-closed playback, bounded tap entry")

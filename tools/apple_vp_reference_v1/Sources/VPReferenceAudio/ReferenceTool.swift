@@ -5,7 +5,7 @@ import VPReferenceCore
 
 @main
 enum ReferenceTool {
-    static func main() {
+    static func main() async {
         do {
             switch try CommandLinePlan.parse(Array(CommandLine.arguments.dropFirst())) {
             case .help:
@@ -14,6 +14,7 @@ enum ReferenceTool {
                     Apple VP reference v1: diagnostics and audio are OFF by default.
                     help
                     verify <private-evidence-directory>
+                    request-microphone
                     record --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON \
                     --duration <seconds <= 60> --study-id <non-private-alias> \
                     --output-dir <new-private-directory-outside-Git> [--material <registered-PCM-file>]
@@ -21,25 +22,35 @@ enum ReferenceTool {
                     """)
             case .verify(let directory):
                 verify(directory: directory)
+            case .requestMicrophone:
+                let status = try await MicrophonePermissionPlan().requestExplicitly(using: MicrophonePermissionAccess())
+                print("permission_status=\(status.rawValue); no audio started")
             case .record(let configuration):
                 let outcome = try VP0AudioSession().run(configuration: configuration)
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
-                let data = try encoder.encode(outcome)
+                let data = try EngineeringFailure.check(stage: .evidenceWrite, code: .summaryEncodingFailed) {
+                    try encoder.encode(outcome)
+                }
                 guard let summary = String(data: data, encoding: .utf8) else {
-                    throw ReferenceFailure.blocked("Summary encoding failed")
+                    throw EngineeringFailure(stage: .evidenceWrite, code: .summaryEncodingFailed)
                 }
                 print(summary)
                 if !outcome.isCompleteForReference { exit(1) }
             }
-        } catch ReferenceFailure.blocked(let reason) {
-            fputs("BLOCKED: \(reason)\n", stderr)
-            exit(2)
         } catch {
-            // Keep source paths and hardware identifiers out of terminal diagnostics.
-            fputs("BLOCKED: configuration, permission, recording, or private evidence failed\n", stderr)
+            let failure = EngineeringFailure.capture(error, stage: .command, code: .invalidArguments)
+            emit(failure.diagnostic, kind: "PRIMARY")
+            for diagnostic in failure.secondary { emit(diagnostic, kind: "SECONDARY") }
+            if failure.omittedSecondary > 0 {
+                fputs("diagnostic_secondary_omitted=\(failure.omittedSecondary)\n", stderr)
+            }
             exit(2)
         }
+    }
+
+    private static func emit(_ diagnostic: EngineeringDiagnostic, kind: String) {
+        fputs("BLOCKED \(kind) stage=\(diagnostic.stage.rawValue) code=\(diagnostic.code)\n", stderr)
     }
 
     private static func verify(directory: URL) {

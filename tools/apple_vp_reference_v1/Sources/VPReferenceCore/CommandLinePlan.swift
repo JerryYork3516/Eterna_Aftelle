@@ -3,6 +3,7 @@ import Foundation
 public enum ReferenceCommand {
     case help
     case verify(URL)
+    case requestMicrophone
     case record(RunConfiguration)
 }
 
@@ -10,6 +11,7 @@ public enum CommandLinePlan {
     public static func parse(_ arguments: [String]) throws -> ReferenceCommand {
         guard let command = arguments.first else { return .help }
         if command == "--help" || command == "help" { return .help }
+        if command == "request-microphone", arguments.count == 1 { return .requestMicrophone }
         if command == "verify", arguments.count == 2 {
             return .verify(URL(fileURLWithPath: arguments[1]))
         }

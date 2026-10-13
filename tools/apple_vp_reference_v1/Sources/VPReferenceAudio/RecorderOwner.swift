@@ -17,11 +17,13 @@ final class RecorderOwner {
         handle = recorder
     }
 
-    func seal() {
+    @discardableResult
+    func seal() -> Bool {
         if !sealAttempted {
             sealAttempted = true
             sealSucceeded = vp_recorder_seal(handle)
         }
+        return sealSucceeded
     }
 
     func outcome(directory: URL, expectsRender: Bool) -> AudioRunOutcome {

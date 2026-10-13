@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreAudio
 import Foundation
+import VPReferenceCore
 
 struct AudioRouteSnapshot: Codable, Equatable {
     let defaultInput: AudioDeviceSnapshot
@@ -20,7 +21,7 @@ struct AudioRouteSnapshot: Codable, Equatable {
         guard inputDevice.transport == kAudioDeviceTransportTypeUSB,
             outputDevice.transport == kAudioDeviceTransportTypeBuiltIn
         else {
-            throw AudioReferenceError.unsupportedRoute
+            throw EngineeringFailure(stage: .deviceBinding, code: .unsupportedRoute)
         }
         let inputNode = try AudioDeviceSnapshot.read(identifier: engine.inputNode.auAudioUnit.deviceID)
         let outputNode = try AudioDeviceSnapshot.read(identifier: engine.outputNode.auAudioUnit.deviceID)

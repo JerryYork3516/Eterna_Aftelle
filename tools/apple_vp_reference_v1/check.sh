@@ -22,4 +22,9 @@ if .build/debug/apple-vp-reference record --mode VP_ON --duration 1 \
   exit 1
 fi
 test ! -e .build/never-created
+if .build/debug/apple-vp-reference request-microphone unexpected > .build/check-permission-guard.log 2>&1; then
+  print -u2 'FAIL: malformed permission command was accepted'
+  exit 1
+fi
+rg -q 'stage=COMMAND code=INVALID_ARGUMENTS' .build/check-permission-guard.log
 print 'PASS: build, release, fixtures, formatting, SwiftLint and non-device CLI guards'
