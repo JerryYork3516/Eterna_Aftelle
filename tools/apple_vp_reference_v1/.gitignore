@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+*.vp0
+*.pcm
+*.caf
+*.wav
+*.aiff
+*.aif
