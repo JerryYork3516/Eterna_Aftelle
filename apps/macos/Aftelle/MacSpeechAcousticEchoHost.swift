@@ -971,6 +971,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var lastFallbackReason: MacSpeechAECFallbackReason?
     private var lastDriftSkew: Int64 = 0
     private var driftTrend = "stable"
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    private let observation = MacSpeechAudioObservation.shared
+    private let observationID = MacSpeechAudioObservation.shared.nextObjectID()
+    private var observedRender = MacSpeechAudioObservationCursor()
+    private var observedCapture = MacSpeechAudioObservationCursor()
+    #endif
     private var routeResetCount: UInt64 = 0
     private var fallbackReason: MacSpeechAECFallbackReason?
     private var isPlaybackActive = false
@@ -1137,35 +1143,45 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         _ samples: [Float],
         hostTimeNanoseconds: UInt64? = nil
     ) {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = beginObservedCall(stream: 2, sampleCount: samples.count)
+        defer { observation.finish(observed) }
+        #endif
         guard !samples.isEmpty else { return }
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        observed?.entered = observation.now()
+        #endif
         queue.sync {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            prepareObservedCall(&observed, samples: samples.count, stream: 2,
+                                contentTime: hostTimeNanoseconds, remainder: renderFIFO.count)
+            var observedFrameOffset: UInt64 = 0
+            defer { observed?.remainderAfter = UInt64(renderFIFO.count) }
+            #endif
             if mode == .appleVoiceProcessing {
                 do {
                     try processFrames(
-                        samples,
-                        hostTimeNanoseconds: hostTimeNanoseconds,
-                        stream: "apple_render",
-                        remainder: &renderFIFO,
-                        remainderHostTimeNanoseconds:
-                            &renderRemainderHostTimeNanoseconds
+                        samples, hostTimeNanoseconds: hostTimeNanoseconds,
+                        stream: "apple_render", remainder: &renderFIFO,
+                        remainderHostTimeNanoseconds: &renderRemainderHostTimeNanoseconds
                     ) { frame, frameHostTimeNanoseconds in
                         renderFrameCount &+= 1
-                        if isPlaybackActive,
-                           let frameHostTimeNanoseconds {
-                            appendRenderTimingFrame(
-                                frame,
-                                hostTimeNanoseconds:
-                                    frameHostTimeNanoseconds
-                            )
+                        if isPlaybackActive, let frameHostTimeNanoseconds {
+                            appendRenderTimingFrame(frame, hostTimeNanoseconds: frameHostTimeNanoseconds)
                         } else {
-                            latestRenderHostTimeNanoseconds =
-                                frameHostTimeNanoseconds
+                            latestRenderHostTimeNanoseconds = frameHostTimeNanoseconds
                             latestRenderReferenceRMS = signalRMS(frame)
                         }
                     }
                 } catch FrameProcessingError.discontinuousInput {
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    observed?.status = MacSpeechAudioObservationStatus.discontinuity.rawValue
+                    #endif
                     enterFallback(.sourceAlignmentUnavailable)
                 } catch {
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    observed?.status = MacSpeechAudioObservationStatus.processingFailed.rawValue
+                    #endif
                     enterFallback(.fifoOverflow)
                 }
                 updateDrift()
@@ -1174,29 +1190,28 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             guard mode == .webRTCAEC3, let backend else { return }
             #if DEBUG
             let replayCall = beginAcousticReplayAudioCall(
-                kind: .render,
-                samples: samples,
-                hostTimeNanoseconds: hostTimeNanoseconds
+                kind: .render, samples: samples, hostTimeNanoseconds: hostTimeNanoseconds
             )
             #endif
             do {
                 try processFrames(
-                    samples,
-                    hostTimeNanoseconds: hostTimeNanoseconds,
-                    remainder: &renderFIFO,
-                    remainderHostTimeNanoseconds:
-                        &renderRemainderHostTimeNanoseconds
+                    samples, hostTimeNanoseconds: hostTimeNanoseconds, remainder: &renderFIFO,
+                    remainderHostTimeNanoseconds: &renderRemainderHostTimeNanoseconds
                 ) { frame, frameHostTimeNanoseconds in
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    var frameObservation = beginObservedFrame(observed, offset: &observedFrameOffset)
+                    defer { observation.finish(frameObservation) }
+                    frameObservation?.began = observation.now()
+                    #endif
                     try backend.processRender(frame)
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    completeObservedFrame(&frameObservation, call: &observed, offset: observedFrameOffset)
+                    #endif
                     renderFrameCount &+= 1
                     #if DEBUG
-                    recordAcousticReplayRenderFrame(
-                        call: replayCall,
-                        hostTimeNanoseconds: frameHostTimeNanoseconds
-                    )
+                    recordAcousticReplayRenderFrame(call: replayCall, hostTimeNanoseconds: frameHostTimeNanoseconds)
                     #endif
-                    if isPlaybackActive,
-                       let frameHostTimeNanoseconds {
+                    if isPlaybackActive, let frameHostTimeNanoseconds {
                         appendRenderTimingFrame(
                             frame,
                             hostTimeNanoseconds: frameHostTimeNanoseconds
@@ -1204,12 +1219,21 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     }
                 }
             } catch FrameProcessingError.discontinuousInput {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                observed?.status = MacSpeechAudioObservationStatus.discontinuity.rawValue
+                #endif
                 enterFallback(.sourceAlignmentUnavailable)
                 return
             } catch FrameProcessingError.fifoOverflow {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                observed?.status = MacSpeechAudioObservationStatus.fifoOverflow.rawValue
+                #endif
                 enterFallback(.fifoOverflow)
                 return
             } catch {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                observed?.status = MacSpeechAudioObservationStatus.processingFailed.rawValue
+                #endif
                 enterFallback(.renderProcessingFailed)
                 return
             }
@@ -1260,9 +1284,25 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         hostTimeNanoseconds: UInt64? = nil,
         systemVoiceActivityForFrame: ((UInt64?) -> (Bool?, UInt64?))? = nil
     ) -> [MacSpeechAcousticCaptureSpan] {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = beginObservedCall(stream: 1, sampleCount: samples.count)
+        defer { observation.finish(observed) }
+        #endif
         guard !samples.isEmpty else { return [] }
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        observed?.entered = observation.now()
+        #endif
         return queue.sync {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            prepareObservedCall(&observed, samples: samples.count, stream: 1,
+                                contentTime: hostTimeNanoseconds, remainder: captureFIFO.count)
+            var observedFrameOffset: UInt64 = 0
+            defer { observed?.remainderAfter = UInt64(captureFIFO.count) }
+            #endif
             if mode == .halfDuplexFallback {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                recordObservedReset(stream: 1, pending: captureFIFO.count)
+                #endif
                 captureFIFO.removeAll(keepingCapacity: true)
                 recordUnavailableCaptureObservation(
                     samples,
@@ -1297,10 +1337,16 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         spans.append(captureSpan(samples: frame))
                     }
                 } catch FrameProcessingError.discontinuousInput {
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    observed?.status = MacSpeechAudioObservationStatus.discontinuity.rawValue
+                    #endif
                     enterFallback(.sourceAlignmentUnavailable)
                     return isPlaybackActive || isRouteRebuilding
                         ? [] : [captureSpan(samples: samples)]
                 } catch {
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    observed?.status = MacSpeechAudioObservationStatus.processingFailed.rawValue
+                    #endif
                     enterFallback(.fifoOverflow)
                     return isPlaybackActive || isRouteRebuilding
                         ? [] : [captureSpan(samples: samples)]
@@ -1331,7 +1377,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                         captureHostTimeNanoseconds: frameHostTimeNanoseconds,
                         rawReferenceSearch: rawReferenceSearch
                     )
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    var frameObservation = beginObservedFrame(observed, offset: &observedFrameOffset)
+                    defer { observation.finish(frameObservation) }
+                    frameObservation?.began = observation.now()
+                    #endif
                     let captureResult = try backend.processCapture(frame)
+                    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                    completeObservedFrame(&frameObservation, call: &observed, offset: observedFrameOffset)
+                    #endif
                     guard captureResult.processedSamples.count
                             == Self.frameSampleCount,
                           captureResult.linearOutputSamples.count
@@ -1398,14 +1452,23 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                     captureFrameCount &+= 1
                 }
             } catch FrameProcessingError.discontinuousInput {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                observed?.status = MacSpeechAudioObservationStatus.discontinuity.rawValue
+                #endif
                 enterFallback(.sourceAlignmentUnavailable)
                 return isPlaybackActive || isRouteRebuilding
                     ? [] : [captureSpan(samples: samples)]
             } catch FrameProcessingError.fifoOverflow {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                observed?.status = MacSpeechAudioObservationStatus.fifoOverflow.rawValue
+                #endif
                 enterFallback(.fifoOverflow)
                 return isPlaybackActive || isRouteRebuilding
                     ? [] : [captureSpan(samples: samples)]
             } catch {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                observed?.status = MacSpeechAudioObservationStatus.processingFailed.rawValue
+                #endif
                 enterFallback(.captureProcessingFailed)
                 return isPlaybackActive || isRouteRebuilding
                     ? [] : [captureSpan(samples: samples)]
@@ -1831,8 +1894,14 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             systemVoiceActivityDetected = false
             systemVoiceActivityReadValid = false
             lastAudibleRenderHostTimeNanoseconds = nil
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedReset(stream: 2, pending: renderFIFO.count)
+            #endif
             renderFIFO.removeAll(keepingCapacity: true)
             renderRemainderHostTimeNanoseconds = nil
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedReset(stream: 1, pending: captureFIFO.count)
+            #endif
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
             clearTimingHistory()
@@ -1850,6 +1919,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             recordAcousticReplayControl(kind: .playbackCompleted)
             #endif
             isPlaybackActive = false
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedReset(stream: 1, pending: captureFIFO.count)
+            #endif
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
             clearTimingHistory()
@@ -1879,6 +1951,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             recordAcousticReplayControl(kind: .playbackStopped)
             #endif
             isPlaybackActive = false
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedReset(stream: 1, pending: captureFIFO.count)
+            #endif
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
             clearTimingHistory()
@@ -1891,6 +1966,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         queue.sync {
             #if DEBUG
             recordAcousticReplayControl(kind: .discardPendingCapture)
+            #endif
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedReset(stream: 1, pending: captureFIFO.count)
             #endif
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
@@ -4519,8 +4597,91 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         )
     }
 
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    private func beginObservedCall(stream: UInt64, sampleCount: Int) -> MacSpeechAudioObservationEvent? {
+        var event = observation.begin(.hostCall, stream: stream)
+        if sampleCount == 0 { event?.status = MacSpeechAudioObservationStatus.unprocessed.rawValue }
+        return event
+    }
+
+    private func completeObservedFrame(_ frame: inout MacSpeechAudioObservationEvent?,
+                                       call: inout MacSpeechAudioObservationEvent?, offset: UInt64) {
+        frame?.status = 0
+        observation.finish(frame)
+        frame = nil
+        call?.outputEnd = offset
+    }
+
+    private func prepareObservedCall(_ event: inout MacSpeechAudioObservationEvent?,
+                                     samples: Int, stream: UInt64, contentTime: UInt64?, remainder: Int) {
+        guard let run = event?.run else { return }
+        event?.began = observation.now()
+        event?.object = observationID
+        let start = stream == 1
+            ? observedCapture.begin(run: run, count: samples)
+            : observedRender.begin(run: run, count: samples)
+        event?.inputStart = start
+        event?.inputEnd = start + UInt64(samples)
+        event?.epoch = stream == 1 ? observedCapture.epoch : observedRender.epoch
+        event?.frameCount = UInt64(samples)
+        event?.remainderBefore = UInt64(remainder)
+        event?.contentTime = contentTime ?? 0
+        event?.flags = (contentTime == nil ? 0 : 1) | 8
+        event?.sampleRate = Double(Self.sampleRate).bitPattern
+        event?.reserved = routeResetCount
+        event?.detail = playbackSequence
+        if mode != .webRTCAEC3 {
+            event?.status = MacSpeechAudioObservationStatus.unsupportedMode.rawValue
+        } else if backend == nil {
+            event?.status = MacSpeechAudioObservationStatus.unavailable.rawValue
+        }
+        if (event?.inputStart ?? 0) < UInt64(remainder) { event?.flags |= 16 }
+    }
+
+    private func beginObservedFrame(_ call: MacSpeechAudioObservationEvent?, offset: inout UInt64)
+        -> MacSpeechAudioObservationEvent? {
+        defer { offset += UInt64(Self.frameSampleCount) }
+        guard let call else { return nil }
+        guard var event = observation.begin(.aecFrame, stream: call.stream, parent: call.id) else { return nil }
+        event.object = call.object
+        event.epoch = call.epoch
+        event.flags = call.flags
+        event.reserved = call.reserved
+        event.detail = call.detail
+        event.frameCount = UInt64(Self.frameSampleCount)
+        event.sampleRate = Double(Self.sampleRate).bitPattern
+        event.inputStart = call.inputStart >= call.remainderBefore
+            ? call.inputStart - call.remainderBefore + offset : offset
+        event.inputEnd = event.inputStart + event.frameCount
+        event.status = MacSpeechAudioObservationStatus.processingFailed.rawValue
+        return event
+    }
+
+    private func recordObservedReset(stream: UInt64, pending: Int) {
+        guard var event = observation.begin(.streamReset, stream: stream) else { return }
+        let position = stream == 1
+            ? observedCapture.begin(run: event.run, count: 0)
+            : observedRender.begin(run: event.run, count: 0)
+        event.object = observationID
+        event.epoch = stream == 1 ? observedCapture.epoch : observedRender.epoch
+        event.inputEnd = position
+        event.remainderBefore = UInt64(pending)
+        event.flags = position < UInt64(pending) ? 16 : 0
+        event.reserved = routeResetCount
+        event.detail = event.epoch + 1
+        observation.finish(event)
+        if stream == 1 { observedCapture.reset() } else { observedRender.reset() }
+    }
+    #endif
+
     private func clearFIFOs() {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedReset(stream: 2, pending: renderFIFO.count)
+        #endif
         renderFIFO.removeAll(keepingCapacity: true)
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        recordObservedReset(stream: 1, pending: captureFIFO.count)
+        #endif
         captureFIFO.removeAll(keepingCapacity: true)
         renderRemainderHostTimeNanoseconds = nil
         captureRemainderHostTimeNanoseconds = nil

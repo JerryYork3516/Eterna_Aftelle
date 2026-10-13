@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A07ACE2A0000000000000001 /* MacSpeechAudioObservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07ACE2A0000000000000002 /* MacSpeechAudioObservation.swift */; };
+        A07ACE2A0000000000000003 /* MacSpeechAudioObservationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07ACE2A0000000000000004 /* MacSpeechAudioObservationTypes.swift */; };
 		A073E3000000000000000001 /* Test3LocalAudioRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A073E3000000000000000002 /* Test3LocalAudioRunner.swift */; };
 		A070C0000000000000000001 /* AftelleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000002 /* AftelleApp.swift */; };
 		A070C0000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A070C0000000000000000005 /* ContentView.swift */; };
@@ -72,6 +74,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        A07ACE2A0000000000000002 /* MacSpeechAudioObservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioObservation.swift; sourceTree = "<group>"; };
+        A07ACE2A0000000000000004 /* MacSpeechAudioObservationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechAudioObservationTypes.swift; sourceTree = "<group>"; };
 		A073E3000000000000000002 /* Test3LocalAudioRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Test3LocalAudioRunner.swift; sourceTree = "<group>"; };
 		A070C0000000000000000002 /* AftelleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AftelleApp.swift; sourceTree = "<group>"; };
 		A070C0000000000000000005 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -159,6 +163,8 @@
 				A073E3000000000000000002 /* Test3LocalAudioRunner.swift */,
 				A070C0000000000000000005 /* ContentView.swift */,
 				A0759A100000000000000012 /* RealtimeSpeechPresentationMapper.swift */,
+				A07ACE2A0000000000000002 /* MacSpeechAudioObservation.swift */,
+				A07ACE2A0000000000000004 /* MacSpeechAudioObservationTypes.swift */,
 				A076A100000000000000011 /* MacSpeechAcousticEchoHost.swift */,
 				A076A100000000000000012 /* MacSpeechWebRTCAECProcessor.swift */,
 				A076A100000000000000013 /* AftelleAECBridge.mm */,
@@ -330,6 +336,8 @@
 			files = (
 				A076A100000000000000003 /* AftelleAECBridge.mm in Sources */,
 				A076A100000000000000002 /* MacSpeechWebRTCAECProcessor.swift in Sources */,
+				A07ACE2A0000000000000001 /* MacSpeechAudioObservation.swift in Sources */,
+				A07ACE2A0000000000000003 /* MacSpeechAudioObservationTypes.swift in Sources */,
 				A076A100000000000000001 /* MacSpeechAcousticEchoHost.swift in Sources */,
 				A075A1000000000000000003 /* QwenRealtimeRuntimeComposition.swift in Sources */,
 				A075A1000000000000000001 /* QwenRealtimeCodec.swift in Sources */,
@@ -520,7 +528,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.eterna.aftelle.Aftelle";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG AFTELLE_WEBRTC_AEC3 $(inherited)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG AFTELLE_WEBRTC_AEC3 AFTELLE_AUDIO_OBSERVATION $(inherited)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Aftelle-Bridging-Header.h";
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;

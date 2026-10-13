@@ -671,6 +671,11 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     private var sampleTimeContinuityValid = true
     private var previousInputHostTime: UInt64?
     private var previousInputFrameCount = 0
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    private let observation = MacSpeechAudioObservation.shared
+    private let observationID = MacSpeechAudioObservation.shared.nextObjectID()
+    private var observationEpoch: UInt64 = 0
+    #endif
 
     init(inputFormat: AVAudioFormat) throws {
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
@@ -701,7 +706,17 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         hostTimeNanoseconds: UInt64?,
         sampleTime: Int64? = nil
     ) throws -> Output {
-        try lock.withLock {
+        #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+        var observed = observation.begin(.converter)
+        defer { observation.finish(observed) }
+        #endif
+        return try lock.withLock {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            observed?.began = observation.now()
+            prepareObservation(&observed, inputBuffer: inputBuffer,
+                               hostTimeNanoseconds: hostTimeNanoseconds, sampleTime: sampleTime)
+            defer { recordObservedCursors(&observed) }
+            #endif
             let ratio = outputFormat.sampleRate / inputSampleRate
             let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio)
             let capacity = AVAudioFrameCount(
@@ -727,6 +742,10 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
                 inputStatus.pointee = .haveData
                 return inputBuffer
             }
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            observed?.flags |= inputState.supplied ? 4 : 0
+            observed?.format = UInt64(bitPattern: Int64(status.rawValue))
+            #endif
             if inputState.supplied {
                 let start = Double(inputFrameCount) * ratio
                 let inputTime = anchoredInputHostTime(
@@ -750,6 +769,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
             let timing = outputHostTime(sampleCount: count)
             outputSampleCount += UInt64(count)
             inputTimes.removeAll { $0.end <= Double(outputSampleCount) }
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedOutput(&observed, time: timing.0, failure: timing.1)
+            #endif
             return Output(samples: Array(UnsafeBufferPointer(
                 start: samples,
                 count: count
@@ -844,6 +866,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
 
     func resetForGenerationTransition() {
         lock.withLock {
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            recordObservedConverterReset()
+            #endif
             converter.reset()
             inputFrameCount = 0
             outputSampleCount = 0
@@ -857,6 +882,48 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         }
     }
 }
+
+#if DEBUG && AFTELLE_AUDIO_OBSERVATION
+private extension MacSpeechFloatMono48kConverter {
+    func prepareObservation(_ observed: inout MacSpeechAudioObservationEvent?, inputBuffer: AVAudioPCMBuffer,
+                            hostTimeNanoseconds: UInt64?, sampleTime: Int64?) {
+        observed?.object = observationID
+        observed?.epoch = observationEpoch
+        observed?.inputStart = inputFrameCount
+        observed?.outputStart = outputSampleCount
+        observed?.frameCount = UInt64(inputBuffer.frameLength)
+        observed?.sampleRate = inputSampleRate.bitPattern
+        observed?.contentTime = hostTimeNanoseconds ?? 0
+        observed?.nativeSampleTime = UInt64(bitPattern: sampleTime ?? 0)
+        observed?.flags = (hostTimeNanoseconds == nil ? 0 : 1) | (sampleTime == nil ? 0 : 2)
+        observed?.status = MacSpeechAudioObservationStatus.conversionFailed.rawValue
+    }
+
+    func recordObservedCursors(_ observed: inout MacSpeechAudioObservationEvent?) {
+        observed?.inputEnd = inputFrameCount
+        observed?.outputEnd = outputSampleCount
+    }
+
+    func recordObservedOutput(_ observed: inout MacSpeechAudioObservationEvent?, time: UInt64?, failure: String?) {
+        observed?.status = time == nil
+            ? MacSpeechAudioObservationStatus.missingHostTime.rawValue : 0
+        observed?.detail = time ?? 0
+        observed?.reserved = MacSpeechAudioObservation.converterTimeFailure(failure)
+        observed?.remainderAfter = UInt64(inputTimes.count)
+    }
+
+    func recordObservedConverterReset() {
+        var observed = observation.begin(.streamReset)
+        observed?.object = observationID
+        observed?.epoch = observationEpoch
+        observed?.inputEnd = inputFrameCount
+        observed?.outputEnd = outputSampleCount
+        observationEpoch &+= 1
+        observed?.detail = observationEpoch
+        observation.finish(observed)
+    }
+}
+#endif
 
 nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     @unchecked Sendable
@@ -983,6 +1050,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var captureGenerationFence =
         MacSpeechCaptureGenerationFence()
     #if DEBUG
+    #if AFTELLE_AUDIO_OBSERVATION
+    private let observation = MacSpeechAudioObservation.shared
+    #endif
     private var test3NearEndInjection: Test3NearEndInjection?
     private var test3TimingTraceEnabled = false
     private var test3VADReadSequence: UInt64 = 0
@@ -1045,6 +1115,37 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
     }
 
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION && AUDIO_OBSERVATION_TESTING
+    // Deterministic tests install only in-memory converters, never an engine,
+    // tap, device, microphone, player or device monitor.
+    func prepareObservationTestConverters(_ format: AVAudioFormat) throws {
+        captureAECConverter = try MacSpeechFloatMono48kConverter(inputFormat: format)
+        renderAECConverter = try MacSpeechFloatMono48kConverter(inputFormat: format)
+        let raw = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                sampleRate: 48_000, channels: 1, interleaved: false)!
+        captureOutputConverter = try MacSpeechAudioConverter(inputFormat: raw)
+    }
+
+    func observationTestCallback(_ buffer: AVAudioPCMBuffer, when: AVAudioTime,
+                                 stream: UInt64, generation: UInt64,
+                                 frameBuffer: MacSpeechAudioFrameBuffer) {
+        let observed = observation.beginNativeCallback(buffer, when: when,
+                                                        stream: stream, generation: stream == 1 ? generation : nil)
+        defer { observation.finish(observed) }
+        let contentTime = Self.hostTimeNanoseconds(
+            when
+        )
+        if stream == 1 {
+            processCapture(buffer, hostTimeNanoseconds: contentTime,
+                           nativeSampleTime: when.isSampleTimeValid ? when.sampleTime : nil,
+                           generation: generation, frameBuffer: frameBuffer)
+        } else {
+            processRenderedOutput(buffer, hostTimeNanoseconds: contentTime,
+                                  nativeSampleTime: when.isSampleTimeValid ? when.sampleTime : nil)
+        }
+    }
+    #endif
+
     func startCapture(
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
@@ -1075,6 +1176,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 ),
                 format: inputFormat
             ) { [weak self] buffer, when in
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                let observed = MacSpeechAudioObservation.shared.beginNativeCallback(
+                    buffer, when: when, stream: 1, generation: generation
+                )
+                defer { MacSpeechAudioObservation.shared.finish(observed) }
+                #endif
                 self?.processCapture(
                     buffer,
                     hostTimeNanoseconds: Self.hostTimeNanoseconds(when),
@@ -1622,14 +1729,28 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     ) {
         #if DEBUG
         let enteredAt = DispatchTime.now().uptimeNanoseconds
+        #if AFTELLE_AUDIO_OBSERVATION
+        var observed = observation.begin(.captureLock, stream: 1)
+        observed?.generation = generation
+        defer { observation.finish(observed) }
+        #endif
         #endif
         captureProcessingLock.withLock {
             #if DEBUG
             let acquiredAt = DispatchTime.now().uptimeNanoseconds
+            #if AFTELLE_AUDIO_OBSERVATION
+            observed?.began = observation.now()
+            #endif
             #endif
             guard captureGenerationFence.accepts(
                 hostTimeNanoseconds: hostTimeNanoseconds
-            ) else { return }
+            ) else {
+                #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+                observed?.status = MacSpeechAudioObservationStatus.rejectedGeneration.rawValue
+                observed?.frameCount = UInt64(buffer.frameLength)
+                #endif
+                return
+            }
             let stages = processCaptureLocked(
                 buffer,
                 hostTimeNanoseconds: hostTimeNanoseconds,
@@ -1638,6 +1759,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 frameBuffer: frameBuffer
             )
             #if DEBUG
+            #if AFTELLE_AUDIO_OBSERVATION
+            if stages == nil { observed?.status = MacSpeechAudioObservationStatus.unavailable.rawValue }
+            #endif
             if test3TimingTraceEnabled {
                 let completedAt = DispatchTime.now().uptimeNanoseconds
                 if test3CaptureCallbacks.count
@@ -1937,6 +2061,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             ),
             format: nil
         ) { [weak self] buffer, when in
+            #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+            let observed = MacSpeechAudioObservation.shared.beginNativeCallback(
+                buffer, when: when, stream: 2, generation: nil
+            )
+            defer { MacSpeechAudioObservation.shared.finish(observed) }
+            #endif
             self?.processRenderedOutput(
                 buffer,
                 hostTimeNanoseconds: Self.hostTimeNanoseconds(when),
@@ -1968,10 +2098,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         let converter = renderConverterLock.withLock { renderAECConverter }
         guard let converter else {
             #if DEBUG
+            #if AFTELLE_AUDIO_OBSERVATION
+            recordObservationFailure(.unavailable, stream: 2, samples: Int(buffer.frameLength))
+            #endif
             recordTest3RenderCallback(
                 buffer, enteredAtNanoseconds: enteredAtNanoseconds,
-                hostTimeNanoseconds: hostTimeNanoseconds,
-                nativeSampleTime: nativeSampleTime,
+                hostTimeNanoseconds: hostTimeNanoseconds, nativeSampleTime: nativeSampleTime,
                 converted: nil, status: "converter_unavailable"
             )
             #endif
@@ -1999,16 +2131,28 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             )
         } catch {
             #if DEBUG
+            #if AFTELLE_AUDIO_OBSERVATION
+            recordObservationFailure(.conversionFailed, stream: 2, samples: Int(buffer.frameLength))
+            #endif
             recordTest3RenderCallback(
                 buffer, enteredAtNanoseconds: enteredAtNanoseconds,
-                hostTimeNanoseconds: hostTimeNanoseconds,
-                nativeSampleTime: nativeSampleTime,
+                hostTimeNanoseconds: hostTimeNanoseconds, nativeSampleTime: nativeSampleTime,
                 converted: nil, status: "conversion_failed"
             )
             #endif
             acousticEchoHost.renderConversionFailed()
         }
     }
+
+    #if DEBUG && AFTELLE_AUDIO_OBSERVATION
+    private func recordObservationFailure(_ status: MacSpeechAudioObservationStatus,
+                                          stream: UInt64, samples: Int) {
+        var event = observation.begin(.rejected, stream: stream)
+        event?.status = status.rawValue
+        event?.frameCount = UInt64(samples)
+        observation.finish(event)
+    }
+    #endif
 
     #if DEBUG
     private func recordTest3RenderCallback(
