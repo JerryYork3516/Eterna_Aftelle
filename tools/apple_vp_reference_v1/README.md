@@ -88,6 +88,54 @@ It does not establish microphone truth, complete acoustic coverage, a valid
 experiment, Apple AEC effectiveness or Test3 PASS. Final run interpretation also
 requires the control seal outcome, manifest, source labels and physical protocol.
 
+## Source verification probe — separate site authorization required
+
+`source-probe` is a separate research command, never selected by `record`.
+It requires `--authorize-source-probe`, both live flags, `--mode VP_ON`,
+`--duration 8`, a study alias, a new output directory outside Git, and
+`--probe-registration <private-json>`. It only checks existing microphone
+permission. These parameters record explicit intent; they cannot substitute for
+the user's separate site recording authorization.
+
+Registration is an owned 0600 JSON file inside an owned 0700 directory outside
+Git, limited to 4096 bytes and opened without following the final symlink. Its
+fields are `schemaVersion: 1`, `inputDeviceID`, `outputDeviceID` (the target
+devices' existing private SHA-256 anonymous identifiers), and
+`stimulusProtocol: "QUIET_TWO_PHRASES_V1"`. Prepare these privately after site
+authorization; do not paste identifiers into CLI arguments or public reports.
+The probe compares registered targets with USB/Built-in defaults before VP
+configuration and checks them again afterward. It does not change routing.
+
+Ordinary `record` keeps its existing guard. Probe routing admits that same
+structural qualification, or only the observed case where both nodes identify
+the registered Built-in output with no aggregate metadata. Other unknown node
+presentations, extra devices, virtual nodes and unqualified aggregates fail.
+The exception permits diagnostics only: `source_probe.sourceStatus` always
+remains `SOURCE_UNVERIFIED`, and `sourceQualificationGranted` is always false.
+
+All native input channels and digital mixer Render remain in the original
+recorder format. There is no playback material, player play call, channel
+selection, downmix, source classifier or network/Runtime integration. The C
+admission limit is 8 seconds from arm including startup, while ordinary record
+keeps 60 seconds; 64 MiB/8 MiB limits are unchanged. R2 observes real configuration
+notifications; a control poll checks route/state/format and recorder invalidity
+every planned 50 ms, stopping at the first observed failure. This is not an
+atomic hardware guarantee or a guarantee of exactly 8 seconds of PCM.
+
+Silent visual cues follow the arm-relative registered sequence: initial quiet
+0–2 seconds; phrase one 2–3.3; quiet 3.3–4; phrase two 4–5.5; final quiet to 8.
+Suggested phrases are documented in report 05. At most five control cue times
+are saved. If a phase was skipped, the probe stops INVALID rather than emitting
+catch-up cues. Control cue snapshots are not acoustic arrival timestamps or
+proof that the user spoke. Actual stdout display and speaking delays remain
+unmeasured. Every failure retains its original code and admitted evidence,
+removes the listener, stops/removes taps and seals without retries.
+
+Successful sealed PCM only establishes `INPUT_PCM_PRESENT`. Stimulus response,
+USB support and USB confirmation require separate offline evidence review.
+Responding to speech or matching defaults cannot automatically confirm USB.
+This implementation delivery has not executed a device probe.
+
 ## Comparison boundary
 
 Only independent VP_OFF and VP_ON are implemented. Aftelle Apple is a future,

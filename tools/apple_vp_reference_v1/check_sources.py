@@ -44,6 +44,19 @@ assert not re.search(r"\.start\(|\.prepare\(|\.play\(|installTaps|NativePCMTap|R
 assert "guard route.hasVerifiedBinding" in session
 assert "manifest.runningRoute = route" in session
 assert "addObserver" not in session
+probe = (root / "Sources/VPReferenceAudio/SourceProbe.swift").read_text()
+assert entry.count("SourceProbe()") == 1 and "case .sourceProbe" in entry
+assert probe.index("request.validate()") < probe.index("requireAuthorized") < probe.index("AppleEngineDriver(")
+assert "SourceProbeRegistrationFile.load" in probe and "SourceProbeRoutePolicy.validate" in probe
+assert "maximumSeconds: SourceProbeRequest.maximumSeconds" in probe
+assert "SourceProbeWindow.capture" in probe and probe.count("recorder.seal()") == 1
+assert not re.search(r"\.play\(|schedulePlayback|PCMSourceMaterial|requestAccess|requestExplicitly", probe)
+evidence = (root / "Sources/VPReferenceAudio/SourceProbeEvidence.swift").read_text()
+assert 'sourceStatus = "SOURCE_UNVERIFIED"' in evidence and "sourceQualificationGranted = false" in evidence
+assert "USB_SOURCE_CONFIRMED" not in probe + evidence
+probe_window = (root / "Sources/VPReferenceCore/SourceProbeWindow.swift").read_text()
+assert "play: {}" in probe_window and "0..<162" in probe_window
+assert "probeStimulusWindowMissed" in probe_window and "let observed = elapsedSeconds()" in probe_window
 observer_source = (root / "Sources/VPReferenceAudio/ConfigurationChangeObserver.swift").read_text()
 assert observer_source.count("center.addObserver") == 1
 callback = observer_source.split("{ _ in", 1)[1].split("}", 1)[0]
@@ -52,4 +65,4 @@ assert not re.search(r"Data\(|Array\(|Task\s*\{|\.write\(|JSON|SHA|FFT|\.sync|\.
 manifest = (root / "Package.swift").read_text()
 assert "dependencies: [" in manifest and ".package(" not in manifest
 assert not any(name in manifest for name in [".iOS", ".visionOS", ".watchOS", ".tvOS"])
-print("PASS: SDK-only sources, explicit permission/live branches, fail-closed playback, bounded tap entry")
+print("PASS: SDK-only sources, isolated unknown-source probe, fail-closed playback, bounded tap entry")

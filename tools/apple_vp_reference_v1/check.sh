@@ -33,4 +33,13 @@ if .build/debug/apple-vp-reference request-microphone unexpected > .build/check-
   exit 1
 fi
 rg -q 'stage=COMMAND code=INVALID_ARGUMENTS' .build/check-permission-guard.log
+vp_probe_guard_dir="${TMPDIR%/}/vp0-missing-consent-$$"
+if .build/debug/apple-vp-reference source-probe --enable-audio --arm-diagnostics \
+  --mode VP_ON --duration 8 --study-id nondevice --output-dir "$vp_probe_guard_dir" \
+  --probe-registration "${TMPDIR%/}/vp0-missing-registration.json" > .build/check-probe-guard.log 2>&1; then
+  print -u2 'FAIL: unapproved source-probe was accepted'
+  exit 1
+fi
+test ! -e "$vp_probe_guard_dir"
+rg -q 'stage=COMMAND code=INVALID_ARGUMENTS' .build/check-probe-guard.log
 print 'PASS: build, release, fixtures, formatting, SwiftLint and non-device CLI guards'

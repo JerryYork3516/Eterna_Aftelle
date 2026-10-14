@@ -7,6 +7,7 @@ public enum ReferenceCommand {
     case permissionStatus
     case record(RunConfiguration)
     case inspectRoute(RunConfiguration)
+    case sourceProbe(SourceProbeRequest)
 }
 
 public enum CommandLinePlan {
@@ -18,10 +19,14 @@ public enum CommandLinePlan {
         if command == "verify", arguments.count == 2 {
             return .verify(URL(fileURLWithPath: arguments[1]))
         }
-        guard command == "record" || command == "inspect-route" else {
+        guard command == "record" || command == "inspect-route" || command == "source-probe" else {
             throw ReferenceFailure.blocked("Unknown command; default command only displays help")
         }
-        let options = try parseOptions(Array(arguments.dropFirst()))
+        let options = try parseOptions(Array(arguments.dropFirst()), sourceProbe: command == "source-probe")
+        return try audioCommand(command, options: options)
+    }
+
+    private static func audioCommand(_ command: String, options: [String: String]) throws -> ReferenceCommand {
         guard let mode = options["--mode"].flatMap(VPMode.init(rawValue:)),
             let duration = options["--duration"].flatMap(Double.init),
             let destination = options["--output-dir"], let study = options["--study-id"]
@@ -36,6 +41,16 @@ public enum CommandLinePlan {
             materialURL: options["--material"].map { URL(fileURLWithPath: $0) }, studyID: study
         )
         try configuration.validateForAudio()
+        if command == "source-probe" {
+            guard let registration = options["--probe-registration"] else {
+                throw EngineeringFailure(stage: .command, code: .invalidArguments)
+            }
+            let request = SourceProbeRequest(
+                configuration: configuration, researchAuthorized: options["--authorize-source-probe"] != nil,
+                registrationURL: URL(fileURLWithPath: registration))
+            try request.validate()
+            return .sourceProbe(request)
+        }
         if command == "inspect-route" {
             guard configuration.materialURL == nil else {
                 throw ReferenceFailure.blocked("Inspection forbids material")
@@ -45,9 +60,13 @@ public enum CommandLinePlan {
         return .record(configuration)
     }
 
-    private static func parseOptions(_ arguments: [String]) throws -> [String: String] {
-        let flags: Set<String> = ["--enable-audio", "--arm-diagnostics"]
-        let values: Set<String> = ["--mode", "--duration", "--output-dir", "--study-id", "--material"]
+    private static func parseOptions(_ arguments: [String], sourceProbe: Bool) throws -> [String: String] {
+        var flags: Set<String> = ["--enable-audio", "--arm-diagnostics"]
+        var values: Set<String> = ["--mode", "--duration", "--output-dir", "--study-id", "--material"]
+        if sourceProbe {
+            flags.insert("--authorize-source-probe")
+            values.insert("--probe-registration")
+        }
         var options: [String: String] = [:]
         var index = 0
         while index < arguments.count {

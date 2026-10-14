@@ -7,8 +7,9 @@ final class RecorderOwner {
     private var sealAttempted = false
     private var sealSucceeded = false
 
-    init(configuration: RunConfiguration) throws {
+    init(configuration: RunConfiguration, maximumSeconds: UInt32 = UInt32(VP_MAX_SECONDS)) throws {
         var settings = vp_recorder_default_config()
+        settings.maximum_seconds = maximumSeconds
         var errorCode: Int32 = 0
         let recorder = configuration.outputDirectory.path.withCString { path in
             vp_recorder_create(path, &settings, &errorCode)

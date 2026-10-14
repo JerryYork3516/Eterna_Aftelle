@@ -27,13 +27,14 @@ struct AudioRunManifest: Encodable {
     let renderMeaning = "DIGITAL_MIXER_OUTPUT; not actual speaker sound pressure"
     let inputMeaning: String
     let sampleMapping = "Render sample timestamps are native; exact source-frame mapping UNVERIFIED"
-    let snapshotTiming = "Running snapshot follows engine start, before playback; terminal snapshots follow stop"
-    let diagnosticClockOrigin =
+    var snapshotTiming = "Running snapshot follows engine start, before playback; terminal snapshots follow stop"
+    var diagnosticClockOrigin =
         "MACH_CONTINUOUS_TIME; arm before engine prepare/start; 60s includes startup/sleep; "
         + "raw AVAudioTime.hostTime retains its separate clock domain"
     var outcome: AudioRunOutcome?
     var terminalStatus: String
     var diagnostics = RunDiagnostics()
+    var sourceProbe: SourceProbeEvidence?
     let diagnosticsSchemaVersion = 1
 
     static func create(
@@ -116,6 +117,7 @@ struct AudioRunManifest: Encodable {
         case material, materialStatus, renderMeaning, inputMeaning
         case sampleMapping, snapshotTiming, diagnosticClockOrigin, outcome, terminalStatus, diagnostics
         case diagnosticsSchemaVersion = "diagnostics_schema_version"
+        case sourceProbe = "source_probe"
     }
 }
 

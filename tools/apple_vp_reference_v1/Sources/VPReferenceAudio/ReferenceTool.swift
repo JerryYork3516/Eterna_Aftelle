@@ -17,6 +17,9 @@ enum ReferenceTool {
                     request-microphone
                     permission-status
                     inspect-route <same explicit flags as record; no material; no engine start>
+                    source-probe --authorize-source-probe --probe-registration <private-json> \
+                    --enable-audio --arm-diagnostics --mode VP_ON --duration 8 \
+                    --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
                     record --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON \
                     --duration <seconds <= 60> --study-id <non-private-alias> \
                     --output-dir <new-private-directory-outside-Git> [--material <registered-PCM-file>]
@@ -31,6 +34,10 @@ enum ReferenceTool {
                 print("permission_status=\(MicrophonePermissionAccess.currentStatus().rawValue); no audio started")
             case .inspectRoute(let configuration):
                 try RouteInspection.run(configuration: configuration)
+            case .sourceProbe(let request):
+                let outcome = try SourceProbe().run(request: request)
+                print("source_status=SOURCE_UNVERIFIED source_qualification=false evidence=\(outcome.status)")
+                print("input_records=\(outcome.inputWrittenRecords) input_frames=\(outcome.inputWrittenFrames)")
             case .record(let configuration):
                 let outcome = try VP0AudioSession().run(configuration: configuration)
                 let encoder = JSONEncoder()
