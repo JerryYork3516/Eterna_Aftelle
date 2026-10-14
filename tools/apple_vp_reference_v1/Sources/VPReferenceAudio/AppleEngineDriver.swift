@@ -39,10 +39,13 @@ final class AppleEngineDriver: EngineConfigurationDriving {
 
     func connectPlayback(using formats: AudioFormats) throws {
         guard !engine.isRunning else { throw AudioReferenceError.inconsistentRuntimeState }
-        let outputFormat = engine.outputNode.inputFormat(forBus: 0)
-        guard Self.snapshot(outputFormat) == formats.output else {
+        let previousOutput = engine.outputNode.inputFormat(forBus: 0)
+        guard Self.snapshot(previousOutput) == formats.output else {
             throw AudioReferenceError.inconsistentRuntimeState
         }
+        let outputFormat =
+            engine.inputNode.isVoiceProcessingEnabled
+            ? engine.inputNode.outputFormat(forBus: 0) : previousOutput
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: material?.format ?? outputFormat)
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outputFormat)

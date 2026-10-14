@@ -113,7 +113,7 @@ public enum ConfigurationPlan {
         }
         try validate(state: state, mode: mode)
         let formats = try readFormats(driver: driver)
-        try validate(formats: formats, mode: mode)
+        try validatePCM(formats: formats)
         try EngineeringFailure.check(stage: .outputFormat, code: .graphConnectionFailed) {
             try driver.connectPlayback(using: formats)
         }
@@ -122,7 +122,8 @@ public enum ConfigurationPlan {
         guard connectedFormats.input == formats.input else {
             throw EngineeringFailure(stage: .inputFormat, code: .inputFormatChanged)
         }
-        guard connectedFormats.output == formats.output else {
+        let expectedOutput = mode == .enabled ? formats.input : formats.output
+        guard connectedFormats.output == expectedOutput else {
             throw EngineeringFailure(stage: .outputFormat, code: .outputFormatChanged)
         }
         guard connectedFormats.mixer == connectedFormats.output else {
@@ -151,14 +152,18 @@ public enum ConfigurationPlan {
     }
 
     public static func validate(formats: AudioFormats, mode: VPMode) throws {
+        try validatePCM(formats: formats)
+        if mode == .enabled, formats.input != formats.output {
+            throw EngineeringFailure(stage: .outputFormat, code: .vpIOFormatMismatch)
+        }
+    }
+
+    private static func validatePCM(formats: AudioFormats) throws {
         guard formats.input.isValidPCM else {
             throw EngineeringFailure(stage: .inputFormat, code: .inputFormatUnavailable)
         }
         guard formats.mixer.isValidPCM, formats.output.isValidPCM else {
             throw EngineeringFailure(stage: .outputFormat, code: .outputFormatUnavailable)
-        }
-        if mode == .enabled, formats.input != formats.output {
-            throw EngineeringFailure(stage: .outputFormat, code: .vpIOFormatMismatch)
         }
     }
 }

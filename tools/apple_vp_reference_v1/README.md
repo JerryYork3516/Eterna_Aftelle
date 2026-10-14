@@ -44,6 +44,16 @@ as `record`, forbids material, and writes private `prepared.json` while its engi
 is alive. It does not prepare/start the engine, install taps, play, or create a PCM
 recorder. Exit 0 means the snapshot was written; inspect its binding status.
 
+VP ON connects the mixer to output with the actual input client AVAudioFormat,
+then re-reads and strictly validates matching VP client formats. Initial formats
+may differ before this connection; input must remain unchanged. OFF retains its
+existing output client format. Configuration never changes hardware sample rate.
+If inspection configuration fails, a private `configuration_failure.json` retains
+the original stage/code and available state/formats from the same stopped engine;
+write failure is secondary. No retry, prepare, or start is performed. Associate
+this snapshot with the separately fixed executable identity; channel count does
+not establish microphone or reference-channel roles.
+
 Aggregate descriptor channel counts and actual physical channel counts are saved
 separately. A discrepancy is not silently normalized. Qualification uses the
 independent complete stream/direction chain; descriptor semantics and asynchronous
