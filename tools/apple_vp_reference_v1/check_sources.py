@@ -34,7 +34,16 @@ assert session.index("requireAuthorized") < session.index("AppleEngineDriver(")
 assert session.count("recorder.seal()") == 1
 lifecycle = (root / "Sources/VPReferenceCore/PlaybackLifecycle.swift").read_text()
 assert lifecycle.index("try startAndValidate()") < lifecycle.index("play()\n")
-assert "defer { stop() }" in lifecycle
+assert lifecycle.index("observer?.register()") < lifecycle.index("try startAndValidate()")
+assert lifecycle.index("observer?.remove()") < lifecycle.index("stop()\n")
+assert lifecycle.index("try observer?.check()", lifecycle.index("try startAndValidate()")) < lifecycle.index("play()\n")
+assert "observer: observer" in session
+assert "addObserver" not in session
+observer_source = (root / "Sources/VPReferenceAudio/ConfigurationChangeObserver.swift").read_text()
+assert observer_source.count("center.addObserver") == 1
+callback = observer_source.split("{ _ in", 1)[1].split("}", 1)[0]
+assert "vp_recorder_invalidate" in callback
+assert not re.search(r"Data\(|Array\(|Task\s*\{|\.write\(|JSON|SHA|FFT|\.sync|\.lock\(", callback)
 manifest = (root / "Package.swift").read_text()
 assert "dependencies: [" in manifest and ".package(" not in manifest
 assert not any(name in manifest for name in [".iOS", ".visionOS", ".watchOS", ".tvOS"])

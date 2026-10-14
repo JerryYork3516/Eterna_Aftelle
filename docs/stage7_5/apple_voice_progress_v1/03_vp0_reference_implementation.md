@@ -1,4 +1,4 @@
-# Apple Voice Progress v1 · VP-0 独立参考程序实现 · v1 / R1
+# Apple Voice Progress v1 · VP-0 独立参考程序实现 · v1 / R1 / R2
 
 日期：2026-10-13。范围：Test3 外放回声的独立工程对照工具。
 
@@ -7,6 +7,8 @@
 结论：**IMPLEMENTED_TESTED**。此结论仅表示独立程序通过本轮获准的构建、静态检查、合成内存与离线记录器测试。它不表示 Apple AEC 实际有效、不表示已排除全部工程 Bug，也不表示 Test3 PASS。实际设备行为均为 **NOT_MEASURED**。
 
 VP-0-R1 工程返工结论：**QUALITY_PASS**，依据与限制见第 13 节。R1 基线为 `3f7399bcbf9fb185238c772c8570a60bb99e1c90`；返工阶段未 commit / push。2026-10-14 主控单独授权提交推送本成果，设备实验权限不变。
+
+VP-0-R2 监听时序修复：**R2_QUALITY_PASS**，当前实现与剩余异步边界见第 14 节。基线 `f58bb9864f6721ccdbfb2bb2dd5c266f4f557b7b`；本轮不 commit / push，不启动设备或权限申请。R1 中监听后注册的历史描述不代表 R2 当前时序。
 
 实现阶段未启动 App、AVAudioEngine、麦克风、扬声器或 HIL；未读取私人 PCM、SSD、quarantine 或历史实验资产；未操作原 ACE3 工作区。实现阶段未 commit / push；主控随后单独批准提交推送本工具和本文档。
 
@@ -273,7 +275,7 @@ execution_authorized = false
 
 原缺口属实：observeRunning 的失败曾只设置 INVALID，后续仍可能执行 player.play。现在 capture 使用同一个 `PlaybackLifecycle.run`：`try startAndValidate` 成功后才执行 play，再进入 score；任何返回的 Swift 错误经 defer 执行唯一 stop/removeTap。
 
-运行快照由 `RunningConfigurationPlan.validate` 分类：VP state、input format、output/mixer format、硬件输出格式。读取失败同样抛稳定阶段错误。配置通知仍在成功的运行快照后注册，保持正常启动时机；播放前若已见格式/config invalid 标志，使用 `VP_CONFIGURATION / PRE_PLAYBACK_CONFIGURATION_INVALID`，不擅自断言一定换了设备。
+R1 运行快照由 `RunningConfigurationPlan.validate` 分类：VP state、input format、output/mixer format、硬件输出格式。读取失败同样抛稳定阶段错误。R1 当时在成功的运行快照后注册配置通知；这个注册空窗由第 14 节 R2 修复。播放前已见格式/config invalid 时仍使用 `VP_CONFIGURATION / PRE_PLAYBACK_CONFIGURATION_INVALID`，不擅自断言一定换了设备。
 
 run 先保留原始 EngineeringFailure，再 INVALID recorder；唯一 finish 收口执行一次显式 seal。RecorderOwner 的幂等保护仍在，已入队证据正常排空保存。失败路径不返回成功 outcome，不继续评分，不重复 stop 或释放。
 
@@ -396,6 +398,118 @@ Stage 7 越界检查 **PASS**：六红线无触碰；代码仅独立工具，未
 Apple VP-0 = REVIEW_PENDING
 Apple VP-A/B/C = NOT_AUTHORIZED
 Apple VP-D/E = BLOCKED
+ACE3 Step 2A/2B = FROZEN
+ACE3 Step 2C = PAUSED
+Test3 = BLOCKED
+execution_authorized = false
+```
+
+## 14. VP-0-R2 配置监听时序复核（2026-10-14）
+
+### 14.1 裁定与唯一修复范围
+
+**R2_QUALITY_PASS**：已消除定位到的运行快照→监听注册空窗，确定性注入下已观察的配置异常不能进入播放/评分。原 87 项和新增 7 项全部通过。此结论不表示全部异步 TOCTOU 消除，不表示实际设备/AEC 已通过。
+
+分支 `Apple-Voice-Progress-v1`；开工与收口 HEAD 均为 `f58bb9864f6721ccdbfb2bb2dd5c266f4f557b7b`，初始工作区/暂存区干净。只修改以下 6 个文件，未执行 checkpoint commit、暂存或 push：
+
+| 文件及定位 | 作用 |
+|---|---|
+| `Sources/VPReferenceAudio/VP0AudioSession.swift:48` capture、`:96` stop | 实际路径传入独立 observer；arm 失败先保留已有配置原因；停止函数不再重复处理监听 token。 |
+| `Sources/VPReferenceCore/PlaybackLifecycle.swift:1,9` | 研究工具内部 observer 接口；register/check 先于 startAndValidate，第二次 check 紧接 play 前；defer remove→stop。旧调用默认 nil，原测试仍保留。 |
+| 新 `Sources/VPReferenceAudio/ConfigurationChangeObserver.swift:20,32,38` | 单次注册、累计配置 INVALID 检查、幂等移除；通知 handler 只 C invalidate。 |
+| 新 `Tests/VPReferenceAudioTests/ConfigurationObservationTests.swift:10–95` | A/B/C/D/E、重复注册与失效不可清除，共 7 项；实际 NotificationCenter/observer/C recorder 与共用 helper。 |
+| `check_sources.py` | 静态守卫注册早于启动、播放前检查、remove早于stop，以及通知 callback 不含锁/IO/编码/任务。 |
+| 本文档 | 时序、证据、回归和 DEVICE_UNVERIFIED 边界。 |
+
+以上工具路径相对 `tools/apple_vp_reference_v1/`，行号对应本轮交付源码。未改 AppleEngineDriver、VP 算法、格式配置或记录器。
+
+### 14.2 根因与修复前后时序
+
+旧路径：
+
+```text
+完成图/Tap → arm → prepare/start → observeRunning
+→ 注册监听 → 查配置 INVALID → play → score → remove/stop → seal
+```
+
+observeRunning 与注册之间的配置变化可能没有通知见证；仅靠已读快照无法补回该窗口。
+
+当前路径：
+
+```text
+完成图配置/Tap → 注册监听 → 检查配置 INVALID
+→ arm → prepare/start → observeRunning → 再检查配置 INVALID
+→ play → score → remove监听 → stop/removeTap → seal
+```
+
+注册先于 arm/prepare/start，不重新配置 VP，不重新启动引擎。注册后即已收到异常则连 startup 也不继续；启动/读取快照时已收到的异常由播放前检查挡住。正常控制顺序仍包含 start→validate→play→score→stop。
+
+`register()` 对同一实例只允许一次尝试，重复或移除后重注册拒绝；`remove()` 清 token 后调用一次 NotificationCenter 移除，重复调用无操作。每次 session 用一个 observer，Core helper 的同一 defer 执行 remove 与 stop，外层原有 finish 保持一次 seal。
+
+### 14.3 通知、原始原因与封存
+
+通知仍使用 `.AVAudioEngineConfigurationChange` 和该次 engine 对象过滤，queue=nil。block 只调用既有 `vp_recorder_invalidate(..., VP_INVALID_FORMAT)`；没有新增音频 Tap 工作、锁、IO、JSON、字符串或任务，没有在 handler stop/seal/deallocate engine。
+
+配置检查读取原有 C 累计 `VP_INVALID_FORMAT`，不清标志、不忽略正常启动期间的真实通知。它检查的是**配置异常**，不把所有容量/写盘等 INVALID 都改成提前停音频；这些仍按原有诊断失效语义处理。
+
+若通知先使未 arm 记录器失效，arm 返回 false 时也先执行 observer.check，避免用 RECORDER_ARM_FAILED 覆盖已知配置原因。启动或状态读取自身抛出的原始错误仍走 R1 首错保留规则；C 配置标志独立保留。错误路径不进入 play/score，remove/stop 后封口，已入队合法样本排空保存。
+
+当前配置通知证据是累计 INVALID_FORMAT 与稳定阶段码，不包含每次通知的独立次数/时刻。不能据此宣称所有异步通知均完整登记。真实启动期间若收到配置通知，必须保留失效及已有配置/运行快照，分析物理路线和系统原因；本轮不做过滤、清除或自动重试。
+
+### 14.4 确定性测试及其判别力
+
+测试使用真实 `NotificationCenter`、真实 `ConfigurationChangeObserver`、实际 C recorder 与生产工具调用的同一个 `PlaybackLifecycle.run`。Trace-only decorator 把 register/check/remove 都委托实际 observer；普通 NSObject 代替 engine，仅控制通知注入点。没有构造/启动 AVAudioEngine，没有权限调用。
+
+| 要求 | 新用例 / 已证明结果 |
+|---|---|
+| A start 前变化 | `testChangeBeforeStartIsObservedAndPreventsStartupAndPlayback`：注册完成后同步投递，start/play/score 不执行，配置 INVALID 封存。 |
+| B start 与校验之间 | `testChangeBetweenStartAndValidationBlocksPlayback`：已启动动作/校验动作后，实际 C 标志使播放前 check 抛错；play/score=0，合法合成 record 保留。 |
+| C 校验后、play 前 | `testObservedChangeAfterValidationBlocksPlayback`：在校验返回前同步投递，已观察异常阻止 play/score。没有假设异步 scheduler 可被确定性覆盖。 |
+| D 无变化 | `testUnchangedConfigurationPreservesControlOrder`：register→check→start→validate→check→play→score→remove→stop→seal，容器最低流覆盖正常。 |
+| E 启动/状态失败 | 两项：`testStartFailureRemovesObserverAndSealsOnceWithoutReplacingReason`、`testStateFailureRemovesObserverBeforeSealAndPreservesReason`：原始 ENGINE_START / VP_STATE 原因保留，register/remove/stop/seal 各一次。 |
+| 不重复注册、不清失效 | `testObserverCannotRegisterTwiceOrClearObservedInvalidity`：重复/移除后注册拒绝，累计异常仍在，移除幂等。 |
+
+正常及失败用例在 remove 后、seal 前再同步投递通知，C 标志不改变，证明同步场景 token 已移除；这不是“所有已经派发的异步 handler 已排空”的证明。合成样本只验证封存/守恒，不是声学 PCM 或真人资格。
+
+### 14.5 完整回归与三个独立审查
+
+原 87 个路径/方法名从冻结 HEAD 提取，逐项确认保留并在最终日志执行；新增 7 项，合计 **94 tests、0 failures**（Core72，Audio22）。Debug/Release warnings-as-errors 构建、SwiftLint 0.65.1 error=0/warning=0、Apple Swift Format strict、C11 `-Wall -Wextra -Werror`、静态独立性及默认/非法参数 CLI 守卫全部通过；无规则豁免。
+
+| 审查 | 结论与依据 |
+|---|---|
+| TECHNICAL_REVIEW | **PASS（本轮限定范围）**：官方通知语义、handler/thread边界与源码时序相符，已定位注册空窗消除；未宣称全异步竞态解决。 |
+| ENGINEERING_REVIEW | **PASS**：实际 Session 接入共同 helper/observer；单次注册/移除/stop/seal；已观察配置异常阻止播放，原始原因保留。独立只读源码审核未发现此修复范围内确定阻断。 |
+| EVIDENCE_REVIEW | **PASS**：确定性 A/B/C/D/E 与原87回归，C INVALID/封存可复算；真实设备、异步调度与声学真值不以 Mock 冒充。 |
+
+前后不变项经 Git 基线逐文件字节比较：ConfigurationPlan、AppleEngineDriver、NativePCMTap、C recorder/header、RecorderOwner、AudioRunManifest/Outcome、诊断码、权限模块、CLI入口、Package/Info.plist 均未修改。VP ON/OFF 配置、PCM/时间结构、60秒/64MiB/8MiB、准入/writer/seal规则与默认不启动设备均保留。
+
+日志仍为忽略的 `.build/check-*.log`；`.build/r2-baseline-tests.json` 仅记录本轮本地非设备基线，不进入 Git。
+
+### 14.6 Apple 依据与尚存异步边界
+
+[Apple 配置变更通知](https://developer.apple.com/documentation/AVFAudio/AVAudioEngineConfigurationChangeNotification) 及本机 `AVAudioEngine.h:1050–1060` 说明硬件声道/采样率变化可使引擎自行停止并发出通知，handler 在内部 dispatch queue；在该 handler 内拆毁 engine 有死锁风险。本实现只在控制路径清理。
+
+[Foundation addObserver](https://developer.apple.com/documentation/Foundation/NotificationCenter/addObserver%28forName%3Aobject%3Aqueue%3Ausing%3A%29) 规定 queue=nil 在 posting thread 同步执行，且 block/token 持有至移除。由此可复现同步注入顺序；不能外推 Apple 的设备事件一定在 controller 检查前派发。
+
+以下均为 **DEVICE_UNVERIFIED**，本轮未确定性模拟或测量：
+
+1. 最后一次 check 已读到无异常后、driver.player.play 之前到达的新通知；check 与 play 没有跨 SDK/系统线程的原子事务，仍有 TOCTOU。
+2. play 与 score 之间或评分期间的新配置变化；已登记通知仍可使 recorder INVALID，但本轮没有新增动态 stop/重启策略。
+3. removeObserver 是否等待已派发 handler 全部完成。官方 API 未提供本工具所需的排空保证；强 owner 防悬空，已进入 C invalidate 的调用受原 seal 握手保护，尚未进入 C 的晚 handler 不可声称一定写入 footer。
+4. Apple 正常启动是否产生通知、其精确触发/派发顺序，真实路由自适应、停机及 ARC 释放时序。收到真实通知按 INVALID 保留，不过滤制造 PASS。
+
+注册前已发生但尚未送达的事件、NSException/native crash、物理路由/VP/AEC效果仍未验证。一次状态检查或这 7 项同步用例，不证明“从来不会在异常配置下执行 play”。
+
+### 14.7 Stage 7 与工程冻结候选条件
+
+Stage 7 越界检查 **PASS**：只涉及上述独立工具和本文档；六红线无触碰，无正式 App/Test2/Qwen/Runtime/Provider/音频协议/DR/正式合同/ACE3变更，无新平台target或Stage8。未启动 App/AVAudioEngine/麦克风/扬声器，未请求权限、运行HIL或读私人PCM/SSD/quarantine，未操作原ACE3工作区。
+
+满足本轮限定的 VP-0 非设备工程冻结**候选**条件，可交主控作最终冻结复审；**本轮未获得 Freeze Approval**。若最终冻结需要上述 DEVICE_UNVERIFIED 时序保证，必须另行批准验证与裁定，不能用 R2_QUALITY_PASS 自动满足。当前只提交工作副本成果，不 commit/push，不进入 VP-A/B/C。
+
+```text
+VP-0 = REVIEW_PENDING
+VP-A/B/C = NOT_AUTHORIZED
+VP-D/E = BLOCKED
 ACE3 Step 2A/2B = FROZEN
 ACE3 Step 2C = PAUSED
 Test3 = BLOCKED

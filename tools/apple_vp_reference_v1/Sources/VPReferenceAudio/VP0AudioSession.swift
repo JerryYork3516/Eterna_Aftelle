@@ -50,25 +50,21 @@ public final class VP0AudioSession {
         manifest: inout AudioRunManifest
     ) throws {
         installTaps(driver: driver, recorder: recorder)
-        var observer: NSObjectProtocol?
+        let observer = ConfigurationChangeObserver(observedObject: driver.engine, recorder: recorder)
         let startTick = vp_recorder_now_tick()
         try PlaybackLifecycle.run(
+            observer: observer,
             startAndValidate: {
                 guard vp_recorder_arm(recorder.handle, startTick) else {
+                    try observer.check()
                     throw EngineeringFailure(stage: .recorder, code: .recorderArmFailed)
                 }
                 try startAndWait(driver: driver)
                 try observeRunning(driver: driver, manifest: &manifest)
-                observer = NotificationCenter.default.addObserver(
-                    forName: .AVAudioEngineConfigurationChange, object: driver.engine, queue: nil
-                ) { _ in vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_FORMAT)) }
-                if vp_recorder_snapshot(recorder.handle).invalid_reasons & UInt32(VP_INVALID_FORMAT) != 0 {
-                    throw EngineeringFailure(stage: .vpConfiguration, code: .prePlaybackConfigurationInvalid)
-                }
             },
             play: { driver.player.play() },
             score: { wait(configuration: configuration, recorder: recorder, startTick: startTick) },
-            stop: { stop(driver: driver, observer: observer) }
+            stop: { stop(driver: driver) }
         )
     }
 
@@ -97,8 +93,7 @@ public final class VP0AudioSession {
         )
     }
 
-    private func stop(driver: AppleEngineDriver, observer: NSObjectProtocol?) {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
+    private func stop(driver: AppleEngineDriver) {
         driver.player.stop()
         driver.engine.stop()
         driver.engine.inputNode.removeTap(onBus: 0)
