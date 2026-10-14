@@ -40,7 +40,7 @@ P3 = APPROVED；P4 = APPROVED_SOURCE_SUPPORTED。P4已支持 VP_ON 采集到可�
 
 在后续独立批准的离线素材准备中选定一份无近端用户内容、可人工听辨、含连续居民语音的固定素材，登记完整8秒frame range、native format、文件SHA-256及解码后native-buffer SHA-256。建议使用有使用权的固定居民语音、无非有限样本和意外提示音；格式转换若需要，先离线完成并重新登记，不能在两臂间换版本、归一化或调增益。
 
-运行时原 `PCMSourceMaterial.load` 有界加载完整素材，VP-A验证Float32、文件及native PCM双身份、frame count/sampleRate对应恰好8秒和sourceStartFrame=0。不匹配在Engine创建前拒绝。双身份避免用文件身份冒充实际调度buffer身份。当前尚未选择/读取真实素材、生成真实素材登记或指定公开摘要；这些是开测前BLOCKED项。合成测试的内容不能替代实验素材。
+运行时原 `PCMSourceMaterial.load` 有界加载完整素材，VP-A验证Float32、文件及native PCM双身份、frame count/sampleRate对应恰好8秒和sourceStartFrame=0，并在非实时路径逐声道检查样本有限且绝对值≤1。不匹配或危险样本在Engine创建前拒绝。双身份避免用文件身份冒充实际调度buffer身份。真实素材状态为 **MATERIAL_PENDING**：授权记录内没有已选定并获准使用的8秒居民素材，未读取或登记私人素材，也没有真实双SHA、内容或安全核验。合成测试不能替代实验素材。
 
 固定路径为：PCM → AVAudioPlayerNode → 同一AVAudioEngine mainMixer → outputNode → Mac内建扬声器 → **真实空气/房间反射** → 目标麦克风 → inputNode原生Tap。麦克风没有回接扬声器；不向输入注入软件PCM，不叠加AEC3。外放前由用户记录相对几何、麦克风朝向、距离、桌面摆放、门窗/噪声和系统音量设置，在两臂之间保持；不得为了有利结果改变音量、Mic Mode、增益或位置。
 
@@ -105,7 +105,7 @@ VP_ON/OFF同时影响AEC、AGC、降噪及可能的播放处理。相同系统�
 
 本节点不作正式AEC PASS/FAIL裁定，不创建近端检测/语义/Runtime授权。若后续需要源资格或其他观察，另立局部研究方案；不得改Test2或全双工主链完成Test3。
 
-## 10. 非设备检查及三维自审
+## 10. 初次准备基线的非设备检查及三维自审
 
 原160项测试源码全部保留，新增34项（Core20、Audio14），目标总计194。最终结果见下表，任何设备项都未运行。
 
@@ -145,6 +145,60 @@ VP-A/B/C = NOT_AUTHORIZED
 VP-D/E = BLOCKED
 ACE3 Step 2A/2B = FROZEN
 ACE3 Step 2C = PAUSED
+Test3 = BLOCKED
+execution_authorized = false
+```
+
+## 12. 准备收口修正：素材安全与MATERIAL_PENDING
+
+修正基线：`1f7bbd9e1b281ea9e846b2d62f6ec2a533d6260a`，分支、HEAD、upstream、实时远端相符，初始工作区干净。本轮仅处理样本安全检查和已有素材授权核对，不重新规划已完成节点或修改PROPOSED实验窗口。
+
+### 12.1 非实时素材安全检查
+
+新增 `VPAMaterialSafety.inspect`，只读解码后的原生Float32 buffer，在文件/native双SHA及8秒身份验证后、登记/设备读取与Engine创建前执行。按照本机SDK `AVAudioBuffer.h` 130–150的channel pointer/stride契约，扫描每个声道的全部有效frames，兼容planar与interleaved。扫描保留原素材≤8MiB、≤32声道边界，摘要最多32项，不创建每样本对象、任务或PCM副本。
+
+- NaN和正负Inf：拒绝，`SOURCE_MATERIAL / MATERIAL_NON_FINITE_SAMPLES`。
+- 绝对值超过1.0，包括边界外相邻Float32：拒绝，`MATERIAL_OUT_OF_RANGE_SAMPLES`。
+- Float32布局、空buffer或扫描预算不合法：拒绝，`MATERIAL_SAMPLE_LAYOUT_INVALID`。
+- 恰好+1.0或−1.0允许；逐声道记录绝对峰值、有效样本数、恰好满幅的样本数量。该数量不等于已证明削波或可听失真。
+
+安全摘要由 `VPAAdmission.prepare` 返回并写入私有 `vpa_experiment.materialSafety.channels`；它描述**播放素材**，不是采集Input/Render统计或声源资格。危险样本立即拒绝，不形成“安全素材”摘要、prepared或有效运行；公开错误只含稳定stage/code，不打印样本、私人路径、身份或内容。
+
+不归一化、限幅、混音、改采样率或修改任何样本；没有新增实时callback工作。普通record仍走vpa=nil路径，原 `PCMSourceMaterial.load` 不变；source-probe、Driver、Tap、VP配置、observer/生命周期、C recorder、取消和生产代码均未改。native PCM和时间容器合同不变，仅增加VP-A私有素材摘要。
+
+修改文件：`VPAMaterialSafety.swift`（新增）、`VPAAdmission.swift`、`VPAEvidence.swift`、`AudioRunManifest.swift`、`VP0AudioSession.swift`、Core `EngineeringDiagnostic.swift`、`VPAMaterialSafetyTests.swift`（新增）及本07报告。范围均限定独立工具和07。
+
+### 12.2 授权素材核对
+
+只读核对本报告第4节、03报告第10节及工具README的素材授权记录。记录只要求未来准备获准素材，未给出已批准的具体8秒居民素材、真实双SHA或内容核验。历史私人PCM存在、曾获采集授权或P4真人语句可听辨，均不构成此次居民外放素材许可；不能改作纯居民负控。
+
+**MATERIAL_PENDING**。没有扫描私人目录、读取任何私人PCM/日志/登记文件、调用Provider生成素材或重新登记设备；本轮没有可合法进行时长、内容、双SHA及样本安全核验的真实素材。全部真实素材核验为NOT_RUN，未打印私人素材/设备身份。
+
+最小下一步是主控指定并批准一份具体居民素材及其离线读取/内容核验用途，再离线核验完整8秒、双SHA、原格式和安全摘要；不预先授权播放。当前不创建、裁剪或转换未知资产，也不将合成夹具登记为居民素材。
+
+### 12.3 最终非设备回归及三维复审
+
+初次准备的194项全部保留，新增13项合成测试，最终207项（Core122、Audio85）。测试覆盖多声道峰值/±1计数、NaN/±Inf、正负边界外相邻Float、planar/interleaved末端非首声道、静默及边界内值、位模式不变、空/非Float/超预算/超声道buffer、实际准入在登记/设备读取前拒绝危险素材、身份失败优先及私有摘要编码。新夹具的多声道格式显式使用离散channel layout，仅表示合成声道顺序，不赋予物理声道角色。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| Debug / Release，warnings-as-errors | PASS |
+| 原194 + 新13 XCTest | PASS，207/207，零失败；Core122、Audio85 |
+| SwiftLint / Swift Format strict / C11 / 静态边界与默认拒绝 | PASS，SwiftLint 0 error / 0 warning；无规则豁免 |
+| 麦克风、扬声器、Engine、系统权限及真实素材 | NOT_RUN |
+
+首次回归发现三声道夹具误用了仅支持1–2声道的无layout构造器，已按本机SDK `AVAudioFormat.h` 99–125修正；该失败不被计作Apple设备或AEC失败。严格检查完成后才记录最终通过结果。
+
+TECHNICAL_REVIEW：样本检查契约与公开SDK一致，±1边界来自本轮明确安全要求，不是新增AEC声学PASS阈值。ENGINEERING_REVIEW：NON_DEVICE_PASS，完整检查通过；独立只读源码审核未发现关键缺陷。EVIDENCE_REVIEW：合成/静态准备证据；真实素材仍MATERIAL_PENDING，真实设备及AEC能力NOT_MEASURED。Stage7 Forbidden Checklist：PASS；六红线未触碰，无Runtime API/DR schema/平台target/Stage8或Provider调用；不访问原ACE3工作区，未改变既有全双工和取消机制。工程准备可供主控复审，开测继续BLOCKED；本轮仅提交安全的源码/合成测试/脱敏报告，不提交资产。
+
+```text
+VP-A_PREPARATION_CLOSEOUT = REVIEW_PENDING
+Material = MATERIAL_PENDING
+VP-A_DEVICE_NOT_RUN
+USB unique physical source = UNVERIFIED
+Apple AEC = NOT_MEASURED
+VP-A/B/C = NOT_AUTHORIZED
+VP-D/E = BLOCKED
 Test3 = BLOCKED
 execution_authorized = false
 ```

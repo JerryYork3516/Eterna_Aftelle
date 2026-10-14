@@ -7,6 +7,7 @@ struct VPAEvidence: Encodable {
     let sourceStatus = "SOURCE_UNVERIFIED"
     let sourceQualificationGranted = false
     let registrationSHA256: String
+    var materialSafety: VPAMaterialSafety?
     let quietSeconds = VPARequest.quietSeconds
     let materialSeconds = VPARequest.materialSeconds
     let tailSeconds = VPARequest.tailSeconds

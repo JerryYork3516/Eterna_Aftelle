@@ -37,7 +37,8 @@ public final class VP0AudioSession {
             )
         }
         if let admission {
-            manifest.prepareVPA(registrationSHA256: admission.registrationSHA256)
+            manifest.prepareVPA(
+                registrationSHA256: admission.registrationSHA256, materialSafety: admission.materialSafety)
         }
         let recorder = try EngineeringFailure.check(stage: .recorder, code: .recorderCreateFailed) {
             try RecorderOwner(configuration: configuration, maximumSeconds: vpa == nil ? 60 : VPARequest.maximumSeconds)

@@ -7,9 +7,10 @@ struct VPAAdmission {
     let registrationSHA256: String
     let input: AudioDeviceSnapshot
     let output: AudioDeviceSnapshot
+    var materialSafety: VPAMaterialSafety?
 
     static func prepare(request: VPARequest, material: PCMSourceMaterial?) throws -> Self {
-        try validateMaterial(request: request, identity: material?.identity)
+        let safety = try inspectMaterial(request: request, material: material)
         let registered = try EngineeringFailure.check(stage: .command, code: .invalidArguments) {
             try SourceProbeRegistrationFile.load(request.targetRegistrationURL)
         }
@@ -22,8 +23,16 @@ struct VPAAdmission {
                 inputID: input.anonymousID, outputID: output.anonymousID,
                 isUSB: input.transport == kAudioDeviceTransportTypeUSB,
                 isBuiltIn: output.transport == kAudioDeviceTransportTypeBuiltIn)
-            return Self(request: request, registrationSHA256: registered.sha256, input: input, output: output)
+            return Self(
+                request: request, registrationSHA256: registered.sha256, input: input, output: output,
+                materialSafety: safety)
         }
+    }
+
+    static func inspectMaterial(request: VPARequest, material: PCMSourceMaterial?) throws -> VPAMaterialSafety {
+        guard let material else { throw EngineeringFailure(stage: .sourceMaterial, code: .materialIdentityMismatch) }
+        try validateMaterial(request: request, identity: material.identity)
+        return try VPAMaterialSafety.inspect(material.buffer)
     }
 
     static func validateMaterial(request: VPARequest, identity: PCMSourceIdentity?) throws {
