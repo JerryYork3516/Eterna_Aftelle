@@ -4,6 +4,8 @@
 
 **本报告仅交付候选协议、独立工具准备与非设备验证。VP-A_DEVICE_NOT_RUN；execution_authorized=false。** 下述新实验参数全部为 **PROPOSED**，须经主控独立源码审核、协议批准及另一次明确现场授权才能执行。构建、Mock、合成 PCM 或 Git 交付均不授予设备或 Test3 权限。
 
+当前主控已批准VP-A工程实现；第10–12节保留先前交付和复审历史。最新素材准备见第13节，工程实现不再开发，素材仍为MATERIAL_PENDING，未授予设备实验权限。
+
 ## 1. 基线及继承结论
 
 工作分支 `Apple-Voice-Progress-v1`，审核基线 `2f1eb483b6975a6cd22fbf662571cbb939b40c64`。准备开始时 HEAD、upstream、实时远端分支 SHA 一致，工作区干净。所有新增写入限定独立工具及本07报告；未操作原ACE3工作区，也未读取任何私人登记、历史录音、设备日志或 SSD/quarantine。
@@ -194,6 +196,63 @@ TECHNICAL_REVIEW：样本检查契约与公开SDK一致，±1边界来自本轮�
 ```text
 VP-A_PREPARATION_CLOSEOUT = REVIEW_PENDING
 Material = MATERIAL_PENDING
+VP-A_DEVICE_NOT_RUN
+USB unique physical source = UNVERIFIED
+Apple AEC = NOT_MEASURED
+VP-A/B/C = NOT_AUTHORIZED
+VP-D/E = BLOCKED
+Test3 = BLOCKED
+execution_authorized = false
+```
+
+## 13. VP-A_MATERIAL_FINALIZATION：现有居民声音资产核对
+
+本节点审核基线为 `6e427f09808c689ab035336041d589e02422f962`，分支 `Apple-Voice-Progress-v1`。开始时HEAD、upstream及实时远端一致，工作区干净。继承主控决定：**VP-A工程实现APPROVED**；仅处理现有居民素材定位和离线准备，不重新开发、替换音色或修改已批准工具。
+
+### 13.1 定点定位与可用性
+
+范围限定Git登记的音频资产文件名、固定居民测试资产元数据与其两个明确指向的居民包位置；没有扫描历史私人录音、用户音频缓存、其他目录或原ACE3资产，没有读取PCM本体。
+
+| 已知位置/元数据 | 本轮核验 | 结论 |
+| --- | --- | --- |
+| `apps/macos/Aftelle/Fixtures/Stage7_5/stage7_5_test_assets.json` | 只读元数据：存在固定居民包分发位置和运行语音配置 | 配置/音色引用不是已保存居民波形；未包含可登记的8秒居民输出音频路径 |
+| 固定居民包在当前worktree的指定位置 | 仅对明确文件做存在性检查，MISSING | 无法从该包核对或取得声音资产；不从原工作区拷贝、重新导出或生成居民 |
+| 固定资产文档登记的原始居民包位置 | 仅对明确文件做存在性检查，MISSING | 不扫描父目录寻找其他版本，不公开私人绝对路径或居民身份 |
+| Git登记音频文件 | 文件名清单中只有用户输入探针的PCM候选；未读取音频 | 对应README/AUTHORIZATION将工具输入定义为用户预录PCM，没有居民输出来源与8秒素材登记；不挪作居民负控 |
+
+定点资料为固定测试资产元数据、A3固定资产报告及 `tools/qwen_live_receive_probe/README.md` / `AUTHORIZATION.md`。历史运行配置、居民包导入许可、用户输入录音许可都不能证明某个PCM是当前居民输出。用户本轮选择现有居民声音，允许在明确合法资产存在时离线准备，但不允许据配置调用Provider补造音频。
+
+以上证明的是**已知位置尚未提供合法可用素材**，不是全盘没有居民录音；没有进行全盘搜索。已请求当前居民语音资产的准确路径或当前居民包位置，在没有新的指定目标时按用户允许的缺素材分支收口。
+
+### 13.2 素材结果与处理记录
+
+**MATERIAL_PENDING**。本轮未读取、裁剪、转换、归一化或增强任何私人音频，未覆盖原始资产，未新建真实PCM或素材身份登记。未调用Qwen、Provider或Runtime生成声音，也没有使用新的合成测试音色替代居民。
+
+| 素材核验项 | 本轮结果 |
+| --- | --- |
+| 合法居民来源、声音关联和具体可用文件 | 未建立：缺少当前准确资产位置及可复查来源元数据 |
+| 连续8秒居民讲话内容 | NOT_RUN，没有可合法读取的具体文件 |
+| 确定性裁剪/格式转换 | NOT_RUN，未选择源区间、重采样或下混方法 |
+| 推荐16kHz / mono / Float32、128000frames | 目标保留；实际format、frames、时长均NOT_RUN |
+| 文件SHA-256 / 解码后native PCM SHA-256 | NOT_COMPUTED；不伪造、不沿用合成夹具身份 |
+| 现有VPAMaterialSafety检查、NaN/Inf/越界、峰值与满幅计数 | NOT_RUN，没有真实素材安全结论 |
+| Git之外私有素材目录及成品 | NOT_CREATED，没有用空目录或合成文件冒充就绪资产 |
+
+最小缺口是提供**一份已保存、来源可核对、足够连续8秒的现有居民输出音频**，或实际包含该音频的居民包及精确成员位置。随后才可在另一次明确限定目标的离线授权下准备副本、记录确定性处理、双SHA及现有安全检查。若居民声音只有Provider配置而无保存音频，本轮不能完成素材化；不得以调用Provider或运行App绕过禁止项。
+
+### 13.3 非设备与交付边界
+
+本节点只修改07报告。已逐字节核对 `tools/apple_vp_reference_v1/` 全部Git登记文件与审核基线一致；普通record、source-probe、音频图、VP配置、取消、PCM容器及安全检查均未改，原207项测试不增删。生产代码、DR/VoiceProfile、正式Test3合同及其他冻结节点不变。
+
+必要非设备核验为定点元数据/文件存在性、源码冻结一致性、报告结构/隐私、Git diff与提交范围检查。构建、Swift测试、Lint及C11本轮NOT_RUN：没有源码或可用真实素材变化，不重复已批准基线的207项检查来冒充素材验证；基线第12.3节结果保留历史身份。
+
+TECHNICAL_REVIEW：APPROVED工程基线保持。ENGINEERING_REVIEW：NO_CODE_CHANGE。EVIDENCE_REVIEW：MATERIAL_PENDING；没有真实内容、时长、双SHA、安全或声学PASS。Stage7 Forbidden Checklist：PASS；无六红线、Runtime API、DR schema、VoiceProfile、Provider、平台target或Stage8改动；未启动麦克风、扬声器、AVAudioEngine、权限流程或VP_OFF/ON采集，未进入VP-B/C。
+
+只提交本07脱敏报告，不提交PCM、登记文件、私人设备/居民身份、摘要、私有路径或密钥。完成提交推送及远端SHA核验后停止，等待主控审核；MATERIAL_PENDING成果不授予VP-A执行权。
+
+```text
+VP-A Engineering = APPROVED
+VP-A_MATERIAL_FINALIZATION = MATERIAL_PENDING
 VP-A_DEVICE_NOT_RUN
 USB unique physical source = UNVERIFIED
 Apple AEC = NOT_MEASURED
