@@ -4,7 +4,7 @@
 
 **本报告仅交付候选协议、独立工具准备与非设备验证。VP-A_DEVICE_NOT_RUN；execution_authorized=false。** 下述新实验参数全部为 **PROPOSED**，须经主控独立源码审核、协议批准及另一次明确现场授权才能执行。构建、Mock、合成 PCM 或 Git 交付均不授予设备或 Test3 权限。
 
-当前主控已批准VP-A工程实现；第10–12节保留先前交付和复审历史。最新素材准备见第13节，工程实现不再开发，素材仍为MATERIAL_PENDING，未授予设备实验权限。
+当前主控已批准VP-A工程实现；第10–12节保留先前交付和复审历史。最新素材准备见第13.4节：MATERIAL_PREPARED_REVIEW_PENDING，保留CONTENT_UNVERIFIED和当前VoiceProfile一致性未知；工程实现不再开发，未授予设备实验权限。
 
 ## 1. 基线及继承结论
 
@@ -209,7 +209,7 @@ execution_authorized = false
 
 本节点审核基线为 `6e427f09808c689ab035336041d589e02422f962`，分支 `Apple-Voice-Progress-v1`。开始时HEAD、upstream及实时远端一致，工作区干净。继承主控决定：**VP-A工程实现APPROVED**；仅处理现有居民素材定位和离线准备，不重新开发、替换音色或修改已批准工具。
 
-### 13.1 定点定位与可用性
+### 13.1 首次定点定位与可用性
 
 范围限定Git登记的音频资产文件名、固定居民测试资产元数据与其两个明确指向的居民包位置；没有扫描历史私人录音、用户音频缓存、其他目录或原ACE3资产，没有读取PCM本体。
 
@@ -224,7 +224,7 @@ execution_authorized = false
 
 以上证明的是**已知位置尚未提供合法可用素材**，不是全盘没有居民录音；没有进行全盘搜索。已请求当前居民语音资产的准确路径或当前居民包位置，在没有新的指定目标时按用户允许的缺素材分支收口。
 
-### 13.2 素材结果与处理记录
+### 13.2 首次定位结果与处理记录
 
 **MATERIAL_PENDING**。本轮未读取、裁剪、转换、归一化或增强任何私人音频，未覆盖原始资产，未新建真实PCM或素材身份登记。未调用Qwen、Provider或Runtime生成声音，也没有使用新的合成测试音色替代居民。
 
@@ -240,7 +240,7 @@ execution_authorized = false
 
 最小缺口是提供**一份已保存、来源可核对、足够连续8秒的现有居民输出音频**，或实际包含该音频的居民包及精确成员位置。随后才可在另一次明确限定目标的离线授权下准备副本、记录确定性处理、双SHA及现有安全检查。若居民声音只有Provider配置而无保存音频，本轮不能完成素材化；不得以调用Provider或运行App绕过禁止项。
 
-### 13.3 非设备与交付边界
+### 13.3 首次交付边界
 
 本节点只修改07报告。已逐字节核对 `tools/apple_vp_reference_v1/` 全部Git登记文件与审核基线一致；普通record、source-probe、音频图、VP配置、取消、PCM容器及安全检查均未改，原207项测试不增删。生产代码、DR/VoiceProfile、正式Test3合同及其他冻结节点不变。
 
@@ -253,6 +253,53 @@ TECHNICAL_REVIEW：APPROVED工程基线保持。ENGINEERING_REVIEW：NO_CODE_CHA
 ```text
 VP-A Engineering = APPROVED
 VP-A_MATERIAL_FINALIZATION = MATERIAL_PENDING
+VP-A_DEVICE_NOT_RUN
+USB unique physical source = UNVERIFIED
+Apple AEC = NOT_MEASURED
+VP-A/B/C = NOT_AUTHORIZED
+VP-D/E = BLOCKED
+Test3 = BLOCKED
+execution_authorized = false
+```
+
+### 13.4 用户追加定点授权与实际离线准备
+
+上述缺位置结果已由commit `369e6310779f34fd465ce43eb271c9f6ae55d221`提交推送。随后用户回应路径询问，明确指定两个既有资产：历史居民未标记WAV与历史render-full Float32裸PCM。本次仅只读这两个候选及同目录与来源/格式相关的元数据；没有扩大到其他私人录音。原ACE3只读范围限用户此次明确指定的资产/关联元数据，没有执行该工作区Git操作或修改其文件。
+
+**选择候选1**：自描述WAV，16kHz、mono、signed PCM16、150400frames（9.4秒），文件与原历史封存manifest的SHA相符；历史文档标记为已有居民unmarked源。用户指定支持本次离线使用，未调用任何Provider生成新声音，也未使用带水印版本。完整源SHA在离线处理后再次一致，原文件未覆盖、调增益或改权限。
+
+**候选2未采用**：仅核对相关诊断元数据，未读取其PCM本体；裸文件名不能证明sample rate/channel/layout，且旧诊断中的音色与当前固定测试配置不一致。不据此恢复旧语音配置，也不将它或候选1自动声明为当前VoiceProfile的相同声音。
+
+确定性处理仅取候选1的原始frames `[0,128000)`，不拼接、循环或补静默；signed16→Float32按标准codec单位映射 `sample / 32768`。原始16kHz/mono保持，无重采样、下混、归一化、限幅、增强、fade或音量调整。调用已安装FFmpeg 8.1.2，参数固定为 `-nostdin -n -map 0:a:0 -t 8 -c:a pcm_f32le -bitexact -map_metadata -1`，输入/输出均为私有路径。转换没有使用音频设备。独立RIFF解析逐样本核对新文件payload与原signed16映射的Float32位模式**完全相等**；裁剪边界可能截断语句，未用数据自适应挑选有利片段。
+
+新WAV及处理计划、双SHA、原封存核对、独立payload核验、批准loader/safety结果均保存Git之外的当前用户私有目录；父目录0700、PCM/JSON0600、无symlink，不公开私人路径或摘要。素材/native摘要只在私有登记中保存，不进入报告、Git或普通Trace。
+
+| 本次实际离线核验 | 结果 |
+| --- | --- |
+| 时长/frames | 8.000秒 / 128000frames，连续原始样本区间 |
+| 实际native format | 16kHz、mono、Float32、32bits、4bytes/frame；formatFlags=9（单声道交错形式） |
+| 文件SHA / native PCM SHA | 两者已实际计算；批准loader与独立文件/payload计算逐项一致，仅存私有JSON |
+| 批准 `PCMSourceMaterial.load` | PASS，完整解码范围与128000frames一致 |
+| 批准 `VPAMaterialSafety.inspect` | PASS，唯一声道128000有效样本 |
+| NaN / Inf / 绝对值超过1 | 全部0 |
+| 绝对峰值 / 恰好满幅样本 | 0.687774658203125 / 0（+1、−1均无） |
+| 非零样本 | 116511，仅为信号描述，不是讲话或语义判据 |
+| 样本变换及源保护 | codec映射位模式一致，原源SHA未变；未归一化或改变音量 |
+| 内容来源 | USER_DESIGNATED_HISTORICAL_RESIDENT_UNMARKED；用户指定、历史来源文档及封存身份支持 |
+| 逐字内容/连续讲话充分性 | CONTENT_UNVERIFIED：未播放、未转写；连续8秒PCM不等于8秒全为讲话，保留原自然停顿 |
+| 当前VoiceProfile一致性 | UNVERIFIED；未改变DR/VoiceProfile，不以文件名或信号统计证明身份 |
+
+一次性离线辅助程序仅将原批准源码/已构建Core链接为私有验证器，实际调用原loader和safety方法；没有新增/修改正式工具、替代安全算法或实例化Engine。非设备Debug构建和该辅助程序编译均通过（warnings-as-errors），真实新素材核验成功。跨语言peak核对采用Float32位模式；JSON的短小数表示不被误当成Float64逐字相等要求。没有重新堆积Mock或重复207项基线测试，原测试和实现逐字节未变。
+
+独立证据方法复审支持 **MATERIAL_PREPARED_REVIEW_PENDING**：裁剪/表示转换、安全与身份均可复查，但不授予实验GO。主控仍需接受该用户指定历史居民原声及所选区间，处理内容/当前音色等未知项；如要求它必须匹配当前VoiceProfile，应先提供同一性证据或另指定现有原声，不调用Provider补造、不自动换素材/重新处理。
+
+TECHNICAL_REVIEW：APPROVED工程保持、批准素材检查实际离线PASS。ENGINEERING_REVIEW：NO_CODE_CHANGE / OFFLINE_MATERIAL_CHECK_PASS。EVIDENCE_REVIEW：MATERIAL_PREPARED_REVIEW_PENDING，CONTENT_UNVERIFIED / CURRENT_VOICE_MATCH_UNVERIFIED。Stage7 Forbidden Checklist：PASS；只更新07，未改变生产代码、Qwen全双工、Test2、Runtime、VP/AEC、取消、DR/VoiceProfile或正式合同。没有麦克风/扬声器/AVAudioEngine启动、权限申请、VP_OFF/ON采集或VP-B/C。
+
+```text
+VP-A Engineering = APPROVED
+VP-A_MATERIAL_FINALIZATION = MATERIAL_PREPARED_REVIEW_PENDING
+Content = UNVERIFIED
+Current VoiceProfile equivalence = UNVERIFIED
 VP-A_DEVICE_NOT_RUN
 USB unique physical source = UNVERIFIED
 Apple AEC = NOT_MEASURED
