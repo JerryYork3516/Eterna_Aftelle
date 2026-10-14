@@ -1,12 +1,14 @@
-# Test3 · VP-0-P4 单次真实输入来源验证 · v1
+# Test3 · VP-0-P4 真实输入来源验证及追加授权复验 · v2
 
-本节点在 `Apple-Voice-Progress-v1`、基线 `6b48c36535aa6a04592e253668d27b5ea66c8b57` 上执行唯一一次授权的 VP_ON `source-probe`。没有修改独立工具或生产代码，没有进行录音重试、居民播放或 Test A/B/C。
+本报告保留首次执行的历史记录（第1–13节），并在第14节记录用户后来明确追加授权的提示修复及一次新采集。累计两次：首轮一次，追加授权后一次；没有自动重试、居民播放或Test A/B/C。工具源码基线仍为 `6b48c36535aa6a04592e253668d27b5ea66c8b57`，没有修改独立工具或生产代码。
 
-最终裁定：**P4_DEVICE_BLOCKED（用户提示及刺激协议环节）**；来源：**P4_SOURCE_UNVERIFIED**。
+首次执行裁定：**P4_DEVICE_BLOCKED（用户提示及刺激协议环节）**；来源：**P4_SOURCE_UNVERIFIED**。该结论不回写为成功。
 
-**INPUT_PCM_PRESENT 成立。** Engine 启停、连续 7.8 秒 Input、全声道保存和封存获得真实证据；但用户反馈未收到任何提示，指定语句的现场执行与录音内容对应性未确认。因此本次不能建立 INPUT_RESPONDS_TO_STIMULUS、USB_SOURCE_SUPPORTED 或 USB_SOURCE_CONFIRMED。
+**首次执行的INPUT_PCM_PRESENT成立。** Engine启停、连续7.8秒Input、全声道保存和封存获得真实证据；但用户反馈未收到任何提示，指定语句的现场执行与录音内容对应性未确认。因此首轮不能建立INPUT_RESPONDS_TO_STIMULUS、USB_SOURCE_SUPPORTED或USB_SOURCE_CONFIRMED。
 
 上述 BLOCKED 不等于麦克风硬件、Apple AEC 或 VP 算法失败。recorder INVALID=0 与来源实验 BLOCKED 分别描述记录完整性和实验协议。
+
+**最新复验裁定：P4_SOURCE_SUPPORTED。** 实时文本提示经可见页面及用户确认，三个原生声道的本地试听均包含两句指定语句，既有登记路由稳定、采集及封存正常。仍未建立USB唯一物理来源；不能标为P4_SOURCE_CONFIRMED、DEVICE_GO、AEC_PASS或Test3 PASS。详见第14节。
 
 ## 1. Git 基线及固定程序身份
 
@@ -204,3 +206,94 @@ execution_authorized = false
 ```
 
 完成本报告交付后停止，等待主控独立审核。
+
+## 14. 用户追加授权：提示修复及第二次采集
+
+### 14.1 授权和隔离
+
+首轮报告已由commit `0bfff8043860d0f569223886537d4a09d3370c8d` 推送后，用户明确要求：**“不要停止，修复提示问题重新录音”**。这是一次新的明确授权，覆盖首轮“不自动重试”的限制；没有将其解释为无限录音授权。
+
+提示修复只使用Git之外的本机临时文本页面和控制辅助程序，绑定127.0.0.1，不使用浏览器麦克风、外部资源、Provider或网络转写。页面只接收实际source-probe cue并显示中文；未改变音频处理、图、Tap、记录器、时间/PCM协议或设备守卫。
+
+先在无录音状态动态更新预览，实际页面显示“提示预检已更新：保持安静，尚未录音”。用户确认 **“能看到，已准备好”** 后才执行新一次VP_ON、8秒、无material采集。固定程序SHA/签名、Codex启动宿主和既有私有registration均沿用，未重新构建、重签、登记或改变系统路由/音量/增益/Mic Mode。
+
+第二次有独立attempt和新证据目录，首次证据未覆盖。总录音次数2，本次追加授权下新录音次数1；本轮至此不再追加采集。
+
+### 14.2 提示真实显示与现场反馈
+
+| 实际cue | arm相对生成秒 | 本机写入到DOM回执差（ms） | 页面可见状态 |
+| --- | ---: | ---: | --- |
+| QUIET_INITIAL | 0.151575 | 20.848 | visible |
+| PHRASE_ONE | 2.025694 | 10.219 | visible |
+| QUIET_BETWEEN | 3.310944 | 5.962 | visible |
+| PHRASE_TWO | 4.034313 | 55.670 | visible |
+| QUIET_FINAL | 5.521350 | 54.633 | visible |
+
+五个cue均有一次对应DOM回执；使用页面文字更新后的requestAnimationFrame记录。上述差值是同机墙钟的界面传递描述，不是精确屏幕扫描、人眼感知、发声或声学到达时延，也不是新增产品性能门槛。
+
+用户随后确认：**“提示及时，两句都说完”**。实际可见性由页面状态和用户现场反馈共同支持，不再只依赖执行工具生成通知。本轮没有播放任何提示音。
+
+### 14.3 第二次真实采集及封存
+
+新进程退出0，耗时 **8.750776958秒**。Input和Render仍各78条、124800frames、16kHz/3声道Float32 planar、连续 **7.8秒**；每条1600frames，全部sampleTime/hostTime有效，每流仅首条continuityUnknown=1，后续无断样。
+
+| 项目 | Input | Render |
+| --- | ---: | ---: |
+| 原始sampleTime区间 | `[616,125416)` | `[1172,125972)` |
+| 首/末callback，arm相对秒 | 0.277261 / 7.964739 | 0.307489 / 7.987498 |
+| callback间隔最小/中位/最大（ms） | 90.118 / 96.455 / 129.929 | 95.783 / 96.011 / 128.068 |
+
+INVALID、lost、overflow、discarded、pending、suppressed及缺失时间记录均为0。156条记录、2995200 PCM bytes；C-owned resident4473728 bytes；seal成功、integrity VERIFIED。正确目录参数的离线verify退出0；独立解析计数及footer/receipt FNV核对通过，文件3056600字节。分析没有启动新engine。
+
+8秒包含启动；实际7.8秒不改写为完整8秒，也不因缺少0.2秒自动判丢帧。没有以跨轮PCM差值评价Apple AEC。
+
+VP双端enabled=true、bypass/mute=false、AGC=true，运行观测true、停止后false。configured/running/post-stop设备路由一致且匹配旧登记USB/Built-in；两个node仍呈现Built-in、普通binding仍UNAVAILABLE。客户端16kHz/3声道、node硬件侧getter16kHz/2声道与HAL名义48kHz的解释继续未知。
+
+没有记录器INVALID或配置/格式失败；独立通知次数/派发时刻、HAL单次开销、异步清理未知项继续保留。没有启动另一个engine补验证，不将无断样提升为所有性能问题已排除。
+
+### 14.4 全声道内容及质量边界
+
+三个Input声道各124800样本、非零124074、RMS约0.085337738，最小−0.955773354、最大1.0；全部有限，三个声道的样本数值逐点相等。每声道有 **6个样本恰为+1.0**，−1.0及超过绝对满幅的样本均为0。此处如实记录触顶观察，不据此认定削顶原因、语音无损或音质PASS，也不增加声学阈值。Render三个声道全零。
+
+为私有离线审核，从本次新录音的每个原生plane分别生成同采样率的单声道Float32 WAV。无归一化、增强、混合或改写原始记录。三个播放器只在本机回环服务提供已知文件，无自动播放、外部请求或音频上传；用户自行播放进行内容核验，麦克风录音已结束。
+
+用户逐声道试听后确认：**“三个声道都能听到两句”**。内容对应标为 **USER_REVIEWED_CONTENT**；不是由RMS、非零比例或软件提示时间推断语句，也不是自动ASR裁定。精确真人起音/尾音和声学到达时间未独立标定；能辨认两句不等于已证明所有起尾音无损。
+
+声道数值相等允许说三声道包含相同内容，仍不能分配麦克风/参考角色或证明唯一物理USB来源。原生全声道和私人试听副本均留在本地，未进入Git、普通Trace或公开报告。
+
+### 14.5 最新来源等级及三维审核
+
+| 等级 | 第二次证据裁定 |
+| --- | --- |
+| INPUT_PCM_PRESENT | 成立：真实全声道PCM完整封存 |
+| INPUT_RESPONDS_TO_STIMULUS | 支持：页面提示、现场执行确认及本次PCM逐声道人工内容核验 |
+| USB_SOURCE_SUPPORTED | **成立，待主控复核**：上述响应、稳定既有目标USB登记路由、用户位于目标麦克风附近、无软件注入 |
+| USB_SOURCE_CONFIRMED / SOURCE_CONFIRMED | 未建立：仍缺排除替代输入来源的独立物理或官方同实例依据 |
+
+来源等级是外部证据审核，不回写工具manifest。原 `sourceStatus=SOURCE_UNVERIFIED` 和 `sourceQualificationGranted=false` 均保留；普通record守卫、Runtime声源资格和正式中断权限不变。
+
+| 维度 | 最新裁定 |
+| --- | --- |
+| TECHNICAL_REVIEW | LIMITED_PASS：真实VP_ON近端内容与稳定配置成立；唯一来源、声道角色及VPIO设备呈现解释仍未知 |
+| ENGINEERING_REVIEW | CAPTURE_AND_SEAL_GO / PROMPT_DELIVERY_GO：此次提示有可见页面回执及用户确认，有限采集、停止和封存通过；不推广全部异步/性能保证 |
+| EVIDENCE_REVIEW | **P4_SOURCE_SUPPORTED**：内容是本地人工核验，结构完整可复查；未确认USB唯一来源或AEC能力 |
+
+首次P4_DEVICE_BLOCKED/P4_SOURCE_UNVERIFIED保持历史原结论；最新结果为P4_SOURCE_SUPPORTED，不将第一次改写为PASS。报告复核同时保留满幅样本、格式getter、物理来源和时间边界。
+
+### 14.6 Git交付、边界及停止
+
+仓库只更新本06报告，独立工具/生产源码及03/04/05历史报告均未改。提示页面、回执、注册文件、录音、试听副本和分析元数据仅在Git外私有目录。**Stage7越界检查：PASS**；没有修改Test2、Qwen原生全双工架构、Runtime/Provider/协议/DR，未进入Test A/B/C或验证AEC消音。
+
+将本报告修订独立提交并推送当前分支，核对HEAD/upstream/远端SHA一致。下一步是主控审核本次来源支持证据及既有未解决项，任何声学能力实验都须另行授权。本节点不继续录音或进入Test A。
+
+```text
+VP-0-P3 Implementation = APPROVED
+VP-0-P4 Device Validation = REVIEW_PENDING
+Latest evidence grade = P4_SOURCE_SUPPORTED
+USB unique physical source = UNVERIFIED
+VP-0 Device Preflight = BLOCKED
+VP-A/B/C = NOT_AUTHORIZED
+VP-D/E = BLOCKED
+Test3 = BLOCKED
+execution_authorized = false
+```
