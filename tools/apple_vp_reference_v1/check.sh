@@ -42,4 +42,17 @@ if .build/debug/apple-vp-reference source-probe --enable-audio --arm-diagnostics
 fi
 test ! -e "$vp_probe_guard_dir"
 rg -q 'stage=COMMAND code=INVALID_ARGUMENTS' .build/check-probe-guard.log
+vp_echo_guard_dir="${TMPDIR%/}/vp-a-missing-consent-$$"
+if .build/debug/apple-vp-reference vp-a --enable-audio --arm-diagnostics \
+  --mode VP_ON --duration 16 --study-id nondevice --output-dir "$vp_echo_guard_dir" \
+  --target-registration "${TMPDIR%/}/vp-a-never-read-registration.json" \
+  --material "${TMPDIR%/}/vp-a-never-read-material.wav" \
+  --material-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --material-pcm-sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  > .build/check-echo-guard.log 2>&1; then
+  print -u2 'FAIL: unapproved vp-a was accepted'
+  exit 1
+fi
+test ! -e "$vp_echo_guard_dir"
+rg -q 'stage=COMMAND code=INVALID_ARGUMENTS' .build/check-echo-guard.log
 print 'PASS: build, release, fixtures, formatting, SwiftLint and non-device CLI guards'

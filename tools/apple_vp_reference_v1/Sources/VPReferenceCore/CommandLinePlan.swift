@@ -8,6 +8,7 @@ public enum ReferenceCommand {
     case record(RunConfiguration)
     case inspectRoute(RunConfiguration)
     case sourceProbe(SourceProbeRequest)
+    case vpa(VPARequest)
 }
 
 public enum CommandLinePlan {
@@ -19,10 +20,10 @@ public enum CommandLinePlan {
         if command == "verify", arguments.count == 2 {
             return .verify(URL(fileURLWithPath: arguments[1]))
         }
-        guard command == "record" || command == "inspect-route" || command == "source-probe" else {
+        guard ["record", "inspect-route", "source-probe", "vp-a"].contains(command) else {
             throw ReferenceFailure.blocked("Unknown command; default command only displays help")
         }
-        let options = try parseOptions(Array(arguments.dropFirst()), sourceProbe: command == "source-probe")
+        let options = try parseOptions(Array(arguments.dropFirst()), command: command)
         return try audioCommand(command, options: options)
     }
 
@@ -41,6 +42,17 @@ public enum CommandLinePlan {
             materialURL: options["--material"].map { URL(fileURLWithPath: $0) }, studyID: study
         )
         try configuration.validateForAudio()
+        if command == "vp-a" {
+            guard let registration = options["--target-registration"], let materialSHA = options["--material-sha256"],
+                let nativeSHA = options["--material-pcm-sha256"]
+            else { throw EngineeringFailure(stage: .command, code: .invalidArguments) }
+            let request = VPARequest(
+                configuration: configuration, experimentAuthorized: options["--authorize-vp-a"] != nil,
+                targetRegistrationURL: URL(fileURLWithPath: registration), materialSHA256: materialSHA,
+                nativePCMSHA256: nativeSHA)
+            try request.validate()
+            return .vpa(request)
+        }
         if command == "source-probe" {
             guard let registration = options["--probe-registration"] else {
                 throw EngineeringFailure(stage: .command, code: .invalidArguments)
@@ -60,12 +72,16 @@ public enum CommandLinePlan {
         return .record(configuration)
     }
 
-    private static func parseOptions(_ arguments: [String], sourceProbe: Bool) throws -> [String: String] {
+    private static func parseOptions(_ arguments: [String], command: String) throws -> [String: String] {
         var flags: Set<String> = ["--enable-audio", "--arm-diagnostics"]
         var values: Set<String> = ["--mode", "--duration", "--output-dir", "--study-id", "--material"]
-        if sourceProbe {
+        if command == "source-probe" {
             flags.insert("--authorize-source-probe")
             values.insert("--probe-registration")
+        }
+        if command == "vp-a" {
+            flags.insert("--authorize-vp-a")
+            values.formUnion(["--target-registration", "--material-sha256", "--material-pcm-sha256"])
         }
         var options: [String: String] = [:]
         var index = 0

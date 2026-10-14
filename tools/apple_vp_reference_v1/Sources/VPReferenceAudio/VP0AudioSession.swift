@@ -9,6 +9,15 @@ public final class VP0AudioSession {
     public init() {}
 
     public func run(configuration: RunConfiguration) throws -> AudioRunOutcome {
+        try run(configuration: configuration, vpa: nil)
+    }
+
+    func runVPA(request: VPARequest) throws -> AudioRunOutcome {
+        try request.validate()
+        return try run(configuration: request.configuration, vpa: request)
+    }
+
+    private func run(configuration: RunConfiguration, vpa: VPARequest?) throws -> AudioRunOutcome {
         try EngineeringFailure.check(stage: .command, code: .invalidArguments) {
             try configuration.validateForAudio()
         }
@@ -18,6 +27,7 @@ public final class VP0AudioSession {
         let material = try EngineeringFailure.check(stage: .sourceMaterial, code: .materialLoadFailed) {
             try configuration.materialURL.map(PCMSourceMaterial.load)
         }
+        let admission = try vpa.map { try VPAAdmission.prepare(request: $0, material: material) }
         let driver = AppleEngineDriver(material: material?.buffer)
         let configured = try ConfigurationPlan.configure(mode: configuration.mode, driver: driver)
         let route = try readRoute(driver: driver)
@@ -26,18 +36,30 @@ public final class VP0AudioSession {
                 configuration: configuration, configured: configured, route: route, driver: driver, material: material
             )
         }
+        if let admission {
+            manifest.prepareVPA(registrationSHA256: admission.registrationSHA256)
+        }
         let recorder = try EngineeringFailure.check(stage: .recorder, code: .recorderCreateFailed) {
-            try RecorderOwner(configuration: configuration)
+            try RecorderOwner(configuration: configuration, maximumSeconds: vpa == nil ? 60 : VPARequest.maximumSeconds)
         }
         do {
             try EngineeringFailure.check(stage: .evidenceWrite, code: .preparedWriteFailed) {
                 try manifest.writePrepared(directory: configuration.outputDirectory)
             }
-            guard route.hasVerifiedBinding else {
-                throw EngineeringFailure(stage: .deviceBinding, code: .deviceBindingMismatch)
+            if let admission {
+                try admission.validateRoute(route)
+            } else {
+                guard route.hasVerifiedBinding else {
+                    throw EngineeringFailure(stage: .deviceBinding, code: .deviceBindingMismatch)
+                }
             }
-            try capture(configuration: configuration, driver: driver, recorder: recorder, manifest: &manifest)
+            try capture(
+                configuration: configuration, driver: driver, recorder: recorder, admission: admission,
+                manifest: &manifest)
             try observeAfterStop(driver: driver, manifest: &manifest)
+            if let admission {
+                try validateVPA(driver: driver, manifest: &manifest, admission: admission, stopped: true)
+            }
         } catch {
             manifest.diagnostics.record(EngineeringFailure.capture(error, stage: .recorder, code: .recorderInvalid))
             vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT))
@@ -47,11 +69,17 @@ public final class VP0AudioSession {
 
     private func capture(
         configuration: RunConfiguration, driver: AppleEngineDriver, recorder: RecorderOwner,
-        manifest: inout AudioRunManifest
+        admission: VPAAdmission?, manifest: inout AudioRunManifest
     ) throws {
         installTaps(driver: driver, recorder: recorder)
         let observer = ConfigurationChangeObserver(observedObject: driver.engine, recorder: recorder)
         let startTick = vp_recorder_now_tick()
+        if let admission {
+            try captureVPA(
+                environment: (driver, recorder), observer: observer, startTick: startTick, admission: admission,
+                manifest: &manifest)
+            return
+        }
         try PlaybackLifecycle.run(
             observer: observer,
             startAndValidate: {
@@ -65,6 +93,58 @@ public final class VP0AudioSession {
             play: { driver.player.play() },
             score: { wait(configuration: configuration, recorder: recorder, startTick: startTick) },
             stop: { stop(driver: driver) }
+        )
+    }
+
+    private func captureVPA(
+        environment: (driver: AppleEngineDriver, recorder: RecorderOwner), observer: ConfigurationChangeObserver,
+        startTick: UInt64, admission: VPAAdmission, manifest: inout AudioRunManifest
+    ) throws {
+        let (driver, recorder) = environment
+        manifest.vpaExperiment?.armTick = startTick
+        var stopTick: UInt64?
+        defer { manifest.vpaExperiment?.stopRequestTick = stopTick }
+        try VPAWindow.capture(
+            observer: observer,
+            beforePlayback: {
+                guard vp_recorder_arm(recorder.handle, startTick) else {
+                    throw EngineeringFailure(stage: .recorder, code: .recorderArmFailed)
+                }
+                try startAndWait(driver: driver)
+                try observeRunning(driver: driver, manifest: &manifest, admission: admission)
+                manifest.vpaExperiment?.quietStartTick = vp_recorder_now_tick()
+                try waitVPA(
+                    seconds: VPARequest.quietSeconds, environment: environment, timing: (observer, startTick),
+                    admission: admission, manifest: &manifest)
+            },
+            play: {
+                let snapshot = vp_recorder_snapshot(recorder.handle)
+                guard snapshot.invalid_reasons == 0, snapshot.input_written_frames > 0 else {
+                    throw EngineeringFailure(stage: .recorder, code: .recorderInvalid)
+                }
+                manifest.vpaExperiment?.playRequestTick = vp_recorder_now_tick()
+                driver.player.play()
+                let playing = driver.player.isPlaying
+                manifest.vpaExperiment?.playerPlayingAfterRequest = playing
+                try VPAAdmission.requirePlaybackStarted(playing)
+            },
+            score: {
+                try waitVPA(
+                    seconds: VPARequest.materialSeconds, environment: environment, timing: (observer, startTick),
+                    admission: admission, manifest: &manifest)
+                manifest.vpaExperiment?.plannedTailStartTick = vp_recorder_now_tick()
+                try waitVPA(
+                    seconds: VPARequest.tailSeconds, environment: environment, timing: (observer, startTick),
+                    admission: admission, manifest: &manifest)
+                manifest.vpaExperiment?.windowsCompleted = true
+            },
+            cleanup: (
+                invalidate: { vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT)) },
+                stop: {
+                    stopTick = vp_recorder_now_tick()
+                    self.stop(driver: driver)
+                }
+            )
         )
     }
 
@@ -126,12 +206,21 @@ public final class VP0AudioSession {
         }
     }
 
-    private func observeRunning(driver: AppleEngineDriver, manifest: inout AudioRunManifest) throws {
+    private func observeRunning(
+        driver: AppleEngineDriver, manifest: inout AudioRunManifest, admission: VPAAdmission? = nil
+    ) throws {
         let route = try readRoute(driver: driver)
         manifest.runningRoute = route
-        guard route.hasVerifiedBinding, route.defaultInput == manifest.routeBefore.defaultInput,
-            route.defaultOutput == manifest.routeBefore.defaultOutput
-        else { throw EngineeringFailure(stage: .deviceBinding, code: .routeChanged) }
+        if let admission {
+            try admission.validateRoute(route)
+            guard route == manifest.routeBefore else {
+                throw EngineeringFailure(stage: .deviceBinding, code: .routeChanged)
+            }
+        } else {
+            guard route.hasVerifiedBinding, route.defaultInput == manifest.routeBefore.defaultInput,
+                route.defaultOutput == manifest.routeBefore.defaultOutput
+            else { throw EngineeringFailure(stage: .deviceBinding, code: .routeChanged) }
+        }
         let state = try EngineeringFailure.check(stage: .vpState, code: .stateReadFailed) {
             try driver.readVoiceProcessingState()
         }
@@ -160,6 +249,9 @@ public final class VP0AudioSession {
         if !outcome.isCompleteForReference, manifest.diagnostics.primary == nil {
             manifest.diagnostics.record(EngineeringDiagnostic(stage: .recorder, code: .recorderInvalid))
         }
+        if let experiment = manifest.vpaExperiment, !experiment.windowsCompleted, manifest.diagnostics.primary == nil {
+            manifest.diagnostics.record(EngineeringDiagnostic(stage: .recorder, code: .experimentWindowInvalid))
+        }
         manifest.outcome = outcome
         manifest.terminalStatus = manifest.diagnostics.primary == nil ? outcome.status : "INVALID"
         do {
@@ -170,4 +262,68 @@ public final class VP0AudioSession {
         if manifest.diagnostics.primary != nil { throw EngineeringFailure(diagnostics: manifest.diagnostics) }
         return outcome
     }
+}
+
+extension VP0AudioSession {
+    private func waitVPA(
+        seconds: Double, environment: (driver: AppleEngineDriver, recorder: RecorderOwner),
+        timing: (observer: ConfigurationChangeObserver, startTick: UInt64),
+        admission: VPAAdmission, manifest: inout AudioRunManifest
+    ) throws {
+        let (driver, recorder) = environment
+        let (observer, startTick) = timing
+        try VPAWindow.wait(
+            seconds: seconds,
+            elapsedSeconds: {
+                let now = vp_recorder_now_tick()
+                let ticks = vp_recorder_ticks_for_seconds(1)
+                return now >= startTick && ticks > 0 ? Double(now - startTick) / Double(ticks) : .nan
+            },
+            check: {
+                try observer.check()
+                guard vp_recorder_snapshot(recorder.handle).invalid_reasons == 0 else {
+                    throw EngineeringFailure(stage: .recorder, code: .recorderInvalid)
+                }
+            },
+            observe: {
+                let tick = vp_recorder_now_tick()
+                defer {
+                    manifest.vpaExperiment?.observationCount += 1
+                    let maximum = max(
+                        manifest.vpaExperiment?.maximumObservationTicks ?? 0, vp_recorder_now_tick() - tick)
+                    manifest.vpaExperiment?.maximumObservationTicks = maximum
+                }
+                try observeRunning(driver: driver, manifest: &manifest, admission: admission)
+                try validateVPA(driver: driver, manifest: &manifest, admission: admission, stopped: false)
+            }, sleep: { Thread.sleep(forTimeInterval: $0) })
+    }
+
+    private func validateVPA(
+        driver: AppleEngineDriver, manifest: inout AudioRunManifest, admission: VPAAdmission, stopped: Bool
+    ) throws {
+        let isRunning = driver.isRunning
+        if stopped {
+            manifest.vpaExperiment?.postStopEngineObserved = isRunning
+        } else {
+            manifest.vpaExperiment?.runningEngineObserved = isRunning
+        }
+        guard isRunning != stopped else {
+            throw EngineeringFailure(
+                stage: stopped ? .engineStop : .engineStart, code: .experimentEngineStateMismatch)
+        }
+        if stopped, let route = manifest.postStopRoute { try admission.validateRoute(route) }
+        if stopped {
+            try VPAAdmission.validateStopped(manifest)
+        }
+        let playerVolume = driver.player.volume
+        let mixerVolume = driver.engine.mainMixerNode.outputVolume
+        if let evidence = manifest.vpaExperiment, let previous = evidence.playerVolume {
+            guard previous == playerVolume, evidence.mixerVolume == mixerVolume else {
+                throw EngineeringFailure(stage: .vpState, code: .vpStateChanged)
+            }
+        }
+        manifest.vpaExperiment?.playerVolume = playerVolume
+        manifest.vpaExperiment?.mixerVolume = mixerVolume
+    }
+
 }

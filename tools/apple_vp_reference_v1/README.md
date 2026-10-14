@@ -12,6 +12,48 @@ It never invokes the live recording branch. SwiftLint 0.65.1 must be available a
 `.build/support/swiftlint/swiftlint`, or supplied with `VP_SWIFTLINT_BIN`.
 No lint rules are disabled or baselined. No third-party runtime package is used.
 
+## VP-A pure echo preparation — device execution is not authorized
+
+`vp-a` is a separate single-mode experiment entry. Its proposed protocol is
+`VPA_PURE_ECHO_V1`: 2 seconds of running silence, one fixed 8-second Float32
+linear PCM buffer, and a 3-second planned tail, within a 16-second recorder
+admission limit including startup. These parameters require controller approval.
+No automatic ON/OFF switching, retry, near-end injection, or Runtime action exists.
+
+Future use requires `--authorize-vp-a`, both live flags, a single explicit mode,
+`--duration 16`, study alias, new private output directory, `--material`,
+`--material-sha256`, `--material-pcm-sha256`, and `--target-registration`.
+The two expected material digests must be approved offline before either arm;
+the existing material loader checks file and native buffer identities at runtime.
+The target registration is the approved private P3/P4 JSON, used only as a device
+allowlist. Its `QUIET_TWO_PHRASES_V1` stimulus is not reused for playback, and no
+device is automatically registered. The new private manifest records a separate
+VP-A protocol, control ticks, volume snapshots and bounded observation statistics.
+
+Consent flags record operator intent; they cannot replace separate controller
+approval and the user's explicit site recording/playback consent. This preparation
+ran only builds, static checks and synthetic tests. `VP-A_DEVICE_NOT_RUN`.
+
+Ordinary `record` retains its structural binding guard. `source-probe` retains
+its 8-second no-material/no-play contract. Only the explicit VP-A diagnostic
+path can use the already reviewed VP_ON Built-in-node presentation with stable
+registered USB/Built-in defaults; it still emits `SOURCE_UNVERIFIED` and never
+grants source qualification. VP_OFF requires the ordinary verified binding.
+
+Configuration observation is installed before start. Control checks run at up
+to 20 Hz; full route/state/format observations run about once per second and at
+window boundaries. A returned observation exceeding the proposed 250 ms control
+budget invalidates the run. This does not preempt a blocked Apple getter or prove
+that engine teardown always finishes within 16 seconds. Device timing and load
+remain unmeasured. Known failures stop playback/capture and seal invalid evidence;
+the recorder, tap and Apple engine driver are unchanged.
+
+Playback ticks and the planned tail are control evidence, not measured acoustic
+arrival or completion. `isPlaying`, positive frame counts and a sealed container
+do not prove speaker audibility, full window coverage or echo suppression. Review
+every native Input/Render channel offline and preserve unknown channel roles.
+The full proposed physical protocol and remaining limits are in the VP-A report.
+
 ## Future device recording — not authorized by this implementation delivery
 
 After separate controller approval, microphone authorization and a fixed physical

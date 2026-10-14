@@ -1,0 +1,150 @@
+# Apple Voice Progress v1 · VP-A 纯回声实验准备
+
+日期：2026-10-14。阶段：Stage 7.5 / VP-A_PREPARATION。
+
+**本报告仅交付候选协议、独立工具准备与非设备验证。VP-A_DEVICE_NOT_RUN；execution_authorized=false。** 下述新实验参数全部为 **PROPOSED**，须经主控独立源码审核、协议批准及另一次明确现场授权才能执行。构建、Mock、合成 PCM 或 Git 交付均不授予设备或 Test3 权限。
+
+## 1. 基线及继承结论
+
+工作分支 `Apple-Voice-Progress-v1`，审核基线 `2f1eb483b6975a6cd22fbf662571cbb939b40c64`。准备开始时 HEAD、upstream、实时远端分支 SHA 一致，工作区干净。所有新增写入限定独立工具及本07报告；未操作原ACE3工作区，也未读取任何私人登记、历史录音、设备日志或 SSD/quarantine。
+
+P3 = APPROVED；P4 = APPROVED_SOURCE_SUPPORTED。P4已支持 VP_ON 采集到可听辨现场语句，不重复该节点。USB唯一物理来源继续 **UNVERIFIED**，三个相同声道的内部角色仍未知；P4的6个满幅样本也不被改写为音质无损。Apple AEC = NOT_MEASURED；Test3 = BLOCKED。
+
+## 2. 固定设备、登记与授权
+
+目标仍为现有 Mac mini M4、已登记 USB 麦克风、Mac mini 内建扬声器。本轮未查询其当前在线状态、默认路由、权限、音量或 Mic Mode；这些均须在未来获准现场窗口检查。
+
+复用 P3/P4 已批准的私有 registration.json，当前用户所有、父目录0700、文件0600、Git之外、既有非symlink/有界读取规则。**只把两个既有匿名设备目标作为 allowlist，不修改登记、不自动登记当前默认设备。** 该文件的 `QUIET_TWO_PHRASES_V1` 是旧探针协议，不能冒充外放协议；VP-A manifest另记 `VPA_PURE_ECHO_V1`、素材身份和窗口。
+
+未来执行须同时具备主控协议/源码批准、用户知情同意采集及固定居民外放、已有麦克风 AUTHORIZED、现场准备确认和专用命令 flags。`--authorize-vp-a` 只是显式操作者意图，不能替代现场授权；工具不请求权限、重置TCC、修改路由、系统音量、设备增益、采样率或 Mic Mode。
+
+普通 `record` 仍必须通过原结构绑定守卫。VP-A_OFF同样要求该守卫；VP-A_ON仅在独立研究准入下复用P3已审的设备呈现政策：登记USB/Built-in默认设备稳定，普通绑定成立，或两个node均呈现该Built-in输出且没有未知aggregate。第三设备、虚拟/不支持类型、身份/名义格式/route变化拒绝。此准入只允许诊断，manifest恒为 `SOURCE_UNVERIFIED`、`sourceQualificationGranted=false`。
+
+## 3. 对照与成本提案
+
+| 项目 | PROPOSED 参数/条件 | 解释与限制 |
+| --- | --- | --- |
+| 首轮试次 | VP_OFF一次，再VP_ON一次；分别人工发起 | 顺序独占设备，每次fresh Engine/私有证据目录；前臂异常不继续后臂；不自动反序或补跑 |
+| 每臂运行静默 | Engine启动并通过实际状态检查后2秒 | 不含启动；无人讲话，其他播放器关闭 |
+| 居民素材 | 完整8秒 Float32 linear PCM，仅调度一次 | 建议16kHz、mono；这是素材选择，不强制硬件/VP客户端格式，也不是Apple API必要条件 |
+| 播放观察 | 前2秒为早期，后6秒为后期 | 后期仅为自适应稳定候选，不能先宣称已经稳定 |
+| 计划尾窗 | 播放请求后的8秒窗口结束后再3秒 | 不是已测播放完成时刻，也不证明房间全部尾响消失 |
+| 诊断admission | 每臂最长16秒，自arm起计，包含启动 | 正常窗口约13秒加启动；余量不足即INVALID，不缩窗凑结果 |
+| 控制检查 | 最长50ms sleep；全route/state/format约每1秒及窗口边界读取 | 控制路径执行；实际频率/开销须设备核验 |
+| 返回后的单次观察预算 | 250ms | 工程预算提案，防止控制观察占用窗口；不是声学/产品阈值，不能抢占阻塞getter |
+| 原有硬预算 | ≤60秒、Input+Render PCM≤64MiB、诊断常驻≤8MiB | 不扩大；VP-A另收紧到16秒。素材独立≤8MiB原上限保留；框架/总进程RSS未测 |
+
+单素材、两臂已足够提出一次可判别的有限问题。没有近端外部播放器、HIL真人代理或Provider费用；本节点不准备B/C、不用ASR、HAL VAD、新分类器或FFT在线分析。顺序、自适应历史与环境漂移限制两次观察的外推；追加反序/重复必须有新的区分假设并单独批准。
+
+## 4. 素材与真实空气路径
+
+在后续独立批准的离线素材准备中选定一份无近端用户内容、可人工听辨、含连续居民语音的固定素材，登记完整8秒frame range、native format、文件SHA-256及解码后native-buffer SHA-256。建议使用有使用权的固定居民语音、无非有限样本和意外提示音；格式转换若需要，先离线完成并重新登记，不能在两臂间换版本、归一化或调增益。
+
+运行时原 `PCMSourceMaterial.load` 有界加载完整素材，VP-A验证Float32、文件及native PCM双身份、frame count/sampleRate对应恰好8秒和sourceStartFrame=0。不匹配在Engine创建前拒绝。双身份避免用文件身份冒充实际调度buffer身份。当前尚未选择/读取真实素材、生成真实素材登记或指定公开摘要；这些是开测前BLOCKED项。合成测试的内容不能替代实验素材。
+
+固定路径为：PCM → AVAudioPlayerNode → 同一AVAudioEngine mainMixer → outputNode → Mac内建扬声器 → **真实空气/房间反射** → 目标麦克风 → inputNode原生Tap。麦克风没有回接扬声器；不向输入注入软件PCM，不叠加AEC3。外放前由用户记录相对几何、麦克风朝向、距离、桌面摆放、门窗/噪声和系统音量设置，在两臂之间保持；不得为了有利结果改变音量、Mic Mode、增益或位置。
+
+未来现场须人工确认确实听到固定居民素材、没有自己/其他人讲话、没有其他声源和占用麦克风程序。相同PCM/音量设置不保证两臂相同实际声压；若没有独立声压测量，明确记录SPL、硬件增益及真实空气到达时间未测，不虚构绝对声学时延。
+
+## 5. 工具修改与实际控制顺序
+
+| 文件/函数（均在独立工具内） | 用途 |
+| --- | --- |
+| `VPARequest.validate`、`CommandLinePlan.audioCommand/parseOptions` | 独立 `vp-a`；专用授权、两live flags、单模式、恰好16秒、必需素材双SHA/目标登记；缺项先拒绝 |
+| `VPAAdmission.prepare/validateMaterial/validateRoute` | 既有登记仅作设备目标；配置前默认快照与配置后完整route比较；ON诊断政策与OFF结构守卫分开 |
+| `VPAAdmission.requirePlaybackStarted/validateStopped` | 已观察播放器false不得评分；停止后状态、输入/输出/mixer及硬件侧格式再次核验 |
+| `VP0AudioSession.runVPA/captureVPA/waitVPA/validateVPA` | 复用原session的图、Tap、启动、stop与一次seal；普通 `run(configuration:)` 继续nil VP-A路径 |
+| `VPAWindow.capture/wait` | 实际调用原PlaybackLifecycle，监听start前注册；有限静默/播放/尾窗、INVALID和时钟/观察预算拒绝 |
+| `VPAEvidence`、`AudioRunManifest.vpaExperiment` | 独立可选研究字段，固定时点/标量计数；普通manifest不输出该字段，native容器/时间schema不变 |
+| `ReferenceTool`、`EngineeringDiagnostic` | 显式命令分派、脱敏结果和稳定失败代码；默认只help |
+| 三个 `VPA*Tests.swift`、`check.sh`、`check_sources.py`、README | 合成/拒绝/生命周期验证及使用边界 |
+
+未来每次顺序：请求验证 → 既有权限检查 → 有界素材加载/身份验证 → 读取既有登记与目标默认快照 → 新建停止状态Engine → 原ON/OFF配置与接图 → 重读实际状态/格式/route → 私有prepared → 安装原Tap → 注册R2 observer → arm → 原单次schedule/prepare/start → 运行快照 → 2秒静默/检查 → 播放前observer和recorder状态复核、确认已有Input → 一次play请求/检查isPlaying → 8秒计划播放窗 → 3秒计划尾窗 → 移除observer/stop/removeTap → 停止后核验 → 一次seal/final manifest。
+
+已知quiet/play/score失败先关闭诊断admission，再统一停止；原始stage/code保留，seal/write异常为有界secondary，不重启、重接图或清掉INVALID。`windowsCompleted`只表明控制窗口完成，不能作为声学或完整PCM覆盖PASS。`isPlaying`也只是控制状态，不能证明声压/内容已播放。
+
+**未改** AppleEngineDriver、ConfigurationPlan/RunningConfigurationPlan、NativePCMTap、VPRecorder C/header、RecorderOwner、R2 observer/PlaybackLifecycle、source-probe及其请求/时间窗/证据政策。未新增依赖、实时回调或完成回调。普通record原guard/60秒预算/行为由原测试及diff核对保持。
+
+## 6. Apple契约依据及异步限界
+
+本轮使用本机MacOSX SDK **27.0**、Apple Swift **6.4**构建；与历史报告中的SDK版本分开记录，未来两臂须固定同一新Release可执行SHA/签名/启动宿主，不沿用旧二进制身份冒充当前构建。
+
+本机 `AVAudioIONode.h` 150–163及 [AVAudioIONode](https://developer.apple.com/documentation/avfaudio/avaudioionode) 支持停止状态配置VP、双端关系及VP客户端格式约束；本轮复用原启用后/接图后重读流程，不改硬件格式或以VP bypass冒充OFF。
+
+`AVAudioPlayerNode.h` 90–129及 [scheduleBuffer](https://developer.apple.com/documentation/avfaudio/avaudioplayernode/schedulebuffer(_:at:options:completionhandler:)) 区分player/output采样率与player时间线、nil调度时刻；原Driver以实际material format连接player，由mixer完成合法转换。素材匹配buffer/node格式不等于真实输出已正确，本轮未启动验证。现有buffer完成回调本身也可能早于实际播放完成，因此没有新增该回调来冒充物理终点。
+
+`AVAudioEngine.h` 1036–1060及 [configuration change notification](https://developer.apple.com/documentation/avfaudio/avaudioengineconfigurationchangenotification) 支持监听Engine配置变化，并警示通知内部队列不可同步销毁Engine。现有通知只设置C INVALID，控制路径收口；不在通知中重配置/销毁，也不过滤正常启动通知取得PASS。
+
+**DEVICE_UNVERIFIED**：observer-check到play的并发TOCTOU；多属性route快照非原子；removeObserver对在途通知的屏障、stop/removeTap与晚到callback的实际先后；Apple getter可能阻塞；图格式转换、实际外放及VP参考效果。16秒是C诊断admission上限，不能保证阻塞API下Engine准时退出。强持有RecorderOwner和seal后拒收的合成证据防止已审所有权路径UAF，不证明全部设备并发行为；不因此重写记录器。
+
+## 7. PCM、时间、完整性与隐私
+
+保留全部原生Input/Render声道和ASBD、per-buffer布局、frame counts、sampleTime/hostTime有效位及原值、callback进入Mach tick、连续性、丢失/overflow/contention/pending/discarded、写盘终态、seal与完整性。增加私有arm/quiet/play-request/计划tail/stop-request tick、观察次数/最长观察tick和player/mixer音量；无无界数组/Trace，所有编码/Hash/IO均在非实时路径。
+
+Input和Render各自计算实际样本覆盖、缺口及每个必需窗口可判读性；startup不算安静覆盖，首条时间未知与后续断样分开。正frame count和容器封存只证明最低stream存在/结构，不能推定16秒、13秒或8秒播放均完整覆盖。首次/末次callback进入时刻不能冒充buffer声学内容起止。Mach continuous与AVAudioTime.hostTime的域分开保留；未建立合法转换及声学标定时不报告绝对到达时延。
+
+Render是数字mixer输出，不是扬声器声压。素材SHA/frame range、控制请求、Render样本身份分列；源frame到Render的精确映射仍UNVERIFIED。VP_OFF不是ADC原始真值。全部私人PCM、登记及设备匿名身份/摘要仅留Git之外私有目录，公开只报告脱敏配置、计数与结论；不上传音频，不读旧录音、不把私有路径写报告。
+
+## 8. 回声残留判读与局限
+
+后续离线逐声道检查有限样本、峰值/触顶、静默噪声、居民内容可听辨性、早期/后期残留变化、尾窗及通道相似性。P4相同三声道不视为三路独立信息，不能加总成三倍能量，不猜mic/reference角色，也不只选择最大声道。使用原native保存；任何后续转换/公共频带分析另存导出方法、版本和原始身份，不覆盖证据。
+
+两臂需固定素材/native身份、位置、音量、现场声源约束及可解释的数字Render；不同native rate/channels不直接比raw RMS或跨轮PCM相减。允许采用事前登记窗口的描述性RMS/峰值、语音残留人工听辨及时间结构，不设没有依据的ERLE/SNR/准确率阈值。相关性可支持内容对应，不能证明真人/唯一USB来源。
+
+VP_ON/OFF同时影响AEC、AGC、降噪及可能的播放处理。相同系统设置也可能不同声压；缺少独立声压与同实例输入来源证明时，只能称**固定条件下Apple VP整体差异**，不能称净AEC算法增益。OFF应有可判读居民回声；ON全静音不自动是成功，还可能输入/输出路径无效。纯回声不得产生正式声源资格、用户轮次、中断或追问；本工具的物理隔离保持无正式动作，**不等于线上零误授予已通过声学验收**。
+
+## 9. GO / BLOCKED / NO-GO
+
+| 判断层 | 条件与处理 |
+| --- | --- |
+| 准备GO（待主控） | 独立入口/边界明确，非设备回归通过；只批准审核材料，不开始设备 |
+| 开测BLOCKED | 协议/新工具/现场授权未批准；素材及双身份未批准；既有登记无法可信匹配；权限/现场/私有空间不满足。停止，禁止自登记或续跑 |
+| 工程INVALID/BLOCKED | 任何已知route/config/state/format变化、播放器明确不运行、窗口/控制预算超限、断样/丢失/overflow/写盘或seal失败、覆盖不足、撤回授权。立即结束当前窗口，保留原因，不自动第二臂、重试或改参 |
+| 对照可判读GO | 两臂独立工程有效、完整必需窗口、固定素材确实外放、OFF有可判读回声、ON差异与混杂因素如实呈现；只提交纯回声研究结论供主控判断，不自动进入B/C |
+| 声学NO-GO/UNVERIFIED | OFF缺有效回声负控；ON沉默但无法排除输入异常；声压/路由/格式混杂不可解释；两臂预算用尽仍无新判别力。停止并提出最小补证假设，不能宣布Apple AEC必败或降低红线 |
+
+本节点不作正式AEC PASS/FAIL裁定，不创建近端检测/语义/Runtime授权。若后续需要源资格或其他观察，另立局部研究方案；不得改Test2或全双工主链完成Test3。
+
+## 10. 非设备检查及三维自审
+
+原160项测试源码全部保留，新增34项（Core20、Audio14），目标总计194。最终结果见下表，任何设备项都未运行。
+
+| 检查 | 结果 |
+| --- | --- |
+| Debug / Release，warnings-as-errors | PASS |
+| 原160 + 新34 XCTest | PASS，194/194，零失败；Core122、Audio72 |
+| SwiftLint严格、无豁免 | PASS，0 error / 0 warning |
+| Swift Format strict / C11 -Wall -Wextra -Werror | PASS |
+| 默认help、缺授权CLI分支、SDK-only静态边界 | PASS；拒绝分支在权限/Engine/素材读取之前退出 |
+| 麦克风/扬声器/Engine启动/系统权限/API设备查询 | NOT_RUN |
+
+新增测试执行实际VPAWindow控制函数，覆盖quiet期间已观察异常不play、启动/play/score失败及单次清理、正常顺序、有限轮询、非有限/倒退/冻结时钟、观察超时、16秒C admission边界；参数/登记位置/素材双身份/8秒range/Float32拒绝；OFF守卫与ON未知来源隔离；停止后VP、input/output/hardware格式异常；全native三声道、seal后拒收、普通manifest不出现实验schema、合成AVAudioFile加载及双Hash。没有实例化音频Engine的测试；唯一session入口测试先因缺授权拒绝。
+
+| 审查 | 裁定及证据边界 |
+| --- | --- |
+| TECHNICAL_REVIEW | LIMITED_PASS_RECOMMENDED：公开SDK与原配置路径一致；真正设备接图、播放参考效果、唯一USB输入及声学指标未测 |
+| ENGINEERING_REVIEW | NON_DEVICE_PASS_RECOMMENDED：194项、构建及静态检查通过；保留真实异步/性能未知项，设备工程GO未授予 |
+| EVIDENCE_REVIEW | PREPARATION_ONLY：固定合同/双身份/native和控制时点设计，不以Mock宣称设备或AEC PASS |
+
+独立只读源码复审提出的停止后状态未核验和player false仍评分两项缺口已修复，新增故障断言；没有以测试数量替代技术审查。初期编译/样式问题修正后才计最终回归结果，不引用旧日志绿灯。
+
+## 11. Stage7 Forbidden Checklist与收口
+
+**PASS（准备范围）**：只修改独立工具及07；生产App/Test2/Qwen原生全双工/Provider/Adapter/音频协议/Runtime/generation、DR/Studio/Session/Memory、ACE3、正式Test3合同及02/03/05/06报告均未改。没有模型调用、system路由setter、HAL VAD、软件近端注入、source资格true、cancel/clear、平台扩展或新依赖；未访问原ACE3私人资产。合成文件仅临时测试夹具，未进入Git。
+
+非设备检查全部通过后，只提交本节点工具/测试/README/check脚本与07，并核对HEAD/upstream/实时远端一致；最终完整SHA在交付回复提供。下一步仅主控审核候选协议、准入和源码，再独立批准素材/现场条件。未取得批准前不执行VP-A，不自动进入后续节点。
+
+```text
+VP-A_PREPARATION = REVIEW_PENDING
+VP-A_DEVICE_NOT_RUN
+P3 = APPROVED
+P4 = APPROVED_SOURCE_SUPPORTED
+USB unique physical source = UNVERIFIED
+Apple AEC = NOT_MEASURED
+VP-A/B/C = NOT_AUTHORIZED
+VP-D/E = BLOCKED
+ACE3 Step 2A/2B = FROZEN
+ACE3 Step 2C = PAUSED
+Test3 = BLOCKED
+execution_authorized = false
+```

@@ -35,6 +35,7 @@ struct AudioRunManifest: Encodable {
     var terminalStatus: String
     var diagnostics = RunDiagnostics()
     var sourceProbe: SourceProbeEvidence?
+    var vpaExperiment: VPAEvidence?
     let diagnosticsSchemaVersion = 1
 
     static func create(
@@ -69,6 +70,14 @@ struct AudioRunManifest: Encodable {
 
     func writePrepared(directory: URL) throws {
         try write(directory: directory, filename: "prepared.json")
+    }
+
+    mutating func prepareVPA(registrationSHA256: String) {
+        vpaExperiment = VPAEvidence(registrationSHA256: registrationSHA256)
+        diagnosticClockOrigin =
+            "MACH_CONTINUOUS_TIME; VP-A 16s hard admission includes prepare/start; "
+            + "raw AVAudioTime.hostTime retains its separate clock domain"
+        snapshotTiming = "VP-A: latest post-start/window control snapshot; terminal snapshots follow stop"
     }
 
     func writeFinal(directory: URL) throws {
@@ -118,6 +127,7 @@ struct AudioRunManifest: Encodable {
         case sampleMapping, snapshotTiming, diagnosticClockOrigin, outcome, terminalStatus, diagnostics
         case diagnosticsSchemaVersion = "diagnostics_schema_version"
         case sourceProbe = "source_probe"
+        case vpaExperiment = "vpa_experiment"
     }
 }
 

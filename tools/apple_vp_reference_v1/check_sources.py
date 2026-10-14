@@ -19,8 +19,9 @@ tap = (root / "Sources/VPReferenceAudio/NativePCMTap.swift").read_text()
 assert "vp_recorder_submit" in tap and "recorder: RecorderOwner" in tap
 assert not re.search(r"Data\(|Array\(|Task\s*\{|async|\.write\(|JSON|SHA|FFT|\.sync|\.lock\(", tap)
 entry = (root / "Sources/VPReferenceAudio/ReferenceTool.swift").read_text()
-assert entry.count("VP0AudioSession()") == 1
-assert entry.index("case .record") < entry.index("VP0AudioSession()")
+assert entry.count("VP0AudioSession()") == 2
+assert "case .record(let configuration):\n                let outcome = try VP0AudioSession().run" in entry
+assert "case .vpa(let request):" in entry and "session.runVPA(request: request)" in entry
 assert entry.count("case .requestMicrophone") == 1
 assert entry.count("requestExplicitly(") == 1
 request_sources = [
@@ -65,4 +66,14 @@ assert not re.search(r"Data\(|Array\(|Task\s*\{|\.write\(|JSON|SHA|FFT|\.sync|\.
 manifest = (root / "Package.swift").read_text()
 assert "dependencies: [" in manifest and ".package(" not in manifest
 assert not any(name in manifest for name in [".iOS", ".visionOS", ".watchOS", ".tvOS"])
+assert session.index("try request.validate()") < session.index("requireAuthorized")
+assert "if let admission" in session and "VPAWindow.capture" in session
+assert "maximumSeconds: vpa == nil ? 60 : VPARequest.maximumSeconds" in session
+assert session.count("driver.player.play()") == 2
+echo_evidence = (root / "Sources/VPReferenceAudio/VPAEvidence.swift").read_text()
+assert 'sourceStatus = "SOURCE_UNVERIFIED"' in echo_evidence
+assert "sourceQualificationGranted = false" in echo_evidence
+echo_window = (root / "Sources/VPReferenceCore/VPAWindow.swift").read_text()
+assert "PlaybackLifecycle.run" in echo_window and "0..<322" in echo_window
+assert "maximumObservationSeconds" in echo_window
 print("PASS: SDK-only sources, isolated unknown-source probe, fail-closed playback, bounded tap entry")

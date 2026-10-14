@@ -20,6 +20,11 @@ enum ReferenceTool {
                     source-probe --authorize-source-probe --probe-registration <private-json> \
                     --enable-audio --arm-diagnostics --mode VP_ON --duration 8 \
                     --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
+                    vp-a --authorize-vp-a --target-registration <existing-private-json> \
+                    --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON --duration 16 \
+                    --material <fixed-8s-PCM> --material-sha256 <preapproved-file-SHA256> \
+                    --material-pcm-sha256 <preapproved-native-PCM-SHA256> \
+                    --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
                     record --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON \
                     --duration <seconds <= 60> --study-id <non-private-alias> \
                     --output-dir <new-private-directory-outside-Git> [--material <registered-PCM-file>]
@@ -38,24 +43,32 @@ enum ReferenceTool {
                 let outcome = try SourceProbe().run(request: request)
                 print("source_status=SOURCE_UNVERIFIED source_qualification=false evidence=\(outcome.status)")
                 print("input_records=\(outcome.inputWrittenRecords) input_frames=\(outcome.inputWrittenFrames)")
+            case .vpa(let request):
+                let session = VP0AudioSession()
+                let outcome = try session.runVPA(request: request)
+                print("vp_a_source=SOURCE_UNVERIFIED source_qualification=false evidence=\(outcome.status)")
             case .record(let configuration):
                 let outcome = try VP0AudioSession().run(configuration: configuration)
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.sortedKeys]
-                let data = try EngineeringFailure.check(stage: .evidenceWrite, code: .summaryEncodingFailed) {
-                    try encoder.encode(outcome)
-                }
-                guard let summary = String(data: data, encoding: .utf8) else {
-                    throw EngineeringFailure(stage: .evidenceWrite, code: .summaryEncodingFailed)
-                }
-                print(summary)
-                if !outcome.isCompleteForReference { exit(1) }
+                try emitRecordOutcome(outcome)
             }
         } catch {
             let failure = EngineeringFailure.capture(error, stage: .command, code: .invalidArguments)
             emitFailure(failure)
             exit(2)
         }
+    }
+
+    private static func emitRecordOutcome(_ outcome: AudioRunOutcome) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try EngineeringFailure.check(stage: .evidenceWrite, code: .summaryEncodingFailed) {
+            try encoder.encode(outcome)
+        }
+        guard let summary = String(data: data, encoding: .utf8) else {
+            throw EngineeringFailure(stage: .evidenceWrite, code: .summaryEncodingFailed)
+        }
+        print(summary)
+        if !outcome.isCompleteForReference { exit(1) }
     }
 
     private static func emitFailure(_ failure: EngineeringFailure) {
