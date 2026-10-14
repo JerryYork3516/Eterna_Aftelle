@@ -38,6 +38,9 @@ assert lifecycle.index("observer?.register()") < lifecycle.index("try startAndVa
 assert lifecycle.index("observer?.remove()") < lifecycle.index("stop()\n")
 assert lifecycle.index("try observer?.check()", lifecycle.index("try startAndValidate()")) < lifecycle.index("play()\n")
 assert "observer: observer" in session
+inspection = (root / "Sources/VPReferenceAudio/RouteInspection.swift").read_text()
+assert inspection.index("requireAuthorized") < inspection.index("AppleEngineDriver(")
+assert not re.search(r"\.start\(|\.prepare\(|\.play\(|installTaps|NativePCMTap|RecorderOwner|requestAccess", inspection)
 assert "addObserver" not in session
 observer_source = (root / "Sources/VPReferenceAudio/ConfigurationChangeObserver.swift").read_text()
 assert observer_source.count("center.addObserver") == 1

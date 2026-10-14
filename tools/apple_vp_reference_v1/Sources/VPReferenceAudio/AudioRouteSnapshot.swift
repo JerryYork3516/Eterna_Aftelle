@@ -12,6 +12,8 @@ struct AudioRouteSnapshot: Codable, Equatable {
     let microphoneModeSource: String
     let preferredMicrophoneMode: String
     let activeMicrophoneMode: String
+    let inputAggregate: AggregateDeviceSnapshot?
+    let outputAggregate: AggregateDeviceSnapshot?
 
     static func read(engine: AVAudioEngine) throws -> Self {
         let inputID = try AudioDeviceSnapshot.defaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice)
@@ -23,8 +25,10 @@ struct AudioRouteSnapshot: Codable, Equatable {
         else {
             throw EngineeringFailure(stage: .deviceBinding, code: .unsupportedRoute)
         }
-        let inputNode = try AudioDeviceSnapshot.read(identifier: engine.inputNode.auAudioUnit.deviceID)
-        let outputNode = try AudioDeviceSnapshot.read(identifier: engine.outputNode.auAudioUnit.deviceID)
+        let inputNodeID = engine.inputNode.auAudioUnit.deviceID
+        let outputNodeID = engine.outputNode.auAudioUnit.deviceID
+        let inputNode = try AudioDeviceSnapshot.read(identifier: inputNodeID)
+        let outputNode = try AudioDeviceSnapshot.read(identifier: outputNodeID)
         let bindingMatches =
             inputNode.anonymousID == inputDevice.anonymousID
             && outputNode.anonymousID == outputDevice.anonymousID
@@ -34,7 +38,11 @@ struct AudioRouteSnapshot: Codable, Equatable {
             deviceBindingStatus: bindingMatches ? "NODE_IDS_MATCH_DEFAULTS" : "UNAVAILABLE",
             microphoneModeSource: "AVCaptureDevice process property; this engine attribution UNVERIFIED",
             preferredMicrophoneMode: microphoneMode(preferred: true),
-            activeMicrophoneMode: microphoneMode(preferred: false)
+            activeMicrophoneMode: microphoneMode(preferred: false),
+            inputAggregate: inputNode.transport == kAudioDeviceTransportTypeAggregate
+                ? AggregateDeviceSnapshot.capture(inputNodeID) : nil,
+            outputAggregate: outputNode.transport == kAudioDeviceTransportTypeAggregate
+                ? AggregateDeviceSnapshot.capture(outputNodeID) : nil
         )
     }
 

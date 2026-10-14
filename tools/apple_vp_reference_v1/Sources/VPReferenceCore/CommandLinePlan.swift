@@ -4,7 +4,9 @@ public enum ReferenceCommand {
     case help
     case verify(URL)
     case requestMicrophone
+    case permissionStatus
     case record(RunConfiguration)
+    case inspectRoute(RunConfiguration)
 }
 
 public enum CommandLinePlan {
@@ -12,10 +14,11 @@ public enum CommandLinePlan {
         guard let command = arguments.first else { return .help }
         if command == "--help" || command == "help" { return .help }
         if command == "request-microphone", arguments.count == 1 { return .requestMicrophone }
+        if command == "permission-status", arguments.count == 1 { return .permissionStatus }
         if command == "verify", arguments.count == 2 {
             return .verify(URL(fileURLWithPath: arguments[1]))
         }
-        guard command == "record" else {
+        guard command == "record" || command == "inspect-route" else {
             throw ReferenceFailure.blocked("Unknown command; default command only displays help")
         }
         let options = try parseOptions(Array(arguments.dropFirst()))
@@ -33,6 +36,12 @@ public enum CommandLinePlan {
             materialURL: options["--material"].map { URL(fileURLWithPath: $0) }, studyID: study
         )
         try configuration.validateForAudio()
+        if command == "inspect-route" {
+            guard configuration.materialURL == nil else {
+                throw ReferenceFailure.blocked("Inspection forbids material")
+            }
+            return .inspectRoute(configuration)
+        }
         return .record(configuration)
     }
 

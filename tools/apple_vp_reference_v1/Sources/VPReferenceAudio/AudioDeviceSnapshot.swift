@@ -20,7 +20,7 @@ struct AudioDeviceSnapshot: Codable, Equatable {
         return Self(anonymousID: anonymousID, transport: transport, nominalSampleRate: sampleRate)
     }
 
-    private static func scalar<Value>(
+    static func scalar<Value>(
         _ identifier: AudioObjectID, selector: AudioObjectPropertySelector
     ) throws -> Value {
         var address = AudioObjectPropertyAddress(

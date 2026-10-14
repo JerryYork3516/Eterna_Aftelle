@@ -15,6 +15,8 @@ enum ReferenceTool {
                     help
                     verify <private-evidence-directory>
                     request-microphone
+                    permission-status
+                    inspect-route <same explicit flags as record; no material; no engine start>
                     record --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON \
                     --duration <seconds <= 60> --study-id <non-private-alias> \
                     --output-dir <new-private-directory-outside-Git> [--material <registered-PCM-file>]
@@ -25,6 +27,10 @@ enum ReferenceTool {
             case .requestMicrophone:
                 let status = try await MicrophonePermissionPlan().requestExplicitly(using: MicrophonePermissionAccess())
                 print("permission_status=\(status.rawValue); no audio started")
+            case .permissionStatus:
+                print("permission_status=\(MicrophonePermissionAccess.currentStatus().rawValue); no audio started")
+            case .inspectRoute(let configuration):
+                try RouteInspection.run(configuration: configuration)
             case .record(let configuration):
                 let outcome = try VP0AudioSession().run(configuration: configuration)
                 let encoder = JSONEncoder()
@@ -40,12 +46,16 @@ enum ReferenceTool {
             }
         } catch {
             let failure = EngineeringFailure.capture(error, stage: .command, code: .invalidArguments)
-            emit(failure.diagnostic, kind: "PRIMARY")
-            for diagnostic in failure.secondary { emit(diagnostic, kind: "SECONDARY") }
-            if failure.omittedSecondary > 0 {
-                fputs("diagnostic_secondary_omitted=\(failure.omittedSecondary)\n", stderr)
-            }
+            emitFailure(failure)
             exit(2)
+        }
+    }
+
+    private static func emitFailure(_ failure: EngineeringFailure) {
+        emit(failure.diagnostic, kind: "PRIMARY")
+        for diagnostic in failure.secondary { emit(diagnostic, kind: "SECONDARY") }
+        if failure.omittedSecondary > 0 {
+            fputs("diagnostic_secondary_omitted=\(failure.omittedSecondary)\n", stderr)
         }
     }
 
