@@ -8,9 +8,13 @@ enum RouteInspection {
         try MicrophonePermissionPlan.requireAuthorized(status: MicrophonePermissionAccess.currentStatus())
         let driver = AppleEngineDriver(material: nil)
         let configured = try ConfigurationPlan.configure(mode: configuration.mode, driver: driver)
-        let route = try AudioRouteSnapshot.read(engine: driver.engine)
-        let manifest = try AudioRunManifest.create(
-            configuration: configuration, configured: configured, route: route, driver: driver, material: nil)
+        let route = try EngineeringFailure.check(stage: .deviceBinding, code: .deviceReadFailed) {
+            try AudioRouteSnapshot.read(engine: driver.engine)
+        }
+        let manifest = try EngineeringFailure.check(stage: .evidenceWrite, code: .identityFailed) {
+            try AudioRunManifest.create(
+                configuration: configuration, configured: configured, route: route, driver: driver, material: nil)
+        }
         try EngineeringFailure.check(stage: .evidenceWrite, code: .preparedWriteFailed) {
             guard configuration.outputDirectory.path.withCString({ mkdir($0, mode_t(0o700)) }) == 0 else {
                 throw AudioReferenceError.evidenceWriteFailed
