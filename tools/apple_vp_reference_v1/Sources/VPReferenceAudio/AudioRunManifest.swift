@@ -14,6 +14,7 @@ struct AudioRunManifest: Encodable {
     let configured: ConfiguredEngine
     let routeBefore: AudioRouteSnapshot
     var postStopRoute: AudioRouteSnapshot?
+    var runningRoute: AudioRouteSnapshot?
     var runningFormats: AudioFormats?
     var runningState: VoiceProcessingState?
     var runningHardwareOutputFormat: NativeAudioFormat?
@@ -104,6 +105,7 @@ struct AudioRunManifest: Encodable {
         case configured
         case routeBefore = "route_before"
         case postStopRoute = "post_stop_route"
+        case runningRoute = "running_route"
         case runningFormats = "running_formats"
         case runningState = "running_state"
         case runningHardwareOutputFormat = "running_hardware_output_format"

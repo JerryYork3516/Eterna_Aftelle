@@ -22,6 +22,12 @@ if .build/debug/apple-vp-reference record --mode VP_ON --duration 1 \
   exit 1
 fi
 test ! -e .build/never-created
+if .build/debug/apple-vp-reference inspect-route --mode VP_OFF --duration 1 \
+  --study-id nondevice --output-dir .build/never-inspected > .build/check-inspection-guard.log 2>&1; then
+  print -u2 'FAIL: missing inspection flags were accepted'
+  exit 1
+fi
+test ! -e .build/never-inspected
 if .build/debug/apple-vp-reference request-microphone unexpected > .build/check-permission-guard.log 2>&1; then
   print -u2 'FAIL: malformed permission command was accepted'
   exit 1

@@ -15,6 +15,10 @@ struct AudioRouteSnapshot: Codable, Equatable {
     let inputAggregate: AggregateDeviceSnapshot?
     let outputAggregate: AggregateDeviceSnapshot?
 
+    var hasVerifiedBinding: Bool {
+        deviceBindingStatus == "NODE_IDS_MATCH_DEFAULTS" || deviceBindingStatus == "AGGREGATE_IO_DIRECTION_QUALIFIED"
+    }
+
     static func read(engine: AVAudioEngine) throws -> Self {
         let inputID = try AudioDeviceSnapshot.defaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice)
         let outputID = try AudioDeviceSnapshot.defaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice)
@@ -32,17 +36,35 @@ struct AudioRouteSnapshot: Codable, Equatable {
         let bindingMatches =
             inputNode.anonymousID == inputDevice.anonymousID
             && outputNode.anonymousID == outputDevice.anonymousID
+        let inputAggregate =
+            inputNode.transport == kAudioDeviceTransportTypeAggregate
+            ? AggregateDeviceSnapshot.capture(inputNodeID) : nil
+        let outputAggregate =
+            outputNode.transport == kAudioDeviceTransportTypeAggregate
+            ? AggregateDeviceSnapshot.capture(outputNodeID) : nil
+        let inputQualified =
+            inputNode == inputDevice
+            || inputAggregate?.qualifies(node: inputNode, defaultInput: inputDevice, defaultOutput: outputDevice)
+                == true
+        let outputQualified =
+            outputNode == outputDevice
+            || outputAggregate?.qualifies(node: outputNode, defaultInput: inputDevice, defaultOutput: outputDevice)
+                == true
+        guard try AudioDeviceSnapshot.defaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice) == inputID,
+            try AudioDeviceSnapshot.defaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice) == outputID
+        else { throw EngineeringFailure(stage: .deviceBinding, code: .routeChanged) }
+        let status =
+            bindingMatches
+            ? "NODE_IDS_MATCH_DEFAULTS"
+            : (inputQualified && outputQualified ? "AGGREGATE_IO_DIRECTION_QUALIFIED" : "UNAVAILABLE")
         return Self(
             defaultInput: inputDevice, defaultOutput: outputDevice,
             inputNodeDevice: inputNode, outputNodeDevice: outputNode,
-            deviceBindingStatus: bindingMatches ? "NODE_IDS_MATCH_DEFAULTS" : "UNAVAILABLE",
+            deviceBindingStatus: status,
             microphoneModeSource: "AVCaptureDevice process property; this engine attribution UNVERIFIED",
             preferredMicrophoneMode: microphoneMode(preferred: true),
             activeMicrophoneMode: microphoneMode(preferred: false),
-            inputAggregate: inputNode.transport == kAudioDeviceTransportTypeAggregate
-                ? AggregateDeviceSnapshot.capture(inputNodeID) : nil,
-            outputAggregate: outputNode.transport == kAudioDeviceTransportTypeAggregate
-                ? AggregateDeviceSnapshot.capture(outputNodeID) : nil
+            inputAggregate: inputAggregate, outputAggregate: outputAggregate
         )
     }
 

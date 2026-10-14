@@ -22,9 +22,10 @@ linear PCM; omit it for resident-silent near-end tests. These flags do not grant
 Runtime interruption authority. Each invocation creates and tears down one engine.
 
 The required default input is USB and output is built-in. Actual node-device
-binding must also be established by the available public state; unknown or
-aggregate-only binding is BLOCKED rather than inferred from defaults. TCC behavior
-and this binding on real devices are NOT_MEASURED. Recording only checks existing
+binding must be direct or supported by ordered aggregate members, active membership,
+unique physical directions, complete physical/aggregate stream ranges, and zero
+process taps. Missing or ambiguous evidence is BLOCKED. This is HAL structural
+qualification, not physical source attribution or an AEC result. Recording checks existing
 microphone permission; it never requests access. The tool does not change defaults,
 volume, hardware gain or microphone mode.
 
@@ -36,6 +37,18 @@ AUTHORIZED does not prompt; DENIED/RESTRICTED/UNAVAILABLE fail. This command nev
 constructs an engine or starts recording. It does not reset TCC or click a prompt.
 Actual first-use prompts, permission persistence, signing and Terminal/Codex TCC
 responsibility remain NOT_MEASURED despite the embedded usage description/identity.
+
+`permission-status` only reads the current authorization enum; it neither requests
+permission nor constructs an engine. `inspect-route` uses the same explicit flags
+as `record`, forbids material, and writes private `prepared.json` while its engine
+is alive. It does not prepare/start the engine, install taps, play, or create a PCM
+recorder. Exit 0 means the snapshot was written; inspect its binding status.
+
+Aggregate descriptor channel counts and actual physical channel counts are saved
+separately. A discrepancy is not silently normalized. Qualification uses the
+independent complete stream/direction chain; descriptor semantics and asynchronous
+HAL changes may remain UNVERIFIED. Running and post-stop routes are also observed,
+but multiple property reads are not atomic and do not lock the system route.
 
 Control-path failures emit bounded PRIMARY/SECONDARY stage and stable code values,
 without underlying SDK error text, device UID, paths or credentials. A failed

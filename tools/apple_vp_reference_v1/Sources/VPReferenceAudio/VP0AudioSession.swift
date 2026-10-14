@@ -33,7 +33,7 @@ public final class VP0AudioSession {
             try EngineeringFailure.check(stage: .evidenceWrite, code: .preparedWriteFailed) {
                 try manifest.writePrepared(directory: configuration.outputDirectory)
             }
-            guard route.deviceBindingStatus == "NODE_IDS_MATCH_DEFAULTS" else {
+            guard route.hasVerifiedBinding else {
                 throw EngineeringFailure(stage: .deviceBinding, code: .deviceBindingMismatch)
             }
             try capture(configuration: configuration, driver: driver, recorder: recorder, manifest: &manifest)
@@ -127,6 +127,11 @@ public final class VP0AudioSession {
     }
 
     private func observeRunning(driver: AppleEngineDriver, manifest: inout AudioRunManifest) throws {
+        let route = try readRoute(driver: driver)
+        manifest.runningRoute = route
+        guard route.hasVerifiedBinding, route.defaultInput == manifest.routeBefore.defaultInput,
+            route.defaultOutput == manifest.routeBefore.defaultOutput
+        else { throw EngineeringFailure(stage: .deviceBinding, code: .routeChanged) }
         let state = try EngineeringFailure.check(stage: .vpState, code: .stateReadFailed) {
             try driver.readVoiceProcessingState()
         }
