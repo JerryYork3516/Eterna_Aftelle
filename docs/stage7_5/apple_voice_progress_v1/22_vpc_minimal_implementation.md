@@ -186,3 +186,9 @@ Apple AEC Formal PASS = NOT_ESTABLISHED
 Test3 = BLOCKED
 Test3.execution_authorized = false
 ```
+
+## 14. VP-C_ENGINEERING_MAJOR_FIX（本轮追加）
+
+本轮审核基线：`39061ad33c31a3a62d3a11fbf5b7060fc3f80330`；分支、HEAD、upstream及实时远端一致，初始工作区干净。上文为原节点历史记录，原样保留。
+
+主控复审发现两项工程MAJOR：合法不等量cue迟到被当作窗口压缩；播放区间任意非零Render不足以证明双讲段持续数字播放。本提交先记录修复范围并建立跨文件修改前的本地检查点。当前仍为FIX_REQUIRED / 2_OPEN，后续仅定点修复和非设备核验；未访问私人资产或执行设备。
