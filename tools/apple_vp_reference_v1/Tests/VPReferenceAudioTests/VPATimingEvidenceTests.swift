@@ -8,8 +8,8 @@ final class VPATimingEvidenceTests: XCTestCase {
     func testFinalPairCanBeLocallyValidButGlobalAdmissionFails() throws {
         var evidence = VPAEvidence(registrationSHA256: "synthetic")
         evidence.armTick = 0
-        for (index, phase) in VPAClockPair.Phase.allCases.prefix(3).enumerated() {
-            let origin = UInt64(index) * 5_000_000_000
+        for (index, phase) in VPAClockPair.Phase.allCases.prefix(5).enumerated() {
+            let origin = UInt64(index) * 3_000_000_000
             try evidence.recordClockPair(
                 VPAClockPair(
                     phase: phase, absoluteBeforeTick: origin, continuousTick: origin + 100,
@@ -24,23 +24,26 @@ final class VPATimingEvidenceTests: XCTestCase {
             try VPAWindow.requireAdmission(
                 armTick: evidence.armTick, currentTick: 16_100_000_000, maximumTicks: 16_000_000_000)
         ) { XCTAssertEqual(($0 as? EngineeringFailure)?.diagnostic.code, "EXPERIMENT_WINDOW_INVALID") }
-        XCTAssertEqual(evidence.clockPairs.count, 4)
+        XCTAssertEqual(evidence.clockPairs.count, 6)
         XCTAssertFalse(evidence.postRollCompleted)
         XCTAssertFalse(evidence.isTimingComplete)
     }
 
-    func testFourLocalPairsRemainGloballyUnverifiedAndNeedPostRoll() throws {
+    func testSixEventPairsNeedPrewarmAndPostRoll() throws {
         var evidence = VPAEvidence(registrationSHA256: String(repeating: "a", count: 64))
         for (index, phase) in VPAClockPair.Phase.allCases.enumerated() {
             try evidence.recordClockPair(pair(phase, origin: UInt64(index + 1) * 1_000))
         }
         evidence.windowsCompleted = true
         XCTAssertFalse(evidence.isTimingComplete)
-        evidence.postRollStartTick = 100
-        evidence.postRollEndTick = 200
+        evidence.prewarmStartTick = 1_200
+        evidence.prewarmEndTick = 1_500
+        evidence.prewarmInputRecords = 1
+        evidence.prewarmRenderRecords = 1
+        evidence.prewarmCompleted = true
         evidence.postRollCompleted = true
         XCTAssertTrue(evidence.isTimingComplete)
-        XCTAssertEqual(evidence.clockEvidenceStatus, "LOCAL_BRACKETS_ONLY_GLOBAL_MAPPING_UNVERIFIED")
+        XCTAssertEqual(evidence.clockEvidenceStatus, "EVENT_LOCAL_BRACKETS_GLOBAL_MAPPING_NOT_USED")
         XCTAssertEqual(evidence.postRollSeconds, 0.5)
         XCTAssertFalse(evidence.sourceQualificationGranted)
     }
@@ -66,7 +69,7 @@ final class VPATimingEvidenceTests: XCTestCase {
     func testRepeatedPhaseTimeCannotClaimProgress() throws {
         var evidence = VPAEvidence(registrationSHA256: "synthetic")
         try evidence.recordClockPair(pair(.beforeStart, origin: 1_000))
-        XCTAssertThrowsError(try evidence.recordClockPair(pair(.playRequest, origin: 1_000)))
+        XCTAssertThrowsError(try evidence.recordClockPair(pair(.quietStart, origin: 1_000)))
         XCTAssertEqual(evidence.clockEvidenceStatus, "CLOCK_ORDER_OR_UNITS_CHANGED")
     }
 
@@ -75,7 +78,7 @@ final class VPATimingEvidenceTests: XCTestCase {
             var evidence = VPAEvidence(registrationSHA256: "synthetic")
             try evidence.recordClockPair(pair(.beforeStart, origin: 1_000))
             let next = VPAClockPair(
-                phase: .playRequest, absoluteBeforeTick: numerator == 125 ? 900 : 2_000,
+                phase: .quietStart, absoluteBeforeTick: numerator == 125 ? 900 : 2_000,
                 continuousTick: 2_100, absoluteAfterTick: 2_002,
                 timebaseNumerator: numerator, timebaseDenominator: 3)
             XCTAssertThrowsError(try evidence.recordClockPair(next))
@@ -84,43 +87,39 @@ final class VPATimingEvidenceTests: XCTestCase {
         }
     }
 
-    func testDisjointOffsetsKeepChangeEvidenceAndReject() throws {
+    func testDisjointOffsetsAreRetainedWithoutGlobalMappingAssumption() throws {
         var evidence = VPAEvidence(registrationSHA256: "synthetic")
         try evidence.recordClockPair(pair(.beforeStart, origin: 1_000))
         let changed = VPAClockPair(
-            phase: .playRequest, absoluteBeforeTick: 2_000, continuousTick: 2_200, absoluteAfterTick: 2_002,
+            phase: .quietStart, absoluteBeforeTick: 2_000, continuousTick: 2_200, absoluteAfterTick: 2_002,
             timebaseNumerator: 125, timebaseDenominator: 3)
-        XCTAssertThrowsError(try evidence.recordClockPair(changed))
+        try evidence.recordClockPair(changed)
         XCTAssertEqual(evidence.clockPairs.count, 2)
-        XCTAssertEqual(evidence.clockEvidenceStatus, "OFFSET_CHANGE_OBSERVED")
-        XCTAssertEqual(evidence.clockPairs.last?.continuousTick, 2_200)
+        XCTAssertEqual(evidence.quietStartTick, changed.continuousTick)
+        XCTAssertFalse(evidence.clockInvalid)
     }
 
-    func testAllEarlierPairsAreComparedRatherThanOnlyAdjacentPair() throws {
+    func testAllLocalEventBracketsRetainedEvenWhenOffsetsChangeBetweenEvents() throws {
         var evidence = VPAEvidence(registrationSHA256: "synthetic")
-        let origins: [UInt64] = [0, 10, 20]
-        let continuous: [UInt64] = [4, 17, 30]
-        for index in 0..<3 {
-            let next = VPAClockPair(
-                phase: VPAClockPair.Phase.allCases[index], absoluteBeforeTick: origins[index],
-                continuousTick: continuous[index], absoluteAfterTick: origins[index] + 4,
-                timebaseNumerator: 1, timebaseDenominator: 1)
-            if index == 2 {
-                XCTAssertThrowsError(try evidence.recordClockPair(next))
-            } else {
-                try evidence.recordClockPair(next)
-            }
+        for (index, phase) in VPAClockPair.Phase.allCases.enumerated() {
+            let origin = UInt64(index + 1) * 1_000
+            try evidence.recordClockPair(
+                VPAClockPair(
+                    phase: phase, absoluteBeforeTick: origin, continuousTick: origin * 2,
+                    absoluteAfterTick: origin + 4, timebaseNumerator: 1, timebaseDenominator: 1))
         }
-        XCTAssertEqual(evidence.clockEvidenceStatus, "OFFSET_CHANGE_OBSERVED")
+        XCTAssertEqual(evidence.clockEvidenceStatus, "EVENT_LOCAL_BRACKETS_GLOBAL_MAPPING_NOT_USED")
+        XCTAssertFalse(evidence.clockInvalid)
+        XCTAssertEqual(evidence.postRollStartTick, evidence.clockPairs[4].continuousTick)
     }
 
-    func testClockCollectionCannotExceedFourPairs() throws {
+    func testClockCollectionCannotExceedSixPairs() throws {
         var evidence = VPAEvidence(registrationSHA256: "synthetic")
         for (index, phase) in VPAClockPair.Phase.allCases.enumerated() {
             try evidence.recordClockPair(pair(phase, origin: UInt64(index + 1) * 1_000))
         }
-        XCTAssertThrowsError(try evidence.recordClockPair(pair(.beforeStop, origin: 5_000)))
-        XCTAssertEqual(evidence.clockPairs.count, 4)
+        XCTAssertThrowsError(try evidence.recordClockPair(pair(.beforeStop, origin: 7_000)))
+        XCTAssertEqual(evidence.clockPairs.count, 6)
         XCTAssertEqual(evidence.clockEvidenceStatus, "PAIR_LIMIT_EXCEEDED")
     }
 
@@ -157,6 +156,49 @@ final class VPATimingEvidenceTests: XCTestCase {
             XCTAssertFalse(encoded.contains("clockPairs"))
             XCTAssertFalse(encoded.contains("postRoll"))
         }
+    }
+
+    func testEveryEventFieldUsesItsOwnPairedContinuousTick() throws {
+        var evidence = VPAEvidence(registrationSHA256: "synthetic")
+        for (index, phase) in VPAClockPair.Phase.allCases.enumerated() {
+            try evidence.recordClockPair(pair(phase, origin: UInt64(index + 1) * 1_000))
+        }
+        XCTAssertEqual(evidence.quietStartTick, evidence.clockPairs[1].continuousTick)
+        XCTAssertEqual(evidence.playRequestTick, evidence.clockPairs[2].continuousTick)
+        XCTAssertEqual(evidence.plannedTailStartTick, evidence.clockPairs[3].continuousTick)
+        XCTAssertEqual(evidence.postRollStartTick, evidence.clockPairs[4].continuousTick)
+        XCTAssertEqual(evidence.postRollEndTick, evidence.clockPairs[5].continuousTick)
+        XCTAssertEqual(evidence.normalStopBoundaryTick, evidence.clockPairs[5].continuousTick)
+    }
+
+    func testMissingQuietOrPostRollBoundaryCannotClaimTimingComplete() throws {
+        for omitted in [VPAClockPair.Phase.quietStart, .postRollStart] {
+            var evidence = VPAEvidence(registrationSHA256: "synthetic")
+            for (index, phase) in VPAClockPair.Phase.allCases.enumerated() {
+                if phase == omitted { break }
+                try evidence.recordClockPair(pair(phase, origin: UInt64(index + 1) * 1_000))
+            }
+            evidence.windowsCompleted = true
+            evidence.postRollCompleted = true
+            XCTAssertFalse(evidence.isTimingComplete)
+        }
+    }
+
+    func testBoundaryFieldCannotBeReplacedWithAnUnpairedLaterRead() throws {
+        var evidence = VPAEvidence(registrationSHA256: "synthetic")
+        for (index, phase) in VPAClockPair.Phase.allCases.enumerated() {
+            try evidence.recordClockPair(pair(phase, origin: UInt64(index + 1) * 1_000))
+        }
+        evidence.prewarmStartTick = 1_200
+        evidence.prewarmEndTick = 1_500
+        evidence.prewarmInputRecords = 1
+        evidence.prewarmRenderRecords = 1
+        evidence.prewarmCompleted = true
+        evidence.windowsCompleted = true
+        evidence.postRollCompleted = true
+        XCTAssertTrue(evidence.isTimingComplete)
+        evidence.quietStartTick = (evidence.quietStartTick ?? 0) + 1
+        XCTAssertFalse(evidence.isTimingComplete)
     }
 
     private func pair(_ phase: VPAClockPair.Phase, origin: UInt64) -> VPAClockPair {

@@ -117,7 +117,7 @@ final class VPATimingWindowTests: XCTestCase {
         }
     }
 
-    func testClockFailuresAtAllFourCapturePhasesCleanOnce() {
+    func testClockFailuresAtAllSixCapturePhasesCleanOnce() {
         for failedPhase in VPAClockPair.Phase.allCases {
             let observer = TimingObserver()
             var stops = 0
@@ -127,13 +127,18 @@ final class VPATimingWindowTests: XCTestCase {
             }
             XCTAssertThrowsError(
                 try VPAWindow.capture(
-                    observer: observer, beforePlayback: { try sample(.beforeStart) },
+                    observer: observer,
+                    beforePlayback: {
+                        try sample(.beforeStart)
+                        try sample(.quietStart)
+                    },
                     play: { try sample(.playRequest) },
                     score: {
                         try VPAWindow.finishPlayback(
                             wait: { _ in },
                             boundary: {
                                 if case .plannedTail = $0 { try sample(.plannedTail) }
+                                if case .postRoll = $0 { try sample(.postRollStart) }
                                 if case .complete = $0 { try sample(.beforeStop) }
                             })
                     }, cleanup: (invalidate: { invalidations += 1 }, stop: { stops += 1 }))

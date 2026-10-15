@@ -4,7 +4,7 @@
 
 **本报告仅交付候选协议、独立工具准备与非设备验证。VP-A_DEVICE_NOT_RUN；execution_authorized=false。** 下述新实验参数全部为 **PROPOSED**，须经主控独立源码审核、协议批准及另一次明确现场授权才能执行。构建、Mock、合成 PCM 或 Git 交付均不授予设备或 Test3 权限。
 
-当前主控已批准原VP-A工程实现；第10–12节保留先前交付和复审历史。素材准备见第13.4节，既有素材及登记未改变。随后一次VP_OFF的完整尾窗证据不足，详见08报告。仅按本轮定点授权增加第14节 **PROPOSED** 时序修订，等待主控审核；本轮未授予设备实验权限，也未用新代码改写历史结果。
+当前主控已批准原VP-A工程实现；第10–12节保留先前交付和复审历史。素材准备见第13.4节，既有素材及登记未改变。08/09分别保留首次运行和时序修订后复验的BLOCKED结论。最新候选为第15节 **PROPOSED** 窗口证据修订，第14节保留上一版准备历史；本轮未授予设备实验权限，也未用新代码改写历史结果。
 
 ## 1. 基线及继承结论
 
@@ -27,6 +27,7 @@ P3 = APPROVED；P4 = APPROVED_SOURCE_SUPPORTED。P4已支持 VP_ON 采集到可�
 | 项目 | PROPOSED 参数/条件 | 解释与限制 |
 | --- | --- | --- |
 | 首轮试次 | VP_OFF一次，再VP_ON一次；分别人工发起 | 顺序独占设备，每次fresh Engine/私有证据目录；前臂异常不继续后臂；不自动反序或补跑 |
+| 正式quiet前预热 | 两流有效PCM记录出现后才起计quiet；连同启动最迟arm+2.5秒结束 | 第15节PROPOSED修订；2.5=16−2−8−3−0.5，不是新增admission；不足即停止，不缩评分窗 |
 | 每臂运行静默 | Engine启动并通过实际状态检查后2秒 | 不含启动；无人讲话，其他播放器关闭 |
 | 居民素材 | 完整8秒 Float32 linear PCM，仅调度一次 | 建议16kHz、mono；这是素材选择，不强制硬件/VP客户端格式，也不是Apple API必要条件 |
 | 播放观察 | 前2秒为早期，后6秒为后期 | 后期仅为自适应稳定候选，不能先宣称已经稳定 |
@@ -391,3 +392,104 @@ USB unique physical source = UNVERIFIED
 Test3 = BLOCKED
 execution_authorized = false
 ```
+
+## 15. VP-A_OFF_WINDOW_EVIDENCE_FIX：PROPOSED窗口证据修订
+
+日期：2026-10-15。本轮审核基线为 `549c1c879ec0b2e26f8f77684aec868df24bd422`；开始时HEAD、upstream和实时origin一致、工作区干净。该干净已提交基线保留作回滚点。目标只是在独立VP-A中修复评分窗口证据，**IMPLEMENTED_NONDEVICE_TESTED / REVIEW_PENDING / VP-A_DEVICE_NOT_RUN（本节点）**，不表示新一轮设备有效或Apple AEC通过。
+
+08和09全文不变。继承09已证实的数字尾段补足，不重新分析、裁剪或换算旧PCM制造PASS；原2/8/3、独立0.5秒post-roll、16秒admission及原64MiB/8MiB不变。素材/登记未读未改，无现场设备查询、权限调用、Engine、录音或外放。
+
+### 15.1 有界预热及原评分窗
+
+Engine按原路径单次启动、状态验证后，先在控制路径等待Input和Render均已有有效PCM记录。复用C snapshot的每流written_records/written_frames、missing时间有效位、writer_failure、lost/overflow及INVALID状态；不要求幅度非零，不运行VAD，不把数字静默误判为无PCM。预热自身不算2秒quiet。
+
+预热和启动共同受派生界 `16−(2+8+3+0.5)=2.5秒`（arm起）约束；最多52次有限循环、每次sleep不超过50ms，沿用250ms单次控制观测预算。等待中及观测后检查错误，ready时再次核对运行/路由/格式，预热完成后才记录quietStart；quietStart配对后还要确认余下完整13.5秒可容纳，不用预热占掉quiet或tail。观测/调度使后续余量不够时仍按原窗口检查失败，不缩窗、不延长admission或自动重试。
+
+预热记录prewarmStart/End、两流有效记录数及完成标记；缺一路、缺有效时间、写盘/诊断失败、倒退/冻结时钟、已知配置变化、超预算均走原失败清理。snapshot就绪是开窗准入，不是最终覆盖证明；晚到故障仍由后续检查及封存复核发现。
+
+### 15.2 六阶段配对与事件自身的absolute区间
+
+新timingRevision为 `EVENT_LOCAL_WINDOWS_V2_PROPOSED`。直接升级为最多6对，不保留能把旧4对当完整的新程序legacy开关；旧manifest和历史判断不迁移。
+
+| phase | 事件字段/位置 |
+| --- | --- |
+| beforeStart | 原arm之后、Engine start之前，仅保留启动诊断 |
+| quietStart | 预热及状态核对通过后；quietStartTick取本对C |
+| playRequest | 原2秒quiet之后、播放准入/请求处；playRequestTick取本对C，不等于声学起音 |
+| plannedTail | 原8秒等待结束处；plannedTailStartTick取本对C |
+| postRollStart | 原3秒tail结束、独立post-roll开始处；postRollStartTick取本对C |
+| beforeStop | 正常post-roll结束、进入原cleanup之前；postRollEndTick和normalStopBoundaryTick均取本对C |
+
+每对仍为 `A_before / C / A_after` 加原timebase、原始tick和局部不确定度。**事件continuous字段就是这次配对里的C**，不再用配对结束后另读C当作已被配对的事件。实际cleanup仍另存stopRequestTick，不能说它本身已配对，也不把normalStopBoundary当作Engine实际停止完成时刻。错误早退保留实际到达阶段的raw及首因，不补取缺失阶段。
+
+每事件的absolute位置保守取自身 `[A_before,A_after]`；评分窗覆盖取开始事件最早A_before至结束事件最晚A_after，不从任何全程偏移换算。仍核验局部bracket合法、阶段/时钟向前、单位一致及单次观测预算，但**不再要求不同事件的C−A区间相交**。合法的跨事件偏移变化会原样留存，不以恒定偏移假设拒绝或抹平；状态为 `EVENT_LOCAL_BRACKETS_GLOBAL_MAPPING_NOT_USED`。原第14节4对及offset相交政策只属上一版历史。
+
+同时保留每个窗的最短可能absolute跨度 `end.A_before−start.A_after`；原三个窗必须分别支持至少2/8/3秒，不能仅因C等待足够就推定absolute证据足够。比较用原timebase和checked整数算术，没有新增声学阈值。若局部bracket宽度/时钟关系使原时长不能获证，保持UNVERIFIED。
+
+### 15.3 seal后的双流保守覆盖证明
+
+原stop、removeTap、observer移除及一次seal先完成，再运行 `VPACoverageFile.evaluate`。复用已有C文件验证与 `vp_recorder_read_identity` 读取原身份头；不改Tap、Recorder、PCM/时间容器，不加载PCM payload来做幅度分析，不在实时线程运行。新增元数据只保存4个窗口和两路有限状态，不保存无界记录数组。
+
+各流分别要求：所有记录hostTime/sampleTime有效，格式合法且稳定，帧数正，sampleTime严格递推且无整数溢出，原始hostTime严格向前；容器/诊断/计数合规。对每个窗口保存：
+
+1. 不晚于开始A_before的实际记录首hostTime锚点；选择最后一个满足条件的块。
+2. 不早于结束A_after的后继记录**首hostTime**锚点；选择第一个满足条件的块。
+3. 两个锚点的原record索引、hostTime、sampleTime和样本跨度。样本跨度按稳定native ASBD名义速率至少覆盖整个外包absolute区间，不接受“只有少量PCM，host却巨幅跳跃”。
+
+正式quiet/play/tail必须两流都具备这些条件；post-roll另列 `required=false`，其覆盖不足不会被偷换成正式tail不足，也不会被加进tail凑3秒。仅末块 `host+frames/rate` 看似达到结束，但没有实际后继host锚点时，**不得通过**；不添加epsilon填host残差、不补帧、不重新选择评分窗口。
+
+原三个窗最短时长比较为 `ticks × numer × 2 ≥ required_half_seconds × 1e9 × denom`；各流名义样本跨度比较为 `frames × 1e9 × denom ≥ outer_ticks × native_rate × numer`。乘法、signed sample差均checked；当前实现只在native rate可精确表示为正整数时给该精确比较结论，分数速率不强制取整、溢出不近似，保留UNVERIFIED而非更改设备格式。
+
+全部正式窗满足时只给 `DIGITAL_SAMPLE_SPAN_COVERED`。这是连续数字样本序列、本地事件区间、足量名义样本与raw host锚点的证据，**不是每个帧内样本的精确物理时间/实际硬件速率、房间声压或声学尾响证明**。本机SDK的AVAudioTime.h 18–20行及[AVAudioTime](https://developer.apple.com/documentation/avfaudio/avaudiotime)区分host与sample时间；CoreAudioBaseTypes.h 858–860行定义actual/nominal速率比例。原容器未保存AVAudioTime.sampleRate/rateScalar，不能靠名义速率外推升级物理结论。
+
+离线遍历最多4096条，这是新增解析器的工程成本界（PROPOSED），不是AEC成功阈值；超界保留完整原容器但不给覆盖通过。现C接口按索引重扫，最坏O(n²)，有界且只在停止/封存后执行；没有声称实机耗时已测。模型只持有两流及4窗状态，不另复制原PCM，原诊断resident预算不扩大，进程/框架总RSS仍未测。
+
+运行有原始失败时不执行覆盖升级，不覆盖primary诊断。正常封存但覆盖证据不足时，manifest记EXPERIMENT_COVERAGE_UNVERIFIED和INVALID终态，工具BLOCKED；不回写已经seal的C INVALID或伪造lost。原容器可以结构完整、invalidReasons=0，同时窗口证据仍UNVERIFIED，两层状态分别解释。预热失败使用EXPERIMENT_PREWARM_INVALID；后续仍沿原一次stop/seal出口，没有重启或二次采集。
+
+### 15.4 修改文件和非设备验证
+
+所有源码/测试路径相对 `tools/apple_vp_reference_v1/`，仅以下14个工具文件及本07有变化：
+
+| 文件 | 定点职责 |
+| --- | --- |
+| Sources/VPReferenceCore/VPARequest.swift | 派生2.5秒预热最晚完成界，原2/8/3/.5/16不变 |
+| Sources/VPReferenceCore/VPAWindow.swift | readyPCM及有限prewarm，原capture/stop/窗口等待契约保留 |
+| Sources/VPReferenceCore/VPAClockPair.swift | 有界phase增加quietStart、postRollStart |
+| Sources/VPReferenceCore/EngineeringDiagnostic.swift | 仅增加预热/覆盖证据稳定错误码 |
+| Sources/VPReferenceCore/VPAWindowCoverage.swift（新增） | 事件局部区间、双流样本/host锚点与checked覆盖模型 |
+| Sources/VPReferenceAudio/VPAClockSampling.swift | 记录配对及原16秒/quiet剩余预算检查，均非实时 |
+| Sources/VPReferenceAudio/VPAEvidence.swift | 六事件自身字段、预热及覆盖结果；无全局offset假设 |
+| Sources/VPReferenceAudio/VP0AudioSession.swift | 仅VP-A调用预热、边界及seal后证据，复用原观测/清理 |
+| Sources/VPReferenceAudio/VPACoverageFile.swift（新增） | 有界C身份接口遍历、前后完整性检查，无payload复制 |
+| Tests/VPReferenceCoreTests/VPATimingWindowTests.swift | 原失败阶段覆盖随授权升级为6阶段，未删除用例 |
+| Tests/VPReferenceAudioTests/VPATimingEvidenceTests.swift | 原4-pair/offset预期改为6事件局部政策，另增3项绑定测试 |
+| Tests/VPReferenceCoreTests/VPAPrewarmTests.swift（新增） | 7项预热、有效PCM、预算/INVALID/单次清理测试 |
+| Tests/VPReferenceCoreTests/VPAWindowCoverageTests.swift（新增） | 14项充分/不足、外包不确定度、少量PCM巨大跳跃、短窗和溢出反例 |
+| Tests/VPReferenceAudioTests/VPACoverageFileTests.swift（新增） | 7项真实C合成封存文件、截断/失效/后继锚点/有限读取验证 |
+
+最终完整 `check.sh` 通过：**262项 = 原231个用例保留 + 新31项**（Core155、Audio107），0失败。原VP-A时钟测试按新授权合同调整预期，不假称旧4对/offset政策仍生效；普通record/source-probe及旧模式测试继续通过。Debug/Release（warnings-as-errors）、SwiftLint 0 error/0 warning、Swift Format strict、C11 -Wall/-Wextra/-Werror、SDK独立性静态检查、默认关闭/缺授权CLI拒绝均通过，无规则豁免。
+
+先前准备节点的231项通过后，本轮新增的所有用例也实际运行。编译/Mock/C合成夹具只证明工程逻辑：没有启动Engine、麦克风、扬声器或真实权限流程，没有访问历史PCM、素材、registration、SSD/quarantine。没有将合成封存结果冒充设备通过。
+
+### 15.5 三维复核及Stage7 Forbidden Checklist
+
+- **TECHNICAL_REVIEW：PASS（本节点代码/时间合同）；DEVICE_NOT_RUN。** 每事件本地absolute区间替代全程offset推断，2/8/3及独立post-roll保留；数字跨度与物理精确性分列。
+- **ENGINEERING_REVIEW：PASS（完整非设备检查及独立源码复核）。** 复核发现的“少量PCM+巨大host跳跃”MAJOR已用样本跨度、原时长和确定性反例修复，无剩余已识别CRITICAL/MAJOR。预热失败不播放，新增诊断不覆盖首因，原一次cleanup/seal及资源预算保留。
+- **EVIDENCE_REVIEW：准备实现通过；新设备窗口证据NOT_MEASURED。** 不修改08/09或解析旧PCM补PASS。未来仍须审实际anchors/样本、局部不确定度、格式/路由、PCM/封存及现场内容，无法获证即UNVERIFIED；即使数字覆盖满足也不能称Apple AEC或Test3 PASS。
+
+Stage7 Forbidden Checklist：**PASS**。触碰六红线：无；改代码：是（独立VP-A控制/证据/测试）；Runtime API、DR schema/fixture、新平台target、Stage8：均否。生产App、Qwen全双工、NativeSpeechProvider/Adapter、Runtime/Test2/generation、DR/Studio/Memory/Session、ACE3及正式Test3合同未变。Driver、Tap、C Recorder/header、音频图、普通record/source-probe准入/行为未变；新覆盖函数仅对存在且正常完成的VP-A元数据工作。无实时callback新增工作，无正式声源资格/中断/Provider/取消授权。没有新设备操作、重试或VP-B/C/D/E。
+
+仍未验证：实机预热就绪时间/16秒余量、实际callback尾块、原评分窗数字覆盖、各流硬件速率/帧内映射、在途observer/late callback与阻塞stop的普遍时序保证、离线4096上限下耗时。新候选程序未来须另行审核并固定二进制/签名，获明确现场授权后才可运行；本轮提交不授予执行权。
+
+```text
+VP-A_OFF_WINDOW_EVIDENCE_FIX = IMPLEMENTED_NONDEVICE_TESTED / REVIEW_PENDING
+VP-A_DEVICE_NOT_RUN (本节点)
+Historical VP_OFF (08/09) = BLOCKED / EVIDENCE_UNVERIFIED (unchanged)
+VP_ON = NOT_AUTHORIZED
+Apple AEC = NOT_MEASURED
+USB unique physical source = UNVERIFIED
+Test3 = BLOCKED
+Test3.execution_authorized = false
+```
+
+完成提交推送后停止，等待主控独立复审，不自行执行VP_OFF或VP_ON。

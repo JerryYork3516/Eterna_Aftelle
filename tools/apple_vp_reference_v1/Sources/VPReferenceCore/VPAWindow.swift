@@ -1,3 +1,5 @@
+import VPRecorder
+
 public enum VPAWindow {
     public enum Boundary {
         case plannedTail, postRoll, complete
@@ -18,6 +20,47 @@ public enum VPAWindow {
         guard let armTick, maximumTicks > 0, currentTick >= armTick, currentTick - armTick <= maximumTicks else {
             throw EngineeringFailure(stage: .recorder, code: .experimentWindowInvalid)
         }
+    }
+
+    public static func readyPCM(_ snapshot: VPRecorderSnapshot) throws -> Bool {
+        guard snapshot.invalid_reasons == 0, !snapshot.writer_failure,
+            snapshot.missing_sample_time_records == 0, snapshot.missing_host_time_records == 0,
+            snapshot.lost_records == 0, snapshot.overflow_records == 0
+        else { throw EngineeringFailure(stage: .recorder, code: .recorderInvalid) }
+        return snapshot.input_written_records > 0 && snapshot.input_written_frames > 0
+            && snapshot.render_written_records > 0 && snapshot.render_written_frames > 0
+    }
+
+    public static func prewarm(
+        elapsedSeconds: () -> Double, check: () throws -> Void, ready: () throws -> Bool,
+        observe: () throws -> Void, sleep: (Double) -> Void
+    ) throws {
+        var previous = 0.0
+        var nextObservation = 0.0
+        for _ in 0..<52 {
+            let now = elapsedSeconds()
+            guard now.isFinite, now >= previous, now <= VPARequest.prewarmDeadlineSeconds else {
+                throw EngineeringFailure(stage: .recorder, code: .experimentPrewarmInvalid)
+            }
+            try check()
+            let hasPCM = try ready()
+            if now >= nextObservation || hasPCM {
+                try observe()
+                nextObservation = now + 1
+            }
+            let after = elapsedSeconds()
+            guard after.isFinite, after >= now, after <= VPARequest.prewarmDeadlineSeconds,
+                after - now <= VPARequest.maximumObservationSeconds
+            else { throw EngineeringFailure(stage: .recorder, code: .experimentPrewarmInvalid) }
+            previous = after
+            try check()
+            if hasPCM { return }
+            guard after < VPARequest.prewarmDeadlineSeconds else {
+                throw EngineeringFailure(stage: .recorder, code: .experimentPrewarmInvalid)
+            }
+            sleep(min(0.05, VPARequest.prewarmDeadlineSeconds - after))
+        }
+        throw EngineeringFailure(stage: .recorder, code: .experimentPrewarmInvalid)
     }
 
     public static func capture(

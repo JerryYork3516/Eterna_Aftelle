@@ -24,6 +24,8 @@ public enum FailureCode: String, Sendable {
     case materialNonFiniteSamples = "MATERIAL_NON_FINITE_SAMPLES"
     case materialOutOfRangeSamples = "MATERIAL_OUT_OF_RANGE_SAMPLES"
     case experimentWindowInvalid = "EXPERIMENT_WINDOW_INVALID"
+    case experimentPrewarmInvalid = "EXPERIMENT_PREWARM_INVALID"
+    case experimentCoverageUnverified = "EXPERIMENT_COVERAGE_UNVERIFIED"
     case experimentClockInvalid = "EXPERIMENT_CLOCK_INVALID"
     case experimentEngineStateMismatch = "EXPERIMENT_ENGINE_STATE_MISMATCH"
     case experimentPlaybackFailed = "EXPERIMENT_PLAYBACK_FAILED"

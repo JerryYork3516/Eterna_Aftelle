@@ -12,16 +12,24 @@ struct VPAEvidence: Encodable {
     let materialSeconds = VPARequest.materialSeconds
     let tailSeconds = VPARequest.tailSeconds
     let postRollSeconds = VPARequest.postRollSeconds
-    let timingRevision = "POSTROLL_CLOCK_PAIRS_V1_PROPOSED"
-    let clockMappingMeaning = "Local brackets only; overlap does not establish constant offset or acoustic timing"
+    let timingRevision = "EVENT_LOCAL_WINDOWS_V2_PROPOSED"
+    let clockMappingMeaning =
+        "Each event uses its own absolute bracket; no global offset is required; acoustic timing is unverified"
     let maximumObservationSeconds = VPARequest.maximumObservationSeconds
     let timelineMeaning = "Control requests only; not measured acoustic onset/end or speaker sound pressure"
+    var prewarmStartTick: UInt64?
+    var prewarmEndTick: UInt64?
+    var prewarmInputRecords: UInt64 = 0
+    var prewarmRenderRecords: UInt64 = 0
+    var prewarmCompleted = false
+    var windowCoverage: VPAWindowCoverage?
     var armTick: UInt64?
     var quietStartTick: UInt64?
     var playRequestTick: UInt64?
     var plannedTailStartTick: UInt64?
     var postRollStartTick: UInt64?
     var postRollEndTick: UInt64?
+    var normalStopBoundaryTick: UInt64?
     var stopRequestTick: UInt64?
     var windowsCompleted = false
     var postRollCompleted = false
@@ -37,10 +45,16 @@ struct VPAEvidence: Encodable {
     var playerPlayingAfterRequest: Bool?
 
     var isTimingComplete: Bool {
-        guard let postRollStartTick, let postRollEndTick, postRollEndTick >= postRollStartTick else { return false }
-        return windowsCompleted && postRollCompleted && !clockInvalid
+        guard let prewarmStartTick, let prewarmEndTick, prewarmEndTick >= prewarmStartTick,
+            let quietStartTick, quietStartTick >= prewarmEndTick,
+            let postRollStartTick, let postRollEndTick, postRollEndTick >= postRollStartTick,
+            prewarmInputRecords > 0, prewarmRenderRecords > 0, normalStopBoundaryTick == postRollEndTick
+        else { return false }
+        let ticks = [quietStartTick, playRequestTick, plannedTailStartTick, postRollStartTick, postRollEndTick]
+        guard ticks.compactMap({ $0 }) == clockPairs.dropFirst().map(\.continuousTick) else { return false }
+        return prewarmCompleted && windowsCompleted && postRollCompleted && !clockInvalid
             && clockPairs.count == VPAClockPair.Phase.allCases.count
-            && clockEvidenceStatus == "LOCAL_BRACKETS_ONLY_GLOBAL_MAPPING_UNVERIFIED"
+            && clockEvidenceStatus == "EVENT_LOCAL_BRACKETS_GLOBAL_MAPPING_NOT_USED"
     }
 
     mutating func recordClockPair(_ pair: VPAClockPair) throws {
@@ -60,15 +74,21 @@ struct VPAEvidence: Encodable {
                 pair.timebaseDenominator == previous.timebaseDenominator
             else { try invalidClock("CLOCK_ORDER_OR_UNITS_CHANGED") }
         }
-        for earlier in clockPairs.dropLast() {
-            guard let lower = pair.offsetLowerBoundTicks, let upper = pair.offsetUpperBoundTicks,
-                let earlierLower = earlier.offsetLowerBoundTicks, let earlierUpper = earlier.offsetUpperBoundTicks
-            else { try invalidClock("INVALID_PAIR") }
-            if lower > earlierUpper || upper < earlierLower {
-                try invalidClock("OFFSET_CHANGE_OBSERVED")
-            }
+        recordBoundary(pair)
+        clockEvidenceStatus = "EVENT_LOCAL_BRACKETS_GLOBAL_MAPPING_NOT_USED"
+    }
+
+    private mutating func recordBoundary(_ pair: VPAClockPair) {
+        switch pair.phase {
+        case .beforeStart: break
+        case .quietStart: quietStartTick = pair.continuousTick
+        case .playRequest: playRequestTick = pair.continuousTick
+        case .plannedTail: plannedTailStartTick = pair.continuousTick
+        case .postRollStart: postRollStartTick = pair.continuousTick
+        case .beforeStop:
+            postRollEndTick = pair.continuousTick
+            normalStopBoundaryTick = pair.continuousTick
         }
-        clockEvidenceStatus = "LOCAL_BRACKETS_ONLY_GLOBAL_MAPPING_UNVERIFIED"
     }
 
     private mutating func invalidClock(_ status: String) throws -> Never {

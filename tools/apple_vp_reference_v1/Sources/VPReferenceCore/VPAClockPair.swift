@@ -1,6 +1,6 @@
 public struct VPAClockPair: Encodable, Sendable {
     public enum Phase: String, Encodable, CaseIterable, Sendable {
-        case beforeStart, playRequest, plannedTail, beforeStop
+        case beforeStart, quietStart, playRequest, plannedTail, postRollStart, beforeStop
     }
 
     public let phase: Phase
