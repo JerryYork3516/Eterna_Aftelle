@@ -1,3 +1,4 @@
+import AVFoundation
 import AudioToolbox
 import Foundation
 import VPRecorder
@@ -58,6 +59,18 @@ final class VPCPCMFixture {
 
     deinit { try? FileManager.default.removeItem(at: directory) }
 
+    func material(amplitude: Float = 0.25) throws -> AVAudioPCMBuffer {
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: 1_000,
+                channels: 1, interleaved: false))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8_000))
+        buffer.frameLength = 8_000
+        let values = try XCTUnwrap(buffer.floatChannelData?[0])
+        for index in 0..<8_000 { values[index] = amplitude }
+        return buffer
+    }
+
     func identity(host: UInt64, sample: Int64, planar: Bool = false) -> VPFrameIdentity {
         var value = VPFrameIdentity()
         value.stream_kind = UInt32(VP_STREAM_INPUT)
@@ -87,17 +100,18 @@ final class VPCPCMFixture {
                 if stream == UInt32(VP_STREAM_RENDER) && !render { continue }
                 var value = identity(host: host, sample: sample)
                 value.stream_kind = stream
-                let active = signal == "quiet" ? host < 3_000 : host >= 3_100 && host <= 11_000
+                if signal == "gapInput", stream == UInt32(VP_STREAM_INPUT), host >= 7_000 { value.sample_time += 1 }
+                if signal == "gapRender", stream == UInt32(VP_STREAM_RENDER), host >= 7_000 { value.sample_time += 1 }
                 var samples: [Float] = (0..<300).map {
                     if stream == UInt32(VP_STREAM_INPUT) { return 0.125 }
-                    if signal == "crossTail" { return host == 11_000 && $0 == 299 ? amplitude : 0 }
-                    return active && $0 % 3 == 2 ? amplitude : 0
+                    return renderSample(host: host, offset: $0, amplitude: amplitude, signal: signal)
                 }
                 var buffer = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer())
                 let accepted = samples.withUnsafeMutableBytes { bytes in
                     buffer.mBuffers = AudioBuffer(mNumberChannels: 3, mDataByteSize: 1_200, mData: bytes.baseAddress)
                     return vp_recorder_submit(recorder, &value, &buffer)
                 }
+                if !accepted, signal.hasPrefix("gap") { return }
                 XCTAssertTrue(accepted)
                 records += 1
                 let deadline = Date().addingTimeInterval(2)
@@ -109,4 +123,20 @@ final class VPCPCMFixture {
             sample += 100
         }
     }
+    private func renderSample(host: UInt64, offset: Int, amplitude: Float, signal: String) -> Float {
+        guard offset % 3 == 2 else { return 0 }
+        let frame = offset / 3
+        switch signal {
+        case "crossTail": return host == 11_000 && offset == 299 ? amplitude : 0
+        case "quiet": return host < 3_000 ? amplitude : 0
+        case "preOnly": return host >= 3_100 && host < 5_000 ? amplitude : 0
+        case "pulse": return host == 6_100 && frame == 0 ? amplitude : 0
+        case "shortPulses": return host >= 3_100 && host <= 11_000 && frame == 0 ? amplitude : 0
+        case "earlyFull": return host >= 1_100 && host <= 9_000 ? amplitude : 0
+        case "lateFull": return host >= 5_100 && host <= 13_000 ? amplitude : 0
+        case "leadingSilence": return host >= 3_600 && host <= 11_000 ? amplitude : 0
+        default: return host >= 3_100 && host <= 11_000 ? amplitude : 0
+        }
+    }
+
 }

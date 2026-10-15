@@ -54,7 +54,8 @@ final class VPCSession {
             vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT))
         }
         return try Self.finish(
-            recorder: recorder, manifest: &manifest, directory: request.configuration.outputDirectory)
+            recorder: recorder, manifest: &manifest, directory: request.configuration.outputDirectory,
+            material: material.buffer)
     }
 
     private func capture(
@@ -203,7 +204,7 @@ final class VPCSession {
     }
 
     nonisolated static func finish(
-        recorder: RecorderOwner, manifest: inout AudioRunManifest, directory: URL
+        recorder: RecorderOwner, manifest: inout AudioRunManifest, directory: URL, material: AVAudioPCMBuffer? = nil
     ) throws -> AudioRunOutcome {
         if !recorder.seal() { manifest.diagnostics.record(EngineeringDiagnostic(stage: .seal, code: .sealFailed)) }
         let outcome = recorder.outcome(directory: directory, expectsRender: true)
@@ -221,7 +222,7 @@ final class VPCSession {
                 let analysis = try VPCPCMRead.evaluate(
                     directory: directory, events: manifest.vpcExperiment?.events ?? [],
                     receipts: manifest.vpcExperiment?.receipts ?? [],
-                    arm: manifest.vpcExperiment?.armTick)
+                    arm: manifest.vpcExperiment?.armTick, material: material)
                 manifest.vpcExperiment?.analysis = analysis
                 if analysis.status != "DIGITAL_DUAL_STREAM_AND_RENDER_PRESENT" {
                     manifest.diagnostics.record(

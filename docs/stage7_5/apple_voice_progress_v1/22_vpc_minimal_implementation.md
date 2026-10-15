@@ -192,3 +192,125 @@ Test3.execution_authorized = false
 本轮审核基线：`39061ad33c31a3a62d3a11fbf5b7060fc3f80330`；分支、HEAD、upstream及实时远端一致，初始工作区干净。上文为原节点历史记录，原样保留。
 
 主控复审发现两项工程MAJOR：合法不等量cue迟到被当作窗口压缩；播放区间任意非零Render不足以证明双讲段持续数字播放。本提交先记录修复范围并建立跨文件修改前的本地检查点。当前仍为FIX_REQUIRED / 2_OPEN，后续仅定点修复和非设备核验；未访问私人资产或执行设备。
+
+### 14.1 最终范围与裁定
+
+本节是上述检查点之后的修复结果，不追溯替换第1–13节原实现结论。两项主控MAJOR已定点修复，并完成两路独立只读源码复审；复审额外发现的“完整素材提前/明显迟播仍可能被接受”因果缺口也已在同一Render证据链关闭。**NON_DEVICE_FIX_REVIEW_READY；VP-C Implementation = REVIEW_PENDING；Engineering MAJOR = 0_OPEN（本轮范围）**。冻结与设备批准仍由主控决定。
+
+| 实际文件（均相对独立工具目录） | 修改位置与作用 |
+| --- | --- |
+| `Sources/VPReferenceCore/VPCCoverage.swift` | `makeWindows` / `finish`：计划PCM覆盖与实际控制跨度分开；保持完整名义评分样本量及双流连续性要求 |
+| `Sources/VPReferenceCore/VPCPlannedBoundary.swift`（新增） | `ordered` / `make` / `VPCControlSpan`：事件局部配对单调包络、实际显示跨度与迟到证据 |
+| `Sources/VPReferenceAudio/VPCPCMRead.swift` | `evaluate` / `finish` / `include`：封存后组合覆盖、完整素材对应与分阶段Render证据 |
+| `Sources/VPReferenceAudio/VPCRenderReference.swift`（新增） | 逐声道同率、整段原样匹配和播放起点原始host锚点因果核验 |
+| `Sources/VPReferenceAudio/VPCRenderDistribution.swift`（新增） | 独讲前/双讲/独讲后原生信号分布、后继锚点门及有限数字持续性判据 |
+| `Sources/VPReferenceAudio/VPCSession.swift` | `run` → `finish`：仅传递本次准入已校验并加载的素材buffer，供seal后的离线核验；不重新读取素材 |
+| `Tests/VPReferenceAudioTests/VPCPCMFixture.swift` | 仅合成内存/临时容器夹具：素材参考、提前/迟播、脉冲、缺段和断样注入 |
+| `Tests/VPReferenceAudioTests/VPCEvidenceTests.swift` | 原18个方法保留；接入参考buffer；纠正旧200ms迟到错误断言为300ms真正越界反例 |
+| `Tests/VPReferenceAudioTests/VPCFinishTests.swift` | 原方法保留；实际finish调用链接入同一合成素材，仍验证最终写入失败及声学维度隔离 |
+| `Tests/VPReferenceAudioTests/VPCCoverageRegressionTests.swift`（新增） | 8项时间反例 |
+| `Tests/VPReferenceAudioTests/VPCRenderRegressionTests.swift`（新增） | 11项Render反例 |
+
+本节点另仅追加本报告。CLI、原生窗口、`VPCWindow`播放/提示调用顺序、所有冻结组件及A/B/普通入口均未修改。
+
+### 14.2 MAJOR 1：计划窗口、实际事件与数字覆盖
+
+**CONFIRMED_ENGINEERING_DEFECT。** 旧`minimumDurationVerified`比较两个实际事件的absolute最短跨度与完整计划时长。各cue独立允许250ms迟到，因此4.05→9.02的4.97秒并不意味着原5秒计划PCM缺失。
+
+修复后的证据分别保存：
+
+1. **固定计划窗**：仍为0–2、2–4、4–9、9–10、10–13秒；整体正式13秒，13–13.5秒post-roll独立。计划边界以`observationStart.continuous + 固定offset`定义，非整tick目标保留floor/ceil范围；乘加溢出直接拒绝。
+2. **原始局部时钟包络**：合并原9个事件及6条request/display回执，检查时间单位与两域次序。每个计划continuous目标由前后已记录配对单调夹逼为absolute区间，保存原tick引用及上下界。原始配对仍完整保留在事件/回执中；不将某次offset用于全程，不外推精确声学时间。
+3. **实际可用控制跨度**：保存显示时刻至下一阶段请求的真实continuous跨度、起点迟到量和边界absolute证据。允许的最低控制跨度从原计划时长减原250ms独立迟到预算导出；没有增加调度预算。4.05→9.02的新夹具显示跨度4.968秒可合法通过此项。它不声称用户讲了多久，也不将4.968秒写成5秒。
+4. **原计划PCM覆盖**：Input和Render各自必须有前/后原host锚包住整个计划absolute包络、sampleTime精确连续、格式不变、计数一致；同时要求样本跨度足够覆盖保守包络和完整名义计划时长。不能以合法cue或控制窗口结束代替PCM已交付。正式13秒独立核验，post-roll不能填补正式评分缺口。
+
+保留的旧字段`minimumAbsoluteSpanTicks`仍是实际事件最短absolute跨度；`minimumDurationVerified`现在表示`actualControl.valid`，不再承诺该旧absolute跨度等于完整计划时长。计划边界、实际跨度和`covered`分别可审计。
+
+局部包络可能跨较大的相邻事件间隔，因此可能要求保守的额外数字覆盖；宽度可从原tick直接复查。它不是精确起止估计。缺配对、缺PCM锚、断样、时间倒退、超250ms、实际可用控制窗压缩超预算均不能通过。
+
+### 14.3 MAJOR 2：分阶段Render、固定素材与持续性
+
+**CONFIRMED_ENGINEERING_DEFECT。** 旧`renderPlayNonZeroSamples > 0`只证明总播放区间某处有非零数，不能证明4–9秒阶段有持续居民数字内容。该旧总计仍作为描述量保留，已从充分条件中移除。
+
+本轮新增的检查只在stop、removeTap、seal及原容器独立校验之后执行，严格限定VP-C：
+
+- 从本次已经通过双SHA/安全准入的已加载buffer借用只读参考，不新增私人文件访问、不复制整段Render或Input、不修改原素材。没有参考时保持`MATERIAL_COMPATIBILITY_UNVERIFIED`。
+- 对原生Render每个声道独立做**同采样率、mono Float32固定8秒素材、逐样本bit-pattern原样匹配**。由素材和该声道首个非零样本建立唯一整数sample偏移，不扫描有利lag、不拟合增益、不重采样、不下混、不选最大声道。完整8秒（含leading silence）必须匹配；非有限数、单点内容差异、缺段或额外非零内容不能冒充对应。
+- 匹配源起点按原sampleTime定位到相邻Render原host锚；该保守区间须位于实际`playRequest.absoluteAfter`之后、`NEAR_CONTINUOUS.absoluteBefore`之前。提前于play请求或直到真人阶段才起播的完整同素材反例被拒绝。不能把first-nonzero host直接当含前导静默素材的起点。
+- 分别保存`residentBefore`、`doubleTalkCandidate`、`residentAfter`的计划标签2–4、4–9、9–10，以及**实际display→下一request**的原始局部时钟边界。只纳入当前与后继Render host锚都落入实际阶段的完整buffer；末buffer没有后继时不假造其结束边界。
+- 每阶段保留全声道样本数、非零数、首末非零sampleTime及按原生sampleTime划分的一秒格分布。格子不是精确计划秒或声学到达时间；计划窗PCM覆盖由14.2独立核验。原始buffer host/sample/声道身份仍在封存容器内，可逐条复查。
+- 至少同一个**完整素材匹配**声道在实际near控制阶段具有超过一秒原生样本数量的非零内容、首末跨度超过一秒且分布于至少两个原生秒格，才建立`MATCHED_SOURCE_AND_DOUBLE_TALK_DIGITAL_SIGNAL`。一秒来自本协议持续重叠目标，只是保守的数字素材占用检查；不是语音活动检测、无间断发声证明或AEC性能阈值。单非零样本、稀疏短脉冲、仅2–4秒信号、4–9秒全零及持续无关波形不能通过。
+
+只有正式双流计划覆盖、此数字素材检查及全声道有限样本均成立，原`DIGITAL_DUAL_STREAM_AND_RENDER_PRESENT`工程状态才能成立。这个状态的充分条件已加强；不是新的声学PASS。
+
+**限制必须保留：**至少一个明确匹配的Render声道足以支持数字居民播放路径存在；其余声道的匹配结果分别保存，未匹配不自动获证。全声道原始PCM均保留。尚未证明合法混音增益、采样率转换或不同声道映射能满足该严格模型，不能假设mono到三声道必为原幅度复制。遇到不同格式、未知增益、保守buffer边缘或材料本身近端阶段内容不足，只能记UNVERIFIED/工程证据不足，不归因Apple VP失败。整8秒素材核对可使用既有尾部采集数据，但不延长评分窗。
+
+数字播放有效也不证明扬声器声压、真实持续物理双讲、真人起尾完整、居民残回声或USB唯一物理来源。这些结论全部继续`EVIDENCE_UNVERIFIED`，声源资格始终false。
+
+### 14.4 非设备回归与错误路径
+
+实际执行`zsh check.sh`成功退出；未执行任何合法设备命令。检查包含：
+
+| 检查 | 本轮结果 |
+| --- | --- |
+| 原测试保留 | 原352个测试方法全部保留，删除0；原有313项A/B/普通入口测试源码不变 |
+| 新增测试 | 19项：时间8项、Render11项 |
+| 全部Swift测试 | **371项，0失败**；Core206、Audio165 |
+| Debug / Release | 均成功，warnings-as-errors |
+| SwiftLint strict | **0 error / 0 warning**，无豁免 |
+| Swift Format strict | 通过 |
+| C11 | 原C Recorder以`-std=c11 -Wall -Wextra -Werror -fsyntax-only`通过，C源码/header不变 |
+| 静态隔离及CLI拒绝分支 | 通过；默认关闭、缺授权先拒绝，无设备/素材/登记读取 |
+| Git、历史与冻结边界 | 原352方法集合保留；指定冻结文件及01–21逐字节不变；本报告原历史前缀不变 |
+
+新增时间反例：4.05→9.02合法控制跨度、正常不等量迟到、超过250ms/明显压缩、计划quiet缺起点PCM、时钟逆序、缺后继锚、跨阶段可变offset及post-roll独立。可变offset夹具曾自身制造紧邻事件A/C逆序，已修正夹具事件簇；没有放宽生产时钟检查。
+
+新增Render反例：仅前段有声；一个脉冲/重复短脉冲；持续无关波形；有效全声道持续素材；完整素材提前或明显迟播；前导静默对齐；素材本身仅一脉冲；缺参考/不同采样率；Input或Render断样；末buffer无继锚；合法play迟到后的整段匹配。
+
+旧`testCompressedTailAndDoubleTalkCannotHideBehindFullThirteenSeconds`方法仍保留，其200ms合法迟到却要求失败的旧断言与本轮主控裁定冲突。现改用300ms真正超过原预算的反例，仍要求拒绝；另新增合法4.05→9.02通过控制门且完整计划PCM另证的正例。不是删除失败测试或降低PCM完整性标准。
+
+原实际生命周期故障夹具继续覆盖：启动/观察/配置/提示失败、INVALID后停止、不再发送后续cue或重复play、第一失败保留、一次stop、两路Tap各移除一次、observer移除、幂等seal及writer/verify/最终写入失败。合成断样由原C Recorder首先拒绝，封存为INVALID，离线读取也拒绝；未绕过C校验制造损坏容器“有效”。
+
+### 14.5 独立源码复审与资源边界
+
+由统一修改者完成实现，另两路仅只读复核时间链与Render链。最终结论：本轮两项MAJOR及直接相关播放因果缺口均关闭，**没有未关闭的直接相关CRITICAL/MAJOR**。源码证据与测试成功分别评价，没有以测试数量替代审核。
+
+- 时间调用链仍为固定deadline → 原cue显示迟到门 → 原始配对记录 → seal后计划/实际独立判定。所有固定窗口与预算不变。
+- Render调用链为既有素材准入 → 单次既有play → 原生Tap/C记录 → stop/seal/独立verify → 原样参考对应、阶段分布 → 总体工程证据组合。没有另起Engine、重新配置、播放重试或证据失败后继续录音。
+- `VPCSession`仅将本次已加载buffer传入离线finish；实时callback及其所有权完全不变。没有新增实时IO、锁、分配、字符串或DSP，也没有新依赖/通用实验框架。
+- 原16秒admission、13秒评分、0.5秒post-roll、至少0.5秒控制余量、250ms提示预算、64MiB PCM及8MiB诊断预算均不扩大。记录器原60秒全局硬限也未改变。
+- 新离线状态有界：容器原4096条record及每块128KiB上限继续生效；参考锚最多4096，分布每阶段最多16个原生秒格、pending最多34格、声道最多32。只保留统计和锚点，不缓存全部Render，也不复制已加载素材。超界直接UNVERIFIED/失败。原64KiB私有manifest写入限额不扩大；完整三声道合成finish能在此限额内封存，超大元数据仍写入失败而非无限扩容。此为静态容量审核，未宣称实机CPU/RSS已测量。
+- 宽时钟包络、严格原样匹配、合法混音/格式转换、真实异步通知/晚到callback/设备调度和实际运行资源开销仍`DEVICE_UNVERIFIED`。真实声源、内容、持续物理重叠、回声效果均未测量。
+
+### 14.6 三维复审、Stage7与收口
+
+**TECHNICAL_REVIEW：NON_DEVICE_FIX_REVIEWED / DEVICE_UNVERIFIED。** 修复误拒合法迟到与误接收不足Render的证据逻辑；不改Apple API接入、VP算法或音频图。严格参考模型可能保守拒收，不宣称已经排除全部实机工程问题。
+
+**ENGINEERING_REVIEW：NON_DEVICE_CHECKS_PASSED / REVIEW_PENDING。** 371项及完整检查通过；独立只读源码复审未留CRITICAL/MAJOR；供主控审核，不自动冻结或解锁设备。
+
+**EVIDENCE_REVIEW：SYNTHETIC_DIGITAL_EVIDENCE_ONLY。** 数字覆盖、显示控制、素材匹配、物理双讲、真人保留和残回声分层；后面三项仍UNVERIFIED。没有私人素材分析、人工听辨或Apple声学能力结果。
+
+| Stage7 Forbidden Checklist | 裁定与证据 |
+| --- | --- |
+| 当前Stage、六红线及平台边界 | PASS；仅Stage7.5独立VP-C控制/离线证据修复，无新平台或Stage8 |
+| Qwen/Provider/Runtime/Test2 | PASS；源码不变，无主链调用、Runtime API/generation/声源资格/interrupt/cancel/clear变化 |
+| DR/Studio/Memory/Session/Store | PASS；无schema、文件内容、状态所有权或调度变化 |
+| 冻结音频组件 | PASS；Driver、Tap、C/header、PlaybackLifecycle、RecorderOwner及配置监听均逐字节不变；原图、ON_ONLY和固定语料/素材合同不变 |
+| 历史与原工作区 | PASS；01–21和本报告旧前缀不变，A/B历史未追改；未操作原ACE3、SSD/quarantine或历史私人资产 |
+| 设备/权限/私人数据 | PASS；无Engine启动、真实录音/外放、TCC或设备查询；未读取私人PCM、素材或登记 |
+| Git/隐私 | PASS；仅本文及上表独立VP-C源码/测试，无私人PCM、UID/摘要、登记JSON、素材SHA、原始日志、私人路径或密钥 |
+
+```text
+VP-C Preparation = APPROVED
+VP-C Implementation = REVIEW_PENDING
+VP-C Engineering MAJOR = 0_OPEN (current scoped review)
+VP-C Device Run = NOT_AUTHORIZED
+VP-C Acoustic Evidence = NOT_MEASURED
+VP-D/E = NOT_AUTHORIZED
+Runtime Integration = NOT_AUTHORIZED
+Apple AEC Formal PASS = NOT_ESTABLISHED
+Test3 = BLOCKED
+Test3.execution_authorized = false
+```
+
+完成本轮授权提交推送后停止，等待主控独立源码审核；不运行VP-C或进入任何后续实验。

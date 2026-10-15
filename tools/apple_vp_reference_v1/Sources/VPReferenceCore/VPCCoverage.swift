@@ -14,6 +14,9 @@ public struct VPCCoverage: Encodable {
         public let plannedEndSeconds: Double
         public let startAbsoluteEarliest: UInt64
         public let endAbsoluteLatest: UInt64
+        public let startBoundary: VPCPlannedBoundary
+        public let endBoundary: VPCPlannedBoundary
+        public let actualControl: VPCControlSpan
         public let minimumAbsoluteSpanTicks: UInt64
         public let minimumDurationVerified: Bool
         public var inputSampleSpan: UInt64?
@@ -31,7 +34,8 @@ public struct VPCCoverage: Encodable {
     public private(set) var windows: [Window] = []
     public let meaning =
         "Raw host anchors bracket event-local windows in continuous digital sample sequences; "
-        + "observed boundaries include recorded cue lateness; acoustic timing remains unverified"
+        + "fixed planned boundaries use monotonic local brackets; "
+        + "actual cue spans are separate; acoustic timing unverified"
     private var previous: [UInt32: VPFrameIdentity] = [:]
     private var failed = false
     private var timebaseNumerator: UInt32 = 0
@@ -83,7 +87,7 @@ public struct VPCCoverage: Encodable {
         }
         timebaseNumerator = events[0].numerator
         timebaseDenominator = events[0].denominator
-        makeWindows(events)
+        makeWindows(events, receipts: receipts)
     }
 
     private struct Plan {
@@ -94,7 +98,7 @@ public struct VPCCoverage: Encodable {
         let end: Double
     }
 
-    private mutating func makeWindows(_ events: [VPBClock]) {
+    private mutating func makeWindows(_ events: [VPBClock], receipts: [VPBDisplayReceipt]) {
         let bounds = [
             Plan(name: "formal13", first: 1, last: 7, start: 0, end: 13),
             Plan(name: "quiet", first: 1, last: 2, start: 0, end: 2),
@@ -105,19 +109,32 @@ public struct VPCCoverage: Encodable {
             Plan(name: "tail", first: 6, last: 7, start: 10, end: 13),
             Plan(name: "postRoll", first: 7, last: 8, start: 13, end: 13.5)
         ]
+        guard let clocks = VPCPlannedBoundary.ordered(events: events, receipts: receipts) else {
+            reject("C_LOCAL_CLOCK_ORDER_INVALID")
+            return
+        }
+        let cueIndices = [1: 0, 2: 1, 4: 2, 5: 3, 6: 4, 7: 5]
         for plan in bounds {
-            let first = events[plan.first]
-            let last = events[plan.last]
-            let minimum = last.absoluteBefore - first.absoluteAfter
+            guard let start = VPCPlannedBoundary.make(origin: events[1], seconds: plan.start, clocks: clocks),
+                let end = VPCPlannedBoundary.make(origin: events[1], seconds: plan.end, clocks: clocks),
+                end.absoluteLatest > start.absoluteEarliest,
+                let firstCue = cueIndices[plan.first]
+            else {
+                reject("C_PLANNED_BOUNDARY_UNBRACKETED")
+                return
+            }
+            let actual = VPCControlSpan(
+                start: receipts[firstCue].displayed,
+                end: cueIndices[plan.last].map { receipts[$0].requested } ?? events[plan.last],
+                plannedSeconds: plan.end - plan.start, origin: events[1], startOffset: plan.start)
+            let minimum = events[plan.last].absoluteBefore - events[plan.first].absoluteAfter
             windows.append(
                 Window(
                     name: plan.name, required: plan.name != "postRoll",
                     plannedStartSeconds: plan.start, plannedEndSeconds: plan.end,
-                    startAbsoluteEarliest: first.absoluteBefore, endAbsoluteLatest: last.absoluteAfter,
-                    minimumAbsoluteSpanTicks: minimum,
-                    minimumDurationVerified: durationVerified(
-                        ticks: minimum,
-                        halfSeconds: UInt64((plan.end - plan.start) * 2))))
+                    startAbsoluteEarliest: start.absoluteEarliest, endAbsoluteLatest: end.absoluteLatest,
+                    startBoundary: start, endBoundary: end, actualControl: actual,
+                    minimumAbsoluteSpanTicks: minimum, minimumDurationVerified: actual.valid))
         }
     }
 
@@ -175,6 +192,8 @@ public struct VPCCoverage: Encodable {
                 window.minimumDurationVerified
                 && samplesCover(windows[index].inputSampleSpan, ticks: ticks, stream: UInt32(VP_STREAM_INPUT))
                 && samplesCover(windows[index].renderSampleSpan, ticks: ticks, stream: UInt32(VP_STREAM_RENDER))
+                && plannedSamples(windows[index].inputSampleSpan, window: window, stream: UInt32(VP_STREAM_INPUT))
+                && plannedSamples(windows[index].renderSampleSpan, window: window, stream: UInt32(VP_STREAM_RENDER))
         }
         guard windows.filter(\.required).allSatisfy(\.covered) else {
             reject("HOST_ANCHORS_OR_SAMPLE_SPAN_DO_NOT_COVER_FORMAL_WINDOWS")
@@ -191,11 +210,9 @@ public struct VPCCoverage: Encodable {
         status = "UNVERIFIED"
     }
 
-    private func durationVerified(ticks: UInt64, halfSeconds: UInt64) -> Bool {
-        guard let left = product([ticks, UInt64(timebaseNumerator), 2]),
-            let right = product([halfSeconds, 1_000_000_000, UInt64(timebaseDenominator)])
-        else { return false }
-        return left >= right
+    private func plannedSamples(_ frames: UInt64?, window: Window, stream: UInt32) -> Bool {
+        guard let frames, let rate = previous[stream]?.format.mSampleRate else { return false }
+        return Double(frames) >= (window.plannedEndSeconds - window.plannedStartSeconds) * rate
     }
 
     private func sampleSpan(_ first: Anchor?, _ last: Anchor?) -> UInt64? {

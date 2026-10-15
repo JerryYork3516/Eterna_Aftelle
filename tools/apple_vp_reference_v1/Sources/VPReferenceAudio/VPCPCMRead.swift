@@ -1,9 +1,12 @@
+import AVFoundation
 import Foundation
 import VPRecorder
 import VPReferenceCore
 
 struct VPCPCMRead: Encodable {
     var coverage: VPCCoverage
+    var reference: VPCRenderReference
+    var distribution: VPCRenderDistribution
     var inputChannels: [VPBChannelStatistics] = []
     var renderChannels: [VPBChannelStatistics] = []
     var renderPlayNonZeroSamples: UInt64 = 0
@@ -23,7 +26,8 @@ struct VPCPCMRead: Encodable {
     }
 
     static func evaluate(
-        directory: URL, events: [VPBClock], receipts: [VPBDisplayReceipt], arm: UInt64?
+        directory: URL, events: [VPBClock], receipts: [VPBDisplayReceipt], arm: UInt64?,
+        material: AVAudioPCMBuffer? = nil
     ) throws -> Self {
         let url = directory.appendingPathComponent("evidence.vp0")
         let before = url.path.withCString { vp_recorder_validate_file($0) }
@@ -42,7 +46,9 @@ struct VPCPCMRead: Encodable {
             events[1].seconds(events[1].continuous - arm) <= 2, events[8].continuous >= arm,
             events[8].seconds(events[8].continuous - arm) < 16
         else { throw failure() }
-        var result = Self(coverage: VPCCoverage(events: events, receipts: receipts))
+        var result = Self(
+            coverage: VPCCoverage(events: events, receipts: receipts),
+            reference: VPCRenderReference(source: material), distribution: VPCRenderDistribution(receipts: receipts))
         var total: UInt64 = 0
         for index in 0..<before.record_count {
             try autoreleasepool {
@@ -68,12 +74,19 @@ struct VPCPCMRead: Encodable {
         guard after.complete, after.checksum_matches, after.invalid_reasons == 0,
             after.record_count == before.record_count, after.pcm_bytes == before.pcm_bytes, total == before.pcm_bytes
         else { throw failure() }
-        result.coverage.finish(expectedRecords: before.record_count)
-        let finite = (result.inputChannels + result.renderChannels).allSatisfy { $0.nonFinite == 0 }
-        if result.coverage.formalWindowsCovered, result.renderPlayNonZeroSamples > 0, finite {
-            result.status = "DIGITAL_DUAL_STREAM_AND_RENDER_PRESENT"
-        }
+        result.finish(expectedRecords: before.record_count, events: events)
         return result
+    }
+
+    private mutating func finish(expectedRecords: UInt64, events: [VPBClock]) {
+        coverage.finish(expectedRecords: expectedRecords)
+        let finite = (inputChannels + renderChannels).allSatisfy { $0.nonFinite == 0 }
+        reference.finish(events: events)
+        distribution.finish(reference: reference)
+        let playbackVerified = distribution.status == "MATCHED_SOURCE_AND_DOUBLE_TALK_DIGITAL_SIGNAL"
+        if coverage.formalWindowsCovered, playbackVerified, finite {
+            status = "DIGITAL_DUAL_STREAM_AND_RENDER_PRESENT"
+        }
     }
 
     private mutating func include(
@@ -89,6 +102,8 @@ struct VPCPCMRead: Encodable {
         guard channels.count == count else { throw Self.failure() }
         // A whole block is admitted only after its next Render host anchor is also inside play.
         if render {
+            reference.prepare(identity)
+            try distribution.prepare(identity)
             acceptPendingRender(identity: identity, start: events[3], end: events[6])
             pendingRenderHost = identity.host_time
             pendingPlayNonZero = 0
@@ -98,15 +113,19 @@ struct VPCPCMRead: Encodable {
                 let offset = planar ? channel * frames + frame : frame * count + channel
                 let value = Float(bitPattern: VPBPCMRead.u32(data, offset * 4))
                 channels[channel].include(value)
-                if render, value.isFinite, value != 0 {
+                if render {
                     let sample = identity.sample_time.addingReportingOverflow(Int64(frame))
                     guard !sample.overflow else { throw Self.failure() }
                     let anchor = SignalAnchor(
                         recordIndex: index, bufferHostTime: identity.host_time,
                         sampleTime: sample.partialValue, channel: channel)
-                    if firstRenderSignal == nil { firstRenderSignal = anchor }
-                    lastRenderSignal = anchor
-                    pendingPlayNonZero += 1
+                    reference.include(value, channel: channel, sample: sample.partialValue)
+                    try distribution.include(value, anchor: anchor, channelCount: count)
+                    if value.isFinite, value != 0 {
+                        if firstRenderSignal == nil { firstRenderSignal = anchor }
+                        lastRenderSignal = anchor
+                        pendingPlayNonZero += 1
+                    }
                 }
             }
         }

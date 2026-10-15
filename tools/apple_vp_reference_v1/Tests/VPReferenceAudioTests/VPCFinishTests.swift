@@ -33,12 +33,12 @@ final class VPCFinishTests: XCTestCase {
                 XCTAssertThrowsError(
                     try VPCSession.finish(
                         recorder: fixture.owner,
-                        manifest: &context.manifest, directory: fixture.directory))
+                        manifest: &context.manifest, directory: fixture.directory, material: fixture.material()))
             } else {
                 XCTAssertNoThrow(
                     try VPCSession.finish(
                         recorder: fixture.owner,
-                        manifest: &context.manifest, directory: fixture.directory))
+                        manifest: &context.manifest, directory: fixture.directory, material: fixture.material()))
             }
             XCTAssertEqual(
                 context.manifest.vpcExperiment?.engineeringValidity,

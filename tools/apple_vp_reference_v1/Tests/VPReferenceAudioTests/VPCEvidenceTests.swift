@@ -133,24 +133,24 @@ final class VPCEvidenceTests: XCTestCase {
         let fixture = try VPCPCMFixture()
         try fixture.write()
         XCTAssertTrue(fixture.owner.seal())
-        for (index, cueIndex, name) in [(6, 4, "tail"), (4, 2, "doubleTalkCandidate")] {
+        for (index, cueIndex) in [(6, 4), (4, 2)] {
             var events = fixture.events
             let old = events[index]
             events[index] = VPBClock(
-                id: old.id, absoluteBefore: old.absoluteBefore + 200,
-                continuous: old.continuous + 200, absoluteAfter: old.absoluteAfter + 200,
+                id: old.id, absoluteBefore: old.absoluteBefore + 300,
+                continuous: old.continuous + 300, absoluteAfter: old.absoluteAfter + 300,
                 numerator: old.numerator, denominator: old.denominator)
             var receipts = fixture.receipts
             let phase = VPCCue.allCases[cueIndex]
             receipts[cueIndex] = fixture.receipt(
                 phase: phase,
-                request: old.absoluteBefore + 202, display: old.absoluteBefore + 204)
+                request: old.absoluteBefore + 302, display: old.absoluteBefore + 304)
             let value = try VPCPCMRead.evaluate(
                 directory: fixture.directory, events: events,
                 receipts: receipts, arm: fixture.arm)
             XCTAssertEqual(value.status, "UNVERIFIED")
-            XCTAssertFalse(try XCTUnwrap(value.coverage.windows.first { $0.name == name }).minimumDurationVerified)
-            XCTAssertTrue(try XCTUnwrap(value.coverage.windows.first { $0.name == "formal13" }).covered)
+            XCTAssertFalse(value.coverage.formalWindowsCovered)
+            XCTAssertEqual(value.coverage.reason, "C_CUE_TIMING_INVALID")
         }
     }
 
@@ -243,6 +243,7 @@ final class VPCEvidenceTests: XCTestCase {
 
     private func read(_ fixture: VPCPCMFixture) throws -> VPCPCMRead {
         try VPCPCMRead.evaluate(
-            directory: fixture.directory, events: fixture.events, receipts: fixture.receipts, arm: fixture.arm)
+            directory: fixture.directory, events: fixture.events, receipts: fixture.receipts, arm: fixture.arm,
+            material: fixture.material())
     }
 }
