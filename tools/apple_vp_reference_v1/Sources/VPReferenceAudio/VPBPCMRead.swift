@@ -134,18 +134,18 @@ struct VPBPCMRead: Encodable {
         }
     }
 
-    private static func read(_ handle: FileHandle, count: Int) throws -> Data {
+    static func read(_ handle: FileHandle, count: Int) throws -> Data {
         guard let bytes = try handle.read(upToCount: count), bytes.count == count else {
             throw EngineeringFailure(stage: .recorder, code: .experimentCoverageUnverified)
         }
         return bytes
     }
 
-    private static func u32(_ data: Data, _ offset: Int) -> UInt32 {
+    static func u32(_ data: Data, _ offset: Int) -> UInt32 {
         data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) }
     }
 
-    private static func u64(_ data: Data, _ offset: Int) -> UInt64 {
+    static func u64(_ data: Data, _ offset: Int) -> UInt64 {
         data.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)) }
     }
 }

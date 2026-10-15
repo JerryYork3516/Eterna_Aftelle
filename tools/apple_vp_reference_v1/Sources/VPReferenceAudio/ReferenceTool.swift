@@ -7,22 +7,22 @@ import VPReferenceCore
 enum ReferenceTool {
     static func main() async {
         do {
-            switch try CommandLinePlan.parse(Array(CommandLine.arguments.dropFirst())) {
+            let command = try CommandLinePlan.parse(Array(CommandLine.arguments.dropFirst()))
+            switch command {
             case .help:
                 printHelp()
             case .verify(let directory):
                 verify(directory: directory)
-            case .requestMicrophone:
-                let status = try await MicrophonePermissionPlan().requestExplicitly(using: MicrophonePermissionAccess())
-                print("permission_status=\(status.rawValue); no audio started")
-            case .permissionStatus:
-                print("permission_status=\(MicrophonePermissionAccess.currentStatus().rawValue); no audio started")
+            case .requestMicrophone, .permissionStatus:
+                try await microphoneCommand(command)
             case .inspectRoute(let configuration):
                 try RouteInspection.run(configuration: configuration)
             case .sourceProbe(let request):
                 try runSourceProbe(request)
             case .vpa(let request):
                 try runVPA(request)
+            case .vpc(let request):
+                try runVPC(request: request)
             case .vpb(let request):
                 try runVPB(request: request)
             case .record(let configuration):
@@ -33,6 +33,15 @@ enum ReferenceTool {
             let failure = EngineeringFailure.capture(error, stage: .command, code: .invalidArguments)
             emitFailure(failure)
             exit(2)
+        }
+    }
+
+    private static func microphoneCommand(_ command: ReferenceCommand) async throws {
+        if case .permissionStatus = command {
+            print("permission_status=\(MicrophonePermissionAccess.currentStatus().rawValue); no audio started")
+        } else {
+            let status = try await MicrophonePermissionPlan().requestExplicitly(using: MicrophonePermissionAccess())
+            print("permission_status=\(status.rawValue); no audio started")
         }
     }
 
@@ -51,6 +60,9 @@ enum ReferenceTool {
             vp-b --authorize-vp-b --target-registration <existing-private-json> \
             --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON --duration 16 \
             --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
+            vp-c --authorize-vp-c --material-content-reviewed <same material/registration flags as vp-a> \
+            --enable-audio --arm-diagnostics --mode VP_ON --duration 16
+            VP-C requires separate site consent and material speech review; no automatic retry or mode switch.
             VP-B requires a visible native prompt and separate site consent; no resident playback.
             vp-a --authorize-vp-a --target-registration <existing-private-json> \
             --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON --duration 16 \
@@ -84,6 +96,16 @@ enum ReferenceTool {
         let confirmed = try prompt.confirm(mode: request.configuration.mode)
         let outcome = try VPBSession().run(request: request, preflight: confirmed, prompt: prompt)
         print("vp_b_evidence=\(outcome.status) content=EVIDENCE_UNVERIFIED source_qualification=false")
+    }
+
+    @MainActor
+    private static func runVPC(request: VPCRequest) throws {
+        try request.validate()
+        let prompt = VPCPrompt()
+        defer { prompt.close() }
+        let confirmed = try prompt.confirm(mode: request.configuration.mode)
+        let outcome = try VPCSession().run(request: request, preflight: confirmed, prompt: prompt)
+        print("vp_c_evidence=\(outcome.status) acoustics=EVIDENCE_UNVERIFIED source_qualification=false")
     }
 
     private static func emitRecordOutcome(_ outcome: AudioRunOutcome) throws {

@@ -10,6 +10,7 @@ public enum ReferenceCommand {
     case sourceProbe(SourceProbeRequest)
     case vpa(VPARequest)
     case vpb(VPBRequest)
+    case vpc(VPCRequest)
 }
 
 public enum CommandLinePlan {
@@ -21,7 +22,7 @@ public enum CommandLinePlan {
         if command == "verify", arguments.count == 2 {
             return .verify(URL(fileURLWithPath: arguments[1]))
         }
-        guard ["record", "inspect-route", "source-probe", "vp-a", "vp-b"].contains(command) else {
+        guard ["record", "inspect-route", "source-probe", "vp-a", "vp-b", "vp-c"].contains(command) else {
             throw ReferenceFailure.blocked("Unknown command; default command only displays help")
         }
         let options = try parseOptions(Array(arguments.dropFirst()), command: command)
@@ -45,6 +46,9 @@ public enum CommandLinePlan {
         try configuration.validateForAudio()
         if command == "vp-b" {
             return try nearEndCommand(configuration: configuration, options: options)
+        }
+        if command == "vp-c" {
+            return try doubleTalkCommand(configuration: configuration, options: options)
         }
         if command == "vp-a" {
             guard let registration = options["--target-registration"], let materialSHA = options["--material-sha256"],
@@ -89,6 +93,23 @@ public enum CommandLinePlan {
         return .vpb(request)
     }
 
+    private static func doubleTalkCommand(
+        configuration: RunConfiguration, options: [String: String]
+    ) throws -> ReferenceCommand {
+        guard let registration = options["--target-registration"], let fileSHA = options["--material-sha256"],
+            let pcmSHA = options["--material-pcm-sha256"]
+        else {
+            throw EngineeringFailure(stage: .command, code: .invalidArguments)
+        }
+        let request = VPCRequest(
+            materialRequest: VPARequest(
+                configuration: configuration, experimentAuthorized: options["--authorize-vp-c"] != nil,
+                targetRegistrationURL: URL(fileURLWithPath: registration), materialSHA256: fileSHA,
+                nativePCMSHA256: pcmSHA), materialContentReviewed: options["--material-content-reviewed"] != nil)
+        try request.validate()
+        return .vpc(request)
+    }
+
     private static func parseOptions(_ arguments: [String], command: String) throws -> [String: String] {
         var flags: Set<String> = ["--enable-audio", "--arm-diagnostics"]
         var values: Set<String> = ["--mode", "--duration", "--output-dir", "--study-id", "--material"]
@@ -98,6 +119,10 @@ public enum CommandLinePlan {
         }
         if command == "vp-a" {
             flags.insert("--authorize-vp-a")
+            values.formUnion(["--target-registration", "--material-sha256", "--material-pcm-sha256"])
+        }
+        if command == "vp-c" {
+            flags.formUnion(["--authorize-vp-c", "--material-content-reviewed"])
             values.formUnion(["--target-registration", "--material-sha256", "--material-pcm-sha256"])
         }
         if command == "vp-b" {

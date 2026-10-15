@@ -10,7 +10,7 @@ allowed = {
 for source in (root / "Sources").rglob("*.swift"):
     text = source.read_text()
     imports = re.findall(r"^import (\w+)", text, re.MULTILINE)
-    permitted = allowed | {"AppKit"} if source.name == "VPBPrompt.swift" else allowed
+    permitted = allowed | {"AppKit"} if source.name in {"VPBPrompt.swift", "VPCPrompt.swift"} else allowed
     assert set(imports) <= permitted, (source.name, imports)
     assert not re.search(
         r"AudioObjectSetPropertyData|AudioUnitSetProperty|VoiceActivityDetection|"
@@ -86,3 +86,17 @@ near_evidence = (root / "Sources/VPReferenceAudio/VPBEvidence.swift").read_text(
 assert 'sourceQualificationGranted = false' in near_evidence and 'researchResult = VPBResearchResult.unverified' in near_evidence
 assert near_end.count('removeTap(onBus: 0)') == 2 and near_end.count('driver.engine.stop()') == 1
 print("PASS: SDK-only sources, isolated unknown-source probe, fail-closed playback, bounded tap entry")
+
+c_session = (root / "Sources/VPReferenceAudio/VPCSession.swift").read_text()
+assert c_session.index("request.validate()") < c_session.index("PCMSourceMaterial.load")
+assert c_session.count("AppleEngineDriver(") == 1 and c_session.count("RecorderOwner(") == 1
+assert c_session.count("driver.player.play()") == 1 and c_session.count("driver.player.stop()") == 1
+assert c_session.count("driver.engine.stop()") == 1 and c_session.count("removeTap(onBus: 0)") == 2
+assert c_session.count("recorder.seal()") == 1 and "expectsRender: true" in c_session
+assert "VPCWindow.run" in c_session and "VPCPCMRead.evaluate" in c_session
+assert not re.search(r"requestAccess|requestExplicitly|setVolume|VoiceActivityDetection", c_session)
+print("PASS: isolated VP-C, single playback owner, unchanged callback and no automatic permission")
+assert re.search(r"VPCWindow.start\(\s*schedule: \{ driver.schedulePlayback\(\) \}", c_session)
+assert c_session.count("driver.schedulePlayback()") == 1
+assert c_session.index("driver.schedulePlayback()") < c_session.index("driver.engine.prepare()")
+assert c_session.index("driver.engine.prepare()") < c_session.index("try driver.engine.start()")
