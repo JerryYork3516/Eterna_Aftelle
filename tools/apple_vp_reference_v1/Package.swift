@@ -19,8 +19,10 @@ let package = Package(
         .executableTarget(
             name: "VPReferenceAudio",
             dependencies: ["VPReferenceCore", "VPRecorder"],
+            resources: [.process("Resources")],
             linkerSettings: [
                 .linkedFramework("AVFoundation"), .linkedFramework("CoreAudio"),
+                .linkedFramework("AppKit"),
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
                     "-Xlinker", referenceInfoPlistPath

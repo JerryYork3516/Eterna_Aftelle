@@ -17,6 +17,8 @@ public enum FailureStage: String, Codable, Sendable, CaseIterable {
 
 public enum FailureCode: String, Sendable {
     case invalidArguments = "INVALID_ARGUMENTS"
+    case promptUnconfirmed = "PROMPT_UNCONFIRMED"
+    case inputNonFiniteSamples = "INPUT_NON_FINITE_SAMPLES"
     case sessionAlreadyUsed = "SESSION_ALREADY_USED"
     case materialLoadFailed = "MATERIAL_LOAD_FAILED"
     case materialIdentityMismatch = "MATERIAL_IDENTITY_MISMATCH"

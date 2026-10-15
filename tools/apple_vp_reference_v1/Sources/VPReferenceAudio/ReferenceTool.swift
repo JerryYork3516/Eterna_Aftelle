@@ -9,27 +9,7 @@ enum ReferenceTool {
         do {
             switch try CommandLinePlan.parse(Array(CommandLine.arguments.dropFirst())) {
             case .help:
-                print(
-                    """
-                    Apple VP reference v1: diagnostics and audio are OFF by default.
-                    help
-                    verify <private-evidence-directory>
-                    request-microphone
-                    permission-status
-                    inspect-route <same explicit flags as record; no material; no engine start>
-                    source-probe --authorize-source-probe --probe-registration <private-json> \
-                    --enable-audio --arm-diagnostics --mode VP_ON --duration 8 \
-                    --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
-                    vp-a --authorize-vp-a --target-registration <existing-private-json> \
-                    --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON --duration 16 \
-                    --material <fixed-8s-PCM> --material-sha256 <preapproved-file-SHA256> \
-                    --material-pcm-sha256 <preapproved-native-PCM-SHA256> \
-                    --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
-                    record --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON \
-                    --duration <seconds <= 60> --study-id <non-private-alias> \
-                    --output-dir <new-private-directory-outside-Git> [--material <registered-PCM-file>]
-                    Device recording requires separate controller authorization. No Runtime authority is granted.
-                    """)
+                printHelp()
             case .verify(let directory):
                 verify(directory: directory)
             case .requestMicrophone:
@@ -40,13 +20,11 @@ enum ReferenceTool {
             case .inspectRoute(let configuration):
                 try RouteInspection.run(configuration: configuration)
             case .sourceProbe(let request):
-                let outcome = try SourceProbe().run(request: request)
-                print("source_status=SOURCE_UNVERIFIED source_qualification=false evidence=\(outcome.status)")
-                print("input_records=\(outcome.inputWrittenRecords) input_frames=\(outcome.inputWrittenFrames)")
+                try runSourceProbe(request)
             case .vpa(let request):
-                let session = VP0AudioSession()
-                let outcome = try session.runVPA(request: request)
-                print("vp_a_source=SOURCE_UNVERIFIED source_qualification=false evidence=\(outcome.status)")
+                try runVPA(request)
+            case .vpb(let request):
+                try runVPB(request: request)
             case .record(let configuration):
                 let outcome = try VP0AudioSession().run(configuration: configuration)
                 try emitRecordOutcome(outcome)
@@ -56,6 +34,56 @@ enum ReferenceTool {
             emitFailure(failure)
             exit(2)
         }
+    }
+
+    private static func printHelp() {
+        print(
+            """
+            Apple VP reference v1: diagnostics and audio are OFF by default.
+            help
+            verify <private-evidence-directory>
+            request-microphone
+            permission-status
+            inspect-route <same explicit flags as record; no material; no engine start>
+            source-probe --authorize-source-probe --probe-registration <private-json> \
+            --enable-audio --arm-diagnostics --mode VP_ON --duration 8 \
+            --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
+            vp-b --authorize-vp-b --target-registration <existing-private-json> \
+            --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON --duration 16 \
+            --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
+            VP-B requires a visible native prompt and separate site consent; no resident playback.
+            vp-a --authorize-vp-a --target-registration <existing-private-json> \
+            --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON --duration 16 \
+            --material <fixed-8s-PCM> --material-sha256 <preapproved-file-SHA256> \
+            --material-pcm-sha256 <preapproved-native-PCM-SHA256> \
+            --study-id <non-private-alias> --output-dir <new-private-directory-outside-Git>
+            record --enable-audio --arm-diagnostics --mode VP_OFF|VP_ON \
+            --duration <seconds <= 60> --study-id <non-private-alias> \
+            --output-dir <new-private-directory-outside-Git> [--material <registered-PCM-file>]
+            Device recording requires separate controller authorization. No Runtime authority is granted.
+            """)
+    }
+
+    private static func runSourceProbe(_ request: SourceProbeRequest) throws {
+        let outcome = try SourceProbe().run(request: request)
+        print("source_status=SOURCE_UNVERIFIED source_qualification=false evidence=\(outcome.status)")
+        print("input_records=\(outcome.inputWrittenRecords) input_frames=\(outcome.inputWrittenFrames)")
+    }
+
+    private static func runVPA(_ request: VPARequest) throws {
+        let session = VP0AudioSession()
+        let outcome = try session.runVPA(request: request)
+        print("vp_a_source=SOURCE_UNVERIFIED source_qualification=false evidence=\(outcome.status)")
+    }
+
+    @MainActor
+    private static func runVPB(request: VPBRequest) throws {
+        try request.validate()
+        let prompt = VPBPrompt()
+        defer { prompt.close() }
+        let confirmed = try prompt.confirm(mode: request.configuration.mode)
+        let outcome = try VPBSession().run(request: request, preflight: confirmed, prompt: prompt)
+        print("vp_b_evidence=\(outcome.status) content=EVIDENCE_UNVERIFIED source_qualification=false")
     }
 
     private static func emitRecordOutcome(_ outcome: AudioRunOutcome) throws {

@@ -9,6 +9,7 @@ public enum ReferenceCommand {
     case inspectRoute(RunConfiguration)
     case sourceProbe(SourceProbeRequest)
     case vpa(VPARequest)
+    case vpb(VPBRequest)
 }
 
 public enum CommandLinePlan {
@@ -20,7 +21,7 @@ public enum CommandLinePlan {
         if command == "verify", arguments.count == 2 {
             return .verify(URL(fileURLWithPath: arguments[1]))
         }
-        guard ["record", "inspect-route", "source-probe", "vp-a"].contains(command) else {
+        guard ["record", "inspect-route", "source-probe", "vp-a", "vp-b"].contains(command) else {
             throw ReferenceFailure.blocked("Unknown command; default command only displays help")
         }
         let options = try parseOptions(Array(arguments.dropFirst()), command: command)
@@ -42,6 +43,9 @@ public enum CommandLinePlan {
             materialURL: options["--material"].map { URL(fileURLWithPath: $0) }, studyID: study
         )
         try configuration.validateForAudio()
+        if command == "vp-b" {
+            return try nearEndCommand(configuration: configuration, options: options)
+        }
         if command == "vp-a" {
             guard let registration = options["--target-registration"], let materialSHA = options["--material-sha256"],
                 let nativeSHA = options["--material-pcm-sha256"]
@@ -72,6 +76,19 @@ public enum CommandLinePlan {
         return .record(configuration)
     }
 
+    private static func nearEndCommand(
+        configuration: RunConfiguration, options: [String: String]
+    ) throws -> ReferenceCommand {
+        guard let registration = options["--target-registration"] else {
+            throw EngineeringFailure(stage: .command, code: .invalidArguments)
+        }
+        let request = VPBRequest(
+            configuration: configuration, authorized: options["--authorize-vp-b"] != nil,
+            registrationURL: URL(fileURLWithPath: registration))
+        try request.validate()
+        return .vpb(request)
+    }
+
     private static func parseOptions(_ arguments: [String], command: String) throws -> [String: String] {
         var flags: Set<String> = ["--enable-audio", "--arm-diagnostics"]
         var values: Set<String> = ["--mode", "--duration", "--output-dir", "--study-id", "--material"]
@@ -82,6 +99,11 @@ public enum CommandLinePlan {
         if command == "vp-a" {
             flags.insert("--authorize-vp-a")
             values.formUnion(["--target-registration", "--material-sha256", "--material-pcm-sha256"])
+        }
+        if command == "vp-b" {
+            flags.insert("--authorize-vp-b")
+            values.insert("--target-registration")
+            values.remove("--material")
         }
         var options: [String: String] = [:]
         var index = 0

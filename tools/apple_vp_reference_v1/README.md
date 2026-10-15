@@ -56,6 +56,35 @@ The full proposed physical protocol and remaining limits are in the VP-A report.
 
 ## Future device recording — not authorized by this implementation delivery
 
+### VP-B live near-end research — implementation review pending
+
+`vp-b` is a separate, single-arm, no-playback entry for `VPB_LIVE_ZH_V1`.
+Future use requires separate controller and site approval, `--authorize-vp-b`,
+both live flags, one explicit mode, `--duration 16`, the existing
+`--target-registration`, a study alias and a new private output directory.
+Material, automatic mode switching, permission requests and retries are forbidden.
+
+A native Chinese prompt must be visible and the user must click its confirmation
+before permission inspection, engine creation or capture. Per-cue receipts mean
+AppKit submitted a display while the window was visible, not that the user read
+it or spoke. Closing/hiding the window fails the next observed control check.
+Real window interaction remains NOT_MEASURED; this delivery never opens it.
+
+Input-only prewarm and opening checks must finish within 3 seconds from arm.
+The fixed 12-second observation uses the approved quiet/normal/short/soft timeline,
+followed by a fixed 0.5-second diagnostic post-roll from its actual boundary.
+All admission remains under 16 seconds; no PCM-dependent extension is allowed.
+Render is retained if present, but is not required for Input readiness or coverage.
+The original record binding guard and source-probe/vp-a contracts remain unchanged.
+
+After one stop/tap removal/seal, bounded offline analysis checks all native Input
+channels and raw host/sample coverage. RMS, peaks and exceptional samples are
+descriptive; all content judgments stay `EVIDENCE_UNVERIFIED` pending separately
+authorized manual listening. See report 16 for non-device checks and remaining
+device/UI/timing limitations. No VP-B device run is authorized by this delivery.
+
+### Ordinary record
+
 After separate controller approval, microphone authorization and a fixed physical
 protocol, a single invocation may use `record --enable-audio --arm-diagnostics`
 with explicit `--mode VP_OFF` or `VP_ON`, `--duration`, `--study-id`, and a new

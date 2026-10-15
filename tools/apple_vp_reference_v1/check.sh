@@ -55,4 +55,14 @@ if .build/debug/apple-vp-reference vp-a --enable-audio --arm-diagnostics \
 fi
 test ! -e "$vp_echo_guard_dir"
 rg -q 'stage=COMMAND code=INVALID_ARGUMENTS' .build/check-echo-guard.log
+vp_near_guard_dir="${TMPDIR%/}/vp-b-missing-consent-$$"
+if .build/debug/apple-vp-reference vp-b --enable-audio --arm-diagnostics \
+  --mode VP_ON --duration 16 --study-id nondevice --output-dir "$vp_near_guard_dir" \
+  --target-registration "${TMPDIR%/}/vp-b-never-read-registration.json" \
+  > .build/check-near-end-guard.log 2>&1; then
+  print -u2 'FAIL: unapproved vp-b was accepted'
+  exit 1
+fi
+test ! -e "$vp_near_guard_dir"
+rg -q 'stage=COMMAND code=INVALID_ARGUMENTS' .build/check-near-end-guard.log
 print 'PASS: build, release, fixtures, formatting, SwiftLint and non-device CLI guards'

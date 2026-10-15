@@ -36,6 +36,7 @@ struct AudioRunManifest: Encodable {
     var diagnostics = RunDiagnostics()
     var sourceProbe: SourceProbeEvidence?
     var vpaExperiment: VPAEvidence?
+    var vpbExperiment: VPBEvidence?
     let diagnosticsSchemaVersion = 1
 
     static func create(
@@ -128,6 +129,7 @@ struct AudioRunManifest: Encodable {
         case diagnosticsSchemaVersion = "diagnostics_schema_version"
         case sourceProbe = "source_probe"
         case vpaExperiment = "vpa_experiment"
+        case vpbExperiment = "vpb_experiment"
     }
 }
 

@@ -10,7 +10,8 @@ allowed = {
 for source in (root / "Sources").rglob("*.swift"):
     text = source.read_text()
     imports = re.findall(r"^import (\w+)", text, re.MULTILINE)
-    assert set(imports) <= allowed, (source.name, imports)
+    permitted = allowed | {"AppKit"} if source.name == "VPBPrompt.swift" else allowed
+    assert set(imports) <= permitted, (source.name, imports)
     assert not re.search(
         r"AudioObjectSetPropertyData|AudioUnitSetProperty|VoiceActivityDetection|"
         r"WebRTC|RuntimeCore|NativeSpeechProvider|ProviderAdapter|Aftelle", text
@@ -76,4 +77,12 @@ assert "sourceQualificationGranted = false" in echo_evidence
 echo_window = (root / "Sources/VPReferenceCore/VPAWindow.swift").read_text()
 assert "PlaybackLifecycle.run" in echo_window and "0..<322" in echo_window
 assert "maximumObservationSeconds" in echo_window
+near_end = (root / "Sources/VPReferenceAudio/VPBSession.swift").read_text()
+assert near_end.index('preflight.validate') < near_end.index('requireAuthorized') < near_end.index('AppleEngineDriver(')
+assert not re.search(r"\.play\(|schedulePlayback|PCMSourceMaterial|requestAccess|requestExplicitly", near_end)
+assert 'SourceProbeRoutePolicy.validate(route)' in near_end and '!route.hasVerifiedBinding' in near_end
+assert near_end.count('recorder.seal()') == 1
+near_evidence = (root / "Sources/VPReferenceAudio/VPBEvidence.swift").read_text()
+assert 'sourceQualificationGranted = false' in near_evidence and 'researchResult = VPBResearchResult.unverified' in near_evidence
+assert near_end.count('removeTap(onBus: 0)') == 2 and near_end.count('driver.engine.stop()') == 1
 print("PASS: SDK-only sources, isolated unknown-source probe, fail-closed playback, bounded tap entry")
