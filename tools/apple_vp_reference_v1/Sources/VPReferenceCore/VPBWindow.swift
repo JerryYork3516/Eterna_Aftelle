@@ -36,7 +36,7 @@ public enum VPBWindow {
 
     public static func run(
         clock: (armTick: UInt64, elapsed: () -> Double), observe: (Bool) throws -> Bool,
-        event: (String) throws -> VPBClock, cue: (VPBCue) throws -> Void, wait: (Double) -> Void
+        event: (String) throws -> VPBClock, cue: (VPBCue) throws -> VPBDisplayReceipt, wait: (Double) -> Void
     ) throws {
         var previous = 0.0
         func checkedTime() throws -> Double {
@@ -70,7 +70,7 @@ public enum VPBWindow {
             if next < VPBCue.allCases.count, relative >= VPBCue.allCases[next].offset {
                 let phase = VPBCue.allCases[next]
                 let boundary = try emit(
-                    phase: phase, now: { try checkedTime() - originSeconds },
+                    context: (phase, origin), now: { try checkedTime() - originSeconds },
                     observe: { _ = try observe(true) }, event: event, cue: cue)
                 if phase == .postRoll, let boundary {
                     postRollBoundary = boundary
@@ -110,21 +110,19 @@ public enum VPBWindow {
     }
 
     private static func emit(
-        phase: VPBCue, now: () throws -> Double, observe: () throws -> Void,
-        event: (String) throws -> VPBClock, cue: (VPBCue) throws -> Void
+        context: (phase: VPBCue, origin: VPBClock), now: () throws -> Double, observe: () throws -> Void,
+        event: (String) throws -> VPBClock, cue: (VPBCue) throws -> VPBDisplayReceipt
     ) throws -> VPBClock? {
-        guard try now() < phase.end else {
-            throw EngineeringFailure(stage: .recorder, code: .probeStimulusWindowMissed)
-        }
+        let (phase, origin) = context
+        try VPBCueTiming.requireStart(phase: phase, observed: now(), origin: origin)
         try observe()
-        guard try now() < phase.end else {
-            throw EngineeringFailure(stage: .recorder, code: .probeStimulusWindowMissed)
-        }
+        try VPBCueTiming.requireStart(phase: phase, observed: now(), origin: origin)
         let boundary = phase == .quietInitial ? nil : try event(phase.rawValue)
-        guard try now() < phase.end else {
-            throw EngineeringFailure(stage: .recorder, code: .probeStimulusWindowMissed)
-        }
-        try cue(phase)
+        let observed = try now()
+        try VPBCueTiming.requireStart(phase: phase, observed: observed, origin: origin)
+        let receipt = try cue(phase)
+        let timing = VPBCueTiming(phase: phase, observed: observed, origin: origin, receipt: receipt)
+        guard timing.accepted else { throw VPBCueTimingFailure(timing: timing) }
         guard try now() < phase.end else {
             throw EngineeringFailure(stage: .recorder, code: .probeStimulusWindowMissed)
         }

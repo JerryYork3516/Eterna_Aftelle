@@ -11,7 +11,8 @@ final class VPBEvidenceTests: XCTestCase {
         let fixture = try VPBPCMFixture()
         try fixture.write(through: 13_600)
         XCTAssertTrue(vp_recorder_seal(fixture.recorder))
-        let result = try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events)
+        let result = try VPBPCMRead.evaluate(
+            directory: fixture.directory, events: fixture.events, receipts: fixture.receipts)
         XCTAssertEqual(result.status, "DIGITAL_INPUT_SPAN_COVERED")
         XCTAssertEqual(result.coverage.windows.count, 8)
         XCTAssertTrue(result.coverage.windows.allSatisfy(\.covered))
@@ -27,14 +28,16 @@ final class VPBEvidenceTests: XCTestCase {
         try fixture.write(through: 13_000)
         XCTAssertTrue(vp_recorder_seal(fixture.recorder))
         XCTAssertEqual(
-            try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events).status, "UNVERIFIED")
+            try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events, receipts: fixture.receipts)
+                .status, "UNVERIFIED")
     }
 
     func testPlanarChannelsAreRetainedWithoutSelectingOrDownmixing() throws {
         let fixture = try VPBPCMFixture()
         try fixture.write(through: 13_600, planar: true)
         XCTAssertTrue(vp_recorder_seal(fixture.recorder))
-        let result = try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events)
+        let result = try VPBPCMRead.evaluate(
+            directory: fixture.directory, events: fixture.events, receipts: fixture.receipts)
         XCTAssertEqual(result.inputChannels.map(\.peak), [0.25, 0.5, 0.75])
         XCTAssertEqual(result.status, "DIGITAL_INPUT_SPAN_COVERED")
     }
@@ -43,7 +46,8 @@ final class VPBEvidenceTests: XCTestCase {
         let fixture = try VPBPCMFixture()
         try fixture.write(through: 13_600, amplitudes: [2, -0.5, 0.75])
         XCTAssertTrue(vp_recorder_seal(fixture.recorder))
-        let result = try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events)
+        let result = try VPBPCMRead.evaluate(
+            directory: fixture.directory, events: fixture.events, receipts: fixture.receipts)
         XCTAssertGreaterThan(result.inputChannels[0].outOfRange, 0)
         XCTAssertEqual(result.status, "DIGITAL_INPUT_SPAN_COVERED")
     }
@@ -53,10 +57,88 @@ final class VPBEvidenceTests: XCTestCase {
         try fixture.write(through: 13_600)
         XCTAssertTrue(vp_recorder_seal(fixture.recorder))
         XCTAssertNoThrow(
-            try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events, expectedArmTick: fixture.arm))
+            try VPBPCMRead.evaluate(
+                directory: fixture.directory, events: fixture.events, receipts: fixture.receipts,
+                expectedArmTick: fixture.arm))
         XCTAssertThrowsError(
             try VPBPCMRead.evaluate(
-                directory: fixture.directory, events: fixture.events, expectedArmTick: fixture.arm + 1))
+                directory: fixture.directory, events: fixture.events, receipts: fixture.receipts,
+                expectedArmTick: fixture.arm + 1))
+    }
+
+    func testContinuousPCMCannotPassWithLateActualDisplay() throws {
+        let fixture = try VPBPCMFixture()
+        try fixture.write(through: 13_600)
+        XCTAssertTrue(vp_recorder_seal(fixture.recorder))
+        var receipts = fixture.receipts
+        receipts[1] = fixture.receipt(phase: .normal, request: 3_020, display: 5_800)
+        let result = try VPBPCMRead.evaluate(
+            directory: fixture.directory, events: fixture.events, receipts: receipts)
+        XCTAssertEqual(result.status, "UNVERIFIED")
+        XCTAssertFalse(result.coverage.windows[1].covered)
+        XCTAssertFalse(result.coverage.windows[1].cueTimingAccepted)
+        XCTAssertGreaterThan(result.coverage.cueTimings[1].displayLateSeconds ?? 0, 2.7)
+        XCTAssertTrue(result.coverage.windows[1].first != nil && result.coverage.windows[1].last != nil)
+    }
+
+    func testContinuousPCMCannotPassWithMissingDuplicateOrOutOfOrderReceipts() throws {
+        let fixture = try VPBPCMFixture()
+        try fixture.write(through: 13_600)
+        XCTAssertTrue(vp_recorder_seal(fixture.recorder))
+        let reordered = [fixture.receipts[1], fixture.receipts[0]] + fixture.receipts.dropFirst(2)
+        for receipts in [[], Array(fixture.receipts.dropLast()), fixture.receipts + [fixture.receipts[0]], reordered] {
+            let result = try VPBPCMRead.evaluate(
+                directory: fixture.directory, events: fixture.events, receipts: receipts)
+            XCTAssertEqual(result.status, "UNVERIFIED")
+            XCTAssertFalse(result.coverage.windows.contains(where: \.covered))
+        }
+    }
+
+    func testTimelyCoverageIncludesOriginalReceiptLateness() throws {
+        let fixture = try VPBPCMFixture()
+        try fixture.write(through: 13_600)
+        XCTAssertTrue(vp_recorder_seal(fixture.recorder))
+        let result = try VPBPCMRead.evaluate(
+            directory: fixture.directory, events: fixture.events, receipts: fixture.receipts)
+        XCTAssertEqual(result.coverage.cueTimings.count, 8)
+        XCTAssertTrue(result.coverage.cueTimings.allSatisfy(\.accepted))
+        XCTAssertEqual(result.coverage.cueTimings[1].displayLateSeconds ?? 0, 0.006, accuracy: 0.000001)
+    }
+
+    func testPostRollCueTimingRemainsRequiredWhenItsPCMCoverageIsIndependent() throws {
+        let fixture = try VPBPCMFixture()
+        try fixture.write(through: 13_600)
+        XCTAssertTrue(vp_recorder_seal(fixture.recorder))
+        var receipts = fixture.receipts
+        receipts[7] = fixture.receipt(phase: .postRoll, request: 13_200, display: 13_400)
+        let result = try VPBPCMRead.evaluate(
+            directory: fixture.directory, events: fixture.events, receipts: receipts)
+        XCTAssertTrue(result.coverage.windows.dropLast().allSatisfy(\.covered))
+        XCTAssertFalse(result.coverage.cueTimings[7].accepted)
+        XCTAssertEqual(result.status, "UNVERIFIED")
+    }
+
+    func testRejectedCueAndRawLateReceiptSurviveInvalidSeal() throws {
+        let fixture = try SourceProbeFixture()
+        let pcm = try VPBPCMFixture()
+        let receipt = pcm.receipt(phase: .normal, request: 3_020, display: 5_800)
+        var evidence = VPBEvidence(preflight: receipt)
+        evidence.receipts.append(receipt)
+        evidence.rejectedCue = VPBCueTiming(phase: .normal, observed: 2.02, origin: pcm.events[1], receipt: receipt)
+        fixture.manifest.vpbExperiment = evidence
+        fixture.manifest.diagnostics.record(EngineeringDiagnostic(stage: .recorder, code: .probeStimulusWindowMissed))
+        vp_recorder_invalidate(fixture.recorder.handle, UInt32(VP_INVALID_ABORT))
+        XCTAssertThrowsError(
+            try VPBSession.finish(recorder: fixture.recorder, manifest: &fixture.manifest, directory: fixture.directory)
+        )
+        XCTAssertEqual(fixture.manifest.terminalStatus, "INVALID")
+        XCTAssertEqual(fixture.manifest.diagnostics.primary?.code, FailureCode.probeStimulusWindowMissed.rawValue)
+        XCTAssertTrue(vp_recorder_snapshot(fixture.recorder.handle).sealed)
+        let encoded = try JSONEncoder().encode(fixture.manifest.vpbExperiment)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let rejected = try XCTUnwrap(object["rejectedCue"] as? [String: Any])
+        XCTAssertEqual(rejected["displayLateSeconds"] as? Double ?? 0, 2.8, accuracy: 0.000001)
+        XCTAssertEqual((object["receipts"] as? [Any])?.count, 1)
     }
 
     func testChinesePromptResourcesLoadWithoutCreatingApplicationOrWindow() {
@@ -69,7 +151,8 @@ final class VPBEvidenceTests: XCTestCase {
         let fixture = try VPBPCMFixture()
         try fixture.write(through: 13_100)
         XCTAssertTrue(vp_recorder_seal(fixture.recorder))
-        let result = try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events)
+        let result = try VPBPCMRead.evaluate(
+            directory: fixture.directory, events: fixture.events, receipts: fixture.receipts)
         XCTAssertEqual(result.status, "DIGITAL_INPUT_SPAN_COVERED")
         XCTAssertFalse(try XCTUnwrap(result.coverage.windows.last).covered)
     }
@@ -94,17 +177,19 @@ final class VPBEvidenceTests: XCTestCase {
         try fixture.write(through: 1_000)
         vp_recorder_invalidate(fixture.recorder, UInt32(VP_INVALID_ABORT))
         XCTAssertTrue(vp_recorder_seal(fixture.recorder))
-        XCTAssertThrowsError(try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events))
+        XCTAssertThrowsError(
+            try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events, receipts: fixture.receipts))
         let handle = try FileHandle(forWritingTo: fixture.directory.appendingPathComponent("evidence.vp0"))
         try handle.truncate(atOffset: 100)
         try handle.close()
-        XCTAssertThrowsError(try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events))
+        XCTAssertThrowsError(
+            try VPBPCMRead.evaluate(directory: fixture.directory, events: fixture.events, receipts: fixture.receipts))
     }
 
     func testMissingDuplicateClockAndWideBracketsCannotProveScore() throws {
         let fixture = try VPBPCMFixture()
         for events in [Array(fixture.events.dropLast()), fixture.events + [fixture.events[0]]] {
-            var proof = VPBInputCoverage(events: events)
+            var proof = VPBInputCoverage(events: events, receipts: fixture.receipts)
             proof.finish()
             XCTAssertEqual(proof.status, "UNVERIFIED")
         }
@@ -116,7 +201,7 @@ final class VPBEvidenceTests: XCTestCase {
 
     func testSparseSamplesWithHugeHostJumpCannotPass() throws {
         let fixture = try VPBPCMFixture()
-        var proof = VPBInputCoverage(events: fixture.events)
+        var proof = VPBInputCoverage(events: fixture.events, receipts: fixture.receipts)
         proof.include(fixture.identity(host: 900, sample: 0), index: 0)
         proof.include(fixture.identity(host: 14_000, sample: 100), index: 1)
         proof.finish()
@@ -126,7 +211,7 @@ final class VPBEvidenceTests: XCTestCase {
     func testDiscontinuousMissingTimeAndFormatChangesFailClosed() throws {
         let fixture = try VPBPCMFixture()
         for failure in ["sample", "host", "format", "missing"] {
-            var proof = VPBInputCoverage(events: fixture.events)
+            var proof = VPBInputCoverage(events: fixture.events, receipts: fixture.receipts)
             proof.include(fixture.identity(host: 900, sample: 0), index: 0)
             var next = fixture.identity(host: 1_000, sample: 100)
             if failure == "sample" { next.sample_time = 101 }
@@ -189,6 +274,29 @@ private final class VPBPCMFixture {
                 id: $0, absoluteBefore: $1, continuous: $1 + arm, absoluteAfter: $1 + 1, numerator: 1_000_000,
                 denominator: 1)
         }
+    }
+
+    var receipts: [VPBDisplayReceipt] {
+        VPBCue.allCases.enumerated().map { index, phase in
+            let event = events[index + 1]
+            func clock(_ delay: UInt64) -> VPBClock {
+                VPBClock(
+                    id: phase.rawValue, absoluteBefore: event.absoluteBefore + delay,
+                    continuous: event.continuous + delay, absoluteAfter: event.absoluteAfter + delay,
+                    numerator: event.numerator, denominator: event.denominator)
+            }
+            return VPBDisplayReceipt(cueID: phase.rawValue, requested: clock(2), displayed: clock(4), visible: true)
+        }
+    }
+
+    func receipt(phase: VPBCue, request: UInt64, display: UInt64) -> VPBDisplayReceipt {
+        func clock(_ tick: UInt64) -> VPBClock {
+            VPBClock(
+                id: phase.rawValue, absoluteBefore: tick, continuous: tick + arm, absoluteAfter: tick + 1,
+                numerator: 1_000_000, denominator: 1)
+        }
+        return VPBDisplayReceipt(
+            cueID: phase.rawValue, requested: clock(request), displayed: clock(display), visible: true)
     }
 
     init() throws {

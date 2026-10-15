@@ -98,6 +98,78 @@ final class VPBWindowTests: XCTestCase {
         XCTAssertEqual(observer.registrations, 0)
     }
 
+    func testNormalCueAtFourPointEightSecondsIsRejectedBeforeDisplay() {
+        let fixture = VPBControlFixture()
+        fixture.jumpAt = 2.19
+        fixture.jumpTo = 5.0  // Observation origin is about arm+0.2: A would be shown at relative 4.8.
+        XCTAssertThrowsError(try fixture.run()) { error in
+            let timing = (error as? VPBCueTimingFailure)?.timing
+            XCTAssertEqual(timing?.cueID, .normal)
+            XCTAssertEqual(timing?.controlLateSeconds ?? 0, 2.8, accuracy: 0.01)
+        }
+        XCTAssertEqual(fixture.cues, [.quietInitial])
+    }
+
+    func testInitialQuietNearItsEndIsRejectedBeforeDisplay() {
+        let fixture = VPBControlFixture()
+        fixture.afterOriginDelay = 1.8
+        XCTAssertThrowsError(try fixture.run()) { error in
+            XCTAssertEqual((error as? VPBCueTimingFailure)?.timing.cueID, .quietInitial)
+        }
+        XCTAssertTrue(fixture.cues.isEmpty)
+    }
+
+    func testObservationAndPairDelaysCannotConsumePhaseStartBudget() {
+        for delayEvent in [false, true] {
+            let fixture = VPBControlFixture()
+            fixture.boundaryDelay = delayEvent ? 0 : 0.3
+            fixture.eventDelayID = delayEvent ? VPBCue.normal.rawValue : ""
+            fixture.eventDelay = 0.3
+            XCTAssertThrowsError(try fixture.run()) { error in
+                XCTAssertEqual((error as? VPBCueTimingFailure)?.timing.cueID, .normal)
+            }
+            XCTAssertEqual(fixture.cues, [.quietInitial])
+        }
+    }
+
+    func testLateDisplayKeepsActualReceiptAndPreventsFollowingCues() throws {
+        let fixture = VPBControlFixture()
+        fixture.delayedCue = .normal
+        fixture.displayDelay = 0.3
+        XCTAssertThrowsError(try fixture.run()) { error in
+            let timing = (error as? VPBCueTimingFailure)?.timing
+            XCTAssertEqual(timing?.cueID, .normal)
+            XCTAssertGreaterThan(timing?.displayLateSeconds ?? 0, 0.25)
+            XCTAssertLessThan(timing?.remainingPlannedSeconds ?? 3, 2.75)
+        }
+        XCTAssertEqual(fixture.cues, [.quietInitial, .normal])
+        XCTAssertEqual(fixture.receipts.count, 2)
+        XCTAssertEqual(fixture.receipts.last?.cueID, VPBCue.normal.rawValue)
+    }
+
+    func testLateDisplayUsesActualLifecycleInvalidatesAndCleansUpOnce() {
+        let fixture = VPBControlFixture()
+        fixture.delayedCue = .normal
+        fixture.displayDelay = 0.3
+        let observer = VPBObserverFixture()
+        var stops = 0
+        var removals = 0
+        var invalidations = 0
+        XCTAssertThrowsError(
+            try VPBWindow.capture(
+                admission: (true, observer), start: {}, window: { try fixture.run() },
+                invalidate: { invalidations += 1 },
+                stop: {
+                    stops += 1
+                    removals += 2
+                }))
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertEqual(stops, 1)
+        XCTAssertEqual(removals, 2)
+        XCTAssertEqual(observer.removals, 1)
+        XCTAssertFalse(fixture.cues.contains(.short))
+    }
+
     func testActualLifecycleCleansUpExactlyOnceOnEveryExit() throws {
         for failure in ["none", "start", "score", "observer"] {
             let observer = VPBObserverFixture()
@@ -150,6 +222,10 @@ private final class VPBControlFixture {
     var fullAtNormal = 0
     var eventDelayID = ""
     var eventDelay = 0.0
+    var displayDelay = 0.0
+    var delayedCue: VPBCue?
+    var receipts: [VPBDisplayReceipt] = []
+    var afterOriginDelay = 0.0
 
     func run() throws {
         try VPBWindow.run(
@@ -171,11 +247,25 @@ private final class VPBControlFixture {
                     id: id, absoluteBefore: tick, continuous: tick, absoluteAfter: tick + 1, numerator: 1,
                     denominator: 1)
                 self.events.append(value)
+                if id == "observationStart" { self.now += self.afterOriginDelay }
                 return value
             },
             cue: { phase in
                 if self.badCue == phase { throw VPBFixtureFailure.expected }
                 self.cues.append(phase)
+                func clock() -> VPBClock {
+                    self.now += 0.000001
+                    let tick = UInt64((self.now + 1) * 1_000_000_000)
+                    return VPBClock(
+                        id: phase.rawValue, absoluteBefore: tick, continuous: tick, absoluteAfter: tick + 1,
+                        numerator: 1, denominator: 1)
+                }
+                let request = clock()
+                if phase == self.delayedCue { self.now += self.displayDelay }
+                let receipt = VPBDisplayReceipt(
+                    cueID: phase.rawValue, requested: request, displayed: clock(), visible: true)
+                self.receipts.append(receipt)
+                return receipt
             },
             wait: { seconds in
                 self.now += seconds

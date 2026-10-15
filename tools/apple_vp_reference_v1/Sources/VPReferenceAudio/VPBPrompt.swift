@@ -48,14 +48,16 @@ final class VPBPrompt {
         }
         window.makeKeyAndOrderFront(nil)
         wait(0.05)
-        return try display(id: "PREFLIGHT", value: text("warming"), userConfirmed: true)
+        let receipt = display(id: "PREFLIGHT", value: text("warming"), userConfirmed: true)
+        try receipt.validate(id: "PREFLIGHT", requiresUser: true)
+        return receipt
     }
 
     func cue(_ cue: VPBCue) throws -> VPBDisplayReceipt {
         let value =
             cue.phrase.map { text(cue == .soft ? "soft" : "speak") + "\n" + $0 }
             ?? text(cue == .postRoll ? "postRoll" : "quiet")
-        return try display(id: cue.rawValue, value: value)
+        return display(id: cue.rawValue, value: value)
     }
 
     func requireVisible() throws {
@@ -79,17 +81,15 @@ final class VPBPrompt {
 
     func close() { window.close() }
 
-    private func display(id: String, value: String, userConfirmed: Bool = false) throws -> VPBDisplayReceipt {
+    private func display(id: String, value: String, userConfirmed: Bool = false) -> VPBDisplayReceipt {
         let requested = VPBClockRead.read(id)
         label.stringValue = value
         window.contentView?.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
-        try requireVisible()
-        let receipt = VPBDisplayReceipt(
-            cueID: id, requested: requested, displayed: VPBClockRead.read(id), visible: true,
+        let visible = window.isVisible && window.occlusionState.contains(.visible) && NSApplication.shared.isActive
+        return VPBDisplayReceipt(
+            cueID: id, requested: requested, displayed: VPBClockRead.read(id), visible: visible,
             userConfirmed: userConfirmed)
-        try receipt.validate(id: id, requiresUser: userConfirmed)
-        return receipt
     }
 
     nonisolated static func localized(_ key: String) -> String {

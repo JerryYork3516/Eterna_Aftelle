@@ -44,7 +44,9 @@ struct VPBPCMRead: Encodable {
     var containerArmTick: UInt64 = 0
     let meaning = "Whole native Input descriptive statistics; content/first-last words require private manual review"
 
-    static func evaluate(directory: URL, events: [VPBClock], expectedArmTick: UInt64? = nil) throws -> Self {
+    static func evaluate(
+        directory: URL, events: [VPBClock], receipts: [VPBDisplayReceipt], expectedArmTick: UInt64? = nil
+    ) throws -> Self {
         let url = directory.appendingPathComponent("evidence.vp0")
         let before = url.path.withCString { vp_recorder_validate_file($0) }
         guard before.complete, before.checksum_matches, before.invalid_reasons == 0,
@@ -58,7 +60,7 @@ struct VPBPCMRead: Encodable {
             u32(file, 16) == 392, u32(file, 20) == 24 + MemoryLayout<VPRecorderSnapshot>.stride,
             u32(file, 28) == 0x0102_0304
         else { throw EngineeringFailure(stage: .recorder, code: .experimentCoverageUnverified) }
-        var result = Self(coverage: VPBInputCoverage(events: events))
+        var result = Self(coverage: VPBInputCoverage(events: events, receipts: receipts))
         result.containerArmTick = u64(file, 48)
         if let expectedArmTick {
             guard result.containerArmTick == expectedArmTick, events.count == 10,

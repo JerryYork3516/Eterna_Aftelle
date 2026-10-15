@@ -16,6 +16,7 @@ struct VPBEvidence: Encodable {
     var armTick: UInt64?
     var events: [VPBClock] = []
     var receipts: [VPBDisplayReceipt] = []
+    var rejectedCue: VPBCueTiming?
     var analysis: VPBPCMRead?
 
     mutating func append(_ event: VPBClock) throws {

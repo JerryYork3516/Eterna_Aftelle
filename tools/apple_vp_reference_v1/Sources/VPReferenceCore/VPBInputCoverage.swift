@@ -11,6 +11,7 @@ public struct VPBInputCoverage: Encodable {
         public let cue: VPBCue
         public let start: UInt64
         public let end: UInt64
+        public let cueTimingAccepted: Bool
         public var first: Anchor?
         public var last: Anchor?
         public var covered = false
@@ -18,13 +19,14 @@ public struct VPBInputCoverage: Encodable {
 
     public private(set) var status = "UNVERIFIED"
     public private(set) var windows: [Window] = []
+    public private(set) var cueTimings: [VPBCueTiming] = []
     private var previous: VPFrameIdentity?
     private var clock: VPBClock?
     private var rejected = false
 
-    private enum CodingKeys: String, CodingKey { case status, windows }
+    private enum CodingKeys: String, CodingKey { case status, windows, cueTimings }
 
-    public init(events: [VPBClock]) {
+    public init(events: [VPBClock], receipts: [VPBDisplayReceipt]) {
         let ids = ["beforeStart", "observationStart"] + VPBCue.allCases.dropFirst().map(\.rawValue) + ["beforeStop"]
         guard events.map(\.id) == ids, events.allSatisfy(\.valid) else {
             rejected = true
@@ -41,9 +43,16 @@ public struct VPBInputCoverage: Encodable {
             }
         }
         clock = events[0]
+        if receipts.map(\.cueID) == VPBCue.allCases.map(\.rawValue) {
+            cueTimings = zip(VPBCue.allCases, receipts).map {
+                VPBCueTiming(phase: $0, origin: events[1], receipt: $1)
+            }
+        }
         for (index, cue) in VPBCue.allCases.enumerated() {
             windows.append(
-                Window(cue: cue, start: events[index + 1].absoluteBefore, end: events[index + 2].absoluteAfter))
+                Window(
+                    cue: cue, start: events[index + 1].absoluteBefore, end: events[index + 2].absoluteAfter,
+                    cueTimingAccepted: cueTimings.count == 8 && cueTimings[index].accepted))
         }
         // The required score span is 12s; post-roll is independently reported.
         if events[0].seconds(events[8].absoluteBefore - events[1].absoluteAfter) < 12 { rejected = true }
@@ -91,9 +100,12 @@ public struct VPBInputCoverage: Encodable {
                 let lhs = product([UInt64(difference.partialValue), 1_000_000_000, UInt64(clock.denominator)]),
                 let rhs = product([windows[index].end - windows[index].start, rate, UInt64(clock.numerator)])
             else { continue }
-            windows[index].covered = lhs >= rhs
+            windows[index].covered = lhs >= rhs && windows[index].cueTimingAccepted
         }
-        if windows.count == 8, windows.dropLast().allSatisfy(\.covered) { status = "DIGITAL_INPUT_SPAN_COVERED" }
+        let cuesAccepted = cueTimings.count == 8 && cueTimings.allSatisfy(\.accepted)
+        if windows.count == 8, cuesAccepted, windows.dropLast().allSatisfy(\.covered) {
+            status = "DIGITAL_INPUT_SPAN_COVERED"
+        }
     }
 
     private func product(_ values: [UInt64]) -> UInt64? {

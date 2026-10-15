@@ -73,9 +73,14 @@ final class VPBSession {
                 try observe(driver: driver, manifest: &manifest, stopped: false)
             },
             window: {
-                try wait(
-                    driver: driver, diagnostic: (recorder, observer), arm: arm, manifest: &manifest,
-                    prompt: prompt)
+                do {
+                    try wait(
+                        driver: driver, diagnostic: (recorder, observer), arm: arm, manifest: &manifest,
+                        prompt: prompt)
+                } catch let failure as VPBCueTimingFailure {
+                    manifest.vpbExperiment?.rejectedCue = failure.timing
+                    throw EngineeringFailure(stage: .recorder, code: .probeStimulusWindowMissed)
+                }
             }, invalidate: { vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT)) },
             stop: {
                 driver.engine.stop()
@@ -121,11 +126,11 @@ final class VPBSession {
             },
             cue: { phase in
                 let receipt = try prompt.cue(phase)
-                try receipt.validate(id: phase.rawValue)
                 guard (manifest.vpbExperiment?.receipts.count ?? 8) < 8 else {
                     throw EngineeringFailure(stage: .command, code: .promptUnconfirmed)
                 }
                 manifest.vpbExperiment?.receipts.append(receipt)
+                return receipt
             }, wait: { prompt.wait($0) })
     }
 
@@ -189,6 +194,7 @@ final class VPBSession {
             do {
                 let analysis = try VPBPCMRead.evaluate(
                     directory: directory, events: manifest.vpbExperiment?.events ?? [],
+                    receipts: manifest.vpbExperiment?.receipts ?? [],
                     expectedArmTick: manifest.vpbExperiment?.armTick)
                 manifest.vpbExperiment?.analysis = analysis
                 if analysis.status != "DIGITAL_INPUT_SPAN_COVERED" {

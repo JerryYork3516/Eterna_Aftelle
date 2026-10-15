@@ -153,3 +153,80 @@ Test3.execution_authorized = false
 ```
 
 仅提交空检查点、独立实现及脱敏本报告，推送当前研究分支后停止，等待主控独立审核。
+
+## 8. VP-B_CUE_TIMING_FIX · 主控审核补充（2026-10-15）
+
+本节追加审核补充，不改前述296项基线结果。开始时HEAD、upstream及实时远端均为 `ee61ad16115e333a66f3c6b87b5b5932cbe6f980`，工作区干净。跨文件修改前按AGENTS.md创建空检查点 `[7.5] Checkpoint before VP-B cue timing fix`，没有文件变更。本次只改VP-B独立控制、提示证据及其测试，不执行设备。
+
+### 8.1 根因、预算依据与修复
+
+旧 `VPBWindow.emit` 主要检查未超过phase.end；`VPBDisplayReceipt.validate` 只检查请求到显示的局部耗时≤250ms，未约束二者相对observationStart的预定起点。因此A_NORMAL到4.8秒才迅速显示，仍可能被认为有效。
+
+**固定调度迟到预算为250ms**，沿用基线 `VPBSession.wait.observe` 的既有250ms控制观测上限，改为同时约束相对原计划起点的累计迟到。它是控制有效性预算，不是实测显示性能、真人发声容差、声学PASS阈值或新的产品合同。最短0.5秒转段不能因调度等待而整个消失；A/B/C允许的剩余计划时长分别至少2.75/1.25/2.25秒。即使调度通过，真人未自然说完、漏词或超出固定窗仍须EVIDENCE_UNVERIFIED，不能强迫加速。没有设备运行证明250ms一定可达到。
+
+修复后的实际路径为：原Input预热与observationStart → 从原计划起点检查控制迟到 → 原状态观测 → 再检查 → 原事件时钟配对 → 再检查 → 原生提示提交并返回真实回执 → **先保存回执** → 检查请求及显示C时间均在 `[计划起点, 计划起点+250ms]` → 原阶段终点检查 → 后续阶段。所有八个cue都适用，包括D_INITIAL及POST_ROLL；没有追赶补发、补时、窗口顺延或自动重试。
+
+请求/显示还保留原可见性、cue ID、时钟有效性、单位、顺序及请求到显示耗时检查。相对起点预算用checked整数乘法交叉比较原tick/timebase，125/3 timebase在250ms边界后一tick也拒绝；不靠浮点epsilon放宽。控制路径和回执分别保留原始tick与配对不确定度，不拟合跨域恒定偏移。
+
+实际迟到数据以 `VPBCueTiming` 保存：预定起止、实际控制时刻、未截断的control/request/display迟到量、`remainingPlannedSeconds`及accepted。剩余值相对原phase.end计算；没有发生的请求/显示为nil，不伪造回执。迟到前置检查抛出结构化失败；显示失败则raw receipt已入原≤8条数组。Session保存至单条 `rejectedCue`，映射原 `RECORDER / PROBE_STIMULUS_WINDOW_MISSED`，交原INVALID、停止及封存路径；不发送后续cue。
+
+### 8.2 修改文件与封存后判定
+
+以下路径均在 `tools/apple_vp_reference_v1/` 下：
+
+| 文件 / 函数 | 本次变化 |
+| --- | --- |
+| 新增 `Sources/VPReferenceCore/VPBCueTiming.swift` | 相对计划起点的控制/请求/显示检查、原始迟到及剩余量、结构化拒收；固定小数据，无新依赖 |
+| `Sources/VPReferenceCore/VPBWindow.swift`：run / emit | cue返回真实回执；观测/配对前后检查；回执迟到立即抛出，不改capture/预热/评分及post-roll时间表 |
+| `Sources/VPReferenceCore/VPBInputCoverage.swift`：init / finish | 必须提供8条顺序正确的实际回执；逐窗记录cueTimingAccepted、cueTimings；总体覆盖也必须全部cue通过 |
+| `Sources/VPReferenceAudio/VPBPrompt.swift`：display / confirm | display返回实际visible和原始回执供先保存再判定；PREFLIGHT仍在confirm及Session中验证，未确认不能启动 |
+| `Sources/VPReferenceAudio/VPBSession.swift`：capture / wait / finish | 保存真实拒收元数据及raw receipt；复用既有失效/清理/封存；传入实际回执做离线重核 |
+| `Sources/VPReferenceAudio/VPBEvidence.swift` | 增加有界可选rejectedCue，不改变原PCM schema或旧入口元数据 |
+| `Sources/VPReferenceAudio/VPBPCMRead.swift`：evaluate | receipts为必传，无缺回执仍可通过的默认分支；原native reader和统计算法不变 |
+| 新增 `Tests/VPReferenceCoreTests/VPBCueTimingTests.swift` | 7项预算/时钟/迟到数据反例 |
+| `Tests/VPReferenceCoreTests/VPBWindowTests.swift` | 保留11项，新增5项，实际控制与生命周期故障测试 |
+| `Tests/VPReferenceAudioTests/VPBEvidenceTests.swift` | 保留15项并补真实合成回执，新增5项离线及INVALID封存反例 |
+
+封存后 `DIGITAL_INPUT_SPAN_COVERED` 现在同时要求原连续Input样本/host锚点覆盖及全部8条cue时序有效。缺少、重复、乱序、迟到或无效显示不能因PCM完整而获得该状态；各窗仍保存数字锚点。post-roll PCM覆盖保持独立，但第8条cue准时性必须通过。`covered`仍只代表数字区间加调度准入，不能证明实际发声覆盖整窗、首尾完整或可懂度；研究结果保持EVIDENCE_UNVERIFIED待另行人工核验。
+
+### 8.3 完整非设备回归与源码审核
+
+最终 `zsh check.sh` 全部通过：
+
+| 检查 | 结果 |
+| --- | --- |
+| 原测试 | 296项全部保留并通过；其中262项历史测试文件没有变化 |
+| 本次新增 | 17项：CueTiming 7、Window 5、Evidence 5 |
+| 全部Swift测试 | **313项、0 failures：Core 186 / Audio 127** |
+| Debug / Release | warnings-as-errors构建成功 |
+| SwiftLint strict | 0 error / 0 warning；无规则豁免 |
+| Swift Format strict | 通过 |
+| C11及原静态隔离/缺授权CLI检查 | 全部通过；没有进入真实音频或权限路径 |
+
+反例包括：A在4.8秒才到达、D_INITIAL在1.8秒才到达、观测/事件配对消耗起点预算、请求虽在预算内但显示累计超预算、真实回执保留后拒收且没有后续cue、正常及时显示、分数timebase边界后一tick、负迟到不截断、缺失/错ID/隐藏/时钟异常、完整PCM但迟到/缺失/重复/乱序回执、仅post-roll回执迟到、拒收首因及元数据在INVALID seal后保留。既有测试继续验证单次stop/observer移除、统一两个Tap移除路径及seal幂等性；这不是实机异步并发证明。
+
+源码对照确认：`VPBWindow.capture`、原 `PlaybackLifecycle` 和 `RecorderOwner` 清理所有权未变；失败先INVALID，统一observer.remove、一次Engine.stop及各一次removeTap，随后原finish一次seal。预算及资源仍为arm起16秒、原60秒硬上限/64MiB PCM/8MiB诊断缓冲；原12秒评分、独立0.5秒post-roll和固定语料不变。没有给实时callback增加计算、IO、等待锁或分配；没有重写记录器、改音频图或Apple VP配置。
+
+**TECHNICAL_REVIEW：CUE_TIMING_NONDEVICE_PASS / REVIEW_PENDING。** 定位的起点迟到缺口和离线回执漏门已关闭。250ms是调度门限，无声学有效性宣称。
+
+**ENGINEERING_REVIEW：NON_DEVICE_CHECKS_PASS。** 根因、实际调用路径、失败清理及覆盖反例已复核；另一次只读复核确认全部8条cue总门及post-roll独立性，未发现剩余已知critical/major。Mock数量不代替源码审查。
+
+**EVIDENCE_REVIEW：VP_B_DEVICE_NOT_RUN / CONTENT_UNVERIFIED。** 没有真实显示、录音或人工听辨。AppKit回执只代表display提交并报告可见，不是屏幕scanout、用户读到或发声时刻。真实UI迟延、最后可见性检查后的TOCTOU、系统API阻塞、late callback与清理时序仍DEVICE_UNVERIFIED / NOT_MEASURED；没有因此放宽预算或授权实机。
+
+### 8.4 Stage7 Forbidden Checklist与停止状态
+
+**结论：PASS。触碰的红线：无。** 修改文件为8.2所列10个独立工具源码/测试及本文；有代码修改，无Runtime API、DR schema、平台target或Stage8变更，无需额外确认即可提交本次已授权修复。
+
+Qwen Realtime原生全双工、NativeSpeechProvider/Adapter、正式I/O、RuntimeCore、generation、Test2、ACE3、DR/Memory/Session/Studio及正式Test3合同全部未改。AppleEngineDriver、NativePCMTap、C Recorder/header、VP-A/source-probe/普通record业务行为保持。未操作原ACE3工作区、私人登记/PCM、SSD/quarantine；没有设备、TCC、Provider、Runtime、中断/cancel/clear或声源资格动作。无私人路径、设备身份、音频、密钥或原始运行日志进入本提交。
+
+```text
+VP-A Research = CLOSED_FOR_NOW
+VP-B Implementation = REVIEW_PENDING
+VP-B Device Run = NOT_AUTHORIZED / NOT_RUN
+VP-C/D/E = NOT_AUTHORIZED
+Runtime Integration = NOT_AUTHORIZED
+Test3 = BLOCKED
+Test3.execution_authorized = false
+```
+
+本次只提交检查点、定点修复/测试和本文补充；推送后停止，等待主控独立审核，不开始VP-B设备运行。
