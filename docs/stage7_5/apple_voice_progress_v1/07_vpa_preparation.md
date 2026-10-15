@@ -4,7 +4,7 @@
 
 **本报告仅交付候选协议、独立工具准备与非设备验证。VP-A_DEVICE_NOT_RUN；execution_authorized=false。** 下述新实验参数全部为 **PROPOSED**，须经主控独立源码审核、协议批准及另一次明确现场授权才能执行。构建、Mock、合成 PCM 或 Git 交付均不授予设备或 Test3 权限。
 
-当前主控已批准VP-A工程实现；第10–12节保留先前交付和复审历史。最新素材准备见第13.4节：MATERIAL_PREPARED_REVIEW_PENDING，保留CONTENT_UNVERIFIED和当前VoiceProfile一致性未知；工程实现不再开发，未授予设备实验权限。
+当前主控已批准原VP-A工程实现；第10–12节保留先前交付和复审历史。素材准备见第13.4节，既有素材及登记未改变。随后一次VP_OFF的完整尾窗证据不足，详见08报告。仅按本轮定点授权增加第14节 **PROPOSED** 时序修订，等待主控审核；本轮未授予设备实验权限，也未用新代码改写历史结果。
 
 ## 1. 基线及继承结论
 
@@ -31,7 +31,8 @@ P3 = APPROVED；P4 = APPROVED_SOURCE_SUPPORTED。P4已支持 VP_ON 采集到可�
 | 居民素材 | 完整8秒 Float32 linear PCM，仅调度一次 | 建议16kHz、mono；这是素材选择，不强制硬件/VP客户端格式，也不是Apple API必要条件 |
 | 播放观察 | 前2秒为早期，后6秒为后期 | 后期仅为自适应稳定候选，不能先宣称已经稳定 |
 | 计划尾窗 | 播放请求后的8秒窗口结束后再3秒 | 不是已测播放完成时刻，也不证明房间全部尾响消失 |
-| 诊断admission | 每臂最长16秒，自arm起计，包含启动 | 正常窗口约13秒加启动；余量不足即INVALID，不缩窗凑结果 |
+| 诊断post-roll | 原3秒尾窗之后固定0.5秒，独立、非评分 | 第14节PROPOSED修订；不缩短、重选或延长原正式观察窗，不根据结果调整 |
+| 诊断admission | 每臂最长16秒，自arm起计，包含启动 | 修订后计划等待合计13.5秒加启动/控制开销；余量不足即INVALID，不缩窗凑结果 |
 | 控制检查 | 最长50ms sleep；全route/state/format约每1秒及窗口边界读取 | 控制路径执行；实际频率/开销须设备核验 |
 | 返回后的单次观察预算 | 250ms | 工程预算提案，防止控制观察占用窗口；不是声学/产品阈值，不能抢占阻塞getter |
 | 原有硬预算 | ≤60秒、Input+Render PCM≤64MiB、诊断常驻≤8MiB | 不扩大；VP-A另收紧到16秒。素材独立≤8MiB原上限保留；框架/总进程RSS未测 |
@@ -305,6 +306,88 @@ USB unique physical source = UNVERIFIED
 Apple AEC = NOT_MEASURED
 VP-A/B/C = NOT_AUTHORIZED
 VP-D/E = BLOCKED
+Test3 = BLOCKED
+execution_authorized = false
+```
+
+
+## 14. VP-A_TIMING_FIX_PREPARATION：PROPOSED定点时序修订
+
+日期：2026-10-15。审核起点为 `f6a29a1fad10603bf77abcb33ad315a75ea89f65`，开始时HEAD、upstream和实时远端一致、工作区干净。该干净已提交基线保留为回滚点。本轮仅实现独立VP-A控制时序和非设备测试，并更新07/08；**PROPOSED_REVIEW_PENDING / VP-A_DEVICE_NOT_RUN**。本节的实现检查不授予新一次VP_OFF或VP_ON现场权限。
+
+### 14.1 固定窗口及预算
+
+原窗口仍为：启动/状态检查后静默2秒 → 播放请求及固定8秒等待 → 原计划尾窗3秒。`VPAWindow.finishPlayback` 仅在该尾窗之后追加固定0.5秒post-roll；原 `windowsCompleted` 在原尾窗结束时设置，`postRollStartTick`、`postRollEndTick`、`postRollCompleted` 另行记录。post-roll不计入3秒尾窗、不参加原评分、不动态延长、不补跑；没有更换居民素材或登记。
+
+仍从原arm起最多16秒，包含启动和全部控制开销；计划等待为13.5秒，不保证每台设备都能在剩余预算内完成。原 `waitVPA` 在所有等待中继续检查INVALID、观察开销、路由/状态与总预算。四次时钟配对各自完成后，也重取continuous tick检查原16秒上限，避免配对自身耗时越界后错误设置完成标记；超限走原INVALID/stop/seal路径。边界允许恰好16秒，超过即失败，没有新增宽限。
+
+Input+Render仍共用原64MiB PCM和8MiB诊断缓冲上限，原60秒总硬限制保留，VP-A另收紧到16秒；原素材独立容量上限不变。配对数组最多4条，异常后锁定失败，不能继续追加无界元数据。没有增加实时callback计算、文件IO、锁、任务或采样点；C Recorder及原生PCM容器未改。
+
+### 14.2 原始时钟配对及不确定度
+
+[Apple AVAudioTime文档](https://developer.apple.com/documentation/avfaudio/avaudiotime)明确hostTime采用mach_absolute_time，sampleTime属于特定采样率的音频位置。本机MacOSX27.0.sdk的 `mach/mach_time.h`（46–47、58–62行）以及[Apple XNU公开头文件](https://github.com/apple/darwin-xnu/blob/main/osfmk/mach/mach_time.h)说明continuous时钟还在系统睡眠期间推进。因此保留两域原始值，不能把continuous控制tick直接当作Tap hostTime，也不能用录后一次偏移证明全程精确。
+
+每个预定阶段在非实时控制路径先读取timebase，再依次取 `A_before=mach_absolute_time()`、`C=mach_continuous_time()`、`A_after=mach_absolute_time()`；不循环重试，不以中点替换原值。保存阶段、三个UInt64原始tick、timebase分子/分母、bracket宽度，以及局部偏移范围 `[C−A_after, C−A_before]`。范围端点采用经检查的整数差，允许负端点，避免大tick先转Double后丢失低位；单位不可用、倒退或无法表示时保留raw并拒绝有效性。bracket是采样配对不确定度，不是硬件或声学时间误差上界。
+
+| 阶段 | 实际位置与含义 |
+| --- | --- |
+| `beforeStart` | observer已由原capture注册、recorder已arm，在engine.start之前 |
+| `playRequest` | 2秒静默结束，在原播放准入快照/INVALID检查及player.play请求之前；不等于实际声学起音 |
+| `plannedTail` | 固定8秒等待结束，在原plannedTailStartTick记录及3秒尾窗开始附近；不等于数字/物理播放完成 |
+| `beforeStop` | 固定0.5秒post-roll结束，在正常清理stop之前；通过预算后才设置postRoll完成 |
+
+四对必须按阶段顺序、原始时钟向前且单位一致。单次bracket使用原250ms控制观察预算，不另造精度或声学阈值。各局部偏移区间逐一与全部早先区间比较：发现不相交即记 `OFFSET_CHANGE_OBSERVED` 并以 `EXPERIMENT_CLOCK_INVALID` 停止；不猜测变化原因，不再取一对掩盖它。错误raw配对保留，首个诊断原因不被后续封存诊断覆盖。
+
+即使4个区间均相交，状态也只是 `LOCAL_BRACKETS_ONLY_GLOBAL_MAPPING_UNVERIFIED`。这不能证明配对点之间偏移恒定、没有短暂变化，不能授权跨全程按同一偏移换算。后续离线须先在同一raw hostTime域分析Input/Render，按局部bracket报告可支持的边界与不确定度；无法证明原窗完整PCM覆盖仍BLOCKED。当前不拟合整段漂移曲线，不给出虚构绝对声学时延。
+
+早期失败只保存实际到达阶段的配对及原stopRequestTick，配对状态允许INCOMPLETE/INVALID；不会在失败清理中补取“beforeStop”或重复有状态操作，以免诊断失败阻止stop、覆盖原始错误。正常路径才要求全部4对及独立post-roll完成；`isTimingComplete`只是控制元数据完整性条件，**不是PCM、Render尾窗或声学覆盖PASS**。
+
+### 14.3 精确修改范围及生命周期
+
+以下路径均相对 `tools/apple_vp_reference_v1/`：
+
+| 文件/函数 | 本轮修改 |
+| --- | --- |
+| `Sources/VPReferenceCore/VPARequest.swift` | 仅新增固定postRollSeconds=0.5；原2/8/3、16秒和准入不变 |
+| `Sources/VPReferenceCore/VPAWindow.swift` | 新增finishPlayback固定序列及requireAdmission；原capture/wait和cleanup所有权保留 |
+| `Sources/VPReferenceCore/VPAClockPair.swift` | 新增原始配对、整数边界、timebase和局部宽度的数据模型 |
+| `Sources/VPReferenceCore/EngineeringDiagnostic.swift` | 仅新增VP-A的EXPERIMENT_CLOCK_INVALID稳定错误码 |
+| `Sources/VPReferenceAudio/VPAClockSampling.swift` | 新增4个有限控制点实际使用的Mach配对读取，无音频API |
+| `Sources/VPReferenceAudio/VPAEvidence.swift` | 新增PROPOSED timingRevision、独立post-roll、最多4对raw及失败锁定/完整性元数据 |
+| `Sources/VPReferenceAudio/VP0AudioSession.swift` | 仅VP-A的runVPA闭包、sampleVPAClock/markVPABoundary及条件式finish判定；复用原wait/stop/封存 |
+| `Tests/VPReferenceCoreTests/VPAClockPairTests.swift` | 新增5项纯数据测试 |
+| `Tests/VPReferenceCoreTests/VPATimingWindowTests.swift` | 新增7项预算/窗口/实际capture与C封存夹具测试 |
+| `Tests/VPReferenceAudioTests/VPATimingEvidenceTests.swift` | 新增12项时钟/元数据/旧模式隔离测试 |
+
+配置监听仍在start之前注册。所有新增throw位于原capture的失败清理范围，沿原一次invalidate、一次stop/removeTap/移除observer及随后一次seal出口处理，没有新增restart、第二个清理出口或失败后继续播放。最后配对的总预算缺口在源码复核中发现并修正：现在配对保存后再检查最新continuous tick，失败不设置postRoll完成；对应确定性测试保留4对raw且拒绝总16.1秒。
+
+AppleEngineDriver、NativePCMTap、C Recorder/header、音频图/VP配置、普通record/source-probe控制逻辑、原PCM/时间字段及原207项测试文件均与起点一致。没有改变R2配置通知政策，未清除INVALID。测试覆盖原capture和封存机制；真实晚到callback、Engine阻塞和设备停止时序仍未测。预算检查至实际stop间还存在调度/阻塞API时间，不能宣称抢占式16秒物理截止。
+
+### 14.4 非设备回归与三维复核
+
+运行原 `check.sh`：Debug/Release均成功（warnings-as-errors）；Swift测试 **231项全部通过 = 原207项保留 + 新24项**，其中Core 134、Audio 97，0失败。SwiftLint 0 error/0 warning、Swift Format strict、C11 -Wall/-Wextra/-Werror静态检查、独立性静态检查、默认关闭及缺授权CLI拒绝检查均通过。测试使用合成内存/临时文件，不启动Engine、麦克风、扬声器或真实权限流程。旧模式JSON不带新增VP-A时序字段。
+
+新增确定性覆盖包括：2/8/3不变且0.5独立、16秒边界/超限、配对自身局部合法但总预算超限、大tick整数精度、负区间端点、缺单位/倒退/冻结/单位变化、偏移变化及非相邻区间、raw留存/错误锁定、最多4对、实际manifest变更写回、INVALID跳过后续窗口、各边界失败、一次stop/移除observer/封存、post-roll失败保留原错误。Mock/合成通过不证明Apple AEC、真实PCM覆盖或异步设备竞态已通过。
+
+- **TECHNICAL_REVIEW：PASS（本轮定点源码与时钟合同）；DEVICE_UNVERIFIED。** 没有更改Apple VP接线/算法；局部配对不升级为全程精确。
+- **ENGINEERING_REVIEW：PASS（构建、静态、合成及独立源码复核）。** 既有预算、失败出口与旧模式保留；无剩余已识别critical/major源码问题。实际调度、callback尾块与stop耗时未测。
+- **EVIDENCE_REVIEW：PASS（诊断准备）；实际新窗口覆盖NOT_MEASURED。** 固定0.5秒是获准提出并实现的诊断余量，不是保证足够或新的AEC成功阈值。未来仍须按原3秒评分窗和两路实际内容终点复核；不足即BLOCKED，不自动重试。
+
+Stage7 Forbidden Checklist：**PASS**。触碰红线：无；修改仅为上述10个独立工具源码/测试文件和07/08；改代码：是（研究控制路径）；Runtime API、DR schema/fixture、新平台target、Stage8：均否。正式App、Qwen全双工、NativeSpeechProvider/Adapter、Runtime/Test2/generation、ACE3、Memory/Session/Studio均未变。无正式声源资格、Provider cancel/clear或中断权限。没有访问私人PCM、设备登记、SSD/quarantine或原ACE3工作区；没有设备实验、权限申请、路由/音量改变或VP-B/C/D/E。完成后停止等待主控，不需另加范围权限。
+
+### 14.5 后续准入与未测项
+
+该候选代码已重建，未来实际使用的Release文件、SHA和签名须作为**新版本重新固定并审核**；不能沿用旧设备运行的可执行身份，也不能在两臂之间换程序。私有素材/登记保持原样，本轮未读取或更新它们。尚须单独批准修订协议及现场运行；完成Git交付不授权执行。
+
+后续每轮仍须检查实际两流PCM连续性、hostTime/sampleTime、非零Render边界、原2/8/3完整覆盖、post-roll独立覆盖、全部4对的raw/timebase/不确定度、原路由与VP状态、lost/overflow/pending/INVALID、seal/verify。只要有预算/配置/证据异常即停止；0.5秒不得按结果延长。Render不是声压真值、VP_OFF不是ADC原始真值、USB唯一物理来源仍UNVERIFIED、VP模式差异不全归因纯AEC。
+
+```text
+VP-A timing revision = PROPOSED_REVIEW_PENDING
+VP-A_DEVICE_NOT_RUN (本节点)
+VP_OFF = BLOCKED (历史完整尾窗未获证)
+VP_ON = NOT_AUTHORIZED
+Apple AEC = NOT_MEASURED
+USB unique physical source = UNVERIFIED
 Test3 = BLOCKED
 execution_authorized = false
 ```

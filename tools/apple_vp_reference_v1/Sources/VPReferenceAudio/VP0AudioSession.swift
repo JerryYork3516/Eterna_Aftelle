@@ -111,6 +111,7 @@ public final class VP0AudioSession {
                 guard vp_recorder_arm(recorder.handle, startTick) else {
                     throw EngineeringFailure(stage: .recorder, code: .recorderArmFailed)
                 }
+                try sampleVPAClock(.beforeStart, manifest: &manifest)
                 try startAndWait(driver: driver)
                 try observeRunning(driver: driver, manifest: &manifest, admission: admission)
                 manifest.vpaExperiment?.quietStartTick = vp_recorder_now_tick()
@@ -119,6 +120,7 @@ public final class VP0AudioSession {
                     admission: admission, manifest: &manifest)
             },
             play: {
+                try sampleVPAClock(.playRequest, manifest: &manifest)
                 let snapshot = vp_recorder_snapshot(recorder.handle)
                 guard snapshot.invalid_reasons == 0, snapshot.input_written_frames > 0 else {
                     throw EngineeringFailure(stage: .recorder, code: .recorderInvalid)
@@ -130,14 +132,12 @@ public final class VP0AudioSession {
                 try VPAAdmission.requirePlaybackStarted(playing)
             },
             score: {
-                try waitVPA(
-                    seconds: VPARequest.materialSeconds, environment: environment, timing: (observer, startTick),
-                    admission: admission, manifest: &manifest)
-                manifest.vpaExperiment?.plannedTailStartTick = vp_recorder_now_tick()
-                try waitVPA(
-                    seconds: VPARequest.tailSeconds, environment: environment, timing: (observer, startTick),
-                    admission: admission, manifest: &manifest)
-                manifest.vpaExperiment?.windowsCompleted = true
+                try VPAWindow.finishPlayback(
+                    wait: {
+                        try waitVPA(
+                            seconds: $0, environment: environment, timing: (observer, startTick),
+                            admission: admission, manifest: &manifest)
+                    }, boundary: { try markVPABoundary($0, manifest: &manifest) })
             },
             cleanup: (
                 invalidate: { vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT)) },
@@ -250,7 +250,7 @@ public final class VP0AudioSession {
         if !outcome.isCompleteForReference, manifest.diagnostics.primary == nil {
             manifest.diagnostics.record(EngineeringDiagnostic(stage: .recorder, code: .recorderInvalid))
         }
-        if let experiment = manifest.vpaExperiment, !experiment.windowsCompleted, manifest.diagnostics.primary == nil {
+        if let experiment = manifest.vpaExperiment, !experiment.isTimingComplete, manifest.diagnostics.primary == nil {
             manifest.diagnostics.record(EngineeringDiagnostic(stage: .recorder, code: .experimentWindowInvalid))
         }
         manifest.outcome = outcome
@@ -266,6 +266,31 @@ public final class VP0AudioSession {
 }
 
 extension VP0AudioSession {
+    @discardableResult
+    private func sampleVPAClock(_ phase: VPAClockPair.Phase, manifest: inout AudioRunManifest) throws -> UInt64 {
+        try manifest.vpaExperiment?.recordClockPair(VPAClockSampling.read(phase: phase))
+        let maximum = vp_recorder_ticks_for_seconds(VPARequest.maximumSeconds)
+        let tick = vp_recorder_now_tick()
+        try VPAWindow.requireAdmission(
+            armTick: manifest.vpaExperiment?.armTick, currentTick: tick, maximumTicks: maximum)
+        return tick
+    }
+
+    private func markVPABoundary(_ boundary: VPAWindow.Boundary, manifest: inout AudioRunManifest) throws {
+        switch boundary {
+        case .plannedTail:
+            try sampleVPAClock(.plannedTail, manifest: &manifest)
+            manifest.vpaExperiment?.plannedTailStartTick = vp_recorder_now_tick()
+        case .postRoll:
+            manifest.vpaExperiment?.windowsCompleted = true
+            manifest.vpaExperiment?.postRollStartTick = vp_recorder_now_tick()
+        case .complete:
+            let tick = try sampleVPAClock(.beforeStop, manifest: &manifest)
+            manifest.vpaExperiment?.postRollEndTick = tick
+            manifest.vpaExperiment?.postRollCompleted = true
+        }
+    }
+
     private func waitVPA(
         seconds: Double, environment: (driver: AppleEngineDriver, recorder: RecorderOwner),
         timing: (observer: ConfigurationChangeObserver, startTick: UInt64),

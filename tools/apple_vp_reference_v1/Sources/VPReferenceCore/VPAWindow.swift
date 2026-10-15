@@ -1,4 +1,25 @@
 public enum VPAWindow {
+    public enum Boundary {
+        case plannedTail, postRoll, complete
+    }
+
+    public static func finishPlayback(
+        wait: (Double) throws -> Void, boundary: (Boundary) throws -> Void
+    ) throws {
+        try wait(VPARequest.materialSeconds)
+        try boundary(.plannedTail)
+        try wait(VPARequest.tailSeconds)
+        try boundary(.postRoll)
+        try wait(VPARequest.postRollSeconds)
+        try boundary(.complete)
+    }
+
+    public static func requireAdmission(armTick: UInt64?, currentTick: UInt64, maximumTicks: UInt64) throws {
+        guard let armTick, maximumTicks > 0, currentTick >= armTick, currentTick - armTick <= maximumTicks else {
+            throw EngineeringFailure(stage: .recorder, code: .experimentWindowInvalid)
+        }
+    }
+
     public static func capture(
         observer: any PlaybackConfigurationObserving, beforePlayback: () throws -> Void,
         play: () throws -> Void, score: () throws -> Void,

@@ -204,3 +204,30 @@ Test3.execution_authorized = false
 TECHNICAL_REVIEW：同域原始时间复算成立，最后Render非零样本边界已逐声道确认；精确声学时刻和源frame映射仍UNVERIFIED。ENGINEERING_REVIEW：原配置/生命周期/记录器观察子项保持；整协议窗口未获证，批量边界原因未定，不认定AEC或C记录器故障。EVIDENCE_REVIEW：新增不依赖continuous映射的数字后窗不足证据，保持 **VP-A_BLOCKED / EVIDENCE_UNVERIFIED**。
 
 Stage7 Forbidden Checklist：PASS；仅追加本节，无源码/参数/音频图/历史结论修改，无新设备操作，无VP_ON或下一阶段。此节点为文档和只读证据复审，应用构建/单元测试NOT_RUN；验证采用原始字段、同域算术、容器只读verify、原文件身份保护、追加范围及隐私检查。提交后停止，等待主控审核。
+
+
+## 10. 后续VP-A_TIMING_FIX_PREPARATION说明（PROPOSED，未补跑）
+
+本节追加于2026-10-15，第1–9节及其历史数据、归因和BLOCKED结论保持原样。主控仅批准在独立VP-A中准备定点工程修订，起点为 `f6a29a1fad10603bf77abcb33ad315a75ea89f65`。候选实现及完整协议见[07报告第14节](07_vpa_preparation.md#14-vp-a_timing_fix_preparationproposed定点时序修订)，仍待主控独立复审。
+
+**PROPOSED修订**：保留原2秒静默、8秒播放、3秒计划尾窗，在其后另加固定0.5秒非评分post-roll。16秒arm起总预算、64MiB PCM/8MiB诊断缓冲不变，不根据结果延长；不足即BLOCKED。四次有界absolute-before/continuous/absolute-after配对位于start前、播放请求附近、planned-tail附近及正常stop前，保存raw、timebase和局部偏移区间/不确定度。配对异常、观察到偏移区间变化或总预算超限走原INVALID/stop/seal路径；原始失败不被覆盖。早期失败保留部分配对，不在清理中补采掩盖原因。
+
+该准备并未取得新的PCM、时钟或声学证据；局部配对相交也不能证明全程偏移恒定。新增0.5秒不能补回历史末端数据，不能把本次已记录约2.924/2.950秒数字非零结束后覆盖改写成3秒，也不能证明未来一定完整。下一次获准运行仍须分别核对原评分窗、数字非零终点、实际两路采样及物理真值限制，不能静默重选窗口或把控制完成标记当作PCM覆盖PASS。
+
+完整非设备 `check.sh` 通过：原207项未改，新24项，共231项（Core 134、Audio 97），Debug/Release、SwiftLint 0 error/0 warning、Swift Format strict、C11、独立性与默认拒绝设备路径检查均通过。覆盖窗口/预算、时钟异常及漂移线索、INVALID后停止、一次stop/seal和旧模式隔离。配对后的最终预算检查也覆盖局部配对合规但总16.1秒失败的情况；检查至真实stop的调度/阻塞API仍DEVICE_UNVERIFIED，没有声学/真实线程PASS。
+
+TECHNICAL_REVIEW：PASS（定点候选实现），历史时钟/声学证据限制保留。ENGINEERING_REVIEW：PASS（非设备检查与源码复核），实际0.5秒末块交付和设备生命周期未测。EVIDENCE_REVIEW：PROPOSED诊断准备，历史 **VP-A_BLOCKED / EVIDENCE_UNVERIFIED** 不变。该新构建未来须重新固定实际二进制/签名身份，不能复用旧运行的程序身份。
+
+Stage7 Forbidden Checklist：PASS；本轮只改独立VP-A控制/测试及07，08只追加本节；Driver、Tap、C Recorder、音频图、record/source-probe、正式App、Qwen/Runtime/Test2/ACE3、正式Test3合同均未改。无新录音/外放/Engine/权限或私有资产访问，未进入VP_ON或VP-B/C/D/E。
+
+```text
+VP-A timing revision = PROPOSED_REVIEW_PENDING
+VP-A_DEVICE_NOT_RUN (本节点)
+VP_OFF = BLOCKED
+VP_ON = NOT_AUTHORIZED
+Apple AEC = NOT_MEASURED
+Test3 = BLOCKED
+execution_authorized = false
+```
+
+仅提交准备修订；完成后停止，等待主控复审及独立现场授权。

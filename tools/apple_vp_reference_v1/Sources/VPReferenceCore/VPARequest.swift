@@ -6,6 +6,7 @@ public struct VPARequest: Sendable {
     public static let quietSeconds = 2.0
     public static let materialSeconds = 8.0
     public static let tailSeconds = 3.0
+    public static let postRollSeconds = 0.5
     public static let maximumObservationSeconds = 0.25
     public let configuration: RunConfiguration
     public let experimentAuthorized: Bool
