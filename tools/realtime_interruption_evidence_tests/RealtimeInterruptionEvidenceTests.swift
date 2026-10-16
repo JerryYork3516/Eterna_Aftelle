@@ -1,7 +1,728 @@
+@preconcurrency import AVFoundation
 import Foundation
 
 private struct R81CredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? { nil }
+}
+
+private extension RealtimeInterruptionEvidenceTests {
+    static func testD1Only() async throws {
+        let exportDirectory = try d1ExportTestDirectory()
+        expect(!FileManager.default.fileExists(atPath: exportDirectory.path),
+               "D1 starts without exporting any evidence")
+        testD1LaunchMode()
+        await testD1InitializationIsolation()
+        testD1PreparationAndConsent()
+        try await testD1ListeningCapture()
+        try await testD1PlaybackScenarios()
+        await testD1StopDuringAuthorization()
+        await testD1PermissionAndCaptureFailures()
+        await testD1ByteLimitAndPreviousResult()
+        try await testD1PlaybackFailure()
+        try await testD1PlaybackPressureAndLateCompletion()
+        await testD1StaleCapture()
+        await testD1RouteChange()
+        expect(!FileManager.default.fileExists(atPath: exportDirectory.path),
+               "Stop and failure never automatically export")
+        print("d1_export_synthetic_cleanup=PASS")
+        print("d1_dependency_factory_calls=0")
+        print("d1_initialization_microphone_queries=0")
+        print("d1_initialization_microphone_requests=0")
+        print("d1_initialization_capture_starts=0")
+        print("d1_initialization_playback_starts=0")
+        print("d1_only_cases=\(cases)")
+        print("d1_only_checks=\(checks)")
+    }
+
+    static func testD1LaunchMode() {
+        cases += 1
+        let flag = AppleVPAcousticTestLaunchMode.argument
+        expect(flag == "--apple-vp-acoustic-test", "D1 launch flag is explicit and stable")
+        let disabledArguments: [[String]] = [[], ["Aftelle"], ["Aftelle", flag + "=false"], ["Aftelle", flag + "s"]]
+        for arguments in disabledArguments {
+            expect(!AppleVPAcousticTestLaunchMode.isEnabled(arguments: arguments),
+                   "D1 is disabled without the exact launch flag")
+        }
+        expect(AppleVPAcousticTestLaunchMode.isEnabled(arguments: ["Aftelle", flag]),
+               "only the exact flag enables D1")
+    }
+
+    static func testD1InitializationIsolation() async {
+        cases += 1
+        let spy = D1NormalDependenciesSpy()
+        let authorization = R855MicrophoneAuthorizationProvider(authorization: .notDetermined)
+        let capture = R81AudioCapture(acousticEchoHost: MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing))
+        let host = MacSpeechAudioHost(
+            authorizationProvider: authorization, capture: capture, deviceMonitor: R81DeviceMonitor()
+        )
+        let player = FakeMacSpeechAudioOutputPlayer()
+        let output = MacSpeechAudioOutputHost(player: player, deviceMonitor: FakeMacSpeechOutputDeviceMonitor())
+        let controller = AppController(
+            acousticTestArguments: ["Aftelle", "--apple-vp-acoustic-test"],
+            speechAudioHost: host, speechAudioOutputHost: output,
+            normalDependenciesFactory: spy.make
+        )
+        expect(controller.isAppleVPAcousticTestMode, "D1 Controller selects isolated mode before normal dependencies")
+        expect(spy.calls == 0, "D1 initialization never constructs normal dependencies")
+        expect(!controller.isResidentTextInputAvailable, "D1 initialization restores no resident or session")
+        controller.start()
+        controller.markSessionUncleanIfPossible()
+        controller.persistForNormalTerminationIfPossible()
+        await controller.startNativeSpeechInputBridge()
+        await controller.shutdownSpeechAudioHost()
+        await controller.shutdownSpeechAudioHost()
+        expect(spy.calls == 0, "D1 startup and termination never construct normal dependencies")
+        expect(!controller.isResidentTextInputAvailable, "D1 lifecycle restores no resident or session")
+        let queries = await authorization.queryCount()
+        let requests = await authorization.requestCount()
+        expect(queries == 0, "D1 mode selection and cleanup never query microphone authorization")
+        expect(requests == 0, "D1 mode selection and cleanup never request microphone authorization")
+        expect(capture.startCount == 0, "D1 mode selection and cleanup never start capture")
+        expect(player.prepareCount == 0, "D1 mode selection and cleanup never prepare playback")
+        expect(player.startCount == 0, "D1 mode selection and cleanup never start playback")
+        expect(!controller.speechAudioHostSnapshot.isCapturing, "D1 shutdown leaves capture stopped")
+        expect(controller.speechAudioOutputHostSnapshot.state == .closed, "D1 shutdown closes the original OutputHost")
+    }
+}
+
+@MainActor
+private final class D1NormalDependenciesSpy {
+    private(set) var calls = 0
+
+    func make() -> (OrchestrationKernel, ProviderKeychainStore) {
+        calls += 1
+        fatalError("D1 must not construct normal dependencies")
+    }
+}
+
+private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var frameBuffer: MacSpeechAudioFrameBuffer?
+    private var generation: UInt64 = 0
+    private var sampleCursor: Int64 = 0
+    private var contentStart: UInt64 = 0
+    private var stats: MacSpeechNativeVoiceDebugStats?
+    private var starts = 0
+    private var stops = 0
+    private var active = false
+    private let failsStart: Bool
+
+    init(failsStart: Bool = false) {
+        self.failsStart = failsStart
+    }
+
+    func selectProcessingMode(_ mode: MacSpeechAudioProcessingMode) throws {
+        guard mode == .appleVoiceProcessing else { throw MacSpeechAudioCaptureError.voiceProcessingUnavailable }
+    }
+
+    func voiceProcessingSnapshot() -> MacSpeechVoiceProcessingSnapshot? {
+        let format = MacSpeechNativeInputFormat(sampleRate: 48000, channelCount: 1)
+        return MacSpeechVoiceProcessingSnapshot(
+            mode: .appleVoiceProcessing, configurationID: 1, inputEnabled: true, outputEnabled: true,
+            bypassed: false, inputMuted: false, automaticGainControlEnabled: true,
+            inputFormat: format, outputFormat: format, validatedAtNanoseconds: 1
+        )
+    }
+
+    func start(generation: UInt64, frameBuffer: MacSpeechAudioFrameBuffer) throws -> MacSpeechNativeInputFormat {
+        try lock.withLock {
+            guard !failsStart else { throw MacSpeechAudioCaptureError.engineStartFailed }
+            active = true
+            starts += 1
+            self.generation = generation
+            self.frameBuffer = frameBuffer
+            contentStart = DispatchTime.now().uptimeNanoseconds
+            sampleCursor = 0
+        }
+        return MacSpeechNativeInputFormat(sampleRate: 48000, channelCount: 1)
+    }
+
+    func stop() {
+        lock.withLock {
+            guard active else { return }
+            active = false
+            stops += 1
+            frameBuffer = nil
+        }
+    }
+
+    func armNativeVoiceDebug(runID: UUID, generation: UInt64) -> Bool {
+        lock.withLock {
+            var value = MacSpeechNativeVoiceDebugStats(runID: runID, generation: generation)
+            value.bind(configurationID: 1, voiceProcessing: voiceProcessingSnapshot())
+            stats = value
+            return true
+        }
+    }
+
+    func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
+        lock.withLock { stats?.snapshot.runID == runID ? stats?.snapshot : nil }
+    }
+
+    func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
+        lock.withLock {
+            guard stats?.snapshot.runID == runID else { return nil }
+            stats?.seal()
+            return stats?.snapshot
+        }
+    }
+
+    func clearNativeVoiceDebug(runID: UUID) {
+        lock.withLock {
+            if stats?.snapshot.runID == runID {
+                stats = nil
+            }
+        }
+    }
+
+    func emitPackets(_ count: Int, marker: UInt8 = 1) {
+        lock.withLock {
+            guard active, let frameBuffer else { return }
+            for _ in 0 ..< count {
+                let timestamp = contentStart + UInt64(sampleCursor) * 1_000_000_000 / 48000
+                let pcm = Data((0 ..< 480).flatMap { _ in [marker, 0] })
+                let accepted = frameBuffer.append(
+                    pcm16Bytes: pcm, activity: 0, generation: generation, timestamp: timestamp
+                )
+                let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000,
+                                           channels: 1, interleaved: false)!
+                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960)!
+                buffer.frameLength = 960
+                buffer.floatChannelData![0].initialize(repeating: Float(marker) / 32768, count: 960)
+                stats?.recordNative(buffer, hostTimeNanoseconds: timestamp, sampleTime: sampleCursor,
+                                    configurationID: 1, generation: generation)
+                stats?.recordPacket(timestamp: timestamp, byteCount: pcm.count, accepted: accepted,
+                                    configurationID: 1, generation: generation)
+                sampleCursor += 960
+            }
+        }
+    }
+
+    func emitPreviousGenerationPacket() {
+        lock.withLock {
+            guard active, let frameBuffer, generation > 0 else { return }
+            let previous = generation - 1
+            let accepted = frameBuffer.append(
+                pcm16Bytes: Data(repeating: 9, count: 960), activity: 0,
+                generation: previous, timestamp: contentStart
+            )
+            stats?.recordPacket(timestamp: contentStart, byteCount: 960, accepted: accepted,
+                                configurationID: 1, generation: previous)
+        }
+    }
+
+    var startCount: Int {
+        lock.withLock { starts }
+    }
+
+    var stopCount: Int {
+        lock.withLock { stops }
+    }
+}
+
+@MainActor
+private struct D1ControllerStack {
+    let controller: AppController
+    let dependencies: D1NormalDependenciesSpy
+    let authorization: R855MicrophoneAuthorizationProvider
+    let capture: D1AudioCapture
+    let player: FakeMacSpeechAudioOutputPlayer
+    let output: MacSpeechAudioOutputHost
+    let captureMonitor: FakeMacSpeechOutputDeviceMonitor
+
+    init(
+        authorizationState: MicrophoneAuthorizationState = .authorized,
+        holdQueryNumber: Int? = nil,
+        failsCaptureStart: Bool = false,
+        byteLimit: Int = 720_000,
+        outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
+    ) {
+        let dependencies = D1NormalDependenciesSpy()
+        let authorization = R855MicrophoneAuthorizationProvider(
+            authorization: authorizationState, holdQueryNumber: holdQueryNumber
+        )
+        let capture = D1AudioCapture(failsStart: failsCaptureStart)
+        let player = FakeMacSpeechAudioOutputPlayer()
+        self.dependencies = dependencies
+        self.authorization = authorization
+        self.capture = capture
+        self.player = player
+        let captureMonitor = FakeMacSpeechOutputDeviceMonitor()
+        captureMonitor.changeInput(identifier: "d1-input", name: "D1 Fake Input", available: true)
+        self.captureMonitor = captureMonitor
+        let host = MacSpeechAudioHost(
+            authorizationProvider: authorization, capture: capture, deviceMonitor: captureMonitor
+        )
+        let output = MacSpeechAudioOutputHost(
+            player: player, deviceMonitor: FakeMacSpeechOutputDeviceMonitor(), configuration: outputConfiguration
+        )
+        self.output = output
+        controller = AppController(
+            acousticTestArguments: ["Aftelle", "--apple-vp-acoustic-test"],
+            speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
+            acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
+            normalDependenciesFactory: dependencies.make
+        )
+    }
+}
+
+private extension RealtimeInterruptionEvidenceTests {
+    static func startD1(_ controller: AppController) {
+        controller.startAppleVPAcousticTest(
+            microphoneConsent: true, speakerConsent: true, localCaptureConsent: true
+        )
+    }
+
+    static func expectD1Cleanup(_ stack: D1ControllerStack) {
+        expect(stack.controller.appleVPAcousticTestState.phase == .sealed, "D1 terminal evidence is sealed")
+        expect(!stack.controller.speechAudioHostSnapshot.isCapturing, "D1 terminal cleanup releases capture")
+        expect(stack.controller.speechAudioOutputHostSnapshot.state == .closed, "D1 terminal cleanup closes output")
+        expect(stack.dependencies.calls == 0, "D1 never initializes the normal Runtime/Provider/Store graph")
+    }
+
+    static func testD1PreparationAndConsent() {
+        cases += 1
+        let stack = D1ControllerStack()
+        expect(stack.controller.appleVPAcousticTestState.phase == .idle, "D1 is initially unarmed")
+        expect(stack.controller.prepareAppleVPAcousticTest(.residentOnly), "D1 explicitly prepares a scenario")
+        expect(stack.controller.appleVPAcousticTestState.phase == .ready, "preparation alone is device-free")
+        stack.controller.startAppleVPAcousticTest(
+            microphoneConsent: false, speakerConsent: false, localCaptureConsent: false
+        )
+        expect(stack.controller.appleVPAcousticTestState.phase == .ready
+            && stack.controller.appleVPAcousticTestState.errorCode == "consent_required",
+            "missing consent rejects before an asynchronous device operation")
+        expect(stack.capture.startCount == 0 && stack.player.prepareCount == 0,
+               "preparation and consent refusal perform no audio activation")
+        expect(stack.dependencies.calls == 0, "preparation never creates normal dependencies")
+        expectD1ExportRejected("an unsealed run has no export destination") {
+            _ = try stack.controller.appleVPAcousticTestExportURL(asWAV: false)
+        }
+        expectD1ExportRejected("an unsealed run cannot export JSON") {
+            let directory = try d1ExportTestDirectory()
+            try stack.controller.writeAppleVPAcousticTestJSON(
+                to: directory.appendingPathComponent("unsealed.json"), localExportConsent: true
+            )
+        }
+    }
+
+    static func testD1ListeningCapture() async throws {
+        cases += 1
+        let stack = D1ControllerStack(byteLimit: 960)
+        expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly), "B prepares without a playback file")
+        stack.controller.startAppleVPAcousticTest(
+            microphoneConsent: true, speakerConsent: false, localCaptureConsent: true
+        )
+        await waitUntil("D1 B running") { stack.controller.appleVPAcousticTestState.phase == .running }
+        startD1(stack.controller)
+        expect(!stack.controller.prepareAppleVPAcousticTest(.residentOnly), "busy run cannot switch scenario")
+        expect(!stack.controller.selectAppleVPAcousticPlaybackURL(nil), "busy run cannot change playback source")
+        stack.capture.emitPackets(1)
+        await waitUntil("D1 B sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+        expect(stack.capture.startCount == 1, "duplicate Start does not create a second capture")
+        expect(stack.player.prepareCount == 0 && stack.player.startCount == 0, "B never prepares or plays output")
+        expect(stack.controller.appleVPAcousticTestState.packetCount == 1
+            && stack.controller.appleVPAcousticTestState.byteCount == 960, "B retains exactly the emitted packet")
+        let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+        expect(wav.suffix(960) == Data((0 ..< 480).flatMap { _ in [UInt8(1), 0] }),
+               "WAV data is byte-identical to the retained processed packet")
+        let manifest = try JSONSerialization.jsonObject(with: stack.controller.appleVPAcousticTestManifestData())
+            as? [String: Any]
+        expect(manifest?["physical_acceptance"] as? String == "UNVERIFIED"
+            && manifest?["runtime_interruption"] as? String == "DISABLED",
+            "Fake engineering success cannot grant physical or Runtime acceptance")
+        try expectD1ExportConsent(stack.controller, expected: wav)
+        expectD1Cleanup(stack)
+    }
+
+    static func testD1PlaybackScenarios() async throws {
+        let source = try d1SyntheticPlayback(packets: 6)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for scenario in [AppleVPAcousticTestScenario.residentOnly, .doubleTalk] {
+            cases += 1
+            let stack = D1ControllerStack(byteLimit: 960)
+            expect(stack.controller.prepareAppleVPAcousticTest(scenario), "A/C prepare explicitly")
+            expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "A/C accept only the selected test URL")
+            startD1(stack.controller)
+            await waitUntil("D1 playback running") { stack.controller.appleVPAcousticTestState.phase == .running }
+            await waitUntil("D1 playback source scheduled") {
+                stack.player.startCount == 1 && stack.player.payloads.reduce(0) { $0 + $1.count } == 5760
+            }
+            expect(stack.player.prepareCount == 1 && stack.player.startCount == 1,
+                   "A/C feed the original OutputHost and injected FakePlayer")
+            expect(stack.player.payloads.allSatisfy { $0.count <= 4800 },
+                   "playback chunks are bounded to 100ms before the original consumer watchdog")
+            expect(stack.player.payloads.reduce(into: Data()) { $0.append($1) }
+                == Data((0 ..< 2880).flatMap { _ in [UInt8(2), 0] }),
+                "OutputHost receives the complete selected synthetic source sequence")
+            stack.capture.emitPackets(1)
+            await waitUntil("D1 playback sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode == nil,
+                   "complete Fake engineering evidence seals without a physical PASS")
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func testD1StopDuringAuthorization() async {
+        cases += 1
+        let stack = D1ControllerStack(holdQueryNumber: 1, byteLimit: 960)
+        expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly), "held authorization scenario prepares")
+        startD1(stack.controller)
+        await waitUntil("D1 authorization barrier") { await stack.authorization.isQueryPending() }
+        var stopReturned = false
+        let stopping = Task { @MainActor in
+            await stack.controller.stopAppleVPAcousticTest()
+            stopReturned = true
+        }
+        await waitUntil("D1 Stop returns before permission callback") { stopReturned }
+        await stopping.value
+        let permissionStillPending = await stack.authorization.isQueryPending()
+        expect(permissionStillPending, "Stop never waits for the uncancellable microphone callback")
+        expect(stack.capture.startCount == 0 && stack.player.startCount == 0,
+               "late authorization cannot start retired audio")
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "cancelled", "Stop preserves cancellation")
+        expectD1Cleanup(stack)
+        let retiredRun = stack.controller.appleVPAcousticTestState.runID
+        expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly, discardPreviousResult: true),
+               "an explicit next preparation preserves the unresolved authorization fence")
+        startD1(stack.controller)
+        expect(stack.controller.appleVPAcousticTestState.authorizationPending
+            && !stack.controller.appleVPAcousticTestState.canStart
+            && stack.controller.appleVPAcousticTestState.errorCode == "authorization_pending"
+            && stack.capture.startCount == 0, "pending authorization prevents a concurrent replacement capture")
+        await stack.authorization.releaseQuery()
+        await waitUntil("D1 old authorization cleanup") { stack.controller.appleVPAcousticTestState.canStart }
+        startD1(stack.controller)
+        await waitUntil("D1 next run starts") { stack.controller.appleVPAcousticTestState.phase == .running }
+        expect(stack.controller.appleVPAcousticTestState.runID != retiredRun && stack.capture.startCount == 1,
+               "only explicit Start after old authorization cleanup can create the next capture")
+        stack.capture.emitPackets(1)
+        await waitUntil("D1 next run sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+        expect(stack.controller.appleVPAcousticTestState.errorCode == nil, "next run recovers after stale permission")
+        expectD1Cleanup(stack)
+    }
+
+    static func testD1PermissionAndCaptureFailures() async {
+        for captureFailure in [false, true] {
+            cases += 1
+            let stack = D1ControllerStack(
+                authorizationState: captureFailure ? .authorized : .denied, failsCaptureStart: captureFailure
+            )
+            expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly), "failure scenario prepares")
+            startD1(stack.controller)
+            await waitUntil("D1 failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode
+                == (captureFailure ? "capture_unavailable" : "microphone_not_authorized"),
+                "the first permission/capture failure remains explicit")
+            expect(stack.capture.startCount == 0 && stack.player.startCount == 0,
+                   "failed permission or capture cannot create playback")
+            expectD1ExportRejected("a sealed run without valid PCM cannot create a WAV") {
+                let url = try stack.controller.appleVPAcousticTestExportURL(asWAV: true)
+                try stack.controller.writeAppleVPAcousticTestWAV(to: url, localExportConsent: true)
+            }
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func testD1ByteLimitAndPreviousResult() async {
+        cases += 1
+        let stack = D1ControllerStack(byteLimit: 960)
+        expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly), "bounded capture prepares")
+        startD1(stack.controller)
+        await waitUntil("D1 bounded capture running") { stack.controller.appleVPAcousticTestState.phase == .running }
+        stack.capture.emitPackets(2)
+        await waitUntil("D1 capacity failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "processed_pcm_capacity_exceeded",
+               "overflow preserves a capacity failure rather than silently truncating")
+        expect(stack.controller.appleVPAcousticTestState.byteCount == 960,
+               "retained bytes never exceed the configured bound")
+        let runID = stack.controller.appleVPAcousticTestState.runID
+        expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk), "a sealed result requires explicit discard")
+        expect(stack.controller.appleVPAcousticTestState.runID == runID, "failed preparation preserves sealed identity")
+        expectD1Cleanup(stack)
+        expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly, discardPreviousResult: true),
+               "explicit discard is the only way to prepare the next run")
+        expect(stack.controller.appleVPAcousticTestState.byteCount == 0, "new preparation carries no old PCM")
+    }
+
+    static func testD1PlaybackFailure() async throws {
+        cases += 1
+        let source = try d1SyntheticPlayback()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let stack = D1ControllerStack()
+        stack.player.prepareError = .outputUnavailable
+        expect(stack.controller.prepareAppleVPAcousticTest(.residentOnly), "playback failure scenario prepares")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "playback test selects only its own asset")
+        startD1(stack.controller)
+        await waitUntil("D1 playback failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "playback_failed",
+               "playback preparation failure closes without another route")
+        expect(stack.capture.startCount == 0 && stack.player.startCount == 0,
+               "failed output preparation cannot start capture or playback")
+        expectD1Cleanup(stack)
+    }
+
+    static func testD1StaleCapture() async {
+        cases += 1
+        let stack = D1ControllerStack(byteLimit: 960)
+        expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly), "stale callback scenario prepares")
+        startD1(stack.controller)
+        await waitUntil("D1 stale test running") { stack.controller.appleVPAcousticTestState.phase == .running }
+        stack.capture.emitPreviousGenerationPacket()
+        stack.capture.emitPackets(1, marker: 3)
+        await waitUntil("D1 stale evidence sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+        expect(stack.controller.appleVPAcousticTestState.byteCount == 960,
+               "old-generation PCM never joins current bytes")
+        expect(stack.controller.speechAudioHostSnapshot.rejectedStaleFrameCount == 1,
+               "old-generation callback remains visible as rejected")
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "native_coverage_unverified",
+               "stale native evidence cannot be promoted to valid coverage")
+        expectD1Cleanup(stack)
+    }
+
+    static func testD1PlaybackPressureAndLateCompletion() async throws {
+        cases += 1
+        let source = try d1SyntheticPlayback(packets: 12)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let configuration = MacSpeechPCMPlaybackConfiguration(
+            capacity: 1, lowWatermark: 0, consumerTimeoutNanoseconds: 2_000_000_000,
+            startupBufferCount: 1, startupBufferDurationNanoseconds: 0, scheduleAheadCount: 1
+        )
+        let stack = D1ControllerStack(outputConfiguration: configuration)
+        expect(stack.controller.prepareAppleVPAcousticTest(.doubleTalk), "pressure scenario prepares")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source),
+               "pressure test selects its own synthetic source")
+        startD1(stack.controller)
+        await waitUntil("D1 output pressure") { await stack.output.currentSnapshot().pressureWaitCount > 0 }
+        var stopReturned = false
+        let stopping = Task { @MainActor in
+            await stack.controller.stopAppleVPAcousticTest()
+            stopReturned = true
+        }
+        await waitUntil("D1 Stop releases pressured output") { stopReturned }
+        await stopping.value
+        let retired = await stack.output.currentSnapshot()
+        stack.player.completeStoppedChunk()
+        await waitUntil("D1 late output completion rejected") {
+            await stack.output.currentSnapshot().rejectedCallbackCount > retired.rejectedCallbackCount
+        }
+        let afterLate = await stack.output.currentSnapshot()
+        expect(afterLate.state == .closed && afterLate.generation == retired.generation,
+               "late completion cannot revive closed output")
+        expect(stack.player.payloads.allSatisfy { $0.count <= 4800 },
+               "queue pressure never expands playback chunk duration")
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "cancelled",
+               "Stop retains the first cancellation while waking blocked playback")
+        expectD1Cleanup(stack)
+    }
+
+    static func expectD1ExportConsent(_ controller: AppController, expected: Data) throws {
+        let wavURL = try controller.appleVPAcousticTestExportURL(asWAV: true)
+        let jsonURL = try controller.appleVPAcousticTestExportURL(asWAV: false)
+        let directory = try d1ExportTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        cases += 1
+        expect(wavURL.deletingLastPathComponent() == directory,
+               "Controller chooses the isolated approved cache directory")
+        expect(!FileManager.default.fileExists(atPath: directory.path),
+               "computing destinations creates no files or directory")
+        expectD1ExportRejected("local WAV export requires its own explicit consent") {
+            try controller.writeAppleVPAcousticTestWAV(to: wavURL, localExportConsent: false)
+        }
+        expectD1ExportRejected("local JSON export requires its own explicit consent") {
+            try controller.writeAppleVPAcousticTestJSON(to: jsonURL, localExportConsent: false)
+        }
+        expect(!FileManager.default.fileExists(atPath: directory.path), "refused consent writes no evidence")
+        try testD1ExportPathRefusals(controller, wavURL: wavURL)
+        try testD1ExportDirectorySymlink(controller, wavURL: wavURL)
+        try testD1ExportRepositoryAncestor(controller, wavURL: wavURL)
+        try testD1ExportPair(controller, wavURL: wavURL, jsonURL: jsonURL, expected: expected)
+    }
+
+    static func d1ExportTestDirectory() throws -> URL {
+        guard let home = ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        let cache = try FileManager.default.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false
+        )
+        guard cache.path.hasPrefix(URL(fileURLWithPath: home).path + "/") else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        return cache.appendingPathComponent("com.eterna.aftelle.debug-apple-vp-evidence", isDirectory: true)
+    }
+
+    static func expectD1ExportRejected(_ message: String, operation: () throws -> Void) {
+        do {
+            try operation()
+            expect(false, message)
+        } catch {
+            expect(true, message)
+        }
+    }
+
+    static func testD1ExportPathRefusals(_ controller: AppController, wavURL: URL) throws {
+        cases += 1
+        let directory = try d1ExportTestDirectory()
+        let outside = directory.deletingLastPathComponent().appendingPathComponent("d1-r2-outside.wav")
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("d1-r2-refused.wav")
+        let wrongRun = directory.appendingPathComponent("run-\(UUID().uuidString).wav")
+        let traversal = URL(fileURLWithPath:
+            directory.path + "/../" + directory.lastPathComponent + "/" + wavURL.lastPathComponent)
+        for target in [outside, repository, wrongRun, traversal] {
+            expectD1ExportRejected("WAV refuses any nonexact approved run destination") {
+                try controller.writeAppleVPAcousticTestWAV(to: target, localExportConsent: true)
+            }
+            expect(!FileManager.default.fileExists(atPath: target.path), "rejected path creates no file")
+        }
+        expectD1ExportRejected("a WAV destination cannot receive JSON") {
+            try controller.writeAppleVPAcousticTestJSON(to: wavURL, localExportConsent: true)
+        }
+        expect(!FileManager.default.fileExists(atPath: directory.path),
+               "invalid destinations never create the evidence directory")
+    }
+
+    static func testD1ExportDirectorySymlink(_ controller: AppController, wavURL: URL) throws {
+        cases += 1
+        let directory = try d1ExportTestDirectory()
+        let escaped = directory.deletingLastPathComponent().appendingPathComponent("d1-r2-escape-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: escaped, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: escaped)
+        }
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: escaped)
+        expectD1ExportRejected("an approved-directory symlink cannot escape to another directory") {
+            try controller.writeAppleVPAcousticTestWAV(to: wavURL, localExportConsent: true)
+        }
+        let contents = try FileManager.default.contentsOfDirectory(atPath: escaped.path)
+        expect(contents.isEmpty, "symlink refusal writes no escaped file")
+    }
+
+    static func testD1ExportRepositoryAncestor(_ controller: AppController, wavURL: URL) throws {
+        cases += 1
+        let directory = try d1ExportTestDirectory()
+        let marker = directory.deletingLastPathComponent().appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: marker) }
+        expectD1ExportRejected("the approved basename inside a Git ancestor is refused") {
+            try controller.writeAppleVPAcousticTestWAV(to: wavURL, localExportConsent: true)
+        }
+        expect(!FileManager.default.fileExists(atPath: wavURL.path), "Git ancestor refusal writes no audio")
+    }
+
+    static func testD1ExportPair(
+        _ controller: AppController, wavURL: URL, jsonURL: URL, expected: Data
+    ) throws {
+        cases += 1
+        let directory = try d1ExportTestDirectory()
+        try controller.writeAppleVPAcousticTestWAV(to: wavURL, localExportConsent: true)
+        try controller.writeAppleVPAcousticTestJSON(to: jsonURL, localExportConsent: true)
+        let exported = try Data(contentsOf: wavURL)
+        expect(exported == expected, "explicit Fake export preserves exact processed WAV bytes")
+        let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any]
+        let runID = controller.appleVPAcousticTestState.runID?.uuidString
+        expect(manifest?["run_id"] as? String == runID, "JSON belongs to the sealed capture run")
+        expect(wavURL.deletingPathExtension().lastPathComponent == "run-" + (runID ?? "UNKNOWN")
+            && jsonURL.deletingPathExtension().lastPathComponent == wavURL.deletingPathExtension().lastPathComponent,
+            "the JSON/WAV pair shares the exact run filename identity")
+        expect(manifest?["source_commit"] is NSNull && manifest?["build_identity"] is NSNull,
+               "unregistered source and build identities remain UNKNOWN")
+        let contents = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        expect(Set(contents) == Set([wavURL.lastPathComponent, jsonURL.lastPathComponent]),
+               "only the explicit corresponding JSON/WAV pair exists")
+        try expectD1ExportPermissions(directory: directory, files: [wavURL, jsonURL])
+        try expectD1ExportNoOverwrite(controller, wavURL: wavURL, jsonURL: jsonURL)
+        try testD1ExportFileSymlink(controller, wavURL: wavURL)
+    }
+
+    static func expectD1ExportPermissions(directory: URL, files: [URL]) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+        expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700,
+               "evidence directory permissions are 0700")
+        for file in files {
+            let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+            expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+                   "exported file permissions are 0600")
+        }
+    }
+
+    static func expectD1ExportNoOverwrite(_ controller: AppController, wavURL: URL, jsonURL: URL) throws {
+        cases += 1
+        let wavBefore = try Data(contentsOf: wavURL)
+        let jsonBefore = try Data(contentsOf: jsonURL)
+        expectD1ExportRejected("WAV export never overwrites an existing file") {
+            try controller.writeAppleVPAcousticTestWAV(to: wavURL, localExportConsent: true)
+        }
+        expectD1ExportRejected("JSON export never overwrites an existing file") {
+            try controller.writeAppleVPAcousticTestJSON(to: jsonURL, localExportConsent: true)
+        }
+        let wavAfter = try Data(contentsOf: wavURL)
+        let jsonAfter = try Data(contentsOf: jsonURL)
+        expect(wavAfter == wavBefore && jsonAfter == jsonBefore,
+               "refused overwrites preserve both original byte sequences")
+    }
+
+    static func testD1ExportFileSymlink(_ controller: AppController, wavURL: URL) throws {
+        cases += 1
+        let escaped = wavURL.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("d1-r2-existing-\(UUID().uuidString)")
+        let marker = Data("synthetic sentinel".utf8)
+        try marker.write(to: escaped, options: .withoutOverwriting)
+        defer { try? FileManager.default.removeItem(at: escaped) }
+        try FileManager.default.removeItem(at: wavURL)
+        try FileManager.default.createSymbolicLink(at: wavURL, withDestinationURL: escaped)
+        expectD1ExportRejected("an existing output symlink is refused without following it") {
+            try controller.writeAppleVPAcousticTestWAV(to: wavURL, localExportConsent: true)
+        }
+        let after = try Data(contentsOf: escaped)
+        expect(after == marker, "output symlink refusal preserves the unrelated synthetic target")
+    }
+
+    static func testD1RouteChange() async {
+        for changesInput in [true, false] {
+            cases += 1
+            let stack = D1ControllerStack()
+            expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly), "route change scenario prepares")
+            startD1(stack.controller)
+            await waitUntil("D1 route test running") { stack.controller.appleVPAcousticTestState.phase == .running }
+            if changesInput {
+                stack.captureMonitor.changeInput(identifier: "d1-replacement", name: "D1 Fake Input", available: true)
+            } else {
+                stack.captureMonitor.changeOutput(identifier: "d1-replacement", name: "D1 Fake Output", available: true)
+            }
+            await waitUntil("D1 route failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode == "route_changed",
+                   "an actual Fake route callback seals the run as invalid")
+            expect(stack.capture.startCount == 1 && stack.capture.stopCount == 1,
+                   "route failure releases capture once and never automatically restarts")
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func d1SyntheticPlayback(packets: Int = 1) throws -> URL {
+        let pcm = Data((0 ..< (480 * packets)).flatMap { _ in [UInt8(2), 0] })
+        var bytes = Data("RIFF".utf8)
+        d1AppendLittleEndian(UInt32(36 + pcm.count), to: &bytes)
+        bytes.append(Data("WAVEfmt ".utf8))
+        d1AppendLittleEndian(16, to: &bytes)
+        bytes.append(contentsOf: [1, 0, 1, 0])
+        d1AppendLittleEndian(24000, to: &bytes)
+        d1AppendLittleEndian(48000, to: &bytes)
+        bytes.append(contentsOf: [2, 0, 16, 0])
+        bytes.append(Data("data".utf8))
+        d1AppendLittleEndian(UInt32(pcm.count), to: &bytes)
+        bytes.append(pcm)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aftelle-d1-synthetic-\(UUID().uuidString).wav")
+        try bytes.write(to: url, options: .withoutOverwriting)
+        return url
+    }
+
+    static func d1AppendLittleEndian(_ value: UInt32, to bytes: inout Data) {
+        bytes.append(contentsOf: (0 ..< 4).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+    }
 }
 
 private struct T32CascadedCredentialReader: ProviderCredentialReading {
@@ -627,6 +1348,14 @@ private struct RealtimeInterruptionEvidenceTests {
     private static var duplicateStartProviderSessions = -1
 
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--d1-only"]) {
+            try await testD1Only()
+            return
+        }
+        try await runFixtureTests()
+    }
+
+    private static func runFixtureTests() async throws {
         guard CommandLine.arguments.count == 2 else {
             fatalError("fixture path required")
         }

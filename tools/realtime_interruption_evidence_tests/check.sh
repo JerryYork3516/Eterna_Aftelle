@@ -2,8 +2,20 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+mode="${1:-full}"
+if [[ "$mode" != "full" && "$mode" != "d1-only" ]]; then
+  echo "unsupported realtime evidence mode: $mode" >&2
+  exit 2
+fi
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-r81-evidence.XXXXXX")"
-trap 'rm -rf "$build_dir"' EXIT
+d1_runtime_home=""
+cleanup() {
+  rm -rf "$build_dir"
+  if [[ -n "$d1_runtime_home" ]]; then
+    rm -rf "$d1_runtime_home"
+  fi
+}
+trap cleanup EXIT
 fixture="$repo_root/apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident"
 runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
 host_sources=(
@@ -44,8 +56,30 @@ swiftc \
   -o "$build_dir/realtime_interruption_evidence_tests"
 
 runtime_home="$build_dir/runtime-home"
-mkdir -p "$runtime_home"
+if [[ "$mode" == "d1-only" ]]; then
+  cache_root="$(swift -e 'import Foundation; print(FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].path)')"
+  cache_root="$(cd "$cache_root" && pwd -P)"
+  d1_runtime_home="$(mktemp -d "$cache_root/aftelle-d1-r2-tests.XXXXXX")"
+  chmod 0700 "$d1_runtime_home"
+  runtime_home="$d1_runtime_home"
+else
+  mkdir -p "$runtime_home"
+fi
 output="$build_dir/output.log"
+if [[ "$mode" == "d1-only" ]]; then
+  CFFIXED_USER_HOME="$runtime_home" \
+    "$build_dir/realtime_interruption_evidence_tests" --d1-only \
+    | tee "$output"
+  rg -qx 'd1_export_synthetic_cleanup=PASS' "$output"
+  rg -qx 'd1_dependency_factory_calls=0' "$output"
+  rg -qx 'd1_initialization_microphone_queries=0' "$output"
+  rg -qx 'd1_initialization_microphone_requests=0' "$output"
+  rg -qx 'd1_initialization_capture_starts=0' "$output"
+  rg -qx 'd1_initialization_playback_starts=0' "$output"
+  rg -qx 'd1_only_cases=22' "$output"
+  rg -qx 'd1_only_checks=174' "$output"
+  exit 0
+fi
 CFFIXED_USER_HOME="$runtime_home" \
   "$build_dir/realtime_interruption_evidence_tests" "$fixture" \
   | tee "$output"

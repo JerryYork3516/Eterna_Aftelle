@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-10-16 · T3.2-A-D1-R2 受控证据导出（仅本地）
+
+- 主控裁定D1离线安全PASS_WITH_CONDITIONS，允许C19独立延期至Stage7.5结束，不与旧C23重复统计。R2仅两生产文件收紧DEBUG导出至固定Caches／runID，目录0700、文件0600、fd逐级拒symlink／Git／覆盖；原Capture及Test2原链不改。
+- D1控制／导出安全22/174、统计10/49、各Guard和Debug／未签名Release通过；首133为合成HOME的系统路径别名，probe后只修测试环境，原失败与D1 patch保留。最终Format20856/exit1、Lint384/exit2仍FAIL，新增B0，3个既有C19文件长度必要增长登记；[R2实际审核](docs/stage7_5/test3_apple_vp_clean/T3_2_A_D1_debug_acoustic_harness.md)。
+- R2 REVIEW_PENDING/LOCAL_ONLY，ENGINEERING REWORK/DEBT_DEFERRED；无commit/push、App／设备／Provider／私人音频。真实构建到run／物理窗口／试听仍UNKNOWN，设备/B未授权、T3.3未开始、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；交付后停止。
+
+## 2026-10-16 · T3.2-A-D1 隔离DEBUG声学入口（仅本地）
+
+- 仅3获批生产文件实现D启动／退出隔离、复用原共享Host的A/B/C手动控制、100ms播放child及单一有界drain／native累计观测；无Runtime／Provider／Store图、第二Engine或正式Decision。Debug／未签名Release、Release guard、Host178、Playback238、AEC1165、Converter25/221、D1控制15/140、统计10/49通过；首编译失败及Stats133保留于[实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_D1_debug_acoustic_harness.md)。
+- 固定工具同范围Format20907→20856（exit1）、Lint387→384（exit2），B0；新增C19＝12函数＋7文件／类型增长，不自动继承旧C23延期，ENGINEERING REWORK。无规范配置或旧合同变化，无提交豁免。
+- D1 REVIEW_PENDING/LOCAL_ONLY；未launch App／设备／私人录音／真实Provider、无commit/push。Device/B未授权、T3.3未开始、SQ-M1 OPEN、Qwen0/3、正式Test3 BLOCKED/false，完成本地交付后停止。
+
 ## 2026-10-16 · T3.2-A-L-R2 最终交付授权与治理
 
 - 主控批准离线功能安全，并对当前已验证17文件单独授予一次性lint提交例外；16项验证源码/脚本未漂移，仅补3文档治理记录，不重复build/测试。Release Guard、Debug/Release、安全回归PASS；SwiftFormat18286/SwiftLint312仍FAIL，B0/C23＝21文件/类型＋2函数长度。

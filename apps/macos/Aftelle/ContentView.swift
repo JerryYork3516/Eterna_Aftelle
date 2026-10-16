@@ -17,7 +17,7 @@ final class ParticleOrientationOverlayState: ObservableObject {
 
 @MainActor
 final class ParticlePresentationSettings: ObservableObject {
-    @Published var tuning = ParticleTuning.loadSaved()
+    @Published var tuning: ParticleTuning
     @Published private(set) var rebuildGeneration = 0
     @Published var isManualRotationEnabled = false
     @Published var viewOrientation: ParticleViewOrientation = .identity
@@ -34,6 +34,16 @@ final class ParticlePresentationSettings: ObservableObject {
     @Published var isOrientationOverlayVisible = false
     let orientationOverlayState = ParticleOrientationOverlayState()
     #endif
+
+    init() {
+        #if DEBUG
+            tuning = AppleVPAcousticTestLaunchMode.isEnabled(
+                arguments: ProcessInfo.processInfo.arguments
+            ) ? .systemDefault : ParticleTuning.loadSaved()
+        #else
+            tuning = ParticleTuning.loadSaved()
+        #endif
+    }
 
     func rebuildWithFixedSeed() {
         rebuildGeneration &+= 1
@@ -117,6 +127,18 @@ struct ContentView: View {
     #endif
 
     var body: some View {
+        #if DEBUG
+            if controller.isAppleVPAcousticTestMode {
+                AppleVPAcousticTestView(controller: controller)
+            } else {
+                normalBody
+            }
+        #else
+            normalBody
+        #endif
+    }
+
+    private var normalBody: some View {
         ZStack {
             shellBackground
                 .ignoresSafeArea()
@@ -626,6 +648,128 @@ private struct ParticleOrientationDebugOverlay: View {
     }
 }
 
+    private struct AppleVPAcousticTestView: View {
+        @ObservedObject var controller: AppController
+        @State private var pendingScenario: AppleVPAcousticTestScenario?
+        @State private var showsStartConsent = false
+        @State private var showsDiscardConfirmation = false
+        @State private var exportLocation: URL?
+
+        var body: some View {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Apple VP Acoustic Test")
+                        .font(.title)
+                    Text("Isolated DEBUG mode. No resident, session or provider is loaded.")
+                    Text("Device validation is not authorized in D1. Controls require a separate device approval.")
+                    preparationControls
+                    operationControls
+                    if let exportLocation {
+                        Text("Last local export")
+                        Text(verbatim: exportLocation.path)
+                            .textSelection(.enabled)
+                    }
+                    ForEach(controller.appleVPAcousticStatusLines, id: \.self) { line in
+                        Text(verbatim: line)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding()
+            }
+            .confirmationDialog("Discard result?", isPresented: $showsDiscardConfirmation) {
+                Button("Discard and prepare", role: .destructive) {
+                    if let scenario = pendingScenario {
+                        _ = controller.prepareAppleVPAcousticTest(scenario, discardPreviousResult: true)
+                    }
+                    pendingScenario = nil
+                }
+                Button("Cancel", role: .cancel) { pendingScenario = nil }
+            }
+            .confirmationDialog("Allow local test?", isPresented: $showsStartConsent) {
+                Button("Use microphone, local capture and test playback") {
+                    controller.startAppleVPAcousticTest(
+                        microphoneConsent: true, speakerConsent: true, localCaptureConsent: true
+                    )
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("A/C use the selected offline voice. B uses only the microphone.")
+                Text("No provider is contacted. Audio stays in bounded memory until an explicit export.")
+            }
+            .onDisappear {
+                Task { await controller.shutdownSpeechAudioHost() }
+            }
+        }
+
+        private var preparationControls: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button("Prepare A · Resident only") { prepare(.residentOnly) }
+                    Button("Prepare B · Human only") { prepare(.humanOnly) }
+                    Button("Prepare C · Double talk") { prepare(.doubleTalk) }
+                }
+                .disabled(controller.appleVPAcousticTestState.isBusy)
+                Button("Select approved offline WAV…") { selectPlaybackFile() }
+                    .disabled(controller.appleVPAcousticTestState.isBusy)
+                Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
+            }
+        }
+
+        private var operationControls: some View {
+            HStack {
+                Button("Start…") { showsStartConsent = true }
+                    .disabled(!controller.appleVPAcousticTestState.canStart)
+                Button("Stop") {
+                    Task { await controller.stopAppleVPAcousticTest() }
+                }
+                .disabled(!controller.appleVPAcousticTestState.isBusy)
+                Button("Export local JSON…") { exportResult(asWAV: false) }
+                    .disabled(!controller.appleVPAcousticTestState.canExport)
+                Button("Export local WAV…") { exportResult(asWAV: true) }
+                    .disabled(!controller.appleVPAcousticTestState.canExport)
+            }
+        }
+
+        private func prepare(_ scenario: AppleVPAcousticTestScenario) {
+            if !controller.prepareAppleVPAcousticTest(scenario) {
+                pendingScenario = scenario
+                showsDiscardConfirmation = true
+            }
+        }
+
+        private func selectPlaybackFile() {
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.wav]
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            if panel.runModal() == .OK {
+                _ = controller.selectAppleVPAcousticPlaybackURL(panel.url)
+            }
+        }
+
+        private func exportResult(asWAV: Bool) {
+            do {
+                let url = try controller.appleVPAcousticTestExportURL(asWAV: asWAV)
+                let confirmation = NSAlert()
+                confirmation.messageText = String(localized: "Export local evidence?")
+                confirmation.informativeText = url.path
+                confirmation.addButton(withTitle: String(localized: "Export"))
+                confirmation.addButton(withTitle: String(localized: "Cancel"))
+                guard confirmation.runModal() == .alertFirstButtonReturn else { return }
+                if asWAV {
+                    try controller.writeAppleVPAcousticTestWAV(to: url, localExportConsent: true)
+                } else {
+                    try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
+                }
+                exportLocation = url
+            } catch {
+                let alert = NSAlert(error: error)
+                alert.runModal()
+            }
+        }
+    }
+
 private enum ParticleDebugSection {
     case diagnostics
     case provider
@@ -642,6 +786,14 @@ struct ParticleDebugWindow: View {
     @ObservedObject var presentationSettings: ParticlePresentationSettings
 
     var body: some View {
+            if controller.isAppleVPAcousticTestMode {
+                AppleVPAcousticTestView(controller: controller)
+            } else {
+                normalBody
+            }
+        }
+
+        private var normalBody: some View {
         ParticleDebugPanel(
             snapshot: controller.particleDebugSnapshot,
             providerState: controller.providerDebugState,

@@ -4,6 +4,8 @@
 
 **本文件是本范围的唯一正式计划入口。** 当前设计见 [Apple Native Voice Experience 计划 v2](T3_1_R2_native_voice_experience_plan.md)。主控已批准T3.1-R2计划：Apple 原生通话音频能力 → Aftelle 既有音频输入接口 → Test2 冻结技术链。主控本轮已批准T3.0-F/Test2 Offline Baseline及T3.1-R2 Plan，并仅授权T3.2-A生产实现、必要离线回归与构建。本轮结果见 [T3.2-A实现与审核](T3_2_A_implementation_and_review.md)：机械离线检查通过，格式/静态工具FAIL及工程REWORK保留；用户已明确仅豁免本轮lint提交门槛，允许当前白名单交付；不是设备或下一节点授权。正式旧Human Gate仍有效，Apple合同剖面另按逐项批准边界处理。 最新主控决定及交付见 [T3.2-A-L最终审核](T3_2_A_L_incremental_lint_review.md)：离线功能安全已APPROVED；Release guard、Debug/Release及受影响离线回归PASS；B0/C23（21文件/类型＋2函数长度），SwiftFormat18286/SwiftLint312仍FAIL。主控对本次已验证17文件单独授予一次性lint提交例外；ENGINEERING保持REWORK/DEBT_DEFERRED，C23在Stage7.5结束后治理；设备及下一节点未授权。
 
+当前D1及R2交付见 [隔离式声学测试入口与R2导出安全审核](T3_2_A_D1_debug_acoustic_harness.md#11-t32-a-d1-r2--secure-evidence-export--harness-closure)：主控裁定D1离线安全PASS_WITH_CONDITIONS，允许C19作为独立结构债务在Stage7.5结束后治理，不与旧C23重复统计。R2仅收紧DEBUG证据导出至受控Caches目录、runID文件名及0700/0600与symlink/覆盖负控；D1控制22/174、统计10/49、Guard、Debug/Release通过，未启动真实App／设备。新增B0，Format20856／Lint384仍FAIL，C19中3项文件长度必要增长如实登记；ENGINEERING仍REWORK/DEBT_DEFERRED。R2 REVIEW_PENDING/LOCAL_ONLY，无commit/push、设备或后续节点授权。
+
 ## 当前状态
 
 ~~~text
@@ -14,6 +16,9 @@ T3.2-A = REVIEW_PENDING
 T3.2-A-L Offline Safety = APPROVED
 T3.2-A-L Submission = COMPLETED
 ENGINEERING = REWORK / DEBT_DEFERRED
+D1 C19 = DEBT_DEFERRED / SEPARATE_REGISTER
+T3.2-A-D1 Offline Safety = PASS_WITH_CONDITIONS (MAIN_DECISION)
+T3.2-A-D1-R2 = REVIEW_PENDING / LOCAL_ONLY
 T3.2-A Device Validation = NOT_AUTHORIZED
 T3.2-B = NOT_AUTHORIZED
 T3.3–T3.6 = NOT_STARTED
@@ -48,6 +53,7 @@ T3.0、T3.1-R2报告中的状态行和AGENTS指针保留当时快照，本轮不
 | T3.0-F | [原Fixture恢复及七入口离线回归](T3_0_F_fixture_recovery_and_baseline_validation.md)，不降标准、不提交DR | APPROVED；七入口全部exit 0 |
 | T3.1-R2 | 完整原生能力矩阵、API/系统边界、拓扑、接口与合同映射 | Plan APPROVED（主控本轮确认）；不等于后续执行授权 |
 | T3.2-A | [VP核心及离线实现/审核](T3_2_A_implementation_and_review.md) | REVIEW_PENDING；机械离线PASS，提交治理REWORK；设备NOT_AUTHORIZED |
+| T3.2-A-D1 / R2 | [隔离DEBUG入口与安全导出审核](T3_2_A_D1_debug_acoustic_harness.md) | R2 REVIEW_PENDING / LOCAL_ONLY；D1安全PASS_WITH_CONDITIONS，工程REWORK/DEBT_DEFERRED，设备未授权 |
 | T3.2-B | AGC/状态、系统模式、app mute同步、可配置ducking、可选Muted Talker | NOT_AUTHORIZED；可选体验不成为A前置 |
 | T3.3 | 既有输入接口最小兼容；纯回声/独讲/持续双讲Shadow验证 | NOT_STARTED |
 | T3.4 | 复用Test2原链回归、必要小修复/清理、同候选构建冻结 | NOT_STARTED |

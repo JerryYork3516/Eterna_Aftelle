@@ -3,6 +3,7 @@ import Foundation
 #if DEBUG
 import AppKit
 import CryptoKit
+    import Darwin
 import UniformTypeIdentifiers
 #endif
 
@@ -31,7 +32,13 @@ nonisolated private enum ProductionQwenRealtimeBrainConfiguration {
     }
 
     static var value: QwenRealtimeResidentBrainConfiguration {
-        let modelID = selectedModel.rawValue
+        makeValue(model: selectedModel)
+    }
+
+    static func makeValue(
+        model: Stage75QwenRealtimeModel
+    ) -> QwenRealtimeResidentBrainConfiguration {
+        let modelID = model.rawValue
         return QwenRealtimeResidentBrainConfiguration(
             endpoint: URL(
                 string: "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=\(modelID)"
@@ -49,6 +56,87 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
 }
 
 #if DEBUG
+    nonisolated enum AppleVPAcousticTestLaunchMode {
+        static let argument = "--apple-vp-acoustic-test"
+
+        static func isEnabled(arguments: [String]) -> Bool {
+            arguments.contains(argument)
+        }
+    }
+
+    nonisolated enum AppleVPAcousticTestScenario: String, CaseIterable {
+        case residentOnly = "A"
+        case humanOnly = "B"
+        case doubleTalk = "C"
+    }
+
+    nonisolated enum AppleVPAcousticTestPhase: String {
+        case idle, ready, starting, running, stopping, sealed
+    }
+
+    nonisolated struct AppleVPAcousticTestState {
+        var scenario = AppleVPAcousticTestScenario.residentOnly
+        var phase = AppleVPAcousticTestPhase.idle
+        var runID: UUID?
+        var errorCode: String?
+        fileprivate var playbackURL: URL?
+        fileprivate var pcm = Data()
+        fileprivate var packets: [[UInt64]] = []
+        fileprivate var generation: UInt64?
+        fileprivate var playbackGeneration: UInt64?
+        fileprivate var stopGeneration: UInt64 = 0
+        fileprivate var authorizationRunID: UUID?
+        fileprivate var playbackFailure: String?
+        fileprivate var playbackSHA256: String?
+        fileprivate var route = MacSpeechAudioHostSnapshot.initial
+        fileprivate var captureFinal = MacSpeechAudioHostSnapshot.initial
+        fileprivate var playbackFinal = MacSpeechAudioOutputHostSnapshot.initial
+        fileprivate var native: MacSpeechNativeVoiceDebugSnapshot?
+        fileprivate var lastRefresh: UInt64 = 0
+        fileprivate var cleanupInFlight = false
+        var selectedPlaybackFileName: String {
+            playbackURL?.lastPathComponent ?? ""
+        }
+
+        var packetCount: Int {
+            packets.count
+        }
+
+        var byteCount: Int {
+            pcm.count
+        }
+
+        var isBusy: Bool {
+            phase == .starting || phase == .running || phase == .stopping
+        }
+
+        var canExport: Bool {
+            phase == .sealed && runID != nil
+        }
+
+        var authorizationPending: Bool {
+            authorizationRunID != nil
+        }
+
+        var canStart: Bool {
+            phase == .ready && !authorizationPending && !cleanupInFlight
+        }
+    }
+
+    private nonisolated enum AppleVPAcousticTestError: String, Error {
+        case consentRequired = "consent_required"
+        case unavailable = "debug_capture_unavailable"
+        case permissionDenied = "microphone_not_authorized"
+        case invalidFile = "invalid_playback_wav"
+        case captureUnavailable = "capture_unavailable"
+        case voiceProcessingUnavailable = "voice_processing_unverified"
+        case routeChanged = "route_changed"
+        case captureDropped = "capture_frame_drop"
+        case playbackFailed = "playback_failed"
+        case invalidPacket = "invalid_processed_packet"
+        case capacityExceeded = "processed_pcm_capacity_exceeded"
+    }
+
 nonisolated private enum Stage75NativeSpeechConfiguration {
     static var profile: NativeSpeechProviderProfile {
         makeProfile(model: ProductionQwenRealtimeBrainConfiguration.selectedModel)
@@ -453,7 +541,7 @@ final class AppController: ObservableObject {
     #if DEBUG
     @Published private(set) var nativeSpeechProviderDebugState =
         NativeSpeechProviderDebugViewState(
-            profile: Stage75NativeSpeechConfiguration.profile
+                profile: Stage75NativeSpeechConfiguration.makeProfile(model: .plus)
         )
     @Published private(set) var speechInputBridgeSnapshot =
         MacSpeechNativeInputBridgeSnapshot.initial
@@ -478,8 +566,38 @@ final class AppController: ObservableObject {
         RelationshipProgressionDebugViewState()
     #endif
 
-    private let orchestrationKernel: OrchestrationKernel
-    private let providerKeychainStore: ProviderKeychainStore
+    #if DEBUG
+        private struct NormalDependencies {
+            let orchestrationKernel: OrchestrationKernel
+            let providerKeychainStore: ProviderKeychainStore
+        }
+
+        let isAppleVPAcousticTestMode: Bool
+        private let appleVPAcousticTestCapture: (any MacSpeechAudioCapturing)?
+        private let appleVPAcousticTestDurationNanoseconds: UInt64
+        private let appleVPAcousticTestByteLimit: Int
+        private var appleVPAcousticRun = AppleVPAcousticTestState()
+        private var appleVPAcousticTestTask: Task<Void, Never>?
+        private var appleVPAcousticPlaybackTask: Task<Void, Never>?
+        var appleVPAcousticTestState: AppleVPAcousticTestState {
+            var snapshot = appleVPAcousticRun
+            snapshot.cleanupInFlight = speechAudioHostShutdownOperation != nil || speechHostLifecycleOperationCount != 0
+            return snapshot
+        }
+
+        private let normalDependenciesFactory: @MainActor () -> NormalDependencies
+        private lazy var normalDependencies = normalDependenciesFactory()
+        private var orchestrationKernel: OrchestrationKernel {
+            normalDependencies.orchestrationKernel
+        }
+
+        private var providerKeychainStore: ProviderKeychainStore {
+            normalDependencies.providerKeychainStore
+        }
+    #else
+        private let orchestrationKernel: OrchestrationKernel
+        private let providerKeychainStore: ProviderKeychainStore
+    #endif
     private var activeProviderProfile: ProviderProfile?
     private var loadedResidentID = ""
     private var loadedSessionID = ""
@@ -509,8 +627,13 @@ final class AppController: ObservableObject {
     private var realtimeBrainPlaybackGeneration: UInt64?
     private var realtimeBrainPlaybackDrainWaiter:
         CheckedContinuation<Bool, Never>?
-    private var realtimeBrainSessionConfiguration =
-        ProductionQwenRealtimeBrainConfiguration.value
+    #if DEBUG
+        private var realtimeBrainSessionConfiguration =
+            ProductionQwenRealtimeBrainConfiguration.makeValue(model: .plus)
+    #else
+        private var realtimeBrainSessionConfiguration =
+            ProductionQwenRealtimeBrainConfiguration.value
+    #endif
     private var realtimeBrainRouteAttemptID: UUID?
     private var realtimeBrainPreparedCaptureGeneration: UInt64?
     private var realtimeBrainStartInFlight = false
@@ -576,38 +699,43 @@ final class AppController: ObservableObject {
         return nil
         #endif
     }
-    private lazy var realtimeBrainInputBridge = MacSpeechRealtimeBrainInputBridge(
-        source: speechAudioHost,
-        sendFrameWithActivity: { [orchestrationKernel] frame, activity in
-            await orchestrationKernel.sendRealtimeResidentBrainAudio(
-                frame,
-                activity: activity.localActivity
-            )
-        },
-        confirmAcceptedLocalActivity: {
-            [orchestrationKernel] frame, activity in
-            await orchestrationKernel
-                .confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
-                    frame: frame,
+    private lazy var realtimeBrainInputBridge = makeRealtimeBrainInputBridge()
+
+    private func makeRealtimeBrainInputBridge() -> MacSpeechRealtimeBrainInputBridge {
+        let orchestrationKernel = self.orchestrationKernel
+        return MacSpeechRealtimeBrainInputBridge(
+            source: speechAudioHost,
+            sendFrameWithActivity: { [orchestrationKernel] frame, activity in
+                await orchestrationKernel.sendRealtimeResidentBrainAudio(
+                    frame,
                     activity: activity.localActivity
                 )
-        },
-        stopInput: { [orchestrationKernel] binding in
-            await orchestrationKernel.stopRealtimeResidentBrainInput(
-                session: binding.session
-            )
-        },
-        observeResidentAcoustics: { [weak self] observation in
-            await self?.observeRealtimeResidentBrainAcoustics(observation)
-                ?? .ignored(.staleIdentity)
-        },
-        consumeAcousticObservation: { [weak self] observation in
-            await self?.consumeRealtimeResidentBrainAcousticObservation(
-                observation
-            )
-        },
-        recordAcousticDiagnostic: realtimeBrainAcousticDiagnosticRecorder
-    )
+            },
+            confirmAcceptedLocalActivity: { [orchestrationKernel] frame, activity in
+                await orchestrationKernel
+                    .confirmRealtimeResidentBrainAcceptedLocalAudioActivity(
+                        frame: frame,
+                        activity: activity.localActivity
+                    )
+            },
+            stopInput: { [orchestrationKernel] binding in
+                await orchestrationKernel.stopRealtimeResidentBrainInput(
+                    session: binding.session
+                )
+            },
+            observeResidentAcoustics: { [weak self] observation in
+                await self?.observeRealtimeResidentBrainAcoustics(observation)
+                    ?? .ignored(.staleIdentity)
+            },
+            consumeAcousticObservation: { [weak self] observation in
+                await self?.consumeRealtimeResidentBrainAcousticObservation(
+                    observation
+                )
+            },
+            recordAcousticDiagnostic: realtimeBrainAcousticDiagnosticRecorder
+        )
+    }
+
     private lazy var realtimeBrainOutputBridge =
         MacSpeechRealtimeBrainOutputBridge(
             receiveEvent: { [orchestrationKernel] session in
@@ -728,107 +856,201 @@ final class AppController: ObservableObject {
     #endif
 
     init() {
-        let credentialStore = ProviderKeychainStore()
-        let runtimeCore: RuntimeCore
-        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
-        speechAudioHost = MacSpeechAudioHost(
-            capture: SystemMacSpeechAudioCapture(
-                audioEngine: speechAudioEngine
+        #if DEBUG
+            isAppleVPAcousticTestMode = AppleVPAcousticTestLaunchMode.isEnabled(
+                arguments: ProcessInfo.processInfo.arguments
             )
-        )
+        #else
+            let credentialStore = ProviderKeychainStore()
+        #endif
+        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
+        let speechCapture = SystemMacSpeechAudioCapture(audioEngine: speechAudioEngine)
+        speechAudioHost = MacSpeechAudioHost(capture: speechCapture)
+        #if DEBUG
+            appleVPAcousticTestCapture = speechCapture
+            appleVPAcousticTestDurationNanoseconds = 15_000_000_000
+            appleVPAcousticTestByteLimit = 720_000
+        #endif
         speechAudioOutputHost = MacSpeechAudioOutputHost(
             player: SystemMacSpeechAudioOutputPlayer(
                 audioEngine: speechAudioEngine
             )
         )
         #if DEBUG
-        let speechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
-        nativeSpeechDiagnosticBuffer = speechDiagnosticBuffer
-        realtimeSpeechDiagnosticAudioEngine = speechAudioEngine
-        runtimeCore = QwenRealtimeRuntimeComposition.makeDebugRuntimeCore(
-            credentialReader: credentialStore,
-            diagnosticBuffer: speechDiagnosticBuffer,
-            realtimeBrainConfiguration:
-                ProductionQwenRealtimeBrainConfiguration.value,
-            asrConfiguration: Stage7511QwenASRConfiguration.value,
-            ttsConfiguration: Stage7511QwenTTSConfiguration.value,
-            realtimeBrainConfigurationProvider: {
-                ProductionQwenRealtimeBrainConfiguration.value
+            let speechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
+            nativeSpeechDiagnosticBuffer = speechDiagnosticBuffer
+            realtimeSpeechDiagnosticAudioEngine = speechAudioEngine
+            normalDependenciesFactory = {
+                Self.makeNormalDependencies(diagnosticBuffer: speechDiagnosticBuffer)
             }
-        )
+            restoreNormalConfiguration()
         #else
-        runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
-            credentialReader: credentialStore,
-            realtimeBrainConfiguration:
+            let runtimeCore = QwenRealtimeRuntimeComposition.makeRuntimeCore(
+                credentialReader: credentialStore,
+                realtimeBrainConfiguration:
                 ProductionQwenRealtimeBrainConfiguration.value,
-            realtimeBrainConfigurationProvider: {
-                ProductionQwenRealtimeBrainConfiguration.value
-            }
-        )
-        #endif
-        providerKeychainStore = credentialStore
-        orchestrationKernel = OrchestrationKernel(
-            runtimeCore: runtimeCore
-        )
-        restoreProviderConfiguration()
-        #if DEBUG
-        refreshNativeSpeechProviderDebugState()
+                realtimeBrainConfigurationProvider: {
+                    ProductionQwenRealtimeBrainConfiguration.value
+                }
+            )
+            providerKeychainStore = credentialStore
+            orchestrationKernel = OrchestrationKernel(runtimeCore: runtimeCore)
+            restoreProviderConfiguration()
         #endif
     }
 
     init(orchestrationKernel: OrchestrationKernel) {
-        self.orchestrationKernel = orchestrationKernel
-        providerKeychainStore = ProviderKeychainStore()
+        #if DEBUG
+            isAppleVPAcousticTestMode = false
+            normalDependenciesFactory = {
+                NormalDependencies(
+                    orchestrationKernel: orchestrationKernel,
+                    providerKeychainStore: ProviderKeychainStore()
+                )
+            }
+        #else
+            self.orchestrationKernel = orchestrationKernel
+            providerKeychainStore = ProviderKeychainStore()
+        #endif
         let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
-        speechAudioHost = MacSpeechAudioHost(
-            capture: SystemMacSpeechAudioCapture(
-                audioEngine: speechAudioEngine
-            )
-        )
+        let speechCapture = SystemMacSpeechAudioCapture(audioEngine: speechAudioEngine)
+        speechAudioHost = MacSpeechAudioHost(capture: speechCapture)
+        #if DEBUG
+            appleVPAcousticTestCapture = speechCapture
+            appleVPAcousticTestDurationNanoseconds = 15_000_000_000
+            appleVPAcousticTestByteLimit = 720_000
+        #endif
         speechAudioOutputHost = MacSpeechAudioOutputHost(
             player: SystemMacSpeechAudioOutputPlayer(
                 audioEngine: speechAudioEngine
             )
         )
         #if DEBUG
-        nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
-        realtimeSpeechDiagnosticAudioEngine = speechAudioEngine
-        #endif
-        restoreProviderConfiguration()
-        #if DEBUG
-        refreshNativeSpeechProviderDebugState()
+            nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
+            realtimeSpeechDiagnosticAudioEngine = speechAudioEngine
+            restoreNormalConfiguration()
+        #else
+            restoreProviderConfiguration()
         #endif
     }
 
     #if DEBUG
-    init(
-        orchestrationKernel: OrchestrationKernel,
-        speechAudioHost: MacSpeechAudioHost,
-        speechAudioOutputHost: MacSpeechAudioOutputHost =
-            MacSpeechAudioOutputHost(),
-        nativeSpeechProfile: NativeSpeechProviderProfile =
-            Stage75NativeSpeechConfiguration.profile,
-        nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer =
-            NativeSpeechDiagnosticBuffer(),
-        realtimeSpeechDiagnosticAudioEngine:
+        init(
+            orchestrationKernel: OrchestrationKernel,
+            speechAudioHost: MacSpeechAudioHost,
+            speechAudioOutputHost: MacSpeechAudioOutputHost =
+                MacSpeechAudioOutputHost(),
+            speechAudioCapture: (any MacSpeechAudioCapturing)? = nil,
+            nativeSpeechProfile: NativeSpeechProviderProfile =
+                Stage75NativeSpeechConfiguration.profile,
+            nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer =
+                NativeSpeechDiagnosticBuffer(),
+            realtimeSpeechDiagnosticAudioEngine:
             SystemMacSpeechVoiceProcessingEngine? = nil
-    ) {
-        self.orchestrationKernel = orchestrationKernel
-        providerKeychainStore = ProviderKeychainStore()
-        self.speechAudioHost = speechAudioHost
-        self.speechAudioOutputHost = speechAudioOutputHost
-        self.nativeSpeechDiagnosticBuffer = nativeSpeechDiagnosticBuffer
-        self.realtimeSpeechDiagnosticAudioEngine =
-            realtimeSpeechDiagnosticAudioEngine
-        nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
-            profile: nativeSpeechProfile
-        )
-        restoreProviderConfiguration()
-        refreshNativeSpeechProviderDebugState()
-    }
+        ) {
+            isAppleVPAcousticTestMode = false
+            normalDependenciesFactory = {
+                NormalDependencies(
+                    orchestrationKernel: orchestrationKernel,
+                    providerKeychainStore: ProviderKeychainStore()
+                )
+            }
+            self.speechAudioHost = speechAudioHost
+            self.speechAudioOutputHost = speechAudioOutputHost
+            appleVPAcousticTestCapture = speechAudioCapture
+            appleVPAcousticTestDurationNanoseconds = 15_000_000_000
+            appleVPAcousticTestByteLimit = 720_000
+            self.nativeSpeechDiagnosticBuffer = nativeSpeechDiagnosticBuffer
+            self.realtimeSpeechDiagnosticAudioEngine =
+                realtimeSpeechDiagnosticAudioEngine
+            restoreNormalConfiguration(nativeSpeechProfile: nativeSpeechProfile)
+        }
+
+        init(
+            acousticTestArguments: [String],
+            speechAudioHost: MacSpeechAudioHost,
+            speechAudioOutputHost: MacSpeechAudioOutputHost,
+            speechAudioCapture: (any MacSpeechAudioCapturing)? = nil,
+            acousticTestDurationNanoseconds: UInt64 = 15_000_000_000,
+            acousticTestByteLimit: Int = 720_000,
+            normalDependenciesFactory:
+            @escaping @MainActor () -> (OrchestrationKernel, ProviderKeychainStore)
+        ) {
+            isAppleVPAcousticTestMode = AppleVPAcousticTestLaunchMode.isEnabled(
+                arguments: acousticTestArguments
+            )
+            self.normalDependenciesFactory = {
+                let (kernel, credentialStore) = normalDependenciesFactory()
+                return NormalDependencies(
+                    orchestrationKernel: kernel,
+                    providerKeychainStore: credentialStore
+                )
+            }
+            self.speechAudioHost = speechAudioHost
+            self.speechAudioOutputHost = speechAudioOutputHost
+            appleVPAcousticTestCapture = speechAudioCapture
+            appleVPAcousticTestDurationNanoseconds = min(15_000_000_000, max(1, acousticTestDurationNanoseconds))
+            appleVPAcousticTestByteLimit = min(720_000, max(960, acousticTestByteLimit))
+            nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
+            realtimeSpeechDiagnosticAudioEngine = nil
+            restoreNormalConfiguration()
+        }
+
+        private static func makeNormalDependencies(
+            diagnosticBuffer: NativeSpeechDiagnosticBuffer
+        ) -> NormalDependencies {
+            let credentialStore = ProviderKeychainStore()
+            let runtimeCore = QwenRealtimeRuntimeComposition.makeDebugRuntimeCore(
+                credentialReader: credentialStore,
+                diagnosticBuffer: diagnosticBuffer,
+                realtimeBrainConfiguration:
+                ProductionQwenRealtimeBrainConfiguration.value,
+                asrConfiguration: Stage7511QwenASRConfiguration.value,
+                ttsConfiguration: Stage7511QwenTTSConfiguration.value,
+                realtimeBrainConfigurationProvider: {
+                    ProductionQwenRealtimeBrainConfiguration.value
+                }
+            )
+            return NormalDependencies(
+                orchestrationKernel: OrchestrationKernel(runtimeCore: runtimeCore),
+                providerKeychainStore: credentialStore
+            )
+        }
+
+        private func restoreNormalConfiguration() {
+            guard !isAppleVPAcousticTestMode else { return }
+            _ = normalDependencies
+            realtimeBrainSessionConfiguration =
+                ProductionQwenRealtimeBrainConfiguration.value
+            nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
+                profile: Stage75NativeSpeechConfiguration.profile
+            )
+            restoreProviderConfiguration()
+            refreshNativeSpeechProviderDebugState()
+        }
+
+        private func restoreNormalConfiguration(
+            nativeSpeechProfile: NativeSpeechProviderProfile
+        ) {
+            _ = normalDependencies
+            realtimeBrainSessionConfiguration =
+                ProductionQwenRealtimeBrainConfiguration.value
+            nativeSpeechProviderDebugState = NativeSpeechProviderDebugViewState(
+                profile: nativeSpeechProfile
+            )
+            restoreProviderConfiguration()
+            refreshNativeSpeechProviderDebugState()
+        }
     #endif
 
     func start() {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else {
+                startupState = .idle
+                runtimeState = .idle
+                return
+            }
+        #endif
         startupState = .loading
         refreshResidentVisualIntent()
         refreshParticleDebugSnapshot()
@@ -911,6 +1133,9 @@ final class AppController: ObservableObject {
     }
 
     func updateParticleRenderMetrics(_ metrics: ParticleRenderMetrics) {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         latestParticleRenderMetrics = metrics
         refreshParticleDebugSnapshot()
         #if DEBUG
@@ -919,13 +1144,19 @@ final class AppController: ObservableObject {
     }
 
     func setParticleColorSource(_ source: ParticleColorSource) {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         particleColorSource = source
         applyEffectiveParticleColorProfile()
         refreshParticleDebugSnapshot()
     }
 
     var isResidentTextInputAvailable: Bool {
-        !loadedResidentID.isEmpty && !loadedSessionID.isEmpty
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return false }
+        #endif
+        return !loadedResidentID.isEmpty && !loadedSessionID.isEmpty
     }
 
     var canStartRealtimeFullDuplexSpeech: Bool {
@@ -940,7 +1171,10 @@ final class AppController: ObservableObject {
     }
 
     var canStopRealtimeFullDuplexSpeech: Bool {
-        !realtimeBrainStopping
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return false }
+        #endif
+        return !realtimeBrainStopping
             && (realtimeBrainInputBinding != nil
                 || realtimeBrainRouteAttemptID != nil
                 || realtimeBrainPreparedCaptureGeneration != nil)
@@ -958,6 +1192,9 @@ final class AppController: ObservableObject {
 
     @discardableResult
     func submitResidentText(_ inputText: String) async -> Bool {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return false }
+        #endif
         let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty, !residentTextInputState.isSubmitting else { return false }
         guard isResidentTextInputAvailable else {
@@ -1113,6 +1350,7 @@ final class AppController: ObservableObject {
 
     #if DEBUG
     func copyDialogueAudit() {
+            guard !isAppleVPAcousticTestMode else { return }
         copyDialogueAudit { text in
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
@@ -1121,6 +1359,7 @@ final class AppController: ObservableObject {
     }
 
     func copyDialogueAudit(using writer: (String) -> Bool) {
+            guard !isAppleVPAcousticTestMode else { return }
         guard writer(dialogueAuditTranscript()) else {
             dialogueAuditState.statusKey = "dialogueAudit.status.copyFailed"
             return
@@ -1129,6 +1368,7 @@ final class AppController: ObservableObject {
     }
 
     func exportDialogueAudit() {
+            guard !isAppleVPAcousticTestMode else { return }
         let exportedAt = Date()
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
@@ -1148,10 +1388,12 @@ final class AppController: ObservableObject {
     }
 
     func clearDialogueAudit() {
+            guard !isAppleVPAcousticTestMode else { return }
         dialogueAuditState.clear()
     }
 
     func exportRealtimeSpeechDiagnostics() {
+            guard !isAppleVPAcousticTestMode else { return }
         let exportedAt = Date()
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -1184,6 +1426,7 @@ final class AppController: ObservableObject {
     }
 
     func armRealtimeSpeechAudioCapsule() {
+            guard !isAppleVPAcousticTestMode else { return }
         guard let routeAttemptID = realtimeBrainRouteAttemptID,
               let binding = realtimeBrainInputBinding,
               isCurrentRealtimeBrainRoute(
@@ -1289,6 +1532,7 @@ final class AppController: ObservableObject {
     }
 
     func clearRealtimeSpeechDiagnostics() {
+            guard !isAppleVPAcousticTestMode else { return }
         realtimeSpeechAudioCaptureTask?.cancel()
         realtimeSpeechAudioCaptureTask = nil
         realtimeSpeechDiagnosticViewRefreshTask?.cancel()
@@ -1313,6 +1557,7 @@ final class AppController: ObservableObject {
         audioCapsuleFileName: String? = nil,
         audioCapsuleSHA256: String? = nil
     ) throws -> Data {
+            guard !isAppleVPAcousticTestMode else { throw CocoaError(.featureUnsupported) }
         drainNativeSpeechInternalDiagnostics()
         let bundle = Bundle.main
         let qwenRealtime = qwenRealtimeDiagnosticExport()
@@ -1628,6 +1873,7 @@ final class AppController: ObservableObject {
         to url: URL,
         exportedAt: Date = Date()
     ) throws {
+            guard !isAppleVPAcousticTestMode else { throw CocoaError(.featureUnsupported) }
         let expectedReplayAttemptID = realtimeSpeechReplayCaptureAttemptID
         let pendingCapsule = nativeSpeechDiagnosticBuffer
             .realtimeAudioCapsuleSnapshot()
@@ -2122,6 +2368,7 @@ final class AppController: ObservableObject {
     }
 
     func copyRuntimeOrchestrationInteraction(_ interactionID: UUID) {
+            guard !isAppleVPAcousticTestMode else { return }
         copyRuntimeOrchestrationInteraction(interactionID) { text in
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
@@ -2133,6 +2380,7 @@ final class AppController: ObservableObject {
         _ interactionID: UUID,
         using writer: (String) -> Bool
     ) {
+            guard !isAppleVPAcousticTestMode else { return }
         guard let text = runtimeOrchestrationTranscript(interactionID: interactionID),
               writer(text) else {
             runtimeOrchestrationState.statusKey = "runtimeOrchestration.status.copyFailed"
@@ -2142,6 +2390,7 @@ final class AppController: ObservableObject {
     }
 
     func exportRuntimeOrchestrationInteraction(_ interactionID: UUID) {
+            guard !isAppleVPAcousticTestMode else { return }
         guard runtimeOrchestrationState.interactions.contains(where: { $0.id == interactionID }) else {
             runtimeOrchestrationState.statusKey = "runtimeOrchestration.status.exportFailed"
             return
@@ -2172,6 +2421,7 @@ final class AppController: ObservableObject {
     }
 
     func clearRuntimeOrchestrationRecords() {
+            guard !isAppleVPAcousticTestMode else { return }
         orchestrationKernel.clearRuntimeOrchestrationRecords()
         runtimeOrchestrationState = RuntimeOrchestrationViewState(
             statusKey: "runtimeOrchestration.status.cleared"
@@ -2182,6 +2432,7 @@ final class AppController: ObservableObject {
         interactionID: UUID,
         exportedAt: Date = Date()
     ) -> String? {
+            guard !isAppleVPAcousticTestMode else { return nil }
         guard let interaction = runtimeOrchestrationState.interactions.first(where: {
             $0.id == interactionID
         }) else {
@@ -2393,6 +2644,7 @@ final class AppController: ObservableObject {
         to url: URL,
         exportedAt: Date = Date()
     ) throws {
+            guard !isAppleVPAcousticTestMode else { throw CocoaError(.featureUnsupported) }
         guard let text = runtimeOrchestrationTranscript(
             interactionID: interactionID,
             exportedAt: exportedAt
@@ -2423,6 +2675,7 @@ final class AppController: ObservableObject {
     }
 
     func clearDialogueTestData() {
+            guard !isAppleVPAcousticTestMode else { return }
         guard speechHostAllowsSessionReplacement else {
             recordRealtimeSpeechDiagnostic(
                 source: .lifecycle,
@@ -2474,6 +2727,7 @@ final class AppController: ObservableObject {
     }
 
     func dialogueAuditTranscript() -> String {
+            guard !isAppleVPAcousticTestMode else { return "" }
         let formatter = DateFormatter()
         formatter.locale = .current
         formatter.dateStyle = .none
@@ -2484,6 +2738,7 @@ final class AppController: ObservableObject {
     }
 
     func dialogueAuditExportText(exportedAt: Date = Date()) -> String {
+            guard !isAppleVPAcousticTestMode else { return "" }
         let residentName = currentAuditResidentDisplayName
         let modelID = activeProviderProfile?.modelID ?? "-"
         let dateFormatter = DateFormatter()
@@ -2502,6 +2757,7 @@ final class AppController: ObservableObject {
     }
 
     func writeDialogueAudit(to url: URL, exportedAt: Date = Date()) throws {
+            guard !isAppleVPAcousticTestMode else { throw CocoaError(.featureUnsupported) }
         let data = Data(dialogueAuditExportText(exportedAt: exportedAt).utf8)
         try data.write(to: url, options: [.withoutOverwriting])
     }
@@ -2626,27 +2882,32 @@ final class AppController: ObservableObject {
     }
 
     func resetRelationshipProgressionForDebug() {
+            guard !isAppleVPAcousticTestMode else { return }
         relationshipProgressionDebugState =
             orchestrationKernel.resetRelationshipProgressionForDebug()
     }
 
     func setParticleAvatarMode(_ mode: ParticleAvatarMode) {
+            guard !isAppleVPAcousticTestMode else { return }
         particleAvatarMode = mode
         particleRenderKind = mode == .abstractBustReserved ? .abstractBustReserved : .particleCore
         refreshParticleDebugSnapshot()
     }
 
     func setParticleRenderKind(_ kind: ParticleRenderKind) {
+            guard !isAppleVPAcousticTestMode else { return }
         particleRenderKind = kind
         particleAvatarMode = kind.avatarMode
         refreshParticleDebugSnapshot()
     }
 
     func toggleParticleDebugPanel() {
+            guard !isAppleVPAcousticTestMode else { return }
         isParticleDebugPanelPresented.toggle()
     }
 
     func setParticleDebugPanelPresented(_ isPresented: Bool) {
+            guard !isAppleVPAcousticTestMode else { return }
         isParticleDebugPanelPresented = isPresented
         if isPresented {
             refreshRuntimeOrchestrationState()
@@ -2654,20 +2915,24 @@ final class AppController: ObservableObject {
     }
 
     func setParticleShellMode(_ mode: ParticleShellMode) {
+            guard !isAppleVPAcousticTestMode else { return }
         particleShellMode = mode
         refreshParticleDebugSnapshot()
     }
 
     func showDebugSubtitle() {
+            guard !isAppleVPAcousticTestMode else { return }
         showDebugSubtitle(at: debugSubtitleIndex)
     }
 
     func showNextDebugSubtitle() {
+            guard !isAppleVPAcousticTestMode else { return }
         debugSubtitleIndex = (debugSubtitleIndex + 1) % debugSubtitleKeys.count
         showDebugSubtitle(at: debugSubtitleIndex)
     }
 
     func hideDebugSubtitle() {
+            guard !isAppleVPAcousticTestMode else { return }
         guard !particleSubtitleState.text.isEmpty else {
             particleSubtitleState = .hidden
             return
@@ -2685,6 +2950,7 @@ final class AppController: ObservableObject {
     }
 
     func debugImportResident(from url: URL) {
+            guard !isAppleVPAcousticTestMode else { return }
         guard speechHostAllowsSessionReplacement else {
             fixtureStatus = "Debug DR: stop speech before import"
             recordRealtimeSpeechDiagnostic(
@@ -2721,6 +2987,7 @@ final class AppController: ObservableObject {
     }
 
     func saveProviderConfiguration(_ profile: ProviderProfile) {
+            guard !isAppleVPAcousticTestMode else { return }
         if let error = orchestrationKernel.configureTextProvider(profile: profile) {
             providerDebugState.statusKey = statusKey(for: error)
             providerDebugState.configurationSaved = activeProviderProfile != nil
@@ -2744,6 +3011,7 @@ final class AppController: ObservableObject {
     }
 
     func saveProviderCredential(_ credential: String) {
+            guard !isAppleVPAcousticTestMode else { return }
         do {
             try providerKeychainStore.save(credential, for: providerDebugState.profile.keyRef)
             providerConfigurationGeneration += 1
@@ -2758,6 +3026,7 @@ final class AppController: ObservableObject {
     }
 
     func deleteProviderCredential() {
+            guard !isAppleVPAcousticTestMode else { return }
         do {
             try providerKeychainStore.delete(for: providerDebugState.profile.keyRef)
             providerConfigurationGeneration += 1
@@ -2769,6 +3038,7 @@ final class AppController: ObservableObject {
     }
 
     func testResidentReply(inputText: String) async {
+            guard !isAppleVPAcousticTestMode else { return }
         guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             providerDebugState.statusKey = "particleDebug.provider.status.inputRequired"
             providerDebugState.replyText = ""
@@ -2849,6 +3119,7 @@ final class AppController: ObservableObject {
         workspaceID: String,
         secret: String
     ) {
+            guard !isAppleVPAcousticTestMode else { return }
         do {
             let credential = try QwenRealtimeCredential(
                 workspaceID: workspaceID,
@@ -2869,7 +3140,7 @@ final class AppController: ObservableObject {
     }
 
     var canSelectRealtimeSpeechModel: Bool {
-        !nativeSpeechProviderDebugState.isTesting
+            !isAppleVPAcousticTestMode && !nativeSpeechProviderDebugState.isTesting
             && !speechInputBridgeSnapshot.hasActivePump
             && !speechOutputBridgeSnapshot.hasActiveReceiveLoop
             && realtimeBrainRouteAttemptID == nil
@@ -2881,6 +3152,7 @@ final class AppController: ObservableObject {
     }
 
     func selectNativeSpeechModel(_ modelID: String) {
+            guard !isAppleVPAcousticTestMode else { return }
         guard let model = Stage75QwenRealtimeModel(rawValue: modelID),
               canSelectRealtimeSpeechModel else { return }
         UserDefaults.standard.set(
@@ -2898,6 +3170,7 @@ final class AppController: ObservableObject {
     }
 
     func refreshMicrophoneAuthorization() async {
+            guard !isAppleVPAcousticTestMode else { return }
         speechAudioHostShutdownCompleted = false
         speechAudioHostSnapshot =
             await speechAudioHost.refreshAuthorization()
@@ -2916,11 +3189,13 @@ final class AppController: ObservableObject {
     }
 
     func requestMicrophoneAuthorization() async {
+            guard !isAppleVPAcousticTestMode else { return }
         speechAudioHostShutdownCompleted = false
         _ = await ensureRealtimeMicrophoneAuthorization()
     }
 
     func startSpeechAudioCapture() async {
+            guard !isAppleVPAcousticTestMode else { return }
             guard speechHostLifecycleOperationCount == 0,
                   realtimeBrainRouteAttemptID == nil,
                   realtimeBrainInputBinding == nil,
@@ -2962,6 +3237,7 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
+            guard !isAppleVPAcousticTestMode else { return }
             speechHostStopGeneration &+= 1
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
@@ -3037,6 +3313,12 @@ final class AppController: ObservableObject {
     private func performSpeechAudioHostShutdown() async {
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
+        #if DEBUG
+            if isAppleVPAcousticTestMode {
+                await closeAppleVPAcousticRunForShutdown()
+                return
+            }
+        #endif
         await stopRealtimeResidentBrainRoute()
         #if DEBUG
         await cancelFormalSpeechRoute()
@@ -3061,10 +3343,16 @@ final class AppController: ObservableObject {
     }
 
     func startRealtimeFullDuplexSpeech() async {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         await startRealtimeResidentBrainRoute()
     }
 
     func startRealtimeResidentBrainRoute() async {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         if realtimeBrainRouteAttemptID != nil || realtimeBrainStartInFlight {
             return
         }
@@ -3338,6 +3626,9 @@ final class AppController: ObservableObject {
     }
 
     func stopRealtimeFullDuplexSpeech() async {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         await stopRealtimeResidentBrainRoute()
     }
 
@@ -4483,6 +4774,7 @@ final class AppController: ObservableObject {
     }
 
     func startFormalSpeechRoute() async {
+            guard !isAppleVPAcousticTestMode else { return }
         guard formalSpeechRouteGeneration == nil else { return }
         guard speechHostLifecycleOperationCount == 0 else {
             publishFormalSpeechRouteFailure("speech_input_busy")
@@ -5254,7 +5546,12 @@ final class AppController: ObservableObject {
         formalSpeechInterruptingGeneration = nil
     }
 
-    func startNativeSpeechInputBridge() async {
+        func startNativeSpeechInputBridge() async {
+            guard !isAppleVPAcousticTestMode else { return }
+            await startNormalNativeSpeechInput()
+        }
+
+        private func startNormalNativeSpeechInput() async {
         realtimeSpeechPlaybackSubtitleSynchronizer.resetForInteraction()
         recordRealtimeSpeechDiagnostic(
             source: .lifecycle,
@@ -6424,6 +6721,7 @@ final class AppController: ObservableObject {
     }
 
     func deleteNativeSpeechProviderCredential() {
+            guard !isAppleVPAcousticTestMode else { return }
         do {
             try providerKeychainStore.delete(
                 for: ProviderKeychainStore.qwenKeyRef
@@ -6439,6 +6737,7 @@ final class AppController: ObservableObject {
     }
 
     func testNativeSpeechProviderConnectivity() async {
+            guard !isAppleVPAcousticTestMode else { return }
         guard providerKeychainStore.exists(
             for: ProviderKeychainStore.qwenKeyRef
         ) else {
@@ -6735,6 +7034,30 @@ final class AppController: ObservableObject {
     }
 
     func step(inputText: String) -> RuntimeStepResponse {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else {
+                return RuntimeStepResponse(
+                    outputText: "",
+                    visualState: VisualState(mode: .idle),
+                    avatarState: AvatarState(
+                        residentID: "", displayName: "", mode: "idle",
+                        presence: "unavailable", moodHint: "", activityHint: "",
+                        particleHint: ""
+                    ),
+                    residentState: RuntimeResidentState(
+                        residentID: "", sessionID: "", lifecycleStatus: "unavailable",
+                        presence: "unavailable", lastActivitySummary: ""
+                    ),
+                    cancellationState: RuntimeCancellationState(
+                        isCancelled: true, reason: .cancelled
+                    ),
+                    traceEvents: [],
+                    diagnostics: RuntimeDiagnostics(
+                        providerMode: "unavailable", cancellationState: "cancelled"
+                    )
+                )
+            }
+        #endif
         let response = orchestrationKernel.step(residentID: loadedResidentID, inputText: inputText)
         runtimeState = response.cancellationState.isCancelled ? (response.cancellationState.reason == .interrupted ? .interrupted : .cancelled) : .running
         dialogueEntries.append(
@@ -6808,6 +7131,9 @@ final class AppController: ObservableObject {
     }
 
     func cancelCurrentStep() {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         orchestrationKernel.cancelCurrentStep()
         runtimeState = .cancelled
         residentSpeechSignal = .ended
@@ -6816,6 +7142,9 @@ final class AppController: ObservableObject {
     }
 
     func interrupt() {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         orchestrationKernel.interrupt()
         runtimeState = .interrupted
         residentSpeechSignal = .ended
@@ -6824,6 +7153,9 @@ final class AppController: ObservableObject {
     }
 
     func runtimeTick() {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         let response = orchestrationKernel.runtimeTick()
         clockState = RuntimeClockViewState(
             tickCount: response.clockState.tickCount,
@@ -6841,6 +7173,9 @@ final class AppController: ObservableObject {
     }
 
     func persistForNormalTerminationIfPossible() {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         guard !loadedResidentID.isEmpty, !loadedSessionID.isEmpty else { return }
         orchestrationKernel.saveCurrentSession(
             lastUserInput: sessionState.lastUserInput,
@@ -6855,6 +7190,9 @@ final class AppController: ObservableObject {
     }
 
     func markSessionUncleanIfPossible() {
+        #if DEBUG
+            guard !isAppleVPAcousticTestMode else { return }
+        #endif
         guard !loadedResidentID.isEmpty, !loadedSessionID.isEmpty else { return }
         orchestrationKernel.markSessionUnclean(
             lastUserInput: sessionState.lastUserInput,
@@ -7133,3 +7471,708 @@ final class AppController: ObservableObject {
         return (result, drData)
     }
 }
+
+#if DEBUG
+    extension AppController {
+        @discardableResult
+        func prepareAppleVPAcousticTest(
+            _ scenario: AppleVPAcousticTestScenario,
+            discardPreviousResult: Bool = false
+        ) -> Bool {
+            guard isAppleVPAcousticTestMode, appleVPAcousticTestTask == nil,
+                  speechAudioHostShutdownOperation == nil, speechHostLifecycleOperationCount == 0,
+                  !appleVPAcousticRun.isBusy,
+                  appleVPAcousticRun.runID == nil || discardPreviousResult else { return false }
+            if let runID = appleVPAcousticRun.runID {
+                appleVPAcousticTestCapture?.clearNativeVoiceDebug(runID: runID)
+            }
+            let url = appleVPAcousticRun.playbackURL
+            let pendingAuthorization = appleVPAcousticRun.authorizationRunID
+            appleVPAcousticRun = AppleVPAcousticTestState()
+            appleVPAcousticRun.authorizationRunID = pendingAuthorization
+            appleVPAcousticRun.scenario = scenario
+            appleVPAcousticRun.playbackURL = url
+            appleVPAcousticRun.phase = .ready
+            publishAppleVPAcousticState(force: true)
+            return true
+        }
+
+        @discardableResult
+        func selectAppleVPAcousticPlaybackURL(_ url: URL?) -> Bool {
+            guard isAppleVPAcousticTestMode, !appleVPAcousticRun.isBusy,
+                  appleVPAcousticRun.runID == nil else { return false }
+            appleVPAcousticRun.playbackURL = url
+            publishAppleVPAcousticState(force: true)
+            return true
+        }
+
+        func startAppleVPAcousticTest(
+            microphoneConsent: Bool, speakerConsent: Bool, localCaptureConsent: Bool
+        ) {
+            guard isAppleVPAcousticTestMode, appleVPAcousticRun.phase == .ready,
+                  appleVPAcousticTestTask == nil, speechAudioHostShutdownOperation == nil,
+                  speechHostLifecycleOperationCount == 0 else { return }
+            guard microphoneConsent, localCaptureConsent,
+                  appleVPAcousticRun.scenario == .humanOnly || speakerConsent
+            else {
+                appleVPAcousticRun.errorCode = AppleVPAcousticTestError.consentRequired.rawValue
+                publishAppleVPAcousticState(force: true)
+                return
+            }
+            guard appleVPAcousticRun.authorizationRunID == nil else {
+                appleVPAcousticRun.errorCode = "authorization_pending"
+                publishAppleVPAcousticState(force: true)
+                return
+            }
+            guard appleVPAcousticTestCapture != nil else {
+                appleVPAcousticRun.errorCode = AppleVPAcousticTestError.unavailable.rawValue
+                publishAppleVPAcousticState(force: true)
+                return
+            }
+            speechAudioHostShutdownCompleted = false
+            let runID = UUID()
+            appleVPAcousticRun.runID = runID
+            appleVPAcousticRun.stopGeneration = speechHostStopGeneration
+            appleVPAcousticRun.errorCode = nil
+            appleVPAcousticRun.phase = .starting
+            publishAppleVPAcousticState(force: true)
+            appleVPAcousticTestTask = Task { @MainActor [weak self] in
+                await self?.runAppleVPAcousticTest(runID: runID)
+            }
+        }
+
+        func stopAppleVPAcousticTest() async {
+            guard isAppleVPAcousticTestMode else { return }
+            if appleVPAcousticRun.isBusy {
+                appleVPAcousticRun.phase = .stopping
+                appleVPAcousticRun.errorCode = "cancelled"
+            }
+            await shutdownSpeechAudioHost()
+        }
+
+        private func runAppleVPAcousticTest(runID: UUID) async {
+            var failure: String?
+            do {
+                let playback = try appleVPAcousticPlaybackBytes()
+                try await authorizeAppleVPAcousticTest(runID: runID)
+                let generation = try await prepareAppleVPAcousticAudio(runID: runID)
+                try await startAppleVPAcousticAudio(runID: runID, generation: generation, playback: playback)
+                appleVPAcousticRun.phase = .running
+                publishAppleVPAcousticState(force: true)
+                try await collectAppleVPAcousticFrames(runID: runID)
+            } catch {
+                failure = error is CancellationError ? "cancelled"
+                    : (error as? AppleVPAcousticTestError)?.rawValue ?? "acoustic_test_failed"
+            }
+            await finishAppleVPAcousticTest(runID: runID, failure: failure)
+        }
+
+        private func appleVPAcousticPlaybackBytes() throws -> Data? {
+            guard appleVPAcousticRun.scenario != .humanOnly else { return nil }
+            guard let url = appleVPAcousticRun.playbackURL else { throw AppleVPAcousticTestError.invalidFile }
+            do {
+                let source = try AppleVPAcousticWAV.read(url: url)
+                appleVPAcousticRun.playbackSHA256 = source.sha256
+                return source.pcm
+            } catch { throw AppleVPAcousticTestError.invalidFile }
+        }
+
+        private func authorizeAppleVPAcousticTest(runID: UUID) async throws {
+            appleVPAcousticRun.authorizationRunID = runID
+            let current = await speechAudioHost.refreshAuthorization()
+            try await acceptAppleVPAcousticAuthorization(current, runID: runID)
+            if speechAudioHostSnapshot.authorization == .notDetermined {
+                appleVPAcousticRun.authorizationRunID = runID
+                let requested = await speechAudioHost.requestMicrophoneAuthorization()
+                try await acceptAppleVPAcousticAuthorization(requested, runID: runID)
+            }
+            guard speechAudioHostSnapshot.authorization == .authorized else {
+                throw AppleVPAcousticTestError.permissionDenied
+            }
+            guard speechAudioHostSnapshot.inputDevice.isAvailable,
+                  speechAudioHostSnapshot.outputDevice.isAvailable else { throw AppleVPAcousticTestError.routeChanged }
+        }
+
+        private func acceptAppleVPAcousticAuthorization(
+            _ snapshot: MacSpeechAudioHostSnapshot, runID: UUID
+        ) async throws {
+            do { try checkAppleVPAcousticRun(runID) } catch {
+                if !appleVPAcousticRun.isBusy, speechAudioHostShutdownOperation == nil {
+                    speechAudioHostShutdownCompleted = false
+                    await shutdownSpeechAudioHost()
+                }
+                if appleVPAcousticRun.authorizationRunID == runID {
+                    appleVPAcousticRun.authorizationRunID = nil
+                    publishAppleVPAcousticState(force: true)
+                }
+                throw error
+            }
+            if appleVPAcousticRun.authorizationRunID == runID {
+                appleVPAcousticRun.authorizationRunID = nil
+            }
+            speechAudioHostSnapshot = snapshot
+        }
+
+        private func prepareAppleVPAcousticAudio(runID: UUID) async throws -> UInt64 {
+            try await selectSpeechAudioProcessingMode(.appleVoiceProcessing, stopGeneration: speechHostStopGeneration)
+            try checkAppleVPAcousticRun(runID)
+            let generation = await speechAudioHost.prepareCaptureGeneration()
+            try checkAppleVPAcousticRun(runID)
+            guard let generation,
+                  appleVPAcousticTestCapture?.armNativeVoiceDebug(runID: runID, generation: generation) == true
+            else {
+                throw AppleVPAcousticTestError.captureUnavailable
+            }
+            appleVPAcousticRun.generation = generation
+            return generation
+        }
+
+        private func startAppleVPAcousticAudio(runID: UUID, generation: UInt64, playback: Data?) async throws {
+            if playback != nil {
+                let output = await speechAudioOutputHost.prepare()
+                try checkAppleVPAcousticRun(runID)
+                speechAudioOutputHostSnapshot = output
+                guard output.state == .prepared else { throw AppleVPAcousticTestError.playbackFailed }
+            }
+            let capture = await speechAudioHost.startPreparedCapture(generation: generation)
+            try checkAppleVPAcousticRun(runID)
+            speechAudioHostSnapshot = capture
+            guard capture.isCapturing else { throw AppleVPAcousticTestError.captureUnavailable }
+            appleVPAcousticRun.route = capture
+            appleVPAcousticRun.native = appleVPAcousticTestCapture?.nativeVoiceDebugSnapshot(runID: runID)
+            guard let voice = appleVPAcousticRun.native?.voiceProcessing,
+                  voice.hasValidAppleProcessing, !voice.inputMuted,
+                  voice.configurationID > 0, voice.validatedAtNanoseconds > 0,
+                  appleVPAcousticRun.native?.captureGeneration == generation,
+                  appleVPAcousticRun.native?.configurationID == voice.configurationID
+            else {
+                throw AppleVPAcousticTestError.voiceProcessingUnavailable
+            }
+            guard let playback else { return }
+            let outputGeneration = speechAudioOutputHostSnapshot.generation
+            appleVPAcousticRun.playbackGeneration = outputGeneration
+            appleVPAcousticPlaybackTask = Task { @MainActor [weak self] in
+                await self?.pumpAppleVPAcousticPlayback(playback, generation: outputGeneration, runID: runID)
+            }
+        }
+
+        private func pumpAppleVPAcousticPlayback(_ pcm: Data, generation: UInt64, runID: UUID) async {
+            do {
+                var offset = 0
+                var sequence: UInt64 = 1
+                while offset < pcm.count {
+                    try checkAppleVPAcousticRun(runID)
+                    let end = min(offset + 4800, pcm.count)
+                    let output = await speechAudioOutputHost.enqueue(
+                        pcm16Bytes: pcm.subdata(in: offset ..< end), sequence: sequence, generation: generation
+                    )
+                    try checkAppleVPAcousticRun(runID)
+                    guard output.lastError == nil else { throw AppleVPAcousticTestError.playbackFailed }
+                    speechAudioOutputHostSnapshot = output
+                    if output.state == .prepared {
+                        let started = await speechAudioOutputHost.start()
+                        try checkAppleVPAcousticRun(runID)
+                        speechAudioOutputHostSnapshot = started
+                    }
+                    offset = end
+                    sequence += 1
+                }
+                let finished = await speechAudioOutputHost.finishProviderResponse(generation: generation)
+                try checkAppleVPAcousticRun(runID)
+                speechAudioOutputHostSnapshot = finished
+                guard finished.playbackStartedCount == 1 else { throw AppleVPAcousticTestError.playbackFailed }
+            } catch {
+                if (try? checkAppleVPAcousticRun(runID)) != nil {
+                    appleVPAcousticRun.playbackFailure = "playback_failed"
+                }
+            }
+        }
+
+        private func collectAppleVPAcousticFrames(runID: UUID) async throws {
+            let deadline = DispatchTime.now().uptimeNanoseconds + appleVPAcousticTestDurationNanoseconds
+            while DispatchTime.now().uptimeNanoseconds < deadline {
+                try checkAppleVPAcousticRun(runID)
+                let capture = await speechAudioHost.currentSnapshot()
+                try checkAppleVPAcousticRun(runID)
+                let output = await speechAudioOutputHost.currentSnapshot()
+                try checkAppleVPAcousticRun(runID)
+                speechAudioHostSnapshot = capture
+                speechAudioOutputHostSnapshot = output
+                guard appleVPAcousticRun.playbackFailure == nil else { throw AppleVPAcousticTestError.playbackFailed }
+                try validateAppleVPAcousticRoute()
+                let frames = await speechAudioHost.drainFrames(maxCount: 25)
+                try checkAppleVPAcousticRun(runID)
+                for frame in frames {
+                    try appendAppleVPAcousticFrame(frame)
+                }
+                appleVPAcousticRun.native = appleVPAcousticTestCapture?.nativeVoiceDebugSnapshot(runID: runID)
+                guard appleVPAcousticRun.native?.sealReason == nil else { throw AppleVPAcousticTestError.routeChanged }
+                publishAppleVPAcousticState()
+                if appleVPAcousticRun.byteCount == appleVPAcousticTestByteLimit {
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        private func validateAppleVPAcousticRoute() throws {
+            let previous = appleVPAcousticRun.route
+            guard speechAudioHostSnapshot.isCapturing, speechAudioHostSnapshot.lastError == nil,
+                  speechAudioHostSnapshot.inputDevice == previous.inputDevice,
+                  speechAudioHostSnapshot.outputDevice == previous.outputDevice
+            else {
+                throw AppleVPAcousticTestError.routeChanged
+            }
+            guard speechAudioHostSnapshot.droppedFrameCount == previous.droppedFrameCount else {
+                throw AppleVPAcousticTestError.captureDropped
+            }
+            if let generation = appleVPAcousticRun.playbackGeneration {
+                guard speechAudioOutputHostSnapshot.generation == generation,
+                      speechAudioOutputHostSnapshot.lastError == nil
+                else {
+                    throw AppleVPAcousticTestError.playbackFailed
+                }
+            }
+        }
+
+        private func appendAppleVPAcousticFrame(_ frame: MacSpeechAudioFrame) throws {
+            guard frame.captureGeneration == appleVPAcousticRun.generation,
+                  frame.pcm16Bytes.count == 960, frame.monotonicTimestampNanoseconds > 0,
+                  frame.sequenceNumber == UInt64(appleVPAcousticRun.packetCount + 1)
+            else {
+                throw AppleVPAcousticTestError.invalidPacket
+            }
+            if let previous = appleVPAcousticRun.packets.last {
+                let expected = previous[1].addingReportingOverflow(20_000_000)
+                guard !expected.overflow, frame.monotonicTimestampNanoseconds == expected.partialValue else {
+                    throw AppleVPAcousticTestError.invalidPacket
+                }
+            }
+            guard appleVPAcousticRun.byteCount + frame.pcm16Bytes.count <= appleVPAcousticTestByteLimit else {
+                throw AppleVPAcousticTestError.capacityExceeded
+            }
+            appleVPAcousticRun.pcm.append(frame.pcm16Bytes)
+            appleVPAcousticRun.packets.append([frame.sequenceNumber, frame.monotonicTimestampNanoseconds, 960])
+        }
+
+        private func checkAppleVPAcousticRun(_ runID: UUID) throws {
+            guard !Task.isCancelled, appleVPAcousticRun.runID == runID,
+                  appleVPAcousticRun.stopGeneration == speechHostStopGeneration,
+                  appleVPAcousticRun.phase == .starting || appleVPAcousticRun.phase == .running
+            else {
+                throw CancellationError()
+            }
+        }
+
+        private func finishAppleVPAcousticTest(runID: UUID, failure: String?) async {
+            guard appleVPAcousticRun.runID == runID,
+                  appleVPAcousticRun.phase == .starting || appleVPAcousticRun.phase == .running else { return }
+            appleVPAcousticRun.errorCode = failure
+            appleVPAcousticRun.phase = .stopping
+            await shutdownSpeechAudioHost()
+        }
+
+        private func closeAppleVPAcousticRunForShutdown() async {
+            if appleVPAcousticRun.phase == .starting || appleVPAcousticRun.phase == .running {
+                appleVPAcousticRun.errorCode = "cancelled"
+                appleVPAcousticRun.phase = .stopping
+            }
+            appleVPAcousticTestTask?.cancel()
+            let playbackTask = appleVPAcousticPlaybackTask
+            playbackTask?.cancel()
+            if appleVPAcousticRun.phase == .stopping {
+                appleVPAcousticRun.captureFinal = await speechAudioHost.currentSnapshot()
+                appleVPAcousticRun.playbackFinal = await speechAudioOutputHost.currentSnapshot()
+                if let runID = appleVPAcousticRun.runID {
+                    appleVPAcousticRun.native = appleVPAcousticTestCapture?.sealNativeVoiceDebug(runID: runID)
+                }
+                if appleVPAcousticRun.errorCode == nil, appleVPAcousticRun.native?.coverageValid != true {
+                    appleVPAcousticRun.errorCode = "native_coverage_unverified"
+                }
+                if appleVPAcousticRun.errorCode == nil, appleVPAcousticRun.pcm.isEmpty {
+                    appleVPAcousticRun.errorCode = "no_processed_pcm"
+                }
+            }
+            speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+            await speechAudioHost.shutdown()
+            speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+            await playbackTask?.value
+            if appleVPAcousticRun.phase == .stopping {
+                appleVPAcousticRun.phase = .sealed
+            }
+            appleVPAcousticTestTask = nil
+            appleVPAcousticPlaybackTask = nil
+            publishAppleVPAcousticState(force: true)
+        }
+
+        private func publishAppleVPAcousticState(force: Bool = false) {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard force || now - appleVPAcousticRun.lastRefresh >= 200_000_000 else { return }
+            appleVPAcousticRun.lastRefresh = now
+            objectWillChange.send()
+        }
+    }
+#endif
+
+#if DEBUG
+    private enum AppleVPAcousticWAV {
+        static func read(url: URL) throws -> (pcm: Data, sha256: String) {
+            guard url.isFileURL else { throw AppleVPAcousticTestError.invalidFile }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let bytes = try file.read(upToCount: 724_097) ?? Data()
+            guard bytes.count <= 724_096 else { throw AppleVPAcousticTestError.invalidFile }
+            return try (pcm(from: bytes), digest(bytes))
+        }
+
+        static func pcm(from bytes: Data) throws -> Data {
+            guard bytes.count >= 44, bytes.prefix(4) == Data("RIFF".utf8),
+                  bytes[8 ..< 12] == Data("WAVE".utf8), integer(bytes, 4, 4) + 8 == bytes.count
+            else {
+                throw AppleVPAcousticTestError.invalidFile
+            }
+            var offset = 12
+            var validFormat = false
+            var result: Data?
+            while offset + 8 <= bytes.count {
+                let size = integer(bytes, offset + 4, 4)
+                let content = offset + 8
+                guard size <= bytes.count - content else { throw AppleVPAcousticTestError.invalidFile }
+                let tag = bytes[offset ..< content - 4]
+                if tag == Data("fmt ".utf8) {
+                    guard !validFormat, size >= 16 else { throw AppleVPAcousticTestError.invalidFile }
+                    guard validPCMFormat(bytes, offset: content) else { throw AppleVPAcousticTestError.invalidFile }
+                    validFormat = true
+                } else if tag == Data("data".utf8) {
+                    guard result == nil, size > 0, size <= 720_000, size.isMultiple(of: 2) else {
+                        throw AppleVPAcousticTestError.invalidFile
+                    }
+                    result = bytes.subdata(in: content ..< content + size)
+                }
+                offset = content + size + size % 2
+            }
+            guard validFormat, offset == bytes.count, let result,
+                  bytes.count - result.count <= 4096 else { throw AppleVPAcousticTestError.invalidFile }
+            return result
+        }
+
+        static func digest(_ bytes: Data) -> String {
+            SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }
+
+        private static func integer(_ bytes: Data, _ offset: Int, _ count: Int) -> Int {
+            (0 ..< count).reduce(0) { $0 | Int(bytes[offset + $1]) << ($1 * 8) }
+        }
+
+        private static func validPCMFormat(_ bytes: Data, offset: Int) -> Bool {
+            integer(bytes, offset, 2) == 1 && integer(bytes, offset + 2, 2) == 1
+                && integer(bytes, offset + 4, 4) == 24000 && integer(bytes, offset + 8, 4) == 48000
+                && integer(bytes, offset + 12, 2) == 2 && integer(bytes, offset + 14, 2) == 16
+        }
+
+        static func encoded(pcm: Data) -> Data {
+            var output = Data("RIFF".utf8)
+            append(UInt32(pcm.count + 36), to: &output)
+            output.append(Data("WAVEfmt ".utf8))
+            append(16, to: &output)
+            output.append(contentsOf: [1, 0, 1, 0])
+            append(24000, to: &output)
+            append(48000, to: &output)
+            output.append(contentsOf: [2, 0, 16, 0])
+            output.append(Data("data".utf8))
+            append(UInt32(pcm.count), to: &output)
+            output.append(pcm)
+            return output
+        }
+
+        private static func append(_ value: UInt32, to bytes: inout Data) {
+            bytes.append(contentsOf: (0 ..< 4).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+        }
+    }
+#endif
+
+#if DEBUG
+    extension AppController {
+        var appleVPAcousticStatusLines: [String] {
+            let native = appleVPAcousticRun.native
+            let voice = native?.voiceProcessing
+            let unknown = "UNKNOWN"
+            let fact: (Bool?) -> String = { $0.map(String.init) ?? unknown }
+            let generation = appleVPAcousticRun.generation.map(String.init) ?? unknown
+            let configuration = native?.configurationID.map(String.init) ?? unknown
+            let nativeFormat = native?.nativeFormat.map {
+                "\($0.sampleRate) Hz / \($0.channelCount) ch / \($0.sampleFormat) / interleaved=\($0.isInterleaved)"
+            } ?? unknown
+            let channels = native.map { String(describing: $0.channels) } ?? unknown
+            let dropped = speechAudioHostSnapshot.droppedFrameCount
+            let stale = speechAudioHostSnapshot.rejectedStaleFrameCount
+            let coverage = native.map { String($0.coverageValid) } ?? unknown
+            var lines = [String]()
+            lines.append("phase=\(appleVPAcousticRun.phase.rawValue) scenario=\(appleVPAcousticRun.scenario.rawValue)")
+            lines.append("run=\(appleVPAcousticRun.runID?.uuidString ?? unknown)")
+            lines.append("file=\(appleVPAcousticRun.selectedPlaybackFileName)")
+            lines.append("error=\(appleVPAcousticRun.errorCode ?? unknown)")
+            lines.append("authorization_pending=\(appleVPAcousticTestState.authorizationPending); result=UNKNOWN")
+            lines.append("generation=\(generation) configuration=\(configuration)")
+            lines.append("VP input=\(fact(voice?.inputEnabled)) output=\(fact(voice?.outputEnabled))")
+            lines.append("AGC=\(fact(voice?.automaticGainControlEnabled))")
+            lines.append("bypass=\(fact(voice?.bypassed)) muted=\(fact(voice?.inputMuted))")
+            lines.append("readback_ns=\(voice.map { String($0.validatedAtNanoseconds) } ?? unknown)")
+            lines.append("VP input=\(voice.map { appleVPAcousticFormatDescription($0.inputFormat) } ?? unknown)")
+            lines.append("VP output=\(voice.map { appleVPAcousticFormatDescription($0.outputFormat) } ?? unknown)")
+            lines.append("native=\(nativeFormat); processed=24000 Hz / mono / PCM16 LE / channel[0]")
+            lines.append("packets=\(appleVPAcousticRun.packetCount) bytes=\(appleVPAcousticRun.byteCount)")
+            lines.append("drop=\(dropped) stale=\(stale) coverage=\(coverage)")
+            lines.append("native channels peak/fullScale/overScale/nonFinite=\(channels)")
+            lines.append("Physical acceptance=UNVERIFIED; Source=OPEN; Runtime interruption=DISABLED")
+            return lines
+        }
+
+        func appleVPAcousticTestManifestData() throws -> Data {
+            guard isAppleVPAcousticTestMode, appleVPAcousticRun.canExport else { throw CocoaError(.featureUnsupported) }
+            let state = appleVPAcousticRun
+            var manifest = [String: Any]()
+            manifest["schema_version"] = 1
+            manifest["run_id"] = state.runID?.uuidString ?? "UNKNOWN"
+            manifest["scenario"] = state.scenario.rawValue
+            manifest["source_commit"] = NSNull()
+            manifest["build_identity"] = NSNull()
+            manifest["physical_acceptance"] = "UNVERIFIED"
+            manifest["runtime_interruption"] = "DISABLED"
+            manifest["source_qualification"] = "OPEN"
+            manifest["error"] = state.errorCode ?? NSNull() as Any
+            manifest["playback_file_name"] = state.selectedPlaybackFileName
+            manifest["playback_sha256"] = state.playbackSHA256 ?? NSNull() as Any
+            manifest["capture_generation"] = state.generation ?? NSNull() as Any
+            manifest["input_device"] = state.route.inputDevice.identifier
+            manifest["output_device"] = state.route.outputDevice.identifier
+            manifest["processed_sample_rate"] = 24000
+            manifest["processed_channels"] = 1
+            manifest["processed_encoding"] = "PCM16_LE"
+            manifest["processed_channel_map"] = [0]
+            manifest["duration_limit_ns"] = appleVPAcousticTestDurationNanoseconds
+            manifest["byte_limit"] = appleVPAcousticTestByteLimit
+            manifest["packet_count"] = state.packetCount
+            manifest["byte_count"] = state.byteCount
+            manifest["processed_sha256"] = AppleVPAcousticWAV.digest(state.pcm)
+            manifest["packets_sequence_host_time_ns_bytes"] = state.packets
+            manifest["capture_drop_count"] = state.captureFinal.droppedFrameCount
+            manifest["capture_stale_count"] = state.captureFinal.rejectedStaleFrameCount
+            manifest["capture_state"] = state.captureFinal.state.rawValue
+            manifest["capture_queued_at_seal"] = state.captureFinal.queuedFrameCount
+            manifest["capture_generated_at_seal"] = state.captureFinal.generatedFrameCount
+            manifest["export_scope"] = "drained full20ms packets; queued/partial converter tail not padded"
+            manifest["partial_converter_tail_samples"] = NSNull()
+            manifest["capture_error"] = state.captureFinal.lastError ?? NSNull() as Any
+            manifest["playback_state"] = state.playbackFinal.state.rawValue
+            manifest["playback_generation"] = state.playbackFinal.generation
+            manifest["playback_started_count"] = state.playbackFinal.playbackStartedCount
+            manifest["playback_underrun_count"] = state.playbackFinal.underrunCount
+            manifest["playback_rejected_callback_count"] = state.playbackFinal.rejectedCallbackCount
+            manifest["playback_error"] = state.playbackFinal.lastError ?? NSNull() as Any
+            manifest["native"] = appleVPAcousticNativeManifest(state.native)
+            return try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        }
+
+        func appleVPAcousticTestProcessedWAVData() throws -> Data {
+            guard isAppleVPAcousticTestMode, appleVPAcousticRun.canExport,
+                  !appleVPAcousticRun.pcm.isEmpty else { throw CocoaError(.featureUnsupported) }
+            return AppleVPAcousticWAV.encoded(pcm: appleVPAcousticRun.pcm)
+        }
+
+        func writeAppleVPAcousticTestJSON(to url: URL, localExportConsent: Bool) throws {
+            guard localExportConsent else { throw CocoaError(.featureUnsupported) }
+            try AppleVPAcousticEvidenceExport.write(
+                appleVPAcousticTestManifestData(), to: url,
+                expected: appleVPAcousticTestExportURL(asWAV: false)
+            )
+        }
+
+        func writeAppleVPAcousticTestWAV(to url: URL, localExportConsent: Bool) throws {
+            guard localExportConsent else { throw CocoaError(.featureUnsupported) }
+            try AppleVPAcousticEvidenceExport.write(
+                appleVPAcousticTestProcessedWAVData(), to: url,
+                expected: appleVPAcousticTestExportURL(asWAV: true)
+            )
+        }
+
+        func appleVPAcousticTestExportURL(asWAV: Bool) throws -> URL {
+            guard isAppleVPAcousticTestMode, appleVPAcousticRun.canExport,
+                  let runID = appleVPAcousticRun.runID else { throw CocoaError(.featureUnsupported) }
+            return try AppleVPAcousticEvidenceExport.destination(runID: runID, asWAV: asWAV)
+        }
+
+        private func appleVPAcousticNativeManifest(_ native: MacSpeechNativeVoiceDebugSnapshot?) -> [String: Any] {
+            guard let native else { return ["status": "UNKNOWN"] }
+            var result = [String: Any]()
+            result["run_id"] = native.runID.uuidString
+            result["generation"] = native.captureGeneration
+            result["configuration_id"] = native.configurationID ?? NSNull() as Any
+            result["sealed"] = native.isSealed
+            result["seal_reason"] = native.sealReason ?? NSNull() as Any
+            result["coverage_valid"] = native.coverageValid
+            result["issues"] = native.issues
+            result["rejections"] = native.rejections
+            result["native_buffers"] = native.nativeBufferCount
+            result["native_frames"] = native.nativeFrameCount
+            result["packet_count"] = native.packetCount
+            result["packet_bytes"] = native.packetByteCount
+            result["first_native_host_time"] = native.firstNativeHostTime ?? NSNull() as Any
+            result["last_native_host_time"] = native.lastNativeHostTime ?? NSNull() as Any
+            result["first_native_sample_time"] = native.firstNativeSampleTime ?? NSNull() as Any
+            result["last_native_sample_time"] = native.lastNativeSampleTime ?? NSNull() as Any
+            result["first_packet_time_ns"] = native.firstPacketTime ?? NSNull() as Any
+            result["last_packet_time_ns"] = native.lastPacketTime ?? NSNull() as Any
+            let format = native.nativeFormat.map(appleVPAcousticNativeFormatManifest)
+            let voice = native.voiceProcessing.map(appleVPAcousticVoiceManifest)
+            result["native_format"] = format ?? ["status": "UNKNOWN"]
+            result["channels"] = native.channels.map(appleVPAcousticChannelManifest)
+            result["voice_processing"] = voice ?? ["status": "UNKNOWN"]
+            return result
+        }
+
+        private func appleVPAcousticVoiceManifest(_ voice: MacSpeechVoiceProcessingSnapshot) -> [String: Any] {
+            var result = [String: Any]()
+            result["mode"] = voice.mode.rawValue
+            result["configuration_id"] = voice.configurationID
+            result["input_enabled"] = voice.inputEnabled
+            result["output_enabled"] = voice.outputEnabled
+            result["bypassed"] = voice.bypassed
+            result["input_muted"] = voice.inputMuted
+            result["agc_enabled"] = voice.automaticGainControlEnabled
+            result["validated_at_ns"] = voice.validatedAtNanoseconds
+            result["input_format"] = appleVPAcousticFormatDescription(voice.inputFormat)
+            result["output_format"] = appleVPAcousticFormatDescription(voice.outputFormat)
+            result["noise_suppression"] = "Apple native; no independent public readback"
+            return result
+        }
+
+        private func appleVPAcousticNativeFormatManifest(_ format: MacSpeechNativeVoiceDebugFormat) -> [String: Any] {
+            var result = [String: Any]()
+            result["rate"] = format.sampleRate
+            result["channels"] = format.channelCount
+            result["sample_format"] = format.sampleFormat
+            result["interleaved"] = format.isInterleaved
+            return result
+        }
+
+        private func appleVPAcousticChannelManifest(_ channel: MacSpeechNativeVoiceDebugChannel) -> [String: Any] {
+            var result = [String: Any]()
+            result["samples"] = channel.sampleCount
+            result["peak"] = channel.peakMagnitude ?? NSNull() as Any
+            result["full_scale"] = channel.fullScaleCount
+            result["over_scale"] = channel.overScaleCount
+            result["non_finite"] = channel.nonFiniteCount
+            return result
+        }
+
+        private func appleVPAcousticFormatDescription(_ format: MacSpeechNativeInputFormat) -> String {
+            "\(format.sampleRate) Hz / \(format.channelCount) ch"
+        }
+    }
+
+    private enum AppleVPAcousticEvidenceExport {
+        static func destination(runID: UUID, asWAV: Bool) throws -> URL {
+            let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+            let expectedCache = home.appendingPathComponent("Library/Caches", isDirectory: true)
+            guard let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+                  cache.path == expectedCache.path
+            else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            return cache.appendingPathComponent("com.eterna.aftelle.debug-apple-vp-evidence", isDirectory: true)
+                .appendingPathComponent("run-\(runID.uuidString).\(asWAV ? "wav" : "json")")
+        }
+
+        static func write(_ bytes: Data, to url: URL, expected: URL) throws {
+            guard url.isFileURL, url.host?.isEmpty != false, url.query == nil, url.fragment == nil,
+                  url.path == url.standardizedFileURL.path, url.path == expected.path
+            else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            let directory = try openDirectory(expected.deletingLastPathComponent())
+            defer { Darwin.close(directory) }
+            let flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC
+            let descriptor = openat(directory, expected.lastPathComponent, flags, 0o600)
+            guard descriptor >= 0 else { throw currentError() }
+            let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            do {
+                try validateFile(descriptor)
+                try file.write(contentsOf: bytes)
+                try file.synchronize()
+                try file.close()
+            } catch {
+                try? file.close()
+                unlinkat(directory, expected.lastPathComponent, 0)
+                throw error
+            }
+        }
+
+        private static func openDirectory(_ url: URL) throws -> Int32 {
+            var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard descriptor >= 0 else { throw currentError() }
+            let homeDepth = FileManager.default.homeDirectoryForCurrentUser.pathComponents.count - 1
+            do {
+                for (index, component) in url.pathComponents.dropFirst().enumerated() {
+                    try rejectUnsafeLocation(component: component, directory: descriptor)
+                    let child = try openChild(component, directory: descriptor, canCreate: index >= homeDepth)
+                    Darwin.close(descriptor)
+                    descriptor = child
+                }
+                try rejectUnsafeLocation(component: "", directory: descriptor)
+                var status = stat()
+                guard fstat(descriptor, &status) == 0,
+                      status.st_uid == getuid(), status.st_mode & 0o7777 == 0o700
+                else {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                return descriptor
+            } catch {
+                Darwin.close(descriptor)
+                throw error
+            }
+        }
+
+        private static func openChild(_ name: String, directory: Int32, canCreate: Bool) throws -> Int32 {
+            let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+            var child = openat(directory, name, flags)
+            if child < 0, errno == ENOENT, canCreate {
+                guard mkdirat(directory, name, 0o700) == 0 else { throw currentError() }
+                child = openat(directory, name, flags)
+            }
+            guard child >= 0 else { throw currentError() }
+            return child
+        }
+
+        private static func rejectUnsafeLocation(component: String, directory: Int32) throws {
+            let forbidden = [".git", "mobile documents", "cloudstorage", "dropbox", "onedrive", "google drive",
+                             "googledrive", "icloud drive", "session", "sessions", "memory"]
+            guard !forbidden.contains(component.lowercased()), !component.hasSuffix(".digital_resident") else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            var marker = stat()
+            let result = fstatat(directory, ".git", &marker, AT_SYMLINK_NOFOLLOW)
+            guard result < 0, errno == ENOENT else { throw CocoaError(.fileWriteNoPermission) }
+        }
+
+        private static func validateFile(_ descriptor: Int32) throws {
+            var status = stat()
+            guard fchmod(descriptor, 0o600) == 0, fstat(descriptor, &status) == 0,
+                  status.st_uid == getuid(), status.st_nlink == 1,
+                  status.st_mode & S_IFMT == S_IFREG, status.st_mode & 0o7777 == 0o600
+            else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+
+        private static func currentError() -> NSError {
+            NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+    }
+#endif

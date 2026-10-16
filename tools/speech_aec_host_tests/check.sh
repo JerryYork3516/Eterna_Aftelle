@@ -2,6 +2,11 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+mode="${1:-full}"
+if [[ "$mode" != "full" && "$mode" != "d1-stats-only" ]]; then
+  echo "unsupported speech AEC test mode: $mode" >&2
+  exit 2
+fi
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-speech-aec-host.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
@@ -10,6 +15,16 @@ capture="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
 tests="$repo_root/tools/speech_aec_host_tests/MacSpeechAcousticEchoHostTests.swift"
 replay="$repo_root/tools/speech_aec_host_tests/RecordedAcousticReplay.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
+
+if [[ "$mode" == "d1-stats-only" ]]; then
+  swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
+    -framework AVFoundation "$aec_host" "$capture" \
+    "$repo_root/tools/speech_aec_host_tests/ConverterTimelineTests.swift" \
+    "$repo_root/tools/speech_aec_host_tests/NativeVoiceDebugStatsTests.swift" \
+    -o "$build_dir/native_voice_debug_tests"
+  "$build_dir/native_voice_debug_tests" --d1-stats-only
+  exit 0
+fi
 
 swiftc \
   -D DEBUG \

@@ -16,6 +16,12 @@ private struct ConverterTimelineTests {
     private static let anchor: UInt64 = 10_000_000_000
 
     static func main() throws {
+        #if DEBUG
+            if CommandLine.arguments.dropFirst().elementsEqual(["--d1-stats-only"]) {
+                NativeVoiceDebugStatsTests.run()
+                return
+            }
+        #endif
         let scenarios = ["missing-start", "missing-middle", "forward", "backward",
                          "sample-gap", "host-jump-with-sample-time", "jitter", "reset"]
         for rate in [48000.0, 44100.0] {
