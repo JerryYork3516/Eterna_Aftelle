@@ -1,5 +1,31 @@
 import Foundation
 
+actor FakeMacSpeechConsumerWatchdogSleeper {
+    private var continuations: [Int: CheckedContinuation<Void, Never>] = [:]
+    private(set) var requestCount = 0
+    var pendingCount: Int { continuations.count }
+
+    func sleep() async {
+        requestCount += 1
+        let request = requestCount
+        await withCheckedContinuation { continuation in
+            continuations[request] = continuation
+        }
+    }
+
+    func resume(request: Int) {
+        continuations.removeValue(forKey: request)?.resume()
+    }
+
+    func resumeAll() {
+        let pending = Array(continuations.values)
+        continuations.removeAll()
+        for continuation in pending {
+            continuation.resume()
+        }
+    }
+}
+
 private struct FakeMacSpeechPendingPlayback: Sendable {
     let completion: @Sendable (
         Result<Int, MacSpeechAudioOutputHostError>
@@ -11,7 +37,7 @@ final class FakeMacSpeechAudioOutputPlayer:
     MacSpeechAudioOutputPlaying, @unchecked Sendable
 {
     private let lock = NSLock()
-    private let preparedFormat: MacSpeechLocalPlaybackFormat
+    private var preparedFormat: MacSpeechLocalPlaybackFormat
     private var pendingPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var stoppedPlaybacks: [FakeMacSpeechPendingPlayback] = []
     private var scheduledPayloads: [Data] = []
@@ -47,6 +73,10 @@ final class FakeMacSpeechAudioOutputPlayer:
             if let prepareError { throw prepareError }
             return preparedFormat
         }
+    }
+
+    func changePreparedFormat(_ format: MacSpeechLocalPlaybackFormat) {
+        lock.withLock { preparedFormat = format }
     }
 
     func schedule(
@@ -200,12 +230,27 @@ final class FakeMacSpeechOutputDeviceMonitor:
     func changeOutput(identifier: String, name: String, available: Bool) {
         let callback = lock.withLock { () -> (@Sendable () -> Void)? in
             route = MacSpeechDeviceRoute(
-                input: .unavailable,
+                input: route.input,
                 output: MacSpeechAudioDevice(
                     identifier: identifier,
                     name: name,
                     isAvailable: available
                 )
+            )
+            return onChange
+        }
+        callback?()
+    }
+
+    func changeInput(identifier: String, name: String, available: Bool) {
+        let callback = lock.withLock { () -> (@Sendable () -> Void)? in
+            route = MacSpeechDeviceRoute(
+                input: MacSpeechAudioDevice(
+                    identifier: identifier,
+                    name: name,
+                    isAvailable: available
+                ),
+                output: route.output
             )
             return onChange
         }

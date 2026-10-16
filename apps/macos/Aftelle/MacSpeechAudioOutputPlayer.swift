@@ -414,6 +414,10 @@ nonisolated final class SystemMacSpeechAudioOutputPlayer:
     }
 
     func resetForRouteChange() {
+        lock.withLock {
+            converter = nil
+            localFormat = nil
+        }
         audioEngine.resetForRouteChange()
     }
 

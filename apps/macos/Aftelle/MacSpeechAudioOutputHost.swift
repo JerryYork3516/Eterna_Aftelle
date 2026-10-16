@@ -104,14 +104,19 @@ actor MacSpeechAudioOutputHost {
     private let player: MacSpeechAudioOutputPlaying
     private let deviceMonitor: MacSpeechDeviceRouteMonitoring
     private let configuration: MacSpeechPCMPlaybackConfiguration
+    private let sleepForConsumerTimeout:
+        @Sendable (UInt64) async throws -> Void
     private var state: MacSpeechAudioOutputHostState = .idle
     private var generation: UInt64 = 0
     private var outputDevice = MacSpeechAudioDevice.unavailable
+    private var inputDeviceIdentifier = MacSpeechAudioDevice.unavailable.identifier
+    private var isInputDeviceAvailable = false
     private var localFormat = "current default output / not prepared"
     private var queue: MacSpeechPCMPlaybackBuffer
     private var inFlightByteCounts: [UInt64: Int] = [:]
     private var waitingEnqueueContinuation: CheckedContinuation<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
+    private var consumerWatchdogID: UUID?
     private var enqueuedChunkCount = 0
     private var enqueuedByteCount = 0
     private var playedChunkCount = 0
@@ -145,11 +150,16 @@ actor MacSpeechAudioOutputHost {
             SystemMacSpeechAudioOutputPlayer(),
         deviceMonitor: MacSpeechDeviceRouteMonitoring =
             SystemMacSpeechDeviceMonitor(),
-        configuration: MacSpeechPCMPlaybackConfiguration = .standard
+        configuration: MacSpeechPCMPlaybackConfiguration = .standard,
+        sleepForConsumerTimeout:
+            @escaping @Sendable (UInt64) async throws -> Void = {
+                try await Task.sleep(nanoseconds: $0)
+            }
     ) {
         self.player = player
         self.deviceMonitor = deviceMonitor
         self.configuration = configuration
+        self.sleepForConsumerTimeout = sleepForConsumerTimeout
         queue = MacSpeechPCMPlaybackBuffer(
             capacity: configuration.capacity,
             generation: 0
@@ -165,12 +175,23 @@ actor MacSpeechAudioOutputHost {
         return snapshot()
     }
 
+    func canSelectAudioProcessingMode() -> Bool {
+        (state == .idle || state == .closed)
+            && queue.isEmpty
+            && inFlightByteCounts.isEmpty
+            && waitingEnqueueContinuation == nil
+            && timeoutTask == nil
+            && consumerWatchdogID == nil
+    }
+
     func prepare() -> MacSpeechAudioOutputHostSnapshot {
         if state == .prepared || state == .playing || state == .stalled
             || state == .draining {
             return snapshot()
         }
         let route = deviceMonitor.currentRoute()
+        inputDeviceIdentifier = route.input.identifier
+        isInputDeviceAvailable = route.input.isAvailable
         outputDevice = route.output
         guard outputDevice.isAvailable else {
             return fail(.outputUnavailable)
@@ -183,8 +204,7 @@ actor MacSpeechAudioOutputHost {
             resumeWaitingEnqueues()
             providerResponseFinished = false
             pendingFadeIn = .initial
-            timeoutTask?.cancel()
-            timeoutTask = nil
+            cancelConsumerWatchdog()
             localFormat = preparedFormat.description
             state = .prepared
             lastError = nil
@@ -457,8 +477,7 @@ actor MacSpeechAudioOutputHost {
 
     private func enterStalledPlayback() {
         guard state != .stalled else { return }
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        cancelConsumerWatchdog()
         state = .stalled
         pendingFadeIn = .stalledResume
         underrunCount += 1
@@ -484,8 +503,7 @@ actor MacSpeechAudioOutputHost {
         guard providerResponseFinished,
               queue.isEmpty,
               inFlightByteCounts.isEmpty else { return }
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        cancelConsumerWatchdog()
         player.finishPlayback()
         state = .completed
         appendEvent(.playbackCompleted)
@@ -514,8 +532,7 @@ actor MacSpeechAudioOutputHost {
             generation: completedGeneration, sequence: sequence, accepted: true
         ))
         #endif
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        cancelConsumerWatchdog()
         switch result {
         case .success(let byteCount):
             playedChunkCount += 1
@@ -528,9 +545,11 @@ actor MacSpeechAudioOutputHost {
     }
 
     private func handleConsumerTimeout(
-        generation timedOutGeneration: UInt64
+        generation timedOutGeneration: UInt64,
+        watchdogID: UUID
     ) {
-        guard timedOutGeneration == generation,
+        guard watchdogID == consumerWatchdogID,
+              timedOutGeneration == generation,
               !inFlightByteCounts.isEmpty,
               state == .playing || state == .draining
         else {
@@ -541,24 +560,34 @@ actor MacSpeechAudioOutputHost {
     }
 
     private func restartConsumerWatchdog() {
-        timeoutTask?.cancel()
-        guard !inFlightByteCounts.isEmpty else {
-            timeoutTask = nil
-            return
-        }
+        cancelConsumerWatchdog()
+        guard !inFlightByteCounts.isEmpty else { return }
         let watchedGeneration = generation
+        let watchdogID = UUID()
+        consumerWatchdogID = watchdogID
+        let sleepForConsumerTimeout = sleepForConsumerTimeout
         let timeoutNanoseconds = Self.consumerWatchdogNanoseconds(
             inFlightByteCount: inFlightByteCounts.values.reduce(0, +),
             safetyMarginNanoseconds:
                 configuration.consumerTimeoutNanoseconds
         )
         timeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-            guard !Task.isCancelled else { return }
+            do {
+                try await sleepForConsumerTimeout(timeoutNanoseconds)
+            } catch {
+                return
+            }
             await self?.handleConsumerTimeout(
-                generation: watchedGeneration
+                generation: watchedGeneration,
+                watchdogID: watchdogID
             )
         }
+    }
+
+    private func cancelConsumerWatchdog() {
+        consumerWatchdogID = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
     }
 
     private var hasStartupBuffer: Bool {
@@ -603,8 +632,7 @@ actor MacSpeechAudioOutputHost {
     private func fail(
         _ error: MacSpeechAudioOutputHostError
     ) -> MacSpeechAudioOutputHostSnapshot {
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        cancelConsumerWatchdog()
         player.stop()
         inFlightByteCounts.removeAll(keepingCapacity: true)
         queue.reset(generation: generation)
@@ -622,8 +650,7 @@ actor MacSpeechAudioOutputHost {
         keepsEngineRunning: Bool = false
     ) {
         resetEventDelivery()
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        cancelConsumerWatchdog()
         if keepsEngineRunning {
             player.clearScheduledPlayback()
         } else {
@@ -658,18 +685,18 @@ actor MacSpeechAudioOutputHost {
     }
 
     private func handleDeviceRouteChange() {
-        let nextOutput = deviceMonitor.currentRoute().output
-        guard nextOutput.identifier != outputDevice.identifier
-                || !nextOutput.isAvailable else {
+        let nextRoute = deviceMonitor.currentRoute()
+        guard nextRoute.input.identifier != inputDeviceIdentifier
+                || nextRoute.input.isAvailable != isInputDeviceAvailable
+                || nextRoute.output.identifier != outputDevice.identifier
+                || nextRoute.output.isAvailable != outputDevice.isAvailable else {
             return
         }
-        outputDevice = nextOutput
-        guard state == .prepared || state == .playing || state == .stalled
-                || state == .draining || state == .completed else {
-            return
-        }
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        inputDeviceIdentifier = nextRoute.input.identifier
+        isInputDeviceAvailable = nextRoute.input.isAvailable
+        outputDevice = nextRoute.output
+        guard state != .idle && state != .closed else { return }
+        cancelConsumerWatchdog()
         player.resetForRouteChange()
         player.stop()
         player.close()

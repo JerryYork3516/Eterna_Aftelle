@@ -82,12 +82,23 @@ test "$player_attach_line" -lt "$voice_processing_enable_line"
 rg -q 'audioEngine\.scheduleOutput' "$player"
 echo "speech_audio_host_shared_voice_processing_graph=PASS"
 
-rg -q 'setMutedSpeechActivityEventListener' "$capture"
-rg -q 'isVoiceProcessingInputMuted = true' "$capture"
-rg -q 'event == \.started' "$capture"
+rg -q 'inputNode\.isVoiceProcessingInputMuted = false' "$capture"
+rg -q 'inputNode\.isVoiceProcessingBypassed = false' "$capture"
+rg -q 'inputNode\.isVoiceProcessingAGCEnabled = true' "$capture"
 rg -q 'func finishOutputPlayback\(\)' "$capture"
-rg -q 'unmuteInput\(\)' "$capture"
-echo "speech_audio_host_playback_echo_gate=PASS"
+if rg -q 'isVoiceProcessingInputMuted = true|setMutedSpeechActivityEventListener|handleMutedSpeechActivity' "$capture"; then
+  echo "speech_audio_host_continuous_unmuted_capture=FAIL"
+  exit 1
+fi
+echo "speech_audio_host_continuous_unmuted_capture=PASS"
+
+rg -q 'func selectProcessingMode' "$host" "$capture"
+rg -q 'await speechAudioOutputHost.canSelectAudioProcessingMode' "$controller"
+awk '/func startRealtimeResidentBrainRoute/ { active = 1 } /private func ensureRealtimeMicrophoneAuthorization/ { active = 0 } active && /\.appleVoiceProcessing/ { found = 1 } END { exit !found }' \
+  "$controller"
+awk '/func startFormalSpeechRoute/ { active = 1 } /private func pumpFormalSpeechAudio/ { active = 0 } active && /\.webRTCAEC3/ { found = 1 } END { exit !found }' \
+  "$controller"
+echo "speech_audio_host_backend_route_scope=PASS"
 
 rg -q 'currentAcousticEchoSnapshot' "$host"
 rg -q 'resetAcousticEchoDiagnostics' "$host" "$capture"

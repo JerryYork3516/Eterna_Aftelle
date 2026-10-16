@@ -23,6 +23,14 @@ swiftc \
   "$tests" \
   -o "$build_dir/speech_aec_host_tests"
 
+swiftc \
+  -parse-as-library -warn-concurrency -strict-concurrency=complete \
+  -framework AVFoundation \
+  "$aec_host" "$capture" \
+  "$repo_root/tools/speech_aec_host_tests/ConverterTimelineTests.swift" \
+  -o "$build_dir/converter_timeline_tests"
+"$build_dir/converter_timeline_tests"
+
 "$build_dir/speech_aec_host_tests"
 
 swiftc \
@@ -43,12 +51,20 @@ rg -q 'case halfDuplexFallback' "$aec_host"
 rg -q 'speech-aec-processing' "$aec_host"
 rg -q 'fifoSampleCapacity' "$aec_host"
 rg -q 'outputNode\.presentationLatency' "$capture"
-if sed -n '/private func processCaptureLocked(/,/private func rebuildAudioFormatsLocked(/p' \
+if sed -n '/private func processCapture(/,/private func rebuildAudioFormatsLocked(/p' \
   "$capture" | rg -q 'presentationLatency'; then
   echo "speech_aec_capture_callback_latency_read=FAIL"
   exit 1
 fi
 rg -q 'refreshAcousticEchoPresentationLatencyLocked' "$capture"
+rg -q 'nativeSampleTime: when.isSampleTimeValid' "$capture"
+rg -q 'timestamp: timestamp' "$capture"
+if sed -n '/private func processCapture(/,/private func rebuildAudioFormatsLocked(/p' \
+  "$capture" | rg -q 'timestamp:.*DispatchTime|timestamp:.*uptimeNanoseconds'; then
+  echo "speech_aec_content_time=FAIL"
+  exit 1
+fi
+echo "speech_aec_content_time=PASS"
 echo "speech_aec_capture_callback_latency_read=PASS"
 if rg -q 'playerNode\.outputPresentationLatency' "$capture"; then
   echo "speech_aec_hardware_delay=FAIL"
@@ -95,13 +111,13 @@ if rg -q 'mainMixerNode\.installTap' "$capture"; then
   exit 1
 fi
 echo "speech_aec_render_source=PASS"
-test "$(rg -c 'acousticEchoHost\.processRender' "$capture")" -eq 1
+test "$(rg -c 'host\.processRender' "$capture")" -eq 1
 if rg -q 'scheduledOutputFrameCount|queuedOutputFrameCount' "$aec_host" "$capture"; then
   echo "speech_aec_render_timing=FAIL"
   exit 1
 fi
 echo "speech_aec_render_timing=PASS"
-capture_aec_line="$(rg -n -m 1 'acousticEchoHost\.processCapture' "$capture" | cut -d: -f1)"
+capture_aec_line="$(rg -n -m 1 'host\.processCaptureSpans' "$capture" | cut -d: -f1)"
 capture_packet_line="$(rg -n -m 1 'outputConverter\.convert' "$capture" | cut -d: -f1)"
 test "$capture_aec_line" -lt "$capture_packet_line"
 if rg -q 'Task\.sleep|usleep|Thread\.sleep' "$aec_host" "$capture"; then

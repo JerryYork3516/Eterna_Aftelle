@@ -132,7 +132,7 @@ validate_r853_output() {
   case "$mode" in
     r853-qwen-handoff-only)
       rg -qx 'r853_qwen_app_controller_cases=10' "$log_file"
-      rg -qx 'r853_qwen_app_controller_checks=110' "$log_file"
+      rg -qx 'r853_qwen_app_controller_checks=120' "$log_file"
       echo "r853_qwen_handoff_fixture=PASS"
       ;;
     r853-qwen-repeated-reassociation-only)
@@ -147,7 +147,7 @@ validate_r853_output() {
       ;;
     r853-queued-start-only)
       rg -qx 'r853_queued_start_cases=4' "$log_file"
-      rg -qx 'r853_queued_start_checks=40' "$log_file"
+      rg -qx 'r853_queued_start_checks=44' "$log_file"
       echo "r853_queued_start_fixture=PASS"
       ;;
     *) return 2 ;;

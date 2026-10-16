@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-16 · T3.2-A Apple原生Voice Processing核心
+
+- 按主控本轮授权，在唯一共享Engine接入Realtime Apple VP，Cascaded保留AEC3；选择性实现P1–P4及P8必要身份隔离，不改Runtime/Bridge/Qwen/DR/历史合同，正式Apple中断仍锁闭。
+- Debug/未签名Release、Host178、Playback238、AEC1165、converter25/221、InputBridge32/210、R81 28/239、resident-only12/126、r853三模式15/223、confirmed1/62、latency1/68及Release guard通过。初次失败及修复保留于[实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_implementation_and_review.md)，不等于真实Apple声学PASS。
+- T3.2-A=REVIEW_PENDING；SwiftFormat/SwiftLint严格检查FAIL，MG-1/工程REWORK保留，用户明确仅豁免本轮lint提交门槛，授权保留FAIL后提交推送；未登记已修复或节点APPROVED。设备/B/T3.3未授权，SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false，完成本节点后停止。
+
 ## 2026-10-16 · T3.0-F Fixture恢复与离线基线验证
 
 - 取得本次用户独立授权后，F-01与Test2冻结资产登记的摘要/身份匹配，按原字节恢复到Clean固定路径；原件未改、目标忽略且未跟踪，私人Fixture/原始日志/私人SHA均未提交。

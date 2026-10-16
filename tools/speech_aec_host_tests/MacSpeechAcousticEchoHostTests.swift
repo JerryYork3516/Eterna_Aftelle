@@ -149,6 +149,8 @@ private struct MacSpeechAcousticEchoHostTests {
         testPlaybackStopClearsSourceGateState()
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
+        testAppleFullScaleObservation()
+        testAppleRouteRebuildAndFailureStayClosed()
         testNativeTenMillisecondTapFraming()
         testSixteenToFortyEightCaptureFraming()
         testTwentyFourToFortyEightResamplingRoundTrip()
@@ -1909,6 +1911,155 @@ private struct MacSpeechAcousticEchoHostTests {
                "Apple voice processing is selectable")
         expect(backend.recordedOperations.isEmpty,
                "Apple and WebRTC AEC are mutually exclusive")
+        let samples = testSignal(seed: 81, amplitude: 0.2)
+        host.updateDelay(
+            outputPresentationLatencySeconds: 0.01,
+            capturePresentationLatencySeconds: 0.01
+        )
+        host.processRender(samples, hostTimeNanoseconds: 9_000_000_000)
+        let listening = host.processCaptureSpans(
+            samples,
+            hostTimeNanoseconds: 9_010_000_000
+        )
+        expect(listening.count == 1 && listening[0].samples == samples,
+               "Apple listening PCM passes through without second processing")
+        host.playbackStarted()
+        let playing = host.processCaptureSpans(
+            samples,
+            hostTimeNanoseconds: 9_020_000_000
+        )
+        expect(playing.count == 1 && playing[0].samples == samples,
+               "Apple playback preserves continuous processed PCM")
+        expect(playing[0].observation.captureHostTimeNanoseconds
+                   == 9_020_000_000,
+               "Apple pass-through preserves the supplied content time")
+        let snapshot = host.snapshot()
+        expect(snapshot.processedCaptureRMS > 0,
+               "Apple processed RMS is measured during playback")
+        expect(snapshot.rawCaptureRMS == 0
+                   && snapshot.linearAECOutputRMS == 0
+                   && !snapshot.hasWebRTCStatistics,
+               "Apple unavailable raw and WebRTC fields are marked inapplicable")
+        expect(!snapshot.enabled && !snapshot.active
+                   && snapshot.erlDecibels == 0
+                   && snapshot.erleDecibels == 0,
+               "Apple does not manufacture WebRTC processing evidence")
+        expect(snapshot.inputClassification == .uncertain
+                   && !snapshot.sourceGateOpen
+                   && snapshot.doubleTalkFrameCount == 0
+                   && snapshot.nearEndSpeechFrameCount == 0,
+               "Apple mechanical PCM never grants acoustic source eligibility")
+        expect(!playing[0].observation.aecEnabled
+                   && !playing[0].observation.aecActive
+                   && !playing[0].observation.sourceGateOpen,
+               "Apple observation retains legacy eligibility rejection")
+        host.discardPendingCaptureForGenerationTransition()
+        expect(host.snapshot().captureFIFOSampleCount == 0,
+               "Apple adapter retains no old-generation capture samples")
+        host.playbackStopped()
+        expect(host.processCapture(
+            samples,
+            hostTimeNanoseconds: 9_030_000_000
+        ) == samples, "Apple Stop does not mute later processed input")
+        expect(backend.recordedOperations.isEmpty,
+               "Apple render, capture and lifecycle never invoke WebRTC")
+        let largeCallback = samples + samples
+        let largeSpan = host.processCaptureSpans(
+            largeCallback,
+            hostTimeNanoseconds: 9_040_000_000
+        )
+        expect(largeSpan.count == 1 && largeSpan[0].samples == largeCallback,
+               "Apple arbitrary-size callbacks preserve every supplied sample")
+        expect(largeSpan[0].observation.captureHostTimeNanoseconds
+                   == 9_040_000_000,
+               "Apple multi-frame span time identifies its first content sample")
+    }
+
+    private static func testAppleFullScaleObservation() {
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing)
+        _ = host.configure()
+        expect(host.snapshot().processedCapturePeakMagnitude == nil,
+               "unobserved Apple peak is unavailable")
+        let samples: [Float] = [0.99, 1, -1, 1.2, -0.4]
+        let spans = host.processCaptureSpans(samples, hostTimeNanoseconds: 10_000_000_000)
+        expect(spans.first?.samples == samples, "level observation never limits or rewrites PCM")
+        let observed = host.snapshot()
+        expect(abs((observed.processedCapturePeakMagnitude ?? 0) - 1.2) < 0.000_001,
+               "Apple converted PCM peak observes super full scale")
+        expect(observed.processedCaptureFullScaleSampleCount == 3,
+               "full scale count includes positive, negative and over-range samples")
+        expect(!observed.sourceGateOpen && observed.inputClassification == .uncertain,
+               "peak and full scale cannot grant source qualification")
+        _ = host.processCaptureSpans([0.25], hostTimeNanoseconds: 10_001_000_000)
+        expect(host.snapshot().processedCapturePeakMagnitude == 0.25
+                   && host.snapshot().processedCaptureFullScaleSampleCount == 0,
+               "level readings describe the latest chunk without unbounded accumulation")
+        host.discardPendingCaptureForGenerationTransition()
+        expect(host.snapshot().processedCapturePeakMagnitude == nil
+                   && host.snapshot().processedCaptureFullScaleSampleCount == nil,
+               "generation transition invalidates old level observations")
+        for invalid: [Float] in [[.nan], [.infinity], [-.infinity], [0.1, .nan]] {
+            _ = host.processCaptureSpans(invalid, hostTimeNanoseconds: 10_002_000_000)
+            expect(host.snapshot().processedCapturePeakMagnitude == nil
+                       && host.snapshot().processedCaptureFullScaleSampleCount == nil,
+                   "nonfinite Apple levels remain unknown instead of valid silence")
+        }
+        let legacy = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: FakeAECBackend())
+        _ = legacy.configure()
+        expect(legacy.snapshot().processedCapturePeakMagnitude == nil
+                   && legacy.snapshot().processedCaptureFullScaleSampleCount == nil,
+               "Apple-only level observations do not pretend to be WebRTC measurements")
+    }
+
+    private static func testAppleRouteRebuildAndFailureStayClosed() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(
+            mode: .appleVoiceProcessing,
+            backend: backend
+        )
+        _ = host.configure()
+        let samples = testSignal(seed: 82, amplitude: 0.2)
+        host.routeWillRebuild()
+        expect(host.processCapture(
+            samples,
+            hostTimeNanoseconds: 10_000_000_000
+        ).isEmpty, "Apple capture is rejected while route rebuild is pending")
+        host.playbackStopped()
+        expect(host.processCapture(
+            samples,
+            hostTimeNanoseconds: 10_010_000_000
+        ).isEmpty, "playback Stop cannot reopen a rebuilding Apple route")
+        expect(host.routeDidRebuild() == .appleVoiceProcessing,
+               "owner rebuild acknowledgement retains the Apple backend")
+        expect(host.processCapture(
+            samples,
+            hostTimeNanoseconds: 10_020_000_000
+        ) == samples, "Apple adapter accepts new content after rebuild acknowledgement")
+        host.renderConversionFailed()
+        expect(host.snapshot().mode == .halfDuplexFallback
+                   && host.snapshot().fallbackReason == .renderProcessingFailed,
+               "Apple adapter exposes its conversion failure")
+        expect(host.processCapture(
+            samples,
+            hostTimeNanoseconds: 10_030_000_000
+        ).isEmpty, "failed Apple path does not silently deliver half-duplex PCM")
+        host.playbackCompleted()
+        expect(host.processCapture(
+            samples,
+            hostTimeNanoseconds: 10_040_000_000
+        ).isEmpty, "playback completion cannot recover failed Apple capture")
+        expect(backend.recordedOperations.isEmpty,
+               "Apple failure never switches into the WebRTC backend")
+        host.routeWillRebuild()
+        expect(host.routeDidRebuild() == .appleVoiceProcessing
+                   && host.snapshot().fallbackReason == nil,
+               "owner Apple rebuild clears the previous adapter failure state")
+        expect(host.configure() == .appleVoiceProcessing,
+               "explicit owner reconfiguration restores the requested Apple adapter")
+        expect(host.processCapture(
+            samples,
+            hostTimeNanoseconds: 10_050_000_000
+        ) == samples, "explicit reconfiguration accepts fresh Apple content")
     }
 
     private static func testNativeTenMillisecondTapFraming() {

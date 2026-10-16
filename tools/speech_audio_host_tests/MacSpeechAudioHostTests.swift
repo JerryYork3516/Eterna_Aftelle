@@ -12,6 +12,9 @@ private actor FakeMicrophoneAuthorizationProvider:
     private let requestedAuthorization: MicrophoneAuthorizationState
     private let queryFails: Bool
     private let requestFails: Bool
+    private var holdsQuery: Bool
+    private var queryContinuations: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var failedQueries: Set<Int> = []
     private(set) var queryCount = 0
     private(set) var requestCount = 0
 
@@ -19,18 +22,38 @@ private actor FakeMicrophoneAuthorizationProvider:
         authorization: MicrophoneAuthorizationState,
         requestedAuthorization: MicrophoneAuthorizationState = .authorized,
         queryFails: Bool = false,
-        requestFails: Bool = false
+        requestFails: Bool = false,
+        holdsQuery: Bool = false
     ) {
         self.authorization = authorization
         self.requestedAuthorization = requestedAuthorization
         self.queryFails = queryFails
         self.requestFails = requestFails
+        self.holdsQuery = holdsQuery
     }
 
     func currentAuthorization() async throws -> MicrophoneAuthorizationState {
         queryCount += 1
+        let queryNumber = queryCount
         if queryFails { throw FakeAuthorizationError.unavailable }
+        if holdsQuery {
+            holdsQuery = false
+            await withCheckedContinuation { queryContinuations[queryNumber] = $0 }
+            if failedQueries.remove(queryNumber) != nil {
+                throw FakeAuthorizationError.unavailable
+            }
+        }
         return authorization
+    }
+
+    func isQueryPending(_ number: Int = 1) -> Bool { queryContinuations[number] != nil }
+
+    func holdNextQuery() { holdsQuery = true }
+
+    func releaseQuery(_ number: Int = 1, fails: Bool = false) {
+        if fails { failedQueries.insert(number) }
+        let continuation = queryContinuations.removeValue(forKey: number)
+        continuation?.resume()
     }
 
     func requestAuthorization() async throws -> MicrophoneAuthorizationState {
@@ -46,6 +69,7 @@ private final class FakeMacSpeechAudioCapture:
 {
     private let lock = NSLock()
     private let startError: MacSpeechAudioCaptureError?
+    private let selectionError: MacSpeechAudioCaptureError?
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
@@ -55,9 +79,24 @@ private final class FakeMacSpeechAudioCapture:
     private var routeRebuildCompletions = 0
     private var routeRebuildCompletionsWhileStarted = 0
     private var acousticDiagnosticResets = 0
+    private var processingModes: [MacSpeechAudioProcessingMode] = []
 
-    init(startError: MacSpeechAudioCaptureError? = nil) {
+    init(
+        startError: MacSpeechAudioCaptureError? = nil,
+        selectionError: MacSpeechAudioCaptureError? = nil
+    ) {
         self.startError = startError
+        self.selectionError = selectionError
+    }
+
+    func selectProcessingMode(_ mode: MacSpeechAudioProcessingMode) throws {
+        if let selectionError { throw selectionError }
+        try lock.withLock {
+            guard !started else {
+                throw MacSpeechAudioCaptureError.processingModeBusy
+            }
+            processingModes.append(mode)
+        }
     }
 
     func start(
@@ -137,6 +176,9 @@ private final class FakeMacSpeechAudioCapture:
         lock.withLock { acousticDiagnosticResets }
     }
     var isStarted: Bool { lock.withLock { started } }
+    var selectedProcessingModes: [MacSpeechAudioProcessingMode] {
+        lock.withLock { processingModes }
+    }
 }
 
 private final class FakeMacSpeechDeviceMonitor:
@@ -210,6 +252,11 @@ private struct MacSpeechAudioHostTests {
         await testVoiceProcessingUnavailableFailsClosed()
         await testStartStopRestartAreIdempotent()
         await testPreparedCaptureDefersProducerAndResetsGenerationStats()
+        await testBackendSelectionRequiresIdleCapture()
+        await testBackendSelectionFailureDoesNotStartCapture()
+        await testRouteChangeInvalidatesPreparedCapture()
+        await testPendingPreparationRejectsSelectionAndCannotResumeAfterRetirement()
+        await testRetiredPreparationCannotClearNewPreparation()
         testPCM16Encoding()
         testExactTwentyMillisecondPacketization()
         do {
@@ -435,6 +482,211 @@ private struct MacSpeechAudioHostTests {
             "active capture keeps the prepared generation"
         )
         _ = await host.stopCapture()
+    }
+
+    private static func testBackendSelectionRequiresIdleCapture() async {
+        let (host, provider, capture, _) = makeHost(authorization: .authorized)
+        do {
+            try await host.selectProcessingMode(.appleVoiceProcessing)
+        } catch {
+            fatalError("FAILED: idle backend selection: \(error)")
+        }
+        expect(capture.selectedProcessingModes == [.appleVoiceProcessing],
+               "idle selection forwards only the requested backend")
+        expect(await provider.queryCount == 0 && capture.startCount == 0,
+               "selection does not request permission or start audio")
+        expect(await host.currentSnapshot() == .initial,
+               "selection preserves capture diagnostics and generations")
+
+        guard let generation = await host.prepareCaptureGeneration() else {
+            fatalError("FAILED: backend selection prepares capture")
+        }
+        let prepared = await host.currentSnapshot()
+        do {
+            try await host.selectProcessingMode(.webRTCAEC3)
+            fatalError("FAILED: prepared capture must reject backend selection")
+        } catch let error as MacSpeechAudioCaptureError {
+            expect(error == .processingModeBusy,
+                   "prepared capture reports busy without stopping preparation")
+        } catch {
+            fatalError("FAILED: unexpected prepared selection error: \(error)")
+        }
+        expect(await host.currentSnapshot() == prepared,
+               "prepared backend rejection preserves every capture field")
+        expect(capture.selectedProcessingModes == [.appleVoiceProcessing],
+               "prepared rejection never calls the backend selector")
+
+        let active = await host.startPreparedCapture(generation: generation)
+        do {
+            try await host.selectProcessingMode(.webRTCAEC3)
+            fatalError("FAILED: active capture must reject backend selection")
+        } catch let error as MacSpeechAudioCaptureError {
+            expect(error == .processingModeBusy,
+                   "active capture rejects switching")
+        } catch {
+            fatalError("FAILED: unexpected active selection error: \(error)")
+        }
+        expect(await host.currentSnapshot() == active && capture.stopCount == 0,
+               "active rejection neither stops capture nor changes diagnostics")
+        _ = await host.stopCapture()
+        do {
+            try await host.selectProcessingMode(.webRTCAEC3)
+        } catch {
+            fatalError("FAILED: explicit Stop releases backend selection: \(error)")
+        }
+        expect(capture.selectedProcessingModes == [.appleVoiceProcessing, .webRTCAEC3],
+               "Cascaded backend can be restored only after explicit Stop")
+    }
+
+    private static func testBackendSelectionFailureDoesNotStartCapture() async {
+        let capture = FakeMacSpeechAudioCapture(selectionError: .voiceProcessingUnavailable)
+        let provider = FakeMicrophoneAuthorizationProvider(authorization: .authorized)
+        let host = MacSpeechAudioHost(
+            authorizationProvider: provider,
+            capture: capture,
+            deviceMonitor: FakeMacSpeechDeviceMonitor(route: availableRoute)
+        )
+        do {
+            try await host.selectProcessingMode(.appleVoiceProcessing)
+            fatalError("FAILED: unavailable Apple backend must fail closed")
+        } catch let error as MacSpeechAudioCaptureError {
+            expect(error == .voiceProcessingUnavailable,
+                   "backend failure preserves the actual configuration error")
+        } catch {
+            fatalError("FAILED: unexpected backend error: \(error)")
+        }
+        expect(capture.startCount == 0 && capture.selectedProcessingModes.isEmpty,
+               "unavailable Apple backend neither starts nor falls back")
+        let queryCount = await provider.queryCount
+        let snapshot = await host.currentSnapshot()
+        expect(queryCount == 0 && snapshot == .initial,
+               "failed selection leaves permission and capture untouched")
+    }
+
+    private static func testRouteChangeInvalidatesPreparedCapture() async {
+        let (host, _, capture, monitor) = makeHost(authorization: .authorized)
+        guard let generation = await host.prepareCaptureGeneration() else {
+            fatalError("FAILED: route test prepares capture")
+        }
+        monitor.setRoute(MacSpeechDeviceRoute(input: inputB, output: outputA))
+        await host.refreshDeviceRoute()
+        expect(await host.currentSnapshot().lastError == "audio_route_changed",
+               "route change invalidates preparation before any audio is started")
+        let staleStart = await host.startPreparedCapture(generation: generation)
+        expect(!staleStart.isCapturing && capture.startCount == 0,
+               "prepared capture from the previous route cannot activate")
+        expect(staleStart.lastError == "capture_generation_unavailable",
+               "old route preparation is explicitly rejected")
+    }
+
+    private static func testPendingPreparationRejectsSelectionAndCannotResumeAfterRetirement() async {
+        for retirement in ["stop", "route", "shutdown"] {
+            let provider = FakeMicrophoneAuthorizationProvider(
+                authorization: .authorized, holdsQuery: true
+            )
+            let capture = FakeMacSpeechAudioCapture()
+            let monitor = FakeMacSpeechDeviceMonitor(route: availableRoute)
+            let host = MacSpeechAudioHost(
+                authorizationProvider: provider, capture: capture, deviceMonitor: monitor
+            )
+            let pending = Task { await host.prepareCaptureGeneration() }
+            await waitForQuery(provider)
+            let beforeSelection = await host.currentSnapshot()
+            do {
+                try await host.selectProcessingMode(.appleVoiceProcessing)
+                fatalError("FAILED: preparation in flight must reject backend selection")
+            } catch let error as MacSpeechAudioCaptureError {
+                expect(error == .processingModeBusy,
+                       "\(retirement) preparation rejects backend changes before authorization returns")
+            } catch {
+                fatalError("FAILED: unexpected in-flight selection error: \(error)")
+            }
+            expect(await host.currentSnapshot() == beforeSelection && capture.selectedProcessingModes.isEmpty,
+                   "\(retirement) busy selection has no capture or backend side effect")
+            expect(await host.prepareCaptureGeneration() == nil,
+                   "\(retirement) duplicate preparation cannot replace an active attempt")
+            switch retirement {
+            case "stop":
+                _ = await host.stopCapture()
+            case "route":
+                monitor.setRoute(MacSpeechDeviceRoute(input: inputB, output: outputB))
+                await host.refreshDeviceRoute()
+            default:
+                await host.shutdown()
+            }
+            let retired = await host.currentSnapshot()
+            await provider.releaseQuery()
+            expect(await pending.value == nil,
+                   "\(retirement) rejects the retired authorization completion")
+            expect(await host.currentSnapshot() == retired,
+                   "\(retirement) late completion cannot change the retired Host state")
+            expect(capture.startCount == 0 && monitor.startCount == 0,
+                   "\(retirement) late completion cannot restart audio or route monitoring")
+            expect(retired.queuedFrameCount == 0 && !retired.isCapturing,
+                   "\(retirement) leaves no effective capture or queued PCM")
+            do {
+                try await host.selectProcessingMode(.appleVoiceProcessing)
+            } catch {
+                fatalError("FAILED: retired preparation must release backend selection: \(error)")
+            }
+            guard let generation = await host.prepareCaptureGeneration() else {
+                fatalError("FAILED: \(retirement) allows a fresh explicit preparation")
+            }
+            expect(await host.startPreparedCapture(generation: generation).isCapturing,
+                   "\(retirement) supports a new explicit capture after retirement")
+            _ = await host.stopCapture()
+        }
+    }
+
+    private static func testRetiredPreparationCannotClearNewPreparation() async {
+        for oldQueryFails in [false, true] {
+            let provider = FakeMicrophoneAuthorizationProvider(
+                authorization: .authorized, holdsQuery: true
+            )
+            let capture = FakeMacSpeechAudioCapture()
+            let host = MacSpeechAudioHost(
+                authorizationProvider: provider, capture: capture,
+                deviceMonitor: FakeMacSpeechDeviceMonitor(route: availableRoute)
+            )
+            let old = Task { await host.prepareCaptureGeneration() }
+            await waitForQuery(provider)
+            _ = await host.stopCapture()
+            await provider.holdNextQuery()
+            let current = Task { await host.prepareCaptureGeneration() }
+            await waitForQuery(provider, number: 2)
+            await provider.releaseQuery(1, fails: oldQueryFails)
+            expect(await old.value == nil,
+                   "retired preparation rejects its late success or failure")
+            do {
+                try await host.selectProcessingMode(.appleVoiceProcessing)
+                fatalError("FAILED: retired completion cleared the current preparation identity")
+            } catch let error as MacSpeechAudioCaptureError {
+                expect(error == .processingModeBusy,
+                       "old success and catch cannot retire a newer preparation")
+            } catch {
+                fatalError("FAILED: unexpected replacement preparation error: \(error)")
+            }
+            expect(capture.selectedProcessingModes.isEmpty,
+                   "new preparation still excludes backend mutation")
+            await provider.releaseQuery(2)
+            guard let generation = await current.value else {
+                fatalError("FAILED: newer preparation identity survives old completion")
+            }
+            expect(await host.startPreparedCapture(generation: generation).isCapturing,
+                   "current preparation can activate after an old completion")
+            _ = await host.stopCapture()
+        }
+    }
+
+    private static func waitForQuery(
+        _ provider: FakeMicrophoneAuthorizationProvider,
+        number: Int = 1
+    ) async {
+        for _ in 0 ..< 1_000 {
+            if await provider.isQueryPending(number) { return }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        fatalError("FAILED: authorization query did not reach offline barrier")
     }
 
     private static func testPCM16Encoding() {

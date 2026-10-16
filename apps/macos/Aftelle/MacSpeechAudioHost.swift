@@ -110,6 +110,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
     private var isMonitoringRoute = false
     private var generation: UInt64 = 0
     private var preparedGeneration: UInt64?
+    private var capturePreparationAttemptID: UUID?
     private var actualInputFormat = MacSpeechNativeInputFormat(
         sampleRate: 0,
         channelCount: 0
@@ -133,6 +134,15 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
 
     func currentSnapshot() -> MacSpeechAudioHostSnapshot {
         makeSnapshot()
+    }
+
+    func selectProcessingMode(_ mode: MacSpeechAudioProcessingMode) throws {
+        guard !isCapturing,
+              preparedGeneration == nil,
+              capturePreparationAttemptID == nil else {
+            throw MacSpeechAudioCaptureError.processingModeBusy
+        }
+        try capture.selectProcessingMode(mode)
     }
 
     func interruptionAcousticSnapshot() async
@@ -213,6 +223,11 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         capture.acousticEchoSnapshot()
     }
 
+    nonisolated func currentVoiceProcessingSnapshot()
+        -> MacSpeechVoiceProcessingSnapshot? {
+        capture.voiceProcessingSnapshot()
+    }
+
     nonisolated func resetAcousticEchoDiagnostics() {
         capture.resetAcousticEchoDiagnostics()
     }
@@ -265,15 +280,21 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
     }
 
     func prepareCaptureGeneration() async -> UInt64? {
+        guard capturePreparationAttemptID == nil else { return nil }
         if isCapturing || preparedGeneration != nil {
             stopCapture(lastError: nil)
         }
+        let attemptID = UUID()
+        capturePreparationAttemptID = attemptID
         do {
-            update(
-                authorization: try await authorizationProvider
-                    .currentAuthorization()
-            )
+            let currentAuthorization = try await authorizationProvider
+                .currentAuthorization()
+            guard capturePreparationAttemptID == attemptID else { return nil }
+            capturePreparationAttemptID = nil
+            update(authorization: currentAuthorization)
         } catch {
+            guard capturePreparationAttemptID == attemptID else { return nil }
+            capturePreparationAttemptID = nil
             _ = fail()
             return nil
         }
@@ -373,7 +394,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         if inputChanged || outputChanged {
             capture.routeWillRebuild()
         }
-        if isCapturing,
+        if isCapturing || preparedGeneration != nil || capturePreparationAttemptID != nil,
            inputChanged || outputChanged || !route.input.isAvailable {
             stopCapture(
                 lastError: route.input.isAvailable
@@ -453,6 +474,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
     }
 
     private func stopCapture(lastError: String?) {
+        capturePreparationAttemptID = nil
         if isCapturing {
             capture.stop()
             frameBuffer.end(generation: generation)

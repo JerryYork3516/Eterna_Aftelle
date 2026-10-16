@@ -18,6 +18,7 @@ private struct MacSpeechAudioOutputHostTests {
         testPlaybackProcessingAvoidsCrossChunkGainPumping()
         testBoundedQueueOrderingAndValidation()
         await testPrepareAndDiagnostics()
+        await testBackendSelectionRequiresReleasedOutput()
         await testPlaybackProcessingDoesNotEmitLimiterEvent()
         await testPlaybackStartWaitsForAudibleChunk()
         await testDurationBasedStartupWatermark()
@@ -28,6 +29,8 @@ private struct MacSpeechAudioOutputHostTests {
         await testQueuePressureWaitsWithoutStopping()
         await testConversionFailureStopsAndClears()
         await testConsumerTimeoutStopsAndClears()
+        await testRetiredWatchdogCannotFailSameGenerationPlayback()
+        await testWatchdogInvalidatedByClearAndClose()
         testConsumerWatchdogIncludesScheduledPCMDuration()
         testOutputStopDoesNotBlockCaptureStateTransition()
         await testStopAndCloseAreIdempotent()
@@ -36,6 +39,8 @@ private struct MacSpeechAudioOutputHostTests {
         await testStaleResponseCompletionCannotFinishNewGeneration()
         await testCloseCanReprepare()
         await testDefaultOutputChangeFailsAndCanRecover()
+        await testInputRouteChangeInvalidatesOutputAndCanRecover()
+        await testSameDeviceAvailabilityChangesInvalidateOutputOnce()
         await testUnavailableOutputFailsBeforePrepare()
         await testPendingSinkEventsCapacityLimit()
         print("speech_audio_output_checks=\(checks)")
@@ -381,6 +386,38 @@ private struct MacSpeechAudioOutputHostTests {
                "playback preserves PCM after the first fade")
     }
 
+    private static func testBackendSelectionRequiresReleasedOutput() async {
+        let (host, player) = makeHost()
+        expect(await host.canSelectAudioProcessingMode(),
+               "initial output is idle for backend selection")
+        let generation = await host.prepare().generation
+        let prepared = await host.currentSnapshot()
+        expect(!(await host.canSelectAudioProcessingMode()),
+               "prepared output rejects backend selection")
+        expect(await host.currentSnapshot() == prepared,
+               "backend eligibility check does not change prepared output")
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+        )
+        expect(!(await host.canSelectAudioProcessingMode()),
+               "queued output rejects backend selection")
+        _ = await host.finishProviderResponse(generation: generation)
+        expect(!(await host.canSelectAudioProcessingMode()),
+               "scheduled output rejects backend selection")
+        player.completeScheduledChunk()
+        await waitUntil { await host.currentSnapshot().state == .completed }
+        expect(!(await host.canSelectAudioProcessingMode()),
+               "completed output retains preparation until explicit close")
+        _ = await host.stop()
+        expect(!(await host.canSelectAudioProcessingMode()),
+               "stopped output retains preparation until explicit close")
+        _ = await host.close()
+        expect(await host.canSelectAudioProcessingMode(),
+               "explicit close releases backend selection")
+        expect(player.closeCount == 1,
+               "backend eligibility checks never close the player")
+    }
+
     private static func testPlaybackStartWaitsForAudibleChunk() async {
         let (host, player) = makeHost()
         let generation = await host.prepare().generation
@@ -692,6 +729,120 @@ private struct MacSpeechAudioOutputHostTests {
         expect(failed.recentEvents.last?.kind == .failed, "conversion failure emits event")
     }
 
+    private static func testRetiredWatchdogCannotFailSameGenerationPlayback()
+        async {
+        let sleeper = FakeMacSpeechConsumerWatchdogSleeper()
+        let player = FakeMacSpeechAudioOutputPlayer()
+        let host = MacSpeechAudioOutputHost(
+            player: player,
+            deviceMonitor: FakeMacSpeechOutputDeviceMonitor(),
+            configuration: MacSpeechPCMPlaybackConfiguration(
+                capacity: 2,
+                lowWatermark: 0,
+                consumerTimeoutNanoseconds: 20_000_000,
+                startupBufferCount: 1,
+                startupBufferDurationNanoseconds: 0,
+                scheduleAheadCount: 1
+            ),
+            sleepForConsumerTimeout: { _ in await sleeper.sleep() }
+        )
+        let generation = await host.prepare().generation
+        for sequence in 1 ... 2 {
+            _ = await host.enqueue(
+                pcm16Bytes: Data([UInt8(sequence), 0]),
+                sequence: UInt64(sequence), generation: generation
+            )
+        }
+        _ = await host.finishProviderResponse(generation: generation)
+        await waitUntil { await sleeper.requestCount == 1 }
+        player.completeScheduledChunk()
+        await waitUntil { await sleeper.requestCount == 2 }
+        let current = await host.currentSnapshot()
+        expect(current.generation == generation,
+               "watchdog restarts within the same playback generation")
+        expect(current.scheduledChunkCount == 1,
+               "replacement watchdog protects remaining scheduled PCM")
+
+        await sleeper.resume(request: 1)
+        await waitUntil {
+            await host.currentSnapshot().rejectedCallbackCount
+                > current.rejectedCallbackCount
+        }
+        let afterRetiredTimeout = await host.currentSnapshot()
+        expect(afterRetiredTimeout.state == current.state,
+               "retired same-generation watchdog cannot fail current output")
+        expect(afterRetiredTimeout.scheduledChunkCount == 1,
+               "retired watchdog cannot clear current scheduled PCM")
+        expect(player.stopCount == 0,
+               "retired watchdog has no player stop side effect")
+
+        await sleeper.resume(request: 2)
+        await waitUntil { await host.currentSnapshot().state == .failed }
+        expect(await host.currentSnapshot().lastError == "consumer_timed_out",
+               "current watchdog still enforces the consumer timeout")
+        expect(player.stopCount == 1,
+               "current watchdog stops timed-out output exactly once")
+        _ = await host.close()
+        await sleeper.resumeAll()
+        expect(await sleeper.pendingCount == 0,
+               "watchdog test releases every retained sleeper")
+    }
+
+    private static func testWatchdogInvalidatedByClearAndClose() async {
+        let sleeper = FakeMacSpeechConsumerWatchdogSleeper()
+        let player = FakeMacSpeechAudioOutputPlayer()
+        let host = MacSpeechAudioOutputHost(
+            player: player,
+            deviceMonitor: FakeMacSpeechOutputDeviceMonitor(),
+            sleepForConsumerTimeout: { _ in await sleeper.sleep() }
+        )
+        let firstGeneration = await host.prepare().generation
+        _ = await host.enqueue(
+            pcm16Bytes: Data([1, 0]), sequence: 1,
+            generation: firstGeneration
+        )
+        _ = await host.finishProviderResponse(generation: firstGeneration)
+        await waitUntil { await sleeper.requestCount == 1 }
+        let cleared = await host.clear()
+        expect(cleared.generation > firstGeneration,
+               "clear advances the playback generation")
+        _ = await host.enqueue(
+            pcm16Bytes: Data([2, 0]), sequence: 1,
+            generation: cleared.generation
+        )
+        _ = await host.finishProviderResponse(generation: cleared.generation)
+        await waitUntil { await sleeper.requestCount == 2 }
+        await sleeper.resume(request: 1)
+        await waitUntil {
+            await host.currentSnapshot().rejectedCallbackCount > 0
+        }
+        let afterClear = await host.currentSnapshot()
+        expect(afterClear.state == .draining,
+               "pre-clear watchdog cannot fail the new generation")
+        expect(afterClear.scheduledChunkCount == 1,
+               "pre-clear watchdog preserves new-generation PCM")
+        expect(player.stopCount == 0,
+               "clear and retired watchdog keep the shared engine available")
+        let closed = await host.close()
+        await sleeper.resume(request: 2)
+        await waitUntil {
+            await host.currentSnapshot().rejectedCallbackCount
+                > closed.rejectedCallbackCount
+        }
+        let afterClose = await host.currentSnapshot()
+        expect(afterClose.state == .closed,
+               "pre-close watchdog cannot reopen or fail closed output")
+        expect(afterClose.generation == closed.generation,
+               "pre-close watchdog cannot change the closed generation")
+        expect(player.stopCount == 1 && player.closeCount == 1,
+               "close side effects remain exactly once after a late watchdog")
+        expect(await host.canSelectAudioProcessingMode(),
+               "late watchdog cannot reacquire backend resources")
+        await sleeper.resumeAll()
+        expect(await sleeper.pendingCount == 0,
+               "clear/close watchdog test releases every sleeper")
+    }
+
     private final class BlockingOutputStopper: @unchecked Sendable {
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
@@ -935,6 +1086,145 @@ private struct MacSpeechAudioOutputHostTests {
         expect(snapshot.state == .failed, "unavailable output fails")
         expect(snapshot.lastError == "output_unavailable", "output error")
         expect(player.prepareCount == 0, "player not prepared without device")
+    }
+
+    private static func testInputRouteChangeInvalidatesOutputAndCanRecover()
+        async {
+        for stopsBeforeChange in [false, true] {
+            let player = FakeMacSpeechAudioOutputPlayer()
+            let monitor = FakeMacSpeechOutputDeviceMonitor()
+            let host = MacSpeechAudioOutputHost(
+                player: player,
+                deviceMonitor: monitor
+            )
+            let generation = await host.prepare().generation
+            _ = await host.enqueue(
+                pcm16Bytes: Data([1, 0]), sequence: 1,
+                generation: generation
+            )
+            _ = await host.finishProviderResponse(generation: generation)
+            if stopsBeforeChange { _ = await host.stop() }
+            let beforeChange = await host.currentSnapshot()
+            player.changePreparedFormat(MacSpeechLocalPlaybackFormat(
+                sampleRate: 44_100, channelCount: 1,
+                sampleFormat: "Float32", isInterleaved: false
+            ))
+            monitor.changeInput(
+                identifier: "input-next", name: "Next Input", available: true
+            )
+            await waitUntil { await host.currentSnapshot().state == .failed }
+            let failed = await host.currentSnapshot()
+            expect(failed.lastError == "output_device_changed",
+                   "input-only route change fails the shared output graph closed")
+            expect(failed.generation > beforeChange.generation,
+                   "input-only route change retires the playback generation")
+            expect(failed.queueDepth == 0 && failed.scheduledChunkCount == 0,
+                   "input-only route change clears queued and scheduled PCM")
+            expect(player.routeResetCount == 1 && player.closeCount == 1,
+                   "input-only route change releases cached output preparation")
+            expect(player.stopCount == (stopsBeforeChange ? 2 : 1),
+                   "input-only change releases both active and stopped preparation")
+            expect(failed.outputDevice == beforeChange.outputDevice,
+                   "shared-graph invalidation also applies when output ID is unchanged")
+            player.completeStoppedChunk()
+            await waitUntil {
+                await host.currentSnapshot().rejectedCallbackCount
+                    > failed.rejectedCallbackCount
+            }
+            let afterLateCallback = await host.currentSnapshot()
+            expect(afterLateCallback.state == .failed
+                && afterLateCallback.generation == failed.generation,
+                "old-route completion cannot revive output after graph invalidation")
+            let recovered = await host.prepare()
+            expect(recovered.state == .prepared,
+                   "input-only route change supports a fresh explicit preparation")
+            expect(recovered.localFormat.contains("44100 Hz")
+                && recovered.localFormat.contains("mono"),
+                "recovery obtains the replacement format rather than the old cache")
+            expect(player.prepareCount == 2,
+                   "route recovery calls the player preparation again")
+            let stale = await host.enqueue(
+                pcm16Bytes: Data([1, 0]), sequence: 2, generation: generation
+            )
+            expect(stale.lastError == "stale_generation"
+                && stale.enqueuedChunkCount == recovered.enqueuedChunkCount,
+                "old-route PCM cannot enter the recovered queue")
+            _ = await host.enqueue(
+                pcm16Bytes: Data([2, 0]), sequence: 1,
+                generation: recovered.generation
+            )
+            _ = await host.finishProviderResponse(generation: recovered.generation)
+            player.completeScheduledChunk()
+            await waitUntil { await host.currentSnapshot().state == .completed }
+            expect(await host.currentSnapshot().playedChunkCount == 1,
+                   "only current-route PCM completes after explicit recovery")
+            _ = await host.close()
+        }
+    }
+
+    private static func testSameDeviceAvailabilityChangesInvalidateOutputOnce()
+        async {
+        for changesInput in [true, false] {
+            let player = FakeMacSpeechAudioOutputPlayer()
+            let monitor = FakeMacSpeechOutputDeviceMonitor()
+            monitor.changeInput(
+                identifier: "input-test", name: "Test Input", available: true
+            )
+            let host = MacSpeechAudioOutputHost(
+                player: player, deviceMonitor: monitor
+            )
+            let generation = await host.prepare().generation
+            _ = await host.enqueue(
+                pcm16Bytes: Data([1, 0]), sequence: 1, generation: generation
+            )
+            _ = await host.finishProviderResponse(generation: generation)
+            func changeAvailability(_ available: Bool) {
+                if changesInput {
+                    monitor.changeInput(
+                        identifier: "input-test", name: "Test Input",
+                        available: available
+                    )
+                } else {
+                    monitor.changeOutput(
+                        identifier: "output-test", name: "Test Output",
+                        available: available
+                    )
+                }
+            }
+            changeAvailability(false)
+            await waitUntil { await host.currentSnapshot().state == .failed }
+            let failed = await host.currentSnapshot()
+            expect(failed.generation > generation,
+                   "same-UID device loss retires shared output identity")
+            expect(failed.scheduledChunkCount == 0 && player.closeCount == 1,
+                   "same-UID device loss closes preparation and scheduled output")
+            changeAvailability(false)
+            try? await Task.sleep(for: .milliseconds(20))
+            expect(await host.currentSnapshot() == failed,
+                   "duplicate same-UID unavailable notification preserves failed state")
+            expect(player.routeResetCount == 1 && player.closeCount == 1
+                && player.stopCount == 1,
+                "duplicate unavailable notification has no repeated release effect")
+            changeAvailability(true)
+            await waitUntil {
+                await host.currentSnapshot().generation > failed.generation
+            }
+            expect(await host.currentSnapshot().state == .failed,
+                   "same-UID availability recovery does not restart output")
+            expect(player.startCount == 1,
+                   "device recovery requires a new explicit playback start")
+            let recovered = await host.prepare()
+            expect(recovered.state == .prepared && player.prepareCount == 2,
+                   "same-UID device recovery negotiates fresh playback preparation")
+            player.completeStoppedChunk()
+            await waitUntil {
+                await host.currentSnapshot().rejectedCallbackCount
+                    > recovered.rejectedCallbackCount
+            }
+            expect(await host.currentSnapshot().state == .prepared,
+                   "old callback cannot activate a same-UID recovered route")
+            _ = await host.close()
+        }
     }
 
     private static func makeHost(

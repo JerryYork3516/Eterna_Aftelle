@@ -4,6 +4,74 @@ private struct R81CredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? { nil }
 }
 
+private struct T32CascadedCredentialReader: ProviderCredentialReading {
+    func readCredential(for keyRef: String) throws -> String? { "offline-test-credential" }
+}
+
+private struct T32CascadedTextTransport: ProviderHTTPTransport {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let content = #"{"reply_text":"offline reply","expression_state":"neutral","expression_intensity":0}"#
+        let body = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": content]]]
+        ])
+        return (body, HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+        )!)
+    }
+}
+
+private actor T32CascadedASRProvider: ASRProvider {
+    private var starts = 0
+    private var inputs: [ASRAudioInput] = []
+    private var inputContinuation: CheckedContinuation<Void, Never>?
+    func start(request: ASRStartRequest) async throws { starts += 1 }
+    func send(_ input: ASRAudioInput) async throws {
+        inputs.append(input)
+        let continuation = inputContinuation
+        inputContinuation = nil
+        continuation?.resume()
+    }
+    func receive(generation: UInt64) async throws -> ASREvent {
+        if !inputs.contains(where: { $0.generation == generation }) {
+            await withCheckedContinuation { inputContinuation = $0 }
+        }
+        return ASREvent(generation: generation, kind: .finalTranscript("offline turn \(starts)"))
+    }
+    func cancel(generation: UInt64) async throws {
+        let continuation = inputContinuation
+        inputContinuation = nil
+        continuation?.resume()
+    }
+    func close(generation: UInt64) async throws {}
+    func startCount() -> Int { starts }
+    func sources() -> [ASRAudioSource] { inputs.map(\.source) }
+}
+
+private actor T32CascadedTTSProvider: TTSProvider {
+    private var events: [TTSEvent] = []
+    private var starts = 0
+    func start(request: TTSSynthesisRequest) async throws {
+        starts += 1
+        events = [
+            TTSEvent(generation: request.generation, kind: .started),
+            TTSEvent(generation: request.generation, kind: .audio(TTSAudioChunk(
+                generation: request.generation,
+                sequenceNumber: 1,
+                bytes: Data(repeating: 1, count: 960),
+                format: .pcm16, sampleRate: 24_000, channelCount: 1
+            ))),
+            TTSEvent(generation: request.generation, kind: .done)
+        ]
+    }
+    func receive(generation: UInt64) async throws -> TTSEvent {
+        guard !events.isEmpty else { throw SpeechRouteError.invalidEvent }
+        return events.removeFirst()
+    }
+    func cancel(generation: UInt64) async throws { events.removeAll() }
+    func close(generation: UInt64) async throws {}
+    func startCount() -> Int { starts }
+}
+
 private struct R81AuthorizationProvider: MicrophoneAuthorizationProviding {
     func currentAuthorization() async throws -> MicrophoneAuthorizationState {
         .authorized
@@ -22,20 +90,37 @@ private actor R855MicrophoneAuthorizationProvider:
     private var requestContinuation: CheckedContinuation<Void, Never>?
     private var queries = 0
     private var requests = 0
+    private let holdQueryNumber: Int?
+    private var queryContinuation: CheckedContinuation<Void, Never>?
 
     init(
         authorization: MicrophoneAuthorizationState,
         requestedAuthorization: MicrophoneAuthorizationState = .authorized,
-        holdsRequest: Bool = false
+        holdsRequest: Bool = false,
+        holdQueryNumber: Int? = nil
     ) {
         self.authorization = authorization
         self.requestedAuthorization = requestedAuthorization
         self.holdsRequest = holdsRequest
+        self.holdQueryNumber = holdQueryNumber
     }
 
     func currentAuthorization() async throws -> MicrophoneAuthorizationState {
         queries += 1
+        if queries == holdQueryNumber {
+            await withCheckedContinuation { continuation in
+                queryContinuation = continuation
+            }
+        }
         return authorization
+    }
+
+    func isQueryPending() -> Bool { queryContinuation != nil }
+
+    func releaseQuery() {
+        let continuation = queryContinuation
+        queryContinuation = nil
+        continuation?.resume()
     }
 
     func requestAuthorization() async throws -> MicrophoneAuthorizationState {
@@ -156,10 +241,21 @@ private final class R81AudioCapture:
     private var started = false
     private var starts = 0
     private var stops = 0
+    private var selectedProcessingMode = MacSpeechAudioProcessingMode.webRTCAEC3
     let acousticEchoHost: MacSpeechAcousticEchoHost
 
     init(acousticEchoHost: MacSpeechAcousticEchoHost) {
         self.acousticEchoHost = acousticEchoHost
+    }
+
+    func selectProcessingMode(_ mode: MacSpeechAudioProcessingMode) throws {
+        try lock.withLock {
+            guard !started else {
+                throw MacSpeechAudioCaptureError.processingModeBusy
+            }
+            // Mechanical route seam only; this fake retains its injected acoustic evidence.
+            selectedProcessingMode = mode
+        }
     }
 
     func start(
@@ -202,6 +298,9 @@ private final class R81AudioCapture:
     var isStarted: Bool { lock.withLock { started } }
     var startCount: Int { lock.withLock { starts } }
     var stopCount: Int { lock.withLock { stops } }
+    var processingMode: MacSpeechAudioProcessingMode {
+        lock.withLock { selectedProcessingMode }
+    }
 
     @discardableResult
     func emit(_ marker: UInt8) -> Bool {
@@ -1151,6 +1250,8 @@ private struct RealtimeInterruptionEvidenceTests {
         )
 
         try await testControllerMicrophoneAuthorization(fixture: fixture)
+        try await testStopDuringCapturePreparation(fixture: fixture)
+        try await testConsecutiveCascadedTurnsReleaseBackend(fixture: fixture)
         try await testControllerSemanticFirstInterruption(fixture: fixture)
         try await testControllerPlaybackCompletionAndStopRace(fixture: fixture)
         try await testControllerInterruptFailureCanRestart(fixture: fixture)
@@ -1218,6 +1319,117 @@ private struct RealtimeInterruptionEvidenceTests {
         try await testDuplicateStartRequestsMicrophoneOnce(fixture: fixture)
     }
 
+    private static func testConsecutiveCascadedTurnsReleaseBackend(fixture: Data) async throws {
+        cases += 1
+        let asr = T32CascadedASRProvider()
+        let tts = T32CascadedTTSProvider()
+        let router = ProviderRouter(
+            credentialReader: T32CascadedCredentialReader(),
+            transport: T32CascadedTextTransport(), asrProvider: asr, ttsProvider: tts
+        )
+        let runtime = RuntimeCore(
+            executionEngine: ExecutionEngine(providerRouter: router),
+            providerRouter: router, sessionStore: SessionStore()
+        )
+        let acoustic = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: R81AECBackend())
+        expect(acoustic.configure() == .webRTCAEC3, "Cascaded fake retains injected AEC3 provenance")
+        let capture = R81AudioCapture(acousticEchoHost: acoustic)
+        let host = MacSpeechAudioHost(
+            authorizationProvider: R81AuthorizationProvider(), capture: capture,
+            deviceMonitor: R81DeviceMonitor()
+        )
+        let player = FakeMacSpeechAudioOutputPlayer()
+        let output = MacSpeechAudioOutputHost(
+            player: player, deviceMonitor: FakeMacSpeechOutputDeviceMonitor(),
+            configuration: MacSpeechPCMPlaybackConfiguration(
+                capacity: 4, lowWatermark: 1, consumerTimeoutNanoseconds: 30_000_000_000,
+                startupBufferCount: 1, startupBufferDurationNanoseconds: 0, scheduleAheadCount: 2
+            )
+        )
+        let controller = AppController(
+            orchestrationKernel: OrchestrationKernel(runtimeCore: runtime),
+            speechAudioHost: host, speechAudioOutputHost: output
+        )
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("t32-cascaded-\(UUID().uuidString).digital_resident")
+        try fixture.write(to: fixtureURL, options: .atomic)
+        controller.debugImportResident(from: fixtureURL)
+        try? FileManager.default.removeItem(at: fixtureURL)
+        expect(runtime.configureTextProvider(profile: ProviderProfile(
+            profileID: "offline-text", providerID: "offline-provider", adapterType: "openai_compatible",
+            modelID: "offline-model", baseURL: "https://example.invalid/v1",
+            keyRef: "keychain://offline-test/text", enabled: true,
+            timeout: 5, stream: false, thinkingMode: "disabled"
+        )) == nil, "Cascaded text dependency is explicitly offline")
+        for turn in 1 ... 2 {
+            await controller.startFormalSpeechRoute()
+            expect(capture.emit(UInt8(turn)), "Cascaded turn \(turn) emits offline input")
+            await waitUntil("Cascaded turn \(turn) schedules fake playback") { player.pendingCount == 1 }
+            player.completeScheduledChunk()
+            await waitUntil("Cascaded turn \(turn) completes and releases prepared resources") {
+                controller.formalSpeechRouteDebugSnapshot.phase == .idle
+                    && player.closeCount == turn
+            }
+            expect(capture.processingMode == .webRTCAEC3,
+                   "Cascaded turn \(turn) keeps its registered AEC3 backend")
+            let backendReleased = await output.canSelectAudioProcessingMode()
+            expect(backendReleased,
+                   "completed Cascaded turn \(turn) releases backend ownership")
+            expect(!capture.isStarted && runtime.activeBrainLeaseForTesting() == nil,
+                   "completed Cascaded turn \(turn) releases capture and Runtime lease")
+        }
+        let asrStarts = await asr.startCount()
+        let ttsStarts = await tts.startCount()
+        let sources = await asr.sources()
+        expect(asrStarts == 2 && ttsStarts == 2,
+               "two consecutive Cascaded messages complete without a manual repair Stop")
+        expect(sources == [.aec3Processed, .aec3Processed],
+               "Cascaded input preserves AEC3 source labeling on both offline messages")
+        print("t32a_consecutive_cascaded_turns=2")
+        await controller.shutdownSpeechAudioHost()
+    }
+
+    private static func testStopDuringCapturePreparation(fixture: Data) async throws {
+        for route in ["realtime", "cascaded", "native"] {
+            cases += 1
+            let stack = try makePermissionControllerStack(
+                fixture: fixture,
+                authorization: .authorized,
+                holdQueryNumber: route == "realtime" ? 2 : 1
+            )
+            let start = Task { @MainActor in
+                switch route {
+                case "realtime":
+                    await stack.controller.startRealtimeFullDuplexSpeech()
+                case "cascaded":
+                    await stack.controller.startFormalSpeechRoute()
+                default:
+                    await stack.controller.startNativeSpeechInputBridge()
+                }
+            }
+            await waitUntil("\(route) capture preparation reaches its offline barrier") {
+                await stack.authorizationProvider.isQueryPending()
+            }
+            expect(stack.capture.processingMode == (route == "realtime"
+                ? .appleVoiceProcessing : .webRTCAEC3),
+                "\(route) selects only its registered backend before preparation")
+            await stack.controller.stopSpeechAudioCapture()
+            await stack.authorizationProvider.releaseQuery()
+            await start.value
+            expect(stack.capture.startCount == 0 && !stack.capture.isStarted,
+                   "\(route) late preparation cannot restart capture after Stop")
+            let openedProviderSessions = await stack.provider.openCount()
+            expect(openedProviderSessions == 0,
+                   "\(route) late preparation cannot open a Provider after Stop")
+            expect(stack.runtime.activeBrainLeaseForTesting() == nil,
+                   "\(route) late preparation cannot acquire Runtime ownership")
+            expect(!stack.controller.realtimeBrainInputBridgeSnapshot.hasActivePump
+                && !stack.controller.speechInputBridgeSnapshot.hasActivePump,
+                "\(route) late preparation cannot start either input pump")
+        }
+        print("t32a_stop_during_capture_preparation_cases=3")
+    }
+
     private static func testAuthorizedMicrophoneStartsWithoutRequest(
         fixture: Data
     ) async throws {
@@ -1237,6 +1449,8 @@ private struct RealtimeInterruptionEvidenceTests {
         }
         let requestCount = await stack.authorizationProvider.requestCount()
         let queryCount = await stack.authorizationProvider.queryCount()
+        expect(stack.capture.processingMode == .appleVoiceProcessing,
+               "Realtime requests Apple processing through the mechanical fake seam")
         expect(
             requestCount == 0,
             "authorized microphone does not request permission again"
@@ -1793,7 +2007,8 @@ private struct RealtimeInterruptionEvidenceTests {
         fixture: Data,
         authorization: MicrophoneAuthorizationState,
         requestedAuthorization: MicrophoneAuthorizationState = .authorized,
-        holdsRequest: Bool = false
+        holdsRequest: Bool = false,
+        holdQueryNumber: Int? = nil
     ) throws -> R855PermissionControllerStack {
         let provider = R81RealtimeProvider()
         let router = ProviderRouter(
@@ -1808,7 +2023,8 @@ private struct RealtimeInterruptionEvidenceTests {
         let authorizationProvider = R855MicrophoneAuthorizationProvider(
             authorization: authorization,
             requestedAuthorization: requestedAuthorization,
-            holdsRequest: holdsRequest
+            holdsRequest: holdsRequest,
+            holdQueryNumber: holdQueryNumber
         )
         let acousticEchoHost = MacSpeechAcousticEchoHost(
             mode: .webRTCAEC3,

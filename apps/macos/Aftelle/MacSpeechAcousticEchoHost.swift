@@ -99,6 +99,8 @@ nonisolated protocol MacSpeechAECBackend: AnyObject, Sendable {
 
 nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let mode: MacSpeechAudioProcessingMode
+    // Legacy numeric AEC fields are unavailable placeholders on the Apple path.
+    var hasWebRTCStatistics: Bool { mode == .webRTCAEC3 }
     let enabled: Bool
     let active: Bool
     let sampleRate: Int
@@ -119,6 +121,9 @@ nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let renderTimingFrameCount: Int
     let rawCaptureRMS: Double
     let processedCaptureRMS: Double
+    // Latest Apple processed 48 kHz chunk, after conversion; not a distortion verdict.
+    let processedCapturePeakMagnitude: Double?
+    let processedCaptureFullScaleSampleCount: Int?
     let renderCaptureCorrelation: Double
     let residualRenderCorrelation: Double
     let linearAECOutputRMS: Double
@@ -776,6 +781,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     private var matchedRenderReferenceRMS = 0.0
     private var rawCaptureRMS = 0.0
     private var processedCaptureRMS = 0.0
+    private var processedCapturePeakMagnitude: Double?
+    private var processedCaptureFullScaleSampleCount: Int?
     private var renderCaptureCorrelation = 0.0
     private var residualRenderCorrelation = 0.0
     private var linearAECOutputRMS = 0.0
@@ -1058,6 +1065,15 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     ) -> [MacSpeechAcousticCaptureSpan] {
         guard !samples.isEmpty else { return [] }
         return queue.sync {
+            if requestedMode == .appleVoiceProcessing {
+                guard mode == .appleVoiceProcessing,
+                      !isRouteRebuilding else { return [] }
+                recordUnavailableCaptureObservation(
+                    samples,
+                    hostTimeNanoseconds: hostTimeNanoseconds
+                )
+                return [captureSpan(samples: samples)]
+            }
             if mode == .halfDuplexFallback {
                 captureFIFO.removeAll(keepingCapacity: true)
                 recordUnavailableCaptureObservation(
@@ -1190,11 +1206,34 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             (samples.count + Self.frameSampleCount - 1)
                 / Self.frameSampleCount
         )
-        latestCaptureHostTimeNanoseconds = hostTimeNanoseconds.map {
-            $0 &+ UInt64(frameCount - 1) * 10_000_000
+        latestCaptureHostTimeNanoseconds = mode == .appleVoiceProcessing
+            ? hostTimeNanoseconds
+            : hostTimeNanoseconds.map {
+                $0 &+ UInt64(frameCount - 1) * 10_000_000
+            }
+        let measuredRMS = signalRMS(samples)
+        if mode == .appleVoiceProcessing {
+            // These samples have already passed Apple VP; raw mic is unavailable.
+            rawCaptureRMS = 0
+            processedCaptureRMS = measuredRMS
+            var peak = 0.0
+            var fullScaleCount = 0
+            var finite = true
+            for sample in samples {
+                guard sample.isFinite else {
+                    finite = false
+                    break
+                }
+                let magnitude = abs(Double(sample))
+                peak = max(peak, magnitude)
+                if magnitude >= 1 { fullScaleCount += 1 }
+            }
+            processedCapturePeakMagnitude = finite ? peak : nil
+            processedCaptureFullScaleSampleCount = finite ? fullScaleCount : nil
+        } else {
+            rawCaptureRMS = measuredRMS
+            processedCaptureRMS = isPlaybackActive ? 0 : measuredRMS
         }
-        rawCaptureRMS = signalRMS(samples)
-        processedCaptureRMS = isPlaybackActive ? 0 : rawCaptureRMS
         linearAECOutputRMS = 0
         renderCaptureCorrelation = 0
         residualRenderCorrelation = 0
@@ -1320,6 +1359,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             #endif
             captureFIFO.removeAll(keepingCapacity: true)
             captureRemainderHostTimeNanoseconds = nil
+            processedCapturePeakMagnitude = nil
+            processedCaptureFullScaleSampleCount = nil
         }
     }
 
@@ -1349,6 +1390,12 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         queue.sync {
             clearFIFOs()
             isRouteRebuilding = false
+            if requestedMode == .appleVoiceProcessing {
+                mode = .appleVoiceProcessing
+                fallbackReason = nil
+                backendStats = disabledStats()
+                return mode
+            }
             guard requestedMode == .webRTCAEC3, let backend else {
                 mode = requestedMode
                 return mode
@@ -3096,6 +3143,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         captureFIFO.removeAll(keepingCapacity: true)
         renderRemainderHostTimeNanoseconds = nil
         captureRemainderHostTimeNanoseconds = nil
+        processedCapturePeakMagnitude = nil
+        processedCaptureFullScaleSampleCount = nil
     }
 
     private func clearTimingHistory() {
@@ -3125,6 +3174,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         matchedRenderReferenceRMS = 0
         rawCaptureRMS = 0
         processedCaptureRMS = 0
+        processedCapturePeakMagnitude = nil
+        processedCaptureFullScaleSampleCount = nil
         renderCaptureCorrelation = 0
         residualRenderCorrelation = 0
         linearAECOutputRMS = 0
@@ -3163,6 +3214,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     private func resetDiagnosticCounters() {
+        processedCapturePeakMagnitude = nil
+        processedCaptureFullScaleSampleCount = nil
         echoOnlyFrameCount = 0
         nearEndSpeechFrameCount = 0
         doubleTalkFrameCount = 0
@@ -3257,6 +3310,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
             renderTimingFrameCount: renderTimingHistory.count,
             rawCaptureRMS: rawCaptureRMS,
             processedCaptureRMS: processedCaptureRMS,
+            processedCapturePeakMagnitude: processedCapturePeakMagnitude,
+            processedCaptureFullScaleSampleCount: processedCaptureFullScaleSampleCount,
             renderCaptureCorrelation: renderCaptureCorrelation,
             residualRenderCorrelation: residualRenderCorrelation,
             linearAECOutputRMS: linearAECOutputRMS,
