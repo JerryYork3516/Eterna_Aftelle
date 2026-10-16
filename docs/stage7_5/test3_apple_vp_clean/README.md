@@ -2,16 +2,23 @@
 
 日期：2026-10-16（Asia/Shanghai）。版本：计划 v1。
 
-**本文件是 Test3 Apple VP 重建计划的唯一正式入口。** 它不覆盖 AGENTS、Runtime 架构边界或正式验收合同；当前仅 T3.0 获得执行授权。节点计划落盘不等于批准后续实施。
+**本文件是 Test3 Apple VP 重建计划的唯一正式入口。** 它不覆盖 AGENTS、Runtime 架构边界或正式验收合同。本轮主控已批准 T3.0 文档，并授权 T3.1 纯设计；节点计划落盘不等于批准后续源码或实验。
 
 ```text
-T3.0 = REVIEW_PENDING
-Baseline verification = PARTIAL / FIXTURE_BLOCKED
-T3.1–T3.6 = NOT_AUTHORIZED
-T3.P = NOT_AUTHORIZED / HISTORICAL_QUALIFICATION_0_OF_3
-Test3 = BLOCKED
-execution_authorized = false
+T3.0 Documentation = APPROVED
+T3.0 Baseline Verification = PARTIAL / FIXTURE_BLOCKED
+T3.1 = REVIEW_PENDING
+Source Qualification Design = DESIGN_BLOCKED
+T3.2 = NOT_AUTHORIZED
+T3.3–T3.6 = NOT_STARTED
+T3.P = NOT_AUTHORIZED
+Qwen Strict Overlap = 0/3
+Production Apple VP = NOT_STARTED
+Formal Test3 = BLOCKED
+Test3.execution_authorized = false
 ```
+
+T3.1 交付：[架构与声源资格协议](T3_1_architecture_and_source_qualification.md)、[版本化合同草案与多维审核](T3_1_apple_vp_test3_contract_draft.md)。原 T3.0 报告及 AGENTS 指针保留当时授权/状态快照，本轮指令和本入口说明现状。Fixture 缺口不阻本轮纯设计，但继续阻 T3.2；资格因果规则未闭合，不建议整体批准。
 
 ## 1. 目标、基线与分支
 
@@ -63,7 +70,7 @@ T3.1 必须冻结同一 Host 在完全空闲、无 prepared capture、无排程/
 - 输入：固定 Test2 SHA、已创建远端分支、指定合同/研究结论和历史修复差异。
 - 输出：独立 Worktree、本入口、[实际基线审核](T3_0_baseline_review.md)、最小离线验证和逐项移植/排除清单。
 - 验收：初始 SHA/追踪/隔离可核验；不移植源码；检查失败如实保留；只提交获批文档，无私人资产或日志。
-- 冻结：本轮交付 `REVIEW_PENDING`；缺失 fixture 导致的验证缺口必须由主控接受或安排另行补齐，不自行宣布 APPROVED。
+- 冻结状态：Documentation 已由主控 APPROVED；Baseline Verification 仍 PARTIAL/FIXTURE_BLOCKED，未重跑、补造或改判旧结果。
 
 ### T3.1 — 合同、后端作用域、资格规则
 
@@ -145,4 +152,4 @@ T3.1 还需同步处理：53-E 的 `.webRTCAEC3`、54-C rebuild 恢复后端及 
 
 六红线持续有效：大脑不碰平台、Store 带版本、三层不黏连、DR 只读且保留 revision、逻辑/画法分层、交互按 Intent。无新平台、Stage8、后台监听、唤醒词、声纹识别、第二 Brain/Session/Memory 或 Provider 旁路。
 
-当前停止点：T3.0 文档与基线证据提交后等待主控审核；不自动执行 T3.1、T3.2、T3.P 或任何正式 Test3 实验。
+当前停止点：T3.1 设计文档提交后等待主控审核；不自动执行 T3.2、T3.P 或任何正式 Test3 实验。T3.1 纯设计授权不解除 fixture 和声源资格设计阻塞。

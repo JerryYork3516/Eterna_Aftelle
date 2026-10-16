@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-16 · T3.1 Apple VP 合同与架构设计
+
+- 主控已批准 T3.0 Documentation，Baseline Verification 继续 PARTIAL/FIXTURE_BLOCKED，并仅授权本轮纯设计。新增本阶段 [架构与声源资格协议](docs/stage7_5/test3_apple_vp_clean/T3_1_architecture_and_source_qualification.md) 及 [版本化合同草案](docs/stage7_5/test3_apple_vp_clean/T3_1_apple_vp_test3_contract_draft.md)，只更新本目录入口状态，不改历史合同/AGENTS/源码。
+- 明确 Realtime Apple/Cascaded AEC3 的单 engine owner、全空闲切换、prepared/缓存/回调失效及六层证据/Runtime授权边界；53/54/55保持原安全义务，Apple专属等价见证须主控批准。现有观测尚无可正式授予真人资格的因果rule，资格子项 DESIGN_BLOCKED，禁止硬设 attribution 或借VP/VAD/STS放行。
+- T3.1=REVIEW_PENDING；T3.2=NOT_AUTHORIZED，后续节点不自动启动；严格Qwen overlap仍0/3，正式Test3 BLOCKED/false。多维独立审核和问题登记见合同草案；本轮无构建/测试、Engine/设备、私人PCM/WAV/DR或真实Provider执行。
+
 ## 2026-10-16 · T3.0 Test3 Apple VP Clean 基线与正式计划
 
 - 从 `728423813ebfc60e303372f3761fc631ac1c03d1` 在独立 Worktree 建立 `Test3-AppleVP-Clean` 本地追踪,保留原 ACE3/VP 研究目录。正式入口为 [Test3 Apple VP Clean](docs/stage7_5/test3_apple_vp_clean/README.md),实际结果及移植依赖见同目录 T3.0 报告;本轮不移植源码。
