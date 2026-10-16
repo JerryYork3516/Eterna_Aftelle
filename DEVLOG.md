@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-16 · T3.0-F Fixture恢复与离线基线验证
+
+- 取得本次用户独立授权后，F-01与Test2冻结资产登记的摘要/身份匹配，按原字节恢复到Clean固定路径；原件未改、目标忽略且未跟踪，私人Fixture/原始日志/私人SHA均未提交。
+- 七个原受阻离线入口各一次全部exit 0：Qwen148/1972、Evidence24/205、confirmed1/62、InputBridge32/210、resident-only12/126、r853三模式15/208、latency/stale1/68（cases/checks）。未重跑既有PASS构建/Release guard/Host/Playback，无生产或测试源码/标准/.gitignore修改。
+- [实际报告](docs/stage7_5/test3_apple_vp_clean/T3_0_F_fixture_recovery_and_baseline_validation.md)：T3.0-F=REVIEW_PENDING，Baseline=PASS_PENDING_MAIN_REVIEW；主控本轮确认T3.1-R2 Plan=APPROVED。SQ-M1 OPEN、Qwen0/3、FormalTest3 BLOCKED/false保留；T3.2-A/B仍未授权，无设备/私人音频/真实Provider执行，交付后停止。
+
 ## 2026-10-16 · T3.1-R2 Apple Native Voice Experience 计划重排
 
 - 按主控决定调整为 Apple 完整原生通话音频 → 既有输入接口 → Test2 原链，新增 [v2计划](docs/stage7_5/test3_apple_vp_clean/T3_1_R2_native_voice_experience_plan.md) 并更新本范围 README；原两份 v1 只加 Superseded 指针，历史问题/审核不改。
