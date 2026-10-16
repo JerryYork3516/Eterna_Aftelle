@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-16 · T3.0 Test3 Apple VP Clean 基线与正式计划
+
+- 从 `728423813ebfc60e303372f3761fc631ac1c03d1` 在独立 Worktree 建立 `Test3-AppleVP-Clean` 本地追踪,保留原 ACE3/VP 研究目录。正式入口为 [Test3 Apple VP Clean](docs/stage7_5/test3_apple_vp_clean/README.md),实际结果及移植依赖见同目录 T3.0 报告;本轮不移植源码。
+- Xcode 27.0 下 Debug/Release 未签名构建、Release 路由 guard、Host 131 checks、Playback 172 checks PASS。Qwen/Runtime 身份、中断及输入回归缺少被 Git 忽略的固定 DR fixture,实际前置失败与停止/未运行项均保留;未复制居民文件或修改代码修复,不宣称全部回归 PASS。
+- 仅新增两份计划/审核文档、AGENTS 最小指针和本简记。T3.0=`REVIEW_PENDING`,基线验证=`PARTIAL/FIXTURE_BLOCKED`;Test3=`BLOCKED`,`execution_authorized=false`,严格 Qwen overlap 仍 0/3。无设备/真人/在线 Provider/私人音频,不自动进入 T3.1/T3.2/T3.P。Stage7 本轮越界检查 PASS。
+
 ## 2026-09-09 · 手动切换实时语音模型
 
 - Qwen 调试面板现有选择器接通主界面实时全双工，使用普通版 `qwen3.5-omni-flash-realtime` / `qwen3.5-omni-plus-realtime`；默认 Plus。本机保存选择，停止后切换，下一次启动读取，运行中禁用选择。Adapter 只在完全关闭时读取新配置，同一会话及恢复连接保持原配置；诊断保留最近启动会话的型号。未更改凭据、中断 authority、身份隔离、DR、Session/Memory 合约或声学策略。

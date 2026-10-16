@@ -53,6 +53,7 @@
 | runtime_api_contract.md / dr_contract_v0_3.md | 涉及 Runtime/DR 字段时读 |
 | aftelle_runtime_boundary.md | 判断架构边界是否越界时读;只读不改 |
 | DEVLOG.md | 需要了解当前进度/历史决策时读 |
+| [Test3 Apple VP Clean 正式计划](docs/stage7_5/test3_apple_vp_clean/README.md) | Test3 Apple VP 重建的唯一正式入口;当前仅 T3.0 授权,后续节点另行批准 |
 
 **默认行为:写代码时,只读本文件 + 当前任务直接相关的 1–2 份。不确定要不要读某份时,先问我,不要自行全部加载。**
 
