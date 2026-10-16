@@ -1432,6 +1432,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var processingSnapshot: MacSpeechVoiceProcessingSnapshot?
     #if DEBUG
         private var nativeVoiceDebug: MacSpeechNativeVoiceDebugStats?
+        private var configurationDebug: [String: Any] = [:]
+
+        func voiceProcessingConfigurationDebug() -> [String: Any] {
+            lock.withLock { configurationDebug }
+        }
     #endif
     private var outputPresentationLatencySeconds = 0.0
     private var capturePresentationLatencySeconds = 0.0
@@ -1724,12 +1729,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         do {
             let inputNode = engine.inputNode
             guard !engine.isRunning else { throw MacSpeechAudioCaptureError.processingModeBusy }
-            if audioProcessingMode == .appleVoiceProcessing {
-                try inputNode.setVoiceProcessingEnabled(true)
-                inputNode.isVoiceProcessingBypassed = false
-                inputNode.isVoiceProcessingInputMuted = false
-                inputNode.isVoiceProcessingAGCEnabled = true
-            }
+            try configureVoiceProcessingIO(engine: engine)
             let localFormat = engine.mainMixerNode.outputFormat(forBus: 0)
             let inputFormat = inputNode.outputFormat(forBus: 0)
             let outputInputFormat = engine.outputNode.inputFormat(forBus: 0)
@@ -1755,6 +1755,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             _ = acousticEchoHost.configure()
             isConfigured = true
         } catch {
+            #if DEBUG
+                configurationDebug["error_domain"] = (error as NSError).domain
+                configurationDebug["error_code"] = (error as NSError).code
+            #endif
             captureAECConverter = nil
             captureOutputConverter = nil
             renderConverterLock.withLock { renderAECConverter = nil }
@@ -1767,6 +1771,35 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             engine.detach(playerNode)
             throw error
         }
+    }
+
+    private func configureVoiceProcessingIO(engine: AVAudioEngine) throws {
+        guard audioProcessingMode == .appleVoiceProcessing else { return }
+        #if DEBUG
+            configurationDebug = ["stage": "enable_voice_processing"]
+        #endif
+        let inputNode = engine.inputNode
+        try inputNode.setVoiceProcessingEnabled(true)
+        inputNode.isVoiceProcessingBypassed = false
+        inputNode.isVoiceProcessingInputMuted = false
+        inputNode.isVoiceProcessingAGCEnabled = true
+        let format = inputNode.outputFormat(forBus: 0)
+        #if DEBUG
+            configurationDebug["input_rate"] = format.sampleRate
+            configurationDebug["input_channels"] = format.channelCount
+            configurationDebug["output_channels_before"] = engine.outputNode.inputFormat(forBus: 0).channelCount
+            configurationDebug["stage"] = "negotiate_io_format"
+        #endif
+        guard format.sampleRate.isFinite, format.sampleRate > 0, format.channelCount > 0 else {
+            throw MacSpeechAudioCaptureError.invalidInputFormat
+        }
+        // Voice-processing I/O formats must match; negotiate while the engine is stopped.
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: format)
+        #if DEBUG
+            configurationDebug["output_rate"] = engine.outputNode.inputFormat(forBus: 0).sampleRate
+            configurationDebug["output_channels"] = engine.outputNode.inputFormat(forBus: 0).channelCount
+            configurationDebug["stage"] = "validate_io_format"
+        #endif
     }
 
     private func validateVoiceProcessing(engine: AVAudioEngine, requireUnmuted: Bool) throws {
@@ -1807,6 +1840,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             }
         }
         processingSnapshot = snapshot
+        #if DEBUG
+            configurationDebug["stage"] = "validated"
+        #endif
     }
 
     private func tearDownIfIdle(outputAlreadyStopped: Bool = false) {
@@ -2098,6 +2134,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         engine: AVAudioEngine,
         localFormat: AVAudioFormat
     ) throws {
+        #if DEBUG
+            configurationDebug["stage"] = "create_converters"
+        #endif
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0,
               inputFormat.channelCount > 0,

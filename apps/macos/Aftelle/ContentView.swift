@@ -697,6 +697,7 @@ private struct ParticleOrientationDebugOverlay: View {
                 Text("A/C use the selected offline voice. B uses only the microphone.")
                 Text("No provider is contacted. Audio stays in bounded memory until an explicit export.")
             }
+            .task { controller.start() }
             .onDisappear {
                 Task { await controller.shutdownSpeechAudioHost() }
             }

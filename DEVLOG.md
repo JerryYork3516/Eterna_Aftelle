@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-17 · T3.2-A-D2-F1 格式协商与无声预演
+
+- 修复 VP 启用后未协商 Mixer→Output 格式即比较一致性的缺口，保留 stopped 配置／原 Guard／唯一 Engine；DEBUG 增加有界配置诊断与输入不保留的零值 PCM 预演，测试页接回原 Controller.start。原 Test2／Cascaded／Runtime／Provider／Session 链不改。
+- Debug／未签名 Release、Release/Architecture/Secret Guard、Host178、Playback238、AEC1165、Converter25/221、D1 Fake40/283、统计10/49通过；Fake completion／计数、Host静态变量名及启动idle首失败保留。当前 Bluetooth A/B/C 各一次无声预演通过，输入 PCM 保留0、无实际 WAV，已退出 App。
+- B0；Format20856/exit1、Lint384/exit2仍FAIL，6个既有文件／类型指标增长单独登记，ENGINEERING REWORK/DEBT_DEFERRED。原 USB＋扬声器路线未复验，Mic Mode未知，READY_FOR_HUMAN_TEST=false；[实际交付与审核](docs/stage7_5/test3_apple_vp_clean/T3_2_A_D2_F1_root_cause_and_silent_dry_run.md)。F1 REVIEW_PENDING，SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；提交后停止，不推进有声测试或后续节点。
+
 ## 2026-10-16 · T3.2-A-D1-R2 受控证据导出（仅本地）
 
 - 主控裁定D1离线安全PASS_WITH_CONDITIONS，允许C19独立延期至Stage7.5结束，不与旧C23重复统计。R2仅两生产文件收紧DEBUG导出至固定Caches／runID，目录0700、文件0600、fd逐级拒symlink／Git／覆盖；原Capture及Test2原链不改。

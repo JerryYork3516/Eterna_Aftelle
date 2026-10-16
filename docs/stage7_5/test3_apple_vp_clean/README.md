@@ -2,6 +2,10 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-10-17 增量状态见 [D2-F1 根因修复与无声预演](T3_2_A_D2_F1_root_cause_and_silent_dry_run.md)：补齐停止状态下 VP I/O 格式协商，保留原 Guard／唯一 Engine／Test2 原链；Debug/Release、Guard、受影响离线回归、Fake A/B/C 及当前 Bluetooth 路线各一次真实无声控制链通过。无实际输入 PCM 保存／WAV 导出，无有声或 Provider 测试。原 D2 USB＋内置扬声器路线未复验、系统 Microphone Mode 未知，**READY_FOR_HUMAN_TEST=false**；F1 REVIEW_PENDING，ENGINEERING REWORK／DEBT_DEFERRED，B0、全量 Format20856／Lint384 仍 FAIL。后续段落／状态表保留其历史快照，本次实际状态与准入限制以 F1 报告为准；T3.2-B/T3.3 未授权推进，SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false 不变。
+
+后续所有需要用户参与的测试，Codex 必须先完成构建、固定资产、工具、目标设备初始化与无声预演；未通过即停止并报告，不把编译／排障／准备留给用户等待，也不直接邀请进入正式测试。本次无声授权不包含有声测试或真人音频保存。
+
 **本文件是本范围的唯一正式计划入口。** 当前设计见 [Apple Native Voice Experience 计划 v2](T3_1_R2_native_voice_experience_plan.md)。主控已批准T3.1-R2计划：Apple 原生通话音频能力 → Aftelle 既有音频输入接口 → Test2 冻结技术链。主控本轮已批准T3.0-F/Test2 Offline Baseline及T3.1-R2 Plan，并仅授权T3.2-A生产实现、必要离线回归与构建。本轮结果见 [T3.2-A实现与审核](T3_2_A_implementation_and_review.md)：机械离线检查通过，格式/静态工具FAIL及工程REWORK保留；用户已明确仅豁免本轮lint提交门槛，允许当前白名单交付；不是设备或下一节点授权。正式旧Human Gate仍有效，Apple合同剖面另按逐项批准边界处理。 最新主控决定及交付见 [T3.2-A-L最终审核](T3_2_A_L_incremental_lint_review.md)：离线功能安全已APPROVED；Release guard、Debug/Release及受影响离线回归PASS；B0/C23（21文件/类型＋2函数长度），SwiftFormat18286/SwiftLint312仍FAIL。主控对本次已验证17文件单独授予一次性lint提交例外；ENGINEERING保持REWORK/DEBT_DEFERRED，C23在Stage7.5结束后治理；设备及下一节点未授权。
 
 当前D1及R2交付见 [隔离式声学测试入口与R2导出安全审核](T3_2_A_D1_debug_acoustic_harness.md#11-t32-a-d1-r2--secure-evidence-export--harness-closure)：主控裁定D1离线安全PASS_WITH_CONDITIONS，允许C19作为独立结构债务在Stage7.5结束后治理，不与旧C23重复统计。R2仅收紧DEBUG证据导出至受控Caches目录、runID文件名及0700/0600与symlink/覆盖负控；D1控制22/174、统计10/49、Guard、Debug/Release通过，未启动真实App／设备。新增B0，Format20856／Lint384仍FAIL，C19中3项文件长度必要增长如实登记；ENGINEERING仍REWORK/DEBT_DEFERRED。R2 REVIEW_PENDING/LOCAL_ONLY，无commit/push、设备或后续节点授权。

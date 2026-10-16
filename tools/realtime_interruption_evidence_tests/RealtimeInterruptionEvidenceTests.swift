@@ -24,6 +24,11 @@ private extension RealtimeInterruptionEvidenceTests {
         await testD1RouteChange()
         expect(!FileManager.default.fileExists(atPath: exportDirectory.path),
                "Stop and failure never automatically export")
+        try await testD2SilentSmoke()
+        await testD2SilentPermissionFence()
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: exportDirectory.path)
+        expect(remaining.isEmpty, "explicit silent exports leave no unknown synthetic files")
+        try FileManager.default.removeItem(at: exportDirectory)
         print("d1_export_synthetic_cleanup=PASS")
         print("d1_dependency_factory_calls=0")
         print("d1_initialization_microphone_queries=0")
@@ -32,6 +37,66 @@ private extension RealtimeInterruptionEvidenceTests {
         print("d1_initialization_playback_starts=0")
         print("d1_only_cases=\(cases)")
         print("d1_only_checks=\(checks)")
+    }
+
+    static func testD2SilentSmoke() async throws {
+        for scenario in AppleVPAcousticTestScenario.allCases {
+            cases += 1
+            let stack = D1ControllerStack(byteLimit: 1920, silentScenario: scenario)
+            stack.controller.start()
+            stack.controller.start()
+            await waitUntil("silent smoke capture running") {
+                stack.controller.appleVPAcousticTestState.phase == .running
+            }
+            if scenario != .humanOnly {
+                await waitUntil("silent smoke complete zero output") {
+                    stack.player.completeScheduledChunk()
+                    let output = await stack.output.currentSnapshot()
+                    return stack.player.payloads.reduce(0) { $0 + $1.count } == 96000
+                        && output.state == .completed
+                }
+                expect(stack.player.payloads.allSatisfy { $0.allSatisfy { $0 == 0 } },
+                       "silent smoke schedules zero PCM through the original player")
+            }
+            stack.capture.emitPackets(2)
+            await waitUntil("silent smoke sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            let jsonURL = try stack.controller.appleVPAcousticTestExportURL(asWAV: false)
+            await waitUntil("silent smoke stats exported") { FileManager.default.fileExists(atPath: jsonURL.path) }
+            defer { try? FileManager.default.removeItem(at: jsonURL) }
+            let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any]
+            expect(manifest?["retained_pcm_bytes"] as? Int == 0, "actual input content is not retained")
+            expect(manifest?["processed_sha256"] is NSNull, "discarded PCM never receives a fabricated digest")
+            expect(manifest?["packet_count"] as? Int == 2, "metadata still validates the actual packet sequence")
+            expect(manifest?["physical_acceptance"] as? String == "UNVERIFIED", "silent control is not acoustic PASS")
+            expect(stack.controller.appleVPAcousticTestState.errorCode == nil, "silent Fake lifecycle completes")
+            expect(stack.capture.startCount == 1 && stack.dependencies.calls == 0, "one isolated capture only")
+            let requests = await stack.authorization.requestCount()
+            expect(requests == 0, "silent mode cannot request a new system permission")
+            do {
+                _ = try stack.controller.appleVPAcousticTestProcessedWAVData()
+                expect(false, "silent mode must refuse raw-input WAV export")
+            } catch {
+                expect(true, "silent mode refuses raw-input WAV export")
+            }
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func testD2SilentPermissionFence() async {
+        cases += 1
+        let stack = D1ControllerStack(authorizationState: .notDetermined, silentScenario: .residentOnly)
+        stack.controller.start()
+        await waitUntil("silent permission refusal") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+        let requests = await stack.authorization.requestCount()
+        expect(requests == 0 && stack.capture.startCount == 0 && stack.player.startCount == 0,
+               "new permission requires a user action, never silent approval")
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "microphone_not_authorized",
+               "silent permission failure remains explicit")
+        expectD1Cleanup(stack)
+        if let url = try? stack.controller.appleVPAcousticTestExportURL(asWAV: false) {
+            await waitUntil("silent failure stats exported") { FileManager.default.fileExists(atPath: url.path) }
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     static func testD1LaunchMode() {
@@ -235,6 +300,7 @@ private struct D1ControllerStack {
         holdQueryNumber: Int? = nil,
         failsCaptureStart: Bool = false,
         byteLimit: Int = 720_000,
+        silentScenario: AppleVPAcousticTestScenario? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
         let dependencies = D1NormalDependenciesSpy()
@@ -258,7 +324,8 @@ private struct D1ControllerStack {
         )
         self.output = output
         controller = AppController(
-            acousticTestArguments: ["Aftelle", "--apple-vp-acoustic-test"],
+            acousticTestArguments: ["Aftelle", "--apple-vp-acoustic-test"]
+                + (silentScenario.map { ["--apple-vp-silent-smoke=" + $0.rawValue] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             normalDependenciesFactory: dependencies.make
@@ -359,6 +426,9 @@ private extension RealtimeInterruptionEvidenceTests {
             await waitUntil("D1 playback sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
             expect(stack.controller.appleVPAcousticTestState.errorCode == nil,
                    "complete Fake engineering evidence seals without a physical PASS")
+            try expectD1ExportConsent(
+                stack.controller, expected: stack.controller.appleVPAcousticTestProcessedWAVData()
+            )
             expectD1Cleanup(stack)
         }
     }

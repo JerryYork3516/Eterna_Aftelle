@@ -58,6 +58,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
 #if DEBUG
     nonisolated enum AppleVPAcousticTestLaunchMode {
         static let argument = "--apple-vp-acoustic-test"
+        static let silentArgument = "--apple-vp-silent-smoke="
 
         static func isEnabled(arguments: [String]) -> Bool {
             arguments.contains(argument)
@@ -103,7 +104,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         }
 
         var byteCount: Int {
-            pcm.count
+            packets.count * MacSpeechAudioInputFormat.packetByteCount
         }
 
         var isBusy: Bool {
@@ -574,6 +575,8 @@ final class AppController: ObservableObject {
 
         let isAppleVPAcousticTestMode: Bool
         private let appleVPAcousticTestCapture: (any MacSpeechAudioCapturing)?
+        private let appleVPSilentSmokeScenario: AppleVPAcousticTestScenario?
+        private var appleVPSilentSmokeStarted = false
         private let appleVPAcousticTestDurationNanoseconds: UInt64
         private let appleVPAcousticTestByteLimit: Int
         private var appleVPAcousticRun = AppleVPAcousticTestState()
@@ -868,7 +871,8 @@ final class AppController: ObservableObject {
         speechAudioHost = MacSpeechAudioHost(capture: speechCapture)
         #if DEBUG
             appleVPAcousticTestCapture = speechCapture
-            appleVPAcousticTestDurationNanoseconds = 15_000_000_000
+            appleVPSilentSmokeScenario = Self.silentSmokeScenario(arguments: ProcessInfo.processInfo.arguments)
+            appleVPAcousticTestDurationNanoseconds = appleVPSilentSmokeScenario == nil ? 15_000_000_000 : 4_000_000_000
             appleVPAcousticTestByteLimit = 720_000
         #endif
         speechAudioOutputHost = MacSpeechAudioOutputHost(
@@ -902,6 +906,7 @@ final class AppController: ObservableObject {
     init(orchestrationKernel: OrchestrationKernel) {
         #if DEBUG
             isAppleVPAcousticTestMode = false
+            appleVPSilentSmokeScenario = nil
             normalDependenciesFactory = {
                 NormalDependencies(
                     orchestrationKernel: orchestrationKernel,
@@ -949,6 +954,7 @@ final class AppController: ObservableObject {
             SystemMacSpeechVoiceProcessingEngine? = nil
         ) {
             isAppleVPAcousticTestMode = false
+            appleVPSilentSmokeScenario = nil
             normalDependenciesFactory = {
                 NormalDependencies(
                     orchestrationKernel: orchestrationKernel,
@@ -989,6 +995,7 @@ final class AppController: ObservableObject {
             self.speechAudioHost = speechAudioHost
             self.speechAudioOutputHost = speechAudioOutputHost
             appleVPAcousticTestCapture = speechAudioCapture
+            appleVPSilentSmokeScenario = Self.silentSmokeScenario(arguments: acousticTestArguments)
             appleVPAcousticTestDurationNanoseconds = min(15_000_000_000, max(1, acousticTestDurationNanoseconds))
             appleVPAcousticTestByteLimit = min(720_000, max(960, acousticTestByteLimit))
             nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
@@ -1046,8 +1053,7 @@ final class AppController: ObservableObject {
     func start() {
         #if DEBUG
             guard !isAppleVPAcousticTestMode else {
-                startupState = .idle
-                runtimeState = .idle
+                startAppleVPAcousticMode()
                 return
             }
         #endif
@@ -7474,6 +7480,37 @@ final class AppController: ObservableObject {
 
 #if DEBUG
     extension AppController {
+        private static func silentSmokeScenario(arguments: [String]) -> AppleVPAcousticTestScenario? {
+            guard AppleVPAcousticTestLaunchMode.isEnabled(arguments: arguments),
+                  let argument = arguments.first(where: { $0.hasPrefix(AppleVPAcousticTestLaunchMode.silentArgument) })
+            else { return nil }
+            return AppleVPAcousticTestScenario(rawValue: String(argument.dropFirst(
+                AppleVPAcousticTestLaunchMode.silentArgument.count
+            )))
+        }
+
+        private func startAppleVPAcousticMode() {
+            startupState = .idle
+            runtimeState = .idle
+            guard appleVPSilentSmokeScenario != nil, !appleVPSilentSmokeStarted else { return }
+            appleVPSilentSmokeStarted = true
+            Task { @MainActor [weak self] in await self?.runAppleVPSilentSmoke() }
+        }
+
+        private func runAppleVPSilentSmoke() async {
+            guard let scenario = appleVPSilentSmokeScenario, prepareAppleVPAcousticTest(scenario) else { return }
+            startAppleVPAcousticTest(microphoneConsent: true, speakerConsent: true, localCaptureConsent: true)
+            await appleVPAcousticTestTask?.value
+            guard appleVPAcousticRun.canExport else { return }
+            do {
+                let url = try appleVPAcousticTestExportURL(asWAV: false)
+                try writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
+                print("apple_vp_silent_smoke_manifest=\(url.lastPathComponent)")
+            } catch {
+                print("apple_vp_silent_smoke_export=FAIL")
+            }
+        }
+
         @discardableResult
         func prepareAppleVPAcousticTest(
             _ scenario: AppleVPAcousticTestScenario,
@@ -7569,6 +7606,9 @@ final class AppController: ObservableObject {
 
         private func appleVPAcousticPlaybackBytes() throws -> Data? {
             guard appleVPAcousticRun.scenario != .humanOnly else { return nil }
+            if appleVPSilentSmokeScenario != nil {
+                return Data(repeating: 0, count: 96000)
+            }
             guard let url = appleVPAcousticRun.playbackURL else { throw AppleVPAcousticTestError.invalidFile }
             do {
                 let source = try AppleVPAcousticWAV.read(url: url)
@@ -7581,6 +7621,9 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.authorizationRunID = runID
             let current = await speechAudioHost.refreshAuthorization()
             try await acceptAppleVPAcousticAuthorization(current, runID: runID)
+            if appleVPSilentSmokeScenario != nil, speechAudioHostSnapshot.authorization != .authorized {
+                throw AppleVPAcousticTestError.permissionDenied
+            }
             if speechAudioHostSnapshot.authorization == .notDetermined {
                 appleVPAcousticRun.authorizationRunID = runID
                 let requested = await speechAudioHost.requestMicrophoneAuthorization()
@@ -7751,7 +7794,9 @@ final class AppController: ObservableObject {
             guard appleVPAcousticRun.byteCount + frame.pcm16Bytes.count <= appleVPAcousticTestByteLimit else {
                 throw AppleVPAcousticTestError.capacityExceeded
             }
-            appleVPAcousticRun.pcm.append(frame.pcm16Bytes)
+            if appleVPSilentSmokeScenario == nil {
+                appleVPAcousticRun.pcm.append(frame.pcm16Bytes)
+            }
             appleVPAcousticRun.packets.append([frame.sequenceNumber, frame.monotonicTimestampNanoseconds, 960])
         }
 
@@ -7789,7 +7834,7 @@ final class AppController: ObservableObject {
                 if appleVPAcousticRun.errorCode == nil, appleVPAcousticRun.native?.coverageValid != true {
                     appleVPAcousticRun.errorCode = "native_coverage_unverified"
                 }
-                if appleVPAcousticRun.errorCode == nil, appleVPAcousticRun.pcm.isEmpty {
+                if appleVPAcousticRun.errorCode == nil, appleVPAcousticRun.packetCount == 0 {
                     appleVPAcousticRun.errorCode = "no_processed_pcm"
                 }
             }
@@ -7960,7 +8005,12 @@ final class AppController: ObservableObject {
             manifest["byte_limit"] = appleVPAcousticTestByteLimit
             manifest["packet_count"] = state.packetCount
             manifest["byte_count"] = state.byteCount
-            manifest["processed_sha256"] = AppleVPAcousticWAV.digest(state.pcm)
+            manifest["silent_smoke"] = appleVPSilentSmokeScenario != nil
+            manifest["retained_pcm_bytes"] = state.pcm.count
+            manifest["processed_sha256"] = appleVPSilentSmokeScenario == nil
+                ? AppleVPAcousticWAV.digest(state.pcm) as Any : NSNull()
+            manifest["configuration_debug"] = realtimeSpeechDiagnosticAudioEngine?.voiceProcessingConfigurationDebug()
+                ?? [:]
             manifest["packets_sequence_host_time_ns_bytes"] = state.packets
             manifest["capture_drop_count"] = state.captureFinal.droppedFrameCount
             manifest["capture_stale_count"] = state.captureFinal.rejectedStaleFrameCount
@@ -7982,6 +8032,7 @@ final class AppController: ObservableObject {
 
         func appleVPAcousticTestProcessedWAVData() throws -> Data {
             guard isAppleVPAcousticTestMode, appleVPAcousticRun.canExport,
+                  appleVPSilentSmokeScenario == nil,
                   !appleVPAcousticRun.pcm.isEmpty else { throw CocoaError(.featureUnsupported) }
             return AppleVPAcousticWAV.encoded(pcm: appleVPAcousticRun.pcm)
         }

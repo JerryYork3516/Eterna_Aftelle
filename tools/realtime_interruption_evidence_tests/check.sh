@@ -76,8 +76,8 @@ if [[ "$mode" == "d1-only" ]]; then
   rg -qx 'd1_initialization_microphone_requests=0' "$output"
   rg -qx 'd1_initialization_capture_starts=0' "$output"
   rg -qx 'd1_initialization_playback_starts=0' "$output"
-  rg -qx 'd1_only_cases=22' "$output"
-  rg -qx 'd1_only_checks=174' "$output"
+  rg -qx 'd1_only_cases=40' "$output"
+  rg -qx 'd1_only_checks=283' "$output"
   exit 0
 fi
 CFFIXED_USER_HOME="$runtime_home" \
