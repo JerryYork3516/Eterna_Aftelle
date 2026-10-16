@@ -99,8 +99,11 @@ nonisolated protocol MacSpeechAECBackend: AnyObject, Sendable {
 
 nonisolated struct MacSpeechAcousticEchoSnapshot: Sendable, Equatable {
     let mode: MacSpeechAudioProcessingMode
-    // Legacy numeric AEC fields are unavailable placeholders on the Apple path.
-    var hasWebRTCStatistics: Bool { mode == .webRTCAEC3 }
+    /// Legacy numeric AEC fields are unavailable placeholders on the Apple path.
+    var hasWebRTCStatistics: Bool {
+        mode == .webRTCAEC3
+    }
+
     let enabled: Bool
     let active: Bool
     let sampleRate: Int
@@ -1066,29 +1069,19 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         guard !samples.isEmpty else { return [] }
         return queue.sync {
             if requestedMode == .appleVoiceProcessing {
-                guard mode == .appleVoiceProcessing,
-                      !isRouteRebuilding else { return [] }
-                recordUnavailableCaptureObservation(
+                return processAppleCapture(
                     samples,
                     hostTimeNanoseconds: hostTimeNanoseconds
                 )
-                return [captureSpan(samples: samples)]
             }
             if mode == .halfDuplexFallback {
-                captureFIFO.removeAll(keepingCapacity: true)
-                recordUnavailableCaptureObservation(
+                return processFallbackCapture(
                     samples,
                     hostTimeNanoseconds: hostTimeNanoseconds
                 )
-                return isPlaybackActive || isRouteRebuilding
-                    ? [] : [captureSpan(samples: samples)]
             }
             guard mode == .webRTCAEC3, let backend else {
-                recordUnavailableCaptureObservation(
-                    samples,
-                    hostTimeNanoseconds: hostTimeNanoseconds
-                )
-                return [captureSpan(samples: samples)]
+                return makeUnavailableCaptureSpans(samples, hostTimeNanoseconds: hostTimeNanoseconds)
             }
             #if DEBUG
             let replayCall = beginAcousticReplayAudioCall(
@@ -1185,6 +1178,39 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         }
     }
 
+    private func processAppleCapture(
+        _ samples: [Float],
+        hostTimeNanoseconds: UInt64?
+    ) -> [MacSpeechAcousticCaptureSpan] {
+        guard mode == .appleVoiceProcessing,
+              !isRouteRebuilding else { return [] }
+        return makeUnavailableCaptureSpans(samples, hostTimeNanoseconds: hostTimeNanoseconds)
+    }
+
+    private func makeUnavailableCaptureSpans(
+        _ samples: [Float],
+        hostTimeNanoseconds: UInt64?
+    ) -> [MacSpeechAcousticCaptureSpan] {
+        recordUnavailableCaptureObservation(
+            samples,
+            hostTimeNanoseconds: hostTimeNanoseconds
+        )
+        return [captureSpan(samples: samples)]
+    }
+
+    private func processFallbackCapture(
+        _ samples: [Float],
+        hostTimeNanoseconds: UInt64?
+    ) -> [MacSpeechAcousticCaptureSpan] {
+        captureFIFO.removeAll(keepingCapacity: true)
+        recordUnavailableCaptureObservation(
+            samples,
+            hostTimeNanoseconds: hostTimeNanoseconds
+        )
+        return isPlaybackActive || isRouteRebuilding
+            ? [] : [captureSpan(samples: samples)]
+    }
+
     private func captureSpan(
         samples: [Float],
         captureFrameIndex: UInt64? = nil
@@ -1226,7 +1252,9 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
                 }
                 let magnitude = abs(Double(sample))
                 peak = max(peak, magnitude)
-                if magnitude >= 1 { fullScaleCount += 1 }
+                if magnitude >= 1 {
+                    fullScaleCount += 1
+                }
             }
             processedCapturePeakMagnitude = finite ? peak : nil
             processedCaptureFullScaleSampleCount = finite ? fullScaleCount : nil

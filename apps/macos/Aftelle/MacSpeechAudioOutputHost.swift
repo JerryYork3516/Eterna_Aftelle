@@ -152,9 +152,9 @@ actor MacSpeechAudioOutputHost {
             SystemMacSpeechDeviceMonitor(),
         configuration: MacSpeechPCMPlaybackConfiguration = .standard,
         sleepForConsumerTimeout:
-            @escaping @Sendable (UInt64) async throws -> Void = {
-                try await Task.sleep(nanoseconds: $0)
-            }
+        @escaping @Sendable (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
+        }
     ) {
         self.player = player
         self.deviceMonitor = deviceMonitor
@@ -687,15 +687,16 @@ actor MacSpeechAudioOutputHost {
     private func handleDeviceRouteChange() {
         let nextRoute = deviceMonitor.currentRoute()
         guard nextRoute.input.identifier != inputDeviceIdentifier
-                || nextRoute.input.isAvailable != isInputDeviceAvailable
-                || nextRoute.output.identifier != outputDevice.identifier
-                || nextRoute.output.isAvailable != outputDevice.isAvailable else {
+            || nextRoute.input.isAvailable != isInputDeviceAvailable
+            || nextRoute.output.identifier != outputDevice.identifier
+            || nextRoute.output.isAvailable != outputDevice.isAvailable
+        else {
             return
         }
         inputDeviceIdentifier = nextRoute.input.identifier
         isInputDeviceAvailable = nextRoute.input.isAvailable
         outputDevice = nextRoute.output
-        guard state != .idle && state != .closed else { return }
+        guard state != .idle, state != .closed else { return }
         cancelConsumerWatchdog()
         player.resetForRouteChange()
         player.stop()

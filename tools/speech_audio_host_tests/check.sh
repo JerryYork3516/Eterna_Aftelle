@@ -94,7 +94,9 @@ echo "speech_audio_host_continuous_unmuted_capture=PASS"
 
 rg -q 'func selectProcessingMode' "$host" "$capture"
 rg -q 'await speechAudioOutputHost.canSelectAudioProcessingMode' "$controller"
-awk '/func startRealtimeResidentBrainRoute/ { active = 1 } /private func ensureRealtimeMicrophoneAuthorization/ { active = 0 } active && /\.appleVoiceProcessing/ { found = 1 } END { exit !found }' \
+awk '/func startRealtimeResidentBrainRoute/ { active = 1 } /private func ensureRealtimeMicrophoneAuthorization/ { active = 0 } active && /await prepareRealtimeSpeechAudioBackend/ { found = 1 } END { exit !found }' \
+  "$controller"
+awk '/private func prepareRealtimeSpeechAudioBackend/ { active = 1 } /private func acceptRealtimeMicrophoneAuthorization/ { active = 0 } active && /\.appleVoiceProcessing/ { found = 1 } END { exit !found }' \
   "$controller"
 awk '/func startFormalSpeechRoute/ { active = 1 } /private func pumpFormalSpeechAudio/ { active = 0 } active && /\.webRTCAEC3/ { found = 1 } END { exit !found }' \
   "$controller"

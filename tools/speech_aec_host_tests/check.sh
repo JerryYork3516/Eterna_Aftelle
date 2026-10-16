@@ -76,7 +76,9 @@ rg -q 'playbackCompleted\(\)' "$aec_host" "$capture"
 rg -q 'playerNode\.installTap' "$capture"
 rg -q 'processRenderedOutput' "$capture"
 rg -q 'renderConversionFailed' "$aec_host" "$capture"
-test "$(rg -c 'hostTimeNanoseconds: Self\.hostTimeNanoseconds\(when\)' "$capture")" -eq 2
+test "$(rg -c 'Self\.hostTimeNanoseconds\((when|time)\)' "$capture")" -eq 2
+rg -Fq 'at: when' "$capture"
+rg -Fq 'let nativeSampleTime = time.isSampleTimeValid ? time.sampleTime : nil' "$capture"
 rg -q 'AVAudioTime\.seconds\(forHostTime:' "$capture"
 rg -q 'renderTimingHistory' "$aec_host"
 rg -q 'causalLastAudibleRenderHostTimeNanoseconds' "$aec_host"

@@ -325,7 +325,7 @@ final class R823AudioCapture:
     private var frameBuffer: MacSpeechAudioFrameBuffer?
     private var generation: UInt64?
     private var started = false
-    private var selectedProcessingMode = MacSpeechAudioProcessingMode.webRTCAEC3
+        private var selectedProcessingMode = MacSpeechAudioProcessingMode.webRTCAEC3
 
     init(acousticEchoHost: MacSpeechAcousticEchoHost) throws {
         guard let aecFormat = AVAudioFormat(
@@ -340,19 +340,19 @@ final class R823AudioCapture:
         outputConverter = try MacSpeechAudioConverter(inputFormat: aecFormat)
     }
 
-    func selectProcessingMode(_ mode: MacSpeechAudioProcessingMode) throws {
-        try lock.withLock {
-            guard !started else {
-                throw MacSpeechAudioCaptureError.processingModeBusy
+        func selectProcessingMode(_ mode: MacSpeechAudioProcessingMode) throws {
+            try lock.withLock {
+                guard !started else {
+                    throw MacSpeechAudioCaptureError.processingModeBusy
+                }
+                // Mechanical route seam only; this fake retains its injected acoustic evidence.
+                selectedProcessingMode = mode
             }
-            // Mechanical route seam only; this fake retains its injected acoustic evidence.
-            selectedProcessingMode = mode
         }
-    }
 
-    var processingMode: MacSpeechAudioProcessingMode {
-        lock.withLock { selectedProcessingMode }
-    }
+        var processingMode: MacSpeechAudioProcessingMode {
+            lock.withLock { selectedProcessingMode }
+        }
 
     func start(
         generation: UInt64,
@@ -11477,9 +11477,7 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
         )
 
         await controller.startRealtimeResidentBrainRoute()
-        try? await Task.sleep(for: .milliseconds(100))
-        expect(capture.processingMode == .appleVoiceProcessing,
-               "R8.5.3 mechanical fake records the Realtime Apple backend request")
+            await waitForR853StartAndVerifyBackend(capture)
         let routeSnapshot = controller.formalSpeechRouteDebugSnapshot
         let inputSnapshot = controller.realtimeBrainInputBridgeSnapshot
         let outputSnapshot = controller.realtimeBrainOutputBridgeSnapshot
@@ -11526,6 +11524,14 @@ private struct RealtimeResidentOnlyZeroSelfInterruptTests {
             session: session
         )
     }
+
+        private static func waitForR853StartAndVerifyBackend(
+            _ capture: R823AudioCapture
+        ) async {
+            try? await Task.sleep(for: .milliseconds(100))
+            expect(capture.processingMode == .appleVoiceProcessing,
+                   "R8.5.3 mechanical fake records the Realtime Apple backend request")
+        }
 
     private static func emitR853QwenListeningNearEnd(
         stack: R853QwenControllerStack

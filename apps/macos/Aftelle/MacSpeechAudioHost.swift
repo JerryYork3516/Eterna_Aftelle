@@ -139,7 +139,8 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
     func selectProcessingMode(_ mode: MacSpeechAudioProcessingMode) throws {
         guard !isCapturing,
               preparedGeneration == nil,
-              capturePreparationAttemptID == nil else {
+              capturePreparationAttemptID == nil
+        else {
             throw MacSpeechAudioCaptureError.processingModeBusy
         }
         try capture.selectProcessingMode(mode)
@@ -223,8 +224,7 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         capture.acousticEchoSnapshot()
     }
 
-    nonisolated func currentVoiceProcessingSnapshot()
-        -> MacSpeechVoiceProcessingSnapshot? {
+    nonisolated func currentVoiceProcessingSnapshot() -> MacSpeechVoiceProcessingSnapshot? {
         capture.voiceProcessingSnapshot()
     }
 

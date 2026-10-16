@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-10-16 · T3.2-A-L-R2 最终交付授权与治理
+
+- 主控批准离线功能安全，并对当前已验证17文件单独授予一次性lint提交例外；16项验证源码/脚本未漂移，仅补3文档治理记录，不重复build/测试。Release Guard、Debug/Release、安全回归PASS；SwiftFormat18286/SwiftLint312仍FAIL，B0/C23＝21文件/类型＋2函数长度。
+- ENGINEERING=REWORK/DEBT_DEFERRED；C23统一阶段结束后治理，本次不再重构。后续新增代码严格规范/新增违规为零、旧债分登记，功能/安全/Release Guard零豁免；不改04规范、工具或CI。最终独立复核另记Host辅助awk旧结束标记MINOR OPEN（非C23、无当前功能错误），未改验证脚本。
+- 本交付按指定commit信息正常push，Submission=COMPLETED仅以提交后HEAD/upstream/实时远端一致且clean回执为准；[完整审核](docs/stage7_5/test3_apple_vp_clean/T3_2_A_L_incremental_lint_review.md)。设备/B/T3.3未授权、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；交付后立即停止。
+
+## 2026-10-16 · T3.2-A-L-R2 Release Guard修复（仅本地）
+
+- 保留17项未提交修改及Git外incoming快照；仅再改AppController权限/原shutdown清理、AEC两消费者同步去重、R853单行缩进及3文档。原Release guard未改，R2首次及最终均exit0；Debug/未签名Release、全部受影响离线入口均exit0，计数不降。具体命令/首次L失败/实际diff见[同一审核报告R2](docs/stage7_5/test3_apple_vp_clean/T3_2_A_L_incremental_lint_review.md)。
+- SwiftFormat18408→18697→18285→18286（exit1）；SwiftLint317→341→312→312（exit2）。最终B0/C23＝21结构＋2必要函数债务，不把总数差当增量；中间brace新诊断已修且保留记录。
+- TECHNICAL离线安全建议PASS，EVIDENCE/CONSISTENCY/Stage7 PASS；ENGINEERING仍REWORK（规范MAJOR1 OPEN、MINOR函数债务2 OPEN；新增功能安全MAJOR0）。T3.2-A-L REVIEW_PENDING/LOCAL_ONLY，无commit/push/豁免延续；设备/B/T3.3未授权、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false，完成后停止。
+
+## 2026-10-16 · T3.2-A-L 增量规范修复（本地停止）
+
+- 固定ab11→e0对比，局部修复12个Swift及2个相关静态检查脚本，无全库格式化、配置改动或断言删除。SwiftFormat 18408→18697→18285（exit 1）；SwiftLint strict 317→341→312（exit 2）。最终真实残余B1/C24，未达增量归零；[实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_L_incremental_lint_review.md)保留分类、原始失败及独立交叉审核范围。
+- Host178、Playback238、AEC1165、Converter25/221、Input32/210、R81 28/239、resident-only12/126、R853 15/223、confirmed1/62、latency1/68均exit 0；Release route guard因权限调用抽取至helper而exit 1（expected=1/actual=0），失败后停止，当前Debug/Release NOT_RUN，未改guard后重跑。
+- ENGINEERING/TECHNICAL/CONSISTENCY=REWORK，证据呈现及Stage7范围检查PASS；MAJOR 2 OPEN、MINOR 1 OPEN/1 CLOSED。保留本地变更，未提交推送，e0单次lint豁免不延续。设备/B/T3.3未授权、SQ-M1 OPEN、Qwen0/3、正式Test3 BLOCKED/false。
+
 ## 2026-10-16 · T3.2-A Apple原生Voice Processing核心
 
 - 按主控本轮授权，在唯一共享Engine接入Realtime Apple VP，Cascaded保留AEC3；选择性实现P1–P4及P8必要身份隔离，不改Runtime/Bridge/Qwen/DR/历史合同，正式Apple中断仍锁闭。

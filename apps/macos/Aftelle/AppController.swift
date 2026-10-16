@@ -2921,33 +2921,33 @@ final class AppController: ObservableObject {
     }
 
     func startSpeechAudioCapture() async {
-        guard speechHostLifecycleOperationCount == 0,
-              realtimeBrainRouteAttemptID == nil,
-              realtimeBrainInputBinding == nil,
-              !hasActiveAlternateSpeechRoute else { return }
+            guard speechHostLifecycleOperationCount == 0,
+                  realtimeBrainRouteAttemptID == nil,
+                  realtimeBrainInputBinding == nil,
+                  !hasActiveAlternateSpeechRoute else { return }
         speechAudioHostShutdownCompleted = false
-        let stopGeneration = speechHostStopGeneration
+            let stopGeneration = speechHostStopGeneration
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
-        do {
-            try await selectSpeechAudioProcessingMode(
-                .webRTCAEC3,
-                stopGeneration: stopGeneration
-            )
-        } catch {
-            recordRealtimeSpeechDiagnostic(
-                source: .lifecycle,
-                category: "capture_start_failed",
-                errorCode: (error as? MacSpeechAudioCaptureError)?.rawValue
-                    ?? "audio_backend_unavailable"
-            )
-            return
-        }
+            do {
+                try await selectSpeechAudioProcessingMode(
+                    .webRTCAEC3,
+                    stopGeneration: stopGeneration
+                )
+            } catch {
+                recordRealtimeSpeechDiagnostic(
+                    source: .lifecycle,
+                    category: "capture_start_failed",
+                    errorCode: (error as? MacSpeechAudioCaptureError)?.rawValue
+                        ?? "audio_backend_unavailable"
+                )
+                return
+            }
         speechAudioHostSnapshot = await speechAudioHost.startCapture()
-        guard speechHostStopGeneration == stopGeneration else {
-            speechAudioHostSnapshot = await speechAudioHost.stopCapture()
-            return
-        }
+            guard speechHostStopGeneration == stopGeneration else {
+                speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+                return
+            }
         if speechAudioHostSnapshot.isCapturing {
             lastDiagnosticAggregateNanoseconds = 0
             lastDiagnosticCaptureGeneratedCount = 0
@@ -2962,7 +2962,7 @@ final class AppController: ObservableObject {
     }
 
     func stopSpeechAudioCapture() async {
-        speechHostStopGeneration &+= 1
+            speechHostStopGeneration &+= 1
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
         await cancelFormalSpeechRoute()
@@ -3131,12 +3131,7 @@ final class AppController: ObservableObject {
         guard realtimeBrainRouteAttemptID == attemptID,
               speechAudioHostShutdownOperation == nil,
               !speechAudioHostShutdownCompleted else {
-            if speechAudioHostShutdownOperation != nil
-                || speechAudioHostShutdownCompleted {
-                await speechAudioHost.shutdown()
-                speechAudioHostSnapshot =
-                    await speechAudioHost.currentSnapshot()
-            }
+            await settleAbandonedRealtimeAuthorization()
             return
         }
         switch microphoneAuthorization {
@@ -3161,21 +3156,9 @@ final class AppController: ObservableObject {
             )
             return
         }
-        do {
-            try await selectSpeechAudioProcessingMode(
-                .appleVoiceProcessing,
-                stopGeneration: speechHostStopGeneration
-            )
-        } catch {
-            guard realtimeBrainRouteAttemptID == attemptID else { return }
-            realtimeBrainRouteAttemptID = nil
-            publishRealtimeResidentBrainRouteFailure(
-                (error as? MacSpeechAudioCaptureError)?.rawValue
-                    ?? "audio_backend_unavailable"
-            )
+        guard await prepareRealtimeSpeechAudioBackend(attemptID: attemptID) else {
             return
         }
-        guard realtimeBrainRouteAttemptID == attemptID else { return }
         let preparedCaptureGeneration =
             await speechAudioHost.prepareCaptureGeneration()
         guard realtimeBrainRouteAttemptID == attemptID else {
@@ -3306,6 +3289,33 @@ final class AppController: ObservableObject {
         return speechAudioHostSnapshot.authorization
     }
 
+    private func prepareRealtimeSpeechAudioBackend(attemptID: UUID) async -> Bool {
+        do {
+            try await selectSpeechAudioProcessingMode(
+                .appleVoiceProcessing,
+                stopGeneration: speechHostStopGeneration
+            )
+        } catch {
+            guard realtimeBrainRouteAttemptID == attemptID else { return false }
+            realtimeBrainRouteAttemptID = nil
+            publishRealtimeResidentBrainRouteFailure(
+                (error as? MacSpeechAudioCaptureError)?.rawValue
+                    ?? "audio_backend_unavailable"
+            )
+            return false
+        }
+        guard realtimeBrainRouteAttemptID == attemptID else { return false }
+        return true
+    }
+
+    private func settleAbandonedRealtimeAuthorization() async {
+        if speechAudioHostShutdownOperation != nil || speechAudioHostShutdownCompleted {
+            await speechAudioHost.shutdown()
+            speechAudioHostSnapshot =
+                await speechAudioHost.currentSnapshot()
+        }
+    }
+
     private func selectSpeechAudioProcessingMode(
         _ mode: MacSpeechAudioProcessingMode,
         stopGeneration: UInt64
@@ -3314,13 +3324,15 @@ final class AppController: ObservableObject {
               speechAudioHostShutdownOperation == nil,
               !speechAudioHostShutdownCompleted,
               await speechAudioOutputHost.canSelectAudioProcessingMode(),
-              speechHostStopGeneration == stopGeneration else {
+              speechHostStopGeneration == stopGeneration
+        else {
             throw MacSpeechAudioCaptureError.processingModeBusy
         }
         try await speechAudioHost.selectProcessingMode(mode)
         guard speechHostStopGeneration == stopGeneration,
               speechAudioHostShutdownOperation == nil,
-              !speechAudioHostShutdownCompleted else {
+              !speechAudioHostShutdownCompleted
+        else {
             throw MacSpeechAudioCaptureError.processingModeBusy
         }
     }
@@ -4486,7 +4498,7 @@ final class AppController: ObservableObject {
             return
         }
         speechAudioHostShutdownCompleted = false
-        let stopGeneration = speechHostStopGeneration
+            let stopGeneration = speechHostStopGeneration
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
         formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
@@ -4499,54 +4511,13 @@ final class AppController: ObservableObject {
             category: "formal_route_start_requested",
             stateAfter: FormalSpeechRoutePhase.starting.rawValue
         )
-        do {
-            try await selectSpeechAudioProcessingMode(
-                .webRTCAEC3,
+            guard let captureGeneration = await prepareFormalSpeechCapture(
                 stopGeneration: stopGeneration
-            )
-        } catch {
-            guard speechHostStopGeneration == stopGeneration else { return }
-            publishFormalSpeechRouteFailure(
-                (error as? MacSpeechAudioCaptureError)?.rawValue
-                    ?? "audio_backend_unavailable"
-            )
-            return
-        }
-        let preparedCaptureGeneration =
-            await speechAudioHost.prepareCaptureGeneration()
-        guard speechHostStopGeneration == stopGeneration else {
-            if let preparedCaptureGeneration {
-                _ = await speechAudioHost.cancelPreparedCapture(
-                    generation: preparedCaptureGeneration
-                )
-            }
-            return
-        }
-        guard let captureGeneration = preparedCaptureGeneration else {
-            speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
-            publishFormalSpeechRouteFailure("capture_unavailable")
-            return
-        }
-        let startResult = await orchestrationKernel.startSpeechRouteASR(
-            locale: "zh-CN"
-        )
-        guard speechHostStopGeneration == stopGeneration else {
-            if case .success(let generation) = startResult {
-                _ = await orchestrationKernel.cancelSpeechRoute(generation: generation)
-            }
-            _ = await speechAudioHost.cancelPreparedCapture(generation: captureGeneration)
-            return
-        }
-        guard case .success(let generation) = startResult else {
-            speechAudioHostSnapshot = await speechAudioHost
-                .cancelPreparedCapture(generation: captureGeneration)
-            if case .failure(let error) = startResult {
-                publishFormalSpeechRouteFailure(
-                    Self.formalSpeechErrorCode(error)
-                )
-            }
-            return
-        }
+            ) else { return }
+            guard let generation = await startFormalSpeechASR(
+                captureGeneration: captureGeneration,
+                stopGeneration: stopGeneration
+            ) else { return }
 
         let interactionID = UUID()
         formalSpeechRouteGeneration = generation
@@ -4570,10 +4541,10 @@ final class AppController: ObservableObject {
         await speechAudioOutputHost.setEventSink { [weak self] event in
             await self?.consumeFormalSpeechPlaybackEvent(event)
         }
-        guard speechHostStopGeneration == stopGeneration else { return }
+            guard speechHostStopGeneration == stopGeneration else { return }
         speechAudioHostSnapshot = await speechAudioHost
             .startPreparedCapture(generation: captureGeneration)
-        guard speechHostStopGeneration == stopGeneration else { return }
+            guard speechHostStopGeneration == stopGeneration else { return }
         guard speechAudioHostSnapshot.isCapturing else {
             await failFormalSpeechRoute(
                 generation: generation,
@@ -4605,7 +4576,67 @@ final class AppController: ObservableObject {
             )
         }
         refreshParticleDebugSnapshot()
-    }
+        }
+
+        private func prepareFormalSpeechCapture(stopGeneration: UInt64) async -> UInt64? {
+            do {
+                try await selectSpeechAudioProcessingMode(
+                    .webRTCAEC3,
+                    stopGeneration: stopGeneration
+                )
+            } catch {
+                guard speechHostStopGeneration == stopGeneration else { return nil }
+                publishFormalSpeechRouteFailure(
+                    (error as? MacSpeechAudioCaptureError)?.rawValue
+                        ?? "audio_backend_unavailable"
+                )
+                return nil
+            }
+            let preparedCaptureGeneration =
+                await speechAudioHost.prepareCaptureGeneration()
+            guard speechHostStopGeneration == stopGeneration else {
+                if let preparedCaptureGeneration {
+                    _ = await speechAudioHost.cancelPreparedCapture(
+                        generation: preparedCaptureGeneration
+                    )
+                }
+                return nil
+            }
+            guard let captureGeneration = preparedCaptureGeneration else {
+                speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+                publishFormalSpeechRouteFailure("capture_unavailable")
+                return nil
+            }
+            return captureGeneration
+        }
+
+        private func startFormalSpeechASR(
+            captureGeneration: UInt64,
+            stopGeneration: UInt64
+        ) async -> UInt64? {
+            let startResult = await orchestrationKernel.startSpeechRouteASR(
+                locale: "zh-CN"
+            )
+            guard speechHostStopGeneration == stopGeneration else {
+                if case let .success(generation) = startResult {
+                    _ = await orchestrationKernel.cancelSpeechRoute(generation: generation)
+                }
+                _ = await speechAudioHost.cancelPreparedCapture(generation: captureGeneration)
+                return nil
+            }
+            guard case let .success(generation) = startResult else {
+                speechAudioHostSnapshot = await speechAudioHost
+                    .cancelPreparedCapture(generation: captureGeneration)
+                if case let .failure(error) = startResult {
+                    publishFormalSpeechRouteFailure(
+                        Self.formalSpeechErrorCode(error)
+                    )
+                }
+                return nil
+            }
+
+            return generation
+        }
 
     private func pumpFormalSpeechAudio(
         captureGeneration: UInt64
@@ -5038,7 +5069,7 @@ final class AppController: ObservableObject {
             formalSpeechInputTask?.cancel()
             formalSpeechInputTask = nil
             speechAudioHostSnapshot = await speechAudioHost.stopCapture()
-            speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+                speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
             let commitResult = orchestrationKernel
                 .commitSpeechRoutePlayback(generation: generation)
             guard case .success = commitResult else {
@@ -5149,7 +5180,7 @@ final class AppController: ObservableObject {
             generation: generation
         )
         speechAudioHostSnapshot = await speechAudioHost.stopCapture()
-        speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+            speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
         resetFormalSpeechRouteState()
         formalSpeechRouteDebugSnapshot = FormalSpeechRouteDebugSnapshot(
             phase: terminalPhase,
@@ -5238,46 +5269,12 @@ final class AppController: ObservableObject {
             return
         }
         speechAudioHostShutdownCompleted = false
-        let stopGeneration = speechHostStopGeneration
+            let stopGeneration = speechHostStopGeneration
         speechHostLifecycleOperationCount += 1
         defer { speechHostLifecycleOperationCount -= 1 }
-        do {
-            try await selectSpeechAudioProcessingMode(
-                .webRTCAEC3,
+            guard let captureGeneration = await prepareNativeSpeechCapture(
                 stopGeneration: stopGeneration
-            )
-        } catch {
-            guard speechHostStopGeneration == stopGeneration else { return }
-            speechInputBridgeSnapshot = await speechInputBridge.fail(.unavailable)
-            recordRealtimeSpeechDiagnostic(
-                source: .lifecycle,
-                category: "bridge_start_failed",
-                errorCode: (error as? MacSpeechAudioCaptureError)?.rawValue
-                    ?? "audio_backend_unavailable"
-            )
-            return
-        }
-        let preparedCaptureGeneration =
-            await speechAudioHost.prepareCaptureGeneration()
-        guard speechHostStopGeneration == stopGeneration else {
-            if let preparedCaptureGeneration {
-                _ = await speechAudioHost.cancelPreparedCapture(
-                    generation: preparedCaptureGeneration
-                )
-            }
-            return
-        }
-        guard let captureGeneration = preparedCaptureGeneration else {
-            speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
-            speechInputBridgeSnapshot =
-                await speechInputBridge.fail(.unavailable)
-            recordRealtimeSpeechDiagnostic(
-                source: .lifecycle,
-                category: "bridge_start_failed",
-                errorCode: "capture_unavailable"
-            )
-            return
-        }
+            ) else { return }
         speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
         lastDiagnosticAggregateNanoseconds = 0
         lastDiagnosticCaptureGeneratedCount = 0
@@ -5290,46 +5287,25 @@ final class AppController: ObservableObject {
             profile: nativeSpeechProviderDebugState.profile,
             captureGeneration: captureGeneration
         )
-        guard speechHostStopGeneration == stopGeneration else {
-            if case .success(let binding) = result {
-                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
+            guard speechHostStopGeneration == stopGeneration else {
+                if case let .success(binding) = result {
+                    _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
+                }
+                _ = await speechAudioHost.cancelPreparedCapture(generation: captureGeneration)
+                return
             }
-            _ = await speechAudioHost.cancelPreparedCapture(generation: captureGeneration)
-            return
-        }
         switch result {
         case .success(let binding):
-            residentTextPresentationID = nil
-            await speechOutputDebugSink.reset()
-            guard speechHostStopGeneration == stopGeneration else {
-                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
-                return
-            }
-            nativeSpeechPlaybackBinding = nil
-            projectedNativeSpeechDialogueHistoryIdentities.removeAll(
-                keepingCapacity: true
-            )
-            lastPlaybackEventOrdinal = 0
-            await speechAudioOutputHost.setEventSink { [weak self] event in
-                await self?.consumePlaybackHostEvent(event)
-            }
-            guard speechHostStopGeneration == stopGeneration else {
-                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
-                return
-            }
-            speechOutputBridgeSnapshot = await speechOutputBridge.start(
-                binding: binding
-            )
-            guard speechHostStopGeneration == stopGeneration else {
-                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
-                return
-            }
+                guard await prepareNativeSpeechPlayback(
+                    binding: binding,
+                    stopGeneration: stopGeneration
+                ) else { return }
             speechAudioHostSnapshot = await speechAudioHost
                 .startPreparedCapture(generation: captureGeneration)
-            guard speechHostStopGeneration == stopGeneration else {
-                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
-                return
-            }
+                guard speechHostStopGeneration == stopGeneration else {
+                    _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
+                    return
+                }
             guard speechAudioHostSnapshot.isCapturing else {
                 speechOutputBridgeSnapshot = await speechOutputBridge.stop()
                 speechInputBridgeSnapshot =
@@ -5354,7 +5330,7 @@ final class AppController: ObservableObject {
             speechInputBridgeSnapshot = await speechInputBridge.start(
                 binding: binding
             )
-            guard speechHostStopGeneration == stopGeneration else { return }
+                guard speechHostStopGeneration == stopGeneration else { return }
             recordRealtimeSpeechDiagnostic(
                 source: .lifecycle,
                 category: "receive_loop_started",
@@ -5390,7 +5366,80 @@ final class AppController: ObservableObject {
         }
         syncRealtimeSpeechPresentation()
         refreshNativeSpeechPlaybackDebugSnapshot()
-    }
+        }
+
+        private func prepareNativeSpeechCapture(stopGeneration: UInt64) async -> UInt64? {
+            do {
+                try await selectSpeechAudioProcessingMode(
+                    .webRTCAEC3,
+                    stopGeneration: stopGeneration
+                )
+            } catch {
+                guard speechHostStopGeneration == stopGeneration else { return nil }
+                speechInputBridgeSnapshot = await speechInputBridge.fail(.unavailable)
+                recordRealtimeSpeechDiagnostic(
+                    source: .lifecycle,
+                    category: "bridge_start_failed",
+                    errorCode: (error as? MacSpeechAudioCaptureError)?.rawValue
+                        ?? "audio_backend_unavailable"
+                )
+                return nil
+            }
+            let preparedCaptureGeneration =
+                await speechAudioHost.prepareCaptureGeneration()
+            guard speechHostStopGeneration == stopGeneration else {
+                if let preparedCaptureGeneration {
+                    _ = await speechAudioHost.cancelPreparedCapture(
+                        generation: preparedCaptureGeneration
+                    )
+                }
+                return nil
+            }
+            guard let captureGeneration = preparedCaptureGeneration else {
+                speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+                speechInputBridgeSnapshot =
+                    await speechInputBridge.fail(.unavailable)
+                recordRealtimeSpeechDiagnostic(
+                    source: .lifecycle,
+                    category: "bridge_start_failed",
+                    errorCode: "capture_unavailable"
+                )
+                return nil
+            }
+            return captureGeneration
+        }
+
+        private func prepareNativeSpeechPlayback(
+            binding: NativeSpeechInputBinding,
+            stopGeneration: UInt64
+        ) async -> Bool {
+            residentTextPresentationID = nil
+            await speechOutputDebugSink.reset()
+            guard speechHostStopGeneration == stopGeneration else {
+                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
+                return false
+            }
+            nativeSpeechPlaybackBinding = nil
+            projectedNativeSpeechDialogueHistoryIdentities.removeAll(
+                keepingCapacity: true
+            )
+            lastPlaybackEventOrdinal = 0
+            await speechAudioOutputHost.setEventSink { [weak self] event in
+                await self?.consumePlaybackHostEvent(event)
+            }
+            guard speechHostStopGeneration == stopGeneration else {
+                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
+                return false
+            }
+            speechOutputBridgeSnapshot = await speechOutputBridge.start(
+                binding: binding
+            )
+            guard speechHostStopGeneration == stopGeneration else {
+                _ = await orchestrationKernel.closeNativeSpeechInput(binding: binding)
+                return false
+            }
+            return true
+        }
 
     private func consumeNativeSpeechOutputEvent(
         _ event: NativeSpeechEvent

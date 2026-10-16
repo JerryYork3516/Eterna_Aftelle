@@ -2,7 +2,7 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
-**本文件是本范围的唯一正式计划入口。** 当前设计见 [Apple Native Voice Experience 计划 v2](T3_1_R2_native_voice_experience_plan.md)。主控已批准T3.1-R2计划：Apple 原生通话音频能力 → Aftelle 既有音频输入接口 → Test2 冻结技术链。主控本轮已批准T3.0-F/Test2 Offline Baseline及T3.1-R2 Plan，并仅授权T3.2-A生产实现、必要离线回归与构建。本轮结果见 [T3.2-A实现与审核](T3_2_A_implementation_and_review.md)：机械离线检查通过，格式/静态工具FAIL及工程REWORK保留；用户已明确仅豁免本轮lint提交门槛，允许当前白名单交付；不是设备或下一节点授权。正式旧Human Gate仍有效，Apple合同剖面另按逐项批准边界处理。
+**本文件是本范围的唯一正式计划入口。** 当前设计见 [Apple Native Voice Experience 计划 v2](T3_1_R2_native_voice_experience_plan.md)。主控已批准T3.1-R2计划：Apple 原生通话音频能力 → Aftelle 既有音频输入接口 → Test2 冻结技术链。主控本轮已批准T3.0-F/Test2 Offline Baseline及T3.1-R2 Plan，并仅授权T3.2-A生产实现、必要离线回归与构建。本轮结果见 [T3.2-A实现与审核](T3_2_A_implementation_and_review.md)：机械离线检查通过，格式/静态工具FAIL及工程REWORK保留；用户已明确仅豁免本轮lint提交门槛，允许当前白名单交付；不是设备或下一节点授权。正式旧Human Gate仍有效，Apple合同剖面另按逐项批准边界处理。 最新主控决定及交付见 [T3.2-A-L最终审核](T3_2_A_L_incremental_lint_review.md)：离线功能安全已APPROVED；Release guard、Debug/Release及受影响离线回归PASS；B0/C23（21文件/类型＋2函数长度），SwiftFormat18286/SwiftLint312仍FAIL。主控对本次已验证17文件单独授予一次性lint提交例外；ENGINEERING保持REWORK/DEBT_DEFERRED，C23在Stage7.5结束后治理；设备及下一节点未授权。
 
 ## 当前状态
 
@@ -11,6 +11,9 @@ T3.0 Documentation = APPROVED
 Baseline Verification = PASS (MAIN_APPROVED)
 T3.1-R2 Plan = APPROVED
 T3.2-A = REVIEW_PENDING
+T3.2-A-L Offline Safety = APPROVED
+T3.2-A-L Submission = COMPLETED
+ENGINEERING = REWORK / DEBT_DEFERRED
 T3.2-A Device Validation = NOT_AUTHORIZED
 T3.2-B = NOT_AUTHORIZED
 T3.3–T3.6 = NOT_STARTED
@@ -24,6 +27,8 @@ Test3.execution_authorized = false
 ~~~
 
 T3.0、T3.1-R2报告中的状态行和AGENTS指针保留当时快照，本轮不追溯修改；主控本轮另明确批准T3.0-F/Test2 Offline Baseline，并授权本次A实现；历史快照不追溯改写。旧v1的SQ-M1 MAJOR OPEN历史不变，v2将它重分类为Apple处理结果与既有声学接口的兼容/安全OPEN问题；不新建复杂声源认证Gate，不阻纯PCM机械设计。本次Test2离线回归不关闭SQ-M1；安全不足时仍fail-closed，限制T3.3安全验收、T3.4正式开放与T3.5。
+
+本次Submission完成状态以正常commit/push后HEAD=upstream=实时远端且git status clean的回执为准。一次性例外不沿用e0、不改04规范或工具结果；后续Stage7.5新增代码严格规范、新增违规必须为零，已有债务分登记，功能/安全/Release Guard零豁免，阶段结束后集中治理。本段只记录治理决定，不新增CI或lint配置。独立复核另登记Host辅助awk结束标记陈旧的MINOR OPEN（不属于C23、当前无功能错误），本次不改已验证脚本。
 
 ## 基线、路线与保护
 

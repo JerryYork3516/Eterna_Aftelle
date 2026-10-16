@@ -372,7 +372,9 @@ nonisolated struct MacSpeechPCM16Packetizer: Sendable {
         contentTimestampNanoseconds: UInt64? = nil
     ) -> [MacSpeechPCM16Packet] {
         guard !samples.isEmpty else { return [] }
-        if pendingSamples.isEmpty { pendingTimestamp = contentTimestampNanoseconds }
+        if pendingSamples.isEmpty {
+            pendingTimestamp = contentTimestampNanoseconds
+        }
         pendingSamples.append(contentsOf: samples)
         evidenceSpans.append(EvidenceSpan(
             sampleCount: samples.count,
@@ -494,7 +496,11 @@ nonisolated extension MacSpeechAudioCapturing {
             throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
         }
     }
-    func voiceProcessingSnapshot() -> MacSpeechVoiceProcessingSnapshot? { nil }
+
+    func voiceProcessingSnapshot() -> MacSpeechVoiceProcessingSnapshot? {
+        nil
+    }
+
     func discardPendingAudioForGenerationTransition() {}
     func routeWillRebuild() {}
     func routeDidRebuild() {}
@@ -548,25 +554,12 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
         requireContentTime: Bool = false
     ) throws -> [MacSpeechPCM16Packet] {
         try lock.withLock {
-            if requireContentTime {
-                guard contentTimeValid, let timestamp = contentTimestampNanoseconds,
-                      timestamp > 0 else {
-                    contentTimeValid = false
-                    packetizer.reset()
-                    return []
-                }
-                if contentAnchor == nil { contentAnchor = timestamp }
-                let expected = Double(contentAnchor!)
-                    + Double(inputSampleCount) * 1_000_000_000 / inputSampleRate
-                guard abs(Double(timestamp) - expected) <= (1_000_000_000 / inputSampleRate).rounded(.up) else {
-                    contentTimeValid = false
-                    packetizer.reset()
-                    return []
-                }
+            if requireContentTime, !validateContentTimeLocked(contentTimestampNanoseconds) {
+                return []
             }
             let ratio = MacSpeechAudioInputFormat.sampleRate / inputSampleRate
             let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio) + 8
-            guard inputBuffer.frameLength > 0, estimatedFrames <= 8_192 else {
+            guard inputBuffer.frameLength > 0, estimatedFrames <= 8192 else {
                 throw MacSpeechAudioCaptureError.conversionFailed
             }
             let capacity = AVAudioFrameCount(max(1, estimatedFrames))
@@ -604,9 +597,47 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
                 throw MacSpeechAudioCaptureError.conversionFailed
             }
             inputSampleCount += UInt64(inputBuffer.frameLength)
+            return try makePacketsLocked(
+                samples: samples,
+                outputBuffer: outputBuffer,
+                ratio: ratio,
+                activityEvidenceKind: activityEvidenceKind,
+                acousticSnapshot: acousticSnapshot
+            )
+        }
+    }
+
+    private func validateContentTimeLocked(_ timestamp: UInt64?) -> Bool {
+        guard contentTimeValid, let timestamp, timestamp > 0 else {
+            contentTimeValid = false
+            packetizer.reset()
+            return false
+        }
+        if contentAnchor == nil {
+            contentAnchor = timestamp
+        }
+        let expected = Double(contentAnchor!)
+            + Double(inputSampleCount) * 1_000_000_000 / inputSampleRate
+        guard abs(Double(timestamp) - expected) <= (1_000_000_000 / inputSampleRate).rounded(.up) else {
+            contentTimeValid = false
+            packetizer.reset()
+            return false
+        }
+        return true
+    }
+
+    private func makePacketsLocked(
+        samples: UnsafeMutablePointer<Float>,
+        outputBuffer: AVAudioPCMBuffer,
+        ratio: Double,
+        activityEvidenceKind: MacSpeechAudioActivityEvidenceKind,
+        acousticSnapshot: MacSpeechAcousticObservationSnapshot?
+    ) throws -> [MacSpeechPCM16Packet] {
+        try withExtendedLifetime(outputBuffer) {
             let count = Int(outputBuffer.frameLength)
             guard Double(outputSampleCount) + Double(count)
-                    <= Double(inputSampleCount) * ratio + 0.000_001 else {
+                <= Double(inputSampleCount) * ratio + 0.000_001
+            else {
                 contentTimeValid = false
                 packetizer.reset()
                 throw MacSpeechAudioCaptureError.conversionFailed
@@ -750,19 +781,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     ) throws -> Output {
         try lock.withLock {
             let ratio = outputFormat.sampleRate / inputSampleRate
-            let estimatedFrames = ceil(Double(inputBuffer.frameLength) * ratio)
-            guard inputBuffer.frameLength > 0,
-                  estimatedFrames <= 16_384,
-                  inputTimes.count < 64 else {
-                throw MacSpeechAudioCaptureError.conversionFailed
-            }
-            let capacity = AVAudioFrameCount(max(1, estimatedFrames))
-            guard let outputBuffer = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: capacity
-            ) else {
-                throw MacSpeechAudioCaptureError.conversionFailed
-            }
+            let outputBuffer = try makeOutputBufferLocked(
+                frameLength: inputBuffer.frameLength, ratio: ratio
+            )
             let inputState = InputState()
             var conversionError: NSError?
             let status = converter.convert(
@@ -781,17 +802,12 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
                 sampleTimeContinuityValid = false
                 throw MacSpeechAudioCaptureError.conversionFailed
             }
-            let start = Double(inputFrameCount) * ratio
-            let inputTime = anchoredInputHostTime(
+            recordInputTimeLocked(
+                frameLength: inputBuffer.frameLength,
+                ratio: ratio,
                 sampleTime: sampleTime,
-                hostTimeNanoseconds: hostTimeNanoseconds,
-                inputFrameCount: Int(inputBuffer.frameLength)
+                hostTimeNanoseconds: hostTimeNanoseconds
             )
-            inputFrameCount += UInt64(inputBuffer.frameLength)
-            inputTimes.append(InputTime(
-                start: start, end: Double(inputFrameCount) * ratio,
-                hostTimeNanoseconds: inputTime
-            ))
             guard conversionError == nil,
                   status != .error,
                   let samples = outputBuffer.floatChannelData?[0] else {
@@ -808,18 +824,19 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         }
     }
 
-    private func outputHostTime(sampleCount: Int)
-        -> UInt64? {
+    private func outputHostTime(sampleCount: Int) -> UInt64? {
         guard sampleCount > 0 else { return nil }
         let start = Double(outputSampleCount)
         let end = start + Double(sampleCount)
         let intervals = inputTimes.filter { $0.end > start && $0.start < end }
         guard let last = intervals.last,
-              last.end + 0.000_001 >= end else {
+              last.end + 0.000_001 >= end
+        else {
             return nil
         }
         guard let first = intervals.first,
-              first.start <= start else {
+              first.start <= start
+        else {
             return nil
         }
         guard let firstTime = first.hostTimeNanoseconds else {
@@ -855,23 +872,10 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
             return nil
         }
         guard let sampleTime else {
-            if sampleTimeAnchor != nil {
-                sampleTimeContinuityValid = false
-            }
-            if let previousInputHostTime {
-                let expected = Double(previousInputHostTime)
-                    + Double(previousInputFrameCount)
-                        * 1_000_000_000 / inputSampleRate
-                let tolerance = (1_000_000_000 / inputSampleRate)
-                    .rounded(.up)
-                if abs(Double(hostTimeNanoseconds) - expected)
-                    > tolerance {
-                    sampleTimeContinuityValid = false
-                }
-            }
-            previousInputHostTime = hostTimeNanoseconds
-            previousInputFrameCount = inputFrameCount
-            return sampleTimeContinuityValid ? hostTimeNanoseconds : nil
+            return unanchoredInputHostTimeLocked(
+                hostTimeNanoseconds: hostTimeNanoseconds,
+                inputFrameCount: inputFrameCount
+            )
         }
         if sampleTimeAnchor == nil {
             guard self.inputFrameCount == 0 else {
@@ -886,7 +890,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         let (next, overflow) = sampleTime.addingReportingOverflow(
             Int64(inputFrameCount)
         )
-        if overflow { sampleTimeContinuityValid = false }
+        if overflow {
+            sampleTimeContinuityValid = false
+        }
         nextInputSampleTime = overflow ? nil : next
         guard sampleTimeContinuityValid,
               let sampleTimeAnchor,
@@ -901,11 +907,33 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         guard timestamp.isFinite, timestamp > 0,
               timestamp < Double(UInt64.max),
               abs(Double(hostTimeNanoseconds) - timestamp)
-                <= (1_000_000_000 / inputSampleRate).rounded(.up) else {
+              <= (1_000_000_000 / inputSampleRate).rounded(.up)
+        else {
             sampleTimeContinuityValid = false
             return nil
         }
         return UInt64(timestamp.rounded())
+    }
+
+    private func unanchoredInputHostTimeLocked(
+        hostTimeNanoseconds: UInt64,
+        inputFrameCount: Int
+    ) -> UInt64? {
+        if sampleTimeAnchor != nil {
+            sampleTimeContinuityValid = false
+        }
+        if let previousInputHostTime {
+            let expected = Double(previousInputHostTime)
+                + Double(previousInputFrameCount)
+                * 1_000_000_000 / inputSampleRate
+            let tolerance = (1_000_000_000 / inputSampleRate).rounded(.up)
+            if abs(Double(hostTimeNanoseconds) - expected) > tolerance {
+                sampleTimeContinuityValid = false
+            }
+        }
+        previousInputHostTime = hostTimeNanoseconds
+        previousInputFrameCount = inputFrameCount
+        return sampleTimeContinuityValid ? hostTimeNanoseconds : nil
     }
 
     func resetForGenerationTransition() {
@@ -921,6 +949,48 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
             previousInputHostTime = nil
             previousInputFrameCount = 0
         }
+    }
+}
+
+private extension MacSpeechFloatMono48kConverter {
+    func makeOutputBufferLocked(
+        frameLength: AVAudioFrameCount,
+        ratio: Double
+    ) throws -> AVAudioPCMBuffer {
+        let estimatedFrames = ceil(Double(frameLength) * ratio)
+        guard frameLength > 0,
+              estimatedFrames <= 16384,
+              inputTimes.count < 64
+        else {
+            throw MacSpeechAudioCaptureError.conversionFailed
+        }
+        let capacity = AVAudioFrameCount(max(1, estimatedFrames))
+        guard let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: capacity
+        ) else {
+            throw MacSpeechAudioCaptureError.conversionFailed
+        }
+        return outputBuffer
+    }
+
+    func recordInputTimeLocked(
+        frameLength: AVAudioFrameCount,
+        ratio: Double,
+        sampleTime: Int64?,
+        hostTimeNanoseconds: UInt64?
+    ) {
+        let start = Double(inputFrameCount) * ratio
+        let inputTime = anchoredInputHostTime(
+            sampleTime: sampleTime,
+            hostTimeNanoseconds: hostTimeNanoseconds,
+            inputFrameCount: Int(frameLength)
+        )
+        inputFrameCount += UInt64(frameLength)
+        inputTimes.append(InputTime(
+            start: start, end: Double(inputFrameCount) * ratio,
+            hostTimeNanoseconds: inputTime
+        ))
     }
 }
 
@@ -976,7 +1046,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var captureGenerationFence = MacSpeechCaptureGenerationFence()
     #if DEBUG
     private static let audioUnitDiagnosticLogger = Logger(
-        subsystem: "com.eterna.aftelle", category: "AudioUnitAttribution"
+            subsystem: "com.eterna.aftelle", category: "AudioUnitAttribution"
     )
     #endif
 
@@ -997,12 +1067,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         mode: MacSpeechAudioProcessingMode
     ) -> MacSpeechAcousticEchoHost {
         #if AFTELLE_WEBRTC_AEC3
-        MacSpeechAcousticEchoHost(
-            mode: mode,
-            backend: mode == .webRTCAEC3 ? MacSpeechWebRTCAECProcessor() : nil
-        )
+            MacSpeechAcousticEchoHost(
+                mode: mode,
+                backend: mode == .webRTCAEC3 ? MacSpeechWebRTCAECProcessor() : nil
+            )
         #else
-        MacSpeechAcousticEchoHost(mode: mode)
+            MacSpeechAcousticEchoHost(mode: mode)
         #endif
     }
 
@@ -1010,7 +1080,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         try lifecycleLock.withLock {
             try lock.withLock {
                 guard !isCaptureActive, !isOutputPrepared, !isOutputPlaying,
-                      !isRouteRebuilding else {
+                      !isRouteRebuilding
+                else {
                     throw MacSpeechAudioCaptureError.processingModeBusy
                 }
                 guard mode != .halfDuplexFallback else {
@@ -1030,30 +1101,45 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         lock.withLock { processingSnapshot }
     }
 
+    private struct PreparedCapture {
+        let engine: AVAudioEngine
+        let format: AVAudioFormat
+        let configurationID: UInt64
+    }
+
+    private func prepareCaptureLocked(generation: UInt64) throws -> PreparedCapture {
+        guard !isRouteRebuilding else {
+            throw MacSpeechAudioCaptureError.processingModeBusy
+        }
+        try configureIfNeeded()
+        guard let engine, captureAECConverter != nil,
+              captureOutputConverter != nil
+        else {
+            throw MacSpeechAudioCaptureError.converterUnavailable
+        }
+        if isCaptureActive {
+            guard captureGeneration == generation else {
+                throw MacSpeechAudioCaptureError.processingModeBusy
+            }
+        }
+        return PreparedCapture(
+            engine: engine,
+            format: engine.inputNode.outputFormat(forBus: 0),
+            configurationID: configurationID
+        )
+    }
+
     func startCapture(
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) throws -> MacSpeechNativeInputFormat {
         try lifecycleLock.withLock {
-            let prepared = try lock.withLock { () throws -> (AVAudioEngine, AVAudioFormat, UInt64) in
-                guard !isRouteRebuilding else {
-                    throw MacSpeechAudioCaptureError.processingModeBusy
-                }
-                try configureIfNeeded()
-                guard let engine, captureAECConverter != nil,
-                      captureOutputConverter != nil else {
-                    throw MacSpeechAudioCaptureError.converterUnavailable
-                }
-                if isCaptureActive {
-                    guard captureGeneration == generation else {
-                        throw MacSpeechAudioCaptureError.processingModeBusy
-                    }
-                }
-                return (engine, engine.inputNode.outputFormat(forBus: 0), configurationID)
+            let prepared = try lock.withLock { try prepareCaptureLocked(generation: generation) }
+            if lock.withLock({ isCaptureActive }) {
+                return describe(prepared.format)
             }
-            if lock.withLock({ isCaptureActive }) { return describe(prepared.1) }
             do {
-                try validateVoiceProcessing(engine: prepared.0, requireUnmuted: true)
+                try validateVoiceProcessing(engine: prepared.engine, requireUnmuted: true)
                 captureProcessingLock.withLock {
                     captureGenerationFence = MacSpeechCaptureGenerationFence()
                     lock.withLock {
@@ -1063,29 +1149,28 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                         isCaptureActive = true
                     }
                 }
-                let inputNode = prepared.0.inputNode
-                let captureConfigurationID = prepared.2
+                let inputNode = prepared.engine.inputNode
+                let captureConfigurationID = prepared.configurationID
                 inputNode.installTap(
                     onBus: 0,
-                    bufferSize: MacSpeechAudioInputFormat.tapBufferSize(for: prepared.1.sampleRate),
-                    format: prepared.1
+                    bufferSize: MacSpeechAudioInputFormat.tapBufferSize(for: prepared.format.sampleRate),
+                    format: prepared.format
                 ) { [weak self] buffer, when in
                     self?.processCapture(
                         buffer,
-                        hostTimeNanoseconds: Self.hostTimeNanoseconds(when),
-                        nativeSampleTime: when.isSampleTimeValid ? when.sampleTime : nil,
+                        at: when,
                         configurationID: captureConfigurationID,
                         generation: generation,
                         frameBuffer: frameBuffer
                     )
                 }
                 lock.withLock { isCaptureTapInstalled = true }
-                if !prepared.0.isRunning {
-                    prepared.0.prepare()
-                    try prepared.0.start()
+                if !prepared.engine.isRunning {
+                    prepared.engine.prepare()
+                    try prepared.engine.start()
                 }
                 lock.withLock { refreshAcousticEchoPresentationLatencyLocked() }
-                return describe(prepared.1)
+                return describe(prepared.format)
             } catch {
                 stopCaptureLocked()
                 throw error
@@ -1145,7 +1230,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             let node = try lock.withLock { () throws -> AVAudioPlayerNode in
                 guard isOutputPrepared, !isRouteRebuilding,
                       let playerNode, let outputFormat,
-                      buffer.format == outputFormat else {
+                      buffer.format == outputFormat
+                else {
                     throw MacSpeechAudioCaptureError.engineStartFailed
                 }
                 return playerNode
@@ -1170,7 +1256,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     prepared.0.prepare()
                     try prepared.0.start()
                 }
-                if !prepared.1.isPlaying { prepared.1.play() }
+                if !prepared.1.isPlaying {
+                    prepared.1.play()
+                }
                 lock.withLock { refreshAcousticEchoPresentationLatencyLocked() }
             } catch {
                 lock.withLock { isOutputPlaying = false }
@@ -1245,12 +1333,14 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             let inputFormat = inputNode.outputFormat(forBus: 0)
             let outputInputFormat = engine.outputNode.inputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
-                  localFormat.sampleRate > 0, localFormat.channelCount > 0 else {
+                  localFormat.sampleRate > 0, localFormat.channelCount > 0
+            else {
                 throw MacSpeechAudioCaptureError.invalidInputFormat
             }
             if audioProcessingMode == .appleVoiceProcessing {
                 guard inputFormat.sampleRate == outputInputFormat.sampleRate,
-                      inputFormat.channelCount == outputInputFormat.channelCount else {
+                      inputFormat.channelCount == outputInputFormat.channelCount
+                else {
                     throw MacSpeechAudioCaptureError.invalidInputFormat
                 }
             }
@@ -1296,15 +1386,16 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             outputFormat: describe(engine.outputNode.inputFormat(forBus: 0)),
             validatedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
         )
-        if let previous = processingSnapshot,
-           previous.configurationID == configurationID,
-           (previous.inputFormat != snapshot.inputFormat || previous.outputFormat != snapshot.outputFormat) {
-            processingSnapshot = nil
-            throw MacSpeechAudioCaptureError.invalidInputFormat
+        if let previous = processingSnapshot, previous.configurationID == configurationID {
+            if previous.inputFormat != snapshot.inputFormat || previous.outputFormat != snapshot.outputFormat {
+                processingSnapshot = nil
+                throw MacSpeechAudioCaptureError.invalidInputFormat
+            }
         }
         if audioProcessingMode == .appleVoiceProcessing {
             guard snapshot.hasValidAppleProcessing,
-                  !requireUnmuted || !snapshot.inputMuted else {
+                  !requireUnmuted || !snapshot.inputMuted
+            else {
                 processingSnapshot = nil
                 throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
             }
@@ -1322,9 +1413,21 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         tearDownGraph(outputAlreadyStopped: outputAlreadyStopped)
     }
 
+    private struct DetachedGraph {
+        let engine: AVAudioEngine?
+        let playerNode: AVAudioPlayerNode?
+        let captureTapInstalled: Bool
+        let renderTapInstalled: Bool
+    }
+
     private func tearDownGraph(outputAlreadyStopped: Bool = false) {
-        let graph = lock.withLock { () -> (AVAudioEngine?, AVAudioPlayerNode?, Bool, Bool) in
-            let result = (engine, playerNode, isCaptureTapInstalled, isRenderReferenceTapInstalled)
+        let graph = lock.withLock {
+            let result = DetachedGraph(
+                engine: engine,
+                playerNode: playerNode,
+                captureTapInstalled: isCaptureTapInstalled,
+                renderTapInstalled: isRenderReferenceTapInstalled
+            )
             configurationID &+= 1
             isCaptureActive = false
             captureGeneration = nil
@@ -1343,15 +1446,19 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             resetAcousticEchoPresentationLatencyLocked()
             return result
         }
-        if graph.2 { graph.0?.inputNode.removeTap(onBus: 0) }
-        if graph.3 { graph.1?.removeTap(onBus: 0) }
+        if graph.captureTapInstalled {
+            graph.engine?.inputNode.removeTap(onBus: 0)
+        }
+        if graph.renderTapInstalled {
+            graph.playerNode?.removeTap(onBus: 0)
+        }
         captureProcessingLock.withLock {}
         renderProcessingLock.withLock {}
-        graph.0?.stop()
-        if !outputAlreadyStopped, let node = graph.1 {
+        graph.engine?.stop()
+        if !outputAlreadyStopped, let node = graph.playerNode {
             stopPlayerNodeOutsideStateLock(node)
         }
-        if let engine = graph.0, let node = graph.1 {
+        if let engine = graph.engine, let node = graph.playerNode {
             engine.disconnectNodeOutput(node)
             engine.detach(node)
             engine.reset()
@@ -1366,7 +1473,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 return isConfigured
             }
             acousticEchoHost.routeWillRebuild()
-            if wasConfigured { tearDownGraph() }
+            if wasConfigured {
+                tearDownGraph()
+            }
         }
     }
 
@@ -1409,7 +1518,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         attemptID: UUID,
         targetCaptureFrameCount: Int = 1_000
     ) -> Bool {
-        lock.withLock { acousticEchoHost }.armAcousticReplayCapture(
+            lock.withLock { acousticEchoHost }.armAcousticReplayCapture(
             attemptID: attemptID,
             targetCaptureFrameCount: targetCaptureFrameCount
         )
@@ -1419,7 +1528,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         reason: MacSpeechAcousticReplaySealReason = .manual,
         matchingAttemptID attemptID: UUID? = nil
     ) {
-        lock.withLock { acousticEchoHost }.sealAcousticReplayCapture(
+            lock.withLock { acousticEchoHost }.sealAcousticReplayCapture(
             reason: reason,
             matchingAttemptID: attemptID
         )
@@ -1427,48 +1536,61 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     func acousticReplayCaptureSnapshot()
         -> MacSpeechAcousticReplayCaptureSnapshot? {
-        lock.withLock { acousticEchoHost }.acousticReplayCaptureSnapshot()
+            lock.withLock { acousticEchoHost }.acousticReplayCaptureSnapshot()
     }
 
     func clearAcousticReplayCapture(matchingAttemptID attemptID: UUID? = nil) {
-        lock.withLock { acousticEchoHost }.clearAcousticReplayCapture(
+            lock.withLock { acousticEchoHost }.clearAcousticReplayCapture(
             matchingAttemptID: attemptID
         )
     }
     #endif
 
+    private struct CaptureProcessingContext {
+        let inputConverter: MacSpeechFloatMono48kConverter
+        let outputConverter: MacSpeechAudioConverter
+        let host: MacSpeechAcousticEchoHost
+        let appleProcessing: Bool
+    }
+
     private func processCapture(
         _ buffer: AVAudioPCMBuffer,
-        hostTimeNanoseconds: UInt64?,
-        nativeSampleTime: Int64?,
+        at time: AVAudioTime,
         configurationID: UInt64,
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) {
+        let hostTimeNanoseconds = Self.hostTimeNanoseconds(time)
+        let nativeSampleTime = time.isSampleTimeValid ? time.sampleTime : nil
         captureProcessingLock.withLock {
             guard captureGenerationFence.accepts(hostTimeNanoseconds: hostTimeNanoseconds) else { return }
-            let context = lock.withLock { () -> (MacSpeechFloatMono48kConverter, MacSpeechAudioConverter, MacSpeechAcousticEchoHost, Bool)? in
+            let context = lock.withLock { () -> CaptureProcessingContext? in
                 guard isCaptureActive, self.configurationID == configurationID,
                       captureGeneration == generation,
                       let input = captureAECConverter, let output = captureOutputConverter else { return nil }
-                return (input, output, acousticEchoHost, audioProcessingMode == .appleVoiceProcessing)
+                return CaptureProcessingContext(
+                    inputConverter: input,
+                    outputConverter: output,
+                    host: acousticEchoHost,
+                    appleProcessing: audioProcessingMode == .appleVoiceProcessing
+                )
             }
-            guard let (inputConverter, outputConverter, host, appleProcessing) = context,
-                  let converted = try? inputConverter.convert(
-                    buffer, hostTimeNanoseconds: hostTimeNanoseconds, sampleTime: nativeSampleTime
+            guard let context,
+                  let converted = try? context.inputConverter.convert(
+                      buffer, hostTimeNanoseconds: hostTimeNanoseconds, sampleTime: nativeSampleTime
                   ), let contentTime = converted.hostTimeNanoseconds,
                   captureGenerationFence.accepts(hostTimeNanoseconds: contentTime),
                   lock.withLock({ isCaptureActive && self.configurationID == configurationID
-                      && captureGeneration == generation }) else { return }
+                          && captureGeneration == generation }) else { return }
             let startedAt = DispatchTime.now().uptimeNanoseconds
-            let captureSpans = host.processCaptureSpans(converted.samples, hostTimeNanoseconds: contentTime)
-            if let packets = try? outputConverter.convert(
-                captureSpans: captureSpans, requiresContinuousContentTime: appleProcessing
+            let captureSpans = context.host.processCaptureSpans(converted.samples, hostTimeNanoseconds: contentTime)
+            if let packets = try? context.outputConverter.convert(
+                captureSpans: captureSpans, requiresContinuousContentTime: context.appleProcessing
             ) {
                 for packet in packets {
                     guard let observation = packet.acousticSnapshot,
                           let timestamp = packet.contentTimestampNanoseconds
-                            ?? (appleProcessing ? nil : observation.captureHostTimeNanoseconds) else { continue }
+                          ?? (context.appleProcessing ? nil : observation.captureHostTimeNanoseconds) else { continue }
                     frameBuffer.append(
                         pcm16Bytes: packet.bytes,
                         activity: packet.activity,
@@ -1478,12 +1600,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                         residentPlaybackSequence: observation.playbackSequence,
                         residentPlaybackActive: observation.isPlaybackActive,
                         lastAudibleResidentRenderTimestampNanoseconds: observation.lastAudibleRenderHostTimeNanoseconds,
-                        sourceGateEpoch: packet.activityEvidenceKind == .sourceGatedNearEnd ? observation.sourceGateEpoch : 0,
+                        sourceGateEpoch: packet.activityEvidenceKind == .sourceGatedNearEnd
+                            ? observation.sourceGateEpoch : 0,
                         acousticSnapshot: observation
                     )
                 }
             }
-            host.recordCaptureProcessingDuration(nanoseconds: DispatchTime.now().uptimeNanoseconds &- startedAt)
+            context.host.recordCaptureProcessingDuration(nanoseconds: DispatchTime.now().uptimeNanoseconds &- startedAt)
             lock.withLock { updateAcousticEchoDelayLocked() }
         }
     }

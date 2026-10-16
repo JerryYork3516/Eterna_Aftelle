@@ -3,7 +3,9 @@ import Foundation
 actor FakeMacSpeechConsumerWatchdogSleeper {
     private var continuations: [Int: CheckedContinuation<Void, Never>] = [:]
     private(set) var requestCount = 0
-    var pendingCount: Int { continuations.count }
+    var pendingCount: Int {
+        continuations.count
+    }
 
     func sleep() async {
         requestCount += 1

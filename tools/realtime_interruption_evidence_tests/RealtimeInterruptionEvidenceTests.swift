@@ -5,15 +5,16 @@ private struct R81CredentialReader: ProviderCredentialReading {
 }
 
 private struct T32CascadedCredentialReader: ProviderCredentialReading {
-    func readCredential(for keyRef: String) throws -> String? { "offline-test-credential" }
+    func readCredential(for _: String) throws -> String? {
+        "offline-test-credential"
+    }
 }
 
 private struct T32CascadedTextTransport: ProviderHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         let content = #"{"reply_text":"offline reply","expression_state":"neutral","expression_intensity":0}"#
-        let body = try JSONSerialization.data(withJSONObject: [
-            "choices": [["message": ["content": content]]]
-        ])
+        let payload = ["choices": [["message": ["content": content]]]]
+        let body = try JSONSerialization.data(withJSONObject: payload)
         return (body, HTTPURLResponse(
             url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
         )!)
@@ -24,27 +25,38 @@ private actor T32CascadedASRProvider: ASRProvider {
     private var starts = 0
     private var inputs: [ASRAudioInput] = []
     private var inputContinuation: CheckedContinuation<Void, Never>?
-    func start(request: ASRStartRequest) async throws { starts += 1 }
+    func start(request _: ASRStartRequest) async throws {
+        starts += 1
+    }
+
     func send(_ input: ASRAudioInput) async throws {
         inputs.append(input)
         let continuation = inputContinuation
         inputContinuation = nil
         continuation?.resume()
     }
+
     func receive(generation: UInt64) async throws -> ASREvent {
         if !inputs.contains(where: { $0.generation == generation }) {
             await withCheckedContinuation { inputContinuation = $0 }
         }
         return ASREvent(generation: generation, kind: .finalTranscript("offline turn \(starts)"))
     }
-    func cancel(generation: UInt64) async throws {
+
+    func cancel(generation _: UInt64) async throws {
         let continuation = inputContinuation
         inputContinuation = nil
         continuation?.resume()
     }
-    func close(generation: UInt64) async throws {}
-    func startCount() -> Int { starts }
-    func sources() -> [ASRAudioSource] { inputs.map(\.source) }
+
+    func close(generation _: UInt64) async throws {}
+    func startCount() -> Int {
+        starts
+    }
+
+    func sources() -> [ASRAudioSource] {
+        inputs.map(\.source)
+    }
 }
 
 private actor T32CascadedTTSProvider: TTSProvider {
@@ -52,24 +64,30 @@ private actor T32CascadedTTSProvider: TTSProvider {
     private var starts = 0
     func start(request: TTSSynthesisRequest) async throws {
         starts += 1
-        events = [
-            TTSEvent(generation: request.generation, kind: .started),
-            TTSEvent(generation: request.generation, kind: .audio(TTSAudioChunk(
-                generation: request.generation,
-                sequenceNumber: 1,
-                bytes: Data(repeating: 1, count: 960),
-                format: .pcm16, sampleRate: 24_000, channelCount: 1
-            ))),
-            TTSEvent(generation: request.generation, kind: .done)
-        ]
+        let started = TTSEvent(generation: request.generation, kind: .started)
+        let audio = TTSEvent(generation: request.generation, kind: .audio(TTSAudioChunk(
+            generation: request.generation,
+            sequenceNumber: 1,
+            bytes: Data(repeating: 1, count: 960),
+            format: .pcm16, sampleRate: 24000, channelCount: 1
+        )))
+        let done = TTSEvent(generation: request.generation, kind: .done)
+        events = [started, audio, done]
     }
-    func receive(generation: UInt64) async throws -> TTSEvent {
+
+    func receive(generation _: UInt64) async throws -> TTSEvent {
         guard !events.isEmpty else { throw SpeechRouteError.invalidEvent }
         return events.removeFirst()
     }
-    func cancel(generation: UInt64) async throws { events.removeAll() }
-    func close(generation: UInt64) async throws {}
-    func startCount() -> Int { starts }
+
+    func cancel(generation _: UInt64) async throws {
+        events.removeAll()
+    }
+
+    func close(generation _: UInt64) async throws {}
+    func startCount() -> Int {
+        starts
+    }
 }
 
 private struct R81AuthorizationProvider: MicrophoneAuthorizationProviding {
@@ -115,7 +133,9 @@ private actor R855MicrophoneAuthorizationProvider:
         return authorization
     }
 
-    func isQueryPending() -> Bool { queryContinuation != nil }
+    func isQueryPending() -> Bool {
+        queryContinuation != nil
+    }
 
     func releaseQuery() {
         let continuation = queryContinuation
@@ -298,6 +318,7 @@ private final class R81AudioCapture:
     var isStarted: Bool { lock.withLock { started } }
     var startCount: Int { lock.withLock { starts } }
     var stopCount: Int { lock.withLock { stops } }
+
     var processingMode: MacSpeechAudioProcessingMode {
         lock.withLock { selectedProcessingMode }
     }
@@ -1249,9 +1270,7 @@ private struct RealtimeInterruptionEvidenceTests {
             "memory control session closes"
         )
 
-        try await testControllerMicrophoneAuthorization(fixture: fixture)
-        try await testStopDuringCapturePreparation(fixture: fixture)
-        try await testConsecutiveCascadedTurnsReleaseBackend(fixture: fixture)
+        try await testControllerPreparationAndRouteRecovery(fixture: fixture)
         try await testControllerSemanticFirstInterruption(fixture: fixture)
         try await testControllerPlaybackCompletionAndStopRace(fixture: fixture)
         try await testControllerInterruptFailureCanRestart(fixture: fixture)
@@ -1319,6 +1338,12 @@ private struct RealtimeInterruptionEvidenceTests {
         try await testDuplicateStartRequestsMicrophoneOnce(fixture: fixture)
     }
 
+    private static func testControllerPreparationAndRouteRecovery(fixture: Data) async throws {
+        try await testControllerMicrophoneAuthorization(fixture: fixture)
+        try await testStopDuringCapturePreparation(fixture: fixture)
+        try await testConsecutiveCascadedTurnsReleaseBackend(fixture: fixture)
+    }
+
     private static func testConsecutiveCascadedTurnsReleaseBackend(fixture: Data) async throws {
         cases += 1
         let asr = T32CascadedASRProvider()
@@ -1350,17 +1375,8 @@ private struct RealtimeInterruptionEvidenceTests {
             orchestrationKernel: OrchestrationKernel(runtimeCore: runtime),
             speechAudioHost: host, speechAudioOutputHost: output
         )
-        let fixtureURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("t32-cascaded-\(UUID().uuidString).digital_resident")
-        try fixture.write(to: fixtureURL, options: .atomic)
-        controller.debugImportResident(from: fixtureURL)
-        try? FileManager.default.removeItem(at: fixtureURL)
-        expect(runtime.configureTextProvider(profile: ProviderProfile(
-            profileID: "offline-text", providerID: "offline-provider", adapterType: "openai_compatible",
-            modelID: "offline-model", baseURL: "https://example.invalid/v1",
-            keyRef: "keychain://offline-test/text", enabled: true,
-            timeout: 5, stream: false, thinkingMode: "disabled"
-        )) == nil, "Cascaded text dependency is explicitly offline")
+        try importResidentFixture(fixture, into: controller, name: "t32-cascaded")
+        configureCascadedTextDependency(runtime)
         for turn in 1 ... 2 {
             await controller.startFormalSpeechRoute()
             expect(capture.emit(UInt8(turn)), "Cascaded turn \(turn) emits offline input")
@@ -1370,14 +1386,53 @@ private struct RealtimeInterruptionEvidenceTests {
                 controller.formalSpeechRouteDebugSnapshot.phase == .idle
                     && player.closeCount == turn
             }
-            expect(capture.processingMode == .webRTCAEC3,
-                   "Cascaded turn \(turn) keeps its registered AEC3 backend")
-            let backendReleased = await output.canSelectAudioProcessingMode()
-            expect(backendReleased,
-                   "completed Cascaded turn \(turn) releases backend ownership")
-            expect(!capture.isStarted && runtime.activeBrainLeaseForTesting() == nil,
-                   "completed Cascaded turn \(turn) releases capture and Runtime lease")
+            await expectCascadedBackendReleased(capture: capture, output: output, runtime: runtime, turn: turn)
         }
+        await expectConsecutiveCascadedProviderEvents(asr: asr, tts: tts)
+        print("t32a_consecutive_cascaded_turns=2")
+        await controller.shutdownSpeechAudioHost()
+    }
+
+    private static func expectCascadedBackendReleased(
+        capture: R81AudioCapture,
+        output: MacSpeechAudioOutputHost,
+        runtime: RuntimeCore,
+        turn: Int
+    ) async {
+        expect(capture.processingMode == .webRTCAEC3,
+               "Cascaded turn \(turn) keeps its registered AEC3 backend")
+        let backendReleased = await output.canSelectAudioProcessingMode()
+        expect(backendReleased,
+               "completed Cascaded turn \(turn) releases backend ownership")
+        expect(!capture.isStarted && runtime.activeBrainLeaseForTesting() == nil,
+               "completed Cascaded turn \(turn) releases capture and Runtime lease")
+    }
+
+    private static func importResidentFixture(
+        _ fixture: Data,
+        into controller: AppController,
+        name: String
+    ) throws {
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString).digital_resident")
+        try fixture.write(to: fixtureURL, options: .atomic)
+        controller.debugImportResident(from: fixtureURL)
+        try? FileManager.default.removeItem(at: fixtureURL)
+    }
+
+    private static func configureCascadedTextDependency(_ runtime: RuntimeCore) {
+        expect(runtime.configureTextProvider(profile: ProviderProfile(
+            profileID: "offline-text", providerID: "offline-provider", adapterType: "openai_compatible",
+            modelID: "offline-model", baseURL: "https://example.invalid/v1",
+            keyRef: "keychain://offline-test/text", enabled: true,
+            timeout: 5, stream: false, thinkingMode: "disabled"
+        )) == nil, "Cascaded text dependency is explicitly offline")
+    }
+
+    private static func expectConsecutiveCascadedProviderEvents(
+        asr: T32CascadedASRProvider,
+        tts: T32CascadedTTSProvider
+    ) async {
         let asrStarts = await asr.startCount()
         let ttsStarts = await tts.startCount()
         let sources = await asr.sources()
@@ -1385,8 +1440,6 @@ private struct RealtimeInterruptionEvidenceTests {
                "two consecutive Cascaded messages complete without a manual repair Stop")
         expect(sources == [.aec3Processed, .aec3Processed],
                "Cascaded input preserves AEC3 source labeling on both offline messages")
-        print("t32a_consecutive_cascaded_turns=2")
-        await controller.shutdownSpeechAudioHost()
     }
 
     private static func testStopDuringCapturePreparation(fixture: Data) async throws {
@@ -1411,8 +1464,8 @@ private struct RealtimeInterruptionEvidenceTests {
                 await stack.authorizationProvider.isQueryPending()
             }
             expect(stack.capture.processingMode == (route == "realtime"
-                ? .appleVoiceProcessing : .webRTCAEC3),
-                "\(route) selects only its registered backend before preparation")
+                       ? .appleVoiceProcessing : .webRTCAEC3),
+            "\(route) selects only its registered backend before preparation")
             await stack.controller.stopSpeechAudioCapture()
             await stack.authorizationProvider.releaseQuery()
             await start.value
@@ -2059,13 +2112,7 @@ private struct RealtimeInterruptionEvidenceTests {
             speechAudioHost: audioHost,
             speechAudioOutputHost: outputHost
         )
-        let fixtureURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(
-                "r855-permission-\(UUID().uuidString).digital_resident"
-            )
-        try fixture.write(to: fixtureURL, options: .atomic)
-        controller.debugImportResident(from: fixtureURL)
-        try? FileManager.default.removeItem(at: fixtureURL)
+        try importResidentFixture(fixture, into: controller, name: "r855-permission")
         expect(
             controller.isResidentTextInputAvailable,
             "permission test loads the formal resident fixture"
