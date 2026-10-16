@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-16 · T3.1-R2 Apple Native Voice Experience 计划重排
+
+- 按主控决定调整为 Apple 完整原生通话音频 → 既有输入接口 → Test2 原链，新增 [v2计划](docs/stage7_5/test3_apple_vp_clean/T3_1_R2_native_voice_experience_plan.md) 并更新本范围 README；原两份 v1 只加 Superseded 指针，历史问题/审核不改。
+- 拆出 T3.0-F 安全 fixture 前置、T3.2-A 核心与 B 系统体验；T3.3 仅做既有接口必要兼容/Shadow，T3.4 复用原链并冻结。SQ-M1 保持 OPEN、重分类为接口兼容/安全问题，不阻机械设计，不允许绕过 Runtime。
+- T3.1-R2=REVIEW_PENDING；T3.0 Baseline=PARTIAL/FIXTURE_BLOCKED，T3.2=NOT_AUTHORIZED，严格Qwen overlap=0/3，Formal Test3=BLOCKED/false。实际五维审核及准入限制见v2；本轮仅文档，无源码/测试修改、构建/测试、Engine/私人内容或真实Provider执行，提交后停止。
+
 ## 2026-10-16 · T3.1 Apple VP 合同与架构设计
 
 - 主控已批准 T3.0 Documentation，Baseline Verification 继续 PARTIAL/FIXTURE_BLOCKED，并仅授权本轮纯设计。新增本阶段 [架构与声源资格协议](docs/stage7_5/test3_apple_vp_clean/T3_1_architecture_and_source_qualification.md) 及 [版本化合同草案](docs/stage7_5/test3_apple_vp_clean/T3_1_apple_vp_test3_contract_draft.md)，只更新本目录入口状态，不改历史合同/AGENTS/源码。

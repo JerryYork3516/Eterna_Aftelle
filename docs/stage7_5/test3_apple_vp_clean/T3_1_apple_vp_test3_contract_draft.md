@@ -1,5 +1,7 @@
 # Eterna Aftelle · T3.1 · Apple VP Test3 版本化合同草案
 
+> **SUPERSEDED（2026-10-16）**：本文件保留为历史 v1，以下问题、状态及审核记录原样保留。当前唯一计划入口为 [README v2](README.md)，执行口径见 [T3.1-R2 Native Voice Experience](T3_1_R2_native_voice_experience_plan.md)；新设计仍 REVIEW_PENDING，不自动生效或关闭历史问题。
+
 日期：2026-10-16（Asia/Shanghai）。版本：`AppleVP-Test3-Acceptance-DRAFT-v1`。状态：**REVIEW_PENDING / NOT_EFFECTIVE**。
 
 本草案须主控逐项批准后才可成为正式 Apple 剖面，不替换或修改旧 [统一 Human Gate](../../r8_5_unified_human_gate_checklist.md)。配套设计：[架构与声源资格协议](T3_1_architecture_and_source_qualification.md)。目前源资格子设计 DESIGN_BLOCKED，不能建议 T3.1 APPROVED；没有任何新正式验收 PASS。
