@@ -95,7 +95,7 @@ def plan(mode, run_dir):
             shell("audio-host", "speech_audio_host_tests"),
             shell("playback", "speech_audio_output_tests"),
             shell("debug-stats-timing", "speech_aec_host_tests", "d1-stats-only")]
-    if mode == "FULL":
+    if mode in ("FULL", "FULL_CURRENT"):
         jobs += [shell("aec-converter-replay", "speech_aec_host_tests"),
                  shell("d1-control-export", "realtime_interruption_evidence_tests", "d1-only"),
                  shell("r81-evidence", "realtime_interruption_evidence_tests", fixture=True),
@@ -107,7 +107,9 @@ def plan(mode, run_dir):
                  shell("confirmed-cancel", "realtime_confirmed_interruption_tests", fixture=True),
                  shell("latency-stale", "realtime_barge_in_latency_stale_audio_tests", fixture=True),
                  shell("double-talk-fake", "realtime_double_talk_acoustic_tests", fixture=True),
-                 candidate, shell("legacy-total", "realtime_total_regression_tests")]
+                 candidate]
+        if mode == "FULL":
+            jobs.append(shell("legacy-total", "realtime_total_regression_tests"))
         derived = str(run_dir / "DerivedData")
         for configuration in ("Debug", "Release"):
             jobs.append(job("build-" + configuration.lower(), [
@@ -226,14 +228,41 @@ def run_jobs(jobs, root, directory, reused, source=None):
     return rows
 
 
+def current_status(required, rows, source, directory):
+    import test3_total
+
+    if any(r["status"] == "FAIL" or (r["status"] == "PASS" and r["exit_code"] != 0)
+           for r in rows):
+        return "FAIL", "Current test execution failed"
+    if (not required or [r["name"] for r in rows] != [r["name"] for r in required] or
+            any(r["status"] != "PASS" for r in rows)):
+        return "BLOCKED", "Required current test scope incomplete"
+    try:
+        candidate = read_report(directory / "candidate/results.json")
+        if set(candidate["invariants"]) != set(test3_total.IDS):
+            raise test3_total.EvidenceMissing("11 invariant evidence incomplete")
+        if (candidate["status"] != "PASS" or candidate["reason"] != "TEST3_CANDIDATE_PASS" or
+                candidate["invariants"] != dict.fromkeys(test3_total.IDS, "PASS")):
+            raise ValueError("Runtime/Fake gate evidence invalid")
+        require_same_identity(source, candidate["identity"])
+        test3_total.read_metrics(rows)
+        test3_total.validate_metrics(test3_total.read_metrics(candidate["tests"]))
+        require_same_identity(source, identity())
+    except (OSError, KeyError, test3_total.EvidenceMissing) as error:
+        return "BLOCKED", str(error)
+    except ValueError as error:
+        return "FAIL", str(error)
+    return "PASS", "Complete current offline scope and Runtime/Fake evidence verified"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("FAST", "FULL", "TEST3"))
+    parser.add_argument("mode", choices=("FAST", "FULL", "TEST3", "FULL_CURRENT"))
     parser.add_argument("--reuse-fast", type=Path)
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
-    if args.reuse_fast and args.mode != "FULL":
-        parser.error("--reuse-fast is only valid for FULL")
+    if args.reuse_fast and args.mode not in ("FULL", "FULL_CURRENT"):
+        parser.error("--reuse-fast is only valid for FULL or FULL_CURRENT")
     if args.list:
         for item in plan(args.mode, Path(".build/t3_2_a_validation/RUN")):
             print(item["name"] + ": " + shlex.join(item["command"]))
@@ -248,17 +277,28 @@ def main():
     directory = Path(tempfile.mkdtemp(prefix=args.mode.lower() + "-", dir=base))
     source = identity()
     reused = reuse_fast(args.reuse_fast, source)
-    rows = run_jobs(plan(args.mode, directory), ROOT, directory, reused, source)
+    required = plan(args.mode, directory)
+    rows = run_jobs(required, ROOT, directory, reused, source)
     status = ("FAIL" if any(r["status"] == "FAIL" for r in rows) else
               "BLOCKED" if any(r["status"] != "PASS" for r in rows) else "PASS")
+    if args.mode == "FULL_CURRENT":
+        status, reason = current_status(required, rows, source, directory)
     for row in rows:
         row["source_commit"] = source["source_commit"]
         row["command_text"] = shlex.join(row["command"])
-    report = {"schema_version": 1, "automation_version": "0.2", "mode": args.mode,
+    report = {"schema_version": 1, "automation_version": "0.3", "mode": args.mode,
               "status": status, "full_approval": "FULL_APPROVAL_PENDING",
               "identity": source, "tests": rows, "max_attempts": 1,
               "R3_M01": "OPEN: 80ms onset origin UNKNOWN; synthetic results do not close it",
               "acoustic_acceptance": "NOT_RUN", "Test3.execution_authorized": False}
+    if args.mode == "FULL_CURRENT":
+        report.update(FULL_CURRENT=status, full_approval="FULL_CURRENT_REVIEW_PENDING",
+                      validation_reason=reason,
+                      required_test_names=[item["name"] for item in required],
+                      LEGACY_R851="HISTORICAL_BASELINE_BLOCKED",
+                      LEGACY_R851_EXECUTED_IN_CURRENT=any(
+                          r["name"] == "legacy-total" and r.get("execution") == "EXECUTED"
+                          for r in rows))
     output = directory / "results.json"
     write_report(output, report)
     print(f"RESULT={status}\nREPORT={output}")

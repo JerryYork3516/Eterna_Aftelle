@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-10-18 最新交付见 [Automation v0.3：当前独立FULL门禁](T3_2_A_automation_v0_3.md)。主控已确认v0.2 APPROVED_WITH_LIMITATIONS；本轮新增FULL_CURRENT，FAST 8/8、自测31、当前完整21/21（8严格复用、13新执行）及TEST3 7入口/11不变量均PASS/exit0，Debug/Release及三项Guard通过。旧FAST/TEST3/FULL的plan与固定v0.2逐项一致，旧FULL仍含legacy-total，原21 PASS/1 BLOCKED、exit2历史证据不改、不重复长时重跑；当前结果明确LEGACY_R851=HISTORICAL_BASELINE_BLOCKED、EXECUTED_IN_CURRENT=false。仅修改离线工具和文档，Swift增量0/B0，历史lint FAIL/C19/C23延期不变。Automation v0.3 REVIEW_PENDING；FULL_CURRENT的PASS只证明当前完整离线工程，不关闭R3-M01/起音UNKNOWN、SQ-M1、Qwen0/3或T3.2-A/Formal Test3 BLOCKED/false，不授权设备、B或T3.3。以下段落保留历史快照，以本段、本报告和最新主控决定为准。
+
 2026-10-17 最新自动化交付见 [Automation v0.2：旧冻结基线审计与独立候选](T3_2_A_automation_v0_2.md)：原11项Runtime/Fake语义已核清（9 UNCHANGED、2 APPROVED_EVOLUTION），新增独立TEST3入口，7个原测试实际执行、11项候选PASS。FAST 8项PASS；FULL保留原21项并新增候选，最终21 PASS（8复用）/1旧冻结摘要BLOCKED，原exit1/总exit2不变；Debug/Release、三项Guard与产物DEBUG隔离通过。旧expected、清单/断言、生产代码均未改；首次验证器失败及修正记录保留。仅建议TEST3_CANDIDATE_PASS / FULL_APPROVAL_PENDING，Automation v0.2 REVIEW_PENDING；历史全量lint FAIL/C19/C23延期不变，本轮Swift增量0。R3-M01 OPEN、起音归因UNKNOWN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；不产生设备或后续节点授权。以下段落保留历史快照，当前自动化结论以本段、本报告及最新主控决定为准。
 
 2026-10-17 自动化交付见 [T3.2-A 自动化验证体系 v0.1](T3_2_A_automation_v0_1.md)：复用原离线入口，新增FAST/FULL顺序执行、一次执行上限、timeout/失败停止、身份/计数/日志记录及合成起音正负控。FAST 8项PASS；FULL 20项PASS（8项明确复用）/1项旧冻结摘要BLOCKED，原exit1与总exit2保留；Debug/Release及三项Guard通过。新增生产/Swift改动0，增量规范不适用，历史lint FAIL/C19/C23不变；未启动设备或读取真人录音。Automation v0.1 REVIEW_PENDING，80ms起音归因仍UNKNOWN，R3-M01 OPEN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；不产生设备或后续节点授权。

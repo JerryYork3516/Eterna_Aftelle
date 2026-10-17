@@ -1,6 +1,9 @@
 """Self-check the wrapper and synthetic diagnostics; no device or audio files."""
 
+import ast
+from contextlib import redirect_stdout
 import hashlib
+import io
 import json
 import os
 import signal
@@ -161,7 +164,7 @@ class RunnerChecks(unittest.TestCase):
         row = runner.execute(self.command("tmp", "import os; print(os.environ['TMPDIR'])"),
                              runner.ROOT, self.path / "tmp-job")
         self.assertIn(str(self.path / "tmp-job/tmp"), Path(row["log"]).read_text())
-        for mode in ("FAST", "FULL"):
+        for mode in ("FAST", "FULL", "TEST3", "FULL_CURRENT"):
             jobs = runner.plan(mode, self.path)
             self.assertEqual(len(jobs), len({x["name"] for x in jobs}))
             self.assertTrue(all(x["max_attempts"] == 1 and x["timeout_seconds"] > 0 for x in jobs))
@@ -237,6 +240,104 @@ class RunnerChecks(unittest.TestCase):
                              for x in test3_total.jobs()))
         self.assertEqual(len(runner.plan("FAST", self.path)), 8)
         self.assertEqual(len(runner.plan("TEST3", self.path)), 1)
+
+    def test_original_mode_plans_match_v02(self):
+        original = ast.parse(runner.git(
+            "show", "30f2b0aaf1b9a439c5bf429d3eb3be97254a580a:tools/t3_2_a_validation/run.py"))
+        functions = [n for n in original.body if isinstance(n, ast.FunctionDef) and
+                     n.name in ("job", "plan")]
+        namespace = dict(vars(runner))
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "v0.2-plan", "exec"), namespace)
+        for mode in ("FAST", "TEST3", "FULL"):
+            with self.subTest(mode=mode):
+                self.assertEqual(runner.plan(mode, self.path), namespace["plan"](mode, self.path))
+
+    def test_current_plan_only_excludes_historical_gate(self):
+        full = runner.plan("FULL", self.path)
+        current = runner.plan("FULL_CURRENT", self.path)
+        self.assertEqual(len(full), 22)
+        self.assertEqual(len(current), 21)
+        self.assertEqual(current, [j for j in full if j["name"] != "legacy-total"])
+        self.assertEqual(sum(j["name"] == "test3-candidate" for j in current), 1)
+
+    def run_current_cli(self, jobs):
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["run.py", "FULL_CURRENT"]), \
+                patch.object(runner, "plan", return_value=jobs), redirect_stdout(output):
+            code = runner.main()
+        path = Path(re.search(r"^REPORT=(.+)$", output.getvalue(), re.MULTILINE).group(1))
+        return code, runner.read_report(path)
+
+    def test_current_cli_candidate_failure_stops_and_exits_one(self):
+        code, result = self.run_current_cli([
+            self.command("test3-candidate", "raise SystemExit(1)"),
+            self.command("never", "pass")])
+        self.assertEqual((code, result["FULL_CURRENT"]), (1, "FAIL"))
+        self.assertEqual([r["status"] for r in result["tests"]], ["FAIL", "NOT_RUN"])
+        self.assertEqual([r["attempts"] for r in result["tests"]], [1, 0])
+        self.assertEqual(result["LEGACY_R851"], "HISTORICAL_BASELINE_BLOCKED")
+        self.assertFalse(result["LEGACY_R851_EXECUTED_IN_CURRENT"])
+
+    def test_current_cli_missing_fixture_blocks_without_execution(self):
+        item = self.command("requires-fixture", "raise SystemExit(0)")
+        item["requires_fixture"] = True
+        with patch.object(runner, "FIXTURE", self.path / "absent"):
+            code, result = self.run_current_cli([item])
+        self.assertEqual((code, result["FULL_CURRENT"]), (2, "BLOCKED"))
+        self.assertEqual(result["tests"][0]["attempts"], 0)
+        self.assertFalse(result["LEGACY_R851_EXECUTED_IN_CURRENT"])
+
+    def current_evidence_fixture(self):
+        source = {"source_commit": "SYNTHETIC_METADATA_ONLY"}
+        required = runner.plan("FULL_CURRENT", self.path)
+        metrics = test3_total.required_metrics()
+        metrics["random"].update({"r851_randomized_" + k: "1" for k in (
+            "final_before_stop", "completion_before_final", "partial_final_stop",
+            "short_pause_resume", "provider_first_start")})
+
+        def evidence(item, values):
+            log = self.path / (item["name"] + ".log")
+            log.write_text("\n".join(k + "=" + v for k, v in values.items()) + "\n")
+            return {**item, "status": "PASS", "exit_code": 0, "log": str(log),
+                    "log_sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
+
+        rows = [evidence(j, {}) for j in required]
+        children = [evidence(j, metrics[j["name"]]) for j in test3_total.jobs()]
+        directory = self.path / "candidate"
+        directory.mkdir()
+        runner.write_report(directory / "results.json", {
+            "status": "PASS", "reason": "TEST3_CANDIDATE_PASS", "identity": source,
+            "invariants": dict.fromkeys(test3_total.IDS, "PASS"), "tests": children})
+        return required, rows, source
+
+    def test_current_final_log_integrity_accepts_control_and_rejects_tampering(self):
+        required, rows, source = self.current_evidence_fixture()
+        with patch.object(runner, "identity", return_value=source):
+            self.assertEqual(runner.current_status(required, rows, source, self.path)[0], "PASS")
+            Path(rows[0]["log"]).write_text("tampered")
+            status, reason = runner.current_status(required, rows, source, self.path)
+        self.assertEqual(status, "FAIL")
+        self.assertEqual(reason, "Log tampering")
+
+    def test_current_final_source_drift_is_fail(self):
+        required, rows, source = self.current_evidence_fixture()
+        with patch.object(runner, "identity", return_value={"source_commit": "changed"}):
+            self.assertEqual(runner.current_status(required, rows, source, self.path)[0], "FAIL")
+
+    def test_current_missing_evidence_and_incomplete_scope_cannot_pass(self):
+        required, rows, source = self.current_evidence_fixture()
+        path = self.path / "candidate/results.json"
+        result = runner.read_report(path)
+        result["invariants"].pop("I1")
+        runner.write_report(path, result)
+        with patch.object(runner, "identity", return_value=source):
+            self.assertEqual(runner.current_status(required, rows, source, self.path)[0], "BLOCKED")
+            path.unlink()
+            self.assertEqual(runner.current_status(required, rows, source, self.path)[0], "BLOCKED")
+            self.assertEqual(runner.current_status(required, rows[:-1], source, self.path)[0], "BLOCKED")
+            self.assertEqual(runner.current_status([], [], source, self.path)[0], "BLOCKED")
+            rows[0]["exit_code"] = 1
+            self.assertEqual(runner.current_status(required, rows, source, self.path)[0], "FAIL")
 
     def test_evidence_success_markers_match_existing_producer(self):
         script = (runner.ROOT / "tools/realtime_interruption_evidence_tests/check.sh").read_text()

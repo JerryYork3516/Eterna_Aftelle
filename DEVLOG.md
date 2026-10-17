@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-18 · T3.2-A Automation v0.3 当前完整离线门禁
+
+- 主控确认v0.2 APPROVED_WITH_LIMITATIONS；最小新增FULL_CURRENT，保留其余模式。固定30f2b0a纯plan/job对照通过：旧FULL 22项仍含冻结门禁；当前21项仅除去legacy-total，明确历史BLOCKED/本轮未执行，不更新旧SHA/清单或生产代码。
+- 最终FAST8、自测31、FULL_CURRENT21（8严格复用/13新执行）、TEST3 7入口/11不变量、Debug/Release与三项Guard均exit0；原15 runs/18 subprocesses失败0。候选失败、缺Fixture、身份漂移、非法复用、日志篡改、超时/停止及不完整证据负控有效；真实父子日志/SHA最终复核通过，无重试或设备/在线Provider/私人音频访问。
+- [实际报告与五维SELF_REVIEW](docs/stage7_5/test3_apple_vp_clean/T3_2_A_automation_v0_3.md)：新增CRITICAL/MAJOR/MINOR均0，Swift增量0/B0；历史lint FAIL/C19/C23延期、工程全局REWORK保留。Automation v0.3 REVIEW_PENDING，FULL_CURRENT=PASS仅限当前完整离线工程；R3-M01/起音UNKNOWN、SQ-M1 OPEN、Qwen0/3、T3.2-A/Formal Test3 BLOCKED/false，后续节点未授权。提交推送后停止。
+
 ## 2026-10-17 · T3.2-A Automation v0.2 独立安全候选
 
 - 旧摘要精确绑定75015d2快照，Test2收口已不匹配；审计原11语义为9 UNCHANGED/2 APPROVED_EVOLUTION，不把摘要不同当功能回归。仅调整验证工具并新增[独立候选与审核](docs/stage7_5/test3_apple_vp_clean/T3_2_A_automation_v0_2.md)，不改旧门禁/清单、生产代码或测试标准。
