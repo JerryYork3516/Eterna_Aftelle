@@ -29,9 +29,10 @@ swiftc \
   "$host" \
   "$fake" \
   "$tests" \
+  "$repo_root/tools/speech_audio_output_tests/MacSpeechPCMOutputConversionTests.swift" \
   -o "$build_dir/speech_audio_output_tests"
 
-"$build_dir/speech_audio_output_tests"
+"$build_dir/speech_audio_output_tests" "$@"
 
 test "$(rg -c '/\* MacSpeechPCMPlaybackBuffer\.swift( in Sources)? \*/' "$project")" -eq 4
 test "$(rg -c '/\* MacSpeechAudioOutputPlayer\.swift( in Sources)? \*/' "$project")" -eq 4

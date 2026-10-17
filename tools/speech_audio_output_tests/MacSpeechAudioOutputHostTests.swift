@@ -43,6 +43,8 @@ private struct MacSpeechAudioOutputHostTests {
         await testSameDeviceAvailabilityChangesInvalidateOutputOnce()
         await testUnavailableOutputFailsBeforePrepare()
         await testPendingSinkEventsCapacityLimit()
+        print("speech_audio_output_base_checks=\(checks)")
+        checks += MacSpeechPCMOutputConversionTests.runIfRequested()
         print("speech_audio_output_checks=\(checks)")
     }
 
