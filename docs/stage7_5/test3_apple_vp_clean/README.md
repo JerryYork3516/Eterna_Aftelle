@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-10-17 最新复审交付见 [R3-M01 单次A时序与用户试听](T3_2_A_D2_R3_M01_single_A_review.md)：一次A原控制链/native/744个20ms包通过，host_timing有1次观测skip；用户原话“听不到居民回声，但是有起音，起音不知道是否影响”。居民回声为USER_REPORTED_NOT_HEARD，起音性质/影响仍UNKNOWN，A=INCONCLUSIVE/REVIEW_PENDING，R3-M01 OPEN、T3.2-A BLOCKED。用户最新明确授权仅该run的原字节WAV随脱敏报告提交至当前分支供主控复审；其SHA及run绑定见报告/manifest，不扩展其他录音权限、不改.gitignore或历史约束。本次无生产/测试源码修改、重测或音频处理；历史规范FAIL/C19/C23保留，后续节点与正式Test3仍未授权。
+
 2026-10-17 最新交付见 [R3-M01 DEBUG Host 时序观测](T3_2_A_D2_R3_M01_debug_timing_observation.md)：只在原共享 Engine／Input 与 Player Tap／受控 JSON 增加有界调用、到达、内容时间、实际 localFormat/ASBD/layout 和连续性统计；未改音频行为、未启动 App／设备或读取私人音频。统计16/77、Host178、Playback238、Converter65/6830、AEC1165、D1 Fake40/290、Debug/Release及三项Guard通过；B0，同范围Format4459／Lint90仍FAIL，3项既有长度指标增长另记，C19/C23延期、ENGINEERING REWORK。非零预期区间覆盖及设备性能仍UNKNOWN；R3 A声学FAIL不改判，**R3-M01 OPEN、T3.2-A BLOCKED**。本次不产生设备或下一节点授权；以下旧段落为历史快照，当前结论以本报告和最新主控决定为准。
 
 2026-10-17 最新增量见 [D2-R2-M01 内容时间修复与长时无声验证](T3_2_A_D2_R2_M01_content_timeline_and_silent_validation.md)：原累计一样本门槛改为原容差下的相邻硬件时间检查，sampleTime/输出游标与真实不连续拒收保留；Debug/Release、三项Guard、受影响离线回归及目标USB＋内置扬声器Silent A（18s上限、17.9s原生）/B/C各一次通过。B0，Format20856/Lint384仍FAIL，C19/C23及4个既有C指标增长登记，ENGINEERING REWORK/DEBT_DEFERRED。READY_FOR_HUMAN_TEST=true仅表示可安排另行授权的有声测试；起音音量变化OPEN，T3.2-A总体未收口，SQ-M1/Qwen0/3/Formal Test3 BLOCKED/false不变。以下前序段落/状态表保留历史快照，本轮事实与授权边界以M01报告及最新主控指令为准。

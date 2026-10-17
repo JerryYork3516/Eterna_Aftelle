@@ -1,0 +1,421 @@
+{
+  "schema_version": "1.0",
+  "artifact_type": "sanitized_single_A_review_metadata",
+  "run_id": "EDDF62B0-D328-4C19-85E6-B98D9A6D5CEA",
+  "recorded_source_commit": "7db839304c8c7dd575edd48fc3a6ecbb1bc72e68",
+  "debug_app_sha256": "ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118",
+  "debug_dylib_sha256": "81e2c6799a2ef69f2d7ecf56de5f7bf1553185d472a32b98691c746dcaabf6ad",
+  "original_manifest_source_commit": null,
+  "original_manifest_build_identity": null,
+  "identity_binding": "Externally verified source and loaded images; original manifest nulls retained",
+  "original_metadata_json_sha256": "56168c9d2dfc2ab03d6eee0a9c1204970baf89219433deb22f7938aca753ed9e",
+  "user_listening": {
+    "date": "2026-10-17",
+    "feedback_verbatim": "听不到居民回声，但是有起音，起音不知道是否影响",
+    "resident_echo": "USER_REPORTED_NOT_HEARD",
+    "onset": "REPORTED; nature and impact UNKNOWN",
+    "acceptability": "UNKNOWN",
+    "codex_listened": false
+  },
+  "upload_authorization": {
+    "scope": "This run WAV plus sanitized review only, to JerryYork3516/Eterna_Aftelle Test3-AppleVP-Clean for main-controller review",
+    "user_request_verbatim": "听不到居民回声，但是有起音，起音不知道是否影响，提交推送给主控审核，包括WAV",
+    "does_not_authorize_other_recordings": true
+  },
+  "wav": {
+    "file": "run-EDDF62B0-D328-4C19-85E6-B98D9A6D5CEA.wav",
+    "sha256": "2cc639c31949b9c6b0f886f1f315bfc17fd74e45bf68b1f67b46012cd7d638a3",
+    "data_sha256": "45cee88eb65281ee8d029d09556833653a4187b6d249a09777bedb6f8d4f03d5",
+    "byte_count": 714284,
+    "pcm_byte_count": 714240,
+    "rate": 24000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "encoding": "PCM16_LE",
+    "frame_count": 357120,
+    "duration_seconds": 14.88,
+    "byte_identical_to_controlled_export": true,
+    "data_hash_matches_run_manifest": true,
+    "processing_after_export": "NONE"
+  },
+  "route": {
+    "input": "I-01 USB microphone",
+    "output": "O-01 Mac built-in speaker",
+    "input_volume_percent": 60,
+    "output_volume_percent": 55,
+    "output_muted": false,
+    "route_uid_match_verified_locally": true,
+    "hardware_identifiers_omitted": true,
+    "microphone_mode": "UNKNOWN"
+  },
+  "run": {
+    "duration_limit_ns": 15000000000,
+    "silent_smoke": false,
+    "capture_generation": 1,
+    "capture_state": "capturing",
+    "capture_error": null,
+    "capture_generated_at_seal": 744,
+    "capture_queued_at_seal": 0,
+    "capture_drop_count": 0,
+    "capture_stale_count": 0,
+    "playback_state": "completed",
+    "playback_error": null,
+    "playback_generation": 1,
+    "playback_started_count": 1,
+    "playback_underrun_count": 0,
+    "playback_rejected_callback_count": 0,
+    "configuration_debug": {
+      "input_channels": 3,
+      "input_rate": 16000,
+      "output_channels": 3,
+      "output_channels_before": 2,
+      "output_rate": 16000,
+      "stage": "validated"
+    },
+    "partial_converter_tail_samples": null
+  },
+  "native": {
+    "channels": [
+      {
+        "full_scale": 0,
+        "non_finite": 0,
+        "over_scale": 0,
+        "peak": 0.11983921378850937,
+        "samples": 238400
+      },
+      {
+        "full_scale": 0,
+        "non_finite": 0,
+        "over_scale": 0,
+        "peak": 0.11983921378850937,
+        "samples": 238400
+      },
+      {
+        "full_scale": 0,
+        "non_finite": 0,
+        "over_scale": 0,
+        "peak": 0.11983921378850937,
+        "samples": 238400
+      }
+    ],
+    "configuration_id": 2,
+    "coverage_valid": true,
+    "first_native_host_time": 731566349300042,
+    "first_native_sample_time": 656,
+    "first_packet_time_ns": 731566349300042,
+    "generation": 1,
+    "issues": [],
+    "last_native_host_time": 731581149245833,
+    "last_native_sample_time": 237456,
+    "last_packet_time_ns": 731581209300042,
+    "native_buffers": 149,
+    "native_format": {
+      "channels": 3,
+      "interleaved": false,
+      "rate": 16000,
+      "sample_format": "float32"
+    },
+    "native_frames": 238400,
+    "packet_bytes": 714240,
+    "packet_count": 744,
+    "rejections": {
+      "buffer_rejected": 0,
+      "capture_fence": 0,
+      "capture_stopped": 0,
+      "configuration_changed": 0,
+      "content_time": 0,
+      "input_conversion": 0,
+      "native_capacity": 0,
+      "native_clock": 0,
+      "native_format": 0,
+      "non_finite": 0,
+      "other": 0,
+      "output_conversion": 0,
+      "packet_clock": 0,
+      "packet_length": 0,
+      "packet_time": 0,
+      "route_changed": 0,
+      "stale_context": 0,
+      "voice_processing": 0
+    },
+    "run_id": "EDDF62B0-D328-4C19-85E6-B98D9A6D5CEA",
+    "seal_reason": null,
+    "sealed": true,
+    "voice_processing": {
+      "agc_enabled": true,
+      "bypassed": false,
+      "configuration_id": 2,
+      "input_enabled": true,
+      "input_format": "16000.0 Hz / 3 ch",
+      "input_muted": false,
+      "mode": "appleVoiceProcessing",
+      "noise_suppression": "Apple native; no independent public readback",
+      "output_enabled": true,
+      "output_format": "16000.0 Hz / 3 ch",
+      "validated_at_ns": 731566137625958
+    }
+  },
+  "host_timing": {
+    "callbacksClosed": true,
+    "captureGeneration": 1,
+    "configurationID": 2,
+    "events": [
+      {
+        "count": 1,
+        "event": "engineStartBefore",
+        "firstCallTimeNs": 731566173742041,
+        "lastCallTimeNs": 731566173742041
+      },
+      {
+        "count": 1,
+        "event": "engineStartReturned",
+        "firstCallTimeNs": 731566356323583,
+        "lastCallTimeNs": 731566356323583
+      },
+      {
+        "count": 1,
+        "event": "playerPlayBefore",
+        "firstCallTimeNs": 731566471627083,
+        "lastCallTimeNs": 731566471627083
+      },
+      {
+        "count": 1,
+        "event": "playerPlayReturned",
+        "firstCallTimeNs": 731566479157541,
+        "lastCallTimeNs": 731566479157541
+      },
+      {
+        "count": 1,
+        "event": "playbackPrepared",
+        "firstCallTimeNs": 731566137340250,
+        "lastCallTimeNs": 731566137340250
+      },
+      {
+        "count": 1,
+        "event": "playbackStarted",
+        "firstCallTimeNs": 731566479168375,
+        "lastCallTimeNs": 731566479168375
+      },
+      {
+        "count": 1,
+        "event": "playbackCompleted",
+        "firstCallTimeNs": 731571347816375,
+        "lastCallTimeNs": 731571347816375
+      },
+      {
+        "count": 1,
+        "event": "captureStopped",
+        "firstCallTimeNs": 731581365226833,
+        "lastCallTimeNs": 731581365226833
+      },
+      {
+        "count": 2,
+        "event": "configurationChanged",
+        "firstCallTimeNs": 731566137119166,
+        "lastCallTimeNs": 731581365399541
+      },
+      {
+        "count": 0,
+        "event": "routeChanged"
+      }
+    ],
+    "identityChanges": 1,
+    "input": {
+      "backwards": 0,
+      "buffers": 148,
+      "callbacks": 148,
+      "duplicate": 0,
+      "firstArrivalNs": 731566480989000,
+      "firstCallbackArrivalNs": 731566480989000,
+      "firstContentHostNs": 731566349300042,
+      "firstSampleTime": 656,
+      "frames": 236800,
+      "hostDiscontinuities": 1,
+      "lastArrivalNs": 731581267001125,
+      "lastCallbackArrivalNs": 731581267001125,
+      "lastContentEndNs": 731581249245833,
+      "lastContentHostNs": 731581149245833,
+      "lastSampleTime": 237456,
+      "maximumEndGapNs": 99999166,
+      "maximumStartIntervalNs": 199999166,
+      "missingTime": 0,
+      "nonzeroFrames": 0,
+      "previousFrames": 1600,
+      "sampleDiscontinuities": 1
+    },
+    "inputWitnessMeaning": "Metadata-valid tap callback; not proof of downstream PCM acceptance",
+    "invalidBuffers": 0,
+    "missingValueMeaning": "Omitted optional fields are UNKNOWN; call/arrival/content clocks are distinct",
+    "nonzeroCoverage": "UNKNOWN: scheduled-to-player content alignment is not established",
+    "playbackFormat": {
+      "asbd": {
+        "mBitsPerChannel": 32,
+        "mBytesPerFrame": 4,
+        "mBytesPerPacket": 4,
+        "mChannelsPerFrame": 3,
+        "mFormatFlags": 41,
+        "mFormatID": 1819304813,
+        "mFramesPerPacket": 1,
+        "mReserved": 0,
+        "mSampleRate": 16000
+      },
+      "channelCount": 3,
+      "channelDescriptions": [],
+      "commonFormat": 1,
+      "commonFormatName": "AVAudioCommonFormat(rawValue: 1)",
+      "descriptionsTruncated": false,
+      "interleaved": false,
+      "layoutBitmap": 0,
+      "layoutDescriptionCount": 0,
+      "layoutTag": 9633795,
+      "sampleRate": 16000
+    },
+    "playbackGeneration": 1,
+    "playerRender": {
+      "backwards": 0,
+      "buffers": 149,
+      "callbacks": 149,
+      "duplicate": 0,
+      "firstArrivalNs": 731566511183166,
+      "firstCallbackArrivalNs": 731566511183166,
+      "firstContentHostNs": 731566448050042,
+      "firstNonzeroContentNs": 731567607419708,
+      "firstNonzeroSampleTime": 19762,
+      "firstSampleTime": 1212,
+      "frames": 238400,
+      "hostDiscontinuities": 0,
+      "lastArrivalNs": 731581295249291,
+      "lastCallbackArrivalNs": 731581295249291,
+      "lastContentEndNs": 731581347995500,
+      "lastContentHostNs": 731581247995500,
+      "lastNonzeroContentNs": 731571355092458,
+      "lastNonzeroSampleTime": 79725,
+      "lastSampleTime": 238012,
+      "maximumEndGapNs": 1166,
+      "maximumStartIntervalNs": 100001166,
+      "missingTime": 0,
+      "nonzeroFrames": 59964,
+      "previousFrames": 1600,
+      "sampleDiscontinuities": 0
+    },
+    "render_generation_source": "run/capture binding and tap configuration; no callback playback-generation field",
+    "runID": "EDDF62B0-D328-4C19-85E6-B98D9A6D5CEA",
+    "scheduledFrames": 76010,
+    "scheduledNonzeroFrames": 59964,
+    "skippedUpdates": 1,
+    "staleCallbacks": 0,
+    "status": "UNKNOWN_OBSERVATION_LOSS",
+    "tapLocation": "PlayerNode before Mixer; not speaker or Apple internal AEC reference"
+  },
+  "packet_summary": {
+    "count": 744,
+    "first": [
+      1,
+      731566349300042,
+      960
+    ],
+    "last": [
+      744,
+      731581209300042,
+      960
+    ],
+    "all_960_bytes": true,
+    "sequence_contiguous": true,
+    "content_time_20ms": true,
+    "drained_seconds": 14.88
+  },
+  "timeline": [
+    {
+      "event": "engineStartBefore",
+      "semantics": "CALL",
+      "monotonic_ns": 731566173742041,
+      "relative_engine_start_ms": 0.0
+    },
+    {
+      "event": "engineStartReturned",
+      "semantics": "CALL",
+      "monotonic_ns": 731566356323583,
+      "relative_engine_start_ms": 182.581542
+    },
+    {
+      "event": "playerPlayBefore",
+      "semantics": "CALL",
+      "monotonic_ns": 731566471627083,
+      "relative_engine_start_ms": 297.885042
+    },
+    {
+      "event": "playerPlayReturned",
+      "semantics": "CALL",
+      "monotonic_ns": 731566479157541,
+      "relative_engine_start_ms": 305.4155
+    },
+    {
+      "event": "playbackCompleted",
+      "semantics": "CALL",
+      "monotonic_ns": 731571347816375,
+      "relative_engine_start_ms": 5174.074334
+    },
+    {
+      "event": "captureStopped",
+      "semantics": "CALL",
+      "monotonic_ns": 731581365226833,
+      "relative_engine_start_ms": 15191.484792
+    },
+    {
+      "event": "input_first_arrival",
+      "semantics": "CALLBACK_ARRIVAL",
+      "monotonic_ns": 731566480989000,
+      "relative_engine_start_ms": 307.246959
+    },
+    {
+      "event": "render_first_arrival",
+      "semantics": "CALLBACK_ARRIVAL",
+      "monotonic_ns": 731566511183166,
+      "relative_engine_start_ms": 337.441125
+    },
+    {
+      "event": "input_first_content",
+      "semantics": "AVAudioTime_CONTENT",
+      "monotonic_ns": 731566349300042,
+      "relative_engine_start_ms": 175.558001
+    },
+    {
+      "event": "render_first_content",
+      "semantics": "AVAudioTime_CONTENT",
+      "monotonic_ns": 731566448050042,
+      "relative_engine_start_ms": 274.308001
+    },
+    {
+      "event": "render_first_nonzero_content",
+      "semantics": "AVAudioTime_CONTENT",
+      "monotonic_ns": 731567607419708,
+      "relative_engine_start_ms": 1433.677667
+    },
+    {
+      "event": "render_last_nonzero_content",
+      "semantics": "AVAudioTime_CONTENT",
+      "monotonic_ns": 731571355092458,
+      "relative_engine_start_ms": 5181.350417
+    }
+  ],
+  "post_exit": {
+    "input": {
+      "alive": 1,
+      "hog_owner": -1,
+      "running_somewhere": 0
+    },
+    "output": {
+      "alive": 1,
+      "hog_owner": -1,
+      "running_somewhere": 0
+    }
+  },
+  "verdict": {
+    "A": "INCONCLUSIVE / REVIEW_PENDING",
+    "root_cause": "ROOT_CAUSE_UNKNOWN",
+    "echo_listening": "USER_REPORTED_NOT_HEARD",
+    "onset_impact": "UNKNOWN",
+    "host_timing_completeness": "PARTIAL / UNKNOWN_OBSERVATION_LOSS",
+    "formal_test3_execution_authorized": false
+  }
+}

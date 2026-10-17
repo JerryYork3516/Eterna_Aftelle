@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-17 · R3-M01 单次A试听证据交付
+
+- 唯一run EDDF62B0-D328-4C19-85E6-B98D9A6D5CEA：744包/14.88s连续、native coverage=true、原拒收全0；host_timing skippedUpdates=1保留。用户试听原话“听不到居民回声，但是有起音，起音不知道是否影响”，起音性质/影响仍UNKNOWN。
+- 用户明确授权仅本run原字节WAV随[脱敏复审报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_D2_R3_M01_single_A_review.md)/manifest提交供主控审核；WAV和data区SHA与源/原run摘要匹配，无剪辑或处理，不上传其他录音或原始设备日志。首次打包Python辅助脚本exit1已保留并兼容修正；本次不改源码、不重测，历史lint FAIL/C19/C23保留。
+- A=INCONCLUSIVE/REVIEW_PENDING，ROOT_CAUSE_UNKNOWN，R3-M01 OPEN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；提交推送后停止，等待主控审听及裁定。
+
 ## 2026-10-17 · R3-M01 最小 DEBUG Host 时序观测
 
 - 仅在原 Engine/Input/Player Tap/JSON 增加 run-local 有界时序、实际Playback格式与连续性元数据；一次CAS失败显式计数，不等待、不保留PCM，不改原启动／播放／Converter／Test2行为。无App／设备／私人音频或Provider执行，Player Tap不冒充Mixer／扬声器／Apple内部参考。
