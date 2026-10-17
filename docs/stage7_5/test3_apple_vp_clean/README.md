@@ -24,6 +24,8 @@
 
 ## 当前状态
 
+最新综合C准备见[离线预备与实际证据](T3_2_A_comprehensive_C_offline_preparation.md)：仅DEBUG引导/Fake准备，真实设备与真人C未授权；v0.3旧候选PASS与本轮改后验证分别登记。R3-M01继续OPEN，T3.2-A继续BLOCKED，不沿用下方早期快照作为新的设备或节点授权。
+
 ~~~text
 T3.0 Documentation = APPROVED
 Baseline Verification = PASS (MAIN_APPROVED)

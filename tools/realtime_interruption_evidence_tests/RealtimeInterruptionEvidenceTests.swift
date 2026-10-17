@@ -37,6 +37,7 @@ private extension RealtimeInterruptionEvidenceTests {
         print("d1_initialization_playback_starts=0")
         print("d1_only_cases=\(cases)")
         print("d1_only_checks=\(checks)")
+        try await testComprehensiveC()
     }
 
     static func testD2SilentSmoke() async throws {
@@ -161,6 +162,226 @@ private extension RealtimeInterruptionEvidenceTests {
 }
 
 @MainActor
+private final class ComprehensiveCClock {
+    let start = DispatchTime.now().uptimeNanoseconds
+    var elapsed: UInt64 = 0
+    var now: UInt64 {
+        start + elapsed
+    }
+}
+
+private extension RealtimeInterruptionEvidenceTests {
+    static func testComprehensiveC() async throws {
+        let originalCases = cases
+        let originalChecks = checks
+        try await testComprehensiveCRepetition()
+        try await testComprehensiveCPreconditions()
+        try await testComprehensiveCFailures()
+        let directory = try d1ExportTestDirectory()
+        expect(!FileManager.default.fileExists(atPath: directory.path),
+               "C leaves no synthetic exports after all positive and negative controls")
+        print("c_preparation_cases=\(cases - originalCases)")
+        print("c_preparation_checks=\(checks - originalChecks)")
+        print("c_preparation_fake=PASS")
+    }
+
+    static func prepareComprehensiveC(_ stack: D1ControllerStack, source: URL, discard: Bool = false) {
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            .doubleTalk, discardPreviousResult: discard, comprehensiveC: true
+        ), "C prepares an explicit isolated guided run")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "C selects synthetic offline audio")
+        startD1(stack.controller)
+    }
+
+    static func driveComprehensiveC(_ stack: D1ControllerStack, clock: ComprehensiveCClock) async {
+        await waitUntil("C capture running") { stack.controller.appleVPAcousticTestState.phase == .running }
+        expect(stack.player.startCount == stack.capture.startCount - 1,
+               "no new playback at the beginning of the human-only stage")
+        for tick in 0 ..< 30 {
+            clock.elapsed = UInt64(tick) * 500_000_000
+            stack.capture.emitPackets(25)
+            await waitUntil("C drains each bounded synthetic batch") {
+                stack.player.completeScheduledChunk()
+                return stack.controller.appleVPAcousticTestState.packetCount == (tick + 1) * 25
+            }
+            if tick == 0 {
+                expect(stack.controller.appleVPAcousticTestState.guideStage == "human_only",
+                       "C begins with an observable human-only guide")
+            }
+            if tick == 6 {
+                await waitUntil("C synthetic output completes exactly once") {
+                    stack.player.completeScheduledChunk()
+                    return await stack.output.currentSnapshot().state == .completed
+                }
+            }
+        }
+        clock.elapsed = 15_000_000_000
+        await waitUntil("C seals and releases resources") {
+            stack.controller.appleVPAcousticTestState.phase == .sealed
+        }
+    }
+
+    static func testComprehensiveCRepetition() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now })
+        var previousRun: UUID?
+        for iteration in 0 ..< 2 {
+            cases += 1
+            clock.elapsed = 0
+            prepareComprehensiveC(stack, source: source, discard: iteration > 0)
+            await driveComprehensiveC(stack, clock: clock)
+            let state = stack.controller.appleVPAcousticTestState
+            expect(state.errorCode == nil && state.packetCount == 750, "C seals all 15 synthetic seconds")
+            expect(state.runID != previousRun, "each repeated C has a distinct run identity")
+            expect(stack.capture.startCount == iteration + 1 && stack.capture.stopCount == iteration + 1,
+                   "repeated C releases the previous capture before starting another")
+            previousRun = state.runID
+            try expectComprehensiveCManifest(stack.controller)
+            let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+            try expectD1ExportConsent(stack.controller, expected: wav)
+            try testComprehensiveCExportPermission(stack.controller)
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func expectComprehensiveCManifest(_ controller: AppController) throws {
+        let manifest = try JSONSerialization.jsonObject(with: controller.appleVPAcousticTestManifestData())
+            as? [String: Any]
+        let guide = manifest?["comprehensive_c"] as? [String: Any]
+        let events = guide?["events_ns"] as? [String: UInt64]
+        expect(Set(events?.keys.map { $0 } ?? []) == Set(["human_only", "double_talk", "human_tail", "quiet"]),
+               "C evidence has exactly four bounded guidance marks")
+        expect(guide?["physical_overlap_seconds"] is NSNull && guide?["human_speech_windows"] is NSNull,
+               "software guidance cannot fabricate actual speech or physical overlap")
+        expect(manifest?["physical_acceptance"] as? String == "UNVERIFIED", "Fake C cannot pass acoustics")
+    }
+
+    static func testComprehensiveCPreconditions() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for kind in ["denied", "unknown", "output", "capture"] {
+            cases += 1
+            let authorization: MicrophoneAuthorizationState = kind == "denied" ? .denied
+                : kind == "unknown" ? .notDetermined : .authorized
+            let stack = D1ControllerStack(
+                authorizationState: authorization, requestedAuthorization: authorization,
+                failsCaptureStart: kind == "capture"
+            )
+            if kind == "output" {
+                stack.player.prepareError = .outputUnavailable
+            }
+            prepareComprehensiveC(stack, source: source)
+            await waitUntil("C prerequisite failure sealed") {
+                stack.controller.appleVPAcousticTestState.phase == .sealed
+            }
+            expect(stack.controller.appleVPAcousticTestState.errorCode != nil, "C prerequisite failure cannot pass")
+            expect(stack.player.startCount == 0, "failed C preflight never plays audio")
+            try expectComprehensiveCPartialEvidence(stack.controller)
+            expectD1Cleanup(stack)
+        }
+        try await testComprehensiveCBudget()
+    }
+
+    static func testComprehensiveCBudget() async throws {
+        cases += 1
+        let source = try d1SyntheticPlayback(packets: 301)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let stack = D1ControllerStack()
+        expect(!stack.controller.prepareAppleVPAcousticTest(.humanOnly, comprehensiveC: true),
+               "the comprehensive plan cannot silently replace B")
+        prepareComprehensiveC(stack, source: source)
+        await waitUntil("overlong C asset refused before permission") {
+            stack.controller.appleVPAcousticTestState.phase == .sealed
+        }
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "invalid_playback_wav",
+               "a C asset outside the pre-registered six-second budget fails closed")
+        expect(stack.capture.startCount == 0 && stack.player.prepareCount == 0,
+               "invalid C budget never initializes capture or playback")
+        expectD1Cleanup(stack)
+    }
+
+    static func testComprehensiveCFailures() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for kind in ["playback", "timeline", "configuration", "generation", "seal", "cancel", "shutdown", "late"] {
+            cases += 1
+            let clock = ComprehensiveCClock()
+            let stack = D1ControllerStack(clock: { clock.now })
+            prepareComprehensiveC(stack, source: source)
+            await waitUntil("C failure injection ready") { stack.controller.appleVPAcousticTestState.phase == .running }
+            await injectComprehensiveCFailure(kind, stack: stack, clock: clock)
+            await waitUntil("C injected failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode != nil, "injected C failure remains a failure")
+            try expectComprehensiveCPartialEvidence(stack.controller)
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func injectComprehensiveCFailure(
+        _ kind: String, stack: D1ControllerStack, clock: ComprehensiveCClock
+    ) async {
+        switch kind {
+        case "playback":
+            stack.player.scheduleError = .outputUnavailable
+            clock.elapsed = 3_000_000_000
+        case "late": clock.elapsed = 6_000_000_000
+        case "cancel": await stack.controller.stopAppleVPAcousticTest()
+        case "shutdown": await stack.controller.shutdownSpeechAudioHost()
+        default:
+            if kind == "seal" {
+                stack.capture.omitsSeal = true
+            }
+            if kind == "timeline" {
+                stack.capture.invalidateTimeline()
+            }
+            if kind == "configuration" {
+                stack.capture.invalidateTimeline(configuration: 2)
+            }
+            if kind == "generation" {
+                stack.capture.emitPreviousGenerationPacket()
+            }
+            await driveComprehensiveC(stack, clock: clock)
+        }
+    }
+
+    static func expectComprehensiveCPartialEvidence(_ controller: AppController) throws {
+        let manifest = try JSONSerialization.jsonObject(with: controller.appleVPAcousticTestManifestData())
+            as? [String: Any]
+        expect(manifest?["error"] is String && manifest?["comprehensive_c"] is [String: Any],
+               "even failed or unsealed native evidence retains explicit partial run metadata")
+        expect(manifest?["source_commit"] is NSNull && manifest?["build_identity"] is NSNull,
+               "unbound real source and build identities remain UNKNOWN")
+        expectD1ExportRejected("partial JSON export also requires explicit consent") {
+            let url = try controller.appleVPAcousticTestExportURL(asWAV: false)
+            try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: false)
+        }
+        let url = try controller.appleVPAcousticTestExportURL(asWAV: false)
+        let directory = try d1ExportTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        expect(saved?["error"] is String, "explicit export preserves the failed run instead of losing all metadata")
+    }
+
+    static func testComprehensiveCExportPermission(_ controller: AppController) throws {
+        cases += 1
+        let directory = try d1ExportTestDirectory()
+        let parent = directory.deletingLastPathComponent()
+        let attributes = try FileManager.default.attributesOfItem(atPath: parent.path)
+        let original = attributes[.posixPermissions] as? NSNumber ?? 0o700
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: parent.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: original], ofItemAtPath: parent.path) }
+        expectD1ExportRejected("an unwritable isolated cache parent cannot redirect evidence elsewhere") {
+            let url = try controller.appleVPAcousticTestExportURL(asWAV: false)
+            try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
+        }
+        expect(!FileManager.default.fileExists(atPath: directory.path), "permission failure creates no partial export")
+    }
+}
+
+@MainActor
 private final class D1NormalDependenciesSpy {
     private(set) var calls = 0
 
@@ -181,6 +402,7 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     private var stops = 0
     private var active = false
     private let failsStart: Bool
+    var omitsSeal = false
 
     init(failsStart: Bool = false) {
         self.failsStart = failsStart
@@ -236,6 +458,7 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
 
     func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
         lock.withLock {
+            guard !omitsSeal else { return nil }
             guard stats?.snapshot.runID == runID else { return nil }
             stats?.seal()
             return stats?.snapshot
@@ -286,6 +509,13 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
         }
     }
 
+    func invalidateTimeline(configuration: UInt64 = 1) {
+        lock.withLock {
+            stats?.recordPacket(timestamp: contentStart + 123, byteCount: 960, accepted: false,
+                                configurationID: configuration, generation: generation)
+        }
+    }
+
     var startCount: Int {
         lock.withLock { starts }
     }
@@ -307,15 +537,18 @@ private struct D1ControllerStack {
 
     init(
         authorizationState: MicrophoneAuthorizationState = .authorized,
+        requestedAuthorization: MicrophoneAuthorizationState = .authorized,
         holdQueryNumber: Int? = nil,
         failsCaptureStart: Bool = false,
         byteLimit: Int = 720_000,
         silentScenario: AppleVPAcousticTestScenario? = nil,
+        clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
         let dependencies = D1NormalDependenciesSpy()
         let authorization = R855MicrophoneAuthorizationProvider(
-            authorization: authorizationState, holdQueryNumber: holdQueryNumber
+            authorization: authorizationState, requestedAuthorization: requestedAuthorization,
+            holdQueryNumber: holdQueryNumber
         )
         let capture = D1AudioCapture(failsStart: failsCaptureStart)
         let player = FakeMacSpeechAudioOutputPlayer()
@@ -338,6 +571,7 @@ private struct D1ControllerStack {
                 + (silentScenario.map { ["--apple-vp-silent-smoke=" + $0.rawValue] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
+            acousticTestClock: clock,
             normalDependenciesFactory: dependencies.make
         )
     }

@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-18 · T3.2-A 综合C离线准备
+
+- 仅DEBUG新增显式综合C指导：一次Start、原15秒上限，真人独讲/双讲/真人尾部/安静四段，复用原Host/pump/drain/导出；不改AEC/AGC/NS、正式插话或Test2权威。旧DEBUG累计启动数误作每run计数的问题改为增量恰好1，连续Fake run验证；首次失败与Fake权限配置错误保留。
+- [范围、异常负控、当前门禁及SELF_REVIEW](docs/stage7_5/test3_apple_vp_clean/T3_2_A_comprehensive_C_offline_preparation.md)：FAST8/FULL_CURRENT21、7入口/11不变量、Debug/Release/三Guard均exit0；新增C31/250、原D140/290、增量B0，工具全局FAIL/既有C19/C23及本轮4处结构增长保留。设备只读查询显示路线/音量与历史USB＋内置目标不同，未修改；无App/Engine/设备运行、无私人录音访问。仅软件准备通过可申请另行授权的无声预检，真人C未授权；M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED。
+
 ## 2026-10-18 · T3.2-A Automation v0.3 当前完整离线门禁
 
 - 主控确认v0.2 APPROVED_WITH_LIMITATIONS；最小新增FULL_CURRENT，保留其余模式。固定30f2b0a纯plan/job对照通过：旧FULL 22项仍含冻结门禁；当前21项仅除去legacy-total，明确历史BLOCKED/本轮未执行，不更新旧SHA/清单或生产代码。

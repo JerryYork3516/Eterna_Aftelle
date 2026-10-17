@@ -651,6 +651,7 @@ private struct ParticleOrientationDebugOverlay: View {
     private struct AppleVPAcousticTestView: View {
         @ObservedObject var controller: AppController
         @State private var pendingScenario: AppleVPAcousticTestScenario?
+        @State private var pendingComprehensiveC = false
         @State private var showsStartConsent = false
         @State private var showsDiscardConfirmation = false
         @State private var exportLocation: URL?
@@ -663,6 +664,9 @@ private struct ParticleOrientationDebugOverlay: View {
                     Text("Isolated DEBUG mode. No resident, session or provider is loaded.")
                     Text("Device validation is not authorized in D1. Controls require a separate device approval.")
                     preparationControls
+                    if controller.appleVPAcousticTestState.comprehensiveC {
+                        comprehensiveCGuide
+                    }
                     operationControls
                     if let exportLocation {
                         Text("Last local export")
@@ -680,7 +684,9 @@ private struct ParticleOrientationDebugOverlay: View {
             .confirmationDialog("Discard result?", isPresented: $showsDiscardConfirmation) {
                 Button("Discard and prepare", role: .destructive) {
                     if let scenario = pendingScenario {
-                        _ = controller.prepareAppleVPAcousticTest(scenario, discardPreviousResult: true)
+                        _ = controller.prepareAppleVPAcousticTest(
+                            scenario, discardPreviousResult: true, comprehensiveC: pendingComprehensiveC
+                        )
                     }
                     pendingScenario = nil
                 }
@@ -711,6 +717,10 @@ private struct ParticleOrientationDebugOverlay: View {
                     Button("Prepare C · Double talk") { prepare(.doubleTalk) }
                 }
                 .disabled(controller.appleVPAcousticTestState.isBusy)
+                Button(String(localized: "Prepare comprehensive C · Guided single run")) {
+                    prepare(.doubleTalk, comprehensiveC: true)
+                }
+                .disabled(controller.appleVPAcousticTestState.isBusy)
                 Button("Select approved offline WAV…") { selectPlaybackFile() }
                     .disabled(controller.appleVPAcousticTestState.isBusy)
                 Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
@@ -732,9 +742,26 @@ private struct ParticleOrientationDebugOverlay: View {
             }
         }
 
-        private func prepare(_ scenario: AppleVPAcousticTestScenario) {
-            if !controller.prepareAppleVPAcousticTest(scenario) {
+        private var comprehensiveCGuide: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(String(localized: "综合C：一次Start，最多15秒；仅在另行获准设备测试后使用。"))
+                Text(String(localized: "0–3秒真人独讲；听到居民后继续讲话；居民结束后继续至安静提示。"))
+                Text(String(localized: "约11秒起停止讲话并保持安静，等自动封存后分别同意JSON/WAV导出。"))
+                switch controller.appleVPAcousticTestState.guideStage {
+                case "human_only": Text(String(localized: "真人独讲：今天我想聊聊刚才的事情。"))
+                case "double_talk": Text(String(localized: "听到居民发声时继续自然讲话，目标物理重叠超过1秒。"))
+                case "human_tail": Text(String(localized: "居民播放已完成：真人继续讲话，等待安静提示。"))
+                case "quiet": Text(String(localized: "停止讲话，保持安静至封存。"))
+                default: Text(String(localized: "等待准备；软件提示不证明真实讲话或物理重叠时长。"))
+                }
+                Text(String(localized: "退出前请导出；失败JSON也可保留。未导出的内存证据会随App退出丢失。"))
+            }
+        }
+
+        private func prepare(_ scenario: AppleVPAcousticTestScenario, comprehensiveC: Bool = false) {
+            if !controller.prepareAppleVPAcousticTest(scenario, comprehensiveC: comprehensiveC) {
                 pendingScenario = scenario
+                pendingComprehensiveC = comprehensiveC
                 showsDiscardConfirmation = true
             }
         }

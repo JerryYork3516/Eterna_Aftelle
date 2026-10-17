@@ -103,6 +103,14 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate var native: MacSpeechNativeVoiceDebugSnapshot?
         fileprivate var lastRefresh: UInt64 = 0
         fileprivate var cleanupInFlight = false
+        var comprehensiveC = false
+        fileprivate var guideStartedAt: UInt64?
+        fileprivate var guideEvents: [String: UInt64] = [:]
+
+        var guideStage: String? {
+            ["quiet", "human_tail", "double_talk", "human_only"].first { guideEvents[$0] != nil }
+        }
+
         var selectedPlaybackFileName: String {
             playbackURL?.lastPathComponent ?? ""
         }
@@ -590,6 +598,7 @@ final class AppController: ObservableObject {
         private var appleVPAcousticRun = AppleVPAcousticTestState()
         private var appleVPAcousticTestTask: Task<Void, Never>?
         private var appleVPAcousticPlaybackTask: Task<Void, Never>?
+        private var appleVPAcousticClock: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
         var appleVPAcousticTestState: AppleVPAcousticTestState {
             var snapshot = appleVPAcousticRun
             snapshot.cleanupInFlight = speechAudioHostShutdownOperation != nil || speechHostLifecycleOperationCount != 0
@@ -991,6 +1000,7 @@ final class AppController: ObservableObject {
             speechAudioCapture: (any MacSpeechAudioCapturing)? = nil,
             acousticTestDurationNanoseconds: UInt64 = 15_000_000_000,
             acousticTestByteLimit: Int = 720_000,
+            acousticTestClock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
             normalDependenciesFactory:
             @escaping @MainActor () -> (OrchestrationKernel, ProviderKeychainStore)
         ) {
@@ -1010,6 +1020,7 @@ final class AppController: ObservableObject {
             appleVPSilentSmokeScenario = Self.silentSmokeScenario(arguments: acousticTestArguments)
             appleVPAcousticTestDurationNanoseconds = min(15_000_000_000, max(1, acousticTestDurationNanoseconds))
             appleVPAcousticTestByteLimit = min(720_000, max(960, acousticTestByteLimit))
+            appleVPAcousticClock = acousticTestClock
             nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
             realtimeSpeechDiagnosticAudioEngine = nil
             restoreNormalConfiguration()
@@ -7526,9 +7537,11 @@ final class AppController: ObservableObject {
         @discardableResult
         func prepareAppleVPAcousticTest(
             _ scenario: AppleVPAcousticTestScenario,
-            discardPreviousResult: Bool = false
+            discardPreviousResult: Bool = false,
+            comprehensiveC: Bool = false
         ) -> Bool {
             guard isAppleVPAcousticTestMode, appleVPAcousticTestTask == nil,
+                  !comprehensiveC || (scenario == .doubleTalk && appleVPSilentSmokeScenario == nil),
                   speechAudioHostShutdownOperation == nil, speechHostLifecycleOperationCount == 0,
                   !appleVPAcousticRun.isBusy,
                   appleVPAcousticRun.runID == nil || discardPreviousResult else { return false }
@@ -7540,6 +7553,7 @@ final class AppController: ObservableObject {
             appleVPAcousticRun = AppleVPAcousticTestState()
             appleVPAcousticRun.authorizationRunID = pendingAuthorization
             appleVPAcousticRun.scenario = scenario
+            appleVPAcousticRun.comprehensiveC = comprehensiveC
             appleVPAcousticRun.playbackURL = url
             appleVPAcousticRun.phase = .ready
             publishAppleVPAcousticState(force: true)
@@ -7608,7 +7622,8 @@ final class AppController: ObservableObject {
                 try await startAppleVPAcousticAudio(runID: runID, generation: generation, playback: playback)
                 appleVPAcousticRun.phase = .running
                 publishAppleVPAcousticState(force: true)
-                try await collectAppleVPAcousticFrames(runID: runID)
+                try await collectAppleVPAcousticFrames(runID: runID, playback: playback)
+                try validateAppleVPAcousticCCompletion()
             } catch {
                 failure = error is CancellationError ? "cancelled"
                     : (error as? AppleVPAcousticTestError)?.rawValue ?? "acoustic_test_failed"
@@ -7625,6 +7640,14 @@ final class AppController: ObservableObject {
             do {
                 let source = try AppleVPAcousticWAV.read(url: url)
                 appleVPAcousticRun.playbackSHA256 = source.sha256
+                if appleVPAcousticRun.comprehensiveC {
+                    guard (144_000 ... 288_000).contains(source.pcm.count),
+                          appleVPAcousticTestDurationNanoseconds == 15_000_000_000,
+                          appleVPAcousticTestByteLimit == 720_000
+                    else {
+                        throw AppleVPAcousticTestError.invalidFile
+                    }
+                }
                 return source.pcm
             } catch { throw AppleVPAcousticTestError.invalidFile }
         }
@@ -7688,6 +7711,9 @@ final class AppController: ObservableObject {
                 try checkAppleVPAcousticRun(runID)
                 speechAudioOutputHostSnapshot = output
                 guard output.state == .prepared else { throw AppleVPAcousticTestError.playbackFailed }
+                if appleVPAcousticRun.comprehensiveC {
+                    appleVPAcousticRun.playbackGeneration = output.generation
+                }
                 realtimeSpeechDiagnosticAudioEngine?.bindNativeVoiceTimingPlayback(
                     runID: runID, generation: output.generation
                 )
@@ -7706,7 +7732,17 @@ final class AppController: ObservableObject {
             else {
                 throw AppleVPAcousticTestError.voiceProcessingUnavailable
             }
+            if appleVPAcousticRun.comprehensiveC {
+                let now = appleVPAcousticClock()
+                appleVPAcousticRun.guideStartedAt = now
+                appleVPAcousticRun.guideEvents["human_only"] = now
+                return
+            }
             guard let playback else { return }
+            scheduleAppleVPAcousticPlayback(playback, runID: runID)
+        }
+
+        private func scheduleAppleVPAcousticPlayback(_ playback: Data, runID: UUID) {
             let outputGeneration = speechAudioOutputHostSnapshot.generation
             appleVPAcousticRun.playbackGeneration = outputGeneration
             appleVPAcousticPlaybackTask = Task { @MainActor [weak self] in
@@ -7715,6 +7751,7 @@ final class AppController: ObservableObject {
         }
 
         private func pumpAppleVPAcousticPlayback(_ pcm: Data, generation: UInt64, runID: UUID) async {
+            let startsBefore = speechAudioOutputHostSnapshot.playbackStartedCount
             do {
                 var offset = 0
                 var sequence: UInt64 = 1
@@ -7738,7 +7775,9 @@ final class AppController: ObservableObject {
                 let finished = await speechAudioOutputHost.finishProviderResponse(generation: generation)
                 try checkAppleVPAcousticRun(runID)
                 speechAudioOutputHostSnapshot = finished
-                guard finished.playbackStartedCount == 1 else { throw AppleVPAcousticTestError.playbackFailed }
+                guard finished.playbackStartedCount == startsBefore + 1 else {
+                    throw AppleVPAcousticTestError.playbackFailed
+                }
             } catch {
                 if (try? checkAppleVPAcousticRun(runID)) != nil {
                     appleVPAcousticRun.playbackFailure = "playback_failed"
@@ -7746,9 +7785,10 @@ final class AppController: ObservableObject {
             }
         }
 
-        private func collectAppleVPAcousticFrames(runID: UUID) async throws {
-            let deadline = DispatchTime.now().uptimeNanoseconds + appleVPAcousticTestDurationNanoseconds
-            while DispatchTime.now().uptimeNanoseconds < deadline {
+        private func collectAppleVPAcousticFrames(runID: UUID, playback: Data?) async throws {
+            let started = appleVPAcousticRun.guideStartedAt ?? appleVPAcousticClock()
+            let deadline = started + appleVPAcousticTestDurationNanoseconds
+            while appleVPAcousticClock() < deadline {
                 try checkAppleVPAcousticRun(runID)
                 let capture = await speechAudioHost.currentSnapshot()
                 try checkAppleVPAcousticRun(runID)
@@ -7758,6 +7798,7 @@ final class AppController: ObservableObject {
                 speechAudioOutputHostSnapshot = output
                 guard appleVPAcousticRun.playbackFailure == nil else { throw AppleVPAcousticTestError.playbackFailed }
                 try validateAppleVPAcousticRoute()
+                try advanceAppleVPAcousticCGuide(playback: playback, runID: runID)
                 let frames = await speechAudioHost.drainFrames(maxCount: 25)
                 try checkAppleVPAcousticRun(runID)
                 for frame in frames {
@@ -7770,6 +7811,41 @@ final class AppController: ObservableObject {
                     return
                 }
                 try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        private func advanceAppleVPAcousticCGuide(playback: Data?, runID: UUID) throws {
+            guard let started = appleVPAcousticRun.guideStartedAt else { return }
+            let now = appleVPAcousticClock()
+            guard now >= started else { throw AppleVPAcousticTestError.invalidPacket }
+            let elapsed = now - started
+            if elapsed >= 3_000_000_000, appleVPAcousticRun.guideEvents["double_talk"] == nil {
+                guard elapsed < 4_000_000_000, let playback else {
+                    throw AppleVPAcousticTestError.playbackFailed
+                }
+                appleVPAcousticRun.guideEvents["double_talk"] = now
+                scheduleAppleVPAcousticPlayback(playback, runID: runID)
+            }
+            if elapsed >= 9_000_000_000, appleVPAcousticRun.guideEvents["human_tail"] == nil {
+                guard speechAudioOutputHostSnapshot.state == .completed else {
+                    throw AppleVPAcousticTestError.playbackFailed
+                }
+                appleVPAcousticRun.guideEvents["human_tail"] = now
+            }
+            if elapsed >= 11_000_000_000, appleVPAcousticRun.guideEvents["quiet"] == nil {
+                guard elapsed < 14_000_000_000 else { throw AppleVPAcousticTestError.invalidPacket }
+                appleVPAcousticRun.guideEvents["quiet"] = now
+            }
+        }
+
+        private func validateAppleVPAcousticCCompletion() throws {
+            guard appleVPAcousticRun.comprehensiveC else { return }
+            guard appleVPAcousticRun.guideEvents.count == 4,
+                  let quiet = appleVPAcousticRun.guideEvents["quiet"],
+                  appleVPAcousticClock() >= quiet + 1_000_000_000,
+                  speechAudioOutputHostSnapshot.state == .completed
+            else {
+                throw AppleVPAcousticTestError.invalidPacket
             }
         }
 
@@ -8050,7 +8126,21 @@ final class AppController: ObservableObject {
         private func encodeAppleVPAcousticManifest(_ manifest: [String: Any], runID: UUID?) throws -> Data {
             var result = manifest
             result["host_timing"] = try appleVPAcousticTimingManifest(runID)
+            if appleVPAcousticRun.comprehensiveC {
+                result["comprehensive_c"] = appleVPAcousticCManifest()
+            }
             return try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+        }
+
+        private func appleVPAcousticCManifest() -> [String: Any] {
+            var result: [String: Any] = ["version": 1]
+            result["clock"] = "monotonic_software_guidance_not_physical_audio"
+            result["events_ns"] = appleVPAcousticRun.guideEvents
+            result["human_speech_windows"] = NSNull()
+            result["physical_overlap_seconds"] = NSNull()
+            result["post_roll_coverage"] = "REVIEW_REQUIRED"
+            result["planned_seconds"] = ["human_only": 0, "schedule_playback": 3, "human_tail": 9, "quiet": 11]
+            return result
         }
 
         private func appleVPAcousticTimingManifest(_ runID: UUID?) throws -> [String: Any] {
