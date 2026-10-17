@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-10-17 最新自动化交付见 [Automation v0.2：旧冻结基线审计与独立候选](T3_2_A_automation_v0_2.md)：原11项Runtime/Fake语义已核清（9 UNCHANGED、2 APPROVED_EVOLUTION），新增独立TEST3入口，7个原测试实际执行、11项候选PASS。FAST 8项PASS；FULL保留原21项并新增候选，最终21 PASS（8复用）/1旧冻结摘要BLOCKED，原exit1/总exit2不变；Debug/Release、三项Guard与产物DEBUG隔离通过。旧expected、清单/断言、生产代码均未改；首次验证器失败及修正记录保留。仅建议TEST3_CANDIDATE_PASS / FULL_APPROVAL_PENDING，Automation v0.2 REVIEW_PENDING；历史全量lint FAIL/C19/C23延期不变，本轮Swift增量0。R3-M01 OPEN、起音归因UNKNOWN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；不产生设备或后续节点授权。以下段落保留历史快照，当前自动化结论以本段、本报告及最新主控决定为准。
+
 2026-10-17 自动化交付见 [T3.2-A 自动化验证体系 v0.1](T3_2_A_automation_v0_1.md)：复用原离线入口，新增FAST/FULL顺序执行、一次执行上限、timeout/失败停止、身份/计数/日志记录及合成起音正负控。FAST 8项PASS；FULL 20项PASS（8项明确复用）/1项旧冻结摘要BLOCKED，原exit1与总exit2保留；Debug/Release及三项Guard通过。新增生产/Swift改动0，增量规范不适用，历史lint FAIL/C19/C23不变；未启动设备或读取真人录音。Automation v0.1 REVIEW_PENDING，80ms起音归因仍UNKNOWN，R3-M01 OPEN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false；不产生设备或后续节点授权。
 
 2026-10-17 最新复审交付见 [R3-M01 单次A时序与用户试听](T3_2_A_D2_R3_M01_single_A_review.md)：一次A原控制链/native/744个20ms包通过，host_timing有1次观测skip；用户原话“听不到居民回声，但是有起音，起音不知道是否影响”。居民回声为USER_REPORTED_NOT_HEARD，起音性质/影响仍UNKNOWN，A=INCONCLUSIVE/REVIEW_PENDING，R3-M01 OPEN、T3.2-A BLOCKED。用户最新明确授权仅该run的原字节WAV随脱敏报告提交至当前分支供主控复审；其SHA及run绑定见报告/manifest，不扩展其他录音权限、不改.gitignore或历史约束。本次无生产/测试源码修改、重测或音频处理；历史规范FAIL/C19/C23保留，后续节点与正式Test3仍未授权。

@@ -3,16 +3,20 @@
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 import run as runner
 import signals
+import test3_total
 
 
 class SyntheticChecks(unittest.TestCase):
@@ -88,7 +92,8 @@ class RunnerChecks(unittest.TestCase):
     def test_timeout_kills_descendant_and_stops(self):
         pid_file = self.path / "pid"
         code = ("import subprocess,sys,time,pathlib; "
-                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']); "
+                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)'],"
+                "start_new_session=True); "
                 f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid)); time.sleep(20)")
         rows = runner.run_jobs([self.command("timeout", code, 1),
                                 self.command("never", "pass")], runner.ROOT, self.path, {})
@@ -97,6 +102,30 @@ class RunnerChecks(unittest.TestCase):
         pid = int(pid_file.read_text())
         state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True).stdout.strip()
         self.assertTrue(not state or state.startswith(b"Z"), "descendant still running")
+
+    def test_interrupt_cleans_nested_sessions(self):
+        pid_file = self.path / "nested-pid"
+        child = ("import subprocess,sys,time,pathlib; "
+                 "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)'],"
+                 "start_new_session=True); "
+                 f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid)); time.sleep(20)")
+        code = ("import sys; sys.path.insert(0," + repr(str(runner.HERE)) + "); "
+                "import run; from pathlib import Path; "
+                f"r=run.execute(run.job('interrupt',[sys.executable,'-c',{child!r}],10),"
+                f"run.ROOT,Path({str(self.path / 'interrupted')!r})); "
+                "raise SystemExit(r['exit_code'])")
+        process = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        deadline = time.monotonic() + 5
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(pid_file.exists(), "synthetic descendant did not start")
+        os.kill(process.pid, signal.SIGINT)
+        self.assertEqual(process.wait(timeout=8), 130)
+        state = subprocess.run(["ps", "-o", "stat=", "-p", pid_file.read_text()],
+                               capture_output=True).stdout.strip()
+        self.assertTrue(not state or state.startswith(b"Z"))
 
     def test_historical_block_preserves_failure_exit(self):
         code = ("print('r851_production_mutations=0'); "
@@ -112,6 +141,21 @@ class RunnerChecks(unittest.TestCase):
         with patch.object(runner, "FIXTURE", self.path / "absent"):
             row = runner.run_jobs([item], runner.ROOT, self.path, {})[0]
         self.assertEqual((row["status"], row["exit_code"], row["attempts"]), ("BLOCKED", None, 0))
+
+    def test_candidate_block_keeps_exit_and_requires_valid_report(self):
+        destination = self.path / "blocked-report"
+        code = ("import sys; from pathlib import Path; sys.path.insert(0," +
+                repr(str(runner.HERE)) + "); import run; p=Path(sys.argv[1]); p.mkdir(); "
+                "run.write_report(p/'results.json', {'status':'BLOCKED','reason':'missing evidence'}); "
+                "raise SystemExit(2)")
+        item = self.command("test3-candidate", code)
+        item["command"].append(str(destination))
+        row = runner.execute(item, runner.ROOT, self.path / "candidate-block")
+        self.assertEqual((row["status"], row["exit_code"]), ("BLOCKED", 2))
+        item = self.command("test3-candidate", "raise SystemExit(2)")
+        item["command"].append(str(self.path / "absent-report"))
+        row = runner.execute(item, runner.ROOT, self.path / "invalid-block")
+        self.assertEqual((row["status"], row["exit_code"]), ("FAIL", 2))
 
     def test_isolated_tmp_and_single_attempt_plan(self):
         row = runner.execute(self.command("tmp", "import os; print(os.environ['TMPDIR'])"),
@@ -138,7 +182,7 @@ class RunnerChecks(unittest.TestCase):
         report = {"schema_version": 1, "mode": "FAST", "status": "PASS",
                   "identity": source, "tests": [row]}
         path = directory / "results.json"
-        path.write_text(json.dumps(report))
+        runner.write_report(path, report)
         with patch.object(runner, "ROOT", self.path):
             self.assertEqual(runner.reuse_fast(path, source)["pass"]["execution"], "REUSED_FAST")
             with self.assertRaises(ValueError):
@@ -150,8 +194,94 @@ class RunnerChecks(unittest.TestCase):
     def test_reuse_rejects_outside_report(self):
         path = self.path / "unapproved.json"
         path.write_text("{}")
+        with patch.object(runner, "ROOT", self.path / "different-checkout"):
+            with self.assertRaisesRegex(ValueError, "this checkout"):
+                runner.reuse_fast(path, {})
+
+    def test_result_receipt_rejects_metadata_tampering(self):
+        path = self.path / "results.json"
+        runner.write_report(path, {"status": "PASS", "counts": 1})
+        self.assertEqual(runner.read_report(path)["counts"], 1)
+        path.write_text(json.dumps({"status": "PASS", "counts": 999}))
         with self.assertRaises(ValueError):
-            runner.reuse_fast(path, {})
+            runner.read_report(path)
+
+    def test_external_pcm_and_partial_test_overrides_removed(self):
+        overrides = {key: "SYNTHETIC_OVERRIDE_NOT_A_REAL_PATH" for key in runner.TEST_OVERRIDES}
+        # Check only the known switches; no values from the caller are logged.
+        code = ("import os; raise SystemExit(int(any(k in os.environ for k in " +
+                repr(list(runner.TEST_OVERRIDES)) + ")))")
+        with patch.dict(os.environ, overrides):
+            row = runner.execute(self.command("env", code), runner.ROOT, self.path / "env")
+        self.assertEqual(row["exit_code"], 0)
+
+    def test_source_or_workspace_drift_stops_after_first_job(self):
+        for field in ("production_tree", "workspace_metadata_sha256"):
+            with self.subTest(field=field):
+                before, after = {field: "before"}, {field: "after"}
+                directory = self.path / field
+                directory.mkdir()
+                with patch.object(runner, "identity", return_value=after):
+                    rows = runner.run_jobs([self.command("changed", "pass"),
+                                            self.command("never", "pass")],
+                                           runner.ROOT, directory, {}, before)
+                self.assertEqual(rows[0]["status"], "FAIL")
+                self.assertEqual(rows[1]["status"], "NOT_RUN")
+
+    def test_candidate_static_contracts_and_no_frozen_bypass(self):
+        result = test3_total.static_contracts(runner.ROOT)
+        self.assertEqual(tuple(result["invariant_ids"]), test3_total.IDS)
+        self.assertTrue(all(result["checks"].values()))
+        self.assertEqual(len(test3_total.jobs()), 7)
+        self.assertFalse(any("realtime_total_regression_tests/check.sh" in x["command"]
+                             for x in test3_total.jobs()))
+        self.assertEqual(len(runner.plan("FAST", self.path)), 8)
+        self.assertEqual(len(runner.plan("TEST3", self.path)), 1)
+
+    def test_evidence_success_markers_match_existing_producer(self):
+        script = (runner.ROOT / "tools/realtime_interruption_evidence_tests/check.sh").read_text()
+        emitted = set(re.findall(r'echo "([A-Za-z0-9_]+)=PASS"', script))
+        self.assertTrue(set(test3_total.required_metrics()["evidence"]).issubset(emitted))
+        self.assertIn('echo "realtime_interruption_runtime_authority=FAIL"\n  exit 1', script)
+
+    def test_invariant_and_old_generation_bad_acceptance_really_fail(self):
+        for key in ("r851_false_memory_writes", "r851_stale_generation_side_effects"):
+            with self.subTest(key=key):
+                code = ("import sys; sys.path.insert(0," + repr(str(runner.HERE)) + "); "
+                        "import test3_total as t; m=t.required_metrics(); "
+                        "m['random'].update({'r851_randomized_'+k:'1' for k in "
+                        "('final_before_stop','completion_before_final','partial_final_stop',"
+                        "'short_pause_resume','provider_first_start')}); "
+                        "m['cross'][" + repr(key) + "]='1'; t.validate_metrics(m)")
+                item = self.command(key, code)
+                # Explicit checks must survive optimized Python as well.
+                item["command"].insert(1, "-O")
+                row = runner.execute(item, runner.ROOT, self.path / key)
+                self.assertEqual((row["status"], row["exit_code"]), ("FAIL", 1))
+
+    def test_candidate_missing_evidence_blocked_and_log_tamper_failed(self):
+        with self.assertRaises(test3_total.EvidenceMissing):
+            test3_total.validate_metrics({})
+        log = self.path / "data.log"
+        log.write_text("original")
+        row = {"name": "cross", "status": "PASS", "exit_code": 0, "log": str(log),
+               "log_sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
+        log.write_text("modified")
+        with self.assertRaisesRegex(ValueError, "Log tampering"):
+            test3_total.read_metrics([row])
+
+    def test_candidate_missing_fixture_has_real_blocked_report(self):
+        directory = self.path / ".build/t3_2_a_validation/candidate"
+        directory.parent.mkdir(parents=True)
+        with patch.object(runner, "ROOT", self.path), \
+                patch.object(runner, "FIXTURE", self.path / "absent"), \
+                patch.object(runner, "identity", return_value={"source_commit": "synthetic"}):
+            code = test3_total.main(directory)
+        self.assertEqual(code, 2)
+        report = runner.read_report(directory / "results.json")
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertEqual(report["tests"], [])
+        self.assertEqual(set(report["invariants"].values()), {"BLOCKED"})
 
 
 if __name__ == "__main__":

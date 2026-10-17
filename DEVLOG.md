@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-17 · T3.2-A Automation v0.2 独立安全候选
+
+- 旧摘要精确绑定75015d2快照，Test2收口已不匹配；审计原11语义为9 UNCHANGED/2 APPROVED_EVOLUTION，不把摘要不同当功能回归。仅调整验证工具并新增[独立候选与审核](docs/stage7_5/test3_apple_vp_clean/T3_2_A_automation_v0_2.md)，不改旧门禁/清单、生产代码或测试标准。
+- 最终FAST 8 PASS、自测24项；FULL 21 PASS（8复用）/旧冻结1 BLOCKED、原exit1/总exit2保留；新候选7入口/11不变量PASS，cross12/846、随机100次/1274、固定15 runs/18子进程失败0、Tool7/143。Debug/Release、三项Guard、产物隔离通过；首次验证器/自测失败及修正保留，无功能安全回归。
+- 五维SELF_REVIEW，新增CRITICAL0、工具MAJOR1 CLOSED/MINOR2 CLOSED；Swift增量0、历史lint FAIL/C19/C23延期、ENGINEERING REWORK不变。TEST3_CANDIDATE_PASS仅限Runtime/Fake，FULL_APPROVAL_PENDING、Automation REVIEW_PENDING；R3-M01/起音UNKNOWN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false。无设备/在线Provider/私人音频访问，按授权提交推送后停止。
+
 ## 2026-10-17 · T3.2-A 自动化验证体系 v0.1
 
 - 只新增5个离线脚本与[覆盖/执行审核](docs/stage7_5/test3_apple_vp_clean/T3_2_A_automation_v0_1.md)，不改生产或原测试；复用原Fake、Converter/Replay、Guard及xcodebuild。FAST 8项PASS；FULL 20项PASS（8项复用）/旧总回归固定摘要1项BLOCKED，原exit1、总exit2如实保留；不刷新历史门禁。
