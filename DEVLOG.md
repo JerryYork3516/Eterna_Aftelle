@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-17 · T3.2-A 自动化验证体系 v0.1
+
+- 只新增5个离线脚本与[覆盖/执行审核](docs/stage7_5/test3_apple_vp_clean/T3_2_A_automation_v0_1.md)，不改生产或原测试；复用原Fake、Converter/Replay、Guard及xcodebuild。FAST 8项PASS；FULL 20项PASS（8项复用）/旧总回归固定摘要1项BLOCKED，原exit1、总exit2如实保留；不刷新历史门禁。
+- 执行器14项自测，7组合成异常CLI exit1、4组正常/弱/短音/渐强exit0；timeout后子进程停止、无重试/后续NOT_RUN、缓存身份/日志负控通过。Debug/unsigned Release及产物DEBUG时序隔离通过，无App/设备/Provider或真人音频读取，无音频/原日志交付。
+- 本轮无Swift增量（规范检查不适用，不冒充PASS），历史全量FAIL及C19/C23延期不变。五维SELF_REVIEW、本轮新增CRITICAL/MAJOR/MINOR均0；Automation REVIEW_PENDING，R3-M01 80ms起音仍OPEN/UNKNOWN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false。按本轮授权提交推送后停止。
+
 ## 2026-10-17 · R3-M01 单次A试听证据交付
 
 - 唯一run EDDF62B0-D328-4C19-85E6-B98D9A6D5CEA：744包/14.88s连续、native coverage=true、原拒收全0；host_timing skippedUpdates=1保留。用户试听原话“听不到居民回声，但是有起音，起音不知道是否影响”，起音性质/影响仍UNKNOWN。
