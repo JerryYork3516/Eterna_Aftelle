@@ -63,6 +63,14 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         static func isEnabled(arguments: [String]) -> Bool {
             arguments.contains(argument)
         }
+
+        static func collectionDuration(silentScenario: AppleVPAcousticTestScenario?) -> UInt64 {
+            switch silentScenario {
+            case .residentOnly: 18_000_000_000
+            case .humanOnly, .doubleTalk: 4_000_000_000
+            case nil: 15_000_000_000
+            }
+        }
     }
 
     nonisolated enum AppleVPAcousticTestScenario: String, CaseIterable {
@@ -872,8 +880,12 @@ final class AppController: ObservableObject {
         #if DEBUG
             appleVPAcousticTestCapture = speechCapture
             appleVPSilentSmokeScenario = Self.silentSmokeScenario(arguments: ProcessInfo.processInfo.arguments)
-            appleVPAcousticTestDurationNanoseconds = appleVPSilentSmokeScenario == nil ? 15_000_000_000 : 4_000_000_000
-            appleVPAcousticTestByteLimit = 720_000
+            appleVPAcousticTestDurationNanoseconds = AppleVPAcousticTestLaunchMode.collectionDuration(
+                silentScenario: appleVPSilentSmokeScenario
+            )
+            appleVPAcousticTestByteLimit = max(
+                720_000, Int(appleVPAcousticTestDurationNanoseconds / 1_000_000_000) * 48000
+            )
         #endif
         speechAudioOutputHost = MacSpeechAudioOutputHost(
             player: SystemMacSpeechAudioOutputPlayer(
@@ -7995,8 +8007,10 @@ final class AppController: ObservableObject {
             manifest["playback_file_name"] = state.selectedPlaybackFileName
             manifest["playback_sha256"] = state.playbackSHA256 ?? NSNull() as Any
             manifest["capture_generation"] = state.generation ?? NSNull() as Any
-            manifest["input_device"] = state.route.inputDevice.identifier
-            manifest["output_device"] = state.route.outputDevice.identifier
+            manifest["input_device"] = appleVPSilentSmokeScenario == nil
+                ? state.route.inputDevice.identifier : "default_input"
+            manifest["output_device"] = appleVPSilentSmokeScenario == nil
+                ? state.route.outputDevice.identifier : "default_output"
             manifest["processed_sample_rate"] = 24000
             manifest["processed_channels"] = 1
             manifest["processed_encoding"] = "PCM16_LE"

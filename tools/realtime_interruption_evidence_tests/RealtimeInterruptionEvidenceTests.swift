@@ -65,6 +65,9 @@ private extension RealtimeInterruptionEvidenceTests {
             defer { try? FileManager.default.removeItem(at: jsonURL) }
             let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any]
             expect(manifest?["retained_pcm_bytes"] as? Int == 0, "actual input content is not retained")
+            expect(manifest?["input_device"] as? String == "default_input"
+                && manifest?["output_device"] as? String == "default_output",
+                "silent statistics retain route aliases without hardware identifiers")
             expect(manifest?["processed_sha256"] is NSNull, "discarded PCM never receives a fabricated digest")
             expect(manifest?["packet_count"] as? Int == 2, "metadata still validates the actual packet sequence")
             expect(manifest?["physical_acceptance"] as? String == "UNVERIFIED", "silent control is not acoustic PASS")
@@ -110,6 +113,13 @@ private extension RealtimeInterruptionEvidenceTests {
         }
         expect(AppleVPAcousticTestLaunchMode.isEnabled(arguments: ["Aftelle", flag]),
                "only the exact flag enables D1")
+        for scenario in AppleVPAcousticTestScenario.allCases {
+            let duration = AppleVPAcousticTestLaunchMode.collectionDuration(silentScenario: scenario)
+            expect(duration == (scenario == .residentOnly ? 18_000_000_000 : 4_000_000_000),
+                   "only silent A extends beyond the historical failure boundary")
+        }
+        expect(AppleVPAcousticTestLaunchMode.collectionDuration(silentScenario: nil) == 15_000_000_000,
+               "voiced collection remains limited to fifteen seconds")
     }
 
     static func testD1InitializationIsolation() async {

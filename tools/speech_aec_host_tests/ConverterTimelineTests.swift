@@ -24,12 +24,20 @@ private struct ConverterTimelineTests {
         #endif
         let scenarios = ["missing-start", "missing-middle", "forward", "backward",
                          "sample-gap", "host-jump-with-sample-time", "jitter", "reset"]
-        for rate in [48000.0, 44100.0] {
+        for rate in [16000.0, 48000.0, 44100.0] {
             try streaming(rate: rate)
             for scenario in scenarios {
                 try clockBoundary(rate: rate, scenario: scenario)
             }
             try delivery(rate: rate)
+            for drift in [0.0, -62667.0, 62667.0] {
+                try longClock(rate: rate, driftAtBoundary: drift)
+            }
+            let faults = ["sample-gap", "sample-backward", "host-jump", "host-backward",
+                          "missing-host", "missing-sample", "one-sample-excess"]
+            for fault in faults {
+                try driftThenFault(rate: rate, fault: fault)
+            }
         }
         try packetTimeAndReset()
         try gatedSpanCompatibility()
@@ -266,6 +274,56 @@ private struct ConverterTimelineTests {
 }
 
 private extension ConverterTimelineTests {
+    static func longClock(rate: Double, driftAtBoundary: Double) throws {
+        cases += 1
+        let converter = try MacSpeechFloatMono48kConverter(inputFormat: format(rate))
+        let size = Int(rate / 10)
+        let chunk = buffer(waveform(size), rate: rate)
+        var outputSamples = 0
+        for index in 0 ..< 300 {
+            let elapsed = Double(index) / 10
+            let drift = driftAtBoundary * elapsed / 14.8
+            let timestamp = UInt64((Double(time(index * size, rate: rate)) + drift).rounded())
+            let converted = try converter.convert(
+                chunk, hostTimeNanoseconds: timestamp, sampleTime: Int64(index * size)
+            )
+            let expected = time(outputSamples, rate: 48000)
+            expect(converted.hostTimeNanoseconds.map { abs(Double($0) - Double(expected)) <= 1 } == true,
+                   "continuous source cursor survives thirty seconds of bounded hardware clock drift")
+            outputSamples += converted.samples.count
+        }
+        expect(outputSamples > 29 * 48000, "long conversion retains the source through the drift boundary")
+    }
+
+    static func driftThenFault(rate: Double, fault: String) throws {
+        cases += 1
+        let converter = try MacSpeechFloatMono48kConverter(inputFormat: format(rate))
+        let size = Int(rate / 10)
+        let chunk = buffer(waveform(size), rate: rate)
+        for index in 0 ..< 180 {
+            let nominal = time(index * size, rate: rate)
+            var timestamp: UInt64? = nominal - UInt64((Double(index) * 62667 / 148).rounded())
+            var sample: Int64? = Int64(index * size)
+            if index >= 170 {
+                switch fault {
+                case "sample-gap": sample! += 1
+                case "sample-backward": sample! -= Int64(size * 2)
+                case "host-jump": timestamp! += 50_000_000
+                case "host-backward": timestamp! -= 200_000_000
+                case "missing-host": timestamp = nil
+                case "missing-sample": sample = nil
+                default: timestamp! += UInt64(ceil(1_000_000_000 / rate)) + 1000
+                }
+            }
+            let converted = try converter.convert(chunk, hostTimeNanoseconds: timestamp, sampleTime: sample)
+            expect((converted.hostTimeNanoseconds != nil) == (index < 170),
+                   "real discontinuity after valid drift latches invalid until generation reset")
+        }
+        converter.resetForGenerationTransition()
+        let restarted = try converter.convert(chunk, hostTimeNanoseconds: anchor, sampleTime: 0)
+        expect(restarted.hostTimeNanoseconds == anchor, "generation reset clears the prior invalid clock")
+    }
+
     static func format(_ rate: Double) -> AVAudioFormat {
         AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
                       channels: 1, interleaved: false)!

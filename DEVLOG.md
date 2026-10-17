@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-17 · T3.2-A-D2-R2-M01 内容时间与长时无声验证
+
+- 确定性重放确认原累计host/sample一样本门槛误拒连续时轴；保留原容差，改用相邻硬件时间检查，原sample/generation/reset/输出游标和真实缺口拒收不变。DEBUG仅Silent A延长18s、B/C4s，有声15s不变；无声统计设备标识脱敏。
+- Converter65/6830、AEC1165、Host178、Playback238、D1 Fake40/290、统计10/49、Debug/Release及三项Guard通过；目标USB＋内置扬声器A/B/C各一次通过，A取得17.9s原生内容、content_time等拒收全0，无实际PCM/WAV保存，App已退出。首映像检查/退出快照工具异常原样登记。
+- 新增B0；Format20856/exit1、Lint384/exit2仍FAIL，4个既有C指标增长另记，C19/C23延期。READY_FOR_HUMAN_TEST=true仅为后续独立授权的有声测试准备；原起音音量变化OPEN，M01 REVIEW_PENDING、ENGINEERING REWORK/DEBT_DEFERRED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false。[实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_D2_R2_M01_content_timeline_and_silent_validation.md)。提交推送后停止。
+
 ## 2026-10-17 · T3.2-A-D2-F1 格式协商与无声预演
 
 - 修复 VP 启用后未协商 Mixer→Output 格式即比较一致性的缺口，保留 stopped 配置／原 Guard／唯一 Engine；DEBUG 增加有界配置诊断与输入不保留的零值 PCM 预演，测试页接回原 Controller.start。原 Test2／Cascaded／Runtime／Provider／Session 链不改。

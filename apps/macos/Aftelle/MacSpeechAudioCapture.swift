@@ -916,6 +916,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         }
         nextInputSampleTime = overflow ? nil : next
         guard sampleTimeContinuityValid,
+              continuousInputHostTimeLocked(
+                  hostTimeNanoseconds: hostTimeNanoseconds, inputFrameCount: inputFrameCount
+              ) != nil,
               let sampleTimeAnchor,
               let hostTimeAnchor else { return nil }
         let (offset, subtractionOverflow) = sampleTime.subtractingReportingOverflow(sampleTimeAnchor)
@@ -926,9 +929,7 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         let elapsed = Double(offset) * 1_000_000_000 / inputSampleRate
         let timestamp = Double(hostTimeAnchor) + elapsed
         guard timestamp.isFinite, timestamp > 0,
-              timestamp < Double(UInt64.max),
-              abs(Double(hostTimeNanoseconds) - timestamp)
-              <= (1_000_000_000 / inputSampleRate).rounded(.up)
+              timestamp < Double(UInt64.max)
         else {
             sampleTimeContinuityValid = false
             return nil
@@ -943,12 +944,23 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         if sampleTimeAnchor != nil {
             sampleTimeContinuityValid = false
         }
+        return continuousInputHostTimeLocked(
+            hostTimeNanoseconds: hostTimeNanoseconds, inputFrameCount: inputFrameCount
+        )
+    }
+
+    private func continuousInputHostTimeLocked(
+        hostTimeNanoseconds: UInt64,
+        inputFrameCount: Int
+    ) -> UInt64? {
+        // Compare adjacent hardware times; sampleTime remains the anchored content clock.
         if let previousInputHostTime {
             let expected = Double(previousInputHostTime)
                 + Double(previousInputFrameCount)
                 * 1_000_000_000 / inputSampleRate
             let tolerance = (1_000_000_000 / inputSampleRate).rounded(.up)
-            if abs(Double(hostTimeNanoseconds) - expected) > tolerance {
+            let difference = abs(Double(hostTimeNanoseconds) - expected)
+            if hostTimeNanoseconds <= previousInputHostTime || difference > tolerance {
                 sampleTimeContinuityValid = false
             }
         }
