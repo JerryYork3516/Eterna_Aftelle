@@ -2,6 +2,7 @@
 import Foundation
 #if DEBUG
 import OSLog
+    import Synchronization
 #endif
 
 nonisolated enum MacSpeechAudioInputFormat {
@@ -1149,6 +1150,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
 
         let runID: UUID
         let captureGeneration: UInt64
+        let timing: MacSpeechNativeVoiceTiming?
         private(set) var isSealed = false
         private var sealReason: String?
         private var configurationID: UInt64?
@@ -1171,9 +1173,10 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private var firstPacketTime: UInt64?
         private var lastPacketTime: UInt64?
 
-        init(runID: UUID, generation: UInt64) {
+        init(runID: UUID, generation: UInt64, timing: MacSpeechNativeVoiceTiming? = nil) {
             self.runID = runID
             captureGeneration = generation
+            self.timing = timing
         }
 
         mutating func bind(
@@ -1390,7 +1393,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
         }
 
-        private static func sample(
+        static func sample(
             _ data: UnsafeMutableRawPointer,
             index: Int,
             format: AVAudioCommonFormat
@@ -1411,6 +1414,381 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
     }
 
+#endif
+
+#if DEBUG
+    nonisolated enum MacSpeechTimingEvent: String, CaseIterable, Codable, Sendable {
+        case engineStartBefore, engineStartReturned, playerPlayBefore, playerPlayReturned
+        case playbackPrepared, playbackStarted, playbackCompleted, captureStopped
+        case configurationChanged, routeChanged
+    }
+
+    nonisolated struct MacSpeechTimingEventWitness: Codable, Sendable, Equatable {
+        let event: MacSpeechTimingEvent
+        var firstCallTimeNs: UInt64?
+        var lastCallTimeNs: UInt64?
+        var count: UInt64 = 0
+    }
+
+    nonisolated struct MacSpeechTimingStream: Codable, Sendable, Equatable {
+        var firstCallbackArrivalNs: UInt64?
+        var lastCallbackArrivalNs: UInt64?
+        var callbacks: UInt64 = 0
+        var firstArrivalNs: UInt64?
+        var lastArrivalNs: UInt64?
+        var firstContentHostNs: UInt64?
+        var lastContentHostNs: UInt64?
+        var lastContentEndNs: UInt64?
+        var firstSampleTime: Int64?
+        var lastSampleTime: Int64?
+        var previousFrames: UInt64 = 0
+        var buffers: UInt64 = 0
+        var frames: UInt64 = 0
+        var missingTime: UInt64 = 0
+        var duplicate: UInt64 = 0
+        var backwards: UInt64 = 0
+        var sampleDiscontinuities: UInt64 = 0
+        var hostDiscontinuities: UInt64 = 0
+        var maximumStartIntervalNs: UInt64 = 0
+        var maximumEndGapNs: UInt64 = 0
+        var firstNonzeroContentNs: UInt64?
+        var lastNonzeroContentNs: UInt64?
+        var firstNonzeroSampleTime: Int64?
+        var lastNonzeroSampleTime: Int64?
+        var nonzeroFrames: UInt64 = 0
+
+        mutating func recordNonzero(
+            content: (host: UInt64?, sample: Int64?), range: ClosedRange<Int>, rate: Double
+        ) {
+            var firstHost: UInt64?
+            var lastHost: UInt64?
+            var firstSample: Int64?
+            var lastSample: Int64?
+            if let host = content.host, host > 0 {
+                let firstOffset = UInt64((Double(range.lowerBound) * 1_000_000_000 / rate).rounded())
+                let lastOffset = UInt64((Double(range.upperBound) * 1_000_000_000 / rate).rounded())
+                let begin = host.addingReportingOverflow(firstOffset)
+                let end = host.addingReportingOverflow(lastOffset)
+                if !begin.overflow && !end.overflow {
+                    firstHost = begin.partialValue
+                    lastHost = end.partialValue
+                }
+            }
+            if let sample = content.sample {
+                let begin = sample.addingReportingOverflow(Int64(range.lowerBound))
+                let end = sample.addingReportingOverflow(Int64(range.upperBound))
+                if !begin.overflow && !end.overflow {
+                    firstSample = begin.partialValue
+                    lastSample = end.partialValue
+                }
+            }
+            if nonzeroFrames == 0 {
+                firstNonzeroContentNs = firstHost
+                firstNonzeroSampleTime = firstSample
+            }
+            lastNonzeroContentNs = lastHost
+            lastNonzeroSampleTime = lastSample
+        }
+
+        mutating func arrived(at time: UInt64) {
+            firstCallbackArrivalNs = firstCallbackArrivalNs ?? time
+            lastCallbackArrivalNs = time
+            callbacks &+= 1
+        }
+
+        mutating func record(host: UInt64?, sample: Int64?, arrival: UInt64, count: UInt64, rate: Double) {
+            buffers &+= 1
+            frames &+= count
+            guard let host, host > 0, let sample, rate.isFinite, rate > 0 else {
+                missingTime &+= 1
+                lastContentHostNs = nil
+                lastSampleTime = nil
+                lastContentEndNs = nil
+                return
+            }
+            firstArrivalNs = firstArrivalNs ?? arrival
+            lastArrivalNs = arrival
+            if let previousHost = lastContentHostNs, let previousSample = lastSampleTime {
+                if host == previousHost && sample == previousSample {
+                    duplicate &+= 1
+                }
+                if host < previousHost || sample < previousSample {
+                    backwards &+= 1
+                }
+                let expected = previousSample.addingReportingOverflow(Int64(previousFrames))
+                if expected.overflow || expected.partialValue != sample {
+                    sampleDiscontinuities &+= 1
+                }
+                let interval = host >= previousHost ? host - previousHost : 0
+                maximumStartIntervalNs = max(maximumStartIntervalNs, interval)
+                if let end = lastContentEndNs {
+                    if host > end {
+                        maximumEndGapNs = max(maximumEndGapNs, host - end)
+                    }
+                    if abs(Double(host) - Double(end)) > ceil(1_000_000_000 / rate) {
+                        hostDiscontinuities &+= 1
+                    }
+                }
+            }
+            firstContentHostNs = firstContentHostNs ?? host
+            firstSampleTime = firstSampleTime ?? sample
+            lastContentHostNs = host
+            lastSampleTime = sample
+            previousFrames = count
+            let end = host.addingReportingOverflow(UInt64((Double(count) * 1_000_000_000 / rate).rounded()))
+            lastContentEndNs = end.overflow ? nil : end.partialValue
+        }
+    }
+
+    nonisolated struct MacSpeechPlaybackFormatWitness: Codable, Sendable, Equatable {
+        let sampleRate: Double
+        let channelCount: UInt32
+        let commonFormat: UInt
+        let commonFormatName: String
+        let interleaved: Bool
+        let asbd: [String: Double]
+        let layoutTag: UInt32?
+        let layoutBitmap: UInt32?
+        let layoutDescriptionCount: UInt32?
+        let channelDescriptions: [[String: Double]]
+        let descriptionsTruncated: Bool
+
+        init(_ format: AVAudioFormat) {
+            sampleRate = format.sampleRate
+            channelCount = format.channelCount
+            commonFormat = format.commonFormat.rawValue
+            commonFormatName = String(describing: format.commonFormat)
+            interleaved = format.isInterleaved
+            let native = format.streamDescription.pointee
+            asbd = ["mSampleRate": native.mSampleRate, "mFormatID": Double(native.mFormatID),
+                    "mFormatFlags": Double(native.mFormatFlags), "mBytesPerPacket": Double(native.mBytesPerPacket),
+                    "mFramesPerPacket": Double(native.mFramesPerPacket),
+                    "mBytesPerFrame": Double(native.mBytesPerFrame),
+                    "mChannelsPerFrame": Double(native.mChannelsPerFrame),
+                    "mBitsPerChannel": Double(native.mBitsPerChannel),
+                    "mReserved": Double(native.mReserved)]
+            let layout = format.channelLayout?.layout
+            layoutTag = layout?.pointee.mChannelLayoutTag
+            layoutBitmap = layout?.pointee.mChannelBitmap.rawValue
+            layoutDescriptionCount = layout?.pointee.mNumberChannelDescriptions
+            descriptionsTruncated = (layoutDescriptionCount ?? 0) > 8
+            channelDescriptions = Self.descriptions(layout)
+        }
+
+        private static func descriptions(_ layout: UnsafePointer<AudioChannelLayout>?) -> [[String: Double]] {
+            guard let layout,
+                  let offset = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions) else { return [] }
+            let pointer = UnsafeRawPointer(layout).advanced(by: offset)
+                .assumingMemoryBound(to: AudioChannelDescription.self)
+            return (0 ..< min(8, Int(layout.pointee.mNumberChannelDescriptions))).map { index in
+                let value = pointer[index]
+                return ["label": Double(value.mChannelLabel), "flags": Double(value.mChannelFlags.rawValue),
+                        "x": Double(value.mCoordinates.0), "y": Double(value.mCoordinates.1),
+                        "z": Double(value.mCoordinates.2)]
+            }
+        }
+    }
+
+    nonisolated struct MacSpeechTimingSnapshot: Encodable, Sendable, Equatable {
+        let runID: UUID
+        let captureGeneration: UInt64
+        var configurationID: UInt64?
+        var playbackGeneration: UInt64?
+        var events = MacSpeechTimingEvent.allCases.map { MacSpeechTimingEventWitness(event: $0) }
+        var input = MacSpeechTimingStream()
+        var playerRender = MacSpeechTimingStream()
+        var playbackFormat: MacSpeechPlaybackFormatWitness?
+        var staleCallbacks: UInt64 = 0
+        var identityChanges: UInt64 = 0
+        var invalidBuffers: UInt64 = 0
+        var skippedUpdates: UInt64 = 0
+        var callbacksClosed = false
+        var scheduledFrames: UInt64 = 0
+        var scheduledNonzeroFrames: UInt64 = 0
+        let tapLocation = "PlayerNode before Mixer; not speaker or Apple internal AEC reference"
+        let missingValueMeaning = "Omitted optional fields are UNKNOWN; call/arrival/content clocks are distinct"
+        let inputWitnessMeaning = "Metadata-valid tap callback; not proof of downstream PCM acceptance"
+        let nonzeroCoverage = "UNKNOWN: scheduled-to-player content alignment is not established"
+    }
+
+    /// A run-local observer: one CAS attempt, no waiting, retries, I/O or PCM retention.
+    final nonisolated class MacSpeechNativeVoiceTiming: @unchecked Sendable {
+        let runID: UUID
+        let captureGeneration: UInt64
+        private let busy = Atomic<Bool>(false)
+        private let skipped = Atomic<UInt64>(0)
+        private var state: MacSpeechTimingSnapshot
+
+        init(runID: UUID, generation: UInt64) {
+            self.runID = runID
+            captureGeneration = generation
+            state = MacSpeechTimingSnapshot(runID: runID, captureGeneration: generation)
+        }
+
+        private func update(_ body: (inout MacSpeechTimingSnapshot) -> Void) {
+            guard busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged
+            else {
+                skipped.wrappingAdd(1, ordering: .relaxed)
+                return
+            }
+            defer { busy.store(false, ordering: .releasing) }
+            body(&state)
+        }
+
+        func snapshot() -> MacSpeechTimingSnapshot? {
+            guard busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged
+            else {
+                return nil
+            }
+            defer { busy.store(false, ordering: .releasing) }
+            var result = state
+            result.skippedUpdates = skipped.load(ordering: .relaxed)
+            return result
+        }
+
+        func bind(configurationID: UInt64, playbackGeneration: UInt64? = nil) {
+            update { value in
+                guard configurationID > 0, playbackGeneration != 0 else {
+                    value.callbacksClosed = true
+                    value.identityChanges &+= 1
+                    return
+                }
+                if let current = value.configurationID, current != configurationID {
+                    value.callbacksClosed = true
+                    value.identityChanges &+= 1
+                } else {
+                    value.configurationID = configurationID
+                }
+                if let playbackGeneration {
+                    if let current = value.playbackGeneration, current != playbackGeneration {
+                        value.callbacksClosed = true
+                        value.identityChanges &+= 1
+                    } else {
+                        value.playbackGeneration = playbackGeneration
+                    }
+                }
+            }
+        }
+
+        func event(_ event: MacSpeechTimingEvent, at time: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+            update { value in
+                guard let index = MacSpeechTimingEvent.allCases.firstIndex(of: event) else { return }
+                value.events[index].firstCallTimeNs = value.events[index].firstCallTimeNs ?? time
+                value.events[index].lastCallTimeNs = time
+                value.events[index].count &+= 1
+                if event == .captureStopped || event == .routeChanged {
+                    value.callbacksClosed = true
+                }
+            }
+        }
+
+        func format(_ format: AVAudioFormat) {
+            let witness = MacSpeechPlaybackFormatWitness(format)
+            update { $0.playbackFormat = witness }
+        }
+
+        func input(
+            content: (host: UInt64?, sample: Int64?), arrival: UInt64, frames: UInt64, rate: Double,
+            identity: (configurationID: UInt64, generation: UInt64)
+        ) {
+            update { value in
+                guard !value.callbacksClosed, value.configurationID == identity.configurationID,
+                      value.captureGeneration == identity.generation else { value.staleCallbacks &+= 1; return }
+                value.input.arrived(at: arrival)
+                guard frames > 0, frames <= 16384, rate.isFinite, rate >= 1, rate <= 768_000 else {
+                    value.invalidBuffers &+= 1
+                    return
+                }
+                value.input.record(
+                    host: content.host,
+                    sample: content.sample,
+                    arrival: arrival,
+                    count: frames,
+                    rate: rate
+                )
+            }
+        }
+
+        func render(
+            _ buffer: AVAudioPCMBuffer, content: (host: UInt64?, sample: Int64?), arrival: UInt64,
+            identity: (configurationID: UInt64, generation: UInt64)
+        ) {
+            update { value in
+                guard !value.callbacksClosed, value.configurationID == identity.configurationID,
+                      value.captureGeneration == identity.generation else { value.staleCallbacks &+= 1; return }
+                value.playerRender.arrived(at: arrival)
+                guard let bounds = Self.nonzeroBounds(buffer) else { value.invalidBuffers &+= 1; return }
+                value.playerRender.record(host: content.host, sample: content.sample, arrival: arrival,
+                                          count: UInt64(buffer.frameLength), rate: buffer.format.sampleRate)
+                if let range = bounds.range {
+                    value.playerRender.recordNonzero(content: content, range: range, rate: buffer.format.sampleRate)
+                }
+                value.playerRender.nonzeroFrames &+= bounds.count
+            }
+        }
+
+        func scheduled(_ buffer: AVAudioPCMBuffer) {
+            update { value in
+                guard let bounds = Self.nonzeroBounds(buffer) else { value.invalidBuffers &+= 1; return }
+                value.scheduledFrames &+= UInt64(buffer.frameLength)
+                value.scheduledNonzeroFrames &+= bounds.count
+            }
+        }
+    }
+
+    private extension MacSpeechNativeVoiceTiming {
+        static func nonzeroBounds(_ buffer: AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)? {
+            let frames = Int(buffer.frameLength)
+            let channels = Int(buffer.format.channelCount)
+            guard frames > 0, frames <= 16384, channels > 0, channels <= 8,
+                  buffer.format.sampleRate.isFinite, buffer.format.sampleRate >= 1,
+                  buffer.format.sampleRate <= 768_000 else { return nil }
+            let bytes: Int
+            switch buffer.format.commonFormat {
+            case .pcmFormatFloat32, .pcmFormatInt32: bytes = 4
+            case .pcmFormatInt16: bytes = 2
+            default: return nil
+            }
+            let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+            guard buffers.count == (buffer.format.isInterleaved ? 1 : channels) else { return nil }
+            var first: Int?
+            var last: Int?
+            var count: UInt64 = 0
+            for item in buffers {
+                let itemChannels = Int(item.mNumberChannels)
+                guard itemChannels == (buffer.format.isInterleaved ? channels : 1), item.mData != nil,
+                      Int(item.mDataByteSize) >= frames * itemChannels * bytes else { return nil }
+            }
+            for frame in 0 ..< frames {
+                guard let nonzero = nonzeroFrame(frame, buffers: buffers, format: buffer.format.commonFormat)
+                else { return nil }
+                if nonzero {
+                    first = first ?? frame; last = frame; count &+= 1
+                }
+            }
+            return (first.flatMap { start in last.map { start ... $0 } }, count)
+        }
+
+        static func nonzeroFrame(
+            _ frame: Int, buffers: UnsafeMutableAudioBufferListPointer, format: AVAudioCommonFormat
+        ) -> Bool? {
+            var nonzero = false
+            for item in buffers {
+                guard let data = item.mData else { return nil }
+                let channels = Int(item.mNumberChannels)
+                for channel in 0 ..< channels {
+                    let value = MacSpeechNativeVoiceDebugStats.sample(
+                        data,
+                        index: frame * channels + channel,
+                        format: format
+                    ).0
+                    guard value.isFinite else { return nil }
+                    nonzero = nonzero || value != 0
+                }
+            }
+            return nonzero
+        }
+    }
 #endif
 
 nonisolated final class SystemMacSpeechVoiceProcessingEngine:
@@ -1444,6 +1822,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     private var processingSnapshot: MacSpeechVoiceProcessingSnapshot?
     #if DEBUG
         private var nativeVoiceDebug: MacSpeechNativeVoiceDebugStats?
+        private var nativeVoiceTimingDebug: MacSpeechNativeVoiceTiming?
         private var configurationDebug: [String: Any] = [:]
 
         func voiceProcessingConfigurationDebug() -> [String: Any] {
@@ -1577,10 +1956,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     )
                 }
                 lock.withLock { isCaptureTapInstalled = true }
-                if !prepared.engine.isRunning {
-                    prepared.engine.prepare()
-                    try prepared.engine.start()
-                }
+                try startEngineIfNeeded(prepared.engine)
                 lock.withLock { refreshAcousticEchoPresentationLatencyLocked() }
                 return describe(prepared.format)
             } catch {
@@ -1604,6 +1980,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
         // removeTap can wait for a callback which needs the state lock.
         input?.removeTap(onBus: 0)
+        #if DEBUG
+            nativeVoiceTimingDebug?.event(.captureStopped)
+        #endif
         captureProcessingLock.withLock {
             #if DEBUG
                 nativeVoiceDebug?.seal(reason: "capture_stopped")
@@ -1635,6 +2014,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 try configureIfNeeded()
                 guard let outputFormat else { throw MacSpeechAudioCaptureError.invalidInputFormat }
                 isOutputPrepared = true
+                #if DEBUG
+                    nativeVoiceTimingDebug?.format(outputFormat)
+                    nativeVoiceTimingDebug?.event(.playbackPrepared)
+                #endif
                 return outputFormat
             }
         }
@@ -1654,6 +2037,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 }
                 return playerNode
             }
+            #if DEBUG
+                nativeVoiceTimingDebug?.scheduled(buffer)
+            #endif
             node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
         }
     }
@@ -1670,13 +2056,19 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 try validateVoiceProcessing(engine: prepared.0, requireUnmuted: false)
                 acousticEchoHost.playbackStarted()
                 lock.withLock { isOutputPlaying = true }
-                if !prepared.0.isRunning {
-                    prepared.0.prepare()
-                    try prepared.0.start()
-                }
+                try startEngineIfNeeded(prepared.0)
                 if !prepared.1.isPlaying {
+                    #if DEBUG
+                        nativeVoiceTimingDebug?.event(.playerPlayBefore)
+                    #endif
                     prepared.1.play()
+                    #if DEBUG
+                        nativeVoiceTimingDebug?.event(.playerPlayReturned)
+                    #endif
                 }
+                #if DEBUG
+                    nativeVoiceTimingDebug?.event(.playbackStarted)
+                #endif
                 lock.withLock { refreshAcousticEchoPresentationLatencyLocked() }
             } catch {
                 lock.withLock { isOutputPlaying = false }
@@ -1689,6 +2081,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     func finishOutputPlayback() {
         lifecycleLock.withLock {
             lock.withLock { isOutputPlaying = false }
+            #if DEBUG
+                nativeVoiceTimingDebug?.event(.playbackCompleted)
+            #endif
             acousticEchoHost.playbackCompleted()
         }
     }
@@ -1731,6 +2126,18 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     private func stopPlayerNodeOutsideStateLock(_ node: AVAudioPlayerNode?) {
         stopPlayerNode(node)
+    }
+
+    private func startEngineIfNeeded(_ engine: AVAudioEngine) throws {
+        guard !engine.isRunning else { return }
+        engine.prepare()
+        #if DEBUG
+            nativeVoiceTimingDebug?.event(.engineStartBefore)
+        #endif
+        try engine.start()
+        #if DEBUG
+            nativeVoiceTimingDebug?.event(.engineStartReturned)
+        #endif
     }
 
     private func configureIfNeeded() throws {
@@ -1903,6 +2310,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
         captureProcessingLock.withLock {
             #if DEBUG
+                nativeVoiceTimingDebug?.bind(configurationID: configurationID)
+                nativeVoiceTimingDebug?.event(.configurationChanged)
                 nativeVoiceDebug?.seal(reason: "configuration_changed")
             #endif
         }
@@ -1920,6 +2329,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     func routeWillRebuild() {
         lifecycleLock.withLock {
+            #if DEBUG
+                nativeVoiceTimingDebug?.event(.routeChanged)
+            #endif
             let wasConfigured = lock.withLock { () -> Bool in
                 isRouteRebuilding = true
                 routeRebuildWasConfigured = isConfigured
@@ -2016,6 +2428,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         generation: UInt64,
         frameBuffer: MacSpeechAudioFrameBuffer
     ) {
+        #if DEBUG
+            let callbackArrivalNs = DispatchTime.now().uptimeNanoseconds
+        #endif
         let hostTime = Self.hostTimeNanoseconds(time)
         let nativeSampleTime = time.isSampleTimeValid ? time.sampleTime : nil
         captureProcessingLock.withLock {
@@ -2031,6 +2446,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 #endif
                 return
             }
+            #if DEBUG
+                recordNativeTimingInput(
+                    buffer, content: (hostTime, nativeSampleTime), arrival: callbackArrivalNs,
+                    identity: (configurationID, generation)
+                )
+            #endif
             guard let input = convertCaptureInput(
                 buffer, context: context, nativeTime: (hostTime, nativeSampleTime),
                 configurationID: configurationID, generation: generation
@@ -2182,14 +2603,29 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         configurationID: UInt64
     ) {
         guard !isRenderReferenceTapInstalled else { return }
+        #if DEBUG
+            nativeVoiceTimingDebug?.bind(configurationID: configurationID)
+            nativeVoiceTimingDebug?.event(.configurationChanged)
+            let timing = nativeVoiceTimingDebug
+        #endif
         playerNode.installTap(
             onBus: 0,
             bufferSize: AVAudioFrameCount(MacSpeechAcousticEchoHost.frameSampleCount),
             format: nil
         ) { [weak self] buffer, when in
+            #if DEBUG
+                let arrivalNs = DispatchTime.now().uptimeNanoseconds
+            #endif
+            let contentHostTime = Self.hostTimeNanoseconds(when)
+            #if DEBUG
+                if let timing {
+                    timing.render(buffer, content: (contentHostTime, when.isSampleTimeValid ? when.sampleTime : nil),
+                                  arrival: arrivalNs, identity: (configurationID, timing.captureGeneration))
+                }
+            #endif
             self?.processRenderedOutput(
                 buffer,
-                hostTimeNanoseconds: Self.hostTimeNanoseconds(when),
+                hostTimeNanoseconds: contentHostTime,
                 nativeSampleTime: when.isSampleTimeValid ? when.sampleTime : nil,
                 configurationID: configurationID
             )
@@ -2289,6 +2725,15 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
 #if DEBUG
     extension SystemMacSpeechVoiceProcessingEngine {
+        private func recordNativeTimingInput(
+            _ buffer: AVAudioPCMBuffer, content: (host: UInt64?, sample: Int64?), arrival: UInt64,
+            identity: (configurationID: UInt64, generation: UInt64)
+        ) {
+            nativeVoiceDebug?.timing?.input(content: content, arrival: arrival,
+                                            frames: UInt64(buffer.frameLength), rate: buffer.format.sampleRate,
+                                            identity: identity)
+        }
+
         func armNativeVoiceDebug(runID: UUID, generation: UInt64) -> Bool {
             lifecycleLock.withLock {
                 captureProcessingLock.withLock {
@@ -2297,7 +2742,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                             && !isOutputPlaying && !isRouteRebuilding
                     }
                     guard idle, nativeVoiceDebug == nil else { return false }
-                    nativeVoiceDebug = MacSpeechNativeVoiceDebugStats(runID: runID, generation: generation)
+                    let timing = MacSpeechNativeVoiceTiming(runID: runID, generation: generation)
+                    nativeVoiceTimingDebug = timing
+                    nativeVoiceDebug = MacSpeechNativeVoiceDebugStats(
+                        runID: runID, generation: generation, timing: timing
+                    )
                     return true
                 }
             }
@@ -2319,11 +2768,27 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
 
         func clearNativeVoiceDebug(runID: UUID) {
-            captureProcessingLock.withLock {
-                guard nativeVoiceDebug?.runID == runID,
-                      nativeVoiceDebug?.isSealed == true || lock.withLock({ !isCaptureActive }) else { return }
-                nativeVoiceDebug = nil
+            lifecycleLock.withLock {
+                captureProcessingLock.withLock {
+                    guard nativeVoiceDebug?.runID == runID,
+                          nativeVoiceDebug?.isSealed == true || lock.withLock({ !isCaptureActive }) else { return }
+                    nativeVoiceDebug = nil
+                    nativeVoiceTimingDebug = nil
+                }
             }
+        }
+
+        func bindNativeVoiceTimingPlayback(runID: UUID, generation: UInt64) {
+            lifecycleLock.withLock {
+                guard let timing = nativeVoiceTimingDebug, timing.runID == runID else { return }
+                timing.bind(configurationID: configurationID, playbackGeneration: generation)
+            }
+        }
+
+        func nativeVoiceTimingSnapshot(runID: UUID) -> MacSpeechTimingSnapshot? {
+            let timing = lifecycleLock.withLock { nativeVoiceTimingDebug }
+            guard timing?.runID == runID else { return nil }
+            return timing?.snapshot()
         }
 
         private func bindNativeVoiceDebugLocked(configurationID: UInt64, generation: UInt64) {

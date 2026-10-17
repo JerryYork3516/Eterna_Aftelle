@@ -7688,6 +7688,9 @@ final class AppController: ObservableObject {
                 try checkAppleVPAcousticRun(runID)
                 speechAudioOutputHostSnapshot = output
                 guard output.state == .prepared else { throw AppleVPAcousticTestError.playbackFailed }
+                realtimeSpeechDiagnosticAudioEngine?.bindNativeVoiceTimingPlayback(
+                    runID: runID, generation: output.generation
+                )
             }
             let capture = await speechAudioHost.startPreparedCapture(generation: generation)
             try checkAppleVPAcousticRun(runID)
@@ -8041,7 +8044,32 @@ final class AppController: ObservableObject {
             manifest["playback_rejected_callback_count"] = state.playbackFinal.rejectedCallbackCount
             manifest["playback_error"] = state.playbackFinal.lastError ?? NSNull() as Any
             manifest["native"] = appleVPAcousticNativeManifest(state.native)
-            return try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+            return try encodeAppleVPAcousticManifest(manifest, runID: state.runID)
+        }
+
+        private func encodeAppleVPAcousticManifest(_ manifest: [String: Any], runID: UUID?) throws -> Data {
+            var result = manifest
+            result["host_timing"] = try appleVPAcousticTimingManifest(runID)
+            return try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+        }
+
+        private func appleVPAcousticTimingManifest(_ runID: UUID?) throws -> [String: Any] {
+            guard let runID,
+                  let timing = realtimeSpeechDiagnosticAudioEngine?.nativeVoiceTimingSnapshot(runID: runID)
+            else {
+                return ["status": "UNKNOWN"]
+            }
+            let data = try JSONEncoder().encode(timing)
+            guard var result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            result["status"] = timing.skippedUpdates == 0 ? "OBSERVED_PARTIAL_METADATA" : "UNKNOWN_OBSERVATION_LOSS"
+            if timing.input.callbacks == 0 {
+                result["status"] = "UNKNOWN_NO_INPUT_CALLBACKS"
+            }
+            result["render_generation_source"] = "run/capture binding and tap configuration; "
+                + "no callback playback-generation field"
+            return result
         }
 
         func appleVPAcousticTestProcessedWAVData() throws -> Data {

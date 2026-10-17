@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-10-17 最新交付见 [R3-M01 DEBUG Host 时序观测](T3_2_A_D2_R3_M01_debug_timing_observation.md)：只在原共享 Engine／Input 与 Player Tap／受控 JSON 增加有界调用、到达、内容时间、实际 localFormat/ASBD/layout 和连续性统计；未改音频行为、未启动 App／设备或读取私人音频。统计16/77、Host178、Playback238、Converter65/6830、AEC1165、D1 Fake40/290、Debug/Release及三项Guard通过；B0，同范围Format4459／Lint90仍FAIL，3项既有长度指标增长另记，C19/C23延期、ENGINEERING REWORK。非零预期区间覆盖及设备性能仍UNKNOWN；R3 A声学FAIL不改判，**R3-M01 OPEN、T3.2-A BLOCKED**。本次不产生设备或下一节点授权；以下旧段落为历史快照，当前结论以本报告和最新主控决定为准。
+
 2026-10-17 最新增量见 [D2-R2-M01 内容时间修复与长时无声验证](T3_2_A_D2_R2_M01_content_timeline_and_silent_validation.md)：原累计一样本门槛改为原容差下的相邻硬件时间检查，sampleTime/输出游标与真实不连续拒收保留；Debug/Release、三项Guard、受影响离线回归及目标USB＋内置扬声器Silent A（18s上限、17.9s原生）/B/C各一次通过。B0，Format20856/Lint384仍FAIL，C19/C23及4个既有C指标增长登记，ENGINEERING REWORK/DEBT_DEFERRED。READY_FOR_HUMAN_TEST=true仅表示可安排另行授权的有声测试；起音音量变化OPEN，T3.2-A总体未收口，SQ-M1/Qwen0/3/Formal Test3 BLOCKED/false不变。以下前序段落/状态表保留历史快照，本轮事实与授权边界以M01报告及最新主控指令为准。
 
 2026-10-17 增量状态见 [D2-F1 根因修复与无声预演](T3_2_A_D2_F1_root_cause_and_silent_dry_run.md)：补齐停止状态下 VP I/O 格式协商，保留原 Guard／唯一 Engine／Test2 原链；Debug/Release、Guard、受影响离线回归、Fake A/B/C 及当前 Bluetooth 路线各一次真实无声控制链通过。无实际输入 PCM 保存／WAV 导出，无有声或 Provider 测试。原 D2 USB＋内置扬声器路线未复验、系统 Microphone Mode 未知，**READY_FOR_HUMAN_TEST=false**；F1 REVIEW_PENDING，ENGINEERING REWORK／DEBT_DEFERRED，B0、全量 Format20856／Lint384 仍 FAIL。后续段落／状态表保留其历史快照，本次实际状态与准入限制以 F1 报告为准；T3.2-B/T3.3 未授权推进，SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false 不变。

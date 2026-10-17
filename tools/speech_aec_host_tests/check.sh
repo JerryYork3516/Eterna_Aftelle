@@ -45,6 +45,15 @@ swiftc \
   "$repo_root/tools/speech_aec_host_tests/ConverterTimelineTests.swift" \
   -o "$build_dir/converter_timeline_tests"
 "$build_dir/converter_timeline_tests"
+nm "$build_dir/converter_timeline_tests" | xcrun swift-demangle > "$build_dir/release-symbols.txt"
+if rg -q 'MacSpeechNativeVoiceTiming|MacSpeechTimingSnapshot|MacSpeechPlaybackFormatWitness' "$build_dir/release-symbols.txt"; then
+  echo "speech_timing_release_isolation=FAIL"
+  exit 1
+fi
+test "$(rg -c 'installTap\(' "$capture")" -eq 2
+test "$(rg -c 'AVAudioEngine\(\)' "$capture")" -eq 1
+echo "speech_timing_release_isolation=PASS"
+echo "speech_timing_original_graph=PASS"
 
 "$build_dir/speech_aec_host_tests"
 

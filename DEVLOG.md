@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-17 · R3-M01 最小 DEBUG Host 时序观测
+
+- 仅在原 Engine/Input/Player Tap/JSON 增加 run-local 有界时序、实际Playback格式与连续性元数据；一次CAS失败显式计数，不等待、不保留PCM，不改原启动／播放／Converter／Test2行为。无App／设备／私人音频或Provider执行，Player Tap不冒充Mixer／扬声器／Apple内部参考。
+- 统计16/77、Host178、Playback238、Converter65/6830、AEC1165、D1 Fake40/290、Debug/Release及三项Guard exit0；首轮OptionSet编译exit1、符号工具PATH exit127保留且已关闭，最终源码摘要与产物核验一致。新增B0，同范围Format4459／Lint90仍FAIL，三项既有长度指标增长登记、C19/C23延期，ENGINEERING REWORK/DEBT_DEFERRED。
+- [交付与SELF_REVIEW](docs/stage7_5/test3_apple_vp_clean/T3_2_A_D2_R3_M01_debug_timing_observation.md)：新增CRITICAL0／功能安全MAJOR0／MINOR3（结构增长、预期区间映射UNKNOWN、设备开销未测）；R3-M01 OPEN、T3.2-A BLOCKED、SQ-M1 OPEN、Qwen0/3、Formal Test3 BLOCKED/false。按本轮授权提交推送后停止，不自动设备测试或推进B/T3.3。
+
 ## 2026-10-17 · T3.2-A-D2-R2-M01 内容时间与长时无声验证
 
 - 确定性重放确认原累计host/sample一样本门槛误拒连续时轴；保留原容差，改用相邻硬件时间检查，原sample/generation/reset/输出游标和真实缺口拒收不变。DEBUG仅Silent A延长18s、B/C4s，有声15s不变；无声统计设备标识脱敏。

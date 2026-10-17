@@ -26,6 +26,13 @@ import Foundation
             nativeDebugIntegerFormats()
             nativeDebugInterleavedChannels()
             nativeDebugZeroIdentity()
+            cases += 6
+            nativeTimingEvents()
+            nativeTimingFirstWitness()
+            nativeTimingClockFailures()
+            nativeTimingIdentity()
+            nativeTimingStopAndRoute()
+            nativeTimingCapacityAndPrivacy()
             print("d1_native_stats_cases=\(cases)")
             print("d1_native_stats_checks=\(checks)")
             print("d1_native_stats_device_access=ZERO")
@@ -255,6 +262,138 @@ import Foundation
             expect(missingReadback.snapshot.issues.contains("voice_processing")
                 && !missingReadback.snapshot.coverageValid,
                 "zero readback time remains processing-unknown")
+        }
+    }
+
+    private extension NativeVoiceDebugStatsTests {
+        static func timingStats() -> MacSpeechNativeVoiceTiming {
+            let value = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 7)
+            value.bind(configurationID: 3, playbackGeneration: 1)
+            return value
+        }
+
+        static func nativeTimingEvents() {
+            let value = timingStats()
+            for (index, event) in MacSpeechTimingEvent.allCases.enumerated() {
+                value.event(event, at: anchor + UInt64(index))
+            }
+            value.event(.captureStopped, at: anchor + 20)
+            let view = value.snapshot()
+            expect(view?.events.count == 10, "events have fixed capacity")
+            expect(view?.events.first?.firstCallTimeNs == anchor, "engine call timestamp retained")
+            expect(view?.events[7].count == 2 && view?.events[7].lastCallTimeNs == anchor + 20, "duplicates aggregate")
+            expect(view?.callbacksClosed == true, "stop closes only observation callbacks")
+            let origin = anchor
+            DispatchQueue.concurrentPerform(iterations: 1000) { index in
+                value.event(.playbackPrepared, at: origin + UInt64(index))
+            }
+            let concurrent = value.snapshot()
+            expect(
+                (concurrent?.events[4].count ?? 0) + (concurrent?.skippedUpdates ?? 0) == 1001,
+                "contention is counted without retry"
+            )
+            expect(concurrent?.events.count == 10, "concurrency never grows the event buffer")
+        }
+
+        static func nativeTimingFirstWitness() {
+            let value = timingStats()
+            value.input(content: (anchor, 100), arrival: anchor + 1000, frames: 4, rate: 48000,
+                        identity: (3, 7))
+            let buffer = nativeDebugBuffer([[0, 0.1, 0, 0.2]])
+            value.render(buffer, content: (anchor, 0), arrival: anchor + 2000,
+                         identity: (3, 7))
+            let view = value.snapshot()
+            expect(view?.input.firstContentHostNs == anchor && view?.input.firstArrivalNs == anchor + 1000,
+                   "content and callback arrival are distinct")
+            expect(view?.playerRender.firstNonzeroContentNs == anchor + 20833, "sample offset uses content time")
+            expect(view?.playerRender.firstArrivalNs == anchor + 2000, "first Player callback witnessed")
+            value.render(buffer, content: (anchor + 83333, 4), arrival: anchor + 100_000, identity: (3, 7))
+            let stream = value.snapshot()?.playerRender
+            expect(stream?.frames == 8 && stream?.sampleDiscontinuities == 0, "contiguous samples")
+            expect(stream?.hostDiscontinuities == 0 && stream?.maximumStartIntervalNs == 83333, "bounded rounding")
+            expect(stream?.firstNonzeroContentNs == anchor + 20833, "first nonzero is never overwritten")
+        }
+
+        static func nativeTimingClockFailures() {
+            let value = timingStats()
+            for (host, sample) in [(anchor, Int64(0)), (anchor + 166_667, 8), (anchor + 166_667, 8), (anchor - 1, -1)] {
+                value.input(content: (host, sample), arrival: anchor + 1_000_000, frames: 4, rate: 48000,
+                            identity: (3, 7))
+            }
+            value.input(content: (nil, nil), arrival: anchor, frames: 4, rate: 48000, identity: (3, 7))
+            let stream = value.snapshot()?.input
+            expect(
+                stream?.missingTime == 1 && stream?.duplicate == 1 && stream?.backwards == 1,
+                "clock negative controls"
+            )
+            expect(
+                (stream?.sampleDiscontinuities ?? 0) > 0 && (stream?.hostDiscontinuities ?? 0) > 0,
+                "gaps stay visible"
+            )
+        }
+
+        static func nativeTimingIdentity() {
+            let value = timingStats()
+            value.input(content: (anchor, 0), arrival: anchor, frames: 4, rate: 48000, identity: (4, 7))
+            value.render(nativeDebugBuffer([[1]]), content: (anchor, 0), arrival: anchor, identity: (3, 8))
+            value.bind(configurationID: 3, playbackGeneration: 2)
+            expect(
+                value.snapshot()?.staleCallbacks == 2 && value.snapshot()?.identityChanges == 1,
+                "old identities rejected"
+            )
+            expect(
+                value.snapshot()?.input.buffers == 0 && value.snapshot()?.playerRender.buffers == 0,
+                "no stale merge"
+            )
+        }
+
+        static func nativeTimingStopAndRoute() {
+            for event in [MacSpeechTimingEvent.captureStopped, .routeChanged] {
+                let value = timingStats()
+                value.event(event, at: anchor)
+                value.render(nativeDebugBuffer([[1]]), content: (anchor, 0), arrival: anchor,
+                             identity: (3, 7))
+                expect(
+                    value.snapshot()?.staleCallbacks == 1,
+                    "late callbacks after stop/route are observation-only rejects"
+                )
+            }
+            let value = timingStats()
+            value.bind(configurationID: 4)
+            expect(value.snapshot()?.callbacksClosed == true, "configuration reset invalidates the old run")
+        }
+
+        static func nativeTimingCapacityAndPrivacy() {
+            let value = timingStats()
+            value.render(nativeDebugBuffer([Array(repeating: 0, count: 16385)]), content: (anchor, 0),
+                         arrival: anchor, identity: (3, 7))
+            let buffer = nativeDebugBuffer([[0, 1, 0, 0.5], [0, 1, 0, 0.5], [0, 1, 0, 0.5]])
+            value.format(buffer.format)
+            value.scheduled(buffer)
+            let view = value.snapshot()
+            expect(view?.playbackFormat?.asbd.count == 9 && view?.playbackFormat?.channelCount == 3, "complete ASBD")
+            expect(
+                view?.playbackFormat?.layoutTag == kAudioChannelLayoutTag_DiscreteInOrder | 3,
+                "explicit synthetic layout"
+            )
+            expect(
+                view?.scheduledFrames == 4 && view?.scheduledNonzeroFrames == 2,
+                "frames are not tripled by channel count"
+            )
+            expect(view?.nonzeroCoverage.hasPrefix("UNKNOWN") == true, "counts alone never prove interval coverage")
+            expect(buffer.floatChannelData?[0][1] == 1, "observation leaves PCM unchanged")
+            value.render(buffer, content: (nil, 0), arrival: anchor, identity: (3, 7))
+            value.render(buffer, content: (anchor + 83333, 4), arrival: anchor + 100_000, identity: (3, 7))
+            expect(value.snapshot()?.playerRender.firstNonzeroContentNs == nil,
+                   "missing first-nonzero time stays unknown rather than being backfilled")
+            let data = try? JSONEncoder().encode(value.snapshot())
+            let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            expect(value.snapshot()?.invalidBuffers == 1, "oversized buffers do not expand observation capacity")
+            expect(
+                text.contains("UNKNOWN") && !text.contains("pcm16") && !text.contains("device"),
+                "no PCM or device identifiers"
+            )
+            expect((data?.count ?? Int.max) < 16000, "serialized metadata is bounded")
         }
     }
 #endif
