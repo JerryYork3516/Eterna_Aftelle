@@ -1,0 +1,452 @@
+{
+  "schema_version": 1,
+  "evidence_scope": "T3.2-A comprehensive C engineering acoustics; not formal 53-B/53-C",
+  "source_commit": "70962420c0132634e8d93243d0a2c046bee65a52",
+  "branch": "Test3-AppleVP-Clean",
+  "build_sha256": {
+    "debug_executable": "ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118",
+    "debug_dylib": "28c8e694a40652055fd7747f9414cd64a9abfb3aa7c222f4fa4bdd5fb4217fba",
+    "release_executable": "a28ddb1651f4793f2761aabc31ad8374564f58cab9075bfee83b1454337b8528"
+  },
+  "source_build_binding": "Verified externally against candidate code diff, current source hashes and actual loaded executable/dylib. Source JSON source_commit/build_identity remained null.",
+  "source_json_identity_fields": {
+    "source_commit": null,
+    "build_identity": null
+  },
+  "fixed_render_reference": {
+    "file_name": "d2_fixed_zh_24k_mono_pcm16le_preroll1s_v1.wav",
+    "sha256": "774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea",
+    "sample_rate": 24000,
+    "channels": 1,
+    "encoding": "PCM16_LE",
+    "samples": 114032,
+    "duration_seconds": 4.751333333333333,
+    "leading_silence_seconds": 1,
+    "text": "这是一段固定语音，用来检查回声和人声。",
+    "uploaded_in_this_delivery": false
+  },
+  "route": {
+    "input_class": "USB microphone",
+    "input_volume_percent": 60,
+    "output_class": "Mac built-in speaker",
+    "output_volume_percent": 55,
+    "muted": false,
+    "microphone_mode": "UNKNOWN"
+  },
+  "execution_authorization": {
+    "initial_recording_export": true,
+    "initial_local_analysis": true,
+    "additional_run": "Explicit user request after first failure; not an automatic retry",
+    "additional_local_analysis": true,
+    "audio_git_upload": "Explicit user request after second failure; limited to these two original exported WAVs",
+    "future_device_runs_authorized": false
+  },
+  "sensitive_assets_excluded": [
+    "unrelated recordings",
+    "DR",
+    "Session",
+    "Memory",
+    "credentials",
+    "device identifiers",
+    "original device logs"
+  ],
+  "runs": [
+    {
+      "run_number": 1,
+      "run_id": "B223A633-CBA1-474D-90EC-0FB68F7496BF",
+      "scenario": "COMPREHENSIVE_C",
+      "data_mode": "RECORDING",
+      "silent_smoke": false,
+      "wav_file": "run-B223A633-CBA1-474D-90EC-0FB68F7496BF.wav",
+      "wav_sha256": "f32559dc3b92646476073edaf07c44cd515fb59aab9d43a48d90c170f514d4c8",
+      "wav_bytes": 714284,
+      "audio_kind": "APPLE_VP_PROCESSED_ORIGINAL_EXPORT_BYTES",
+      "audio_modified_for_delivery": false,
+      "unprocessed_microphone_audio": "NOT_CAPTURED_NOT_AVAILABLE",
+      "additional_postprocessing": "NONE",
+      "source_statistics_json_sha256": "a58bbc706552a4d1298544e7054c756faf9a9b07877a5adbdccdaf25041cd9bc",
+      "source_statistics_json_uploaded": false,
+      "format": {
+        "sample_rate": 24000,
+        "channels": 1,
+        "encoding": "PCM16_LE",
+        "samples": 357120,
+        "duration_seconds": 14.88
+      },
+      "voice_processing": {
+        "agc_enabled": true,
+        "bypassed": false,
+        "configuration_id": 2,
+        "input_enabled": true,
+        "input_format": "16000.0 Hz / 3 ch",
+        "input_muted": false,
+        "mode": "appleVoiceProcessing",
+        "noise_suppression": "Apple native; no independent public readback",
+        "output_enabled": true,
+        "output_format": "16000.0 Hz / 3 ch"
+      },
+      "capture_generation": 1,
+      "playback_generation": 1,
+      "configuration_id": 2,
+      "native": {
+        "buffers": 150,
+        "frames": 240000,
+        "format": {
+          "channels": 3,
+          "interleaved": false,
+          "rate": 16000,
+          "sample_format": "float32"
+        },
+        "coverage_valid": true,
+        "issues": [],
+        "rejections": {
+          "buffer_rejected": 0,
+          "capture_fence": 0,
+          "capture_stopped": 0,
+          "configuration_changed": 0,
+          "content_time": 0,
+          "input_conversion": 0,
+          "native_capacity": 0,
+          "native_clock": 0,
+          "native_format": 0,
+          "non_finite": 0,
+          "other": 0,
+          "output_conversion": 0,
+          "packet_clock": 0,
+          "packet_length": 0,
+          "packet_time": 0,
+          "route_changed": 0,
+          "stale_context": 0,
+          "voice_processing": 0
+        },
+        "channels": [
+          {
+            "full_scale": 51,
+            "non_finite": 0,
+            "over_scale": 0,
+            "peak": 1,
+            "samples": 240000
+          },
+          {
+            "full_scale": 51,
+            "non_finite": 0,
+            "over_scale": 0,
+            "peak": 1,
+            "samples": 240000
+          },
+          {
+            "full_scale": 51,
+            "non_finite": 0,
+            "over_scale": 0,
+            "peak": 1,
+            "samples": 240000
+          }
+        ]
+      },
+      "packets": {
+        "generated": 749,
+        "drained": 744,
+        "queued_at_seal": 5,
+        "drained_seconds": 14.88,
+        "queued_seconds": 0.1,
+        "sequence_errors": 0,
+        "time_errors": 0,
+        "size_errors": 0,
+        "drop": 0,
+        "stale": 0,
+        "playback_rejected_callbacks": 0,
+        "playback_underrun": 0,
+        "partial_converter_tail_samples": null,
+        "tail_coverage": "PARTIAL"
+      },
+      "software_stage_offsets_seconds": {
+        "double_talk": 3.014963041,
+        "human_only": 0.0,
+        "human_tail": 9.000980875,
+        "quiet": 11.020643291
+      },
+      "quiet_drained_coverage_seconds": 3.852368876,
+      "playback": {
+        "state": "completed",
+        "prepared": 1,
+        "started": 1,
+        "completed": 1
+      },
+      "host_timing": {
+        "status": "UNKNOWN_OBSERVATION_LOSS",
+        "skipped_updates": 4,
+        "stale_callbacks": 0,
+        "input_observation_discontinuities": 2,
+        "player_render_discontinuities": 0,
+        "meaning": "Observation counters are not physical audio loss or Apple internal AEC reference"
+      },
+      "processed_signal_statistics": {
+        "seconds": 14.88,
+        "samples": 357120,
+        "peak_dbfs": 0.0,
+        "rms_dbfs": -23.7073,
+        "rail_samples": 53,
+        "exact_zero_samples": 204130
+      },
+      "software_guided_segment_statistics": [
+        {
+          "segment": "guided_human_only",
+          "recording_start_s": 0.006987833,
+          "recording_end_s": 3.021950874,
+          "samples": 72359,
+          "peak_dbfs": -62.3502,
+          "rms_dbfs": -81.728,
+          "rail_samples": 0,
+          "exact_zero_samples": 55711
+        },
+        {
+          "segment": "guided_double_talk",
+          "recording_start_s": 3.021950874,
+          "recording_end_s": 9.007968708,
+          "samples": 143664,
+          "peak_dbfs": 0.0,
+          "rms_dbfs": -19.7526,
+          "rail_samples": 53,
+          "exact_zero_samples": 35594
+        },
+        {
+          "segment": "guided_human_tail",
+          "recording_start_s": 9.007968708,
+          "recording_end_s": 11.027631124,
+          "samples": 48472,
+          "peak_dbfs": -90.309,
+          "rms_dbfs": -98.0497,
+          "rail_samples": 0,
+          "exact_zero_samples": 40317
+        },
+        {
+          "segment": "guided_quiet",
+          "recording_start_s": 11.027631124,
+          "recording_end_s": 14.88,
+          "samples": 92457,
+          "peak_dbfs": -84.2884,
+          "rms_dbfs": -96.8857,
+          "rail_samples": 0,
+          "exact_zero_samples": 72340
+        }
+      ],
+      "exploratory_reference_correlation": {
+        "method": "12-sample block average; normalized waveform correlation; fixed +/-500ms about PlayerNode content anchor; 2ms lag step",
+        "strongest_absolute_correlation": 0.3238165477961965,
+        "signed_correlation": -0.3238165477961965,
+        "reference_start_in_recording_s": 3.396,
+        "descriptive_before_play_controls_1s": {
+          "0.5": 0.01635810172038286,
+          "1.5": -0.016935147599172785
+        },
+        "aec_truth": "NOT_ESTABLISHED",
+        "warning": "AEC and simultaneous human speech change waveform; correlation cannot decide residual echo or voice retention"
+      },
+      "user_feedback_verbatim": "能听见居民声音，人声很小。重新进行一次实验",
+      "user_listening_result": "FAIL_USER_REPORTED",
+      "human_speech_window_witness": "UNKNOWN_USER_CANNOT_RECALL",
+      "physical_overlap": "UNKNOWN",
+      "capture_state_snapshot": "pre-stop snapshot; not proof of still-running capture",
+      "cleanup": "Stop/Seal/Shutdown and normal Quit; own process absence verified"
+    },
+    {
+      "run_number": 2,
+      "run_id": "56C61C30-1CD3-4B63-9A1D-8D7F3FD98878",
+      "scenario": "COMPREHENSIVE_C",
+      "data_mode": "RECORDING",
+      "silent_smoke": false,
+      "wav_file": "run-56C61C30-1CD3-4B63-9A1D-8D7F3FD98878.wav",
+      "wav_sha256": "ffe2e53a95de8f0eb2f154b07e7a33c8408f9b2bfa510db769027bf82729704f",
+      "wav_bytes": 714284,
+      "audio_kind": "APPLE_VP_PROCESSED_ORIGINAL_EXPORT_BYTES",
+      "audio_modified_for_delivery": false,
+      "unprocessed_microphone_audio": "NOT_CAPTURED_NOT_AVAILABLE",
+      "additional_postprocessing": "NONE",
+      "source_statistics_json_sha256": "62373dfa98aef394b84689d8e7a9c3b41da0223579a54f8de822ec4358bee07a",
+      "source_statistics_json_uploaded": false,
+      "format": {
+        "sample_rate": 24000,
+        "channels": 1,
+        "encoding": "PCM16_LE",
+        "samples": 357120,
+        "duration_seconds": 14.88
+      },
+      "voice_processing": {
+        "agc_enabled": true,
+        "bypassed": false,
+        "configuration_id": 2,
+        "input_enabled": true,
+        "input_format": "16000.0 Hz / 3 ch",
+        "input_muted": false,
+        "mode": "appleVoiceProcessing",
+        "noise_suppression": "Apple native; no independent public readback",
+        "output_enabled": true,
+        "output_format": "16000.0 Hz / 3 ch"
+      },
+      "capture_generation": 1,
+      "playback_generation": 1,
+      "configuration_id": 2,
+      "native": {
+        "buffers": 150,
+        "frames": 240000,
+        "format": {
+          "channels": 3,
+          "interleaved": false,
+          "rate": 16000,
+          "sample_format": "float32"
+        },
+        "coverage_valid": true,
+        "issues": [],
+        "rejections": {
+          "buffer_rejected": 0,
+          "capture_fence": 0,
+          "capture_stopped": 0,
+          "configuration_changed": 0,
+          "content_time": 0,
+          "input_conversion": 0,
+          "native_capacity": 0,
+          "native_clock": 0,
+          "native_format": 0,
+          "non_finite": 0,
+          "other": 0,
+          "output_conversion": 0,
+          "packet_clock": 0,
+          "packet_length": 0,
+          "packet_time": 0,
+          "route_changed": 0,
+          "stale_context": 0,
+          "voice_processing": 0
+        },
+        "channels": [
+          {
+            "full_scale": 20,
+            "non_finite": 0,
+            "over_scale": 0,
+            "peak": 1,
+            "samples": 240000
+          },
+          {
+            "full_scale": 20,
+            "non_finite": 0,
+            "over_scale": 0,
+            "peak": 1,
+            "samples": 240000
+          },
+          {
+            "full_scale": 20,
+            "non_finite": 0,
+            "over_scale": 0,
+            "peak": 1,
+            "samples": 240000
+          }
+        ]
+      },
+      "packets": {
+        "generated": 749,
+        "drained": 744,
+        "queued_at_seal": 5,
+        "drained_seconds": 14.88,
+        "queued_seconds": 0.1,
+        "sequence_errors": 0,
+        "time_errors": 0,
+        "size_errors": 0,
+        "drop": 0,
+        "stale": 0,
+        "playback_rejected_callbacks": 0,
+        "playback_underrun": 0,
+        "partial_converter_tail_samples": null,
+        "tail_coverage": "PARTIAL"
+      },
+      "software_stage_offsets_seconds": {
+        "double_talk": 3.001232333,
+        "human_only": 0.0,
+        "human_tail": 9.021378417,
+        "quiet": 11.011716333
+      },
+      "quiet_drained_coverage_seconds": 3.861617501,
+      "playback": {
+        "state": "completed",
+        "prepared": 1,
+        "started": 1,
+        "completed": 1
+      },
+      "host_timing": {
+        "status": "UNKNOWN_OBSERVATION_LOSS",
+        "skipped_updates": 4,
+        "stale_callbacks": 0,
+        "input_observation_discontinuities": 4,
+        "player_render_discontinuities": 0,
+        "meaning": "Observation counters are not physical audio loss or Apple internal AEC reference"
+      },
+      "processed_signal_statistics": {
+        "seconds": 14.88,
+        "samples": 357120,
+        "peak_dbfs": -0.0003,
+        "rms_dbfs": -21.9872,
+        "rail_samples": 13,
+        "exact_zero_samples": 130645
+      },
+      "software_guided_segment_statistics": [
+        {
+          "name": "guided_human_only",
+          "recording_start_s": 0.006666166,
+          "recording_end_s": 3.007898499,
+          "samples": 72030,
+          "peak_dbfs": -63.0744,
+          "rms_dbfs": -81.2017,
+          "rail_samples": 0,
+          "exact_zero_samples": 51434
+        },
+        {
+          "name": "guided_double_talk",
+          "recording_start_s": 3.007898499,
+          "recording_end_s": 9.028044583,
+          "samples": 144483,
+          "peak_dbfs": -0.0003,
+          "rms_dbfs": -18.1801,
+          "rail_samples": 13,
+          "exact_zero_samples": 986
+        },
+        {
+          "name": "guided_human_tail",
+          "recording_start_s": 9.028044583,
+          "recording_end_s": 11.018382499,
+          "samples": 47768,
+          "peak_dbfs": -13.7216,
+          "rms_dbfs": -29.8757,
+          "rail_samples": 0,
+          "exact_zero_samples": 17493
+        },
+        {
+          "name": "guided_quiet",
+          "recording_start_s": 11.018382499,
+          "recording_end_s": 14.88,
+          "samples": 92679,
+          "peak_dbfs": -16.9861,
+          "rms_dbfs": -38.2346,
+          "rail_samples": 0,
+          "exact_zero_samples": 60572
+        }
+      ],
+      "exploratory_reference_correlation": {
+        "method": "same 12-sample averaging, fixed +/-500ms, 2ms lag grid as first run",
+        "absolute_correlation": 0.3915219152515365,
+        "signed_correlation": 0.3915219152515365,
+        "reference_start_in_recording_s": 3.402,
+        "acoustic_truth": "NOT_ESTABLISHED"
+      },
+      "user_feedback_verbatim": "能听到居民声音和我的人声。存在忽大忽小，确认我从“真人独讲”提示一直讲到“停止讲话”，现场听到居民发声并且同时讲话超过一秒。还是失败，提交推送后让GPT审核一下两次原始WAV和处理后的WAV",
+      "user_listening_result": "FAIL_USER_REPORTED",
+      "human_speech_window_witness": "USER_CONFIRMED_FROM_HUMAN_ONLY_TO_QUIET_PROMPT",
+      "physical_overlap": "USER_REPORTED_GT_1_SECOND_NOT_INDEPENDENTLY_MEASURED",
+      "capture_state_snapshot": "pre-stop snapshot; not proof of still-running capture",
+      "cleanup": "Stop/Seal/Shutdown and normal Quit; own process absence verified"
+    }
+  ],
+  "overall_result": "FAIL_REVIEW_PENDING",
+  "R3_M01": "OPEN",
+  "T3_2_A": "BLOCKED",
+  "SQ_M1": "OPEN",
+  "Formal_Test3": "BLOCKED",
+  "Test3.execution_authorized": false
+}
