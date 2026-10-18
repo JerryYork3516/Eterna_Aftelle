@@ -20,7 +20,9 @@ if [[ "$mode" == "d1-stats-only" ]]; then
   swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
     -framework AVFoundation "$aec_host" "$capture" \
     "$repo_root/tools/speech_aec_host_tests/ConverterTimelineTests.swift" \
+    "$repo_root/tools/speech_aec_host_tests/NativeInputChannelMappingTests.swift" \
     "$repo_root/tools/speech_aec_host_tests/NativeVoiceDebugStatsTests.swift" \
+    "$repo_root/tools/speech_aec_host_tests/AppleVPDebugProfileTests.swift" \
     -o "$build_dir/native_voice_debug_tests"
   "$build_dir/native_voice_debug_tests" --d1-stats-only
   exit 0
@@ -43,10 +45,11 @@ swiftc \
   -framework AVFoundation \
   "$aec_host" "$capture" \
   "$repo_root/tools/speech_aec_host_tests/ConverterTimelineTests.swift" \
+  "$repo_root/tools/speech_aec_host_tests/NativeInputChannelMappingTests.swift" \
   -o "$build_dir/converter_timeline_tests"
 "$build_dir/converter_timeline_tests"
 nm "$build_dir/converter_timeline_tests" | xcrun swift-demangle > "$build_dir/release-symbols.txt"
-if rg -q 'MacSpeechNativeVoiceTiming|MacSpeechTimingSnapshot|MacSpeechPlaybackFormatWitness' "$build_dir/release-symbols.txt"; then
+if rg -q 'MacSpeechNativeVoiceTiming|MacSpeechTimingSnapshot|MacSpeechPlaybackFormatWitness|MacSpeechAppleVPDebugProfile' "$build_dir/release-symbols.txt"; then
   echo "speech_timing_release_isolation=FAIL"
   exit 1
 fi

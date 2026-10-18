@@ -491,6 +491,7 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
     func resetAcousticEchoDiagnostics()
     #if DEBUG
         func armNativeVoiceDebug(runID: UUID, generation: UInt64) -> Bool
+        func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool
         func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot?
         func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot?
         func clearNativeVoiceDebug(runID: UUID)
@@ -518,6 +519,11 @@ nonisolated extension MacSpeechAudioCapturing {
     #if DEBUG
         func armNativeVoiceDebug(runID _: UUID, generation _: UInt64) -> Bool {
             false
+        }
+
+        func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool {
+            guard profile == .agcOn else { return false }
+            return armNativeVoiceDebug(runID: runID, generation: generation)
         }
 
         func nativeVoiceDebugSnapshot(runID _: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
@@ -1047,6 +1053,21 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
 }
 
 #if DEBUG
+    nonisolated enum MacSpeechAppleVPDebugProfile: String, CaseIterable, Sendable {
+        case agcOn = "APPLE_VP_AGC_ON"
+        case agcOff = "APPLE_VP_AGC_OFF"
+
+        var automaticGainControlEnabled: Bool {
+            self == .agcOn
+        }
+
+        func accepts(_ snapshot: MacSpeechVoiceProcessingSnapshot) -> Bool {
+            snapshot.mode == .appleVoiceProcessing && snapshot.inputEnabled && snapshot.outputEnabled
+                && !snapshot.bypassed && !snapshot.inputMuted
+                && snapshot.automaticGainControlEnabled == automaticGainControlEnabled
+        }
+    }
+
     nonisolated struct MacSpeechNativeVoiceDebugFormat: Sendable, Equatable {
         let sampleRate: Double
         let channelCount: UInt32
@@ -1101,6 +1122,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
     nonisolated struct MacSpeechNativeVoiceDebugSnapshot: Sendable, Equatable {
         let runID: UUID
         let captureGeneration: UInt64
+        let profile: MacSpeechAppleVPDebugProfile
         let configurationID: UInt64?
         let isSealed: Bool
         let sealReason: String?
@@ -1151,6 +1173,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         let runID: UUID
         let captureGeneration: UInt64
         let timing: MacSpeechNativeVoiceTiming?
+        let profile: MacSpeechAppleVPDebugProfile
         private(set) var isSealed = false
         private var sealReason: String?
         private var configurationID: UInt64?
@@ -1173,10 +1196,14 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private var firstPacketTime: UInt64?
         private var lastPacketTime: UInt64?
 
-        init(runID: UUID, generation: UInt64, timing: MacSpeechNativeVoiceTiming? = nil) {
+        init(
+            runID: UUID, generation: UInt64, timing: MacSpeechNativeVoiceTiming? = nil,
+            profile: MacSpeechAppleVPDebugProfile = .agcOn
+        ) {
             self.runID = runID
             captureGeneration = generation
             self.timing = timing
+            self.profile = profile
         }
 
         mutating func bind(
@@ -1199,7 +1226,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             guard let voiceProcessing,
                   voiceProcessing.configurationID == configurationID,
                   voiceProcessing.validatedAtNanoseconds > 0,
-                  voiceProcessing.hasValidAppleProcessing,
+                  profile.accepts(voiceProcessing),
                   !voiceProcessing.inputMuted
             else {
                 reject("voice_processing")
@@ -1290,7 +1317,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             let rejections = Dictionary(uniqueKeysWithValues: zip(Self.reasons, rejectionCounts))
             let issues = Self.reasons.filter { rejections[$0, default: 0] > 0 }
             return MacSpeechNativeVoiceDebugSnapshot(
-                runID: runID, captureGeneration: captureGeneration, configurationID: configurationID,
+                runID: runID, captureGeneration: captureGeneration, profile: profile, configurationID: configurationID,
                 isSealed: isSealed, sealReason: sealReason,
                 coverageValid: configurationID != nil && nativeBufferCount > 0 && packetCount > 0 && issues.isEmpty,
                 issues: issues, voiceProcessing: voiceProcessing, nativeFormat: nativeFormat,
@@ -1824,9 +1851,20 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         private var nativeVoiceDebug: MacSpeechNativeVoiceDebugStats?
         private var nativeVoiceTimingDebug: MacSpeechNativeVoiceTiming?
         private var configurationDebug: [String: Any] = [:]
+        private struct AGCOffDebugContext {
+            let runID: UUID
+            let generation: UInt64
+            let configurationID: UInt64
+        }
+
+        private var agcOffDebugContext: AGCOffDebugContext?
 
         func voiceProcessingConfigurationDebug() -> [String: Any] {
-            lock.withLock { configurationDebug }
+            lock.withLock {
+                var snapshot = configurationDebug
+                snapshot["agc_off_registration_present"] = agcOffDebugContext != nil
+                return snapshot
+            }
         }
     #endif
     private var outputPresentationLatencySeconds = 0.0
@@ -1899,6 +1937,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         guard !isRouteRebuilding else {
             throw MacSpeechAudioCaptureError.processingModeBusy
         }
+        #if DEBUG
+            if let context = agcOffDebugContext, context.generation != generation {
+                agcOffDebugContext = nil
+                processingSnapshot = nil
+                throw MacSpeechAudioCaptureError.voiceProcessingUnavailable
+            }
+        #endif
         try configureIfNeeded()
         guard let engine, captureAECConverter != nil,
               captureOutputConverter != nil
@@ -1974,6 +2019,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         let input = lock.withLock { () -> AVAudioInputNode? in
             isCaptureActive = false
             captureGeneration = nil
+            #if DEBUG
+                if agcOffDebugContext != nil {
+                    agcOffDebugContext = nil
+                    processingSnapshot = nil
+                }
+            #endif
             guard isCaptureTapInstalled else { return nil }
             isCaptureTapInstalled = false
             return engine?.inputNode
@@ -1998,6 +2049,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         captureProcessingLock.withLock {
             #if DEBUG
                 nativeVoiceDebug?.seal(reason: "configuration_changed")
+                lock.withLock {
+                    if agcOffDebugContext != nil {
+                        agcOffDebugContext = nil
+                        processingSnapshot = nil
+                    }
+                }
             #endif
             captureGenerationFence.advance(to: DispatchTime.now().uptimeNanoseconds)
             let context = lock.withLock { (captureAECConverter, captureOutputConverter, acousticEchoHost) }
@@ -2201,7 +2258,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         try inputNode.setVoiceProcessingEnabled(true)
         inputNode.isVoiceProcessingBypassed = false
         inputNode.isVoiceProcessingInputMuted = false
-        inputNode.isVoiceProcessingAGCEnabled = true
+        #if DEBUG
+            inputNode.isVoiceProcessingAGCEnabled = agcOffDebugContext == nil
+            configurationDebug["requested_agc_enabled"] = agcOffDebugContext == nil
+        #else
+            inputNode.isVoiceProcessingAGCEnabled = true
+        #endif
         let format = inputNode.outputFormat(forBus: 0)
         #if DEBUG
             configurationDebug["input_rate"] = format.sampleRate
@@ -2246,7 +2308,19 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             }
         }
         if audioProcessingMode == .appleVoiceProcessing {
-            guard snapshot.hasValidAppleProcessing,
+            let validProcessing: Bool
+            #if DEBUG
+                if let context = agcOffDebugContext {
+                    validProcessing = context.configurationID == snapshot.configurationID
+                        && (captureGeneration == nil || captureGeneration == context.generation)
+                        && MacSpeechAppleVPDebugProfile.agcOff.accepts(snapshot)
+                } else {
+                    validProcessing = snapshot.hasValidAppleProcessing
+                }
+            #else
+                validProcessing = snapshot.hasValidAppleProcessing
+            #endif
+            guard validProcessing,
                   !requireUnmuted || !snapshot.inputMuted
             else {
                 processingSnapshot = nil
@@ -2265,7 +2339,14 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     private func tearDownIfIdle(outputAlreadyStopped: Bool = false) {
-        guard lock.withLock({ !isCaptureActive && !isOutputPrepared }) else { return }
+        let idle = lock.withLock {
+            guard !isCaptureActive, !isOutputPrepared else { return false }
+            #if DEBUG
+                agcOffDebugContext = nil
+            #endif
+            return true
+        }
+        guard idle else { return }
         tearDownGraph(outputAlreadyStopped: outputAlreadyStopped)
     }
 
@@ -2334,6 +2415,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             #endif
             let wasConfigured = lock.withLock { () -> Bool in
                 isRouteRebuilding = true
+                #if DEBUG
+                    if agcOffDebugContext != nil {
+                        agcOffDebugContext = nil
+                        processingSnapshot = nil
+                    }
+                #endif
                 routeRebuildWasConfigured = isConfigured
                 return isConfigured
             }
@@ -2735,17 +2822,27 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
 
         func armNativeVoiceDebug(runID: UUID, generation: UInt64) -> Bool {
+            armNativeVoiceDebug(runID: runID, generation: generation, profile: .agcOn)
+        }
+
+        func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool {
             lifecycleLock.withLock {
                 captureProcessingLock.withLock {
                     let idle = lock.withLock {
                         audioProcessingMode == .appleVoiceProcessing && !isCaptureActive
                             && !isOutputPlaying && !isRouteRebuilding
+                            && (profile == .agcOn || (!isConfigured && !isOutputPrepared))
                     }
-                    guard idle, nativeVoiceDebug == nil else { return false }
+                    guard idle, generation > 0, nativeVoiceDebug == nil else { return false }
+                    lock.withLock {
+                        agcOffDebugContext = profile == .agcOff
+                            ? AGCOffDebugContext(runID: runID, generation: generation,
+                                                 configurationID: configurationID &+ 1) : nil
+                    }
                     let timing = MacSpeechNativeVoiceTiming(runID: runID, generation: generation)
                     nativeVoiceTimingDebug = timing
                     nativeVoiceDebug = MacSpeechNativeVoiceDebugStats(
-                        runID: runID, generation: generation, timing: timing
+                        runID: runID, generation: generation, timing: timing, profile: profile
                     )
                     return true
                 }
@@ -2774,6 +2871,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                           nativeVoiceDebug?.isSealed == true || lock.withLock({ !isCaptureActive }) else { return }
                     nativeVoiceDebug = nil
                     nativeVoiceTimingDebug = nil
+                    lock.withLock {
+                        if agcOffDebugContext?.runID == runID {
+                            agcOffDebugContext = nil
+                            processingSnapshot = nil
+                        }
+                    }
                 }
             }
         }
@@ -2828,6 +2931,10 @@ nonisolated final class SystemMacSpeechAudioCapture:
     #if DEBUG
         func armNativeVoiceDebug(runID: UUID, generation: UInt64) -> Bool {
             audioEngine.armNativeVoiceDebug(runID: runID, generation: generation)
+        }
+
+        func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool {
+            audioEngine.armNativeVoiceDebug(runID: runID, generation: generation, profile: profile)
         }
 
         func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {

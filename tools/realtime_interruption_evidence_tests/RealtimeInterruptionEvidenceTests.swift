@@ -39,6 +39,7 @@ private extension RealtimeInterruptionEvidenceTests {
         print("d1_only_checks=\(checks)")
         try await testComprehensiveC()
         try await testStatsOnlyC()
+        try await testAcousticAGCProfiles()
     }
 
     static func testD2SilentSmoke() async throws {
@@ -188,10 +189,12 @@ private extension RealtimeInterruptionEvidenceTests {
 
     static func prepareComprehensiveC(
         _ stack: D1ControllerStack, source: URL, discard: Bool = false,
-        dataMode: AppleVPAcousticDataMode = .recording
+        dataMode: AppleVPAcousticDataMode = .recording,
+        processingProfile: MacSpeechAppleVPDebugProfile = .agcOn
     ) {
         expect(stack.controller.prepareAppleVPAcousticTest(
-            .doubleTalk, discardPreviousResult: discard, comprehensiveC: true, dataMode: dataMode
+            .doubleTalk, discardPreviousResult: discard, comprehensiveC: true, dataMode: dataMode,
+            processingProfile: processingProfile
         ), "C prepares an explicit isolated guided run")
         expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "C selects synthetic offline audio")
         stack.controller.startAppleVPAcousticTest(
@@ -566,6 +569,108 @@ private extension RealtimeInterruptionEvidenceTests {
     }
 }
 
+private extension RealtimeInterruptionEvidenceTests {
+    static func testAcousticAGCProfiles() async throws {
+        let originalCases = cases
+        let originalChecks = checks
+        try await testAcousticAGCRepetition()
+        await testAcousticAGCRejections()
+        testAcousticAGCPreparation()
+        print("acoustic_agc_profile_cases=\(cases - originalCases)")
+        print("acoustic_agc_profile_checks=\(checks - originalChecks)")
+        print("acoustic_agc_device_access=ZERO")
+    }
+
+    static func testAcousticAGCRepetition() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now })
+        var previousRun: UUID?
+        for (index, profile) in [MacSpeechAppleVPDebugProfile.agcOff, .agcOn, .agcOff].enumerated() {
+            cases += 1
+            clock.elapsed = 0
+            let mode: AppleVPAcousticDataMode = index == 2 ? .statsOnly : .recording
+            prepareComprehensiveC(stack, source: source, discard: index > 0,
+                                  dataMode: mode, processingProfile: profile)
+            await waitUntil("AGC profile running") { stack.controller.appleVPAcousticTestState.phase == .running }
+            expect(!stack.controller.prepareAppleVPAcousticTest(.humanOnly, processingProfile: .agcOn),
+                   "a prepared profile cannot change during capture")
+            expect(stack.capture.voiceProcessingSnapshot()?.automaticGainControlEnabled
+                == profile.automaticGainControlEnabled, "the requested profile reaches the capture dependency")
+            await driveComprehensiveC(stack, clock: clock, dataMode: mode)
+            let state = stack.controller.appleVPAcousticTestState
+            let manifest = try JSONSerialization.jsonObject(
+                with: stack.controller.appleVPAcousticTestManifestData()
+            ) as? [String: Any]
+            expect(state.processingProfile == profile && state.errorCode == nil,
+                   "both explicit profiles complete the unchanged guided C lifecycle")
+            expect(state.runID != previousRun && state.packetCount == 750,
+                   "repetition binds a fresh run and accepts every continuous synthetic packet")
+            expect(manifest?["processing_profile"] as? String == profile.rawValue,
+                   "the manifest records the prepared profile independently of actual readback")
+            expect(stack.capture.voiceProcessingSnapshot()?.automaticGainControlEnabled == true,
+                   "Stop removes the Fake experiment configuration")
+            if mode == .statsOnly {
+                try expectStatsOnlyEvidence(stack.controller)
+            } else {
+                let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+                expect(wav.count > 44,
+                       "ordinary recording C retains its original synthetic WAV ability")
+            }
+            previousRun = state.runID
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func testAcousticAGCRejections() async {
+        for profile in MacSpeechAppleVPDebugProfile.allCases {
+            cases += 1
+            let stack = D1ControllerStack()
+            stack.capture.agcReadbackOverride = !profile.automaticGainControlEnabled
+            expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly, processingProfile: profile),
+                   "readback negative control prepares explicitly")
+            startD1(stack.controller)
+            await waitUntil("wrong AGC readback sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode != nil,
+                   "both wrong AGC readbacks fail closed")
+            expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 0,
+                   "rejected processing produces no recording")
+            expectD1Cleanup(stack)
+        }
+        cases += 1
+        let unsupported = D1ControllerStack()
+        unsupported.capture.supportsAGCProfile = false
+        _ = unsupported.controller.prepareAppleVPAcousticTest(.humanOnly, processingProfile: .agcOff)
+        startD1(unsupported.controller)
+        await waitUntil("unsupported AGC profile sealed") {
+            unsupported.controller.appleVPAcousticTestState.phase == .sealed
+        }
+        expect(unsupported.capture.startCount == 0, "unsupported AGC-OFF fails before capture start")
+        expect(unsupported.controller.appleVPAcousticTestState.errorCode != nil, "unsupported is not PASS")
+        expectD1Cleanup(unsupported)
+    }
+
+    static func testAcousticAGCPreparation() {
+        cases += 1
+        let stack = D1ControllerStack()
+        expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly), "ordinary Prepare still succeeds")
+        expect(stack.controller.appleVPAcousticTestState.processingProfile == .agcOn,
+               "the original default remains AGC-ON")
+        _ = stack.controller.prepareAppleVPAcousticTest(.humanOnly, processingProfile: .agcOff)
+        stack.controller.startAppleVPAcousticTest(
+            microphoneConsent: false, speakerConsent: true, localCaptureConsent: true
+        )
+        expect(stack.capture.startCount == 0 && stack.controller.appleVPAcousticTestState.runID == nil,
+               "a prepared OFF selection does not authorize microphone use")
+        cases += 1
+        let silent = D1ControllerStack(silentScenario: .doubleTalk)
+        expect(!silent.controller.prepareAppleVPAcousticTest(.doubleTalk, processingProfile: .agcOff),
+               "silent-smoke cannot silently acquire an AGC-OFF experiment")
+        expect(silent.capture.startCount == 0, "rejected silent selection starts no device")
+    }
+}
+
 @MainActor
 private final class D1NormalDependenciesSpy {
     private(set) var calls = 0
@@ -588,6 +693,9 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     private var active = false
     private let failsStart: Bool
     var omitsSeal = false
+    var agcReadbackOverride: Bool?
+    var supportsAGCProfile = true
+    private var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
 
     init(failsStart: Bool = false) {
         self.failsStart = failsStart
@@ -598,10 +706,15 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     }
 
     func voiceProcessingSnapshot() -> MacSpeechVoiceProcessingSnapshot? {
+        lock.withLock { makeVoiceProcessingSnapshot() }
+    }
+
+    private func makeVoiceProcessingSnapshot() -> MacSpeechVoiceProcessingSnapshot {
         let format = MacSpeechNativeInputFormat(sampleRate: 48000, channelCount: 1)
         return MacSpeechVoiceProcessingSnapshot(
             mode: .appleVoiceProcessing, configurationID: 1, inputEnabled: true, outputEnabled: true,
-            bypassed: false, inputMuted: false, automaticGainControlEnabled: true,
+            bypassed: false, inputMuted: false,
+            automaticGainControlEnabled: agcReadbackOverride ?? processingProfile.automaticGainControlEnabled,
             inputFormat: format, outputFormat: format, validatedAtNanoseconds: 1
         )
     }
@@ -621,6 +734,7 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
 
     func stop() {
         lock.withLock {
+            processingProfile = .agcOn
             guard active else { return }
             active = false
             stops += 1
@@ -629,9 +743,15 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     }
 
     func armNativeVoiceDebug(runID: UUID, generation: UInt64) -> Bool {
+        armNativeVoiceDebug(runID: runID, generation: generation, profile: .agcOn)
+    }
+
+    func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool {
         lock.withLock {
-            var value = MacSpeechNativeVoiceDebugStats(runID: runID, generation: generation)
-            value.bind(configurationID: 1, voiceProcessing: voiceProcessingSnapshot())
+            guard profile == .agcOn || supportsAGCProfile else { return false }
+            processingProfile = profile
+            var value = MacSpeechNativeVoiceDebugStats(runID: runID, generation: generation, profile: profile)
+            value.bind(configurationID: 1, voiceProcessing: makeVoiceProcessingSnapshot())
             stats = value
             return true
         }
@@ -654,6 +774,7 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
         lock.withLock {
             if stats?.snapshot.runID == runID {
                 stats = nil
+                processingProfile = .agcOn
             }
         }
     }

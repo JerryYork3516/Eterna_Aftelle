@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-18 · Acoustic Isolation M01 DEBUG AGC-OFF离线准备
+
+- 确认原输入Converter只选ch0；合成三声道12/3194通过，真实Apple声道语义和两次真人C静音/增益根因仍UNKNOWN。仅DEBUG声学入口新增Prepare固定的AGC-ON/OFF及严格身份/readback/失效；正式默认和Cascaded不改，无新Engine/Tap/保存链。
+- [实际证据与SELF_REVIEW](docs/stage7_5/test3_apple_vp_clean/T3_2_A_acoustic_isolation_M01_agc_off_review.md)：profile19/51、D1新增8/167、FAST8/FULL_CURRENT21、11不变量、Debug/Release/三Guard均exit0；首次候选exit133及修复保留。B0，同范围Format7208/Lint176仍FAIL，5个既有结构锚点增长与历史C19/C23登记，ENGINEERING REWORK/DEBT_DEFERRED。未启动设备或读取私人录音；REVIEW_PENDING，仅离线准备，AGC_OFF_DEVICE_TEST未授权、真实读回NOT_RUN、真人C不可自动执行，R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false不变。
+
 ## 2026-10-18 · P2-Privacy-M01 STATS_ONLY离线隐私修复
 
 - 仅DEBUG综合C新增Prepare固定的STATS_ONLY：保留原15秒四阶段/PCM检查，不累计整段录音，实际留存0/摘要null，Controller拒绝WAV编码/URL/写入，UI明确统计模式及JSON独立导出同意；普通录音C、原silent-smoke及全部生产音频/Runtime机制不改。

@@ -653,6 +653,7 @@ private struct ParticleOrientationDebugOverlay: View {
         @State private var pendingScenario: AppleVPAcousticTestScenario?
         @State private var pendingComprehensiveC = false
         @State private var pendingDataMode = AppleVPAcousticDataMode.recording
+        @State private var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
         @State private var showsStartConsent = false
         @State private var showsDiscardConfirmation = false
         @State private var exportLocation: URL?
@@ -688,7 +689,7 @@ private struct ParticleOrientationDebugOverlay: View {
                     if let scenario = pendingScenario {
                         _ = controller.prepareAppleVPAcousticTest(
                             scenario, discardPreviousResult: true, comprehensiveC: pendingComprehensiveC,
-                            dataMode: pendingDataMode
+                            dataMode: pendingDataMode, processingProfile: processingProfile
                         )
                     }
                     pendingScenario = nil
@@ -729,10 +730,18 @@ private struct ParticleOrientationDebugOverlay: View {
             let state = controller.appleVPAcousticTestState
             Text(String(localized: "Data mode: \(state.dataMode.rawValue)"))
             Text(String(localized: "Retained PCM bytes: \(state.retainedPCMByteCount)"))
+            Text(String(localized: "Prepared processing profile: \(state.processingProfile.rawValue)"))
         }
 
         private var preparationControls: some View {
             VStack(alignment: .leading, spacing: 8) {
+                Picker(String(localized: "Next Prepare profile"), selection: $processingProfile) {
+                    Text(String(localized: "APPLE_VP_AGC_ON · default"))
+                        .tag(MacSpeechAppleVPDebugProfile.agcOn)
+                    Text(String(localized: "APPLE_VP_AGC_OFF · experiment; AEC + NS remain enabled"))
+                        .tag(MacSpeechAppleVPDebugProfile.agcOff)
+                }
+                .disabled(controller.appleVPAcousticTestState.isBusy)
                 HStack {
                     Button("Prepare A · Resident only") { prepare(.residentOnly) }
                     Button("Prepare B · Human only") { prepare(.humanOnly) }
@@ -798,7 +807,9 @@ private struct ParticleOrientationDebugOverlay: View {
             _ scenario: AppleVPAcousticTestScenario, comprehensiveC: Bool = false,
             dataMode: AppleVPAcousticDataMode = .recording
         ) {
-            if !controller.prepareAppleVPAcousticTest(scenario, comprehensiveC: comprehensiveC, dataMode: dataMode) {
+            if !controller.prepareAppleVPAcousticTest(
+                scenario, comprehensiveC: comprehensiveC, dataMode: dataMode, processingProfile: processingProfile
+            ) {
                 pendingScenario = scenario
                 pendingComprehensiveC = comprehensiveC
                 pendingDataMode = dataMode

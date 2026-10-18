@@ -33,6 +33,7 @@ import Foundation
             nativeTimingIdentity()
             nativeTimingStopAndRoute()
             nativeTimingCapacityAndPrivacy()
+            AppleVPDebugProfileTests.run()
             print("d1_native_stats_cases=\(cases)")
             print("d1_native_stats_checks=\(checks)")
             print("d1_native_stats_device_access=ZERO")

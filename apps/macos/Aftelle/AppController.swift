@@ -92,6 +92,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         var scenario = AppleVPAcousticTestScenario.residentOnly
         var phase = AppleVPAcousticTestPhase.idle
         fileprivate(set) var dataMode = AppleVPAcousticDataMode.recording
+        fileprivate(set) var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
         var runID: UUID?
         var errorCode: String?
         fileprivate var playbackURL: URL?
@@ -7553,10 +7554,12 @@ final class AppController: ObservableObject {
             _ scenario: AppleVPAcousticTestScenario,
             discardPreviousResult: Bool = false,
             comprehensiveC: Bool = false,
-            dataMode: AppleVPAcousticDataMode = .recording
+            dataMode: AppleVPAcousticDataMode = .recording,
+            processingProfile: MacSpeechAppleVPDebugProfile = .agcOn
         ) -> Bool {
             guard isAppleVPAcousticTestMode, appleVPAcousticTestTask == nil,
                   !comprehensiveC || (scenario == .doubleTalk && appleVPSilentSmokeScenario == nil),
+                  processingProfile == .agcOn || appleVPSilentSmokeScenario == nil,
                   speechAudioHostShutdownOperation == nil, speechHostLifecycleOperationCount == 0,
                   !appleVPAcousticRun.isBusy,
                   appleVPAcousticRun.runID == nil || discardPreviousResult else { return false }
@@ -7570,6 +7573,7 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.scenario = scenario
             appleVPAcousticRun.comprehensiveC = comprehensiveC
             appleVPAcousticRun.dataMode = appleVPSilentSmokeScenario == nil ? dataMode : .statsOnly
+            appleVPAcousticRun.processingProfile = processingProfile
             appleVPAcousticRun.playbackURL = url
             appleVPAcousticRun.phase = .ready
             publishAppleVPAcousticState(force: true)
@@ -7713,7 +7717,9 @@ final class AppController: ObservableObject {
             let generation = await speechAudioHost.prepareCaptureGeneration()
             try checkAppleVPAcousticRun(runID)
             guard let generation,
-                  appleVPAcousticTestCapture?.armNativeVoiceDebug(runID: runID, generation: generation) == true
+                  appleVPAcousticTestCapture?.armNativeVoiceDebug(
+                      runID: runID, generation: generation, profile: appleVPAcousticRun.processingProfile
+                  ) == true
             else {
                 throw AppleVPAcousticTestError.captureUnavailable
             }
@@ -7741,7 +7747,8 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.route = capture
             appleVPAcousticRun.native = appleVPAcousticTestCapture?.nativeVoiceDebugSnapshot(runID: runID)
             guard let voice = appleVPAcousticRun.native?.voiceProcessing,
-                  voice.hasValidAppleProcessing, !voice.inputMuted,
+                  appleVPAcousticRun.native?.profile == appleVPAcousticRun.processingProfile,
+                  appleVPAcousticRun.processingProfile.accepts(voice),
                   voice.configurationID > 0, voice.validatedAtNanoseconds > 0,
                   appleVPAcousticRun.native?.captureGeneration == generation,
                   appleVPAcousticRun.native?.configurationID == voice.configurationID
@@ -8142,6 +8149,8 @@ final class AppController: ObservableObject {
             var result = manifest
             let mode = appleVPAcousticRun.dataMode
             result["data_mode"] = mode.rawValue
+            result["processing_profile"] = appleVPAcousticRun.processingProfile.rawValue
+            result["requested_agc_enabled"] = appleVPAcousticRun.processingProfile.automaticGainControlEnabled
             result["export_scope"] = mode == .statsOnly
                 ? "statistics only; PCM not retained; queued/partial converter tail not padded"
                 : "drained full20ms packets; queued/partial converter tail not padded"

@@ -44,6 +44,7 @@ private struct ConverterTimelineTests {
         try processingState()
         try capacity()
         try invalidTimestamp()
+        try NativeInputChannelMappingTests.run()
         print("speech_converter_timeline_cases=\(cases)")
         print("speech_converter_timeline_checks=\(checks)")
         print("speech_converter_device_access=ZERO")

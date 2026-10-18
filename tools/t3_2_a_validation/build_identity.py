@@ -17,7 +17,7 @@ def inspect(derived):
         symbols[name] = subprocess.check_output(["nm", "-j", str(paths[name])],
                                                 stderr=subprocess.DEVNULL).decode()
     witnesses = ("MacSpeechNativeVoiceTiming", "MacSpeechTimingSnapshot",
-                 "MacSpeechPlaybackFormatWitness")
+                 "MacSpeechPlaybackFormatWitness", "MacSpeechAppleVPDebugProfile")
     if not all(s in symbols["debug_dylib"] for s in witnesses):
         raise ValueError("DEBUG timing symbols missing")
     if any(s in symbols["release_app"] for s in witnesses):
