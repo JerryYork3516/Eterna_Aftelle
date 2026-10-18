@@ -24,6 +24,8 @@
 
 ## 当前状态
 
+最新P2隐私修复见[STATS_ONLY离线实现与审核](T3_2_A_P2_Privacy_M01_stats_only_review.md)：仅现有DEBUG综合C增加Prepare固定的数据保留模式；STATS_ONLY保留原15秒四阶段及PCM检查，不累计整段录音、摘要为null，Controller三条WAV入口拒绝、UI只允许显式统计JSON导出；普通录音C与旧silent-smoke不变。新增19/395、原D140/290、综合C31/250，FAST8/FULL_CURRENT21、11不变量、Debug/Release及三项Guard均PASS/exit0；新增B0，同范围Format7094/Lint166仍FAIL，C19/C23及3处既有文件长度增长如实延期。本轮无App/设备运行或私人音频访问；SELF_REVIEW、节点REVIEW_PENDING，P2_PRECHECK=REWORK、P2_DEVICE_EXECUTION=NOT_AUTHORIZED、READY_FOR_C_HUMAN=false；R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false不变。主控复审后另行决定预检及设备授权。
+
 最新综合C准备见[离线预备与实际证据](T3_2_A_comprehensive_C_offline_preparation.md)：仅DEBUG引导/Fake准备，真实设备与真人C未授权；v0.3旧候选PASS与本轮改后验证分别登记。R3-M01继续OPEN，T3.2-A继续BLOCKED，不沿用下方早期快照作为新的设备或节点授权。
 
 ~~~text

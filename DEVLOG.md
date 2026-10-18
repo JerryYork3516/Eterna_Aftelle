@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-18 · P2-Privacy-M01 STATS_ONLY离线隐私修复
+
+- 仅DEBUG综合C新增Prepare固定的STATS_ONLY：保留原15秒四阶段/PCM检查，不累计整段录音，实际留存0/摘要null，Controller拒绝WAV编码/URL/写入，UI明确统计模式及JSON独立导出同意；普通录音C、原silent-smoke及全部生产音频/Runtime机制不改。
+- [实际证据与SELF_REVIEW](docs/stage7_5/test3_apple_vp_clean/T3_2_A_P2_Privacy_M01_stats_only_review.md)：新增19 cases/395 checks、原D140/290、综合C31/250，FAST8/FULL_CURRENT21、11不变量、Debug/Release及三Guard均exit0；新增B0，Format7094/Lint166仍FAIL，C19/C23及3处既有file_length增长延期。无App/设备/私人录音访问；REVIEW_PENDING，P2_PRECHECK=REWORK、设备未授权、READY_FOR_C_HUMAN=false，R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false。
+
 ## 2026-10-18 · T3.2-A 综合C离线准备
 
 - 仅DEBUG新增显式综合C指导：一次Start、原15秒上限，真人独讲/双讲/真人尾部/安静四段，复用原Host/pump/drain/导出；不改AEC/AGC/NS、正式插话或Test2权威。旧DEBUG累计启动数误作每run计数的问题改为增量恰好1，连续Fake run验证；首次失败与Fake权限配置错误保留。

@@ -652,6 +652,7 @@ private struct ParticleOrientationDebugOverlay: View {
         @ObservedObject var controller: AppController
         @State private var pendingScenario: AppleVPAcousticTestScenario?
         @State private var pendingComprehensiveC = false
+        @State private var pendingDataMode = AppleVPAcousticDataMode.recording
         @State private var showsStartConsent = false
         @State private var showsDiscardConfirmation = false
         @State private var exportLocation: URL?
@@ -664,6 +665,7 @@ private struct ParticleOrientationDebugOverlay: View {
                     Text("Isolated DEBUG mode. No resident, session or provider is loaded.")
                     Text("Device validation is not authorized in D1. Controls require a separate device approval.")
                     preparationControls
+                    retentionStatus
                     if controller.appleVPAcousticTestState.comprehensiveC {
                         comprehensiveCGuide
                     }
@@ -685,7 +687,8 @@ private struct ParticleOrientationDebugOverlay: View {
                 Button("Discard and prepare", role: .destructive) {
                     if let scenario = pendingScenario {
                         _ = controller.prepareAppleVPAcousticTest(
-                            scenario, discardPreviousResult: true, comprehensiveC: pendingComprehensiveC
+                            scenario, discardPreviousResult: true, comprehensiveC: pendingComprehensiveC,
+                            dataMode: pendingDataMode
                         )
                     }
                     pendingScenario = nil
@@ -693,20 +696,39 @@ private struct ParticleOrientationDebugOverlay: View {
                 Button("Cancel", role: .cancel) { pendingScenario = nil }
             }
             .confirmationDialog("Allow local test?", isPresented: $showsStartConsent) {
-                Button("Use microphone, local capture and test playback") {
+                Button(startConsentTitle) {
                     controller.startAppleVPAcousticTest(
-                        microphoneConsent: true, speakerConsent: true, localCaptureConsent: true
+                        microphoneConsent: true, speakerConsent: true,
+                        localCaptureConsent: controller.appleVPAcousticTestState.dataMode == .recording
                     )
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("A/C use the selected offline voice. B uses only the microphone.")
-                Text("No provider is contacted. Audio stays in bounded memory until an explicit export.")
+                if controller.appleVPAcousticTestState.dataMode == .statsOnly {
+                    Text(String(localized: "STATS_ONLY: no recording is retained."))
+                    Text(String(localized: "Only statistics JSON can be exported with consent."))
+                } else {
+                    Text("No provider is contacted. Audio stays in bounded memory until an explicit export.")
+                }
             }
             .task { controller.start() }
             .onDisappear {
                 Task { await controller.shutdownSpeechAudioHost() }
             }
+        }
+
+        private var startConsentTitle: String {
+            controller.appleVPAcousticTestState.dataMode == .statsOnly
+                ? String(localized: "Use microphone and test playback · STATS_ONLY")
+                : String(localized: "Use microphone, local capture and test playback")
+        }
+
+        @ViewBuilder
+        private var retentionStatus: some View {
+            let state = controller.appleVPAcousticTestState
+            Text(String(localized: "Data mode: \(state.dataMode.rawValue)"))
+            Text(String(localized: "Retained PCM bytes: \(state.retainedPCMByteCount)"))
         }
 
         private var preparationControls: some View {
@@ -719,6 +741,10 @@ private struct ParticleOrientationDebugOverlay: View {
                 .disabled(controller.appleVPAcousticTestState.isBusy)
                 Button(String(localized: "Prepare comprehensive C · Guided single run")) {
                     prepare(.doubleTalk, comprehensiveC: true)
+                }
+                .disabled(controller.appleVPAcousticTestState.isBusy)
+                Button(String(localized: "Prepare comprehensive C · STATS_ONLY")) {
+                    prepare(.doubleTalk, comprehensiveC: true, dataMode: .statsOnly)
                 }
                 .disabled(controller.appleVPAcousticTestState.isBusy)
                 Button("Select approved offline WAV…") { selectPlaybackFile() }
@@ -738,30 +764,44 @@ private struct ParticleOrientationDebugOverlay: View {
                 Button("Export local JSON…") { exportResult(asWAV: false) }
                     .disabled(!controller.appleVPAcousticTestState.canExport)
                 Button("Export local WAV…") { exportResult(asWAV: true) }
-                    .disabled(!controller.appleVPAcousticTestState.canExport)
+                    .disabled(!controller.appleVPAcousticTestState.canExportWAV)
             }
         }
 
         private var comprehensiveCGuide: some View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(String(localized: "综合C：一次Start，最多15秒；仅在另行获准设备测试后使用。"))
-                Text(String(localized: "0–3秒真人独讲；听到居民后继续讲话；居民结束后继续至安静提示。"))
-                Text(String(localized: "约11秒起停止讲话并保持安静，等自动封存后分别同意JSON/WAV导出。"))
-                switch controller.appleVPAcousticTestState.guideStage {
-                case "human_only": Text(String(localized: "真人独讲：今天我想聊聊刚才的事情。"))
-                case "double_talk": Text(String(localized: "听到居民发声时继续自然讲话，目标物理重叠超过1秒。"))
-                case "human_tail": Text(String(localized: "居民播放已完成：真人继续讲话，等待安静提示。"))
-                case "quiet": Text(String(localized: "停止讲话，保持安静至封存。"))
-                default: Text(String(localized: "等待准备；软件提示不证明真实讲话或物理重叠时长。"))
+                if controller.appleVPAcousticTestState.dataMode == .statsOnly {
+                    Text(String(localized: "STATS_ONLY：无需讲话。使用已批准零值WAV；0–3 / 3–9 / 9–11 / 11–15秒自动推进。"))
+                    Text(String(localized: "当前软件阶段：\(controller.appleVPAcousticTestState.guideStage ?? "UNKNOWN")"))
+                } else {
+                    recordingCGuide
                 }
                 Text(String(localized: "退出前请导出；失败JSON也可保留。未导出的内存证据会随App退出丢失。"))
             }
         }
 
-        private func prepare(_ scenario: AppleVPAcousticTestScenario, comprehensiveC: Bool = false) {
-            if !controller.prepareAppleVPAcousticTest(scenario, comprehensiveC: comprehensiveC) {
+        @ViewBuilder
+        private var recordingCGuide: some View {
+            Text(String(localized: "0–3秒真人独讲；听到居民后继续讲话；居民结束后继续至安静提示。"))
+            Text(String(localized: "约11秒起停止讲话并保持安静，等自动封存后分别同意JSON/WAV导出。"))
+            switch controller.appleVPAcousticTestState.guideStage {
+            case "human_only": Text(String(localized: "真人独讲：今天我想聊聊刚才的事情。"))
+            case "double_talk": Text(String(localized: "听到居民发声时继续自然讲话，目标物理重叠超过1秒。"))
+            case "human_tail": Text(String(localized: "居民播放已完成：真人继续讲话，等待安静提示。"))
+            case "quiet": Text(String(localized: "停止讲话，保持安静至封存。"))
+            default: Text(String(localized: "等待准备；软件提示不证明真实讲话或物理重叠时长。"))
+            }
+        }
+
+        private func prepare(
+            _ scenario: AppleVPAcousticTestScenario, comprehensiveC: Bool = false,
+            dataMode: AppleVPAcousticDataMode = .recording
+        ) {
+            if !controller.prepareAppleVPAcousticTest(scenario, comprehensiveC: comprehensiveC, dataMode: dataMode) {
                 pendingScenario = scenario
                 pendingComprehensiveC = comprehensiveC
+                pendingDataMode = dataMode
                 showsDiscardConfirmation = true
             }
         }

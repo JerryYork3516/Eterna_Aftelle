@@ -38,6 +38,7 @@ private extension RealtimeInterruptionEvidenceTests {
         print("d1_only_cases=\(cases)")
         print("d1_only_checks=\(checks)")
         try await testComprehensiveC()
+        try await testStatsOnlyC()
     }
 
     static func testD2SilentSmoke() async throws {
@@ -185,15 +186,22 @@ private extension RealtimeInterruptionEvidenceTests {
         print("c_preparation_fake=PASS")
     }
 
-    static func prepareComprehensiveC(_ stack: D1ControllerStack, source: URL, discard: Bool = false) {
+    static func prepareComprehensiveC(
+        _ stack: D1ControllerStack, source: URL, discard: Bool = false,
+        dataMode: AppleVPAcousticDataMode = .recording
+    ) {
         expect(stack.controller.prepareAppleVPAcousticTest(
-            .doubleTalk, discardPreviousResult: discard, comprehensiveC: true
+            .doubleTalk, discardPreviousResult: discard, comprehensiveC: true, dataMode: dataMode
         ), "C prepares an explicit isolated guided run")
         expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "C selects synthetic offline audio")
-        startD1(stack.controller)
+        stack.controller.startAppleVPAcousticTest(
+            microphoneConsent: true, speakerConsent: true, localCaptureConsent: dataMode == .recording
+        )
     }
 
-    static func driveComprehensiveC(_ stack: D1ControllerStack, clock: ComprehensiveCClock) async {
+    static func driveComprehensiveC(
+        _ stack: D1ControllerStack, clock: ComprehensiveCClock, dataMode: AppleVPAcousticDataMode? = nil
+    ) async {
         await waitUntil("C capture running") { stack.controller.appleVPAcousticTestState.phase == .running }
         expect(stack.player.startCount == stack.capture.startCount - 1,
                "no new playback at the beginning of the human-only stage")
@@ -203,6 +211,12 @@ private extension RealtimeInterruptionEvidenceTests {
             await waitUntil("C drains each bounded synthetic batch") {
                 stack.player.completeScheduledChunk()
                 return stack.controller.appleVPAcousticTestState.packetCount == (tick + 1) * 25
+            }
+            if let dataMode {
+                let state = stack.controller.appleVPAcousticTestState
+                let retained = dataMode == .statsOnly ? 0 : state.byteCount
+                expect(state.dataMode == dataMode && state.retainedPCMByteCount == retained,
+                       "every drained batch respects the prepared retention mode")
             }
             if tick == 0 {
                 expect(stack.controller.appleVPAcousticTestState.guideStage == "human_only",
@@ -378,6 +392,177 @@ private extension RealtimeInterruptionEvidenceTests {
             try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
         }
         expect(!FileManager.default.fileExists(atPath: directory.path), "permission failure creates no partial export")
+    }
+}
+
+private extension RealtimeInterruptionEvidenceTests {
+    static func testStatsOnlyC() async throws {
+        let originalCases = cases
+        let originalChecks = checks
+        try await testStatsOnlyCRepetition()
+        try await testStatsOnlyCConsentAndStop()
+        try await testStatsOnlyCFailures()
+        let directory = try d1ExportTestDirectory()
+        expect(!FileManager.default.fileExists(atPath: directory.path), "statistics tests clean all synthetic exports")
+        print("stats_only_cases=\(cases - originalCases)")
+        print("stats_only_checks=\(checks - originalChecks)")
+        print("stats_only_fake=PASS")
+    }
+
+    static func testStatsOnlyCRepetition() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now })
+        let modes: [AppleVPAcousticDataMode] = [.recording, .statsOnly, .recording, .statsOnly]
+        var runIDs = Set<UUID>()
+        for (index, mode) in modes.enumerated() {
+            cases += 1
+            clock.elapsed = 0
+            prepareComprehensiveC(stack, source: source, discard: index > 0, dataMode: mode)
+            expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 0,
+                   "Prepare discards the previous run's recording before switching modes")
+            await driveComprehensiveC(stack, clock: clock, dataMode: mode)
+            let state = stack.controller.appleVPAcousticTestState
+            expect(state.errorCode == nil && state.packetCount == 750, "both modes validate 750 continuous packets")
+            if let runID = state.runID {
+                runIDs.insert(runID)
+            }
+            try expectComprehensiveCManifest(stack.controller)
+            if mode == .statsOnly {
+                try expectStatsOnlyEvidence(stack.controller)
+                try testStatsOnlyJSONExport(stack.controller)
+                try testStatsOnlyJSONSymlink(stack.controller)
+                try testComprehensiveCExportPermission(stack.controller)
+            } else {
+                let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+                expect(state.canExportWAV && wav.count == 720_044, "ordinary C retains complete synthetic WAV access")
+            }
+            expectD1Cleanup(stack)
+        }
+        expect(runIDs.count == modes.count, "mixed retention modes never reuse a run identity")
+    }
+
+    static func expectStatsOnlyEvidence(_ controller: AppController) throws {
+        let state = controller.appleVPAcousticTestState
+        let manifest = try JSONSerialization.jsonObject(with: controller.appleVPAcousticTestManifestData())
+            as? [String: Any]
+        expect(state.dataMode == .statsOnly && state.retainedPCMByteCount == 0 && !state.canExportWAV,
+               "sealed success, failure and Stop retain no recording and expose no WAV control")
+        expect(manifest?["retained_pcm_bytes"] as? Int == 0 && manifest?["processed_sha256"] is NSNull,
+               "statistics report actual zero retention and no PCM digest")
+        expect(manifest?["data_mode"] as? String == "STATS_ONLY", "each manifest identifies its immutable mode")
+        expect(manifest?["input_device"] as? String == "default_input"
+            && manifest?["output_device"] as? String == "default_output", "statistics redact hardware identities")
+        expectD1ExportRejected("statistics mode refuses WAV encoding") {
+            _ = try controller.appleVPAcousticTestProcessedWAVData()
+        }
+        expectD1ExportRejected("statistics mode refuses WAV destination creation") {
+            _ = try controller.appleVPAcousticTestExportURL(asWAV: true)
+        }
+        let directory = try d1ExportTestDirectory()
+        let wav = directory.appendingPathComponent("run-\(state.runID?.uuidString ?? "UNKNOWN").wav")
+        expectD1ExportRejected("even explicit export consent cannot write a statistics run as WAV") {
+            try controller.writeAppleVPAcousticTestWAV(to: wav, localExportConsent: true)
+        }
+        expect(!FileManager.default.fileExists(atPath: wav.path), "rejected WAV operations leave no file")
+    }
+
+    static func testStatsOnlyJSONExport(_ controller: AppController) throws {
+        cases += 1
+        let directory = try d1ExportTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = try controller.appleVPAcousticTestExportURL(asWAV: false)
+        expect(!FileManager.default.fileExists(atPath: directory.path), "statistics never export automatically")
+        expectD1ExportRejected("statistics JSON still requires explicit export consent") {
+            try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: false)
+        }
+        let outside = directory.deletingLastPathComponent().appendingPathComponent("outside-stats.json")
+        expectD1ExportRejected("statistics cannot escape the approved directory") {
+            try controller.writeAppleVPAcousticTestJSON(to: outside, localExportConsent: true)
+        }
+        try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
+        let before = try Data(contentsOf: url)
+        let manifest = try JSONSerialization.jsonObject(with: before) as? [String: Any]
+        expect(manifest?["run_id"] as? String == controller.appleVPAcousticTestState.runID?.uuidString,
+               "explicit statistics export binds the sealed run")
+        try expectD1ExportPermissions(directory: directory, files: [url])
+        expectD1ExportRejected("statistics JSON cannot overwrite an existing result") {
+            try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
+        }
+        let after = try Data(contentsOf: url)
+        expect(after == before, "rejected overwrite preserves the existing statistics")
+        let contents = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        expect(contents == [url.lastPathComponent], "the only exported file is this run's statistics JSON")
+    }
+
+    static func testStatsOnlyJSONSymlink(_ controller: AppController) throws {
+        cases += 1
+        let directory = try d1ExportTestDirectory()
+        let target = directory.deletingLastPathComponent().appendingPathComponent("stats-symlink-target")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: target)
+        }
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: target)
+        expectD1ExportRejected("statistics JSON rejects an evidence-directory symlink") {
+            let url = try controller.appleVPAcousticTestExportURL(asWAV: false)
+            try controller.writeAppleVPAcousticTestJSON(to: url, localExportConsent: true)
+        }
+        let contents = try FileManager.default.contentsOfDirectory(atPath: target.path)
+        expect(contents.isEmpty, "symlink refusal writes no statistics outside the controlled root")
+    }
+
+    static func testStatsOnlyCConsentAndStop() async throws {
+        cases += 1
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let stack = D1ControllerStack()
+        expect(stack.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true, dataMode: .statsOnly),
+               "statistics mode is fixed during Prepare")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "statistics select only synthetic playback")
+        for (microphone, speaker) in [(false, true), (true, false)] {
+            stack.controller.startAppleVPAcousticTest(
+                microphoneConsent: microphone, speakerConsent: speaker, localCaptureConsent: false
+            )
+            expect(stack.capture.startCount == 0 && stack.player.prepareCount == 0,
+                   "statistics never bypass microphone or playback consent")
+        }
+        stack.controller.startAppleVPAcousticTest(
+            microphoneConsent: true, speakerConsent: true, localCaptureConsent: false
+        )
+        await waitUntil("statistics run started without recording consent") {
+            stack.controller.appleVPAcousticTestState.phase == .running
+        }
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            .doubleTalk, discardPreviousResult: true, comprehensiveC: true, dataMode: .recording
+        ), "a running statistics run cannot be changed into recording mode")
+        stack.capture.emitPackets(2)
+        await waitUntil("statistics drained before Stop") { stack.controller.appleVPAcousticTestState.packetCount == 2 }
+        await stack.controller.stopAppleVPAcousticTest()
+        try expectStatsOnlyEvidence(stack.controller)
+        expectD1Cleanup(stack)
+    }
+
+    static func testStatsOnlyCFailures() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for kind in ["playback", "timeline", "configuration", "generation", "seal", "cancel", "shutdown", "late"] {
+            cases += 1
+            let clock = ComprehensiveCClock()
+            let stack = D1ControllerStack(clock: { clock.now })
+            prepareComprehensiveC(stack, source: source, dataMode: .statsOnly)
+            await waitUntil("statistics failure injection ready") {
+                stack.controller.appleVPAcousticTestState.phase == .running
+            }
+            await injectComprehensiveCFailure(kind, stack: stack, clock: clock)
+            await waitUntil("statistics failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode != nil, "statistics failure cannot become PASS")
+            try expectStatsOnlyEvidence(stack.controller)
+            try expectComprehensiveCPartialEvidence(stack.controller)
+            expectD1Cleanup(stack)
+        }
     }
 }
 
