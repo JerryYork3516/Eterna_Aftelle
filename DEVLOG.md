@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-19 · REF/HOST R2 最小比较适配
+
+- [R2报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R2_adaptation.md)：冻结REF派生8秒Float32素材通过原准入；仅派生副本增加有界事件管道及continuous/absolute映射，HOST音频处理和15秒综合C不改。共同内容约第4秒对齐，但不是严格单变量或物理双讲证明。
+- REF原33+新增9项、外部13项、原控制器9项离线通过，新增B类0；首次Fake错误与规范失败保留。派生HOST代理被原SHA门禁明确拒绝，播放器源码/有限素材登记与完整执行连接尚未闭合，R2=PARTIAL、READY=false。原7冲突现场不动；无设备和私人音频访问，T3.2-A/Formal Test3仍BLOCKED，停止待主控审核。
+
 ## 2026-10-19 · AGC ON/OFF＋4秒预热离线准备
 
 - [实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_agc_on_off_4s_offline_preparation.md)：仅DEBUG开放已登记OFF+4S组合并按profile精确匹配读回；生产AGC=true、原音频处理/调度、独立OFF与普通C不改，ScoreControl和UI准备同步，19秒处理/15秒评分、预热丢弃、720KB及STATS_ONLY维持。

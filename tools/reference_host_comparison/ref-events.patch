@@ -1,0 +1,352 @@
+--- a/Sources/VPReferenceAudio/VPCSession.swift
++++ b/Sources/VPReferenceAudio/VPCSession.swift
+@@ -7,6 +7,7 @@
+ @MainActor
+ final class VPCSession {
+     private var used = false
+-
++    private var comparison: VPCComparisonEvents?
++
+     func run(request: VPCRequest, preflight: VPBDisplayReceipt, prompt: VPCPrompt) throws -> AudioRunOutcome {
+         try request.validate()
+@@ -43,13 +44,16 @@
+             "VP-C fixed-origin 13+.5 deadlines, .5 control reserve; local brackets; no acoustic mapping"
+         manifest.snapshotTiming =
+             "VP-C configured/running/control/stopped; play request, player state and Render separate"
++        try prepareComparison(manifest: &manifest)
+         let recorder = try RecorderOwner(
+             configuration: request.configuration, maximumSeconds: VPARequest.maximumSeconds)
+         do {
+             try manifest.writePrepared(directory: request.configuration.outputDirectory)
+             try capture(driver: driver, recorder: recorder, manifest: &manifest, prompt: prompt)
+             try observe(driver: driver, manifest: &manifest, stopped: true)
++            try comparison?.terminal(cancelled: false, clock: VPBClockRead.read("comparisonStop"))
+         } catch {
++            cancelComparison(manifest: &manifest)
+             manifest.diagnostics.record(EngineeringFailure.capture(error, stage: .recorder, code: .recorderInvalid))
+             vp_recorder_invalidate(recorder.handle, UInt32(VP_INVALID_ABORT))
+         }
+@@ -121,6 +125,7 @@
+                 }
+             ),
+             observe: { full in
++                try comparison?.check(clock: VPBClockRead.read("comparisonCheck"))
+                 let before = vp_recorder_now_tick()
+                 try observer.check()
+                 try prompt.requireVisible()
+@@ -139,9 +144,7 @@
+                 )
+             },
+             event: { id in
+-                let value = VPBClockRead.read(id)
+-                try manifest.vpcExperiment?.append(value)
+-                return value
++                try comparisonEvent(id, manifest: &manifest)
+             },
+             perform: { action in
+                 switch action {
+@@ -249,3 +252,29 @@
+         return outcome
+     }
+ }
++
++extension VPCSession {
++    private func prepareComparison(manifest: inout AudioRunManifest) throws {
++        comparison = try VPCComparisonEvents.fromEnvironment(runID: manifest.runID)
++        if comparison != nil {
++            manifest.diagnosticClockOrigin = "ADAPTED_REF; " + manifest.diagnosticClockOrigin
++        }
++    }
++
++    private func cancelComparison(manifest: inout AudioRunManifest) {
++        do {
++            try comparison?.terminal(cancelled: true, clock: VPBClockRead.read("comparisonCancel"))
++        } catch {
++            manifest.diagnostics.record(EngineeringFailure.capture(
++                error, stage: .evidenceWrite, code: .finalWriteFailed
++            ))
++        }
++    }
++
++    private func comparisonEvent(_ id: String, manifest: inout AudioRunManifest) throws -> VPBClock {
++        let value = VPBClockRead.read(id)
++        try manifest.vpcExperiment?.append(value)
++        try comparison?.event(value)
++        return value
++    }
++}
+--- /dev/null
++++ b/Sources/VPReferenceAudio/VPCComparisonEvents.swift
+@@ -0,0 +1,119 @@
++import Darwin
++import Foundation
++import VPReferenceCore
++
++enum VPCComparisonError: Error {
++    case invalidPipe, invalidClock, duplicateEvent, writeFailed
++}
++
++final class VPCComparisonEvents {
++    private let descriptor: Int32
++    private let runID: UUID
++    private var origin: VPBClock?
++    private var terminated = false
++
++    static func fromEnvironment(runID: String) throws -> VPCComparisonEvents? {
++        guard let value = ProcessInfo.processInfo.environment["AFTELLE_VPC_COMPARISON_FD"] else { return nil }
++        guard let descriptor = Int32(value), let identity = UUID(uuidString: runID) else {
++            throw VPCComparisonError.invalidPipe
++        }
++        return try VPCComparisonEvents(descriptor: descriptor, runID: identity)
++    }
++
++    init(descriptor: Int32, runID: UUID) throws {
++        var info = stat()
++        let flags = fcntl(descriptor, F_GETFL)
++        guard descriptor > 2, flags >= 0, flags & O_NONBLOCK != 0,
++              flags & O_ACCMODE != O_RDONLY, fstat(descriptor, &info) == 0,
++              info.st_mode & S_IFMT == S_IFIFO
++        else { throw VPCComparisonError.invalidPipe }
++        let owned = fcntl(descriptor, F_DUPFD_CLOEXEC, 3)
++        guard owned >= 0 else { throw VPCComparisonError.invalidPipe }
++        guard fcntl(owned, F_SETNOSIGPIPE, 1) == 0 else {
++            close(owned)
++            throw VPCComparisonError.invalidPipe
++        }
++        self.descriptor = owned
++        self.runID = runID
++    }
++
++    deinit { close(descriptor) }
++
++    static func nanoseconds(_ ticks: UInt64, _ numerator: UInt32, _ denominator: UInt32) throws -> UInt64 {
++        guard numerator > 0, denominator > 0 else { throw VPCComparisonError.invalidClock }
++        let product = ticks.multipliedFullWidth(by: UInt64(numerator))
++        guard product.high < UInt64(denominator) else { throw VPCComparisonError.invalidClock }
++        return UInt64(denominator).dividingFullWidth(product).quotient
++    }
++
++    static func midpoint(_ clock: VPBClock) throws -> UInt64 {
++        guard clock.valid else { throw VPCComparisonError.invalidClock }
++        let before = try nanoseconds(clock.absoluteBefore, clock.numerator, clock.denominator)
++        let after = try nanoseconds(clock.absoluteAfter, clock.numerator, clock.denominator)
++        guard after - before <= 1_000_000, after <= UInt64.max - 9_000_000_000 else {
++            throw VPCComparisonError.invalidClock
++        }
++        return before + (after - before) / 2
++    }
++
++    static func schedule(runID: UUID, clock: VPBClock) throws -> [String: Any] {
++        let start = try midpoint(clock)
++        var message: [String: Any] = ["schema_version": 1, "source": "ADAPTED_REF", "event": "schedule"]
++        message["run_id"] = runID.uuidString
++        message["clock"] = "mach_absolute_nanoseconds"
++        message["observation_start_ns"] = start
++        message["near_start_ns"] = start + 4_000_000_000
++        message["near_stop_ns"] = start + 9_000_000_000
++        message["anchor"] = ["absolute_before": clock.absoluteBefore, "continuous": clock.continuous,
++                             "absolute_after": clock.absoluteAfter, "numer": clock.numerator,
++                             "denom": clock.denominator]
++        return message
++    }
++
++    func check(clock: VPBClock) throws {
++        var readiness = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
++        guard poll(&readiness, 1, 0) == 1, readiness.revents == Int16(POLLOUT) else {
++            throw VPCComparisonError.invalidPipe
++        }
++        let current = try Self.midpoint(clock)
++        guard let origin else { return }
++        guard clock.numerator == origin.numerator, clock.denominator == origin.denominator,
++              clock.continuous >= origin.continuous, clock.absoluteBefore >= origin.absoluteAfter
++        else { throw VPCComparisonError.invalidClock }
++        let elapsed = try Self.nanoseconds(clock.continuous - origin.continuous, clock.numerator, clock.denominator)
++        let first = try Self.midpoint(origin)
++        guard current >= first else { throw VPCComparisonError.invalidClock }
++        let absoluteElapsed = current - first
++        let difference = max(elapsed, absoluteElapsed) - min(elapsed, absoluteElapsed)
++        guard difference <= 1_000_000 else { throw VPCComparisonError.invalidClock }
++    }
++
++    func event(_ clock: VPBClock) throws {
++        guard !terminated else { throw VPCComparisonError.duplicateEvent }
++        try check(clock: clock)
++        guard clock.id == "observationStart" else { return }
++        guard origin == nil else { throw VPCComparisonError.duplicateEvent }
++        try send(Self.schedule(runID: runID, clock: clock))
++        origin = clock
++    }
++
++    func terminal(cancelled: Bool, clock: VPBClock) throws {
++        guard !terminated else { return }
++        terminated = true
++        var message: [String: Any] = ["schema_version": 1, "source": "ADAPTED_REF"]
++        message["event"] = cancelled ? "cancel" : "stop"
++        message["run_id"] = runID.uuidString
++        message["clock"] = "mach_absolute_nanoseconds"
++        message["event_time_ns"] = try Self.midpoint(clock)
++        try send(message)
++    }
++
++    private func send(_ message: [String: Any]) throws {
++        var data = try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys])
++        data.append(10)
++        // <= PIPE_BUF: one atomic, nonblocking write on the control path, never a Tap.
++        guard data.count <= 512 else { throw VPCComparisonError.writeFailed }
++        let count = data.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
++        guard count == data.count else { throw VPCComparisonError.writeFailed }
++    }
++}
+--- /dev/null
++++ b/Tests/VPReferenceAudioTests/VPCComparisonEventsTests.swift
+@@ -0,0 +1,150 @@
++import Darwin
++import Foundation
++@testable import VPReferenceAudio
++import VPReferenceCore
++import XCTest
++
++final class VPCComparisonEventsTests: XCTestCase {
++    private let identity = UUID(uuid: (17, 17, 17, 17, 17, 17, 65, 17, 129, 17, 17, 17, 17, 17, 17, 17))
++
++    private func point(_ id: String = "observationStart", at tick: UInt64 = 1_000_000_000) -> VPBClock {
++        VPBClock(id: id, absoluteBefore: tick, continuous: tick + 900_000,
++                 absoluteAfter: tick + 2, numerator: 125, denominator: 3)
++    }
++
++    private func withPipe(_ body: (VPCComparisonEvents, Int32, Int32) throws -> Void) throws {
++        var descriptors: [Int32] = [-1, -1]
++        XCTAssertEqual(pipe(&descriptors), 0)
++        defer { close(descriptors[0]); close(descriptors[1]) }
++        for descriptor in descriptors {
++            XCTAssertEqual(fcntl(descriptor, F_SETFL, O_NONBLOCK), 0)
++        }
++        let events = try VPCComparisonEvents(descriptor: descriptors[1], runID: identity)
++        try body(events, descriptors[0], descriptors[1])
++    }
++
++    private func messages(_ descriptor: Int32) throws -> [[String: Any]] {
++        var bytes = [UInt8](repeating: 0, count: 4096)
++        let count = read(descriptor, &bytes, bytes.count)
++        guard count >= 0 else { throw VPCComparisonError.invalidPipe }
++        return try Data(bytes.prefix(count)).split(separator: 10).map {
++            try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0)) as? [String: Any])
++        }
++    }
++
++    func testExactTimebaseConversionAndBoundedSchedule() throws {
++        XCTAssertEqual(try VPCComparisonEvents.nanoseconds(3, 125, 3), 125)
++        XCTAssertThrowsError(try VPCComparisonEvents.nanoseconds(UInt64.max, 125, 1))
++        XCTAssertThrowsError(try VPCComparisonEvents.nanoseconds(1, 1, 0))
++        let message = try VPCComparisonEvents.schedule(runID: identity, clock: point())
++        XCTAssertEqual(message["observation_start_ns"] as? UInt64, 41_666_666_708)
++        XCTAssertEqual(message["near_start_ns"] as? UInt64, 45_666_666_708)
++        XCTAssertEqual(message["near_stop_ns"] as? UInt64, 50_666_666_708)
++        XCTAssertLessThanOrEqual(try JSONSerialization.data(withJSONObject: message).count + 1, 512)
++    }
++
++    func testScheduleTerminalOnceAndDuplicateRejected() throws {
++        try withPipe { events, reader, _ in
++            try events.event(point())
++            XCTAssertThrowsError(try events.event(point(at: 1_000_000_010)))
++            try events.terminal(cancelled: false, clock: point("stop", at: 2_000_000_000))
++            try events.terminal(cancelled: true, clock: point("cancel", at: 2_000_000_000))
++            XCTAssertEqual(try messages(reader).compactMap { $0["event"] as? String }, ["schedule", "stop"])
++            XCTAssertThrowsError(try events.event(point(at: 1_000_000_020)))
++        }
++    }
++
++    func testCancelBeforeScheduleHasNoPlayPlan() throws {
++        try withPipe { events, reader, _ in
++            try events.terminal(cancelled: true, clock: point("cancel", at: 2_000_000_000))
++            XCTAssertEqual(try messages(reader).compactMap { $0["event"] as? String }, ["cancel"])
++        }
++    }
++
++    func testClosedReaderAndFullPipeRejectWithoutWaiting() throws {
++        var descriptors: [Int32] = [-1, -1]
++        XCTAssertEqual(pipe(&descriptors), 0)
++        defer { close(descriptors[1]) }
++        XCTAssertEqual(fcntl(descriptors[1], F_SETFL, O_NONBLOCK), 0)
++        let closed = try VPCComparisonEvents(descriptor: descriptors[1], runID: identity)
++        XCTAssertEqual(close(descriptors[0]), 0)
++        XCTAssertThrowsError(try closed.event(point()))
++        XCTAssertThrowsError(try closed.terminal(cancelled: true, clock: point("cancel", at: 2_000_000_000)))
++        try withPipe { events, _, writer in
++            let data = [UInt8](repeating: 1, count: 512)
++            var writes = 0
++            while write(writer, data, data.count) == data.count {
++                writes += 1
++                XCTAssertLessThan(writes, 1024)
++                if writes >= 1024 {
++                    throw VPCComparisonError.invalidPipe
++                }
++            }
++            XCTAssertEqual(errno, EAGAIN)
++            XCTAssertThrowsError(try events.event(point()))
++        }
++    }
++
++    func testInvalidPipeDescriptorRejected() throws {
++        for descriptor: Int32 in [-1, 0, 1, 2] {
++            XCTAssertThrowsError(try VPCComparisonEvents(descriptor: descriptor, runID: identity))
++        }
++        var descriptors: [Int32] = [-1, -1]
++        XCTAssertEqual(pipe(&descriptors), 0)
++        defer { close(descriptors[0]); close(descriptors[1]) }
++        XCTAssertThrowsError(try VPCComparisonEvents(descriptor: descriptors[1], runID: identity))
++    }
++
++    func testClockSleepBackwardAndWideBracketRejected() throws {
++        try withPipe { events, _, _ in
++            try events.event(point())
++            try events.check(clock: point("check", at: 1_000_010_000))
++            XCTAssertThrowsError(try events.check(clock: point("check", at: 999_999_000)))
++            let slept = VPBClock(
++                id: "check", absoluteBefore: 1_000_020_000, continuous: 1_002_920_000,
++                absoluteAfter: 1_000_020_002, numerator: 125, denominator: 3
++            )
++            XCTAssertThrowsError(try events.check(clock: slept))
++        }
++        let wide = VPBClock(id: "observationStart", absoluteBefore: 1, continuous: 100,
++                            absoluteAfter: 2_000_001, numerator: 1, denominator: 1)
++        XCTAssertThrowsError(try VPCComparisonEvents.midpoint(wide))
++    }
++
++    func testOriginalWindowGeneratesPlanAndKeepsCueOffsets() throws {
++        try withPipe { events, reader, _ in
++            var elapsed = 0.0
++            var cues: [VPCCue] = []
++            var playTimes: [Double] = []
++            func clock(_ id: String) -> VPBClock {
++                let tick = 1_000_000_000 + UInt64((elapsed * 1_000_000_000).rounded())
++                return VPBClock(id: id, absoluteBefore: tick, continuous: tick,
++                                absoluteAfter: tick, numerator: 1, denominator: 1)
++            }
++            try VPCWindow.run(clock: (1_000_000_000, { elapsed }), observe: { _ in
++                try events.check(clock: clock("observe"))
++                return (true, true)
++            }, event: { id in
++                let value = clock(id)
++                try events.event(value)
++                return value
++            }, perform: { action in
++                switch action {
++                case .play: playTimes.append(elapsed); return nil
++                case let .cue(cue):
++                    cues.append(cue)
++                    return VPBDisplayReceipt(cueID: cue.rawValue, requested: clock(cue.rawValue),
++                                             displayed: clock(cue.rawValue), visible: true)
++                }
++            }, wait: { elapsed += $0 })
++            try events.terminal(cancelled: false, clock: clock("stop"))
++            XCTAssertEqual(cues, VPCCue.allCases)
++            XCTAssertEqual(playTimes.count, 1)
++            XCTAssertEqual(try XCTUnwrap(playTimes.first), 2, accuracy: 0.001)
++            XCTAssertEqual(elapsed, 13.5, accuracy: 0.001)
++            let recorded = try messages(reader)
++            XCTAssertEqual(recorded.count, 2)
++            XCTAssertEqual(recorded[0]["run_id"] as? String, identity.uuidString)
++        }
++    }
++}
