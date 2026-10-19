@@ -173,4 +173,3 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 
 提交本脱敏报告后停止，返回Apple VP主线等待主控审核。不得自动追加HIL、Warm-up或真人/正式Test3实验。
-
