@@ -25,6 +25,11 @@ if [[ "$mode" == "d1-stats-only" ]]; then
     "$repo_root/tools/speech_aec_host_tests/AppleVPDebugProfileTests.swift" \
     -o "$build_dir/native_voice_debug_tests"
   "$build_dir/native_voice_debug_tests" --d1-stats-only
+  swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
+    -framework AVFoundation "$aec_host" "$capture" \
+    "$repo_root/tools/speech_aec_host_tests/WarmupWindowStatsTests.swift" \
+    -o "$build_dir/warmup_window_tests"
+  "$build_dir/warmup_window_tests"
   exit 0
 fi
 
@@ -49,7 +54,7 @@ swiftc \
   -o "$build_dir/converter_timeline_tests"
 "$build_dir/converter_timeline_tests"
 nm "$build_dir/converter_timeline_tests" | xcrun swift-demangle > "$build_dir/release-symbols.txt"
-if rg -q 'MacSpeechNativeVoiceTiming|MacSpeechTimingSnapshot|MacSpeechPlaybackFormatWitness|MacSpeechAppleVPDebugProfile' "$build_dir/release-symbols.txt"; then
+if rg -q 'MacSpeechNativeVoiceTiming|MacSpeechTimingSnapshot|MacSpeechPlaybackFormatWitness|MacSpeechAppleVPDebugProfile|MacSpeechWarmupProfile|MacSpeechAcousticWindowStats' "$build_dir/release-symbols.txt"; then
   echo "speech_timing_release_isolation=FAIL"
   exit 1
 fi

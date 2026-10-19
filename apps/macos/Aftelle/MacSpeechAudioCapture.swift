@@ -492,6 +492,7 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
     #if DEBUG
         func armNativeVoiceDebug(runID: UUID, generation: UInt64) -> Bool
         func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool
+        func configureNativeAcousticWindows(runID: UUID, generation: UInt64, plan: MacSpeechAcousticWindowPlan) -> Bool
         func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot?
         func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot?
         func clearNativeVoiceDebug(runID: UUID)
@@ -524,6 +525,12 @@ nonisolated extension MacSpeechAudioCapturing {
         func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool {
             guard profile == .agcOn else { return false }
             return armNativeVoiceDebug(runID: runID, generation: generation)
+        }
+
+        func configureNativeAcousticWindows(
+            runID _: UUID, generation _: UInt64, plan _: MacSpeechAcousticWindowPlan
+        ) -> Bool {
+            false
         }
 
         func nativeVoiceDebugSnapshot(runID _: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
@@ -1068,6 +1075,169 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
     }
 
+    nonisolated enum MacSpeechWarmupProfile: String, CaseIterable, Sendable {
+        case zero = "WARMUP_0S"
+        case four = "WARMUP_4S"
+
+        var nanoseconds: UInt64 {
+            self == .four ? 4_000_000_000 : 0
+        }
+    }
+
+    nonisolated struct MacSpeechAcousticWindowPlan: Sendable, Equatable {
+        static let names = ["warmup", "human_only", "double_talk", "human_tail", "quiet"]
+        let captureStartedAt: UInt64
+        let scoreStartedAt: UInt64
+        let scoreEndedAt: UInt64
+
+        init?(captureStartedAt: UInt64, profile: MacSpeechWarmupProfile) {
+            let score = captureStartedAt.addingReportingOverflow(profile.nanoseconds)
+            let end = score.partialValue.addingReportingOverflow(15_000_000_000)
+            guard captureStartedAt > 0, !score.overflow, !end.overflow else { return nil }
+            self.captureStartedAt = captureStartedAt
+            scoreStartedAt = score.partialValue
+            scoreEndedAt = end.partialValue
+        }
+
+        func bounds(_ index: Int) -> (UInt64, UInt64) {
+            switch index {
+            case 0: (captureStartedAt, scoreStartedAt)
+            case 1: (scoreStartedAt, scoreStartedAt + 3_000_000_000)
+            case 2: (scoreStartedAt + 3_000_000_000, scoreStartedAt + 9_000_000_000)
+            case 3: (scoreStartedAt + 9_000_000_000, scoreStartedAt + 11_000_000_000)
+            default: (scoreStartedAt + 11_000_000_000, scoreEndedAt)
+            }
+        }
+
+        func window(start: UInt64, end: UInt64) -> Int? {
+            guard start < end else { return nil }
+            for index in 0 ..< Self.names.count {
+                let (lower, upper) = bounds(index)
+                if start >= lower, end <= upper {
+                    return index
+                }
+            }
+            return nil
+        }
+    }
+
+    nonisolated struct MacSpeechAcousticWindowStats: Sendable, Equatable {
+        let plan: MacSpeechAcousticWindowPlan
+        private var levels = Array(repeating: MacSpeechNativeVoiceDebugChannel(), count: 40)
+        private var equalSamples = Array(repeating: UInt64(0), count: 40)
+        private var comparedSamples = Array(repeating: UInt64(0), count: 40)
+        private var firstContent = [UInt64?](repeating: nil, count: 5)
+        private var lastContentEnd = [UInt64?](repeating: nil, count: 5)
+        private var channels = 0
+        private var rate = 0.0
+        private(set) var excludedFrames: UInt64 = 0
+        private(set) var invalidBuffers: UInt64 = 0
+        let framesBeforeConfiguration: UInt64
+
+        init(plan: MacSpeechAcousticWindowPlan, framesBeforeConfiguration: UInt64 = 0) {
+            self.plan = plan
+            self.framesBeforeConfiguration = framesBeforeConfiguration
+        }
+
+        mutating func recordNative(_ buffer: AVAudioPCMBuffer, hostTime: UInt64?) {
+            guard let hostTime, hostTime > 0, buffer.format.sampleRate.isFinite,
+                  buffer.format.sampleRate > 0, buffer.format.channelCount <= 8
+            else {
+                invalidBuffers &+= 1
+                return
+            }
+            channels = Int(buffer.format.channelCount)
+            rate = buffer.format.sampleRate
+            let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+            for frame in 0 ..< Int(buffer.frameLength) {
+                guard let window = frameWindow(frame, hostTime: hostTime) else { continue }
+                let first = nativeSample(buffers, format: buffer.format, frame: frame, channel: 0)
+                for channel in 0 ..< channels {
+                    let value = channel == 0 ? first
+                        : nativeSample(buffers, format: buffer.format, frame: frame, channel: channel)
+                    record(value, reference: first.0, channel: channel, window: window)
+                }
+            }
+        }
+
+        mutating func recordPCM(_ bytes: Data, hostTime: UInt64) {
+            guard bytes.count == 960, hostTime > 0 else {
+                invalidBuffers &+= 1
+                return
+            }
+            channels = 1
+            rate = 24000
+            bytes.withUnsafeBytes { data in
+                for frame in 0 ..< 480 {
+                    guard let window = frameWindow(frame, hostTime: hostTime) else { continue }
+                    let value = Int16(littleEndian: data.loadUnaligned(fromByteOffset: frame * 2, as: Int16.self))
+                    let sample = Double(value) / 32768
+                    record((sample, value == .min || value == .max), reference: sample, channel: 0, window: window)
+                }
+            }
+        }
+
+        private mutating func frameWindow(_ frame: Int, hostTime: UInt64) -> Int? {
+            let start = hostTime.addingReportingOverflow(UInt64((Double(frame) * 1e9 / rate).rounded(.down)))
+            let end = hostTime.addingReportingOverflow(UInt64((Double(frame + 1) * 1e9 / rate).rounded(.up)))
+            guard !start.overflow, !end.overflow,
+                  let index = plan.window(start: start.partialValue, end: end.partialValue)
+            else {
+                excludedFrames &+= 1
+                return nil
+            }
+            firstContent[index] = firstContent[index] ?? start.partialValue
+            lastContentEnd[index] = end.partialValue
+            return index
+        }
+
+        private func nativeSample(
+            _ buffers: UnsafeMutableAudioBufferListPointer, format: AVAudioFormat, frame: Int, channel: Int
+        ) -> (Double, Bool) {
+            let item = buffers[format.isInterleaved ? 0 : channel]
+            guard let data = item.mData else { return (.nan, false) }
+            let index = format.isInterleaved ? frame * channels + channel : frame
+            return MacSpeechNativeVoiceDebugStats.sample(data, index: index, format: format.commonFormat)
+        }
+
+        private mutating func record(_ sample: (Double, Bool), reference: Double, channel: Int, window: Int) {
+            let index = window * 8 + channel
+            _ = levels[index].record(sample.0, fullScale: sample.1)
+            if reference.isFinite, sample.0.isFinite {
+                comparedSamples[index] &+= 1
+                equalSamples[index] &+= sample.0 == reference ? 1 : 0
+            }
+        }
+
+        func manifest() -> [String: Any] {
+            var windows = [[String: Any]]()
+            for index in 0 ..< 5 {
+                let (start, end) = plan.bounds(index)
+                let rows = (0 ..< channels).map { channel -> [String: Any] in
+                    let slot = index * 8 + channel
+                    var row = Self.levelManifest(levels[slot])
+                    row["compared_to_ch0_finite_samples"] = comparedSamples[slot]
+                    row["numerically_equal_to_ch0_samples"] = equalSamples[slot]
+                    return row
+                }
+                windows.append(["name": MacSpeechAcousticWindowPlan.names[index], "start_ns": start,
+                                "end_ns": end, "first_content_ns": firstContent[index] ?? NSNull() as Any,
+                                "last_content_end_ns": lastContentEnd[index] ?? NSNull() as Any, "channels": rows])
+            }
+            return ["windows": windows, "sample_rate": rate, "excluded_boundary_or_outside_frames": excludedFrames,
+                    "native_frames_before_window_configuration": framesBeforeConfiguration,
+                    "invalid_buffers": invalidBuffers, "source": "processed_samples_not_raw_microphone",
+                    "equality": "numeric_finite_samples_only_not_physical_channel_identity"]
+        }
+
+        static func levelManifest(_ level: MacSpeechNativeVoiceDebugChannel) -> [String: Any] {
+            ["samples": level.sampleCount, "rms": level.rms ?? NSNull() as Any,
+             "peak": level.peakMagnitude ?? NSNull() as Any, "full_scale": level.fullScaleCount,
+             "non_finite": level.nonFiniteCount, "exact_zero_samples": level.zeroCount,
+             "maximum_adjacent_sample_step": level.maximumAdjacentStep]
+        }
+    }
+
     nonisolated struct MacSpeechNativeVoiceDebugFormat: Sendable, Equatable {
         let sampleRate: Double
         let channelCount: UInt32
@@ -1098,6 +1268,14 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private(set) var fullScaleCount: UInt64 = 0
         private(set) var overScaleCount: UInt64 = 0
         private(set) var nonFiniteCount: UInt64 = 0
+        private(set) var sumSquares = 0.0
+        private(set) var zeroCount: UInt64 = 0
+        private(set) var maximumAdjacentStep = 0.0
+        private var previousFiniteSample: Double?
+
+        var rms: Double? {
+            sampleCount > 0 && nonFiniteCount == 0 ? sqrt(sumSquares / Double(sampleCount)) : nil
+        }
 
         fileprivate mutating func record(_ sample: Double, fullScale: Bool) -> Bool {
             sampleCount &+= 1
@@ -1106,6 +1284,12 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 peakMagnitude = nil
                 return false
             }
+            sumSquares += sample * sample
+            zeroCount &+= sample == 0 ? 1 : 0
+            if let previousFiniteSample {
+                maximumAdjacentStep = max(maximumAdjacentStep, abs(sample - previousFiniteSample))
+            }
+            previousFiniteSample = sample
             if nonFiniteCount == 0 {
                 peakMagnitude = max(peakMagnitude ?? 0, abs(sample))
             }
@@ -1142,6 +1326,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         let firstPacketTime: UInt64?
         let lastPacketTime: UInt64?
         let rejections: [String: UInt64]
+        let acousticWindows: MacSpeechAcousticWindowStats?
     }
 
     private nonisolated enum MacSpeechNativeVoiceDebugReason: String, CaseIterable {
@@ -1195,6 +1380,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private var previousNativeFrames = 0
         private var firstPacketTime: UInt64?
         private var lastPacketTime: UInt64?
+        private var acousticWindows: MacSpeechAcousticWindowStats?
 
         init(
             runID: UUID, generation: UInt64, timing: MacSpeechNativeVoiceTiming? = nil,
@@ -1234,6 +1420,13 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
         }
 
+        mutating func configureWindows(_ plan: MacSpeechAcousticWindowPlan) -> Bool {
+            guard !isSealed, acousticWindows == nil, configurationID != nil,
+                  profile == .agcOn, voiceProcessing?.hasValidAppleProcessing == true else { return false }
+            acousticWindows = MacSpeechAcousticWindowStats(plan: plan, framesBeforeConfiguration: nativeFrameCount)
+            return true
+        }
+
         mutating func recordNative(
             _ buffer: AVAudioPCMBuffer,
             hostTimeNanoseconds: UInt64?,
@@ -1265,6 +1458,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
             observedChannels = Int(format.channelCount)
             recordSamples(buffer)
+            acousticWindows?.recordNative(buffer, hostTime: hostTimeNanoseconds)
         }
 
         mutating func recordPacket(
@@ -1326,7 +1520,8 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 packetCount: packetCount, packetByteCount: packetByteCount,
                 firstNativeHostTime: firstNativeHostTime, lastNativeHostTime: lastNativeHostTime,
                 firstNativeSampleTime: firstNativeSampleTime, lastNativeSampleTime: lastNativeSampleTime,
-                firstPacketTime: firstPacketTime, lastPacketTime: lastPacketTime, rejections: rejections
+                firstPacketTime: firstPacketTime, lastPacketTime: lastPacketTime, rejections: rejections,
+                acousticWindows: acousticWindows
             )
         }
 
@@ -2849,6 +3044,16 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             }
         }
 
+        func configureNativeAcousticWindows(
+            runID: UUID, generation: UInt64, plan: MacSpeechAcousticWindowPlan
+        ) -> Bool {
+            captureProcessingLock.withLock {
+                guard nativeVoiceDebug?.runID == runID,
+                      nativeVoiceDebug?.captureGeneration == generation else { return false }
+                return nativeVoiceDebug?.configureWindows(plan) == true
+            }
+        }
+
         func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
             captureProcessingLock.withLock {
                 guard nativeVoiceDebug?.runID == runID else { return nil }
@@ -2935,6 +3140,12 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
         func armNativeVoiceDebug(runID: UUID, generation: UInt64, profile: MacSpeechAppleVPDebugProfile) -> Bool {
             audioEngine.armNativeVoiceDebug(runID: runID, generation: generation, profile: profile)
+        }
+
+        func configureNativeAcousticWindows(
+            runID: UUID, generation: UInt64, plan: MacSpeechAcousticWindowPlan
+        ) -> Bool {
+            audioEngine.configureNativeAcousticWindows(runID: runID, generation: generation, plan: plan)
         }
 
         func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {

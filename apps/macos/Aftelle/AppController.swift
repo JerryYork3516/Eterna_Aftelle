@@ -88,11 +88,69 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         case statsOnly = "STATS_ONLY"
     }
 
+    nonisolated struct AppleVPWarmupDrainState {
+        let plan: MacSpeechAcousticWindowPlan
+        var statistics: MacSpeechAcousticWindowStats
+        private(set) var drainedPackets: UInt64 = 0
+        private(set) var warmupPackets: UInt64 = 0
+        private(set) var boundaryPackets: UInt64 = 0
+        private(set) var outsidePackets: UInt64 = 0
+        private(set) var lastPacketTime: UInt64?
+        private(set) var firstPacketTime: UInt64?
+
+        init(plan: MacSpeechAcousticWindowPlan) {
+            self.plan = plan
+            statistics = MacSpeechAcousticWindowStats(plan: plan)
+        }
+
+        mutating func retain(_ frame: MacSpeechAudioFrame) throws -> Bool {
+            guard frame.sequenceNumber == drainedPackets + 1, frame.pcm16Bytes.count == 960,
+                  frame.monotonicTimestampNanoseconds > 0 else { throw AppleVPAcousticTestError.invalidPacket }
+            let start = frame.monotonicTimestampNanoseconds
+            let end = start.addingReportingOverflow(20_000_000)
+            guard !end.overflow else { throw AppleVPAcousticTestError.invalidPacket }
+            if let lastPacketTime {
+                let expected = lastPacketTime.addingReportingOverflow(20_000_000)
+                guard !expected.overflow, start == expected.partialValue else {
+                    throw AppleVPAcousticTestError.invalidPacket
+                }
+            }
+            firstPacketTime = firstPacketTime ?? start
+            lastPacketTime = start
+            drainedPackets += 1
+            statistics.recordPCM(frame.pcm16Bytes, hostTime: start)
+            if start >= plan.scoreStartedAt, end.partialValue <= plan.scoreEndedAt {
+                return true
+            }
+            if start >= plan.captureStartedAt, end.partialValue <= plan.scoreStartedAt {
+                warmupPackets += 1
+            } else if start < plan.scoreEndedAt, end.partialValue > plan.scoreStartedAt {
+                boundaryPackets += 1
+            } else {
+                outsidePackets += 1
+            }
+            return false
+        }
+
+        func manifest() -> [String: Any] {
+            ["capture_start_returned_ns": plan.captureStartedAt, "score_start_content_boundary_ns": plan.scoreStartedAt,
+             "score_end_content_boundary_ns": plan.scoreEndedAt, "drained_packets": drainedPackets,
+             "warmup_packets_not_retained": warmupPackets, "excluded_boundary_packets": boundaryPackets,
+             "excluded_outside_packets": outsidePackets, "first_drained_content_ns": firstPacketTime ?? NSNull() as Any,
+             "last_drained_content_ns": lastPacketTime ?? NSNull() as Any, "pcm_statistics": statistics.manifest(),
+             "warmup_retained_pcm_bytes": 0, "alignment": "whole_packets_inside_content_time_window",
+             "partial_tail": "UNKNOWN", "tail_coverage": "REVIEW_REQUIRED"]
+        }
+    }
+
     nonisolated struct AppleVPAcousticTestState {
         var scenario = AppleVPAcousticTestScenario.residentOnly
         var phase = AppleVPAcousticTestPhase.idle
         fileprivate(set) var dataMode = AppleVPAcousticDataMode.recording
         fileprivate(set) var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
+        fileprivate(set) var warmupProfile: MacSpeechWarmupProfile?
+        fileprivate var warmupDrain: AppleVPWarmupDrainState?
+        fileprivate var lastCollectionClock: UInt64?
         var runID: UUID?
         var errorCode: String?
         fileprivate var playbackURL: URL?
@@ -116,6 +174,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
 
         var guideStage: String? {
             ["quiet", "human_tail", "double_talk", "human_only"].first { guideEvents[$0] != nil }
+                ?? (warmupDrain != nil && phase == .running ? "warmup" : nil)
         }
 
         var selectedPlaybackFileName: String {
@@ -132,6 +191,10 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
 
         var retainedPCMByteCount: Int {
             pcm.count
+        }
+
+        var drainedPacketCount: UInt64 {
+            warmupDrain?.drainedPackets ?? UInt64(packetCount)
         }
 
         var isBusy: Bool {
@@ -7555,11 +7618,13 @@ final class AppController: ObservableObject {
             discardPreviousResult: Bool = false,
             comprehensiveC: Bool = false,
             dataMode: AppleVPAcousticDataMode = .recording,
-            processingProfile: MacSpeechAppleVPDebugProfile = .agcOn
+            processingProfile: MacSpeechAppleVPDebugProfile = .agcOn,
+            warmupProfile: MacSpeechWarmupProfile? = nil
         ) -> Bool {
             guard isAppleVPAcousticTestMode, appleVPAcousticTestTask == nil,
                   !comprehensiveC || (scenario == .doubleTalk && appleVPSilentSmokeScenario == nil),
                   processingProfile == .agcOn || appleVPSilentSmokeScenario == nil,
+                  warmupProfile == nil || (comprehensiveC && processingProfile == .agcOn),
                   speechAudioHostShutdownOperation == nil, speechHostLifecycleOperationCount == 0,
                   !appleVPAcousticRun.isBusy,
                   appleVPAcousticRun.runID == nil || discardPreviousResult else { return false }
@@ -7574,6 +7639,7 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.comprehensiveC = comprehensiveC
             appleVPAcousticRun.dataMode = appleVPSilentSmokeScenario == nil ? dataMode : .statsOnly
             appleVPAcousticRun.processingProfile = processingProfile
+            appleVPAcousticRun.warmupProfile = warmupProfile
             appleVPAcousticRun.playbackURL = url
             appleVPAcousticRun.phase = .ready
             publishAppleVPAcousticState(force: true)
@@ -7756,13 +7822,29 @@ final class AppController: ObservableObject {
                 throw AppleVPAcousticTestError.voiceProcessingUnavailable
             }
             if appleVPAcousticRun.comprehensiveC {
-                let now = appleVPAcousticClock()
-                appleVPAcousticRun.guideStartedAt = now
-                appleVPAcousticRun.guideEvents["human_only"] = now
+                try beginAppleVPAcousticScoring(runID: runID, generation: generation)
                 return
             }
             guard let playback else { return }
             scheduleAppleVPAcousticPlayback(playback, runID: runID)
+        }
+
+        private func beginAppleVPAcousticScoring(runID: UUID, generation: UInt64) throws {
+            let now = appleVPAcousticClock()
+            var scoreStart = now
+            if let profile = appleVPAcousticRun.warmupProfile {
+                guard let plan = MacSpeechAcousticWindowPlan(captureStartedAt: now, profile: profile),
+                      appleVPAcousticTestCapture?.configureNativeAcousticWindows(
+                          runID: runID, generation: generation, plan: plan
+                      ) == true else { throw AppleVPAcousticTestError.voiceProcessingUnavailable }
+                appleVPAcousticRun.warmupDrain = AppleVPWarmupDrainState(plan: plan)
+                scoreStart = plan.scoreStartedAt
+            }
+            appleVPAcousticRun.lastCollectionClock = now
+            appleVPAcousticRun.guideStartedAt = scoreStart
+            if scoreStart == now {
+                appleVPAcousticRun.guideEvents["human_only"] = now
+            }
         }
 
         private func scheduleAppleVPAcousticPlayback(_ playback: Data, runID: UUID) {
@@ -7821,6 +7903,14 @@ final class AppController: ObservableObject {
                 speechAudioOutputHostSnapshot = output
                 guard appleVPAcousticRun.playbackFailure == nil else { throw AppleVPAcousticTestError.playbackFailed }
                 try validateAppleVPAcousticRoute()
+                let now = appleVPAcousticClock()
+                if let previous = appleVPAcousticRun.lastCollectionClock, now < previous {
+                    throw AppleVPAcousticTestError.invalidPacket
+                }
+                appleVPAcousticRun.lastCollectionClock = now
+                if now >= deadline {
+                    break
+                }
                 try advanceAppleVPAcousticCGuide(playback: playback, runID: runID)
                 let frames = await speechAudioHost.drainFrames(maxCount: 25)
                 try checkAppleVPAcousticRun(runID)
@@ -7829,6 +7919,15 @@ final class AppController: ObservableObject {
                 }
                 appleVPAcousticRun.native = appleVPAcousticTestCapture?.nativeVoiceDebugSnapshot(runID: runID)
                 guard appleVPAcousticRun.native?.sealReason == nil else { throw AppleVPAcousticTestError.routeChanged }
+                if appleVPAcousticRun.warmupProfile != nil {
+                    guard let voice = appleVPAcousticTestCapture?.voiceProcessingSnapshot(),
+                          MacSpeechAppleVPDebugProfile.agcOn.accepts(voice),
+                          voice.configurationID == appleVPAcousticRun.native?.configurationID,
+                          appleVPAcousticRun.native?.issues.isEmpty == true
+                    else {
+                        throw AppleVPAcousticTestError.voiceProcessingUnavailable
+                    }
+                }
                 publishAppleVPAcousticState()
                 if appleVPAcousticRun.byteCount == appleVPAcousticTestByteLimit {
                     return
@@ -7840,7 +7939,15 @@ final class AppController: ObservableObject {
         private func advanceAppleVPAcousticCGuide(playback: Data?, runID: UUID) throws {
             guard let started = appleVPAcousticRun.guideStartedAt else { return }
             let now = appleVPAcousticClock()
-            guard now >= started else { throw AppleVPAcousticTestError.invalidPacket }
+            guard now >= started else {
+                if appleVPAcousticRun.warmupProfile == .four {
+                    return
+                }
+                throw AppleVPAcousticTestError.invalidPacket
+            }
+            if appleVPAcousticRun.guideEvents["human_only"] == nil {
+                appleVPAcousticRun.guideEvents["human_only"] = now
+            }
             let elapsed = now - started
             if elapsed >= 3_000_000_000, appleVPAcousticRun.guideEvents["double_talk"] == nil {
                 guard elapsed < 4_000_000_000, let playback else {
@@ -7893,6 +8000,14 @@ final class AppController: ObservableObject {
         }
 
         private func appendAppleVPAcousticFrame(_ frame: MacSpeechAudioFrame) throws {
+            if appleVPAcousticRun.warmupDrain != nil {
+                guard frame.captureGeneration == appleVPAcousticRun.generation else {
+                    throw AppleVPAcousticTestError.invalidPacket
+                }
+                guard try appleVPAcousticRun.warmupDrain?.retain(frame) == true else { return }
+                try retainAppleVPAcousticFrame(frame)
+                return
+            }
             guard frame.captureGeneration == appleVPAcousticRun.generation,
                   frame.pcm16Bytes.count == 960, frame.monotonicTimestampNanoseconds > 0,
                   frame.sequenceNumber == UInt64(appleVPAcousticRun.packetCount + 1)
@@ -7905,6 +8020,10 @@ final class AppController: ObservableObject {
                     throw AppleVPAcousticTestError.invalidPacket
                 }
             }
+            try retainAppleVPAcousticFrame(frame)
+        }
+
+        private func retainAppleVPAcousticFrame(_ frame: MacSpeechAudioFrame) throws {
             guard appleVPAcousticRun.byteCount + frame.pcm16Bytes.count <= appleVPAcousticTestByteLimit else {
                 throw AppleVPAcousticTestError.capacityExceeded
             }
@@ -8151,6 +8270,11 @@ final class AppController: ObservableObject {
             result["data_mode"] = mode.rawValue
             result["processing_profile"] = appleVPAcousticRun.processingProfile.rawValue
             result["requested_agc_enabled"] = appleVPAcousticRun.processingProfile.automaticGainControlEnabled
+            if let warmup = appleVPAcousticRun.warmupProfile {
+                result["warmup_profile"] = warmup.rawValue
+                result["total_collection_limit_ns"] = 15_000_000_000 + warmup.nanoseconds
+                result["warmup"] = appleVPAcousticWarmupManifest()
+            }
             result["export_scope"] = mode == .statsOnly
                 ? "statistics only; PCM not retained; queued/partial converter tail not padded"
                 : "drained full20ms packets; queued/partial converter tail not padded"
@@ -8159,6 +8283,31 @@ final class AppController: ObservableObject {
                 result["comprehensive_c"] = appleVPAcousticCManifest()
             }
             return try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+        }
+
+        private func appleVPAcousticWarmupManifest() -> [String: Any] {
+            guard let drain = appleVPAcousticRun.warmupDrain else { return [:] }
+            var result = drain.manifest()
+            let packets = appleVPAcousticRun.packets
+            let first = packets.first?[1]
+            let lastEnd = packets.last.map { $0[1] + 20_000_000 }
+            let quietStart = max(drain.plan.scoreStartedAt + 11_000_000_000,
+                                 appleVPAcousticRun.guideEvents["quiet"] ?? drain.plan.scoreEndedAt)
+            let quiet = packets.reduce(UInt64(0)) { total, packet in
+                let start = max(packet[1], quietStart)
+                let end = min(packet[1] + 20_000_000, drain.plan.scoreEndedAt)
+                return total + (end > start ? end - start : 0)
+            }
+            let complete = first == drain.plan.scoreStartedAt && lastEnd == drain.plan.scoreEndedAt
+                && packets.count == 750
+            result["scoring_packet_coverage"] = complete ? "COMPLETE_FULL_PACKETS" : "PARTIAL"
+            result["scoring_drained_ns"] = UInt64(packets.count) * 20_000_000
+            result["quiet_drained_ns"] = quiet
+            result["first_scoring_content_ns"] = first ?? NSNull() as Any
+            result["last_scoring_content_end_ns"] = lastEnd ?? NSNull() as Any
+            result["queued_at_seal"] = appleVPAcousticRun.captureFinal.queuedFrameCount
+            result["tail_coverage"] = complete ? "CONVERTER_PARTIAL_TAIL_UNKNOWN" : "PARTIAL"
+            return result
         }
 
         private func appleVPAcousticCManifest() -> [String: Any] {
@@ -8245,6 +8394,7 @@ final class AppController: ObservableObject {
             let voice = native.voiceProcessing.map(appleVPAcousticVoiceManifest)
             result["native_format"] = format ?? ["status": "UNKNOWN"]
             result["channels"] = native.channels.map(appleVPAcousticChannelManifest)
+            result["acoustic_windows"] = native.acousticWindows?.manifest() ?? NSNull() as Any
             result["voice_processing"] = voice ?? ["status": "UNKNOWN"]
             return result
         }

@@ -40,6 +40,7 @@ private extension RealtimeInterruptionEvidenceTests {
         try await testComprehensiveC()
         try await testStatsOnlyC()
         try await testAcousticAGCProfiles()
+        try await testWarmupPreparation()
     }
 
     static func testD2SilentSmoke() async throws {
@@ -671,6 +672,233 @@ private extension RealtimeInterruptionEvidenceTests {
     }
 }
 
+private extension RealtimeInterruptionEvidenceTests {
+    static func testWarmupPreparation() async throws {
+        let originalCases = cases
+        let originalChecks = checks
+        try await testWarmupRepetition()
+        try await testWarmupFailures()
+        try await testWarmupQueuedTail()
+        testWarmupInvalidPrepare()
+        try testWarmupPacketBoundary()
+        print("warmup_control_cases=\(cases - originalCases)")
+        print("warmup_control_checks=\(checks - originalChecks)")
+        print("warmup_control_device_access=ZERO")
+    }
+
+    static func prepareWarmupC(
+        _ stack: D1ControllerStack, source: URL, profile: MacSpeechWarmupProfile,
+        mode: AppleVPAcousticDataMode = .recording, discard: Bool = false
+    ) {
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            .doubleTalk, discardPreviousResult: discard, comprehensiveC: true,
+            dataMode: mode, warmupProfile: profile
+        ), "warm-up profile is fixed at Prepare")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "synthetic source selected")
+        startD1(stack.controller)
+    }
+
+    static func driveWarmupC(
+        _ stack: D1ControllerStack, clock: ComprehensiveCClock, profile: MacSpeechWarmupProfile, queuedTail: Int = 0
+    ) async {
+        await waitUntil("warm-up capture started") { stack.controller.appleVPAcousticTestState.phase == .running }
+        let starts = stack.player.startCount
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            .doubleTalk, discardPreviousResult: true, comprehensiveC: true,
+            warmupProfile: profile == .four ? .zero : .four
+        ), "a running experiment cannot switch its prepared warm-up profile")
+        let warmupTicks = profile == .four ? 8 : 0
+        for tick in 0 ..< (30 + warmupTicks) {
+            clock.elapsed = UInt64(tick) * 500_000_000
+            let withheld = tick == 29 + warmupTicks ? queuedTail : 0
+            stack.capture.emitPackets(25 - withheld, marker: tick < warmupTicks ? 9 : 1)
+            let expected = max(0, tick + 1 - warmupTicks) * 25 - withheld
+            await waitUntil("bounded warm-up batch drained") {
+                stack.player.completeScheduledChunk()
+                let state = stack.controller.appleVPAcousticTestState
+                let seen = state.drainedPacketCount
+                return state.packetCount == expected && seen == UInt64((tick + 1) * 25 - withheld)
+            }
+            if tick < warmupTicks {
+                let state = stack.controller.appleVPAcousticTestState
+                expect(state.retainedPCMByteCount == 0 && state.guideStage == "warmup",
+                       "warm-up processes packets but retains no recording and starts no scoring")
+                expect(stack.player.startCount == starts, "warm-up never starts the Player")
+            }
+            expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount <= 720_000,
+                   "19-second processing cannot enlarge the recording cap")
+            if tick == warmupTicks + 6 {
+                await waitUntil("one warm-up output completes") {
+                    stack.player.completeScheduledChunk()
+                    return await stack.output.currentSnapshot().state == .completed
+                }
+            }
+        }
+        if queuedTail > 0 {
+            stack.capture.emitPackets(queuedTail)
+        }
+        clock.elapsed = 15_000_000_000 + profile.nanoseconds
+        await waitUntil("warm-up run sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+    }
+
+    static func testWarmupRepetition() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now })
+        stack.capture.contentStartOverride = clock.start
+        for (index, profile) in [MacSpeechWarmupProfile.zero, .four, .four, .zero].enumerated() {
+            cases += 1
+            clock.elapsed = 0
+            let mode: AppleVPAcousticDataMode = index == 2 ? .statsOnly : .recording
+            prepareWarmupC(stack, source: source, profile: profile, mode: mode, discard: index > 0)
+            await driveWarmupC(stack, clock: clock, profile: profile)
+            let state = stack.controller.appleVPAcousticTestState
+            expect(state.errorCode == nil && state.packetCount == 750,
+                   "each scoring run retains 750 valid packets")
+            expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk, warmupProfile: .four),
+                   "sealed results cannot be silently replaced")
+            try expectWarmupManifest(stack.controller, profile: profile)
+            if mode == .statsOnly {
+                try expectStatsOnlyEvidence(stack.controller)
+                try testStatsOnlyJSONExport(stack.controller)
+            } else {
+                let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+                expect(wav.count == 720_044, "only 15 scoring seconds appear in the WAV")
+                let matches = wav.dropFirst(44).enumerated().allSatisfy {
+                    $0.offset % 2 == 0 ? $0.element == 1 : $0.element == 0
+                }
+                expect(matches, "the warm-up marker never leaks into the scoring recording")
+            }
+            expect(stack.capture.startCount == index + 1 && stack.capture.stopCount == index + 1,
+                   "each run starts and stops the original Capture once, not at the boundary")
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func expectWarmupManifest(_ controller: AppController, profile: MacSpeechWarmupProfile) throws {
+        let value = try JSONSerialization.jsonObject(with: controller.appleVPAcousticTestManifestData())
+        let manifest = value as? [String: Any] ?? [:]
+        let warmup = manifest["warmup"] as? [String: Any] ?? [:]
+        let guide = manifest["comprehensive_c"] as? [String: Any] ?? [:]
+        let events = guide["events_ns"] as? [String: UInt64] ?? [:]
+        let start = warmup["score_start_content_boundary_ns"] as? UInt64 ?? 0
+        expect(manifest["warmup_profile"] as? String == profile.rawValue, "the manifest binds the selected profile")
+        expect(manifest["total_collection_limit_ns"] as? UInt64 == 15_000_000_000 + profile.nanoseconds,
+               "only the DEBUG run has the 19-second total budget")
+        expect(manifest["byte_limit"] as? Int == 720_000
+            && warmup["warmup_retained_pcm_bytes"] as? Int == 0,
+            "warm-up has no second recording or expanded cap")
+        expect(warmup["drained_packets"] as? UInt64 == (profile == .four ? 950 : 750), "all packets were drained")
+        expect(events["double_talk"] == start + 3_000_000_000 && events["quiet"] == start + 11_000_000_000,
+               "playback and guidance keep the original scoring-relative schedule")
+        expect(warmup["partial_tail"] as? String == "UNKNOWN", "unknown converter tail is never fabricated")
+    }
+
+    static func testWarmupFailures() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let failures = ["stop", "shutdown", "route", "timeout", "clock", "generation",
+                        "configuration", "agc", "unsupported"]
+        for kind in failures {
+            cases += 1
+            let clock = ComprehensiveCClock()
+            let stack = D1ControllerStack(clock: { clock.now })
+            stack.capture.contentStartOverride = clock.start
+            stack.capture.supportsWarmupWindows = kind != "unsupported"
+            prepareWarmupC(stack, source: source, profile: .four)
+            if kind != "unsupported" {
+                await waitUntil("warm-up failure ready") { stack.controller.appleVPAcousticTestState.phase == .running }
+                await injectWarmupFailure(kind, stack: stack, clock: clock)
+            }
+            await waitUntil("warm-up failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode != nil, "injected failures cannot become PASS")
+            expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 0,
+                   "failure before scoring leaves no warm-up recording")
+            expect(stack.player.startCount == 0, "a failed warm-up does not play resident audio")
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func injectWarmupFailure(_ kind: String, stack: D1ControllerStack, clock: ComprehensiveCClock) async {
+        switch kind {
+        case "stop": await stack.controller.stopAppleVPAcousticTest()
+        case "shutdown": await stack.controller.shutdownSpeechAudioHost()
+        case "route": stack.captureMonitor.changeInput(identifier: "other", name: "Fake changed", available: true)
+        case "timeout": clock.elapsed = 20_000_000_000
+        case "clock":
+            clock.elapsed = 500_000_000
+            stack.capture.emitPackets(1)
+            await waitUntil("clock advanced once") { stack.controller.appleVPAcousticTestState.drainedPacketCount == 1 }
+            clock.elapsed = 0
+        case "generation": stack.capture.emitPreviousGenerationPacket()
+        case "configuration": stack.capture.invalidateTimeline(configuration: 2)
+        case "agc": stack.capture.agcReadbackOverride = false
+        default: preconditionFailure("unknown warm-up failure control")
+        }
+    }
+
+    static func testWarmupQueuedTail() async throws {
+        cases += 1
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now })
+        stack.capture.contentStartOverride = clock.start
+        prepareWarmupC(stack, source: source, profile: .four)
+        await driveWarmupC(stack, clock: clock, profile: .four, queuedTail: 5)
+        let value = try JSONSerialization.jsonObject(with: stack.controller.appleVPAcousticTestManifestData())
+        let manifest = value as? [String: Any] ?? [:]
+        let warmup = manifest["warmup"] as? [String: Any] ?? [:]
+        expect(warmup["queued_at_seal"] as? Int == 5, "queued tail remains distinct from drained content")
+        expect(warmup["tail_coverage"] as? String == "PARTIAL", "partial tail is not padded into a complete result")
+        expect((warmup["quiet_drained_ns"] as? UInt64 ?? 0) >= 1_000_000_000, "quiet coverage uses actual drained time")
+        expect(stack.controller.appleVPAcousticTestState.packetCount == 745, "five queued packets are not in the WAV")
+        expectD1Cleanup(stack)
+    }
+
+    static func testWarmupInvalidPrepare() {
+        cases += 1
+        let stack = D1ControllerStack()
+        expect(!stack.controller.prepareAppleVPAcousticTest(.humanOnly, warmupProfile: .four),
+               "warm-up cannot affect ordinary B or production input")
+        expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true,
+                                                            processingProfile: .agcOff, warmupProfile: .zero),
+               "warm-up comparisons reject AGC-OFF even for zero extra delay")
+        let silent = D1ControllerStack(silentScenario: .doubleTalk)
+        expect(!silent.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true, warmupProfile: .four),
+               "the original four-second silent-smoke cannot acquire a warm-up run")
+    }
+
+    static func testWarmupPacketBoundary() throws {
+        cases += 1
+        guard let plan = MacSpeechAcousticWindowPlan(captureStartedAt: 10_000_000_000, profile: .four) else {
+            throw CocoaError(.coderInvalidValue)
+        }
+        var drain = AppleVPWarmupDrainState(plan: plan)
+        var retained = 0
+        for index in 0 ..< 951 {
+            let frame = MacSpeechAudioFrame(
+                captureGeneration: 1, sequenceNumber: UInt64(index + 1),
+                monotonicTimestampNanoseconds: plan.captureStartedAt - 10_000_000 + UInt64(index) * 20_000_000,
+                pcm16Bytes: Data(repeating: 0, count: 960), activity: 0
+            )
+            if try drain.retain(frame) {
+                retained += 1
+            }
+        }
+        expect(retained == 749 && drain.boundaryPackets == 2 && drain.outsidePackets == 1,
+               "both crossing packets are excluded without padding, cropping or timestamp rewriting")
+        let duplicate = MacSpeechAudioFrame(captureGeneration: 1, sequenceNumber: 951,
+                                            monotonicTimestampNanoseconds: plan.scoreEndedAt,
+                                            pcm16Bytes: Data(repeating: 0, count: 960), activity: 0)
+        do {
+            _ = try drain.retain(duplicate)
+            expect(false, "duplicate packets cannot become scoring content")
+        } catch { expect(drain.drainedPackets == 951, "rejected duplicate leaves counters unchanged") }
+    }
+}
+
 @MainActor
 private final class D1NormalDependenciesSpy {
     private(set) var calls = 0
@@ -695,6 +923,8 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     var omitsSeal = false
     var agcReadbackOverride: Bool?
     var supportsAGCProfile = true
+    var supportsWarmupWindows = true
+    var contentStartOverride: UInt64?
     private var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
 
     init(failsStart: Bool = false) {
@@ -726,7 +956,7 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
             starts += 1
             self.generation = generation
             self.frameBuffer = frameBuffer
-            contentStart = DispatchTime.now().uptimeNanoseconds
+            contentStart = contentStartOverride ?? DispatchTime.now().uptimeNanoseconds
             sampleCursor = 0
         }
         return MacSpeechNativeInputFormat(sampleRate: 48000, channelCount: 1)
@@ -754,6 +984,17 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
             value.bind(configurationID: 1, voiceProcessing: makeVoiceProcessingSnapshot())
             stats = value
             return true
+        }
+    }
+
+    func configureNativeAcousticWindows(
+        runID: UUID, generation: UInt64, plan: MacSpeechAcousticWindowPlan
+    ) -> Bool {
+        lock.withLock {
+            guard supportsWarmupWindows, stats?.runID == runID, stats?.captureGeneration == generation else {
+                return false
+            }
+            return stats?.configureWindows(plan) == true
         }
     }
 

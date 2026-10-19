@@ -654,6 +654,7 @@ private struct ParticleOrientationDebugOverlay: View {
         @State private var pendingComprehensiveC = false
         @State private var pendingDataMode = AppleVPAcousticDataMode.recording
         @State private var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
+        @State private var warmupProfile: MacSpeechWarmupProfile?
         @State private var showsStartConsent = false
         @State private var showsDiscardConfirmation = false
         @State private var exportLocation: URL?
@@ -689,7 +690,8 @@ private struct ParticleOrientationDebugOverlay: View {
                     if let scenario = pendingScenario {
                         _ = controller.prepareAppleVPAcousticTest(
                             scenario, discardPreviousResult: true, comprehensiveC: pendingComprehensiveC,
-                            dataMode: pendingDataMode, processingProfile: processingProfile
+                            dataMode: pendingDataMode, processingProfile: processingProfile,
+                            warmupProfile: pendingComprehensiveC ? warmupProfile : nil
                         )
                     }
                     pendingScenario = nil
@@ -706,6 +708,9 @@ private struct ParticleOrientationDebugOverlay: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("A/C use the selected offline voice. B uses only the microphone.")
+                if controller.appleVPAcousticTestState.warmupProfile == .four {
+                    Text(String(localized: "WARMUP_4S: 19 seconds total; no warm-up recording retained."))
+                }
                 if controller.appleVPAcousticTestState.dataMode == .statsOnly {
                     Text(String(localized: "STATS_ONLY: no recording is retained."))
                     Text(String(localized: "Only statistics JSON can be exported with consent."))
@@ -731,6 +736,10 @@ private struct ParticleOrientationDebugOverlay: View {
             Text(String(localized: "Data mode: \(state.dataMode.rawValue)"))
             Text(String(localized: "Retained PCM bytes: \(state.retainedPCMByteCount)"))
             Text(String(localized: "Prepared processing profile: \(state.processingProfile.rawValue)"))
+            if let warmup = state.warmupProfile {
+                Text(String(localized: "Prepared warm-up: \(warmup.rawValue) · AGC-ON"))
+                Text(String(localized: "Warm-up PCM is discarded; only the 15-second scoring window can be retained."))
+            }
         }
 
         private var preparationControls: some View {
@@ -748,18 +757,35 @@ private struct ParticleOrientationDebugOverlay: View {
                     Button("Prepare C · Double talk") { prepare(.doubleTalk) }
                 }
                 .disabled(controller.appleVPAcousticTestState.isBusy)
+                warmupControls
                 Button(String(localized: "Prepare comprehensive C · Guided single run")) {
                     prepare(.doubleTalk, comprehensiveC: true)
                 }
-                .disabled(controller.appleVPAcousticTestState.isBusy)
+                .disabled(isComprehensiveCPreparationDisabled)
                 Button(String(localized: "Prepare comprehensive C · STATS_ONLY")) {
                     prepare(.doubleTalk, comprehensiveC: true, dataMode: .statsOnly)
                 }
-                .disabled(controller.appleVPAcousticTestState.isBusy)
+                .disabled(isComprehensiveCPreparationDisabled)
                 Button("Select approved offline WAV…") { selectPlaybackFile() }
                     .disabled(controller.appleVPAcousticTestState.isBusy)
                 Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
             }
+        }
+
+        private var isComprehensiveCPreparationDisabled: Bool {
+            controller.appleVPAcousticTestState.isBusy || (warmupProfile != nil && processingProfile == .agcOff)
+        }
+
+        private var warmupControls: some View {
+            Picker(String(localized: "Next comprehensive C warm-up"), selection: $warmupProfile) {
+                Text(String(localized: "Original C · no warm-up comparison"))
+                    .tag(MacSpeechWarmupProfile?.none)
+                Text(String(localized: "WARMUP_0S · AGC-ON · 15 seconds total"))
+                    .tag(Optional(MacSpeechWarmupProfile.zero))
+                Text(String(localized: "WARMUP_4S · AGC-ON · 19 seconds total"))
+                    .tag(Optional(MacSpeechWarmupProfile.four))
+            }
+            .disabled(controller.appleVPAcousticTestState.isBusy)
         }
 
         private var operationControls: some View {
@@ -779,7 +805,7 @@ private struct ParticleOrientationDebugOverlay: View {
 
         private var comprehensiveCGuide: some View {
             VStack(alignment: .leading, spacing: 8) {
-                Text(String(localized: "综合C：一次Start，最多15秒；仅在另行获准设备测试后使用。"))
+                Text(String(localized: "综合C：评分15秒；WARMUP_4S先安静预热4秒，总采集最多19秒。须另行获准设备测试。"))
                 if controller.appleVPAcousticTestState.dataMode == .statsOnly {
                     Text(String(localized: "STATS_ONLY：无需讲话。使用已批准零值WAV；0–3 / 3–9 / 9–11 / 11–15秒自动推进。"))
                     Text(String(localized: "当前软件阶段：\(controller.appleVPAcousticTestState.guideStage ?? "UNKNOWN")"))
@@ -795,6 +821,7 @@ private struct ParticleOrientationDebugOverlay: View {
             Text(String(localized: "0–3秒真人独讲；听到居民后继续讲话；居民结束后继续至安静提示。"))
             Text(String(localized: "约11秒起停止讲话并保持安静，等自动封存后分别同意JSON/WAV导出。"))
             switch controller.appleVPAcousticTestState.guideStage {
+            case "warmup": Text(String(localized: "预热中：保持安静，尚未评分；预热录音不会保留。"))
             case "human_only": Text(String(localized: "真人独讲：今天我想聊聊刚才的事情。"))
             case "double_talk": Text(String(localized: "听到居民发声时继续自然讲话，目标物理重叠超过1秒。"))
             case "human_tail": Text(String(localized: "居民播放已完成：真人继续讲话，等待安静提示。"))
@@ -808,7 +835,8 @@ private struct ParticleOrientationDebugOverlay: View {
             dataMode: AppleVPAcousticDataMode = .recording
         ) {
             if !controller.prepareAppleVPAcousticTest(
-                scenario, comprehensiveC: comprehensiveC, dataMode: dataMode, processingProfile: processingProfile
+                scenario, comprehensiveC: comprehensiveC, dataMode: dataMode, processingProfile: processingProfile,
+                warmupProfile: comprehensiveC ? warmupProfile : nil
             ) {
                 pendingScenario = scenario
                 pendingComprehensiveC = comprehensiveC

@@ -521,3 +521,8 @@ Stage 6.11 Freeze：Backend pytest 208 passed / Web typecheck passed / 6.7 Memor
 3. **一个 bug 一个 AI,不换人群殴。**
 4. **每条指令圈定范围**,不说"看整个项目"。
 5. **准备够了就开工** —— 再想新问题,大多答案是"前面已经定了"。行动 > 完美规划。
+
+
+## 2026-10-19 · Stage7.5 · Acoustic Isolation P1
+
+DEBUG综合C的WARMUP_0S/4S离线准备REVIEW_PENDING：AGC-ON固定，预热持续drain/零留存，15秒评分内容窗与原720KB上限不变；新增Native7/69、Controller17/406，FAST8/FULL_CURRENT21、11不变量、Debug/Release/三Guard及Release隔离PASS。B0、Format7208/Lint176仍FAIL，4处已有file_length增长与C19/C23分开登记。详见[Test3报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_acoustic_isolation_P1_warmup_offline_preparation.md)。无App/Engine/设备或真人录音；HIL硬件未就绪，所有设备执行未授权，R3-M01/SQ-M1 OPEN，T3.2-A/Formal Test3 BLOCKED。
