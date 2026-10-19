@@ -2,6 +2,8 @@
 
 日期：2026-10-19。审核来源：**SELF_REVIEW**，无独立Reviewer。**同步控制修复通过；声学结果INCONCLUSIVE，R3-M01仍OPEN。**
 
+**音频交付补充：** 用户随后明确要求“音频也提交推送，重新给我结论”。本次仅追加下述A/B两份处理后评分WAV，原字节及SHA不变，供主控试听。此前“仅本机、不上传”描述保留为当时授权与交付历史；本次上传范围、证据链接及复核见第9节。未新增设备实验，声学结论不变。
+
 ## 1. 结论及授权
 
 用户在明确批准A/B录音、本地JSON/WAV导出及新增WAV本机分析后，进一步要求“解决这些问题，处理完后重新跑一遍A/B测试，直接运行无需我再授权”。本轮据此只重跑A/B各一次，无真人讲话、自动重试、Provider或正式Human Gate；录音和原始设备日志不上传。
@@ -166,3 +168,22 @@ Test3.execution_authorized=false
 ```
 
 本轮设备执行结束；无自动追加实验，等待主控审核。
+
+## 9. 用户授权的A/B音频交付补充
+
+交付前核验HEAD/upstream/实时远端均为`1a57c6c2746c977fa7be7ffd5f78a60abed02ac2`；tracked无修改，原未跟踪报告保留。按AGENTS先创建本地空回滚点，再仅复制本轮两份已封存评分WAV并更新本报告。此次未修改源码、测试、配置或原始Caches证据，没有重新运行设备或重复既有回归。
+
+用户最新明确授权仅用于本次A/B实验音频提交推送。两份文件均为Apple VP处理后、24kHz/Mono/PCM16LE的最终评分录音，各356640samples、713324bytes、14.86秒；不是未经Apple VP处理的原始麦克风录音，不包含B组4秒预热PCM。直接按原文件字节复制，未增益、降噪、剪辑、重采样或补零，RIFF仅含`fmt `与`data`，无附加设备标识元数据。没有收入其他历史录音、原生PCM、Caches原始JSON或设备日志。
+
+| 实验 | 可供主控试听的WAV | SHA-256 |
+| --- | --- | --- |
+| A · WARMUP_0S | [A评分WAV](evidence/bt_speech_warmup_sync_20261019/A_WARMUP_0S_run-77A5E7E1-CFE0-45C1-8C45-FEB741B11499.wav) | `d540bd775022bd67b033a6c82948674cd3252ce7ca3bbe399991ca8ea93f1fa1` |
+| B · WARMUP_4S | [B评分WAV](evidence/bt_speech_warmup_sync_20261019/B_WARMUP_4S_run-9B3D2520-C711-4ABB-9085-F40ACF007DF3.wav) | `fc26cd3f4ded41bb94715a9b32cdf68d4e0dab420ce565be5dbf1021295ad4b4` |
+
+此次复核仅涉及两份已获上传授权WAV的原字节SHA、格式、长度、目标路径和提交白名单；不自动播放、不转录、不新增声学判定。主控试听结论仍待补充，不能将提交音频等同于USER_LISTENING_PASS。原受控目录中的文件及0600权限保持不变。
+
+本次实际校验：两份WAV身份/格式/RIFF纯音频块校验2/2通过，Python exit0；`bash tools/secret_guard/check.sh` exit0；`git diff --check` exit0。源码和测试无变更，构建、FAST及FULL_CURRENT本次均NOT_RUN，既有执行结果仅按第7节身份引用。提交暂存区只允许本报告与上表两份WAV，Git中音频blob也须与原SHA逐一一致。
+
+结论维持：`SYNC_CONTROL_REPAIR=PASS`、`WARMUP_EFFECT=INCONCLUSIVE`。A/B首段均有代理源相关特征，B未呈现已证实的预热改善，且原生每声道106个满幅样本、最终PCM99个端点样本的风险仍OPEN。软件触发毫秒级同步不证明物理发声同步；声源参考隔离、真实覆盖、Converter partial tail与历史真人异常仍未解释。`AEC_ROOT_CAUSE=UNKNOWN`、`R3-M01=OPEN`、`T3.2-A=BLOCKED`、`Test3.execution_authorized=false`。
+
+本次五维SELF_REVIEW：TECHNICAL=PASS（文件身份和原字节交付）；ENGINEERING=REWORK/DEBT_DEFERRED（继承历史规范FAIL，无Swift改动）；EVIDENCE=PARTIAL（仅增加可试听证据，未补齐物理隔离、原音及尾部）；CONSISTENCY=PASS（授权变更追加登记，既有失败和限制保留）；Stage7 Forbidden Checklist=PASS（无代码、Runtime API、DR schema、平台或Stage8改动，音频提交有本次明确授权）。新增CRITICAL=0；新增确认的生产MAJOR=0；原B满幅MAJOR风险及证据MINOR继续OPEN。
