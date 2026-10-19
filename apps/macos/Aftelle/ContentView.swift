@@ -737,7 +737,7 @@ private struct ParticleOrientationDebugOverlay: View {
             Text(String(localized: "Retained PCM bytes: \(state.retainedPCMByteCount)"))
             Text(String(localized: "Prepared processing profile: \(state.processingProfile.rawValue)"))
             if let warmup = state.warmupProfile {
-                Text(String(localized: "Prepared warm-up: \(warmup.rawValue) · AGC-ON"))
+                Text(String(localized: "Prepared warm-up: \(warmup.rawValue) · \(state.processingProfile.rawValue)"))
                 Text(String(localized: "Warm-up PCM is discarded; only the 15-second scoring window can be retained."))
             }
         }
@@ -773,7 +773,7 @@ private struct ParticleOrientationDebugOverlay: View {
         }
 
         private var isComprehensiveCPreparationDisabled: Bool {
-            controller.appleVPAcousticTestState.isBusy || (warmupProfile != nil && processingProfile == .agcOff)
+            controller.appleVPAcousticTestState.isBusy || (warmupProfile == .zero && processingProfile == .agcOff)
         }
 
         private var warmupControls: some View {
@@ -782,7 +782,7 @@ private struct ParticleOrientationDebugOverlay: View {
                     .tag(MacSpeechWarmupProfile?.none)
                 Text(String(localized: "WARMUP_0S · AGC-ON · 15 seconds total"))
                     .tag(Optional(MacSpeechWarmupProfile.zero))
-                Text(String(localized: "WARMUP_4S · AGC-ON · 19 seconds total"))
+                Text(String(localized: "WARMUP_4S · selected AGC profile · 19 seconds total"))
                     .tag(Optional(MacSpeechWarmupProfile.four))
             }
             .disabled(controller.appleVPAcousticTestState.isBusy)

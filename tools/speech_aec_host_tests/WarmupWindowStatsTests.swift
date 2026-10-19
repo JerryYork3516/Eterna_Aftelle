@@ -12,6 +12,7 @@ enum WarmupWindowStatsTests {
         try testNativeWindows()
         try testBoundaryAndPCM()
         try testIdentityAndInvalid()
+        try testProfileReadbackWindows()
         print("warmup_native_cases=\(cases)")
         print("warmup_native_checks=\(checks)")
         print("warmup_native_device_access=ZERO")
@@ -130,7 +131,7 @@ enum WarmupWindowStatsTests {
                 bypassed: false, inputMuted: false, automaticGainControlEnabled: profile == .agcOn,
                 inputFormat: format, outputFormat: format, validatedAtNanoseconds: anchor
             ))
-            expect(stats.configureWindows(four) == (profile == .agcOn), "warm-up requires AGC-ON")
+            expect(stats.configureWindows(four), "registered ON and OFF both support the fixed four-second warm-up")
             expect(!stats.configureWindows(zero), "a configured run cannot change its windows")
             try stats.recordNative(buffer(), hostTimeNanoseconds: anchor, sampleTime: 0,
                                    configurationID: 3, generation: 6)
@@ -150,5 +151,40 @@ enum WarmupWindowStatsTests {
                "nonfinite data remains UNKNOWN rather than a successful RMS")
         stats.recordNative(values, hostTime: nil)
         expect(stats.invalidBuffers == 1, "missing content time cannot be substituted with callback arrival")
+    }
+
+    private static func testProfileReadbackWindows() throws {
+        let format = MacSpeechNativeInputFormat(sampleRate: 16000, channelCount: 3)
+        for profile in MacSpeechAppleVPDebugProfile.allCases {
+            for bad in 0 ... 7 {
+                cases += 1
+                var stats = MacSpeechNativeVoiceDebugStats(runID: UUID(), generation: 7, profile: profile)
+                let voice = MacSpeechVoiceProcessingSnapshot(
+                    mode: bad == 5 ? .webRTCAEC3 : .appleVoiceProcessing, configurationID: bad == 6 ? 4 : 3,
+                    inputEnabled: bad != 1, outputEnabled: bad != 2, bypassed: bad == 3, inputMuted: bad == 4,
+                    automaticGainControlEnabled: bad == 0
+                        ? !profile.automaticGainControlEnabled : profile.automaticGainControlEnabled,
+                    inputFormat: format, outputFormat: format, validatedAtNanoseconds: anchor
+                )
+                stats.bind(configurationID: 3, voiceProcessing: voice)
+                let four = try plan(.four)
+                expect(stats.configureWindows(four) == (bad == 7),
+                       "window registration requires exact profile, VP state and configuration readback")
+            }
+            cases += 1
+            var stats = MacSpeechNativeVoiceDebugStats(runID: UUID(), generation: 7, profile: profile)
+            stats.bind(configurationID: 3, voiceProcessing: MacSpeechVoiceProcessingSnapshot(
+                mode: .appleVoiceProcessing, configurationID: 3, inputEnabled: true, outputEnabled: true,
+                bypassed: false, inputMuted: false, automaticGainControlEnabled: profile.automaticGainControlEnabled,
+                inputFormat: format, outputFormat: format, validatedAtNanoseconds: anchor
+            ))
+            let zero = try plan(.zero)
+            expect(stats.configureWindows(zero) == (profile == .agcOn),
+                   "zero-delay OFF remains outside the registered comparison")
+            if profile == .agcOff {
+                let four = try plan(.four)
+                expect(stats.configureWindows(four), "rejected zero-delay registration cannot contaminate four seconds")
+            }
+        }
     }
 }

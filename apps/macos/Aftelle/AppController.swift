@@ -7663,7 +7663,7 @@ final class AppController: ObservableObject {
             guard isAppleVPAcousticTestMode, appleVPAcousticTestTask == nil,
                   !comprehensiveC || (scenario == .doubleTalk && appleVPSilentSmokeScenario == nil),
                   processingProfile == .agcOn || appleVPSilentSmokeScenario == nil,
-                  warmupProfile == nil || (comprehensiveC && processingProfile == .agcOn),
+                  warmupProfile == nil || (comprehensiveC && (processingProfile == .agcOn || warmupProfile == .four)),
                   speechAudioHostShutdownOperation == nil, speechHostLifecycleOperationCount == 0,
                   !appleVPAcousticRun.isBusy,
                   appleVPAcousticRun.runID == nil || discardPreviousResult else { return false }
@@ -7721,7 +7721,7 @@ final class AppController: ObservableObject {
                 appleVPScoreControl = try AppleVPScoreControl(arguments: appleVPScoreControlArguments)
                 guard appleVPScoreControl == nil || (appleVPAcousticRun.comprehensiveC
                     && appleVPAcousticRun.warmupProfile != nil
-                    && appleVPAcousticRun.processingProfile == .agcOn)
+                    && (appleVPAcousticRun.processingProfile == .agcOn || appleVPAcousticRun.warmupProfile == .four))
                 else { throw AppleVPAcousticTestError.externalPlaybackControl }
             } catch {
                 appleVPAcousticRun.errorCode = AppleVPAcousticTestError.externalPlaybackControl.rawValue
@@ -7863,6 +7863,7 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.route = capture
             appleVPAcousticRun.native = appleVPAcousticTestCapture?.nativeVoiceDebugSnapshot(runID: runID)
             guard let voice = appleVPAcousticRun.native?.voiceProcessing,
+                  appleVPAcousticRun.native?.runID == runID,
                   appleVPAcousticRun.native?.profile == appleVPAcousticRun.processingProfile,
                   appleVPAcousticRun.processingProfile.accepts(voice),
                   voice.configurationID > 0, voice.validatedAtNanoseconds > 0,
@@ -7972,7 +7973,10 @@ final class AppController: ObservableObject {
                 guard appleVPAcousticRun.native?.sealReason == nil else { throw AppleVPAcousticTestError.routeChanged }
                 if appleVPAcousticRun.warmupProfile != nil {
                     guard let voice = appleVPAcousticTestCapture?.voiceProcessingSnapshot(),
-                          MacSpeechAppleVPDebugProfile.agcOn.accepts(voice),
+                          appleVPAcousticRun.processingProfile.accepts(voice),
+                          appleVPAcousticRun.native?.profile == appleVPAcousticRun.processingProfile,
+                          appleVPAcousticRun.native?.runID == runID,
+                          appleVPAcousticRun.native?.captureGeneration == appleVPAcousticRun.generation,
                           voice.configurationID == appleVPAcousticRun.native?.configurationID,
                           appleVPAcousticRun.native?.issues.isEmpty == true
                     else {

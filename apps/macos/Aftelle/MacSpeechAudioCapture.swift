@@ -1421,8 +1421,12 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
 
         mutating func configureWindows(_ plan: MacSpeechAcousticWindowPlan) -> Bool {
-            guard !isSealed, acousticWindows == nil, configurationID != nil,
-                  profile == .agcOn, voiceProcessing?.hasValidAppleProcessing == true else { return false }
+            let warmup = plan.scoreStartedAt - plan.captureStartedAt
+            guard !isSealed, acousticWindows == nil, let voiceProcessing,
+                  configurationID == voiceProcessing.configurationID,
+                  rejectionCounts.allSatisfy({ $0 == 0 }), profile.accepts(voiceProcessing),
+                  profile == .agcOn || warmup == MacSpeechWarmupProfile.four.nanoseconds
+            else { return false }
             acousticWindows = MacSpeechAcousticWindowStats(plan: plan, framesBeforeConfiguration: nativeFrameCount)
             return true
         }

@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-19 · AGC ON/OFF＋4秒预热离线准备
+
+- [实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_agc_on_off_4s_offline_preparation.md)：仅DEBUG开放已登记OFF+4S组合并按profile精确匹配读回；生产AGC=true、原音频处理/调度、独立OFF与普通C不改，ScoreControl和UI准备同步，19秒处理/15秒评分、预热丢弃、720KB及STATS_ONLY维持。
+- 当前Native25/88、Warm-up36/785、ScoreControl12/291、FAST8、FULL_CURRENT21、11不变量、Debug/Release/三Guard与产物隔离均exit0；两次新增测试错误（exit133错误码、exit1私有枚举访问）已修正并保留首错。新增B0，Format7208/Lint176仍FAIL，旧C19/C23及3处必要长度增长登记，ENGINEERING REWORK。无App/设备或私人音频执行；仅离线READY，AGC_4S_DEVICE_EXECUTION未授权、实机读回NOT_RUN，R3-M01/SQ-M1 OPEN，T3.2-A/Formal Test3 BLOCKED/false，停止待主控审核。
+
 ## 2026-10-19 · BT-Speech Warm-up 同步修复与A/B复测
 
 - [实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_bt_speech_warmup_sync_and_ab_review.md)：DEBUG原评分锚点经专用非阻塞管道驱动外部单次播放/score11停止，未改音频处理或原同意门禁；Score8/131、FAST8、Debug/Release/三Guardexit0，新增B0，工具FAIL及旧C19/C23和3处必要增长保留。

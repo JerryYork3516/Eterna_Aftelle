@@ -679,6 +679,7 @@ private extension RealtimeInterruptionEvidenceTests {
         let originalChecks = checks
         try await testWarmupRepetition()
         try await testWarmupFailures()
+        try await testWarmupStartReadbackFailures()
         try await testWarmupQueuedTail()
         testWarmupInvalidPrepare()
         try testWarmupPacketBoundary()
@@ -693,6 +694,9 @@ private extension RealtimeInterruptionEvidenceTests {
         for profile in [MacSpeechWarmupProfile.zero, .four] {
             try await testScoreControlRun(profile)
         }
+        try await testScoreControlRun(.four, processingProfile: .agcOff)
+        try await testScoreControlRun(.four, processingProfile: .agcOff, mode: .statsOnly)
+        try testScoreControlPreparationFence()
         try await testScoreControlCancellation()
         try testScoreControlRejectedDescriptors()
         try testScoreControlBlockedReader()
@@ -710,7 +714,10 @@ private extension RealtimeInterruptionEvidenceTests {
         }
     }
 
-    static func testScoreControlRun(_ profile: MacSpeechWarmupProfile) async throws {
+    static func testScoreControlRun(
+        _ profile: MacSpeechWarmupProfile, processingProfile: MacSpeechAppleVPDebugProfile = .agcOn,
+        mode: AppleVPAcousticDataMode = .recording
+    ) async throws {
         cases += 1
         let channel = Pipe()
         defer { try? channel.fileHandleForReading.close(); try? channel.fileHandleForWriting.close() }
@@ -720,7 +727,7 @@ private extension RealtimeInterruptionEvidenceTests {
         let stack = D1ControllerStack(clock: { clock.now },
                                       scoreControlDescriptor: channel.fileHandleForWriting.fileDescriptor)
         stack.capture.contentStartOverride = clock.start
-        prepareWarmupC(stack, source: source, profile: profile)
+        prepareWarmupC(stack, source: source, profile: profile, mode: mode, processingProfile: processingProfile)
         await driveWarmupC(stack, clock: clock, profile: profile)
         let events = try scoreControlEvents(channel)
         expect(events.count == 2, "one schedule and one terminal stop are emitted")
@@ -732,9 +739,31 @@ private extension RealtimeInterruptionEvidenceTests {
         expect(scheduled["run_id"] as? String == stack.controller.appleVPAcousticTestState.runID?.uuidString,
                "the control event belongs to the active run")
         expect(events[1]["run_id"] as? String == scheduled["run_id"] as? String, "Stop retains run identity")
-        expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 720_000,
+        expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == (mode == .recording ? 720_000 : 0),
                "the control pipe cannot enlarge the score recording")
+        expect(stack.controller.appleVPAcousticTestState.processingProfile == processingProfile,
+               "the external control channel cannot change the prepared AGC profile")
+        if mode == .statsOnly {
+            try expectStatsOnlyEvidence(stack.controller)
+        }
         expectD1Cleanup(stack)
+    }
+
+    static func testScoreControlPreparationFence() throws {
+        for profile in MacSpeechAppleVPDebugProfile.allCases {
+            cases += 1
+            let channel = Pipe()
+            defer { try? channel.fileHandleForReading.close(); try? channel.fileHandleForWriting.close() }
+            let stack = D1ControllerStack(scoreControlDescriptor: channel.fileHandleForWriting.fileDescriptor)
+            expect(stack.controller.prepareAppleVPAcousticTest(.humanOnly, processingProfile: profile),
+                   "an independent AGC profile remains available without external score control")
+            startD1(stack.controller)
+            let state = stack.controller.appleVPAcousticTestState
+            expect(state.errorCode == "external_playback_control_unavailable" && state.runID == nil,
+                   "a valid control descriptor does not qualify an unregistered comparison")
+            expect(stack.capture.startCount == 0 && stack.player.startCount == 0,
+                   "external control qualification fails before any Capture or Playback")
+        }
     }
 
     static func testScoreControlCancellation() async throws {
@@ -795,11 +824,12 @@ private extension RealtimeInterruptionEvidenceTests {
 
     static func prepareWarmupC(
         _ stack: D1ControllerStack, source: URL, profile: MacSpeechWarmupProfile,
-        mode: AppleVPAcousticDataMode = .recording, discard: Bool = false
+        mode: AppleVPAcousticDataMode = .recording, discard: Bool = false,
+        processingProfile: MacSpeechAppleVPDebugProfile = .agcOn
     ) {
         expect(stack.controller.prepareAppleVPAcousticTest(
             .doubleTalk, discardPreviousResult: discard, comprehensiveC: true,
-            dataMode: mode, warmupProfile: profile
+            dataMode: mode, processingProfile: processingProfile, warmupProfile: profile
         ), "warm-up profile is fixed at Prepare")
         expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "synthetic source selected")
         startD1(stack.controller)
@@ -814,6 +844,11 @@ private extension RealtimeInterruptionEvidenceTests {
             .doubleTalk, discardPreviousResult: true, comprehensiveC: true,
             warmupProfile: profile == .four ? .zero : .four
         ), "a running experiment cannot switch its prepared warm-up profile")
+        let prepared = stack.controller.appleVPAcousticTestState.processingProfile
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            .doubleTalk, discardPreviousResult: true, comprehensiveC: true,
+            processingProfile: prepared == .agcOn ? .agcOff : .agcOn, warmupProfile: .four
+        ), "a running experiment cannot switch AGC even when both preparations are valid")
         let warmupTicks = profile == .four ? 8 : 0
         for tick in 0 ..< (30 + warmupTicks) {
             clock.elapsed = UInt64(tick) * 500_000_000
@@ -854,11 +889,13 @@ private extension RealtimeInterruptionEvidenceTests {
         let clock = ComprehensiveCClock()
         let stack = D1ControllerStack(clock: { clock.now })
         stack.capture.contentStartOverride = clock.start
-        for (index, profile) in [MacSpeechWarmupProfile.zero, .four, .four, .zero].enumerated() {
+        for (index, profile) in [MacSpeechWarmupProfile.zero, .four, .four, .zero, .four, .four, .four].enumerated() {
             cases += 1
             clock.elapsed = 0
-            let mode: AppleVPAcousticDataMode = index == 2 ? .statsOnly : .recording
-            prepareWarmupC(stack, source: source, profile: profile, mode: mode, discard: index > 0)
+            let mode: AppleVPAcousticDataMode = index == 2 || index == 5 ? .statsOnly : .recording
+            let processing: MacSpeechAppleVPDebugProfile = index == 4 || index == 5 ? .agcOff : .agcOn
+            prepareWarmupC(stack, source: source, profile: profile, mode: mode, discard: index > 0,
+                           processingProfile: processing)
             await driveWarmupC(stack, clock: clock, profile: profile)
             let state = stack.controller.appleVPAcousticTestState
             expect(state.errorCode == nil && state.packetCount == 750,
@@ -866,6 +903,12 @@ private extension RealtimeInterruptionEvidenceTests {
             expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk, warmupProfile: .four),
                    "sealed results cannot be silently replaced")
             try expectWarmupManifest(stack.controller, profile: profile)
+            let manifest = try JSONSerialization.jsonObject(
+                with: stack.controller.appleVPAcousticTestManifestData()
+            ) as? [String: Any] ?? [:]
+            expect(state.processingProfile == processing
+                && manifest["requested_agc_enabled"] as? Bool == processing.automaticGainControlEnabled,
+                "successive ON/OFF runs retain their own requested AGC without inheriting old configuration")
             if mode == .statsOnly {
                 try expectStatsOnlyEvidence(stack.controller)
                 try testStatsOnlyJSONExport(stack.controller)
@@ -906,14 +949,15 @@ private extension RealtimeInterruptionEvidenceTests {
         let source = try d1SyntheticPlayback(packets: 150)
         defer { try? FileManager.default.removeItem(at: source) }
         let failures = ["stop", "shutdown", "route", "timeout", "clock", "generation",
-                        "configuration", "agc", "unsupported"]
-        for kind in failures {
+                        "configuration", "agc", "unsupported", "run", "profile"]
+        for (index, kind) in (failures + failures).enumerated() {
             cases += 1
             let clock = ComprehensiveCClock()
             let stack = D1ControllerStack(clock: { clock.now })
             stack.capture.contentStartOverride = clock.start
             stack.capture.supportsWarmupWindows = kind != "unsupported"
-            prepareWarmupC(stack, source: source, profile: .four)
+            let processing: MacSpeechAppleVPDebugProfile = index < failures.count ? .agcOn : .agcOff
+            prepareWarmupC(stack, source: source, profile: .four, processingProfile: processing)
             if kind != "unsupported" {
                 await waitUntil("warm-up failure ready") { stack.controller.appleVPAcousticTestState.phase == .running }
                 await injectWarmupFailure(kind, stack: stack, clock: clock)
@@ -923,6 +967,27 @@ private extension RealtimeInterruptionEvidenceTests {
             expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 0,
                    "failure before scoring leaves no warm-up recording")
             expect(stack.player.startCount == 0, "a failed warm-up does not play resident audio")
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func testWarmupStartReadbackFailures() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for profile in MacSpeechAppleVPDebugProfile.allCases {
+            cases += 1
+            let clock = ComprehensiveCClock()
+            let stack = D1ControllerStack(clock: { clock.now })
+            stack.capture.agcReadbackOverride = !profile.automaticGainControlEnabled
+            prepareWarmupC(stack, source: source, profile: .four, processingProfile: profile)
+            await waitUntil("four-second comparison refuses mismatched start readback") {
+                stack.controller.appleVPAcousticTestState.phase == .sealed
+            }
+            let state = stack.controller.appleVPAcousticTestState
+            expect(state.errorCode != nil && state.processingProfile == profile,
+                   "mismatched readback fails without fallback or profile substitution")
+            expect(state.retainedPCMByteCount == 0 && stack.player.startCount == 0,
+                   "failed registration cannot produce scoring audio or resident playback")
             expectD1Cleanup(stack)
         }
     }
@@ -940,7 +1005,19 @@ private extension RealtimeInterruptionEvidenceTests {
             clock.elapsed = 0
         case "generation": stack.capture.emitPreviousGenerationPacket()
         case "configuration": stack.capture.invalidateTimeline(configuration: 2)
-        case "agc": stack.capture.agcReadbackOverride = false
+        default: injectWarmupProfileFailure(kind, stack: stack)
+        }
+    }
+
+    static func injectWarmupProfileFailure(_ kind: String, stack: D1ControllerStack) {
+        switch kind {
+        case "agc":
+            let previous = stack.capture.voiceProcessingSnapshot()?.automaticGainControlEnabled ?? true
+            stack.capture.agcReadbackOverride = !previous
+        case "run": stack.capture.replaceNativeContext(runID: UUID())
+        case "profile":
+            let prepared = stack.controller.appleVPAcousticTestState.processingProfile
+            stack.capture.replaceNativeContext(profile: prepared == .agcOn ? .agcOff : .agcOn)
         default: preconditionFailure("unknown warm-up failure control")
         }
     }
@@ -971,7 +1048,7 @@ private extension RealtimeInterruptionEvidenceTests {
                "warm-up cannot affect ordinary B or production input")
         expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true,
                                                             processingProfile: .agcOff, warmupProfile: .zero),
-               "warm-up comparisons reject AGC-OFF even for zero extra delay")
+               "the unregistered AGC-OFF plus zero-delay comparison remains rejected")
         let silent = D1ControllerStack(silentScenario: .doubleTalk)
         expect(!silent.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true, warmupProfile: .four),
                "the original four-second silent-smoke cannot acquire a warm-up run")
@@ -1160,6 +1237,17 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
             )
             stats?.recordPacket(timestamp: contentStart, byteCount: 960, accepted: accepted,
                                 configurationID: 1, generation: previous)
+        }
+    }
+
+    func replaceNativeContext(runID: UUID? = nil, profile: MacSpeechAppleVPDebugProfile? = nil) {
+        lock.withLock {
+            guard let current = stats?.snapshot else { return }
+            var replacement = MacSpeechNativeVoiceDebugStats(
+                runID: runID ?? current.runID, generation: generation, profile: profile ?? processingProfile
+            )
+            replacement.bind(configurationID: 1, voiceProcessing: makeVoiceProcessingSnapshot())
+            stats = replacement
         }
     }
 
