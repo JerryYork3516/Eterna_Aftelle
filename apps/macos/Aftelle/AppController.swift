@@ -56,6 +56,41 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
 }
 
 #if DEBUG
+    nonisolated struct AppleVPScoreControl {
+        static let argument = "--apple-vp-score-control-fd="
+        let descriptor: Int32
+
+        init?(arguments: [String]) throws {
+            let values = arguments.filter { $0.hasPrefix(Self.argument) }
+            guard !values.isEmpty else { return nil }
+            guard values.count == 1,
+                  let descriptor = Int32(values[0].dropFirst(Self.argument.count)), descriptor > 2
+            else { throw AppleVPAcousticTestError.externalPlaybackControl }
+            var info = stat()
+            let flags = fcntl(descriptor, F_GETFL)
+            guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFIFO,
+                  flags >= 0, flags & O_ACCMODE == O_WRONLY,
+                  fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0,
+                  fcntl(descriptor, F_SETNOSIGPIPE, 1) == 0
+            else { throw AppleVPAcousticTestError.externalPlaybackControl }
+            self.descriptor = descriptor
+        }
+
+        func send(_ event: String, runID: UUID, scoreStart: UInt64 = 0) throws {
+            var message: [String: Any] = ["schema_version": 1, "event": event, "run_id": runID.uuidString]
+            message["score_start_ns"] = scoreStart
+            message["proxy_stop_ns"] = scoreStart + 11_000_000_000
+            message["clock"] = "mach_absolute_nanoseconds"
+            var bytes = try JSONSerialization.data(withJSONObject: message, options: .sortedKeys)
+            bytes.append(10)
+            guard bytes.count <= 512 else { throw AppleVPAcousticTestError.externalPlaybackControl }
+            let written = bytes.withUnsafeBytes { buffer in
+                Darwin.write(descriptor, buffer.baseAddress, buffer.count)
+            }
+            guard written == bytes.count else { throw AppleVPAcousticTestError.externalPlaybackControl }
+        }
+    }
+
     nonisolated enum AppleVPAcousticTestLaunchMode {
         static let argument = "--apple-vp-acoustic-test"
         static let silentArgument = "--apple-vp-silent-smoke="
@@ -219,6 +254,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
     }
 
     private nonisolated enum AppleVPAcousticTestError: String, Error {
+        case externalPlaybackControl = "external_playback_control_unavailable"
         case consentRequired = "consent_required"
         case unavailable = "debug_capture_unavailable"
         case permissionDenied = "microphone_not_authorized"
@@ -677,6 +713,8 @@ final class AppController: ObservableObject {
         private var appleVPAcousticTestTask: Task<Void, Never>?
         private var appleVPAcousticPlaybackTask: Task<Void, Never>?
         private var appleVPAcousticClock: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
+        private var appleVPScoreControlArguments = ProcessInfo.processInfo.arguments
+        private var appleVPScoreControl: AppleVPScoreControl?
         var appleVPAcousticTestState: AppleVPAcousticTestState {
             var snapshot = appleVPAcousticRun
             snapshot.cleanupInFlight = speechAudioHostShutdownOperation != nil || speechHostLifecycleOperationCount != 0
@@ -1099,6 +1137,7 @@ final class AppController: ObservableObject {
             appleVPAcousticTestDurationNanoseconds = min(15_000_000_000, max(1, acousticTestDurationNanoseconds))
             appleVPAcousticTestByteLimit = min(720_000, max(960, acousticTestByteLimit))
             appleVPAcousticClock = acousticTestClock
+            appleVPScoreControlArguments = acousticTestArguments
             nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
             realtimeSpeechDiagnosticAudioEngine = nil
             restoreNormalConfiguration()
@@ -7678,6 +7717,17 @@ final class AppController: ObservableObject {
                 publishAppleVPAcousticState(force: true)
                 return
             }
+            do {
+                appleVPScoreControl = try AppleVPScoreControl(arguments: appleVPScoreControlArguments)
+                guard appleVPScoreControl == nil || (appleVPAcousticRun.comprehensiveC
+                    && appleVPAcousticRun.warmupProfile != nil
+                    && appleVPAcousticRun.processingProfile == .agcOn)
+                else { throw AppleVPAcousticTestError.externalPlaybackControl }
+            } catch {
+                appleVPAcousticRun.errorCode = AppleVPAcousticTestError.externalPlaybackControl.rawValue
+                publishAppleVPAcousticState(force: true)
+                return
+            }
             speechAudioHostShutdownCompleted = false
             let runID = UUID()
             appleVPAcousticRun.runID = runID
@@ -7845,6 +7895,7 @@ final class AppController: ObservableObject {
             if scoreStart == now {
                 appleVPAcousticRun.guideEvents["human_only"] = now
             }
+            try appleVPScoreControl?.send("schedule", runID: runID, scoreStart: scoreStart)
         }
 
         private func scheduleAppleVPAcousticPlayback(_ playback: Data, runID: UUID) {
@@ -8059,6 +8110,12 @@ final class AppController: ObservableObject {
             let playbackTask = appleVPAcousticPlaybackTask
             playbackTask?.cancel()
             if appleVPAcousticRun.phase == .stopping {
+                if let runID = appleVPAcousticRun.runID {
+                    do { try appleVPScoreControl?.send("stop", runID: runID) } catch {
+                        appleVPAcousticRun.errorCode = appleVPAcousticRun.errorCode
+                            ?? AppleVPAcousticTestError.externalPlaybackControl.rawValue
+                    }
+                }
                 appleVPAcousticRun.captureFinal = await speechAudioHost.currentSnapshot()
                 appleVPAcousticRun.playbackFinal = await speechAudioOutputHost.currentSnapshot()
                 if let runID = appleVPAcousticRun.runID {
@@ -8270,6 +8327,7 @@ final class AppController: ObservableObject {
             result["data_mode"] = mode.rawValue
             result["processing_profile"] = appleVPAcousticRun.processingProfile.rawValue
             result["requested_agc_enabled"] = appleVPAcousticRun.processingProfile.automaticGainControlEnabled
+            result["external_playback_control"] = appleVPScoreControl == nil ? "DISABLED" : "DEBUG_PIPE_BOUND"
             if let warmup = appleVPAcousticRun.warmupProfile {
                 result["warmup_profile"] = warmup.rawValue
                 result["total_collection_limit_ns"] = 15_000_000_000 + warmup.nanoseconds

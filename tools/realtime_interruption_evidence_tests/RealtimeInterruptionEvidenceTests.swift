@@ -41,6 +41,7 @@ private extension RealtimeInterruptionEvidenceTests {
         try await testStatsOnlyC()
         try await testAcousticAGCProfiles()
         try await testWarmupPreparation()
+        try await testScoreControl()
     }
 
     static func testD2SilentSmoke() async throws {
@@ -686,6 +687,112 @@ private extension RealtimeInterruptionEvidenceTests {
         print("warmup_control_device_access=ZERO")
     }
 
+    static func testScoreControl() async throws {
+        let originalCases = cases
+        let originalChecks = checks
+        for profile in [MacSpeechWarmupProfile.zero, .four] {
+            try await testScoreControlRun(profile)
+        }
+        try await testScoreControlCancellation()
+        try testScoreControlRejectedDescriptors()
+        try testScoreControlBlockedReader()
+        print("score_control_cases=\(cases - originalCases)")
+        print("score_control_checks=\(checks - originalChecks)")
+        print("score_control_device_access=ZERO")
+    }
+
+    static func scoreControlEvents(_ channel: Pipe) throws -> [[String: Any]] {
+        var bytes = [UInt8](repeating: 0, count: 2048)
+        let count = read(channel.fileHandleForReading.fileDescriptor, &bytes, bytes.count)
+        expect(count > 0, "the dedicated control pipe contains bounded events")
+        return try bytes.prefix(max(0, count)).split(separator: 10).map {
+            try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] ?? [:]
+        }
+    }
+
+    static func testScoreControlRun(_ profile: MacSpeechWarmupProfile) async throws {
+        cases += 1
+        let channel = Pipe()
+        defer { try? channel.fileHandleForReading.close(); try? channel.fileHandleForWriting.close() }
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now },
+                                      scoreControlDescriptor: channel.fileHandleForWriting.fileDescriptor)
+        stack.capture.contentStartOverride = clock.start
+        prepareWarmupC(stack, source: source, profile: profile)
+        await driveWarmupC(stack, clock: clock, profile: profile)
+        let events = try scoreControlEvents(channel)
+        expect(events.count == 2, "one schedule and one terminal stop are emitted")
+        expect(events.map { $0["event"] as? String } == ["schedule", "stop"], "control order is fixed")
+        let scheduled = events[0]
+        let start = clock.start + profile.nanoseconds
+        expect(scheduled["score_start_ns"] as? UInt64 == start, "the trigger uses the content-window score anchor")
+        expect(scheduled["proxy_stop_ns"] as? UInt64 == start + 11_000_000_000, "quiet starts at score11")
+        expect(scheduled["run_id"] as? String == stack.controller.appleVPAcousticTestState.runID?.uuidString,
+               "the control event belongs to the active run")
+        expect(events[1]["run_id"] as? String == scheduled["run_id"] as? String, "Stop retains run identity")
+        expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 720_000,
+               "the control pipe cannot enlarge the score recording")
+        expectD1Cleanup(stack)
+    }
+
+    static func testScoreControlCancellation() async throws {
+        cases += 1
+        let channel = Pipe()
+        defer { try? channel.fileHandleForReading.close(); try? channel.fileHandleForWriting.close() }
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now },
+                                      scoreControlDescriptor: channel.fileHandleForWriting.fileDescriptor)
+        prepareWarmupC(stack, source: source, profile: .four)
+        await waitUntil("control run starts") { stack.controller.appleVPAcousticTestState.phase == .running }
+        await stack.controller.stopAppleVPAcousticTest()
+        let events = try scoreControlEvents(channel)
+        expect(events.count == 2 && events[1]["event"] as? String == "stop",
+               "cancellation during warm-up cancels future proxy playback")
+        expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 0,
+               "warm-up cancellation retains no PCM")
+        expectD1Cleanup(stack)
+    }
+
+    static func testScoreControlRejectedDescriptors() throws {
+        for value in ["0", "invalid", "2147483647"] {
+            cases += 1
+            var rejected = false
+            do { _ = try AppleVPScoreControl(arguments: [AppleVPScoreControl.argument + value]) } catch {
+                rejected = true
+            }
+            expect(rejected, "invalid or standard descriptors are never accepted")
+        }
+        cases += 1
+        let disabled = try AppleVPScoreControl(arguments: ["Aftelle"])
+        expect(disabled == nil, "the normal launch has no control channel")
+    }
+
+    static func testScoreControlBlockedReader() throws {
+        cases += 1
+        let channel = Pipe()
+        defer { try? channel.fileHandleForReading.close(); try? channel.fileHandleForWriting.close() }
+        let descriptor = channel.fileHandleForWriting.fileDescriptor
+        let control = try AppleVPScoreControl(arguments: [AppleVPScoreControl.argument + String(descriptor)])
+        expect(fcntl(descriptor, F_GETFL) & O_NONBLOCK != 0, "control writes never wait on the reader")
+        var padding = [UInt8](repeating: 0, count: 512)
+        var writtenPackets = 0
+        while writtenPackets < 256, write(descriptor, &padding, padding.count) >= 0 {
+            writtenPackets += 1
+        }
+        expect(writtenPackets < 256, "the negative control really fills the pipe")
+        var rejected = false
+        do { try control?.send("schedule", runID: UUID(), scoreStart: 1) } catch { rejected = true }
+        expect(rejected, "a blocked control channel fails instead of pretending playback was triggered")
+        try channel.fileHandleForReading.close()
+        rejected = false
+        do { try control?.send("stop", runID: UUID()) } catch { rejected = true }
+        expect(rejected, "a closed reader is an error rather than SIGPIPE or a false success")
+    }
+
     static func prepareWarmupC(
         _ stack: D1ControllerStack, source: URL, profile: MacSpeechWarmupProfile,
         mode: AppleVPAcousticDataMode = .recording, discard: Bool = false
@@ -1090,6 +1197,7 @@ private struct D1ControllerStack {
         byteLimit: Int = 720_000,
         silentScenario: AppleVPAcousticTestScenario? = nil,
         clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        scoreControlDescriptor: Int32? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
         let dependencies = D1NormalDependenciesSpy()
@@ -1115,7 +1223,8 @@ private struct D1ControllerStack {
         self.output = output
         controller = AppController(
             acousticTestArguments: ["Aftelle", "--apple-vp-acoustic-test"]
-                + (silentScenario.map { ["--apple-vp-silent-smoke=" + $0.rawValue] } ?? []),
+                + (silentScenario.map { ["--apple-vp-silent-smoke=" + $0.rawValue] } ?? [])
+                + (scoreControlDescriptor.map { [AppleVPScoreControl.argument + String($0)] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,

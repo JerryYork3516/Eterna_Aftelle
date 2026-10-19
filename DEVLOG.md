@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-10-19 · BT-Speech Warm-up 同步修复与A/B复测
+
+- [实际报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_bt_speech_warmup_sync_and_ab_review.md)：DEBUG原评分锚点经专用非阻塞管道驱动外部单次播放/score11停止，未改音频处理或原同意门禁；Score8/131、FAST8、Debug/Release/三Guardexit0，新增B0，工具FAIL及旧C19/C23和3处必要增长保留。
+- 获新授权A/B各一次，播放调用相对score0约1.94/0.31ms，旧7秒失配修复；首段PCM约-16.25/-15.29dBFS，B出现Native106/PCM99端点样本。两组有代理及居民参考特征，但源/参考隔离UNKNOWN、尾部PARTIAL，WARMUP_EFFECT INCONCLUSIVE。原始音频只在本机，不上传；旧失败保留，R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false，停止待主控审核。
+
+
 ## 2026-10-18 · Acoustic Isolation M01 DEBUG AGC-OFF离线准备
 
 - 确认原输入Converter只选ch0；合成三声道12/3194通过，真实Apple声道语义和两次真人C静音/增益根因仍UNKNOWN。仅DEBUG声学入口新增Prepare固定的AGC-ON/OFF及严格身份/readback/失效；正式默认和Cascaded不改，无新Engine/Tap/保存链。

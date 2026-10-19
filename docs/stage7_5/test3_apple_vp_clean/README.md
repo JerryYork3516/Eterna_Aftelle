@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-10-19最新补充见[BT-Speech同步修复与实际A/B](T3_2_A_bt_speech_warmup_sync_and_ab_review.md)：仅DEBUG新增评分时间管道，保留原同意/音频链；当前Score8/131、FAST8、Debug/Release/三Guard及Release隔离exit0，B0，工具FAIL与C19/C23及3处增长保留。按新授权A/B各一次完成，播放起点延迟1.94/0.31ms，score11停止；两组代理首段非近静音，B原生每声道106/PCM99端点样本风险OPEN，参考隔离/尾部PARTIAL，预热效果INCONCLUSIVE。FULL_CURRENT历史21/21未重跑、不冒称当前候选全量通过；无音频上传，R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false，不追加实验。
+
 2026-10-19最新交付见[Warm-up P1：0/4秒离线工程准备](T3_2_A_acoustic_isolation_P1_warmup_offline_preparation.md)：仅DEBUG综合C新增Prepare固定的AGC-ON预热对照，4秒期间持续drain且不保留音频，两臂仍为原15秒评分/720KB上限、按内容时间排除跨界包。Native 7/69、Controller 17/406、原D1/C/STATS_ONLY/AGC、FAST8/FULL_CURRENT21、11不变量、Debug/Release/三Guard及Release隔离均实际PASS/exit0；B0，同范围Format7208/Lint176仍FAIL，既有C19/C23与4处file_length增长分开登记。仅离线READY建议/REVIEW_PENDING；无设备/私人录音访问，HIL_HARDWARE_NOT_READY。WARMUP_DEVICE_AB、HIL及AGC_OFF_DEVICE_TEST仍NOT_AUTHORIZED，R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false不变。以下为历史快照，不产生新执行授权。
 
 2026-10-18 最新只读对照见 [Acoustic Isolation P0：旧研究与Host及单变量方案](T3_2_A_acoustic_isolation_P0_research_vs_host_comparison.md)：12项源码对照确认启动铺垫、Tap观察点、播放素材/排程及导出链存在差异，尚未确认生产声学BUG；预热不足和AGC作用均为HYPOTHESIS。更正证据口径：现Native每声道统计无RMS或逐样本相等检查，不能将旧VP-C三声道相等推广到当前。既有10文件/产物/36日志引用身份匹配，未重跑FULL、构建或设备；只新增报告和本索引。方案候选为先另批一次OFF＋STATS_ONLY无声准入，再考虑真人独讲B的ON/OFF匹配对照，两臂不新增预热；独立预热变量另批。P0 REVIEW_PENDING，设备执行未授权/读回NOT_RUN，AEC_ROOT_CAUSE UNKNOWN，R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false不变；历史lint FAIL/C19/C23及M01结构债务保留。
