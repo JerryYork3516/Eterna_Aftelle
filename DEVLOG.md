@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-20 · REF/HOST R3 播放器兼容与离线执行连接
+
+- [R3报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R3_player_integration.md)：找到原Objective-C播放器及直接依赖，同名重建SHA完全一致；仅派生副本增加REF/HOST两份固定素材的严格准入，接入原SingleRun/R2时钟翻译与单次清理循环。
+- 新增33项、R2 Swift42/外部13/原控制器9项离线通过；DEVICE_DISABLED，未运行App/NSSound/设备。R2历史失败、原7冲突和索引保持；源码/隐私/五维审核见报告。READY仅为离线技术准备，T3.2-A与Formal Test3仍BLOCKED，待主控授权实机比较。
+
 ## 2026-10-19 · REF/HOST R2 最小比较适配
 
 - [R2报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R2_adaptation.md)：冻结REF派生8秒Float32素材通过原准入；仅派生副本增加有界事件管道及continuous/absolute映射，HOST音频处理和15秒综合C不改。共同内容约第4秒对齐，但不是严格单变量或物理双讲证明。

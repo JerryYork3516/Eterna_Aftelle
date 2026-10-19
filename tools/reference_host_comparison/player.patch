@@ -1,0 +1,14 @@
+--- a/bt_proxy_speech_once.m
++++ b/bt_proxy_speech_once.m
+@@ -5,0 +6 @@
++#include "proxy_registry.h"
+@@ -12,3 +13,3 @@
+-  NSData *file=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[2]]];
+-  unsigned char bytes[CC_SHA256_DIGEST_LENGTH];CC_SHA256(file.bytes,(CC_LONG)file.length,bytes);NSMutableString *digest=[NSMutableString new];for(int i=0;i<sizeof(bytes);i++)[digest appendFormat:@"%02x",bytes[i]];
+-  if(!file||![digest isEqual:@"1c7081f8271251804e01234be8a0ff8344062d09c311592634cb8fdf6b992d0a"]) @throw [NSException exceptionWithName:@"Fixture" reason:@"Frozen speech SHA mismatch" userInfo:nil];
++  NSString *root=[[[NSString stringWithUTF8String:argv[0]] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"assets"];
++  NSDictionary *fixture=RegisteredProxy([NSString stringWithUTF8String:argv[2]],root);
++  NSData *file=fixture[@"data"];NSString *digest=fixture[@"sha256"];
+@@ -19 +20 @@
+-  if(!sound||![sound.playbackDeviceIdentifier isEqual:uid]||fabs(sound.duration-11.012916666666667)>.001||sound.loops) @throw [NSException exceptionWithName:@"Binding" reason:@"UID/duration/loop readback mismatch" userInfo:nil];
++  if(!sound||![sound.playbackDeviceIdentifier isEqual:uid]||fabs(sound.duration-[fixture[@"duration"] doubleValue])>.001||sound.loops) @throw [NSException exceptionWithName:@"Binding" reason:@"UID/duration/loop readback mismatch" userInfo:nil];

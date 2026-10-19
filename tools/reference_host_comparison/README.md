@@ -1,7 +1,38 @@
-# REF/HOST R2 离线适配
+# REF/HOST R2/R3 离线适配
 
-这是冻结 VP-C 的派生素材、事件补丁和离线验证，**不是设备执行器**。
-当前状态为 `PARTIAL`：已有蓝牙播放器/控制器固定原代理素材摘要，不能直接使用本轮 HOST 派生代理素材。禁止跳过该校验运行设备。
+这是冻结 VP-C 的派生素材、事件补丁和离线验证，**没有获准的设备启动入口**。
+R2历史状态为 `PARTIAL`。R3已找到原Objective-C播放器源码，并通过同名重建得到原二进制的相同SHA；新增有限素材登记及REF/HOST单次连接的Fake验证。旧播放器、旧控制器和R2失败证据保持原样。
+
+## R3播放器与执行连接
+
+原播放器是 `bt_proxy_speech_once.m`，直接包含 `native_dual_sound.m`；不是Swift。`prepare_player.py`只接受报告登记的两份源码、原二进制、原控制器及两份代理素材SHA。先重建并比对原二进制，再在新的Git忽略目录应用 `player.patch`。原文件不修改。
+
+```bash
+python3 -B tools/reference_host_comparison/prepare_player.py \
+  --source "$ORIGINAL_PLAYER_SOURCE" \
+  --assets "$R2_ASSETS_DIR" \
+  --output .build/reference_host_r3/new_player
+
+export R3_BUNDLE="$PWD/.build/reference_host_r3/new_player"
+export R3_REF_EXECUTABLE="$PWD/.build/reference_host_r2/final/ADAPTED_REF/.build/debug/apple-vp-reference"
+# R3_HOST_EXECUTABLE指向报告登记的已验证Debug主程序；不会执行它。
+python3 -B tools/reference_host_comparison/test_integration.py
+```
+
+`proxy_registry.h`登记 `REF_proxy.wav` / `HOST_proxy.wav`：只允许播放器同目录 `assets` 内的这两个规范绝对路径；校验整文件SHA、RIFF、24k/Mono/PCM16LE、264310/360310帧、0/96000帧前导及登记起音。拒绝其他文件、路径别名和symlink；不接受调用方自定义SHA。Foundation-only `registry_check`复用完全相同的准入函数，不链接AppKit/CoreAudio，也不创建NSSound。
+
+`integration.py`复用原SHA锁定的 `SingleRun` 和R2 `ReferenceRun`。执行循环沿用旧控制器的准备、等待同意、PLAY/STOP、封存等待和退出顺序，加入模式、二进制、终止证据及清理检查：
+
+| 模式 | 原子进程接口 | PLAY / STOP | 时钟 |
+|---|---|---|---|
+| REF | ADAPTED_REF原vp-c参数与 `AFTELLE_VPC_COMPARISON_FD` | observation+4 / +9秒 | R2 continuous锚点→absolute纳秒 |
+| HOST | 原 `--apple-vp-acoustic-test --apple-vp-score-control-fd=` | score+0 / +11秒；4秒预热 | 原mach_absolute纳秒 |
+
+不用旧 `--arm A/B`表示REF/HOST，不混传事件fd。原50ms迟到门槛保持；重复/外来run、缺事件、EOF、子进程失败、取消和时钟倒退均失败退出。活播放器最多收到一次STOP；已退出或断管道时记录无法投递并回收，不伪造STOP成功。
+
+**DEVICE_DISABLED=true**：`run()`默认在启动任何进程前拒绝；当前测试仅显式注入带禁用标识的Fake子进程。模块命令行也拒绝启动，没有 `--enable-device`选项。本轮完整连接指实际执行控制循环、Unix管道和身份检查，子进程为Fake；不是蓝牙/麦克风执行。未来实机调用仍需主控批准的启动入口、原系统权限、REF实验确认或HOST原UI采集/导出同意，不可把测试注入接口当成授权。
+
+同一个证据目录禁止复用，结果0600；命令与事件有界、失败不重试、清理失败不能写PASS。源码/产物身份和33项新增测试、原42/13/9回归见[R3报告](../../docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R3_player_integration.md)。READY仅表示离线技术准备；真实时序、音量、物理覆盖和参考隔离仍未验证。
 
 ## 身份与范围
 
@@ -50,8 +81,8 @@ python3 -B "$R2_ORIGINAL_CONTROLLER" --self-test
 
 `controller.py` 只加载并校验原 `SingleRun` 类，精确翻译 REF 的 5 秒 near 窗口；HOST 的 11 秒合同不改。它没有设备启动 CLI，也没有声学 PASS 判定。
 
-## 尚未完成的实际执行连接
+## R2历史阻塞（保留）
 
 旧 `execute` 在启动辅助播放器前固定检查原代理 SHA；`HOST_proxy.wav` 会被拒绝。本轮负控验证了拒绝发生且 Popen 次数为 0。辅助播放器二进制也含 `Frozen speech SHA mismatch` 校验文字，但本轮没有执行它或恢复到可审核的原 Swift 源码。
 
-下一步应先定位既有播放器源码，有限增加明确的派生素材 SHA/时长登记，并把本翻译器接入原单次执行/清理循环。不得用替换文件、删断言、二进制补丁或重写播放器绕过阻塞。本轮设备执行未授权。
+R3的解决方式见本页上方：原控制器仍会拒绝派生素材，新的派生播放器/外部连接独立登记身份，不改写这条历史负控。设备执行未授权。
