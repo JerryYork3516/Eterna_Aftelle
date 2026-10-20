@@ -2,9 +2,9 @@
 
 日期：2026-10-20。schema_version：1。
 
-**续跑仍BLOCKED，A/B/C实际录音均为0次，没有新的声学结论。** 用户要求“修复后继续推进实验”后，已修正的控制器夹具复核14/14 PASS；但A组尚在文件选择阶段，执行员按应用名称获取UI时误启动另一份普通Aftelle实例。按“未预期进程立即停止全部剩余测试”的规则取消整批，退出两个实例，未继续B/C。
+**最新批次已实际执行A/B/C各一次，取得三份本地录音；整体PARTIAL，不能宣布声学PASS。** A/B完成原评分流程；C在quiet阶段因Input内容时钟校验失败安全停止，未完成整个15秒评分。A出现居民模板残留特征及数字满幅；C相较B的代理语音匹配减弱。三组均已封存、显式导出、退出并释放设备，未追加录音。用户试听PENDING。
 
-第1–7节保留初次交付`e5e6af8c6efcc16069eaee3598acf7d20a978af1`的失败与未复核记录；**第8节为本次续跑的最终状态**，不覆盖旧失败事实。
+第1–7节保留初次交付`e5e6af8c6efcc16069eaee3598acf7d20a978af1`的失败记录，第8节保留`e91a123f6fde633fe054f5372410f4acc06d58f7`的采集前取消记录；**第9节为用户再次明确要求重新开始后的实际结果**。历史零录音状态不代表本次批次，也未被覆盖或改写为成功。
 
 ## 1. Git、构建与范围
 
@@ -260,6 +260,212 @@ SOURCE_REFERENCE_ISOLATION=UNKNOWN
 AEC_ROOT_CAUSE=UNKNOWN
 R3-M01=OPEN
 T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+T3.3=NOT_STARTED
+```
+
+## 9. 再次授权后的单批次实机结果（当前结论）
+
+### 9.1 身份、操作纠正与执行范围
+
+用户再次要求“重新开始，未完成实验不要停止，并且完成后让我试听”。本次开始时隔离工作区干净，HEAD / upstream / 实时远端均为
+`e91a123f6fde633fe054f5372410f4acc06d58f7`。运行源码、App/dylib、M02 Host及两份素材摘要逐项匹配第1–2节登记；本次未重建、未修改源码或阈值。最终提交仅更新本报告。
+
+纠正的是UI执行方式：只对控制器返回的确切PID操作原界面，使用`lsof`核验实际App及dylib；不再按应用显示名称获取/启动实例。AppleScript仅操作原Prepare、文件选择、采集同意、分别导出JSON/WAV及Quit。文件列表标题行和AppleScript保留变量名问题在采集前修正，没有增加App或Capture次数。本批普通Aftelle误启动0次；第8节旧失败和尝试标记保留。
+
+一次准备复核确认TinyUSB输入60%、Mac内置输出55%未静音、小爱在线且UID匹配；未修改默认路由、系统音量、Mic Mode、播放器音量或素材。三组运行后均核验进程退出、设备`running=0`及相同路由/音量，再决定是否进入下一组。Mic Mode、小爱绝对音量/声压和摆位校准仍UNKNOWN。App沿用已取得的系统权限，没有新TCC请求或自动操作系统授权。
+
+| 本批实际项目 | A：居民独讲 | B：BT近端独讲 | C：双讲 |
+| --- | --- | --- | --- |
+| RunID | `F60F1D2A-4B68-4A05-8260-5BC567F71721` | `44430CFD-991C-46B2-8446-E400A77A9FD1` | `DFF89229-7E56-42D9-A8AF-ECAA9EC0EBE6` |
+| App / Capture次数 | 1 / 1 | 1 / 1 | 1 / 1 |
+| 居民start / completed | 1 / 1 | 0 / 0 | 1 / 1 |
+| BT PLAY / STOP | 0 / 0；无代理进程 | 1 / 1 | 1 / 1 |
+| 外部控制器 / App退出码 | 0 / 0 | 0 / 0 | 0 / 0 |
+| App实验错误 | 无 | 无 | `voice_processing_unverified`，见9.5 |
+| 实验控制结果 | PASS_WITH_TAIL_LIMITATION | PASS_WITH_TAIL_LIMITATION | **FAIL_EARLY_CLOCK_REJECTION** |
+| 保存评分WAV | 14.86秒 | 14.86秒 | **13.36秒，部分结果** |
+| Stop / Seal / 导出 / Quit / 释放 | 完成 | 完成 | 安全停止后完成 |
+
+三份外部回执均写`CONTROL_COMPLETED_DEVICE`；这只表示外部执行循环和进程退出完成，**不能覆盖C的App失败状态**。C释放审核明确`safe_to_continue=false`。未重试、未执行第四次采集。
+
+三组Capture启动返回至停止分别19.004546、19.014272、17.515729秒，合计55.534547秒。A/B相对19秒名义deadline有4.546/14.272ms停止调度尾差，不能写成精确19.000秒。以更早的`engineStartBefore`至停止计算，三组总跨度56.086780秒，仍小于57秒整批上限。Native实际记录内容分别18.9、19.0、17.5秒。
+
+### 9.2 实机配置与真实软件时间
+
+三组实际读回均为Input VP=true、Output VP=true、AGC=true、bypass=false、inputMuted=false；Capture/Playback generation均1、configurationID均2。原生Input与Output为16kHz/3ch非交错Float32；Output ASBD flags=41、layoutTag=9633795、descriptionCount=0。最终评分WAV为24kHz/Mono/PCM16LE。
+
+每组configuration事件仅准备与Shutdown各一次，route事件0；没有运行中身份变更。三份JSON的`source_commit`/`build_identity`为null，因此源码/构建身份由本次外部SHA、启动参数、PID和映射文件核验绑定，不能称JSON本身已携带完整构建身份。
+
+以下均相对评分内容边界，单位秒；负值处于预热。调用、回调到达和内容时间分别列出，不是物理声学起止。
+
+| 实际事件 | A | B | C |
+| --- | ---: | ---: | ---: |
+| Engine.start调用前 / 返回 | −4.186296 / −4.000663 | −4.182950 / −4.001179 | −4.182987 / −4.000824 |
+| Capture启动返回 | −4.000000 | −4.000000 | −4.000000 |
+| 首Input callback到达 / 内容 | −3.872991 / −4.004802 | −3.874039 / −4.005276 | −3.873030 / −4.004199 |
+| 四阶段实际提示 | 0.026161 / 3.002102 / 9.024391 / 11.024079 | 0.015652 / 3.017713 / 9.001272 / 11.017524 | 0.009248 / 3.008228 / 9.008030 / 11.023871 |
+| 居民Player.play调用前 / 返回 | 3.047742 / 3.069064 | 未调用 | 3.061927 / 3.069538 |
+| 居民Playback completed | 7.941620 | 未播放 | 7.938650 |
+| Player Render首末非零内容 | 4.197262–7.944915 | 无非零Render | 4.197871–7.945535 |
+| 代理PLAY调用前 / 返回 | 不适用 | 0.000771 / 0.329165 | 0.000084 / 0.403865 |
+| 代理STOP调用 | 不适用 | 11.000964 | 11.000305 |
+| Capture停止 | 15.004546 | 15.014272 | **13.515729** |
+
+三组预热Native分窗覆盖约4秒，持续Converter/drain，未保留预热PCM、未重启Engine或重置generation。BT软件PLAY及时发出，但返回耗时约329/404ms；真实物理起音/停止和Apple处理延迟未校准。Player Render不等于扬声器实际发声，也不等于Apple内部AEC参考。`SOURCE_REFERENCE_ISOLATION=UNKNOWN`。
+
+### 9.3 Native、drain、保存内容与尾部
+
+| 证据 | A | B | C |
+| --- | ---: | ---: | ---: |
+| Native buffers / frames | 189 / 302400 | 190 / 304000 | 175 / 280000 |
+| generated / drained / queued | 944 / 944 / 0 | 949 / 944 / 5 | 869 / 869 / 0 |
+| 预热不留存包 / 跨界排除包 / 窗外排除包 | 199 / 1 / 1 | 199 / 1 / 1 | 199 / 1 / 1 |
+| 真正留存20ms包 | 743 | 743 | 668 |
+| 真正留存PCM字节 | 713280 | 713280 | 641280 |
+| 保存内容起止（score秒） | 0.015198–14.875198 | 0.014724–14.874724 | 0.015801–13.375801 |
+| score尾部未留存 | 124.802ms | 125.276ms | **1624.199ms** |
+| quiet已drain覆盖 | 3.851119秒 | 3.857200秒 | 2.351930秒 |
+| Native full_scale（各声道） | 23 / 23 / 23 | 0 / 0 / 0 | 0 / 0 / 0 |
+| WAV精确PCM16端点样本 | 33 | 0 | 0 |
+| Capture drop / stale | 0 / 0 | 0 / 0 | 0 / 0 |
+| Native拒绝 | 0 | 0 | `native_clock=1; content_time=1` |
+| Playback reject / underrun | 0 / 0 | 0 / 0 | 0 / 0 |
+| Input host / sample不连续 | 0 / 0 | 0 / 0 | **1 / 0** |
+| Input最大相邻起点间隔 | 100.008208ms | 100.001791ms | **102.182375ms** |
+| Render host / sample不连续 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Render最大相邻起点间隔 | 100.008250ms | 100.001792ms | 100.002791ms |
+| DEBUG skip / stale callback / invalid buffer | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+所有保存包的序号和20ms内容时间连续，没有保存WAV内部的已知缺包；**不能据此否认C最后一次内容时钟拒绝**。C的Native `coverage_valid=false`，A/B=true。所有预热留存字节0、评分留存小于720000字节。所有组`TAIL_COVERAGE=PARTIAL`、converter partial tail=UNKNOWN；queued=0也未证明完整尾部，B queued=5不自动等同真实丢帧。没有补零或改时间戳。
+
+Manifest的`capture_state=capturing`来自停止前快照；实际停止事件、sealed、callbacksClosed、进程退出和设备`running=0`共同证明清理完成，不以该旧快照误报仍在录音。
+
+### 9.4 声学数值：同窗比较与限制
+
+下表只统计**真正写入WAV的评分PCM**，幅度按PCM16/32768归一化，单位dBFS；不代表声压、可懂度或用户听感。
+
+| 评分内容窗口 | A RMS / Peak | B RMS / Peak | C RMS / Peak |
+| --- | ---: | ---: | ---: |
+| 0–3秒 | −91.01 / −64.29 | −18.28 / −1.98 | −17.79 / −1.58 |
+| 3–9秒 | −18.99 / 0.00 | −24.38 / −9.77 | −25.94 / −7.25 |
+| **4–7.75秒** | **−17.03 / 0.00** | **−24.42 / −9.81** | **−27.11 / −7.25** |
+| 9–11秒 | −100.58 / −84.29 | −24.58 / −10.86 | −26.02 / −11.67 |
+| 11秒至实际保存末尾 | −99.52 / −84.29 | −33.62 / −13.43 | −32.58 / −14.22 |
+
+首窗均缺约15ms前沿；quiet末尾覆盖不同，最后一行不是完整同窗15秒比较。4–7.75秒各有90000个保存样本，精确零样本A=10886、B=3171、C=33017。C的零样本比例36.69%高于B的3.52%，但Float32量化至PCM16会产生零；Native的3–9秒精确零样本B/C均0。**不同窗口、不同量化口径的零计数不能证明Native硬静音或Converter丢帧。**
+
+20ms评分网格的最大RMS正向绝对变化：
+
+| 组 | 内容时间 | 相邻RMS线性值 | dB变化 |
+| --- | ---: | --- | ---: |
+| A | 4.640秒 | 0.067571 → 0.498430 | +17.36 |
+| B | 1.100秒 | 0.199805 → 0.385148 | +5.70 |
+| C | 1.160秒 | 0.185355 → 0.368758 | +5.97 |
+
+A的33个PCM端点位于score 4.647989–4.662114秒；Native同播放大窗已有每声道23个满幅值，非有限和超范围计数均0。确认数字满幅存在，不能直接归因为AGC BUG或模拟输入硬件削波。B/C最大起音变化也可能含原语音音节包络，不能只用阶跃阈值宣布异常。
+
+Native各声道每窗均有实际有限样本逐值比较统计：`numerically_equal_to_ch0_samples == compared_to_ch0_finite_samples`；本次所有窗成立。这比相同Peak/计数更强，但不是对Apple内部声道物理含义的证明。
+
+以下比较同RunID、相同声明内容窗口内的**Native ch0与全部drained PCM**，不是用drained统计冒充WAV：
+
+| 窗口 | A Native → drained PCM RMS | B Native → drained PCM RMS | C Native → drained PCM RMS |
+| --- | --- | --- | --- |
+| 0–3秒 | −90.990 → −91.032 | −18.3034 → −18.3037 | −17.8166 → −17.8170 |
+| 3–9秒 | −18.9855 → −18.9886 | −24.3755 → −24.3758 | −25.9407 → −25.9409 |
+| 9–11秒 | −100.926 → −100.582 | −24.5812 → −24.5816 | −26.0207 → −26.0213 |
+
+B/C有声大窗的后级RMS差均小于0.001dB。Native→PCM没有显示大窗额外增益损失；A极低能量窗有PCM16量化差。现有Native仅提供0–3、3–9、9–11、quiet等窗，**没有独立4–7.75秒或20ms Native统计**，故不能把局部吞字/消音精确定位到VP前后，也不能用整窗RMS排除所有转换损伤。
+
+固定素材辅助相关性沿用本机数值方法：去均值归一化互相关，明确时间偏移搜索；同时用倒放模板、A无代理、B无居民作负控。没有新增声学验收阈值。
+
+| 模板 / 波形绝对NCC峰值 | A | B | C |
+| --- | ---: | ---: | ---: |
+| 代理源0–3秒 | 0.035（无代理负控） | 0.577 | 0.555 |
+| 代理源4–7.75秒 | 0.063（无代理负控） | **0.687** | **0.294** |
+| 居民源1–4.75秒 | **0.411** | 0.072（无居民负控） | 0.120 |
+
+代理源4–7.75秒模板在输出score 4–5秒候选起点搜索，B/C最佳起点4.8026/4.8098秒，倒放负控分别0.115/0.047，20ms包络相关分别0.910/0.351。它是延迟搜索后的模板特征，不能冒充精确软件4–7.75秒的物理双讲证据。居民模板A倒放负控0.093，C倒放0.065；混合信号、相同Tingting声线、AEC频谱变化和未知声学延迟均限制声源归属。
+
+由此支持：B/C首段都有代理内容特征；C重叠附近的代理匹配和能量分布较B退化；A出现居民来源残留的数值证据。**尚不能宣告居民可听程度、真人保留PASS、AGC因果或Apple内部参考隔离。** C较低的居民相关性也不能证明听不到回声。
+
+居民最后非零Player Render后0–500ms：A RMS −35.51dBFS、Peak −19.90；后续500–1500ms RMS −99.63。C对应−24.78/−26.83dBFS，但此时代理仍在播放，不能全部称回声尾音。BT软件STOP后的0–500ms B/C RMS −24.73/−25.81，500–1000ms降至−81.09/−93.49；真实扬声器停止与音频处理延迟UNKNOWN。
+
+### 9.5 C安全停止的确认路径
+
+**CONFIRMED：Input相邻host内容时间出现一次2.182375ms偏差，触发`native_clock`与`content_time`各1次；原生sampleTime仍连续。** 最后VP/AGC实际读回均有效，`voice_processing`拒绝为0。错误字符串不能直接解释成VP关闭。
+
+只读核对冻结源码：
+
+- `MacSpeechAudioCapture.swift:967`的`continuousInputHostTimeLocked`按一个原生采样周期验证相邻host时间；16kHz时容差62.5µs。超出后将`sampleTimeContinuityValid=false`，后续内容时间无效，直到原generation重置路径恢复。
+- 同文件`recordClock`及`prepareAppleCapture`分别记录`native_clock`和缺失内容时间的`content_time`；没有放宽容差或现场重同步。
+- `AppController.swift:7974`的`collectAppleVPAcousticFrames`要求Native issues为空；此条件失败与VP读回失败共用`voiceProcessingUnavailable`错误，因此本次呈现`voice_processing_unverified`。随即走原Stop/Seal/Shutdown。
+
+确认的是**时钟拒绝→实验安全停止的传播路径**；目前不能区分设备真实漏采、host时钟抖动或别的调度原因，不能据此确认生产BUG。该停止发生在score约13.516秒，晚于主要重叠窗，不能解释4–7.75秒代理特征退化，也不能追溯认定历史真人前三秒近静音的根因。
+
+M02隔离补丁未改变；本轮没有旧软件AEC3 fallback导致断流的直接证据。Manifest未完整导出所有AcousticHost fallback状态，缺失项保持UNKNOWN。没有为得到PASS改DSP、时间戳阈值或重跑C。
+
+### 9.6 本地证据、命令与检查次数
+
+本轮JSON/WAV由原UI逐项确认导出至原受控Caches，目录0700、文件0600、当前用户所有、无symlink；每组独立RunID，未覆盖旧文件。三份WAV都只含本轮评分留存，processed数据SHA与对应Manifest匹配。Native只保留有界统计，没有另存完整Native原音；Native本身也已经过Apple VP。
+
+| 组 | WAV bytes / SHA-256 | JSON bytes / SHA-256 |
+| --- | --- | --- |
+| A | 713324 / `87a0e5e91db130597e02706620e0b23584018d989fa17654665cc74dd797d44c` | 65070 / `99978f967dc9767b1c0d3c33178c062b3fd7cbc4a336ed90208ce463876b51f2` |
+| B | 713324 / `ddbc4aff5073fd4d0f45498b0b757cfb8f1c293fb07dfe47da3b2c820331a9cc` | 64481 / `e497c147d9922d12bd1ea7bffc63f29658c0c31782811f99297fa3b29407feda` |
+| C | 641324 / `4d61b1bfbeacfc33a02b485f86e646f6828272e02f8de9e11e8ba3e18d6b6382` | 60898 / `9c1dc95b1b0a22147d3e7c172de9583d0446a90a9850344958c52012a1864129` |
+
+实际设备命令与第8.2节相同，分别`--group A`、`--group B`、`--group C`，每组新建独立受控子目录，调用各1次、外部exit均0；C的实验失败另按Manifest裁定。B/C代理进程退出0；原STOP回执证明`not_playing=1`，不以自然播放完成回调代替停止证据。
+
+| 本次实际执行 | 次数 / 结果 |
+| --- | --- |
+| 启动前Git、冻结二进制/素材、设备预检 | 一次准备复核，PASS；组间另做停止释放与路线不变检查 |
+| A/B/C UI与设备执行 | 各1次；原采集及JSON/WAV导出确认均实际完成 |
+| `python3 -B .build/r5_m03/resume2/review_release.py A <A-RunID>` | 1次，exit0，允许进入B |
+| 同一脚本审核B | 1次，exit0，允许进入C |
+| C故障与释放审核 | 1次，进程/设备已释放；明确禁止继续 |
+| `python3 -B .build/r5_m03/resume2/analyze_batch.py` | 1次，exit0；仅本轮三份新WAV和两份固定合成素材 |
+| 本次Fake、Swift回归、构建、FULL_CURRENT | **0次**；未改代码，复用第4–5、8.1节真实证据 |
+| 文档diff、单文件白名单/隐私检查 | 1轮，PASS |
+| `bash tools/secret_guard/check.sh` | 1轮，exit0 |
+
+本地统计结果SHA：`8c3caa45e4334a95e95cb91f48783291224686a7a7649de7d9c214016c8480f8`；
+有限分析脚本SHA：`f84e5ce97f794872716034648110d0ba78bbd1131eb4309994bce8a5ab7b6408`。
+沿用已有统计函数，仅提取函数定义，不执行旧脚本内历史私人音频读取。无自动播放、转录、云端音频分析或Git音频上传；对用户仅提供本机原WAV试听入口，`USER_LISTENING=PENDING`。
+
+### 9.7 五维审核、分级与唯一下一步
+
+| 维度 | 当前结论 |
+| --- | --- |
+| 功能 | PARTIAL：三组各运行一次且取得有效文件；A/B原流程完成，C内容时钟拒收提前停止 |
+| 安全/隐私 | PASS：新授权、原UI/TCC门禁、限定次数与总预算、无预热录音留存、进程/设备释放；音频不公开 |
+| 证据 | PASS_WITH_LIMITATIONS：区分进程exit与实验失败、Native/drained/WAV、物理时序UNKNOWN、C缺尾和试听待定 |
+| 工程/规范 | 本次报告变更，生产源码0改动、M02保留；新增源码B类0，历史格式/lint及C19/C23债务不变 |
+| Stage7 Forbidden Checklist | PASS：A–H逐项未越界；Runtime API、DR schema、平台target、Provider所有权、正式Human Gate和Stage状态无变化 |
+
+本批新增确认生产代码BUG=0；**MAJOR=1：C因Native内容时钟拒绝未完成全部评分**；CRITICAL=0、MINOR=0。A数字满幅/居民残留和C代理匹配下降是本批确认数值及待听感审核的既有声学风险新证据，不把它们偷换为已确认AGC/AEC代码BUG。旧第8节误启普通App问题本批未复现，旧记录仍保留。
+
+唯一下一项建议：主控结合本批A/B/C试听及C时钟拒绝证据审核，决定是否单独授权时钟路径的定点调查/修复；不追加设备、不先调增益或DSP。原7个冲突工作区的status、索引及未跟踪清单与保护快照一致。本次Git仅提交本报告，推送后核验三方HEAD；交付commit由最终回复及Git记录给出。
+
+```ini
+R5_M03=PARTIAL_BATCH_EVIDENCE_DELIVERED
+A_CAPTURE_RUNS=1
+B_CAPTURE_RUNS=1
+C_CAPTURE_RUNS=1
+A_CONTROL_CHAIN=PASS_WITH_TAIL_LIMITATION
+B_CONTROL_CHAIN=PASS_WITH_TAIL_LIMITATION
+C_CONTROL_CHAIN=FAIL_EARLY_CLOCK_REJECTION
+C_SAVED_SCORING_SECONDS=13.36
+ADDITIONAL_CAPTURE_RUNS=0
+TAIL_COVERAGE=PARTIAL
+CONVERTER_PARTIAL_TAIL=UNKNOWN
+USER_LISTENING=PENDING
+SOURCE_REFERENCE_ISOLATION=UNKNOWN
+AEC_ROOT_CAUSE=UNKNOWN
+R3-M01=OPEN
+T3.2-A=BLOCKED
+SQ-M1=OPEN
 Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 T3.3=NOT_STARTED
