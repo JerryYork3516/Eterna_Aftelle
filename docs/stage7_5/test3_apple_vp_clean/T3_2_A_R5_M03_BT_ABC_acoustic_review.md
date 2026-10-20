@@ -2,9 +2,9 @@
 
 日期：2026-10-20。schema_version：1。
 
-**最新批次已实际执行A/B/C各一次，取得三份本地录音；整体PARTIAL，不能宣布声学PASS。** A/B完成原评分流程；C在quiet阶段因Input内容时钟校验失败安全停止，未完成整个15秒评分。A出现居民模板残留特征及数字满幅；C相较B的代理语音匹配减弱。三组均已封存、显式导出、退出并释放设备，未追加录音。用户试听PENDING。
+**用户试听结论：A/B/C“全部失败”。** 三组各执行一次的工程证据不变：A/B完成原评分流程；C在quiet阶段因Input内容时钟校验失败安全停止，未完成整个15秒评分。A出现居民模板残留特征及数字满幅；C相较B的代理语音匹配减弱。用户随后明确授权公开提交本批三份WAV供主控审核；文件保持原始字节，未追加录音。公开文件及固定播放原文见[试听证据](evidence/r5_m03_bt_abc_20261020/LISTENING_EVIDENCE.md)。
 
-第1–7节保留初次交付`e5e6af8c6efcc16069eaee3598acf7d20a978af1`的失败记录，第8节保留`e91a123f6fde633fe054f5372410f4acc06d58f7`的采集前取消记录；**第9节为用户再次明确要求重新开始后的实际结果**。历史零录音状态不代表本次批次，也未被覆盖或改写为成功。
+第1–7节保留初次交付`e5e6af8c6efcc16069eaee3598acf7d20a978af1`的失败记录，第8节保留`e91a123f6fde633fe054f5372410f4acc06d58f7`的采集前取消记录；第9节为重新开始后的设备执行及当时交付，**第10节为最新试听反馈和公开提交授权**。历史零录音、未试听、仅本机保存状态均保留为当时事实，不覆盖为成功。
 
 ## 1. Git、构建与范围
 
@@ -265,7 +265,7 @@ Test3.execution_authorized=false
 T3.3=NOT_STARTED
 ```
 
-## 9. 再次授权后的单批次实机结果（当前结论）
+## 9. 再次授权后的单批次实机结果（试听前交付记录）
 
 ### 9.1 身份、操作纠正与执行范围
 
@@ -466,6 +466,45 @@ AEC_ROOT_CAUSE=UNKNOWN
 R3-M01=OPEN
 T3.2-A=BLOCKED
 SQ-M1=OPEN
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+T3.3=NOT_STARTED
+```
+
+## 10. 用户试听FAIL及本批WAV公开提交
+
+用户在收到本批三个试听入口后原话：
+
+> 全部失败，音频提交推送让GPT审核，并给我对应的内容文本
+
+据此登记A/B/C用户听感均为FAIL。用户没有分别描述每组失败的具体声源、词句或故障类型，因此这些细项继续UNKNOWN；不替用户补写“回声明显”“人声不可懂”等更具体意见。第9节工程结果保持：A/B控制流程完成，C时钟拒收提前停止；声学失败不能被控制链exit0覆盖。
+
+本次交付前HEAD / upstream / 实时远端均为`e9168cc10a5fe7576493bb17eb4c6f030364f583`。跨文件操作前建立本地回滚提交`c291d09`。用户当前指令明确授权将本批三份录音提交至现有PUBLIC仓库；此前不上传限制保留为录音执行时的授权历史，此次仅对下列三份文件变更公开范围：
+
+- [A_resident_only.wav](evidence/r5_m03_bt_abc_20261020/A_resident_only.wav)：RunID `F60F1D2A-4B68-4A05-8260-5BC567F71721`，14.86秒。
+- [B_bt_near_end_only.wav](evidence/r5_m03_bt_abc_20261020/B_bt_near_end_only.wav)：RunID `44430CFD-991C-46B2-8446-E400A77A9FD1`，14.86秒。
+- [C_double_talk_partial.wav](evidence/r5_m03_bt_abc_20261020/C_double_talk_partial.wav)：RunID `DFF89229-7E56-42D9-A8AF-ECAA9EC0EBE6`，13.36秒，保留提前停止事实。
+
+三份均是原App导出的**Apple VP后24kHz/Mono/PCM16评分WAV**，不是未经Apple VP处理的原始麦克风对照。本轮没有保存可另行上传的完整Native原音。复制前后整文件SHA、大小、格式、PCM数据摘要与本批原Manifest关联均核验一致；没有重采样、降噪、归一化、裁剪、补零或重新生成音频。源文件保持0600及原字节不变。
+
+试听说明同时提供两份固定合成素材的预设文字、SHA和A/B/C对应关系；这些来自已登记的非私人素材说明，不是对受损录音的自动转写，也不证明每个字均被保留。没有启动App/设备、播放或采集，没有读取其他历史录音。
+
+本次仅提交3份已授权WAV、`LISTENING_EVIDENCE.md`和本报告。原Manifest、设备UID、私密路径、系统日志及其他录音不提交。执行单一文件白名单/摘要检查、`git diff --check`和Secret Guard，均通过；代码/构建/声学回归不运行，原冲突工作区不变。
+
+五维复核：功能=完成证据提交；安全/隐私=限本次明确授权的公开范围；证据=保留用户原话、原文件和C失败；工程=无生产源码变更；Stage7 Forbidden Checklist=PASS（六红线、Runtime/Provider、DR schema、正式Gate和Stage状态均未改变）。新增提交工程问题CRITICAL/MAJOR/MINOR均0；第9节C时钟拒收及声学问题继续OPEN。主控尚未完成音频复审，根因仍UNKNOWN。
+
+```ini
+USER_LISTENING=FAIL_ALL_THREE_USER_REPORTED
+A_USER_LISTENING=FAIL
+B_USER_LISTENING=FAIL
+C_USER_LISTENING=FAIL
+R5_M03_ACOUSTIC_RESULT=FAIL_USER_REPORTED
+R5_M03_CONTROL_RESULT=PARTIAL_C_EARLY_STOP
+PUBLIC_AUDIO_SUBMISSION=AUTHORIZED_THIS_THREE_FILE_BATCH
+GPT_AUDIO_REVIEW=PENDING
+AEC_ROOT_CAUSE=UNKNOWN
+R3-M01=OPEN
+T3.2-A=BLOCKED
 Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 T3.3=NOT_STARTED
