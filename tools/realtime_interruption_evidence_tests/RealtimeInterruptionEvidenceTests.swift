@@ -1077,29 +1077,76 @@ private extension RealtimeInterruptionEvidenceTests {
         print("m03_fake_device_access=ZERO")
     }
 
-    static func testM03Group(_ scenario: AppleVPAcousticTestScenario, source: URL) async throws {
+    static func testM07Batch() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for scenario in AppleVPAcousticTestScenario.allCases {
+            try await testM03Group(scenario, source: source, humanBatch: true)
+        }
+        cases += 1
+        let missingPipe = D1ControllerStack(humanBatchScenario: .humanOnly)
+        expect(missingPipe.controller.prepareAppleVPAcousticTest(
+            .humanOnly, comprehensiveC: true, warmupProfile: .four, humanAcousticBatch: true
+        ), "HUMAN preparation does not start devices")
+        startD1(missingPipe.controller)
+        expect(missingPipe.capture.startCount == 0
+            && missingPipe.controller.appleVPAcousticTestState.errorCode == "external_playback_control_unavailable",
+            "HUMAN requires its explicit score-control pipe before capture")
+        let mixed = D1ControllerStack(batchScenario: .humanOnly, humanBatchScenario: .humanOnly)
+        for human in [false, true] {
+            expect(!mixed.controller.prepareAppleVPAcousticTest(
+                .humanOnly, comprehensiveC: true, warmupProfile: .four,
+                btAcousticBatch: !human, humanAcousticBatch: human
+            ), "HUMAN and BT launch identities cannot be mixed")
+        }
+        print("m07_fake_cases=\(cases)")
+        print("m07_fake_checks=\(checks)")
+        print("m07_fake_device_access=ZERO")
+    }
+
+    static func testM03Group(
+        _ scenario: AppleVPAcousticTestScenario, source: URL, humanBatch: Bool = false
+    ) async throws {
         cases += 1
         let channel = Pipe()
         defer { try? channel.fileHandleForReading.close(); try? channel.fileHandleForWriting.close() }
         let clock = ComprehensiveCClock()
         let stack = D1ControllerStack(
             clock: { clock.now }, scoreControlDescriptor: channel.fileHandleForWriting.fileDescriptor,
-            batchScenario: scenario
+            batchScenario: humanBatch ? nil : scenario,
+            humanBatchScenario: humanBatch ? scenario : nil
         )
         stack.capture.contentStartOverride = clock.start
         expect(!stack.controller.prepareAppleVPAcousticTest(
             scenario, comprehensiveC: true, processingProfile: .agcOff,
-            warmupProfile: .four, btAcousticBatch: true
-        ), "M03 cannot switch off AGC")
+            warmupProfile: .four, btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch
+        ), "the acoustic batch cannot switch off AGC")
         expect(!stack.controller.prepareAppleVPAcousticTest(
-            scenario, comprehensiveC: true, warmupProfile: .zero, btAcousticBatch: true
-        ), "M03 requires four seconds of continuous warm-up")
+            scenario, comprehensiveC: true, warmupProfile: .zero,
+            btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch
+        ), "the acoustic batch requires four seconds of continuous warm-up")
         expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true),
-               "M03 cannot accidentally start a legacy scenario")
+               "the acoustic batch cannot accidentally start a legacy scenario")
+        if humanBatch {
+            expect(!stack.controller.prepareAppleVPAcousticTest(
+                scenario, comprehensiveC: true, dataMode: .statsOnly,
+                warmupProfile: .four, humanAcousticBatch: true
+            ), "HUMAN cannot change its frozen recording mode")
+        }
         expect(stack.controller.prepareAppleVPAcousticTest(
-            scenario, comprehensiveC: true, warmupProfile: .four, btAcousticBatch: true
-        ), "the explicit M03 source combination prepares")
+            scenario, comprehensiveC: true, warmupProfile: .four,
+            btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch
+        ), "the explicit acoustic source combination prepares")
         expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "same synthetic fixture selected")
+        if humanBatch {
+            for (microphone, local) in [(false, true), (true, false)] {
+                stack.controller.startAppleVPAcousticTest(
+                    microphoneConsent: microphone, speakerConsent: true, localCaptureConsent: local
+                )
+                expect(stack.capture.startCount == 0 && stack.player.prepareCount == 0,
+                       "HUMAN preserves microphone and local-recording consent before device preparation")
+            }
+        }
         startD1(stack.controller)
         await driveWarmupC(stack, clock: clock, profile: .four, residentEnabled: scenario != .humanOnly)
         let state = stack.controller.appleVPAcousticTestState
@@ -1110,11 +1157,32 @@ private extension RealtimeInterruptionEvidenceTests {
         expect(events.count == 2 && events.map { $0["event"] as? String } == ["schedule", "stop"],
                "one schedule and one stop are emitted")
         let identityMatches = events.allSatisfy {
-            $0["batch"] as? String == "R5_M03" && $0["scenario"] as? String == scenario.rawValue
+            $0["batch"] as? String == (humanBatch ? "R5_M07" : "R5_M03")
+                && $0["scenario"] as? String == scenario.rawValue
+                && $0["run_id"] as? String == state.runID?.uuidString
         }
         expect(identityMatches, "both events bind the source combination")
         expect(events[0]["score_start_ns"] as? UInt64 == clock.start + 4_000_000_000,
                "all groups share the four-second score origin")
+        if humanBatch {
+            expect(events.allSatisfy {
+                $0["source"] as? String == "human" && $0["proxy_requested"] as? Bool == false
+                    && $0["proxy_stop_ns"] == nil
+            }, "HUMAN score messages never request a proxy")
+            expect(events.allSatisfy {
+                $0["score_start_ns"] as? UInt64 == clock.start + 4_000_000_000
+                    && $0["human_speech_stop_ns"] as? UInt64 == clock.start + 15_000_000_000
+            },
+                   "HUMAN speaking ends at score eleven after four seconds of warm-up")
+            let manifest = try JSONSerialization.jsonObject(
+                with: stack.controller.appleVPAcousticTestManifestData()
+            ) as? [String: Any] ?? [:]
+            let human = manifest["human_acoustic_batch"] as? [String: Any]
+            expect(manifest["bt_acoustic_batch"] == nil && human?["batch"] as? String == "R5_M07"
+                && human?["source"] as? String == "human" && human?["proxy_requested"] as? Bool == false
+                && human?["human_requested"] as? Bool == (scenario != .residentOnly),
+                "HUMAN metadata preserves the actual requested source and excludes BT metadata")
+        }
         try expectWarmupManifest(stack.controller, profile: .four)
         let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
         expect(wav.dropFirst(44).enumerated().allSatisfy { $0.offset % 2 == 0 ? $0.element == 1 : $0.element == 0 },
@@ -1526,6 +1594,7 @@ private struct D1ControllerStack {
         clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         scoreControlDescriptor: Int32? = nil,
         batchScenario: AppleVPAcousticTestScenario? = nil,
+        humanBatchScenario: AppleVPAcousticTestScenario? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
         let dependencies = D1NormalDependenciesSpy()
@@ -1553,7 +1622,8 @@ private struct D1ControllerStack {
             acousticTestArguments: ["Aftelle", "--apple-vp-acoustic-test"]
                 + (silentScenario.map { ["--apple-vp-silent-smoke=" + $0.rawValue] } ?? [])
                 + (scoreControlDescriptor.map { [AppleVPScoreControl.argument + String($0)] } ?? [])
-                + (batchScenario.map { ["--apple-vp-bt-abc=" + $0.rawValue] } ?? []),
+                + (batchScenario.map { ["--apple-vp-bt-abc=" + $0.rawValue] } ?? [])
+                + (humanBatchScenario.map { ["--apple-vp-human-abc=" + $0.rawValue] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,
@@ -2647,6 +2717,11 @@ private struct RealtimeInterruptionEvidenceTests {
     private static var duplicateStartProviderSessions = -1
 
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m07-only"]) {
+            try await testM03Batch()
+            try await testM07Batch()
+            return
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m03-only"]) {
             try await testM03Batch()
             return

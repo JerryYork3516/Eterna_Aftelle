@@ -744,7 +744,17 @@ private struct ParticleOrientationDebugOverlay: View {
 
         private var preparationControls: some View {
             VStack(alignment: .leading, spacing: 8) {
-                if let scenario = controller.appleVPBTBatchScenario {
+                if let scenario = controller.appleVPHumanBatchScenario {
+                    Button(String(localized: "Prepare M07 HUMAN \(scenario.rawValue) · AGC-ON · WARMUP_4S")) {
+                        _ = controller.prepareAppleVPAcousticTest(
+                            scenario, comprehensiveC: true, processingProfile: .agcOn,
+                            warmupProfile: .four, humanAcousticBatch: true
+                        )
+                    }
+                    .disabled(controller.appleVPAcousticTestState.phase != .idle)
+                    Text(String(localized: "M07 HUMAN: one recording; 4s quiet warm-up + 15s score. No proxy playback."))
+                    Text(String(localized: "A: remain quiet. B/C: speak naturally from score start until the quiet cue at 11s."))
+                } else if let scenario = controller.appleVPBTBatchScenario {
                     Button(String(localized: "Prepare M03 \(scenario.rawValue) · AGC-ON · WARMUP_4S")) {
                         _ = controller.prepareAppleVPAcousticTest(
                             scenario, comprehensiveC: true, processingProfile: .agcOn,
@@ -779,7 +789,7 @@ private struct ParticleOrientationDebugOverlay: View {
                 }
                 Button("Select approved offline WAV…") { selectPlaybackFile() }
                     .disabled(controller.appleVPAcousticTestState.isBusy)
-                if controller.appleVPBTBatchScenario == nil {
+                if controller.appleVPBTBatchScenario == nil, controller.appleVPHumanBatchScenario == nil {
                     Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
                 }
             }
@@ -818,8 +828,12 @@ private struct ParticleOrientationDebugOverlay: View {
 
         private var comprehensiveCGuide: some View {
             VStack(alignment: .leading, spacing: 8) {
-                Text(String(localized: "综合C：评分15秒；WARMUP_4S先安静预热4秒，总采集最多19秒。须另行获准设备测试。"))
-                if controller.appleVPAcousticTestState.btAcousticBatch {
+                if !controller.appleVPAcousticTestState.humanAcousticBatch {
+                    Text(String(localized: "综合C：评分15秒；WARMUP_4S先安静预热4秒，总采集最多19秒。须另行获准设备测试。"))
+                }
+                if controller.appleVPAcousticTestState.humanAcousticBatch {
+                    humanBatchGuide
+                } else if controller.appleVPAcousticTestState.btAcousticBatch {
                     Text(String(localized: "M03: synthetic sources; physical overlap unverified."))
                     Text(String(
                         localized: "Software phase: \(controller.appleVPAcousticTestState.guideStage ?? "UNKNOWN")"
@@ -831,6 +845,28 @@ private struct ParticleOrientationDebugOverlay: View {
                     recordingCGuide
                 }
                 Text(String(localized: "退出前请导出；失败JSON也可保留。未导出的内存证据会随App退出丢失。"))
+            }
+        }
+
+        @ViewBuilder
+        private var humanBatchGuide: some View {
+            let state = controller.appleVPAcousticTestState
+            Text(String(localized: "M07 HUMAN \(state.scenario.rawValue)：安静预热4秒，评分15秒；只在明确同意后本地导出。"))
+            if state.scenario == .residentOnly {
+                Text(String(localized: "A：全程保持安静，仅播放居民素材。"))
+            } else {
+                Text(String(localized: "B/C：从评分起点自然讲话，11秒安静提示后停止。B不播放居民；C听到居民时继续讲话。"))
+            }
+            switch state.guideStage {
+            case "warmup": Text(String(localized: "预热中：保持安静，尚未评分；预热录音不会保留。"))
+            case "quiet": Text(String(localized: "停止讲话，保持安静至封存。"))
+            case "human_only", "double_talk", "human_tail":
+                if state.scenario == .residentOnly {
+                    Text(String(localized: "评分中：继续保持安静。"))
+                } else {
+                    Text(String(localized: "评分中：继续自然讲话，等待11秒安静提示。"))
+                }
+            default: Text(String(localized: "等待准备；软件提示不证明真实讲话或物理重叠时长。"))
             }
         }
 

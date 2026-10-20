@@ -20,6 +20,7 @@ REF_GUI_BINARY_SHA = "65fadd2acbb09dc9cf19e8f8a93013ad795ff93cef543a3e65420d5d59
 HOST_BINARY_SHA = "ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118"
 HOST_DYLIB_SHA = "34ca1dc87ed28229fc2992503253d272eca4833dea5fdb2f7ceaf20c25267ba1"
 M03_HOST_DYLIB_SHA = "6f81387668c4625c88f80895778dad46e4a8a39badde25ad95527ae4492e2eef"
+M07_HOST_DYLIB_SHA = "f1339555b1de0be412629e58013ba6686d0de09851a37496b835a3d5b1812fd7"
 PLAYER_BINARY_SHA = "ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8"
 R4_CONSENT = "R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS"
 
@@ -48,8 +49,10 @@ def now_ns():
     return lib.mach_absolute_time() * base.numer // base.denom
 
 
-def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None):
+def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, human_group=None):
     executable = Path(executable).resolve()
+    if human_group is not None and (mode != "HOST" or m03_group is not None or human_group not in ("A", "B", "C")):
+        raise ValueError("unregistered or mixed human group")
     if mode == "HOST":
         if ref_arguments:
             raise ValueError("REF arguments cannot enter HOST")
@@ -57,10 +60,12 @@ def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None):
         if m03_group is not None and m03_group not in ("A", "B", "C"):
             raise ValueError("unregistered M03 group")
         require_identity(executable.with_name("Aftelle.debug.dylib"),
-                         M03_HOST_DYLIB_SHA if m03_group else HOST_DYLIB_SHA)
+                         M07_HOST_DYLIB_SHA if human_group else M03_HOST_DYLIB_SHA if m03_group else HOST_DYLIB_SHA)
         args = [str(executable), "--apple-vp-acoustic-test", "--apple-vp-score-control-fd=" + str(descriptor)]
         if m03_group:
             args.append("--apple-vp-bt-abc=" + m03_group)
+        if human_group:
+            args.append("--apple-vp-human-abc=" + human_group)
         return args, {}
     if m03_group is not None:
         raise ValueError("M03 never starts REF")
@@ -155,9 +160,11 @@ def run_device_once(bundle, mode, executable, evidence, ref_arguments=(), *, con
 
 
 def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn, clock, device=False,
-                   m03_group=None):
-    bundle, fixture = verify_bundle(bundle, "REF" if m03_group else mode)
-    use_proxy = m03_group != "A"
+                   m03_group=None, human_group=None):
+    if human_group is not None and (mode != "HOST" or m03_group is not None or human_group not in ("A", "B", "C")):
+        raise ValueError("unregistered or mixed human group")
+    bundle, fixture = verify_bundle(bundle, "REF" if m03_group or human_group else mode)
+    use_proxy = human_group is None and m03_group != "A"
     plan = Plan(mode, original_single_run(bundle / "original_sync_once.py"))
     evidence = Path(evidence)
     evidence.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -166,6 +173,9 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
     if m03_group:
         state.update(batch="R5_M03", group=m03_group,
                      device_access="M03_EXPLICIT_ONCE" if device else "ZERO_FAKE_ONLY")
+    if human_group:
+        state.update(batch="R5_M07", group=human_group, source="human", proxy_requested=False,
+                     device_access="M07_EXPLICIT_ONCE" if device else "ZERO_FAKE_ONLY")
     if mode == "REF":
         state["reference_variant"] = require_reference_identity(executable)
     helper = child = None
@@ -225,7 +235,8 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
         read_fd, write_fd = os.pipe()
         os.set_blocking(read_fd, False)
         os.set_blocking(write_fd, False)
-        argv, extra_env = command(mode, executable, write_fd, ref_arguments, m03_group=m03_group)
+        argv, extra_env = command(mode, executable, write_fd, ref_arguments,
+                                  m03_group=m03_group, human_group=human_group)
         proxy_fd = None
         if use_proxy:
             helper = spawn([str(bundle / "bt_proxy_registered"), "--authorized-proxy-once", str(fixture)],
@@ -254,7 +265,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if device:
             print(json.dumps(dict(event="awaiting_original_UI_consent", app_pid=child.pid,
-                                  m03_group=m03_group)), flush=True)
+                                  m03_group=m03_group, human_group=human_group)), flush=True)
         os.close(write_fd)
         write_fd = None
         wait_limit = stamp() + 240_000_000_000
@@ -266,7 +277,16 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                 for event in lines(read_fd):
                     if m03_group and (event.get("batch"), event.get("scenario")) != ("R5_M03", m03_group):
                         raise ValueError("M03 source combination mismatch")
-                    plan.accept(event, now)
+                    checked_event = event
+                    if human_group:
+                        if (event.get("batch"), event.get("scenario"), event.get("source")) != ("R5_M07", human_group, "human") or event.get("proxy_requested") is not False:
+                            raise ValueError("M07 human source identity mismatch")
+                        if "proxy_stop_ns" in event or type(event.get("human_speech_stop_ns")) is not int:
+                            raise ValueError("M07 human timing contract mismatch")
+                        checked_event = dict(event)
+                        checked_event.pop("source")
+                        checked_event["proxy_stop_ns"] = checked_event.pop("human_speech_stop_ns")
+                    plan.accept(checked_event, now)
                     record(event)
             if not plan.state.terminal and child.poll() is not None:
                 raise RuntimeError("audio process exited before terminal event")
@@ -301,7 +321,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
             raise ValueError("proxy PLAY/STOP/completion evidence missing")
         if device:
             print(json.dumps(dict(event="sealed_awaiting_original_export_and_quit",
-                                  run_id=plan.state.run_id, m03_group=m03_group)), flush=True)
+                                  run_id=plan.state.run_id, m03_group=m03_group, human_group=human_group)), flush=True)
         state["audio_exit"] = child.wait(timeout=240)  # Original export/quit consent remains external.
         if (use_proxy and state["proxy_exit"] != 0) or state["audio_exit"] != 0:
             raise RuntimeError("child exit failure")

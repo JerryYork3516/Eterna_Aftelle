@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 mode="${1:-full}"
-if [[ "$mode" != "full" && "$mode" != "d1-only" && "$mode" != "m03-only" ]]; then
+if [[ "$mode" != "full" && "$mode" != "d1-only" && "$mode" != "m03-only" && "$mode" != "m07-only" ]]; then
   echo "unsupported realtime evidence mode: $mode" >&2
   exit 2
 fi
@@ -56,7 +56,7 @@ swiftc \
   -o "$build_dir/realtime_interruption_evidence_tests"
 
 runtime_home="$build_dir/runtime-home"
-if [[ "$mode" == "d1-only" || "$mode" == "m03-only" ]]; then
+if [[ "$mode" == "d1-only" || "$mode" == "m03-only" || "$mode" == "m07-only" ]]; then
   cache_root="$(swift -e 'import Foundation; print(FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].path)')"
   cache_root="$(cd "$cache_root" && pwd -P)"
   d1_runtime_home="$(mktemp -d "$cache_root/aftelle-d1-r2-tests.XXXXXX")"
@@ -66,6 +66,14 @@ else
   mkdir -p "$runtime_home"
 fi
 output="$build_dir/output.log"
+if [[ "$mode" == "m07-only" ]]; then
+  CFFIXED_USER_HOME="$runtime_home" \
+    "$build_dir/realtime_interruption_evidence_tests" --m07-only \
+    | tee "$output"
+  rg -qx 'm03_fake_device_access=ZERO' "$output"
+  rg -qx 'm07_fake_device_access=ZERO' "$output"
+  exit 0
+fi
 if [[ "$mode" == "m03-only" ]]; then
   CFFIXED_USER_HOME="$runtime_home" \
     "$build_dir/realtime_interruption_evidence_tests" --m03-only \
