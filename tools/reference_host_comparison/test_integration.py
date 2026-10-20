@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -35,6 +36,12 @@ def schedule(mode):
                                 numer=1, denom=1))
     return dict(schema_version=1, clock="mach_absolute_nanoseconds", event="schedule", run_id=ID,
                 score_start_ns=START+4_000_000_000, proxy_stop_ns=START+15_000_000_000)
+
+
+def proxy_ready(mode):
+    return dict(event="proxy_ready", play_calls=0, uid_sha256="FAKE_REDACTED", uptime_ns=START,
+                fixture_sha256=FIXTURES[mode+"_proxy.wav"],
+                duration_seconds=(264310 if mode == "REF" else 360310)/24000)
 
 
 class FakeChild:
@@ -111,9 +118,10 @@ class FakeProcesses:
                     return super().write(data)
             self.helper.stdin = Commands()
             if self.fault != "no_ready":
-                self.emit(self.proxy_write, dict(event="proxy_ready", play_calls=0,
-                          fixture_sha256=FIXTURES[self.mode+"_proxy.wav"],
-                          duration_s=(264310 if self.mode == "REF" else 360310)/24000))
+                ready = proxy_ready(self.mode)
+                if self.fault == "wrong_duration_field":
+                    ready["duration_s"] = ready.pop("duration_seconds")
+                self.emit(self.proxy_write, ready)
             return self.helper
         self.app_write = os.dup(kwargs["pass_fds"][0])
         self.descriptors.append(self.app_write)
@@ -237,6 +245,7 @@ class ExecutionTests(unittest.TestCase):
                             "duplicate_play_ack": "completion evidence missing",
                             "unreapable": "timed out",
                             "proxy_failure_after_stop": "proxy exited unexpectedly",
+                            "wrong_duration_field": "proxy fixture readback mismatch",
                         }
                         with self.assertRaisesRegex((ValueError, AssertionError, RuntimeError, TimeoutError, EOFError, BrokenPipeError, subprocess.TimeoutExpired), reasons[fault]):
                             target.run(BUNDLE, mode, REF if mode == "REF" else HOST, path,
@@ -289,6 +298,7 @@ class ExecutionTests(unittest.TestCase):
     def test_late_play(self): self.exercise("REF", "late")
     def test_late_stop(self): self.exercise("REF", "late_stop")
     def test_no_ready(self): self.exercise("REF", "no_ready")
+    def test_wrong_duration_field_refused(self): self.exercise("REF", "wrong_duration_field")
     def test_no_schedule(self): self.exercise("HOST", "no_schedule")
     def test_eof(self): self.exercise("REF", "eof")
     def test_child_exit(self): self.exercise("HOST", "child_exit")
@@ -348,6 +358,67 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError): target.command("REF", REF, 10, REF_ARGS[1:])
         plan = target.Plan("HOST", target.original_single_run(BUNDLE/"original_sync_once.py"))
         with self.assertRaises(ValueError): plan.accept(schedule("REF"), START)
+
+    def test_fake_readiness_matches_registered_native_source(self):
+        source = (BUNDLE/"bt_proxy_speech_once.m").read_text()
+        line = next(line for line in source.splitlines() if '@"event":@"proxy_ready"' in line)
+        keys = set(re.findall(r'@"(\w+)":', line))
+        self.assertEqual(set(proxy_ready("REF")), keys)
+        self.assertIn("duration_seconds", keys)
+        self.assertNotIn("duration_s", keys)
+
+
+class DeviceGateTests(unittest.TestCase):
+    def test_missing_or_wrong_consent_never_spawns(self):
+        with patch.object(subprocess, "Popen") as spawn:
+            for consent in (None, True, "R3", ""):
+                with self.assertRaises(PermissionError):
+                    target.run_device_once(BUNDLE, "REF", REF, "unused", REF_ARGS, consent=consent)
+            spawn.assert_not_called()
+
+    def test_target_identity_precedes_reservation_and_launch(self):
+        with tempfile.TemporaryDirectory(dir=BUNDLE.parent) as directory, patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                target.run_device_once(BUNDLE, "REF", HOST, Path(directory)/"REF", REF_ARGS,
+                                       consent=target.R4_CONSENT)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            spawn.assert_not_called()
+
+    def test_player_requires_frozen_binary_not_only_receipt(self):
+        with patch.object(target, "PLAYER_BINARY_SHA", "0"*64), patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                target.run_device_once(BUNDLE, "REF", REF, "unused", REF_ARGS, consent=target.R4_CONSENT)
+            spawn.assert_not_called()
+
+    def test_explicit_entry_uses_real_spawn_and_consumes_once(self):
+        with tempfile.TemporaryDirectory(dir=BUNDLE.parent) as directory, patch.object(target, "_connected_run") as loop:
+            parent = Path(directory).resolve()
+            parent.chmod(0o700)
+            target.run_device_once(BUNDLE, "REF", REF, parent/"REF", REF_ARGS, consent=target.R4_CONSENT)
+            self.assertIs(loop.call_args.kwargs["spawn"], subprocess.Popen)
+            self.assertTrue(loop.call_args.kwargs["device"])
+            self.assertEqual((parent/"R4_REF_consumed.json").stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError):
+                target.run_device_once(BUNDLE, "REF", REF, parent/"another", REF_ARGS, consent=target.R4_CONSENT)
+            self.assertEqual(loop.call_count, 1)
+
+    def test_unsafe_or_symlink_evidence_parent_refused(self):
+        with tempfile.TemporaryDirectory(dir=BUNDLE.parent) as directory, patch.object(target, "_connected_run") as loop:
+            parent = Path(directory).resolve()
+            parent.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "owned private"):
+                target.run_device_once(BUNDLE, "HOST", HOST, parent/"HOST", consent=target.R4_CONSENT)
+            parent.chmod(0o700)
+            (parent/"alias").symlink_to(parent, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlinks"):
+                target.run_device_once(BUNDLE, "HOST", HOST, parent/"alias/HOST", consent=target.R4_CONSENT)
+            loop.assert_not_called()
+
+    def test_cli_still_requires_explicit_mode_and_consent(self):
+        result = subprocess.run([sys.executable, "-B", str(Path(target.__file__).with_name("device_once.py"))],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--authorize-device-once", result.stderr)
 
 
 if __name__ == "__main__":

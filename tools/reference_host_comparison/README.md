@@ -1,6 +1,6 @@
 # REF/HOST R2/R3 离线适配
 
-这是冻结 VP-C 的派生素材、事件补丁和离线验证，**没有获准的设备启动入口**。
+这是冻结 VP-C 的派生素材、事件补丁和验证。R3默认禁止设备；R4另有必须明确同意的单次入口。
 R2历史状态为 `PARTIAL`。R3已找到原Objective-C播放器源码，并通过同名重建得到原二进制的相同SHA；新增有限素材登记及REF/HOST单次连接的Fake验证。旧播放器、旧控制器和R2失败证据保持原样。
 
 ## R3播放器与执行连接
@@ -30,7 +30,13 @@ python3 -B tools/reference_host_comparison/test_integration.py
 
 不用旧 `--arm A/B`表示REF/HOST，不混传事件fd。原50ms迟到门槛保持；重复/外来run、缺事件、EOF、子进程失败、取消和时钟倒退均失败退出。活播放器最多收到一次STOP；已退出或断管道时记录无法投递并回收，不伪造STOP成功。
 
-**DEVICE_DISABLED=true**：`run()`默认在启动任何进程前拒绝；当前测试仅显式注入带禁用标识的Fake子进程。模块命令行也拒绝启动，没有 `--enable-device`选项。本轮完整连接指实际执行控制循环、Unix管道和身份检查，子进程为Fake；不是蓝牙/麦克风执行。未来实机调用仍需主控批准的启动入口、原系统权限、REF实验确认或HOST原UI采集/导出同意，不可把测试注入接口当成授权。
+**DEVICE_DISABLED=true**：`run()`默认在启动任何进程前拒绝；离线测试仅显式注入带禁用标识的Fake子进程。模块原命令行也拒绝启动。R3完整连接指实际执行控制循环、Unix管道和身份检查，子进程为Fake；不是蓝牙/麦克风执行。
+
+R4新增独立 `device_once.py` / `run_device_once()`，只供已明确批准的REF/HOST各一次实验。必须显式指定 `--authorize-device-once REF|HOST` 和 `--consent R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS`，并传入已核验的bundle、目标二进制及新的私有证据目录。该选项记录操作者已取得的授权，不产生或替代授权。缺少同意、目标/播放器SHA不符、证据目录不安全均零启动；私有父目录的 `R4_REF_consumed.json` / `R4_HOST_consumed.json` 排他创建，失败也不自动重试。默认入口不变；实机路径直接使用Popen，不伪造Fake标识。
+
+该入口保留原系统权限、REF可见实验确认、HOST原UI配置/采集/显式导出。SIGTERM及异常进入原STOP/进程回收路径；HOST不能传REF参数。实际完成只记 `CONTROL_COMPLETED_DEVICE`，声学结论和用户听感另行审核。证据和录音须保存在Git外0700目录，禁止未经单独授权公开音频。
+
+R4第一次实机准备发现旧控制器/Fake把播放器的 `duration_seconds` 误写为 `duration_s`，在启动REF前误拒绝正确素材。已修正控制器和Fake，并按已登记原生源码检查ready字段集合；错误旧字段继续拒绝。41项离线通过不能替代修复后的实机验证；原失败及单次尝试标记保留，未自动重试。
 
 同一个证据目录禁止复用，结果0600；命令与事件有界、失败不重试、清理失败不能写PASS。源码/产物身份和33项新增测试、原42/13/9回归见[R3报告](../../docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R3_player_integration.md)。READY仅表示离线技术准备；真实时序、音量、物理覆盖和参考隔离仍未验证。
 

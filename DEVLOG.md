@@ -547,3 +547,7 @@ Stage 6.11 Freeze：Backend pytest 208 passed / Web typecheck passed / 6.7 Memor
 ## 2026-10-19 · Stage7.5 · Acoustic Isolation P1
 
 DEBUG综合C的WARMUP_0S/4S离线准备REVIEW_PENDING：AGC-ON固定，预热持续drain/零留存，15秒评分内容窗与原720KB上限不变；新增Native7/69、Controller17/406，FAST8/FULL_CURRENT21、11不变量、Debug/Release/三Guard及Release隔离PASS。B0、Format7208/Lint176仍FAIL，4处已有file_length增长与C19/C23分开登记。详见[Test3报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_acoustic_isolation_P1_warmup_offline_preparation.md)。无App/Engine/设备或真人录音；HIL硬件未就绪，所有设备执行未授权，R3-M01/SQ-M1 OPEN，T3.2-A/Formal Test3 BLOCKED。
+
+## 2026-10-20 · Stage7.5 · REF/HOST R4续行
+
+用户授权恢复输出55%并执行既定对照；新增默认禁用、显式同意及单次尝试保护的独立实机入口。首次代理准备因真实`duration_seconds`与旧控制器/Fake的`duration_s`不一致退出，尚未播放或启动REF采集，HOST未运行。确认并离线修复适配器协议BUG，41/13/9项及三Guard通过；原失败保留，无设备自动重试、无生产音频改动或新录音公开。R4仍BLOCKED，AEC根因UNKNOWN，T3.2-A/Formal Test3保持BLOCKED。详见[R4报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_R4_device_comparison.md)。

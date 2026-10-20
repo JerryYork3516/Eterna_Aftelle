@@ -1,6 +1,6 @@
 """Single-run REF/HOST connection, derived from the registered sync_once.py loop.
 
-Device launch is disabled. Tests inject Fake children; there is no device-enable CLI.
+Device launch defaults to disabled. R4 requires separate explicit single-run consent.
 The original SingleRun and R2 clock translator remain the timing authorities.
 """
 import ctypes
@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import select
+import signal
 import subprocess
 
 from controller import original_single_run, ReferenceRun
@@ -17,6 +18,8 @@ DEVICE_DISABLED = True
 REF_BINARY_SHA = "54d2eaf775eccdf806c82f8996a7038db4b219e4ddba60ea8914122997385ade"
 HOST_BINARY_SHA = "ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118"
 HOST_DYLIB_SHA = "34ca1dc87ed28229fc2992503253d272eca4833dea5fdb2f7ceaf20c25267ba1"
+PLAYER_BINARY_SHA = "ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8"
+R4_CONSENT = "R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS"
 
 
 def disabled_spawn(*args, **kwargs):
@@ -100,11 +103,45 @@ def verify_bundle(bundle, mode):
 def run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn=disabled_spawn, clock=now_ns):
     if spawn is disabled_spawn or not getattr(spawn, "device_disabled", False):
         disabled_spawn()
+    return _connected_run(bundle, mode, executable, evidence, ref_arguments, spawn=spawn, clock=clock)
+
+
+def run_device_once(bundle, mode, executable, evidence, ref_arguments=(), *, consent=None):
+    if consent != R4_CONSENT:
+        disabled_spawn()
+    bundle, _ = verify_bundle(bundle, mode)
+    require_identity(bundle / "bt_proxy_registered", PLAYER_BINARY_SHA)
+    # Validate the target before reserving a run or starting even the waiting player.
+    command(mode, executable, 3, ref_arguments)
+    evidence = Path(evidence).absolute()
+    if evidence.resolve() != evidence:
+        raise ValueError("R4 evidence path must not traverse symlinks")
+    parent = evidence.parent
+    if parent.is_symlink() or parent.stat().st_uid != os.getuid() or parent.stat().st_mode & 0o777 != 0o700:
+        raise ValueError("R4 evidence parent must be owned private directory")
+    fd = os.open(parent / ("R4_" + mode + "_consumed.json"),
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as output:
+        json.dump(dict(schema_version=1, mode=mode, consent=consent, status="ATTEMPT_RESERVED"), output)
+
+    def cancelled(signum, frame):
+        raise InterruptedError("R4 operator cancellation")
+
+    previous = signal.signal(signal.SIGTERM, cancelled)
+    try:
+        return _connected_run(bundle, mode, executable, evidence, ref_arguments,
+                              spawn=subprocess.Popen, clock=now_ns, device=True)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn, clock, device=False):
     bundle, fixture = verify_bundle(bundle, mode)
     plan = Plan(mode, original_single_run(bundle / "original_sync_once.py"))
     evidence = Path(evidence)
     evidence.mkdir(mode=0o700, parents=False, exist_ok=False)
-    state = dict(schema_version=1, mode=mode, device_access="ZERO_FAKE_ONLY", events=[], commands=[], status="RUNNING")
+    state = dict(schema_version=1, mode=mode, device_access="R4_EXPLICIT_ONCE" if device else "ZERO_FAKE_ONLY",
+                 events=[], commands=[], status="RUNNING")
     helper = child = None
     read_fd = write_fd = None
     buffers = {}
@@ -173,12 +210,13 @@ def run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn=disabled_
             if not select.select([proxy_fd], [], [], .01)[0]:
                 continue
             ready = lines(proxy_fd)
+            for event in ready:
+                record(event)
             expected_duration = (264310 if mode == "REF" else 360310) / 24000
             if len(ready) != 1 or ready[0].get("event") != "proxy_ready" or ready[0].get("play_calls") != 0:
                 raise ValueError("invalid proxy readiness")
-            if ready[0].get("fixture_sha256") != FIXTURES[fixture.name] or abs(ready[0].get("duration_s", 0)-expected_duration) > .001:
+            if ready[0].get("fixture_sha256") != FIXTURES[fixture.name] or abs(ready[0].get("duration_seconds", 0)-expected_duration) > .001:
                 raise ValueError("proxy fixture readback mismatch")
-            record(ready[0])
             break
         environment = dict(os.environ)
         environment.pop("AFTELLE_VPC_COMPARISON_FD", None)
@@ -228,7 +266,8 @@ def run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn=disabled_
         state["audio_exit"] = child.wait(timeout=240)  # Original export/quit consent remains external.
         if state["proxy_exit"] != 0 or state["audio_exit"] != 0:
             raise RuntimeError("child exit failure")
-        state.update(status="PASS_OFFLINE_CONTROL_ONLY", run_id=plan.state.run_id)
+        state.update(status="CONTROL_COMPLETED_DEVICE" if device else "PASS_OFFLINE_CONTROL_ONLY",
+                     run_id=plan.state.run_id)
         return state
     except BaseException as error:
         state.update(status="FAIL", error=str(error))
