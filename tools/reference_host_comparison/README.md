@@ -1,4 +1,4 @@
-# REF/HOST R2/R3 离线适配
+# REF/HOST R2–R4 对照适配
 
 这是冻结 VP-C 的派生素材、事件补丁和验证。R3默认禁止设备；R4另有必须明确同意的单次入口。
 R2历史状态为 `PARTIAL`。R3已找到原Objective-C播放器源码，并通过同名重建得到原二进制的相同SHA；新增有限素材登记及REF/HOST单次连接的Fake验证。旧播放器、旧控制器和R2失败证据保持原样。
@@ -40,7 +40,20 @@ R4第一次实机准备发现旧控制器/Fake把播放器的 `duration_seconds`
 
 REF原产物是没有`.app`目录的CLI；当前CUA无法按名称、bundle ID或裸可执行路径选择它。`prepare_reference_app.py`仅复制登记SHA的可执行文件及原资源，生成含原Info字段的本地`.app`，只增加CFBundleExecutable/PackageType，不重编译、不签名改写Mach-O、不改VP/窗口/排程源码。其二进制SHA仍为原ADAPTED_REF值；工具本身不启动应用。新增两个离线用例验证原身份/资源、拒绝错误二进制及不覆盖已有包装，累计43项PASS。
 
-该包装已使CUA能识别应用，但本机读取REF原NSAlert仍返回`timeoutReached`。这不是原确认已经通过；不得绕过确认或据此宣称设备执行成功。2026-10-20续行仅做了两次采集前准备，均未PLAY或Capture；原生窗口自动化方式的明确授权仍待用户回复。实际设备实验各一次的预算未被录音消耗。
+该字节一致包装使CUA能识别应用，但原NSAlert仍不可控。用户明确允许AppleScript后，原async CLI入口在本机仍无可操作窗口。最终只在新的派生副本应用`ref-gui-entry.patch`：移除原`@main`、保留原main的`@MainActor`隔离、新增同步AppKit run-loop调用原main。音频驱动、Tap、VPCWindow、配置与排程不改。新产物名为`R4_GUI_ENTRY_ADAPTED_REF`，SHA为`65fadd2acbb09dc9cf19e8f8a93013ad795ff93cef543a3e65420d5d59a9a52b`；不能冒充旧R3/历史二进制。`prepare_reference_app.py`只接受这两个明确登记的REF身份，不开放任意SHA。
+
+重建时，将R2的`ADAPTED_REF`复制到新的Git忽略目录（排除`.build/.swiftpm`），然后只在该副本执行：
+
+```bash
+git -C "$REF_GUI_COPY" apply --unidiff-zero \
+  "$PWD/tools/reference_host_comparison/ref-gui-entry.patch"
+xcrun swift build --package-path "$REF_GUI_COPY" -Xswiftc -warnings-as-errors
+python3 -B tools/reference_host_comparison/prepare_reference_app.py \
+  --reference "$REF_GUI_COPY/.build/debug/apple-vp-reference" \
+  --info "$REF_GUI_COPY/Info.plist" --output "$NEW_REF_APP"
+```
+
+这不是自动升级二进制登记；工具链变化后SHA不符会停止，必须另行审核。构建、包装及Fake测试不会自动启动设备。R4最终经原REF可见同意、HOST原录音/导出确认，各取得一次真实录音及正常退出。用户报告两段都有时有时无、忽大忽小；居民来源仍不确定，声学对照INCONCLUSIVE。前序采集前准备失败均保留，未进行失败录音重录。详见[R4实际报告](../../docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_R4_device_comparison.md)。
 
 同一个证据目录禁止复用，结果0600；命令与事件有界、失败不重试、清理失败不能写PASS。源码/产物身份和33项新增测试、原42/13/9回归见[R3报告](../../docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R3_player_integration.md)。READY仅表示离线技术准备；真实时序、音量、物理覆盖和参考隔离仍未验证。
 

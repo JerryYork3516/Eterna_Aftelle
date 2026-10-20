@@ -16,6 +16,7 @@ from prepare_player import CONTROLLER_SHA, FIXTURES, require_identity, sha
 
 DEVICE_DISABLED = True
 REF_BINARY_SHA = "54d2eaf775eccdf806c82f8996a7038db4b219e4ddba60ea8914122997385ade"
+REF_GUI_BINARY_SHA = "65fadd2acbb09dc9cf19e8f8a93013ad795ff93cef543a3e65420d5d59a9a52b"
 HOST_BINARY_SHA = "ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118"
 HOST_DYLIB_SHA = "34ca1dc87ed28229fc2992503253d272eca4833dea5fdb2f7ceaf20c25267ba1"
 PLAYER_BINARY_SHA = "ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8"
@@ -24,6 +25,15 @@ R4_CONSENT = "R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS"
 
 def disabled_spawn(*args, **kwargs):
     raise PermissionError("DEVICE_DISABLED: no real process launch is authorized")
+
+
+def require_reference_identity(executable):
+    digest = sha(executable)
+    if digest == REF_BINARY_SHA:
+        return "R3_ADAPTED_REF"
+    if digest == REF_GUI_BINARY_SHA:
+        return "R4_GUI_ENTRY_ADAPTED_REF"
+    raise ValueError("Frozen REF identity mismatch")
 
 
 def now_ns():
@@ -47,7 +57,7 @@ def command(mode, executable, descriptor, ref_arguments=()):
         return [str(executable), "--apple-vp-acoustic-test", "--apple-vp-score-control-fd=" + str(descriptor)], {}
     if mode != "REF":
         raise ValueError("Expected REF or HOST, never legacy --arm A/B")
-    require_identity(executable, REF_BINARY_SHA)
+    require_reference_identity(executable)
     required = ["vp-c", "--authorize-vp-c", "--material-content-reviewed", "--enable-audio", "--arm-diagnostics"]
     values = ["--mode", "--duration", "--target-registration", "--material", "--material-sha256",
               "--material-pcm-sha256", "--study-id", "--output-dir"]
@@ -142,6 +152,8 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
     evidence.mkdir(mode=0o700, parents=False, exist_ok=False)
     state = dict(schema_version=1, mode=mode, device_access="R4_EXPLICIT_ONCE" if device else "ZERO_FAKE_ONLY",
                  events=[], commands=[], status="RUNNING")
+    if mode == "REF":
+        state["reference_variant"] = require_reference_identity(executable)
     helper = child = None
     read_fd = write_fd = None
     buffers = {}

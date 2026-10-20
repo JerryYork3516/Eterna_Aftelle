@@ -1,17 +1,18 @@
-"""Package the byte-identical ADAPTED_REF CLI for native window control; no execution."""
+"""Package a registered REF binary and unchanged resources; no execution."""
 import argparse
 import json
 from pathlib import Path
 import plistlib
 import shutil
 
-from integration import REF_BINARY_SHA
+from integration import require_reference_identity
 from prepare_player import require_identity, sha
 
 
 def prepare(reference, info, output):
     reference, info, output = map(lambda p: Path(p).absolute(), (reference, info, output))
-    require_identity(reference, REF_BINARY_SHA)
+    variant = require_reference_identity(reference)
+    binary_sha = sha(reference)
     metadata = plistlib.loads(info.read_bytes())
     if metadata.get("CFBundleIdentifier") != "org.eterna.research.apple-vp-reference-v1":
         raise ValueError("Unexpected REF identity")
@@ -28,10 +29,10 @@ def prepare(reference, info, output):
     shutil.copytree(resources, contents / "Resources" / resources.name)
     metadata.update(CFBundleExecutable=executable.name, CFBundlePackageType="APPL")
     (contents / "Info.plist").write_bytes(plistlib.dumps(metadata))
-    require_identity(executable, REF_BINARY_SHA)
+    require_identity(executable, binary_sha)
     copied = contents / "Resources" / resources.name
     assert before == {str(p.relative_to(copied)): sha(p) for p in copied.rglob("*") if p.is_file()}
-    receipt = dict(schema_version=1, binary_sha256=sha(executable), original_info_sha256=sha(info),
+    receipt = dict(schema_version=1, reference_variant=variant, binary_sha256=sha(executable), original_info_sha256=sha(info),
                    packaged_info_sha256=sha(contents / "Info.plist"), resources=before,
                    source_modified=False, device_execution="NOT_RUN")
     output.with_suffix(".receipt.json").write_text(json.dumps(receipt, indent=2))

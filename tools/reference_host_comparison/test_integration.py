@@ -376,7 +376,7 @@ class DeviceGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=BUNDLE.parent) as directory:
             output = Path(directory)/"REF.app"
             executable = prepare_reference_app.prepare(REF, info, output)
-            self.assertEqual(target.sha(executable), target.REF_BINARY_SHA)
+            self.assertEqual(target.sha(executable), target.sha(REF))
             metadata = plistlib.loads((output/"Contents/Info.plist").read_bytes())
             for key, value in plistlib.loads(info.read_bytes()).items():
                 self.assertEqual(metadata[key], value)

@@ -1,332 +1,269 @@
 # T3.2-A · R4 Controlled REF/HOST Device Comparison
 
-日期：2026-10-20（Asia/Shanghai）。**最新续行：环境、协议修复及字节一致的REF应用包装已完成，43项离线PASS；当前R4仍未完成，停在原REF确认窗口的UI控制可达性问题。REF/HOST实际采集仍均为0次，未播放代理。替代UI技术的明确授权请求待回复。详见第13节。**
+日期：2026-10-20（Asia/Shanghai）。**真实REF一次、HOST一次已完成；控制链通过，声学对照INCONCLUSIVE。用户报告两段都断续、忽大忽小。**
 
-第1–8节保留音量阻塞历史；第9–12节保留协议修复续行历史。下面的失败记录均未覆盖。
+## 1. 先给结论
 
-## 1. 结论与停止原因
+- **CONFIRMED**：两组取得真实VP/AGC读回、一次代理PLAY/STOP、封存、本地录音和正常退出证据。没有重录、第三组或新增真人实验。
+- **CONFIRMED（用户听感）**：两段“都有时有时无，忽大忽小卡顿”。代理声音完整、稳定保留未达到通过条件；居民声音是否可辨，用户也不确定，保持 **UNKNOWN**。
+- **CONFIRMED_DIFFERENCE**：固定共同数字窗[4,7.75)内，REF RMS −18.71dBFS，HOST −20.78dBFS。两组均有代理参考特征；蓝牙时延、未校准声学/处理延迟及混合声源限制因果比较。
+- **NO_CONFIRMED_CODE_ROOT_CAUSE**：修复了实验适配器的ready字段错误，并解决REF原生确认窗口不可控的启动阻塞；没有确认生产AEC、AGC、Converter或Runtime代码导致声学失败。
 
-只读预检取得 Mac mini 默认输出音量 **63%**，不符合本轮冻结条件 **55%**。输入音量60%、默认TinyUSB输入、默认Mac mini内置扬声器及小爱蓝牙输出的系统枚举符合目标，但不能抵消输出音量不一致。
+结果更接近任务的**情况B：REF和HOST在当前代理条件下都没有良好听感**。这支持优先检查共同代理/声学条件的混淆，但不等于这些条件已确认为根因；不能否定旧真人VP-C成功记录，也不能证明Aftelle集成独有故障。每组只有一次，不具备稳定差异的重复性证据。
 
-按照本轮“必要条件不满足则BLOCKED、不自动修改音量”的要求，立即停止设备执行准备。没有调整音量、路由或Microphone Mode，没有请求或消耗本轮设备实验同意，没有启动REF、HOST、NSSound或音频流。实机入口适配暂未实施，R3默认DEVICE_DISABLED保持不变。
+本轮不是严格单变量实验，不计正式53门禁；`AEC_ROOT_CAUSE=UNKNOWN`、`T3.2-A=BLOCKED`保持。
 
-**本报告不是新的声学失败证据，也不是R3离线集成回归失败。** 本轮只证明设备前置条件不满足，无法产生REF/HOST比较结果。未进入四种声学结果分类。
+## 2. Git、候选和保护
 
-## 2. Git与保护
-
-| 项目 | 实际证据 |
+| 项目 | 实际身份 |
 |---|---|
-| 开始HEAD / upstream / 实时远端 | `46ade941afc7b9570565c834f6601e1a85317b8b`，三方相同 |
-| 执行工作区 | 既有干净隔离worktree `vp-reference-host-preparation/Eterna_Aftelle` |
-| 隔离分支 / 推送目标 | `codex/reference-host-comparison-preparation` → `Test3-AppleVP-Clean` |
-| 开始tracked/untracked状态 | 空；没有纳入其他历史报告 |
-| 原受保护工作区 | 7个未解决冲突保留；以`GIT_OPTIONAL_LOCKS=0`读取，其status及index摘要与原保护快照一致 |
-| 修改范围 | 仅本报告；没有代码、测试、配置或历史证据修改 |
-| 回滚边界 | 单文件新增报告；没有跨文件修改，不新增空checkpoint |
+| R4最初三方基线 | `46ade941afc7b9570565c834f6601e1a85317b8b` |
+| 前序阻塞报告/适配交付 | `4a1b79e841bd73eb4564af40c7d22775984d631c`、`f2efb4be49d235070b7783cbab3d19b27dc5ec41`、`7cc53b74a7d6cb3bb1b6901755c1171e633c2f7d` |
+| 本次跨文件修改回滚点 | `f1b64586e86b2f67f7fddf709e04d9f8d985eefa`；空checkpoint，与7cc53b7的tree相同 |
+| 工作区 / 分支 | 干净隔离`vp-reference-host-preparation/Eterna_Aftelle`；`codex/reference-host-comparison-preparation`推送到`Test3-AppleVP-Clean` |
+| 执行身份 | 上述checkpoint加本次登记补丁；计划中的控制脚本SHA部分过期，实际二进制身份完整，源码receipt存在下述缺口 |
+| 原冲突现场 | status/index与保护快照相同，仍7个冲突；index SHA `e4c0f51f433f4f53a3bf77e82aabd5152617f5efdbe441f05559182a56c8b952` |
 
-原冲突工作区和ACE3索引、暂存文件、未跟踪证据均未写入。交付commit由包含本报告的Git对象及最终回复给出，不在报告内伪造自引用SHA。
+没有stash/pop、reset/clean、切原分支、解决冲突或强推；原未跟踪报告未暂存。没有生产音频、RuntimeCore、Provider、DR、正式Human Gate或取消逻辑修改。交付commit由包含本报告的Git对象和最终回复给出，不伪造自引用SHA。
+
+最终审计发现：`gui-entry-execution-plan.json`的integration.py SHA仍是前序7cc53b7版本，test_integration.py也保留中间版本SHA，没有在最终GUI身份登记后刷新。实际控制回执包含新`R4_GUI_ENTRY_ADAPTED_REF`标识、REF manifest的实际二进制SHA与登记一致，但**不能把该计划的旧源码摘要当成实际执行源码的完整逐字节证明**。原计划不回写；另存事后审计与交付源码摘要，不声称事后摘要具有事前效力。EXECUTION_SOURCE_RECEIPT=PARTIAL。这不改变已发生的两次录音，但限制可追溯性；不以再录音掩盖缺口。
 
 ## 3. 构建与素材身份
 
-以下SHA均在本轮重新计算并与R2/R3登记值一致；**只读文件，不执行二进制，不播放素材**。
+| 产物 | SHA-256 |
+|---|---|
+| 冻结REF源码 | commit `c64c7e2629ec775062fdc2ea1e4a934c73c1fa75`，`tools/apple_vp_reference_v1/` |
+| 原R3 ADAPTED_REF（保留） | `54d2eaf775eccdf806c82f8996a7038db4b219e4ddba60ea8914122997385ade` |
+| **实际REF：R4_GUI_ENTRY_ADAPTED_REF** | `65fadd2acbb09dc9cf19e8f8a93013ad795ff93cef543a3e65420d5d59a9a52b`，2906192bytes |
+| REF GUI入口补丁 | `ac6e22138e906f20c72eb846d8c57b634958efb1918bbe917f1dec2916bdfe28` |
+| HOST Debug主程序 | `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，40216bytes |
+| HOST Debug dylib | `34ca1dc87ed28229fc2992503253d272eca4833dea5fdb2f7ceaf20c25267ba1`，21885024bytes |
+| 已登记R3代理播放器 | `ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8` |
+| REF居民：16k/Mono/Float32，128000帧 | `c47d3df54cda56d010b0b6ded27bb75f1e92d9065f390dcb39bee260f317960b` |
+| HOST居民：24k/Mono/PCM16LE，114032帧 | `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea` |
+| REF代理：24k/Mono/PCM16LE，264310帧 | `1c7081f8271251804e01234be8a0ff8344062d09c311592634cb8fdf6b992d0a` |
+| HOST代理：同格式，360310帧，4秒零值前导 | `4a0b85b6fa3d14f14510d3f041ff1c41ee9b0363962c28dca812ce0ae83a55e8` |
 
-| 产物 | bytes | SHA-256 |
-|---|---:|---|
-| ADAPTED_REF Debug | 2904384 | `54d2eaf775eccdf806c82f8996a7038db4b219e4ddba60ea8914122997385ade` |
-| HOST Debug主程序 | 40216 | `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118` |
-| HOST Debug dylib | 21885024 | `34ca1dc87ed28229fc2992503253d272eca4833dea5fdb2f7ceaf20c25267ba1` |
-| R3派生代理播放器 | 93040 | `ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8` |
-| REF派生居民素材 | 512058 | `c47d3df54cda56d010b0b6ded27bb75f1e92d9065f390dcb39bee260f317960b` |
-| HOST原居民素材 | 228108 | `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea` |
-| REF原代理素材 | 528698 | `1c7081f8271251804e01234be8a0ff8344062d09c311592634cb8fdf6b992d0a` |
-| HOST派生代理素材 | 720664 | `4a0b85b6fa3d14f14510d3f041ff1c41ee9b0363962c28dca812ce0ae83a55e8` |
+实际REF是冻结源码加R2事件补丁、再加R4 GUI入口的当前工具链构建，**不是历史成功原二进制，也不是R3的字节一致包装**。对照R3派生Sources/Tests，只有`ReferenceTool.swift`入口声明及新增`ReferenceGUIEntry.swift`不同；AppleEngineDriver、VPCSession/VPCWindow、Tap、VP配置、排程、素材合同未改。
 
-REF仍是冻结来源 `c64c7e2629ec775062fdc2ea1e4a934c73c1fa75` 加R2事件补丁的ADAPTED_REF，不是历史成功实验原二进制。HOST复用已登记Debug构建。未重新构建或重跑FULL_CURRENT。R3的33项、R2的42/13项及原控制器9项PASS属于历史离线结果，本轮不计为重新执行。
+HOST复用R3登记构建，启动前/结束后重新核验主程序和dylib。导出内`build_identity/source_commit=null`保留；外部登记、执行计划和实际二进制SHA关联身份，不把缺字段写成内嵌校验已通过。未重建HOST Debug/Release，未重跑FULL_CURRENT。
 
-## 4. 本机只读设备结果
+## 4. 设备、权限和VP
 
-采集证据时间为本轮2026-10-20上午预检；本地身份回执写入时间为08:39:09。系统查询不启动音频流。
+| 条件 | REF / HOST实际结果 |
+|---|---|
+| 输入 | TinyUSB USB麦克风；输入60% |
+| 居民输出 | Mac mini内置扬声器；55%，未静音 |
+| 近端代理输出 | 小爱音箱Bluetooth，按登记UID绑定独立设备；44100Hz/2ch、alive=1；音量接口UNKNOWN |
+| 默认路线 | 默认输入TinyUSB、默认输出Mac内置；没有切换默认路线 |
+| 权限和原同意 | 系统原权限路径可用；REF原可见确认`userConfirmed=true, visible=true`；HOST采集/录音及JSON/WAV独立导出确认均经原UI完成；未操作新系统权限弹窗 |
+| VP实际属性 | 两组Input/Output=true、AGC=true、bypassed=false、inputMuted=false |
+| 输入格式 | 两组16kHz/3ch/Float32非交错；Native已经过Apple VP，并非未经处理的麦克风原音 |
+| Mic Mode、摆位/声压 | UNKNOWN；没有以“未修改”代替完全相同的实测证据 |
+| 结束查询 | 三目标设备alive=1/running=0，系统input60/output55/mutedfalse；无实验进程残留 |
 
-| 字段 | 实际值 | 判定 |
-|---|---|---|
-| 默认输入 | TinyUSB DFU runtime，USB，16000Hz，系统枚举1输入声道 | 路线符合；不是VP运行后的原生格式 |
-| 输入音量 | 60% | 符合目标 |
-| 默认输出 | Mac mini内置扬声器，48000Hz，2输出声道 | 路线符合 |
-| 输出音量 | **63%**；目标55% | **BLOCKED** |
-| 系统输出静音 | false | 符合目标 |
-| 近端代理输出 | 小爱音箱，Bluetooth，44100Hz，2输出声道 | 系统枚举存在；未执行播放 |
-| 小爱音量 / UID实际绑定读回 | UNKNOWN / NOT_RUN | 音量阻塞后未继续设备绑定检查 |
-| 麦克风系统权限 / Microphone Mode | UNKNOWN / UNKNOWN | 未查询外部TCC、未请求新权限 |
-| Aftelle/REF/代理播放器残留 | 未发现对应应用或实验进程 | 存在已加载的Core Audio输入驱动宿主；不把驱动宿主误记为Aftelle应用残留 |
-| 独占占用 / 实际可启动性 | UNKNOWN / DEVICE_UNVERIFIED | 不以设备枚举或进程列表证明可启动 |
+HOST真实Playback localFormat为16kHz/3ch/Float32、commonFormat raw1、interleaved=false。完整ASBD：formatID1819304813（lpcm）、flags41、bytesPerPacket4、framesPerPacket1、bytesPerFrame4、channelsPerFrame3、bitsPerChannel32、reserved0、sampleRate16000。Layout tag9633795（0x930003）、bitmap0、descriptionCount0、descriptions=[]、truncated=false。不推断三个声道的物理意义。
 
-没有将“系统枚举在线”当作实体声压、实际播放、蓝牙延迟或AEC效果证据。没有读取设备UID、私人录音、DR、Session或Memory内容。新回执位于Git忽略目录，未公开系统原始输出。
-
-## 5. 执行与声学证据
+## 5. 一对真实运行与时间线
 
 | 项目 | REF | HOST |
 |---|---|---|
-| 本轮运行次数 | 0 | 0 |
-| RunID | NOT_CREATED | NOT_CREATED |
-| 本轮独立用户实验确认 | NOT_REQUESTED | NOT_REQUESTED |
-| 实际VP/AGC/bypass/mute读回 | NOT_RUN | NOT_RUN |
-| 实际Input / Render / PLAY / STOP时间 | NOT_RUN | NOT_RUN |
-| Native / PCM分窗RMS、Peak、满幅及增益阶跃 | NOT_RUN | NOT_RUN |
-| Drop / Stale / Reject、首尾覆盖 | NOT_RUN | NOT_RUN |
-| 新录音、JSON/WAV导出、封存 | NOT_CREATED | NOT_CREATED |
-| 新音频进程与清理 | 未创建，无需实验Shutdown | 未创建，无需实验Shutdown |
-| 用户试听 | NOT_RUN，无本轮音频可试听 | NOT_RUN，无本轮音频可试听 |
+| RunID | `D2CFBD8B-B359-4298-8861-DC8DA614CD47` | `FD387D0B-6840-4702-9AE1-5A5D7ADCC998` |
+| Capture / 居民 / 代理 | 各1次 | 各1次 |
+| 控制器 / audio及proxy exit | CONTROL_COMPLETED_DEVICE / 0、0 | CONTROL_COMPLETED_DEVICE / 0、0 |
+| 观察/评分原点（mach_absolute纳秒） | 955623740845062 | 955776354965250 |
+| 代理PLAY调用→返回，相对原点 | 4.000241396→4.132341521秒 | 0.000316833→0.317676583秒（素材前4秒静默） |
+| 代理STOP调用 | 9.001104854秒 | 11.001656166秒 |
+| 居民请求 / Player.play | 原playRequest约2.004930秒 | play前3.093643583秒、返回3.101039958秒 |
+| 数字Render非零内容估计 | 4.140521979–7.888146979秒 | Player Tap 4.229411833–7.977068750秒 |
+| 居民完成 | Render源128000帧精确核对；原Player按原观察计划停止 | started/completed各1次；完成调用7.967298083秒 |
+| 停止/导出 | 原13秒formal加postroll后Stop/Seal、正常返回 | captureStopped调用15.001870333秒；Seal、先JSON后WAV、正常Quit |
 
-约t=4至t=7.75秒仍只是R2/R3登记的共同数字内容观察方案；本轮没有物理覆盖数据。不能比较回声残留、代理保留或音量稳定性。`SOURCE_REFERENCE_ISOLATION=UNKNOWN`继续保留。
+HOST Engine.start调用前/返回为score−4.187523667/−4.000849417秒；capture-start-return为−4秒。Input首次callback到达−3.872543167秒、首内容−4.004647167秒。Player Render首次到达−3.842854917秒、首内容−3.905897167秒。**调用、callback到达、内容时间分开登记，不混用。**
 
-## 6. 实际检查与exit
+HOST四阶段实际软件事件：human_only +0.025848250秒，double_talk +3.007503583秒，human_tail +9.005979333秒，quiet +11.021425875秒。这是软件指导，不是物理发声。派生代理设计在HOST 0–3秒静默，因此该低能量段不能验证历史真人首3秒静音。
 
-| 检查 / 命令 | 本轮结果 |
+REF由原continuous tick锚点转为absolute纳秒，HOST消费原ScoreControl纳秒。主分析窗固定[4,7.75)，没有择优改窗。REF样本位置使用首原生host锚点+连续sampleTime，HOST使用packet内容时间；处理/空气延迟未校准。REF主Mixer Tap和HOST Player Tap位置不同，均不等于物理声压或Apple内部AEC参考。
+
+代理PLAY调用分别耗时132.10/317.36ms，源特征匹配相对偏移也不同，故`COMPARISON_LIMITED`；不把软件Start当蓝牙物理起音，不声称精确物理重叠。
+
+## 6. Native/PCM和幅度
+
+两组本次Native三声道相同：REF逐样本bit一致；HOST有界统计各窗有限样本与ch0数值相等。只说明本次数据，不推广其他运行、不定义Apple内部声道角色。没有未经Apple VP处理的原音对照。
+
+共同[4,7.75)窗使用统一Float幅度：
+
+| 数据 | 样本数 | RMS / dBFS | Peak / dBFS | 非有限 / abs≥1 |
+|---|---:|---|---|---|
+| REF Native ch0 | 60000 | 0.115978 / −18.71 | 0.985116 / −0.1303 | 0 / 0 |
+| HOST最终PCM | 90000 | 0.091400 / −20.78 | 0.999786 / −0.0019 | 0 / 0 |
+
+HOST混合RMS低约2.07dB，不代表近端语音保留低2.07dB。HOST Native峰值0.999981761，PCM精确端点0；REF Native满幅0。峰值接近满幅，但本次未证实削波。REF Render仅ch0非零，ch1/ch2零，不与Input三声道相同混淆。
+
+HOST分窗统计（Native每声道相同；最终PCM24k/Mono）：
+
+| 窗口 | Native RMS / Peak | PCM RMS / Peak | PCM−Native RMS dB |
+|---|---|---|---:|
+| 4秒预热 | 0.00004506 / 0.00071235 | 0.00004488 / 0.00070190 | −0.03373 |
+| 0–3秒 | 0.00042184 / 0.01396464 | 0.00042178 / 0.01397705 | −0.00129 |
+| 3–9秒 | 0.09231500 / 0.99998176 | 0.09231348 / 0.99978638 | −0.00014 |
+| 9–11秒 | 0.10143996 / 0.41909575 | 0.10143561 / 0.41607666 | −0.00037 |
+| 11–15秒（部分） | 0.01654304 / 0.22102770 | 0.01658501 / 0.22070313 | +0.02201 |
+
+该幅度关系降低了本次后级普通转换显著吞声/放大的优先级，不能排除Apple输出/参考归属、真实近端或所有瞬时内容问题。
+
+最大正20ms RMS阶跃：REF t5.68秒，0.043556→0.418654（+19.66dB）；HOST t6.54秒，0.126563→0.455887（+11.13dB）。自然语音起始也产生阶跃，不凭此定义AGC BUG或新声学阈值；用户报告的听感波动独立保留。
+
+HOST软件quiet后11–11.5秒RMS−26.71dBFS，11.5–12秒降至−90.20；REF对应11–11.5秒−85.67。可能涉及蓝牙/处理尾部，但来源和因果 **UNKNOWN**，不直接认定陈旧播放或居民残响BUG。
+
+## 7. 连续性、尾部和清理
+
+REF Input/Render各136records、217600frames；总272records/5222400PCMbytes。invalid/lost/overflow/pending/discarded/suppressed均0；sealed及独立verify通过，integrityStatus=VERIFIED。continuityUnknownRecords=2、timestampStatus=UNVERIFIED保留，容器完整性不等于物理时序或AEC PASS。
+
+REF听音ch0为13.6秒，首host锚点模型约覆盖观察−0.165603至13.434397秒；formal13数字窗覆盖，但不能证明13.5秒postroll全覆盖。原`stoppedEngineObserved=false`是VPCSession Stop后赋值`engine.isRunning`，表示不再运行，不是Stop失败。
+
+HOST Native189buffers/302400frames；generated944/drained944/queued_at_seal0。预热199包不留存，跨边界排除1包、窗外排除1包，评分743包/713280bytes（低于720000）。seq202–944、每包960bytes、20ms连续；drop/stale/rejection/underrun0、routeChanged0。
+
+评分覆盖[+0.015352833,+14.875352833)，14.86秒；缺前15.352833ms、尾124.647167ms，共140ms。quiet已有3.853926958秒有效drain，≥1秒。**queued0仍TAIL_COVERAGE=PARTIAL**；converter partial tail=null/UNKNOWN。未补零/改时间戳。
+
+HOST观测skippedUpdates=2，Input观察187buffers而Native189；观察sample/host discontinuities各2、最大end gap约100ms，状态UNKNOWN_OBSERVATION_LOSS。与观测漏更新相容，不能确认真实丢帧；已接纳PCM连续也不能恢复漏掉的全部回调证据。Render189buffers、sampleDiscontinuities0，backwards/duplicate/missing/stale/invalid0；最大start interval100.002459ms/end gap2.459µs。
+
+callbacksClosed=true，captureStopped有记录；configurationChanged两次位于准备/停止，run内generation捕获1/播放1、configurationID2。导出顶层capture_state=capturing保留原快照，不改写为stopped；正常退出和设备running0由独立查询确认。两组STOP回执success=true/not_playing=1，delegate finished success=false在主动STOP时发生，原回执不改写，不误记为进程失败。audio/proxy exit均0。
+
+## 8. 源特征和负控
+
+同一3.75秒模板、相同候选起点[3.75,5.0]秒，两组统一分析到16k，不重写原WAV；相同20ms包络、相同窗反转模板负控，无阈值调整。
+
+| 指标 | REF | HOST |
+|---|---:|---:|
+| 代理波形绝对相关峰（有符号值） | 0.3659（−0.3659） | 0.3410（−0.3410） |
+| 代理反转模板负控 | 0.0610 | 0.0798 |
+| 代理包络相关 | 0.3652 | 0.3402 |
+| 代理特征最佳起点 | 4.5448秒 | 4.7258秒 |
+| 居民波形绝对相关峰 | 0.0525 | 0.0412 |
+| 居民反转模板负控 | 0.0536 | 0.0578 |
+| 居民包络相关 | 0.2318 | 0.1778 |
+
+**SUPPORTED_HYPOTHESIS**：两组存在代理源特征，不能证明全文、人耳可懂和持续保留。居民匹配没有超过该负控，未形成强孤立波形证据；低相关不能排除经AEC改变的可听居民残留。同中文合成声、混合声源及同Mac输出限制来源分离。
+
+SOURCE_REFERENCE_ISOLATION=UNKNOWN。约181ms源特征偏移不是校准物理时延，不直接归因于蓝牙或Aftelle。REF manifest保留旧LIVE_HUMAN_RESEARCH/phrase/protocol文案，但本轮实际是BT代理、无人讲话，sourceQualificationGranted=false；不把旧文案作为真人证据。
+
+## 9. 用户试听原话
+
+提供顺序01=REF原生ch0，02=HOST原应用评分WAV；未自动播放。原文：
+
+> 01能听到语音，但说的是 我们 不确定是不是居民语音，02一部分清楚。两段语音都有时有时无，忽大忽小卡顿。你再听一遍得出结论，一会提交推送时也让GPT审核
+
+不把“不确定”改写为居民回声确认。Codex没有人耳复听能力，本地分析不冒充独立听感。分类如下：
+
+| 结论项 | 状态 |
 |---|---|
-| `git rev-parse HEAD`、`git rev-parse '@{upstream}'`、`git status --short`、`git ls-remote origin refs/heads/Test3-AppleVP-Clean` | exit0；开始三方相同，隔离工作区干净 |
-| Python只读比对原冲突工作区status/index | exit0；status_same=true、index_same=true、conflicts=7 |
-| `/usr/sbin/system_profiler SPAudioDataType -json` | exit0；仅提取目标设备和默认路线字段 |
-| `/usr/bin/osascript -e 'get volume settings'` | exit0；output63/input60/mutedfalse |
-| `ps -axo pid=,comm=`，按实验程序名称筛选 | exit0；未发现对应应用/实验进程 |
-| Python `hashlib.sha256`读取第3节8个指定产物/非私人素材 | exit0；8/8身份匹配 |
-| `bash tools/secret_guard/check.sh` | exit0；secret-guard: ok |
-| `git diff --check`及报告范围/隐私/原工作区保护核验 | exit0；仅新增本报告，无私人路径、设备标识、音频载荷或密钥；原status/index不变 |
-| 新增实机启动入口、Fake回归、构建、FULL_CURRENT | NOT_RUN；预检阻塞，无实现变更 |
+| REF/HOST控制、封存、退出 | PASS（工程范围） |
+| REF/HOST代理完整性及音量稳定 | FAIL_USER_REPORTED |
+| 居民是否可听 | UNKNOWN |
+| 精确物理双讲时长 | NOT_EVIDENCED |
+| HOST首3秒真人保留 | NOT_TESTED；本方案是代理静默 |
+| 用户试听 | COMPLETED_WITH_LIMITATIONS；声源辨认不确定 |
+| Aftelle独有集成缺陷 / Apple算法BUG | UNKNOWN / UNKNOWN |
 
-本地脱敏回执：`.build/reference_host_r4/precheck/identity-and-block.json`（目录0700、文件0600）。它保存已发生的系统查询结果和本轮摘要核验，不包含设备UID或音频载荷。交付提交及推送后三方HEAD核验结果见最终回复。
+交GPT主控复审本报告与本机两段原始证据；当前不能把任何一方判为正式真人双讲PASS。要求主控审核不等于新增公开音频授权，本次Git不含录音。
 
-## 7. 五维SELF_REVIEW与问题等级
+## 10. 环境和最小修复记录
+
+1. 原输出63%不符55%，按门禁停下、零采集。用户随后明确“同意且授权，修复环境后重新执行”，据此仅恢复输出55%，读回input60/output55/mutedfalse，不改默认路线/Mic Mode/小爱音量。
+2. 首次准备因真实`duration_seconds`与R3/Fake的`duration_s`不一致exit1，REF尚未启动、PLAY/Capture0。确认实验适配器协议BUG；最小修正字段、Fake采用真实协议、增加原生源码字段核对与错误旧别名拒绝。不改阈值/播放器二进制。
+3. 裸async CLI、字节一致App包装、Terminal/LaunchServices准备无法操作原REF确认。CUA超时不是同意成功；AppleScript经用户明确授权后也未读到可用窗口。无音频UI探针对照支持本机async入口/AppKit运行循环可达性阻塞，不推广为所有环境的系统BUG。
+4. 新派生副本移除旧@main、显式保留旧main的@MainActor隔离，新增同步AppKit运行循环调用原main。原同意窗口恢复，AppleScript按授权点击原按钮，没有跳过原确认/系统权限。首次编译actor推断错误exit1，显式恢复原隔离后build0。新产物单独登记，不冒充旧参考。
+5. Swift42首轮漏传原R2_ASSETS_DIR，两项fixture失败；补齐环境后42通过。Python43初次将App内路径用作要求资源旁置的packager测试输入失败，改用同SHA编译CLI后43通过。实际设备用同SHA登记App；未降低断言。
+
+准备中确有多次进程启动和UI探查，不能称只启动过一次程序；均在Capture前停止且PLAY0。最终实际录音REF/HOST各1次，未失败重录。旧失败控制回执、尝试标记、UI-only探针及前序Git报告全部保留。
+
+默认integration.run()/原模块CLI仍DEVICE_DISABLED；单独实机入口需明确同意、精确二进制/素材SHA和排他标记，直接Popen而非假装Fake。只新增GUI身份，不开放任意SHA。原生产音频行为不改。
+
+## 11. 实际测试/命令及exit
+
+绝对参数、逐文件SHA、耗时/日志摘要仅留Git忽略`.build/reference_host_r4/resume1–3/`；私人注册不公开。下表不是历史PASS冒充新运行。
+
+| 命令 / 检查 | cases / 结果 | exit / 耗时 |
+|---|---|---|
+| 原Git控制器+真实ready形状Fake最小复现 | 精确ValueError；零真实进程 | 复现器0；原调用异常 |
+| resume1 `python3 -B tools/reference_host_comparison/test_integration.py` | 41 PASS | 0 / 0.5743s |
+| `R2_ASSETS_DIR=… R2_ORIGINAL_CONTROLLER=… python3 -B tools/reference_host_comparison/test_control.py` | 13 PASS | 0 / 0.8410s |
+| 原登记`sync_once.py --self-test` | 9 PASS，device_access=ZERO | 0 / 0.0311s |
+| `xcrun swift build --package-path .build/reference_host_r4/REF_GUI -Xswiftc -warnings-as-errors` | GUI派生REF；首错actor构建exit1保留 | 最终0 |
+| `R2_ASSETS_DIR=… xcrun swift test --package-path .build/reference_host_r4/REF_GUI -Xswiftc -warnings-as-errors --filter 'VPCWindowTests\|VPCCommandTests\|VPAMaterialSafetyTests\|VPCComparisonEventsTests\|ComparisonMaterialTests'` | 42 PASS；漏fixture环境exit1另留 | 0 / 1.8012s |
+| `R3_BUNDLE=… R3_REF_EXECUTABLE=<GUI编译CLI> R3_HOST_EXECUTABLE=… python3 -B tools/reference_host_comparison/test_integration.py` | 43 PASS；原R3二进制另核验接受，错目标零启动 | 0 / 0.5542s |
+| 交付冻结后同一43项命令（仅Fake，零设备） | 43 PASS；6份控制/测试源码执行前后SHA相同，单独新receipt | 0 / 0.6214s |
+| 登记SwiftFormat `--lint --swift-version 5 --reporter json <ReferenceGUIEntry.swift>` | 新入口0违规；PATH简写首次127另留 | 0 / 0.0231s |
+| 登记SwiftLint `lint --strict --quiet --reporter json <ReferenceGUIEntry.swift> <ReferenceTool.swift>` | 增量0违规 | 0 / 0.2843s |
+| `bash tools/architecture_guard/check.sh` | architecture-guard: ok | 0 / 0.0947s |
+| `bash tools/secret_guard/check.sh` | secret-guard: ok | 0 / 0.1036s |
+| `bash tools/realtime_release_route_guard/check.sh` | 六项PASS，禁用符号0 | 0 / 0.5269s |
+| `python3 -B tools/reference_host_comparison/device_once.py --authorize-device-once REF --consent R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS --bundle … --executable … --evidence … -- <原vp-c参数>` | VP_ON/duration16（原观察13秒+0.5秒postroll）/8秒素材、原PCM摘要及注册、原授权参数；真实REF1次 | 0；audio/proxy各0 |
+| 同入口`--authorize-device-once HOST`，不传REF参数 | 原ScoreControl和原UI；AGC_ON/WARMUP_4S/RECORDING；真实HOST1次 | 0；audio/proxy各0 |
+| 本次GUI REF `verify <本轮REF_capture>` | container_complete=true/invalid_reasons0/272records | 0 |
+| `python3 -B .build/reference_host_r4/resume3/analyze_current.py` | 仅本轮两组与登记合成源；固定窗、幅度/相关/负控 | 0 |
+| 结束只读preflight/volume/限定进程查询 | 三设备running0，60/55未静音，无实验进程 | 各0 |
+| 最终白名单、diff、语法、证据SHA/权限、冲突保护 | 7份授权文件；4份Python AST、正/反向补丁check、4份证据SHA/0600、原7冲突status/index不变 | 0 |
+| HOST Debug/Release重建、FULL_CURRENT、真人C | 未重新执行；没有生产变更或新增真人授权 | NOT_RUN |
+
+正负控覆盖：默认设备禁用、同意缺失/错误、错二进制/素材、原协议错字段、错run/时钟/重复/迟到/缺事件、EOF、子进程失败、取消、hung/unreapable、目录覆盖/权限/symlink拒绝、PLAY/STOP单次及环境隔离。没有用Mock冒充实际蓝牙。
+
+关键日志SHA：GUI build `fbba68009c3ea9fe142476e0506af400d2817f5954129fbfec6050a5e5da37ec`；Swift42 `d722350c4808d31ea9c191594fc4f996f53337a8d5cdf08f3dd153a7bdf94171`；设备前Python43 `f929d577018e51fade128381de9aabff860c0f29bf34e387461db7ed91dfa159`；交付冻结Python43 `00e87df373ace7912fc1fb3ca995b31ccf7767e0369b4bc11a41fffbdfbdfed2`；有限分析 `1dcd18a7a04ee1328aac6d76e16182674cbf2f9b43492bda9a741fd1a9a3c61a`。初始失败日志未覆盖；最后一次Fake只证明交付候选有效，不修补此前设备执行源码receipt缺口。
+
+## 12. 本地证据和隐私
+
+目录0700、文件0600、本人所有、无symlink；新RunID不覆盖旧文件。结束空闲约1.87GB。Git仅脱敏报告和最小适配/测试/索引，没有WAV、PCM、私人manifest、设备UID或系统原始日志。
+
+| 本地证据 | bytes / 格式 | SHA-256 |
+|---|---|---|
+| REF封存evidence.vp0 | 272条原生Input/Render记录；原件未改 | `925352c28e47ac8b9ec3229d7d3b8d5b37e42ae0c8bd9f1c15318d9451368e27` |
+| REF_native_input_ch0.wav | 870458；16k/Mono/IEEE Float32；13.6秒 | `c20dd1b313fe7c8669dd9837efb66d40c5a14edd35556912587f7dd284a7d7eb` |
+| HOST本RunID统计JSON | 64989 | `0d26f11cc31c5f713ecb664a5b475a84a5d9fb0d301e26b81dc5bc95de2f34db` |
+| HOST本RunID原导出WAV | 713324；24k/Mono/PCM16LE；14.86秒 | `6c3447aaaf639f59f000e3a9d35f51186b8c25775801a5580be92fc2f8e63e1a` |
+
+REF听音仅提取已核验bit一致的ch0，Float32样本逐字节保留；未归一化、降噪、重采样或改增益，原容器SHA不变。HOST为原应用直接导出。未自动试听、转录或上传音频。交GPT主控审核不等于公开原音授权。
+
+## 13. 五维SELF_REVIEW、问题和后续
 
 | 维度 | 结论 |
 |---|---|
-| TECHNICAL | BLOCKED：输出63%不满足55%准入；实机入口未开放，没有设备执行结果 |
-| ENGINEERING | PASS_SCOPED：仅新增报告，R3默认禁用保留，无生产行为/测试/参数变更；新增规范B类0 |
-| EVIDENCE | PASS_FOR_BLOCKED_REPORT：实际查询与exit、构建/素材SHA及0次执行明确；未把历史Fake PASS冒充当前实测 |
-| CONSISTENCY | PASS：遵守音量不符停止、禁止自动调整与新的用户确认门槛；原7冲突及历史报告不动 |
-| Stage7 Forbidden Checklist | PASS：无Runtime/Provider/DR/正式Human Gate变更，无Engine/Tap/平台新增，无录音/播放或未授权跨App音频执行 |
+| TECHNICAL | PASS_CONTROL / INCONCLUSIVE_ACOUSTICS：真实执行、VP读回、安全清理完成；用户报告两段不连续，根因未定位 |
+| ENGINEERING | PASS_SCOPED：原拓扑/算法/转换不改；仅实验启动和控制适配，42/43及13/9回归、Guard有真实记录 |
+| EVIDENCE | PARTIAL：听感原话、原SHA、固定窗和负控保留；物理时间/参考隔离、完整尾部、观测skip、计划源码SHA和内嵌identity仍有缺口 |
+| CONSISTENCY | PASS：GUI REF独立登记，不冒充历史二进制；原冲突/旧证据不动，不把代理结果变成真人或居民来源确认 |
+| Stage7 Forbidden Checklist | PASS：无Runtime/Provider/DR/正式Human Gate变更，无新Engine/Tap/Scheduler；设备/导出走本轮授权及原确认 |
 
 - 新增CRITICAL=0。
-- **MAJOR-R4-PRECHECK-01：OPEN**，默认输出音量不符合冻结条件，阻塞本轮比较。这是实验准入问题，不是确认的生产代码BUG。
-- 新增MINOR=0；原蓝牙物理延迟、摆位/声压、参考隔离及格式/尾包限制继续保留。
-- 历史C19/C23及全量SwiftFormat/SwiftLint债务保持原登记；本轮不清理、不重测。
+- **MAJOR-R4-ACOUSTIC-01 OPEN**：用户报告两组均断续/音量波动，无法据此支持Aftelle独有根因。是代理声学未通过，不是确认生产代码BUG。
+- **MINOR-R4-EVIDENCE-01 OPEN**：HOST skip2、评分140ms首尾缺口/Converter tail UNKNOWN、计划源码SHA及内嵌identity缺失；REF timestampStatus UNVERIFIED，分别保留。
+- 原输出音量、ready协议、原生确认可达性阻塞已关闭，原失败保留；新增B类问题0，历史C19/C23及全量lint/format债务不清理、不扩大。
 
-唯一下一步：由用户或主控先恢复/确认冻结的55%输出条件，再发起R4续行；重新只读核验后完成最小显式实机入口及离线负控，并取得本轮REF/HOST实验明确同意。不可把本报告或条件恢复当作设备启动授权。
-
-## 8. 状态
+**唯一下一项**：主控复审本次共同听感失败、本机原始证据及来源隔离限制，再决定独立近端/真人主线验证。本轮不追加HIL、AGC切换、设备实验或生产修复。
 
 ```ini
 R3_INTEGRATION=PASS_OFFLINE_HISTORICAL
-R4_PRECHECK=BLOCKED
-R4_DEVICE_COMPARISON=BLOCKED
-R4_DEVICE_ENTRY=NOT_IMPLEMENTED
-REF_DEVICE_RUNS=0
-HOST_DEVICE_RUNS=0
-READY_FOR_USER_CONSENT=false
-DEVICE_EXECUTION=NOT_AUTHORIZED
-USER_LISTENING=NOT_RUN
+R4_PRECHECK=PASS_AFTER_AUTHORIZED_ENVIRONMENT_REPAIR
+R4_DEVICE_COMPARISON=COMPLETED_WITH_LIMITATIONS
+R4_CONTROL_CHAIN=PASS
+EXECUTION_SOURCE_RECEIPT=PARTIAL
+REF_DEVICE_RUNS=1
+HOST_DEVICE_RUNS=1
+COMPARATIVE_ACOUSTIC_RESULT=INCONCLUSIVE
+REF_PROXY_AUDIO=FAIL_USER_REPORTED
+HOST_PROXY_AUDIO=FAIL_USER_REPORTED
+USER_LISTENING=COMPLETED_WITH_LIMITATIONS
+RESIDENT_ECHO=UNKNOWN
+COMPARISON_LIMITED=true
 SOURCE_REFERENCE_ISOLATION=UNKNOWN
+TAIL_COVERAGE=PARTIAL
+NO_CONFIRMED_CODE_ROOT_CAUSE=true
+DEVICE_RETEST=NOT_AUTHORIZED
 FORMAL_TEST3_AUTHORIZED=false
 Test3.execution_authorized=false
 AEC_ROOT_CAUSE=UNKNOWN
 R3-M01=OPEN
 T3.2-A=BLOCKED
 Formal_Test3=BLOCKED
-T3.3=NOT_STARTED
-```
-
-## 9. 用户授权续行、环境修复与最小入口
-
-用户随后明确表示“同意且授权，修复环境后重新执行”。本次据此允许恢复输出55%，以及既定REF/HOST各一次、原可见确认、仅本机录音与分析；没有再次索要相同授权。
-
-- 续行开始HEAD/upstream/实时远端均为 `4a1b79e841bd73eb4564af40c7d22775984d631c`；隔离工作区干净。
-- 跨文件修改前checkpoint：`f9edc66fcec42e2210be9339799720597da7b28c`。
-- 实际执行 `osascript -e 'set volume output volume 55'`，随后读回output55/input60/mutedfalse。没有改变默认路线、Mic Mode或其他设备音量。
-- 用已登记源码重建只读 `--preflight` 查询器；不走其播放分支。CoreAudio读回内置输出scalar `0.5500001311302185`；TinyUSB、内置扬声器、小爱均alive=1、running=0，默认输入/输出与目标相同。小爱44100Hz、2声道、未静音；小爱音量UNKNOWN。
-- 已验证REF二进制的 `permission-status` 返回 `AUTHORIZED; no audio started`、exit0。没有请求或点击新的系统权限。HOST自身权限及VP读回仍待其实际启动，不能用REF权限代替。
-- 新建Git外受控目录，0700、当前用户拥有、无symlink；注册文件/控制回执0600；约1.4GiB空闲。新REF注册仅登记本次系统查询的目标匿名身份并保留原合同。没有读取旧私人录音。
-
-最小实现只在 `tools/reference_host_comparison/`：
-
-1. 原 `run()` 默认禁止实机及Fake注入方式保持。新增独立 `run_device_once()` 和 `device_once.py`，显式模式/同意令牌才可执行；直接使用Popen，不伪造Fake身份。
-2. 启动前核验目标REF/HOST及HOST dylib、R3派生播放器固定SHA、bundle和素材；证据父目录要求0700/本人所有/无symlink。原REF系统/可见确认及HOST原UI采集/导出流程不变。
-3. 每组排他创建私有尝试标记；异常也保留，避免自动重试。SIGTERM进入原STOP、terminate/wait及必要kill回收路径；无法回收不得PASS。
-4. 模式、时钟、素材、PLAY/STOP窗口及原50ms迟到门槛不变。实际控制完成单独记 `CONTROL_COMPLETED_DEVICE`，不冒充声学PASS。
-
-## 10. 唯一实际启动尝试与确认的适配BUG
-
-实际调用 `python3 -B tools/reference_host_comparison/device_once.py --authorize-device-once REF --consent R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS --bundle "$R3_BUNDLE" --executable "$ADAPTED_REF" --evidence "$PRIVATE/REF_controller" -- <原vp-c参数>`，原vp-c参数及素材哈希见本地执行计划。**exit1，错误 `ValueError: proxy fixture readback mismatch`。**
-
-发生位置：`integration.py:_connected_run` 的proxy_ready检查。R3派生播放器经固定身份核验后启动一次；其真实ready回执使用 **`duration_seconds`**，R3控制器读取 **`duration_s`**，缺字段回退0后触发原0.001s时长校验。R3的Fake也使用了同一个错误字段，因此历史33项及本次初始39项离线PASS没有发现原生协议不一致。
-
-证据与等级：
-
-| 判断 | 等级 / 依据 |
-|---|---|
-| ready协议字段不一致 | **CONFIRMED_CODE_BUG（独立实验适配器）**；已登记原生源码的proxy_ready Emit字段与R3控制器直接不一致 |
-| 此错误可独立复现 | **CONFIRMED**；从Git导出原控制器，以真实字段形状的Fake运行同一控制循环，精确复现相同ValueError，仅创建一个Fake播放器、发送STOP、不启动Fake REF；拦截所有真实Popen |
-| 实际素材文件损坏或SHA不符 | **NOT_EVIDENCED**；指定文件SHA仍一致；错误来自缺失时长字段，不能记为素材损坏 |
-| REF/HOST/AEC生产代码根因 | **UNKNOWN**；本错误发生在REF启动前，与历史真人静音、Native满幅或双讲回声没有已证因果关系 |
-
-最小修复是读取原生协议的 `duration_seconds`，不接受旧错误别名、不调整阈值。Fake改为真实字段，并新增从已登记原生源码提取ready字段集合的检查及错误旧字段拒绝负控。以后失败前也保留经过过滤的ready元数据。没有修改原播放器二进制或音频算法。
-
-本次原失败发生在新增过滤记录语句之前，因此实际失败回执的events为空；**没有可恢复的实际duration数值**，本报告不编造该数值。原生源码只用于确认协议和控制路径，不能代替遗漏的回执。
-
-| 实际次数 / 证据 | REF | HOST |
-|---|---:|---:|
-| 显式设备控制器尝试 | 1 | 0 |
-| 代理播放器准备进程 | 1 | 0 |
-| 代理PLAY | 0 | 0 |
-| 音频采集程序启动 / Capture | 0 / 0 | 0 / 0 |
-| 原实验可见确认 | 未到达 | 未到达 |
-| 新RunID、评分PCM、WAV、原实验JSON | 均未生成 | 均未生成 |
-| VP/AGC读回、Native/PCM、Render/Drop、共同物理覆盖 | NOT_RUN | NOT_RUN |
-| 用户试听 | 无本轮音频，NOT_RUN | 无本轮音频，NOT_RUN |
-
-原失败控制回执保留status=FAIL、commands=[STOP]，没有PLAY；REF_capture目录不存在。播放器已回收，无REF/HOST/代理实验残留进程。实际REF音频程序的Popen位置在上述校验之后，未被执行。没有为了凑一对结果启动HOST，没有追加设备尝试；本次尝试标记保留。
-
-本地私有证据目录：受控Caches下的 `com.eterna.aftelle.ref-host-comparison/r4-983F2D13-0495-4C8A-959E-6FA5766528C6/`；只包含本次注册/尝试标记/失败控制统计，无新麦克风音频。Git忽略的数值证据为 `.build/reference_host_r4/resume1/`，其中保留执行计划、原失败摘要、最小离线复现及所有测试日志，不公开私人注册或设备身份。
-
-## 11. 修复后验证与五维审核
-
-| 实际命令 / 检查 | cases / checks | exit / 耗时 |
-|---|---|---|
-| `clang -fobjc-arc <已登记native_dual_sound.m> -framework AppKit -framework CoreAudio -framework Foundation -o <Git外查询器>`；随后只执行`--preflight` | 只读默认设备、alive/running、输出音量等；未进入播放分支 | 0 / 0 |
-| 已核验REF `permission-status` | AUTHORIZED；无音频 | 0 |
-| 显式REF启动尝试 | 上述原生协议拒绝，0次播放/采集；原失败保留 | **1** |
-| 修改实机入口后的初始 `python3 -B tools/reference_host_comparison/test_integration.py` | 39 PASS；Fake字段偏差尚未被覆盖，不能作为原生兼容PASS | 0 / 0.5946s |
-| 原Git版本 + 原生ready形状的最小离线复现 | 精确触发原ValueError，零真实进程；复现检查成立 | 0（复现器），原调用抛ValueError |
-| 修复后同一 `test_integration.py` | **41 PASS**：原33项、6项显式入口/身份/单次/路径保护、新增真实字段集合核对及错误旧字段拒绝 | **0 / 0.5743s** |
-| `R2_ASSETS_DIR=… R2_ORIGINAL_CONTROLLER=… python3 -B tools/reference_host_comparison/test_control.py` | 13 PASS | 0 / 0.8410s |
-| 原 `sync_once.py --self-test` | 9 PASS，device_access=ZERO | 0 / 0.0311s |
-| Architecture / Secret / Release Route Guard（最终修复后） | 均PASS；Release Route六项PASS、禁用符号0 | 各0；0.0959 / 0.1143 / 0.5122s |
-| Python AST、增量diff/隐私/文件范围、原冲突status/index检查 | 3份Python解析PASS；仅6份授权文件，生产目录diff为空，原工作区不变 | 各0 |
-| 原R2 Swift42、HOST Debug/Release、FULL_CURRENT | 复用原身份；未涉及生产Swift、Swift补丁或构建目标 | NOT_RUN |
-
-新增负控涵盖缺少/错误同意、错目标和播放器SHA零启动、重复尝试拒绝、父目录权限和symlink拒绝、默认CLI缺参数拒绝。原Fake循环的取消、EOF、超时、死子进程、无法回收FAIL、外来run/时钟/重复事件及单次PLAY/STOP检查保持。
-
-关键日志SHA：修复后41项 `6ce29452f603c726080c143b0448dde2cd8ad8413bef0936361fc1acc35674ae`；R2 13项 `6dde3cf70240e5d6f8aad2b9384317f30a7362a18b86977109400e8e5913f80e`；原9项 `e96cf5a493d30dab0a4736040f8b8d1cdfcb85a340d5abe323fc6eca88db10dd`。
-
-| 维度 | 最新结论 |
-|---|---|
-| TECHNICAL | PARTIAL：环境和最小入口已修复，发现并修复确定的适配协议BUG；设备对照未完成 |
-| ENGINEERING | PASS_SCOPED：只修改独立工具、测试、README、DEVLOG及本报告；默认设备禁用、原安全断言与阈值保留，新增B类0 |
-| EVIDENCE | PASS_WITH_LIMITATIONS：原设备拒绝、历史Fake盲点和缺失ready数值如实保留；离线复现/41项不能冒充新实机结果 |
-| CONSISTENCY | PASS：明确用户续行授权；实际采集/播放0次，未自动重试/强行HOST；历史失败及原冲突现场保留 |
-| Stage7 Forbidden Checklist | PASS：无生产Swift/DSP、Runtime/Provider/DR/Human Gate变更，无新Engine/Tap/平台，无公开音频或UID；不进入下一节点 |
-
-CRITICAL=0。**MAJOR-R4-INT-01**：独立适配器真实/Fake协议不一致，已最小离线修复，实机验证仍未完成；**MAJOR-R4-PRECHECK-01（音量）已关闭**。MINOR=0（新增），现有物理覆盖、参考隔离和历史结构/规范债务继续保留。未确认任何Aftelle生产音频根因。
-
-唯一下一项：主控审核本次原生协议修复与停止证据后，另行续行一对REF/HOST设备验证；保持原素材、窗口、设备和AGC-ON，不追加其他声学变量。
-
-## 12. 协议修复续行状态（第13节已更新）
-
-```ini
-R4_ENVIRONMENT=RESTORED
-R4_PRECHECK=PASS_WITH_DEVICE_UNVERIFIED_FIELDS
-R4_EXPLICIT_ENTRY=IMPLEMENTED
-R4_ADAPTER_PROTOCOL_FIX=PASS_OFFLINE
-R4_DEVICE_COMPARISON=BLOCKED
-R4_CONTROLLER_ATTEMPTS_REF=1
-R4_CONTROLLER_ATTEMPTS_HOST=0
-REF_CAPTURE_RUNS=0
-HOST_CAPTURE_RUNS=0
-PROXY_PLAY_CALLS=0
-AUTOMATIC_RETRIES=0
-DEVICE_EXECUTION=STOPPED_AFTER_PREPARE_FAILURE
-USER_LISTENING=NOT_RUN
-SOURCE_REFERENCE_ISOLATION=UNKNOWN
-FORMAL_TEST3_AUTHORIZED=false
-Test3.execution_authorized=false
-AEC_ROOT_CAUSE=UNKNOWN
-R3-M01=OPEN
-T3.2-A=BLOCKED
-Formal_Test3=BLOCKED
-T3.3=NOT_STARTED
-```
-
-## 13. 再次明确续行：原确认窗口与应用包装
-
-用户要求“重新执行R4，遇到阻塞问题自行修复并留下修复记录，确保R4最终完成”。据此继续修复**采集前工程准备**，不重复已开始的声学实验，不改变后文列明的设备安全停止规则。实验/本地音频授权沿用明确同意，不重新索要同一授权。
-
-### 13.1 本轮身份、预检和实际准备
-
-- 初始HEAD/upstream/实时远端均为 `f2efb4be49d235070b7783cbab3d19b27dc5ec41`；相对任务旧参考基线的新增提交均为本聊天已交付的R4报告和协议修复，未回退。
-- 输入60%、输出55%、未静音；无需再次调整。TinyUSB/内置扬声器/小爱均alive=1、running=0，默认路线正确。8项二进制/素材SHA与第3节相同；REF权限只读为AUTHORIZED。没有读取新旧私人录音。
-- 第一次准备已正常取得真实proxy_ready：`duration_seconds=11.012916666666667`、固定代理SHA、play_calls=0；证明前次字段修复已越过原拒绝点。REF进程到达原 `VPCPrompt.confirm`。
-- CUA按CLI名称、bundle ID及可执行路径均不能选择该裸CLI。为修复界面连接，在确认尚未Capture/PLAY后主动SIGTERM退出控制器；原STOP/回收成功。原失败回执为 `R4 operator cancellation`，无采集目录。
-- 修改包装工具/测试前checkpoint：`1706d4a2c391c5d57d97d233e3c362c08ce6dc73`。原冲突worktree不写入。
-
-### 13.2 最小包装修复及其边界
-
-新增 `tools/reference_host_comparison/prepare_reference_app.py`：
-
-1. 先核验冻结ADAPTED_REF二进制SHA及原Info的bundle ID。
-2. 在新本地`.app/Contents/MacOS/`复制原可执行文件，资源逐文件复制至Contents/Resources；不覆盖旧目录。
-3. 保留原Info全部字段，仅增加CFBundleExecutable、CFBundlePackageType=APPL。
-4. 校验复制后二进制及资源摘要，生成包装回执；不重编译、不修改或重新签名可执行文件，不改变原VPCPrompt、VPCWindow、Engine、Tap、VP、AGC或排程代码。
-
-实际包装命令：
-
-```bash
-python3 -B tools/reference_host_comparison/prepare_reference_app.py \
-  --reference "$ADAPTED_REF" --info "$REF_SOURCE/Info.plist" \
-  --output .build/reference_host_r4/resume2/ADAPTED_REF_R4.app
-```
-
-exit0。包装后可执行文件SHA仍为 `54d2eaf775eccdf806c82f8996a7038db4b219e4ddba60ea8914122997385ade`。包装回执SHA为 `1e0db66be486fc7031041806d6a62911fcccd4df885386613ed0710fb712a696`；该包装不是历史成功实验的原App。
-
-本轮第二次准备使用字节一致的包装，权限只读仍AUTHORIZED。CUA inventory现在识别到 `Apple VP Reference v1` / 原bundle ID，但 `getApp()`读取其确认界面持续返回 **`Computer Use server error -10005: timeoutReached`**。本机其他原生应用的CUA读取可用，不能把它写成所有UI接口都不可用。
-
-只读进程采样显示REF主线程处于原 `VPCPrompt.confirm → NSAlert.runModal → NSApplication modal loop`；不是已经通过确认或已经开始录音。采样只用于定位界面阻塞，未提交原始采样日志。通过原生Finder定位、打开动作尝试激活该已运行包装，也未解决读取超时。没有改写或跳过原确认。
-
-原240秒UI/control watchdog最终退出第二次准备，exit1；回执保留 `UI/control watchdog`、proxy_ready、commands=[STOP]、status=FAIL。确认无REF/播放器进程残留，没有Capture目录、音频容器或WAV。
-
-**本轮计数必须区别：采集前控制器准备2次，真实代理PLAY=0，REF Capture=0，HOST Capture=0。** 第二次是对未开始录音的界面准备修复续行，不冒称两次实机声学实验；没有重复已执行的物理实验，也没有为凑结果启动HOST。
-
-### 13.3 必要验证、当前阻塞及审核
-
-| 实际执行 | 结果 / exit |
-|---|---|
-| 8项构建与素材SHA、只读路线/音量、Caches权限 | 匹配 / 0 |
-| 原REF和包装REF `permission-status` | 均AUTHORIZED、无音频 / 0 |
-| 包装构造及原二进制/Info/资源核验 | PASS / 0 |
-| `python3 -B tools/reference_host_comparison/test_integration.py` | 43 tests PASS / 0，约0.5844s |
-| 新增2项 | 包装保留原身份/资源且不覆盖；错误二进制在写入前拒绝；不运行包装App |
-| 原13/9及Swift42、FULL_CURRENT、HOST构建 | 未改对应模块，复用前述结果，不重跑 |
-| Architecture / Secret / Release Route Guard、增量diff检查 | 均PASS / 0；4份Python AST通过，生产目录diff为空，原冲突status/index不变 |
-| 原REF准备 / 包装REF准备 | 分别主动安全取消和watchdog退出 / 1、1；无PLAY/Capture |
-| 原生确认及后续REF/HOST实机数据 | NOT_RUN；没有音频可供试听 |
-
-43项日志SHA：`90f036cbdad624474bedc2f05d84380f1decb01a2bd0b83709605f7cb2152f64`。Git忽略回执位于 `.build/reference_host_r4/resume2/`；新私有尝试目录的末级为 `r4-61C633BF-7B98-4FC2-8763-5D8ABB518E5A`，原始准备与包装准备分目录、不覆盖历史。
-
-已向用户请求**仅针对界面自动化技术**的明确允许：改用AppleScript操作REF/HOST原有确认、文件选择及导出；无需用户手动点击，不操作系统权限弹窗、不绕过确认、不修改音频实现。这个请求来自CUA工具要求“界面操作只用CUA，除非用户明确指定其他技术”，不是撤销已收到的设备/本地录音授权。**答复未到达，不启用替代技术。** 若后续出现新的系统权限要求，仍按原任务停止，不代替用户授予。
-
-| 维度 | 最新SELF_REVIEW |
-|---|---|
-| TECHNICAL | PARTIAL：目标身份、协议、包装和43项离线有效；原确认界面操作仍BLOCKED |
-| ENGINEERING | PASS_SCOPED：仅独立包装工具、直接测试和文档；生产音频差异为空，新增B类0，历史债务不清理 |
-| EVIDENCE | PASS_FOR_BLOCKED_REPORT：明确2次采集前准备、0次实际声学实验；所有错误与缺失如实保留 |
-| CONSISTENCY | PASS：沿用明确实验授权；没有绕过原确认或未授权改用其他UI技术，没有重复录音 |
-| Stage7 Forbidden Checklist | PASS：无生产Engine/Tap/DSP、Runtime/Provider/DR/Human Gate变化，无公开录音或设备UID |
-
-新增CRITICAL=0、**MAJOR-R4-UI-01 OPEN**（原REF确认界面不能由当前CUA操控）、MINOR=0。没有新的AEC生产代码根因；原协议缺陷已越过真实ready验证，但不能据此宣布完整集成或声学PASS。
-
-```ini
-R4_ENVIRONMENT=READY
-R4_REFERENCE_APP_PACKAGING=PASS_BYTE_IDENTICAL
-R4_OFFLINE_CHECKS=43_PASS
-R4_DEVICE_COMPARISON=BLOCKED_AT_ORIGINAL_UI_CONFIRMATION
-R4_CURRENT_PRE_CAPTURE_PREPARES=2
-REF_CAPTURE_RUNS=0
-HOST_CAPTURE_RUNS=0
-PROXY_PLAY_CALLS=0
-USER_UI_TECHNIQUE_PERMISSION=AWAITING_REPLY
-USER_LISTENING=NOT_RUN
-SOURCE_REFERENCE_ISOLATION=UNKNOWN
-AEC_ROOT_CAUSE=UNKNOWN
-R3-M01=OPEN
-T3.2-A=BLOCKED
-Formal_Test3=BLOCKED
-Test3.execution_authorized=false
 T3.3=NOT_STARTED
 ```
