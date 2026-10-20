@@ -224,6 +224,8 @@ SOURCE_REFERENCE_ISOLATION=UNKNOWN。约181ms源特征偏移不是校准物理�
 
 REF听音仅提取已核验bit一致的ch0，Float32样本逐字节保留；未归一化、降噪、重采样或改增益，原容器SHA不变。HOST为原应用直接导出。未自动试听、转录或上传音频。交GPT主控审核不等于公开原音授权。
 
+**后续公开授权补记（2026-10-20）**：以上“未上传”描述保留原R4交付`3a78838`时的状态。用户随后明确要求把本轮录音推送至已知PUBLIC仓库供GPT审核。本次仅公开两份现有WAV的原字节副本及脱敏说明，见[本轮WAV证据](evidence/reference_host_R4_20261020/LISTENING_EVIDENCE.md)。没有VP前原始麦克风WAV，也没有HOST原生PCM留存，不把REF原生VP后输入与HOST最终录音冒充同次处理前/后。未公开原Manifest、设备UID或其他历史录音；未重新录音，原声学结论不变。
+
 ## 13. 五维SELF_REVIEW、问题和后续
 
 | 维度 | 结论 |
