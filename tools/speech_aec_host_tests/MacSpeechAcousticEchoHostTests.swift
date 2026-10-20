@@ -111,8 +111,17 @@ private final class FakeAECBackend: MacSpeechAECBackend, @unchecked Sendable {
 @main
 private struct MacSpeechAcousticEchoHostTests {
     private static var checks = 0
+    private static var failures = 0
+    private static let pipelineIsolationOnly = CommandLine.arguments.contains(
+        "--apple-pipeline-isolation"
+    )
 
     static func main() {
+        if pipelineIsolationOnly {
+            testApplePipelineIsolation()
+            print("apple_pipeline_isolation_cases=4 checks=\(checks) failures=\(failures)")
+            exit(failures == 0 ? 0 : 1)
+        }
         testConfigureAndSerializedFraming()
         testArbitraryRenderCallbackFraming()
         testArbitraryCaptureCallbackFraming()
@@ -150,7 +159,7 @@ private struct MacSpeechAcousticEchoHostTests {
         testStopAlwaysRecoversCapture()
         testAppleModeDoesNotUseWebRTC()
         testAppleFullScaleObservation()
-        testAppleRouteRebuildAndFailureStayClosed()
+        testApplePipelineIsolation()
         testNativeTenMillisecondTapFraming()
         testSixteenToFortyEightCaptureFraming()
         testTwentyFourToFortyEightResamplingRoundTrip()
@@ -2022,6 +2031,77 @@ private struct MacSpeechAcousticEchoHostTests {
             "Apple-only level observations do not pretend to be WebRTC measurements")
     }
 
+    private static func testApplePipelineIsolation() {
+        testAppleRenderFailurePreservesCapture()
+        testAppleSoftwareDelayPreservesCapture()
+        testWebRTCSoftwareFailureFallback()
+        testAppleRouteRebuildAndFailureStayClosed()
+    }
+
+    private static func testAppleRenderFailurePreservesCapture() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing, backend: backend)
+        let samples = testSignal(seed: 83, amplitude: 0.2)
+        expect(host.configure() == .appleVoiceProcessing, "Apple render case configures")
+        expect(host.processCaptureSpans(samples).flatMap { $0.samples } == samples,
+               "Apple capture passes nonzero samples before render failure")
+        host.playbackStarted()
+        host.renderConversionFailed()
+        let spans = host.processCaptureSpans(samples, hostTimeNanoseconds: 11_000_000_000)
+        expect(spans.flatMap { $0.samples } == samples,
+               "software render failure cannot discard Apple VP input")
+        expect(spans.first?.observation.captureHostTimeNanoseconds == 11_000_000_000,
+               "Apple render failure preserves content time")
+        let snapshot = host.snapshot()
+        expect(snapshot.mode == .appleVoiceProcessing && snapshot.fallbackReason == nil,
+               "software render failure cannot change Apple VP mode")
+        expect(snapshot.fallbackCount == 0, "Apple render failure does not enter software fallback")
+        expect(backend.recordedOperations.isEmpty, "Apple render failure never invokes WebRTC")
+        expectAppleEvidenceUnavailable(host)
+        host.playbackStopped()
+        expect(host.processCapture(samples) == samples, "Apple capture survives playback Stop")
+    }
+
+    private static func testAppleSoftwareDelayPreservesCapture() {
+        let backend = FakeAECBackend()
+        let host = MacSpeechAcousticEchoHost(mode: .appleVoiceProcessing, backend: backend)
+        let samples = testSignal(seed: 84, amplitude: 0.2)
+        expect(host.configure() == .appleVoiceProcessing, "Apple delay case configures")
+        expect(host.processCapture(samples) == samples, "Apple capture passes before invalid software delay")
+        host.playbackStarted()
+        for delay in [0.6, Double.infinity, Double.nan] {
+            host.updateDelay(outputPresentationLatencySeconds: delay, capturePresentationLatencySeconds: 0)
+            let spans = host.processCaptureSpans(samples, hostTimeNanoseconds: 12_000_000_000)
+            expect(spans.flatMap { $0.samples } == samples,
+                   "invalid software delay cannot discard Apple VP samples or change their order")
+            expect(spans.first?.observation.captureHostTimeNanoseconds == 12_000_000_000,
+                   "invalid software delay preserves Apple content time")
+            let snapshot = host.snapshot()
+            expect(snapshot.mode == .appleVoiceProcessing && snapshot.fallbackReason == nil,
+                   "software AEC3 delay cannot change Apple VP mode")
+            expect(snapshot.fallbackCount == 0, "Apple delay case does not enter software fallback")
+        }
+        expect(backend.recordedOperations.isEmpty && backend.recordedDelays.isEmpty,
+               "Apple software delay never configures WebRTC")
+        expectAppleEvidenceUnavailable(host)
+    }
+
+    private static func testWebRTCSoftwareFailureFallback() {
+        testRenderConversionFailureFallback()
+        for delay in [0.6, Double.nan] {
+            let backend = FakeAECBackend()
+            let host = MacSpeechAcousticEchoHost(mode: .webRTCAEC3, backend: backend)
+            expect(host.configure() == .webRTCAEC3, "WebRTC delay control configures")
+            host.playbackStarted()
+            host.updateDelay(outputPresentationLatencySeconds: delay, capturePresentationLatencySeconds: 0)
+            let snapshot = host.snapshot()
+            expect(snapshot.mode == .halfDuplexFallback && snapshot.fallbackReason == .delayInvalid,
+                   "WebRTC invalid delay retains its original fallback")
+            expect(host.processCapture(testSignal(seed: 85, amplitude: 0.2)).isEmpty,
+                   "WebRTC invalid delay continues to block unsafe playback input")
+        }
+    }
+
     private static func testAppleRouteRebuildAndFailureStayClosed() {
         let backend = FakeAECBackend()
         let host = MacSpeechAcousticEchoHost(
@@ -2036,6 +2116,8 @@ private struct MacSpeechAcousticEchoHostTests {
             hostTimeNanoseconds: 10_000_000_000
         ).isEmpty, "Apple capture is rejected while route rebuild is pending")
         host.playbackStopped()
+        host.renderConversionFailed()
+        host.updateDelay(outputPresentationLatencySeconds: 0.6, capturePresentationLatencySeconds: 0)
         expect(host.processCapture(
             samples,
             hostTimeNanoseconds: 10_010_000_000
@@ -2047,18 +2129,18 @@ private struct MacSpeechAcousticEchoHostTests {
             hostTimeNanoseconds: 10_020_000_000
         ) == samples, "Apple adapter accepts new content after rebuild acknowledgement")
         host.renderConversionFailed()
-        expect(host.snapshot().mode == .halfDuplexFallback
-            && host.snapshot().fallbackReason == .renderProcessingFailed,
-            "Apple adapter exposes its conversion failure")
+        expect(host.snapshot().mode == .appleVoiceProcessing
+            && host.snapshot().fallbackReason == nil,
+            "software render conversion is isolated from the Apple capture adapter")
         expect(host.processCapture(
             samples,
             hostTimeNanoseconds: 10_030_000_000
-        ).isEmpty, "failed Apple path does not silently deliver half-duplex PCM")
+        ) == samples, "Apple processed input survives software render conversion failure")
         host.playbackCompleted()
         expect(host.processCapture(
             samples,
             hostTimeNanoseconds: 10_040_000_000
-        ).isEmpty, "playback completion cannot recover failed Apple capture")
+        ) == samples, "playback completion retains continuous Apple capture")
         expect(backend.recordedOperations.isEmpty,
                "Apple failure never switches into the WebRTC backend")
         host.routeWillRebuild()
@@ -2213,6 +2295,14 @@ private struct MacSpeechAcousticEchoHostTests {
     }
 
     private static func expect(_ condition: Bool, _ message: String) {
+        if pipelineIsolationOnly {
+            checks += 1
+            if !condition {
+                failures += 1
+                print("FAILED: \(message)")
+            }
+            return
+        }
         guard condition else { fatalError("FAILED: \(message)") }
         checks += 1
     }

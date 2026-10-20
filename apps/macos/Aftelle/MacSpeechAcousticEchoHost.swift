@@ -1049,6 +1049,8 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
     }
 
     func renderConversionFailed() {
+        // Apple VP owns its render reference; this failure belongs to software AEC3.
+        guard requestedMode != .appleVoiceProcessing else { return }
         queue.sync { enterFallback(.renderProcessingFailed) }
     }
 
@@ -1275,6 +1277,7 @@ nonisolated final class MacSpeechAcousticEchoHost: @unchecked Sendable {
         outputPresentationLatencySeconds: Double,
         capturePresentationLatencySeconds: Double
     ) {
+        guard requestedMode != .appleVoiceProcessing else { return }
         queue.sync {
             guard outputPresentationLatencySeconds.isFinite,
                   capturePresentationLatencySeconds.isFinite else {
