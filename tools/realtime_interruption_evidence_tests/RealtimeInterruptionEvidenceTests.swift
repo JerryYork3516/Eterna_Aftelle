@@ -836,7 +836,8 @@ private extension RealtimeInterruptionEvidenceTests {
     }
 
     static func driveWarmupC(
-        _ stack: D1ControllerStack, clock: ComprehensiveCClock, profile: MacSpeechWarmupProfile, queuedTail: Int = 0
+        _ stack: D1ControllerStack, clock: ComprehensiveCClock, profile: MacSpeechWarmupProfile,
+        queuedTail: Int = 0, residentEnabled: Bool = true
     ) async {
         await waitUntil("warm-up capture started") { stack.controller.appleVPAcousticTestState.phase == .running }
         let starts = stack.player.startCount
@@ -869,7 +870,7 @@ private extension RealtimeInterruptionEvidenceTests {
             }
             expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount <= 720_000,
                    "19-second processing cannot enlarge the recording cap")
-            if tick == warmupTicks + 6 {
+            if residentEnabled, tick == warmupTicks + 6 {
                 await waitUntil("one warm-up output completes") {
                     stack.player.completeScheduledChunk()
                     return await stack.output.currentSnapshot().state == .completed
@@ -881,6 +882,74 @@ private extension RealtimeInterruptionEvidenceTests {
         }
         clock.elapsed = 15_000_000_000 + profile.nanoseconds
         await waitUntil("warm-up run sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+    }
+
+    static func testM03Batch() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for scenario in AppleVPAcousticTestScenario.allCases {
+            try await testM03Group(scenario, source: source)
+        }
+        cases += 1
+        let missingPipe = D1ControllerStack(batchScenario: .humanOnly)
+        expect(missingPipe.controller.prepareAppleVPAcousticTest(
+            .humanOnly, comprehensiveC: true, warmupProfile: .four, btAcousticBatch: true
+        ), "preparation alone cannot start devices")
+        startD1(missingPipe.controller)
+        expect(missingPipe.capture.startCount == 0
+            && missingPipe.controller.appleVPAcousticTestState.errorCode == "external_playback_control_unavailable",
+            "missing external control fails before capture")
+        try await testScoreControlCancellation()
+        try testScoreControlBlockedReader()
+        try testWarmupPacketBoundary()
+        print("m03_fake_cases=\(cases)")
+        print("m03_fake_checks=\(checks)")
+        print("m03_fake_device_access=ZERO")
+    }
+
+    static func testM03Group(_ scenario: AppleVPAcousticTestScenario, source: URL) async throws {
+        cases += 1
+        let channel = Pipe()
+        defer { try? channel.fileHandleForReading.close(); try? channel.fileHandleForWriting.close() }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(
+            clock: { clock.now }, scoreControlDescriptor: channel.fileHandleForWriting.fileDescriptor,
+            batchScenario: scenario
+        )
+        stack.capture.contentStartOverride = clock.start
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            scenario, comprehensiveC: true, processingProfile: .agcOff,
+            warmupProfile: .four, btAcousticBatch: true
+        ), "M03 cannot switch off AGC")
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            scenario, comprehensiveC: true, warmupProfile: .zero, btAcousticBatch: true
+        ), "M03 requires four seconds of continuous warm-up")
+        expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true),
+               "M03 cannot accidentally start a legacy scenario")
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            scenario, comprehensiveC: true, warmupProfile: .four, btAcousticBatch: true
+        ), "the explicit M03 source combination prepares")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "same synthetic fixture selected")
+        startD1(stack.controller)
+        await driveWarmupC(stack, clock: clock, profile: .four, residentEnabled: scenario != .humanOnly)
+        let state = stack.controller.appleVPAcousticTestState
+        expect(state.errorCode == nil && state.packetCount == 750 && state.retainedPCMByteCount == 720_000,
+               "each source combination completes the same bounded scoring window")
+        expect(stack.player.startCount == (scenario == .humanOnly ? 0 : 1), "resident starts only in A and C")
+        let events = try scoreControlEvents(channel)
+        expect(events.count == 2 && events.map { $0["event"] as? String } == ["schedule", "stop"],
+               "one schedule and one stop are emitted")
+        let identityMatches = events.allSatisfy {
+            $0["batch"] as? String == "R5_M03" && $0["scenario"] as? String == scenario.rawValue
+        }
+        expect(identityMatches, "both events bind the source combination")
+        expect(events[0]["score_start_ns"] as? UInt64 == clock.start + 4_000_000_000,
+               "all groups share the four-second score origin")
+        try expectWarmupManifest(stack.controller, profile: .four)
+        let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+        expect(wav.dropFirst(44).enumerated().allSatisfy { $0.offset % 2 == 0 ? $0.element == 1 : $0.element == 0 },
+               "no warm-up marker is retained in the scoring WAV")
+        expectD1Cleanup(stack)
     }
 
     static func testWarmupRepetition() async throws {
@@ -1286,6 +1355,7 @@ private struct D1ControllerStack {
         silentScenario: AppleVPAcousticTestScenario? = nil,
         clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         scoreControlDescriptor: Int32? = nil,
+        batchScenario: AppleVPAcousticTestScenario? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
         let dependencies = D1NormalDependenciesSpy()
@@ -1312,7 +1382,8 @@ private struct D1ControllerStack {
         controller = AppController(
             acousticTestArguments: ["Aftelle", "--apple-vp-acoustic-test"]
                 + (silentScenario.map { ["--apple-vp-silent-smoke=" + $0.rawValue] } ?? [])
-                + (scoreControlDescriptor.map { [AppleVPScoreControl.argument + String($0)] } ?? []),
+                + (scoreControlDescriptor.map { [AppleVPScoreControl.argument + String($0)] } ?? [])
+                + (batchScenario.map { ["--apple-vp-bt-abc=" + $0.rawValue] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,
@@ -2406,6 +2477,10 @@ private struct RealtimeInterruptionEvidenceTests {
     private static var duplicateStartProviderSessions = -1
 
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m03-only"]) {
+            try await testM03Batch()
+            return
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--d1-only"]) {
             try await testD1Only()
             return

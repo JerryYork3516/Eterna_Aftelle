@@ -744,31 +744,44 @@ private struct ParticleOrientationDebugOverlay: View {
 
         private var preparationControls: some View {
             VStack(alignment: .leading, spacing: 8) {
-                Picker(String(localized: "Next Prepare profile"), selection: $processingProfile) {
-                    Text(String(localized: "APPLE_VP_AGC_ON · default"))
-                        .tag(MacSpeechAppleVPDebugProfile.agcOn)
-                    Text(String(localized: "APPLE_VP_AGC_OFF · experiment; AEC + NS remain enabled"))
-                        .tag(MacSpeechAppleVPDebugProfile.agcOff)
+                if let scenario = controller.appleVPBTBatchScenario {
+                    Button(String(localized: "Prepare M03 \(scenario.rawValue) · AGC-ON · WARMUP_4S")) {
+                        _ = controller.prepareAppleVPAcousticTest(
+                            scenario, comprehensiveC: true, processingProfile: .agcOn,
+                            warmupProfile: .four, btAcousticBatch: true
+                        )
+                    }
+                    .disabled(controller.appleVPAcousticTestState.phase != .idle)
+                    Text(String(localized: "M03: one recording; 4s warm-up + 15s score. No human speech required."))
+                } else {
+                    Picker(String(localized: "Next Prepare profile"), selection: $processingProfile) {
+                        Text(String(localized: "APPLE_VP_AGC_ON · default"))
+                            .tag(MacSpeechAppleVPDebugProfile.agcOn)
+                        Text(String(localized: "APPLE_VP_AGC_OFF · experiment; AEC + NS remain enabled"))
+                            .tag(MacSpeechAppleVPDebugProfile.agcOff)
+                    }
+                    .disabled(controller.appleVPAcousticTestState.isBusy)
+                    HStack {
+                        Button("Prepare A · Resident only") { prepare(.residentOnly) }
+                        Button("Prepare B · Human only") { prepare(.humanOnly) }
+                        Button("Prepare C · Double talk") { prepare(.doubleTalk) }
+                    }
+                    .disabled(controller.appleVPAcousticTestState.isBusy)
+                    warmupControls
+                    Button(String(localized: "Prepare comprehensive C · Guided single run")) {
+                        prepare(.doubleTalk, comprehensiveC: true)
+                    }
+                    .disabled(isComprehensiveCPreparationDisabled)
+                    Button(String(localized: "Prepare comprehensive C · STATS_ONLY")) {
+                        prepare(.doubleTalk, comprehensiveC: true, dataMode: .statsOnly)
+                    }
+                    .disabled(isComprehensiveCPreparationDisabled)
                 }
-                .disabled(controller.appleVPAcousticTestState.isBusy)
-                HStack {
-                    Button("Prepare A · Resident only") { prepare(.residentOnly) }
-                    Button("Prepare B · Human only") { prepare(.humanOnly) }
-                    Button("Prepare C · Double talk") { prepare(.doubleTalk) }
-                }
-                .disabled(controller.appleVPAcousticTestState.isBusy)
-                warmupControls
-                Button(String(localized: "Prepare comprehensive C · Guided single run")) {
-                    prepare(.doubleTalk, comprehensiveC: true)
-                }
-                .disabled(isComprehensiveCPreparationDisabled)
-                Button(String(localized: "Prepare comprehensive C · STATS_ONLY")) {
-                    prepare(.doubleTalk, comprehensiveC: true, dataMode: .statsOnly)
-                }
-                .disabled(isComprehensiveCPreparationDisabled)
                 Button("Select approved offline WAV…") { selectPlaybackFile() }
                     .disabled(controller.appleVPAcousticTestState.isBusy)
-                Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
+                if controller.appleVPBTBatchScenario == nil {
+                    Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
+                }
             }
         }
 
@@ -806,7 +819,12 @@ private struct ParticleOrientationDebugOverlay: View {
         private var comprehensiveCGuide: some View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(String(localized: "综合C：评分15秒；WARMUP_4S先安静预热4秒，总采集最多19秒。须另行获准设备测试。"))
-                if controller.appleVPAcousticTestState.dataMode == .statsOnly {
+                if controller.appleVPAcousticTestState.btAcousticBatch {
+                    Text(String(localized: "M03: synthetic sources; physical overlap unverified."))
+                    Text(String(
+                        localized: "Software phase: \(controller.appleVPAcousticTestState.guideStage ?? "UNKNOWN")"
+                    ))
+                } else if controller.appleVPAcousticTestState.dataMode == .statsOnly {
                     Text(String(localized: "STATS_ONLY：无需讲话。使用已批准零值WAV；0–3 / 3–9 / 9–11 / 11–15秒自动推进。"))
                     Text(String(localized: "当前软件阶段：\(controller.appleVPAcousticTestState.guideStage ?? "UNKNOWN")"))
                 } else {
