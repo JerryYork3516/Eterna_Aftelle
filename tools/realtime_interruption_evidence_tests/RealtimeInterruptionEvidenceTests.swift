@@ -1172,8 +1172,7 @@ private extension RealtimeInterruptionEvidenceTests {
             expect(events.allSatisfy {
                 $0["score_start_ns"] as? UInt64 == clock.start + 4_000_000_000
                     && $0["human_speech_stop_ns"] as? UInt64 == clock.start + 15_000_000_000
-            },
-                   "HUMAN speaking ends at score eleven after four seconds of warm-up")
+            }, "HUMAN speaking ends at score eleven after four seconds of warm-up")
             let manifest = try JSONSerialization.jsonObject(
                 with: stack.controller.appleVPAcousticTestManifestData()
             ) as? [String: Any] ?? [:]

@@ -752,8 +752,12 @@ private struct ParticleOrientationDebugOverlay: View {
                         )
                     }
                     .disabled(controller.appleVPAcousticTestState.phase != .idle)
-                    Text(String(localized: "M07 HUMAN: one recording; 4s quiet warm-up + 15s score. No proxy playback."))
-                    Text(String(localized: "A: remain quiet. B/C: speak naturally from score start until the quiet cue at 11s."))
+                    Text(String(
+                        localized: "M07 HUMAN: one recording; 4s quiet warm-up + 15s score. No proxy playback."
+                    ))
+                    Text(String(
+                        localized: "A: remain quiet. B/C: speak naturally from score start until the quiet cue at 11s."
+                    ))
                 } else if let scenario = controller.appleVPBTBatchScenario {
                     Button(String(localized: "Prepare M03 \(scenario.rawValue) · AGC-ON · WARMUP_4S")) {
                         _ = controller.prepareAppleVPAcousticTest(
