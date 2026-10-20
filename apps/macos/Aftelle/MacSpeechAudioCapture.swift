@@ -1643,6 +1643,148 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
 #endif
 
 #if DEBUG
+    nonisolated enum MacSpeechRuntimeReadback {
+        enum Phase: String, Encodable, Sendable { case engineStarted, residentPlaybackStarted }
+
+        struct Identity {
+            let runID: UUID
+            let generation: UInt64
+            let configurationID: UInt64
+        }
+
+        struct Stream: Encodable, Sendable, Equatable {
+            let owner: UInt32
+            let direction: UInt32
+            let start: UInt32
+            let channels: UInt32
+            let rate: Double
+        }
+
+        struct Device: Encodable, Sendable, Equatable {
+            let id: UInt32
+            let transport: UInt32
+            let aggregate: Bool
+            let alive: Bool
+            let inputChannels: UInt32
+            let outputChannels: UInt32
+            let inputStreams: [Stream]
+            let outputStreams: [Stream]
+        }
+
+        struct Aggregate: Encodable, Sendable, Equatable {
+            let device: Device
+            let members: [Device]
+            let activeMembers: [UInt32]
+            let tapCount: Int?
+            let activeTapCount: Int?
+
+            func qualifies(input: Device, output: Device) -> Bool {
+                guard device.aggregate, !input.aggregate, !output.aggregate, input.id != output.id,
+                      device.alive, members.count == 2, activeMembers.count == 2,
+                      Set(activeMembers) == Set([input.id, output.id]), tapCount == 0, activeTapCount == 0,
+                      let microphone = members.first(where: { $0 == input }),
+                      let speaker = members.first(where: { $0 == output }),
+                      microphone.alive, speaker.alive,
+                      microphone.inputChannels > 0, microphone.outputChannels == 0,
+                      speaker.inputChannels == 0, speaker.outputChannels > 0,
+                      device.inputChannels == microphone.inputChannels,
+                      device.outputChannels == speaker.outputChannels
+                else { return false }
+                return directionMatches(input: true) && directionMatches(input: false)
+            }
+
+            private func directionMatches(input: Bool) -> Bool {
+                let direction: UInt32 = input ? 1 : 0
+                var expected: [UInt32] = []
+                for member in members {
+                    let streams = input ? member.inputStreams : member.outputStreams
+                    guard Self.valid(streams, direction: direction, owner: member.id),
+                          streams.reduce(0, { $0 + $1.channels })
+                          == (input ? member.inputChannels : member.outputChannels) else { return false }
+                    expected.append(contentsOf: streams.map(\.channels))
+                }
+                let streams = input ? device.inputStreams : device.outputStreams
+                return Self.valid(streams, direction: direction, owner: device.id)
+                    && streams.map(\.channels) == expected
+            }
+
+            private static func valid(_ streams: [Stream], direction: UInt32, owner: UInt32) -> Bool {
+                guard streams.count <= 16 else { return false }
+                var next: UInt32 = 1
+                for stream in streams {
+                    guard stream.owner == owner, stream.direction == direction, stream.start == next,
+                          stream.channels > 0, stream.channels <= 64, next <= 65 - stream.channels,
+                          stream.rate.isFinite, stream.rate > 0 else { return false }
+                    next += stream.channels
+                }
+                return true
+            }
+        }
+
+        struct Route: Encodable, Sendable, Equatable {
+            let defaultInput: Device
+            let defaultOutput: Device
+            let actualInput: Device
+            let actualOutput: Device
+            let aggregates: [Aggregate]
+
+            var binding: String {
+                guard defaultInput.id > 0, defaultOutput.id > 0, actualInput.id > 0, actualOutput.id > 0,
+                      defaultInput.alive, defaultOutput.alive, actualInput.alive, actualOutput.alive
+                else { return "UNKNOWN_UNAVAILABLE_DEVICE" }
+                if actualInput == defaultInput, actualOutput == defaultOutput {
+                    return "NODE_IDS_MATCH_DEFAULTS"
+                }
+                let input = actualInput == defaultInput || aggregates.contains {
+                    $0.device == actualInput && $0.qualifies(input: defaultInput, output: defaultOutput)
+                }
+                let output = actualOutput == defaultOutput || aggregates.contains {
+                    $0.device == actualOutput && $0.qualifies(input: defaultInput, output: defaultOutput)
+                }
+                return input && output ? "AGGREGATE_IO_DIRECTION_QUALIFIED" : "UNKNOWN_UNVERIFIED_BINDING"
+            }
+        }
+
+        struct Payload: Encodable, Sendable, Equatable {
+            let readStartedAtNs: UInt64
+            let readFinishedAtNs: UInt64
+            let voiceProcessing: [String: Bool]
+            let formats: [String: MacSpeechPlaybackFormatWitness]
+            let playerMixerBus: Int?
+            let mixerOutputConnected: Bool
+            var route: Route?
+            var issues: [String]
+            var bindingStatus: String = "UNKNOWN"
+        }
+
+        struct Snapshot: Encodable, Sendable, Equatable {
+            let schemaVersion = 1
+            let phase: Phase
+            let runID: UUID
+            let captureGeneration: UInt64
+            let configurationID: UInt64
+            let payload: Payload
+        }
+
+        static func record(
+            _ phase: Phase, identity: Identity,
+            active: Bool, snapshots: inout [Snapshot], read: () -> Payload
+        ) -> Bool {
+            guard active, identity.generation > 0, identity.configurationID > 0, snapshots.count < 2,
+                  !snapshots.contains(where: { $0.phase == phase }) else { return false }
+            if let first = snapshots.first {
+                guard phase == .residentPlaybackStarted, first.runID == identity.runID,
+                      first.captureGeneration == identity.generation, first.configurationID == identity.configurationID
+                else { return false }
+            } else if phase != .engineStarted {
+                return false
+            }
+            snapshots.append(Snapshot(phase: phase, runID: identity.runID, captureGeneration: identity.generation,
+                                      configurationID: identity.configurationID, payload: read()))
+            return true
+        }
+    }
+
     nonisolated enum MacSpeechTimingEvent: String, CaseIterable, Codable, Sendable {
         case engineStartBefore, engineStartReturned, playerPlayBefore, playerPlayReturned
         case playbackPrepared, playbackStarted, playbackCompleted, captureStopped
@@ -1824,6 +1966,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         var input = MacSpeechTimingStream()
         var playerRender = MacSpeechTimingStream()
         var playbackFormat: MacSpeechPlaybackFormatWitness?
+        var runtimeReadbacks: [MacSpeechRuntimeReadback.Snapshot] = []
         var staleCallbacks: UInt64 = 0
         var identityChanges: UInt64 = 0
         var invalidBuffers: UInt64 = 0
@@ -2049,6 +2192,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     #if DEBUG
         private var nativeVoiceDebug: MacSpeechNativeVoiceDebugStats?
         private var nativeVoiceTimingDebug: MacSpeechNativeVoiceTiming?
+        private var runtimeReadbacks: [MacSpeechRuntimeReadback.Snapshot] = []
         private var configurationDebug: [String: Any] = [:]
         private struct AGCOffDebugContext {
             let runID: UUID
@@ -2320,6 +2464,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     prepared.1.play()
                     #if DEBUG
                         nativeVoiceTimingDebug?.event(.playerPlayReturned)
+                        recordRuntimeReadback(.residentPlaybackStarted, engine: prepared.0)
                     #endif
                 }
                 #if DEBUG
@@ -2393,6 +2538,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         try engine.start()
         #if DEBUG
             nativeVoiceTimingDebug?.event(.engineStartReturned)
+            recordRuntimeReadback(.engineStarted, engine: engine)
         #endif
     }
 
@@ -3038,6 +3184,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                             ? AGCOffDebugContext(runID: runID, generation: generation,
                                                  configurationID: configurationID &+ 1) : nil
                     }
+                    runtimeReadbacks.removeAll(keepingCapacity: true)
                     let timing = MacSpeechNativeVoiceTiming(runID: runID, generation: generation)
                     nativeVoiceTimingDebug = timing
                     nativeVoiceDebug = MacSpeechNativeVoiceDebugStats(
@@ -3080,6 +3227,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                           nativeVoiceDebug?.isSealed == true || lock.withLock({ !isCaptureActive }) else { return }
                     nativeVoiceDebug = nil
                     nativeVoiceTimingDebug = nil
+                    runtimeReadbacks.removeAll(keepingCapacity: true)
                     lock.withLock {
                         if agcOffDebugContext?.runID == runID {
                             agcOffDebugContext = nil
@@ -3098,9 +3246,98 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
 
         func nativeVoiceTimingSnapshot(runID: UUID) -> MacSpeechTimingSnapshot? {
-            let timing = lifecycleLock.withLock { nativeVoiceTimingDebug }
-            guard timing?.runID == runID else { return nil }
-            return timing?.snapshot()
+            let (timing, readbacks) = lifecycleLock.withLock { (nativeVoiceTimingDebug, runtimeReadbacks) }
+            guard timing?.runID == runID, var result = timing?.snapshot() else { return nil }
+            result.runtimeReadbacks = readbacks
+            return result
+        }
+
+        private func recordRuntimeReadback(_ phase: MacSpeechRuntimeReadback.Phase, engine: AVAudioEngine) {
+            guard let timing = nativeVoiceTimingDebug else { return }
+            let context = lock.withLock { (captureGeneration, configurationID, isCaptureActive,
+                                           isRouteRebuilding, audioProcessingMode, playerNode) }
+            guard context.0 == timing.captureGeneration, let player = context.5 else { return }
+            _ = MacSpeechRuntimeReadback.record(
+                phase, identity: .init(
+                    runID: timing.runID,
+                    generation: timing.captureGeneration,
+                    configurationID: context.1
+                ),
+                active: context.2 && !context.3 && context.4 == .appleVoiceProcessing,
+                snapshots: &runtimeReadbacks
+            ) {
+                Self.readRuntimePayload(engine: engine, player: player)
+            }
+        }
+
+        private static func readRuntimePayload(
+            engine: AVAudioEngine, player: AVAudioPlayerNode
+        ) -> MacSpeechRuntimeReadback.Payload {
+            let started = DispatchTime.now().uptimeNanoseconds
+            let input = engine.inputNode
+            let output = engine.outputNode
+            let inputID = input.auAudioUnit.deviceID
+            let outputID = output.auAudioUnit.deviceID
+            var issues: [String] = []
+            let mixer = engine.mainMixerNode
+            let bus = engine.outputConnectionPoints(for: player, outputBus: 0)
+                .first(where: { $0.node === mixer })?.bus
+            let connected = engine.outputConnectionPoints(for: mixer, outputBus: 0)
+                .contains(where: { $0.node === output })
+            let (formats, formatIssues) = readRuntimeFormats(engine: engine, player: player, bus: bus)
+            issues.append(contentsOf: formatIssues)
+            if bus == nil || !connected {
+                issues.append("graph_connection_unverified")
+            }
+            let voice = ["engineRunning": engine.isRunning, "inputEnabled": input.isVoiceProcessingEnabled,
+                         "outputEnabled": output.isVoiceProcessingEnabled,
+                         "agcEnabled": input.isVoiceProcessingAGCEnabled,
+                         "bypass": input.isVoiceProcessingBypassed,
+                         "inputMuted": input.isVoiceProcessingInputMuted]
+            var route: MacSpeechRuntimeReadback.Route?
+            do {
+                route = try MacSpeechRuntimeDeviceReadback.read(input: inputID, output: outputID)
+            } catch { issues.append("route_read_failed:" + String(describing: error)) }
+            if input.auAudioUnit.deviceID != inputID || output.auAudioUnit.deviceID != outputID {
+                route = nil
+                issues.append("io_nodes_changed_during_read")
+            }
+            return MacSpeechRuntimeReadback.Payload(
+                readStartedAtNs: started, readFinishedAtNs: DispatchTime.now().uptimeNanoseconds,
+                voiceProcessing: voice,
+                formats: formats, playerMixerBus: bus, mixerOutputConnected: connected,
+                route: route, issues: issues, bindingStatus: route?.binding ?? "UNKNOWN_READ_FAILED"
+            )
+        }
+
+        private static func readRuntimeFormats(
+            engine: AVAudioEngine, player: AVAudioPlayerNode, bus: AVAudioNodeBus?
+        ) -> ([String: MacSpeechPlaybackFormatWitness], [String]) {
+            let input = engine.inputNode
+            let output = engine.outputNode
+            let mixer = engine.mainMixerNode
+            var formats = [String: MacSpeechPlaybackFormatWitness]()
+            var issues: [String] = []
+            var sources = ["inputOutput": input.outputFormat(forBus: 0),
+                           "playerOutput": player.outputFormat(forBus: 0),
+                           "mixerOutput": mixer.outputFormat(forBus: 0),
+                           "outputInput": output.inputFormat(forBus: 0),
+                           "hardwareOutput": output.outputFormat(forBus: 0)]
+            if let bus {
+                sources["mixerPlayerInput"] = mixer.inputFormat(forBus: bus)
+            }
+            for (name, format) in sources {
+                let value = MacSpeechPlaybackFormatWitness(format)
+                let valid = value.sampleRate.isFinite && value.sampleRate > 0 && value.channelCount > 0
+                    && value.asbd.values.allSatisfy(\.isFinite)
+                    && value.channelDescriptions.allSatisfy { $0.values.allSatisfy(\.isFinite) }
+                if valid {
+                    formats[name] = value
+                } else {
+                    issues.append("invalid_format:" + name)
+                }
+            }
+            return (formats, issues)
         }
 
         private func bindNativeVoiceDebugLocked(configurationID: UInt64, generation: UInt64) {

@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-20 · R5-M04 DEBUG运行态I/O读回离线准备
+
+- [M04报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_R5_M04_runtime_readback_offline_preparation.md)：仅在成功Engine.start与居民player.play后的原非实时控制路径增加每run最多两份同RunID/configurationID快照，读取实际AU设备、Aggregate成员/方向、图/硬件格式及VP/AGC/bypass/mute；缺失证据保留UNKNOWN，不改图、DSP、Converter或回调。
+- 原M03及新增Fake合计11 cases/287 checks、Debug构建、三Guard通过；两次测试失败与修正留证。新增B0，历史Format/Lint FAIL及三处C19/C23结构增长延期。未启动App/设备、未读取私人录音，实际HAL/VP读回NOT_RUN；原7冲突不动，T3.2-A/Formal Test3仍BLOCKED，停止待主控审核与单独A组授权。
+
 ## 2026-10-20 · REF/HOST R3 播放器兼容与离线执行连接
 
 - [R3报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R3_player_integration.md)：找到原Objective-C播放器及直接依赖，同名重建SHA完全一致；仅派生副本增加REF/HOST两份固定素材的严格准入，接入原SingleRun/R2时钟翻译与单次清理循环。

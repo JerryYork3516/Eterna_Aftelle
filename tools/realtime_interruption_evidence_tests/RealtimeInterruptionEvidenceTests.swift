@@ -884,7 +884,177 @@ private extension RealtimeInterruptionEvidenceTests {
         await waitUntil("warm-up run sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
     }
 
+    static func runtimeDevice(
+        _ id: UInt32, input: UInt32, output: UInt32, aggregate: Bool = false
+    ) -> MacSpeechRuntimeReadback.Device {
+        MacSpeechRuntimeReadback.Device(
+            id: id, transport: aggregate ? 3 : 1, aggregate: aggregate, alive: true,
+            inputChannels: input, outputChannels: output,
+            inputStreams: input == 0 ? [] : [.init(owner: id, direction: 1, start: 1, channels: input, rate: 16000)],
+            outputStreams: output == 0 ? [] : [.init(owner: id, direction: 0, start: 1, channels: output, rate: 48000)]
+        )
+    }
+
+    static func testM04RouteBinding() {
+        cases += 1
+        let microphone = runtimeDevice(1, input: 1, output: 0)
+        let speaker = runtimeDevice(2, input: 0, output: 2)
+        let node = runtimeDevice(100, input: 1, output: 2, aggregate: true)
+        func route(_ aggregate: MacSpeechRuntimeReadback.Aggregate) -> MacSpeechRuntimeReadback.Route {
+            .init(defaultInput: microphone, defaultOutput: speaker, actualInput: aggregate.device,
+                  actualOutput: aggregate.device, aggregates: [aggregate])
+        }
+        let valid = MacSpeechRuntimeReadback.Aggregate(device: node, members: [microphone, speaker],
+                                                       activeMembers: [1, 2], tapCount: 0, activeTapCount: 0)
+        expect(route(valid).binding == "AGGREGATE_IO_DIRECTION_QUALIFIED",
+               "different node IDs can represent a verified physical aggregate pair")
+        let direct = MacSpeechRuntimeReadback.Route(defaultInput: microphone, defaultOutput: speaker,
+                                                    actualInput: microphone, actualOutput: speaker, aggregates: [])
+        expect(direct.binding == "NODE_IDS_MATCH_DEFAULTS", "direct hardware identities are verified")
+        let wrong = MacSpeechRuntimeReadback.Route(defaultInput: microphone, defaultOutput: speaker,
+                                                   actualInput: speaker, actualOutput: speaker, aggregates: [])
+        expect(wrong.binding == "UNKNOWN_UNVERIFIED_BINDING", "default route alone cannot prove actual input")
+        testM04Membership(microphone, speaker: speaker, node: node)
+        for stream in [
+            MacSpeechRuntimeReadback.Stream(owner: 100, direction: 0, start: 1, channels: 1, rate: 16000),
+            .init(owner: 99, direction: 1, start: 1, channels: 1, rate: 16000),
+            .init(owner: 100, direction: 1, start: 2, channels: 1, rate: 16000),
+            .init(owner: 100, direction: 1, start: 1, channels: 2, rate: 16000),
+            .init(owner: 100, direction: 1, start: 1, channels: 1, rate: .nan)
+        ] {
+            let broken = MacSpeechRuntimeReadback.Device(
+                id: node.id, transport: node.transport, aggregate: true, alive: true,
+                inputChannels: 1, outputChannels: 2, inputStreams: [stream], outputStreams: node.outputStreams
+            )
+            let value = MacSpeechRuntimeReadback.Aggregate(device: broken, members: valid.members,
+                                                           activeMembers: valid.activeMembers,
+                                                           tapCount: 0, activeTapCount: 0)
+            expect(route(value).binding == "UNKNOWN_UNVERIFIED_BINDING",
+                   "aggregate stream direction, owner, ordering, width and rate must match")
+        }
+    }
+
+    static func testM04Membership(
+        _ microphone: MacSpeechRuntimeReadback.Device, speaker: MacSpeechRuntimeReadback.Device,
+        node: MacSpeechRuntimeReadback.Device
+    ) {
+        cases += 1
+        for (members, active, taps, activeTaps) in [
+            ([microphone, speaker], [UInt32(1)], Optional(0), Optional(0)),
+            ([microphone, speaker], [1, 1], 0, 0),
+            ([microphone, microphone], [1, 2], 0, 0),
+            ([microphone, speaker, runtimeDevice(3, input: 0, output: 1)], [1, 2, 3], 0, 0),
+            ([microphone, speaker], [1, 2], 1, 0),
+            ([microphone, speaker], [1, 2], 0, 1),
+            ([microphone, speaker], [1, 2], nil, 0),
+            ([microphone, speaker], [1, 2], 0, nil)
+        ] {
+            let value = MacSpeechRuntimeReadback.Aggregate(device: node, members: members, activeMembers: active,
+                                                           tapCount: taps, activeTapCount: activeTaps)
+            expect(!value.qualifies(input: microphone, output: speaker),
+                   "missing, duplicated, extra, tapped or unreadable membership never qualifies")
+        }
+    }
+
+    static func testM04BoundedReadbacks() throws {
+        cases += 1
+        typealias Readback = MacSpeechRuntimeReadback
+        let run = UUID()
+        let identity = Readback.Identity(runID: run, generation: 1, configurationID: 2)
+        var records: [Readback.Snapshot] = []
+        var reads = 0
+        func read() -> Readback.Payload {
+            reads += 1
+            return runtimePayload(reads)
+        }
+        func take(_ phase: Readback.Phase, as value: Readback.Identity? = nil, active: Bool = true) -> Bool {
+            Readback.record(phase, identity: value ?? identity, active: active, snapshots: &records, read: read)
+        }
+        expect(!take(.residentPlaybackStarted), "playback cannot fabricate a missing engine-start snapshot")
+        expect(!take(.engineStarted, active: false), "stopped or invalidated runs cannot query devices")
+        expect(reads == 0, "rejected control points perform zero reads")
+        expect(take(.engineStarted), "one engine-start snapshot records even unavailable HAL fields")
+        let foreign: [Readback.Identity] = [
+            .init(runID: UUID(), generation: 1, configurationID: 2),
+            .init(runID: run, generation: 2, configurationID: 2),
+            .init(runID: run, generation: 1, configurationID: 3)
+        ]
+        for value in foreign {
+            expect(!take(.residentPlaybackStarted, as: value), "foreign run/generation/configuration is rejected")
+        }
+        expect(!take(.engineStarted), "duplicate start cannot query devices again")
+        expect(reads == 1, "rejected identities and duplicate points are side-effect free")
+        expect(take(.residentPlaybackStarted), "playback records the same run and configuration")
+        expect(!take(.residentPlaybackStarted), "two snapshots is the hard per-run cap")
+        expect(reads == 2 && records.count == 2, "no readback retry or extra snapshot")
+        try testM04ReadbackManifest(records, run: run)
+        records.removeAll(keepingCapacity: true)
+        expect(take(.engineStarted, as: .init(runID: UUID(), generation: 2, configurationID: 3)),
+               "a new preparation receives independent run-local evidence")
+        print("m04_runtime_readback_fake=PASS")
+        print("m04_runtime_device_reads=FAKE_ONLY")
+    }
+
+    static func runtimePayload(_ read: Int) -> MacSpeechRuntimeReadback.Payload {
+        guard let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3) else {
+            fatalError("FAILED: synthetic runtime layout")
+        }
+        let format = MacSpeechPlaybackFormatWitness(
+            AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, interleaved: false, channelLayout: layout)
+        )
+        let names = ["inputOutput", "playerOutput", "mixerPlayerInput", "mixerOutput", "outputInput", "hardwareOutput"]
+        var formats = Dictionary(uniqueKeysWithValues: names.map { ($0, format) })
+        formats["hardwareOutput"] = MacSpeechPlaybackFormatWitness(
+            AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+        )
+        let microphone = runtimeDevice(1, input: 1, output: 0)
+        let speaker = runtimeDevice(2, input: 0, output: 2)
+        let node = runtimeDevice(100, input: 1, output: 2, aggregate: true)
+        let aggregate = MacSpeechRuntimeReadback.Aggregate(
+            device: node, members: [microphone, speaker], activeMembers: [1, 2], tapCount: 0, activeTapCount: 0
+        )
+        let route: MacSpeechRuntimeReadback.Route? = read == 1 ? nil : .init(
+            defaultInput: microphone, defaultOutput: speaker, actualInput: node, actualOutput: node,
+            aggregates: [aggregate]
+        )
+        return .init(readStartedAtNs: UInt64(read * 100), readFinishedAtNs: UInt64(read * 100 + 10),
+                     voiceProcessing: ["inputEnabled": true, "outputEnabled": true, "agcEnabled": read == 1,
+                                       "bypass": false, "inputMuted": false],
+                     formats: formats, playerMixerBus: 0, mixerOutputConnected: true, route: route,
+                     issues: route == nil ? ["synthetic_route_unavailable"] : [],
+                     bindingStatus: route?.binding ?? "UNKNOWN_READ_FAILED")
+    }
+
+    static func testM04ReadbackManifest(
+        _ records: [MacSpeechRuntimeReadback.Snapshot], run: UUID
+    ) throws {
+        cases += 1
+        var timing = MacSpeechTimingSnapshot(runID: run, captureGeneration: 1)
+        timing.runtimeReadbacks = records
+        let data = try JSONEncoder().encode(timing)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let encoded = json?["runtimeReadbacks"] as? [[String: Any]]
+        expect(encoded?.count == 2 && encoded?.allSatisfy { $0["runID"] as? String == run.uuidString } == true,
+               "existing timing manifest carries two same-run snapshots")
+        let payload = encoded?.first?["payload"] as? [String: Any]
+        expect((payload?["formats"] as? [String: Any])?.count == 6,
+               "all six graph and hardware format witnesses are exported")
+        expect(payload?["bindingStatus"] as? String == "UNKNOWN_READ_FAILED",
+               "read failure remains UNKNOWN instead of a cached valid route")
+        let hardware = (payload?["formats"] as? [String: [String: Any]])?["hardwareOutput"]
+        expect(hardware?["sampleRate"] as? Double == 48000, "hardware format is independent of the VP graph")
+        expect(records[1].payload.voiceProcessing["agcEnabled"] == false
+            && records[1].payload.readStartedAtNs == 200,
+            "later actual properties and read time cannot be replaced by the first cached snapshot")
+        expect(records[1].payload.route?.aggregates.first?.members.count == 2
+            && records[1].payload.bindingStatus == "AGGREGATE_IO_DIRECTION_QUALIFIED",
+            "qualified aggregate membership remains in the same-run record")
+        expect(String(data: data, encoding: .utf8)?.contains("pcm") == false, "readbacks contain no PCM payload")
+    }
+
     static func testM03Batch() async throws {
+        testM04RouteBinding()
+        try testM04BoundedReadbacks()
         let source = try d1SyntheticPlayback(packets: 150)
         defer { try? FileManager.default.removeItem(at: source) }
         for scenario in AppleVPAcousticTestScenario.allCases {
