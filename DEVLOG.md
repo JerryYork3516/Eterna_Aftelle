@@ -551,3 +551,5 @@ DEBUG综合C的WARMUP_0S/4S离线准备REVIEW_PENDING：AGC-ON固定，预热持
 ## 2026-10-20 · Stage7.5 · REF/HOST R4续行
 
 用户授权恢复输出55%并执行既定对照；新增默认禁用、显式同意及单次尝试保护的独立实机入口。首次代理准备因真实`duration_seconds`与旧控制器/Fake的`duration_s`不一致退出，尚未播放或启动REF采集，HOST未运行。确认并离线修复适配器协议BUG，41/13/9项及三Guard通过；原失败保留，无设备自动重试、无生产音频改动或新录音公开。R4仍BLOCKED，AEC根因UNKNOWN，T3.2-A/Formal Test3保持BLOCKED。详见[R4报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_R4_device_comparison.md)。
+
+再次续行：真实proxy_ready已越过协议门禁；REF裸CLI窗口不能被CUA选择，增加二进制/资源字节一致的本地App包装，43项离线PASS。包装被识别，但原NSAlert仍CUA超时；两次采集前准备安全退出，实际PLAY/Capture均0，HOST未运行。已请求允许改用AppleScript操作原界面，未收到回复前不绕过或更换技术。问题及修复、失败证据追加在同一R4报告第13节；生产音频和原7冲突不变。

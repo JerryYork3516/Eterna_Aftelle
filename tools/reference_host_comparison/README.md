@@ -38,6 +38,10 @@ R4新增独立 `device_once.py` / `run_device_once()`，只供已明确批准的
 
 R4第一次实机准备发现旧控制器/Fake把播放器的 `duration_seconds` 误写为 `duration_s`，在启动REF前误拒绝正确素材。已修正控制器和Fake，并按已登记原生源码检查ready字段集合；错误旧字段继续拒绝。41项离线通过不能替代修复后的实机验证；原失败及单次尝试标记保留，未自动重试。
 
+REF原产物是没有`.app`目录的CLI；当前CUA无法按名称、bundle ID或裸可执行路径选择它。`prepare_reference_app.py`仅复制登记SHA的可执行文件及原资源，生成含原Info字段的本地`.app`，只增加CFBundleExecutable/PackageType，不重编译、不签名改写Mach-O、不改VP/窗口/排程源码。其二进制SHA仍为原ADAPTED_REF值；工具本身不启动应用。新增两个离线用例验证原身份/资源、拒绝错误二进制及不覆盖已有包装，累计43项PASS。
+
+该包装已使CUA能识别应用，但本机读取REF原NSAlert仍返回`timeoutReached`。这不是原确认已经通过；不得绕过确认或据此宣称设备执行成功。2026-10-20续行仅做了两次采集前准备，均未PLAY或Capture；原生窗口自动化方式的明确授权仍待用户回复。实际设备实验各一次的预算未被录音消耗。
+
 同一个证据目录禁止复用，结果0600；命令与事件有界、失败不重试、清理失败不能写PASS。源码/产物身份和33项新增测试、原42/13/9回归见[R3报告](../../docs/stage7_5/test3_apple_vp_clean/T3_2_A_reference_host_comparison_R3_player_integration.md)。READY仅表示离线技术准备；真实时序、音量、物理覆盖和参考隔离仍未验证。
 
 ## 身份与范围

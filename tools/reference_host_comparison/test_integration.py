@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import plistlib
 import re
 from pathlib import Path
 import shutil
@@ -13,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 import integration as target
+import prepare_reference_app
 from prepare_player import FIXTURES
 
 BUNDLE = Path(os.environ["R3_BUNDLE"]).resolve()
@@ -369,6 +371,25 @@ class ExecutionTests(unittest.TestCase):
 
 
 class DeviceGateTests(unittest.TestCase):
+    def test_reference_app_preserves_binary_resources_and_original_identity(self):
+        info = Path(__file__).resolve().parents[2]/".build/reference_host_r2/final/ADAPTED_REF/Info.plist"
+        with tempfile.TemporaryDirectory(dir=BUNDLE.parent) as directory:
+            output = Path(directory)/"REF.app"
+            executable = prepare_reference_app.prepare(REF, info, output)
+            self.assertEqual(target.sha(executable), target.REF_BINARY_SHA)
+            metadata = plistlib.loads((output/"Contents/Info.plist").read_bytes())
+            for key, value in plistlib.loads(info.read_bytes()).items():
+                self.assertEqual(metadata[key], value)
+            self.assertEqual(metadata["CFBundleExecutable"], "apple-vp-reference")
+            with self.assertRaises(FileExistsError): prepare_reference_app.prepare(REF, info, output)
+
+    def test_reference_packaging_refuses_wrong_binary_before_writing(self):
+        with tempfile.TemporaryDirectory(dir=BUNDLE.parent) as directory:
+            output = Path(directory)/"REF.app"
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                prepare_reference_app.prepare(HOST, Path(directory)/"not_read", output)
+            self.assertFalse(output.exists())
+
     def test_missing_or_wrong_consent_never_spawns(self):
         with patch.object(subprocess, "Popen") as spawn:
             for consent in (None, True, "R3", ""):

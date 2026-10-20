@@ -1,8 +1,8 @@
 # T3.2-A · R4 Controlled REF/HOST Device Comparison
 
-日期：2026-10-20（Asia/Shanghai）。**最新续行结果：R4仍BLOCKED。用户已授权恢复环境并执行，输出已恢复55%；代理播放器准备1次后因控制协议字段错误退出，尚未启动REF或HOST采集。错误已离线修复，未自动重试。详见第9–12节。**
+日期：2026-10-20（Asia/Shanghai）。**最新续行：环境、协议修复及字节一致的REF应用包装已完成，43项离线PASS；当前R4仍未完成，停在原REF确认窗口的UI控制可达性问题。REF/HOST实际采集仍均为0次，未播放代理。替代UI技术的明确授权请求待回复。详见第13节。**
 
-第1–8节保留前次已提交的音量阻塞记录，是续行前的历史状态。
+第1–8节保留音量阻塞历史；第9–12节保留协议修复续行历史。下面的失败记录均未覆盖。
 
 ## 1. 结论与停止原因
 
@@ -218,7 +218,7 @@ CRITICAL=0。**MAJOR-R4-INT-01**：独立适配器真实/Fake协议不一致，�
 
 唯一下一项：主控审核本次原生协议修复与停止证据后，另行续行一对REF/HOST设备验证；保持原素材、窗口、设备和AGC-ON，不追加其他声学变量。
 
-## 12. 最新状态（取代第8节的历史状态）
+## 12. 协议修复续行状态（第13节已更新）
 
 ```ini
 R4_ENVIRONMENT=RESTORED
@@ -241,5 +241,92 @@ AEC_ROOT_CAUSE=UNKNOWN
 R3-M01=OPEN
 T3.2-A=BLOCKED
 Formal_Test3=BLOCKED
+T3.3=NOT_STARTED
+```
+
+## 13. 再次明确续行：原确认窗口与应用包装
+
+用户要求“重新执行R4，遇到阻塞问题自行修复并留下修复记录，确保R4最终完成”。据此继续修复**采集前工程准备**，不重复已开始的声学实验，不改变后文列明的设备安全停止规则。实验/本地音频授权沿用明确同意，不重新索要同一授权。
+
+### 13.1 本轮身份、预检和实际准备
+
+- 初始HEAD/upstream/实时远端均为 `f2efb4be49d235070b7783cbab3d19b27dc5ec41`；相对任务旧参考基线的新增提交均为本聊天已交付的R4报告和协议修复，未回退。
+- 输入60%、输出55%、未静音；无需再次调整。TinyUSB/内置扬声器/小爱均alive=1、running=0，默认路线正确。8项二进制/素材SHA与第3节相同；REF权限只读为AUTHORIZED。没有读取新旧私人录音。
+- 第一次准备已正常取得真实proxy_ready：`duration_seconds=11.012916666666667`、固定代理SHA、play_calls=0；证明前次字段修复已越过原拒绝点。REF进程到达原 `VPCPrompt.confirm`。
+- CUA按CLI名称、bundle ID及可执行路径均不能选择该裸CLI。为修复界面连接，在确认尚未Capture/PLAY后主动SIGTERM退出控制器；原STOP/回收成功。原失败回执为 `R4 operator cancellation`，无采集目录。
+- 修改包装工具/测试前checkpoint：`1706d4a2c391c5d57d97d233e3c362c08ce6dc73`。原冲突worktree不写入。
+
+### 13.2 最小包装修复及其边界
+
+新增 `tools/reference_host_comparison/prepare_reference_app.py`：
+
+1. 先核验冻结ADAPTED_REF二进制SHA及原Info的bundle ID。
+2. 在新本地`.app/Contents/MacOS/`复制原可执行文件，资源逐文件复制至Contents/Resources；不覆盖旧目录。
+3. 保留原Info全部字段，仅增加CFBundleExecutable、CFBundlePackageType=APPL。
+4. 校验复制后二进制及资源摘要，生成包装回执；不重编译、不修改或重新签名可执行文件，不改变原VPCPrompt、VPCWindow、Engine、Tap、VP、AGC或排程代码。
+
+实际包装命令：
+
+```bash
+python3 -B tools/reference_host_comparison/prepare_reference_app.py \
+  --reference "$ADAPTED_REF" --info "$REF_SOURCE/Info.plist" \
+  --output .build/reference_host_r4/resume2/ADAPTED_REF_R4.app
+```
+
+exit0。包装后可执行文件SHA仍为 `54d2eaf775eccdf806c82f8996a7038db4b219e4ddba60ea8914122997385ade`。包装回执SHA为 `1e0db66be486fc7031041806d6a62911fcccd4df885386613ed0710fb712a696`；该包装不是历史成功实验的原App。
+
+本轮第二次准备使用字节一致的包装，权限只读仍AUTHORIZED。CUA inventory现在识别到 `Apple VP Reference v1` / 原bundle ID，但 `getApp()`读取其确认界面持续返回 **`Computer Use server error -10005: timeoutReached`**。本机其他原生应用的CUA读取可用，不能把它写成所有UI接口都不可用。
+
+只读进程采样显示REF主线程处于原 `VPCPrompt.confirm → NSAlert.runModal → NSApplication modal loop`；不是已经通过确认或已经开始录音。采样只用于定位界面阻塞，未提交原始采样日志。通过原生Finder定位、打开动作尝试激活该已运行包装，也未解决读取超时。没有改写或跳过原确认。
+
+原240秒UI/control watchdog最终退出第二次准备，exit1；回执保留 `UI/control watchdog`、proxy_ready、commands=[STOP]、status=FAIL。确认无REF/播放器进程残留，没有Capture目录、音频容器或WAV。
+
+**本轮计数必须区别：采集前控制器准备2次，真实代理PLAY=0，REF Capture=0，HOST Capture=0。** 第二次是对未开始录音的界面准备修复续行，不冒称两次实机声学实验；没有重复已执行的物理实验，也没有为凑结果启动HOST。
+
+### 13.3 必要验证、当前阻塞及审核
+
+| 实际执行 | 结果 / exit |
+|---|---|
+| 8项构建与素材SHA、只读路线/音量、Caches权限 | 匹配 / 0 |
+| 原REF和包装REF `permission-status` | 均AUTHORIZED、无音频 / 0 |
+| 包装构造及原二进制/Info/资源核验 | PASS / 0 |
+| `python3 -B tools/reference_host_comparison/test_integration.py` | 43 tests PASS / 0，约0.5844s |
+| 新增2项 | 包装保留原身份/资源且不覆盖；错误二进制在写入前拒绝；不运行包装App |
+| 原13/9及Swift42、FULL_CURRENT、HOST构建 | 未改对应模块，复用前述结果，不重跑 |
+| Architecture / Secret / Release Route Guard、增量diff检查 | 均PASS / 0；4份Python AST通过，生产目录diff为空，原冲突status/index不变 |
+| 原REF准备 / 包装REF准备 | 分别主动安全取消和watchdog退出 / 1、1；无PLAY/Capture |
+| 原生确认及后续REF/HOST实机数据 | NOT_RUN；没有音频可供试听 |
+
+43项日志SHA：`90f036cbdad624474bedc2f05d84380f1decb01a2bd0b83709605f7cb2152f64`。Git忽略回执位于 `.build/reference_host_r4/resume2/`；新私有尝试目录的末级为 `r4-61C633BF-7B98-4FC2-8763-5D8ABB518E5A`，原始准备与包装准备分目录、不覆盖历史。
+
+已向用户请求**仅针对界面自动化技术**的明确允许：改用AppleScript操作REF/HOST原有确认、文件选择及导出；无需用户手动点击，不操作系统权限弹窗、不绕过确认、不修改音频实现。这个请求来自CUA工具要求“界面操作只用CUA，除非用户明确指定其他技术”，不是撤销已收到的设备/本地录音授权。**答复未到达，不启用替代技术。** 若后续出现新的系统权限要求，仍按原任务停止，不代替用户授予。
+
+| 维度 | 最新SELF_REVIEW |
+|---|---|
+| TECHNICAL | PARTIAL：目标身份、协议、包装和43项离线有效；原确认界面操作仍BLOCKED |
+| ENGINEERING | PASS_SCOPED：仅独立包装工具、直接测试和文档；生产音频差异为空，新增B类0，历史债务不清理 |
+| EVIDENCE | PASS_FOR_BLOCKED_REPORT：明确2次采集前准备、0次实际声学实验；所有错误与缺失如实保留 |
+| CONSISTENCY | PASS：沿用明确实验授权；没有绕过原确认或未授权改用其他UI技术，没有重复录音 |
+| Stage7 Forbidden Checklist | PASS：无生产Engine/Tap/DSP、Runtime/Provider/DR/Human Gate变化，无公开录音或设备UID |
+
+新增CRITICAL=0、**MAJOR-R4-UI-01 OPEN**（原REF确认界面不能由当前CUA操控）、MINOR=0。没有新的AEC生产代码根因；原协议缺陷已越过真实ready验证，但不能据此宣布完整集成或声学PASS。
+
+```ini
+R4_ENVIRONMENT=READY
+R4_REFERENCE_APP_PACKAGING=PASS_BYTE_IDENTICAL
+R4_OFFLINE_CHECKS=43_PASS
+R4_DEVICE_COMPARISON=BLOCKED_AT_ORIGINAL_UI_CONFIRMATION
+R4_CURRENT_PRE_CAPTURE_PREPARES=2
+REF_CAPTURE_RUNS=0
+HOST_CAPTURE_RUNS=0
+PROXY_PLAY_CALLS=0
+USER_UI_TECHNIQUE_PERMISSION=AWAITING_REPLY
+USER_LISTENING=NOT_RUN
+SOURCE_REFERENCE_ISOLATION=UNKNOWN
+AEC_ROOT_CAUSE=UNKNOWN
+R3-M01=OPEN
+T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
 T3.3=NOT_STARTED
 ```
