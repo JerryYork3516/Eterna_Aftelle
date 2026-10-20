@@ -2,7 +2,9 @@
 
 日期：2026-10-20。schema_version：1。
 
-**本轮BLOCKED在离线控制验证，A/B/C实际录音均为0次，没有新的声学结论。** 设备、素材只读检查成立；新增DEBUG控制的Swift Fake通过，外部控制器14项中13项通过、1项测试夹具错误。任务限定一次Fake验证，未重跑，未将部分通过作为设备准入。
+**续跑仍BLOCKED，A/B/C实际录音均为0次，没有新的声学结论。** 用户要求“修复后继续推进实验”后，已修正的控制器夹具复核14/14 PASS；但A组尚在文件选择阶段，执行员按应用名称获取UI时误启动另一份普通Aftelle实例。按“未预期进程立即停止全部剩余测试”的规则取消整批，退出两个实例，未继续B/C。
+
+第1–7节保留初次交付`e5e6af8c6efcc16069eaee3598acf7d20a978af1`的失败与未复核记录；**第8节为本次续跑的最终状态**，不覆盖旧失败事实。
 
 ## 1. Git、构建与范围
 
@@ -150,6 +152,109 @@ READY_FOR_DEVICE_BATCH=false
 A_DEVICE_RUNS=0
 B_DEVICE_RUNS=0
 C_DEVICE_RUNS=0
+USER_LISTENING=NOT_REQUESTED_USER_ABSENT
+SOURCE_REFERENCE_ISOLATION=UNKNOWN
+AEC_ROOT_CAUSE=UNKNOWN
+R3-M01=OPEN
+T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+T3.3=NOT_STARTED
+```
+
+## 8. 修正后续跑：离线门禁通过，实机批次在采集前停止
+
+### 8.1 身份与复核
+
+续跑开始时HEAD / upstream / 实时远端均为：
+`e5e6af8c6efcc16069eaee3598acf7d20a978af1`，隔离工作区干净。
+只复核受影响的Python控制测试，没有重复Swift Fake、构建、FULL_CURRENT或声学测试，也没有修改源码、二进制或门槛。
+
+| 检查 | 续跑实际结果 |
+| --- | --- |
+| `python3 -B tools/reference_host_comparison/test_m03.py` | 追加1轮，**14/14 PASS，exit0，0.277秒**；包含单次登记及拒绝第二次启动 |
+| Debug App / dylib、AppController / ContentView、M02 Host摘要 | 与第1节冻结值一致；运行中`lsof`也定位到本次候选App及dylib |
+| 素材 | 两份SHA、格式、帧数和居民首1秒全零均与第2节一致 |
+| TinyUSB / Mac / 小爱 | 在线；默认路线匹配，开始前均running=0；输入60%、输出55%、未静音；小爱UID匹配但音量UNKNOWN |
+| 目录 | 本人所有、0700、无symlink、可写；可用空间约2.11GB；新批次目录不覆盖历史结果 |
+| 原冲突工作区 | 续跑前后均7个冲突，status和索引摘要与保护快照完全相同 |
+| 文档/隐私 | `git diff --check`、单文件白名单及私人字段检查通过；本次Secret Guard追加1轮exit0 |
+
+追加测试使用既有R3 bundle和本次冻结HOST可执行文件；REF变量为`NOT_USED_M03_NEVER_STARTS_REF`，Fake不启动设备。通过日志SHA：
+`ab0d51b544d8b964dec1819d6cc17fce75062ddd9908e2ca10c6d6e8ef62b68f`。
+上轮失败日志继续保留，累计Python控制测试2轮：先exit1，修正后exit0。
+
+### 8.2 实际启动、操作错误与停止
+
+仅调用一次：
+
+```sh
+python3 -u -B tools/reference_host_comparison/m03_once.py --group A \
+  --consent R5_M03_ABC_ONCE_LOCAL_RECORDING_AND_ANALYSIS \
+  --bundle .build/reference_host_r3/candidate1 \
+  --executable .build/r5_m03/DerivedData/Build/Products/Debug/Aftelle.app/Contents/MacOS/Aftelle \
+  --evidence '<本机0700新批次目录>/A'
+```
+
+命令通过精确二进制/素材校验，排他登记A尝试，并启动正确DEBUG实例。执行员按已授权AppleScript操作原Prepare及文件选择UI。所见状态为`phase=ready`、`run=UNKNOWN`、`packets=0 bytes=0`、VP/AGC未读回；尚未核验完成素材选择，未点击原采集确认。
+
+文件选择操作未按预期完成后，执行员错误使用`cua.getApp("Aftelle")`读取界面。该名称被解析到另一份本机普通Aftelle安装产物，工具启动了它。随后`ps`确认存在正确DEBUG实例和错误普通实例两个进程。这是**确认的执行员应用定位错误**，不是Apple VP、M02隔离修复或声学代码根因，也不是无害的成功UI读取。
+
+发现后立即按进程命令身份核验并向错误普通实例及A控制器发送SIGTERM；控制器原取消清理路径回收DEBUG子进程。A执行器**exit1**，回执：
+
+```text
+status=FAIL
+error=M03 operator cancellation
+events=[]
+commands=[]
+```
+
+没有删除或重置`M03_A_consumed.json`，没有伪造前组`release.json`，没有自动重试A。B/C目录和尝试标记均未创建。
+
+| 实际执行项目 | A | B | C |
+| --- | ---: | ---: | ---: |
+| M03入口调用 / 正确DEBUG App启动 | 1 / 1 | 0 / 0 | 0 / 0 |
+| 原采集确认 / 实验麦克风采集 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 居民播放 / BT代理播放 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 实验RunID / 新录音JSON/WAV | 无 | 无 | 无 |
+| 实机控制结果 | FAIL_BEFORE_CAPTURE | NOT_RUN | NOT_RUN |
+
+另有1次错误普通App启动，不能隐去或算作正确隔离运行。未操作它的开始按钮，未读取其私人内容；未进一步调查其内部初始化副作用，因此不宣称这次操作完全满足隔离要求。
+
+清理复核：相关进程定点查询exit1（无匹配），TinyUSB/Mac/小爱均`running=0`；默认设备与音量不变。原Caches除本批次目录外无新增条目；批次仅保存0600的尝试登记和失败控制回执，没有录音。没有请求或自动接受新的系统麦克风授权。
+
+A失败回执SHA：
+`011fb37d56288b92344e890b18d1c10dc8521a010bc95b0c62c30b0d34cd46b8`。
+清理证据SHA：
+`b976567a11d521177ae2250b8cf4ebce4a44d06c9e97a2fda1f05fa672179785`。
+原始执行命令、PID、路径和设备字段仅留本机，不进入公开报告。
+
+### 8.3 判定、审核与剩余工作
+
+原离线夹具MAJOR已解决；**新增MAJOR=1：UI按名称定位误启普通实例，批次执行失败**。新增CRITICAL=0、MINOR=0。没有新的生产源码缺陷证据，没有任何Native/WAV分窗、回声、人声保留或同窗A/B/C比较结果。
+
+| 五维SELF_REVIEW | 结论 |
+| --- | --- |
+| 功能 | BLOCKED：离线14/14通过；正确App仅到Prepare，三组录音未完成 |
+| 安全/隐私 | REWORK：误启动普通实例属于执行范围偏离；已停止全部、释放进程/设备，无新录音上传或权限绕过 |
+| 证据 | PASS_FOR_FAILURE_REPORT：保留原exit1、修正exit0及新取消exit1，区分App启动与录音次数 |
+| 工程/增量规范 | 本次仅改报告；冻结构建和已通过Guard证据复用，新增源码B类0，历史债务未改 |
+| Stage7 Forbidden Checklist | REWORK：架构、Runtime API、DR schema、平台及Stage均未变；执行隔离失败已如实登记，禁止把它记为整任务PASS |
+
+后续操作纠正必须绑定控制器返回的**确切PID和已核验可执行路径**，在UI原确认前复核窗口归属；不得再以显示名称`Aftelle`获取可能自动启动其他安装的应用。本次没有更改应用权限或生产逻辑来解决界面问题。
+
+唯一下一项建议：主控审核本次停止记录后，另行决定是否恢复该受控批次；若恢复，沿用按PID的原UI流程，保留新的单次登记和全部安全门禁。本次不自行清空尝试标记或追加采集。
+
+```ini
+R5_M03=BLOCKED_UNEXPECTED_PROCESS_BEFORE_CAPTURE
+M03_CONTROLLER_FAKE=PASS_14_OF_14
+M03_FIXTURE_PATH_CORRECTION=VERIFIED
+A_ENTRY_ATTEMPTS=1
+A_CAPTURE_RUNS=0
+B_CAPTURE_RUNS=0
+C_CAPTURE_RUNS=0
+UNEXPECTED_ORDINARY_APP_STARTS=1
+CLEANUP=PROCESSES_EXITED_DEVICES_NOT_RUNNING
 USER_LISTENING=NOT_REQUESTED_USER_ABSENT
 SOURCE_REFERENCE_ISOLATION=UNKNOWN
 AEC_ROOT_CAUSE=UNKNOWN
