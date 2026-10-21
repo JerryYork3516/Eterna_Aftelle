@@ -21,6 +21,7 @@ HOST_BINARY_SHA = "ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e
 HOST_DYLIB_SHA = "34ca1dc87ed28229fc2992503253d272eca4833dea5fdb2f7ceaf20c25267ba1"
 M03_HOST_DYLIB_SHA = "6f81387668c4625c88f80895778dad46e4a8a39badde25ad95527ae4492e2eef"
 M07_HOST_DYLIB_SHA = "094ce973dc6f3589db56fedca067af4ddc1d0865534bc5150952a66c603f764c"
+F1_HOST_DYLIB_SHA = "ecf6a86f4f05b3a594c978af45fc47d7af96c6761a9f7c1419ee494c96de8d5e"
 PLAYER_BINARY_SHA = "ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8"
 R4_CONSENT = "R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS"
 
@@ -49,8 +50,10 @@ def now_ns():
     return lib.mach_absolute_time() * base.numer // base.denom
 
 
-def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, human_group=None):
+def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, human_group=None, onset_group=None):
     executable = Path(executable).resolve()
+    if onset_group is not None and (onset_group not in ("A", "B") or human_group != "C"):
+        raise ValueError("F1 requires a registered human C onset group")
     if human_group is not None and (mode != "HOST" or m03_group is not None or human_group not in ("A", "B", "C")):
         raise ValueError("unregistered or mixed human group")
     if mode == "HOST":
@@ -60,12 +63,14 @@ def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, h
         if m03_group is not None and m03_group not in ("A", "B", "C"):
             raise ValueError("unregistered M03 group")
         require_identity(executable.with_name("Aftelle.debug.dylib"),
-                         M07_HOST_DYLIB_SHA if human_group else M03_HOST_DYLIB_SHA if m03_group else HOST_DYLIB_SHA)
+                         F1_HOST_DYLIB_SHA if onset_group else M07_HOST_DYLIB_SHA if human_group
+                         else M03_HOST_DYLIB_SHA if m03_group else HOST_DYLIB_SHA)
         args = [str(executable), "--apple-vp-acoustic-test", "--apple-vp-score-control-fd=" + str(descriptor)]
         if m03_group:
             args.append("--apple-vp-bt-abc=" + m03_group)
         if human_group:
-            args.append("--apple-vp-human-abc=" + human_group)
+            args.append("--apple-vp-human-onset=" + onset_group if onset_group
+                        else "--apple-vp-human-abc=" + human_group)
         return args, {}
     if m03_group is not None:
         raise ValueError("M03 never starts REF")
@@ -160,7 +165,9 @@ def run_device_once(bundle, mode, executable, evidence, ref_arguments=(), *, con
 
 
 def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn, clock, device=False,
-                   m03_group=None, human_group=None):
+                   m03_group=None, human_group=None, onset_group=None):
+    if onset_group is not None and (onset_group not in ("A", "B") or human_group != "C"):
+        raise ValueError("F1 requires a registered human C onset group")
     if human_group is not None and (mode != "HOST" or m03_group is not None or human_group not in ("A", "B", "C")):
         raise ValueError("unregistered or mixed human group")
     bundle, fixture = verify_bundle(bundle, "REF" if m03_group or human_group else mode)
@@ -174,8 +181,10 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
         state.update(batch="R5_M03", group=m03_group,
                      device_access="M03_EXPLICIT_ONCE" if device else "ZERO_FAKE_ONLY")
     if human_group:
-        state.update(batch="R5_M07", group=human_group, source="human", proxy_requested=False,
-                     device_access="M07_EXPLICIT_ONCE" if device else "ZERO_FAKE_ONLY")
+        state.update(batch="R5_M07_F1" if onset_group else "R5_M07", group=onset_group or human_group,
+                     source="human", proxy_requested=False,
+                     device_access=("M07_F1_EXPLICIT_ONCE" if onset_group else "M07_EXPLICIT_ONCE")
+                     if device else "ZERO_FAKE_ONLY")
     if mode == "REF":
         state["reference_variant"] = require_reference_identity(executable)
     helper = child = None
@@ -236,7 +245,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
         os.set_blocking(read_fd, False)
         os.set_blocking(write_fd, False)
         argv, extra_env = command(mode, executable, write_fd, ref_arguments,
-                                  m03_group=m03_group, human_group=human_group)
+                                  m03_group=m03_group, human_group=human_group, onset_group=onset_group)
         proxy_fd = None
         if use_proxy:
             helper = spawn([str(bundle / "bt_proxy_registered"), "--authorized-proxy-once", str(fixture)],
@@ -279,8 +288,20 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                         raise ValueError("M03 source combination mismatch")
                     checked_event = event
                     if human_group:
-                        if (event.get("batch"), event.get("scenario"), event.get("source")) != ("R5_M07", human_group, "human") or event.get("proxy_requested") is not False:
+                        batch = "R5_M07_F1" if onset_group else "R5_M07"
+                        if (event.get("batch"), event.get("scenario"), event.get("source")) != (batch, human_group, "human") or event.get("proxy_requested") is not False:
                             raise ValueError("M07 human source identity mismatch")
+                        if onset_group:
+                            delay = 5_500_000_000 if onset_group == "A" else 0
+                            if (event.get("onset_group") != onset_group
+                                    or type(event.get("score_start_ns")) is not int
+                                    or type(event.get("human_start_cue_ns")) is not int
+                                    or event["human_start_cue_ns"] != event["score_start_ns"] + delay):
+                                raise ValueError("F1 onset identity or cue mismatch")
+                            if plan.state.start is not None and event["score_start_ns"] != plan.state.start:
+                                raise ValueError("F1 score origin changed within one run")
+                        elif "onset_group" in event:
+                            raise ValueError("F1 event cannot enter the original M07 batch")
                         if "proxy_stop_ns" in event or type(event.get("human_speech_stop_ns")) is not int:
                             raise ValueError("M07 human timing contract mismatch")
                         checked_event = dict(event)

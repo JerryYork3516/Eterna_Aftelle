@@ -744,7 +744,16 @@ private struct ParticleOrientationDebugOverlay: View {
 
         private var preparationControls: some View {
             VStack(alignment: .leading, spacing: 8) {
-                if let scenario = controller.appleVPHumanBatchScenario {
+                if let profile = controller.appleVPHumanOnsetProfile {
+                    Button(String(localized: "Prepare M07-F1 \(profile.rawValue) · Human C · AGC-ON · WARMUP_4S")) {
+                        _ = controller.prepareAppleVPAcousticTest(
+                            .doubleTalk, comprehensiveC: true, warmupProfile: .four,
+                            humanAcousticBatch: true, humanOnsetProfile: profile
+                        )
+                    }
+                    .disabled(controller.appleVPAcousticTestState.phase != .idle)
+                    Text(String(localized: "A居民先讲；B真人先讲。每组仅一次，4秒安静预热＋15秒评分，无蓝牙。"))
+                } else if let scenario = controller.appleVPHumanBatchScenario {
                     Button(String(localized: "Prepare M07 HUMAN \(scenario.rawValue) · AGC-ON · WARMUP_4S")) {
                         _ = controller.prepareAppleVPAcousticTest(
                             scenario, comprehensiveC: true, processingProfile: .agcOn,
@@ -835,7 +844,9 @@ private struct ParticleOrientationDebugOverlay: View {
                 if !controller.appleVPAcousticTestState.humanAcousticBatch {
                     Text(String(localized: "综合C：评分15秒；WARMUP_4S先安静预热4秒，总采集最多19秒。须另行获准设备测试。"))
                 }
-                if controller.appleVPAcousticTestState.humanAcousticBatch {
+                if let profile = controller.appleVPAcousticTestState.humanOnsetProfile {
+                    humanOnsetGuide(profile)
+                } else if controller.appleVPAcousticTestState.humanAcousticBatch {
                     humanBatchGuide
                 } else if controller.appleVPAcousticTestState.btAcousticBatch {
                     Text(String(localized: "M03: synthetic sources; physical overlap unverified."))
@@ -849,6 +860,28 @@ private struct ParticleOrientationDebugOverlay: View {
                     recordingCGuide
                 }
                 Text(String(localized: "退出前请导出；失败JSON也可保留。未导出的内存证据会随App退出丢失。"))
+            }
+        }
+
+        private func humanOnsetGuide(_ profile: AppleVPHumanOnsetProfile) -> some View {
+            let state = controller.appleVPAcousticTestState
+            return VStack(alignment: .leading, spacing: 8) {
+                Text(String(localized: "两组同句循环朗读：绿色纸船经过小桥，我会继续说完这句话。"))
+                if profile == .residentFirst {
+                    Text(String(localized: "A：先安静；实际听到居民发声1–2秒后开始，持续到11秒安静提示。"))
+                    Text(String(localized: "约5.5秒讲话提示仅作辅助；若居民尚未实际发声，请继续等待。"))
+                } else {
+                    Text(String(localized: "B：评分开始就持续讲话，居民发声时不中断，直到11秒安静提示。"))
+                }
+                if state.guideStage == "quiet" {
+                    Text(String(localized: "停止讲话，保持安静至封存。"))
+                } else if state.guideStage == "warmup" {
+                    Text(String(localized: "预热中：保持安静，预热PCM不保留。"))
+                } else if state.humanSpeechCueAtNanoseconds != nil {
+                    Text(String(localized: "讲话提示：按本组起音规则持续朗读；软件提示不证明物理双讲。"))
+                } else {
+                    Text(String(localized: "保持安静，等待本组讲话提示。"))
+                }
             }
         }
 

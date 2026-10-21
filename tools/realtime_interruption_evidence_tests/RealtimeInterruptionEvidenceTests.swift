@@ -870,6 +870,11 @@ private extension RealtimeInterruptionEvidenceTests {
             }
             expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount <= 720_000,
                    "19-second processing cannot enlarge the recording cap")
+            if let onset = stack.controller.appleVPAcousticTestState.humanOnsetProfile, tick >= warmupTicks {
+                let due = clock.elapsed >= profile.nanoseconds + onset.cueDelayNanoseconds
+                expect((stack.controller.appleVPAcousticTestState.humanSpeechCueAtNanoseconds != nil) == due,
+                       "F1 has no early cue and never changes the score origin")
+            }
             if residentEnabled, tick == warmupTicks + 6 {
                 await waitUntil("one warm-up output completes") {
                     stack.player.completeScheduledChunk()
@@ -1105,7 +1110,8 @@ private extension RealtimeInterruptionEvidenceTests {
     }
 
     static func testM03Group(
-        _ scenario: AppleVPAcousticTestScenario, source: URL, humanBatch: Bool = false
+        _ scenario: AppleVPAcousticTestScenario, source: URL, humanBatch: Bool = false,
+        onsetProfile: AppleVPHumanOnsetProfile? = nil
     ) async throws {
         cases += 1
         let channel = Pipe()
@@ -1114,28 +1120,30 @@ private extension RealtimeInterruptionEvidenceTests {
         let stack = D1ControllerStack(
             clock: { clock.now }, scoreControlDescriptor: channel.fileHandleForWriting.fileDescriptor,
             batchScenario: humanBatch ? nil : scenario,
-            humanBatchScenario: humanBatch ? scenario : nil
+            humanBatchScenario: humanBatch && onsetProfile == nil ? scenario : nil,
+            humanOnsetProfile: onsetProfile
         )
         stack.capture.contentStartOverride = clock.start
         expect(!stack.controller.prepareAppleVPAcousticTest(
             scenario, comprehensiveC: true, processingProfile: .agcOff,
-            warmupProfile: .four, btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch
+            warmupProfile: .four, btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch,
+            humanOnsetProfile: onsetProfile
         ), "the acoustic batch cannot switch off AGC")
         expect(!stack.controller.prepareAppleVPAcousticTest(
             scenario, comprehensiveC: true, warmupProfile: .zero,
-            btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch
+            btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch, humanOnsetProfile: onsetProfile
         ), "the acoustic batch requires four seconds of continuous warm-up")
         expect(!stack.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true),
                "the acoustic batch cannot accidentally start a legacy scenario")
         if humanBatch {
             expect(!stack.controller.prepareAppleVPAcousticTest(
                 scenario, comprehensiveC: true, dataMode: .statsOnly,
-                warmupProfile: .four, humanAcousticBatch: true
+                warmupProfile: .four, humanAcousticBatch: true, humanOnsetProfile: onsetProfile
             ), "HUMAN cannot change its frozen recording mode")
         }
         expect(stack.controller.prepareAppleVPAcousticTest(
             scenario, comprehensiveC: true, warmupProfile: .four,
-            btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch
+            btAcousticBatch: !humanBatch, humanAcousticBatch: humanBatch, humanOnsetProfile: onsetProfile
         ), "the explicit acoustic source combination prepares")
         expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "same synthetic fixture selected")
         if humanBatch {
@@ -1157,7 +1165,7 @@ private extension RealtimeInterruptionEvidenceTests {
         expect(events.count == 2 && events.map { $0["event"] as? String } == ["schedule", "stop"],
                "one schedule and one stop are emitted")
         let identityMatches = events.allSatisfy {
-            $0["batch"] as? String == (humanBatch ? "R5_M07" : "R5_M03")
+            $0["batch"] as? String == (onsetProfile != nil ? "R5_M07_F1" : humanBatch ? "R5_M07" : "R5_M03")
                 && $0["scenario"] as? String == scenario.rawValue
                 && $0["run_id"] as? String == state.runID?.uuidString
         }
@@ -1177,16 +1185,65 @@ private extension RealtimeInterruptionEvidenceTests {
                 with: stack.controller.appleVPAcousticTestManifestData()
             ) as? [String: Any] ?? [:]
             let human = manifest["human_acoustic_batch"] as? [String: Any]
-            expect(manifest["bt_acoustic_batch"] == nil && human?["batch"] as? String == "R5_M07"
+            expect(manifest["bt_acoustic_batch"] == nil
+                && human?["batch"] as? String == (onsetProfile == nil ? "R5_M07" : "R5_M07_F1")
                 && human?["source"] as? String == "human" && human?["proxy_requested"] as? Bool == false
                 && human?["human_requested"] as? Bool == (scenario != .residentOnly),
                 "HUMAN metadata preserves the actual requested source and excludes BT metadata")
+            if let onsetProfile {
+                let cue = clock.start + 4_000_000_000 + onsetProfile.cueDelayNanoseconds
+                expect(events.allSatisfy {
+                    $0["onset_group"] as? String == onsetProfile.rawValue
+                        && $0["human_start_cue_ns"] as? UInt64 == cue
+                }, "F1 schedule and terminal bind one frozen onset profile and cue")
+                expect(state.humanSpeechCueAtNanoseconds == cue, "F1 control cue follows score content origin")
+                let onset = manifest["human_onset_comparison"] as? [String: Any]
+                expect(onset?["physical_overlap_seconds"] is NSNull
+                    && onset?["physical_human_onset_ns"] is NSNull,
+                    "F1 software cue cannot fabricate physical speech or overlap")
+                expect(!stack.controller.prepareAppleVPAcousticTest(
+                    .doubleTalk, discardPreviousResult: true, comprehensiveC: true, warmupProfile: .four,
+                    humanAcousticBatch: true,
+                    humanOnsetProfile: onsetProfile == .residentFirst ? .humanFirst : .residentFirst
+                ), "the launch profile cannot be swapped after seal")
+            }
         }
         try expectWarmupManifest(stack.controller, profile: .four)
         let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
         expect(wav.dropFirst(44).enumerated().allSatisfy { $0.offset % 2 == 0 ? $0.element == 1 : $0.element == 0 },
                "no warm-up marker is retained in the scoring WAV")
         expectD1Cleanup(stack)
+    }
+
+    static func testM07F1() async throws {
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for profile in AppleVPHumanOnsetProfile.allCases {
+            try await testM03Group(.doubleTalk, source: source, humanBatch: true, onsetProfile: profile)
+        }
+        cases += 1
+        let mixed = D1ControllerStack(humanBatchScenario: .doubleTalk, humanOnsetProfile: .residentFirst)
+        let unregistered = D1ControllerStack()
+        for stack in [mixed, unregistered] {
+            expect(!stack.controller.prepareAppleVPAcousticTest(
+                .doubleTalk, comprehensiveC: true, warmupProfile: .four,
+                humanAcousticBatch: true, humanOnsetProfile: .residentFirst
+            ), "F1 cannot mix with old M07 or enter without its registered launch argument")
+            expect(stack.capture.startCount == 0 && stack.player.prepareCount == 0,
+                   "invalid F1 identity never prepares hardware")
+        }
+        let missing = D1ControllerStack(humanOnsetProfile: .residentFirst)
+        expect(missing.controller.prepareAppleVPAcousticTest(
+            .doubleTalk, comprehensiveC: true, warmupProfile: .four,
+            humanAcousticBatch: true, humanOnsetProfile: .residentFirst
+        ), "offline F1 Prepare is safe without opening a device")
+        startD1(missing.controller)
+        expect(missing.capture.startCount == 0
+            && missing.controller.appleVPAcousticTestState.errorCode == "external_playback_control_unavailable",
+            "F1 must bind the existing score pipe before capture")
+        print("m07_f1_fake_cases=\(cases)")
+        print("m07_f1_fake_checks=\(checks)")
+        print("m07_f1_fake_device_access=ZERO")
     }
 
     static func testWarmupRepetition() async throws {
@@ -1594,6 +1651,7 @@ private struct D1ControllerStack {
         scoreControlDescriptor: Int32? = nil,
         batchScenario: AppleVPAcousticTestScenario? = nil,
         humanBatchScenario: AppleVPAcousticTestScenario? = nil,
+        humanOnsetProfile: AppleVPHumanOnsetProfile? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
         let dependencies = D1NormalDependenciesSpy()
@@ -1622,7 +1680,8 @@ private struct D1ControllerStack {
                 + (silentScenario.map { ["--apple-vp-silent-smoke=" + $0.rawValue] } ?? [])
                 + (scoreControlDescriptor.map { [AppleVPScoreControl.argument + String($0)] } ?? [])
                 + (batchScenario.map { ["--apple-vp-bt-abc=" + $0.rawValue] } ?? [])
-                + (humanBatchScenario.map { ["--apple-vp-human-abc=" + $0.rawValue] } ?? []),
+                + (humanBatchScenario.map { ["--apple-vp-human-abc=" + $0.rawValue] } ?? [])
+                + (humanOnsetProfile.map { ["--apple-vp-human-onset=" + $0.rawValue] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,
@@ -2716,6 +2775,12 @@ private struct RealtimeInterruptionEvidenceTests {
     private static var duplicateStartProviderSessions = -1
 
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m07-f1-only"]) {
+            try await testM03Batch()
+            try await testM07Batch()
+            try await testM07F1()
+            return
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m07-only"]) {
             try await testM03Batch()
             try await testM07Batch()

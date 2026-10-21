@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-10-21 · R5-M07-F1 真人起音顺序离线准备
+
+- [F1准备报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_R5_M07_F1_onset_adaptation_preparation.md)：复用M07真人C，仅DEBUG固定居民先讲/真人先讲提示及独立批次身份，保留4秒预热、15秒评分、720KB及原权限/导出/退出；A约5.5秒提示不冒充物理起音。
+- 定点Fake18/785、Python25项及受影响5项、Debug构建通过；首次测试环境SHA拒绝与历史格式/结构债务保留。无App/设备运行、录音或音频上传；旧7冲突不动，停在READY_AWAITING_USER_AUTHORIZATION，正式状态仍BLOCKED，时钟拒收独立OPEN。
+
 ## 2026-10-20 · R5-M04 DEBUG运行态I/O读回离线准备
 
 - [M04报告](docs/stage7_5/test3_apple_vp_clean/T3_2_A_R5_M04_runtime_readback_offline_preparation.md)：仅在成功Engine.start与居民player.play后的原非实时控制路径增加每run最多两份同RunID/configurationID快照，读取实际AU设备、Aggregate成员/方向、图/硬件格式及VP/AGC/bypass/mute；缺失证据保留UNKNOWN，不改图、DSP、Converter或回调。
