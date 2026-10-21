@@ -17,8 +17,7 @@ private struct ConverterTimelineTests {
 
     static func main() throws {
         #if DEBUG
-            if CommandLine.arguments.dropFirst().elementsEqual(["--d1-stats-only"]) {
-                NativeVoiceDebugStatsTests.run()
+            if try diagnosticMode() {
                 return
             }
         #endif
@@ -273,6 +272,32 @@ private struct ConverterTimelineTests {
         expect(frames.stats().droppedCount == 5, "overflow is reported, never hidden")
     }
 }
+
+#if DEBUG
+    private extension ConverterTimelineTests {
+        static func diagnosticMode() throws -> Bool {
+            let arguments = CommandLine.arguments.dropFirst()
+            if arguments.elementsEqual(["--d1-stats-only"]) {
+                NativeVoiceDebugStatsTests.run()
+                return true
+            }
+            guard arguments.elementsEqual(["--m08-clock-only"]) else { return false }
+            try streaming(rate: 16000)
+            try CaptureContentClockReproduction.run()
+            for fault in ["sample-gap", "sample-backward", "missing-host", "missing-sample"] {
+                try driftThenFault(rate: 16000, fault: fault)
+            }
+            try packetTimeAndReset()
+            try delivery(rate: 16000)
+            try capacity()
+            try invalidTimestamp()
+            NativeVoiceDebugStatsTests.run()
+            print("m08_existing_clock_cases=\(cases); checks=\(checks)")
+            print("m08_device_access=ZERO")
+            return true
+        }
+    }
+#endif
 
 private extension ConverterTimelineTests {
     static func longClock(rate: Double, driftAtBoundary: Double) throws {
