@@ -8604,6 +8604,10 @@ final class AppController: ObservableObject {
             result["native_format"] = format ?? ["status": "UNKNOWN"]
             result["channels"] = native.channels.map(appleVPAcousticChannelManifest)
             result["acoustic_windows"] = native.acousticWindows?.manifest() ?? NSNull() as Any
+            result["raw_timestamp_diagnostic"] = native.rawTimestampDiagnostic?.manifest(
+                runID: native.runID, generation: native.captureGeneration,
+                configurationID: native.configurationID, sealed: native.isSealed
+            ) ?? NSNull() as Any
             result["voice_processing"] = voice ?? ["status": "UNKNOWN"]
             return result
         }

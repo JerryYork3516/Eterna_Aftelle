@@ -1303,6 +1303,161 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
     }
 
+    nonisolated struct MacSpeechRawTimestampSample: Sendable, Equatable {
+        let timestamp: AudioTimeStamp
+        let timestampSampleRate: Double
+        let hostNanoseconds: UInt64?
+        let samplePosition: Int64?
+        let bufferFormat: AudioStreamBasicDescription
+        let frames: UInt32
+        let arrivalNanoseconds: UInt64
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            let left = lhs.timestamp, right = rhs.timestamp
+            let leftSMPTE = left.mSMPTETime, rightSMPTE = right.mSMPTETime
+            let leftFormat = lhs.bufferFormat, rightFormat = rhs.bufferFormat
+            return left.mSampleTime.bitPattern == right.mSampleTime.bitPattern
+                && left.mHostTime == right.mHostTime && left.mRateScalar.bitPattern == right.mRateScalar.bitPattern
+                && left.mWordClockTime == right.mWordClockTime && left.mFlags == right.mFlags
+                && left.mReserved == right.mReserved && leftSMPTE.mSubframes == rightSMPTE.mSubframes
+                && leftSMPTE.mSubframeDivisor == rightSMPTE.mSubframeDivisor && leftSMPTE.mCounter == rightSMPTE
+                .mCounter
+                && leftSMPTE.mType == rightSMPTE.mType && leftSMPTE.mFlags == rightSMPTE.mFlags && leftSMPTE
+                .mHours == rightSMPTE.mHours
+                && leftSMPTE.mMinutes == rightSMPTE.mMinutes && leftSMPTE.mSeconds == rightSMPTE.mSeconds && leftSMPTE
+                .mFrames == rightSMPTE.mFrames
+                && lhs.timestampSampleRate.bitPattern == rhs.timestampSampleRate.bitPattern
+                && lhs.hostNanoseconds == rhs.hostNanoseconds && lhs.samplePosition == rhs.samplePosition
+                && leftFormat.mSampleRate.bitPattern == rightFormat.mSampleRate.bitPattern && leftFormat
+                .mFormatID == rightFormat.mFormatID
+                && leftFormat.mFormatFlags == rightFormat.mFormatFlags && leftFormat.mBytesPerPacket == rightFormat
+                .mBytesPerPacket
+                && leftFormat.mFramesPerPacket == rightFormat.mFramesPerPacket && leftFormat
+                .mBytesPerFrame == rightFormat.mBytesPerFrame
+                && leftFormat.mChannelsPerFrame == rightFormat.mChannelsPerFrame && leftFormat
+                .mBitsPerChannel == rightFormat.mBitsPerChannel
+                && leftFormat.mReserved == rightFormat.mReserved && lhs.frames == rhs.frames
+                && lhs.arrivalNanoseconds == rhs.arrivalNanoseconds
+        }
+    }
+
+    nonisolated struct MacSpeechRawTimestampDiagnostic: Sendable, Equatable {
+        enum Fault: String, Sendable {
+            case nativeClock = "native_clock"
+            case contentTime = "content_time"
+            case missingHostTime = "missing_host_time"
+        }
+
+        private(set) var previous2: MacSpeechRawTimestampSample?
+        private(set) var previous1: MacSpeechRawTimestampSample?
+        private(set) var current: MacSpeechRawTimestampSample?
+        private(set) var following1: MacSpeechRawTimestampSample?
+        private(set) var following2: MacSpeechRawTimestampSample?
+        private(set) var fault: Fault?
+
+        var isComplete: Bool {
+            following2 != nil
+        }
+
+        mutating func record(_ sample: MacSpeechRawTimestampSample) {
+            if fault == nil {
+                previous2 = previous1
+                previous1 = current
+                current = sample
+            } else if following1 == nil {
+                following1 = sample
+            } else if following2 == nil {
+                following2 = sample
+            }
+        }
+
+        mutating func markFirstAnomaly(_ reason: Fault) {
+            guard fault == nil, current != nil else { return }
+            fault = reason
+        }
+    }
+
+    private extension MacSpeechRawTimestampSample {
+        func manifest(previous: Self?) -> [String: Any] {
+            let stamp = timestamp, smpte = stamp.mSMPTETime, format = bufferFormat
+            let scalarValid = stamp.mFlags.contains(.rateScalarValid) && stamp.mRateScalar.isFinite
+                && stamp.mRateScalar > 0
+            var result: [String: Any] = [
+                "raw_audio_timestamp": [
+                    "sample_time": Self.finite(stamp.mSampleTime), "sample_time_bits": String(
+                        stamp.mSampleTime.bitPattern,
+                        radix: 16
+                    ),
+                    "host_ticks": stamp.mHostTime, "rate_scalar": Self.finite(stamp.mRateScalar),
+                    "rate_scalar_bits": String(stamp.mRateScalar.bitPattern, radix: 16),
+                    "word_clock_time": stamp.mWordClockTime, "flags": stamp.mFlags.rawValue,
+                    "reserved": stamp.mReserved,
+                    "smpte": ["subframes": smpte.mSubframes, "subframe_divisor": smpte.mSubframeDivisor,
+                              "counter": smpte.mCounter, "type": smpte.mType.rawValue, "flags": smpte.mFlags.rawValue,
+                              "hours": smpte.mHours, "minutes": smpte.mMinutes, "seconds": smpte.mSeconds,
+                              "frames": smpte.mFrames]
+                ],
+                "host_time_valid": stamp.mFlags.contains(.hostTimeValid),
+                "sample_time_valid": stamp.mFlags.contains(.sampleTimeValid),
+                "rate_scalar_valid": scalarValid,
+                "valid_rate_scalar": scalarValid ? stamp.mRateScalar : NSNull() as Any,
+                "timestamp_sample_rate": Self.finite(timestampSampleRate),
+                "converted_host_ns": hostNanoseconds ?? NSNull() as Any,
+                "converted_sample_position": samplePosition ?? NSNull() as Any,
+                "buffer_frames": frames, "buffer_asbd": [
+                    "sample_rate": Self.finite(format.mSampleRate), "format_id": format.mFormatID,
+                    "format_flags": format.mFormatFlags, "bytes_per_packet": format.mBytesPerPacket,
+                    "frames_per_packet": format.mFramesPerPacket, "bytes_per_frame": format.mBytesPerFrame,
+                    "channels": format.mChannelsPerFrame, "bits_per_channel": format.mBitsPerChannel,
+                    "reserved": format.mReserved
+                ],
+                "callback_arrival_ns": arrivalNanoseconds
+            ]
+            if let previous {
+                result["host_delta_ns"] = Self.delta(hostNanoseconds, previous.hostNanoseconds)
+                result["sample_delta_frames"] = samplePosition.flatMap { current in
+                    previous.samplePosition.map { Double(current) - Double($0) }
+                } ?? NSNull() as Any
+                result["expected_sample_delta_frames"] = previous.frames
+                let rate = previous.bufferFormat.mSampleRate
+                result["expected_host_delta_ns"] = rate.isFinite && rate > 0
+                    ? Double(previous.frames) * 1e9 / rate : NSNull() as Any
+                result["arrival_delta_ns"] = Self.delta(arrivalNanoseconds, previous.arrivalNanoseconds)
+            }
+            return result
+        }
+
+        static func finite(_ value: Double) -> Any {
+            value.isFinite ? value : NSNull()
+        }
+
+        static func delta(_ current: UInt64?, _ previous: UInt64?) -> Any {
+            guard let current, let previous else { return NSNull() }
+            return current >= previous ? Double(current - previous) : -Double(previous - current)
+        }
+    }
+
+    extension MacSpeechRawTimestampDiagnostic {
+        /// Called only by the existing control-path JSON export, never by an audio callback.
+        func manifest(runID: UUID, generation: UInt64, configurationID: UInt64?, sealed: Bool) -> [String: Any] {
+            let slots = [previous2, previous1, current, following1, following2]
+            let rows = slots.enumerated().compactMap { index, sample -> [String: Any]? in
+                guard let sample else { return nil }
+                var row = sample.manifest(previous: index > 0 ? slots[index - 1] : nil)
+                row["relative_callback"] = index - 2
+                return row
+            }
+            return ["run_id": runID.uuidString, "generation": generation,
+                    "configuration_id": configurationID ?? NSNull() as Any,
+                    "first_fault": fault?.rawValue ?? NSNull() as Any,
+                    "maximum_callbacks": 5, "callbacks": rows, "sealed": sealed,
+                    "following_status": isComplete ? "complete" :
+                        (sealed ? "unavailable_after_seal" : "awaiting_callbacks"),
+                    "host_clock": "mach_absolute_time converted by existing AVAudioTime helper",
+                    "arrival_clock": "DispatchTime.uptimeNanoseconds auxiliary only"]
+        }
+    }
+
     nonisolated struct MacSpeechNativeVoiceDebugSnapshot: Sendable, Equatable {
         let runID: UUID
         let captureGeneration: UInt64
@@ -1327,6 +1482,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         let lastPacketTime: UInt64?
         let rejections: [String: UInt64]
         let acousticWindows: MacSpeechAcousticWindowStats?
+        let rawTimestampDiagnostic: MacSpeechRawTimestampDiagnostic?
     }
 
     private nonisolated enum MacSpeechNativeVoiceDebugReason: String, CaseIterable {
@@ -1381,6 +1537,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private var firstPacketTime: UInt64?
         private var lastPacketTime: UInt64?
         private var acousticWindows: MacSpeechAcousticWindowStats?
+        private var rawTimestampDiagnostic = MacSpeechRawTimestampDiagnostic()
 
         init(
             runID: UUID, generation: UInt64, timing: MacSpeechNativeVoiceTiming? = nil,
@@ -1429,6 +1586,24 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             else { return false }
             acousticWindows = MacSpeechAcousticWindowStats(plan: plan, framesBeforeConfiguration: nativeFrameCount)
             return true
+        }
+
+        mutating func recordRawTimestamp(
+            _ buffer: AVAudioPCMBuffer, time: AVAudioTime,
+            content: (host: UInt64?, sample: Int64?), arrival: UInt64,
+            identity: (configurationID: UInt64, generation: UInt64)
+        ) {
+            guard !isSealed, configurationID == identity.configurationID, captureGeneration == identity.generation,
+                  !rawTimestampDiagnostic.isComplete else { return }
+            rawTimestampDiagnostic.record(MacSpeechRawTimestampSample(
+                timestamp: time.audioTimeStamp, timestampSampleRate: time.sampleRate,
+                hostNanoseconds: content.host, samplePosition: content.sample,
+                bufferFormat: buffer.format.streamDescription.pointee, frames: buffer.frameLength,
+                arrivalNanoseconds: arrival
+            ))
+            if content.host == nil {
+                rawTimestampDiagnostic.markFirstAnomaly(.missingHostTime)
+            }
         }
 
         mutating func recordNative(
@@ -1499,6 +1674,12 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             guard !isSealed else { return }
             let index = Self.reasons.firstIndex(of: reason) ?? Self.reasons.count - 1
             rejectionCounts[index] &+= 1
+            if reason == "native_clock" {
+                rawTimestampDiagnostic.markFirstAnomaly(.nativeClock)
+            }
+            if reason == "content_time" {
+                rawTimestampDiagnostic.markFirstAnomaly(.contentTime)
+            }
         }
 
         mutating func seal(reason: String? = nil) {
@@ -1525,7 +1706,8 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 firstNativeHostTime: firstNativeHostTime, lastNativeHostTime: lastNativeHostTime,
                 firstNativeSampleTime: firstNativeSampleTime, lastNativeSampleTime: lastNativeSampleTime,
                 firstPacketTime: firstPacketTime, lastPacketTime: lastPacketTime, rejections: rejections,
-                acousticWindows: acousticWindows
+                acousticWindows: acousticWindows,
+                rawTimestampDiagnostic: rawTimestampDiagnostic.fault == nil ? nil : rawTimestampDiagnostic
             )
         }
 
@@ -2868,6 +3050,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         captureProcessingLock.withLock {
             guard captureGenerationFence.accepts(hostTimeNanoseconds: hostTime) else {
                 #if DEBUG
+                    if hostTime == nil {
+                        nativeVoiceDebug?.recordRawTimestamp(
+                            buffer, time: time, content: (hostTime, nativeSampleTime),
+                            arrival: callbackArrivalNs, identity: (configurationID, generation)
+                        )
+                    }
                     nativeVoiceDebug?.reject("capture_fence")
                 #endif
                 return
@@ -2879,10 +3067,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 return
             }
             #if DEBUG
-                recordNativeTimingInput(
-                    buffer, content: (hostTime, nativeSampleTime), arrival: callbackArrivalNs,
-                    identity: (configurationID, generation)
-                )
+                recordNativeTimingInput(buffer, time: time, content: (hostTime, nativeSampleTime),
+                                        arrival: callbackArrivalNs, identity: (configurationID, generation))
             #endif
             guard let input = convertCaptureInput(
                 buffer, context: context, nativeTime: (hostTime, nativeSampleTime),
@@ -3158,9 +3344,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 #if DEBUG
     extension SystemMacSpeechVoiceProcessingEngine {
         private func recordNativeTimingInput(
-            _ buffer: AVAudioPCMBuffer, content: (host: UInt64?, sample: Int64?), arrival: UInt64,
+            _ buffer: AVAudioPCMBuffer, time: AVAudioTime, content: (host: UInt64?, sample: Int64?), arrival: UInt64,
             identity: (configurationID: UInt64, generation: UInt64)
         ) {
+            nativeVoiceDebug?.recordRawTimestamp(buffer, time: time, content: content, arrival: arrival,
+                                                 identity: identity)
             nativeVoiceDebug?.timing?.input(content: content, arrival: arrival,
                                             frames: UInt64(buffer.frameLength), rate: buffer.format.sampleRate,
                                             identity: identity)

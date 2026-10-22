@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 mode="${1:-full}"
-if [[ "$mode" != "full" && "$mode" != "d1-stats-only" && "$mode" != "m08-clock-only" ]]; then
+if [[ "$mode" != "full" && "$mode" != "d1-stats-only" && "$mode" != "m08-clock-only" && "$mode" != "m09-clock-only" ]]; then
   echo "unsupported speech AEC test mode: $mode" >&2
   exit 2
 fi
@@ -16,6 +16,17 @@ device_monitor="$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
 tests="$repo_root/tools/speech_aec_host_tests/MacSpeechAcousticEchoHostTests.swift"
 replay="$repo_root/tools/speech_aec_host_tests/RecordedAcousticReplay.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
+
+if [[ "$mode" == "m09-clock-only" || "$mode" == "full" ]]; then
+  swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
+    -framework AVFoundation "$aec_host" "$capture" "$device_monitor" \
+    "$repo_root/tools/speech_aec_host_tests/RawTimestampDiagnosticsTests.swift" \
+    -o "$build_dir/raw_timestamp_tests"
+  "$build_dir/raw_timestamp_tests"
+  if [[ "$mode" == "m09-clock-only" ]]; then
+    exit 0
+  fi
+fi
 
 if [[ "$mode" == "d1-stats-only" || "$mode" == "m08-clock-only" ]]; then
   swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
@@ -60,7 +71,7 @@ swiftc \
   -o "$build_dir/converter_timeline_tests"
 "$build_dir/converter_timeline_tests"
 nm "$build_dir/converter_timeline_tests" | xcrun swift-demangle > "$build_dir/release-symbols.txt"
-if rg -q 'MacSpeechNativeVoiceTiming|MacSpeechTimingSnapshot|MacSpeechPlaybackFormatWitness|MacSpeechAppleVPDebugProfile|MacSpeechWarmupProfile|MacSpeechAcousticWindowStats' "$build_dir/release-symbols.txt"; then
+if rg -q 'MacSpeechNativeVoiceTiming|MacSpeechTimingSnapshot|MacSpeechPlaybackFormatWitness|MacSpeechAppleVPDebugProfile|MacSpeechWarmupProfile|MacSpeechAcousticWindowStats|MacSpeechRawTimestamp' "$build_dir/release-symbols.txt"; then
   echo "speech_timing_release_isolation=FAIL"
   exit 1
 fi
