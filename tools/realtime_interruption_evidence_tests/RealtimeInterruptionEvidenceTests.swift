@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreAudio
 import Foundation
 
 private struct R81CredentialReader: ProviderCredentialReading {
@@ -1057,7 +1058,310 @@ private extension RealtimeInterruptionEvidenceTests {
         expect(String(data: data, encoding: .utf8)?.contains("pcm") == false, "readbacks contain no PCM payload")
     }
 
+    static func testM12EvidenceSchema() throws {
+        cases += 1
+        var timing = MacSpeechTimingSnapshot(runID: UUID(), captureGeneration: 1)
+        timing.runtimeReadbacks = [.init(phase: .engineStarted, runID: timing.runID,
+                                         captureGeneration: 1, configurationID: 2, payload: runtimePayload(1))]
+        let data = try JSONEncoder().encode(timing)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let payload = ((json?["runtimeReadbacks"] as? [[String: Any]])?.first?["payload"]) as? [String: Any]
+        let process = payload?["processBinding"] as? [String: Any]
+        let events = json?["engineConfigurationEvents"] as? [String: Any]
+        expect(process?["status"] as? String == "UNAVAILABLE"
+            && events?["status"] as? String == "UNAVAILABLE",
+            "M12 must export explicit UNAVAILABLE process and Engine-event evidence instead of missing fields")
+    }
+
+    static func m12ProcessReader(_ mode: String = "direct") -> MacSpeechRuntimeReadback.ProcessReader {
+        let microphone = runtimeDevice(1, input: 1, output: 0)
+        let speaker = runtimeDevice(2, input: 0, output: 2)
+        let node = runtimeDevice(100, input: 1, output: 2, aggregate: true)
+        var pidReads = 0
+        return .init(translate: { _ in
+            if mode == "halFailure" {
+                throw NSError(domain: "SyntheticHAL", code: -50)
+            }
+            return mode == "missingProcess" ? 0 : 89
+        }, pid: { _ in
+            pidReads += 1
+            return mode == "wrongPID" || (mode == "changedPID" && pidReads == 2) ? 4322 : 4321
+        }, devices: { _, scope in try m12ProcessDevices(mode, scope: scope)
+        }, device: { deviceID in
+            if mode == "wrongDirection" {
+                return speaker
+            }
+            if mode == "invalidStream" {
+                return .init(id: deviceID, transport: 1, aggregate: false, alive: true,
+                             inputChannels: 1, outputChannels: 2, inputStreams: [], outputStreams: [])
+            }
+            switch deviceID {
+            case 1: return microphone
+            case 2: return speaker
+            case 100: return node
+            default: return runtimeDevice(deviceID, input: 1, output: 0)
+            }
+        }, aggregate: { _ in
+            .init(device: node, members: [microphone, speaker], activeMembers: [1, 2],
+                  tapCount: mode == "aggregateUnknown" ? nil : 0, activeTapCount: 0)
+        })
+    }
+
+    static func m12ProcessDevices(_ mode: String, scope: UInt32) throws -> [UInt32] {
+        switch mode {
+        case "listFailure": throw NSError(domain: "SyntheticHAL", code: -2000)
+        case "empty": return []
+        case "duplicate": return [1, 1]
+        case "oversized": return Array(1 ... 17)
+        case "aggregate", "aggregateUnknown": return [100]
+        case "multiple" where scope == kAudioObjectPropertyScopeInput: return [1, 3]
+        default: return scope == kAudioObjectPropertyScopeInput ? [1] : [2]
+        }
+    }
+
+    static func testM12ProcessReadback() throws {
+        cases += 1
+        var time: UInt64 = 100
+        let route = runtimePayload(2).route
+        let result = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: route,
+                                                          using: m12ProcessReader(), now: { time += 10; return time })
+        expect(result.status == "CONFIRMED" && result.processObjectID == 89
+            && result.observedPID == 4321 && result.observedPIDAfter == 4321, "only the verified target PID is read")
+        expect(result.input?.scope == kAudioObjectPropertyScopeInput && result.input?.deviceIDs == [1]
+            && result.output?.scope == kAudioObjectPropertyScopeOutput && result.output?.deviceIDs == [2],
+            "process device lists use separate input/output scopes")
+        expect(result.input?.bindingStatus == "PROCESS_DEVICE_METADATA_MATCHES_DEFAULT"
+            && result.output?.bindingStatus == "PROCESS_DEVICE_METADATA_MATCHES_DEFAULT", "direction metadata matches")
+        expect(result.readStartedAtNs == 110 && result.readFinishedAtNs == 120
+            && result.queries.count == 7 && result.queries.allSatisfy { $0.osStatus == 0 },
+            "query status and duration survive")
+        var snapshots: [MacSpeechRuntimeReadback.Snapshot] = []
+        let identity = MacSpeechRuntimeReadback.Identity(runID: UUID(), generation: 1, configurationID: 2)
+        var reads = 0
+        let phases: [MacSpeechRuntimeReadback.Phase] = [
+            .engineStarted, .engineStarted, .residentPlaybackStarted, .residentPlaybackStarted
+        ]
+        for phase in phases {
+            _ = MacSpeechRuntimeReadback.record(phase, identity: identity, active: true, snapshots: &snapshots) {
+                reads += 1
+                var payload = runtimePayload(reads)
+                payload.processBinding = result
+                return payload
+            }
+        }
+        expect(reads == 2 && snapshots.count == 2, "PID diagnostics share the existing two-point read budget")
+        var timing = MacSpeechTimingSnapshot(runID: identity.runID, captureGeneration: 1)
+        timing.runtimeReadbacks = snapshots
+        let data = try JSONEncoder().encode(timing)
+        expect(String(data: data, encoding: .utf8)?.contains("PROCESS_DEVICE_METADATA_MATCHES_DEFAULT") == true,
+               "the existing timing JSON exports process evidence")
+        testM12ProcessFailures(route)
+        testM12ProcessAggregates(route)
+    }
+
+    static func testM12ProcessFailures(_ route: MacSpeechRuntimeReadback.Route?) {
+        cases += 1
+        let modes = ["halFailure", "missingProcess", "wrongPID", "changedPID", "listFailure", "empty",
+                     "duplicate", "oversized", "invalidStream"]
+        for mode in modes {
+            let result = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: route, using: m12ProcessReader(mode))
+            expect(
+                result.status == "UNKNOWN",
+                "PID, HAL, empty, oversized, duplicate or direction failure stays UNKNOWN"
+            )
+            expect(result.input?.bindingStatus != "PROCESS_DEVICE_METADATA_MATCHES_DEFAULT"
+                && result.output?.bindingStatus != "PROCESS_DEVICE_METADATA_MATCHES_DEFAULT", "no default substitution")
+            expect(result.queries.contains { $0.status == "UNKNOWN" }, "failed query/validation remains observable")
+            if mode == "wrongPID" || mode == "missingProcess" {
+                expect(result.input == nil && result.output == nil, "unverified process cannot query devices")
+            }
+            if mode == "halFailure" {
+                expect(result.queries.first?.osStatus == -50, "the original OSStatus is retained")
+            }
+            if mode == "changedPID" {
+                expect(result.observedPIDAfter == 4322, "PID race is recorded")
+            }
+        }
+        let partial = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: route,
+                                                           using: m12ProcessReader("wrongDirection"))
+        expect(partial.status == "UNKNOWN" && partial.input?.status == "UNKNOWN"
+            && partial.input?.deviceIDs == [1] && partial.input?.devices.isEmpty == true,
+            "failed input metadata cannot be replaced by default devices")
+        expect(partial.output?.status == "CONFIRMED" && partial.output?.deviceIDs == [2],
+               "independently successful output query is retained without claiming the input is valid")
+        print("m12_partial_direction=input_UNKNOWN_output_CONFIRMED")
+    }
+
+    static func testM12ProcessAggregates(_ route: MacSpeechRuntimeReadback.Route?) {
+        cases += 1
+        for mode in ["aggregate", "aggregateUnknown", "multiple"] {
+            let result = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: route, using: m12ProcessReader(mode))
+            expect(
+                result.status == "CONFIRMED",
+                "successfully read process lists remain separate from binding inference"
+            )
+            expect(
+                result.input?
+                    .bindingStatus == (mode == "aggregate" ? "PROCESS_AGGREGATE_DIRECTION_QUALIFIED" : "UNKNOWN"),
+                "only the existing strict aggregate contract qualifies; ambiguous binding stays UNKNOWN"
+            )
+        }
+        let noRoute = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: nil, using: m12ProcessReader())
+        expect(noRoute.status == "CONFIRMED" && noRoute.input?.bindingStatus == "UNKNOWN", "no cached default route")
+    }
+
+    static func testM12ConfigurationNotifications() {
+        cases += 1
+        let center = NotificationCenter()
+        let object = NSObject()
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 2)
+        expect(timing.observeEngineConfiguration(object, configurationID: 2, center: center), "register exact object")
+        expect(!timing.observeEngineConfiguration(object, configurationID: 2, center: center), "no duplicate observer")
+        timing.event(.engineStartBefore)
+        center.post(name: .AVAudioEngineConfigurationChange, object: NSObject())
+        expect(timing.snapshot()?.engineConfigurationEvents.count == 0, "other Engine objects are excluded")
+        center.post(name: .AVAudioEngineConfigurationChange, object: object)
+        timing.event(.playerPlayReturned)
+        center.post(name: .AVAudioEngineConfigurationChange, object: object)
+        let events = timing.snapshot()?.engineConfigurationEvents
+        expect(events?.count == 2 && events?.first?.runID == timing.runID && events?.first?.generation == 1
+            && events?.first?.configurationID == 2 && (events?.first?.atNs ?? 0) > 0,
+            "first witness is same-run metadata")
+        expect(events?.first?.lifecyclePhase == "engineStarting", "first lifecycle phase is immutable")
+        timing.recordEngineConfiguration(configurationID: 3)
+        expect(timing.snapshot()?.engineConfigurationEvents.count == 2, "stale configuration cannot enter evidence")
+        timing.stopObservingEngineConfiguration()
+        center.post(name: .AVAudioEngineConfigurationChange, object: object)
+        expect(timing.snapshot()?.engineConfigurationEvents.count == 2
+            && timing.snapshot()?.engineConfigurationEvents.observationClosed == true,
+            "seal removes and closes observation")
+        expect(
+            !timing.observeEngineConfiguration(object, configurationID: 2, center: center),
+            "sealed run cannot rearm"
+        )
+        testM12NotificationLifetime(object, center: center)
+    }
+
+    static func testM12NotificationLifetime(_ object: NSObject, center: NotificationCenter) {
+        cases += 1
+        weak var released: MacSpeechNativeVoiceTiming?
+        do {
+            let old = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+            released = old
+            old.bind(configurationID: 2)
+            expect(
+                old.observeEngineConfiguration(object, configurationID: 2, center: center),
+                "temporary listener registered"
+            )
+        }
+        expect(released == nil, "notification registration does not retain timing or Engine")
+        let current = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 2)
+        current.bind(configurationID: 3)
+        expect(
+            current.observeEngineConfiguration(object, configurationID: 3, center: center),
+            "new generation isolated"
+        )
+        center.post(name: .AVAudioEngineConfigurationChange, object: object)
+        expect(current.snapshot()?.engineConfigurationEvents.count == 1
+            && current.snapshot()?.engineConfigurationEvents.first?.generation == 2,
+            "old generation cannot pollute new evidence")
+        current.bind(configurationID: 4)
+        center.post(name: .AVAudioEngineConfigurationChange, object: object)
+        expect(
+            current.snapshot()?.engineConfigurationEvents.count == 1,
+            "invalidated generation rejects queued notification"
+        )
+        current.stopObservingEngineConfiguration()
+    }
+
+    static func testM12NotificationConcurrency() {
+        cases += 1
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 2)
+        expect(timing.observeEngineConfiguration(NSObject(), configurationID: 2, center: NotificationCenter()),
+               "concurrency fixture registers without creating an Engine")
+        DispatchQueue.concurrentPerform(iterations: 128) { _ in timing.recordEngineConfiguration(configurationID: 2) }
+        guard let events = timing.snapshot()?.engineConfigurationEvents
+        else { fatalError("missing concurrent snapshot") }
+        expect(events.count + events.skippedNotifications == 128, "contention is counted rather than hidden")
+        expect(
+            events.status == (events.skippedNotifications > 0 ? "UNKNOWN" : "CONFIRMED"),
+            "loss cannot claim full observation"
+        )
+        expect(events.first != nil && events.count > 0, "fixed first witness survives concurrent delivery")
+        timing.stopObservingEngineConfiguration()
+        DispatchQueue.concurrentPerform(iterations: 128) { _ in timing.recordEngineConfiguration(configurationID: 2) }
+        expect(timing.snapshot()?.engineConfigurationEvents.count == events.count, "closed evidence cannot change")
+    }
+
+    static func testM12PCMInvariance() throws {
+        cases += 1
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960),
+              let samples = buffer.floatChannelData?[0] else { fatalError("synthetic converter fixture") }
+        buffer.frameLength = 960
+        for frame in 0 ..< 960 {
+            samples[frame] = Float(sin(Double(frame) * 0.1) * 0.2)
+        }
+        for jump in [false, true] {
+            var outputs: [[MacSpeechPCM16Packet]] = []
+            var rejected: [Int] = []
+            for enabled in [false, true] {
+                let result = try m12ConvertedPackets(buffer, enabled: enabled, jump: jump)
+                outputs.append(result.packets)
+                rejected.append(result.empty)
+            }
+            expect(
+                !outputs[0].isEmpty && outputs[0] == outputs[1],
+                "diagnostics preserve PCM values, order and content time"
+            )
+            expect(rejected[0] == rejected[1], "diagnostics preserve existing clock rejection")
+            if jump {
+                expect(rejected[0] >= 6, "real content-time failure remains fail-closed")
+            }
+        }
+    }
+
+    static func m12ConvertedPackets(
+        _ buffer: AVAudioPCMBuffer, enabled: Bool, jump: Bool
+    ) throws -> (packets: [MacSpeechPCM16Packet], empty: Int) {
+        let converter = try MacSpeechAudioConverter(inputFormat: buffer.format)
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        let object = NSObject()
+        timing.bind(configurationID: 2)
+        if enabled {
+            expect(timing.observeEngineConfiguration(object, configurationID: 2, center: NotificationCenter()),
+                   "synthetic enabled observer")
+        }
+        defer { timing.stopObservingEngineConfiguration() }
+        var packets: [MacSpeechPCM16Packet] = []
+        var empty = 0
+        for frame in 0 ..< 10 {
+            if enabled {
+                timing.recordEngineConfiguration(configurationID: 2)
+            }
+            let time = UInt64(1_000_000_000 + frame * 20_000_000 + (jump && frame == 4 ? 3_000_000 : 0))
+            let result = try converter.convert(buffer, contentTimestampNanoseconds: time, requireContentTime: true)
+            packets.append(contentsOf: result)
+            if result.isEmpty {
+                empty += 1
+            }
+        }
+        return (packets, empty)
+    }
+
     static func testM03Batch() async throws {
+        let beforeCases = cases
+        let beforeChecks = checks
+        try testM12EvidenceSchema()
+        try testM12ProcessReadback()
+        testM12ConfigurationNotifications()
+        testM12NotificationConcurrency()
+        try testM12PCMInvariance()
+        print("m12_device_and_hal_access=ZERO")
+        print("m12_cases=\(cases - beforeCases)")
+        print("m12_checks=\(checks - beforeChecks)")
         testM04RouteBinding()
         try testM04BoundedReadbacks()
         let source = try d1SyntheticPlayback(packets: 150)

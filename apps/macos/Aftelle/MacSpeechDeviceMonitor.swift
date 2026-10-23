@@ -189,9 +189,43 @@ nonisolated final class SystemMacSpeechDeviceMonitor:
 
 #if DEBUG
     nonisolated enum MacSpeechRuntimeDeviceReadback {
-        private enum ReadFailure: Error { case property(UInt32, OSStatus), invalidProperty(UInt32) }
+        private typealias ReadFailure = MacSpeechRuntimeReadback.QueryFailure
         private static let maximumObjects = 16
         private static let maximumBytes: UInt32 = 4096
+
+        static func readCurrentProcess(
+            route: MacSpeechRuntimeReadback.Route?
+        ) -> MacSpeechRuntimeReadback.ProcessBinding {
+            guard #available(macOS 14.2, *) else { return .init() }
+            return MacSpeechRuntimeReadback.readProcess(
+                pid: ProcessInfo.processInfo.processIdentifier,
+                route: route,
+                using: .init(
+                    translate: translatePID,
+                    pid: { try scalar($0, kAudioProcessPropertyPID, initial: pid_t(0)) },
+                    devices: { try objects($0, kAudioProcessPropertyDevices, scope: $1) },
+                    device: device, aggregate: aggregate
+                )
+            )
+        }
+
+        private static func translatePID(_ pid: Int32) throws -> UInt32 {
+            let system = AudioObjectID(kAudioObjectSystemObject)
+            let selector = kAudioHardwarePropertyTranslatePIDToProcessObject
+            var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectHasProperty(system, &address) else { throw ReadFailure.unavailable(selector) }
+            var qualifier = pid_t(pid)
+            var id = AudioObjectID(kAudioObjectUnknown)
+            var size = UInt32(MemoryLayout<AudioObjectID>.size)
+            let status = withUnsafePointer(to: &qualifier) {
+                AudioObjectGetPropertyData(system, &address, UInt32(MemoryLayout<pid_t>.size), $0, &size, &id)
+            }
+            guard status == noErr, size == MemoryLayout<AudioObjectID>.size else {
+                throw ReadFailure.property(selector, status)
+            }
+            return id
+        }
 
         static func read(input: UInt32, output: UInt32) throws -> MacSpeechRuntimeReadback.Route {
             let system = AudioObjectID(kAudioObjectSystemObject)

@@ -1,6 +1,9 @@
 @preconcurrency import AVFoundation
 import Foundation
 #if DEBUG
+    import CoreAudio
+#endif
+#if DEBUG
 import OSLog
     import Synchronization
 #endif
@@ -1890,7 +1893,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                     && streams.map(\.channels) == expected
             }
 
-            private static func valid(_ streams: [Stream], direction: UInt32, owner: UInt32) -> Bool {
+            static func valid(_ streams: [Stream], direction: UInt32, owner: UInt32) -> Bool {
                 guard streams.count <= 16 else { return false }
                 var next: UInt32 = 1
                 for stream in streams {
@@ -1937,6 +1940,65 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             var route: Route?
             var issues: [String]
             var bindingStatus: String = "UNKNOWN"
+            var processBinding = ProcessBinding()
+        }
+
+        enum QueryFailure: Error { case property(UInt32, Int32), invalidProperty(UInt32), unavailable(UInt32) }
+
+        struct ProcessQuery: Encodable, Sendable, Equatable {
+            let operation: String
+            let scope: UInt32?
+            let status: String
+            let osStatus: Int32?
+            var failedSelector: UInt32?
+        }
+
+        struct ProcessDirection: Encodable, Sendable, Equatable {
+            let scope: UInt32
+            var deviceIDs: [UInt32] = []
+            var devices: [Device] = []
+            var aggregates: [Aggregate] = []
+            var status = "UNKNOWN"
+            var bindingStatus = "UNKNOWN"
+        }
+
+        struct ProcessBinding: Encodable, Sendable, Equatable {
+            var requestedPID: Int32?
+            var processObjectID: UInt32?
+            var observedPID: Int32?
+            var observedPIDAfter: Int32?
+            var readStartedAtNs: UInt64?
+            var readFinishedAtNs: UInt64?
+            var input: ProcessDirection?
+            var output: ProcessDirection?
+            var queries: [ProcessQuery] = []
+            var status = "UNAVAILABLE"
+            let meaning = "Process direction metadata; not AU endpoints, physical-source proof"
+                + " or Apple internal AEC reference"
+        }
+
+        struct ConfigurationEvent: Encodable, Sendable, Equatable {
+            let atNs: UInt64
+            let runID: UUID
+            let generation: UInt64
+            let configurationID: UInt64
+            let lifecyclePhase: String
+        }
+
+        struct ConfigurationEvents: Encodable, Sendable, Equatable {
+            var status = "UNAVAILABLE"
+            var count: UInt64 = 0
+            var first: ConfigurationEvent?
+            var skippedNotifications: UInt64 = 0
+            var observationClosed = false
+        }
+
+        struct ProcessReader {
+            let translate: (Int32) throws -> UInt32
+            let pid: (UInt32) throws -> Int32
+            let devices: (UInt32, UInt32) throws -> [UInt32]
+            let device: (UInt32) throws -> MacSpeechRuntimeReadback.Device
+            let aggregate: (MacSpeechRuntimeReadback.Device) throws -> MacSpeechRuntimeReadback.Aggregate
         }
 
         struct Snapshot: Encodable, Sendable, Equatable {
@@ -1964,6 +2026,137 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             snapshots.append(Snapshot(phase: phase, runID: identity.runID, captureGeneration: identity.generation,
                                       configurationID: identity.configurationID, payload: read()))
             return true
+        }
+    }
+
+    extension MacSpeechRuntimeReadback {
+        static func readProcess(
+            pid: Int32, route: MacSpeechRuntimeReadback.Route?, using reader: ProcessReader,
+            now: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
+        ) -> MacSpeechRuntimeReadback.ProcessBinding {
+            var result = MacSpeechRuntimeReadback.ProcessBinding(
+                requestedPID: pid,
+                readStartedAtNs: now(),
+                status: "UNKNOWN"
+            )
+            do {
+                guard pid > 0 else { throw QueryFailure.invalidProperty(kAudioProcessPropertyPID) }
+                let id = try processQuery("translatePID", queries: &result.queries) { try reader.translate(pid) }
+                result.processObjectID = id
+                guard id != kAudioObjectUnknown else {
+                    throw QueryFailure.invalidProperty(kAudioHardwarePropertyTranslatePIDToProcessObject)
+                }
+                let observed = try processQuery("processPID", queries: &result.queries) { try reader.pid(id) }
+                result.observedPID = observed
+                guard observed == pid else { throw QueryFailure.invalidProperty(kAudioProcessPropertyPID) }
+                result.input = processDirection(id, scope: kAudioObjectPropertyScopeInput, route: route,
+                                                reader: reader, queries: &result.queries)
+                result.output = processDirection(id, scope: kAudioObjectPropertyScopeOutput, route: route,
+                                                 reader: reader, queries: &result.queries)
+                let after = try processQuery("processPIDAfter", queries: &result.queries) { try reader.pid(id) }
+                result.observedPIDAfter = after
+                guard after == pid else { throw QueryFailure.invalidProperty(kAudioProcessPropertyPID) }
+                if result.input?.status == "CONFIRMED", result.output?.status == "CONFIRMED" {
+                    result.status = "CONFIRMED"
+                }
+            } catch {
+                result.input?.status = "UNKNOWN"
+                result.input?.bindingStatus = "UNKNOWN"
+                result.output?.status = "UNKNOWN"
+                result.output?.bindingStatus = "UNKNOWN"
+                result.queries.append(processFailure("processValidation", scope: nil, error: error))
+            }
+            result.readFinishedAtNs = now()
+            return result
+        }
+
+        private static func processDirection(
+            _ id: UInt32, scope: UInt32, route: MacSpeechRuntimeReadback.Route?, reader: ProcessReader,
+            queries: inout [ProcessQuery]
+        ) -> ProcessDirection {
+            var result = ProcessDirection(scope: scope)
+            do {
+                result.deviceIDs = try processQuery("processDevices", scope: scope, queries: &queries) {
+                    try reader.devices(id, scope)
+                }
+                guard !result.deviceIDs.isEmpty, result.deviceIDs.count <= 16,
+                      Set(result.deviceIDs).count == result.deviceIDs.count
+                else {
+                    throw QueryFailure.invalidProperty(kAudioProcessPropertyDevices)
+                }
+                try processQuery("deviceMetadata", scope: scope, queries: &queries) {
+                    for deviceID in result.deviceIDs {
+                        let value = try reader.device(deviceID)
+                        let input = scope == kAudioObjectPropertyScopeInput
+                        let streams = input ? value.inputStreams : value.outputStreams
+                        let channels = input ? value.inputChannels : value.outputChannels
+                        guard value.id == deviceID, value.id != kAudioObjectUnknown, value.alive, channels > 0,
+                              MacSpeechRuntimeReadback.Aggregate.valid(
+                                  streams,
+                                  direction: input ? 1 : 0,
+                                  owner: deviceID
+                              ),
+                              streams.reduce(0, { $0 + $1.channels }) == channels
+                        else {
+                            throw QueryFailure.invalidProperty(kAudioDevicePropertyStreams)
+                        }
+                        result.devices.append(value)
+                        if value.aggregate {
+                            try result.aggregates.append(reader.aggregate(value))
+                        }
+                    }
+                }
+                result.status = "CONFIRMED"
+                if let route, result.devices.count == 1, let value = result.devices.first {
+                    let expected = scope == kAudioObjectPropertyScopeInput ? route.defaultInput : route.defaultOutput
+                    if value == expected {
+                        result.bindingStatus = "PROCESS_DEVICE_METADATA_MATCHES_DEFAULT"
+                    } else if result.aggregates.contains(where: {
+                        $0.device == value && $0.qualifies(input: route.defaultInput, output: route.defaultOutput)
+                    }) {
+                        result.bindingStatus = "PROCESS_AGGREGATE_DIRECTION_QUALIFIED"
+                    }
+                }
+            } catch {
+                result.status = "UNKNOWN"
+                result.bindingStatus = "UNKNOWN"
+                queries.append(processFailure("directionValidation", scope: scope, error: error))
+            }
+            return result
+        }
+
+        private static func processQuery<T>(
+            _ operation: String, scope: UInt32? = nil,
+            queries: inout [ProcessQuery], read: () throws -> T
+        ) throws -> T {
+            do {
+                let value = try read()
+                queries.append(.init(operation: operation, scope: scope, status: "CONFIRMED", osStatus: noErr))
+                return value
+            } catch {
+                queries.append(processFailure(operation, scope: scope, error: error))
+                throw error
+            }
+        }
+
+        private static func processFailure(
+            _ operation: String, scope: UInt32?, error: Error
+        ) -> ProcessQuery {
+            var result = ProcessQuery(
+                operation: operation, scope: scope, status: "UNKNOWN", osStatus: nil
+            )
+            switch error {
+            case let QueryFailure.property(selector, status): result = .init(
+                    operation: operation, scope: scope, status: "UNKNOWN", osStatus: status, failedSelector: selector
+                )
+            case let QueryFailure.invalidProperty(selector): result.failedSelector = selector
+            case let QueryFailure.unavailable(selector): result = .init(
+                    operation: operation, scope: scope, status: "UNAVAILABLE", osStatus: nil, failedSelector: selector
+                )
+            default: result = .init(operation: operation, scope: scope, status: "UNKNOWN",
+                                    osStatus: Int32(clamping: (error as NSError).code))
+            }
+            return result
         }
     }
 
@@ -2149,6 +2342,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         var playerRender = MacSpeechTimingStream()
         var playbackFormat: MacSpeechPlaybackFormatWitness?
         var runtimeReadbacks: [MacSpeechRuntimeReadback.Snapshot] = []
+        var engineConfigurationEvents = MacSpeechRuntimeReadback.ConfigurationEvents()
         var staleCallbacks: UInt64 = 0
         var identityChanges: UInt64 = 0
         var invalidBuffers: UInt64 = 0
@@ -2169,6 +2363,12 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private let busy = Atomic<Bool>(false)
         private let skipped = Atomic<UInt64>(0)
         private var state: MacSpeechTimingSnapshot
+        private let lifecyclePhase = Atomic<UInt8>(0)
+        private let configurationObservationActive = Atomic<Bool>(false)
+        private let configurationObservationClosed = Atomic<Bool>(false)
+        private let skippedConfigurationNotifications = Atomic<UInt64>(0)
+        private var configurationObserver: NSObjectProtocol?
+        private var configurationCenter: NotificationCenter?
 
         init(runID: UUID, generation: UInt64) {
             self.runID = runID
@@ -2194,7 +2394,72 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             defer { busy.store(false, ordering: .releasing) }
             var result = state
             result.skippedUpdates = skipped.load(ordering: .relaxed)
+            result.engineConfigurationEvents.skippedNotifications = skippedConfigurationNotifications
+                .load(ordering: .relaxed)
+            result.engineConfigurationEvents.observationClosed = !configurationObservationActive
+                .load(ordering: .acquiring)
+            if result.engineConfigurationEvents.skippedNotifications > 0 {
+                result.engineConfigurationEvents.status = "UNKNOWN"
+            }
             return result
+        }
+
+        /// Registration/removal use the existing lifecycle control path, never the notification queue.
+        func observeEngineConfiguration(
+            _ object: AnyObject, configurationID: UInt64, center: NotificationCenter = .default
+        ) -> Bool {
+            guard configurationObserver == nil, !configurationObservationClosed.load(ordering: .acquiring),
+                  busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged
+            else { return false }
+            let valid = !state.callbacksClosed && state.configurationID == configurationID
+                && configurationID > 0 && captureGeneration > 0
+            if valid {
+                state.engineConfigurationEvents.status = "CONFIRMED"
+            }
+            busy.store(false, ordering: .releasing)
+            guard valid else { return false }
+            configurationObservationActive.store(true, ordering: .releasing)
+            configurationCenter = center
+            configurationObserver = center.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: object, queue: nil
+            ) { [weak self] _ in self?.recordEngineConfiguration(configurationID: configurationID) }
+            return true
+        }
+
+        func stopObservingEngineConfiguration() {
+            configurationObservationActive.store(false, ordering: .releasing)
+            configurationObservationClosed.store(true, ordering: .releasing)
+            if let configurationObserver {
+                configurationCenter?.removeObserver(configurationObserver)
+            }
+            configurationObserver = nil
+            configurationCenter = nil
+        }
+
+        deinit { stopObservingEngineConfiguration() }
+
+        func recordEngineConfiguration(
+            configurationID: UInt64, at time: UInt64 = DispatchTime.now().uptimeNanoseconds
+        ) {
+            guard configurationObservationActive.load(ordering: .acquiring) else { return }
+            guard busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged
+            else {
+                skippedConfigurationNotifications.wrappingAdd(1, ordering: .relaxed)
+                return
+            }
+            defer { busy.store(false, ordering: .releasing) }
+            guard configurationObservationActive.load(ordering: .acquiring), !state.callbacksClosed,
+                  state.configurationID == configurationID else { return }
+            if state.engineConfigurationEvents.count < .max {
+                state.engineConfigurationEvents.count += 1
+            }
+            if state.engineConfigurationEvents.first == nil {
+                state.engineConfigurationEvents.first = .init(
+                    atNs: time, runID: runID, generation: captureGeneration,
+                    configurationID: configurationID,
+                    lifecyclePhase: Self.lifecyclePhaseName(lifecyclePhase.load(ordering: .acquiring))
+                )
+            }
         }
 
         func bind(configurationID: UInt64, playbackGeneration: UInt64? = nil) {
@@ -2222,6 +2487,13 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
 
         func event(_ event: MacSpeechTimingEvent, at time: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+            switch event {
+            case .engineStartBefore: lifecyclePhase.store(1, ordering: .releasing)
+            case .engineStartReturned: lifecyclePhase.store(2, ordering: .releasing)
+            case .playerPlayBefore: lifecyclePhase.store(3, ordering: .releasing)
+            case .playerPlayReturned: lifecyclePhase.store(4, ordering: .releasing)
+            default: break
+            }
             update { value in
                 guard let index = MacSpeechTimingEvent.allCases.firstIndex(of: event) else { return }
                 value.events[index].firstCallTimeNs = value.events[index].firstCallTimeNs ?? time
@@ -2230,6 +2502,16 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 if event == .captureStopped || event == .routeChanged {
                     value.callbacksClosed = true
                 }
+            }
+        }
+
+        private static func lifecyclePhaseName(_ value: UInt8) -> String {
+            switch value {
+            case 1: "engineStarting"
+            case 2: "captureRunning"
+            case 3: "residentPlaybackStarting"
+            case 4: "residentPlaybackRunning"
+            default: "capturePrepared"
             }
         }
 
@@ -2510,6 +2792,11 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                         bindNativeVoiceDebugLocked(configurationID: prepared.configurationID, generation: generation)
                     #endif
                 }
+                #if DEBUG
+                    _ = nativeVoiceTimingDebug?.observeEngineConfiguration(
+                        prepared.engine, configurationID: prepared.configurationID
+                    )
+                #endif
                 let inputNode = prepared.engine.inputNode
                 let captureConfigurationID = prepared.configurationID
                 inputNode.installTap(
@@ -2541,6 +2828,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
     }
 
     private func stopCaptureLocked() {
+        #if DEBUG
+            nativeVoiceTimingDebug?.stopObservingEngineConfiguration()
+        #endif
         let input = lock.withLock { () -> AVAudioInputNode? in
             isCaptureActive = false
             captureGeneration = nil
@@ -2918,6 +3208,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
         captureProcessingLock.withLock {
             #if DEBUG
+                nativeVoiceTimingDebug?.stopObservingEngineConfiguration()
                 nativeVoiceTimingDebug?.bind(configurationID: configurationID)
                 nativeVoiceTimingDebug?.event(.configurationChanged)
                 nativeVoiceDebug?.seal(reason: "configuration_changed")
@@ -3401,10 +3692,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         }
 
         func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
-            captureProcessingLock.withLock {
-                guard nativeVoiceDebug?.runID == runID else { return nil }
-                nativeVoiceDebug?.seal()
-                return nativeVoiceDebug?.snapshot
+            lifecycleLock.withLock {
+                captureProcessingLock.withLock {
+                    guard nativeVoiceDebug?.runID == runID else { return nil }
+                    nativeVoiceTimingDebug?.stopObservingEngineConfiguration()
+                    nativeVoiceDebug?.seal()
+                    return nativeVoiceDebug?.snapshot
+                }
             }
         }
 
@@ -3413,6 +3707,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 captureProcessingLock.withLock {
                     guard nativeVoiceDebug?.runID == runID,
                           nativeVoiceDebug?.isSealed == true || lock.withLock({ !isCaptureActive }) else { return }
+                    nativeVoiceTimingDebug?.stopObservingEngineConfiguration()
                     nativeVoiceDebug = nil
                     nativeVoiceTimingDebug = nil
                     runtimeReadbacks.removeAll(keepingCapacity: true)
@@ -3490,11 +3785,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 route = nil
                 issues.append("io_nodes_changed_during_read")
             }
+            let process = MacSpeechRuntimeDeviceReadback.readCurrentProcess(route: route)
             return MacSpeechRuntimeReadback.Payload(
                 readStartedAtNs: started, readFinishedAtNs: DispatchTime.now().uptimeNanoseconds,
                 voiceProcessing: voice,
                 formats: formats, playerMixerBus: bus, mixerOutputConnected: connected,
-                route: route, issues: issues, bindingStatus: route?.binding ?? "UNKNOWN_READ_FAILED"
+                route: route, issues: issues, bindingStatus: route?.binding ?? "UNKNOWN_READ_FAILED",
+                processBinding: process
             )
         }
 
