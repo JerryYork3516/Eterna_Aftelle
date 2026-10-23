@@ -1829,6 +1829,8 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
 
 #if DEBUG
     nonisolated enum MacSpeechRuntimeReadback {
+        static let sharedIODeviceSetBinding = "PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED"
+
         enum Phase: String, Encodable, Sendable { case engineStarted, residentPlaybackStarted }
 
         struct Identity {
@@ -2058,6 +2060,9 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 guard after == pid else { throw QueryFailure.invalidProperty(kAudioProcessPropertyPID) }
                 if result.input?.status == "CONFIRMED", result.output?.status == "CONFIRMED" {
                     result.status = "CONFIRMED"
+                    if let route, qualifiesSharedIODeviceSet(result, route: route) {
+                        result.input?.bindingStatus = sharedIODeviceSetBinding
+                    }
                 }
             } catch {
                 result.input?.status = "UNKNOWN"
@@ -2068,6 +2073,28 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
             result.readFinishedAtNs = now()
             return result
+        }
+
+        static func qualifiesSharedIODeviceSet(_ process: ProcessBinding, route: Route) -> Bool {
+            let microphone = route.defaultInput
+            let speaker = route.defaultOutput
+            guard process.status == "CONFIRMED", let input = process.input, let output = process.output,
+                  input.status == "CONFIRMED", output.status == "CONFIRMED",
+                  input.scope == kAudioObjectPropertyScopeInput, output.scope == kAudioObjectPropertyScopeOutput,
+                  microphone.id > 0, speaker.id > 0, microphone.id != speaker.id,
+                  microphone.alive, speaker.alive, !microphone.aggregate, !speaker.aggregate,
+                  microphone.transport == kAudioDeviceTransportTypeUSB,
+                  speaker.transport == kAudioDeviceTransportTypeBuiltIn,
+                  microphone.inputChannels > 0, microphone.outputChannels == 0, microphone.outputStreams.isEmpty,
+                  speaker.inputChannels > 0, speaker.outputChannels > 0,
+                  route.actualInput == speaker, route.actualOutput == speaker, route.aggregates.isEmpty,
+                  input.deviceIDs.count == 2, Set(input.deviceIDs) == Set([microphone.id, speaker.id]),
+                  input.devices.count == 2, input.devices.contains(microphone), input.devices.contains(speaker),
+                  output.deviceIDs == [speaker.id], output.devices == [speaker],
+                  input.aggregates.isEmpty, output.aggregates.isEmpty
+            else { return false }
+            // This qualifies process membership metadata, never the physical source or internal AEC reference.
+            return true
         }
 
         private static func processDirection(

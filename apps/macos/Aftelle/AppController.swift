@@ -336,12 +336,16 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
             guard pids.allSatisfy({ $0 != nil }), process.status == "CONFIRMED",
                   process.input?.status == "CONFIRMED", process.output?.status == "CONFIRMED"
             else { throw evidenceUnavailable }
-            let bindings = [process.input?.bindingStatus, process.output?.bindingStatus]
-            guard bindings.allSatisfy({
-                $0 == "PROCESS_DEVICE_METADATA_MATCHES_DEFAULT" || $0 == "PROCESS_AGGREGATE_DIRECTION_QUALIFIED"
-            }) else { throw bindingUnverified }
-            guard process.input?.deviceIDs == first.processBinding.input?.deviceIDs,
-                  process.output?.deviceIDs == first.processBinding.output?.deviceIDs,
+            let known = ["PROCESS_DEVICE_METADATA_MATCHES_DEFAULT", "PROCESS_AGGREGATE_DIRECTION_QUALIFIED"]
+            let sharedInput = process.input?.bindingStatus == MacSpeechRuntimeReadback.sharedIODeviceSetBinding
+                && payload.route.map { MacSpeechRuntimeReadback.qualifiesSharedIODeviceSet(process, route: $0) } == true
+            guard known.contains(process.input?.bindingStatus ?? "") || sharedInput,
+                  known.contains(process.output?.bindingStatus ?? "") else { throw bindingUnverified }
+            guard let inputIDs = process.input?.deviceIDs, let outputIDs = process.output?.deviceIDs,
+                  !inputIDs.isEmpty, !outputIDs.isEmpty,
+                  inputIDs.count == Set(inputIDs).count, outputIDs.count == Set(outputIDs).count,
+                  Set(inputIDs) == Set(first.processBinding.input?.deviceIDs ?? []),
+                  Set(outputIDs) == Set(first.processBinding.output?.deviceIDs ?? []),
                   payload.route?.defaultInput.id == first.route?.defaultInput.id,
                   payload.route?.defaultOutput.id == first.route?.defaultOutput.id
             else { throw identityMismatch }

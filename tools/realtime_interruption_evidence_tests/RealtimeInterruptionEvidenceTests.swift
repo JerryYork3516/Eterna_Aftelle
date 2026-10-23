@@ -1210,6 +1210,159 @@ private extension RealtimeInterruptionEvidenceTests {
         expect(noRoute.status == "CONFIRMED" && noRoute.input?.bindingStatus == "UNKNOWN", "no cached default route")
     }
 
+    static func m12SharedIOFixture(
+        _ mode: String = "valid", inputIDs: [UInt32] = [1, 2], outputIDs: [UInt32] = [2]
+    ) -> (MacSpeechRuntimeReadback.Route, MacSpeechRuntimeReadback.ProcessReader) {
+        func device(_ id: UInt32, input: UInt32, output: UInt32, transport: UInt32) -> MacSpeechRuntimeReadback.Device {
+            let value = runtimeDevice(id, input: input, output: output)
+            return .init(id: id, transport: transport, aggregate: false, alive: true,
+                         inputChannels: input, outputChannels: output,
+                         inputStreams: value.inputStreams, outputStreams: value.outputStreams)
+        }
+        let microphone = device(1, input: 1, output: 0,
+                                transport: mode == "inputTransport" ? kAudioDeviceTransportTypeBluetooth
+                                    : kAudioDeviceTransportTypeUSB)
+        let speaker = device(2, input: 2, output: 2,
+                             transport: mode == "outputTransport" ? kAudioDeviceTransportTypeUSB
+                                 : kAudioDeviceTransportTypeBuiltIn)
+        let route = MacSpeechRuntimeReadback.Route(defaultInput: microphone, defaultOutput: speaker,
+                                                   actualInput: mode == "notShared" ? microphone : speaker,
+                                                   actualOutput: speaker, aggregates: [])
+        var pidReads = 0
+        let reader = MacSpeechRuntimeReadback.ProcessReader(translate: { _ in 89 }, pid: { _ in
+            pidReads += 1
+            return mode == "wrongPID" || (mode == "changedPID" && pidReads == 2) ? 4322 : 4321
+        }, devices: { _, scope in
+            if mode == "hal" {
+                throw NSError(domain: "SyntheticHAL", code: -50)
+            }
+            return scope == kAudioObjectPropertyScopeInput ? inputIDs : outputIDs
+        }, device: { id in
+            if id == 1 {
+                return microphone
+            }
+            if id != 2 {
+                return runtimeDevice(id, input: 1, output: 1)
+            }
+            if mode == "metadata" {
+                return device(2, input: 3, output: 2, transport: speaker.transport)
+            }
+            if mode == "transport" {
+                return device(2, input: 2, output: 2, transport: kAudioDeviceTransportTypeUSB)
+            }
+            if mode == "dead" {
+                return .init(id: 2, transport: speaker.transport, aggregate: false, alive: false,
+                             inputChannels: 2, outputChannels: 2,
+                             inputStreams: speaker.inputStreams, outputStreams: speaker.outputStreams)
+            }
+            if mode == "stream" {
+                return .init(id: 2, transport: speaker.transport, aggregate: false, alive: true,
+                             inputChannels: 2, outputChannels: 2,
+                             inputStreams: [], outputStreams: speaker.outputStreams)
+            }
+            return speaker
+        }, aggregate: { _ in throw NSError(domain: "UnexpectedSyntheticAggregate", code: -1) })
+        return (route, reader)
+    }
+
+    static func testM12SharedIOReadback() {
+        cases += 1
+        let (route, reader) = m12SharedIOFixture()
+        let process = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: route, using: reader)
+        expect(process.status == "CONFIRMED"
+            && process.input?.bindingStatus == "PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED",
+            "the exact observed shared-IO input device set must qualify by metadata, not list cardinality")
+        expect(process.input?.deviceIDs == [1, 2] && process.output?.deviceIDs == [2]
+            && process.queries.count == 7 && process.queries.allSatisfy { $0.osStatus == 0 },
+            "raw lists and the existing seven-query budget are preserved")
+        expect(route.binding == "UNKNOWN_UNVERIFIED_BINDING",
+               "process metadata qualification does not promote AU IDs to physical-source proof")
+    }
+
+    static func testM12SharedIOFailures() {
+        cases += 1
+        func reject(_ mode: String = "valid", input: [UInt32] = [1, 2], output: [UInt32] = [2]) {
+            let (route, reader) = m12SharedIOFixture(mode, inputIDs: input, outputIDs: output)
+            let process = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: route, using: reader)
+            expect(process.input?.bindingStatus != "PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED",
+                   "unknown members, metadata, streams, scope, PID and HAL failures cannot qualify a device set")
+        }
+        for input in [[UInt32(1), 3], [1, 2, 3], [2], [1, 1]] {
+            reject(input: input)
+        }
+        reject(output: [2, 3])
+        let shapeModes = ["notShared", "metadata", "transport", "stream", "dead"]
+        let otherModes = ["wrongPID", "changedPID", "hal", "inputTransport", "outputTransport"]
+        for mode in shapeModes + otherModes {
+            reject(mode)
+        }
+    }
+
+    static func testM12SharedIOSafety() {
+        cases += 1
+        let run = UUID()
+        let identity = MacSpeechRuntimeReadback.Identity(runID: run, generation: 1, configurationID: 1)
+        var timing = m12SafetyTiming(run, residentStarted: true)
+        for index in timing.runtimeReadbacks.indices {
+            let (route, reader) = m12SharedIOFixture(inputIDs: index == 0 ? [1, 2] : [2, 1])
+            var payload = timing.runtimeReadbacks[index].payload
+            payload.route = route
+            var process = MacSpeechRuntimeReadback.readProcess(pid: 4321, route: route, using: reader)
+            process.requestedPID = getpid()
+            process.observedPID = getpid()
+            process.observedPIDAfter = getpid()
+            payload.processBinding = process
+            timing.runtimeReadbacks[index] = .init(
+                phase: index == 0 ? .engineStarted : .residentPlaybackStarted,
+                runID: run, captureGeneration: 1, configurationID: 1, payload: payload
+            )
+        }
+        func result(_ value: MacSpeechTimingSnapshot) -> AppleVPRuntimeSafetyError? {
+            do {
+                try AppleVPRuntimeSafetyError.validate(value, identity: identity, pid: getpid(),
+                                                       agcEnabled: true, residentStarted: true)
+                return nil
+            } catch { return error as? AppleVPRuntimeSafetyError }
+        }
+        expect(result(timing) == nil, "stable device membership may arrive in a different HAL array order")
+        testM12SharedIOSetChanges(timing, result: result)
+    }
+
+    static func testM12SharedIOSetChanges(
+        _ timing: MacSpeechTimingSnapshot, result: (MacSpeechTimingSnapshot) -> AppleVPRuntimeSafetyError?
+    ) {
+        let run = timing.runID
+        for ids in [[UInt32(1), 1], [1, 3]] {
+            var invalid = timing
+            var payload = invalid.runtimeReadbacks[1].payload
+            payload.processBinding.input?.deviceIDs = ids
+            invalid.runtimeReadbacks[1] = .init(phase: .residentPlaybackStarted, runID: run,
+                                                captureGeneration: 1, configurationID: 1, payload: payload)
+            expect(result(invalid) == .bindingUnverified, "a shared-input label cannot authorize invalid membership")
+        }
+        var invalidOutput = timing
+        var payload = invalidOutput.runtimeReadbacks[1].payload
+        payload.processBinding.output?.bindingStatus = MacSpeechRuntimeReadback.sharedIODeviceSetBinding
+        invalidOutput.runtimeReadbacks[1] = .init(phase: .residentPlaybackStarted, runID: run,
+                                                  captureGeneration: 1, configurationID: 1, payload: payload)
+        expect(result(invalidOutput) == .bindingUnverified, "shared-input qualification never grants output permission")
+        let third = runtimeDevice(3, input: 1, output: 0)
+        let replacement = MacSpeechRuntimeReadback.Device(
+            id: 3, transport: kAudioDeviceTransportTypeUSB, aggregate: false, alive: true,
+            inputChannels: 1, outputChannels: 0, inputStreams: third.inputStreams, outputStreams: []
+        )
+        var changed = timing
+        payload = changed.runtimeReadbacks[1].payload
+        let speaker = m12SharedIOFixture().0.defaultOutput
+        payload.route = .init(defaultInput: replacement, defaultOutput: speaker,
+                              actualInput: speaker, actualOutput: speaker, aggregates: [])
+        payload.processBinding.input?.deviceIDs = [3, 2]
+        payload.processBinding.input?.devices = [replacement, speaker]
+        changed.runtimeReadbacks[1] = .init(phase: .residentPlaybackStarted, runID: run,
+                                            captureGeneration: 1, configurationID: 1, payload: payload)
+        expect(result(changed) == .identityMismatch, "a different valid device set still stops the active run")
+    }
+
     static func testM12ConfigurationNotifications() {
         cases += 1
         let center = NotificationCenter()
@@ -1352,6 +1505,9 @@ private extension RealtimeInterruptionEvidenceTests {
     }
 
     static func testM03Batch() async throws {
+        testM12SharedIOReadback()
+        testM12SharedIOFailures()
+        testM12SharedIOSafety()
         let safetyCases = cases
         let safetyChecks = checks
         testM12RuntimeSafetyEvidence()
