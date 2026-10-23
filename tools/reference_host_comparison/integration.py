@@ -165,7 +165,10 @@ def run_device_once(bundle, mode, executable, evidence, ref_arguments=(), *, con
 
 
 def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn, clock, device=False,
-                   m03_group=None, human_group=None, onset_group=None):
+                   m03_group=None, human_group=None, onset_group=None, failure_ui=None):
+    if failure_ui is not None and (not device or mode != "HOST" or m03_group != "A"
+                                   or human_group is not None or not callable(failure_ui)):
+        raise ValueError("failure UI requires resident-only device execution")
     if onset_group is not None and (onset_group not in ("A", "B") or human_group != "C"):
         raise ValueError("F1 requires a registered human C onset group")
     if human_group is not None and (mode != "HOST" or m03_group is not None or human_group not in ("A", "B", "C")):
@@ -284,6 +287,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                 raise TimeoutError("UI/control watchdog")
             if select.select([read_fd], [], [], 0)[0]:
                 for event in lines(read_fd):
+                    record(event)
                     if m03_group and (event.get("batch"), event.get("scenario")) != ("R5_M03", m03_group):
                         raise ValueError("M03 source combination mismatch")
                     checked_event = event
@@ -308,7 +312,6 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                         checked_event.pop("source")
                         checked_event["proxy_stop_ns"] = checked_event.pop("human_speech_stop_ns")
                     plan.accept(checked_event, now)
-                    record(event)
             if not plan.state.terminal and child.poll() is not None:
                 raise RuntimeError("audio process exited before terminal event")
             proxy_exit = helper.poll() if helper is not None else None
@@ -351,6 +354,16 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
         return state
     except BaseException as error:
         state.update(status="FAIL", error=str(error))
+        if (failure_ui is not None and isinstance(error, (AssertionError, ValueError))
+                and plan.state.run_id is None and state["events"]
+                and state["events"][-1].get("event") == "stop"
+                and child is not None and child.poll() is None):
+            # The original App must stop/seal/export before its in-memory failure is reaped.
+            try:
+                failure_ui(child.pid)
+                state["failure_ui"] = "COMPLETED"
+            except BaseException as preservation_error:
+                state["failure_ui_error"] = str(preservation_error)
         raise
     finally:
         cleanup_error = None
