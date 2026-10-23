@@ -1,6 +1,6 @@
 # T3.2-A / R5-M12-D1 · 单次执行记录
 
-**最新结果：BLOCKED_STARTUP_TERMINAL_BEFORE_SCHEDULE。** 用户重新授权后，文件选择和原App录音确认已完成；启动阶段收到STOP，控制器拒绝并回收App，未形成评分或可试听WAV。具体App失败原因未成功导出，实际Capture是否已短暂启动为UNKNOWN。第4节记录本次新授权执行；第1–3节及第一份状态块保留首次准备失败事实，不能作为当前结果。
+**最新结果：证据保全修复PASS，单次实机BLOCKED_PROCESS_BINDING_QUALIFICATION。** 本轮已通过原UI导出失败Manifest，确认App因`runtime_process_binding_unverified`停止：输入方向实际返回两个设备，现有资格规则只确认单设备结果。Engine/VP/AGC读回正常，Native回调、评分包和居民播放均0，没有WAV可试听。第5节为最新证据；第1–4节及其状态块保留此前失败，不能代替当前结果。AEC根因仍UNKNOWN。
 
 **首次准备记录：BLOCKED_PRE_CAPTURE_UI_TIMEOUT。** 首次启动1次，未执行原Start确认，实际Capture、居民播放、应用JSON/WAV导出均0次。原控制器在文件选择阶段触发240秒UI看门狗并回收App；没有生成可试听WAV，也没有新的设备绑定、配置事件、AEC或时钟结论。该结果是执行准备失败，不能记为声学FAIL或PASS。
 
@@ -113,6 +113,81 @@ THIS_AUTHORIZATION_ORIGINAL_START_CONFIRMATIONS=1
 ACTUAL_CAPTURE_START=UNKNOWN
 ACCEPTED_SCORE_SCHEDULES=0
 APP_MANIFEST_EXPORT=0
+WAV_EXPORT=0
+AUTOMATIC_RETRIES=0
+USER_LISTENING=NOT_AVAILABLE_NO_WAV
+DEVICE_RETRY=NOT_AUTHORIZED
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+R3-M01=OPEN
+T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+T3.3=NOT_STARTED
+```
+
+## 5. 证据保全修复与本轮唯一一次实机启动
+
+用户另行明确授权修复评分前失败证据保全、定点验证后重新执行M12-D1一次。启动前HEAD、upstream、实时远端均为修复提交`b8beae04d0a91bcda6730a67efb8ab5a0e9755d9`；跨文件修改前已建立本地回滚点`28d28ea`。沿用原Debug候选，主程序、加载dylib和居民素材SHA与第1节一致；未修改Swift、音频算法、配置、图或App门禁，未重新编译音频实现。
+
+### 5.1 修复及离线验证
+
+仅修改`tools/reference_host_comparison/integration.py`：先保存有界收到的事件，再执行原校验；对已明确授权的HOST居民A组，在评分前STOP被拒绝时调用原UI失败保全步骤，之后仍抛原错误、保持FAIL并执行原兜底回收。UI步骤只等原App封存、通过原确认导出、选择原Quit菜单；脚本有12秒AppleScript限制和18秒外部超时。默认DEVICE_DISABLED不变，其他组不能使用该交接；已建立schedule后的外来RunID继续立即拒绝。没有把未绑定STOP接纳为成功Run。
+
+- RED一次：`test_failure_evidence.FailureEvidenceTests.test_rejected_startup_stop_is_retained`，exit1，真实失败为`AssertionError: 0 != 1`，证明原结果丢失STOP。
+- GREEN一次：同一Python unittest入口执行`test_failure_evidence`及`test_m03`，19/19 PASS，exit0；新增5项覆盖保留拒绝事件、原UI导出先于回收、导出异常清理、外来RunID拒绝和交接资格，原14项回归不退化。
+- `python3 -B -m py_compile`两份受影响Python文件，exit0。全部测试使用Fake进程和真实本地管道，真实Popen被禁止，设备访问0。
+- 无Swift改动，复用已核验Debug构建；本轮Debug/Release重建、FULL_CURRENT、HIL及额外设备重试均0。
+
+### 5.2 实机身份及结果
+
+RunID：`D5F7991E-E2D0-4129-88F0-C42B02AD7D85`；generation=1、configurationID=2。原App确认点击1次，Capture启动流程返回capturing，Engine.start成功；随后在首个Native回调和评分schedule之前安全停止。4秒预热及15秒评分没有完成。居民、BT、REF播放均0；失败JSON通过原确认导出1次，WAV导出0次，未自动重试。
+
+Manifest为21451 bytes，SHA-256 `d3c4a1d3c8623c3f8e7804c82d222650aa4b1c1f200481863f4a0cacefb7efe2`。控制回执现已保留STOP，其RunID与Manifest、Native及运行态快照一致。Manifest旧字段`source_commit`和`build_identity`为null；构建身份依据本次外部Git、确切PID映射及文件摘要核验，不假称JSON自行记录了源码身份。
+
+| 本轮运行态证据 | 实际值 |
+|---|---|
+| App错误 | `runtime_process_binding_unverified` |
+| Engine/VP Input/VP Output/AGC | 均true |
+| bypass / inputMuted | 均false |
+| 图连接 | Player→Mixer bus0；Mixer→Output已连接 |
+| 进程PID前后核验 | 均匹配当前App；不枚举其他进程 |
+| 进程查询 | 7项均CONFIRMED、OSStatus=0；不是HAL读取失败 |
+| 输入方向 | 2个设备，均alive、非Aggregate，stream元数据校验通过；包含与默认TinyUSB和内置扬声器各自完全相同的设备元数据；bindingStatus=UNKNOWN |
+| 输出方向 | 1个默认内置扬声器；`PROCESS_DEVICE_METADATA_MATCHES_DEFAULT` |
+| 快照数量与耗时 | 仅engineStarted一份；总5.733750ms，其中进程查询3.233417ms；居民未播放，不存在第二份运行态快照 |
+| 格式 | Input输出、Player输出、Mixer播放器输入、Mixer输出、Output输入均16kHz/3ch Float32非交错；硬件输出侧16kHz/2ch Float32非交错 |
+| Engine配置通知 | 0，skipped=0；封存后observationClosed=true |
+| Native / PCM | Native buffers/frames=0；generated/queued/retained/评分packets/bytes均0；无分窗统计或可听内容 |
+| 时间戳与拒收 | 各拒收计数0、raw_timestamp_diagnostic=null；观察不足，不能记为历史时钟异常已消失 |
+
+`host_timing.events.configurationChanged=2`是既有内部配置计数，不是M12的Engine配置通知数量，不能混为“运行中发生2次通知”。Manifest中的capture_state=capturing为封存前快照，不表示退出后仍在采集。原封存/导出/Quit菜单步骤exit0，随后控制器执行既有回收；App已不存在，两个设备running=0。App操作系统退出码未被原控制结果单独保存，为UNKNOWN，不能把UI脚本exit0当作App退出码。
+
+### 5.3 停止原因与证据边界
+
+CONFIRMED：`MacSpeechAudioCapture.swift`的`MacSpeechRuntimeReadback.processDirection`只在`result.devices.count == 1`时授予默认设备或Aggregate资格。实测输入列表为2项，即使其中包含完全匹配的默认TinyUSB，也保留UNKNOWN。`AppController.swift`的`AppleVPRuntimeSafetyError.validatePayload`随后在bindings资格检查处抛出`bindingUnverified`；它发生在`beginAppleVPAcousticScoring`之前。此条件完整解释**本次**启动停止，不需要假设AEC或时钟失败。
+
+CONFIRMED_DIAGNOSTIC_LIMITATION：现有资格逻辑没有处理该多设备输入列表。HYPOTHESIS：额外关联输出设备可能是VoiceProcessingIO的合法行为。UNKNOWN：该列表的具体系统语义、能否证明独立物理输入，以及Apple内部AEC参考。包含TinyUSB不等于证明全部输入来自TinyUSB；两项列表也不等于错接。不能据此删除count约束、改为“包含目标即PASS”或关闭门禁。此前未保全的运行不能反向补写为同一已确认原因。
+
+退出后只读复核显示默认设备名称和UID摘要与预检一致，输入60%、输出55%，均未静音、alive=1/running=0。两次独立探针的默认AudioObjectID不同，原因UNKNOWN，已保留本机元数据；没有据此认定物理路线改变，也没有声称数字ID前后相同。未修改任何设备设置。
+
+唯一下一项建议：先离线确认VoiceProcessingIO进程多设备列表的公开语义，再由主控审核其最小资格规则；继续保留PID、方向stream、完整元数据、同run一致性和未知设备fail-closed检查。此处只交付准确阻塞，不擅自修改绑定门禁或追加录音。
+
+### 5.4 隐私、交付和审核
+
+128项既有Cache条目stat不变；新增仅本轮目录、控制结果和失败Manifest，全部目录0700、文件0600，没有新WAV/PCM。原7个冲突、HEAD、状态、索引、冲突文件摘要和14项未跟踪stat不变。原始Manifest、设备标识、执行日志和UI回执仅本机保留；Git仅提交控制器、最小Fake及本报告。USER_LISTENING=NOT_AVAILABLE_NO_WAV，不使用历史音频或静音文件代替。
+
+五维SELF_REVIEW：身份PASS；证据保全PASS；单次执行BLOCKED；隐私/安全回收PASS；音频架构及阶段边界PASS。CRITICAL=0、MAJOR=1（多设备绑定资格未确认，阻止评分）、MINOR=1（原控制器未单独记录App系统退出码）。均不是已确认AEC代码根因。文档白名单/隐私、diff检查和Secret Guard用于最终提交；Stage7 Forbidden Checklist=PASS，未改Runtime API、DR schema、平台target或Stage8。
+
+```ini
+FAILURE_EVIDENCE_PRESERVATION=PASS
+R5_M12_D1=BLOCKED_PROCESS_BINDING_QUALIFICATION
+THIS_AUTHORIZATION_APP_LAUNCHES=1
+CAPTURE_START_RETURNED_CAPTURING=1
+NATIVE_CALLBACKS=0
+ACCEPTED_SCORE_SCHEDULES=0
+RESIDENT_PLAYBACK=0
+APP_JSON_EXPORT=1
 WAV_EXPORT=0
 AUTOMATIC_RETRIES=0
 USER_LISTENING=NOT_AVAILABLE_NO_WAV
