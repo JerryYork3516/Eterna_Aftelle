@@ -295,6 +295,64 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         }
     }
 
+    nonisolated enum AppleVPRuntimeSafetyError: String, Error {
+        case configurationChanged = "engine_configuration_changed"
+        case identityMismatch = "runtime_identity_mismatch"
+        case evidenceUnavailable = "runtime_diagnostics_unavailable"
+        case bindingUnverified = "runtime_process_binding_unverified"
+        case processingUnverified = "runtime_processing_unverified"
+
+        static func validate(
+            _ timing: MacSpeechTimingSnapshot?, identity: MacSpeechRuntimeReadback.Identity,
+            pid: Int32, agcEnabled: Bool, residentStarted: Bool
+        ) throws {
+            guard let timing else { throw evidenceUnavailable }
+            guard pid > 0, identity.generation > 0, identity.configurationID > 0,
+                  timing.runID == identity.runID, timing.captureGeneration == identity.generation,
+                  timing.configurationID == identity.configurationID, !timing.callbacksClosed,
+                  timing.identityChanges == 0 else { throw identityMismatch }
+            let events = timing.engineConfigurationEvents
+            guard events.count == 0 else { throw configurationChanged }
+            guard events.status == "CONFIRMED", !events.observationClosed, events.skippedNotifications == 0,
+                  !timing.runtimeReadbacks.isEmpty, timing.runtimeReadbacks.count <= 2,
+                  !residentStarted || timing.runtimeReadbacks.count == 2 else { throw evidenceUnavailable }
+            let first = timing.runtimeReadbacks[0].payload
+            for (index, snapshot) in timing.runtimeReadbacks.enumerated() {
+                guard snapshot.runID == identity.runID, snapshot.captureGeneration == identity.generation,
+                      snapshot.configurationID == identity.configurationID,
+                      snapshot.phase == (index == 0 ? .engineStarted : .residentPlaybackStarted)
+                else { throw identityMismatch }
+                try validatePayload(snapshot.payload, first: first, pid: pid, agcEnabled: agcEnabled)
+            }
+        }
+
+        private static func validatePayload(
+            _ payload: MacSpeechRuntimeReadback.Payload, first: MacSpeechRuntimeReadback.Payload,
+            pid: Int32, agcEnabled: Bool
+        ) throws {
+            let process = payload.processBinding
+            let pids = [process.requestedPID, process.observedPID, process.observedPIDAfter]
+            guard pids.compactMap(\.self).allSatisfy({ $0 == pid }) else { throw identityMismatch }
+            guard pids.allSatisfy({ $0 != nil }), process.status == "CONFIRMED",
+                  process.input?.status == "CONFIRMED", process.output?.status == "CONFIRMED"
+            else { throw evidenceUnavailable }
+            let bindings = [process.input?.bindingStatus, process.output?.bindingStatus]
+            guard bindings.allSatisfy({
+                $0 == "PROCESS_DEVICE_METADATA_MATCHES_DEFAULT" || $0 == "PROCESS_AGGREGATE_DIRECTION_QUALIFIED"
+            }) else { throw bindingUnverified }
+            guard process.input?.deviceIDs == first.processBinding.input?.deviceIDs,
+                  process.output?.deviceIDs == first.processBinding.output?.deviceIDs,
+                  payload.route?.defaultInput.id == first.route?.defaultInput.id,
+                  payload.route?.defaultOutput.id == first.route?.defaultOutput.id
+            else { throw identityMismatch }
+            let expected = ["engineRunning": true, "inputEnabled": true, "outputEnabled": true,
+                            "agcEnabled": agcEnabled, "bypass": false, "inputMuted": false]
+            guard expected.allSatisfy({ payload.voiceProcessing[$0.key] == $0.value }),
+                  payload.playerMixerBus != nil, payload.mixerOutputConnected, payload.issues.isEmpty
+            else { throw processingUnverified }
+        }
+    }
+
     private nonisolated enum AppleVPAcousticTestError: String, Error {
         case externalPlaybackControl = "external_playback_control_unavailable"
         case consentRequired = "consent_required"
@@ -757,6 +815,7 @@ final class AppController: ObservableObject {
         private var appleVPAcousticClock: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
         private var appleVPScoreControlArguments = ProcessInfo.processInfo.arguments
         private var appleVPScoreControl: AppleVPScoreControl?
+        private var appleVPAcousticRuntimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)?
 
         var appleVPBTBatchScenario: AppleVPAcousticTestScenario? {
             let values = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-bt-abc=") }
@@ -1182,6 +1241,7 @@ final class AppController: ObservableObject {
             acousticTestDurationNanoseconds: UInt64 = 15_000_000_000,
             acousticTestByteLimit: Int = 720_000,
             acousticTestClock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+            acousticRuntimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)? = nil,
             normalDependenciesFactory:
             @escaping @MainActor () -> (OrchestrationKernel, ProviderKeychainStore)
         ) {
@@ -1202,6 +1262,7 @@ final class AppController: ObservableObject {
             appleVPAcousticTestDurationNanoseconds = min(15_000_000_000, max(1, acousticTestDurationNanoseconds))
             appleVPAcousticTestByteLimit = min(720_000, max(960, acousticTestByteLimit))
             appleVPAcousticClock = acousticTestClock
+            appleVPAcousticRuntimeTiming = acousticRuntimeTiming
             appleVPScoreControlArguments = acousticTestArguments
             nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
             realtimeSpeechDiagnosticAudioEngine = nil
@@ -7852,10 +7913,12 @@ final class AppController: ObservableObject {
                 appleVPAcousticRun.phase = .running
                 publishAppleVPAcousticState(force: true)
                 try await collectAppleVPAcousticFrames(runID: runID, playback: playback)
+                try validateAppleVPRuntimeDiagnostics(runID: runID)
                 try validateAppleVPAcousticCCompletion()
             } catch {
                 failure = error is CancellationError ? "cancelled"
-                    : (error as? AppleVPAcousticTestError)?.rawValue ?? "acoustic_test_failed"
+                    : (error as? AppleVPRuntimeSafetyError)?.rawValue
+                    ?? (error as? AppleVPAcousticTestError)?.rawValue ?? "acoustic_test_failed"
             }
             await finishAppleVPAcousticTest(runID: runID, failure: failure)
         }
@@ -7965,6 +8028,7 @@ final class AppController: ObservableObject {
             else {
                 throw AppleVPAcousticTestError.voiceProcessingUnavailable
             }
+            try validateAppleVPRuntimeDiagnostics(runID: runID)
             if appleVPAcousticRun.comprehensiveC {
                 try beginAppleVPAcousticScoring(runID: runID, generation: generation)
                 return
@@ -8051,6 +8115,7 @@ final class AppController: ObservableObject {
                 try checkAppleVPAcousticRun(runID)
                 speechAudioHostSnapshot = capture
                 speechAudioOutputHostSnapshot = output
+                try validateAppleVPRuntimeDiagnostics(runID: runID)
                 guard appleVPAcousticRun.playbackFailure == nil else { throw AppleVPAcousticTestError.playbackFailed }
                 try validateAppleVPAcousticRoute()
                 let now = appleVPAcousticClock()
@@ -8147,6 +8212,23 @@ final class AppController: ObservableObject {
                     && speechAudioOutputHostSnapshot.playbackStartedCount == 0
             }
             return speechAudioOutputHostSnapshot.state == .completed
+        }
+
+        private func validateAppleVPRuntimeDiagnostics(runID: UUID) throws {
+            guard realtimeSpeechDiagnosticAudioEngine != nil || appleVPAcousticRuntimeTiming != nil else { return }
+            let timing = if let read = appleVPAcousticRuntimeTiming {
+                read(runID)
+            } else {
+                realtimeSpeechDiagnosticAudioEngine?.nativeVoiceTimingSnapshot(runID: runID)
+            }
+            try AppleVPRuntimeSafetyError.validate(
+                timing, identity: .init(
+                    runID: runID, generation: appleVPAcousticRun.generation ?? 0,
+                    configurationID: appleVPAcousticRun.native?.configurationID ?? 0
+                ),
+                pid: getpid(), agcEnabled: appleVPAcousticRun.processingProfile.automaticGainControlEnabled,
+                residentStarted: [.playing, .draining, .completed].contains(speechAudioOutputHostSnapshot.state)
+            )
         }
 
         private func validateAppleVPAcousticRoute() throws {

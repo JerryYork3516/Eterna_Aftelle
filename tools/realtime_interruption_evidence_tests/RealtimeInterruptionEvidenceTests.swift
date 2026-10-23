@@ -1352,6 +1352,14 @@ private extension RealtimeInterruptionEvidenceTests {
     }
 
     static func testM03Batch() async throws {
+        let safetyCases = cases
+        let safetyChecks = checks
+        testM12RuntimeSafetyEvidence()
+        try await testM12RuntimeSafetyStop()
+        try await testM12RuntimeSafetyStop(afterPlayback: true)
+        try await testM12RuntimeSafetySuccess()
+        print("m12_runtime_gate_cases=\(cases - safetyCases)")
+        print("m12_runtime_gate_checks=\(checks - safetyChecks)")
         let beforeCases = cases
         let beforeChecks = checks
         try testM12EvidenceSchema()
@@ -1384,6 +1392,195 @@ private extension RealtimeInterruptionEvidenceTests {
         print("m03_fake_cases=\(cases)")
         print("m03_fake_checks=\(checks)")
         print("m03_fake_device_access=ZERO")
+    }
+
+    static func m12SafetyTiming(
+        _ run: UUID, residentStarted: Bool = false, agcEnabled: Bool = true, aggregate: Bool = false
+    ) -> MacSpeechTimingSnapshot {
+        let base = runtimePayload(2)
+        var payload = MacSpeechRuntimeReadback.Payload(
+            readStartedAtNs: base.readStartedAtNs, readFinishedAtNs: base.readFinishedAtNs,
+            voiceProcessing: ["engineRunning": true, "inputEnabled": true, "outputEnabled": true,
+                              "agcEnabled": agcEnabled, "bypass": false, "inputMuted": false],
+            formats: base.formats, playerMixerBus: base.playerMixerBus,
+            mixerOutputConnected: base.mixerOutputConnected, route: base.route, issues: []
+        )
+        var process = MacSpeechRuntimeReadback.readProcess(
+            pid: 4321, route: payload.route, using: m12ProcessReader(aggregate ? "aggregate" : "direct")
+        )
+        process.requestedPID = getpid()
+        process.observedPID = getpid()
+        process.observedPIDAfter = getpid()
+        payload.processBinding = process
+        var timing = MacSpeechTimingSnapshot(runID: run, captureGeneration: 1)
+        timing.configurationID = 1
+        timing.engineConfigurationEvents.status = "CONFIRMED"
+        timing.runtimeReadbacks = [.init(phase: .engineStarted, runID: run,
+                                         captureGeneration: 1, configurationID: 1, payload: payload)]
+        if residentStarted {
+            timing.runtimeReadbacks.append(.init(phase: .residentPlaybackStarted, runID: run,
+                                                 captureGeneration: 1, configurationID: 1, payload: payload))
+        }
+        return timing
+    }
+
+    static func testM12RuntimeSafetyEvidence() {
+        cases += 1
+        let run = UUID()
+        let identity = MacSpeechRuntimeReadback.Identity(runID: run, generation: 1, configurationID: 1)
+        let valid = m12SafetyTiming(run)
+        func result(
+            _ timing: MacSpeechTimingSnapshot?, resident: Bool = false, agc: Bool = true
+        ) -> AppleVPRuntimeSafetyError? {
+            do {
+                try AppleVPRuntimeSafetyError.validate(timing, identity: identity, pid: getpid(),
+                                                       agcEnabled: agc, residentStarted: resident)
+                return nil
+            } catch { return error as? AppleVPRuntimeSafetyError }
+        }
+        expect(result(valid) == nil && result(m12SafetyTiming(run, residentStarted: true), resident: true) == nil,
+               "the original two readback points admit confirmed direction metadata")
+        expect(result(nil) == .evidenceUnavailable && result(valid, resident: true) == .evidenceUnavailable,
+               "missing timing or missing post-play readback fails closed")
+        expect(result(m12SafetyTiming(run, agcEnabled: false), agc: false) == nil
+            && result(m12SafetyTiming(run, agcEnabled: false)) == .processingUnverified,
+            "runtime AGC must match the prepared profile without changing either profile")
+        for field in ["run", "generation", "configuration", "closed", "skipped", "observer"] {
+            var timing = valid
+            switch field {
+            case "run": timing = m12SafetyTiming(UUID())
+            case "generation": timing = .init(runID: run, captureGeneration: 2)
+            case "configuration": timing.configurationID = 2
+            case "closed": timing.callbacksClosed = true
+            case "skipped": timing.engineConfigurationEvents.skippedNotifications = 1
+            default: timing.engineConfigurationEvents.observationClosed = true
+            }
+            let expected: AppleVPRuntimeSafetyError = ["skipped", "observer"].contains(field)
+                ? .evidenceUnavailable : .identityMismatch
+            expect(result(timing) == expected, "stale identity and unavailable observation cannot authorize a run")
+        }
+        testM12RuntimeProcessSafety(valid) { result($0) }
+        var stale = valid
+        stale.runtimeReadbacks[0] = .init(phase: .engineStarted, runID: UUID(), captureGeneration: 1,
+                                          configurationID: 1, payload: valid.runtimeReadbacks[0].payload)
+        expect(result(stale) == .identityMismatch, "foreign snapshot cannot enter the current run")
+        var postPlay = m12SafetyTiming(run, residentStarted: true)
+        postPlay.runtimeReadbacks[1] = stale.runtimeReadbacks[0]
+        expect(result(postPlay, resident: true) == .identityMismatch, "the second readback is checked independently")
+        var changed = valid
+        changed.runtimeReadbacks.append(
+            m12SafetyTiming(run, residentStarted: true, aggregate: true).runtimeReadbacks[1]
+        )
+        expect(result(changed, resident: true) == .identityMismatch, "direction device changes between readbacks stop")
+        expect(result(m12SafetyTiming(run, residentStarted: true, aggregate: true), resident: true) == nil,
+               "a stable qualified Aggregate is admitted at both observation points")
+    }
+
+    static func testM12RuntimeProcessSafety(
+        _ valid: MacSpeechTimingSnapshot, result: (MacSpeechTimingSnapshot?) -> AppleVPRuntimeSafetyError?
+    ) {
+        for mode in ["aggregate", "aggregateUnknown", "wrongPID", "changedPID", "halFailure", "empty", "listFailure"] {
+            var timing = valid
+            var payload = valid.runtimeReadbacks[0].payload
+            var process = MacSpeechRuntimeReadback.readProcess(
+                pid: 4321, route: payload.route, using: m12ProcessReader(mode)
+            )
+            process.requestedPID = getpid()
+            process.observedPID = mode == "wrongPID" ? getpid() + 1 : getpid()
+            process.observedPIDAfter = mode == "changedPID" ? getpid() + 1 : getpid()
+            payload.processBinding = process
+            timing.runtimeReadbacks[0] = .init(phase: .engineStarted, runID: valid.runID,
+                                               captureGeneration: 1, configurationID: 1, payload: payload)
+            let expected: AppleVPRuntimeSafetyError? = mode == "aggregate" ? nil
+                : mode == "aggregateUnknown" ? .bindingUnverified
+                : ["wrongPID", "changedPID"].contains(mode) ? .identityMismatch : .evidenceUnavailable
+            expect(result(timing) == expected, "valid Aggregate, UNKNOWN and actual PID mismatch remain distinct")
+            var second = valid
+            second.runtimeReadbacks.append(.init(phase: .residentPlaybackStarted, runID: valid.runID,
+                                                 captureGeneration: 1, configurationID: 1, payload: payload))
+            expect(result(second) == (mode == "aggregate" ? .identityMismatch : expected),
+                   "an unavailable second query is never mislabeled as a confirmed device change")
+        }
+    }
+
+    static func testM12RuntimeSafetyStop(afterPlayback: Bool = false) async throws {
+        cases += 1
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let pipe = Pipe()
+        defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+        let clock = ComprehensiveCClock()
+        var changed = false
+        var residentStarted = { false }
+        let stack = D1ControllerStack(
+            clock: { clock.now }, scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+            batchScenario: .residentOnly, runtimeTiming: { run in
+                var timing = m12SafetyTiming(run, residentStarted: residentStarted())
+                if changed {
+                    timing.engineConfigurationEvents.count = 1
+                    timing.engineConfigurationEvents.first = .init(
+                        atNs: clock.now, runID: run, generation: 1, configurationID: 1, lifecyclePhase: "capture"
+                    )
+                }
+                return timing
+            }
+        )
+        residentStarted = { stack.player.startCount > 0 }
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four, btAcousticBatch: true
+        ), "M12 gate uses the existing bounded A preparation")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "M12 uses synthetic resident only")
+        startD1(stack.controller)
+        await waitUntil("M12 safe capture started") { stack.controller.appleVPAcousticTestState.phase == .running }
+        if afterPlayback {
+            clock.elapsed = 7_000_000_000
+            await waitUntil("M12 fake resident started") {
+                stack.player.completeScheduledChunk()
+                return stack.player.startCount == 1
+            }
+        }
+        changed = true
+        await waitUntil("M12 event stopped capture") {
+            stack.controller.appleVPAcousticTestState.phase == .sealed
+        }
+        let state = stack.controller.appleVPAcousticTestState
+        expect(state.phase == .sealed && state.errorCode == "engine_configuration_changed",
+               "M12 configuration evidence must stop and seal through the existing control path")
+        expect(stack.capture.stopCount == 1 && stack.player.startCount == (afterPlayback ? 1 : 0),
+               "configuration events stop the existing capture and resident lifecycle")
+        expectD1Cleanup(stack)
+        let events = try scoreControlEvents(pipe)
+        expect(events.map { $0["event"] as? String } == ["schedule", "stop"],
+               "M12 failure emits exactly one terminal STOP")
+    }
+
+    static func testM12RuntimeSafetySuccess() async throws {
+        cases += 1
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let pipe = Pipe()
+        defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+        let clock = ComprehensiveCClock()
+        var residentStarted = { false }
+        let stack = D1ControllerStack(
+            clock: { clock.now }, scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+            batchScenario: .residentOnly,
+            runtimeTiming: { run in m12SafetyTiming(run, residentStarted: residentStarted()) }
+        )
+        residentStarted = { stack.player.startCount > 0 }
+        stack.capture.contentStartOverride = clock.start
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four, btAcousticBatch: true
+        ), "M12 success uses the unchanged bounded scoring preparation")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "M12 success selects the synthetic fixture")
+        startD1(stack.controller)
+        await driveWarmupC(stack, clock: clock, profile: .four)
+        let state = stack.controller.appleVPAcousticTestState
+        expect(state.errorCode == nil && state.packetCount == 750 && state.retainedPCMByteCount == 720_000,
+               "the safety consumer preserves 19-second processing and the 15-second recording cap")
+        expectD1Cleanup(stack)
+        let events = try scoreControlEvents(pipe)
+        expect(events.map { $0["event"] as? String } == ["schedule", "stop"], "normal STOP remains single")
     }
 
     static func testM07Batch() async throws {
@@ -1956,6 +2153,7 @@ private struct D1ControllerStack {
         batchScenario: AppleVPAcousticTestScenario? = nil,
         humanBatchScenario: AppleVPAcousticTestScenario? = nil,
         humanOnsetProfile: AppleVPHumanOnsetProfile? = nil,
+        runtimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
         let dependencies = D1NormalDependenciesSpy()
@@ -1989,6 +2187,7 @@ private struct D1ControllerStack {
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,
+            acousticRuntimeTiming: runtimeTiming,
             normalDependenciesFactory: dependencies.make
         )
     }
