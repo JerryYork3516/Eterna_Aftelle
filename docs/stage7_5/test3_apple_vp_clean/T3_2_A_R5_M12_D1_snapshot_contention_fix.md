@@ -1,6 +1,6 @@
 # T3.2-A / M12-D1 · 诊断快照竞争与精确App退出修复
 
-> 2026-10-24。OFFLINE_FIX=PASS；新的单次A组授权已取得，须提交后重新预检，尚未启动本轮设备。
+> 2026-10-24。OFFLINE_FIX=PASS；本轮单次A组技术流程已完成，原JSON/WAV导出成功、App正常退出。评分WAV为14.86秒，尾部覆盖PARTIAL；用户现场发声见证及试听PENDING，不宣布AEC声学PASS。第1–5节为实机前冻结记录，第6节为最终实际结果。
 
 ## 1. 身份与范围
 
@@ -58,6 +58,100 @@ EXACT_PID_APP_QUIT_OFFLINE=PASS
 DEVICE_RUNS_THIS_TASK=0
 DEVICE_AUTHORIZATION=CURRENT_USER_EXPLICIT_SINGLE_A
 PRECHECK=NOT_YET_RUN_AFTER_COMMIT
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+R3-M01=OPEN
+T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+T3.3=NOT_STARTED
+```
+
+
+## 6. 修复交付后的唯一一次M12-D1 A组
+
+### 6.1 提交、预检与隐私准备
+
+先完成离线修复提交并正常推送`d0f7d82b9ea6c9ace17d438437aa9dcef579014b`，核验HEAD/upstream/实时远端一致后才重新预检。源码及二进制与第4节冻结身份一致，按确切PID核验实际映射dylib；固定素材摘要不变，没有复用旧候选或删除身份校验。
+
+默认输入TinyUSB60%、默认内置扬声器55%、未静音，物理设备身份与登记一致，开始前空闲，没有其他音频实验。未改设备配置、系统音量、路由或Mic Mode；权限沿原App流程通过，没有操作新系统权限弹窗。Mic Mode仍UNKNOWN。
+
+初次递归Cache预检发现**一份旧控制回执**权限0644，位于当前用户的0700目录内，因此保留BLOCKED记录。仅对这一个登记项以O_RDONLY/O_NOFOLLOW打开后fchmod至0600，没有读取内容或调用写入；inode、大小、atime、mtime均不变，操作回执留本机。未修改任何历史WAV/PCM或原冲突工作区。重新预检后受控目录全部0700、文件0600，当前用户持有、无symlink，准入通过；没有降低权限要求以取得PASS。
+
+### 6.2 实际次数与两份运行态快照
+
+RunID：`EE7290CD-7CFE-4E8D-8CE6-14C499455A11`，generation=1、configurationID=2。App启动、原Start确认、实际Capture、居民播放、原JSON导出、原WAV导出各1次；BT、REF、B/C、自动重试全部0。保留原可见同意和显式导出确认，不复用此前失败同意。
+
+| 实际字段 | Engine启动后 | 居民Player.play后 |
+|---|---|---|
+| RunID / generation / configurationID | 当前Run / 1 / 2 | 当前Run / 1 / 2 |
+| 进程PID前后核验、7项HAL查询 | 均匹配、CONFIRMED、OSStatus=0 | 均匹配、CONFIRMED、OSStatus=0 |
+| 输入方向 | 2项，严格共享I/O集合元数据资格 | 同一集合、同一资格 |
+| 输出方向 | 1项默认内置输出，原元数据资格 | 同一设备、同一资格 |
+| Engine / VP Input / VP Output / AGC | 全部true | 全部true |
+| bypass / inputMuted | false / false | false / false |
+| 读回耗时 | 2.717375ms（进程查询1.534125ms） | 2.598709ms（进程查询1.346167ms） |
+| 格式与图 | 六处格式及连接正常，见下文 | 与启动后相同 |
+
+五处图内格式（Input输出、Player输出、Mixer播放器输入、Mixer输出、Output输入）均16kHz/3ch Float32非交错；硬件输出侧16kHz/2ch Float32非交错。Player→Mixer bus0及Mixer→Output连接存在。AU公开输入/输出deviceID仍均指向内置输出，顶层bindingStatus仍UNKNOWN_UNVERIFIED_BINDING；进程方向集合资格不能升级成物理输入唯一来源或Apple内部AEC参考的证明。没有Aggregate资格混淆或实际路由变化证据。
+
+Engine配置通知count=0、skipped=0，封存后监听关闭；内部configurationChanged=2是生命周期计数，不是两次Engine通知。诊断读取期间没有HAL错误或诊断不可用。未新增快照重试次数仪表，因此**不能声称本次实机一定触发过竞争等待**；确认的是修复版本可完成原流程，确定性竞争本身由离线RED/GREEN证明。
+
+### 6.3 时间、Native与实际保存WAV
+
+- Player.play调用约score+3.055513秒，返回约+3.066667秒。Player Render首/末非零内容约+4.194916至+7.942577秒；它是Mixer前观测，不是物理扬声器起音或内部AEC参考。
+- Native Input/Player Render各189个callback；Native共302400frames（18.9秒），16kHz/3ch。Input与Render的sample/host discontinuities、backwards、duplicate、missingTime均0；全部Native拒收、drop/stale/reject及route_changed均0。raw_timestamp_diagnostic=null，历史异常本次NOT_REPRODUCED，未宣布修复时钟根因。
+- 计划4+15秒。Capture启动返回至captureStopped事件实际19.0058595秒，比软件内容终点晚5.8595ms；这是控制路径Stop事件的测量值，不能声称物理麦克风恰好在19.000秒内关闭。观察到的Native内容18.9秒，未额外启动采集或扩展评分窗口；尾差独立登记，未改时钟容差。
+- generated=944、drained=944、queued=0。其中预热199包未保留，跨边界1包、窗口外1包排除，实际评分留存743包/713280bytes。计数闭合，预热留存0bytes，未补零、未伪造覆盖或将drained统计冒充WAV。
+- WAV为24kHz/Mono/PCM16LE，356640samples、14.86秒、713324bytes。实际内容覆盖score+0.012847至+14.872847秒；连续序号202–944，包内容时间间隔全部20ms。尾部与评分整体覆盖PARTIAL，Converter partial tail UNKNOWN，720000byte上限未变。
+
+以下PCM只统计**实际WAV**，由原包内容时间映射回评分窗口；Native使用同Run原分窗统计，编码按满幅1统一。A组没有真人，保留旧统计字段名称不等于发生双讲。
+
+| score窗口 | Native ch0 RMS / Peak（dBFS） | 实际WAV RMS / Peak（dBFS） |
+|---|---:|---:|
+| 预热 | -84.76 / -64.80 | 不保存 |
+| 0–3 | -85.34 / -64.91 | -85.44 / -65.20（起点PARTIAL） |
+| 3–9 | -72.95 / -42.09 | -72.96 / -42.11 |
+| 9–11 | -73.75 / -60.25 | -73.77 / -59.94 |
+| 11–15 | -74.00 / -59.63（尾部PARTIAL） | -74.02 / -59.68（尾部PARTIAL） |
+
+三声道在已登记各窗的全部有限样本逐样本等于ch0；边界外119frames不在该相等性证据内，不解释Apple内部物理声道含义。各声道满幅、超幅、非有限均0；WAV精确端点0。整体WAV RMS -74.32dBFS、Peak -42.11dBFS。固定4–7.75秒窗RMS -76.15dBFS、Peak -43.15dBFS；实际非零Render对应窗约-76.12dBFS。Native与PCM同窗大幅度一致，未显示后级转换的大窗能量损伤。
+
+最大20ms RMS相邻上升约20.65dB，发生在score+4.352847秒；整体绝对峰值仍仅-42.11dBFS。底噪附近的相对变化不能定为AGC BUG、过大声压或可听爆音。没有VP前原音，未计算或声称ERLE。相比此前主控登记M03/M09高能量A，此次能量明显更低，但没有因此解释运行间AEC差异，未重新读取历史录音。
+
+### 6.4 原UI退出、文件身份与结果边界
+
+修正后的脚本实际回执为`APP_QUIT_MENU_SELECTED=退出 Aftelle`，唯一匹配确切PID的Aftelle菜单；原JSON/WAV导出均经原确认。控制器exit0，App操作系统exit0，PID消失；默认设备/物理身份、音量和静音状态前后一致，设备running=0。没有按App名称启动其他实例或执行系统退出登录。本次控制总耗时60.541秒含UI准备、导出和退出，不能作录音时长。
+
+| 本机文件 | bytes | SHA-256 |
+|---|---:|---|
+| 原JSON | 90707 | `e34387be42fb399b1cb115e377e6b4f72ee477171342786b8a2d0dfaf9f810f2` |
+| 原评分WAV | 713324 | `f10e3646f04767bb2bcd910e90e357adb3c55bfac41ac3c5ce92edca29957e53` |
+
+仅在本机有限读取本次新WAV及对应元数据，无转录、无播放第二次居民、无音频上传。已将本次WAV提供本机试听，并询问“现场是否确实发声”“WAV能否听到居民及有无异常”；尚未获得本轮反馈，USER_LISTENING=PENDING、PHYSICAL_SPEAKER_WITNESS=PENDING。不能以数值分析冒充试听或声学PASS。
+
+原136项Cache条目stat保持本次收紧权限后的预检基线不变；新增仅本轮控制结果、原JSON及WAV，目录0700、文件0600。原7个冲突、索引、HEAD、冲突文件内容及14项未跟踪stat不变。Git仅提交脱敏报告及已提交的最小修复/测试，不提交录音、私人Manifest、UID或完整日志。
+
+CONFIRMED：确定性竞争路径及离线修复、精确Quit修复、本次两份运行态读回与技术流程、PCM计数/连续性、进程正常退出及设备释放。HYPOTHESIS：此前诊断不可用正由快照竞争触发；本次低残留可能与系统处理状态有关。UNKNOWN：Apple内部AEC参考、历史AEC差异根因、历史时钟根因及本次用户听感。
+
+最终五维SELF_REVIEW：身份PASS；离线复现/回归PASS；单次技术流程PASS_WITH_PARTIAL_SCORE_COVERAGE；隐私/清理/原冲突保护PASS；声学裁定PENDING。CRITICAL=0、MAJOR=0（仅本轮工程修复）、MINOR=2（既有规范债务；评分尾部及Stop调度尾差）。不能把此分级当成T3.2-A声学验收通过。Stage7 Forbidden Checklist=PASS，正式阶段状态不变。
+
+唯一下一项：主控结合本次WAV、两份运行态快照和用户现场/试听反馈审核；本轮结束，不自动追加实验或修改DSP。
+
+```ini
+SNAPSHOT_CONTENTION_OFFLINE_FIX=PASS
+EXACT_PID_APP_QUIT_DEVICE=CONFIRMED_THIS_RUN
+M12_D1_TECHNICAL_EXECUTION=COMPLETED
+DEVICE_RUNS_THIS_TASK=1
+RESIDENT_PLAYBACK=1
+JSON_EXPORT=1
+WAV_EXPORT=1
+AUTOMATIC_RETRIES=0
+SCORE_COVERAGE=PARTIAL
+USER_LISTENING=PENDING
+PHYSICAL_SPEAKER_WITNESS=PENDING
+CLOCK_ANOMALY_THIS_RUN=NOT_REPRODUCED
+NEXT_DEVICE_RUN=NOT_AUTHORIZED
 AEC_ROOT_CAUSE=UNKNOWN
 CLOCK_ROOT_CAUSE=UNKNOWN
 R3-M01=OPEN
