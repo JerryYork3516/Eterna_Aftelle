@@ -1,6 +1,6 @@
 # T3.2-A / M12-D1 · 诊断快照竞争与精确App退出修复
 
-> 2026-10-24。OFFLINE_FIX=PASS；本轮单次A组技术流程已完成，原JSON/WAV导出成功、App正常退出。评分WAV为14.86秒，尾部覆盖PARTIAL；用户现场发声见证及试听PENDING，不宣布AEC声学PASS。第1–5节为实机前冻结记录，第6节为最终实际结果。
+> 2026-10-24。OFFLINE_FIX=PASS；本轮单次A组技术流程已完成，原JSON/WAV导出成功、App正常退出。评分WAV为14.86秒，尾部覆盖PARTIAL；用户已确认扬声器现场发声，WAV听不到居民且无爆音/断裂；本次A组听感正向，正式AEC裁定仍待主控审核。第1–5节为实机前冻结记录，第6节为最终实际结果。
 
 ## 1. 身份与范围
 
@@ -128,13 +128,19 @@ Engine配置通知count=0、skipped=0，封存后监听关闭；内部configurat
 | 原JSON | 90707 | `e34387be42fb399b1cb115e377e6b4f72ee477171342786b8a2d0dfaf9f810f2` |
 | 原评分WAV | 713324 | `f10e3646f04767bb2bcd910e90e357adb3c55bfac41ac3c5ce92edca29957e53` |
 
-仅在本机有限读取本次新WAV及对应元数据，无转录、无播放第二次居民、无音频上传。已将本次WAV提供本机试听，并询问“现场是否确实发声”“WAV能否听到居民及有无异常”；尚未获得本轮反馈，USER_LISTENING=PENDING、PHYSICAL_SPEAKER_WITNESS=PENDING。不能以数值分析冒充试听或声学PASS。
+仅在本机有限读取本次新WAV及对应元数据，无转录、无播放第二次居民、无音频上传。已提供本次WAV供用户试听，随后取得本轮现场见证与真实听感，原话：
+
+> 听不到爆音断裂，WAV未听到居民声音，现场可以
+
+按原问题对应记录：用户确认现场能听到内置扬声器居民语音；本次评分WAV中未听到居民语音，也未听到爆音或断裂。这是本次居民独讲回声控制的正向听感证据，与低能量统计相互支持；不由Codex代替用户听音，不推断其他运行、双讲或真人保留已通过。评分尾部PARTIAL、内部AEC参考UNKNOWN及正式阶段状态保持。
+
+本次补录只修改报告，执行文档范围/隐私、diff及Secret Guard检查；没有重跑Fake、构建或设备实验，也没有再次读取或上传音频。
 
 原136项Cache条目stat保持本次收紧权限后的预检基线不变；新增仅本轮控制结果、原JSON及WAV，目录0700、文件0600。原7个冲突、索引、HEAD、冲突文件内容及14项未跟踪stat不变。Git仅提交脱敏报告及已提交的最小修复/测试，不提交录音、私人Manifest、UID或完整日志。
 
-CONFIRMED：确定性竞争路径及离线修复、精确Quit修复、本次两份运行态读回与技术流程、PCM计数/连续性、进程正常退出及设备释放。HYPOTHESIS：此前诊断不可用正由快照竞争触发；本次低残留可能与系统处理状态有关。UNKNOWN：Apple内部AEC参考、历史AEC差异根因、历史时钟根因及本次用户听感。
+CONFIRMED：确定性竞争路径及离线修复、精确Quit修复、本次两份运行态读回与技术流程、PCM计数/连续性、进程正常退出及设备释放；用户对扬声器发声的现场见证和原始试听反馈。HYPOTHESIS：此前诊断不可用正由快照竞争触发；本次低残留可能与系统处理状态有关。UNKNOWN：Apple内部AEC参考、历史AEC差异根因、历史时钟根因；用户听感已取得，不再列为UNKNOWN。
 
-最终五维SELF_REVIEW：身份PASS；离线复现/回归PASS；单次技术流程PASS_WITH_PARTIAL_SCORE_COVERAGE；隐私/清理/原冲突保护PASS；声学裁定PENDING。CRITICAL=0、MAJOR=0（仅本轮工程修复）、MINOR=2（既有规范债务；评分尾部及Stop调度尾差）。不能把此分级当成T3.2-A声学验收通过。Stage7 Forbidden Checklist=PASS，正式阶段状态不变。
+最终五维SELF_REVIEW：身份PASS；离线复现/回归PASS；单次技术流程PASS_WITH_PARTIAL_SCORE_COVERAGE；隐私/清理/原冲突保护PASS；本次A组听感POSITIVE_WITH_PARTIAL_TAIL，正式声学裁定待主控。CRITICAL=0、MAJOR=0（仅本轮工程修复）、MINOR=2（既有规范债务；评分尾部及Stop调度尾差）。不能把此分级当成T3.2-A声学验收通过。Stage7 Forbidden Checklist=PASS，正式阶段状态不变。
 
 唯一下一项：主控结合本次WAV、两份运行态快照和用户现场/试听反馈审核；本轮结束，不自动追加实验或修改DSP。
 
@@ -148,8 +154,12 @@ JSON_EXPORT=1
 WAV_EXPORT=1
 AUTOMATIC_RETRIES=0
 SCORE_COVERAGE=PARTIAL
-USER_LISTENING=PENDING
-PHYSICAL_SPEAKER_WITNESS=PENDING
+USER_LISTENING=COMPLETED
+RESIDENT_AUDIBILITY_IN_WAV=NOT_HEARD_BY_USER
+AUDIBLE_POP_OR_BREAK=NOT_REPORTED_BY_USER
+PHYSICAL_SPEAKER_WITNESS=USER_CONFIRMED
+A_LISTENING_EVIDENCE=POSITIVE_WITH_PARTIAL_TAIL
+ACOUSTIC_ACCEPTANCE=AWAITING_MAIN_REVIEW
 CLOCK_ANOMALY_THIS_RUN=NOT_REPRODUCED
 NEXT_DEVICE_RUN=NOT_AUTHORIZED
 AEC_ROOT_CAUSE=UNKNOWN
