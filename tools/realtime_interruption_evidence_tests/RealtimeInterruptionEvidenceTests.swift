@@ -1448,6 +1448,100 @@ private extension RealtimeInterruptionEvidenceTests {
         expect(timing.snapshot()?.engineConfigurationEvents.count == events.count, "closed evidence cannot change")
     }
 
+    static func testM12SnapshotContention() throws {
+        cases += 1
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 1)
+        expect(timing.observeEngineConfiguration(NSObject(), configurationID: 1, center: NotificationCenter()),
+               "synthetic observer starts without an Engine")
+        defer { timing.stopObservingEngineConfiguration() }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            timing.withUpdateForTesting {
+                entered.signal()
+                _ = release.wait(timeout: .now() + 1)
+            }
+            finished.signal()
+        }
+        expect(entered.wait(timeout: .now() + 1) == .success, "deterministic writer owns the real timing flag")
+        defer { release.signal() }
+        var waits = 0
+        let value = timing.snapshot(clock: { 1000 }, wait: {
+            waits += 1
+            release.signal()
+            expect(finished.wait(timeout: .now() + 1) == .success, "writer completes before the read retries")
+        })
+        expect(value != nil && waits == 1, "temporary snapshot contention must not fabricate unavailable evidence")
+        var valid = value!
+        valid.runtimeReadbacks = m12SafetyTiming(timing.runID).runtimeReadbacks
+        try AppleVPRuntimeSafetyError.validate(
+            valid, identity: .init(runID: timing.runID, generation: 1, configurationID: 1),
+            pid: getpid(), agcEnabled: true, residentStarted: false
+        )
+        expect(valid.skippedUpdates == 0, "control waiting neither changes nor loses the writer evidence")
+    }
+
+    static func testM12SnapshotTimeouts() {
+        cases += 1
+        for mode in ["deadline", "attemptCap", "backwards"] {
+            let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+            var clock: UInt64 = 1000
+            var waits = 0
+            timing.withUpdateForTesting {
+                let value = timing.snapshot(clock: { clock }, wait: {
+                    waits += 1
+                    if mode == "deadline" {
+                        clock += 1_000_000
+                    }
+                    if mode == "backwards" {
+                        clock = 0
+                    }
+                })
+                expect(value == nil, "a stalled or invalid snapshot never becomes qualified evidence")
+                expect(waits == (mode == "attemptCap" ? 19 : mode == "deadline" ? 5 : 1),
+                       "snapshot waiting has both a clock budget and an attempt cap")
+                do {
+                    try AppleVPRuntimeSafetyError.validate(
+                        value, identity: .init(runID: timing.runID, generation: 1, configurationID: 1),
+                        pid: getpid(), agcEnabled: true, residentStarted: false
+                    )
+                    fatalError("missing evidence must still stop")
+                } catch {
+                    expect(error as? AppleVPRuntimeSafetyError == .evidenceUnavailable,
+                           "exhausted snapshot acquisition preserves fail-closed")
+                }
+                timing.event(.engineStartBefore)
+            }
+            expect(timing.snapshot()?.skippedUpdates == 1, "callback-side updates keep their one-attempt behavior")
+        }
+    }
+
+    static func testM12SnapshotInvalidation() throws {
+        cases += 1
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 1)
+        expect(timing.observeEngineConfiguration(NSObject(), configurationID: 1, center: NotificationCenter()),
+               "invalidation fixture starts without device access")
+        timing.recordEngineConfiguration(configurationID: 1)
+        var value = timing.snapshot()!
+        value.runtimeReadbacks = m12SafetyTiming(timing.runID).runtimeReadbacks
+        do {
+            try AppleVPRuntimeSafetyError.validate(
+                value, identity: .init(runID: timing.runID, generation: 1, configurationID: 1),
+                pid: getpid(), agcEnabled: true, residentStarted: false
+            )
+            fatalError("configuration changes must still stop")
+        } catch {
+            expect(error as? AppleVPRuntimeSafetyError == .configurationChanged,
+                   "fresh snapshots retain real configuration changes")
+        }
+        timing.stopObservingEngineConfiguration()
+        expect(timing.snapshot()?.engineConfigurationEvents.observationClosed == true,
+               "control waiting never reopens a closed observer")
+    }
+
     static func testM12PCMInvariance() throws {
         cases += 1
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1),
@@ -1505,6 +1599,9 @@ private extension RealtimeInterruptionEvidenceTests {
     }
 
     static func testM03Batch() async throws {
+        try testM12SnapshotContention()
+        testM12SnapshotTimeouts()
+        try testM12SnapshotInvalidation()
         testM12SharedIOReadback()
         testM12SharedIOFailures()
         testM12SharedIOSafety()

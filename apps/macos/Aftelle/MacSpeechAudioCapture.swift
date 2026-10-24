@@ -2383,7 +2383,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         let nonzeroCoverage = "UNKNOWN: scheduled-to-player content alignment is not established"
     }
 
-    /// A run-local observer: one CAS attempt, no waiting, retries, I/O or PCM retention.
+    /// Updates never wait; only non-realtime control snapshots use bounded acquisition.
     final nonisolated class MacSpeechNativeVoiceTiming: @unchecked Sendable {
         let runID: UUID
         let captureGeneration: UInt64
@@ -2413,11 +2413,15 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             body(&state)
         }
 
-        func snapshot() -> MacSpeechTimingSnapshot? {
-            guard busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged
-            else {
-                return nil
-            }
+        func withUpdateForTesting(_ body: () -> Void) {
+            update { _ in body() }
+        }
+
+        func snapshot(
+            clock: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+            wait: () -> Void = { Thread.sleep(forTimeInterval: 0.00025) }
+        ) -> MacSpeechTimingSnapshot? {
+            guard acquireSnapshotAccess(clock: clock, wait: wait) else { return nil }
             defer { busy.store(false, ordering: .releasing) }
             var result = state
             result.skippedUpdates = skipped.load(ordering: .relaxed)
@@ -2429,6 +2433,21 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 result.engineConfigurationEvents.status = "UNKNOWN"
             }
             return result
+        }
+
+        private func acquireSnapshotAccess(clock: () -> UInt64, wait: () -> Void) -> Bool {
+            let started = clock()
+            for attempt in 0 ..< 20 {
+                let now = clock()
+                guard now >= started, now - started < 5_000_000 else { return false }
+                if busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged {
+                    return true
+                }
+                if attempt < 19 {
+                    wait()
+                }
+            }
+            return false
         }
 
         /// Registration/removal use the existing lifecycle control path, never the notification queue.
