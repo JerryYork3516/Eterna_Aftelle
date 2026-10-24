@@ -1,6 +1,8 @@
 # T3.2-A / R5-M12-D1 · 单次执行记录
 
-**最新结果：证据保全修复PASS，单次实机BLOCKED_PROCESS_BINDING_QUALIFICATION。** 本轮已通过原UI导出失败Manifest，确认App因`runtime_process_binding_unverified`停止：输入方向实际返回两个设备，现有资格规则只确认单设备结果。Engine/VP/AGC读回正常，Native回调、评分包和居民播放均0，没有WAV可试听。第5节为最新证据；第1–4节及其状态块保留此前失败，不能代替当前结果。AEC根因仍UNKNOWN。
+**最新结果（第6节）：多设备元数据资格通过；本次单次运行在预热阶段因`runtime_diagnostics_unavailable`安全停止，居民播放0、评分PCM为0、无WAV。** 既有失败记录保留。以下第1–5节为历史过程，不替代第6节本次结果。
+
+**此前结果：证据保全修复PASS，单次实机BLOCKED_PROCESS_BINDING_QUALIFICATION。** 本轮已通过原UI导出失败Manifest，确认App因`runtime_process_binding_unverified`停止：输入方向实际返回两个设备，现有资格规则只确认单设备结果。Engine/VP/AGC读回正常，Native回调、评分包和居民播放均0，没有WAV可试听。第5节为最新证据；第1–4节及其状态块保留此前失败，不能代替当前结果。AEC根因仍UNKNOWN。
 
 **首次准备记录：BLOCKED_PRE_CAPTURE_UI_TIMEOUT。** 首次启动1次，未执行原Start确认，实际Capture、居民播放、应用JSON/WAV导出均0次。原控制器在文件选择阶段触发240秒UI看门狗并回收App；没有生成可试听WAV，也没有新的设备绑定、配置事件、AEC或时钟结论。该结果是执行准备失败，不能记为声学FAIL或PASS。
 
@@ -190,6 +192,106 @@ RESIDENT_PLAYBACK=0
 APP_JSON_EXPORT=1
 WAV_EXPORT=0
 AUTOMATIC_RETRIES=0
+USER_LISTENING=NOT_AVAILABLE_NO_WAV
+DEVICE_RETRY=NOT_AUTHORIZED
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+R3-M01=OPEN
+T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+T3.3=NOT_STARTED
+```
+
+
+## 6. 多设备资格修复后：本次新授权的唯一运行（2026-10-24）
+
+### 6.1 身份、前置条件与次数
+
+本次用户在离线修复交付后明确回复“授权”。开始前HEAD、upstream及实时远端均为`11e422d1c165c2af42f80c294528486a4bcfa0e0`，隔离工作区干净；已逐项重算冻结源码、控制器、主程序、dylib和固定素材摘要。原准备记录中的authorized=false保持原样，另建本次新同意及O_EXCL单次消耗标记，没有改写旧授权或旧失败证据。
+
+- 主程序SHA：`ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`。
+- 实际加载Debug dylib SHA：`0fe3a2c9633f9085ad293a2ed911f9dfa3bd0e1cdb453cf0b4f4266fb01a86c1`，启动后按确切PID及映射路径重新核验。
+- 居民素材SHA：`774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`，使用登记原件，未变换。
+- 默认TinyUSB输入、默认内置扬声器输出恢复正确；系统读回60%/55%，未静音，启动前设备空闲。目标物理设备UID摘要与登记一致；本次未改变默认路由、音量或Mic Mode。
+- 保留原Prepare、NSOpenPanel选文件、一次“Use microphone, local capture and test playback”确认及原JSON导出确认，没有操作新系统权限弹窗。Mic Mode外部读回仍UNKNOWN。
+- RunID：`3ADD6380-C589-472B-A4A2-9CD1E96D5415`；generation=1，configurationID=2。
+
+| 本次事项 | 实际结果 |
+|---|---|
+| App启动 / 原Start确认 / Capture启动返回 | 各1次；实际发生Native输入回调 |
+| 计划 | 4秒预热+15秒评分，19秒上限，评分PCM容量720000 bytes |
+| 实际覆盖 | 仅预热早期；Engine.start返回至captureStopped约174.157ms，不能记作完成19秒采集 |
+| ScoreControl | schedule已发送，随后同RunID stop；stop时距离未来评分起点仍约3.832秒 |
+| 居民播放 / BT / REF / 额外B或C | 全部0次 |
+| 原JSON导出 / WAV导出 | 1 / 0；评分PCM为0，不生成静音WAV冒充录音 |
+| 正常结束回执 | 控制器exit0、App操作系统exit0；确切PID已消失，目标输入/输出running=0 |
+| 自动重试 / 第二次采集 | 0 / 0 |
+
+本轮Manifest为32254 bytes，SHA-256 `9a8d90492ecf511374206aad0f17a2b972376a650722acf93464987fac2f4957`。其source_commit/build_identity仍为null；源码与构建身份依据本次外部核验，不冒称Manifest已自行记录。控制器`CONTROL_COMPLETED_DEVICE`仅证明schedule/stop及进程退出协议完成，**不能覆盖Manifest中的运行失败，更不是声学PASS**。外部控制总耗时112.131秒含UI准备及退出等待，不是麦克风录音时长。
+
+### 6.2 本次运行态读回
+
+本次只有engineStarted快照，RunID/generation/configurationID一致；居民未播放，所以不存在residentPlaybackStarted快照。缺少第二快照如实登记，不补造。
+
+| 项目 | 实际结果与边界 |
+|---|---|
+| 进程PID前/后核验、7项HAL查询 | PID一致；均CONFIRMED、OSStatus=0 |
+| 输入方向 | 恰好2个设备：登记USB输入及内置输出；完整元数据匹配，严格共享I/O集合谓词通过 |
+| 输入资格 | `PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED`；本次不再因原单设备限制停止 |
+| 输出方向 | 1个默认内置输出，原默认设备元数据资格通过 |
+| AU公开输入/输出设备 | 均为内置输出设备；顶层bindingStatus仍`UNKNOWN_UNVERIFIED_BINDING`，不能宣称已证明物理输入或内部AEC参考 |
+| Aggregate | 返回设备均非Aggregate，无未解释的Aggregate成员 |
+| Engine / VP Input / VP Output / AGC | 全部true |
+| bypass / inputMuted | 均false |
+| Player→Mixer / Mixer→Output | 连接存在，播放器连接Mixer bus0 |
+| HAL读回耗时 | 完整快照5.014250ms；其中进程查询2.837042ms；Engine.start调用255.546750ms，与HAL查询耗时分开 |
+| Engine配置通知 | count=0、skippedNotifications=0；封存后observationClosed=true是清理结果，不作为事前异常证据 |
+
+六处运行态格式：Input输出、Player输出、Mixer播放器输入、Mixer输出、Output输入均为16kHz/3ch Float32非交错；硬件输出侧为16kHz/2ch Float32非交错。ASBD与layout随原Manifest留本机；本次没有修改格式、channelMap或图。单份正常属性快照不能证明Apple内部AEC参考有效，亦无法证明此后居民播放时属性稳定。
+
+### 6.3 输入、PCM与停止原因
+
+- Native仅1个buffer、1600frames，16kHz/3ch；三声道各1600样本均为精确0，满幅/超幅/非有限均0。这只是约100ms的启动样本，不能判定真人保留或AEC效果。
+- 原生warmup窗按内容时间接收1409frames，另191frames在边界外；三声道在该有限零样本窗口数值相等，不推断物理声道含义。
+- Converter已生成4个完整20ms包，封存时queued=4；drained=0、retained=0、warmup保存字节=0。不得把已生成/排队统计冒充评分WAV。
+- 评分窗均无样本，scoring/tail覆盖PARTIAL，partial_converter_tail为UNKNOWN；没有补零、拼接或保存预热PCM。
+- Input及Player Render各1次回调，均无非零内容；没有居民请求、没有有效居民Render窗口。
+- drop/stale及全部Native拒收计数0，raw_timestamp_diagnostic=null。只有单个buffer，无法检查跨buffer时钟稳定；不能宣称历史时钟问题已解决。
+- App错误明确为`runtime_diagnostics_unavailable`。start阶段的运行态校验已通过并发出未来schedule，之后在评分开始之前失败；不是`runtime_process_binding_unverified`、AEC FAIL或内容时钟拒收。
+
+**CONFIRMED源码机制：** `MacSpeechNativeVoiceTiming.snapshot()`（`MacSpeechAudioCapture.swift:2416`）与回调update共用非阻塞busy标记；竞争时返回nil。`nativeVoiceTimingSnapshot()`（同文件:3758）将其继续作为nil返回；`AppleVPRuntimeSafetyError.validate()`（`AppController.swift:309`）将nil映射为本次相同错误。预热collect循环（同文件:8122）也执行该校验。因此存在“诊断快照暂忙→诊断不可用→安全停止”的具体代码路径，未发生PCM拒收也可能停止。
+
+**HYPOTHESIS：** 本次可能由Native/Render更新与控制路径快照读取竞争触发。现有导出保留了之后成功取得的封存快照，却没有保留抛错当次的nil/具体guard分支；不能把该竞争宣布为本次已证实根因。其他触发同一错误的证据状态分支仍需按失败瞬间核实。封存后的callbacksClosed、identityChanges及observationClosed不能反向当作运行时错误。
+
+**UNKNOWN：** 居民回声效果、声学衰减、连续输入稳定性、Apple内部参考、物理输入的唯一来源。本次没有居民播放，不能与M03/M07/M09居民声学窗口做对照。
+
+### 6.4 退出选择器缺陷、隐私与下一步
+
+本次原UI导出脚本的退出步骤使用`menu bar item 1`及菜单项名称“退出”/“Quit”前缀匹配。随后只读核查表明该层级是Apple系统菜单，包含“退出登录”项；**选择器可能误选系统退出登录，属于确定的UI自动化缺陷**。本次脚本未记录实际选中项，因此不能声称原App Quit菜单已被正确点击，也不能臆造系统是否执行了退出登录。发现后未再次执行该脚本或任何退出菜单点击，已登记禁止复用；实际App退出码0、PID消失及设备空闲由独立进程/设备回执确认。本轮没有追加录音来掩盖该缺陷。
+
+唯一下一项建议：先开展限定范围的离线执行可靠性修复，用既有Fake复现诊断快照竞争与门禁交互，保留真正未知/不合法绑定的fail-closed语义，并将退出操作限定到确切PID的App菜单及确切Quit项目。不得简单忽略nil、关闭诊断门禁或增加无限重试；完成主控审核及新的单次授权之前不再实机运行。本次没有修改该门禁、回调、UI执行器或音频生产代码。
+
+本机原132项Cache条目stat未变；本次只新增独立控制目录、result.json及失败Manifest，无WAV/PCM。受控目录0700、文件0600、当前用户持有、无symlink；原7个冲突、HEAD、索引、冲突文件摘要及14项未跟踪stat保持不变。原始Manifest、设备标识及完整回执不提交Git，也未读取其他私人音频。
+
+实际命令：本地`python3 -u launch_m12_d1.py`→0；确切PID的ps/lsof及摘要核验→0；原Prepare/Start/Export脚本各→0（脚本exit0不等于退出菜单正确）；新Manifest数值提取、只读设备/音量核验→0。一次读取工具遗漏隔离workdir导致FileNotFound，修正绝对工作目录后成功；未写入原工作区、未启动额外设备。Fake、编译、FULL_CURRENT均未重跑，沿用已冻结离线验证和Debug构建。本次仅对报告执行文件白名单/隐私检查、diff检查及Secret Guard，结果随提交回执保存。
+
+五维SELF_REVIEW：身份PASS；单次及失败证据保全PASS；执行BLOCKED_DIAGNOSTICS；隐私/实际设备释放PASS（退出菜单选择器需修复）；音频/正式阶段边界PASS。CRITICAL=0、MAJOR=2（诊断可用性阻塞，具体瞬间根因待复现；退出菜单选择器不安全）、MINOR=0。Stage7 Forbidden Checklist=PASS：无音频算法/Runtime API/DR schema/平台target/Stage8变化；Git仅修改本报告。USER_LISTENING=NOT_AVAILABLE_NO_WAV，不以历史WAV代替本次结果。
+
+```ini
+R5_M12_D1=BLOCKED_RUNTIME_DIAGNOSTICS_UNAVAILABLE
+MULTIDEVICE_METADATA_QUALIFICATION=CONFIRMED_THIS_RUN
+APP_LAUNCHES=1
+CAPTURE_STARTS=1
+NATIVE_CALLBACKS=1
+ACCEPTED_SCORE_SCHEDULES=1
+ACTUAL_SCORE_COVERAGE=NONE
+RESIDENT_PLAYBACK=0
+APP_JSON_EXPORT=1
+WAV_EXPORT=0
+AUTOMATIC_RETRIES=0
+APP_OS_EXIT_CODE=0
+DEVICE_RELEASE=CONFIRMED_IDLE
 USER_LISTENING=NOT_AVAILABLE_NO_WAV
 DEVICE_RETRY=NOT_AUTHORIZED
 AEC_ROOT_CAUSE=UNKNOWN
