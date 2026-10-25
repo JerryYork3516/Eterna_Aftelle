@@ -1,6 +1,6 @@
 # T3.2-A / R5-M13 · 真人双讲音量波动与语音完整性离线分析
 
-> 2026-10-25。**语音损伤分级D：证据不足，无法确认或排除逐字损伤。** 已定位100–160ms低能量谷及较长间隔，但不能区分自然发声/停顿与处理抑制；没有可靠原文、离线ASR或VP前原音。用户此前反馈无可闻爆音、消音或断裂，仅第二句话轻微音量变化。本轮没有证实吞字或新的工程BUG，不以RMS作AEC/STS PASS。
+> 2026-10-25。**语音损伤分级D：证据不足，无法确认或排除逐字损伤。** 已定位100–160ms低能量谷及较长间隔，但不能区分自然发声/停顿与处理抑制；用户随后确认实际朗读的固定句及第二遍波动，但完整Run逐词/时间对齐、离线ASR及VP前原音仍缺少。用户此前反馈无可闻爆音、消音或断裂，仅第二句话轻微音量变化。本轮没有证实吞字或新的工程BUG，不以RMS作AEC/STS PASS。
 
 ## 1. 身份、范围及方法
 
@@ -14,9 +14,9 @@
 
 原样PCM换算为满幅1的float64后计算非重叠20ms/100ms RMS和Peak：743个完整20ms窗；148个完整100ms窗加末尾60ms部分窗，未补零。分窗样本数量及平方和与全文件闭合。精确零RMS的dB值未定义，不用任意有限底值计算巨大的“增益变化”。探索性低能量分箱同时保留-60/-50/-40dBFS三档，只描述输出，**不是VAD、异常或验收阈值**。
 
-## 2. 波动定位及第二句话边界
+## 2. 波动定位及第二遍朗读边界
 
-**SECOND_SENTENCE_TIME=UNKNOWN。** 约4.98–8.30秒是一个候选发声区，未经用户词句/时间对齐确认，不能将它命名为已确认的第二句话。主要低能量候选如下；边界由连续20ms RMS≤-50dBFS窗组成，存在约20ms分辨率和阈值依赖。前/后均为紧邻100ms，整段数值为RMS：
+用户补充确认波动在**第二遍朗读同一测试句**，不是将句内第二个分句自动当作“第二句话”。`SECOND_REPETITION=USER_CONFIRMED`；约4.98–8.30秒仍是未完成词句/时间对齐的候选发声区，精确起止与波动词语仍UNKNOWN。主要低能量候选如下；边界由连续20ms RMS≤-50dBFS窗组成，存在约20ms分辨率和阈值依赖。前/后均为紧邻100ms，整段数值为RMS：
 
 | WAV区间 | 时长 | 前100ms / 区间 / 后100ms（dBFS） | 与已观察居民Render关系 |
 |---|---:|---:|---|
@@ -67,25 +67,25 @@ D2 Render仅有一次约100ms最大gap、skippedUpdates=1及UNKNOWN_OBSERVATION_
 
 `ASR=NOT_RUN`，实际转写调用0次。定点检查当前PATH未找到Whisper/whisper.cpp/faster-whisper/MLX Whisper/Vosk命令；当前Python未找到相应包、sherpa-onnx或Torch；指定Whisper、Hugging Face ASR及Torch检查点缓存未发现可核验现成模型。这只是限定检查结果，不声称全盘不存在其他工具。已有ffmpeg不等于已有可用中文ASR；没有下载、安装、引入Provider或调用云端API。
 
-`REFERENCE_TRANSCRIPT=UNKNOWN`。已询问实际所说内容及波动大约秒数，报告冻结时尚无可靠回复。原先预定测试句不是本次实际朗读原文，不能作为ground truth。本轮没有识别候选/词语时间戳，也没有可据以判定的具体缺字、重复或错识别；不编造文本或把ASR结果当成原文。任何后续实际原文/转写均应仅留本机，本报告不公开这些内容。
+初次提交`7fee411736d4ad05e5c383f525536c4f6cb52aaf`时`REFERENCE_TRANSCRIPT=UNKNOWN`。用户随后明确提供实际朗读的句子，并指出第二遍出现音量波动，现更新为`REFERENCE_TRANSCRIPT=USER_REPORTED_PHRASE`、`SECOND_REPETITION=USER_CONFIRMED`。这是用户回忆提供的实际句子，不再仅是预定提示；原文只保存本机0600受控文件，不写入PUBLIC报告。完整Run重复总次数、逐词对应、波动具体词语和精确秒数仍UNKNOWN。本轮没有ASR识别候选或词级时间戳，不能据此确认缺字或逐字完整性。
 
 因此选择**D（语音损伤证据不足）**，不强选“仅波动且无损伤”、不把可疑能量谷升级为已确认吞字，不宣布逐字完整性PASS。现有用户听感未报告消音/断裂、工程Input连续是有利证据，但仍不足以确认或排除短音节损伤。
 
 ## 5. STS风险、结论与唯一下一项
 
-- **理解风险UNKNOWN**：若100–160ms低谷落在实际发音内，可能需要重点验证；若是音节/词间自然停顿，则不构成损伤。本轮缺少原文/词级时间戳及实际识别输出，不能证明理解是否受影响。
+- **理解风险UNKNOWN**：若100–160ms低谷落在实际发音内，可能需要重点验证；若是音节/词间自然停顿，则不构成损伤。现有用户提供的句子仍缺少逐词时间对齐及实际识别输出，不能证明理解是否受影响。
 - **判停风险UNKNOWN**：880ms、820ms间隔和约980ms初始低能量可作为后续边界样本，但没有运行或审查实际STS判停逻辑，不能套用假定阈值声称会提前结束。11.7秒附近输出降到底噪也不自动等于STS判停正确。
 - **插话NOT_TESTED**：本轮无Runtime/Provider/正式Gate执行，不能从AEC听感、RMS或未来离线ASR推导STS插话通过。
 
-CONFIRMED：原WAV身份、分窗能量/Peak/零值、低谷时间、原件未改变；D2公开报告及用户听感有上述限制。HYPOTHESIS：自然停顿、发音/距离变化、VP误抑制或处理增益变化均可能贡献波动，当前不能排序为确定根因。UNKNOWN：第二句话精确位置、真实原文、具体损失音节、Render缺口时刻/关联、Apple内部参考与实际STS效果。**NO_CONFIRMED_ENGINEERING_FIX_TARGET**：本轮没有足以授权修改AGC/AEC/NS、Converter或时钟的直接证据。
+CONFIRMED：原WAV身份、分窗能量/Peak/零值、低谷时间、原件未改变；用户补充提供实际句子并确认波动在第二遍，原文仅留本机；D2公开报告及用户听感有上述限制。HYPOTHESIS：自然停顿、发音/距离变化、VP误抑制或处理增益变化均可能贡献波动，当前不能排序为确定根因。UNKNOWN：第二遍精确位置/波动词语、完整Run逐词记录、是否损失音节、Render缺口时刻/关联、Apple内部参考与实际STS效果。**NO_CONFIRMED_ENGINEERING_FIX_TARGET**：本轮没有足以授权修改AGC/AEC/NS、Converter或时钟的直接证据。
 
-唯一下一项：用户只需针对现有WAV候选4.98–8.30秒确认实际第二句话及听到波动的词语/时刻，原文仅留本机；不要求重录。取得参考后由主控决定是否另行授权最小STS理解/判停验证，不自动推进。继续观察局部人声误抑制有诊断价值，但当前不建议凭RMS先改音频代码。
+唯一下一项：主控以已确认的重复句，定点复核现有WAV候选4.98–8.30秒与具体波动词语/时刻的对应；无需用户再次提供同一句原文或重录。由主控再决定是否另行授权最小STS理解/判停验证，不自动推进。继续观察局部人声误抑制有诊断价值，但当前不建议凭RMS先改音频代码。
 
 ## 6. 执行、隐私及审核
 
 实际命令：`git rev-parse`/`git ls-remote`身份核验；现有PATH/Python包及指定模型缓存元数据查询；`python3 .build/<本轮忽略目录>/analyze_public_c.py`（exit0，单个WAV）；分窗数量/平方和闭合断言与分析前后SHA核验通过。743个20ms窗、149个100ms窗数值仅存本机忽略目录，脚本及数值文件不提交。只读保护核验确认原7个冲突、索引、HEAD及14项未跟踪stat保持基线；最终交付再次核验。
 
-交付仅本报告；不增加音频文件、不提交私人转写/JSON、UID、绝对私人路径或日志。完成报告语义/隐私/文件白名单、git diff --check及Secret Guard核验后正常提交推送，不强推。实机采集/播放/App/Engine/ASR调用均0，构建、Fake、FULL_CURRENT均NOT_RUN（文档与离线数值工作，无生产代码变化）。
+本次补录仅记录用户原文已取得及第二遍波动；未重跑声学分析、ASR或设备。交付仅本报告；不增加音频文件、不提交私人转写/JSON、UID、绝对私人路径或日志。完成报告语义/隐私/文件白名单、git diff --check及Secret Guard核验后正常提交推送，不强推。实机采集/播放/App/Engine/ASR调用均0，构建、Fake、FULL_CURRENT均NOT_RUN（文档与离线数值工作，无生产代码变化）。
 
 五维SELF_REVIEW：身份PASS；数值计算PASS（无补零/假增益/新标准）；词级语音完整性UNKNOWN；STS和物理因果UNKNOWN；隐私/Git边界PASS。CRITICAL=0；MAJOR=1（第二句话词级证据与实际STS理解/判停未验证）；MINOR=2（既有Render观测缺口、WAV首尾PARTIAL）。这是未解决证据限制，不是新发现生产BUG。
 
@@ -94,8 +94,10 @@ Stage7 Forbidden Checklist=PASS：无六红线触碰；仅新增本报告，不�
 ```ini
 R5_M13=OFFLINE_ANALYSIS_COMPLETED_WITH_LIMITATIONS
 INTELLIGIBILITY_CLASS=D
-REFERENCE_TRANSCRIPT=UNKNOWN
-SECOND_SENTENCE_TIME=UNKNOWN
+REFERENCE_TRANSCRIPT=USER_REPORTED_PHRASE
+FULL_RUN_WORD_ALIGNMENT=UNKNOWN
+SECOND_REPETITION=USER_CONFIRMED
+SECOND_REPETITION_PRECISE_TIME=UNKNOWN
 OFFLINE_ASR=NOT_RUN
 ASR_INVOCATIONS=0
 DEVICE_RUNS=0
