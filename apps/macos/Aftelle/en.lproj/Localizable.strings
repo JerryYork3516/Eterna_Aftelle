@@ -608,3 +608,9 @@
 "realtimeSpeech.status.microphonePermissionRequired" = "Microphone permission is required";
 "realtimeSpeech.status.microphonePermissionDenied" = "Microphone permission was denied";
 "realtimeSpeech.status.microphonePermissionUnavailable" = "Microphone access is unavailable";
+
+/* M20 bounded DEBUG batch. */
+"M20_SCOPE" = "This M20 batch is bound to the frozen build, TinyUSB 60%, built-in speaker 55% and the fixed resident WAV. At most 3 independent rounds, 19 seconds each; local recording and analysis only. Each round keeps the original confirmation and explicit export. Stop cancels all remaining rounds. No audio upload.";
+"M20_QUIET_GUIDE" = "Remain quiet throughout: 4 seconds warm-up, then 15 seconds score. Resident playback is requested at score +3 seconds. Render is not physical speaker proof.";
+"Prepare M20 A · AGC-ON · WARMUP_4S" = "Prepare M20 A · AGC-ON · WARMUP_4S";
+"M20 Mac-only AEC · round %lld of %lld" = "M20 Mac-only AEC · round %lld of %lld";

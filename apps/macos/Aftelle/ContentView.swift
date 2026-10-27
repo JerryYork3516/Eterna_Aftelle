@@ -666,6 +666,11 @@ private struct ParticleOrientationDebugOverlay: View {
                         .font(.title)
                     Text("Isolated DEBUG mode. No resident, session or provider is loaded.")
                     Text("Device validation is not authorized in D1. Controls require a separate device approval.")
+                    if let batch = controller.appleVPMacAECBatch {
+                        Text(String(localized: "M20 Mac-only AEC · round \(batch.round) of \(batch.limit)"))
+                        Text(verbatim: batch.batchID.uuidString)
+                        Text(String(localized: "M20_SCOPE"))
+                    }
                     preparationControls
                     retentionStatus
                     if controller.appleVPAcousticTestState.comprehensiveC {
@@ -707,6 +712,9 @@ private struct ParticleOrientationDebugOverlay: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
+                if controller.appleVPMacAECBatch != nil {
+                    Text(String(localized: "M20_SCOPE"))
+                }
                 Text("A/C use the selected offline voice. B uses only the microphone.")
                 if controller.appleVPAcousticTestState.warmupProfile == .four {
                     Text(String(localized: "WARMUP_4S: 19 seconds total; no warm-up recording retained."))
@@ -744,7 +752,14 @@ private struct ParticleOrientationDebugOverlay: View {
 
         private var preparationControls: some View {
             VStack(alignment: .leading, spacing: 8) {
-                if let profile = controller.appleVPHumanOnsetProfile {
+                if controller.appleVPMacAECBatch != nil {
+                    Button(String(localized: "Prepare M20 A · AGC-ON · WARMUP_4S")) {
+                        _ = controller.prepareAppleVPAcousticTest(
+                            .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true
+                        )
+                    }
+                    .disabled(controller.appleVPAcousticTestState.phase != .idle)
+                } else if let profile = controller.appleVPHumanOnsetProfile {
                     Button(String(localized: "Prepare M07-F1 \(profile.rawValue) · Human C · AGC-ON · WARMUP_4S")) {
                         _ = controller.prepareAppleVPAcousticTest(
                             .doubleTalk, comprehensiveC: true, warmupProfile: .four,
@@ -802,8 +817,10 @@ private struct ParticleOrientationDebugOverlay: View {
                 }
                 Button("Select approved offline WAV…") { selectPlaybackFile() }
                     .disabled(controller.appleVPAcousticTestState.isBusy)
-                if controller.appleVPBTBatchScenario == nil, controller.appleVPHumanBatchScenario == nil {
-                    Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
+                if controller.appleVPMacAECBatch == nil {
+                    if controller.appleVPBTBatchScenario == nil, controller.appleVPHumanBatchScenario == nil {
+                        Text("B/C phrase: 今天我想聊聊刚才的事情。 C requires witnessed physical overlap above one second.")
+                    }
                 }
             }
         }
@@ -831,7 +848,7 @@ private struct ParticleOrientationDebugOverlay: View {
                 Button("Stop") {
                     Task { await controller.stopAppleVPAcousticTest() }
                 }
-                .disabled(!controller.appleVPAcousticTestState.isBusy)
+                .disabled(!controller.appleVPAcousticTestState.isBusy && controller.appleVPMacAECBatch == nil)
                 Button("Export local JSON…") { exportResult(asWAV: false) }
                     .disabled(!controller.appleVPAcousticTestState.canExport)
                 Button("Export local WAV…") { exportResult(asWAV: true) }
@@ -841,10 +858,15 @@ private struct ParticleOrientationDebugOverlay: View {
 
         private var comprehensiveCGuide: some View {
             VStack(alignment: .leading, spacing: 8) {
-                if !controller.appleVPAcousticTestState.humanAcousticBatch {
+                if controller.appleVPMacAECBatch != nil {
+                    Text(String(localized: "M20_QUIET_GUIDE"))
+                    Text(verbatim: controller.appleVPAcousticTestState.guideStage ?? "ready")
+                } else if !controller.appleVPAcousticTestState.humanAcousticBatch {
                     Text(String(localized: "综合C：评分15秒；WARMUP_4S先安静预热4秒，总采集最多19秒。须另行获准设备测试。"))
                 }
-                if let profile = controller.appleVPAcousticTestState.humanOnsetProfile {
+                if controller.appleVPMacAECBatch != nil {
+                    EmptyView()
+                } else if let profile = controller.appleVPAcousticTestState.humanOnsetProfile {
                     humanOnsetGuide(profile)
                 } else if controller.appleVPAcousticTestState.humanAcousticBatch {
                     humanBatchGuide

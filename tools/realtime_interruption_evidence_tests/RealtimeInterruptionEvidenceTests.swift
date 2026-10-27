@@ -2406,6 +2406,7 @@ private struct D1ControllerStack {
         batchScenario: AppleVPAcousticTestScenario? = nil,
         humanBatchScenario: AppleVPAcousticTestScenario? = nil,
         humanOnsetProfile: AppleVPHumanOnsetProfile? = nil,
+        macAECArgument: String? = nil,
         runtimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
@@ -2436,7 +2437,8 @@ private struct D1ControllerStack {
                 + (scoreControlDescriptor.map { [AppleVPScoreControl.argument + String($0)] } ?? [])
                 + (batchScenario.map { ["--apple-vp-bt-abc=" + $0.rawValue] } ?? [])
                 + (humanBatchScenario.map { ["--apple-vp-human-abc=" + $0.rawValue] } ?? [])
-                + (humanOnsetProfile.map { ["--apple-vp-human-onset=" + $0.rawValue] } ?? []),
+                + (humanOnsetProfile.map { ["--apple-vp-human-onset=" + $0.rawValue] } ?? [])
+                + (macAECArgument.map { [AppleVPMacAECBatchRun.argument + $0] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,
@@ -3567,7 +3569,141 @@ private struct RealtimeInterruptionEvidenceTests {
         print("m19_export_device_access=ZERO")
     }
 
+    static func testM20BatchContract() async throws {
+        let batch = UUID().uuidString
+        let valid = batch + ":1:3"
+        let prefix = AppleVPMacAECBatchRun.argument
+        for suffix in [":0:3", ":4:3", ":1:4", ":1:0", ":A:3"] {
+            expect(AppleVPMacAECBatchRun(arguments: [prefix + batch + suffix]) == nil,
+                   "M20 refuses invalid round and batch bounds")
+        }
+        expect(AppleVPMacAECBatchRun(arguments: [prefix + valid, prefix + valid]) == nil,
+               "duplicate batch arguments cannot authorize a run")
+        let missing = D1ControllerStack(macAECArgument: valid)
+        expect(!missing.controller.prepareAppleVPAcousticTest(.doubleTalk, comprehensiveC: true),
+               "M20 cannot prepare a legacy C scenario")
+        expect(!missing.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .zero, macAECBatch: true
+        ), "M20 cannot reduce continuous warm-up")
+        expect(!missing.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, processingProfile: .agcOff,
+            warmupProfile: .four, macAECBatch: true
+        ), "M20 cannot change AGC")
+        expect(missing.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true
+        ), "M20 prepares without devices")
+        startD1(missing.controller)
+        expect(missing.capture.startCount == 0 && missing.player.prepareCount == 0,
+               "M20 requires the original ScoreControl pipe before devices")
+        await missing.controller.stopAppleVPAcousticTest()
+        expect(!missing.controller.appleVPAcousticTestState.canStart,
+               "Stop before Capture revokes the pending batch round")
+    }
+
+    static func testM20SingleRound() async throws {
+        let batch = UUID().uuidString
+        let valid = batch + ":1:3"
+        let source = try URL(fileURLWithPath: requireEnv("M20_RESIDENT_WAV"))
+        let pipe = Pipe()
+        defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(
+            clock: { clock.now }, scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+            macAECArgument: valid
+        )
+        stack.capture.contentStartOverride = clock.start
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true
+        ), "M20 uses the original A capture and playback lifecycle")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "M20 selects its fixed non-private WAV")
+        for consent in [(false, true, true), (true, false, true), (true, true, false)] {
+            stack.controller.startAppleVPAcousticTest(
+                microphoneConsent: consent.0, speakerConsent: consent.1, localCaptureConsent: consent.2
+            )
+            expect(stack.capture.startCount == 0 && stack.player.startCount == 0,
+                   "M20 retains microphone, speaker and local recording consent")
+        }
+        startD1(stack.controller)
+        await driveWarmupC(stack, clock: clock, profile: .four)
+        let state = stack.controller.appleVPAcousticTestState
+        expect(state.errorCode == nil && state.packetCount == 750 && state.retainedPCMByteCount == 720_000,
+               "M20 preserves the 19-second plan and 15-second/720KB scoring cap")
+        expect(stack.capture.startCount == 1 && stack.player.startCount == 1,
+               "one round starts one existing Capture and one resident playback")
+        try expectM20Sealed(stack, pipe: pipe, batch: batch)
+    }
+
+    private static func expectM20Sealed(_ stack: D1ControllerStack, pipe: Pipe, batch: String) throws {
+        let events = try scoreControlEvents(pipe)
+        expect(events.count == 2 && events.allSatisfy {
+            $0["batch"] as? String == "R5_M20" && $0["batch_id"] as? String == batch
+                && $0["round"] as? Int == 1 && $0["limit"] as? Int == 3
+                && $0["proxy_requested"] as? Bool == false && $0["source"] == nil
+        }, "schedule and STOP bind the same Mac-only batch round")
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            .residentOnly, discardPreviousResult: true, comprehensiveC: true, warmupProfile: .four, macAECBatch: true
+        ), "one App lifecycle cannot record twice under one batch round")
+        let manifest = try JSONSerialization.jsonObject(with: stack.controller.appleVPAcousticTestManifestData())
+            as? [String: Any] ?? [:]
+        expect((manifest["mac_aec_batch"] as? [String: Any])?["batch_id"] as? String == batch,
+               "export retains batch identity")
+        try expectWarmupManifest(stack.controller, profile: .four)
+        let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+        expect(wav.count == 720_044 && wav.dropFirst(44).enumerated().allSatisfy {
+            $0.offset % 2 == 0 ? $0.element == 1 : $0.element == 0
+        }, "M20 does not alter existing synthetic PCM bytes or retain warm-up audio")
+        expectD1Cleanup(stack)
+    }
+
+    private static func requireEnv(_ key: String) throws -> String {
+        guard let value = ProcessInfo.processInfo.environment[key] else { throw CocoaError(.fileReadNoSuchFile) }
+        return value
+    }
+
+    static func testM20FailureCleanup() async throws {
+        let source = try URL(fileURLWithPath: requireEnv("M20_RESIDENT_WAV"))
+        let wrong = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: wrong) }
+        for fault in ["permission", "stop", "fixture"] {
+            let pipe = Pipe()
+            defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+            let clock = ComprehensiveCClock()
+            let stack = D1ControllerStack(
+                authorizationState: fault == "permission" ? .denied : .authorized,
+                clock: { clock.now }, scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+                macAECArgument: UUID().uuidString + ":1:3"
+            )
+            expect(stack.controller.prepareAppleVPAcousticTest(
+                .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true
+            ), "M20 negative control prepares without real devices")
+            expect(stack.controller.selectAppleVPAcousticPlaybackURL(fault == "fixture" ? wrong : source),
+                   "M20 validates file contents at original Start")
+            startD1(stack.controller)
+            if fault == "stop" {
+                await waitUntil("M20 warm-up running") { stack.controller.appleVPAcousticTestState.phase == .running }
+                await stack.controller.stopAppleVPAcousticTest()
+            }
+            await waitUntil("M20 failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            let expected = fault == "permission" ? "microphone_not_authorized"
+                : fault == "fixture" ? "invalid_playback_wav" : "cancelled"
+            expect(stack.controller.appleVPAcousticTestState.errorCode == expected,
+                   "M20 preserves the exact failure and original fail-closed semantics")
+            expect(stack.player.startCount == 0 && stack.capture.startCount == (fault == "stop" ? 1 : 0),
+                   "rejected consent or fixture never starts devices; Stop closes warm-up without resident playback")
+            expectD1Cleanup(stack)
+        }
+    }
+
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m20-only"]) {
+            try await testM20BatchContract()
+            try await testM20SingleRound()
+            try await testM20FailureCleanup()
+            try await testM19ExportContract()
+            print("m20_fake_checks=\(checks)")
+            print("m20_fake_device_access=ZERO")
+            return
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m19-only"]) {
             try await testM19ExportContract()
             return

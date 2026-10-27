@@ -56,6 +56,32 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
 }
 
 #if DEBUG
+    nonisolated struct AppleVPMacAECBatchRun {
+        static let argument = "--apple-vp-mac-aec="
+        static let residentSHA256 = "774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea"
+        let batchID: UUID
+        let round: Int
+        let limit: Int
+
+        init?(arguments: [String]) {
+            let values = arguments.filter { $0.hasPrefix(Self.argument) }
+            guard values.count == 1 else { return nil }
+            let fields = values[0].dropFirst(Self.argument.count).split(separator: ":")
+            guard fields.count == 3, let batchID = UUID(uuidString: String(fields[0])),
+                  let round = Int(fields[1]), let limit = Int(fields[2]),
+                  (1 ... 3).contains(limit), (1 ... limit).contains(round)
+            else { return nil }
+            self.batchID = batchID
+            self.round = round
+            self.limit = limit
+        }
+
+        var manifest: [String: Any] {
+            ["batch": "R5_M20", "batch_id": batchID.uuidString, "round": round, "limit": limit,
+             "scenario": "A", "proxy_requested": false]
+        }
+    }
+
     nonisolated struct AppleVPScoreControl {
         static let argument = "--apple-vp-score-control-fd="
         let descriptor: Int32
@@ -79,7 +105,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         func send(
             _ event: String, runID: UUID, scoreStart: UInt64 = 0,
             batchScenario: AppleVPAcousticTestScenario? = nil, humanBatch: Bool = false,
-            onsetProfile: AppleVPHumanOnsetProfile? = nil
+            onsetProfile: AppleVPHumanOnsetProfile? = nil, macAECBatch: AppleVPMacAECBatchRun? = nil
         ) throws {
             guard onsetProfile == nil || (humanBatch && batchScenario == .doubleTalk) else {
                 throw AppleVPAcousticTestError.externalPlaybackControl
@@ -88,6 +114,12 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
             if let batchScenario {
                 message["batch"] = onsetProfile != nil ? "R5_M07_F1" : humanBatch ? "R5_M07" : "R5_M03"
                 message["scenario"] = batchScenario.rawValue
+            }
+            if let macAECBatch {
+                guard batchScenario == .residentOnly, !humanBatch, onsetProfile == nil else {
+                    throw AppleVPAcousticTestError.externalPlaybackControl
+                }
+                message.merge(macAECBatch.manifest) { _, new in new }
             }
             if humanBatch {
                 message["source"] = "human"
@@ -235,13 +267,15 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         var comprehensiveC = false
         fileprivate(set) var btAcousticBatch = false
         fileprivate(set) var humanAcousticBatch = false
+        fileprivate(set) var macAECBatch: AppleVPMacAECBatchRun?
+        fileprivate(set) var macAECCancelled = false
         fileprivate(set) var humanOnsetProfile: AppleVPHumanOnsetProfile?
         fileprivate(set) var humanSpeechCueAtNanoseconds: UInt64?
         fileprivate var guideStartedAt: UInt64?
         fileprivate var guideEvents: [String: UInt64] = [:]
 
         var isAcousticBatch: Bool {
-            btAcousticBatch || humanAcousticBatch
+            btAcousticBatch || humanAcousticBatch || macAECBatch != nil
         }
 
         mutating func recordHumanSpeechCue(at now: UInt64, elapsed: UInt64) {
@@ -292,7 +326,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         }
 
         var canStart: Bool {
-            phase == .ready && !authorizationPending && !cleanupInFlight
+            phase == .ready && !authorizationPending && !cleanupInFlight && !macAECCancelled
         }
     }
 
@@ -821,6 +855,11 @@ final class AppController: ObservableObject {
         private var appleVPScoreControlArguments = ProcessInfo.processInfo.arguments
         private var appleVPScoreControl: AppleVPScoreControl?
         private var appleVPAcousticRuntimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)?
+
+        var appleVPMacAECBatch: AppleVPMacAECBatchRun? {
+            guard isAppleVPAcousticTestMode else { return nil }
+            return AppleVPMacAECBatchRun(arguments: appleVPScoreControlArguments)
+        }
 
         var appleVPBTBatchScenario: AppleVPAcousticTestScenario? {
             let values = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-bt-abc=") }
@@ -7792,12 +7831,17 @@ final class AppController: ObservableObject {
             warmupProfile: MacSpeechWarmupProfile? = nil,
             btAcousticBatch: Bool = false,
             humanAcousticBatch: Bool = false,
-            humanOnsetProfile: AppleVPHumanOnsetProfile? = nil
+            humanOnsetProfile: AppleVPHumanOnsetProfile? = nil,
+            macAECBatch: Bool = false
         ) -> Bool {
             let batchArguments = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-bt-abc=") }
             let humanArguments = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-human-abc=") }
             let onsetArguments = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-human-onset=") }
-            let isBatch = btAcousticBatch || humanAcousticBatch
+            let isBatch = btAcousticBatch || humanAcousticBatch || macAECBatch
+            guard acceptsMacAECPreparation(
+                (macAECBatch, comprehensiveC), scenario: scenario, mode: dataMode,
+                processing: processingProfile, warmup: warmupProfile
+            ) else { return false }
             guard !(btAcousticBatch && humanAcousticBatch),
                   onsetArguments.isEmpty || (humanArguments.isEmpty && batchArguments.isEmpty
                       && humanOnsetProfile != nil && humanOnsetProfile == appleVPHumanOnsetProfile),
@@ -7831,6 +7875,7 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.comprehensiveC = comprehensiveC
             appleVPAcousticRun.btAcousticBatch = btAcousticBatch
             appleVPAcousticRun.humanAcousticBatch = humanAcousticBatch
+            appleVPAcousticRun.macAECBatch = macAECBatch ? appleVPMacAECBatch : nil
             appleVPAcousticRun.humanOnsetProfile = humanOnsetProfile
             appleVPAcousticRun.dataMode = appleVPSilentSmokeScenario == nil ? dataMode : .statsOnly
             appleVPAcousticRun.processingProfile = processingProfile
@@ -7839,6 +7884,24 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.phase = .ready
             publishAppleVPAcousticState(force: true)
             return true
+        }
+
+        private func acceptsMacAECPreparation(
+            _ options: (requested: Bool, guided: Bool), scenario: AppleVPAcousticTestScenario,
+            mode: AppleVPAcousticDataMode, processing: MacSpeechAppleVPDebugProfile,
+            warmup: MacSpeechWarmupProfile?
+        ) -> Bool {
+            let arguments = appleVPScoreControlArguments
+            let hasArgument = arguments.contains { $0.hasPrefix(AppleVPMacAECBatchRun.argument) }
+            guard options.requested else { return !hasArgument }
+            let legacyPrefixes = ["--apple-vp-bt-abc=", "--apple-vp-human-abc=", "--apple-vp-human-onset="]
+            return appleVPMacAECBatch != nil && !arguments.contains { value in
+                legacyPrefixes.contains { value.hasPrefix($0) }
+            } && scenario == .residentOnly && options.guided && mode == .recording
+                && processing == .agcOn && warmup == .four && appleVPSilentSmokeScenario == nil
+                && appleVPAcousticRun.runID == nil && !appleVPAcousticRun.macAECCancelled
+                && appleVPAcousticTestDurationNanoseconds == 15_000_000_000
+                && appleVPAcousticTestByteLimit == 720_000
         }
 
         @discardableResult
@@ -7854,6 +7917,7 @@ final class AppController: ObservableObject {
             microphoneConsent: Bool, speakerConsent: Bool, localCaptureConsent: Bool
         ) {
             guard isAppleVPAcousticTestMode, appleVPAcousticRun.phase == .ready,
+                  !appleVPAcousticRun.macAECCancelled,
                   appleVPAcousticTestTask == nil, speechAudioHostShutdownOperation == nil,
                   speechHostLifecycleOperationCount == 0 else { return }
             guard microphoneConsent, appleVPAcousticRun.dataMode == .statsOnly || localCaptureConsent,
@@ -7901,6 +7965,10 @@ final class AppController: ObservableObject {
 
         func stopAppleVPAcousticTest() async {
             guard isAppleVPAcousticTestMode else { return }
+            if appleVPMacAECBatch != nil {
+                appleVPAcousticRun.macAECCancelled = true
+                appleVPAcousticRun.errorCode = "cancelled"
+            }
             if appleVPAcousticRun.isBusy {
                 appleVPAcousticRun.phase = .stopping
                 appleVPAcousticRun.errorCode = "cancelled"
@@ -7937,6 +8005,10 @@ final class AppController: ObservableObject {
             do {
                 let source = try AppleVPAcousticWAV.read(url: url)
                 appleVPAcousticRun.playbackSHA256 = source.sha256
+                let macResidentSHA = AppleVPMacAECBatchRun.residentSHA256
+                if appleVPAcousticRun.macAECBatch != nil, source.sha256 != macResidentSHA {
+                    throw AppleVPAcousticTestError.invalidFile
+                }
                 if appleVPAcousticRun.comprehensiveC {
                     guard (144_000 ... 288_000).contains(source.pcm.count),
                           appleVPAcousticTestDurationNanoseconds == 15_000_000_000,
@@ -8063,7 +8135,8 @@ final class AppController: ObservableObject {
                 "schedule", runID: runID, scoreStart: scoreStart,
                 batchScenario: appleVPAcousticRun.isAcousticBatch ? appleVPAcousticRun.scenario : nil,
                 humanBatch: appleVPAcousticRun.humanAcousticBatch,
-                onsetProfile: appleVPAcousticRun.humanOnsetProfile
+                onsetProfile: appleVPAcousticRun.humanOnsetProfile,
+                macAECBatch: appleVPAcousticRun.macAECBatch
             )
         }
 
@@ -8324,11 +8397,12 @@ final class AppController: ObservableObject {
                     do {
                         try appleVPScoreControl?.send(
                             "stop", runID: runID,
-                            scoreStart: appleVPAcousticRun.humanAcousticBatch
+                            scoreStart: appleVPAcousticRun.humanAcousticBatch || appleVPAcousticRun.macAECBatch != nil
                                 ? appleVPAcousticRun.guideStartedAt ?? 0 : 0,
                             batchScenario: appleVPAcousticRun.isAcousticBatch ? appleVPAcousticRun.scenario : nil,
                             humanBatch: appleVPAcousticRun.humanAcousticBatch,
-                            onsetProfile: appleVPAcousticRun.humanOnsetProfile
+                            onsetProfile: appleVPAcousticRun.humanOnsetProfile,
+                            macAECBatch: appleVPAcousticRun.macAECBatch
                         )
                     } catch {
                         appleVPAcousticRun.errorCode = appleVPAcousticRun.errorCode
@@ -8548,6 +8622,9 @@ final class AppController: ObservableObject {
             result["processing_profile"] = appleVPAcousticRun.processingProfile.rawValue
             result["requested_agc_enabled"] = appleVPAcousticRun.processingProfile.automaticGainControlEnabled
             result["external_playback_control"] = appleVPScoreControl == nil ? "DISABLED" : "DEBUG_PIPE_BOUND"
+            if let batch = appleVPAcousticRun.macAECBatch {
+                result["mac_aec_batch"] = batch.manifest
+            }
             if appleVPAcousticRun.btAcousticBatch {
                 var batch: [String: Any] = ["batch": "R5_M03", "scenario": appleVPAcousticRun.scenario.rawValue]
                 batch["resident_enabled"] = appleVPAcousticRun.scenario != .humanOnly

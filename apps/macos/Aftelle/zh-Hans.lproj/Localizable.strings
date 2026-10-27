@@ -608,3 +608,9 @@
 "realtimeSpeech.status.microphonePermissionRequired" = "需要麦克风权限";
 "realtimeSpeech.status.microphonePermissionDenied" = "麦克风权限已被拒绝";
 "realtimeSpeech.status.microphonePermissionUnavailable" = "麦克风当前不可用";
+
+/* M20 bounded DEBUG batch. */
+"M20_SCOPE" = "本次M20批次绑定冻结构建、TinyUSB 60%、内置扬声器55%及固定居民素材。最多3轮独立运行，每轮19秒；仅本地录音与分析。每轮保留原确认及显式导出。Stop终止本轮及后续轮次。音频不上传。";
+"M20_QUIET_GUIDE" = "全程保持安静：先预热4秒，再评分15秒，评分第3秒请求居民播放。软件Render不等于扬声器物理发声证明。";
+"Prepare M20 A · AGC-ON · WARMUP_4S" = "Prepare M20 A · AGC-ON · WARMUP_4S";
+"M20 Mac-only AEC · round %lld of %lld" = "M20 Mac-only AEC · 第%lld轮／最多%lld轮";
