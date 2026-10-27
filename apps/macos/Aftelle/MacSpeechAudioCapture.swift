@@ -557,6 +557,9 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let inputSampleRate: Double
+    #if DEBUG
+        let debugSRCMappingKnown: Bool
+    #endif
     private var packetizer = MacSpeechPCM16Packetizer()
     private var inputSampleCount: UInt64 = 0
     private var outputSampleCount: UInt64 = 0
@@ -582,6 +585,9 @@ nonisolated final class MacSpeechAudioConverter: @unchecked Sendable {
         self.converter = converter
         self.outputFormat = outputFormat
         inputSampleRate = inputFormat.sampleRate
+        #if DEBUG
+            debugSRCMappingKnown = converter.primeMethod == .normal
+        #endif
     }
 
     func convert(
@@ -743,17 +749,6 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         var supplied = false
     }
 
-    struct Output {
-        let samples: [Float]
-        let hostTimeNanoseconds: UInt64?
-    }
-
-    private struct InputTime {
-        let start: Double
-        let end: Double
-        let hostTimeNanoseconds: UInt64?
-    }
-
     static func makeBuffer(samples: [Float]) throws -> AVAudioPCMBuffer {
         guard !samples.isEmpty,
               let format = AVAudioFormat(
@@ -778,6 +773,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let inputSampleRate: Double
+    #if DEBUG
+        let debugSRCMappingKnown: Bool
+    #endif
     private var inputFrameCount: UInt64 = 0
     private var outputSampleCount: UInt64 = 0
     private var inputTimes: [InputTime] = []
@@ -806,6 +804,9 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
         self.converter = converter
         self.outputFormat = outputFormat
         inputSampleRate = inputFormat.sampleRate
+        #if DEBUG
+            debugSRCMappingKnown = converter.primeMethod == .normal
+        #endif
     }
 
     func convert(_ inputBuffer: AVAudioPCMBuffer) throws -> [Float] {
@@ -851,14 +852,21 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
                   let samples = outputBuffer.floatChannelData?[0] else {
                 throw MacSpeechAudioCaptureError.conversionFailed
             }
+            #if DEBUG
+                let acceptedInputContentTime = inputTimes.last?.hostTimeNanoseconds
+            #endif
             let count = Int(outputBuffer.frameLength)
             let timestamp = outputHostTime(sampleCount: count)
             outputSampleCount += UInt64(count)
             inputTimes.removeAll { $0.end <= Double(outputSampleCount) }
-            return Output(samples: Array(UnsafeBufferPointer(
-                start: samples,
-                count: count
-            )), hostTimeNanoseconds: timestamp)
+            #if DEBUG
+                return Output(samples: Array(UnsafeBufferPointer(start: samples, count: count)),
+                              hostTimeNanoseconds: timestamp,
+                              acceptedInputContentTime: acceptedInputContentTime)
+            #else
+                return Output(samples: Array(UnsafeBufferPointer(start: samples, count: count)),
+                              hostTimeNanoseconds: timestamp)
+            #endif
         }
     }
 
@@ -1002,6 +1010,22 @@ nonisolated final class MacSpeechFloatMono48kConverter: @unchecked Sendable {
     }
 }
 
+extension MacSpeechFloatMono48kConverter {
+    struct Output {
+        let samples: [Float]
+        let hostTimeNanoseconds: UInt64?
+        #if DEBUG
+            var acceptedInputContentTime: UInt64?
+        #endif
+    }
+
+    private struct InputTime {
+        let start: Double
+        let end: Double
+        let hostTimeNanoseconds: UInt64?
+    }
+}
+
 private extension MacSpeechFloatMono48kConverter {
     func makeOutputBufferLocked(
         frameLength: AVAudioFrameCount,
@@ -1084,6 +1108,168 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
 
         var nanoseconds: UInt64 {
             self == .four ? 4_000_000_000 : 0
+        }
+    }
+
+    nonisolated struct MacSpeechShortWindowSnapshot: Sendable, Equatable {
+        struct Window: Sendable, Equatable {
+            let start: UInt64
+            let end: UInt64
+            let coveredEnd: UInt64
+            let expectedSamples: UInt64
+            let level: MacSpeechNativeVoiceDebugChannel
+
+            var complete: Bool {
+                coveredEnd == end && level.sampleCount == expectedSamples
+                    && level.nonFiniteCount == 0 && level.rms?.isFinite == true
+                    && level.peakMagnitude?.isFinite == true
+            }
+
+            func manifest() -> [String: Any] {
+                var result = MacSpeechAcousticWindowStats.levelManifest(level)
+                result["start_ns"] = start
+                result["end_ns"] = end
+                result["covered_start_ns"] = start
+                result["covered_end_ns"] = coveredEnd
+                result["expected_samples"] = expectedSamples
+                result["finite_samples"] = level.sampleCount - level.nonFiniteCount
+                result["status"] = complete ? "COMPLETE" : "UNKNOWN_INCOMPLETE_OR_NONFINITE"
+                return result
+            }
+        }
+
+        let identity: MacSpeechRuntimeReadback.Identity
+        let source: MacSpeechShortWindowStats.Source
+        let sampleRate: Double
+        let srcAligned: Bool
+        let fault: String?
+        let windows: [Window]
+
+        static func pairedManifest(
+            native: Self?, pcm: Self?, identity: MacSpeechRuntimeReadback.Identity,
+            clockTrusted: Bool, savedPCM: Bool
+        ) -> [String: Any] {
+            let reason = pairingIssue(native: native, pcm: pcm, identity: identity, clockTrusted: clockTrusted)
+            let rows = (pcm?.windows ?? []).map { window -> [String: Any] in
+                let match = native?.windows.first { $0.start == window.start && $0.end == window.end }
+                let issue = reason ?? (match == nil ? "MISSING_NATIVE_WINDOW"
+                    : match?.complete != true || !window.complete ? "INCOMPLETE_OR_NONFINITE" : nil)
+                var row: [String: Any] = ["start_ns": window.start, "end_ns": window.end,
+                                          "status": issue.map { "UNKNOWN_" + $0 } ?? "MATCHED_CONTENT_COVERAGE",
+                                          "native": match?.manifest() ?? NSNull() as Any, "pcm": window.manifest()]
+                let left = match?.level.rms ?? 0
+                let right = window.level.rms ?? 0
+                row["rms_ratio_db"] = issue == nil && left > 0 && right > 0
+                    ? 20 * log10(right / left) : NSNull() as Any
+                return row
+            }
+            return ["version": 1, "window_ns": MacSpeechShortWindowStats.windowNs,
+                    "capacity_per_stream": MacSpeechShortWindowStats.capacity,
+                    "run_id": identity.runID.uuidString, "generation": identity.generation,
+                    "configuration_id": identity.configurationID,
+                    "native_sample_rate": native?.sampleRate ?? NSNull() as Any,
+                    "pcm_sample_rate": pcm?.sampleRate ?? NSNull() as Any,
+                    "content_clock_trusted": clockTrusted,
+                    "native_stream_fault": native?.fault ?? NSNull() as Any,
+                    "pcm_stream_fault": pcm?.fault ?? NSNull() as Any,
+                    "matched_windows": rows.filter { $0["status"] as? String == "MATCHED_CONTENT_COVERAGE" }.count,
+                    "gain_decision": "NOT_PROVIDED",
+                    "status": reason.map { "UNKNOWN_" + $0 } ?? "REVIEW_WINDOW_COVERAGE",
+                    "pcm_scope": savedPCM ? "EXACT_RETAINED_WAV_PACKETS" : "SCORE_PACKETS_NOT_SAVED",
+                    "native_source": "VP_POST_NATIVE_CH0_NOT_ADC_RAW", "windows": rows,
+                    "src_mapping": "accepted_converter_content_clock; normal priming contract, not physical latency",
+                    "interpretation": "energy ratio only; SRC response and speech changes are not gain-defect proof"]
+        }
+
+        private static func pairingIssue(
+            native: Self?, pcm: Self?, identity: MacSpeechRuntimeReadback.Identity, clockTrusted: Bool
+        ) -> String? {
+            guard let native, let pcm else { return "MISSING_STREAM" }
+            guard identity.generation > 0, identity.configurationID > 0,
+                  native.identity == identity, pcm.identity == identity,
+                  native.source == .native, pcm.source == .pcm else { return "IDENTITY_OR_SOURCE" }
+            guard !native.windows.isEmpty, !pcm.windows.isEmpty else { return "MISSING_WINDOWS" }
+            guard clockTrusted, native.fault == nil, pcm.fault == nil else { return "CLOCK_OR_STREAM" }
+            guard native.srcAligned, pcm.srcAligned else { return "SRC_DELAY_UNVERIFIED" }
+            for snapshot in [native, pcm] {
+                var previousEnd: UInt64?
+                for window in snapshot.windows {
+                    guard window.end > window.start,
+                          window.end - window.start == MacSpeechShortWindowStats.windowNs,
+                          previousEnd.map({ window.start >= $0 }) ?? true else { return "DUPLICATE_OR_OVERLAP" }
+                    previousEnd = window.end
+                }
+            }
+            return nil
+        }
+    }
+
+    nonisolated struct MacSpeechShortWindowStats: Sendable {
+        enum Source: Sendable, Equatable { case native, pcm }
+        enum Fault: String, Sendable { case format, clock, capacity }
+        static let capacity = 1000
+        static let windowNs: UInt64 = 20_000_000
+        let source: Source
+        private var levels = Array(repeating: MacSpeechNativeVoiceDebugChannel(), count: capacity)
+        private var anchor: UInt64?
+        private var rate = 0.0
+        private var samplesPerWindow: UInt64 = 0
+        private var samples: UInt64 = 0
+        private var srcAligned = true
+        private var fault: Fault?
+
+        mutating func invalidate(_ reason: Fault) {
+            fault = fault ?? reason
+        }
+
+        mutating func record(
+            count: Int, rate: Double, start: UInt64?, srcAligned: Bool,
+            sample: (Int) -> (Double, Bool)
+        ) {
+            guard fault == nil else { return }
+            guard count > 0, count <= 16384, rate.isFinite, rate >= 50, rate <= 384_000,
+                  (rate / 50).rounded() == rate / 50, self.rate == 0 || self.rate == rate
+            else { invalidate(.format); return }
+            guard let start, start > 0 else { invalidate(.clock); return }
+            if anchor == nil {
+                anchor = start; self.rate = rate; samplesPerWindow = UInt64(rate / 50)
+            }
+            let expected = Double(anchor!) + Double(samples) * 1e9 / rate
+            guard expected < Double(UInt64.max), UInt64(expected.rounded()) == start
+            else { invalidate(.clock); return }
+            guard UInt64(count) <= UInt64(Self.capacity) * samplesPerWindow - samples,
+                  anchor! <= UInt64.max - UInt64(Self.capacity) * Self.windowNs
+            else { invalidate(.capacity); return }
+            self.srcAligned = self.srcAligned && srcAligned
+            for index in 0 ..< count {
+                let value = sample(index)
+                _ = levels[Int(samples / samplesPerWindow)].record(value.0, fullScale: value.1)
+                samples += 1
+            }
+        }
+
+        mutating func recordPCM(_ bytes: Data, start: UInt64) {
+            guard source == .pcm, bytes.count == 960 else { invalidate(.format); return }
+            bytes.withUnsafeBytes { data in
+                record(count: 480, rate: 24000, start: start, srcAligned: true) { index in
+                    let value = Int16(littleEndian: data.loadUnaligned(fromByteOffset: index * 2, as: Int16.self))
+                    return (Double(value) / 32768, value == .min || value == .max)
+                }
+            }
+        }
+
+        func snapshot(identity: MacSpeechRuntimeReadback.Identity) -> MacSpeechShortWindowSnapshot {
+            // Control/seal path only; mapped records never share the mutable accumulator array.
+            let count = samplesPerWindow > 0 ? Int((samples + samplesPerWindow - 1) / samplesPerWindow) : 0
+            let rows = (0 ..< count).map { index -> MacSpeechShortWindowSnapshot.Window in
+                let start = anchor! + UInt64(index) * Self.windowNs
+                let level = levels[index]
+                return .init(start: start, end: start + Self.windowNs,
+                             coveredEnd: start + UInt64((Double(level.sampleCount) * 1e9 / rate).rounded()),
+                             expectedSamples: samplesPerWindow, level: level)
+            }
+            return .init(identity: identity, source: source, sampleRate: rate,
+                         srcAligned: srcAligned, fault: fault?.rawValue, windows: rows)
         }
     }
 
@@ -1486,6 +1672,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         let rejections: [String: UInt64]
         let acousticWindows: MacSpeechAcousticWindowStats?
         let rawTimestampDiagnostic: MacSpeechRawTimestampDiagnostic?
+        var shortWindows: MacSpeechShortWindowSnapshot?
     }
 
     private nonisolated enum MacSpeechNativeVoiceDebugReason: String, CaseIterable {
@@ -1541,6 +1728,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private var lastPacketTime: UInt64?
         private var acousticWindows: MacSpeechAcousticWindowStats?
         private var rawTimestampDiagnostic = MacSpeechRawTimestampDiagnostic()
+        private var shortWindows = MacSpeechShortWindowStats(source: .native)
 
         init(
             runID: UUID, generation: UInt64, timing: MacSpeechNativeVoiceTiming? = nil,
@@ -1710,7 +1898,10 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 firstNativeSampleTime: firstNativeSampleTime, lastNativeSampleTime: lastNativeSampleTime,
                 firstPacketTime: firstPacketTime, lastPacketTime: lastPacketTime, rejections: rejections,
                 acousticWindows: acousticWindows,
-                rawTimestampDiagnostic: rawTimestampDiagnostic.fault == nil ? nil : rawTimestampDiagnostic
+                rawTimestampDiagnostic: rawTimestampDiagnostic.fault == nil ? nil : rawTimestampDiagnostic,
+                shortWindows: isSealed ? shortWindows.snapshot(identity: .init(
+                    runID: runID, generation: captureGeneration, configurationID: configurationID ?? 0
+                )) : nil
             )
         }
 
@@ -1825,15 +2016,62 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
     }
 
+    extension MacSpeechNativeVoiceDebugStats {
+        mutating func recordShortNative(
+            _ buffer: AVAudioPCMBuffer, contentTime: UInt64?, srcAligned: Bool,
+            configurationID: UInt64, generation: UInt64
+        ) {
+            guard !isSealed, self.configurationID == configurationID, captureGeneration == generation else { return }
+            guard buffer.format.commonFormat == .pcmFormatFloat32, validLayout(buffer, sampleBytes: 4),
+                  buffer.frameLength > 0, Int(buffer.frameLength) <= Self.maxNativeFrames,
+                  let pointer = buffer.floatChannelData?[0] else { shortWindows.invalidate(.format); return }
+            let stride = buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1
+            shortWindows.record(
+                count: Int(buffer.frameLength), rate: buffer.format.sampleRate,
+                start: contentTime, srcAligned: srcAligned
+            ) { index in
+                let value = Double(pointer[index * stride])
+                return (value, abs(value) >= 1)
+            }
+        }
+    }
 #endif
 
 #if DEBUG
+    nonisolated struct MacSpeechMicrophoneModeReadback: Encodable, Sendable, Equatable {
+        var status = "UNAVAILABLE"
+        var active: Int?
+        var preferred: Int?
+        var readStartedAtNs: UInt64?
+        var readFinishedAtNs: UInt64?
+        let meaning = "AVCaptureDevice application-route API; not a physical endpoint or Apple AEC-state proof"
+
+        static func read(using reader: () -> (active: Int, preferred: Int)?) -> Self {
+            var result = Self()
+            result.readStartedAtNs = DispatchTime.now().uptimeNanoseconds
+            if let values = reader() {
+                result.active = (0 ... 2).contains(values.active) ? values.active : nil
+                result.preferred = (0 ... 2).contains(values.preferred) ? values.preferred : nil
+                let bothKnown = result.active != nil && result.preferred != nil
+                result.status = bothKnown ? "CONFIRMED_PUBLIC_API" : "UNKNOWN_ENUM"
+            }
+            result.readFinishedAtNs = DispatchTime.now().uptimeNanoseconds
+            return result
+        }
+
+        static func read() -> Self {
+            guard #available(macOS 12.0, *) else { return Self() }
+            return read { (AVCaptureDevice.activeMicrophoneMode.rawValue,
+                           AVCaptureDevice.preferredMicrophoneMode.rawValue) }
+        }
+    }
+
     nonisolated enum MacSpeechRuntimeReadback {
         static let sharedIODeviceSetBinding = "PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED"
 
         enum Phase: String, Encodable, Sendable { case engineStarted, residentPlaybackStarted }
 
-        struct Identity {
+        struct Identity: Sendable, Equatable {
             let runID: UUID
             let generation: UInt64
             let configurationID: UInt64
@@ -1943,6 +2181,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             var issues: [String]
             var bindingStatus: String = "UNKNOWN"
             var processBinding = ProcessBinding()
+            var microphoneModes = MacSpeechMicrophoneModeReadback()
         }
 
         enum QueryFailure: Error { case property(UInt32, Int32), invalidProperty(UInt32), unavailable(UInt32) }
@@ -3463,6 +3702,14 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             #endif
             return nil
         }
+        #if DEBUG
+            nativeVoiceDebug?.recordShortNative(
+                buffer, contentTime: converted.acceptedInputContentTime,
+                srcAligned: converted.hostTimeNanoseconds != nil && context.inputConverter.debugSRCMappingKnown
+                    && context.outputConverter.debugSRCMappingKnown,
+                configurationID: configurationID, generation: generation
+            )
+        #endif
         guard let contentTime = converted.hostTimeNanoseconds else {
             #if DEBUG
                 nativeVoiceDebug?.reject("content_time")
@@ -3832,12 +4079,13 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 issues.append("io_nodes_changed_during_read")
             }
             let process = MacSpeechRuntimeDeviceReadback.readCurrentProcess(route: route)
+            let microphoneModes = MacSpeechMicrophoneModeReadback.read()
             return MacSpeechRuntimeReadback.Payload(
                 readStartedAtNs: started, readFinishedAtNs: DispatchTime.now().uptimeNanoseconds,
                 voiceProcessing: voice,
                 formats: formats, playerMixerBus: bus, mixerOutputConnected: connected,
                 route: route, issues: issues, bindingStatus: route?.binding ?? "UNKNOWN_READ_FAILED",
-                processBinding: process
+                processBinding: process, microphoneModes: microphoneModes
             )
         }
 

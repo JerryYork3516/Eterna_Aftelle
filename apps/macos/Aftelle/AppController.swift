@@ -213,6 +213,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate(set) var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
         fileprivate(set) var warmupProfile: MacSpeechWarmupProfile?
         fileprivate var warmupDrain: AppleVPWarmupDrainState?
+        fileprivate var pcmShortWindows: MacSpeechShortWindowStats?
         fileprivate var lastCollectionClock: UInt64?
         var runID: UUID?
         var errorCode: String?
@@ -8042,6 +8043,7 @@ final class AppController: ObservableObject {
         }
 
         private func beginAppleVPAcousticScoring(runID: UUID, generation: UInt64) throws {
+            appleVPAcousticRun.pcmShortWindows = MacSpeechShortWindowStats(source: .pcm)
             let now = appleVPAcousticClock()
             var scoreStart = now
             if let profile = appleVPAcousticRun.warmupProfile {
@@ -8286,6 +8288,9 @@ final class AppController: ObservableObject {
             if appleVPAcousticRun.dataMode == .recording {
                 appleVPAcousticRun.pcm.append(frame.pcm16Bytes)
             }
+            appleVPAcousticRun.pcmShortWindows?.recordPCM(
+                frame.pcm16Bytes, start: frame.monotonicTimestampNanoseconds
+            )
             appleVPAcousticRun.packets.append([frame.sequenceNumber, frame.monotonicTimestampNanoseconds, 960])
         }
 
@@ -8507,6 +8512,7 @@ final class AppController: ObservableObject {
             manifest["processed_channels"] = 1
             manifest["processed_encoding"] = "PCM16_LE"
             manifest["processed_channel_map"] = [0]
+            manifest["short_window_diagnostics"] = appleVPAcousticShortWindowManifest(state)
             manifest["duration_limit_ns"] = appleVPAcousticTestDurationNanoseconds
             manifest["byte_limit"] = appleVPAcousticTestByteLimit
             manifest["packet_count"] = state.packetCount
@@ -8578,6 +8584,22 @@ final class AppController: ObservableObject {
                 result["comprehensive_c"] = appleVPAcousticCManifest()
             }
             return try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+        }
+
+        private func appleVPAcousticShortWindowManifest(_ state: AppleVPAcousticTestState) -> [String: Any] {
+            guard let run = state.runID, let generation = state.generation,
+                  let configuration = state.native?.configurationID
+            else {
+                return ["version": 1, "status": "UNKNOWN_MISSING_IDENTITY"]
+            }
+            let identity = MacSpeechRuntimeReadback.Identity(
+                runID: run, generation: generation, configurationID: configuration
+            )
+            return MacSpeechShortWindowSnapshot.pairedManifest(
+                native: state.native?.shortWindows, pcm: state.pcmShortWindows?.snapshot(identity: identity),
+                identity: identity, clockTrusted: state.native?.coverageValid == true,
+                savedPCM: state.dataMode == .recording
+            )
         }
 
         private func appleVPAcousticWarmupManifest() -> [String: Any] {

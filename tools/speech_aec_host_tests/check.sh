@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 mode="${1:-full}"
-if [[ "$mode" != "full" && "$mode" != "d1-stats-only" && "$mode" != "m08-clock-only" && "$mode" != "m09-clock-only" ]]; then
+if [[ "$mode" != "full" && "$mode" != "d1-stats-only" && "$mode" != "m08-clock-only" && "$mode" != "m09-clock-only" && "$mode" != "m19-only" ]]; then
   echo "unsupported speech AEC test mode: $mode" >&2
   exit 2
 fi
@@ -16,6 +16,15 @@ device_monitor="$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
 tests="$repo_root/tools/speech_aec_host_tests/MacSpeechAcousticEchoHostTests.swift"
 replay="$repo_root/tools/speech_aec_host_tests/RecordedAcousticReplay.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
+
+if [[ "$mode" == "m19-only" ]]; then
+  swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
+    -framework AVFoundation -framework CoreAudio "$aec_host" "$capture" "$device_monitor" \
+    "$repo_root/tools/speech_aec_host_tests/NativePCMShortWindowTests.swift" \
+    -o "$build_dir/native_pcm_short_window_tests"
+  "$build_dir/native_pcm_short_window_tests"
+  exit 0
+fi
 
 if [[ "$mode" == "m09-clock-only" || "$mode" == "full" ]]; then
   swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \

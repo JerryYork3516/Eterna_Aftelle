@@ -3530,7 +3530,48 @@ private struct RealtimeInterruptionEvidenceTests {
     private static var duplicateStartPermissionRequests = -1
     private static var duplicateStartProviderSessions = -1
 
+    static func testM19ExportContract() async throws {
+        let clock = ComprehensiveCClock()
+        let source = try d1SyntheticPlayback(packets: 150)
+        defer { try? FileManager.default.removeItem(at: source) }
+        for mode in [AppleVPAcousticDataMode.recording, .statsOnly] {
+            let stack = D1ControllerStack(clock: { clock.now })
+            stack.capture.contentStartOverride = clock.start
+            clock.elapsed = 0
+            prepareWarmupC(stack, source: source, profile: .four, mode: mode)
+            await driveWarmupC(stack, clock: clock, profile: .four)
+            let data = try stack.controller.appleVPAcousticTestManifestData()
+            let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            expect(manifest["short_window_diagnostics"] is [String: Any],
+                   "M19 must export bounded same-content-time Native/final-PCM diagnostics")
+            let short = manifest["short_window_diagnostics"] as? [String: Any] ?? [:]
+            let windows = short["windows"] as? [[String: Any]] ?? []
+            let scope = mode == .recording ? "EXACT_RETAINED_WAV_PACKETS" : "SCORE_PACKETS_NOT_SAVED"
+            expect(windows.count == 750 && short["pcm_scope"] as? String == scope,
+                   "only 750 retained scoring packets enter the final PCM statistics")
+            expect(windows.first?["start_ns"] as? UInt64 == clock.start + 4_000_000_000,
+                   "four seconds of warm-up are absent from the final-PCM window series")
+            expect(windows.allSatisfy { ($0["pcm"] as? [String: Any])?["samples"] as? UInt64 == 480 },
+                   "each actual final packet has 480 samples, not the drained warm-up total")
+            if mode == .recording {
+                let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+                expect(wav.count == 720_044 && wav.dropFirst(44).enumerated().allSatisfy {
+                    $0.offset % 2 == 0 ? $0.element == 1 : $0.element == 0
+                }, "new numerical statistics leave the original synthetic scoring WAV bytes unchanged")
+            } else {
+                expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount == 0,
+                       "STATS_ONLY keeps zero audio while recording bounded numerical windows")
+            }
+            expectD1Cleanup(stack)
+        }
+        print("m19_export_device_access=ZERO")
+    }
+
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m19-only"]) {
+            try await testM19ExportContract()
+            return
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m07-f1-only"]) {
             try await testM03Batch()
             try await testM07Batch()
