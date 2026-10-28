@@ -1,6 +1,6 @@
 # R5-M20-D3 · 启动身份修复与新批次审核
 
-2026-10-28，Stage 7.5 / T3.2-A。第一阶段离线验证通过，先提交修复；本阶段尚未启动Aftelle。新的最多3轮设备批次已由用户本次明确授权，修复推送并核验后才创建独立计划执行。AEC根因仍UNKNOWN。
+2026-10-28，Stage 7.5 / T3.2-A。**启动修复离线及本次实机身份验证通过；新批次实际采集/播放1轮并导出，App正常exit 0。随后冻结门禁因`capture_queued_at_seal=5`拒绝资格，批次停止，后两轮NOT_RUN。该轮INCONCLUSIVE，没有自动重试，也没有AEC PASS结论。**
 
 ## 1. 基线、范围与确定性证据
 
@@ -45,17 +45,85 @@
 
 本次用户已授权“修复后直接执行”，无需再询问同一批次；原App可见确认、TCC及Stop均保留。只使用M20正式设备入口，不运行真人C、蓝牙或REF。原始JSON/WAV、设备标识和全部路径/映射日志仅留本机，禁止公开上传。
 
-`ECHO_NOT_DETECTED`不能升级AEC PASS；未独立证明物理扬声器发声时仍为UNVERIFIED。NCC/RMS不是ERLE或可懂度验收。后续实际轮次、运行身份、声学与系统状态结果将在本报告中补记；此修复提交的设备运行次数为0。
+`ECHO_NOT_DETECTED`不能升级AEC PASS；未独立证明物理扬声器发声时仍为UNVERIFIED。NCC/RMS不是ERLE或可懂度验收。此节记录修复提交时的执行边界，彼时设备运行次数为0；后续实际结果见第6节。
 
 ## 5. 范围审核与状态
 
 Stage7 Forbidden Checklist：PASS。没有音频Engine/Tap、DSP、AEC/AGC/NS、Converter、AudioGraph、时钟容差、RuntimeCore、Provider、正式Gate或M18-E01修改。仅外部控制器、对应最小测试及本脱敏报告。
 
-五维自审：范围PASS；离线身份与清理PASS、实机待执行；数值检测沿用冻结阈值；旧控制/Release隔离PASS；隐私与Git保护PASS。修复前MAJOR=1（启动资格误拒绝风险）、MINOR=1（分支/退出码证据不足）；离线负控已覆盖，不能以此预判设备声学结果。
+五维自审：范围PASS；身份修复及实机退出PASS、整批资格BLOCKED；数值检测沿用冻结阈值，未合格轮次不输出AEC通过；旧控制/Release隔离PASS；隐私与Git保护PASS。修复前MAJOR=1（启动资格误拒绝风险）、MINOR=1（分支/退出码证据不足），离线负控及实机读回已覆盖。当前CRITICAL=0、MAJOR=1（实际封存/观测完整性未满足冻结批次合同）、MINOR=1（控制回执沿用旧`device_access`标签）；不定义为AEC根因。
+
+## 6. 新批次实际执行与停止
+
+修复提交`6451a569e4bd04f6fa08e23df9d551b31491f356`已先正常推送，确认HEAD/upstream/实时远端一致后，再独立构造新计划。新批UUID：`1D11273F-6135-4A67-8A7D-F2BF2B3F8430`；plan SHA-256：`2ab54bd468a3a678efc18f617dc2cd4fdb490201c3a4a5801628f79aa8a04c52`。只复用已登记的只读探针和未变化产物，重新登记当前源码/脚本SHA、当前设备身份及新证据目录，没有复制或调用旧D43CA586计划。新计划准备字段`execution_authorized=false`保留；本次用户“修复后直接执行”的新授权通过M20正式CLI记录，独立排他消耗标记已创建。
+
+预检重新确认TinyUSB USB默认输入60%、Mac mini内置默认输出55%且未静音、设备空闲、无冲突实验实例、冻结文件及0700/0600权限匹配；没有调整系统配置。现有TCC边界无法在外部伪造PASS，保留原App实际权限与可见Start/导出确认，未操作新系统权限窗口。
+
+实际调用仍为`python3 -B tools/reference_host_comparison/m20_batch.py --plan <全新计划> --evidence <新计划绑定目录> --authorize-batch '授权开始M20单批3轮AEC测试'`，完整命令和路径仅本机保存。唯一正式入口调用1次，控制进程exit **1**、总耗时28.823秒；此耗时包含UI、导出与检查，不是录音时长。
+
+| 轮次 | RunID | Capture / 居民Playback / JSON / WAV | 结果 |
+|---|---|---|---|
+| 1 | `8C1E1AB0-52E9-4B99-B9D8-FF035540C798` | 各1次 | INCONCLUSIVE：封存队列门禁拒绝；原控制流程完成、App exit 0 |
+| 2 | NOT_RUN | 各0次 | 整批已停止 |
+| 3 | NOT_RUN | 各0次 | 整批已停止 |
+
+三次实际身份观察均为`VERIFIED`，单次约37.1 / 40.7 / 43.2毫秒，首次无需等待；进程前后路径、映射device/inode和两个文件SHA全部匹配。原UI Prepare、Start、导出及精确PID Quit均有回执。`control/result.json`为`CONTROL_COMPLETED_DEVICE`、App `audio_exit=0`、无代理进程。旧`device_access=R4_EXPLICIT_ONCE`仅为遗留标签；实际`batch=R5_M20`、新batch UUID及本次独立授权消耗记录一致，没有复用R4授权。本轮不顺带修改该标签。
+
+**实际首个拒绝条件：** `audit_manifest()`要求`capture_queued_at_seal==0`，本轮为**5**。`BATCH_STOPPED`记录`ValueError: capture/playback counter failure: capture_queued_at_seal`、`completed=0`。该0表示合格评分轮次为0，不能写成实际Capture为0。没有进入原自动评分成功路径，没有第二、三轮，没有清除消耗标记或现场放宽门禁。
+
+## 7. 已保存数据、系统状态与描述性指标
+
+Native为16kHz/3ch Float32、304000 frames（19.000秒样本时长），已过Apple VP；没有另存Native音频。生成949包，drain 944包，封存排队5包；drop=0、stale=0。最终WAV为24kHz/Mono/PCM16LE、356640 frames、14.860秒、713324 bytes，评分PCM713280 bytes，小于720000上限；预热PCM留存0。首评分包相对score起点约+11.832毫秒，评分和尾部覆盖PARTIAL，不补零，Converter partial tail仍UNKNOWN。
+
+WAV完整SHA-256：`9c02afa53766ad820267f521ae5df5c5367f462a1fb8825b7108130f6478a908`；PCM payload SHA-256：`ac496b8365699d1ddf1c58d4a982d690a761af4d6c536325b7ab9ee72f6f072f`。JSON SHA-256：`2ec78f70324778bd59fa2b0631a5c5550d9afad010324c0d9d8739718f772200`。JSON/WAV身份及权限已在本机核验，原文件均不提交Git。
+
+Native拒收字典全0，`raw_timestamp_diagnostic=null`，没有复现M09的`native_clock/content_time`拒收；743个保存PCM包序号和20ms内容时间连续，743个M19完整短窗均匹配，逐窗PCM统计与真正保存WAV一致。各Native声道非有限/满幅/超幅计数0，PCM精确端点0。相同Peak/计数不作为三声道逐样本相等证明。
+
+**独立观测限制：** Input witness的sample/host缺口各4次，`skippedUpdates=6`，状态`UNKNOWN_OBSERVATION_LOSS`；Render witness的sample/host缺口均0，Engine配置事件0且监听已关闭。`identityChanges=1`，本任务没有进一步追查其归属，不自行将其定义为路由变更。不能把Input观察缺口直接写成已证实PCM丢帧，也不能写成时钟证据完全正常；冻结审核即使越过队列项，Input缺口仍不满足资格，不以修正单一计数就宣布批次就绪。
+
+两份运行态快照均为Engine running、VP Input/Output=true、AGC=true、bypass=false、inputMuted=false；进程PID读回一致，input为共享I/O集合方向资格、output与默认设备元数据匹配。六处格式两次完全一致，未改变3ch输出策略。Mic Mode active=0、preferred=0，状态`CONFIRMED_PUBLIC_API`；该应用路由API不等于物理端点处理模式或内部AEC参考证明。
+
+为保留可复核数值，拒收后只用冻结`best_match`/`levels`函数做描述性计算。**原设备入口在`audit_manifest`拒绝，未到达自动评分；未生成合格`analysis.json`。本机补做的冻结`analyse(..., trustworthy=false)`只返回INCONCLUSIVE / INSUFFICIENT_EVIDENCE，没有伪造可信资格。** 参数及阈值未改，以下不构成评分准入：
+
+| 描述性检查 | 结果 |
+|---|---|
+| Player非零Render，换算至WAV原点 | 4.214074–7.961739秒；不是物理扬声器起音 |
+| 居民模板主/全局最佳NCC | 0.069397，候选起点4.361333秒 |
+| 反向模板 / 尾部负控NCC | 0.024048 / 0.035802 |
+| WAV 4–7.75秒RMS / Peak | −54.693dBFS / 0.128204 |
+| WAV 0–3秒基线RMS | −84.968dBFS |
+
+Native ch0与保存PCM按同内容范围的完整20ms窗汇总，不用不同采样率的样本索引强配：
+
+| WAV相对窗口 | 完整窗数 | Native RMS dBFS / Peak | PCM RMS dBFS / Peak |
+|---|---:|---|---|
+| 0–3秒 | 150 | −84.954 / 0.001032 | −84.968 / 0.001068 |
+| 4–7.74秒 | 187 | −54.681 / 0.126750 | −54.681 / 0.128204 |
+| 8–11秒 | 150 | −74.383 / 0.002732 | −74.390 / 0.002502 |
+| 11–14.86秒 | 193 | −75.664 / 0.000721 | −75.682 / 0.000732 |
+
+没有后级整体幅度大幅损失的新证据；低相关和低RMS不证明听不到居民，更不证明AEC有效。没有用户听感或独立物理发声见证，`PHYSICAL_EMISSION=UNVERIFIED`。只有1个不合格声学轮次，无法判断跨运行AEC是否时好时坏。
+
+## 8. 收尾、证据等级与唯一下一步
+
+**CONFIRMED：** 启动门禁修复通过离线及本轮实际身份核验；仅1次Capture/Playback/导出，正常Stop/封存/原菜单Quit，App exit 0；批次因队列5包拒绝，余下轮次0次。只读复核App/控制器均退出、目标设备空闲、路由和60%/55%未变化；新旧批次分离，文件权限0700/0600，原7冲突及14项未跟踪证据保留。
+
+**HYPOTHESIS：** 队列5包可能与停止、末次drain及封存的时间边界有关；Input witness缺口可能属于观测遗漏。两者均未在本轮定位或修复，不能直接归因于AEC、真实数据丢失或音频算法。
+
+**UNKNOWN：** 5包具体内容时间及是否仍属评分范围、partial tail、Input观测缺口原因、实际可闻回声、Apple内部AEC参考及跨运行稳定性。
+
+**唯一下一步：** 离线核验本Run的生成949→drain944→Seal排队5的时间归属及原合同，构造最小确定性停止/末包Fixture；不得直接删除`queued==0`断言。Input witness完整性保持独立OPEN，未经新审核/新授权不创建下一批次、不重录、不修DSP。
 
 ```ini
 M20_D3_OFFLINE_VALIDATION=PASS
-M20_D3_DEVICE_BATCH=AUTHORIZED_PENDING_NEW_PLAN
+M20_D3_STARTUP_IDENTITY=VERIFIED_DEVICE
+M20_D3_DEVICE_BATCH=STOPPED_TECHNICAL_QUEUED_AT_SEAL
+ACTUAL_CAPTURE_PLAYBACK_ROUNDS=1
+QUALIFIED_ACOUSTIC_ROUNDS=0
+ROUNDS_2_3=NOT_RUN
+AUTOMATIC_RETRIES=0
+ACOUSTIC_RESULT=INCONCLUSIVE
+PHYSICAL_EMISSION=UNVERIFIED
 AEC_ROOT_CAUSE=UNKNOWN
 CLOCK_ROOT_CAUSE=UNKNOWN
 T3.2-A=BLOCKED
