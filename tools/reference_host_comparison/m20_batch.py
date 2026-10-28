@@ -1,5 +1,6 @@
 """One explicitly consented Mac-only A batch; default entry never launches devices."""
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import signal
 import stat
 import subprocess
+import time
 import uuid
 
 import numpy as np
@@ -135,17 +137,121 @@ def check_plan(plan):
         raise ValueError("conflicting audio experiment process")
 
 
-def verify_loaded(pid, plan):
-    executable = str(Path(plan["executable"]).resolve())
-    actual = subprocess.check_output(["ps", "-p", str(pid), "-o", "comm="], text=True).strip()
-    mappings = subprocess.check_output(["lsof", "-a", "-p", str(pid), "-d", "txt", "-Fn"], text=True)
-    dylib = str(Path(executable).with_name("Aftelle.debug.dylib"))
-    if actual != executable or "n"+dylib not in mappings.splitlines():
-        raise ValueError("actual PID or loaded dylib mismatch")
-    for name in ("launcher", "dylib"):
-        item = plan["files"][name]
-        if sha(item["path"]) != item["sha256"]:
-            raise ValueError("loaded candidate identity changed")
+class IdentityError(ValueError):
+    def __init__(self, code, reason):
+        self.code = code
+        super().__init__(code+": "+reason)
+
+
+def _process_path(pid):
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    lib.proc_pidpath.restype = ctypes.c_int
+    path = ctypes.create_string_buffer(4096)
+    if lib.proc_pidpath(pid, path, len(path)) <= 0:
+        raise IdentityError("READBACK_UNAVAILABLE", "proc_pidpath errno="+str(ctypes.get_errno()))
+    return os.fsdecode(path.value)
+
+
+def _process_readback(pid, timeout):
+    before = _process_path(pid)
+    result = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid), "-d", "txt", "-FpfDin"],
+                            capture_output=True, text=True, timeout=timeout)
+    if result.returncode or result.stderr or len(result.stdout) > 1_048_576:
+        raise IdentityError("READBACK_UNAVAILABLE", "lsof failed or output exceeded bound")
+    processes, mappings, item = [], [], None
+    for field in result.stdout.splitlines():
+        if field.startswith("p"):
+            processes.append(int(field[1:]))
+        elif field.startswith("f"):
+            item = {}
+            mappings.append(item)
+        elif item is not None and field[:1] in ("D", "i", "n"):
+            key = {"D": "device", "i": "inode", "n": "path"}[field[0]]
+            item[key] = field[1:] if key == "path" else int(field[1:], 16 if key == "device" else 10)
+        else:
+            raise IdentityError("READBACK_UNAVAILABLE", "unrecognised lsof field")
+    if processes != [pid]:
+        raise IdentityError("PROCESS_IDENTITY_MISMATCH", "mapping query returned another PID")
+    if not 1 <= len(mappings) <= 2048 or any(set(x) != {"device", "inode", "path"} for x in mappings):
+        raise IdentityError("READBACK_UNAVAILABLE", "incomplete mapping identity")
+    return dict(pid=pid, executable=before, executable_after=_process_path(pid), mappings=mappings)
+
+
+def verify_loaded(pid, plan, *, startup=False, readback=None, clock=time.monotonic, sleep=time.sleep,
+                  cancelled=None, record=None):
+    """Wait only for a missing library in an otherwise verified owned process."""
+    readback = readback or _process_readback
+    started, attempts = clock(), []
+    deadline = started + (3.0 if startup else 0)
+    outcome = dict(pid=pid, clock="time.monotonic seconds", started=started, attempts=attempts)
+    try:
+        if type(pid) is not int or pid <= 0:
+            raise IdentityError("PROCESS_IDENTITY_MISMATCH", "invalid owned PID")
+        for _ in range(32):
+            if cancelled is not None and cancelled():
+                raise InterruptedError("M20 stopped during identity readback")
+            if startup and attempts and clock() >= deadline:
+                raise IdentityError("STARTUP_TIMEOUT", "library absent within three-second startup bound")
+            paths = {name: Path(plan["files"][name]["path"]).resolve(strict=True) for name in ("launcher", "dylib")}
+            codes = dict(launcher="PROCESS_IDENTITY_MISMATCH", dylib="DYLIB_IDENTITY_MISMATCH")
+            if (not Path(plan["executable"]).samefile(paths["launcher"])
+                    or paths["dylib"] != paths["launcher"].with_name("Aftelle.debug.dylib")):
+                raise IdentityError("PROCESS_IDENTITY_MISMATCH", "plan launcher or sibling library differs")
+            for name, path in paths.items():
+                actual_sha = sha(path)
+                outcome.setdefault("files", {})[name] = dict(path=str(path), sha256=actual_sha)
+                if actual_sha != plan["files"][name]["sha256"]:
+                    raise IdentityError(codes[name], "registered file SHA mismatch")
+            if startup and clock() >= deadline:
+                raise IdentityError("STARTUP_TIMEOUT", "startup readback deadline reached")
+            timeout = min(1.0, max(0.001, deadline-clock())) if startup else 1.0
+            data = readback(pid, timeout)
+            attempt = dict(pid=data["pid"], executable=data["executable"],
+                           executable_after=data["executable_after"], mappings=[], code="READBACK_UNAVAILABLE")
+            attempts.append(attempt)
+            if data["pid"] != pid or any(not Path(data[key]).samefile(paths["launcher"])
+                                         for key in ("executable", "executable_after")):
+                raise IdentityError("PROCESS_IDENTITY_MISMATCH", "actual executable differs")
+            found = {}
+            for name, path in paths.items():
+                info = path.stat()
+                candidates = [x for x in data["mappings"] if (
+                    (x["inode"], x["device"]) == (info.st_ino, info.st_dev)
+                    or Path(x["path"]).name.removesuffix(" (deleted)") == path.name)]
+                attempt["mappings"].extend(candidates[:8])
+                if name == "launcher" and not candidates:
+                    raise IdentityError("READBACK_UNAVAILABLE", "executable mapping unavailable")
+                for mapped in candidates:
+                    if (mapped["path"].endswith(" (deleted)") or not Path(mapped["path"]).samefile(path)
+                            or (mapped["inode"], mapped["device"]) != (info.st_ino, info.st_dev)
+                            or sha(mapped["path"]) != plan["files"][name]["sha256"]):
+                        raise IdentityError(codes[name], "mapped file path, inode, device or SHA differs")
+                found[name] = bool(candidates)
+            attempt["code"] = "VERIFIED" if found["dylib"] else "DYLIB_NOT_READY"
+            if found["dylib"]:
+                if startup and clock() > deadline:
+                    raise IdentityError("STARTUP_TIMEOUT", "identity completed after startup deadline")
+                outcome["code"] = "VERIFIED"
+                return outcome
+            if not startup:
+                raise IdentityError("DYLIB_NOT_READY", "expected library not mapped")
+            sleep(min(0.1, max(0, deadline-clock())))
+        raise IdentityError("STARTUP_TIMEOUT", "startup observation capacity exceeded")
+    except IdentityError as error:
+        outcome.update(code=error.code, error=str(error))
+        raise
+    except InterruptedError:
+        outcome["code"] = "CANCELLED"
+        raise
+    except (OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError) as error:
+        failure = IdentityError("READBACK_UNAVAILABLE", type(error).__name__)
+        outcome.update(code=failure.code, error=str(failure))
+        raise failure from error
+    finally:
+        outcome["ended"] = clock()
+        if record is not None:
+            record(outcome)
 
 
 def ui(script, *args):
@@ -262,25 +368,38 @@ def audit_manifest(manifest, context, wav_identity, *, expected_pid=None):
 def device_round(plan, context, root):
     executable, cache = Path(plan["executable"]), Path(plan["cache"])
     pid_holder = []
+    identity_checks, capture_requested = 0, False
+
+    def identity(pid, *, startup=False, cleanup=False):
+        nonlocal identity_checks
+        identity_checks += 1
+        return verify_loaded(pid, plan, startup=startup,
+            cancelled=None if cleanup else lambda: (root.parent/"STOP").exists(),
+            record=lambda value: save(root/f"identity-{identity_checks}.json", value))
 
     def prepare(pid):
+        nonlocal capture_requested
         pid_holder.append(pid)
-        verify_loaded(pid, plan)
+        identity(pid, startup=True)
         save(root/"prepare_ui.json", dict(receipt=ui(plan["files"]["prepare_ui"]["path"], pid, plan["resident"])))
-        verify_loaded(pid, plan)
+        identity(pid)
         if (root.parent/"STOP").exists():
             raise InterruptedError("M20 stopped before Capture")
+        capture_requested = True
         save(root/"start_ui.json", dict(receipt=ui(plan["files"]["start_ui"]["path"], pid)))
 
-    def finish(pid):
-        verify_loaded(pid, plan)
+    def finish(pid, *, cleanup=False):
+        identity(pid, cleanup=cleanup)
         receipt = ui(plan["files"]["finish_ui"]["path"], pid, cache)
         save(root/"finish_ui.json", dict(receipt=receipt))
 
     def stop_and_preserve(pid):
-        verify_loaded(pid, plan)
+        if not capture_requested:
+            return "PRE_CAPTURE_OWNED_CHILD_REAP"
+        identity(pid, cleanup=True)
         save(root/"stop_ui.json", dict(receipt=ui(plan["files"]["stop_ui"]["path"], pid)))
-        finish(pid)
+        finish(pid, cleanup=True)
+        return "CAPTURE_REQUESTED_STOP_EXPORT_QUIT"
 
     integration._connected_run(plan["bundle"], "HOST", executable, root/"control",
         spawn=subprocess.Popen, clock=integration.now_ns, device=True, mac_aec=context,

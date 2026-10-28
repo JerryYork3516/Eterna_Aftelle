@@ -412,8 +412,8 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                 and child is not None and child.poll() is None):
             # The original App must stop/seal/export before its in-memory failure is reaped.
             try:
-                failure_ui(child.pid)
-                state["failure_ui"] = "COMPLETED"
+                preservation = failure_ui(child.pid)
+                state["failure_ui"] = preservation if preservation is not None else "COMPLETED"
             except BaseException as preservation_error:
                 state["failure_ui_error"] = str(preservation_error)
         raise
@@ -433,6 +433,9 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                 except BaseException as error:
                     state.update(status="FAIL", cleanup_error=str(error))
                     cleanup_error = error
+                finally:
+                    if process is not None:
+                        state["audio_exit" if process is child else "proxy_exit"] = process.poll()
         finally:
             for descriptor in (read_fd, write_fd):
                 if descriptor is not None:

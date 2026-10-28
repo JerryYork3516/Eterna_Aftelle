@@ -77,6 +77,7 @@ class MacAECControlTests(unittest.TestCase):
                 result = json.loads((Path(directory)/"run/result.json").read_text())
                 self.assertEqual(result["status"], "FAIL")
                 self.assertIn("operator Stop", result["error"])
+                self.assertEqual(result["audio_exit"], -15)
         finally:
             fake.close()
 
@@ -102,6 +103,8 @@ class MacAECControlTests(unittest.TestCase):
                         else: action()
                     self.assertEqual(calls, [("prepare", 4242), ("finish", 4242)])
                     self.assertIsNotNone(fake.child.poll())
+                    receipt = json.loads((Path(directory)/"run/result.json").read_text())
+                    self.assertEqual(receipt["audio_exit"], 0)
                 finally:
                     fake.close()
 
