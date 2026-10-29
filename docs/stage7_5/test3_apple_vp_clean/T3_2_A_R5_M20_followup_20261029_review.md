@@ -1,6 +1,6 @@
 # T3.2-A / R5-M20 — 2026-10-29 续作审核
 
-本次按用户“明天8:00继续，修复后重新执行三轮”的新授权续作。本文先登记离线修复，设备批次结果在同一报告追加。当前尚未运行本次设备批次，不代表声学验收通过。
+本次按用户“明天8:00继续，修复后重新执行三轮”的新授权续作。本次离线修复完成并先行推送后，使用全新批次正常执行3轮；全部技术门禁通过。冻结检测器结果为2轮 ECHO_DETECTED、1轮 ECHO_NOT_DETECTED。缺少逐轮独立物理发声见证，仍不代表声学验收通过。
 
 ## 1. Git、候选和范围
 
@@ -41,7 +41,9 @@ M20 审核器同时要求 final-drain 回执、包守恒、Input/Render 观察�
 | SwiftFormat 0.63.1 / SwiftLint 0.65.1 增量检查 | 22处修改范围通过；只在隔离目录使用固定版本，未改全局或项目依赖。Format 使用 `--disable wrapMultilineStatementBraces --commas inline` 与现行 Lint 同行花括号/无尾逗号规则一致；历史 Lint 105项保留，新增0 |
 | Python AST、`git diff --check`、文件白名单及文档隐私检查 | PASS |
 
-Python 旧 profile 的测试身份仅在 Fake 进程内绑定当前 Fixture；正式 M20 入口仍验证真实 PID、路径、映射 dylib 和完整 SHA。未删除任何真实身份检查。未执行 FULL_CURRENT、ASR、设备测试或历史音频读取。
+实际执行次数：`m20-only`共4次（RED非零退出1、Optional解包编译失败1、修正后通过1、补齐回执断言/历史尾包并冻结后通过1）；`d1-stats-only`共3次（RED1、GREEN1、测试放入既有warmup文件以避免新增长度债务后复核1，断言未降低）；Python相关回归2轮（各97通过，后轮对应新SHA登记）；M19导出回归1次；Debug/Release构建各1次；三项Guard各1次。没有无关大型回归。
+
+Python 旧 profile 的测试身份仅在 Fake 进程内绑定当前 Fixture；正式 M20 入口仍验证真实 PID、路径、映射 dylib 和完整 SHA。未删除任何真实身份检查。离线验收阶段未执行 FULL_CURRENT、ASR、设备测试或历史音频读取；随后授权设备运行见第5节。
 
 ## 4. 并发、安全与剩余边界
 
@@ -49,11 +51,68 @@ Python 旧 profile 的测试身份仅在 Fake 进程内绑定当前 Fixture；�
 
 保持 AEC/AGC/NS、AudioGraph、采样率、channelMap、Converter、时钟容差、RuntimeCore、Provider、正式 Gate 和 M18-E01 原状。Native 已经经过 Apple VP，不是 ADC Raw。尾部跨边界包与 Converter partial tail 仍不能靠补零宣称完整。没有物理扬声器独立见证时，低相关性也只能是 ECHO_NOT_DETECTED / UNVERIFIED。
 
-Stage7 Forbidden Checklist：PASS。五维 SELF_REVIEW：范围=PASS；因果证据=仅确认工程缺陷；生命周期/并发=定点验证PASS、实机待证；隐私/Git=PASS；声学真实性=UNVERIFIED。新增 CRITICAL=0、MAJOR=0、规范 B 类=0；现有声学/时钟根因及 M18-E01 不因此关闭。
+Stage7 Forbidden Checklist：PASS。五维 SELF_REVIEW：范围=PASS；因果证据=仅确认工程缺陷；生命周期/并发=定点验证PASS、三轮实机技术门禁通过；隐私/Git=PASS；声学真实性=UNVERIFIED。新增 CRITICAL=0、MAJOR=0、规范 B 类=0；现有声学/时钟根因及 M18-E01 不因此关闭。
 
-## 5. 本次新批次（修复推送后填写）
+## 5. 新批次实际执行结果
 
-`DEVICE_RUNS=0`。只有新 plan、独立授权消耗记录、设备只读预检和实际 SHA 全部通过，才按此次新授权使用现有 `m20_batch.py` 正式入口执行最多3轮。旧批次不复用；不自动调整系统设置，不重试，不加第4轮。任何安全/身份/时钟/观察/导出/退出异常均立即停止余下轮次。
+- 修复提交/本次实际源码：`5077e5b22a653dd426278efed92d2ae79c1fb301`。修复推送后 HEAD=upstream=实时远端一致，之后才建立并启动新计划。
+- 新批次：`9EDBABEA-69F1-4DB9-BDEF-58C70BE07CC7`；旧计划/目录/授权标记未复用。正式入口：`python3 -B tools/reference_host_comparison/m20_batch.py --plan <本批私有plan.json> --evidence <本批私有目录> --authorize-batch '授权开始M20单批3轮AEC测试'`。
+- 本次新授权来源为用户预定续作，不是旧 R4 或旧 M20 回执。每轮保留原 App 可见确认、录音/导出和精确 PID 退出；没有操作新的系统权限弹窗。
+- TinyUSB USB输入60%、Mac mini内置扬声器55%且未静音；逐轮前后只读核验设备空闲和身份，未改音量、路由或 Mic Mode。不运行真人C、REF或蓝牙代理。
+- 实际 Capture=3、居民Playback=3、JSON Export=3、WAV Export=3；各为独立 App/PID/RunID，原计划各19秒（4秒预热+15秒评分）。没有重试/第4轮。正式执行器 exit 0，`BATCH_COMPLETE`=3。
+
+| 轮次 / RunID | 固定检测器结果 | 匹配 abs(NCC) | 反向/安静负控 abs(NCC) | 非零Render，WAV相对秒 | 固定Render窗 PCM RMS dBFS |
+| --- | --- | --- | --- | --- | --- |
+| 1 / `61234E2F-14AA-4EA0-803D-ECFDEF759EB0` | ECHO_DETECTED | 0.405821 | 0.076219 / 0.030008 | 4.182068–7.929729 | -17.773 |
+| 2 / `81FD7188-FEAC-4D32-973C-BA18BE1C0036` | ECHO_DETECTED | 0.357538 | 0.087200 / 0.027333 | 4.214068–7.961731 | -18.277 |
+| 3 / `8808794A-E3F8-4036-A861-D84B35581351` | ECHO_NOT_DETECTED | 0.041440 | 0.078065 / 0.034964 | 4.182086–7.929753 | -65.145 |
+
+NCC原始最佳值三轮均为负，上表遵循冻结检测器取绝对值，不修改评分。模板与Render搜索、负控和判定阈值全部保持 `M20_v0.1`；前三个相关值不能解释为ERLE或用户听感。第3轮反向负控高于源模板，但均低于固定未检出限，按原规则返回 ECHO_NOT_DETECTED，不改判据。
+
+### 5.1 包守恒、覆盖和瞬时幅度
+
+| 轮次 | Native覆盖秒 | generated=drained | 最后drain前→实际drain→Seal queued | WAV秒 / 实际PCM字节 | 同窗配对行 | Native满幅/声道；PCM端点 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 19.0 | 949=949 | 5→5→0 | 14.96 / 718080 | 748，全部MATCHED | 0；4 |
+| 2 | 19.0 | 949=949 | 5→5→0 | 14.96 / 718080 | 748，全部MATCHED | 14；17 |
+| 3 | 18.9 | 944=944 | 0→0→0 | 14.86 / 713280 | 743，全部MATCHED | 0；0 |
+
+第1/2轮真实取得各5包末次drain回执，生成949包全部被消费；第3轮944包已全部消费，末次队列本来为0。不是通过清空FIFO制造queued=0。评分PCM均低于720000 bytes，无预热PCM留存；三轮尾部仍为PARTIAL，不补造15秒覆盖。第2轮记录14个Native满幅样本/声道及17个PCM精确端点，属于稀疏满幅观测，未触发冻结的持续满幅停止门禁，不能写成“零满幅/端点”，端点计数本身也不等同于已证实的听觉失真。三轮Native non-finite/over-scale均为0。
+
+所有 Input/Render missingTime、duplicate、backwards、sample/host discontinuity=0；skipped/invalid/stale observation=0，Native各项拒收=0，capture drop/stale=0，raw_timestamp_diagnostic为空。历史时钟异常本批NOT_REPRODUCED，不表示已修复。Engine配置事件及skippedNotifications均为0，监听最终关闭。三个App均正常退出，进程与设备释放核验通过。
+
+### 5.2 Native/PCM同内容窗口
+
+使用现有M19已配对的完整20ms行，仅汇总WAV内容相对4.00–7.74秒（187行）；不切包、不插值，Native每行320样本、PCM每行480样本。Native为VP后ch0，不是Raw。按各行实际样本数汇总能量：
+
+| 轮次 | Native RMS dBFS | WAV PCM RMS dBFS | PCM−Native dB | Native / PCM Peak |
+| --- | --- | --- | --- | --- |
+| 1 | -16.9047 | -16.9050 | -0.0003 | 0.99999326 / 1.00000000 |
+| 2 | -17.4622 | -17.4633 | -0.0011 | 1.00000000 / 1.00000000 |
+| 3 | -78.9494 | -78.9470 | +0.0024 | 0.00224173 / 0.00222778 |
+
+每轮该区间为Native59840、PCM89760个真实样本。前两轮约−17dBFS的高能量与第3轮约−79dBFS的低能量在VP后Native已存在；最终PCM没有额外的大幅整体增益变化。这个结论只定位已保存区间的层级，不证明Apple内部AEC/AGC机制，也不代表真人语音保留。
+
+### 5.3 实际运行态读回
+
+每轮 EngineStarted / ResidentPlaybackStarted 两点均：VP Input/Output=true、AGC=true、bypass=false、inputMuted=false、engineRunning=true。两点及跨三轮公开client/hardware格式结构一致；进程方向设备集合一致。输入资格均为 `PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED`，输出为 `PROCESS_DEVICE_METADATA_MATCHES_DEFAULT`，不能据此确认Apple内部参考端点。
+
+| 轮次 | 两次运行态HAL读回耗时，ms | Mic Mode active / preferred |
+| --- | --- | --- |
+| 1 | 4.287 / 3.060 | 0 / 0，两点一致 |
+| 2 | 3.501 / 3.003 | 0 / 0，两点一致 |
+| 3 | 3.699 / 2.953 | 0 / 0，两点一致 |
+
+Mic Mode是 `AVCaptureDevice` 当前应用路由公开API读回（status=CONFIRMED_PUBLIC_API），0对应Standard；不替代物理端点/硬件DSP/Apple AEC状态证据。没有用preferred代替active。运行态属性相同仍不代表内部适应状态相同。
+
+### 5.4 结论、等级与唯一下一步
+
+- **CONFIRMED**：同一构建、素材、固定评分及已观测设备/VP配置下，冻结检测器在一次独立三轮批次产生2次检出、1次未检出；差异在VP后Native已出现。末次drain和DEBUG观察问题已在本批技术门禁下通过，不能把它们当作AEC根因。
+- **HYPOTHESIS**：跨App生命周期的VP处理/适应状态变化可与结果相容；没有直接内部状态证据，不能确认为Apple算法或Aftelle集成BUG。
+- **UNKNOWN**：每轮真实物理扬声器发声及声压、AEC内部参考、硬件/系统其他处理状态、主观听感。本批无人现场见证；软件Render、完成回执与设备在线不等于独立物理发声证明。第3轮 `physical_emission=UNVERIFIED`、`aec_acceptance=UNVERIFIED`，不得宣称AEC PASS或已确证AEC跨运行失效。
+- **唯一建议**：停止加诊断/调参数；由主控另行决定是否授权一次有逐轮现场物理发声见证的同配置A组批次，优先区分“未检出源于抑制”与“实际声源覆盖不足”。本次不自动执行下一批。
+
+五维最终 SELF_REVIEW：范围/最小性PASS；工程因果/RED-GREEN PASS；三轮控制与资源释放PASS；隐私/Git保护PASS；声学真实性UNVERIFIED。新增代码CRITICAL=0、MAJOR=0、规范B类=0；现有AEC/时钟UNKNOWN及T3.2-A BLOCKED保持。所有WAV、PCM、私人JSON/Manifest、设备UID和完整日志只存本机受控目录（0700/0600），没有音频上传、自动播放或ASR。
 
 ## 6. 保持状态
 
