@@ -2414,6 +2414,7 @@ private struct D1ControllerStack {
         humanBatchScenario: AppleVPAcousticTestScenario? = nil,
         humanOnsetProfile: AppleVPHumanOnsetProfile? = nil,
         macAECArgument: String? = nil,
+        adaptationArgument: String? = nil,
         runtimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
@@ -2445,7 +2446,8 @@ private struct D1ControllerStack {
                 + (batchScenario.map { ["--apple-vp-bt-abc=" + $0.rawValue] } ?? [])
                 + (humanBatchScenario.map { ["--apple-vp-human-abc=" + $0.rawValue] } ?? [])
                 + (humanOnsetProfile.map { ["--apple-vp-human-onset=" + $0.rawValue] } ?? [])
-                + (macAECArgument.map { [AppleVPMacAECBatchRun.argument + $0] } ?? []),
+                + (macAECArgument.map { [AppleVPMacAECBatchRun.argument + $0] } ?? [])
+                + (adaptationArgument.map { ["--apple-vp-adaptation=" + $0] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,
@@ -3709,7 +3711,220 @@ private struct RealtimeInterruptionEvidenceTests {
         }
     }
 
+    static func testM22Preparation() async throws {
+        let batch = UUID().uuidString
+        let standard = MacSpeechMicrophoneModeReadback.read { (0, 1) }
+        let isolation = MacSpeechMicrophoneModeReadback.read { (1, 0) }
+        expect(AppleVPAdaptationRun.acceptsMicrophoneModes([standard]), "active Standard, not preferred, qualifies")
+        expect(!AppleVPAdaptationRun.acceptsMicrophoneModes([isolation]), "active isolation is not Standard")
+        expect(!AppleVPAdaptationRun.acceptsMicrophoneModes([.init()]), "unavailable mode fails closed")
+        expect(!AppleVPAdaptationRun.acceptsMicrophoneModes([]), "missing readback cannot qualify Standard")
+        let stack = D1ControllerStack(adaptationArgument: batch + ":voicedTwice")
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four
+        ), "M22 must admit its separate bounded adaptation contract without relabelling it M20")
+        expect(stack.capture.startCount == 0 && stack.player.startCount == 0,
+               "M22 Prepare cannot access audio devices")
+        startD1(stack.controller)
+        expect(stack.capture.startCount == 0, "M22 requires its original ScoreControl pipe")
+        await stack.controller.stopAppleVPAcousticTest()
+        expect(!stack.controller.appleVPAcousticTestState.canStart, "pre-start Stop revokes M22")
+        for argument in [batch + ":unknown", "bad:voicedTwice", batch + ":delayOnly:extra"] {
+            let invalid = D1ControllerStack(adaptationArgument: argument)
+            expect(!invalid.controller.prepareAppleVPAcousticTest(
+                .residentOnly, comprehensiveC: true, warmupProfile: .four
+            ), "invalid M22 identity cannot fall through to old A/C")
+        }
+        let mixed = D1ControllerStack(macAECArgument: batch + ":1:3", adaptationArgument: batch + ":voicedTwice")
+        expect(!mixed.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true
+        ), "M20 and M22 are mutually exclusive contracts")
+    }
+
+    static func testM22Rounds() async throws {
+        let source = try URL(fileURLWithPath: requireEnv("M20_RESIDENT_WAV"))
+        for arm in AppleVPAdaptationRun.Arm.allCases {
+            let pipe = Pipe()
+            defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+            let clock = ComprehensiveCClock()
+            let stack = D1ControllerStack(clock: { clock.now },
+                                          scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+                                          adaptationArgument: UUID().uuidString + ":" + arm.rawValue)
+            stack.capture.contentStartOverride = clock.start
+            expect(stack.controller.prepareAppleVPAcousticTest(
+                .residentOnly, comprehensiveC: true, warmupProfile: .four
+            ), "M22 Prepare keeps original bounded A capture")
+            expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "fixed resident selected")
+            for consent in [(false, true, true), (true, false, true), (true, true, false)] {
+                stack.controller.startAppleVPAcousticTest(microphoneConsent: consent.0,
+                                                          speakerConsent: consent.1, localCaptureConsent: consent.2)
+                expect(stack.capture.startCount == 0 && stack.player.startCount == 0, "M22 retains all UI consents")
+            }
+            startD1(stack.controller)
+            await driveM22(stack, clock: clock, arm: arm)
+            try expectM22Round(stack, pipe: pipe, arm: arm)
+        }
+    }
+
+    private static func driveM22(_ stack: D1ControllerStack, clock: ComprehensiveCClock,
+                                 arm: AppleVPAdaptationRun.Arm) async {
+        await waitUntil("M22 capture running") { stack.controller.appleVPAcousticTestState.phase == .running }
+        for tick in 0 ..< 38 {
+            clock.elapsed = UInt64(tick) * 500_000_000
+            let tail = tick == 37 ? 5 : 0
+            stack.capture.emitPackets(25 - tail, marker: tick < 8 ? 9 : 1)
+            await waitUntil("M22 bounded packets drained") {
+                stack.player.completeScheduledChunk()
+                return stack.controller.appleVPAcousticTestState.drainedPacketCount == UInt64((tick + 1) * 25 - tail)
+            }
+            if tick < 8 {
+                expect(stack.player.startCount == 0, "quiet warm-up has no playback")
+            }
+            if (tick == 14 && arm != .delayOnly) || tick == 26 {
+                let count = arm == .delayOnly || tick == 14 ? 1 : 2
+                await waitUntil("M22 scheduled generation completes") {
+                    stack.player.completeScheduledChunk()
+                    let output = await stack.output.currentSnapshot()
+                    return stack.player.startCount == count && output.state == .completed
+                }
+            }
+        }
+        stack.capture.emitPackets(5)
+        clock.elapsed = 19_000_000_000
+        await waitUntil("M22 sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+    }
+
+    private static func expectM22Round(_ stack: D1ControllerStack, pipe: Pipe,
+                                       arm: AppleVPAdaptationRun.Arm) throws {
+        let state = stack.controller.appleVPAcousticTestState
+        expect(state.errorCode == nil, "M22 completes without lowering technical qualification")
+        expect(stack.capture.startCount == 1 && stack.player.startCount == (arm == .delayOnly ? 1 : 2),
+               "one capture, at most two playback generations")
+        let json = try JSONSerialization.jsonObject(with: stack.controller.appleVPAcousticTestManifestData())
+            as? [String: Any] ?? [:]
+        expect(json["mac_aec_batch"] == nil, "M22 never impersonates M20")
+        let plays = json["adaptation_plays"] as? [[String: Any]] ?? []
+        expect(plays.count == (arm == .delayOnly ? 1 : 2) && plays.allSatisfy { $0["completed_ns"] != nil },
+               "each play has independent request and completion evidence")
+        if arm != .delayOnly {
+            expect((plays[0]["silent"] as? Bool) == (arm == .silentPrime), "only registered silent primer is silent")
+            let firstGeneration = plays[0]["playback_generation"] as? UInt64 ?? 0
+            let secondGeneration = plays[1]["playback_generation"] as? UInt64 ?? 0
+            expect(secondGeneration > firstGeneration,
+                   "output generation changes without replacing capture generation")
+            expect((plays[1]["request_ns"] as? UInt64 ?? 0) - (plays[0]["request_ns"] as? UInt64 ?? 0) == 6_000_000_000,
+                   "fixed six-second software request interval")
+        }
+        let events = try scoreControlEvents(pipe)
+        expect(events.count == 2 && events.allSatisfy { $0["batch"] as? String == "R5_M22" },
+               "M22 schedule/stop identity")
+        let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+        expect(wav.count == 720_044 && wav.dropFirst(44).enumerated().allSatisfy {
+            $0.offset % 2 == 0 ? $0.element == 1 : $0.element == 0
+        }, "same 720KB PCM bytes, no retained warm-up and no synthesis of Capture")
+        expect((json["adaptation_final_drain"] as? [String: UInt64])?["drained"] == 5,
+               "M22 preserves real final drain rather than discarding queued packets")
+        expectD1Cleanup(stack)
+    }
+
+    static func testM22CancellationAndLatePlay() async throws {
+        let source = try URL(fileURLWithPath: requireEnv("M20_RESIDENT_WAV"))
+        for cancel in [true, false] {
+            let pipe = Pipe()
+            defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+            let clock = ComprehensiveCClock()
+            let stack = D1ControllerStack(clock: { clock.now },
+                                          scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+                                          adaptationArgument: UUID().uuidString + ":voicedTwice")
+            stack.capture.contentStartOverride = clock.start
+            expect(stack.controller.prepareAppleVPAcousticTest(
+                .residentOnly, comprehensiveC: true, warmupProfile: .four
+            ), "M22 failure fixture prepared")
+            expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "fixed source selected")
+            startD1(stack.controller)
+            await waitUntil("M22 cancellable capture") { stack.controller.appleVPAcousticTestState.phase == .running }
+            if cancel {
+                await stack.controller.stopAppleVPAcousticTest()
+            } else {
+                clock.elapsed = 7_300_000_000
+                stack.capture.emitPackets(1)
+            }
+            await waitUntil("M22 failure sealed") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+            expect(stack.controller.appleVPAcousticTestState.errorCode != nil, "cancel/late play cannot qualify")
+            expect(stack.player.startCount == 0, "Stop or expired slot cannot emit resident")
+            expectD1Cleanup(stack)
+        }
+    }
+
+    static func checkM22LateRender(_ timing: MacSpeechNativeVoiceTiming, _ buffer: AVAudioPCMBuffer) {
+        timing.render(buffer, content: (10_120_000_000, 320), arrival: 15_020_000_000,
+                      identity: (3, 1))
+        expect(timing.snapshot()?.adaptation?.first?.render.nonzeroFrames == 640,
+               "late delivery of an existing Tap buffer must remain in its playback witness")
+    }
+
+    static func testM22Timing() throws {
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 3, playbackGeneration: 2)
+        func play(_ index: Int, _ generation: UInt64) -> MacSpeechAdaptationTiming.Playback {
+            .init(index: index, generation: generation, silent: false,
+                  preparedAtNs: UInt64(index) * 10_000_000_000,
+                  latenciesSeconds: ["inputPresentation": 0.01], playerWasPlaying: index == 2)
+        }
+        expect(!timing.beginAdaptation(play(2, 3), configurationID: 3), "second play cannot precede first")
+        expect(timing.beginAdaptation(play(1, 2), configurationID: 3), "bounded first play accepted")
+        expect(!timing.beginAdaptation(play(1, 2), configurationID: 3), "duplicate rejected")
+        expect(!timing.beginAdaptation(play(2, 3), configurationID: 3), "unfinished first play blocks second")
+        let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3)!
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000,
+                                   interleaved: false, channelLayout: layout)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 320)!
+        buffer.frameLength = 320
+        for channel in 0 ..< 3 {
+            for frame in 0 ..< 320 {
+                buffer.floatChannelData![channel][frame] = 0.125
+            }
+        }
+        timing.event(.playbackStarted, at: 10_000_000_001)
+        timing.scheduled(buffer)
+        timing.render(buffer, content: (10_100_000_000, 0), arrival: 10_100_000_000,
+                      identity: (3, 1))
+        timing.event(.playbackCompleted, at: 15_000_000_000)
+        checkM22LateRender(timing, buffer)
+        expect(!timing.beginAdaptation(play(2, 3), configurationID: 4), "configuration mismatch rejected")
+        expect(!timing.beginAdaptation(play(2, 2), configurationID: 3), "reused generation rejected")
+        expect(timing.beginAdaptation(play(2, 3), configurationID: 3), "second generation accepted within same capture")
+        timing.event(.playbackStarted, at: 20_000_000_001)
+        timing.scheduled(buffer)
+        timing.render(buffer, content: (20_100_000_000, 160_000), arrival: 20_100_000_000,
+                      identity: (3, 1))
+        timing.event(.playbackCompleted, at: 25_000_000_000)
+        let result = timing.snapshot()!
+        expect(result.adaptation?.first?.render.callbacks == 2 && result.adaptation?.second?.render.callbacks == 1,
+               "per-play callback counts include the late callback without a new Tap")
+        expect(result.adaptation?.first?.scheduledFrames == 320 && result.adaptation?.second?.scheduledFrames == 320,
+               "two fixed witnesses count separate actual frames")
+        expect(result.adaptation?.first?.render.firstNonzeroContentNs == 10_100_000_000
+            && result.adaptation?.second?.render.firstNonzeroContentNs == 20_100_000_000,
+            "each render onset comes from callback content time, not software request")
+        expect(result.playerRender.sampleDiscontinuities == 1, "M22 cannot hide real global render discontinuity")
+        expect(!timing.beginAdaptation(play(3, 4), configurationID: 3), "third play rejected")
+        timing.bind(configurationID: 4)
+        expect(!timing.beginAdaptation(play(1, 5), configurationID: 4),
+               "configuration invalidation rejects stale evidence")
+        expect(buffer.floatChannelData![0][0] == 0.125, "witness never edits synthetic audio")
+    }
+
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m22-only"]) {
+            try await testM22Preparation()
+            try await testM22Rounds()
+            try await testM22CancellationAndLatePlay()
+            try testM22Timing()
+            print("m22_fake_checks=\(checks)")
+            print("m22_fake_device_access=ZERO")
+            return
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m20-only"]) {
             try await testM20BatchContract()
             try await testM20SingleRound()

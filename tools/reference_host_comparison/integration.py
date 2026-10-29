@@ -23,6 +23,7 @@ M03_HOST_DYLIB_SHA = "6f81387668c4625c88f80895778dad46e4a8a39badde25ad95527ae449
 M07_HOST_DYLIB_SHA = "094ce973dc6f3589db56fedca067af4ddc1d0865534bc5150952a66c603f764c"
 F1_HOST_DYLIB_SHA = "ecf6a86f4f05b3a594c978af45fc47d7af96c6761a9f7c1419ee494c96de8d5e"
 M20_HOST_DYLIB_SHA = "4de26c8850e670dd6be73b03ce60b29c8404b2791d154276087d34295d32433e"
+M22_HOST_DYLIB_SHA = "b4c7b3e3a9a6d75ad955414c7d35ba1a5dadb28144609d517dbd0918b9abec20"
 PLAYER_BINARY_SHA = "ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8"
 R4_CONSENT = "R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS"
 
@@ -61,9 +62,25 @@ def mac_aec_context(value):
     return value
 
 
+ADAPTATION_ARMS = ("voicedTwice", "delayOnly", "silentPrime")
+
+
+def adaptation_context(value):
+    if not isinstance(value, dict) or set(value) != {"batch_id", "round", "limit", "arm"}:
+        raise ValueError("invalid M22 identity")
+    mac_aec_context({k: value[k] for k in ("batch_id", "round", "limit")})
+    if value["arm"] not in ADAPTATION_ARMS or value["round"] != ADAPTATION_ARMS.index(value["arm"])+1 or value["limit"] != 3:
+        raise ValueError("unregistered M22 arm/order")
+    return value
+
+
 def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, human_group=None, onset_group=None,
-            mac_aec=None):
+            mac_aec=None, adaptation=None):
     executable = Path(executable).resolve()
+    if adaptation is not None:
+        adaptation_context(adaptation)
+        if mode != "HOST" or any(x is not None for x in (mac_aec, m03_group, human_group, onset_group)):
+            raise ValueError("M22 cannot mix experiment contracts")
     if mac_aec is not None:
         mac_aec_context(mac_aec)
         if mode != "HOST" or any(x is not None for x in (m03_group, human_group, onset_group)):
@@ -79,9 +96,11 @@ def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, h
         if m03_group is not None and m03_group not in ("A", "B", "C"):
             raise ValueError("unregistered M03 group")
         require_identity(executable.with_name("Aftelle.debug.dylib"),
-                         M20_HOST_DYLIB_SHA if mac_aec else F1_HOST_DYLIB_SHA if onset_group else M07_HOST_DYLIB_SHA if human_group
+                         M22_HOST_DYLIB_SHA if adaptation else M20_HOST_DYLIB_SHA if mac_aec else F1_HOST_DYLIB_SHA if onset_group else M07_HOST_DYLIB_SHA if human_group
                          else M03_HOST_DYLIB_SHA if m03_group else HOST_DYLIB_SHA)
         args = [str(executable), "--apple-vp-acoustic-test", "--apple-vp-score-control-fd=" + str(descriptor)]
+        if adaptation:
+            args.append("--apple-vp-adaptation={batch_id}:{arm}".format(**adaptation))
         if mac_aec:
             args.append("--apple-vp-mac-aec={batch_id}:{round}:{limit}".format(**mac_aec))
         if m03_group:
@@ -184,30 +203,35 @@ def run_device_once(bundle, mode, executable, evidence, ref_arguments=(), *, con
 
 def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn, clock, device=False,
                    m03_group=None, human_group=None, onset_group=None, failure_ui=None,
-                   mac_aec=None, device_ui=None, finish_ui=None, cancel_requested=None):
+                   mac_aec=None, device_ui=None, finish_ui=None, cancel_requested=None, adaptation=None):
+    batch = adaptation if adaptation is not None else mac_aec
+    if adaptation is not None:
+        adaptation_context(adaptation)
+        if mode != "HOST" or any(x is not None for x in (mac_aec, m03_group, human_group, onset_group)):
+            raise ValueError("M22 cannot mix experiment contracts")
     if any(value is not None and not callable(value) for value in (device_ui, finish_ui, cancel_requested)):
         raise ValueError("invalid M20 control callback")
-    if cancel_requested is not None and mac_aec is None:
+    if cancel_requested is not None and batch is None:
         raise ValueError("batch cancellation requires M20")
-    if any(x is not None for x in (device_ui, finish_ui)) and (not device or mac_aec is None):
+    if any(x is not None for x in (device_ui, finish_ui)) and (not device or batch is None):
         raise ValueError("M20 UI requires explicit device execution")
     if mac_aec is not None:
         mac_aec_context(mac_aec)
         if mode != "HOST" or any(x is not None for x in (m03_group, human_group, onset_group)):
             raise ValueError("M20 cannot mix source modes")
-    if failure_ui is not None and (not device or mode != "HOST" or (m03_group != "A" and mac_aec is None)
+    if failure_ui is not None and (not device or mode != "HOST" or (m03_group != "A" and batch is None)
                                    or human_group is not None or not callable(failure_ui)):
         raise ValueError("failure UI requires resident-only device execution")
     if onset_group is not None and (onset_group not in ("A", "B") or human_group != "C"):
         raise ValueError("F1 requires a registered human C onset group")
     if human_group is not None and (mode != "HOST" or m03_group is not None or human_group not in ("A", "B", "C")):
         raise ValueError("unregistered or mixed human group")
-    if mac_aec is not None:
+    if batch is not None:
         bundle, fixture = Path(bundle).resolve(), None
         require_identity(bundle / "original_sync_once.py", CONTROLLER_SHA)
     else:
         bundle, fixture = verify_bundle(bundle, "REF" if m03_group or human_group else mode)
-    use_proxy = mac_aec is None and human_group is None and m03_group != "A"
+    use_proxy = batch is None and human_group is None and m03_group != "A"
     plan = Plan(mode, original_single_run(bundle / "original_sync_once.py"))
     evidence = Path(evidence)
     evidence.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -221,8 +245,10 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                      source="human", proxy_requested=False,
                      device_access=("M07_F1_EXPLICIT_ONCE" if onset_group else "M07_EXPLICIT_ONCE")
                      if device else "ZERO_FAKE_ONLY")
-    if mac_aec is not None:
-        state.update(batch="R5_M20", **mac_aec, proxy_requested=False)
+    if batch is not None:
+        state.update(batch="R5_M22" if adaptation is not None else "R5_M20", **batch, proxy_requested=False)
+        if adaptation is not None and device:
+            state["device_access"] = "M22_EXPLICIT_BATCH"
     if mode == "REF":
         state["reference_variant"] = require_reference_identity(executable)
     helper = child = None
@@ -284,7 +310,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
         os.set_blocking(write_fd, False)
         argv, extra_env = command(mode, executable, write_fd, ref_arguments,
                                   m03_group=m03_group, human_group=human_group, onset_group=onset_group,
-                                  mac_aec=mac_aec)
+                                  mac_aec=mac_aec, adaptation=adaptation)
         proxy_fd = None
         if use_proxy:
             helper = spawn([str(bundle / "bt_proxy_registered"), "--authorized-proxy-once", str(fixture)],
@@ -331,13 +357,13 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                     if m03_group and (event.get("batch"), event.get("scenario")) != ("R5_M03", m03_group):
                         raise ValueError("M03 source combination mismatch")
                     checked_event = event
-                    if mac_aec is not None and (
-                            event.get("batch") != "R5_M20" or event.get("scenario") != "A"
+                    if batch is not None and (
+                            event.get("batch") != ("R5_M22" if adaptation is not None else "R5_M20") or event.get("scenario") != "A"
                             or event.get("proxy_requested") is not False
-                            or any(event.get(k) != v for k, v in mac_aec.items())
+                            or any(event.get(k) != v for k, v in batch.items())
                             or "source" in event):
                         raise ValueError("M20 event identity mismatch")
-                    if mac_aec is not None and plan.state.start is not None and (
+                    if batch is not None and plan.state.start is not None and (
                             event.get("score_start_ns") != plan.state.start
                             or event.get("proxy_stop_ns") != plan.state.start + 11_000_000_000):
                         raise ValueError("M20 score clock changed")
@@ -408,7 +434,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
         state.update(status="FAIL", error=str(error))
         startup_failure = (isinstance(error, (AssertionError, ValueError)) and plan.state.run_id is None
                            and state["events"] and state["events"][-1].get("event") == "stop")
-        if (failure_ui is not None and (mac_aec is not None or startup_failure)
+        if (failure_ui is not None and (batch is not None or startup_failure)
                 and child is not None and child.poll() is None):
             # The original App must stop/seal/export before its in-memory failure is reaped.
             try:

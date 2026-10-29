@@ -128,7 +128,11 @@ def check_plan(plan):
         if path.is_symlink() or sha(path) != identity["sha256"]:
             raise ValueError("frozen file mismatch: "+name)
     executable = Path(plan["executable"])
-    integration.command("HOST", executable, 3, mac_aec=dict(batch_id=plan["batch_id"], round=1, limit=plan["limit"]))
+    context = dict(batch_id=plan["batch_id"], round=1, limit=plan["limit"])
+    if plan.get("task") == "R5_M22":
+        integration.command("HOST", executable, 3, adaptation=dict(context, arm="voicedTwice"))
+    else:
+        integration.command("HOST", executable, 3, mac_aec=context)
     probe(plan)
     # Reading the process list does not launch/activate any App.
     processes = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True)
@@ -281,6 +285,11 @@ def audit_manifest(manifest, context, wav_identity, *, expected_pid=None):
             or manifest.get("playback_error") is not None or manifest.get("playback_started_count") != 1
             or manifest.get("playback_state") != "completed"):
         raise ValueError("run/fixture/export identity or execution failure")
+    return audit_capture_manifest(manifest, wav_identity, expected_pid=expected_pid)
+
+
+def audit_capture_manifest(manifest, wav_identity, *, expected_pid=None, final_drain_key="mac_aec_final_drain"):
+    """Shared capture qualification only. Each experiment validates its own playback contract first."""
     if (manifest.get("data_mode") != "RECORDING" or manifest.get("requested_agc_enabled") is not True
             or manifest.get("byte_limit") != 720000 or manifest.get("silent_smoke") is not False
             or manifest.get("bt_acoustic_batch") is not None or manifest.get("human_acoustic_batch") is not None):
@@ -289,7 +298,7 @@ def audit_manifest(manifest, context, wav_identity, *, expected_pid=None):
                 "playback_underrun_count", "playback_rejected_callback_count"):
         if manifest.get(key) != 0:
             raise ValueError("capture/playback counter failure: "+key)
-    final_drain = manifest.get("mac_aec_final_drain", {})
+    final_drain = manifest.get(final_drain_key, {})
     generated = manifest.get("capture_generated_at_seal")
     drained = manifest.get("warmup", {}).get("drained_packets")
     if (not isinstance(final_drain, dict)
@@ -375,7 +384,7 @@ def audit_manifest(manifest, context, wav_identity, *, expected_pid=None):
                 tail_coverage=manifest["warmup"].get("tail_coverage"), raw_timestamp_diagnostic=None)
 
 
-def device_round(plan, context, root):
+def device_round(plan, context, root, *, adaptation=False):
     executable, cache = Path(plan["executable"]), Path(plan["cache"])
     pid_holder = []
     identity_checks, capture_requested = 0, False
@@ -411,8 +420,9 @@ def device_round(plan, context, root):
         finish(pid, cleanup=True)
         return "CAPTURE_REQUESTED_STOP_EXPORT_QUIT"
 
+    connection = dict(adaptation=context) if adaptation else dict(mac_aec=context)
     integration._connected_run(plan["bundle"], "HOST", executable, root/"control",
-        spawn=subprocess.Popen, clock=integration.now_ns, device=True, mac_aec=context,
+        spawn=subprocess.Popen, clock=integration.now_ns, device=True, **connection,
         device_ui=prepare, finish_ui=finish, failure_ui=stop_and_preserve,
         cancel_requested=lambda: (root.parent/"STOP").exists())
     control = json.loads((root/"control/result.json").read_text())
@@ -428,7 +438,11 @@ def device_round(plan, context, root):
     manifest = json.loads(json_file.read_text())
     samples, identity = load_wav(wav_file)
     resident, _ = load_wav(plan["resident"], resident=True)
-    metadata = audit_manifest(manifest, context, identity, expected_pid=pid_holder[0])
+    if adaptation:
+        import m22_adaptation
+        metadata = m22_adaptation.audit_manifest(manifest, context, identity, expected_pid=pid_holder[0])
+    else:
+        metadata = audit_manifest(manifest, context, identity, expected_pid=pid_holder[0])
     if manifest["run_id"] != run_id:
         raise ValueError("export filename and control RunID mismatch")
     for channel in manifest["native"]["channels"]:
@@ -447,7 +461,10 @@ def device_round(plan, context, root):
             raise ValueError("M19 windows do not match saved WAV")
     if np.count_nonzero((samples == -1) | (samples == 32767/32768)) > len(samples)*0.01:
         raise ValueError("sustained PCM full scale; stop remaining batch")
-    result = analyse(samples, resident, **{key: metadata[key] for key in ("trustworthy", "render_start", "render_end")})
+    if adaptation:
+        result = m22_adaptation.analyse_plays(samples, resident, metadata)
+    else:
+        result = analyse(samples, resident, **{key: metadata[key] for key in ("trustworthy", "render_start", "render_end")})
     result.update(run_id=run_id, technical_ok=True, wav=identity, json_sha256=sha(json_file),
                   native_pcm=metadata, resources_released=False)
     if not pid_holder or subprocess.run(["kill", "-0", str(pid_holder[0])], capture_output=True).returncode == 0:

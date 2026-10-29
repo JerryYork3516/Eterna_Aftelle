@@ -2603,11 +2603,60 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
     }
 
+    nonisolated struct MacSpeechAdaptationTiming: Encodable, Sendable, Equatable {
+        struct Playback: Encodable, Sendable, Equatable {
+            let index: Int
+            let generation: UInt64
+            let silent: Bool
+            let preparedAtNs: UInt64
+            let latenciesSeconds: [String: Double]
+            let playerWasPlaying: Bool
+            var startedAtNs: UInt64?
+            var completedAtNs: UInt64?
+            var scheduledFrames: UInt64 = 0
+            var scheduledNonzeroFrames: UInt64 = 0
+            var render = MacSpeechTimingStream()
+        }
+
+        var first: Playback?
+        var second: Playback?
+
+        mutating func begin(_ play: Playback) -> Bool {
+            if play.index == 1, first == nil, second == nil {
+                first = play
+                return true
+            }
+            if play.index == 2, let first, let end = first.completedAtNs, second == nil,
+               end <= play.preparedAtNs, play.generation > first.generation {
+                second = play
+                return true
+            }
+            return false
+        }
+
+        mutating func updateRender(_ body: (inout Playback) -> Void) {
+            if second != nil {
+                body(&second!)
+            } else if first != nil {
+                body(&first!)
+            }
+        }
+
+        mutating func updateActive(_ body: (inout Playback) -> Void) {
+            if second != nil, second?.completedAtNs == nil {
+                body(&second!)
+            } else if second == nil, first != nil, first?.completedAtNs == nil {
+                body(&first!)
+            }
+        }
+    }
+
     nonisolated struct MacSpeechTimingSnapshot: Encodable, Sendable, Equatable {
         let runID: UUID
         let captureGeneration: UInt64
         var configurationID: UInt64?
         var playbackGeneration: UInt64?
+        var adaptation: MacSpeechAdaptationTiming?
         var events = MacSpeechTimingEvent.allCases.map { MacSpeechTimingEventWitness(event: $0) }
         var input = MacSpeechTimingStream()
         var playerRender = MacSpeechTimingStream()
@@ -2789,6 +2838,14 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 value.events[index].firstCallTimeNs = value.events[index].firstCallTimeNs ?? time
                 value.events[index].lastCallTimeNs = time
                 value.events[index].count &+= 1
+                value.adaptation?.updateActive { play in
+                    if event == .playbackStarted {
+                        play.startedAtNs = time
+                    }
+                    if event == .playbackCompleted {
+                        play.completedAtNs = time
+                    }
+                }
                 if event == .captureStopped || event == .routeChanged {
                     value.callbacksClosed = true
                 }
@@ -2853,6 +2910,15 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                     value.playerRender.recordNonzero(content: content, range: range, rate: buffer.format.sampleRate)
                 }
                 value.playerRender.nonzeroFrames &+= bounds.count
+                value.adaptation?.updateRender { play in
+                    play.render.arrived(at: arrival)
+                    play.render.record(host: content.host, sample: content.sample, arrival: arrival,
+                                       count: UInt64(buffer.frameLength), rate: buffer.format.sampleRate)
+                    if let range = bounds.range {
+                        play.render.recordNonzero(content: content, range: range, rate: buffer.format.sampleRate)
+                    }
+                    play.render.nonzeroFrames &+= bounds.count
+                }
             }
         }
 
@@ -2869,8 +2935,30 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 guard let bounds = scanned else { value.invalidBuffers &+= 1; return }
                 value.scheduledFrames &+= UInt64(buffer.frameLength)
                 value.scheduledNonzeroFrames &+= bounds.count
+                value.adaptation?.updateActive { play in
+                    play.scheduledFrames &+= UInt64(buffer.frameLength)
+                    play.scheduledNonzeroFrames &+= bounds.count
+                }
             }
         }
+    }
+
+    extension MacSpeechNativeVoiceTiming {
+        func beginAdaptation(_ play: MacSpeechAdaptationTiming.Playback, configurationID: UInt64) -> Bool {
+            var accepted = false
+            update { value in
+                guard !value.callbacksClosed, value.configurationID == configurationID,
+                      play.generation > 0, value.identityChanges == 0 else { return }
+                if value.adaptation == nil {
+                    guard play.index == 1,
+                          value.events.first(where: { $0.event == .playbackStarted })?.count == 0 else { return }
+                    value.adaptation = MacSpeechAdaptationTiming()
+                }
+                accepted = value.adaptation?.begin(play) == true
+            }
+            return accepted
+        }
+
     }
 
     private extension MacSpeechNativeVoiceTiming {
@@ -4053,6 +4141,24 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                         }
                     }
                 }
+            }
+        }
+
+        func beginAdaptationPlayback(runID: UUID, generation: UInt64, index: Int, silent: Bool) -> Bool {
+            lifecycleLock.withLock {
+                guard let timing = nativeVoiceTimingDebug, timing.runID == runID,
+                      let engine, let playerNode, engine.isRunning,
+                      lock.withLock({ isCaptureActive && !isRouteRebuilding && isConfigured }) else { return false }
+                let latencies = ["inputPresentation": engine.inputNode.presentationLatency,
+                                 "outputPresentation": engine.outputNode.presentationLatency,
+                                 "playerOutputPresentation": playerNode.outputPresentationLatency,
+                                 "mixerOutputPresentation": engine.mainMixerNode.outputPresentationLatency]
+                guard latencies.values.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return false }
+                return timing.beginAdaptation(.init(
+                    index: index, generation: generation, silent: silent,
+                    preparedAtNs: DispatchTime.now().uptimeNanoseconds, latenciesSeconds: latencies,
+                    playerWasPlaying: playerNode.isPlaying
+                ), configurationID: configurationID)
             }
         }
 
