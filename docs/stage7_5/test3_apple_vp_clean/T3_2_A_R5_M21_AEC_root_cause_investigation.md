@@ -12,6 +12,8 @@
 
 **更正D4物理见证的证据等级**：用户在M21明确说明，之前“三轮都听到了”来自远程软件听音，不是Mac旁现场见证。因此D4原报告中的`USER_WITNESSED_EMISSION`及“用户现场听到”解释不再成立。本报告将六轮实体扬声器发声证明统一保留为`UNVERIFIED`。原用户反馈、原始文件、消耗记录及历史报告不覆写；这项更正不改变冻结检测器的分类。
 
+**用户补充（2026-10-29）**：六轮使用“UU远程”，且“未开启静音本机扬声器”。这是用户对实际使用软件及设置的确认；音频重定向是否启用未单独确认，仍为UNKNOWN。此前发现的Parsec进程不能作为这六轮使用Parsec的证据，其厂商静音策略不再作为本案原因分析依据。此次补充开始时HEAD/upstream/实时远端均为`452666f6a0aae196eb07711f1fd5cb44171b5061`，仅更新本报告。
+
 本次仅分析已指定六份本地M20 WAV/JSON、固定非私人居民素材及对应报告；源码限定Capture、OutputPlayer/Host、AcousticHost、AudioHost和Controller直接控制链。未读取历史真人录音，未ASR、DTW、自动播放或上传音频。后续读取确认已由用户明确免除，范围已报备。
 
 现有短窗和生命周期证据已足以排查本轮后级传播。再增加同类DEBUG读回不能恢复未量测的空气输入或Apple内部参考，因此本轮不增加诊断代码，也不以更多日志代替受控变量。
@@ -118,13 +120,15 @@ M19所有保存行均为`MATCHED_CONTENT_COVERAGE`。本轮逐行复算实际WAV
 
 [Capture:3892](../../../apps/macos/Aftelle/MacSpeechAudioCapture.swift#L3892)读取I/O `presentationLatency`，但现有六份JSON没有导出各轮实际值；完整上下游`outputPresentationLatency`和VP内部算法延迟也不可从这些导出恢复。Apple将I/O presentation latency定义为设备/stream的硬件呈现延迟 [S2,S5]。四个高相关轮的局部模板最佳匹配相对Render约159–173ms，包含滤波、处理、传播及对齐影响，**不等于纯空气延迟或AEC参考延迟**。弱相关段不采用其最佳lag作事实。
 
-### 5.1 远程软件是具体未排除变量，不是已确认根因
+### 5.1 已确认使用UU远程；其音频捕获行为仍未独立核验
 
-本轮只读进程列表匹配到`parsecd`、`parsec-fbf`及`ScreenSharingSubscriber`。这证明当前存在相关进程，不证明六轮历史音频捕获方式、活动连接身份或其音频状态。官方登记的两个Parsec `config.txt`位置未发现文件；未扩大搜索、未读账号/会话日志、未改配置。`server_admin_mute`实际有效值、历史转发状态及远程软件是否还使用其他处理均UNKNOWN；没有把“未找到配置”写成默认值已生效。
+用户已确认六轮使用UU远程，未开启“静音本机扬声器”。因此不再将“用户开启远程软件本机静音选项”作为有支持的解释。这与既有每轮前后系统未静音、55%的读回相容；但它不是六轮全过程的物理声压测量，也未回答是否存在音频重定向。
 
-Parsec官方明确记载：macOS现代捕获方式在主人连接时可继续向远端送音，同时自动静音本机；该策略受`server_admin_mute`控制 [S6]。Apple官方另证明进程音频Tap可捕获输出并阻止其送往硬件 [S7]。后者是公开API能力，**不证明Parsec本次用了CATap或某种muteBehavior**。Parsec的Discord回声消除文档不能不加平台区分地套用于macOS；其特性表将Host Echo Cancelling列为macOS不支持 [S8]。
+此前只读进程列表匹配到`parsecd`、`parsec-fbf`及`ScreenSharingSubscriber`，仅是调查时的进程存在事实。结合用户补充，不能将它们视为六轮实际远程软件的身份回执，不能套用Parsec静音或音频处理文档解释UU远程。对Parsec标准配置位置的未命中也不再支持任何本案推断；未扩大搜索、读取账号/会话数据或更改设置。
 
-反证必须保留：既有每轮前后预检均读到系统未静音、55%，运行态进程设备集合一致，四轮在TinyUSB捕获结果中有明显居民模板。故“Parsec一直把本机静音”不能解释全部记录；离散系统mute读回也不能排除进程级捕获、短暂状态或未量测声压差异。当前信息只足以将H5提升为优先控制的外部混淆条件。
+Apple官方说明音频捕获与硬件发声可以分离 [S6]，这里仅用于限定“远程听到”的证明范围；**不是UU远程采用该API、执行自动静音或导致本次异常的证据**。UU版本、实际捕获接口、重定向状态及是否影响Apple内部参考均未核实，不作产品行为断言。
+
+反证保留：系统mute前后正常、进程设备集合一致、四轮TinyUSB捕获结果具有居民模板。用户未开启本机静音的补充进一步削弱了显式静音解释。H5仍是需要控制的外部条件，不是已证实或已排到首位的根因；不能因为其他机制暂时不可观测就认定远程软件有问题。
 
 ## 6. 假设矩阵、可证伪方法与修复依据
 
@@ -134,20 +138,20 @@ Parsec官方明确记载：macOS现代捕获方式在主人连接时可继续向
 | H2 冷启动/有声适应 | 4秒预热静默，居民在约第4.18秒才有非零Render；前后能量转移有变化 | 六轮生命周期顺序一致；D4R2先低后高、D4R1孤立突发，不符合统一首字泄漏再恢复模型 | 同一Engine中登记首遍/已受同素材激励后的第二遍；比较对应语音，不改增益；需新实验合同，不能沿用M20各轮新生命周期伪称稳定Engine | HYPOTHESIS；本轮没有调整预热或排程依据 |
 | H3 AGC状态/增益适应 | 同轮时变幅度和稀疏Native满幅与该机制相容 | 请求和实际AGC均ON；没有内部gain轨迹/Pre-VP声压；环境或AEC也可产生变化；D4R1平均受短脉冲支配 | 未来在输入/物理输出可靠后，独立登记AGC单变量对照并保留满幅安全Stop；原M20只准ON，不能删除其校验强跑OFF | HYPOTHESIS；不是AGC BUG，暂不优先切换 |
 | H4 ch0错误/三声道映射 | 输出Mono→3ch→硬件2ch的混音矩阵未直接测得 | 已覆盖Native三声道逐点相等，client格式和输出帧数跨六轮一致；后级同窗幅度一致 | 现有逐样本统计已反驳本六轮ch0与其他声道内容不同的子假设；输出矩阵要独立合同/受控验证，不能据猜测强改Mono/Stereo | 输入子假设显著降低；输出CONFIGURATION_RISK，无修复依据 |
-| H5 实际发声/远程捕获/系统状态 | 远程听音取代物理见证；当前Parsec存在；厂商有明确静音/捕获机制；低轮并非整体固定倍率缩小 | 六轮系统mute前后正常，四轮模板清楚；没有历史远程状态或真实声压数据 | 冻结其余条件，只改变远程**主机端音频捕获是否参与**，保留独立画面控制；必须核验该变量实际生效，不能以客户端静音按钮替代 | CONFIGURATION_RISK + HYPOTHESIS；唯一优先验证，未确认因果 |
+| H5 实际发声/远程捕获/系统状态 | 六轮通过UU远程听音，仍无实体发声见证；低轮并非整体固定倍率缩小；音频重定向状态未确认 | 用户确认未开启本机静音；六轮系统mute前后正常、四轮模板清楚；没有UU介入AEC的直接证据；Parsec机制不适用于本案推断 | 先核验UU主机端捕获控制，再冻结其余条件，仅改变音频捕获是否参与，保留独立画面控制；客户端静音不代替退出捕获 | 未排除的CONFIGURATION_RISK + HYPOTHESIS；显式静音解释减弱，无修复依据 |
 | 后级软件增益/Gate/丢包 | 用户能听到变化，但这是待解释结果 | Apple pass-through；M02隔离存在；694个强度可靠短窗差最大0.193dB；三声道一致；连续性无拒收 | 现有真实同窗数据及代码已经提供反证；没有具体可重复失败路径，不另造框架 | 在本六轮不支持其解释大幅差异；NO_CONFIRMED_CODE_DEFECT |
 
 “VP输出之前/之内”是定位边界，不是Apple算法有错。空气输入、远程输出策略、硬件/系统处理、内部参考及AGC同时未完整可观测，不能由同一个输出波形唯一反演根因。
 
 ## 7. 唯一推荐下一步：远程音频捕获参与/退出的受控A–B–A
 
-不再重复三轮相同M20条件，也不先改AGC、3ch或AEC。优先检验H5：远程音频捕获参与是否改变居民输出/VP后结果。
+不再重复三轮相同M20条件，也不先改AGC、3ch或AEC。保留以下方案用于排除远程音频参与这一外部混淆条件；这项实验建议不是“UU远程最可能导致故障”的根因排序。先核验UU实际控制接口和变量可分离性，不能依据Parsec文档直接执行。
 
 | 项目 | 冻结方案与判定 |
 | --- | --- |
 | 唯一有意变量 | 主机端远程音频捕获：A1参与、B完全不参与、A2恢复参与。仅客户端把接收音量设零不合格；不得新增虚拟音频设备/驱动或修改默认路由 |
 | 保持条件 | 同一已验SHA的App/dylib、固定居民SHA、TinyUSB60%、内置扬声器55%未静音、VP/AGC ON、同摆位；各轮独立新App/RunID，4秒预热+15秒评分、score+3秒播放；不使用蓝牙/REF |
-| 控制方式 | 先确认实际远程软件及macOS主机端可逆的音频捕获开关/退出方式；保持不采集音频的远程画面/控制及Stop可达。当前尚未核实此接口，不能臆造配置key、杀掉远程连接或仅静音客户端冒充B |
+| 控制方式 | 软件已由用户确认为UU远程；仍须核验其macOS主机端可逆的音频捕获开关/退出方式，保持不采集音频的远程画面/控制及Stop可达。当前接口未核实，不能套用Parsec配置、臆造key、杀掉远程连接或仅静音客户端冒充B |
 | 执行复用 | 复用原M20单轮设备、身份、UI确认、Stop、导出、精确PID退出及评分；每个独立单轮plan用全新UUID/0700目录/0600文件，绑定总上限3和新的本批授权。旧批次不复用；不得直接调用原无人干预的三轮循环而未落实变量切换 |
 | 假设为真时 | 变量经过独立状态验证，A1/A2结果相近而B发生可重复方向变化，或出现与捕获状态关联的已证实输出静音/设备改变：支持“远程音频参与影响测试条件”，尚不能细分物理输出与VP内部参考 |
 | 假设为假/未支持时 | A/B/A同样呈现居民模板且指标接近，降低此变量解释力；若依旧随机且无复归，不支持本次因果判断。单次未见差异不能排除历史偶发问题 |
@@ -157,7 +161,7 @@ Parsec官方明确记载：macOS现代捕获方式在主人连接时可继续向
 
 **本轮只读预检**：冻结16项文件身份PASS；TinyUSB USB输入在线、系统60%；内置扬声器在线、读回约0.55000013、系统55%、未静音，两设备running=0；无匹配的Aftelle/REF/代理实验进程；证据文件0600、目录0700。无新的TCC请求，外部只读不能代替App内权限门禁。
 
-**实验准入仍PARTIAL**：远程软件实际音频捕获状态及可逆隔离方法未核实，现有M20控制器也不提供该变量切换。没有创建可运行新批次或消耗授权，没有申请本轮设备运行。先完成这一外部控制条件的核验，再冻结单次A–B–A执行参数并请求新批次授权；当前不能把普通设备预检PASS写成新实验READY。
+**实验准入仍PARTIAL**：已确认软件名称和用户未开启本机静音；UU实际音频捕获/重定向状态及可逆隔离方法仍未核实，现有M20控制器也不提供该变量切换。没有创建可运行新批次或消耗授权，没有申请本轮设备运行。先完成这一外部控制条件的核验，再冻结单次A–B–A执行参数并请求新批次授权；当前不能把普通设备预检PASS写成新实验READY。
 
 ## 8. 验证、交付与SELF_REVIEW
 
@@ -169,6 +173,7 @@ Parsec官方明确记载：macOS现代捕获方式在主人连接时可继续向
 - 原件SHA/权限前后复核；报告文档语义/隐私/白名单及`git diff --check`。`bash tools/secret_guard/check.sh`、`bash tools/architecture_guard/check.sh`、`bash tools/realtime_release_route_guard/check.sh`各1次、exit 0。Release Guard是源码隔离检查，不是实机构建或声学验证。
 - Git保护校验初次将换行格式输出与原NUL格式摘要比较而失败；改用原`status --porcelain=v1 -z`、`ls-files -u -z`后摘要相同，索引SHA、7个冲突及14项未跟踪元数据始终一致。未执行任何清理或冲突修改。
 - 生产代码无变更，Debug/Release构建、Swift回归、FULL_CURRENT均NOT_RUN；不重复已冻结构建验收。
+- 用户补充后的文档更新：不再读取音频、复跑分析或探测设备；只做报告差异/隐私/文件白名单、Git保护和Stage7检查。原分析及Guard结果沿用上次实际回执，不冒称本次重新执行。
 
 五维SELF_REVIEW：范围PASS（限定六轮及直接依赖）；数据PASS（原件SHA/同窗/零值语义）；工程PASS（无未经证实修复）；因果PARTIAL（物理输入及内部参考不可观测）；隐私/Git PASS（只提交本报告）。新增代码CRITICAL/MAJOR/MINOR=0。证据问题MAJOR：D4远程听音被解释成物理见证，本报告明确纠正；仍未解决的AEC结果差异保持OPEN。新增规范债务0；历史债务及M18-E01未处理。
 
@@ -179,6 +184,9 @@ R5_M21_OFFLINE_INVESTIGATION=COMPLETE
 R5_M21_CODE_DEFECT=NOT_CONFIRMED
 R5_M21_DEVICE_RUNS=0
 PHYSICAL_SPEAKER_EMISSION=UNVERIFIED
+REMOTE_SOFTWARE=UU_REMOTE_USER_CONFIRMED
+LOCAL_SPEAKER_MUTE_SETTING=NOT_ENABLED_USER_REPORTED
+AUDIO_REDIRECTION=UNKNOWN
 NEXT_EXPERIMENT_PRECHECK=PARTIAL
 NEXT_BATCH_EXECUTION=NOT_AUTHORIZED
 AEC_ROOT_CAUSE=UNKNOWN
@@ -196,7 +204,6 @@ Test3.execution_authorized=false
 - [S3 AVAudioConverter.channelMap](https://developer.apple.com/documentation/avfaudio/avaudioconverter/channelmap)；SDK `AVAudioConverter.h:194–203`与`CoreAudioBaseTypes.h:1463`：显式映射覆盖layout、DiscreteInOrder标签语义。
 - [S4 AVAudioTime](https://developer.apple.com/documentation/avfaudio/avaudiotime)；SDK `AVAudioTime.h:110–133`：host/sample有效性及采样率语义。
 - [S5 AVAudioNode.outputPresentationLatency](https://developer.apple.com/documentation/avfaudio/avaudionode/outputpresentationlatency)；SDK `AVAudioNode.h:218–232`。另见[AUAudioUnit.deviceID](https://developer.apple.com/documentation/audiotoolbox/auaudiounit/deviceid)、SDK `AudioHardware.h:1953–1957`进程方向列表定义；均未提供AEC内部参考样本。
-- [S6 Parsec官方macOS安装/音频说明](https://support.parsec.app/hc/en-us/articles/32381555792148-Install-Parsec-App-on-macOS)及[Host Is Being Muted On Connection](https://support.parsec.app/hc/en-us/articles/32361411663124-Host-Is-Being-Muted-On-Connection)：远程音频与本机自动静音可同时存在；只作为机制依据，不冒称历史状态读回。
-- [S7 Apple Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/CoreAudio/capturing-system-audio-with-core-audio-taps)；SDK `CATapDescription.h:19–34`：捕获和硬件发声可以分离，不据此认定当前软件实际实现。
-- [S8 Parsec Feature Matrix](https://support.parsec.app/hc/en-us/articles/32381463419924-Feature-Matrix)及[macOS Host设置](https://support.parsec.app/hc/en-us/articles/32381394408596-Parsec-App-for-macOS)：平台能力与音频设备选择边界，不将Windows消回声配置当macOS证据。
+- [S6 Apple Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/CoreAudio/capturing-system-audio-with-core-audio-taps)；SDK `CATapDescription.h:19–34`：捕获和硬件发声可以分离；仅作证明边界，不认定UU远程实际采用该接口。
+- 用户直接补充：六轮使用“UU远程”，且“未开启静音本机扬声器”；未单独确认音频重定向。Parsec厂商资料已从本案原因依据中撤下。
 - 历史事实：[M20上批续作](T3_2_A_R5_M20_followup_20261029_review.md)、[D4报告](T3_2_A_R5_M20_D4_physical_witness_review.md)及各轮本机SHA匹配导出。D4物理见证解释以本报告§1更正为准。
