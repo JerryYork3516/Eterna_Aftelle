@@ -210,6 +210,7 @@ class ManifestControls(unittest.TestCase):
         run_id = str(uuid.uuid4()).upper()
         stream = dict(missingTime=0, duplicate=0, backwards=0, sampleDiscontinuities=0, hostDiscontinuities=0)
         timing = dict(runID=run_id, captureGeneration=1, configurationID=2, skippedUpdates=0,
+                      invalidBuffers=0, staleCallbacks=0,
                       input=stream, playerRender=dict(stream, firstNonzeroContentNs=4_200_000_000,
                                                     lastNonzeroContentNs=7_940_000_000),
                       engineConfigurationEvents=dict(status="CONFIRMED", count=0, skippedNotifications=0,
@@ -221,11 +222,12 @@ class ManifestControls(unittest.TestCase):
             scenario="A", playback_sha256=batch.RESIDENT_SHA, processed_sha256="synthetic", retained_pcm_bytes=960,
             playback_started_count=1, playback_state="completed", data_mode="RECORDING", requested_agc_enabled=True,
             byte_limit=720000, silent_smoke=False, capture_generation=1, run_id=run_id, host_timing=timing,
+            mac_aec_final_drain=dict(generation=1, pending_before=0, drained=0), capture_generated_at_seal=1,
             native=dict(coverage_valid=True, issues=[], rejections=dict(native_clock=0), run_id=run_id,
                         configuration_id=2, generation=1),
             packets_sequence_host_time_ns_bytes=[[1, 1, 960]], total_collection_limit_ns=19_000_000_000,
             short_window_diagnostics=dict(windows=[dict(status="MATCHED_CONTENT_COVERAGE")]),
-            warmup=dict(tail_coverage="PARTIAL"))
+            warmup=dict(tail_coverage="PARTIAL", drained_packets=1))
         for key in ("capture_drop_count", "capture_stale_count", "capture_queued_at_seal", "playback_underrun_count",
                     "playback_rejected_callback_count"):
             self.manifest[key] = 0
@@ -236,6 +238,27 @@ class ManifestControls(unittest.TestCase):
         self.assertEqual(result["mic_modes"], [dict(active=0), dict(active=0)])
         self.manifest["short_window_diagnostics"]["windows"] = []
         self.assertFalse(batch.audit_manifest(self.manifest, self.context, self.wav)["trustworthy"])
+
+    def test_final_drain_requires_generation_and_packet_conservation(self):
+        for kind in ("missing", "wrong_generation", "missing_packet", "bad_count", "boolean_count", "missing_counts"):
+            manifest = copy.deepcopy(self.manifest)
+            if kind == "missing": manifest.pop("mac_aec_final_drain")
+            if kind == "wrong_generation": manifest["mac_aec_final_drain"]["generation"] += 1
+            if kind == "missing_packet": manifest["warmup"]["drained_packets"] = 0
+            if kind == "bad_count": manifest["mac_aec_final_drain"]["pending_before"] = 5
+            if kind == "boolean_count": manifest["mac_aec_final_drain"]["drained"] = False
+            if kind == "missing_counts":
+                manifest.pop("capture_generated_at_seal")
+                manifest["warmup"].pop("drained_packets")
+            with self.assertRaisesRegex(ValueError, "final drain"):
+                batch.audit_manifest(manifest, self.context, self.wav)
+
+    def test_observation_loss_and_render_clock_fault_stop_batch_qualification(self):
+        for key in ("skippedUpdates", "invalidBuffers", "staleCallbacks", "render_clock"):
+            manifest = copy.deepcopy(self.manifest)
+            if key == "render_clock": manifest["host_timing"]["playerRender"]["sampleDiscontinuities"] = 1
+            else: manifest["host_timing"][key] = 1
+            with self.assertRaises(ValueError): batch.audit_manifest(manifest, self.context, self.wav)
 
     def test_runtime_identity_engine_configuration_clock_and_export_faults(self):
         for fault in ("pid", "agc", "engine", "clock", "sha", "run", "mode", "format", "counter"):

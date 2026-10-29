@@ -2312,6 +2312,13 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
         }
     }
 
+    func stopAndSealNativeVoiceDebug(runID: UUID, generation expected: UInt64) -> MacSpeechNativeVoiceDebugSnapshot? {
+        guard lock.withLock({ generation == expected }),
+              let sealed = sealNativeVoiceDebug(runID: runID) else { return nil }
+        stop()
+        return sealed
+    }
+
     func clearNativeVoiceDebug(runID: UUID) {
         lock.withLock {
             if stats?.snapshot.runID == runID {
@@ -3600,7 +3607,7 @@ private struct RealtimeInterruptionEvidenceTests {
                "Stop before Capture revokes the pending batch round")
     }
 
-    static func testM20SingleRound() async throws {
+    static func testM20SingleRound(queuedTail: Int = 0) async throws {
         let batch = UUID().uuidString
         let valid = batch + ":1:3"
         let source = try URL(fileURLWithPath: requireEnv("M20_RESIDENT_WAV"))
@@ -3624,12 +3631,20 @@ private struct RealtimeInterruptionEvidenceTests {
                    "M20 retains microphone, speaker and local recording consent")
         }
         startD1(stack.controller)
-        await driveWarmupC(stack, clock: clock, profile: .four)
+        await driveWarmupC(stack, clock: clock, profile: .four, queuedTail: queuedTail)
         let state = stack.controller.appleVPAcousticTestState
         expect(state.errorCode == nil && state.packetCount == 750 && state.retainedPCMByteCount == 720_000,
                "M20 preserves the 19-second plan and 15-second/720KB scoring cap")
         expect(stack.capture.startCount == 1 && stack.player.startCount == 1,
                "one round starts one existing Capture and one resident playback")
+        let manifest = try JSONSerialization.jsonObject(with: stack.controller.appleVPAcousticTestManifestData())
+            as? [String: Any] ?? [:]
+        expect(manifest["capture_queued_at_seal"] as? Int == 0,
+               "M20 must retain every generated scoring packet before ending its FIFO generation")
+        let finalDrain = manifest["mac_aec_final_drain"] as? [String: UInt64]
+        expect(finalDrain?["pending_before"] == UInt64(queuedTail)
+            && finalDrain?["drained"] == UInt64(queuedTail),
+            "the final FIFO receipt accounts for actual packets rather than clearing the queue")
         try expectM20Sealed(stack, pipe: pipe, batch: batch)
     }
 
@@ -3698,6 +3713,8 @@ private struct RealtimeInterruptionEvidenceTests {
         if CommandLine.arguments.dropFirst().elementsEqual(["--m20-only"]) {
             try await testM20BatchContract()
             try await testM20SingleRound()
+            try await testM20SingleRound(queuedTail: 5)
+            try await testWarmupQueuedTail()
             try await testM20FailureCleanup()
             try await testM19ExportContract()
             print("m20_fake_checks=\(checks)")

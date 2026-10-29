@@ -13,6 +13,7 @@ enum WarmupWindowStatsTests {
         try testBoundaryAndPCM()
         try testIdentityAndInvalid()
         try testProfileReadbackWindows()
+        try testTimingScanDoesNotExcludeInput()
         print("warmup_native_cases=\(cases)")
         print("warmup_native_checks=\(checks)")
         print("warmup_native_device_access=ZERO")
@@ -187,4 +188,27 @@ enum WarmupWindowStatsTests {
             }
         }
     }
+
+    private static func testTimingScanDoesNotExcludeInput() throws {
+        cases += 1
+        for scheduled in [false, true] {
+            let value = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 7)
+            value.bind(configurationID: 3, playbackGeneration: 1)
+            let samples = try buffer(frames: 1)
+            samples.floatChannelData?[0][0] = 1
+            let scan: (AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)? = { _ in
+                value.input(content: (anchor, 0), arrival: anchor, frames: 1, rate: 16000, identity: (3, 7))
+                return (0 ... 0, 1)
+            }
+            if scheduled {
+                value.scheduled(samples, scan: scan)
+            } else {
+                value.render(samples, content: (anchor, 0), arrival: anchor, identity: (3, 7), scan: scan)
+            }
+            expect(value.snapshot()?.input.buffers == 1 && value.snapshot()?.skippedUpdates == 0,
+                   "nonzero scanning must not exclude a simultaneous valid Input observation")
+            expect(samples.floatChannelData?[0][0] == 1, "diagnostic scan does not change PCM")
+        }
+    }
+
 }

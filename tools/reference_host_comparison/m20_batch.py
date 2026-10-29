@@ -289,7 +289,19 @@ def audit_manifest(manifest, context, wav_identity, *, expected_pid=None):
                 "playback_underrun_count", "playback_rejected_callback_count"):
         if manifest.get(key) != 0:
             raise ValueError("capture/playback counter failure: "+key)
+    final_drain = manifest.get("mac_aec_final_drain", {})
+    generated = manifest.get("capture_generated_at_seal")
+    drained = manifest.get("warmup", {}).get("drained_packets")
+    if (not isinstance(final_drain, dict)
+            or any(type(final_drain.get(key)) is not int for key in ("generation", "pending_before", "drained"))
+            or final_drain["generation"] != manifest.get("capture_generation")
+            or not 0 <= final_drain["pending_before"] == final_drain["drained"] <= 950
+            or type(generated) is not int or type(drained) is not int
+            or not 0 < generated == drained <= 950):
+        raise ValueError("final drain generation or packet conservation unverified")
     native, timing = manifest["native"], manifest["host_timing"]
+    if any(timing.get(key) != 0 for key in ("skippedUpdates", "invalidBuffers", "staleCallbacks")):
+        raise ValueError("timing observation loss or invalid callback")
     if (native.get("coverage_valid") is not True or native.get("issues") != []
             or any(native["rejections"].values()) or native.get("raw_timestamp_diagnostic") is not None
             or native["run_id"] != manifest["run_id"] or timing["runID"] != manifest["run_id"]
@@ -351,9 +363,7 @@ def audit_manifest(manifest, context, wav_identity, *, expected_pid=None):
     for stream in (timing["input"], timing["playerRender"]):
         if any(stream.get(key) != 0 for key in (
                 "missingTime", "duplicate", "backwards", "sampleDiscontinuities", "hostDiscontinuities")):
-            if stream is timing["input"]:
-                raise ValueError("input content clock discontinuity")
-            trusted = False
+            raise ValueError("input/render content clock discontinuity")
     render = timing["playerRender"]
     origin = packets[0][1]
     start, end = render.get("firstNonzeroContentNs"), render.get("lastNonzeroContentNs")

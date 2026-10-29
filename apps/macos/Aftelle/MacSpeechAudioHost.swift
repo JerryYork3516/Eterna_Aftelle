@@ -385,6 +385,30 @@ actor MacSpeechAudioHost: MacSpeechAudioFrameSourcing {
         return makeSnapshot()
     }
 
+    #if DEBUG
+        func finishDebugCapture(
+            runID: UUID, generation expected: UInt64
+        ) -> (frames: [MacSpeechAudioFrame], pending: Int)? {
+            guard expected == generation, isCapturing,
+                  let sealed = capture.stopAndSealNativeVoiceDebug(runID: runID, generation: expected),
+                  sealed.runID == runID, sealed.captureGeneration == expected else { return nil }
+            isCapturing = false
+            state = hostState(for: authorization)
+            let before = frameBuffer.stats()
+            let frames = frameBuffer.drain(maxCount: 950)
+            let after = frameBuffer.stats()
+            guard before.generatedCount == after.generatedCount, before.queuedCount == frames.count,
+                  after.queuedCount == 0
+            else {
+                lastError = "debug_final_drain_unverified"
+                return nil
+            }
+            frameBuffer.end(generation: expected)
+            lastError = nil
+            return (frames, before.queuedCount)
+        }
+    #endif
+
     func refreshDeviceRoute() {
         let previousRoute = route
         route = deviceMonitor.currentRoute()

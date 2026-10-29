@@ -498,6 +498,7 @@ nonisolated protocol MacSpeechAudioCapturing: AnyObject, Sendable {
         func configureNativeAcousticWindows(runID: UUID, generation: UInt64, plan: MacSpeechAcousticWindowPlan) -> Bool
         func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot?
         func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot?
+        func stopAndSealNativeVoiceDebug(runID: UUID, generation: UInt64) -> MacSpeechNativeVoiceDebugSnapshot?
         func clearNativeVoiceDebug(runID: UUID)
     #endif
 }
@@ -541,6 +542,10 @@ nonisolated extension MacSpeechAudioCapturing {
         }
 
         func sealNativeVoiceDebug(runID _: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
+            nil
+        }
+
+        func stopAndSealNativeVoiceDebug(runID _: UUID, generation _: UInt64) -> MacSpeechNativeVoiceDebugSnapshot? {
             nil
         }
 
@@ -1707,7 +1712,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         let profile: MacSpeechAppleVPDebugProfile
         private(set) var isSealed = false
         private var sealReason: String?
-        private var configurationID: UInt64?
+        private(set) var configurationID: UInt64?
         private var voiceProcessing: MacSpeechVoiceProcessingSnapshot?
         private var nativeFormat: MacSpeechNativeVoiceDebugFormat?
         private var channelStats = Array(
@@ -2829,13 +2834,19 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
 
         func render(
             _ buffer: AVAudioPCMBuffer, content: (host: UInt64?, sample: Int64?), arrival: UInt64,
-            identity: (configurationID: UInt64, generation: UInt64)
+            identity: (configurationID: UInt64, generation: UInt64),
+            scan: ((AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)?)? = nil
         ) {
+            let scanned = if let scan {
+                scan(buffer)
+            } else {
+                Self.nonzeroBounds(buffer)
+            }
             update { value in
                 guard !value.callbacksClosed, value.configurationID == identity.configurationID,
                       value.captureGeneration == identity.generation else { value.staleCallbacks &+= 1; return }
                 value.playerRender.arrived(at: arrival)
-                guard let bounds = Self.nonzeroBounds(buffer) else { value.invalidBuffers &+= 1; return }
+                guard let bounds = scanned else { value.invalidBuffers &+= 1; return }
                 value.playerRender.record(host: content.host, sample: content.sample, arrival: arrival,
                                           count: UInt64(buffer.frameLength), rate: buffer.format.sampleRate)
                 if let range = bounds.range {
@@ -2845,9 +2856,17 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
         }
 
-        func scheduled(_ buffer: AVAudioPCMBuffer) {
+        func scheduled(
+            _ buffer: AVAudioPCMBuffer,
+            scan: ((AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)?)? = nil
+        ) {
+            let scanned = if let scan {
+                scan(buffer)
+            } else {
+                Self.nonzeroBounds(buffer)
+            }
             update { value in
-                guard let bounds = Self.nonzeroBounds(buffer) else { value.invalidBuffers &+= 1; return }
+                guard let bounds = scanned else { value.invalidBuffers &+= 1; return }
                 value.scheduledFrames &+= UInt64(buffer.frameLength)
                 value.scheduledNonzeroFrames &+= bounds.count
             }
@@ -3995,6 +4014,29 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             }
         }
 
+        func stopAndSealNativeVoiceDebug(runID: UUID, generation: UInt64) -> MacSpeechNativeVoiceDebugSnapshot? {
+            lifecycleLock.withLock {
+                let sealed = captureProcessingLock.withLock {
+                    guard generation > 0, nativeVoiceDebug?.runID == runID,
+                          nativeVoiceDebug?.captureGeneration == generation,
+                          nativeVoiceDebug?.profile == .agcOn, nativeVoiceDebug?.isSealed == false else { return false }
+                    let valid = lock.withLock {
+                        guard isCaptureActive, captureGeneration == generation, !isRouteRebuilding,
+                              audioProcessingMode == .appleVoiceProcessing,
+                              nativeVoiceDebug?.configurationID == configurationID else { return false }
+                        isCaptureActive = false
+                        return true
+                    }
+                    guard valid else { return false }
+                    nativeVoiceDebug?.seal()
+                    return true
+                }
+                guard sealed else { return nil }
+                stopCaptureLocked()
+                return captureProcessingLock.withLock { nativeVoiceDebug?.snapshot }
+            }
+        }
+
         func clearNativeVoiceDebug(runID: UUID) {
             lifecycleLock.withLock {
                 captureProcessingLock.withLock {
@@ -4174,6 +4216,10 @@ nonisolated final class SystemMacSpeechAudioCapture:
 
         func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
             audioEngine.sealNativeVoiceDebug(runID: runID)
+        }
+
+        func stopAndSealNativeVoiceDebug(runID: UUID, generation: UInt64) -> MacSpeechNativeVoiceDebugSnapshot? {
+            audioEngine.stopAndSealNativeVoiceDebug(runID: runID, generation: generation)
         }
 
         func clearNativeVoiceDebug(runID: UUID) {

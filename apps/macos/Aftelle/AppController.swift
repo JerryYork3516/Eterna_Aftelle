@@ -260,6 +260,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate var playbackSHA256: String?
         fileprivate var route = MacSpeechAudioHostSnapshot.initial
         fileprivate var captureFinal = MacSpeechAudioHostSnapshot.initial
+        fileprivate var macAECFinalDrain: [String: UInt64]?
         fileprivate var playbackFinal = MacSpeechAudioOutputHostSnapshot.initial
         fileprivate var native: MacSpeechNativeVoiceDebugSnapshot?
         fileprivate var lastRefresh: UInt64 = 0
@@ -8409,6 +8410,7 @@ final class AppController: ObservableObject {
                             ?? AppleVPAcousticTestError.externalPlaybackControl.rawValue
                     }
                 }
+                await finishMacAECBatchCapture()
                 appleVPAcousticRun.captureFinal = await speechAudioHost.currentSnapshot()
                 appleVPAcousticRun.playbackFinal = await speechAudioOutputHost.currentSnapshot()
                 if let runID = appleVPAcousticRun.runID {
@@ -8431,6 +8433,26 @@ final class AppController: ObservableObject {
             appleVPAcousticTestTask = nil
             appleVPAcousticPlaybackTask = nil
             publishAppleVPAcousticState(force: true)
+        }
+
+        private func finishMacAECBatchCapture() async {
+            guard appleVPAcousticRun.macAECBatch != nil, appleVPAcousticRun.errorCode == nil else { return }
+            guard let runID = appleVPAcousticRun.runID, let generation = appleVPAcousticRun.generation,
+                  let drained = await speechAudioHost.finishDebugCapture(runID: runID, generation: generation) else {
+                appleVPAcousticRun.errorCode = "debug_final_drain_unverified"
+                return
+            }
+            do {
+                for frame in drained.frames {
+                    try appendAppleVPAcousticFrame(frame)
+                }
+                appleVPAcousticRun.macAECFinalDrain = [
+                    "generation": generation,
+                    "pending_before": UInt64(drained.pending), "drained": UInt64(drained.frames.count)
+                ]
+            } catch {
+                appleVPAcousticRun.errorCode = AppleVPAcousticTestError.invalidPacket.rawValue
+            }
         }
 
         private func publishAppleVPAcousticState(force: Bool = false) {
@@ -8624,6 +8646,7 @@ final class AppController: ObservableObject {
             result["external_playback_control"] = appleVPScoreControl == nil ? "DISABLED" : "DEBUG_PIPE_BOUND"
             if let batch = appleVPAcousticRun.macAECBatch {
                 result["mac_aec_batch"] = batch.manifest
+                result["mac_aec_final_drain"] = appleVPAcousticRun.macAECFinalDrain ?? NSNull() as Any
             }
             if appleVPAcousticRun.btAcousticBatch {
                 var batch: [String: Any] = ["batch": "R5_M03", "scenario": appleVPAcousticRun.scenario.rawValue]
