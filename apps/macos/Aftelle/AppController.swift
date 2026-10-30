@@ -146,7 +146,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
             _ event: String, runID: UUID, scoreStart: UInt64 = 0,
             batchScenario: AppleVPAcousticTestScenario? = nil, humanBatch: Bool = false,
             onsetProfile: AppleVPHumanOnsetProfile? = nil, macAECBatch: AppleVPMacAECBatchRun? = nil,
-            adaptation: AppleVPAdaptationRun? = nil
+            adaptation: AppleVPAdaptationRun? = nil, allocation: MacSpeechChannelAllocation.Run? = nil,
         ) throws {
             guard onsetProfile == nil || (humanBatch && batchScenario == .doubleTalk) else {
                 throw AppleVPAcousticTestError.externalPlaybackControl
@@ -168,6 +168,9 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
                 }
                 message.merge(adaptation.manifest) { _, new in new }
             }
+            try mergeAllocation(allocation, into: &message,
+                                eligible: macAECBatch == nil && adaptation == nil && batchScenario == .residentOnly
+                                    && !humanBatch && onsetProfile == nil)
             if humanBatch {
                 message["source"] = "human"
                 message["proxy_requested"] = false
@@ -186,6 +189,17 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
                 Darwin.write(descriptor, buffer.baseAddress, buffer.count)
             }
             guard written == bytes.count else { throw AppleVPAcousticTestError.externalPlaybackControl }
+        }
+
+        private func mergeAllocation(
+            _ allocation: MacSpeechChannelAllocation.Run?, into message: inout [String: Any],
+            eligible: Bool,
+        ) throws {
+            guard let allocation else { return }
+            guard eligible else {
+                throw AppleVPAcousticTestError.externalPlaybackControl
+            }
+            message.merge(allocation.eventIdentity) { _, new in new }
         }
     }
 
@@ -317,6 +331,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate(set) var humanAcousticBatch = false
         fileprivate(set) var macAECBatch: AppleVPMacAECBatchRun?
         fileprivate(set) var adaptation: AppleVPAdaptationRun?
+        fileprivate(set) var allocation: MacSpeechChannelAllocation.Run?
         fileprivate var adaptationPlays: [[String: Any]] = []
         fileprivate(set) var macAECCancelled = false
         fileprivate(set) var humanOnsetProfile: AppleVPHumanOnsetProfile?
@@ -325,7 +340,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate var guideEvents: [String: UInt64] = [:]
 
         var isAcousticBatch: Bool {
-            btAcousticBatch || humanAcousticBatch || macAECBatch != nil || adaptation != nil
+            btAcousticBatch || humanAcousticBatch || macAECBatch != nil || adaptation != nil || allocation != nil
         }
 
         mutating func recordHumanSpeechCue(at now: UInt64, elapsed: UInt64) {
@@ -906,6 +921,14 @@ final class AppController: ObservableObject {
         private var appleVPScoreControl: AppleVPScoreControl?
         private var appleVPAcousticRuntimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)?
 
+        private var appleVPChannelBuildVerifier: (String) -> Bool = MacSpeechChannelAllocation.Run.verifiesBuild
+        private var appleVPChannelInstaller: ((MacSpeechChannelAllocation.Run, UUID, UInt64, UInt64) throws -> Void)?
+
+        var appleVPChannelAllocation: MacSpeechChannelAllocation.Run? {
+            guard isAppleVPAcousticTestMode else { return nil }
+            return MacSpeechChannelAllocation.Run(arguments: appleVPScoreControlArguments)
+        }
+
         var appleVPAdaptation: AppleVPAdaptationRun? {
             AppleVPAdaptationRun(arguments: appleVPScoreControlArguments)
         }
@@ -1340,6 +1363,8 @@ final class AppController: ObservableObject {
             acousticTestByteLimit: Int = 720_000,
             acousticTestClock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
             acousticRuntimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)? = nil,
+            channelAllocationBuildVerifier: @escaping (String) -> Bool = MacSpeechChannelAllocation.Run.verifiesBuild,
+            channelAllocationInstaller: ((MacSpeechChannelAllocation.Run, UUID, UInt64, UInt64) throws -> Void)? = nil,
             normalDependenciesFactory:
             @escaping @MainActor () -> (OrchestrationKernel, ProviderKeychainStore)
         ) {
@@ -1362,6 +1387,8 @@ final class AppController: ObservableObject {
             appleVPAcousticClock = acousticTestClock
             appleVPAcousticRuntimeTiming = acousticRuntimeTiming
             appleVPScoreControlArguments = acousticTestArguments
+            appleVPChannelBuildVerifier = channelAllocationBuildVerifier
+            appleVPChannelInstaller = channelAllocationInstaller
             nativeSpeechDiagnosticBuffer = NativeSpeechDiagnosticBuffer()
             realtimeSpeechDiagnosticAudioEngine = nil
             restoreNormalConfiguration()
@@ -7891,7 +7918,8 @@ final class AppController: ObservableObject {
             let batchArguments = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-bt-abc=") }
             let humanArguments = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-human-abc=") }
             let onsetArguments = appleVPScoreControlArguments.filter { $0.hasPrefix("--apple-vp-human-onset=") }
-            let isBatch = btAcousticBatch || humanAcousticBatch || macAECBatch || appleVPAdaptation != nil
+            let isBatch = btAcousticBatch || humanAcousticBatch || macAECBatch
+                || appleVPAdaptation != nil || appleVPChannelAllocation != nil
             guard acceptsAdaptationPreparation(
                 (comprehensiveC, btAcousticBatch || humanAcousticBatch || macAECBatch || humanOnsetProfile != nil),
                 scenario: scenario, dataMode: dataMode, profile: processingProfile, warmup: warmupProfile
@@ -7929,6 +7957,7 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.humanAcousticBatch = humanAcousticBatch
             appleVPAcousticRun.macAECBatch = macAECBatch ? appleVPMacAECBatch : nil
             appleVPAcousticRun.adaptation = appleVPAdaptation
+            appleVPAcousticRun.allocation = appleVPChannelAllocation
             appleVPAcousticRun.humanOnsetProfile = humanOnsetProfile
             appleVPAcousticRun.dataMode = appleVPSilentSmokeScenario == nil ? dataMode : .statsOnly
             appleVPAcousticRun.processingProfile = processingProfile
@@ -7949,10 +7978,29 @@ final class AppController: ObservableObject {
             appleVPAcousticRun.playbackURL = url
         }
 
+        private func acceptsChannelAllocationPreparation(
+            _ options: (guided: Bool, otherBatch: Bool), scenario: AppleVPAcousticTestScenario,
+            mode: AppleVPAcousticDataMode, profile: MacSpeechAppleVPDebugProfile, warmup: MacSpeechWarmupProfile?,
+        ) -> Bool {
+            let args = appleVPScoreControlArguments
+            guard args.contains(where: { $0.hasPrefix(MacSpeechChannelAllocation.Run.argument) }) else { return true }
+            let excluded = [AppleVPMacAECBatchRun.argument, AppleVPAdaptationRun.argument,
+                            "--apple-vp-bt-abc=", "--apple-vp-human-abc=", "--apple-vp-human-onset="]
+            return appleVPChannelAllocation != nil && !options.otherBatch
+                && !args.contains { arg in excluded.contains { arg.hasPrefix($0) } }
+                && options.guided && scenario == .residentOnly && mode == .recording && profile == .agcOn
+                && warmup == .four && appleVPSilentSmokeScenario == nil
+                && appleVPAcousticRun.runID == nil && !appleVPAcousticRun.macAECCancelled
+                && appleVPAcousticTestDurationNanoseconds == 15_000_000_000 && appleVPAcousticTestByteLimit == 720_000
+        }
+
         private func acceptsAdaptationPreparation(
             _ options: (guided: Bool, otherBatch: Bool), scenario: AppleVPAcousticTestScenario,
             dataMode: AppleVPAcousticDataMode, profile: MacSpeechAppleVPDebugProfile, warmup: MacSpeechWarmupProfile?
         ) -> Bool {
+            guard acceptsChannelAllocationPreparation(
+                options, scenario: scenario, mode: dataMode, profile: profile, warmup: warmup,
+            ) else { return false }
             let args = appleVPScoreControlArguments
             guard args.contains(where: { $0.hasPrefix(AppleVPAdaptationRun.argument) }) else { return true }
             let excluded = [AppleVPMacAECBatchRun.argument, "--apple-vp-bt-abc=",
@@ -8045,7 +8093,7 @@ final class AppController: ObservableObject {
 
         func stopAppleVPAcousticTest() async {
             guard isAppleVPAcousticTestMode else { return }
-            if appleVPMacAECBatch != nil || appleVPAdaptation != nil {
+            if appleVPMacAECBatch != nil || appleVPAdaptation != nil || appleVPChannelAllocation != nil {
                 appleVPAcousticRun.macAECCancelled = true
                 appleVPAcousticRun.errorCode = "cancelled"
             }
@@ -8060,6 +8108,10 @@ final class AppController: ObservableObject {
             var failure: String?
             do {
                 let playback = try appleVPAcousticPlaybackBytes()
+                if let allocation = appleVPAcousticRun.allocation,
+                   !appleVPChannelBuildVerifier(allocation.buildSHA) {
+                    throw AppleVPAcousticTestError.externalPlaybackControl
+                }
                 try await authorizeAppleVPAcousticTest(runID: runID)
                 let generation = try await prepareAppleVPAcousticAudio(runID: runID)
                 try await startAppleVPAcousticAudio(runID: runID, generation: generation, playback: playback)
@@ -8086,7 +8138,8 @@ final class AppController: ObservableObject {
                 let source = try AppleVPAcousticWAV.read(url: url)
                 appleVPAcousticRun.playbackSHA256 = source.sha256
                 let macResidentSHA = AppleVPMacAECBatchRun.residentSHA256
-                if appleVPAcousticRun.macAECBatch != nil || appleVPAcousticRun.adaptation != nil,
+                if appleVPAcousticRun.macAECBatch != nil || appleVPAcousticRun.adaptation != nil
+                    || appleVPAcousticRun.allocation != nil,
                    source.sha256 != macResidentSHA {
                     throw AppleVPAcousticTestError.invalidFile
                 }
@@ -8169,6 +8222,17 @@ final class AppController: ObservableObject {
                 realtimeSpeechDiagnosticAudioEngine?.bindNativeVoiceTimingPlayback(
                     runID: runID, generation: output.generation
                 )
+                if let allocation = appleVPAcousticRun.allocation {
+                    if let engine = realtimeSpeechDiagnosticAudioEngine {
+                        try engine.configureChannelAllocation(allocation, runID: runID,
+                                                              generation: generation,
+                                                              playbackGeneration: output.generation)
+                    } else if let install = appleVPChannelInstaller {
+                        try install(allocation, runID, generation, output.generation)
+                    } else {
+                        throw AppleVPAcousticTestError.playbackFailed
+                    }
+                }
             }
             let capture = await speechAudioHost.startPreparedCapture(generation: generation)
             try checkAppleVPAcousticRun(runID)
@@ -8217,7 +8281,8 @@ final class AppController: ObservableObject {
                 batchScenario: appleVPAcousticRun.isAcousticBatch ? appleVPAcousticRun.scenario : nil,
                 humanBatch: appleVPAcousticRun.humanAcousticBatch,
                 onsetProfile: appleVPAcousticRun.humanOnsetProfile,
-                macAECBatch: appleVPAcousticRun.macAECBatch, adaptation: appleVPAcousticRun.adaptation
+                macAECBatch: appleVPAcousticRun.macAECBatch, adaptation: appleVPAcousticRun.adaptation,
+                allocation: appleVPAcousticRun.allocation,
             )
         }
 
@@ -8456,7 +8521,7 @@ final class AppController: ObservableObject {
                 pid: getpid(), agcEnabled: appleVPAcousticRun.processingProfile.automaticGainControlEnabled,
                 residentStarted: [.playing, .draining, .completed].contains(speechAudioOutputHostSnapshot.state)
             )
-            if appleVPAcousticRun.adaptation != nil {
+            if appleVPAcousticRun.adaptation != nil || appleVPAcousticRun.allocation != nil {
                 let modes = timing?.runtimeReadbacks.map { $0.payload.microphoneModes } ?? []
                 guard AppleVPAdaptationRun.acceptsMicrophoneModes(modes) else {
                     throw AppleVPAcousticTestError.voiceProcessingUnavailable
@@ -8552,12 +8617,13 @@ final class AppController: ObservableObject {
                         try appleVPScoreControl?.send(
                             "stop", runID: runID,
                             scoreStart: appleVPAcousticRun.humanAcousticBatch || appleVPAcousticRun.macAECBatch != nil
-                                || appleVPAcousticRun.adaptation != nil
+                                || appleVPAcousticRun.adaptation != nil || appleVPAcousticRun.allocation != nil
                                 ? appleVPAcousticRun.guideStartedAt ?? 0 : 0,
                             batchScenario: appleVPAcousticRun.isAcousticBatch ? appleVPAcousticRun.scenario : nil,
                             humanBatch: appleVPAcousticRun.humanAcousticBatch,
                             onsetProfile: appleVPAcousticRun.humanOnsetProfile,
-                            macAECBatch: appleVPAcousticRun.macAECBatch, adaptation: appleVPAcousticRun.adaptation
+                            macAECBatch: appleVPAcousticRun.macAECBatch, adaptation: appleVPAcousticRun.adaptation,
+                            allocation: appleVPAcousticRun.allocation,
                         )
                     } catch {
                         appleVPAcousticRun.errorCode = appleVPAcousticRun.errorCode
@@ -8590,8 +8656,9 @@ final class AppController: ObservableObject {
         }
 
         private func finishMacAECBatchCapture() async {
-            guard appleVPAcousticRun.macAECBatch != nil || appleVPAcousticRun.adaptation != nil,
-                  appleVPAcousticRun.errorCode == nil else { return }
+            guard appleVPAcousticRun.macAECBatch != nil || appleVPAcousticRun.adaptation != nil
+                || appleVPAcousticRun.allocation != nil,
+                appleVPAcousticRun.errorCode == nil else { return }
             guard let runID = appleVPAcousticRun.runID, let generation = appleVPAcousticRun.generation,
                   let drained = await speechAudioHost.finishDebugCapture(runID: runID, generation: generation) else {
                 appleVPAcousticRun.errorCode = "debug_final_drain_unverified"
@@ -8804,6 +8871,7 @@ final class AppController: ObservableObject {
                 result["mac_aec_final_drain"] = appleVPAcousticRun.macAECFinalDrain ?? NSNull() as Any
             }
             appendAdaptationManifest(to: &result)
+            appendChannelAllocationManifest(to: &result)
             if appleVPAcousticRun.btAcousticBatch {
                 var batch: [String: Any] = ["batch": "R5_M03", "scenario": appleVPAcousticRun.scenario.rawValue]
                 batch["resident_enabled"] = appleVPAcousticRun.scenario != .humanOnly
@@ -8840,6 +8908,16 @@ final class AppController: ObservableObject {
                 result["comprehensive_c"] = appleVPAcousticCManifest()
             }
             return try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+        }
+
+        private func appendChannelAllocationManifest(to result: inout [String: Any]) {
+            if let allocation = appleVPAcousticRun.allocation {
+                result["channel_allocation_experiment"] = allocation.manifest
+                result["channel_allocation_witness"] = appleVPAcousticRun.runID.flatMap {
+                    realtimeSpeechDiagnosticAudioEngine?.channelAllocationSnapshot(runID: $0)
+                } ?? NSNull() as Any
+                result["channel_allocation_final_drain"] = appleVPAcousticRun.macAECFinalDrain ?? NSNull() as Any
+            }
         }
 
         private func appendAdaptationManifest(to result: inout [String: Any]) {

@@ -3050,6 +3050,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         private var nativeVoiceTimingDebug: MacSpeechNativeVoiceTiming?
         private var runtimeReadbacks: [MacSpeechRuntimeReadback.Snapshot] = []
         private var configurationDebug: [String: Any] = [:]
+        private var channelAllocation: MacSpeechChannelAllocation.Session?
+        private var channelAllocationPlaybackGeneration: UInt64?
         private struct AGCOffDebugContext {
             let runID: UUID
             let generation: UInt64
@@ -3302,9 +3304,12 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 return playerNode
             }
             #if DEBUG
-                nativeVoiceTimingDebug?.scheduled(buffer)
+                let allocated = try allocatedOutputBuffer(buffer)
+                nativeVoiceTimingDebug?.scheduled(allocated)
+                node.scheduleBuffer(allocated, completionCallbackType: .dataPlayedBack) { _ in completion() }
+            #else
+                node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
             #endif
-            node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
         }
     }
 
@@ -3348,6 +3353,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             lock.withLock { isOutputPlaying = false }
             #if DEBUG
                 nativeVoiceTimingDebug?.event(.playbackCompleted)
+                channelAllocation?.cancel()
             #endif
             acousticEchoHost.playbackCompleted()
         }
@@ -3355,6 +3361,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     func clearScheduledOutput() {
         lifecycleLock.withLock {
+            #if DEBUG
+                channelAllocation?.cancel()
+            #endif
             let node = lock.withLock { () -> AVAudioPlayerNode? in
                 isOutputPlaying = false
                 return playerNode
@@ -3366,6 +3375,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     func stopOutput() {
         lifecycleLock.withLock {
+            #if DEBUG
+                channelAllocation?.cancel()
+            #endif
             let graph = lock.withLock { () -> (AVAudioPlayerNode?, AVAudioEngine?) in
                 isOutputPlaying = false
                 return (playerNode, isCaptureActive ? nil : engine)
@@ -3378,6 +3390,9 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     func closeOutput() {
         lifecycleLock.withLock {
+            #if DEBUG
+                channelAllocation?.cancel()
+            #endif
             let node = lock.withLock { () -> AVAudioPlayerNode? in
                 isOutputPlaying = false
                 isOutputPrepared = false
@@ -4134,6 +4149,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                     nativeVoiceDebug = nil
                     nativeVoiceTimingDebug = nil
                     runtimeReadbacks.removeAll(keepingCapacity: true)
+                    channelAllocation = nil
+                    channelAllocationPlaybackGeneration = nil
                     lock.withLock {
                         if agcOffDebugContext?.runID == runID {
                             agcOffDebugContext = nil
@@ -4166,6 +4183,48 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             lifecycleLock.withLock {
                 guard let timing = nativeVoiceTimingDebug, timing.runID == runID else { return }
                 timing.bind(configurationID: configurationID, playbackGeneration: generation)
+                channelAllocationPlaybackGeneration = generation
+            }
+        }
+
+        func configureChannelAllocation(
+            _ experiment: MacSpeechChannelAllocation.Run, runID: UUID,
+            generation: UInt64, playbackGeneration: UInt64,
+        ) throws {
+            try lifecycleLock.withLock {
+                guard channelAllocation == nil, nativeVoiceDebug?.runID == runID,
+                      nativeVoiceDebug?.captureGeneration == generation, nativeVoiceDebug?.profile == .agcOn,
+                      channelAllocationPlaybackGeneration == playbackGeneration,
+                      lock.withLock({ !isCaptureActive && !isOutputPlaying && !isRouteRebuilding
+                              && isOutputPrepared && audioProcessingMode == .appleVoiceProcessing }),
+                      let outputFormat else { throw MacSpeechAudioCaptureError.engineStartFailed }
+                try MacSpeechChannelAllocation.validate(outputFormat)
+                channelAllocation = .init(identity: .init(
+                    experiment: experiment, runID: runID, captureGeneration: generation,
+                    playbackGeneration: playbackGeneration, configurationID: configurationID,
+                ))
+            }
+        }
+
+        private func allocatedOutputBuffer(_ buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+            guard var session = channelAllocation else { return buffer }
+            guard let runID = nativeVoiceTimingDebug?.runID,
+                  let generation = captureGeneration, let playback = channelAllocationPlaybackGeneration,
+                  lock.withLock({ isCaptureActive && !isRouteRebuilding }) else {
+                throw MacSpeechAudioCaptureError.engineStartFailed
+            }
+            let result = try session.prepare(buffer, identity: .init(
+                experiment: session.identity.experiment, runID: runID, captureGeneration: generation,
+                playbackGeneration: playback, configurationID: configurationID,
+            ), sequence: session.buffers + 1)
+            channelAllocation = session
+            return result
+        }
+
+        func channelAllocationSnapshot(runID: UUID) -> [String: Any]? {
+            lifecycleLock.withLock {
+                guard channelAllocation?.identity.runID == runID else { return nil }
+                return channelAllocation?.manifest
             }
         }
 

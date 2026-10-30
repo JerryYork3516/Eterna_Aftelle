@@ -23,6 +23,7 @@ M03_HOST_DYLIB_SHA = "6f81387668c4625c88f80895778dad46e4a8a39badde25ad95527ae449
 M07_HOST_DYLIB_SHA = "094ce973dc6f3589db56fedca067af4ddc1d0865534bc5150952a66c603f764c"
 F1_HOST_DYLIB_SHA = "ecf6a86f4f05b3a594c978af45fc47d7af96c6761a9f7c1419ee494c96de8d5e"
 M20_HOST_DYLIB_SHA = "4de26c8850e670dd6be73b03ce60b29c8404b2791d154276087d34295d32433e"
+M26_HOST_DYLIB_SHA = "b4cc575b386443344a4eb3d09a6b6e0d990cf07d36e4b24af466714714377095"
 M22_HOST_DYLIB_SHA = "b4c7b3e3a9a6d75ad955414c7d35ba1a5dadb28144609d517dbd0918b9abec20"
 PLAYER_BINARY_SHA = "ff47b7a948fde6cc47c96ffdee30822563c89abc32e94419390942e213d037d8"
 R4_CONSENT = "R4_REF_HOST_ONCE_LOCAL_RECORDING_AND_ANALYSIS"
@@ -74,9 +75,25 @@ def adaptation_context(value):
     return value
 
 
+ALLOCATION_ARMS = ("TRIPLE_EQUAL", "FIRST_CHANNEL_ONLY")
+
+
+def allocation_context(value):
+    if not isinstance(value, dict) or set(value) != {"batch_id", "round", "limit", "arm"}:
+        raise ValueError("invalid M26 identity")
+    mac_aec_context({k: value[k] for k in ("batch_id", "round", "limit")})
+    if value["arm"] not in ALLOCATION_ARMS or value["round"] != ALLOCATION_ARMS.index(value["arm"])+1 or value["limit"] != 2:
+        raise ValueError("M26 arm/order/limit mismatch")
+    return value
+
+
 def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, human_group=None, onset_group=None,
-            mac_aec=None, adaptation=None):
+            mac_aec=None, adaptation=None, allocation=None):
     executable = Path(executable).resolve()
+    if allocation is not None:
+        allocation_context(allocation)
+        if mode != "HOST" or any(x is not None for x in (mac_aec, adaptation, m03_group, human_group, onset_group)):
+            raise ValueError("M26 cannot mix experiment contracts")
     if adaptation is not None:
         adaptation_context(adaptation)
         if mode != "HOST" or any(x is not None for x in (mac_aec, m03_group, human_group, onset_group)):
@@ -96,9 +113,11 @@ def command(mode, executable, descriptor, ref_arguments=(), *, m03_group=None, h
         if m03_group is not None and m03_group not in ("A", "B", "C"):
             raise ValueError("unregistered M03 group")
         require_identity(executable.with_name("Aftelle.debug.dylib"),
-                         M22_HOST_DYLIB_SHA if adaptation else M20_HOST_DYLIB_SHA if mac_aec else F1_HOST_DYLIB_SHA if onset_group else M07_HOST_DYLIB_SHA if human_group
+                         M26_HOST_DYLIB_SHA if allocation else M22_HOST_DYLIB_SHA if adaptation else M20_HOST_DYLIB_SHA if mac_aec else F1_HOST_DYLIB_SHA if onset_group else M07_HOST_DYLIB_SHA if human_group
                          else M03_HOST_DYLIB_SHA if m03_group else HOST_DYLIB_SHA)
         args = [str(executable), "--apple-vp-acoustic-test", "--apple-vp-score-control-fd=" + str(descriptor)]
+        if allocation:
+            args.append("--apple-vp-channel-allocation={batch_id}:{arm}:".format(**allocation) + M26_HOST_DYLIB_SHA)
         if adaptation:
             args.append("--apple-vp-adaptation={batch_id}:{arm}".format(**adaptation))
         if mac_aec:
@@ -203,8 +222,12 @@ def run_device_once(bundle, mode, executable, evidence, ref_arguments=(), *, con
 
 def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spawn, clock, device=False,
                    m03_group=None, human_group=None, onset_group=None, failure_ui=None,
-                   mac_aec=None, device_ui=None, finish_ui=None, cancel_requested=None, adaptation=None):
-    batch = adaptation if adaptation is not None else mac_aec
+                   mac_aec=None, device_ui=None, finish_ui=None, cancel_requested=None, adaptation=None, allocation=None):
+    batch = allocation if allocation is not None else adaptation if adaptation is not None else mac_aec
+    if allocation is not None:
+        allocation_context(allocation)
+        if mode != "HOST" or any(x is not None for x in (mac_aec, adaptation, m03_group, human_group, onset_group)):
+            raise ValueError("M26 cannot mix experiment contracts")
     if adaptation is not None:
         adaptation_context(adaptation)
         if mode != "HOST" or any(x is not None for x in (mac_aec, m03_group, human_group, onset_group)):
@@ -246,9 +269,9 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                      device_access=("M07_F1_EXPLICIT_ONCE" if onset_group else "M07_EXPLICIT_ONCE")
                      if device else "ZERO_FAKE_ONLY")
     if batch is not None:
-        state.update(batch="R5_M22" if adaptation is not None else "R5_M20", **batch, proxy_requested=False)
-        if adaptation is not None and device:
-            state["device_access"] = "M22_EXPLICIT_BATCH"
+        state.update(batch="R5_M26" if allocation is not None else "R5_M22" if adaptation is not None else "R5_M20", **batch, proxy_requested=False)
+        if (adaptation is not None or allocation is not None) and device:
+            state["device_access"] = "M26_EXPLICIT_BATCH" if allocation is not None else "M22_EXPLICIT_BATCH"
     if mode == "REF":
         state["reference_variant"] = require_reference_identity(executable)
     helper = child = None
@@ -310,7 +333,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
         os.set_blocking(write_fd, False)
         argv, extra_env = command(mode, executable, write_fd, ref_arguments,
                                   m03_group=m03_group, human_group=human_group, onset_group=onset_group,
-                                  mac_aec=mac_aec, adaptation=adaptation)
+                                  mac_aec=mac_aec, adaptation=adaptation, allocation=allocation)
         proxy_fd = None
         if use_proxy:
             helper = spawn([str(bundle / "bt_proxy_registered"), "--authorized-proxy-once", str(fixture)],
@@ -358,7 +381,7 @@ def _connected_run(bundle, mode, executable, evidence, ref_arguments=(), *, spaw
                         raise ValueError("M03 source combination mismatch")
                     checked_event = event
                     if batch is not None and (
-                            event.get("batch") != ("R5_M22" if adaptation is not None else "R5_M20") or event.get("scenario") != "A"
+                            event.get("batch") != ("R5_M26" if allocation is not None else "R5_M22" if adaptation is not None else "R5_M20") or event.get("scenario") != "A"
                             or event.get("proxy_requested") is not False
                             or any(event.get(k) != v for k, v in batch.items())
                             or "source" in event):

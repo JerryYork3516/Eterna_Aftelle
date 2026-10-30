@@ -679,6 +679,14 @@ private struct ParticleOrientationDebugOverlay: View {
                         Local export only; Stop cancels this run.
                         """))
                     }
+                    if let allocation = controller.appleVPChannelAllocation {
+                        Text(String(localized: "M26 channel allocation · \(allocation.arm.rawValue)"))
+                        Text(verbatim: allocation.batchID.uuidString)
+                        Text(String(localized: """
+                        M26: stay quiet; 4s warm-up + 15s score; one fixed playback at 3s. \
+                        Local export only; Stop cancels this run.
+                        """))
+                    }
                     preparationControls
                     retentionStatus
                     if controller.appleVPAcousticTestState.comprehensiveC {
@@ -722,6 +730,12 @@ private struct ParticleOrientationDebugOverlay: View {
             } message: {
                 if controller.appleVPMacAECBatch != nil {
                     Text(String(localized: "M20_SCOPE"))
+                }
+                if controller.appleVPChannelAllocation != nil {
+                    Text(String(localized: """
+                    M26: microphone and fixed resident playback once, 19 seconds maximum. \
+                    Local JSON/WAV only; no automatic retry.
+                    """))
                 }
                 if controller.appleVPAdaptation != nil {
                     Text(String(localized: """
@@ -769,7 +783,14 @@ private struct ParticleOrientationDebugOverlay: View {
                 if controller.appleVPMacAECBatch != nil {
                     Button(String(localized: "Prepare M20 A · AGC-ON · WARMUP_4S")) {
                         _ = controller.prepareAppleVPAcousticTest(
-                            .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true
+                            .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true,
+                        )
+                    }
+                    .disabled(controller.appleVPAcousticTestState.phase != .idle)
+                } else if controller.appleVPChannelAllocation != nil {
+                    Button(String(localized: "Prepare M26 A/B · AGC-ON · WARMUP_4S")) {
+                        _ = controller.prepareAppleVPAcousticTest(
+                            .residentOnly, comprehensiveC: true, warmupProfile: .four,
                         )
                     }
                     .disabled(controller.appleVPAcousticTestState.phase != .idle)

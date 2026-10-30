@@ -2415,6 +2415,9 @@ private struct D1ControllerStack {
         humanOnsetProfile: AppleVPHumanOnsetProfile? = nil,
         macAECArgument: String? = nil,
         adaptationArgument: String? = nil,
+        allocationArgument: String? = nil,
+        allocationBuildVerifier: @escaping (String) -> Bool = MacSpeechChannelAllocation.Run.verifiesBuild,
+        allocationInstaller: ((MacSpeechChannelAllocation.Run, UUID, UInt64, UInt64) throws -> Void)? = nil,
         runtimeTiming: ((UUID) -> MacSpeechTimingSnapshot?)? = nil,
         outputConfiguration: MacSpeechPCMPlaybackConfiguration = .standard
     ) {
@@ -2447,11 +2450,13 @@ private struct D1ControllerStack {
                 + (humanBatchScenario.map { ["--apple-vp-human-abc=" + $0.rawValue] } ?? [])
                 + (humanOnsetProfile.map { ["--apple-vp-human-onset=" + $0.rawValue] } ?? [])
                 + (macAECArgument.map { [AppleVPMacAECBatchRun.argument + $0] } ?? [])
-                + (adaptationArgument.map { ["--apple-vp-adaptation=" + $0] } ?? []),
+                + (adaptationArgument.map { ["--apple-vp-adaptation=" + $0] } ?? [])
+                + (allocationArgument.map { [MacSpeechChannelAllocation.Run.argument + $0] } ?? []),
             speechAudioHost: host, speechAudioOutputHost: output, speechAudioCapture: capture,
             acousticTestDurationNanoseconds: 15_000_000_000, acousticTestByteLimit: byteLimit,
             acousticTestClock: clock,
             acousticRuntimeTiming: runtimeTiming,
+            channelAllocationBuildVerifier: allocationBuildVerifier, channelAllocationInstaller: allocationInstaller,
             normalDependenciesFactory: dependencies.make
         )
     }
@@ -3915,7 +3920,219 @@ private struct RealtimeInterruptionEvidenceTests {
         expect(buffer.floatChannelData![0][0] == 0.125, "witness never edits synthetic audio")
     }
 
+    static func m26Format(
+        rate: Double = 16000, channels: UInt32 = 3,
+        common: AVAudioCommonFormat = .pcmFormatFloat32, interleaved: Bool = false,
+        tag: AudioChannelLayoutTag? = nil,
+    ) -> AVAudioFormat {
+        let layout = AVAudioChannelLayout(layoutTag: tag ?? (kAudioChannelLayoutTag_DiscreteInOrder | channels))!
+        return AVAudioFormat(commonFormat: common, sampleRate: rate, interleaved: interleaved, channelLayout: layout)
+    }
+
+    static func m26Buffer(_ values: [Float]) -> AVAudioPCMBuffer {
+        let input = AVAudioPCMBuffer(pcmFormat: m26Format(), frameCapacity: AVAudioFrameCount(values.count))!
+        input.frameLength = AVAudioFrameCount(values.count)
+        for channel in 0 ..< 3 {
+            for frame in values.indices {
+                input.floatChannelData![channel][frame] = values[frame]
+            }
+        }
+        return input
+    }
+
+    static func m26Rejects(_ action: () throws -> Void) {
+        do {
+            try action()
+            expect(false, "M26 must reject invalid format or identity")
+        } catch {
+            expect(true, "M26 rejects invalid format or identity")
+        }
+    }
+
+    static func testM26Buffers() throws {
+        let values: [Float] = [-1, -0.5, -0.0, 0, 0.125, 0.5, 0.999, -0.25]
+        let input = m26Buffer(values)
+        let originalArm = try MacSpeechChannelAllocation.buffer(input, arm: .tripleEqual)
+        let maskedArm = try MacSpeechChannelAllocation.buffer(input, arm: .firstChannelOnly)
+        expect(originalArm === input, "M26 A must deliver the original converted Buffer")
+        expect(maskedArm.frameLength == input.frameLength && maskedArm.format == input.format,
+               "M26 B must retain complete format and frame count")
+        for frame in values.indices {
+            expect(maskedArm.floatChannelData![0][frame].bitPattern == values[frame].bitPattern,
+                   "M26 B preserves every ch0 bit including negative zero and endpoint frames")
+            expect(maskedArm.floatChannelData![1][frame].bitPattern == 0
+                && maskedArm.floatChannelData![2][frame].bitPattern == 0,
+                "M26 B must clear only ch1/ch2 to exact positive zero")
+            expect(input.floatChannelData![1][frame].bitPattern == values[frame].bitPattern,
+                   "M26 B cannot overwrite the original converted Buffer")
+        }
+    }
+
+    static func testM26Qualification() throws {
+        let formats = [m26Format(rate: 48000), m26Format(channels: 1), m26Format(channels: 2),
+                       m26Format(channels: 4), m26Format(common: .pcmFormatFloat64),
+                       m26Format(interleaved: true), m26Format(tag: kAudioChannelLayoutTag_MPEG_3_0_A)]
+        for bad in formats {
+            m26Rejects { try MacSpeechChannelAllocation.validate(bad) }
+        }
+        let input = m26Buffer(Array(repeating: 0.125, count: 8))
+        input.floatChannelData![2][7] = 0.25
+        m26Rejects { _ = try MacSpeechChannelAllocation.buffer(input, arm: .tripleEqual) }
+        for channel in 0 ..< 3 {
+            input.floatChannelData![channel][7] = .infinity
+        }
+        m26Rejects { _ = try MacSpeechChannelAllocation.buffer(input, arm: .firstChannelOnly) }
+    }
+
+    static func testM26Session() throws {
+        let input = m26Buffer(Array(repeating: 0.125, count: 8))
+        let argument = UUID().uuidString + ":FIRST_CHANNEL_ONLY:" + String(repeating: "a", count: 64)
+        let run = MacSpeechChannelAllocation.Run(arguments: [MacSpeechChannelAllocation.Run.argument + argument])!
+        let identity = MacSpeechChannelAllocation.Identity(experiment: run, runID: UUID(),
+                                                           captureGeneration: 1, playbackGeneration: 2,
+                                                           configurationID: 3)
+        var session = MacSpeechChannelAllocation.Session(identity: identity)
+        _ = try session.prepare(input, identity: identity, sequence: 1)
+        m26Rejects { _ = try session.prepare(input, identity: identity, sequence: 1) }
+        let bad = [MacSpeechChannelAllocation.Identity(experiment: run, runID: UUID(),
+                                                       captureGeneration: 1, playbackGeneration: 2, configurationID: 3),
+                   .init(experiment: run, runID: identity.runID, captureGeneration: 4,
+                         playbackGeneration: 2, configurationID: 3),
+                   .init(experiment: run, runID: identity.runID, captureGeneration: 1,
+                         playbackGeneration: 4, configurationID: 3),
+                   .init(experiment: run, runID: identity.runID, captureGeneration: 1,
+                         playbackGeneration: 2, configurationID: 4)]
+        for invalid in bad {
+            m26Rejects { _ = try session.prepare(input, identity: invalid, sequence: 2) }
+        }
+        expect(session.buffers == 1 && session.frames == 8, "rejected scheduling cannot advance M26 counters")
+        session.cancel()
+        m26Rejects { _ = try session.prepare(input, identity: identity, sequence: 2) }
+        expect(session.closed, "Stop closes allocation before late callbacks")
+    }
+
+    static func testM26SRC() throws {
+        let source = Data((0 ..< 4800).map { UInt8(truncatingIfNeeded: $0 * 11) })
+        let original = source
+        let converter = try MacSpeechPCMOutputConverter(localFormat: m26Format())
+        for _ in 0 ..< 3 {
+            let processing = MacSpeechPCMOutputEnvelope.processing(to: source, fadeIn: .initial)
+            let converted = try converter.convert(pcm16Bytes: processing.bytes)
+            let originalArm = try MacSpeechChannelAllocation.buffer(converted, arm: .tripleEqual)
+            let maskedArm = try MacSpeechChannelAllocation.buffer(converted, arm: .firstChannelOnly)
+            let bytes = Int(converted.frameLength) * 4
+            expect(originalArm === converted && maskedArm !== converted,
+                   "A reuses SRC output; B uses an independent bounded copy")
+            expect(memcmp(originalArm.floatChannelData![0], maskedArm.floatChannelData![0], bytes) == 0,
+                   "ordinary SRC and Fade output ch0 bytes cannot change")
+            expect(maskedArm.frameCapacity == converted.frameCapacity && maskedArm.frameLength == converted.frameLength,
+                   "SRC frame coverage/capacity cannot change")
+            expect(source == original, "allocation does not edit source PCM bytes")
+        }
+    }
+
+    static func testM26Control() async throws {
+        let batch = UUID().uuidString, digest = String(repeating: "a", count: 64)
+        let prefix = MacSpeechChannelAllocation.Run.argument
+        let argument = batch + ":TRIPLE_EQUAL:" + digest
+        expect(MacSpeechChannelAllocation.Run(arguments: [prefix + argument, prefix + argument]) == nil,
+               "M26 refuses duplicate arguments")
+        for bad in ["bad:TRIPLE_EQUAL:" + digest, batch + ":unknown:" + digest,
+                    batch + ":TRIPLE_EQUAL:bad", argument + ":extra"] {
+            expect(MacSpeechChannelAllocation.Run(arguments: [prefix + bad]) == nil,
+                   "M26 refuses malformed identity/SHA")
+            let invalid = D1ControllerStack(allocationArgument: bad)
+            expect(!invalid.controller.prepareAppleVPAcousticTest(
+                .residentOnly, comprehensiveC: true, warmupProfile: .four,
+            ), "malformed M26 cannot fall through into a legacy experiment")
+        }
+        let mixed = D1ControllerStack(macAECArgument: batch + ":1:2", allocationArgument: argument)
+        expect(!mixed.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four, macAECBatch: true,
+        ), "M26 cannot change M20's identity")
+    }
+
+    static func testM26Run(_ arm: MacSpeechChannelAllocation.Arm) async throws {
+        let batch = UUID().uuidString, digest = String(repeating: "a", count: 64)
+        let source = try URL(fileURLWithPath: requireEnv("M20_RESIDENT_WAV"))
+        let pipe = Pipe(), clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now },
+                                      scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+                                      allocationArgument: batch + ":" + arm.rawValue + ":" + digest,
+                                      allocationBuildVerifier: { $0 == digest }, allocationInstaller: { _, _, _, _ in })
+        stack.capture.contentStartOverride = clock.start
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            .doubleTalk, comprehensiveC: true, warmupProfile: .four,
+        ), "M26 cannot prepare human C")
+        expect(stack.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four,
+        ), "M26 prepares its separate A/B contract without devices")
+        expect(stack.capture.startCount == 0 && stack.player.startCount == 0, "M26 Prepare has no device access")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "M26 admits fixed non-private fixture")
+        startD1(stack.controller)
+        await driveWarmupC(stack, clock: clock, profile: .four)
+        expect(stack.controller.appleVPAcousticTestState.errorCode == nil,
+               "M26 retains original Fake scoring/Stop/Seal")
+        expect(stack.controller.appleVPAcousticTestState.retainedPCMByteCount <= 720_000,
+               "M26 retains original PCM cap")
+        try expectM26Events(pipe, arm: arm)
+        expectD1Cleanup(stack)
+        expect(!stack.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four,
+        ), "M26 cannot reuse a completed Run in the same App")
+    }
+
+    static func testM26BuildRejection() async throws {
+        let argument = UUID().uuidString + ":TRIPLE_EQUAL:" + String(repeating: "a", count: 64)
+        let source = try URL(fileURLWithPath: requireEnv("M20_RESIDENT_WAV"))
+        let pipe = Pipe()
+        let rejected = D1ControllerStack(scoreControlDescriptor: pipe.fileHandleForWriting.fileDescriptor,
+                                         allocationArgument: argument, allocationBuildVerifier: { _ in false })
+        expect(rejected.controller.prepareAppleVPAcousticTest(
+            .residentOnly, comprehensiveC: true, warmupProfile: .four,
+        ), "invalid loaded SHA is checked at Start, not fabricated by Prepare")
+        expect(rejected.controller.selectAppleVPAcousticPlaybackURL(source), "SHA negative selects the same source")
+        startD1(rejected.controller)
+        await waitUntil("M26 SHA refusal") { rejected.controller.appleVPAcousticTestState.errorCode != nil }
+        expect(rejected.capture.startCount == 0 && rejected.player.startCount == 0,
+               "bad SHA must not start devices")
+        await rejected.controller.stopAppleVPAcousticTest()
+    }
+
+    static func expectM26Events(_ pipe: Pipe, arm: MacSpeechChannelAllocation.Arm) throws {
+        try pipe.fileHandleForWriting.close()
+        let events = try pipe.fileHandleForReading.readToEnd() ?? Data()
+        guard let text = String(data: events, encoding: .utf8) else { throw CocoaError(.coderInvalidValue) }
+        let lines = text.split(separator: "\n")
+        expect(lines.count == 2 && events.count <= 1024, "M26 uses original bounded two-event pipe")
+        for line in lines {
+            guard let event = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            expect(event["batch"] as? String == "R5_M26" && event["arm"] as? String == arm.rawValue,
+                   "M26 score and stop cannot be labelled M20/M22")
+        }
+    }
+
+    static func testM26All() async throws {
+        try testM26Buffers()
+        try testM26Qualification()
+        try testM26Session()
+        try testM26SRC()
+        try await testM26Control()
+        for arm in MacSpeechChannelAllocation.Arm.allCases {
+            try await testM26Run(arm)
+        }
+        try await testM26BuildRejection()
+        print("m26_fake_checks=\(checks)")
+        print("m26_fake_device_access=ZERO")
+    }
+
     static func main() async throws {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m26-only"]) {
+            try await testM26All()
+            return
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m22-only"]) {
             try await testM22Preparation()
             try await testM22Rounds()

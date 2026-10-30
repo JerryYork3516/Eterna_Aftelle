@@ -129,7 +129,9 @@ def check_plan(plan):
             raise ValueError("frozen file mismatch: "+name)
     executable = Path(plan["executable"])
     context = dict(batch_id=plan["batch_id"], round=1, limit=plan["limit"])
-    if plan.get("task") == "R5_M22":
+    if plan.get("task") == "R5_M26":
+        integration.command("HOST", executable, 3, allocation=dict(context, arm="TRIPLE_EQUAL"))
+    elif plan.get("task") == "R5_M22":
         integration.command("HOST", executable, 3, adaptation=dict(context, arm="voicedTwice"))
     else:
         integration.command("HOST", executable, 3, mac_aec=context)
@@ -384,7 +386,7 @@ def audit_capture_manifest(manifest, wav_identity, *, expected_pid=None, final_d
                 tail_coverage=manifest["warmup"].get("tail_coverage"), raw_timestamp_diagnostic=None)
 
 
-def device_round(plan, context, root, *, adaptation=False):
+def device_round(plan, context, root, *, adaptation=False, allocation=False):
     executable, cache = Path(plan["executable"]), Path(plan["cache"])
     pid_holder = []
     identity_checks, capture_requested = 0, False
@@ -420,7 +422,9 @@ def device_round(plan, context, root, *, adaptation=False):
         finish(pid, cleanup=True)
         return "CAPTURE_REQUESTED_STOP_EXPORT_QUIT"
 
-    connection = dict(adaptation=context) if adaptation else dict(mac_aec=context)
+    if adaptation and allocation:
+        raise ValueError("experiment contracts cannot mix")
+    connection = dict(allocation=context) if allocation else dict(adaptation=context) if adaptation else dict(mac_aec=context)
     integration._connected_run(plan["bundle"], "HOST", executable, root/"control",
         spawn=subprocess.Popen, clock=integration.now_ns, device=True, **connection,
         device_ui=prepare, finish_ui=finish, failure_ui=stop_and_preserve,
@@ -438,7 +442,10 @@ def device_round(plan, context, root, *, adaptation=False):
     manifest = json.loads(json_file.read_text())
     samples, identity = load_wav(wav_file)
     resident, _ = load_wav(plan["resident"], resident=True)
-    if adaptation:
+    if allocation:
+        import m26_channel_allocation
+        metadata = m26_channel_allocation.audit_manifest(manifest, context, identity, expected_pid=pid_holder[0])
+    elif adaptation:
         import m22_adaptation
         metadata = m22_adaptation.audit_manifest(manifest, context, identity, expected_pid=pid_holder[0])
     else:
@@ -465,6 +472,10 @@ def device_round(plan, context, root, *, adaptation=False):
         result = m22_adaptation.analyse_plays(samples, resident, metadata)
     else:
         result = analyse(samples, resident, **{key: metadata[key] for key in ("trustworthy", "render_start", "render_end")})
+    if allocation:
+        result["channel_allocation"] = metadata["channel_allocation"]
+        result["transient_60ms_energy_share"] = m26_channel_allocation.transient_share(
+            samples, metadata["render_start"], metadata["render_end"])
     result.update(run_id=run_id, technical_ok=True, wav=identity, json_sha256=sha(json_file),
                   native_pcm=metadata, resources_released=False)
     if not pid_holder or subprocess.run(["kill", "-0", str(pid_holder[0])], capture_output=True).returncode == 0:

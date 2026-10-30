@@ -1,5 +1,8 @@
 @preconcurrency import AVFoundation
 import Foundation
+#if DEBUG
+    import CryptoKit
+#endif
 
 private nonisolated final class MacSpeechConverterInputState: @unchecked Sendable {
     private let lock = NSLock()
@@ -32,6 +35,145 @@ nonisolated struct MacSpeechLocalPlaybackFormat: Sendable, Equatable {
         )
     }
 }
+
+#if DEBUG
+    nonisolated enum MacSpeechChannelAllocation {
+        enum Arm: String, CaseIterable, Sendable {
+            case tripleEqual = "TRIPLE_EQUAL"
+            case firstChannelOnly = "FIRST_CHANNEL_ONLY"
+        }
+
+        struct Run: Equatable, Sendable {
+            static let argument = "--apple-vp-channel-allocation="
+            static let sourceSHA = "774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea"
+            let batchID: UUID
+            let arm: Arm
+            let buildSHA: String
+
+            init?(arguments: [String]) {
+                let values = arguments.filter { $0.hasPrefix(Self.argument) }
+                guard values.count == 1 else { return nil }
+                let fields = values[0].dropFirst(Self.argument.count).split(
+                    separator: ":",
+                    omittingEmptySubsequences: false,
+                )
+                guard fields.count == 3, let batch = UUID(uuidString: String(fields[0])),
+                      let arm = Arm(rawValue: String(fields[1])), fields[2].count == 64,
+                      fields[2].utf8.allSatisfy({ (48 ... 57).contains($0) || (97 ... 102).contains($0) }) else {
+                    return nil
+                }
+                batchID = batch
+                self.arm = arm
+                buildSHA = String(fields[2])
+            }
+
+            var eventIdentity: [String: Any] {
+                ["batch": "R5_M26", "batch_id": batchID.uuidString, "arm": arm.rawValue,
+                 "round": arm == .tripleEqual ? 1 : 2, "limit": 2, "scenario": "A", "proxy_requested": false]
+            }
+
+            var manifest: [String: Any] {
+                var result = eventIdentity
+                result["source_sha256"] = Self.sourceSHA
+                result["build_sha256"] = buildSHA
+                return result
+            }
+
+            static func verifiesBuild(_ expected: String) -> Bool {
+                guard let executable = Bundle.main.executableURL else { return false }
+                let library = executable.deletingLastPathComponent().appendingPathComponent("Aftelle.debug.dylib")
+                guard let data = try? Data(contentsOf: library, options: .mappedIfSafe) else { return false }
+                return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == expected
+            }
+        }
+
+        struct Identity: Equatable, Sendable {
+            let experiment: Run
+            let runID: UUID
+            let captureGeneration: UInt64
+            let playbackGeneration: UInt64
+            let configurationID: UInt64
+
+            var manifest: [String: Any] {
+                var value = experiment.manifest
+                value["run_id"] = runID.uuidString
+                value["capture_generation"] = captureGeneration
+                value["playback_generation"] = playbackGeneration
+                value["configuration_id"] = configurationID
+                return value
+            }
+        }
+
+        struct Session {
+            let identity: Identity
+            private(set) var buffers = 0
+            private(set) var frames = 0
+            private(set) var closed = false
+
+            mutating func prepare(_ input: AVAudioPCMBuffer, identity current: Identity,
+                                  sequence: Int) throws -> AVAudioPCMBuffer {
+                guard !closed, identity == current, current.captureGeneration > 0,
+                      current.playbackGeneration > 0, current.configurationID > 0,
+                      sequence == buffers + 1, buffers < 48,
+                      frames + Int(input.frameLength) <= 76032 else { throw MacSpeechAudioOutputHostError.invalidState }
+                let output = try buffer(input, arm: identity.experiment.arm)
+                buffers += 1
+                frames += Int(input.frameLength)
+                return output
+            }
+
+            mutating func cancel() {
+                closed = true
+            }
+
+            var manifest: [String: Any] {
+                var value = identity.manifest
+                value["buffers"] = buffers
+                value["frames"] = frames
+                value["closed"] = closed
+                value["format"] = "16000Hz/3ch/Float32/planar/DiscreteInOrder"
+                return value
+            }
+        }
+
+        static func validate(_ format: AVAudioFormat) throws {
+            let asbd = format.streamDescription.pointee
+            guard format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
+                  asbd.mSampleRate == 16000, asbd.mFormatID == kAudioFormatLinearPCM,
+                  asbd.mFormatFlags == kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved,
+                  asbd.mBytesPerPacket == 4, asbd.mFramesPerPacket == 1, asbd.mBytesPerFrame == 4,
+                  asbd.mChannelsPerFrame == 3, asbd.mBitsPerChannel == 32, asbd.mReserved == 0,
+                  let layout = format.channelLayout?.layout.pointee,
+                  layout.mChannelLayoutTag == kAudioChannelLayoutTag_DiscreteInOrder | 3,
+                  layout.mChannelBitmap.rawValue == 0,
+                  layout.mNumberChannelDescriptions == 0 else { throw MacSpeechAudioOutputHostError.conversionFailed }
+        }
+
+        static func buffer(_ input: AVAudioPCMBuffer, arm: Arm) throws -> AVAudioPCMBuffer {
+            try validate(input.format)
+            let count = Int(input.frameLength)
+            let bytes = count * MemoryLayout<Float>.size
+            let channels = UnsafeMutableAudioBufferListPointer(input.mutableAudioBufferList)
+            guard count > 0, input.frameCapacity <= 1664, channels.count == 3,
+                  channels.allSatisfy({ $0.mNumberChannels == 1 && $0.mData != nil && $0.mDataByteSize == bytes }),
+                  let data = input.floatChannelData,
+                  memcmp(data[0], data[1], bytes) == 0, memcmp(data[0], data[2], bytes) == 0,
+                  (0 ..< count).allSatisfy({ data[0][$0].isFinite }) else {
+                throw MacSpeechAudioOutputHostError.conversionFailed
+            }
+            guard arm == .firstChannelOnly else { return input }
+            guard let output = AVAudioPCMBuffer(pcmFormat: input.format, frameCapacity: input.frameCapacity),
+                  let destination = output.floatChannelData else {
+                throw MacSpeechAudioOutputHostError.conversionFailed
+            }
+            output.frameLength = input.frameLength
+            memcpy(destination[0], data[0], bytes)
+            memset(destination[1], 0, bytes)
+            memset(destination[2], 0, bytes)
+            return output
+        }
+    }
+#endif
 
 nonisolated final class MacSpeechPCMOutputConverter: @unchecked Sendable {
     private let lock = NSLock()
