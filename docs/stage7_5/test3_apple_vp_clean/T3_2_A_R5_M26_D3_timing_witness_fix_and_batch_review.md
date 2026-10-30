@@ -1,6 +1,6 @@
 # T3.2-A / R5-M26-D3：时间见证器漏记修复与A/B实机审核
 
-日期：2026-10-30（Asia/Shanghai）。**离线修复验收通过；新批A/B各执行一次、技术门禁通过，冻结检测器均为ECHO_NOT_DETECTED。物理发声见证尚未取得，AEC声学验收仍UNVERIFIED。** 本报告A/B均为居民独讲，字母仅表示输出声道分配臂。
+日期：2026-10-30（Asia/Shanghai）。**离线修复验收通过；新批A/B各执行一次、技术门禁通过，冻结检测器均为ECHO_NOT_DETECTED。用户补充确认两臂现场均听到居民播放，支持本批有声条件下居民模板残留较低；正式AEC验收仍待主控审核。** 本报告A/B均为居民独讲，字母仅表示输出声道分配臂。
 
 ## 1. 身份、范围与确认缺陷
 
@@ -88,7 +88,7 @@ Render在回调中复制扫描结果，并锁定当时M22播放序号，避免�
 | 该窗Peak / PCM端点样本 | 0.040833 / 0 | 0.107666 / 0 |
 | Render窗最大60ms能量占比 | 85.657% | 94.409% |
 | 预热PCM保存 / 首尾覆盖 | 0 bytes / PARTIAL | 0 bytes / PARTIAL |
-| 用户物理发声见证 | PENDING / UNVERIFIED | PENDING / UNVERIFIED |
+| 用户物理发声见证 | USER_CONFIRMED_HEARD | USER_CONFIRMED_HEARD |
 
 两臂Capture/Playback Generation=1、ConfigurationID=2；各两次读回均VP Input/Output及AGC开启，bypass=false、inputMuted=false、Engine running；active/preferred Mic Mode均Standard（公共App-route API）。两次格式稳定，图内16kHz/3ch planar Float32、硬件输出16kHz/2ch；进程输入共享I/O集合及输出默认设备元数据资格通过。Engine配置事件及skippedNotifications均0，监听已关闭。两App实际加载身份均按确切PID核验，最终输入/输出running=0。
 
@@ -100,15 +100,17 @@ Render在回调中复制扫描结果，并锁定当时M22播放序号，避免�
 
 **CONFIRMED：** 共享标记导致漏记的路径已由离线RED/GREEN修复；本批两臂无观测遗漏、无Native拒收/包丢失，均完成原控制、导出及资源释放。**没有新增暂存命中计数**，实机未证明一定发生过竞争；确认的是修复候选兼容原流程和本批观察完整。
 
-**UNKNOWN：** Apple内部AEC参考、历史声学跨运行差异及瞬态来源。已一次性请求两臂物理发声见证，交付时尚无反馈，保持UNVERIFIED。软件Render/播放完成不代替扬声器实际发声。即使后续见证成立，本批两臂都低于同一模板检出条件，也未支持B优于A，不能宣布长期AEC稳定或把3ch判为BUG。
+**用户补充见证：** 对“本次A、B两轮Mac内置扬声器是否分别播放居民语音”的问题，用户原话为“都听到”。分别绑定A=`BD30440E-F730-43D5-B4EE-EF2C20EFC07C`、B=`BA29C3DA-4DBE-46ED-8F50-23A1D192E4EF`，两臂物理发声证据更新为USER_CONFIRMED_HEARD。本机追加独立回执；原计划、评分器输出及封存记录保持不变，没有重测、重算或改写原始UNVERIFIED字段。
+
+该反馈是现场发声见证，不是WAV试听裁定。结合两臂技术资格及低模板检出结果，支持本批居民回声受到抑制的有限结论；不能计算ERLE或宣布长期AEC稳定。**UNKNOWN：** Apple内部AEC参考、历史声学跨运行差异及瞬态来源。本批没有证据支持B优于A，也不能把3ch判为BUG。
 
 独立App/Engine生命周期、固定A→B顺序及实际声压仍是混杂。声道分配可能改变扬声器响度，同为系统55%不保证相同声压。本轮不将B纳入生产策略，不自动追加实验或关闭T3.2-A。
 
 原WAV SHA：A=`ac8752ec81cbc9a8e76d3a2e5236addae612d4878b0287891f9326d6c9d15e78`；B=`15043b66b78d09c28d66eb69c542397a69d2deda58c44e2450ac620d44006493`。私人WAV/JSON、设备UID及完整日志仅留本机；不上传、不转写、不自动播放。Git仅提交上述源码/测试/身份常量及本报告，原7冲突、索引和14项未跟踪证据交付前后核对。
 
-SELF_REVIEW：合同/真实损失负控PASS；实时有界及Release隔离PASS；定点回归/规范PASS；隐私/Git PASS；科学接受PARTIAL（物理见证及因果归属不足）。新增CRITICAL=0、MAJOR=0、MINOR=0；历史规范债务及M18-E01独立保留。Stage7 Forbidden Checklist=**PASS**：无新Engine/Tap/HIL，无AEC/AGC/NS、AudioGraph、Converter、时钟容差、正式Gate、RuntimeCore、Provider、DR/API或平台/Stage8变更。
+SELF_REVIEW：合同/真实损失负控PASS；实时有界及Release隔离PASS；定点回归/规范PASS；隐私/Git PASS；科学接受PARTIAL（物理见证已补齐，声压、跨运行稳定性及因果归属仍不足）。新增CRITICAL=0、MAJOR=0、MINOR=0；历史规范债务及M18-E01独立保留。Stage7 Forbidden Checklist=**PASS**：无新Engine/Tap/HIL，无AEC/AGC/NS、AudioGraph、Converter、时钟容差、正式Gate、RuntimeCore、Provider、DR/API或平台/Stage8变更。
 
-**唯一下一步：** 交主控审核本批合格A/B及待补的物理见证，再决定是否需要进一步实验；当前不作生产声道策略变更。
+**唯一下一步：** 交主控审核已补齐现场发声见证的本批A/B结果，再决定是否需要进一步实验；当前不作生产声道策略变更。本次补充仅更新报告，新增采集/播放/构建/音频分析均为0。
 
 ```ini
 TIMING_WITNESS_FIX=OFFLINE_PASS
@@ -118,7 +120,7 @@ B=ECHO_NOT_DETECTED
 CAPTURES=2
 RESIDENT_PLAYBACKS=2
 RETRIES=0
-PHYSICAL_EMISSION=UNVERIFIED
+PHYSICAL_EMISSION=USER_CONFIRMED_BOTH_ARMS
 AEC_ROOT_CAUSE=UNKNOWN
 CLOCK_ROOT_CAUSE=UNKNOWN
 M18_E01=DEFERRED
