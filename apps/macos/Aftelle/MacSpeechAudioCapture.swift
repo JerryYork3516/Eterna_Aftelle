@@ -2634,10 +2634,10 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             return false
         }
 
-        mutating func updateRender(_ body: (inout Playback) -> Void) {
-            if second != nil {
+        mutating func updateRender(index: UInt8, _ body: (inout Playback) -> Void) {
+            if index == 2, second != nil {
                 body(&second!)
-            } else if first != nil {
+            } else if index == 1, first != nil {
                 body(&first!)
             }
         }
@@ -2683,6 +2683,11 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private let busy = Atomic<Bool>(false)
         private let skipped = Atomic<UInt64>(0)
         private var state: MacSpeechTimingSnapshot
+        private let callbackSlots = (0 ..< 16).map { _ in CallbackSlot() }
+        private let callbackWriteIndex = Atomic<UInt64>(0)
+        private var callbackReadIndex: UInt64 = 0
+        private let callbackOverflow = Atomic<Bool>(false)
+        private let adaptationPlaybackIndex = Atomic<UInt8>(0)
         private let lifecyclePhase = Atomic<UInt8>(0)
         private let configurationObservationActive = Atomic<Bool>(false)
         private let configurationObservationClosed = Atomic<Bool>(false)
@@ -2703,11 +2708,21 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 return
             }
             defer { busy.store(false, ordering: .releasing) }
+            guard drainCallbacks() else {
+                skipped.wrappingAdd(1, ordering: .relaxed)
+                return
+            }
             body(&state)
         }
 
         func withUpdateForTesting(_ body: () -> Void) {
             update { _ in body() }
+        }
+
+        func withPendingInputForTesting(configurationID: UInt64, _ body: () -> Void) {
+            enqueue(.init(rendering: false, content: (1_000_000_000, 0), arrival: 1, frames: 320, rate: 16000,
+                          identity: (configurationID, captureGeneration), nonzero: nil, playbackIndex: 0),
+                    beforePublish: body)
         }
 
         func snapshot(
@@ -2734,7 +2749,10 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 let now = clock()
                 guard now >= started, now - started < 5_000_000 else { return false }
                 if busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged {
-                    return true
+                    if drainCallbacks() {
+                        return true
+                    }
+                    busy.store(false, ordering: .releasing)
                 }
                 if attempt < 19 {
                     wait()
@@ -2871,22 +2889,8 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             content: (host: UInt64?, sample: Int64?), arrival: UInt64, frames: UInt64, rate: Double,
             identity: (configurationID: UInt64, generation: UInt64)
         ) {
-            update { value in
-                guard !value.callbacksClosed, value.configurationID == identity.configurationID,
-                      value.captureGeneration == identity.generation else { value.staleCallbacks &+= 1; return }
-                value.input.arrived(at: arrival)
-                guard frames > 0, frames <= 16384, rate.isFinite, rate >= 1, rate <= 768_000 else {
-                    value.invalidBuffers &+= 1
-                    return
-                }
-                value.input.record(
-                    host: content.host,
-                    sample: content.sample,
-                    arrival: arrival,
-                    count: frames,
-                    rate: rate
-                )
-            }
+            enqueue(.init(rendering: false, content: content, arrival: arrival, frames: frames, rate: rate,
+                          identity: identity, nonzero: nil, playbackIndex: 0))
         }
 
         func render(
@@ -2894,32 +2898,15 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             identity: (configurationID: UInt64, generation: UInt64),
             scan: ((AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)?)? = nil
         ) {
+            let playbackIndex = adaptationPlaybackIndex.load(ordering: .acquiring)
             let scanned = if let scan {
                 scan(buffer)
             } else {
                 Self.nonzeroBounds(buffer)
             }
-            update { value in
-                guard !value.callbacksClosed, value.configurationID == identity.configurationID,
-                      value.captureGeneration == identity.generation else { value.staleCallbacks &+= 1; return }
-                value.playerRender.arrived(at: arrival)
-                guard let bounds = scanned else { value.invalidBuffers &+= 1; return }
-                value.playerRender.record(host: content.host, sample: content.sample, arrival: arrival,
-                                          count: UInt64(buffer.frameLength), rate: buffer.format.sampleRate)
-                if let range = bounds.range {
-                    value.playerRender.recordNonzero(content: content, range: range, rate: buffer.format.sampleRate)
-                }
-                value.playerRender.nonzeroFrames &+= bounds.count
-                value.adaptation?.updateRender { play in
-                    play.render.arrived(at: arrival)
-                    play.render.record(host: content.host, sample: content.sample, arrival: arrival,
-                                       count: UInt64(buffer.frameLength), rate: buffer.format.sampleRate)
-                    if let range = bounds.range {
-                        play.render.recordNonzero(content: content, range: range, rate: buffer.format.sampleRate)
-                    }
-                    play.render.nonzeroFrames &+= bounds.count
-                }
-            }
+            enqueue(.init(rendering: true, content: content, arrival: arrival, frames: UInt64(buffer.frameLength),
+                          rate: buffer.format.sampleRate, identity: identity, nonzero: scanned,
+                          playbackIndex: playbackIndex))
         }
 
         func scheduled(
@@ -2955,6 +2942,9 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                     value.adaptation = MacSpeechAdaptationTiming()
                 }
                 accepted = value.adaptation?.begin(play) == true
+                if accepted {
+                    adaptationPlaybackIndex.store(UInt8(play.index), ordering: .releasing)
+                }
             }
             return accepted
         }
@@ -2962,6 +2952,103 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
     }
 
     private extension MacSpeechNativeVoiceTiming {
+        nonisolated struct CallbackRecord: Sendable {
+            let rendering: Bool
+            let content: (host: UInt64?, sample: Int64?)
+            let arrival: UInt64
+            let frames: UInt64
+            let rate: Double
+            let identity: (configurationID: UInt64, generation: UInt64)
+            let nonzero: (range: ClosedRange<Int>?, count: UInt64)?
+            let playbackIndex: UInt8
+        }
+
+        final nonisolated class CallbackSlot {
+            // 0 = free, 1 = being written, 2 = published.
+            let readiness = Atomic<UInt8>(0)
+            var sequence: UInt64 = 0
+            var record: CallbackRecord?
+        }
+
+        /// Slots carry only copied metadata; a busy reader cannot erase a Tap observation.
+        func enqueue(_ record: CallbackRecord, beforePublish: () -> Void = {}) {
+            guard !callbackOverflow.load(ordering: .acquiring) else {
+                skipped.wrappingAdd(1, ordering: .relaxed)
+                return
+            }
+            let sequence = callbackWriteIndex.wrappingAdd(1, ordering: .acquiringAndReleasing).oldValue
+            let slot = callbackSlots[Int(sequence % UInt64(callbackSlots.count))]
+            guard slot.readiness.compareExchange(expected: 0, desired: 1,
+                                                 ordering: .acquiringAndReleasing).exchanged else {
+                skipped.wrappingAdd(1, ordering: .relaxed)
+                callbackOverflow.store(true, ordering: .releasing)
+                return
+            }
+            slot.sequence = sequence
+            slot.record = record
+            beforePublish()
+            slot.readiness.store(2, ordering: .releasing)
+            guard busy.compareExchange(expected: false, desired: true, ordering: .acquiringAndReleasing).exchanged
+            else { return }
+            defer { busy.store(false, ordering: .releasing) }
+            _ = drainCallbacks()
+        }
+
+        func drainCallbacks() -> Bool {
+            let end = callbackWriteIndex.load(ordering: .acquiring)
+            for _ in callbackSlots.indices {
+                if callbackReadIndex == end {
+                    return true
+                }
+                let slot = callbackSlots[Int(callbackReadIndex % UInt64(callbackSlots.count))]
+                guard slot.readiness.load(ordering: .acquiring) == 2 else {
+                    return callbackOverflow.load(ordering: .acquiring)
+                }
+                guard slot.sequence == callbackReadIndex, let record = slot.record else {
+                    skipped.wrappingAdd(1, ordering: .relaxed)
+                    callbackOverflow.store(true, ordering: .releasing)
+                    return true
+                }
+                apply(record)
+                slot.record = nil
+                callbackReadIndex &+= 1
+                slot.readiness.store(0, ordering: .releasing)
+            }
+            return callbackReadIndex == end || callbackOverflow.load(ordering: .acquiring)
+        }
+
+        func apply(_ record: CallbackRecord) {
+            guard !state.callbacksClosed, state.configurationID == record.identity.configurationID,
+                  state.captureGeneration == record.identity.generation else { state.staleCallbacks &+= 1; return }
+            if record.rendering {
+                state.playerRender.arrived(at: record.arrival)
+                guard let bounds = record.nonzero else { state.invalidBuffers &+= 1; return }
+                Self.recordRender(record, bounds: bounds, stream: &state.playerRender)
+                state.adaptation?.updateRender(index: record.playbackIndex) { play in
+                    play.render.arrived(at: record.arrival)
+                    Self.recordRender(record, bounds: bounds, stream: &play.render)
+                }
+            } else {
+                state.input.arrived(at: record.arrival)
+                guard record.frames > 0, record.frames <= 16384, record.rate.isFinite,
+                      record.rate >= 1, record.rate <= 768_000 else { state.invalidBuffers &+= 1; return }
+                state.input.record(host: record.content.host, sample: record.content.sample, arrival: record.arrival,
+                                   count: record.frames, rate: record.rate)
+            }
+        }
+
+        static func recordRender(
+            _ record: CallbackRecord, bounds: (range: ClosedRange<Int>?, count: UInt64),
+            stream: inout MacSpeechTimingStream
+        ) {
+            stream.record(host: record.content.host, sample: record.content.sample, arrival: record.arrival,
+                          count: record.frames, rate: record.rate)
+            if let range = bounds.range {
+                stream.recordNonzero(content: record.content, range: range, rate: record.rate)
+            }
+            stream.nonzeroFrames &+= bounds.count
+        }
+
         static func nonzeroBounds(_ buffer: AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)? {
             let frames = Int(buffer.frameLength)
             let channels = Int(buffer.format.channelCount)

@@ -4114,7 +4114,128 @@ private struct RealtimeInterruptionEvidenceTests {
         }
     }
 
+    static func testTimingCallbackContention() throws {
+        cases += 1
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 3)
+        let buffer = AVAudioPCMBuffer(pcmFormat: m26Format(), frameCapacity: 320)!
+        buffer.frameLength = 320
+        for channel in 0 ..< 3 {
+            for frame in 0 ..< 320 {
+                buffer.floatChannelData![channel][frame] = frame % 2 == 0 ? 0.125 : -0.25
+            }
+        }
+        let original = (0 ..< 3).map { Data(bytes: buffer.floatChannelData![$0], count: 1280) }
+        func callback(_ index: Int) {
+            let host = UInt64(1_000_000_000 + index * 20_000_000)
+            timing.input(content: (host, Int64(index * 320)), arrival: host, frames: 320, rate: 16000,
+                         identity: (3, 1))
+            timing.render(buffer, content: (host, Int64(index * 320)), arrival: host, identity: (3, 1))
+        }
+        callback(0)
+        timing.withUpdateForTesting { callback(1) }
+        callback(2)
+        let value = timing.snapshot()!
+        expect(value.skippedUpdates == 0, "occupied timing reader must not discard actual callback metadata")
+        expect(value.input.buffers == 3 && value.playerRender.buffers == 3,
+               "both streams retain every real metadata update")
+        for stream in [value.input, value.playerRender] {
+            expect(stream.frames == 960 && stream.sampleDiscontinuities == 0 && stream.hostDiscontinuities == 0,
+                   "deferred metadata retains original frames, order and content time")
+        }
+        expect(value.playerRender.nonzeroFrames == 960, "deferred Render preserves scanned bounds")
+        expect((0 ..< 3).map { Data(bytes: buffer.floatChannelData![$0], count: 1280) } == original,
+               "timing metadata never changes audio bytes")
+    }
+
+    static func testTimingCallbackOverflowAndFences() {
+        cases += 1
+        let overflow = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        overflow.bind(configurationID: 3)
+        overflow.withUpdateForTesting {
+            for index in 0 ..< 17 {
+                overflow.input(content: (UInt64(1_000_000_000 + index * 20_000_000), Int64(index * 320)),
+                               arrival: 1, frames: 320, rate: 16000, identity: (3, 1))
+            }
+        }
+        let full = overflow.snapshot()!
+        expect(full.input.buffers == 16 && full.skippedUpdates == 1,
+               "bounded capacity must retain stored records and expose the genuinely lost update")
+        let current = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 2)
+        current.bind(configurationID: 4)
+        current.input(content: (1_000_000_000, 0), arrival: 1, frames: 320, rate: 16000, identity: (4, 2))
+        current.withUpdateForTesting {
+            current.input(content: (1_040_000_000, 640), arrival: 2, frames: 320, rate: 16000, identity: (4, 2))
+            current.input(content: (1_060_000_000, 960), arrival: 3, frames: 320, rate: 16000, identity: (3, 1))
+        }
+        current.input(content: (1_060_000_000, 960), arrival: 4, frames: 0, rate: 16000, identity: (4, 2))
+        let value = current.snapshot()!
+        expect(value.skippedUpdates == 0 && value.input.buffers == 2,
+               "new generation excludes stale data without inheriting overflow")
+        expect(value.input.sampleDiscontinuities == 1 && value.input.hostDiscontinuities == 1,
+               "real missing samples and content-time gaps remain visible")
+        expect(value.staleCallbacks == 1 && value.invalidBuffers == 1, "invalid and stale callbacks stay rejected")
+        current.event(.captureStopped)
+        current.input(content: (1_080_000_000, 1280), arrival: 5, frames: 320, rate: 16000, identity: (4, 2))
+        expect(current.snapshot()?.staleCallbacks == 2, "Stop still closes callback qualification")
+    }
+
+    static func testTimingPublicationAndConcurrency() throws {
+        cases += 1
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 3)
+        timing.withPendingInputForTesting(configurationID: 3) {
+            var waits = 0
+            let pending = timing.snapshot(clock: { 1000 }, wait: { waits += 1 })
+            expect(pending == nil && waits == 19, "unpublished records cannot fabricate a complete snapshot")
+        }
+        expect(timing.snapshot()?.input.buffers == 1 && timing.snapshot()?.skippedUpdates == 0,
+               "real publication recovers evidence without losing or inventing a callback")
+        let buffer = AVAudioPCMBuffer(pcmFormat: m26Format(), frameCapacity: 320)!
+        buffer.frameLength = 320
+        for channel in 0 ..< 3 {
+            for frame in 0 ..< 320 {
+                buffer.floatChannelData![channel][frame] = 0.125
+            }
+        }
+        let finished = DispatchSemaphore(value: 0)
+        timing.withUpdateForTesting {
+            DispatchQueue.global().async {
+                for index in 1 ... 4 {
+                    let host = UInt64(1_000_000_000 + index * 20_000_000)
+                    timing.input(content: (host, Int64(index * 320)), arrival: host, frames: 320, rate: 16000,
+                                 identity: (3, 1))
+                }
+                finished.signal()
+            }
+            for index in 0 ..< 4 {
+                let host = UInt64(1_000_000_000 + index * 20_000_000)
+                timing.render(buffer, content: (host, Int64(index * 320)), arrival: host, identity: (3, 1))
+            }
+            expect(finished.wait(timeout: .now() + 1) == .success, "both producers finish while reader is busy")
+            buffer.frameLength = 160
+            for channel in 0 ..< 3 {
+                for frame in 0 ..< 320 {
+                    buffer.floatChannelData![channel][frame] = 0
+                }
+            }
+        }
+        let value = timing.snapshot()!
+        expect(value.input.buffers == 5 && value.playerRender.buffers == 4 && value.skippedUpdates == 0,
+               "concurrent producers preserve all bounded metadata")
+        expect(value.playerRender.frames == 1280 && value.playerRender.nonzeroFrames == 1280,
+               "queued records never retain a mutable audio buffer")
+        expect(value.input.sampleDiscontinuities == 0 && value.playerRender.sampleDiscontinuities == 0,
+               "stream order survives interleaved producers")
+    }
+
     static func testM26All() async throws {
+        try testTimingCallbackContention()
+        testTimingCallbackOverflowAndFences()
+        try testTimingPublicationAndConcurrency()
+        try testM12SnapshotContention()
+        testM12SnapshotTimeouts()
+        try testM12SnapshotInvalidation()
         try testM26Buffers()
         try testM26Qualification()
         try testM26Session()
