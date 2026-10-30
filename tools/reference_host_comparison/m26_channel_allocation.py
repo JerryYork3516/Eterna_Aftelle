@@ -24,6 +24,9 @@ def check_plan(plan):
             or plan["files"]["dylib"]["sha256"] != integration.M26_HOST_DYLIB_SHA
             or plan["files"]["resident"]["sha256"] != RESIDENT_SHA):
         raise ValueError("M26 frozen identity/order/parameters mismatch")
+    if (not isinstance(plan.get("resident"), str)
+            or plan["resident"] != plan["files"]["resident"]["path"]):
+        raise ValueError("M26 resident path must match the registered fixture")
     for key, name in (("m26", "m26_channel_allocation.py"), ("integration", "integration.py"),
                       ("batch", "m20_batch.py"), ("scorer", "m20_echo.py")):
         if Path(plan["files"][key]["path"]) != Path(__file__).resolve().with_name(name):

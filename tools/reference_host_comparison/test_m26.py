@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -118,6 +118,70 @@ class ControlTests(unittest.TestCase):
                 self.assertEqual(len(calls), count)
                 self.assertLessEqual(count, 2)
                 self.assertEqual((root/"M26_AUTHORIZATION_CONSUMED.json").stat().st_mode & 0o777, 0o600)
+
+
+class PlanContractTests(unittest.TestCase):
+    def plan(self, root):
+        here = Path(target.__file__).resolve().parent
+        files = {key: dict(path=str(here/name)) for key, name in (
+            ("m26", "m26_channel_allocation.py"), ("integration", "integration.py"),
+            ("batch", "m20_batch.py"), ("scorer", "m20_echo.py"),
+            ("prepare_ui", "prepare_host_original_ui.applescript"),
+            ("start_ui", "start_host_original_ui.applescript"))}
+        files.update(dylib=dict(sha256=integration.M26_HOST_DYLIB_SHA),
+                     resident=dict(path=str(root/"registered.wav"), sha256=target.RESIDENT_SHA))
+        return dict(task="R5_M26", ready=True, limit=2, arms=list(target.ARMS), parameters=target.PARAMETERS,
+                    batch_id=str(uuid.uuid4()).upper(), evidence_root=str(root), cache=str(root),
+                    executable=str(HOST), bundle=str(BUNDLE), files=files, resident=files["resident"]["path"])
+
+    def test_resident_path_rejected_before_execution_and_authorization_consumption(self):
+        for fault in ("missing", None, "", "unregistered.wav", ["registered.wav"]):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); root.chmod(0o700)
+                plan = self.plan(root)
+                if fault == "missing": plan.pop("resident")
+                else: plan["resident"] = fault
+                execute = Mock(side_effect=AssertionError("unsafe execution reached"))
+                with patch.object(target.batch, "check_plan") as shared:
+                    with self.assertRaisesRegex(ValueError, "resident"):
+                        target.run_batch(plan, target.CONSENT, root, execute=execute, check=target.check_plan)
+                    shared.assert_not_called()
+                execute.assert_not_called()
+                self.assertFalse((root/"M26_AUTHORIZATION_CONSUMED.json").exists())
+                self.assertFalse((root/"arm-1").exists())
+
+    def test_registered_path_reaches_original_prepare_and_start_ui(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(root)
+            with patch.object(target.batch, "check_plan") as shared:
+                target.check_plan(plan)
+                shared.assert_called_once_with(plan)
+            def connected(*args, **kwargs):
+                kwargs["device_ui"](42)
+                raise InterruptedError("FAKE_UI_BOUNDARY")
+            with patch.object(integration, "_connected_run", side_effect=connected), \
+                    patch.object(target.batch, "verify_loaded") as identity, \
+                    patch.object(target.batch, "ui", return_value="FAKE_ORIGINAL_UI") as ui:
+                with self.assertRaisesRegex(InterruptedError, "FAKE_UI_BOUNDARY"):
+                    target.batch.device_round(plan, context(target.ARMS[0]), root, allocation=True)
+                self.assertEqual(identity.call_count, 2)
+                self.assertEqual(ui.call_args_list[0].args,
+                                 (plan["files"]["prepare_ui"]["path"], 42, plan["files"]["resident"]["path"]))
+                self.assertEqual(ui.call_args_list[1].args, (plan["files"]["start_ui"]["path"], 42))
+
+    def test_wrong_sha_and_shared_safety_failure_still_reject_before_consumption(self):
+        for fault in ("sha", "shared"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); root.chmod(0o700)
+                plan = self.plan(root)
+                if fault == "sha": plan["files"]["resident"]["sha256"] = "0"*64
+                execute = Mock(side_effect=AssertionError("unsafe execution reached"))
+                with patch.object(target.batch, "check_plan", side_effect=ValueError("FAKE_SHA_OR_ROUTE_FAILURE")):
+                    with self.assertRaises(ValueError):
+                        target.run_batch(plan, target.CONSENT, root, execute=execute, check=target.check_plan)
+                execute.assert_not_called()
+                self.assertFalse((root/"M26_AUTHORIZATION_CONSUMED.json").exists())
 
 
 class EvidenceTests(unittest.TestCase):
