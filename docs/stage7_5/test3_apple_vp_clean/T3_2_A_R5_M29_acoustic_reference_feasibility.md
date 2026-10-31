@@ -1,12 +1,14 @@
 # T3.2-A / R5-M29：独立声场参照可行性与准入审查
 
-日期：2026-10-31（Asia/Shanghai）。READ_ONLY_FEASIBILITY_AUDIT；仅新增本报告。
+日期：2026-10-31（Asia/Shanghai）。READ_ONLY_FEASIBILITY_AUDIT；仅本报告，含用户设备盘点答复补充。
 
-**最终裁定：INSUFFICIENT_EVIDENCE。** 已登记设备为Mac mini M4、TinyUSB USB输入、Mac内置扬声器，尚无可核实的独立录音机、手机及采集App身份与处理合同。不能证明现有条件已满足独立声场参照，也不能把“未登记第二设备”写成“用户没有第二设备”或技术上永远不可行。`M29_REFERENCE_QUALIFICATION=UNVERIFIED`，不是设备执行READY。
+**最终裁定：NOT_FEASIBLE_WITH_CURRENT_EQUIPMENT。** 用户对现有独立手机或硬件录音机盘点明确答复“没有”。已确认可用装备仍为Mac mini M4、TinyUSB USB输入、Mac内置扬声器；没有其他已登记的独立参照设备。按当前装备及本节点禁止新增采集器的边界，不能建立合格的独立声场参照，停止该路线。这不是对所有Mac并行采集方案的技术不可能证明。`M29_REFERENCE_QUALIFICATION=UNVERIFIED`，不是设备执行READY。
 
 ## 1. Git、范围与证据来源
 
 开始时隔离Worktree干净；HEAD / upstream / 实时远端均为`bb7d884975abe7acf40c3ecec21aa4914bfd50cc`，本地分支`codex/reference-host-comparison-preparation`，推送目标`Test3-AppleVP-Clean`。沿用用户免除后续读取范围重复确认的指令，先报告限定范围再读取；没有将读取豁免当作私人录音或设备授权。
+
+初稿提交后取得设备盘点答复；本次补充开始时三方均为`1af876e024c551b011539efbd40566e1c1fbbf6f`，工作区干净，仅更正本报告的可用设备、裁定及停止建议，不扩大读取或执行范围。
 
 只读AGENTS、Stage7 Forbidden Checklist及以下已提交报告的相关章节；没有访问历史私人WAV/JSON、Manifest、UID或日志，没有枚举新设备或运行HAL探测。报告的设备事实为**既有登记**，不是本轮在线、占用、音量或权限快照。
 
@@ -18,7 +20,7 @@
 | [M25 §2–4](T3_2_A_R5_M25_reference_host_differential_audit.md)、[旧独立REF准备报告 §3–4](T3_2_A_R5_independent_human_reference_review.md) | 历史成功/派生REF均使用VP输入；独立程序不等于未经VP的声场参照。历史成功条件不完整，不重开原始录音 |
 | [M06 §1及可行性结论](T3_2_A_R5_M06_pre_vp_raw_capture_feasibility.md) | 复用其Apple官方API/SDK审查：独立HAL/AUHAL仅为PARTIAL候选，并行无扰动及ADC Raw来源未验证。本轮不重新实现、运行或扩展这些接口 |
 
-没有进行新的产品能力或API可用性断言：没有具体外部设备型号与App，不能代其填写PCM、增益或处理能力。已向用户请求一次现有候选型号/系统/App文字信息；截至本报告未取得可核实登记。未要求购买、安装、打开App或录音。
+没有进行新的产品能力或API可用性断言：没有具体外部设备型号与App，不能代其填写PCM、增益或处理能力。用户对“目前已有、可供未来参照使用的独立手机或硬件录音机”明确答复“没有”；只将此答复用于相应候选的可用性，不推定其他未登记设备的功能。未要求购买、安装、打开App或录音。
 
 ## 2. 已核实设备与实际可用性的边界
 
@@ -27,15 +29,15 @@
 | Mac mini M4 | 本地Aftelle宿主、内置扬声器；既有目标输出55%、未静音 | 本轮未查询当前设置；扬声器不是独立采集通道，没有登记第二个合格内置输入 |
 | TinyUSB USB输入 | 既有实验输入，目标系统60%；旧设备报告登记USB输入，VP运行后Native为16kHz/3ch Float32 | 设备别名和系统音量不证明ADC、硬件DSP或增益曲线。当前Aftelle Native已经过VP，不是独立参考或ADC Raw |
 | Mac内置扬声器 | 既有居民播放端；M26-D3有用户听闻 | 软件Render、默认设备、播放完成及听闻均不能单独提供麦克风附近的定量声场记录 |
-| 独立硬件录音机 | 没有型号、可用性或采集路径登记 | UNVERIFIED；不能假定现有设备支持手动固定增益或关闭处理 |
-| 独立手机录音系统 | 没有手机、系统及现有App身份登记 | UNVERIFIED；普通录音或无损文件不能自动取得RAW资格 |
+| 独立硬件录音机 | 用户确认没有可供参照使用的设备 | NOT_AVAILABLE；无可进入资格审查的实际候选 |
+| 独立手机录音系统 | 用户确认没有可供参照使用的设备 | NOT_AVAILABLE；无可进入资格审查的实际候选，不能用抽象手机方案填补 |
 | 其他独立采集设备 | 没有第二个采集设备及接口登记 | UNVERIFIED；不假设存在，不下载工具寻找替代通道 |
 
 既有报告证明前述Mac路线曾工作，不证明本轮实时可用。没有合格独立设备的登记，故本轮不建立待运行计划或已消耗授权记录。
 
 ## 3. 候选参照比较
 
-下表是**候选必须提供的证据**，不是产品功能承诺。三类外部候选目前均为UNVERIFIED。
+下表是**未来如有候选必须提供的证据**，不是产品功能承诺。当前A/B已由用户确认不可用，C未登记；不存在已获得资格的外部参照。
 
 | 检查项 | A：硬件录音机 | B：手机＋现有录音App | C：其他独立采集设备 |
 |---|---|---|---|
@@ -58,7 +60,7 @@
 
 | 资格 | 必须取得的真实证据 | 当前结论 |
 |---|---|---|
-| REFERENCE_INDEPENDENCE | 设备及采集路径身份；不经过Aftelle AudioGraph/VoiceProcessingIO，不共享本次AEC状态 | 现有VP信号不满足；外部候选UNVERIFIED |
+| REFERENCE_INDEPENDENCE | 设备及采集路径身份；不经过Aftelle AudioGraph/VoiceProcessingIO，不共享本次AEC状态 | 现有VP信号不满足；A/B不可用，C未验证 |
 | REFERENCE_SIGNAL_INTEGRITY | 已知PCM格式；增益固定；无未知动态AGC/NS/AEC/自动响度；限幅与完整性可检查 | UNVERIFIED |
 | REFERENCE_PHYSICAL_PLACEMENT | TinyUSB附近固定位置、距离、方向、遮挡及支撑方式的登记；两轮不移动，不改变原设备摆位 | UNVERIFIED |
 | REFERENCE_TIME_ALIGNMENT | 独立样本时钟、偏移/漂移与误差界证据；只比较共同且可信的内容覆盖 | UNVERIFIED |
@@ -107,23 +109,23 @@
 
 ## 8. 缺失条件、裁定及唯一下一步
 
-缺少：**一台已确认可用的独立采集设备及现有采集App/接口身份**；可验证的固定增益与AGC/NS/AEC/响度/限幅合同；实际PCM格式与动态范围；可信采样时间及对齐误差界；固定摆位和完整性证据。没有其中任何一项的实际PASS可供本轮填写。
+缺少：**可用的独立采集设备**。用户已确认没有可供参照的独立手机或硬件录音机，其他独立设备未登记。固定增益与AGC/NS/AEC/响度/限幅合同、实际PCM格式与动态范围、可信采样时间与对齐误差界、摆位及完整性也没有实际PASS。
 
-因此选择**INSUFFICIENT_EVIDENCE**，不选择“已有充分设备证据”的FEASIBLE_WITH_VERIFIED_REQUIREMENTS，也不因抽象候选存在便写CONDITIONALLY_FEASIBLE。当前登记未提供可用参照，但没有核实外部设备确实不存在或明确不支持，不能断言NOT_FEASIBLE_WITH_CURRENT_EQUIPMENT。
+初稿因设备库存未明裁定INSUFFICIENT_EVIDENCE；用户补充可用性后，改为**NOT_FEASIBLE_WITH_CURRENT_EQUIPMENT**。此裁定限当前已确认装备及本任务边界：唯一已登记输入正用于现有VP链，旧REF仍经VP，M06独立HAL/AUHAL没有已验证的现成通道，且本轮禁止新增采集器。不是声称同Mac旁路采集永远不可设计，也不据此认定AEC根因。
 
-**唯一下一步：补齐一台现有候选的型号、系统、现有采集App/接口及固定增益/处理路径资料，先由主控做文档准入。** 若没有候选或资料不足，就在缺项处停止；不要求购买，不下载替代App，不重跑AEC，不用Fake声场代替实测。无确认工程缺陷或生产修复依据，H1/H2/H3仍不能裁定。
+**唯一下一步：将“当前装备缺少独立参照”的阻塞交主控审核，停止本条参照路线。** 不再索取不存在的候选资料，不要求购买，不下载替代App，不重跑AEC，不用Fake声场代替实测；若主控选择其他调查方向，须另行圈定任务边界。无确认工程缺陷或生产修复依据，H1/H2/H3仍不能裁定。
 
 ## 9. 本轮检查与Stage状态
 
-- Git三方起点核验、明确单报告白名单、`git diff --check`与staged diff检查、报告隐私/密钥扫描、`bash tools/secret_guard/check.sh`：PASS（各自一次正式交付检查）。
+- 初稿及本次单报告补充均完成Git三方起点核验、单报告白名单、`git diff --check`与staged diff检查、报告隐私/密钥扫描、`bash tools/secret_guard/check.sh`：PASS；本次未重跑编译或音频回归。
 - 原工作区：7个冲突、原索引字节/未合并记录/status及14项未跟踪证据size/mtime前后不变；未读取其内容，未stash/pop、reset/clean、强推或处理冲突。
-- 仅一个新报告，无跨文件修改；不需要创建跨文件回滚提交。生产源码、原评分器、AGENTS治理和正式阶段状态无修改。
+- 仅本报告（初稿新增、本次补充），无跨文件修改；不需要创建跨文件回滚提交。生产源码、原评分器、AGENTS治理和正式阶段状态无修改。
 - 编译、App/Fake/音频测试及硬件在线/权限读回：NOT_RUN，文档任务不重复这些操作。独立参照资格未实测，不把文档检查PASS当作声学可行性PASS。
 
 Stage7 Forbidden Checklist（前/后）：**PASS**；触碰红线：无；修改文件：仅本报告；改代码/Runtime API/DR schema/新增平台target/进入Stage8：均否；无需额外读取确认，本轮在设备资格缺口处停止，不申请设备执行。
 
 ```ini
-M29_FEASIBILITY=INSUFFICIENT_EVIDENCE
+M29_FEASIBILITY=NOT_FEASIBLE_WITH_CURRENT_EQUIPMENT
 M29_REFERENCE_QUALIFICATION=UNVERIFIED
 M29_DEVICE_EXECUTION=NOT_AUTHORIZED
 M29_DEVICE_RUNS=0
