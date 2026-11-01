@@ -4229,6 +4229,487 @@ private struct RealtimeInterruptionEvidenceTests {
                "stream order survives interleaved producers")
     }
 
+    static func testM31ExistingGap() throws {
+        cases += 1
+        let (timing, identity) = m31Timing()
+        let source = m26Buffer([0.125, -0.25, 0.5, -0.75])
+        let changed = m26Buffer([0.125, -0.25, 0.625, -0.75])
+        m31Schedule(timing, identity, source)
+        m31Mapping(timing, identity, origin: 0, closing: false)
+        timing.event(.playerPlayBefore)
+        timing.render(changed, content: (1_000_000_000, 0), arrival: 1, identity: (3, 1), timestampRate: 16000)
+        let value = timing.snapshot()!
+        expect(value.scheduledFrames == value.playerRender.frames
+            && value.scheduledNonzeroFrames == value.playerRender.nonzeroFrames,
+            "existing frame and nonzero counts cannot detect an actual content change")
+        guard let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any] else {
+            throw CocoaError(.coderInvalidValue)
+        }
+        expect(json["playerContent"] != nil,
+               "M31 requires independent content evidence; existing counts are not a fingerprint")
+        expect(m31Close(timing, identity, origin: 0).status == "MAPPED_DIGEST_DIFFERENT_UNATTRIBUTED",
+               "a real synthetic sample change must differ despite equal old counters")
+    }
+
+    static func m31Identity(runID: UUID = UUID(), capture: UInt64 = 1,
+                            playback: UInt64 = 1, configuration: UInt64 = 3) -> MacSpeechPlayerContent.Identity {
+        .init(runID: runID, captureGeneration: capture, playbackGeneration: playback,
+              configurationID: configuration, epoch: UUID(),
+              sourceSHA: "774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea",
+              buildSHA: String(repeating: "a", count: 64))
+    }
+
+    static func m31Timing() -> (MacSpeechNativeVoiceTiming, MacSpeechPlayerContent.Identity) {
+        let identity = m31Identity()
+        let timing = MacSpeechNativeVoiceTiming(runID: identity.runID, generation: identity.captureGeneration)
+        timing.bind(configurationID: identity.configurationID, playbackGeneration: identity.playbackGeneration)
+        expect(timing.enablePlayerContent(identity), "M31 arms once before any callback or source submission")
+        return (timing, identity)
+    }
+
+    static func m31Schedule(_ timing: MacSpeechNativeVoiceTiming, _ identity: MacSpeechPlayerContent.Identity,
+                            _ buffer: AVAudioPCMBuffer) {
+        let before = (0 ..< 3).map { Data(bytes: buffer.floatChannelData![$0], count: Int(buffer.frameLength) * 4) }
+        let digest = timing.preparePlayerContent(buffer, identity: identity)
+        timing.scheduled(buffer)
+        timing.commitPlayerContent(digest, identity: identity)
+        expect(
+            before == (0 ..< 3).map { Data(bytes: buffer.floatChannelData![$0], count: Int(buffer.frameLength) * 4) },
+            "Source fingerprint never changes the actual submitted bytes"
+        )
+    }
+
+    static func m31Mapping(_ timing: MacSpeechNativeVoiceTiming, _ identity: MacSpeechPlayerContent.Identity,
+                           origin: Int64?, closing: Bool, roundTrip: Int64 = 0, rate: Double = 16000) {
+        timing.recordPlayerContentMapping(.init(epoch: identity.epoch, nodeSample: origin,
+                                                roundTripSample: roundTrip, nodeRate: rate, playerRate: rate,
+                                                startedAtNs: closing ? 3 : 1, finishedAtNs: closing ? 4 : 2),
+                                          closing: closing)
+    }
+
+    static func m31Close(_ timing: MacSpeechNativeVoiceTiming, _ identity: MacSpeechPlayerContent.Identity,
+                         origin: Int64?, completed: Bool = true) -> MacSpeechPlayerContent.Summary {
+        m31Mapping(timing, identity, origin: origin, closing: true)
+        if completed {
+            timing.event(.playbackCompleted)
+        }
+        timing.event(.captureStopped)
+        return timing.finalizedPlayerContent(base: timing.snapshot()!)!
+    }
+
+    static func m31Render(_ timing: MacSpeechNativeVoiceTiming, values: [Float], chunks: [Int],
+                          start: Int64 = 0, identity: (UInt64, UInt64) = (3, 1)) {
+        var cursor = 0
+        for length in chunks {
+            let buffer = m26Buffer(Array(values[cursor ..< cursor + length]))
+            let before = (0 ..< 3).map { Data(bytes: buffer.floatChannelData![$0], count: length * 4) }
+            let sample = start + Int64(cursor)
+            timing.render(buffer, content: (1_000_000_000 + UInt64(sample) * 62500, sample), arrival: 1,
+                          identity: identity, timestampRate: 16000)
+            expect(before == (0 ..< 3).map { Data(bytes: buffer.floatChannelData![$0], count: length * 4) },
+                   "Tap fingerprint leaves all channels and frameLength unchanged")
+            cursor += length
+        }
+        expect(cursor == values.count, "test chunks cover the fixture without guessing a tail")
+    }
+
+    static func m31Bitwise(_ bytes: [UInt8]) -> UInt64 {
+        var result: UInt64 = 0
+        for byte in bytes {
+            result ^= UInt64(byte) << 56
+            for _ in 0 ..< 8 {
+                let carry = result & 0x8000_0000_0000_0000 != 0
+                result <<= 1
+                if carry {
+                    result ^= 0x42F0_E1EB_A9EA_3693
+                }
+            }
+        }
+        return result
+    }
+
+    static func m31Hash(_ bytes: [UInt8], initial: UInt64 = 0) -> UInt64 {
+        bytes.withUnsafeBytes { MacSpeechContentCRC64.hash($0, initial: initial) }
+    }
+
+    static func testM31CRC() {
+        cases += 1
+        expect(m31Hash(Array("123456789".utf8)) == 0x6C40_DF5F_0B49_7347, "published ECMA-182 check value")
+        expect(m31Hash([]) == 0 && m31Bitwise([]) == 0, "empty stream has zero CRC")
+        let bytes = (0 ..< 4096).map { UInt8(truncatingIfNeeded: $0 * 37 + $0 / 11) }
+        expect(m31Hash(bytes) == m31Bitwise(bytes), "table CRC agrees with independent bit-at-a-time oracle")
+        var bytewise: UInt64 = 0
+        for byte in bytes {
+            bytewise = m31Hash([byte], initial: bytewise)
+        }
+        expect(bytewise == m31Hash(bytes), "streaming one-byte updates preserve the result")
+        var seed: UInt64 = 12345
+        for _ in 0 ..< 24 {
+            var cursor = 0
+            var combined: UInt64 = 0
+            while cursor < bytes.count {
+                seed = seed &* 6_364_136_223_846_793_005 &+ 1
+                let length = min(Int(seed % 113) + 1, bytes.count - cursor)
+                let block = Array(bytes[cursor ..< cursor + length])
+                let expected = m31Bitwise(block)
+                expect(m31Hash(block) == expected, "every random block also agrees with the independent oracle")
+                combined = MacSpeechContentCRC64.combine(combined, expected, bytes: length)!
+                cursor += length
+            }
+            expect(combined == m31Bitwise(bytes), "random block combination is independent of boundaries")
+        }
+        var changed = bytes
+        changed[2050] ^= 1
+        expect(m31Hash(changed) != m31Hash(bytes), "single-byte change is detected in the deterministic fixture")
+        expect(m31Hash(Array(bytes[2000...]) + Array(bytes[..<2000])) != m31Hash(bytes), "order change differs")
+        expect(m31Hash([0, 0, 0, 0]) != m31Hash([0, 0, 0, 128]), "positive and negative Float32 zero differ in bytes")
+        expect(MacSpeechContentCRC64.combine(1, 0, bytes: -1) == nil
+            && MacSpeechContentCRC64.combine(1, 0, bytes: .max) == nil,
+            "negative lengths and overflow-sized bit lengths refuse combination")
+        expect(MacSpeechContentCRC64.combine(7, 0, bytes: 0) == 7
+            && MacSpeechContentCRC64.combine(7, 1, bytes: 0) == nil, "empty right operand must actually be empty")
+    }
+
+    static func testM31Streams() {
+        cases += 1
+        let source: [Float] = (0 ..< 320).map { index in
+            let amplitude = Float(index % 29 + 1) / 64
+            return index % 2 == 0 ? amplitude : -amplitude
+        }
+        for modification in 0 ..< 8 {
+            checkM31StreamCase(modification, source: source)
+        }
+        testM31BufferQualification()
+    }
+
+    static func checkM31StreamCase(_ modification: Int, source: [Float]) {
+        let (timing, identity) = m31Timing()
+        m31Schedule(timing, identity, m26Buffer(Array(source[..<79])))
+        m31Schedule(timing, identity, m26Buffer(Array(source[79...])))
+        m31Mapping(timing, identity, origin: 64, closing: false)
+        timing.event(.playerPlayBefore)
+        var body = source
+        if modification == 1 {
+            body[177] *= 0.25
+        }
+        if modification == 2 {
+            body = Array(source[160...]) + Array(source[..<160])
+        }
+        if modification == 3 {
+            body[177] = 0
+        }
+        let values = Array(repeating: Float(0), count: 64) + body + Array(repeating: Float(0), count: 64)
+        if modification == 4 {
+            m31Render(timing, values: Array(values.dropFirst(65)), chunks: [383], start: 65)
+        } else if modification == 5 {
+            m31Render(timing, values: Array(values.prefix(383)), chunks: [383])
+        } else {
+            m31Render(timing, values: values, chunks: modification == 0 ? [13, 131, 53, 251] : [448])
+        }
+        let result = m31Close(timing, identity, origin: modification == 6 ? 65 : 64,
+                              completed: modification != 7)
+        switch modification {
+        case 0:
+            expect(result.status == "MAPPED_FINGERPRINT_MATCH" && result.renderFrames == 448,
+                   "actual source stream matches independent Tap boundaries, including observed zero prefix/suffix")
+        case 1 ... 3:
+            expect(
+                result.status == "MAPPED_DIGEST_DIFFERENT_UNATTRIBUTED",
+                "changed, reordered or missing nonzero samples differ"
+            )
+        default:
+            expect(result.status == "INCONCLUSIVE", "truncation, wrong mapping and cancellation cannot claim a match")
+        }
+    }
+
+    static func testM31BufferQualification() {
+        let buffer = AVAudioPCMBuffer(pcmFormat: m26Format(), frameCapacity: 100)!
+        buffer.frameLength = 4
+        for channel in 0 ..< 3 {
+            for index in 0 ..< 100 {
+                buffer.floatChannelData![channel][index] = index < 4 ? 0.125 : .nan
+            }
+        }
+        expect(
+            MacSpeechPlayerContent.digest(buffer) == MacSpeechPlayerContent.digest(m26Buffer([
+                0.125,
+                0.125,
+                0.125,
+                0.125
+            ])),
+            "only actual frameLength is read; poisoned unused capacity is excluded"
+        )
+        buffer.floatChannelData![1][2] = 0.25
+        let changed = MacSpeechPlayerContent.digest(buffer)!
+        expect(
+            changed.first == changed.third && changed.second != changed.first,
+            "each channel has its own fingerprint"
+        )
+        for bad in [m26Format(rate: 48000), m26Format(channels: 2), m26Format(interleaved: true),
+                    m26Format(tag: kAudioChannelLayoutTag_MPEG_3_0_A)] {
+            expect(!MacSpeechPlayerContent.validFormat(bad), "wrong rate, channels, layout and interleaving reject")
+        }
+        buffer.floatChannelData![0][0] = .infinity
+        expect(MacSpeechPlayerContent.digest(buffer) == nil, "non-finite actual content refuses evidence")
+    }
+
+    static func testM31Fences() {
+        cases += 1
+        let values = Array(repeating: Float(0.125), count: 16)
+        for count in [16, 17] {
+            let (timing, identity) = m31Timing()
+            m31Schedule(timing, identity, m26Buffer(Array(values.prefix(min(count, 16)))))
+            m31Mapping(timing, identity, origin: 0, closing: false)
+            timing.event(.playerPlayBefore)
+            timing.withUpdateForTesting {
+                m31Render(
+                    timing,
+                    values: Array(repeating: 0.125, count: count),
+                    chunks: Array(repeating: 1, count: count)
+                )
+            }
+            let result = m31Close(timing, identity, origin: 0)
+            expect(count == 16 ? result.status == "MAPPED_FINGERPRINT_MATCH"
+                : result.reason == "OBSERVER_INCONCLUSIVE",
+                "reader contention is retained; true 17th-slot loss invalidates evidence")
+            expect(timing.snapshot()!.skippedUpdates == (count == 16 ? 0 : 1), "original overflow gate stays exact")
+        }
+        let (pending, pendingID) = m31Timing()
+        pending.withPendingInputForTesting(configurationID: 3) {
+            var waits = 0
+            expect(pending.snapshot(clock: { 1 }, wait: { waits += 1 }) == nil && waits == 19,
+                   "unpublished slot still refuses within the original snapshot budget")
+        }
+        expect(!pending.enablePlayerContent(pendingID), "epoch cannot rearm or reuse an authorization-like identity")
+        let (stale, staleID) = m31Timing()
+        m31Schedule(stale, staleID, m26Buffer([0.125]))
+        m31Mapping(stale, staleID, origin: 0, closing: false)
+        stale.event(.playerPlayBefore)
+        m31Render(stale, values: [0.125], chunks: [1], identity: (2, 99))
+        let refused = m31Close(stale, staleID, origin: 0)
+        expect(refused.status == "INCONCLUSIVE" && stale.snapshot()!.staleCallbacks == 1,
+               "stale callback cannot enter the current content ledger")
+        m31Render(stale, values: [0.125], chunks: [1])
+        expect(stale.snapshot()!.staleCallbacks == 2, "Stop rejects later callbacks without changing the old fence")
+        let off = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        off.bind(configurationID: 3)
+        expect(off.snapshot()!.playerContent == nil, "normal DEBUG paths keep the new witness disabled")
+        expect(MemoryLayout<MacSpeechPlayerContent.Row>.stride <= 64, "fixed row is within the approved 64-byte design")
+        expect(2048 * MemoryLayout<MacSpeechPlayerContent.Row>.stride + 256 * 8
+            + 16 * 256 + 8192 <= 256 * 1024, "persistent history, table, queue delta and control metadata fit 256KiB")
+    }
+
+    static func testM31MappingAndLimits() {
+        cases += 1
+        for mode in 0 ..< 6 {
+            let (timing, identity) = m31Timing()
+            m31Schedule(timing, identity, m26Buffer([0.125]))
+            if mode != 0 {
+                m31Mapping(timing, identity, origin: 0, closing: false,
+                           roundTrip: mode == 2 ? 1 : 0, rate: mode == 3 ? 48000 : 16000)
+            }
+            timing.event(.playerPlayBefore)
+            m31Render(timing, values: [0.125], chunks: [1])
+            let result = m31Close(timing, identity, origin: mode == 1 ? nil : (mode == 4 ? 1 : 0))
+            expect(mode == 5 ? result.status == "MAPPED_FINGERPRINT_MATCH" : result.status == "INCONCLUSIVE",
+                   "only valid, round-trip, same-epoch mappings qualify; nil and conflicting anchors cannot be guessed")
+        }
+        let (capacity, identity) = m31Timing()
+        m31Schedule(capacity, identity, m26Buffer([0.125]))
+        m31Mapping(capacity, identity, origin: 0, closing: false)
+        capacity.event(.playerPlayBefore)
+        m31Render(
+            capacity,
+            values: [0.125] + Array(repeating: 0, count: 2048),
+            chunks: Array(repeating: 1, count: 2049)
+        )
+        expect(
+            m31Close(capacity, identity, origin: 0).reason == "OBSERVER_INCONCLUSIVE",
+            "real history overflow refuses"
+        )
+        let (budget, budgetID) = m31Timing()
+        let huge = m26Buffer(Array(repeating: 0.125, count: 8192))
+        for _ in 0 ..< 11 {
+            m31Schedule(budget, budgetID, huge)
+        }
+        expect(
+            m31Close(budget, budgetID, origin: nil).reason == "OBSERVER_INCONCLUSIVE",
+            "1MiB Source budget cannot expand"
+        )
+        let (tapBudget, tapID) = m31Timing()
+        m31Schedule(tapBudget, tapID, m26Buffer([0.125]))
+        for index in 0 ..< 43 {
+            tapBudget.render(huge, content: (1_000_000_000 + UInt64(index) * 512_000_000, Int64(index * 8192)),
+                             arrival: 1, identity: (3, 1), timestampRate: 16000)
+        }
+        let rejectedBudget = m31Close(tapBudget, tapID, origin: nil)
+        expect(rejectedBudget.reason == "OBSERVER_INCONCLUSIVE", "4MiB Tap budget cannot expand")
+        expect(rejectedBudget.renderHashBytes <= 4_194_304,
+               "rejected reservations never increase accepted hash work beyond the strict cap")
+    }
+
+    static func checkM31BufferReuse() {
+        let (timing, identity) = m31Timing()
+        let buffer = m26Buffer([0.125, -0.25, 0.5, -0.75])
+        m31Schedule(timing, identity, buffer)
+        m31Mapping(timing, identity, origin: 0, closing: false)
+        timing.event(.playerPlayBefore)
+        timing.withUpdateForTesting {
+            timing.render(buffer, content: (1_000_000_000, 0), arrival: 1, identity: (3, 1), timestampRate: 16000)
+            for channel in 0 ..< 3 {
+                for frame in 0 ..< 4 {
+                    buffer.floatChannelData![channel][frame] = 0
+                }
+            }
+            buffer.frameLength = 2
+        }
+        expect(m31Close(timing, identity, origin: 0).status == "MAPPED_FINGERPRINT_MATCH",
+               "queued digest owns copied numbers, not a reused mutable audio buffer")
+        checkM31ForeignSnapshot(timing)
+    }
+
+    static func testM31PublicationAndClose() {
+        cases += 1
+        checkM31BufferReuse()
+        let (closing, closingID) = m31Timing()
+        let original = m26Buffer([0.125, -0.25, 0.5, -0.75])
+        m31Schedule(closing, closingID, original)
+        m31Mapping(closing, closingID, origin: 0, closing: false)
+        m31Mapping(closing, closingID, origin: 0, closing: true)
+        closing.event(.playerPlayBefore)
+        closing.event(.playbackCompleted)
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            closing.render(original, content: (1_000_000_000, 0), arrival: 1, identity: (3, 1), scan: { _ in
+                entered.signal()
+                _ = release.wait(timeout: .now() + 2)
+                return (0 ... 3, 4)
+            }, timestampRate: 16000)
+            done.signal()
+        }
+        expect(entered.wait(timeout: .now() + 1) == .success, "synthetic pause holds an admitted callback")
+        let start = DispatchTime.now().uptimeNanoseconds
+        closing.event(.captureStopped)
+        let stopDuration = DispatchTime.now().uptimeNanoseconds - start
+        let result = closing.finalizedPlayerContent(base: closing.snapshot()!)!
+        expect(
+            result.reason == "OBSERVER_INCONCLUSIVE_IN_FLIGHT",
+            "Stop cannot invent publication of in-flight content"
+        )
+        expect(done.wait(timeout: .now()) == .timedOut, "Stop returns while the admitted callback remains paused")
+        release.signal()
+        expect(done.wait(timeout: .now() + 1) == .success, "Stop never waits for the artificially paused callback")
+        expect(closing.snapshot()!.staleCallbacks == 1, "closed epoch refuses the later publication")
+        print("m31_stop_control_observed_ns=\(stopDuration)")
+        testM31IdentityRefusals(closingID)
+    }
+
+    static func testM31IdentityRefusals(_ identity: MacSpeechPlayerContent.Identity) {
+        for wrong in [m31Identity(), m31Identity(runID: identity.runID, capture: 2),
+                      m31Identity(runID: identity.runID, playback: 2),
+                      m31Identity(runID: identity.runID, configuration: 4)] {
+            let unused = MacSpeechNativeVoiceTiming(runID: identity.runID, generation: 1)
+            unused.bind(configurationID: 3, playbackGeneration: 1)
+            expect(
+                !unused.enablePlayerContent(wrong),
+                "wrong Run/capture/playback/config identity refuses before observation"
+            )
+        }
+        let badSHA = MacSpeechPlayerContent.Identity(runID: UUID(), captureGeneration: 1,
+                                                     playbackGeneration: 1, configurationID: 3, epoch: UUID(),
+                                                     sourceSHA: String(
+                                                         repeating: "0",
+                                                         count: 64
+                                                     ),
+                                                     buildSHA: "invalid")
+        expect(!badSHA.valid, "unregistered source or malformed build identity cannot arm")
+    }
+
+    static func checkM31ForeignSnapshot(_ timing: MacSpeechNativeVoiceTiming) {
+        let base = timing.snapshot()!
+        var foreign = MacSpeechTimingSnapshot(runID: UUID(), captureGeneration: 1)
+        foreign.callbacksClosed = true
+        foreign.configurationID = base.configurationID
+        foreign.playbackGeneration = base.playbackGeneration
+        foreign.events = base.events
+        foreign.scheduledFrames = base.scheduledFrames
+        foreign.playerRender = base.playerRender
+        expect(timing.finalizedPlayerContent(base: foreign)?.status == "INCONCLUSIVE",
+               "another Run's metadata cannot qualify this content ledger")
+    }
+
+    static func testM31Performance() {
+        let samples = 1000
+        MacSpeechContentCRC64.prepare()
+        for frames in [480, 1600, 8192] {
+            let buffer = m26Buffer(Array(repeating: 0.125, count: frames))
+            var extra: [UInt64] = []
+            var total: [UInt64] = []
+            extra.reserveCapacity(samples)
+            total.reserveCapacity(samples)
+            var observed = 0
+            let perRun = min(512, 3_145_728 / (frames * 12))
+            while observed < samples {
+                let (enabled, _) = m31Timing()
+                let disabled = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+                disabled.bind(configurationID: 3)
+                let length = min(perRun, samples - observed)
+                for index in 0 ..< length {
+                    let host = UInt64(1_000_000_000 + index * frames * 62500)
+                    let time = Int64(index * frames)
+                    let offStart = DispatchTime.now().uptimeNanoseconds
+                    disabled.render(buffer, content: (host, time), arrival: 1, identity: (3, 1), timestampRate: 16000)
+                    let off = DispatchTime.now().uptimeNanoseconds - offStart
+                    let onStart = DispatchTime.now().uptimeNanoseconds
+                    enabled.render(buffer, content: (host, time), arrival: 1, identity: (3, 1), timestampRate: 16000)
+                    let enabledDuration = DispatchTime.now().uptimeNanoseconds - onStart
+                    extra.append(enabledDuration > off ? enabledDuration - off : 0)
+                    total.append(enabledDuration)
+                }
+                expect(
+                    enabled.snapshot()!.skippedUpdates == 0,
+                    "benchmark uses the actual original 16-slot data structure"
+                )
+                observed += length
+            }
+            printM31Performance(frames: frames, extra: extra, total: total)
+        }
+        printM31Memory()
+    }
+
+    static func printM31Performance(frames: Int, extra: [UInt64], total: [UInt64]) {
+        let samples = extra.count
+        let extra = extra.sorted()
+        let total = total.sorted()
+        let limit = min(UInt64(1_000_000), UInt64(frames) * 625)
+        print("m31_perf_frames=\(frames) n=\(samples) extra_p50_ns=\(extra[499])"
+            + " extra_p95_ns=\(extra[949]) extra_p99_ns=\(extra[989]) extra_max_ns=\(extra[999])"
+            + " total_max_ns=\(total[999]) budget_ns=\(limit) within_observed_budget=\(extra[999] <= limit)")
+    }
+
+    static func printM31Memory() {
+        let rows = 2048 * MemoryLayout<MacSpeechPlayerContent.Row>.stride
+        let budget = rows + 256 * 8 + 16 * 256 + 8192
+        print("m31_memory_row_stride=\(MemoryLayout<MacSpeechPlayerContent.Row>.stride) history_bytes=\(rows)"
+            + " conservative_increment_bytes=\(budget) limit_bytes=262144")
+        print("m31_perf_device_access=ZERO")
+        print("m31_real_player_mapping=NOT_RUN")
+    }
+
+    static func testM31All() throws {
+        testM31CRC()
+        try testM31ExistingGap()
+        testM31Streams()
+        testM31Fences()
+        testM31MappingAndLimits()
+        testM31PublicationAndClose()
+        print("m31_fake_cases=\(cases)")
+        print("m31_fake_checks=\(checks)")
+        print("m31_fake_device_access=ZERO")
+    }
+
     static func testM26All() async throws {
         try testTimingCallbackContention()
         testTimingCallbackOverflowAndFences()
@@ -4249,9 +4730,24 @@ private struct RealtimeInterruptionEvidenceTests {
         print("m26_fake_device_access=ZERO")
     }
 
-    static func main() async throws {
+    static func runWitnessTestMode() async throws -> Bool {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m31-performance"]) {
+            testM31Performance()
+            return true
+        }
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m31-only"]) {
+            try testM31All()
+            return true
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m26-only"]) {
             try await testM26All()
+            return true
+        }
+        return false
+    }
+
+    static func main() async throws {
+        if try await runWitnessTestMode() {
             return
         }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m22-only"]) {
