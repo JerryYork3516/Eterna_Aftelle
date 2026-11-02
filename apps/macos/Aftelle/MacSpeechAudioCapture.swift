@@ -2811,7 +2811,8 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             let list = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
             guard list.count == 3 else { return nil }
             var result = Digest()
-            for channel in 0 ..< 3 {
+            var channel = 0
+            while channel < 3 {
                 let item = list[channel]
                 guard item.mNumberChannels == 1, Int(item.mDataByteSize) >= frames * 4,
                       let data = item.mData else { return nil }
@@ -2828,6 +2829,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 case 1: result.second = crc
                 default: result.third = crc
                 }
+                channel += 1
             }
             return result
         }

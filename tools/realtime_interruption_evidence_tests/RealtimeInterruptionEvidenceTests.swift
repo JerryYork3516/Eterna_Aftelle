@@ -9,6 +9,8 @@ private final class M31AllocationProbe: @unchecked Sendable {
     /// Test-only Apple libmalloc logging SPI; capability checked and never linked into Aftelle.
     static let source = #"""
     #include <stdint.h>
+    #include <execinfo.h>
+    #include <stdio.h>
     #include <stdlib.h>
     #include <dlfcn.h>
     #include <pthread.h>
@@ -16,7 +18,13 @@ private final class M31AllocationProbe: @unchecked Sendable {
     typedef void logger_t(uint32_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uint32_t);
     typedef struct { uint64_t type, size, pointer, count; } event_t;
     static logger_t **logger_slot;
-    typedef struct { uint64_t active, allocs, frees, bytes, count, overflow; event_t events[64]; } scope_t;
+    typedef struct {
+        uint64_t active, allocs, frees, bytes, count, overflow;
+        event_t events[64];
+        uint64_t capture, tracing, nested, traces;
+        int lengths[3];
+        void *frames[3][48];
+    } scope_t;
     static _Thread_local scope_t scope;
     static pthread_key_t scope_key;
     static _Atomic(uintptr_t) watched;
@@ -31,6 +39,14 @@ private final class M31AllocationProbe: @unchecked Sendable {
         }
         scope_t *s = pthread_getspecific(scope_key);
         if (!s || !s->active) return;
+        if (s->tracing) { s->nested++; return; }
+        if ((type & 2) && result && size == 40 && s->traces < 3 &&
+            s->capture) {
+            s->tracing = 1;
+            s->lengths[s->traces] = backtrace(s->frames[s->traces], 48);
+            s->traces++;
+            s->tracing = 0;
+        }
         if ((type & 2) && result) { s->allocs++; s->bytes += size; }
         if ((type & 4) && b) s->frees++;
         for (uint64_t i = 0; i < s->count; i++) {
@@ -44,16 +60,29 @@ private final class M31AllocationProbe: @unchecked Sendable {
         if (!logger_slot || *logger_slot) return 0;
         if (pthread_key_create(&scope_key, NULL) != 0) return 0;
         scope.active = 0;
+        void *warm[48]; backtrace(warm, 48);
         *logger_slot = logger;
         return 1;
     }
     void m31_probe_uninstall(void) { if (logger_slot && *logger_slot == logger) *logger_slot = NULL; }
     void m31_probe_begin(void) {
         scope.active = 0; scope.allocs = scope.frees = scope.bytes = scope.count = scope.overflow = 0;
+        scope.tracing = scope.nested = scope.traces = 0;
         pthread_setspecific(scope_key, &scope);
         scope.active = 1;
     }
-    uint64_t m31_probe_end(void) { scope.active = 0; return scope.allocs; }
+    uint64_t m31_probe_end(void) {
+        scope.active = 0;
+        if (scope.traces) {
+            fprintf(stderr, "M31_CALLSITE_STACKS nested=%llu traces=%llu\n",
+                    scope.nested, scope.traces);
+            for (unsigned i = 0; i < scope.traces; i++) {
+                fprintf(stderr, "CALLSITE_EVENT %u\n", i);
+                backtrace_symbols_fd(scope.frames[i], scope.lengths[i], 2);
+            }
+        }
+        return scope.allocs;
+    }
     uint64_t m31_probe_read(uint64_t field) {
         switch (field) {
             case 0: return scope.allocs; case 1: return scope.frees; case 2: return scope.bytes;
@@ -72,6 +101,9 @@ private final class M31AllocationProbe: @unchecked Sendable {
         return field == 0 ? atomic_load(&watched_frees) : atomic_load(&watched_thread);
     }
     uint64_t m31_probe_thread(void) { uint64_t value = 0; pthread_threadid_np(NULL, &value); return value; }
+
+    void m31_probe_capture(uint64_t enabled) { scope.capture = enabled; }
+    uint64_t m31_probe_nested(void) { return scope.nested; }
     """#
 
     typealias Action = @convention(c) () -> Void
@@ -87,6 +119,8 @@ private final class M31AllocationProbe: @unchecked Sendable {
     let watch: Watch
     let watched: Read
     let thread: Value
+    let capture: Watch
+    let nested: Value
     private let uninstall: Action
 
     init(path: String) {
@@ -98,6 +132,8 @@ private final class M31AllocationProbe: @unchecked Sendable {
         watch = unsafeBitCast(dlsym(handle, "m31_probe_watch")!, to: Watch.self)
         watched = unsafeBitCast(dlsym(handle, "m31_probe_watched")!, to: Read.self)
         thread = unsafeBitCast(dlsym(handle, "m31_probe_thread")!, to: Value.self)
+        capture = unsafeBitCast(dlsym(handle, "m31_probe_capture")!, to: Watch.self)
+        nested = unsafeBitCast(dlsym(handle, "m31_probe_nested")!, to: Value.self)
         uninstall = unsafeBitCast(dlsym(handle, "m31_probe_uninstall")!, to: Action.self)
         let install = unsafeBitCast(dlsym(handle, "m31_probe_install")!, to: (@convention(c) () -> Int32).self)
         precondition(install() == 1, "allocation hook unavailable or already owned; no observation")
@@ -4997,6 +5033,7 @@ private struct RealtimeInterruptionEvidenceTests {
         expect(armed && probe.read(4) == 0, "preparation is observable without probe overflow")
         expect((0 ..< probe.read(3)).filter { probe.event($0, 1) == 131_072 }.count == 1,
                "2048-row storage is allocated once in non-realtime preparation")
+        observeM31DigestComponents(probe)
         for frames in [480, 1600, 8192] {
             observeM31RenderAllocations(frames, probe: probe)
         }
@@ -5031,15 +5068,20 @@ private struct RealtimeInterruptionEvidenceTests {
         probe.report("first_render_\(frames)")
         expect(probe.read(4) == 0, "render observation is not truncated")
         probe.begin()
+        timing.render(buffer, content: (1_000_000_000 + UInt64(frames) * 62500, Int64(frames)),
+                      arrival: 2, identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("enabled_steady_\(frames)")
+        probe.begin()
         timing.withUpdateForTesting {
-            timing.render(buffer, content: (1_000_000_000 + UInt64(frames) * 62500, Int64(frames)),
-                          arrival: 2, identity: (3, 1), timestampRate: 16000)
+            timing.render(buffer, content: (1_000_000_000 + UInt64(frames) * 125_000, Int64(frames * 2)),
+                          arrival: 3, identity: (3, 1), timestampRate: 16000)
         }
         _ = probe.end()
         probe.report("queued_render_\(frames)")
         probe.begin()
-        timing.render(buffer, content: (1_000_000_000 + UInt64(frames) * 125_000, Int64(frames * 2)),
-                      arrival: 3, identity: (3, 1), timestampRate: 16000)
+        timing.render(buffer, content: (1_000_000_000 + UInt64(frames) * 187_500, Int64(frames * 3)),
+                      arrival: 4, identity: (3, 1), timestampRate: 16000)
         _ = probe.end()
         probe.report("drain_apply_\(frames)")
         let result = m31Close(timing, identity, origin: 0)
@@ -5064,16 +5106,69 @@ private struct RealtimeInterruptionEvidenceTests {
         _ = probe.end()
         probe.report("digest_\(frames)")
         expect(digest != nil, "actual digest was evaluated")
+        probe.capture(ProcessInfo.processInfo.environment["M31_CAPTURE_CALLSITES"] == "1" ? 1 : 0)
         probe.begin()
         let repeated = MacSpeechPlayerContent.digest(buffer)
         _ = probe.end()
+        probe.capture(0)
         probe.report("digest_repeated_\(frames)")
+        expect(probe.nested() == 0, "stack observation cannot hide recursive allocator events")
         expect(digest == repeated, "repeat observation does not change the digest")
+        if ProcessInfo.processInfo.environment["M31_ENFORCE_NEW_ALLOCATIONS"] == "1" {
+            expect(probe.read(0) == 0 && probe.read(1) == 0, "M31 repeated digest must not add allocator events")
+        }
         probe.begin()
         let crc = MacSpeechContentCRC64.hash(raw)
         _ = probe.end()
         probe.report("crc_channel_\(frames)")
         expect(crc == digest!.first, "standalone CRC agrees with the actual digest")
+    }
+
+    static func observeM31DigestComponents(_ probe: M31AllocationProbe) {
+        let buffer = m26Buffer(Array(repeating: 0.125, count: 480))
+        probe.begin()
+        let range = m31RangeIteration(3)
+        _ = probe.end()
+        probe.report("range_iteration_positive")
+        expect(range == 3, "isolated Range preserves all channel indices")
+        probe.begin()
+        let list = m31BufferListAndFiniteScan(buffer, finite: false)
+        _ = probe.end()
+        probe.report("buffer_list_without_range")
+        probe.begin()
+        let finite = m31BufferListAndFiniteScan(buffer, finite: true)
+        _ = probe.end()
+        probe.report("full_finite_scan_without_range")
+        expect(list == 3 && finite == 3, "components visit all three channels and finite samples")
+    }
+
+    static func m31RangeIteration(_ count: Int) -> Int {
+        var result = 0
+        for channel in 0 ..< count {
+            result += channel
+        }
+        return result
+    }
+
+    static func m31BufferListAndFiniteScan(_ buffer: AVAudioPCMBuffer, finite: Bool) -> Int {
+        let list = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        var channel = 0
+        var result = 0
+        while channel < list.count {
+            let item = list[channel]
+            guard let data = item.mData else { return -1 }
+            if finite {
+                let values = data.assumingMemoryBound(to: Float.self)
+                var frame = 0
+                while frame < Int(buffer.frameLength) {
+                    guard values[frame].bitPattern & 0x7F80_0000 != 0x7F80_0000 else { return -1 }
+                    frame += 1
+                }
+            }
+            result += Int(item.mNumberChannels)
+            channel += 1
+        }
+        return result
     }
 
     static func observeM31CapacityAllocations(_ probe: M31AllocationProbe) {
