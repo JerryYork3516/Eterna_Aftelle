@@ -343,3 +343,155 @@ Test3.execution_authorized=false
 M31_D2=NOT_STARTED
 T3.3=NOT_STARTED
 ```
+
+## 9. 2026-11-02：动态分配调用点归因与析构线程定向整改
+
+**当前裁定：新增分配已定位并在离线稳态观察中消除；整体安全验收仍未通过。** 本轮只做一次有依据的产品侧修改：digest的三声道Range迭代改为相同范围的while。生命周期没有足够依据安全修改，保持原实现。原口径性能本次480和8192帧超限，必须恢复为FAILED_BUDGET；不沿用§8的预算通过结论。本节为最新结果，§1–8及所有历史失败原样保留。
+
+### 9.1 起点、范围与提交
+
+起点HEAD/upstream/实时远端均为`a8be3e6c96551cfbed06d45e7c3d2d6de9f5bbfc`，原隔离Worktree clean，本地分支与目标upstream未切换。原7冲突、索引/status/未合并摘要、14项证据size/mtime与§8交付一致；此前9项源码/普通测试/TSan/探针及App磁盘身份重新计算全部匹配。
+
+跨文件前回滚点`af722579754c2cd7f755d6999c31013efda5f530`。实际修改仍仅Capture、直接测试及本报告；代码/测试提交为**`368063b7cbd7ceb5b3b125cf21449422e760239b`**。报告另行提交，最终报告提交SHA及Push后HEAD核验记录在交付回执，避免本报告自引用。
+
+复用AGENTS、Stage7 Checklist、M31设计、§8、既有探针/测试与构建入口；只沿实际所有权链补读Capture、Controller关闭/重置及OutputHost对应函数。没有全仓扫描或读取私人音频/JSON，不修改Controller、OutputHost或其他非白名单文件。
+
+### 9.2 调用点证据：不是根据40-byte大小猜测
+
+在当前实际Capture源码未修改前，重新编译独立`-g`归因程序；Debug/严格并发flags及既有source/framework列表不变，`-g`仅用于此归因产物。普通验收和性能仍使用原无`-g`编译入口。基线Capture SHA为`8f8e22fa302d48ddbe5d42ec88eb944bfad3e71a0be9abb3cb5d6a88b24e4951`；归因程序SHA为`b1e7cd07b75743748a6f315dfe3e561f709a973eda7febaa529f8f6497acf5d8`，独立保存，未被后续程序覆盖。
+
+在原测试专用malloc探针上增加有界调用栈捕获：非观察阶段预热backtrace；仅显式开启的重复digest区间，最多记录3个40-byte申请、每栈最多48帧。捕获重入的分配另计nested，不混入工作计数；符号化/输出在区间关闭后执行。480/1600/8192三档各获得3个实际申请栈，**9个事件的nested均为0**；原64个聚合槽及overflow拒绝保留。没有生产App拦截、系统权限变化或重启Instruments。
+
+实际动态调用关系（从工作代码到观察器）：
+
+```text
+MacSpeechPlayerContent.digest(_:) +704
+  → Swift.IndexingIterator.next()
+  → Swift.Range<A> 的 Collection.subscript.read 协议见证
+  → _malloc_zone_malloc_instrumented_or_legacy
+  → 本机测试logger
+```
+
+三次申请的digest调用位置相同。基线`MacSpeechAudioCapture.swift:2814`为该函数唯一的Range迭代`for channel in 0 ..< 3`；有限性与CRC内部均是while。调用栈及该指令附近的迭代器调用与0/3边界交叉核对，定位于三声道循环，而非AudioBufferList getter或CRC。atos只返回函数及`:0`，**没有伪称取得逐行DWARF信息**；源码行号来自对应基线文本，归因同时依赖真实栈、分段对照及下一节的一次改写前后验证。
+
+| 分段操作 | 离线观察 | 证据边界 |
+|---|---|---|
+| 保留旧Range形式的三次整数迭代 | 3申请/3释放，120 bytes | 与真实digest栈交叉佐证；不单独用计数作为栈证据 |
+| 无Range的三声道BufferList读取 | 首次1申请/0释放，56 bytes | 保留冷读取；未把56-byte具体子调用点写成已确认 |
+| 无Range、三声道完整有限性扫描 | 0/0 | 所有有效frame都读取，没有采样或跳帧 |
+| validFormat | 首次2/2、48 bytes；后续0/0 | 冷/稳态分开，不声称所有新Buffer均预热 |
+| 单声道CRC.hash | 三档均0/0 | CRC代码未改，不将其定性为此次分配原因 |
+| 实际基线重复digest | 三档均3/3、120 bytes | 原始申请栈直接来自该实际函数 |
+
+**ALLOCATION_CALLSITE_ATTRIBUTION=CONFIRMED（当前离线Debug环境）。** 工具链为Apple Swift 6.4 / swiftlang-6.4.0.34.1，arm64，macOS 26.6.2。确认的是此构建环境中的Range迭代分配路径，不宣称所有Swift for循环、Release或Apple AEC均有同类缺陷。
+
+### 9.3 单次最小修改及RED/GREEN
+
+Capture只有4行diff（3增1删）：把`for channel in 0 ..< 3`替换为`var channel=0; while channel<3`，在原switch后`channel += 1`。三个声道的顺序、有效frame、字节和有限性谓词完整保留；CRC表/更新/组合、格式/layout、映射、身份、Epoch、Generation、原子操作、队列、容量、关闭及输出调度均未修改。没有其他产品侧尝试或生命周期补丁。
+
+新增零分配断言直接调用实际digest：基线程序`M31_ENFORCE_NEW_ALLOCATIONS=1 … --m31-allocation`在重复digest处exit133，保留`M31 repeated digest must not add allocator events`失败。这是已定位仪器合同RED，不是AEC故障复现。相同断言在上述一次源代码改写及终版重编译后exit0，三档均通过。
+
+| Frames | 基线重复digest申请/释放 | 整改后重复digest申请/释放 | 关闭路径稳态申请/释放 | 开启路径稳态申请/释放 | 本轮增量 |
+|---|---:|---:|---:|---:|---:|
+| 480 | 3 / 3，120 bytes | 0 / 0，0 bytes | 1922 / 1922，76880 bytes | 1922 / 1922，76880 bytes | 0 / 0 |
+| 1600 | 3 / 3，120 bytes | 0 / 0，0 bytes | 6402 / 6402，256080 bytes | 6402 / 6402，256080 bytes | 0 / 0 |
+| 8192 | 3 / 3，120 bytes | 0 / 0，0 bytes | 32770 / 32770，1310800 bytes | 32770 / 32770，1310800 bytes | 0 / 0 |
+
+本轮终版43个观察区间均overflow=0；空负控0/0，malloc/free正控1/1，Swift容器正控7/7。完整首个开启render也分别为1922/6402/32770次申请和释放；480帧关闭路径首次冷观察为1925/1925，不能混作稳态差量。
+
+整改后冷digest三档仍各有1申请/0释放、56 bytes，重复调用为0/0；该冷现象未被删去或升级为“全路径无分配”。原扫描先访问Buffer相关属性，实际开启/关闭配对观察未见新增申请。不能据此保证所有真实Tap冷路径与本夹具相同。
+
+480/1600/8192的queued观察分别为1921/6401/32769次申请，后续drain为1923/6403/32771，关闭后为1922/6402/32770；各释放数相同。Row容量拒绝6/6、NaN拒绝5/4；没有Row或队列扩容。原有关闭路径申请并未消失，本轮不把这些旧申请混入M31修复成效，也不扩展修改它们。
+
+### 9.4 真实所有权、析构风险及本轮未改原因
+
+以下位置为当前Capture源码（仅此前循环带来后续行号+2）：
+
+| 所有者/路径 | 已确认事实 | 不能证明的部分 |
+|---|---|---|
+| `nativeVoiceTimingDebug`与DebugStats.timing | 既有Engine owner属性及统计结构持有Timing | 这两处不是唯一强引用 |
+| `installRenderReferenceTapLocked:4524` | 原Player Tap闭包强捕获当次Timing；`if let timing`调用中也有在途强引用 | Apple框架最终何时/在哪个线程销毁闭包，不可由离线静态源码确认 |
+| 配置通知闭包 / `deinit:2999` | 通知以weak self登记，执行时可临时持有强引用；deinit调用stopObserving并释放Rows | 若带有observer的deinit落在实时/通知线程，Foundation清理成本未验证 |
+| `admitPlayerContentCallback:3289`、Stop/RouteChange事件 | 关闭位阻止新内容哈希租约；旧回调仍可进入原metadata入口，随后按原关闭/身份规则拒绝 | 不等于同步销毁所有Tap闭包或在途引用 |
+| `clearNativeVoiceDebug:4743` | 控制路径停止observer并清理两个属性；许可条件是已sealed或Capture未active | 该API未以自身条件保证所有Render闭包引用已释放 |
+| Controller `closeAppleVPAcousticRunForShutdown:8607`、`resetAppleVPAcousticPreparation:7970` | 正常关闭先Output.close、Capture.shutdown，后续重新准备时clear；Capture.tearDownGraph沿原路径removeTap/Stop/Reset | 正常顺序是支持证据，不能代替框架最后释放线程的可执行保证 |
+| `nativeVoiceTimingSnapshot:4862` → `finalizedPlayerContent:3194` | 先在lifecycleLock内取得强引用，再在锁外读已封存历史；当前依赖Timing存活来保护Row存储 | 不能只在clear中提前free Rows，否则还需处理锁外摘要读者与在途租约；本轮没有实施这种可能引入UAF的改法 |
+
+本次普通/TSan负控继续验证：在途callback被合成暂停，Stop/RouteChange不等待它；控制侧引用消失后，callback强引用保持对象有效；恢复后旧发布被拒绝，新Run不被污染。未观察到当前实现UAF、双重释放或数据竞争，不外推为穷尽性证明。
+
+实际Row释放观察再次得到：最后引用由合成callback工作线程释放，唯一131072-byte Row在该线程释放1次，区间0申请/20释放。Stop事件观察3750ns，普通功能测试2959ns、TSan10084ns；均非真实Engine Stop或硬实时上界。
+
+**本轮不修改生命周期。** 没有在本白名单/禁止新增等待、Owner、释放线程或复杂状态机的条件下证明安全的最小改法。既要保证非实时释放，又要保留在途回调和锁外摘要读取的存储寿命，不能简单把deallocate前移到Stop/clear。实际Apple音频回调成为最后释放者仍UNKNOWN；有明确的离线风险模型，尚无真实音频线程执行证据。CALLBACK_LIFECYCLE_SAFETY及REALTIME_SAFETY继续NOT_ESTABLISHED。
+
+### 9.5 原口径性能：本轮必须裁定失败
+
+最终无探针普通程序，原`--m31-performance`，480/1600/8192各1000样本；原函数、`max(on−off,0)`、分位索引、预算和CSV保存逻辑相对起点未变。先结束构建/TSan/回归再测量，不并行运行本轮重任务；探针未加载，无系统优先级/音频配置调整。仅测量1次，所有3000样本及失败样本留本机0600 CSV。
+
+| Frames | 固定预算ms | 新增p50 ms | p95 ms | p99 ms | max ms | 超限样本 | 裁定 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 480 | 0.300000 | 0.029834 | 0.049626 | 0.376376 | 3.856667 | 13 / 1000 | FAILED_BUDGET |
+| 1600 | 1.000000 | 0.100792 | 0.127542 | 0.149417 | 0.212834 | 0 / 1000 | 样本内满足 |
+| 8192 | 1.000000 | 0.508166 | 0.600625 | 0.636251 | 1.005125 | 1 / 1000 | FAILED_BUDGET |
+
+开启路径绝对total max为4.133917/1.139542/5.701417ms；不把增量当作完整callback耗时。没有证明尾部超限原因，不把它仅归为系统抢占；不以更低中位数或零新增申请抵消失败，不重跑筛选、删样、提高预算或作第二轮性能整改。§8的通过数据仍保留，但不作为本轮通过依据。
+
+### 9.6 当前源码复验、规范与失败记录
+
+| 实际执行 | 次数/结果 |
+|---|---|
+| 归因程序及实际申请栈 | 修改前合格1次exit0，9个真实事件、nested=0；原型观察另1次exit0，后续合格产物单独保存并登记SHA |
+| 零新增分配合同RED / GREEN | 实际基线RED 1次exit133；终版GREEN 1次exit0，43区间无溢出，三档重复digest及完整开启/关闭配对如上 |
+| `--m31-only` | 终版1次exit0，8 cases / 53303 checks；原CRC逐bit/组合、有限性与全部内容/映射/身份/容量/关闭负控保持 |
+| `--m26-only` / `--m20-only` / `--m22-only` | 终版各1次exit0，245 / 396 / 124 checks；M20含M19，device_access=ZERO |
+| TSan `--m31-only` / `--m26-only` | 终版各1次exit0，53303 / 245 checks；无数据竞争报告，不能替代析构线程或硬实时证明 |
+| 原Output/Converter脚本 | 1次exit0，457 checks，其中转换6 cases / 219 checks；用原登记非私人居民素材，无设备 |
+| Debug / Release构建 | 新DerivedData各1次BUILD SUCCEEDED、exit0；App源码在之后测试夹具修正中未改变，未使用旧App候选或启动App |
+| Release隔离 | 非DEBUG源码投影与起点逐字节相同；Debug见证器/CRC符号匹配601，Release为0 |
+| 原三项Guard | Release Route / Architecture / Secret均exit0；Secret覆盖源码/测试提交及最终报告 |
+| SwiftFormat / SwiftLint增量 | 格式检查exit0，无新增规则计数；两源码原22项债务不变，全文件lint仍exit2 |
+| 文件范围 / diff / 隐私 / Stage7 Checklist | PASS；只改3个白名单文件，未改Owner、AudioGraph、Converter、AEC/AGC/NS、CLOCK、Controller或正式Gate |
+
+一次测试夹具失败如实保留：首次预期GREEN在480帧处因新增稳态观察后重复了queued/drain的sampleTime，被原门禁拒绝（子进程SIGTRAP，外层exit1）。修正仅为把新夹具的最后一个位置从2 buffers改为3 buffers，原断言/时钟容差不变；重新编译普通/TSan产物并重跑全部定点验收。此前普通/TSan各模式已完成的1次通过作为中间收据，不替代终版。没有第二次产品侧修复尝试。
+
+本次两次提交前远端只读复核出现GitHub TLS `SSL_ERROR_SYSCALL`，exit128；不能用该失败推断远端HEAD相同或不同。没有更改认证/TLS校验或系统网络设置。后续正常Push是否完成、最终三方HEAD是否核验成功，以本节点交付回执明确记录，不将本地Commit当作已推送。
+
+### 9.7 新产物身份与最终状态
+
+| 当前磁盘身份（非实际加载证明） | SHA-256 |
+|---|---|
+| Capture | `285dfa966ca6b6ae39276ce5aaa544626998f0bb8949819c4a31d4c0875ff5dd` |
+| 测试源码 | `e75f74511f888a76cb1577c6710aefbc46db2dfee132441b88ceb9f9864c6535` |
+| 普通测试程序 | `3b8fec6bbec5bc7892b23631513a540b49ac25714639ec9a973d017baa9e66e9` |
+| TSan程序 | `1a758bb275308f8e4a63b43f8fbdf1f77bd0b83680f873878ce41a9cd013e5e9` |
+| 终版探针C源码 | `a29b69091001a3b4d14725aae8bbb37e534e500e5aa8b2047d28cc54627aa288` |
+| 终版探针dylib | `4db01c7073d198534f83bbcc99bf1796c30f177922e8d3a55422d7c110233621` |
+| 新Debug launcher | `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118` |
+| 新Debug dylib | `2875df92df73c76e814f5a543681be0a2a8e3a901880f0aa65a879e93282cfeb` |
+| 新Release产物 | `d357e65989f25169e28d97f2f0e6ea4aa89090d82b4527fb9360bb8eeaf44f6c` |
+
+仅合成Buffer及原登记非私人素材（SHA `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`）。未读取私人录音/JSON，未运行真实Player/Engine、麦克风、扬声器、录音、ASR或声学实验；PRIVATE_AUDIO_UPLOAD=0，DEVICE_RUNS=0。原始栈/地址、日志、CSV、探针临时文件与构建产物仅留本机受控ignored目录，不提交Git。
+
+**唯一建议：继续留在M31-D1，提交主控审核尚未满足的性能及控制侧释放保证；本轮不建议评估M31-D2。** 不自动开展第二轮整改、设备验证或其他节点。
+
+Stage7 Forbidden Checklist前/后：**PASS**。触碰红线无；未改Runtime API、DR schema、平台target或Stage8；没有新增生产Engine/Tap/状态Owner/诊断线程，旧Guard及所有冻结预算/门槛不变。最终交付后停止。
+
+```ini
+M31_D1_FUNCTIONAL=OFFLINE_PASS
+M31_D1_PERFORMANCE=FAILED_BUDGET
+NEW_CALLBACK_ALLOCATIONS=OFFLINE_OBSERVED_ZERO_INCREMENT
+ALLOCATION_CALLSITE_ATTRIBUTION=CONFIRMED
+CALLBACK_LIFECYCLE_SAFETY=NOT_ESTABLISHED
+REALTIME_SAFETY=NOT_ESTABLISHED
+M31_D1_OFFLINE=REVIEW_PENDING
+M31_REAL_PLAYER_MAPPING=NOT_RUN
+M31_DEVICE_EXECUTION=NOT_AUTHORIZED
+M31_DEVICE_RUNS=0
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+M18_E01=DEFERRED
+T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+M31_D2=NOT_STARTED
+T3.3=NOT_STARTED
+```
