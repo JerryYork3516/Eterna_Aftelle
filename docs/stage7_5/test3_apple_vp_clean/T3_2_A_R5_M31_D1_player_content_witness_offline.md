@@ -207,3 +207,139 @@ Test3.execution_authorized=false
 M31_D2=NOT_STARTED
 T3.3=NOT_STARTED
 ```
+
+## 8. 2026-11-02：实时安全证据补全与离线验收
+
+**本轮裁定：未达到离线实时安全验收。** 动态观察取得有效数据，发现实际Debug路径中的申请/释放；合成生命周期负控支持在途引用安全、Stop不等待新增观察及旧Run隔离，但不能保证最后释放发生在非实时线程。性能仍在原固定预算内，不能用它、TSan或构建通过替代上述安全条件。本节为最新结论，§1–7及其当时状态全部保留。
+
+### 8.1 准入、修改范围与Git身份
+
+执行前原隔离Worktree为clean，HEAD/upstream/实时远端均等于指定基线`7bff51c2030f0455acd07db1ca05eb467d6e5bda`；本地分支仍`codex/reference-host-comparison-preparation`，upstream为`origin/Test3-AppleVP-Clean`。原7项冲突、索引/status/未合并记录摘要及14项证据size/mtime与上次交付一致。未切换Worktree/分支，不执行reset/rebase/stash/clean/强推。
+
+读取仅限AGENTS、Stage7 Checklist、M31设计/本报告、Capture见证器及直接生命周期、当前测试/构建/Guard入口、必要规范和分配观察API依据。沿用用户免除后续范围重复确认的指令；没有读取私人WAV/JSON。跨文件前本地回滚点`ed373bbbce4a397efd6b91433e9b7efdfd8e077a`。
+
+**实际只修改测试文件及本报告。** Capture源码与基线逐字节一致；CRC、有限性、格式、身份/映射、Source 1MiB/64、Tap 4MiB/2048/8192、16槽、5ms快照预算、失败拒绝、默认关闭及Release隔离均未改变。没有生产整改，也没有继续优化CRC。
+
+测试提交为`cc5b94d4d196c36afe51738e35ec6f4bf55ae0cf`。本报告后续单独提交；为避免报告自身SHA自引用，最终报告提交及Push后三方HEAD记录在本节点交付回执。
+
+新增测试位置（本次测试提交行号）：`M31AllocationProbe:8`、`M31CallbackSignals:121`、`M31TimingOwner:127`、`saveM31Performance:4947`、`testM31AllocationObservation:4966`、`observeM31RenderAllocations:5008`、`testM31ReleaseThread:5101`、`testM31CallbackLifetime:5141`、`runM31LastReference:5175`。探针C源码作为测试字符串保留，只有显式`--m31-probe-source`输出和`--m31-allocation`加载；不链接到App。
+
+### 8.2 STATIC_REVIEW：完整新增回调链
+
+| 代码位置（Capture，未改） | 静态事实及限制 |
+|---|---|
+| `installRenderReferenceTapLocked:4522–4556` | 复用原Player Tap；闭包强捕获当次Timing，weak捕获Engine owner。没有新增Tap或Player API调用 |
+| `render:3074–3096` → `contentFingerprint:3304` → `digest:2808` → `CRC64.hash:2668` | 租约/字节预算为单次CAS，失败不等待；只读有效三声道字节、完整有限性检查。循环上限未变；无文件IO、同步日志或动态容器扩容。**源码无显式申请不能排除Swift/框架隐式申请** |
+| `enqueue/drain/apply:3466–3535` → `appendContent:3324` | 复用16个预分配Slot，每次最多处理16条复制的数值记录，O(1)追加Row；不持有音频Buffer，不在此组合CRC/构造JSON |
+| `enablePlayerContent:3171–3190` | 非实时arm调用CRC.prepare，分配/初始化2048行；Slot数组及16个Slot对象在Timing.init阶段创建，callback不扩容 |
+| `finalizedPlayerContent/contentSummary:3192、3338` | 关闭、无在途且原快照资格成立后，控制路径读取历史及做组合/hex/汇总；不会在callback中通过搜索、补零制造配对 |
+| `event:3141`、`clearNativeVoiceDebug:4741`、`deinit:2997` | Stop/RouteChange关闭Admission而不等待哈希。Timing还由DebugStats及Tap闭包持有；clear清理属性不等于证明回调闭包已释放。`contentRows`实际deinitialize/deallocate仍在deinit，无显式析构线程限制 |
+
+Row仅含数值/UUID，stride64；存储131072 bytes，CRC表payload2048 bytes；结构预算145408 bytes不变。实际arm中观察到唯一131072-byte申请，以及一个2080-byte申请；后者与表的Array存储相容，不能把该申请大小当完整allocator/RSS统计。容量耗尽走原拒绝路径，未观察到Row或队列扩容；这不代表拒绝路径中整个旧扫描无申请。
+
+### 8.3 DYNAMIC_OBSERVATION：隔离进程实际申请/释放
+
+未重启Instruments、未附加任何其他进程、未扩大权限。使用独立编译的本机合成测试程序，通过显式环境路径加载测试专用C探针。Apple [libmalloc源实现](https://github.com/apple-oss-distributions/libmalloc/blob/main/src/malloc.c)可核对`malloc_logger`、allocate/deallocate flags及参数；该符号是**已弃用的实现SPI，不是App采用的公共API合同**。本机符号及空闲所有权检查成功后才安装，结束时卸载再dlclose；失败不能记作观察成功。
+
+探针只在该测试进程内生效：C固定计数器、线程局部观察区间、64个(type,size)固定聚合槽，无逐事件动态存储/日志或追踪线程。所有事件计数保留，槽不足单列overflow；终版37个观察区间均overflow=0。保存首个对应地址仅用于本机Row释放核验，不公开地址/线程ID。准备探针/TLS、打印及解析均在观察区间外。
+
+正负控：空区间0申请/0释放；实际`malloc(333)/free`为1/1；Swift Array/String为7/7；完整首次arm为2321/2317、225928申请字节。冷启动数值包含运行时初始化，不作为callback开销。观察包括实际完整render、队列延后发布、后续drain/apply、关闭后回调、2049行拒绝及NaN拒绝。
+
+| Frames | witness关闭稳态：申请/释放 | witness开启完整render：申请/释放 | 开启相对关闭的观察差量 | 重复独立digest：申请/释放 | 单声道CRC.hash：申请/释放 |
+|---|---:|---:|---:|---:|---:|
+| 480 | 1922 / 1922 | 1925 / 1925 | +3 / +3，120 bytes | 3 / 3，120 bytes | 0 / 0 |
+| 1600 | 6402 / 6402 | 6405 / 6405 | +3 / +3，120 bytes | 3 / 3，120 bytes | 0 / 0 |
+| 8192 | 32770 / 32770 | 32773 / 32773 | +3 / +3，120 bytes | 3 / 3，120 bytes | 0 / 0 |
+
+这些稳态申请均为40-byte块。480帧首次关闭路径另有冷初始化，为1926/1925；8192帧queued/drain/closed分别为32772/32774/32770次申请，释放数相同。Row容量拒绝为9/9，NaN拒绝为6/5；未出现新的131072-byte申请。冷buffer首次digest分别为5/3（480）、4/3（1600/8192），不是重复digest的3/3；不得隐去冷读取差异或外推所有新Tap Buffer已预热。
+
+**CONFIRMED（当前离线Debug）：** callback路径确有申请/释放，见证器关闭时也存在；重复digest存在可复现的3次申请/释放。单独CRC更新本次没有观察到申请，不能据此把新增申请全部归因CRC。`validFormat`冷读取为2/2、后续为0/0。
+
+**UNKNOWN：** 3个40-byte块的具体运行时分配调用点尚未确证。最初怀疑AudioBufferList下标；独立单访问器/成员指针负控均0/0，未支持直接归因，因而没有据此替换生产指针访问或修改CRC。该负控只涉及单访问，不能反推完整digest无申请。此处确认的是安全合同缺口，不是AEC声学根因。
+
+该探针覆盖通过本机libmalloc logger上报的事件，不证明VM/自定义内存池或所有框架内部路径均被覆盖；观察器也会扰动allocator时序。**有效动态观察不等于零申请证明，更不等于真实设备实时安全。** 后续性能测量在无探针的单独进程中执行。
+
+### 8.4 生命周期、并发关闭与析构线程
+
+新增普通/TSan负控复用真实Timing类：在已接纳callback的scan位置合成暂停，分别发captureStopped/routeChanged，再释放控制侧强引用；callback仍持有强引用，完成后旧发布被拒绝，新Run的Render统计仍为0。没有新增生产Owner、等待、后台诊断线程或音频对象。
+
+- **离线支持：** 在途强引用防止提前析构/访问已释放Row；Stop事件在callback仍暂停时返回；关闭后的旧记录不会被当成新Run证据。与原在途摘要INCONCLUSIVE、16槽/容量/身份负控共同通过。
+- **实际释放观察：** arm中识别唯一131072-byte Row申请，记录其对应释放；让callback工作线程持有最后引用后，Row在该线程准确释放一次。该释放区间为0次申请、20次释放。没有用预期析构回调代替真实malloc释放事件。
+- Stop事件本轮动态观察为3291ns；普通功能测试2000ns、TSan9750ns。它们只是合成Timing.event调用，不是实际Engine Stop/removeTap总耗时或硬实时上界。
+- **未闭环风险：** 真实AVAudioNode何时/在哪个线程销毁Tap闭包仍NOT_RUN；没有证明App最后引用始终由控制线程释放。deinit还调用stopObservingEngineConfiguration，若仍有observer，其Foundation清理成本也不能由本次无observer夹具覆盖。
+
+因此UAF/在途/换Run负控通过，**不等于析构线程安全已建立**。合成证据表明析构负担随最后释放者走；实际框架最后引用行为UNKNOWN。本轮没有用TSan PASS替代这一缺口，也不猜测性增加保活Owner、释放线程或新的清理状态机。
+
+### 8.5 原预算性能复测
+
+本次实际源码重新编译；原`--m31-performance`入口、Debug flags、480/1600/8192各1000样本、差量`max(on−off,0)`、分位索引和固定预算均不变。只增加计时之外的可选本地CSV保存，保存全部3000个差量/总耗时及序号，文件0600；没有删除样本。运行时本轮构建/TSan/回归已完成，不与这些重任务并行，无权限/优先级/系统设置改变。
+
+| Frames | 样本 | 固定预算ms | 新增p50 ms | p95 ms | p99 ms | max ms | 预算裁定 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 480 | 1000 | 0.300000 | 0.031166 | 0.045750 | 0.056708 | 0.166042 | 样本内满足 |
+| 1600 | 1000 | 1.000000 | 0.101625 | 0.128875 | 0.153709 | 0.224042 | 样本内满足 |
+| 8192 | 1000 | 1.000000 | 0.514583 | 0.609792 | 0.663750 | 0.732916 | 样本内满足 |
+
+三档预算超限样本均0；开启路径绝对total max分别为0.446875、1.125833、5.335083ms，不能将新增差量冒充完整callback耗时。原历史失败不改写，观察max仍不是硬实时最坏上界。Capture/CRC没有修改，结果不构成新的性能整改或AEC改善。
+
+### 8.6 当前产物复验、失败记录及隐私
+
+| 当前源码实际执行 | 次数、exit及结果 |
+|---|---|
+| 新编译普通程序`--m31-only` | 1次，exit0，8 cases / 53303 checks；包含原CRC逐bit/组合、有限性、内容/映射/身份/容量/关闭及新增生命周期负控 |
+| `--m31-probe-source` → `clang -dynamiclib -std=c11 -O1` → `--m31-allocation` | 终版1次，exit0；C的O1仅用于观察器，Swift Debug工作代码未优化；观察结果是非零申请，不是安全PASS |
+| `--m26-only` / `--m20-only` / `--m22-only` | 合格终版各1次exit0，245 / 396 / 124 checks；相同固定非私人居民素材，M20含M19，device_access=ZERO |
+| `TSAN_OPTIONS=halt_on_error=1 … --m31-only` / `--m26-only` | 终版各1次exit0，53303 / 245 checks；无数据竞争报告，未穷尽所有交错；不同时启用malloc探针 |
+| 原Output/Converter脚本 | 1次exit0，457 checks，其中转换6 cases / 219 checks；合成/登记非私人素材，无Engine/Player设备运行 |
+| `xcodebuild … Debug/Release … CODE_SIGNING_ALLOWED=NO build` | 新独立DerivedData各1次BUILD SUCCEEDED、exit0；没有使用旧产物验收或启动App |
+| Release隔离 | Capture与基线全文相同；当前Debug有601条见证器/CRC相关符号匹配，Release为0；测试专用SPI不在App源码/链接范围 |
+| Release Route / Architecture / Secret Guard | exit0；Secret Guard分别检查测试提交及最终报告；文件白名单/`git diff --check`/隐私检查通过 |
+| SwiftFormat / SwiftLint增量 | 格式范围检查通过，新增lint规则计数0；本次测试文件与基线均12项旧债务，全文件lint仍exit2；Capture未变，未冒充全文件无债务 |
+
+失败均保留：首次新增CLI编译遗漏Bool返回，修正后重编译；一次本地编辑脚本在写入前失败并产生重复中间编译，这些中间产物不用于终版验收。初始逐事件探针256/4096槽在准备阶段溢出，8192槽在1600帧路径溢出，均exit133并作废；改为固定64个(type,size)聚合槽，完整保留计数，终版overflow=0，不改变任何见证器容量或性能门槛。没有再扩大逐事件记录或反复重启Instruments。
+
+单访问器负控首次使用无法创建的普通3ch格式而exit133；改为已有DiscreteInOrder(3)登记格式后两种访问均0/0，仅作为归因反证。首次M26回归缺少`M20_RESIDENT_WAV`而文件不存在退出（SIGTRAP；未改断言）；补齐原固定素材及隔离Cache环境后，当前同一新程序重跑通过。两次lint命令路径/参数错误、3项新增规范提示均修正后作增量复核。所有失败/中间收据与完整终版输出留本机ignored目录，不上传。
+
+素材SHA复核仍为`774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`。只用合成Buffer和获准的非私人素材；未读私人音频/JSON，未触及原未跟踪证据内容，无ASR、云服务、权限申请、设备HAL实验、App/真实Player/Engine/麦克风/扬声器执行。DEVICE_RUNS=0。
+
+| 当前磁盘身份（非加载/设备证明） | SHA-256 |
+|---|---|
+| Capture源码（未改） | `8f8e22fa302d48ddbe5d42ec88eb944bfad3e71a0be9abb3cb5d6a88b24e4951` |
+| 测试源码 | `2dbccba3b8fda38479d890495f72c2ae653921120022bb8aa572093d21db1f74` |
+| 普通测试程序 | `3805e449e8f1c80e9d886f6ea29cc4e69ac8eb5f5463828f2442d4fd5a48b31b` |
+| TSan测试程序 | `07978176cb54db8ea896bc2cf053cacc7a045336ca77fd9cbc4b0ade3911d461` |
+| 从测试导出的探针C源码 | `3c21f78411d91bb182871e4e374ee6a2c4ba6ec792216fe34327bd41af728e7e` |
+| 探针dylib | `5cd3f275e1ae592f9abdba6213daf09d7e130f4a39d415aa94e86bb7c155d71c` |
+| 新Debug launcher | `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118` |
+| 新Debug dylib | `deb1218d03350f83a1c0dd82b87bd7b6a0bf92eb61ba0e55977709201d1d6ce0` |
+| 新Release产物 | `0459cf77bd61cc4260ec35fb0f1ab1fc6209caec4a28e5e8eb257d91191ebcf3` |
+
+### 8.7 裁定、边界与唯一下一步
+
+- **STATIC_REVIEW：** 固定容量/有限工作及无新增显式IO、扩容、等待成立；没有据此宣称零动态申请。
+- **DYNAMIC_OBSERVATION：** 有效的本机离线申请/释放及Row析构线程观察已经取得；结论是存在申请和不受线程约束的最后释放。
+- **REAL_DEVICE_VERIFICATION：** NOT_RUN；不把离线结果升级为真实设备硬实时安全、映射通过、AEC根因或Test3准入。
+
+**唯一下一步：保持见证器关闭，交主控审核本次分配及最后引用释放证据，决定是否另行批准调用点级最小整改；当前不进入M31-D2或设备测试。** 没有足够证据安全修改特定分配调用点或实际框架的释放所有权，本轮不猜测性改生产实现。
+
+Stage7 Forbidden Checklist前/后：**PASS**。红线无；只新增测试和追加本报告，未改Runtime API/DR schema/Provider/RuntimeCore/正式Gate/平台target/Stage8；没有新增生产Engine、Tap、状态Owner或长期诊断线程。只提交这两个白名单文件；Push后再核验三方HEAD及原7冲突/索引/14项证据元数据，交付即停止。
+
+```ini
+M31_D1_FUNCTIONAL=OFFLINE_PASS
+M31_D1_PERFORMANCE=OFFLINE_OBSERVED_BUDGET_PASS
+DYNAMIC_ALLOCATION_OBSERVATION=OBSERVED_OFFLINE_ALLOCATIONS
+CALLBACK_LIFECYCLE_SAFETY=NOT_ESTABLISHED
+REALTIME_SAFETY=NOT_ESTABLISHED
+M31_D1_OFFLINE=REVIEW_PENDING
+M31_REAL_PLAYER_MAPPING=NOT_RUN
+M31_DEVICE_EXECUTION=NOT_AUTHORIZED
+M31_DEVICE_RUNS=0
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+M18_E01=DEFERRED
+T3.2-A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+M31_D2=NOT_STARTED
+T3.3=NOT_STARTED
+```
