@@ -1,6 +1,6 @@
 # T3.2-A / R5-M31-D1：Player内容见证离线实现与性能验收
 
-日期：2026-11-01（Asia/Shanghai）。**功能定向验证通过；CPU预算失败；不具备设备准入条件。** 见证器仅DEBUG、默认关闭，没有真实Player映射或声学结果。
+初次交付：2026-11-01；最小性能整改复验：2026-11-02（Asia/Shanghai）。§1–6保留首轮记录；**本轮固定预算在观测样本内满足，安全证据仍不完整，整体继续REVIEW_PENDING，不宣称无条件整改PASS或设备准入。** 当前结论见§7及末尾状态。见证器仅DEBUG、默认关闭，真实映射/设备执行均未运行。
 
 ## 1. Git、修改范围及身份
 
@@ -49,7 +49,7 @@ RunID、Capture/Playback Generation、ConfigurationID、不可变epoch、登记S
 
 原snapshot仍保留20次/5ms获取预算。复杂组合在`nativeVoiceTimingSnapshot`非实时出口、取得原快照并释放原busy标记后执行；只在关闭且无在途工作时读取冻结历史。新`playerContent`子摘要独立声明资格，旧`nonzeroCoverage`、`OBSERVED_PARTIAL_METADATA`及render-generation说明不改写。
 
-## 4. 实时预算、内存与性能失败
+## 4. 首轮实时预算、内存与性能失败
 
 硬上限保持：Source≤1MiB/64提交，Tap≤4MiB/2048摘要，每callback≤8192 frames。Tap字节采用单次有界CAS预留，拒绝的预留不增加已接纳预算；任何失败保留原因码并成为OBSERVER_INCONCLUSIVE。16槽及原skippedUpdates语义不变。
 
@@ -71,7 +71,7 @@ RunID、Capture/Playback Generation、ConfigurationID、不可变epoch、登记S
 
 因此**PERFORMANCE_BUDGET=FAILED，未来设备准入停止**。没有宣称硬实时安全，也没有修改冻结预算。
 
-## 5. 实际测试、构建、Guard与失败记录
+## 5. 首轮实际测试、构建、Guard与失败记录
 
 编译源码列表和参数复用原`tools/realtime_interruption_evidence_tests/check.sh`的编译段：`swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete`及原framework/source列表；本地ignored driver仅保留产物并选择新测试CLI，不修改正式脚本。完整参数和输出留本机。以下终版均在重新编译成功后执行，普通/TSan测试各有独立程序身份。
 
@@ -96,7 +96,7 @@ RunID、Capture/Playback Generation、ConfigurationID、不可变epoch、登记S
 
 本地累计完成收据：M31普通5次、TSan3次（含中间/作废产物）；M26普通3次、TSan2次；M20/M22各3次。增加次数来自新增覆盖、规范整理和终版重编译，不是声学重试。未执行FULL_CURRENT、Python回归（无Python修改）、ASR/DTW、实际Player映射、App音频、麦克风或扬声器实验；真实设备次数0。
 
-## 6. 证据等级、边界及唯一下一步
+## 6. 首轮证据等级、边界及当时建议
 
 **CONFIRMED（离线）：** CRC标准向量及独立算法一致；有序流跨分块可配对；合成内容变化可检出；格式/时间/身份/容量/关闭失败不伪造匹配；原样本和旧门禁未改；Release隔离成立；8192帧新增处理明显不满足既定预算。
 
@@ -108,22 +108,102 @@ RunID、Capture/Playback Generation、ConfigurationID、不可变epoch、登记S
 
 Stage7 Forbidden Checklist前/后：**PASS**。触碰红线无；生产音频算法、Runtime API、DR schema、平台target、Stage8、正式Gate均不变；不新增Engine/Tap/状态Owner。正常Commit+Push后核验三方HEAD并停止，交主控审核。
 
+## 7. 2026-11-02：最小性能整改与离线复验
+
+### 7.1 准入、修改及因果边界
+
+本轮节点为Stage 7.5.11 / R5-M31-D1。执行前项目/原登记隔离Worktree、clean状态及HEAD/upstream/实时远端均核验为`163bd6257fb370d1e4469e3275f801e1a5ffd980`。未切换/新建分支；跨文件前回滚点`3506bd706ec31431944d2eb0c2376e51ccb099c2`。源码整改提交：**`05aae0944ea373cf43d6652937d2ef6534f58b63`**；本报告另行提交以避免自引用，最终Push后三方HEAD以交付核验值为准。
+
+先分段测量，后仅一次有界源码整改。Capture的diff只有7行：把M31 digest内`for/where + Float.isFinite`改为逐样本`while + Float.bitPattern指数掩码`。没有修改CRC表/更新/组合算法、旧Tap统计、原子操作、队列、Stop、映射、身份、Generation、Epoch、格式/覆盖及全部上限。仍完整验证三声道每个有效样本；没有采样哈希、复用不可信扫描结果、删除负控或增加缓存。
+
+[Apple Float.bitPattern合同](https://developer.apple.com/documentation/swift/float/bitpattern)规定其对应IEEE 754编码。已限定的Float32中，指数位全1（掩码`0x7F800000`）恰好覆盖正负Infinity与所有NaN，其余包含正负零、正规及次正规数均有限。代码读取Float的公开bitPattern，不做不安全内存重绑定或数值变换。新增12种边界编码及4096种固定种子编码，在三声道首/尾位置逐一对照`Float.isFinite`并核对原字节；这与原独立CRC/内容负控共同执行，不把有限样本测试称为穷尽全部位模式。
+
+测试文件只增加有限性等价负控及离线分段诊断入口；原`testM31Performance`与统计函数相对本轮基线全文一致。无优化编译属性/编译级别变更，无AEC/Clock/Converter/Player/Controller/RuntimeCore/DR/正式Gate修改。
+
+### 7.2 热点测量
+
+每段每尺寸1000样本，实际调用原CRC、格式验证及完整digest；有限性隔离项复制原有限循环，使用全部有限的相同合成Buffer。该项是参考循环，不是callback插桩，不能把各段分位数相加当精确调用栈分解。Debug未优化环境及原源码列表/flags保持不变。两次本机Swift interface路径定位未取得文本接口，语义改以Apple官方合同及上述确定性对照核验，未扩大SDK搜索。
+
+| Frames | CRC三声道p50，前→后ms | 原isFinite参考循环p50，前→后ms | 实际digest p50，前→后ms | 格式验证p50，前→后ns |
+|---|---:|---:|---:|---:|
+| 480 | 0.025000 → 0.026708 | 0.108792 → 0.109291 | 0.134000 → 0.030375 | 83 → 83 |
+| 1600 | 0.082458 → 0.089667 | 0.353375 → 0.371583 | 0.435584 → 0.102542 | 83 → 83 |
+| 8192 | 0.436458 → 0.448209 | 1.820125 → 1.862625 | 2.238792 → 0.505333 | 84 → 84 |
+
+**SUPPORTED热点归因：** 8192帧首轮digest约2.24ms，其中原有限性参考循环约1.82ms、CRC约0.44ms；整改后CRC保持约0.44ms而实际digest约0.51ms。证据支持新增有限性循环在当前Debug执行方式下主导原开销，**不支持把CRC列为唯一根因**。本轮同时改变循环形态与谓词实现，未进一步把成本归因到单独某个getter、range迭代或编译器指令。
+
+实际共享Input元数据FIFO的独立1000次调用p50/p95/p99/max为0.500/0.583/0.584/35.791µs；隔离无竞争原子序列探针为0/42/42/42ns。0ns表示测量未解析该成本，不代表零成本；Input探针不等于完整Render发布，原子探针也不覆盖竞争。它们只支持固定工作不是已见中位数主热点；真实竞争由原M26及M31负控检查，不能由微基准自证安全。
+
+### 7.3 原口径完整性能比较
+
+同一`--m31-performance`入口，480/1600/8192各1000样本；原`max(on−off,0)`、分位数索引、有效Run上限和所有异常样本保留。无编译/TSan/其他本轮重任务并行参与该完整计时，无系统优先级或设备设置调整。§4历史失败数据原样保留；下表为本轮原实现复测及唯一源码整改后的复验，不选择性替换历史结果。
+
+| 实现 | Frames | 固定预算ms | 新增p50 ms | p95 ms | p99 ms | 观测max ms | 裁定 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 原实现本轮复测 | 480 | 0.300000 | 0.134333 | 0.175834 | 0.256458 | 0.374584 | FAILED_BUDGET |
+| 原实现本轮复测 | 1600 | 1.000000 | 0.448792 | 0.489417 | 0.523251 | 1.389333 | FAILED_BUDGET |
+| 原实现本轮复测 | 8192 | 1.000000 | 2.296334 | 2.437249 | 2.480250 | 2.629082 | FAILED_BUDGET |
+| 整改后 | 480 | 0.300000 | 0.031459 | 0.054334 | 0.074084 | 0.197750 | 样本内满足 |
+| 整改后 | 1600 | 1.000000 | 0.102208 | 0.134250 | 0.166334 | 0.319625 | 样本内满足 |
+| 整改后 | 8192 | 1.000000 | 0.532417 | 0.656500 | 0.694042 | 0.727583 | 样本内满足 |
+
+整改后原预算全部满足，8192帧新增p50相对本轮原实现约下降77%。这是诊断开销改善，不是AEC改善；配对计时仍受调度/缓存影响，观测max不是硬实时最坏上界。未提高预算、丢异常、换小样本或改统计口径。
+
+### 7.4 功能、安全、构建及隐私复验
+
+| 本轮实际执行 | 结果/次数 |
+|---|---|
+| 新分段诊断`--m31-segments` | 生产实现整改前1次，整改后2次（补固定开销探针后复核）；均exit0、每段/尺寸1000样本；不作性能准入替代 |
+| 原完整基准`--m31-performance` | 前/后各1次，exit0；判定见上表，进程exit0本身不作为PASS |
+| `--m31-only` | 整改后及终版共3次；各7 cases / 53287 checks、exit0。包含原3991检查和新增有限性等价/不改样本检查 |
+| `--m26-only` / `--m20-only` / `--m22-only` | 各1次，245 / 396 / 124 checks、exit0；M20含M19，原门禁、16槽、溢出、关闭与Source/Render负控不变 |
+| Output/Converter原脚本及登记非私人素材 | 1次exit0，457 checks（含独立转换6 cases / 219 checks）；无设备 |
+| TSan `--m31-only` | 1次exit0，53287 checks，没有报告数据竞争；使用同一整改生产源码，最后仅缩短测试提示文字，未改条件/并发逻辑 |
+| Debug / Release构建 | 各1次BUILD SUCCEEDED、exit0，独立DerivedData，未启动App或覆盖旧候选 |
+| Release隔离 | 非DEBUG投影与指定基线逐字节相同；Debug存在诊断符号，Release不存在；CRC与原音频路径不变 |
+| Release Route / Architecture / Secret Guard | 均exit0；后者分别覆盖源码提交与最终报告提交 |
+| SwiftFormat/SwiftLint增量 | 新增违规0；初检1个121字符测试提示缩短，断言不变。原22项规则债务保留，全文件lint仍exit2 |
+| Git diff / 3文件白名单 / 隐私 / 原工作区保护 | PASS；7冲突、索引/未合并记录/status及14项证据size/mtime不变 |
+
+没有引入新的显式callback动态分配：整改仅栈上UInt32读取/掩码/循环，不新增表、数组、缓存、Owner、Engine或Tap；原Row64 bytes、历史申请131072 bytes、结构预算145408 bytes及全部容量不变。**以上是静态结构/范围检查，不替代动态分配实测。** 鉴于首轮追踪器未能有效采样，本轮不重新启动该失败追踪器，不扩大权限、不操作无关进程；DYNAMIC_ALLOCATION_OBSERVATION继续UNVERIFIED，原最后引用释放线程风险仍未闭环。
+
+因此仅报告固定离线预算的观测通过；必要安全证据不足，**不报告整体整改PASS，不给出硬实时安全确认或设备准入**。所有测试均为合成Buffer/既有Fake；登记素材只读核SHA后用于原数字转换回归。未读取私人WAV/JSON、未使用实际Player/麦克风/扬声器、未录音或播放、未运行FULL_CURRENT或进入M31-D2，DEVICE_RUNS=0。
+
+本轮没有功能断言/编译失败；有一次增量lint计数比较因上述新增长提示而exit1，提示修正后零新增。动态观察没有新失败重试；首轮失败回执和本轮完整日志均保留本机ignored目录，不上传。
+
+### 7.5 新候选与交付
+
+| 本轮磁盘身份（非实际加载证明） | SHA-256 |
+|---|---|
+| Capture源码 | `8f8e22fa302d48ddbe5d42ec88eb944bfad3e71a0be9abb3cb5d6a88b24e4951` |
+| 测试源码 | `cc2ddca57bed76f41e65796109b7fd828933440ae93a6ae333b4b4fb4bd22d2c` |
+| Debug launcher | `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118` |
+| Debug dylib | `b31a16bfde805af4b2ee8c86f66e67026ad26ec0da9b1d044271512c7a6db4bb` |
+| Release产物 | `5fc337cb59561943d9db51131b0fd87d622ac70cd7bb597758d017891e5f249a` |
+
+仅上述两份源码/测试及原报告发生修改。源码提交已明确记录，报告提交后正常Push并核验最终HEAD/upstream/实时远端一致；文档自身SHA不自引用，以交付核验为准。真实加载、实际Node↔Player映射及声学结果仍NOT_RUN。
+
+Stage7 Forbidden Checklist本轮前/后：**PASS**。红线无；未改Runtime API/DR schema/平台target/Stage8/正式Gate；不新增音频状态Owner；未修改系统设备、音量或Mic Mode。
+
+**当前唯一下一步：交主控审核本次有界性能改善及仍未取得的动态分配/实时安全证据；停止在M31-D1，不自动复验、启动设备或进入M31-D2。**
+
 ```ini
 M31_DESIGN=APPROVED
 M31_D1_OFFLINE=REVIEW_PENDING
 M31_D1_FUNCTIONAL=OFFLINE_PASS
-M31_D1_PERFORMANCE=FAILED_BUDGET
+M31_D1_PERFORMANCE=OFFLINE_OBSERVED_BUDGET_PASS
+DYNAMIC_ALLOCATION_OBSERVATION=UNVERIFIED
+REALTIME_SAFETY=NOT_ESTABLISHED
 M31_D1_DEVICE_OFFLINE_CONDITIONS=NOT_MET
 M31_REAL_PLAYER_MAPPING=NOT_RUN
 M31_DEVICE_EXECUTION=NOT_AUTHORIZED
 M31_DEVICE_RUNS=0
-DYNAMIC_ALLOCATION_OBSERVATION=UNVERIFIED
-REALTIME_SAFETY=NOT_ESTABLISHED
 AEC_ROOT_CAUSE=UNKNOWN
 CLOCK_ROOT_CAUSE=UNKNOWN
 M18_E01=DEFERRED
 T3.2-A=BLOCKED
 Formal_Test3=BLOCKED
 Test3.execution_authorized=false
+M31_D2=NOT_STARTED
 T3.3=NOT_STARTED
 ```
