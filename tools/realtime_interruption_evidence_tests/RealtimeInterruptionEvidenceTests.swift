@@ -1,7 +1,147 @@
 @preconcurrency import AVFoundation
 import CoreAudio
+import Darwin
 import Foundation
 import Synchronization
+
+/// Loaded only by the explicit isolated allocation audit CLI; never linked into Aftelle.
+private final class M31AllocationProbe: @unchecked Sendable {
+    /// Test-only Apple libmalloc logging SPI; capability checked and never linked into Aftelle.
+    static let source = #"""
+    #include <stdint.h>
+    #include <stdlib.h>
+    #include <dlfcn.h>
+    #include <pthread.h>
+    #include <stdatomic.h>
+    typedef void logger_t(uint32_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uint32_t);
+    typedef struct { uint64_t type, size, pointer, count; } event_t;
+    static logger_t **logger_slot;
+    typedef struct { uint64_t active, allocs, frees, bytes, count, overflow; event_t events[64]; } scope_t;
+    static _Thread_local scope_t scope;
+    static pthread_key_t scope_key;
+    static _Atomic(uintptr_t) watched;
+    static _Atomic(uint64_t) watched_frees, watched_thread;
+    static void logger(uint32_t type, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t result, uint32_t skip) {
+        (void)a; (void)skip;
+        uint64_t size = (type & 2) ? ((type & 4) ? c : b) : 0;
+        uintptr_t ptr = (type & 2) ? result : b;
+        if ((type & 4) && b && b == atomic_load(&watched)) {
+            uint64_t tid = 0; pthread_threadid_np(NULL, &tid);
+            atomic_fetch_add(&watched_frees, 1); atomic_store(&watched_thread, tid);
+        }
+        scope_t *s = pthread_getspecific(scope_key);
+        if (!s || !s->active) return;
+        if ((type & 2) && result) { s->allocs++; s->bytes += size; }
+        if ((type & 4) && b) s->frees++;
+        for (uint64_t i = 0; i < s->count; i++) {
+            if (s->events[i].type == type && s->events[i].size == size) { s->events[i].count++; return; }
+        }
+        if (s->count < 64) s->events[s->count++] = (event_t){type, size, ptr, 1};
+        else s->overflow++;
+    }
+    int m31_probe_install(void) {
+        logger_slot = (logger_t **)dlsym(RTLD_DEFAULT, "malloc_logger");
+        if (!logger_slot || *logger_slot) return 0;
+        if (pthread_key_create(&scope_key, NULL) != 0) return 0;
+        scope.active = 0;
+        *logger_slot = logger;
+        return 1;
+    }
+    void m31_probe_uninstall(void) { if (logger_slot && *logger_slot == logger) *logger_slot = NULL; }
+    void m31_probe_begin(void) {
+        scope.active = 0; scope.allocs = scope.frees = scope.bytes = scope.count = scope.overflow = 0;
+        pthread_setspecific(scope_key, &scope);
+        scope.active = 1;
+    }
+    uint64_t m31_probe_end(void) { scope.active = 0; return scope.allocs; }
+    uint64_t m31_probe_read(uint64_t field) {
+        switch (field) {
+            case 0: return scope.allocs; case 1: return scope.frees; case 2: return scope.bytes;
+            case 3: return scope.count; case 4: return scope.overflow; default: return 0;
+        }
+    }
+    uint64_t m31_probe_event(uint64_t index, uint64_t field) {
+        if (index >= scope.count) return 0;
+        event_t e = scope.events[index];
+        return field == 0 ? e.type : field == 1 ? e.size : field == 2 ? e.pointer : e.count;
+    }
+    void m31_probe_watch(uint64_t address) {
+        atomic_store(&watched_frees, 0); atomic_store(&watched_thread, 0); atomic_store(&watched, address);
+    }
+    uint64_t m31_probe_watched(uint64_t field) {
+        return field == 0 ? atomic_load(&watched_frees) : atomic_load(&watched_thread);
+    }
+    uint64_t m31_probe_thread(void) { uint64_t value = 0; pthread_threadid_np(NULL, &value); return value; }
+    """#
+
+    typealias Action = @convention(c) () -> Void
+    typealias Value = @convention(c) () -> UInt64
+    typealias Read = @convention(c) (UInt64) -> UInt64
+    typealias Event = @convention(c) (UInt64, UInt64) -> UInt64
+    typealias Watch = @convention(c) (UInt64) -> Void
+    let handle: UnsafeMutableRawPointer
+    let begin: Action
+    let end: Value
+    let read: Read
+    let event: Event
+    let watch: Watch
+    let watched: Read
+    let thread: Value
+    private let uninstall: Action
+
+    init(path: String) {
+        handle = dlopen(path, RTLD_NOW | RTLD_LOCAL)!
+        begin = unsafeBitCast(dlsym(handle, "m31_probe_begin")!, to: Action.self)
+        end = unsafeBitCast(dlsym(handle, "m31_probe_end")!, to: Value.self)
+        read = unsafeBitCast(dlsym(handle, "m31_probe_read")!, to: Read.self)
+        event = unsafeBitCast(dlsym(handle, "m31_probe_event")!, to: Event.self)
+        watch = unsafeBitCast(dlsym(handle, "m31_probe_watch")!, to: Watch.self)
+        watched = unsafeBitCast(dlsym(handle, "m31_probe_watched")!, to: Read.self)
+        thread = unsafeBitCast(dlsym(handle, "m31_probe_thread")!, to: Value.self)
+        uninstall = unsafeBitCast(dlsym(handle, "m31_probe_uninstall")!, to: Action.self)
+        let install = unsafeBitCast(dlsym(handle, "m31_probe_install")!, to: (@convention(c) () -> Int32).self)
+        precondition(install() == 1, "allocation hook unavailable or already owned; no observation")
+    }
+
+    deinit {
+        uninstall()
+        dlclose(handle)
+    }
+
+    func report(_ label: String) {
+        print("m31_allocation_scope=\(label) allocations=\(read(0)) frees=\(read(1))"
+            + " bytes=\(read(2)) bins=\(read(3)) overflow=\(read(4))")
+        for index in 0 ..< read(3) {
+            print("m31_allocation_bin=\(label) type=\(event(index, 0))"
+                + " size=\(event(index, 1)) count=\(event(index, 3))")
+        }
+    }
+}
+
+private struct M31CallbackSignals: Sendable {
+    let entered: DispatchSemaphore
+    let resume: DispatchSemaphore
+    let done: DispatchSemaphore
+}
+
+private final class M31TimingOwner: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: MacSpeechNativeVoiceTiming?
+    weak var observed: MacSpeechNativeVoiceTiming?
+
+    init(_ value: MacSpeechNativeVoiceTiming) {
+        self.value = value
+        observed = value
+    }
+
+    func borrow() -> MacSpeechNativeVoiceTiming? {
+        lock.withLock { value }
+    }
+
+    func clear() {
+        lock.withLock { value = nil }
+    }
+}
 
 private struct R81CredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? { nil }
@@ -4789,6 +4929,7 @@ private struct RealtimeInterruptionEvidenceTests {
                 observed += length
             }
             printM31Performance(frames: frames, extra: extra, total: total)
+            saveM31Performance(frames: frames, extra: extra, total: total)
         }
         printM31Memory()
     }
@@ -4803,6 +4944,16 @@ private struct RealtimeInterruptionEvidenceTests {
             + " total_max_ns=\(total[999]) budget_ns=\(limit) within_observed_budget=\(extra[999] <= limit)")
     }
 
+    static func saveM31Performance(frames: Int, extra: [UInt64], total: [UInt64]) {
+        guard let directory = ProcessInfo.processInfo.environment["M31_PERFORMANCE_OUTPUT_DIRECTORY"] else { return }
+        let path = URL(fileURLWithPath: directory).appendingPathComponent("samples-\(frames).csv").path
+        let rows = extra.indices.map { "\($0),\(extra[$0]),\(total[$0])" }
+        let data = Data(("sample,extra_ns,total_ns\n" + rows.joined(separator: "\n") + "\n").utf8)
+        precondition(!FileManager.default.fileExists(atPath: path))
+        precondition(FileManager.default.createFile(atPath: path, contents: data,
+                                                    attributes: [.posixPermissions: 0o600]))
+    }
+
     static func printM31Memory() {
         let rows = 2048 * MemoryLayout<MacSpeechPlayerContent.Row>.stride
         let budget = rows + 256 * 8 + 16 * 256 + 8192
@@ -4810,6 +4961,233 @@ private struct RealtimeInterruptionEvidenceTests {
             + " conservative_increment_bytes=\(budget) limit_bytes=262144")
         print("m31_perf_device_access=ZERO")
         print("m31_real_player_mapping=NOT_RUN")
+    }
+
+    static func testM31AllocationObservation() {
+        guard let path = ProcessInfo.processInfo.environment["M31_ALLOCATION_PROBE"] else {
+            preconditionFailure("explicit isolated probe path required; observation remains UNVERIFIED")
+        }
+        let probe = M31AllocationProbe(path: path)
+        probe.begin()
+        _ = probe.end()
+        expect(probe.read(0) == 0 && probe.read(1) == 0, "empty probe does not allocate or release")
+        probe.report("empty_negative")
+        probe.begin()
+        let pointer = malloc(333)!
+        free(pointer)
+        _ = probe.end()
+        expect(probe.read(0) > 0 && probe.read(1) > 0, "probe sees actual malloc/free positive control")
+        probe.report("malloc_free_positive")
+        probe.begin()
+        do {
+            let values = Array(repeating: UInt64(42), count: 4096)
+            precondition(values[4095] == 42)
+            precondition(String(repeating: "z", count: 4096).utf8.count == 4096)
+        }
+        _ = probe.end()
+        expect(probe.read(0) > 0 && probe.read(1) > 0, "Swift container allocations and releases are observable")
+        probe.report("swift_container_positive")
+        let identity = m31Identity()
+        let timing = MacSpeechNativeVoiceTiming(runID: identity.runID, generation: 1)
+        timing.bind(configurationID: 3, playbackGeneration: 1)
+        probe.begin()
+        let armed = timing.enablePlayerContent(identity)
+        _ = probe.end()
+        probe.report("arm_preparation")
+        expect(armed && probe.read(4) == 0, "preparation is observable without probe overflow")
+        expect((0 ..< probe.read(3)).filter { probe.event($0, 1) == 131_072 }.count == 1,
+               "2048-row storage is allocated once in non-realtime preparation")
+        for frames in [480, 1600, 8192] {
+            observeM31RenderAllocations(frames, probe: probe)
+        }
+        observeM31CapacityAllocations(probe)
+        testM31ReleaseThread(probe)
+        print("m31_allocation_device_access=ZERO")
+    }
+
+    static func observeM31RenderAllocations(_ frames: Int, probe: M31AllocationProbe) {
+        let buffer = m26Buffer(Array(repeating: 0.125, count: frames))
+        observeM31DigestAllocations(buffer, frames: frames, probe: probe)
+        let disabled = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        disabled.bind(configurationID: 3)
+        probe.begin()
+        disabled.render(buffer, content: (1_000_000_000, 0), arrival: 1,
+                        identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("disabled_render_\(frames)")
+        probe.begin()
+        disabled.render(buffer, content: (1_000_000_000 + UInt64(frames) * 62500, Int64(frames)), arrival: 2,
+                        identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("disabled_steady_\(frames)")
+        let (timing, identity) = m31Timing()
+        m31Schedule(timing, identity, buffer)
+        m31Mapping(timing, identity, origin: 0, closing: false)
+        timing.event(.playerPlayBefore)
+        probe.begin()
+        timing.render(buffer, content: (1_000_000_000, 0), arrival: 1,
+                      identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("first_render_\(frames)")
+        expect(probe.read(4) == 0, "render observation is not truncated")
+        probe.begin()
+        timing.withUpdateForTesting {
+            timing.render(buffer, content: (1_000_000_000 + UInt64(frames) * 62500, Int64(frames)),
+                          arrival: 2, identity: (3, 1), timestampRate: 16000)
+        }
+        _ = probe.end()
+        probe.report("queued_render_\(frames)")
+        probe.begin()
+        timing.render(buffer, content: (1_000_000_000 + UInt64(frames) * 125_000, Int64(frames * 2)),
+                      arrival: 3, identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("drain_apply_\(frames)")
+        let result = m31Close(timing, identity, origin: 0)
+        expect(result.reason != "OBSERVER_INCONCLUSIVE", "probe does not cause observation loss")
+        probe.begin()
+        timing.render(buffer, content: (2_000_000_000, 0), arrival: 4,
+                      identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("closed_callback_\(frames)")
+    }
+
+    static func observeM31DigestAllocations(_ buffer: AVAudioPCMBuffer, frames: Int, probe: M31AllocationProbe) {
+        let format = buffer.format
+        let raw = UnsafeRawBufferPointer(start: buffer.floatChannelData![0], count: frames * 4)
+        probe.begin()
+        let valid = MacSpeechPlayerContent.validFormat(format)
+        _ = probe.end()
+        probe.report("format_\(frames)")
+        expect(valid, "actual registered format is checked")
+        probe.begin()
+        let digest = MacSpeechPlayerContent.digest(buffer)
+        _ = probe.end()
+        probe.report("digest_\(frames)")
+        expect(digest != nil, "actual digest was evaluated")
+        probe.begin()
+        let repeated = MacSpeechPlayerContent.digest(buffer)
+        _ = probe.end()
+        probe.report("digest_repeated_\(frames)")
+        expect(digest == repeated, "repeat observation does not change the digest")
+        probe.begin()
+        let crc = MacSpeechContentCRC64.hash(raw)
+        _ = probe.end()
+        probe.report("crc_channel_\(frames)")
+        expect(crc == digest!.first, "standalone CRC agrees with the actual digest")
+    }
+
+    static func observeM31CapacityAllocations(_ probe: M31AllocationProbe) {
+        let buffer = m26Buffer([0.125])
+        let (rows, _) = m31Timing()
+        for frame in 0 ..< 2048 {
+            rows.render(buffer, content: (1_000_000_000 + UInt64(frame) * 62500, Int64(frame)), arrival: 1,
+                        identity: (3, 1), timestampRate: 16000)
+        }
+        probe.begin()
+        rows.render(buffer, content: (1_128_000_000, 2048), arrival: 1, identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("row_capacity_rejection")
+        expect(probe.read(4) == 0, "capacity rejection is fully observed")
+        let invalid = m26Buffer([.nan])
+        let (rejected, _) = m31Timing()
+        probe.begin()
+        rejected.render(invalid, content: (1_000_000_000, 0), arrival: 1,
+                        identity: (3, 1), timestampRate: 16000)
+        _ = probe.end()
+        probe.report("nonfinite_rejection")
+        expect(rejected.snapshot()!.invalidBuffers == 1, "nonfinite input remains rejected")
+    }
+
+    static func testM31ReleaseThread(_ probe: M31AllocationProbe) {
+        let identity = m31Identity()
+        var timing: MacSpeechNativeVoiceTiming? = .init(runID: identity.runID, generation: 1)
+        timing!.bind(configurationID: 3, playbackGeneration: 1)
+        probe.begin()
+        let armed = timing!.enablePlayerContent(identity)
+        _ = probe.end()
+        expect(armed && probe.read(4) == 0, "release audit owns actual prepared row storage")
+        let rows = (0 ..< probe.read(3)).filter { probe.event($0, 1) == 131_072 }
+        expect(rows.count == 1, "release audit identifies one actual row allocation")
+        probe.watch(probe.event(rows[0], 2))
+        let owner = M31TimingOwner(timing!)
+        let buffer = m26Buffer([0.125, -0.25, 0.5, -0.75])
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            runM31LastReference(
+                owner,
+                buffer: buffer,
+                probe: probe,
+                signals: .init(entered: entered, resume: resume, done: done)
+            )
+        }
+        expect(entered.wait(timeout: .now() + 2) == .success, "callback is active before owner release")
+        let start = DispatchTime.now().uptimeNanoseconds
+        timing!.event(.captureStopped)
+        let duration = DispatchTime.now().uptimeNanoseconds - start
+        expect(done.wait(timeout: .now()) == .timedOut, "Stop does not wait for paused hash/scan")
+        owner.clear()
+        timing = nil
+        expect(owner.observed != nil, "in-flight callback strong reference prevents use-after-free")
+        resume.signal()
+        expect(done.wait(timeout: .now() + 2) == .success, "callback returns after close without deadlock")
+        expect(owner.observed == nil && probe.watched(0) == 1, "actual row storage is released exactly once")
+        expect(probe.watched(1) != probe.thread(), "last callback reference can release rows on its worker thread")
+        print("m31_release_last_reference=CALLBACK_WORKER stop_ns=\(duration) row_frees=\(probe.watched(0))")
+        probe.watch(0)
+    }
+
+    static func testM31CallbackLifetime() {
+        cases += 1
+        for stopEvent in [MacSpeechTimingEvent.captureStopped, .routeChanged] {
+            let identity = m31Identity()
+            var timing: MacSpeechNativeVoiceTiming? = .init(runID: identity.runID, generation: 1)
+            timing!.bind(configurationID: 3, playbackGeneration: 1)
+            expect(timing!.enablePlayerContent(identity), "lifetime fixture uses actual row storage")
+            let owner = M31TimingOwner(timing!)
+            let nextRun = m31Timing().0
+            let buffer = m26Buffer([0.125, -0.25, 0.5, -0.75])
+            let entered = DispatchSemaphore(value: 0)
+            let resume = DispatchSemaphore(value: 0)
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                runM31LastReference(
+                    owner,
+                    buffer: buffer,
+                    probe: nil,
+                    signals: .init(entered: entered, resume: resume, done: done)
+                )
+            }
+            expect(entered.wait(timeout: .now() + 2) == .success, "callback holds a strong timing reference")
+            timing!.event(stopEvent)
+            expect(done.wait(timeout: .now()) == .timedOut, "close never waits for the paused callback")
+            owner.clear()
+            timing = nil
+            expect(owner.observed != nil, "dropping the control owner cannot free an active callback object")
+            resume.signal()
+            expect(done.wait(timeout: .now() + 2) == .success, "closed callback returns without accessing freed rows")
+            expect(owner.observed == nil, "test does not hide a retained timing object")
+            expect(nextRun.snapshot()!.playerRender.buffers == 0, "old callback cannot publish into a new Run")
+        }
+    }
+
+    nonisolated static func runM31LastReference(
+        _ owner: M31TimingOwner, buffer: AVAudioPCMBuffer, probe: M31AllocationProbe?,
+        signals: M31CallbackSignals
+    ) {
+        var callback = owner.borrow()
+        callback!.render(buffer, content: (1_000_000_000, 0), arrival: 1, identity: (3, 1), scan: { _ in
+            signals.entered.signal()
+            precondition(signals.resume.wait(timeout: .now() + 2) == .success)
+            return (0 ... 3, 4)
+        }, timestampRate: 16000)
+        precondition(callback!.snapshot()!.staleCallbacks == 1)
+        probe?.begin()
+        callback = nil
+        _ = probe?.end()
+        probe?.report("last_callback_reference_release")
+        signals.done.signal()
     }
 
     static func testM31All() throws {
@@ -4820,6 +5198,7 @@ private struct RealtimeInterruptionEvidenceTests {
         testM31Fences()
         testM31MappingAndLimits()
         testM31PublicationAndClose()
+        testM31CallbackLifetime()
         print("m31_fake_cases=\(cases)")
         print("m31_fake_checks=\(checks)")
         print("m31_fake_device_access=ZERO")
@@ -4846,6 +5225,14 @@ private struct RealtimeInterruptionEvidenceTests {
     }
 
     static func runWitnessTestMode() async throws -> Bool {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m31-probe-source"]) {
+            print(M31AllocationProbe.source)
+            return true
+        }
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m31-allocation"]) {
+            testM31AllocationObservation()
+            return true
+        }
         if CommandLine.arguments.dropFirst().elementsEqual(["--m31-segments"]) {
             measureM31Segments()
             measureM31FixedOverhead()
