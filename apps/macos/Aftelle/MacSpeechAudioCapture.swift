@@ -2816,8 +2816,11 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 guard item.mNumberChannels == 1, Int(item.mDataByteSize) >= frames * 4,
                       let data = item.mData else { return nil }
                 let samples = data.assumingMemoryBound(to: Float.self)
-                for frame in 0 ..< frames where !samples[frame].isFinite {
-                    return nil
+                var frame = 0
+                while frame < frames {
+                    // IEEE Float32 is non-finite exactly when every exponent bit is set.
+                    guard samples[frame].bitPattern & 0x7F80_0000 != 0x7F80_0000 else { return nil }
+                    frame += 1
                 }
                 let crc = MacSpeechContentCRC64.hash(UnsafeRawBufferPointer(start: data, count: frames * 4))
                 switch channel {

@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import CoreAudio
 import Foundation
+import Synchronization
 
 private struct R81CredentialReader: ProviderCredentialReading {
     func readCredential(for keyRef: String) throws -> String? { nil }
@@ -4640,6 +4641,119 @@ private struct RealtimeInterruptionEvidenceTests {
                "another Run's metadata cannot qualify this content ledger")
     }
 
+    static func testM31FiniteEquivalence() {
+        cases += 1
+        var patterns: [UInt32] = [0, 0x8000_0000, 1, 0x007F_FFFF, 0x0080_0000, 0x7F7F_FFFF,
+                                  0xFF7F_FFFF, 0x7F80_0000, 0xFF80_0000, 0x7FC0_0000, 0x7F80_0001, 0xFFC0_0000]
+        var seed: UInt32 = 1_234_567
+        for _ in 0 ..< 4096 {
+            seed = seed &* 1_664_525 &+ 1_013_904_223
+            patterns.append(seed)
+        }
+        let buffer = m26Buffer(Array(repeating: 0.125, count: 4))
+        for bits in patterns {
+            let value = Float(bitPattern: bits)
+            for channel in 0 ..< 3 {
+                for frame in [0, 3] {
+                    buffer.floatChannelData![channel][frame] = value
+                    let before = Data(bytes: buffer.floatChannelData![channel], count: 16)
+                    let result = MacSpeechPlayerContent.digest(buffer)
+                    expect((result != nil) == value.isFinite,
+                           "digest agrees with Float.isFinite for every tested channel and endpoint")
+                    expect(before == Data(bytes: buffer.floatChannelData![channel], count: 16),
+                           "finite bit check never canonicalizes NaN, signed zero, subnormal or normal sample bits")
+                    buffer.floatChannelData![channel][frame] = 0.125
+                }
+            }
+        }
+    }
+
+    static func measureM31Segments() {
+        MacSpeechContentCRC64.prepare()
+        for frames in [480, 1600, 8192] {
+            measureM31SegmentSize(frames)
+        }
+        print("m31_segment_device_access=ZERO")
+    }
+
+    static func measureM31SegmentSize(_ frames: Int) {
+        let buffer = m26Buffer(Array(repeating: 0.125, count: frames))
+        let list = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        var crcTimes: [UInt64] = []
+        var finiteTimes: [UInt64] = []
+        var formatTimes: [UInt64] = []
+        var digestTimes: [UInt64] = []
+        var sink: UInt64 = 0
+        for _ in 0 ..< 1000 {
+            var start = DispatchTime.now().uptimeNanoseconds
+            for channel in 0 ..< 3 {
+                let data = UnsafeRawBufferPointer(start: list[channel].mData!, count: frames * 4)
+                sink ^= MacSpeechContentCRC64.hash(data)
+            }
+            crcTimes.append(DispatchTime.now().uptimeNanoseconds - start)
+            start = DispatchTime.now().uptimeNanoseconds
+            var finite = true
+            for channel in 0 ..< 3 {
+                let values = buffer.floatChannelData![channel]
+                for index in 0 ..< frames where !values[index].isFinite {
+                    finite = false
+                }
+            }
+            finiteTimes.append(DispatchTime.now().uptimeNanoseconds - start)
+            expect(finite, "segment fixture stays finite")
+            start = DispatchTime.now().uptimeNanoseconds
+            let valid = MacSpeechPlayerContent.validFormat(buffer.format)
+            formatTimes.append(DispatchTime.now().uptimeNanoseconds - start)
+            expect(valid, "segment measurement uses the registered actual format validator")
+            start = DispatchTime.now().uptimeNanoseconds
+            let digest = MacSpeechPlayerContent.digest(buffer)!
+            digestTimes.append(DispatchTime.now().uptimeNanoseconds - start)
+            sink ^= digest.first
+        }
+        for (name, values) in [("crc_three_channels", crcTimes), ("isolated_finite_loop", finiteTimes),
+                               ("format_actual", formatTimes), ("digest_actual", digestTimes)] {
+            let sorted = values.sorted()
+            print("m31_segment_frames=\(frames) name=\(name) n=1000 p50_ns=\(sorted[499])"
+                + " p95_ns=\(sorted[949]) p99_ns=\(sorted[989]) max_ns=\(sorted[999])")
+        }
+        print("m31_segment_sink=\(sink)")
+    }
+
+    static func measureM31FixedOverhead() {
+        let timing = MacSpeechNativeVoiceTiming(runID: UUID(), generation: 1)
+        timing.bind(configurationID: 3)
+        let enabled = Atomic<Bool>(true)
+        let failure = Atomic<UInt8>(0)
+        let admission = Atomic<UInt64>(0)
+        let budget = Atomic<UInt64>(0)
+        var queueTimes: [UInt64] = []
+        var atomicTimes: [UInt64] = []
+        for index in 0 ..< 1000 {
+            var start = DispatchTime.now().uptimeNanoseconds
+            timing.input(content: (UInt64(1_000_000_000 + index * 20_000_000), Int64(index * 320)),
+                         arrival: 1, frames: 320, rate: 16000, identity: (3, 1))
+            queueTimes.append(DispatchTime.now().uptimeNanoseconds - start)
+            start = DispatchTime.now().uptimeNanoseconds
+            let active = enabled.load(ordering: .acquiring) && failure.load(ordering: .acquiring) == 0
+            let ticket = admission.load(ordering: .acquiring)
+            let accepted = admission.compareExchange(expected: ticket, desired: ticket + 1,
+                                                     ordering: .acquiringAndReleasing).exchanged
+            let used = budget.load(ordering: .acquiring)
+            let reserved = budget.compareExchange(expected: used, desired: used + 5760,
+                                                  ordering: .acquiringAndReleasing).exchanged
+            admission.wrappingSubtract(1, ordering: .releasing)
+            atomicTimes.append(DispatchTime.now().uptimeNanoseconds - start)
+            expect(active && accepted && reserved, "isolated primitive probe has no injected contention")
+            budget.store(0, ordering: .releasing)
+        }
+        for (name, values) in [("input_queue_actual", queueTimes), ("atomics_uncontended_probe", atomicTimes)] {
+            let sorted = values.sorted()
+            print("m31_fixed_name=\(name) n=1000 p50_ns=\(sorted[499]) p95_ns=\(sorted[949])"
+                + " p99_ns=\(sorted[989]) max_ns=\(sorted[999])")
+        }
+        expect(timing.snapshot()!.input.buffers == 1000, "probe uses actual shared FIFO publication and apply")
+    }
+
     static func testM31Performance() {
         let samples = 1000
         MacSpeechContentCRC64.prepare()
@@ -4700,6 +4814,7 @@ private struct RealtimeInterruptionEvidenceTests {
 
     static func testM31All() throws {
         testM31CRC()
+        testM31FiniteEquivalence()
         try testM31ExistingGap()
         testM31Streams()
         testM31Fences()
@@ -4731,6 +4846,12 @@ private struct RealtimeInterruptionEvidenceTests {
     }
 
     static func runWitnessTestMode() async throws -> Bool {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--m31-segments"]) {
+            measureM31Segments()
+            measureM31FixedOverhead()
+            return true
+        }
+
         if CommandLine.arguments.dropFirst().elementsEqual(["--m31-performance"]) {
             testM31Performance()
             return true
