@@ -133,10 +133,8 @@ if sed -n '/private func processCapture(/,/private func rebuildAudioFormatsLocke
 fi
 echo "speech_aec_content_time=PASS"
 echo "speech_aec_capture_callback_latency_read=PASS"
-if rg -q 'playerNode\.outputPresentationLatency' "$capture"; then
-  echo "speech_aec_hardware_delay=FAIL"
-  exit 1
-fi
+python3 "$repo_root/tools/speech_aec_host_tests/test_aec_delay_gate.py"
+python3 "$repo_root/tools/speech_aec_host_tests/aec_delay_gate.py" "$capture"
 echo "speech_aec_hardware_delay=PASS"
 rg -q 'presentationLatency' "$capture"
 rg -q 'playbackCompleted\(\)' "$aec_host" "$capture"
