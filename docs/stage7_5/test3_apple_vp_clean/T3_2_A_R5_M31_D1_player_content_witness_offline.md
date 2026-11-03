@@ -495,3 +495,131 @@ Test3.execution_authorized=false
 M31_D2=NOT_STARTED
 T3.3=NOT_STARTED
 ```
+
+
+## 10. M31-D2：受控撤回与 T3.2-A 阶段收口（2026-11-03）
+
+**裁定：M31 诊断实现已完成可证明边界内的撤回；M31-D2 为 PARTIAL，正式离线入口仍有阻塞，T3.2-A 不满足下一节点准入。** 本章是当前状态；§1–9 是不可追溯改判的历史记录。停止 M31 性能优化，不新增替代内容见证器，不将撤回作为 AEC 或硬实时安全验收。
+
+### 10.1 任务、Git 身份与保护门禁
+
+- 起点：`1fcee1332eead9cea2fbad3b4e31d34ac5ee7405`，开始时 HEAD、upstream 与实时远端完全一致，工作区 clean。
+- 仅使用原 `vp-reference-host-preparation/Eterna_Aftelle` 隔离 Worktree；本地既有分支 `codex/reference-host-comparison-preparation`，追踪 `origin/Test3-AppleVP-Clean`。没有新分支、切换 Worktree、checkout、reset、rebase、stash、clean、强推或解决旧冲突。
+- 跨文件修改前的可审计空回滚点：`340ce0896a0defee5500cbf2ed9ec2b7e4d2dc64`。
+- 最小撤回源码/测试提交：`19002b3261836cbb6f4180dc14a3b9a1ecd54f55`。本章及 README 为其后的文档收口提交，最终完整交付 SHA、Push 和三方 HEAD 查验由本轮交付回执记录，不能把源码提交冒充文档交付 HEAD。
+- 原受保护 Worktree 的 7 项冲突、索引及 14 项未跟踪证据已作前后元数据核对；只核验 HEAD、status、unmerged、index 摘要及文件大小/mtime，不读取证据内容。本轮不访问私人 WAV/JSON、设备 UID、居民原句或历史私人日志。
+
+实际修改仅四个授权文件：本 Capture、原定向测试、本报告追加部分、README 最小状态索引。其余生产实现、正式计划、工具、冻结评分器与测试断言均只读。
+
+### 10.2 依赖清单与撤回依据
+
+不是整体回滚某个历史 Commit。先审计 `ee94a74869e803eb3f66f97bb57995147153fb82`（M31 实现前）至任务基线在两份源码中的全部差异，再对已证实仅属于 M31 的差异逐文件撤回。区间内源码变更为 M31 初版、性能整改、分配/生命周期审计及已归因循环修正，没有其他节点的音频功能混入。
+
+| 分类 | 实际处置与证据 |
+|---|---|
+| A：M31 内容实现 | 删除 `MacSpeechContentCRC64`、`MacSpeechPlayerContent`、Source/Render 指纹、内容 Identity/Row/Mapping/Summary、Epoch/内容租约及容量状态；删除 `contentRows` 分配、131072-byte Row 析构、`appendContent`、内容时间映射和封存后内容摘要 |
+| A：接入/出口 | 删除 schedule 前的内容准备/提交、Tap 内指纹计算、CallbackRecord 指纹、额外 timestampRate、`enablePlayerContentWitness`、最终内容查询与可选 `playerContent` JSON 字段；原已有时间/格式/覆盖字段保留 |
+| A：测试/探针 | 移除 M31 CRC、内容、映射、性能、分段计时、分配拦截 C 源码与生命周期探针的执行实现；旧 M31 执行参数明确拒绝。原函数和历史源代码可按原 Commit 完整追溯，不删除本机历史收据 |
+| B：既有观察与控制 | 保留 `MacSpeechTimingSnapshot`、`MacSpeechNativeVoiceTiming`、16 槽发布/消费、溢出拒绝、原 event、Input/Render 连续性、scheduled/nonzero 计数、Stop/RouteChange/Generation/Stale 规则及 M12/M19 证据 |
+| B：M20/M22/M26 | 原 App 同意、批次次数、Stop、导出/退出、身份及声道合同保留；未改控制器、Python 批次脚本、评分器、阈值或计划，没有新设备计划/授权消耗记录 |
+| C：正式能力/Test2 | 未改 Apple VP、AEC/AGC/NS、Clock、Converter、Player 调度、AudioGraph、Provider、RuntimeCore、DR 或正式 Gate。Test2 已批准的历史能力与失败记录均不撤销、不重新宣称批准 |
+
+**机械边界证明：** 当前 `MacSpeechAudioCapture.swift` 与上述 M31 前锚点逐字节相同，SHA-256 为 `f8cf47b0de2205e7e70177db6c16ceb0a615730892d4ae605e6fdee9cc45d49c`。测试移除新增撤回检查及其小型分派后，与该锚点的原测试函数/路由逐字节相同；M26 原分支仅放入测试模式分派函数，所有旧测试函数体及断言不变。
+
+依赖查询限定 tracked Swift/Python/shell：M31 具体类型与调用只在这两份源码中存在，Controller、M20/M22/M26 与正式自动化没有消费该新增 JSON 字段；撤回后实现符号/调用引用为 0。保留的一处 `playerContent` 文本是测试 JSON 字段不存在的负控，不是残留执行入口。
+
+当前关键源码位置：Capture `MacSpeechTimingSnapshot:2654`、16 槽 Timing `:2680/:2686`、原 event `:2846`、Input/Render/scheduled `:2888/:2896/:2912`、原队列/消费 `:2955/:3020`、schedule `:3379`、teardown/route `:3671/:3723/:3749`、原 Player Tap `:4012`、clear/snapshot `:4230/:4318`。撤回检查在测试 `testM31Withdrawal:4232`，独立模式分派 `runWithdrawalTestMode:4290`；共 8 项断言。
+
+### 10.3 最小 diff、风险与保留的能力边界
+
+源码提交相对起点：Capture `+31/-579`，测试 `+40/-1087`，合计 `+71/-1666`。新增行主要是恢复原 event/路由位置及 8 项撤回检查；不是新音频功能。文档仅末尾追加和入口索引，不覆盖任何旧 FAIL。
+
+当前检查证明原 scheduled/render 帧数、非零计数、Run/Configuration/Generation 仍可导出；Stop 和 RouteChange 后旧 callback 被拒绝，旧身份不能进入新 Run。**原 `nonzeroCoverage` 继续为 `UNKNOWN: scheduled-to-player content alignment is not established`。** 不再提供内容逐样本/指纹一致性资格。
+
+M31 新增的哈希/Row 路径不再存在，因此其回调增量和大块 Row 随最后引用析构的风险不再属于当前实现；这依据删除后的实际源码和产物引用，不是一次“零分配实测”。旧 Timing/闭包/observer 的既有申请、释放与 Apple 框架线程行为没有被优化或获得新的硬实时保证。不能把撤回或 TSan PASS 写成整个回调实时安全已建立。
+
+所有历史结论保留：§1–9 的全部性能失败及曾观察到的通过、分配现象、§9 Range 调用点归因与新增稳态申请消除、随后 480/8192 帧尾部预算失败、最后引用析构线程未闭环，均不改判。§9 的 480 帧 13/1000、8192 帧 1/1000 超限和 Row 释放证据仍有效于当时版本。未再次运行 M31 性能/分配探针，不将其旧结果作为当前功能验收。
+
+### 10.4 本轮实际离线复验
+
+普通和 TSan 测试均从本轮实际源码新编译；Debug/Release 各用新 DerivedData 构建，没有启动 App 或真实 Player/Engine。只使用合成 Buffer 及原登记非私人居民素材（SHA `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`）。
+
+| 检查 | 当前结果与范围 |
+|---|---|
+| 撤回 `--m31-withdrawal-only` | 终版 exit0，8 checks；JSON 出口、原帧/非零/身份、Stop/RouteChange 及旧代拒绝；无设备 |
+| M26 / M20 / M22 | 终版各 exit0，245 / 396 / 124 checks；M20 包含 M19；device_access=ZERO |
+| TSan | 终版撤回/M26 各 exit0，8 / 245 checks，无数据竞争报告；不外推为 Apple 音频线程硬实时证明 |
+| 原 Output/Converter 入口 | exit0，457 checks，其中 3ch Converter 合成对照 6 cases / 219 checks；原字节/排程合同保留 |
+| Host / 原 Playback | 正式 FAST 中 exit0，178 / 238 checks |
+| 原 AEC full 脚本 | exit1，在测试执行前因旧编译成员缺失而失败，详见下节；不记 PASS |
+| 补充 AEC 单元 | 现有 `MacSpeechAcousticEchoHostTests.swift` 以完整当前 Host 源码依赖独立新编译，exit0，1206 checks |
+| 补充原 Capture 诊断 | 同样只修正本机临时编译依赖、不改测试：RawTimestamp 8 cases / 141 checks；D1 Native Stats 16 / 77；VP Profile 19 / 51；Warm-up 26 / 92，均 exit0、无设备 |
+| 原输入 Converter / ch0 资格 | 原非 DEBUG 编译参数和源码列表，exit0，65 cases / 6830 checks；其中声道映射 12 / 3194；合成数字行为，不外推物理声道语义 |
+| Debug / Release | 各 1 次 BUILD SUCCEEDED、exit0；其后只整理测试分派与报告，App 源码/构建输入未变 |
+| Release 隔离 | Capture 非 DEBUG 源码投影与任务起点逐字节相同；Debug 与 Release 的 M31 相关符号均 0；原 Timing 相关符号 Debug 515、Release 0 |
+| Release Route / Architecture / Secret Guard | 正式 FAST 及源码提交前均 exit0；文档交付前再次检查最终暂存范围 |
+| 规范 / diff | 新增测试范围 SwiftFormat lint exit0；两源码 SwiftLint 仍 exit2，原 22 项规则计数不变、无新增规则违规。开发中一次新增 force_cast/主函数长度提示已仅在测试侧消除，不改旧断言；历史 C19/C23 不改判 |
+
+补充编译不是修补正式脚本：使用既有实际测试，加入当前完整 Host 编译成员（含 M26 类型实际所在的 OutputPlayer 等），临时 driver/产物仅留本机忽略目录。它证明这些程序中的离线行为，但不替代正式入口的资格和失败结果。初版撤回测试曾先完成一次通过；测试侧取消强转并隔离模式分派后，重新编译普通/TSan 并完整重跑上述终版 M20/M22/M26/撤回，不复用旧二进制。
+
+### 10.5 正式自动化的两个现有阻塞
+
+1. **FAST：7 PASS / 1 FAIL，总 exit1。** 最后 `debug-stats-timing` 调用只读的 `tools/speech_aec_host_tests/check.sh d1-stats-only`，其 Debug 编译列表缺少定义 `MacSpeechChannelAllocation` 的当前源文件，实际报类型不在 scope。原 full 脚本也在同一依赖处失败。该脚本 SHA `43e56747bd7fdc73c302b0e11ac9a6cd74ca79bffc21f071a78b17728a5e8b7b` 与任务起点相同；M26 类型引用在起点及 M31 前 Capture 已存在。因此确认是当前既有入口的编译成员缺口，不能归因为本次 M31 撤回，也不能据此断言 AEC 失效。
+2. **TEST3：BLOCKED，总 exit2，候选执行次数 0。** 原固定合成 fixture `apps/macos/Aftelle/Fixtures/Stage7_5/resident_stage7_5_fixture_v1.digital_resident` 在准备时即不存在；原 runner 给出 `Fixed offline fixture missing`，未执行其 7 入口/11 不变量。本轮未补造、替换 fixture 或删掉检查，不把历史 T3.0-F/Test2 PASS 当作本次重验 PASS。
+
+两个正式模式各尝试 1 次，保留原收据；没有重新跑 FULL_CURRENT 或 legacy FULL。自动化记录的 source_commit 是回滚点 `340ce0896a0defee5500cbf2ed9ec2b7e4d2dc64` 及当时工作区身份，不冒称最终文档提交；其中失败的实际 Capture 与本轮源码提交完全相同。随后测试模式分派整理不影响 FAST 编译单元，TEST3 始终未执行，故不重复同一失败入口或降低它的断言。正式原脚本/fixture 不在本轮修改范围，**APPLE_VP_BASELINE_REGRESSION 只能为 PARTIAL。**
+
+### 10.6 冻结磁盘身份（不代表加载/设备准入）
+
+| 产物 | SHA-256 |
+|---|---|
+| 当前 Capture | `f8cf47b0de2205e7e70177db6c16ceb0a615730892d4ae605e6fdee9cc45d49c` |
+| 当前定向测试源码 | `af6cfe7d895ef30da25799f89d01bb029f4913a363377c1df23907ee84d9754d` |
+| Debug launcher | `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118` |
+| Debug dylib | `0555edf68c36feb73b36f06b0ef71fa2f50b51ec97cf7f73814ab9a6e23309b0` |
+| Release executable | `9cc916fe56e69630625028a7272e25f9cdb2da6a9353f94371f1659b424197d7` |
+
+没有创建设备批次、启动进程或核验实际加载，不复用旧设备授权。日志、原始测试输出、构建产物及临时 driver 只留本机忽略目录，不提交 Git。
+
+### 10.7 T3.2-A 正式状态与未关闭事项
+
+依据 [T3.1-R2 正式方案 §7–9](T3_1_R2_native_voice_experience_plan.md) 与 [正式入口](README.md)，本轮区分机械实现、诊断交付、声学资格、下一节点授权：
+
+| 事项 | 已有事实 / 当前阻塞 | 所属后续范围与处理方式 |
+|---|---|---|
+| Apple VP 机械实现 | 既有共享 Engine、VP 配置/读回、Capture/Playback/Converter、Generation/Stop/Route 安全与本轮可执行离线回归保留；没有生产 AEC 代码根因修复 | T3.2-A 保留实现；补齐本章正式入口阻塞后重新作独立离线资格判断，不用部分 PASS 取代全部门禁 |
+| M31 诊断研发 | 历史功能测试、CRC 归因及失败已留档；性能与析构线程条件未验收，当前实现撤回 | M31-D1 `BLOCKED_CLOSED_FOR_REWORK`，本路线收口；本轮不建议继续性能优化或再造诊断系统 |
+| AEC 最终声学资格 | M27 跨运行强残留已复现；M28 R2 约 3.28 秒模板匹配、99.665% PCM 能量位于 Render，差异已在 VP 后 Native；仍未确认根因。一些低残留及用户未听到回声不能证明稳定 PASS | T3.2-A 路线特定纯回声/真人完整性/双讲的正式资格仍需主控另行决定；本轮不增加录音或替代物理见证 |
+| CLOCK | 历史约 2–3ms hostTime 偏差与 fail-closed、generation reset 恢复已有证据；本轮保留拒收、诊断及合成回归，不代表根因确认 | 独立 CLOCK 问题保持 UNKNOWN；只接受后续有明确新证据的单独授权调查，不放宽容差、不混入 AEC 判定 |
+| 起音 / R3-M01 | 历史“听不到居民回声，但是有起音”的性质/影响未正式验收；M24 四段非语音短促声分类不等于工程声源或资格确认 | T3.2-A 声学起音项 OPEN；不得以 M31 撤回、合成 onset 或自动化 FAIL 替代听感/技术联合判断 |
+| SQ-M1 | Apple 处理结果与既有声学接口的兼容/安全未收口；机械 PCM 可运行不关闭此项 | OPEN；限制 T3.3 安全验收、T3.4 正式开放及 T3.5，不新建复杂声源资格体系 |
+| Test2 与正式离线再验 | 原已批准的身份/Decision/cancel/clear/N+1/Session/Memory 安全合同保留，本轮未改这些源码；TEST3 因 fixture 缺失未重验 | 原批准历史保持；恢复固定原 fixture 与正式编译成员后才可补本轮完整回归，不重写旧 FAIL/期望摘要 |
+| T3.2-B / T3.3 与 Human Gate | A 尚未正式冻结，SQ-M1、起音/声学及离线准入未闭环；Qwen Strict Overlap 仍为历史 0/3，T3.P 独立 | B 本轮 NOT_AUTHORIZED；T3.3 NOT_STARTED，不进入 Runtime 接口或后续 T3.4/53-A～E Human Gate；正式 Test3 BLOCKED/false |
+| M18-E01 / 工程债务 | 原 EOF minor deferred 与 C19/C23 不属于本次撤回，不因诊断退出而消失 | 保持 DEFERRED / 原登记的 Stage7.5 后治理，不能把任意小 BUG 命名为 AEC 根因 |
+
+**下一节点准入：不满足。** 没有新的 APPROVED/FROZEN，没有正式 Test3 次数、STS 插话验收、真实硬实时或 Apple 内部 AEC 参考路径的证明。不能将自动化编译失败解释为 Apple AEC 失效。
+
+**唯一下一步建议：交主控独立审核本次撤回及 BLOCKED 收口；如要恢复工程准入，单独批准修复原正式离线回归入口（补全既有 M26 编译依赖并恢复原固定合成 fixture），保持原断言与身份检查。** 不再沿同一 M31 诊断优化路线推进，不默认安排无目标设备实验。
+
+### 10.8 检查、交付与停止
+
+历史 §1–9 与起点逐字节前缀一致；只追加本章，README 只加当前索引。旧源码、回滚点、失败报告和本机原收据不删除。Stage7 Forbidden Checklist 前/后 **PASS**：无 Runtime/DR 契约、平台 target、Stage8、音频算法、Owner、线程、正式 Gate 或设备权限变更。最终暂存白名单、diff、隐私检查及原保护状态复核后，按用户要求正常 Commit + Push，无论本章 PARTIAL 均交付，不用本地 Commit 代替 Push。
+
+```ini
+M31_D1=BLOCKED_CLOSED_FOR_REWORK
+M31_D2=PARTIAL
+M31_WITHDRAWAL=COMPLETED_OFFLINE_VERIFIED
+APPLE_VP_BASELINE_REGRESSION=PARTIAL
+RELEASE_ISOLATION=PASS
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+SQ_M1=OPEN
+T3.2_A=BLOCKED
+T3.2_B=NOT_AUTHORIZED
+T3.3=NOT_STARTED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+DEVICE_RUNS=0
+```
+
+最终 COMMIT_SHA、PUSH_VERIFIED 以正常推送后 HEAD = upstream = 实时远端的独立交付回执为准。完成后停止，等待 ChatGPT 主控审核；不启动设备、不进入下一节点。

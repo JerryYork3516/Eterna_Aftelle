@@ -2,6 +2,20 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+
+2026-11-03 当前收口见 [M31-D2 受控撤回与 T3.2-A 状态](T3_2_A_R5_M31_D1_player_content_witness_offline.md#10-m31-d2受控撤回与-t32-a-阶段收口2026-11-03)。M31 内容指纹/Row/映射及探针已仅在其新增范围内撤回；原 16 槽 Timing、M20/M22/M26、Test2 与 Apple VP 音频能力保留。全部历史性能失败、分配归因及析构线程风险原样留档，不再优化该诊断或把旧性能结果用于当前验收。
+
+| 当前项 | 本轮裁定 |
+|---|---|
+| M31-D1 / M31-D2 | BLOCKED_CLOSED_FOR_REWORK / PARTIAL，撤回完成，待主控审核 |
+| 原 Apple VP 离线能力 | 可执行定向回归、TSan、Debug/Release 与三项 Guard 通过；正式回归整体 PARTIAL |
+| 正式自动化阻塞 | FAST 7 PASS/1 FAIL（旧编译清单缺 M26 类型依赖）；TEST3 BLOCKED/未执行（原固定合成 fixture 缺失），均未降低门禁或擅改工具 |
+| SQ-M1 / 起音 / AEC / CLOCK | OPEN / OPEN / UNKNOWN / UNKNOWN |
+| T3.2-A / T3.2-B / T3.3 | BLOCKED / NOT_AUTHORIZED / NOT_STARTED；不满足下一节点准入 |
+| Formal Test3 / 本轮设备 | BLOCKED，execution_authorized=false；DEVICE_RUNS=0 |
+
+本段与报告 §10 为当前状态；以下均保留原节点当时快照，不追溯改判批准、失败或授权。下一步仅交主控审核；如恢复工程准入，另批修复原正式离线入口，不新增 M31 诊断或自动进入设备测试。
+
 2026-10-19当前离线交付见[AGC ON/OFF＋固定4秒预热准备](T3_2_A_agc_on_off_4s_offline_preparation.md)：仅既有DEBUG门禁新增OFF+4S，保留生产AGC=true、ON+0S/普通C/独立OFF/silent-smoke边界；严格profile/readback/run/generation/configuration匹配，ScoreControl兼容，预热无录音、评分720KB及STATS_ONLY不变。Native分窗25/88、Warm-up控制36/785、ScoreControl12/291、FAST8/FULL_CURRENT21、11不变量、Debug/Release/三Guard及Release隔离均实际PASS/exit0；新增B0，同范围Format7208/Lint176仍FAIL，历史C19/C23及3个既有长度增长锚点保留，ENGINEERING REWORK。仅离线READY_FOR_AGC_DEVICE_TEST=true/REVIEW_PENDING；本轮无App/Engine/设备或私人录音访问，AGC_4S_DEVICE_EXECUTION=NOT_AUTHORIZED、实际OFF读回NOT_RUN。WARMUP_EFFECT INCONCLUSIVE、AEC根因UNKNOWN、R3-M01/SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED/false不变。
 
 以下为各节点当时的历史快照；BT-Speech两份评分WAV的后续明确授权交付另见其报告第9节，不产生本轮设备或声学验收授权。
