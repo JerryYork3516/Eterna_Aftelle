@@ -3,6 +3,11 @@
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
 
+2026-11-03 最新工程复验见 [正式离线入口恢复与准入审核](T3_2_A_formal_offline_regression_recovery_review.md)。仅补原AEC测试入口的两个编译成员，原固定Fixture按冻结登记恢复、0600且不跟踪；生产音频及M31撤回保持不变。FAST原8项、TEST3原7入口/11不变量通过，M20/M22/M26、定向TSan、独立Debug/Release与三Guard通过。
+
+**完整工程准入仍PARTIAL：** FULL_CURRENT严格复用本轮FAST的8项后，在原`speech_aec_hardware_delay`静态门禁FAIL，12项NOT_RUN；该门禁命中M22只读延迟元数据，本轮未改断言或以独立结果补数。详见报告§5，交主控另审门禁范围合同。M31_WITHDRAWAL保持COMPLETED_OFFLINE_VERIFIED；AEC/CLOCK UNKNOWN、SQ-M1 OPEN、T3.2-A BLOCKED，B未授权、T3.3 NOT_STARTED、Formal Test3 BLOCKED/false，DEVICE_RUNS=0。以下索引与报告保留各节点当时快照，不追溯改判或产生设备授权。
+
+
 2026-11-03 当前收口见 [M31-D2 受控撤回与 T3.2-A 状态](T3_2_A_R5_M31_D1_player_content_witness_offline.md#10-m31-d2受控撤回与-t32-a-阶段收口2026-11-03)。M31 内容指纹/Row/映射及探针已仅在其新增范围内撤回；原 16 槽 Timing、M20/M22/M26、Test2 与 Apple VP 音频能力保留。全部历史性能失败、分配归因及析构线程风险原样留档，不再优化该诊断或把旧性能结果用于当前验收。
 
 | 当前项 | 本轮裁定 |
