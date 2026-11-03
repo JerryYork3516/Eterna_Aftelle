@@ -13,6 +13,10 @@ trap 'rm -rf "$build_dir"' EXIT
 aec_host="$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
 capture="$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
 device_monitor="$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
+debug_output_sources=(
+  "$repo_root/apps/macos/Aftelle/MacSpeechPCMPlaybackBuffer.swift"
+  "$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputPlayer.swift"
+)
 tests="$repo_root/tools/speech_aec_host_tests/MacSpeechAcousticEchoHostTests.swift"
 replay="$repo_root/tools/speech_aec_host_tests/RecordedAcousticReplay.swift"
 project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
@@ -20,6 +24,7 @@ project="$repo_root/apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 if [[ "$mode" == "m19-only" ]]; then
   swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
     -framework AVFoundation -framework CoreAudio "$aec_host" "$capture" "$device_monitor" \
+    "${debug_output_sources[@]}" \
     "$repo_root/tools/speech_aec_host_tests/NativePCMShortWindowTests.swift" \
     -o "$build_dir/native_pcm_short_window_tests"
   "$build_dir/native_pcm_short_window_tests"
@@ -29,6 +34,7 @@ fi
 if [[ "$mode" == "m09-clock-only" || "$mode" == "full" ]]; then
   swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
     -framework AVFoundation "$aec_host" "$capture" "$device_monitor" \
+    "${debug_output_sources[@]}" \
     "$repo_root/tools/speech_aec_host_tests/RawTimestampDiagnosticsTests.swift" \
     -o "$build_dir/raw_timestamp_tests"
   "$build_dir/raw_timestamp_tests"
@@ -40,6 +46,7 @@ fi
 if [[ "$mode" == "d1-stats-only" || "$mode" == "m08-clock-only" ]]; then
   swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
     -framework AVFoundation "$aec_host" "$capture" "$device_monitor" \
+    "${debug_output_sources[@]}" \
     "$repo_root/tools/speech_aec_host_tests/ConverterTimelineTests.swift" \
     "$repo_root/tools/speech_aec_host_tests/CaptureContentClockReproduction.swift" \
     "$repo_root/tools/speech_aec_host_tests/NativeInputChannelMappingTests.swift" \
@@ -52,6 +59,7 @@ if [[ "$mode" == "d1-stats-only" || "$mode" == "m08-clock-only" ]]; then
   fi
   swiftc -D DEBUG -parse-as-library -warn-concurrency -strict-concurrency=complete \
     -framework AVFoundation "$aec_host" "$capture" "$device_monitor" \
+    "${debug_output_sources[@]}" \
     "$repo_root/tools/speech_aec_host_tests/WarmupWindowStatsTests.swift" \
     -o "$build_dir/warmup_window_tests"
   "$build_dir/warmup_window_tests"
@@ -68,6 +76,7 @@ swiftc \
   "$aec_host" \
   "$capture" \
   "$device_monitor" \
+  "${debug_output_sources[@]}" \
   "$tests" \
   -o "$build_dir/speech_aec_host_tests"
 
