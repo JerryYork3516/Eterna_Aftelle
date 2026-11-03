@@ -2651,196 +2651,11 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         }
     }
 
-    nonisolated enum MacSpeechContentCRC64 {
-        static let polynomial: UInt64 = 0x42F0_E1EB_A9EA_3693
-        private static let table: [UInt64] = (0 ..< 256).map { byte in
-            var value = UInt64(byte) << 56
-            for _ in 0 ..< 8 {
-                value = (value << 1) ^ (value >> 63 == 0 ? 0 : polynomial)
-            }
-            return value
-        }
-
-        static func prepare() {
-            _ = table[0]
-        }
-
-        static func hash(_ bytes: UnsafeRawBufferPointer, initial: UInt64 = 0) -> UInt64 {
-            table.withUnsafeBufferPointer { values in
-                var crc = initial
-                var index = 0
-                while index < bytes.count {
-                    crc = values[Int((crc >> 56) ^ UInt64(bytes[index]))] ^ (crc << 8)
-                    index += 1
-                }
-                return crc
-            }
-        }
-
-        static func combine(_ first: UInt64, _ second: UInt64, bytes: Int) -> UInt64? {
-            guard bytes >= 0, bytes <= Int.max / 8 else { return nil }
-            guard bytes > 0 else { return second == 0 ? first : nil }
-            var count = bytes
-            var factor: UInt64 = 256
-            var value = first
-            while count > 0 {
-                if count & 1 != 0 {
-                    value = multiply(value, factor)
-                }
-                count >>= 1
-                if count > 0 {
-                    factor = multiply(factor, factor)
-                }
-            }
-            return value ^ second
-        }
-
-        private static func multiply(_ first: UInt64, _ second: UInt64) -> UInt64 {
-            var left = first
-            var right = second
-            var value: UInt64 = 0
-            for _ in 0 ..< 64 {
-                if right & 1 != 0 {
-                    value ^= left
-                }
-                left = (left << 1) ^ (left >> 63 == 0 ? 0 : polynomial)
-                right >>= 1
-            }
-            return value
-        }
-    }
-
-    nonisolated enum MacSpeechPlayerContent {
-        struct Identity: Encodable, Sendable, Equatable {
-            let runID: UUID
-            let captureGeneration: UInt64
-            let playbackGeneration: UInt64
-            let configurationID: UInt64
-            let epoch: UUID
-            let sourceSHA: String
-            let buildSHA: String
-
-            var valid: Bool {
-                captureGeneration > 0 && playbackGeneration > 0 && configurationID > 0
-                    && sourceSHA == "774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea"
-                    && buildSHA.count == 64 && buildSHA.utf8.allSatisfy { (48 ... 57).contains($0)
-                        || (97 ... 102).contains($0)
-                    }
-            }
-        }
-
-        struct Digest: Sendable, Equatable {
-            var first: UInt64 = 0
-            var second: UInt64 = 0
-            var third: UInt64 = 0
-
-            func followed(by other: Digest, bytes: Int) -> Digest? {
-                guard let firstCRC = MacSpeechContentCRC64.combine(first, other.first, bytes: bytes),
-                      let secondCRC = MacSpeechContentCRC64.combine(second, other.second, bytes: bytes),
-                      let thirdCRC = MacSpeechContentCRC64.combine(third, other.third, bytes: bytes) else { return nil }
-                return Digest(first: firstCRC, second: secondCRC, third: thirdCRC)
-            }
-
-            var hex: [String] {
-                [first, second, third].map { String(format: "%016llx", $0) }
-            }
-        }
-
-        struct Row: Sendable {
-            var digest = Digest()
-            var sample: Int64 = 0
-            var frames: UInt64 = 0
-            var epoch: UUID
-            var valid: UInt64 = 0
-        }
-
-        struct Mapping: Encodable, Sendable, Equatable {
-            let epoch: UUID
-            let nodeSample: Int64?
-            let roundTripSample: Int64?
-            let nodeRate: Double?
-            let playerRate: Double?
-            let startedAtNs: UInt64
-            let finishedAtNs: UInt64
-
-            var valid: Bool {
-                nodeSample != nil && roundTripSample == 0 && nodeRate == 16000 && playerRate == 16000
-                    && finishedAtNs >= startedAtNs
-            }
-        }
-
-        struct Summary: Encodable, Sendable, Equatable {
-            let identity: Identity
-            var status = "INCONCLUSIVE"
-            var reason = "OBSERVATION_NOT_CLOSED"
-            var timestampMapping = "INCONCLUSIVE"
-            var firstMapping: Mapping?
-            var closingMapping: Mapping?
-            var sourceFrames: UInt64 = 0
-            var sourceSubmissions = 0
-            var renderFrames: UInt64 = 0
-            var renderRows = 0
-            var sourceHashBytes: UInt64 = 0
-            var renderHashBytes: UInt64 = 0
-            var observerFailureCode: UInt8 = 0
-            var firstNodeSample: Int64?
-            var endNodeSample: Int64?
-            var expectedCRC64: [String] = []
-            var observedCRC64: [String] = []
-            let format = "16000Hz/3ch/Float32LE/planar/DiscreteInOrder(3)"
-            let evidenceBoundary = "Finite fingerprint, not exact samples, physical output or internal AEC reference"
-        }
-
-        static func validFormat(_ format: AVAudioFormat) -> Bool {
-            let value = format.streamDescription.pointee
-            guard format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
-                  value.mSampleRate == 16000, value.mChannelsPerFrame == 3,
-                  value.mFormatID == kAudioFormatLinearPCM,
-                  value.mFormatFlags == kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
-                  | kAudioFormatFlagIsNonInterleaved,
-                  value.mFramesPerPacket == 1, value.mBytesPerPacket == 4,
-                  value.mBytesPerFrame == 4, value.mBitsPerChannel == 32, value.mReserved == 0,
-                  let layout = format.channelLayout?.layout.pointee else { return false }
-            return layout.mChannelLayoutTag == kAudioChannelLayoutTag_DiscreteInOrder | 3
-                && layout.mChannelBitmap.rawValue == 0 && layout.mNumberChannelDescriptions == 0
-        }
-
-        static func digest(_ buffer: AVAudioPCMBuffer) -> Digest? {
-            let frames = Int(buffer.frameLength)
-            guard frames > 0, frames <= 8192, validFormat(buffer.format) else { return nil }
-            let list = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
-            guard list.count == 3 else { return nil }
-            var result = Digest()
-            var channel = 0
-            while channel < 3 {
-                let item = list[channel]
-                guard item.mNumberChannels == 1, Int(item.mDataByteSize) >= frames * 4,
-                      let data = item.mData else { return nil }
-                let samples = data.assumingMemoryBound(to: Float.self)
-                var frame = 0
-                while frame < frames {
-                    // IEEE Float32 is non-finite exactly when every exponent bit is set.
-                    guard samples[frame].bitPattern & 0x7F80_0000 != 0x7F80_0000 else { return nil }
-                    frame += 1
-                }
-                let crc = MacSpeechContentCRC64.hash(UnsafeRawBufferPointer(start: data, count: frames * 4))
-                switch channel {
-                case 0: result.first = crc
-                case 1: result.second = crc
-                default: result.third = crc
-                }
-                channel += 1
-            }
-            return result
-        }
-    }
-
     nonisolated struct MacSpeechTimingSnapshot: Encodable, Sendable, Equatable {
         let runID: UUID
         let captureGeneration: UInt64
         var configurationID: UInt64?
         var playbackGeneration: UInt64?
-        var playerContent: MacSpeechPlayerContent.Summary?
         var adaptation: MacSpeechAdaptationTiming?
         var events = MacSpeechTimingEvent.allCases.map { MacSpeechTimingEventWitness(event: $0) }
         var input = MacSpeechTimingStream()
@@ -2879,21 +2694,6 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private let skippedConfigurationNotifications = Atomic<UInt64>(0)
         private var configurationObserver: NSObjectProtocol?
         private var configurationCenter: NotificationCenter?
-        private var contentIdentity: MacSpeechPlayerContent.Identity?
-        private let contentEnabled = Atomic<Bool>(false)
-        private let contentAdmission = Atomic<UInt64>(0)
-        private static let contentClosedBit: UInt64 = 1 << 63
-        private let contentBytes = Atomic<UInt64>(0)
-        private let contentFailure = Atomic<UInt8>(0)
-        private var contentRows: UnsafeMutablePointer<MacSpeechPlayerContent.Row>?
-        private var contentRowCount = 0
-        private var contentSource = MacSpeechPlayerContent.Digest()
-        private var contentSourceFrames: UInt64 = 0
-        private var contentSourceBytes: UInt64 = 0
-        private var contentSubmissions = 0
-        private var contentPendingFrames: UInt64 = 0
-        private var contentFirstMapping: MacSpeechPlayerContent.Mapping?
-        private var contentClosingMapping: MacSpeechPlayerContent.Mapping?
 
         init(runID: UUID, generation: UInt64) {
             self.runID = runID
@@ -2939,9 +2739,6 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 .load(ordering: .acquiring)
             if result.engineConfigurationEvents.skippedNotifications > 0 {
                 result.engineConfigurationEvents.status = "UNKNOWN"
-            }
-            if let identity = contentIdentity {
-                result.playerContent = .init(identity: identity)
             }
             return result
         }
@@ -2996,11 +2793,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             configurationCenter = nil
         }
 
-        deinit {
-            stopObservingEngineConfiguration()
-            contentRows?.deinitialize(count: 2048)
-            contentRows?.deallocate()
-        }
+        deinit { stopObservingEngineConfiguration() }
 
         func recordEngineConfiguration(
             configurationID: UInt64, at time: UInt64 = DispatchTime.now().uptimeNanoseconds
@@ -3050,6 +2843,33 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
         }
 
+        func event(_ event: MacSpeechTimingEvent, at time: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+            switch event {
+            case .engineStartBefore: lifecyclePhase.store(1, ordering: .releasing)
+            case .engineStartReturned: lifecyclePhase.store(2, ordering: .releasing)
+            case .playerPlayBefore: lifecyclePhase.store(3, ordering: .releasing)
+            case .playerPlayReturned: lifecyclePhase.store(4, ordering: .releasing)
+            default: break
+            }
+            update { value in
+                guard let index = MacSpeechTimingEvent.allCases.firstIndex(of: event) else { return }
+                value.events[index].firstCallTimeNs = value.events[index].firstCallTimeNs ?? time
+                value.events[index].lastCallTimeNs = time
+                value.events[index].count &+= 1
+                value.adaptation?.updateActive { play in
+                    if event == .playbackStarted {
+                        play.startedAtNs = time
+                    }
+                    if event == .playbackCompleted {
+                        play.completedAtNs = time
+                    }
+                }
+                if event == .captureStopped || event == .routeChanged {
+                    value.callbacksClosed = true
+                }
+            }
+        }
+
         private static func lifecyclePhaseName(_ value: UInt8) -> String {
             switch value {
             case 1: "engineStarting"
@@ -3076,15 +2896,8 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         func render(
             _ buffer: AVAudioPCMBuffer, content: (host: UInt64?, sample: Int64?), arrival: UInt64,
             identity: (configurationID: UInt64, generation: UInt64),
-            scan: ((AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)?)? = nil,
-            timestampRate: Double? = nil
+            scan: ((AVAudioPCMBuffer) -> (range: ClosedRange<Int>?, count: UInt64)?)? = nil
         ) {
-            let observing = admitPlayerContentCallback()
-            defer {
-                if observing {
-                    contentAdmission.wrappingSubtract(1, ordering: .releasing)
-                }
-            }
             let playbackIndex = adaptationPlaybackIndex.load(ordering: .acquiring)
             let scanned = if let scan {
                 scan(buffer)
@@ -3093,8 +2906,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
             enqueue(.init(rendering: true, content: content, arrival: arrival, frames: UInt64(buffer.frameLength),
                           rate: buffer.format.sampleRate, identity: identity, nonzero: scanned,
-                          playbackIndex: playbackIndex,
-                          fingerprint: observing ? contentFingerprint(buffer, timestampRate: timestampRate) : nil))
+                          playbackIndex: playbackIndex))
         }
 
         func scheduled(
@@ -3139,311 +2951,6 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
 
     }
 
-    extension MacSpeechNativeVoiceTiming {
-        func event(_ event: MacSpeechTimingEvent, at time: UInt64 = DispatchTime.now().uptimeNanoseconds) {
-            if event == .captureStopped || event == .routeChanged {
-                _ = contentAdmission.bitwiseOr(Self.contentClosedBit, ordering: .acquiringAndReleasing)
-            }
-            switch event {
-            case .engineStartBefore: lifecyclePhase.store(1, ordering: .releasing)
-            case .engineStartReturned: lifecyclePhase.store(2, ordering: .releasing)
-            case .playerPlayBefore: lifecyclePhase.store(3, ordering: .releasing)
-            case .playerPlayReturned: lifecyclePhase.store(4, ordering: .releasing)
-            default: break
-            }
-            update { value in
-                guard let index = MacSpeechTimingEvent.allCases.firstIndex(of: event) else { return }
-                value.events[index].firstCallTimeNs = value.events[index].firstCallTimeNs ?? time
-                value.events[index].lastCallTimeNs = time
-                value.events[index].count &+= 1
-                value.adaptation?.updateActive { play in
-                    if event == .playbackStarted {
-                        play.startedAtNs = time
-                    }
-                    if event == .playbackCompleted {
-                        play.completedAtNs = time
-                    }
-                }
-                if event == .captureStopped || event == .routeChanged {
-                    value.callbacksClosed = true
-                }
-            }
-        }
-
-        func enablePlayerContent(_ identity: MacSpeechPlayerContent.Identity) -> Bool {
-            var accepted = false
-            update { value in
-                guard !contentEnabled.load(ordering: .acquiring), identity.valid,
-                      identity.runID == runID, identity.captureGeneration == captureGeneration,
-                      identity.configurationID == value.configurationID,
-                      identity.playbackGeneration == value.playbackGeneration,
-                      !value.callbacksClosed, value.adaptation == nil,
-                      value.playerRender.buffers == 0, value.input.buffers == 0,
-                      value.scheduledFrames == 0 else { return }
-                MacSpeechContentCRC64.prepare()
-                let rows = UnsafeMutablePointer<MacSpeechPlayerContent.Row>.allocate(capacity: 2048)
-                rows.initialize(repeating: .init(epoch: identity.epoch), count: 2048)
-                contentRows = rows
-                contentIdentity = identity
-                contentEnabled.store(true, ordering: .releasing)
-                accepted = true
-            }
-            return accepted
-        }
-
-        func finalizedPlayerContent(base: MacSpeechTimingSnapshot) -> MacSpeechPlayerContent.Summary? {
-            contentSummary(base: base, closed: contentAdmission.load(ordering: .acquiring) & Self.contentClosedBit != 0,
-                           quiescent: contentAdmission.load(ordering: .acquiring) & ~Self.contentClosedBit == 0)
-        }
-
-        func invalidatePlayerContentIdentity() {
-            failContent(4)
-        }
-
-        func playerContentIdentityForSubmission() -> MacSpeechPlayerContent.Identity? {
-            guard contentEnabled.load(ordering: .acquiring),
-                  !(contentAdmission.load(ordering: .acquiring) & Self.contentClosedBit != 0)
-            else {
-                return nil
-            }
-            return contentIdentity
-        }
-
-        func preparePlayerContent(
-            _ buffer: AVAudioPCMBuffer, identity: MacSpeechPlayerContent.Identity
-        ) -> MacSpeechPlayerContent.Digest? {
-            guard contentEnabled.load(ordering: .acquiring) else { return nil }
-            let frames = UInt64(buffer.frameLength)
-            let bytes = frames * 12
-            var accepted = false
-            update { value in
-                guard identity == contentIdentity,
-                      !(contentAdmission.load(ordering: .acquiring) & Self.contentClosedBit != 0),
-                      !value.callbacksClosed, value.configurationID == identity.configurationID,
-                      value.playbackGeneration == identity.playbackGeneration,
-                      contentFailure.load(ordering: .acquiring) == 0,
-                      frames > 0, frames <= 8192, contentPendingFrames == 0,
-                      contentSubmissions < 64, contentSourceBytes <= 1_048_576 - min(bytes, 1_048_576),
-                      bytes <= 1_048_576 else { failContent(1); return }
-                contentPendingFrames = frames
-                contentSourceBytes += bytes
-                accepted = true
-            }
-            guard accepted, let digest = MacSpeechPlayerContent.digest(buffer) else {
-                failContent(2)
-                return nil
-            }
-            return digest
-        }
-
-        func commitPlayerContent(
-            _ digest: MacSpeechPlayerContent.Digest?, identity: MacSpeechPlayerContent.Identity
-        ) {
-            guard contentEnabled.load(ordering: .acquiring) else { return }
-            update { value in
-                guard !value.callbacksClosed,
-                      !(contentAdmission.load(ordering: .acquiring) & Self.contentClosedBit != 0),
-                      identity == contentIdentity, let digest, contentPendingFrames > 0,
-                      let next = contentSource.followed(by: digest, bytes: Int(contentPendingFrames) * 4)
-                else { failContent(3); return }
-                contentSource = next
-                contentSourceFrames += contentPendingFrames
-                contentPendingFrames = 0
-                contentSubmissions += 1
-            }
-        }
-
-        func playerContentIdentityForMapping(closing: Bool) -> MacSpeechPlayerContent.Identity? {
-            guard contentEnabled.load(ordering: .acquiring),
-                  !(contentAdmission.load(ordering: .acquiring) & Self.contentClosedBit != 0)
-            else {
-                return nil
-            }
-            var identity: MacSpeechPlayerContent.Identity?
-            update { _ in
-                if closing ? contentClosingMapping == nil : contentFirstMapping == nil {
-                    identity = contentIdentity
-                }
-            }
-            return identity
-        }
-
-        func recordPlayerContentMapping(_ mapping: MacSpeechPlayerContent.Mapping, closing: Bool) {
-            guard contentEnabled.load(ordering: .acquiring) else { return }
-            update { value in
-                guard !value.callbacksClosed,
-                      !(contentAdmission.load(ordering: .acquiring) & Self.contentClosedBit != 0),
-                      mapping.epoch == contentIdentity?.epoch else { failContent(4); return }
-                if closing {
-                    guard contentClosingMapping == nil else { failContent(4); return }
-                    contentClosingMapping = mapping
-                } else {
-                    guard contentFirstMapping == nil else { failContent(4); return }
-                    contentFirstMapping = mapping
-                }
-            }
-        }
-    }
-
-    private extension MacSpeechNativeVoiceTiming {
-        func admitPlayerContentCallback() -> Bool {
-            guard contentEnabled.load(ordering: .acquiring) else { return false }
-            let value = contentAdmission.load(ordering: .acquiring)
-            guard value & Self.contentClosedBit == 0 else { return false }
-            guard contentAdmission.compareExchange(expected: value, desired: value + 1,
-                                                   ordering: .acquiringAndReleasing).exchanged
-            else {
-                failContent(6)
-                return false
-            }
-            return true
-        }
-
-        func failContent(_ code: UInt8) {
-            _ = contentFailure.compareExchange(expected: 0, desired: code, ordering: .acquiringAndReleasing)
-        }
-
-        func contentFingerprint(
-            _ buffer: AVAudioPCMBuffer, timestampRate: Double?
-        ) -> (digest: MacSpeechPlayerContent.Digest, epoch: UUID)? {
-            guard let identity = contentIdentity, contentFailure.load(ordering: .acquiring) == 0 else {
-                return nil
-            }
-            let frames = UInt64(buffer.frameLength)
-            guard frames > 0, frames <= 8192, timestampRate == 16000 else { failContent(2); return nil }
-            let bytes = frames * 12
-            let used = contentBytes.load(ordering: .acquiring)
-            guard used <= 4_194_304 - bytes,
-                  contentBytes.compareExchange(expected: used, desired: used + bytes,
-                                               ordering: .acquiringAndReleasing).exchanged else {
-                failContent(1)
-                return nil
-            }
-            guard let digest = MacSpeechPlayerContent.digest(buffer) else { failContent(2); return nil }
-            return (digest, identity.epoch)
-        }
-
-        func appendContent(_ record: CallbackRecord) {
-            guard contentEnabled.load(ordering: .acquiring) else { return }
-            guard let identity = contentIdentity, let rows = contentRows, let fingerprint = record.fingerprint,
-                  fingerprint.epoch == identity.epoch, let sample = record.content.sample, record.rate == 16000,
-                  contentRowCount < 2048
-            else {
-                failContent(5)
-                return
-            }
-            rows[contentRowCount] = .init(digest: fingerprint.digest, sample: sample, frames: record.frames,
-                                          epoch: fingerprint.epoch, valid: 1)
-            contentRowCount += 1
-        }
-
-        func contentSummary(
-            base: MacSpeechTimingSnapshot, closed: Bool, quiescent: Bool
-        ) -> MacSpeechPlayerContent.Summary? {
-            guard let identity = contentIdentity else { return nil }
-            var result = MacSpeechPlayerContent.Summary(identity: identity)
-            guard closed, base.callbacksClosed else { return result }
-            guard quiescent else { result.reason = "OBSERVER_INCONCLUSIVE_IN_FLIGHT"; return result }
-            result.firstMapping = contentFirstMapping
-            result.closingMapping = contentClosingMapping
-            result.sourceFrames = contentSourceFrames
-            result.sourceSubmissions = contentSubmissions
-            result.sourceHashBytes = contentSourceBytes
-            result.renderHashBytes = contentBytes.load(ordering: .acquiring)
-            result.observerFailureCode = contentFailure.load(ordering: .acquiring)
-            result.renderRows = contentRowCount
-            guard base.runID == identity.runID, base.captureGeneration == identity.captureGeneration,
-                  base.skippedUpdates == 0, base.invalidBuffers == 0, base.identityChanges == 0,
-                  base.staleCallbacks == 0, contentFailure.load(ordering: .acquiring) == 0,
-                  contentPendingFrames == 0, base.configurationID == identity.configurationID,
-                  base.playbackGeneration == identity.playbackGeneration,
-                  base.scheduledFrames == contentSourceFrames,
-                  base.playerRender.sampleDiscontinuities == 0, base.playerRender.hostDiscontinuities == 0,
-                  base.input.sampleDiscontinuities == 0, base.input.hostDiscontinuities == 0
-            else {
-                result.reason = "OBSERVER_INCONCLUSIVE"
-                return result
-            }
-            guard base.events.first(where: { $0.event == .playbackCompleted })?.count == 1,
-                  base.events.first(where: { $0.event == .playerPlayBefore })?.count == 1,
-                  base.events.first(where: { $0.event == .routeChanged })?.count == 0
-            else {
-                result.reason = "CANCELLED_PARTIAL_OR_NOT_SINGLE_PLAY"
-                return result
-            }
-            guard let first = contentFirstMapping, let last = contentClosingMapping,
-                  first.valid, last.valid, first.epoch == identity.epoch, last.epoch == identity.epoch,
-                  first.nodeSample == last.nodeSample, first.finishedAtNs <= last.startedAtNs,
-                  let origin = first.nodeSample else { result.reason = "TIMESTAMP_MAPPING_INCONCLUSIVE"; return result }
-            result.timestampMapping = "MAPPED"
-            guard let observed = collectContentRows(identity: identity, result: &result) else { return result }
-            compareContent(observed, origin: origin, base: base, result: &result)
-            return result
-        }
-
-        func collectContentRows(
-            identity: MacSpeechPlayerContent.Identity, result: inout MacSpeechPlayerContent.Summary
-        ) -> MacSpeechPlayerContent.Digest? {
-            guard let rows = contentRows, contentRowCount > 0, contentSourceFrames > 0 else {
-                result.reason = "PARTIAL_COVERAGE"
-                return nil
-            }
-            var observed = MacSpeechPlayerContent.Digest()
-            var end = rows[0].sample
-            let start = end
-            for index in 0 ..< contentRowCount {
-                let row = rows[index]
-                let next = end.addingReportingOverflow(Int64(row.frames))
-                guard row.valid == 1, row.epoch == identity.epoch, row.frames > 0, row.frames <= 8192,
-                      row.sample == end, !next.overflow,
-                      let joined = observed.followed(by: row.digest, bytes: Int(row.frames) * 4)
-                else {
-                    result.reason = "OBSERVER_INCONCLUSIVE_COVERAGE"
-                    return nil
-                }
-                observed = joined
-                end = next.partialValue
-                result.renderFrames += row.frames
-            }
-            result.firstNodeSample = start
-            result.endNodeSample = end
-            return observed
-        }
-
-        func compareContent(
-            _ observed: MacSpeechPlayerContent.Digest, origin: Int64, base: MacSpeechTimingSnapshot,
-            result: inout MacSpeechPlayerContent.Summary
-        ) {
-            guard let start = result.firstNodeSample, let end = result.endNodeSample else { return }
-            let sourceEnd = origin.addingReportingOverflow(Int64(contentSourceFrames))
-            guard !sourceEnd.overflow, start <= origin, end >= sourceEnd.partialValue else {
-                result.reason = "PARTIAL_COVERAGE"
-                return
-            }
-            let suffix = end.subtractingReportingOverflow(sourceEnd.partialValue)
-            guard !suffix.overflow, suffix.partialValue <= Int64(Int.max / 4),
-                  let expected = contentSource.followed(by: .init(), bytes: Int(suffix.partialValue) * 4)
-            else {
-                result.reason = "OBSERVER_INCONCLUSIVE_RANGE"
-                return
-            }
-            if let firstNonzero = base.playerRender.firstNonzeroSampleTime,
-               let lastNonzero = base.playerRender.lastNonzeroSampleTime,
-               firstNonzero < origin || lastNonzero >= sourceEnd.partialValue {
-                result.reason = "OBSERVED_NONZERO_OUTSIDE_SCHEDULED_RANGE"
-                result.status = "MAPPED_DIGEST_DIFFERENT_UNATTRIBUTED"
-                result.expectedCRC64 = expected.hex
-                result.observedCRC64 = observed.hex
-                return
-            }
-            result.expectedCRC64 = expected.hex
-            result.observedCRC64 = observed.hex
-            result.status = expected == observed ? "MAPPED_FINGERPRINT_MATCH"
-                : "MAPPED_DIGEST_DIFFERENT_UNATTRIBUTED"
-            result.reason = "MAPPED_FULL_OBSERVED_RANGE_WITH_QUIESCENT_ZERO_PREFIX_SUFFIX"
-        }
-    }
-
     private extension MacSpeechNativeVoiceTiming {
         nonisolated struct CallbackRecord: Sendable {
             let rendering: Bool
@@ -3454,7 +2961,6 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             let identity: (configurationID: UInt64, generation: UInt64)
             let nonzero: (range: ClosedRange<Int>?, count: UInt64)?
             let playbackIndex: UInt8
-            var fingerprint: (digest: MacSpeechPlayerContent.Digest, epoch: UUID)?
         }
 
         final nonisolated class CallbackSlot {
@@ -3518,7 +3024,6 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 state.playerRender.arrived(at: record.arrival)
                 guard let bounds = record.nonzero else { state.invalidBuffers &+= 1; return }
                 Self.recordRender(record, bounds: bounds, stream: &state.playerRender)
-                appendContent(record)
                 state.adaptation?.updateRender(index: record.playbackIndex) { play in
                     play.render.arrived(at: record.arrival)
                     Self.recordRender(record, bounds: bounds, stream: &play.render)
@@ -3805,7 +3310,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
 
     private func stopCaptureLocked() {
         #if DEBUG
-            recordPlayerContentMapping(closing: true)
             nativeVoiceTimingDebug?.stopObservingEngineConfiguration()
         #endif
         let input = lock.withLock { () -> AVAudioInputNode? in
@@ -3888,24 +3392,8 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             }
             #if DEBUG
                 let allocated = try allocatedOutputBuffer(buffer)
-                let contentIdentity = nativeVoiceTimingDebug?.playerContentIdentityForSubmission()
-                if let identity = contentIdentity {
-                    let current = lock.withLock {
-                        captureGeneration == identity.captureGeneration && configurationID == identity.configurationID
-                            && channelAllocationPlaybackGeneration == identity.playbackGeneration && isCaptureActive
-                    }
-                    if !current {
-                        nativeVoiceTimingDebug?.invalidatePlayerContentIdentity()
-                    }
-                }
-                let fingerprint = contentIdentity.flatMap {
-                    nativeVoiceTimingDebug?.preparePlayerContent(allocated, identity: $0)
-                }
                 nativeVoiceTimingDebug?.scheduled(allocated)
                 node.scheduleBuffer(allocated, completionCallbackType: .dataPlayedBack) { _ in completion() }
-                if let contentIdentity {
-                    nativeVoiceTimingDebug?.commitPlayerContent(fingerprint, identity: contentIdentity)
-                }
             #else
                 node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
             #endif
@@ -4543,8 +4031,7 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             #if DEBUG
                 if let timing {
                     timing.render(buffer, content: (contentHostTime, when.isSampleTimeValid ? when.sampleTime : nil),
-                                  arrival: arrivalNs, identity: (configurationID, timing.captureGeneration),
-                                  timestampRate: when.sampleRate)
+                                  arrival: arrivalNs, identity: (configurationID, timing.captureGeneration))
                 }
             #endif
             self?.processRenderedOutput(
@@ -4828,42 +4315,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
             }
         }
 
-        func enablePlayerContentWitness(_ identity: MacSpeechPlayerContent.Identity) -> Bool {
-            lifecycleLock.withLock {
-                guard nativeVoiceDebug?.runID == identity.runID,
-                      nativeVoiceDebug?.captureGeneration == identity.captureGeneration,
-                      nativeVoiceDebug?.profile == .agcOn,
-                      channelAllocationPlaybackGeneration == identity.playbackGeneration,
-                      identity.configurationID == configurationID,
-                      lock.withLock({ isOutputPrepared && !isCaptureActive && !isOutputPlaying
-                              && engine?.isRunning == false && playerNode?.isPlaying == false
-                              && !isRouteRebuilding && audioProcessingMode == .appleVoiceProcessing })
-                else { return false }
-                return nativeVoiceTimingDebug?.enablePlayerContent(identity) == true
-            }
-        }
-
-        private func recordPlayerContentMapping(closing: Bool) {
-            guard let timing = nativeVoiceTimingDebug,
-                  let identity = timing.playerContentIdentityForMapping(closing: closing) else { return }
-            let started = DispatchTime.now().uptimeNanoseconds
-            let player = lock.withLock { playerNode }
-            let zero = AVAudioTime(sampleTime: 0, atRate: 16000)
-            let node = player?.isPlaying == true ? player?.nodeTime(forPlayerTime: zero) : nil
-            let inverse = node.flatMap { player?.playerTime(forNodeTime: $0) }
-            timing.recordPlayerContentMapping(.init(
-                epoch: identity.epoch, nodeSample: node?.isSampleTimeValid == true ? node?.sampleTime : nil,
-                roundTripSample: inverse?.isSampleTimeValid == true ? inverse?.sampleTime : nil,
-                nodeRate: node?.sampleRate, playerRate: inverse?.sampleRate,
-                startedAtNs: started, finishedAtNs: DispatchTime.now().uptimeNanoseconds
-            ), closing: closing)
-        }
-
         func nativeVoiceTimingSnapshot(runID: UUID) -> MacSpeechTimingSnapshot? {
             let (timing, readbacks) = lifecycleLock.withLock { (nativeVoiceTimingDebug, runtimeReadbacks) }
             guard timing?.runID == runID, var result = timing?.snapshot() else { return nil }
             result.runtimeReadbacks = readbacks
-            result.playerContent = timing?.finalizedPlayerContent(base: result)
             return result
         }
 
@@ -4882,9 +4337,6 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
                 snapshots: &runtimeReadbacks
             ) {
                 Self.readRuntimePayload(engine: engine, player: player)
-            }
-            if case .residentPlaybackStarted = phase {
-                recordPlayerContentMapping(closing: false)
             }
         }
 
