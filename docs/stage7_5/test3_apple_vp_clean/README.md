@@ -3,6 +3,9 @@
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
 
+2026-11-03 最新门禁收口见 [AEC静态门禁范围修复审核](T3_2_A_aec_static_gate_scope_review.md)。硬件延迟检查改为限定源码合同及独立控制，终版17 cases通过；原full已通过`speech_aec_hardware_delay`，随后在未改的`speech_aec_timer_fallback`独立失败。按新阻塞停止规则，本候选未继续FAST/TEST3/FULL_CURRENT、TSan或App构建，不能沿用下方历史PASS；只完成交付安全检查和完整源码/测试/文档推送。T3.2-A BLOCKED，AEC/CLOCK UNKNOWN、SQ-M1 OPEN、M31撤回不变；B未授权、T3.3 NOT_STARTED、Formal Test3 BLOCKED/false，DEVICE_RUNS=0。以下段落保留各次实际证据，不追溯改判。
+
+
 2026-11-03 最新工程复验见 [正式离线入口恢复与准入审核](T3_2_A_formal_offline_regression_recovery_review.md)。仅补原AEC测试入口的两个编译成员，原固定Fixture按冻结登记恢复、0600且不跟踪；生产音频及M31撤回保持不变。FAST原8项、TEST3原7入口/11不变量通过，M20/M22/M26、定向TSan、独立Debug/Release与三Guard通过。
 
 **完整工程准入仍PARTIAL：** FULL_CURRENT严格复用本轮FAST的8项后，在原`speech_aec_hardware_delay`静态门禁FAIL，12项NOT_RUN；该门禁命中M22只读延迟元数据，本轮未改断言或以独立结果补数。详见报告§5，交主控另审门禁范围合同。M31_WITHDRAWAL保持COMPLETED_OFFLINE_VERIFIED；AEC/CLOCK UNKNOWN、SQ-M1 OPEN、T3.2-A BLOCKED，B未授权、T3.3 NOT_STARTED、Formal Test3 BLOCKED/false，DEVICE_RUNS=0。以下索引与报告保留各节点当时快照，不追溯改判或产生设备授权。
