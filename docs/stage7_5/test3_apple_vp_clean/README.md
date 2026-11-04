@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-04 最新定向交付见 [Timer门禁与延迟缓存合同审核](T3_2_A_timer_gate_and_delay_cache_review.md)。仅测试基础设施修改：保留已审核 DEBUG snapshot 的原 20 次/5ms 检查及控制调用链，拒绝实时等待和范围扩张；延迟缓存补强复合赋值、self、inout 与未知修改拒绝，原17项控制不变。Timer18方法/22次CLI、延迟20方法/78次CLI通过。原full一次执行在RawTimestamp 8/141通过后，编译AVFoundation遇到磁盘ENOSPC，尚未到集成门禁；按停止规则未继续FAST/TEST3/FULL_CURRENT、TSan、App构建或Release隔离，也未清理/重试。三项交付Guard通过不替代完整回归。T3.2-A仍BLOCKED，AEC/CLOCK UNKNOWN、SQ-M1 OPEN、M31撤回不变；B未授权、T3.3 NOT_STARTED、Formal Test3 BLOCKED/false，DEVICE_RUNS=0。以下历史结果保留，不追溯改判。
+
 
 2026-11-03 最新门禁收口见 [AEC静态门禁范围修复审核](T3_2_A_aec_static_gate_scope_review.md)。硬件延迟检查改为限定源码合同及独立控制，终版17 cases通过；原full已通过`speech_aec_hardware_delay`，随后在未改的`speech_aec_timer_fallback`独立失败。按新阻塞停止规则，本候选未继续FAST/TEST3/FULL_CURRENT、TSan或App构建，不能沿用下方历史PASS；只完成交付安全检查和完整源码/测试/文档推送。T3.2-A BLOCKED，AEC/CLOCK UNKNOWN、SQ-M1 OPEN、M31撤回不变；B未授权、T3.3 NOT_STARTED、Formal Test3 BLOCKED/false，DEVICE_RUNS=0。以下段落保留各次实际证据，不追溯改判。
 
