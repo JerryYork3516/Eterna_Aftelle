@@ -70,19 +70,32 @@ def tokens(source):
     return rows
 
 
-def function(rows, name):
-    starts = [i for i in range(len(rows) - 1) if rows[i][0] == "func" and rows[i + 1][0] == name]
+def declaration(rows, kind, name, within=None):
+    starts = [i for i in range(len(rows) - 1) if rows[i][0] == kind and rows[i + 1][0] == name
+              and (within is None or within[0] < i < within[1])]
     if len(starts) != 1:
         raise GateFailure("FUNCTION_SCOPE")
-    start = next((i for i in range(starts[0], len(rows)) if rows[i][0] == "{"), None)
+    start, parentheses, brackets = None, 0, 0
+    for i in range(starts[0], len(rows)):
+        word = rows[i][0]
+        parentheses += (word == "(") - (word == ")")
+        brackets += (word == "[") - (word == "]")
+        if word == "{" and parentheses == brackets == 0:
+            start = i
+            break
     if start is None:
         raise GateFailure("FUNCTION_SCOPE")
     depth = 0
     for end in range(start, len(rows)):
         depth += (rows[end][0] == "{") - (rows[end][0] == "}")
         if depth == 0:
-            return start, end
+            return starts[0], start, end
     raise GateFailure("FUNCTION_SCOPE")
+
+
+def function(rows, name):
+    _, start, end = declaration(rows, "func", name)
+    return start, end
 
 
 # Narrow reviewed bodies, not a whole-file hash. Trivia may change; new expressions require review.
@@ -182,6 +195,24 @@ def validate(source):
     if len(sinks) != 2 or any(not inside(i, refresh) and not inside(i, cached) for i in sinks):
         raise GateFailure("UPDATE_DELAY_CALLSITE")
     for field in ("outputPresentationLatencySeconds", "capturePresentationLatencySeconds"):
+        for i, word in enumerate(words):
+            if word.startswith('"') and "\\(" in word and re.search(r"\b" + field + r"\b", word):
+                raise GateFailure("AEC_CACHE_ACCESS_OUTSIDE_CONTROL")
+            if word != field or any(inside(i, name) for name in
+                                    (refresh, cached, "resetAcousticEchoPresentationLatencyLocked")):
+                continue
+            declaration_site = words[max(0, i - 2):i] == ["private", "var"]
+            if declaration_site and words[i + 1:i + 5] == ["=", "0", ".", "0"]:
+                continue
+            operator = ""
+            for part in words[i + 1:]:
+                if part not in "+-*/%&|^<>=!~":
+                    break
+                operator += part
+            inout = words[max(0, i - 1):i] == ["&"] or words[max(0, i - 3):i] == ["&", "self", "."]
+            assignment = operator.endswith("=") and operator not in ("==", "===", "!=", "!==", "<=", ">=")
+            raise GateFailure("AEC_CACHE_WRITE_OUTSIDE_CONTROL" if assignment or inout
+                              else "AEC_CACHE_ACCESS_OUTSIDE_CONTROL")
         writes = [i for i in range(len(words) - 1) if words[i:i + 2] == [field, "="]]
         for i in writes:
             declaration = words[max(0, i - 2):i] == ["private", "var"] and words[i + 2:i + 5] == ["0", ".", "0"]

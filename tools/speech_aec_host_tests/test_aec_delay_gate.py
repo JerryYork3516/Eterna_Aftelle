@@ -125,6 +125,34 @@ class DelayGateTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "aec_delay_gate=ERROR reason=READBACK_UNAVAILABLE")
         self.assertEqual(result.stderr, "")
 
+    def cache_change(self, code, reason):
+        rows = gate.tokens(self.source)
+        start, _ = gate.function(rows, "tearDownIfIdle")
+        point = rows[start][2]
+        self.check(self.source[:point] + "\n" + code + "\n" + self.source[point:], reason)
+
+    def test_compound_cache_writes(self):
+        for field in ("outputPresentationLatencySeconds", "capturePresentationLatencySeconds"):
+            for prefix in ("", "self.\n"):
+                for operator in ("+=", "-=", "*=", "/=", "%=", "&+=", "&-=", "&*=", "<<=", ">>=", "&=", "|=", "^="):
+                    with self.subTest(field=field, prefix=prefix, operator=operator):
+                        self.cache_change(prefix + field + " " + operator + " 1", "AEC_CACHE_WRITE_OUTSIDE_CONTROL")
+
+    def test_inout_cache_writes(self):
+        for field in ("outputPresentationLatencySeconds", "capturePresentationLatencySeconds"):
+            for prefix in ("", "self."):
+                with self.subTest(field=field, prefix=prefix):
+                    self.cache_change("withUnsafeMutablePointer(to: &" + prefix + field + ") { $0.pointee = 1 }",
+                                      "AEC_CACHE_WRITE_OUTSIDE_CONTROL")
+
+    def test_unknown_cache_modification_fails_closed(self):
+        for code in ("self.outputPresentationLatencySeconds.negate()",
+                     r"let key = \SystemMacSpeechVoiceProcessingEngine.capturePresentationLatencySeconds",
+                     "self.`outputPresentationLatencySeconds` += 1",
+                     'let text = "\\(self.outputPresentationLatencySeconds)"'):
+            with self.subTest(code=code):
+                self.cache_change(code, "AEC_CACHE_ACCESS_OUTSIDE_CONTROL")
+
 
 if __name__ == "__main__":
     program = unittest.main(exit=False)

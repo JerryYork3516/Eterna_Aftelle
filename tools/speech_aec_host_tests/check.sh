@@ -187,10 +187,9 @@ echo "speech_aec_render_timing=PASS"
 capture_aec_line="$(rg -n -m 1 'host\.processCaptureSpans' "$capture" | cut -d: -f1)"
 capture_packet_line="$(rg -n -m 1 'outputConverter\.convert' "$capture" | cut -d: -f1)"
 test "$capture_aec_line" -lt "$capture_packet_line"
-if rg -q 'Task\.sleep|usleep|Thread\.sleep' "$aec_host" "$capture"; then
-  echo "speech_aec_timer_fallback=FAIL"
-  exit 1
-fi
+python3 "$repo_root/tools/speech_aec_host_tests/test_aec_timer_gate.py"
+python3 "$repo_root/tools/speech_aec_host_tests/aec_timer_gate.py" \
+  "$capture" "$aec_host" "$repo_root/apps/macos/Aftelle/AppController.swift"
 echo "speech_aec_host_contract=PASS"
 
 test "$(rg -c '/\* MacSpeechAcousticEchoHost\.swift( in Sources)? \*/' "$project")" -eq 4
