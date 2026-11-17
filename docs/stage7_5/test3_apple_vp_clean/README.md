@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-17 最新复验见 [D1 环境纠正与正式离线回归审核](T3_2_A_D1_environment_and_full_regression_review.md)。默认 Caches 通过工作区外路径资格检查，原 D1 单项及 FULL_CURRENT 第 10 项均 PASS（40 cases / 290 checks）。AEC Full、FAST 8/8、独立 TEST3 7/7 及 11 项不变量通过。FULL_CURRENT 第 12 项 Input Bridge 的 DEBUG 编译清单缺少 `MacSpeechChannelAllocation` 定义源文件，exit 1，矩阵 11 PASS / 1 FAIL / 9 NOT_RUN。后续定向、TSan、App 构建和 Release 隔离未运行。生产零差异，T3.2-A 仍 BLOCKED，AEC/CLOCK UNKNOWN，SQ-M1 OPEN，Formal Test3 BLOCKED / false，DEVICE_RUNS=0。
+
 2026-11-16 最新正式复验见 [Post-ENOSPC 离线审核](T3_2_A_post_ENOSPC_formal_regression_review.md)。原 AEC Full、Timer/Delay、FAST 8/8 和独立 TEST3 7/7 及 11 项不变量本轮实际通过。FULL_CURRENT 前 9 项 PASS，第 10 项 D1 Export 因临时运行 home 位于 Git 工作区下触发原路径拒绝（exit 133），余 11 项 NOT_RUN。按停止规则，其余定向回归、TSan 与 App 构建未运行。无 ENOSPC 复现、生产改动或设备运行。T3.2-A 仍 BLOCKED，AEC/CLOCK UNKNOWN、SQ-M1 OPEN，M31 撤回保留，Formal Test3 BLOCKED/false。原历史记录保留。
 
 2026-11-04 最新定向交付见 [Timer门禁与延迟缓存合同审核](T3_2_A_timer_gate_and_delay_cache_review.md)。仅测试基础设施修改：保留已审核 DEBUG snapshot 的原 20 次/5ms 检查及控制调用链，拒绝实时等待和范围扩张；延迟缓存补强复合赋值、self、inout 与未知修改拒绝，原17项控制不变。Timer18方法/22次CLI、延迟20方法/78次CLI通过。原full一次执行在RawTimestamp 8/141通过后，编译AVFoundation遇到磁盘ENOSPC，尚未到集成门禁；按停止规则未继续FAST/TEST3/FULL_CURRENT、TSan、App构建或Release隔离，也未清理/重试。三项交付Guard通过不替代完整回归。T3.2-A仍BLOCKED，AEC/CLOCK UNKNOWN、SQ-M1 OPEN、M31撤回不变；B未授权、T3.3 NOT_STARTED、Formal Test3 BLOCKED/false，DEVICE_RUNS=0。以下历史结果保留，不追溯改判。
