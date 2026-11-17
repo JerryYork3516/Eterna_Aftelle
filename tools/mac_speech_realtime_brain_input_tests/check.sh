@@ -10,6 +10,8 @@ runtime_sources=("$repo_root"/apps/macos/RuntimeCore/*.swift)
 host_sources=(
   "$repo_root/apps/macos/Aftelle/MacSpeechAcousticEchoHost.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechAudioCapture.swift"
+  "$repo_root/apps/macos/Aftelle/MacSpeechPCMPlaybackBuffer.swift"
+  "$repo_root/apps/macos/Aftelle/MacSpeechAudioOutputPlayer.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechRealtimeBrainInputBridge.swift"
   "$repo_root/apps/macos/Aftelle/MacSpeechRealtimeBrainOutputBridge.swift"
