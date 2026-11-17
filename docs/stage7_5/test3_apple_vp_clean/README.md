@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-17 最新工程复验见 [Input Bridge 编译依赖修复与完整离线回归](T3_2_A_input_bridge_dependency_and_full_regression_review.md)。原 DEBUG 测试编译清单仅增加两份现有 Swift 源，独立与矩阵第 12 项均通过 32 cases / 210 checks。FAST 8/8、独立 TEST3 7/7 及 11 项不变量、FULL_CURRENT 21/21（8 项复用、13 项新执行）、Debug/Release、产物隔离、三项 Guard、M20/M22/M26 与定向 TSan 均通过。生产零差异，M31 撤回保持，DEVICE_RUNS=0。AEC/CLOCK UNKNOWN，SQ-M1 和 R3-M01 OPEN，T3.2-A 与 Formal Test3 仍 BLOCKED / false，待主控独立审核。
+
 2026-11-17 最新复验见 [D1 环境纠正与正式离线回归审核](T3_2_A_D1_environment_and_full_regression_review.md)。默认 Caches 通过工作区外路径资格检查，原 D1 单项及 FULL_CURRENT 第 10 项均 PASS（40 cases / 290 checks）。AEC Full、FAST 8/8、独立 TEST3 7/7 及 11 项不变量通过。FULL_CURRENT 第 12 项 Input Bridge 的 DEBUG 编译清单缺少 `MacSpeechChannelAllocation` 定义源文件，exit 1，矩阵 11 PASS / 1 FAIL / 9 NOT_RUN。后续定向、TSan、App 构建和 Release 隔离未运行。生产零差异，T3.2-A 仍 BLOCKED，AEC/CLOCK UNKNOWN，SQ-M1 OPEN，Formal Test3 BLOCKED / false，DEVICE_RUNS=0。
 
 2026-11-16 最新正式复验见 [Post-ENOSPC 离线审核](T3_2_A_post_ENOSPC_formal_regression_review.md)。原 AEC Full、Timer/Delay、FAST 8/8 和独立 TEST3 7/7 及 11 项不变量本轮实际通过。FULL_CURRENT 前 9 项 PASS，第 10 项 D1 Export 因临时运行 home 位于 Git 工作区下触发原路径拒绝（exit 133），余 11 项 NOT_RUN。按停止规则，其余定向回归、TSan 与 App 构建未运行。无 ENOSPC 复现、生产改动或设备运行。T3.2-A 仍 BLOCKED，AEC/CLOCK UNKNOWN、SQ-M1 OPEN，M31 撤回保留，Formal Test3 BLOCKED/false。原历史记录保留。
