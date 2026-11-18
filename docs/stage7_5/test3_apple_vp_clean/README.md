@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-18 [P2 真人独讲 AGC ON→OFF 审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md)记录只读预检 PASS。冻结构建、TinyUSB 60%、Mac mini 内置扬声器 55% 未静音及私有导出路径已核验。沿用普通 B，两臂各最多一次 15 秒，分别授权，保持无播放。ON/OFF 实际运行均为 0，当前只等待 ON 臂的录音、本地 JSON/WAV 导出和就绪授权。P1 已获有限批准，尾部 UNKNOWN 保留。T3.2-A 与 Formal Test3 仍 BLOCKED。
+
 2026-11-18 P1唯一设备运行见 [AGC-OFF＋STATS_ONLY审核§8](T3_2_A_P1_AGC_OFF_STATS_ONLY_device_review.md)。输出经单独允许恢复后只读预检通过，随后取得本次精确授权；实际Capture/全零播放/JSON导出各1次，WAV为0，无重试。两运行点VP I/O开启、AGC=false、bypass/mute=false；Native 15.000秒，已drain744个连续20ms包，quiet覆盖3.86秒，PCM留存0、SHA=null，原UI的WAV按钮禁用；正常PID退出exit0、设备空闲。结论仅OFF_READBACK_AND_CONTROL_CHAIN_SUPPORTED。关闭前capture快照744/queued0与最终Native749相差5包，尾部守恒UNKNOWN；拆图后的identityChanges=1及原始字段全部保留，不改判完整尾部或声学PASS。只更新文档、生产零差异；AEC/CLOCK UNKNOWN、SQ-M1/R3-M01 OPEN、T3.2-A/Formal Test3 BLOCKED/false。交主控另审，不进入P2/P3/P4。
 
 2026-11-18 P1 本次准入见 [AGC-OFF＋STATS_ONLY 设备预检审核](T3_2_A_P1_AGC_OFF_STATS_ONLY_device_review.md)。源码/冻结 Debug 构建、历史 FULL_CURRENT 21/21 收据及原全零素材身份通过；只读设备检查发现默认输出为小爱音箱、系统输出50%，不符合冻结的 Mac mini 内置扬声器55%，HAL scalar 亦 UNKNOWN，故 P1_PREFLIGHT/P1_RESULT=BLOCKED。未调整设置、未申请新运行授权、未启动 App/采集/播放，P1_DEVICE_RUNS=0；实际 VP/AGC、连续性、STATS_ONLY 导出与 Shutdown 均 NOT_RUN。离线工程 ACCEPTED、M31 撤回、AEC/CLOCK UNKNOWN、SQ-M1/R3-M01 OPEN、T3.2-A/Formal Test3 BLOCKED/false 不变；下一步仅待用户确认设备条件后另行复检与授权，不自动推进。
