@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-18 P1 本次准入见 [AGC-OFF＋STATS_ONLY 设备预检审核](T3_2_A_P1_AGC_OFF_STATS_ONLY_device_review.md)。源码/冻结 Debug 构建、历史 FULL_CURRENT 21/21 收据及原全零素材身份通过；只读设备检查发现默认输出为小爱音箱、系统输出50%，不符合冻结的 Mac mini 内置扬声器55%，HAL scalar 亦 UNKNOWN，故 P1_PREFLIGHT/P1_RESULT=BLOCKED。未调整设置、未申请新运行授权、未启动 App/采集/播放，P1_DEVICE_RUNS=0；实际 VP/AGC、连续性、STATS_ONLY 导出与 Shutdown 均 NOT_RUN。离线工程 ACCEPTED、M31 撤回、AEC/CLOCK UNKNOWN、SQ-M1/R3-M01 OPEN、T3.2-A/Formal Test3 BLOCKED/false 不变；下一步仅待用户确认设备条件后另行复检与授权，不自动推进。
+
 2026-11-18 当前声学准入审查见 [真实声学资格收口准备与最小验证方案](T3_2_A_acoustic_qualification_readiness_review.md)。主控已接受离线工程结果（FULL_CURRENT 21/21）。历史真人回声、人声保留/音量波动、M27/M28 残留差异、起音与 CLOCK 的失败及 UNKNOWN 保留。下一项仅建议 P0 原定的一次、最多15秒 AGC-OFF＋STATS_ONLY 配置准入，随后真人 B 的 ON→OFF 配对，以及 A/综合 C 各待独立批准。当前文档准备完成、设备执行未授权，DEVICE_RUNS=0。AEC/CLOCK UNKNOWN、SQ-M1/R3-M01 OPEN，M31 撤回，T3.2-A/Formal Test3 BLOCKED/false不变。
 
 2026-11-17 最新工程复验见 [Input Bridge 编译依赖修复与完整离线回归](T3_2_A_input_bridge_dependency_and_full_regression_review.md)。原 DEBUG 测试编译清单仅增加两份现有 Swift 源，独立与矩阵第 12 项均通过 32 cases / 210 checks。FAST 8/8、独立 TEST3 7/7 及 11 项不变量、FULL_CURRENT 21/21（8 项复用、13 项新执行）、Debug/Release、产物隔离、三项 Guard、M20/M22/M26 与定向 TSan 均通过。生产零差异，M31 撤回保持，DEVICE_RUNS=0。AEC/CLOCK UNKNOWN，SQ-M1 和 R3-M01 OPEN，T3.2-A 与 Formal Test3 仍 BLOCKED / false，待主控独立审核。
