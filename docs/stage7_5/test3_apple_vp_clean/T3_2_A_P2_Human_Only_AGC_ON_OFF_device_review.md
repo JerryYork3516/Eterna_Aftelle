@@ -242,3 +242,93 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 ```
+
+## 8. P2 AGC-OFF 单次执行及配对审核
+
+2026-11-19 22:19（北京时间），收到本臂独立录音、本机 JSON/WAV 导出及设备就绪确认后，执行一次 AGC-OFF 普通 B。**OFF 技术覆盖结果为 `PARTIAL`。用户确认导出语句完整可懂，同时认为 OFF 的听感比 ON 更差，疑似有爆音和失真。** 本节只引用已接受的 ON §7 进行比较，保留 §6 的无采集阻塞及 §7 的 ON PARTIAL。
+
+### 8.1 独立授权、构建与运行身份
+
+| 项目 | OFF 实测 |
+|---|---|
+| Git 和工程候选 | 起点 `47828079606729ca11cef17050d2510269154e33`，启动前 HEAD、upstream、GitHub 实时远端一致。App/Tools 树分别为 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539`、`a687af8d5095a2c1230e9f08a57cc51212243677`，与 ON 共用已接受的 FULL_CURRENT 21/21 源码候选。本轮未重建或重跑工程回归 |
+| 加载身份 | 确切 PID `69256`，以可执行路径、实际映射 inode/device 和 SHA 校验。launcher SHA-256 `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，Debug dylib SHA-256 `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4`。唯一参数 `--apple-vp-acoustic-test` |
+| 原入口与 AX | 通过原 profile 菜单选中精确 AGC-OFF 项，再选择普通 `Prepare B · Human only`，已准备态回读 `RECORDING`、`APPLE_VP_AGC_OFF`、空素材、无 comprehensive C/warm-up。原 `Allow local test?` 面板确认 B 仅使用麦克风，两枚元素均为可用 `AXButton`，标题为空，描述分别匹配原录音确认和 `Cancel`。语义匹配后发送一次 `AXPress`，观察到 `phase=running`。原 App/TCC 入口保留 |
+| 身份与处理 | RunID `60D8A066-0A21-48F4-A401-FC9616480203`，Capture Generation 1，ConfigurationID 2。Engine 启动读回和 Native 封存身份一致。requested/actual AGC=false/false，VP Input/Output=true，bypass=false，inputMuted=false |
+| 设备与格式 | 起止为同一已登记的 TinyUSB USB 默认输入 60%、Mac mini 内置默认输出 55% 未静音，两端在线、空闲。运行态两方向查询及 PID 核验通过，输入 `PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED`，输出 `PROCESS_DEVICE_METADATA_MATCHES_DEFAULT`，物理绑定总项 `UNKNOWN_UNVERIFIED_BINDING`。公开 Mic Mode active/preferred 原始值均为 0。Graph client 16kHz/3ch，输出硬件侧读回 16kHz/2ch |
+| 次数与终态 | App 1、Capture 1、Playback 0、JSON 1、WAV 1，无重试。原流程自动 Stop、Seal、Shutdown 后，分别经原可见界面导出。确切 PID 从 App 菜单退出，exit 0。退出后设备空闲、默认 Route 和音量核验一致 |
+
+本次临时 OFF 控制从已核验的 ON 源脚本生成，复用原确认、取消、导出及退出逻辑。原确认语义的 14 项用例与 OFF 菜单的 7 项用例均离线通过。实际执行源 SHA-256 `ac4bb787e52cfb47d0146f979e48a4b800caf6c3970eb8aa3cc4534c22f063d7`，只读预检收据 SHA-256 `20b1add80c73a748f51767df57117138e3aa4fc3c23e8837b9871da87c1f6147`。运行过的 ON 编译副本摘要已变化，本次使用核验一致的源重建临时控制副本。App 构建独立冻结。
+
+### 8.2 连续性、覆盖及封存
+
+| 项目 | OFF 独立实测 |
+|---|---|
+| Native | 150 个 buffers、240000 frames，16kHz / 3ch / Float32 非交错，帧量 15.000 秒，`coverage_valid=true`，issues 为空。native/content/packet clock、格式、转换及其余 Native 拒收均为 0 |
+| Input 时间 | 首 callback arrival `266478525722166` ns、首 content `266478390099042` ns，Native content 末端 `266493390035833` ns。首/末 buffer sampleTime 为 636/239036，host/sample discontinuity、缺时、重复和倒退均为 0，最大观测相邻端点间隙 1625 ns。首次 running 的 AX 查询区间相对 PCM 首端为 −61.159 至 +249.002 ms。物理起音与句末精确时刻 UNKNOWN |
+| PCM | 744 个已 drain 包，序号 1–744，逐包 20ms、960 bytes，时间与序号连续。首包 `266478390099042` ns，末包 `266493250099042` ns，末端开区间 `266493270099042` ns。保留 714240 bytes，24kHz / Mono / PCM16 LE，覆盖 14.88 秒，720000 bytes 上限有效 |
+| 原封存尾部 | 本 Run 观测 generated/drained/queued=749/744/5，完整包守恒。封存队列 5 包即 100 ms 未进入导出。Native content 末端比已导出 PCM 末端晚约 119.937 ms，Converter partial-tail 字段为 null，样本数 UNKNOWN。封存覆盖 `PARTIAL_TAIL` |
+| 错误及关闭 | drop、stale、Native reject、skippedUpdates、invalidBuffers、staleCallbacks 各为 0。运行期间 Engine 配置通知及跳过通知为 0，Route 变化为 0。各一次 Engine start 与 captureStopped，两个控制层配置事件分别位于启动前、停止后。封存的 `identityChanges=1` 保留。JSON 的 `capture_state=capturing` 采自关闭前快照，原 sealed UI、exit 0 与设备空闲记录单独确认关闭 |
+| 播放及观察边界 | Playback generation、Player.play、非零 Render 的播放资格 N/A。共享 Tap 观测 149 次回调、0 非零帧，排程帧为 0。原 B 的 Native/PCM 20ms 同内容窗 `UNKNOWN_MISSING_STREAM`，专用 raw timestamp 字段为 null |
+
+### 8.3 本机导出及用户独立试听
+
+| OFF 文件 | 大小 | SHA-256 |
+|---|---:|---|
+| 统计 JSON | 64798 bytes | `dc11cbd3a63766930efcb7dca9084bb3bfe4aae9899b9a322b56efebda0d9395` |
+| 处理后 WAV | 714284 bytes | `65e1baa5514731631af60d66f52e612a8b8a8583269e34763ddd18712743a264` |
+
+两文件按独立 RunID 命名，在原 0700 缓存目录分别以 0600 保存。WAV 仅核对文件大小、固定 RIFF/WAVE 格式头和 SHA，样本未解码。统计与 WAV 头部一致，数据段为 714240 bytes。用户自行试听。
+
+- 用户自述约 3 秒说完、之后安静约 10 秒。用户报告与 ON 的语句、自然音量、节奏、距离和环境无明显变化。这里的时长、距离和音量为用户自述。
+- 用户确认首尾完整、人声清楚可懂。
+- 用户先称「感觉声音很奇怪」，随后确认「应该是爆音和失真，是更差」。爆音和失真为听感判断，位置、强度、机制 UNKNOWN。未以波形、端点计数或 ASR 替代听感。OFF 人声异常项保留，未登记听感 PASS。
+
+### 8.4 有限配对结论
+
+| 比较项 | ON §7 | OFF §8 |
+|---|---|---|
+| 候选与路由 | 同一 App/Tools 树、Debug SHA、TinyUSB 60%、Mac mini 内置 55% 未静音 | 相同。两臂公开两方向资格一致，物理绑定总项 UNKNOWN |
+| 格式及处理 | Native 16kHz/3ch Float32 非交错；PCM 24kHz/Mono/PCM16 LE。AGC true/true，VP 双端开启，bypass/mute=false，Mic Mode 0/0 | 相同 Native/PCM 格式、VP、bypass/mute 与公开 Mic Mode。AGC false/false |
+| 人声条件及边界 | 约 3 秒发声、后段约 10 秒安静 | 约 3 秒发声、后段约 10 秒安静。用户未报告明显环境或发声条件变化。两臂物理起止与声压未独立量化 |
+| 覆盖与完整包 | 744 包，14.88 秒，封存 5 包，Converter 尾部 UNKNOWN | 独立测得相同覆盖、包数和封存缺口 |
+| 用户试听 | PASS_LIMITED，导出语句完整、清楚，未报告异常 | 语句完整、清楚，用户认为听感更差，疑似爆音和失真 |
+
+本次主观配对观察为 `AGC_OFF_WORSE_IN_THIS_RUN`，证据可比性为 `COMPARISON_LIMITED`。两臂构建、设置、格式及可见连续性有匹配证据。固定 ON→OFF 的顺序、自然重读、缺少未经处理原音和精确物理时间限制因果判断。每臂封存覆盖均 PARTIAL，AGC 参与历史异常的假设保持 UNKNOWN。AEC、CLOCK、SQ-M1、R3-M01 与正式声学准入尚未关闭。
+
+### 8.5 交付与状态
+
+OFF 技术摘要 SHA-256 `87f5fc9ccf3937bb02e5f912332a6f318354cc73e8438c44b34851d56ae95780`。回滚检查点 `b98daf0147129ae2244ac4c54cf502a206fbbeec` 与起始 Git 树相同。Stage7 Forbidden Checklist 为 PASS，红线触碰为无。仅追加本报告和 README 索引，生产代码、正式测试、Runtime API、DR schema 和平台 target 无改动，未进入 Stage 8。原 7 项冲突、索引、14 项保护证据、Fixture 和 M31 撤回身份均保留。隐私原件和原始 AX 记录留本机，提交后停止交主控审核。
+
+```ini
+P2_ON_RESULT=PARTIAL
+P2_ON_LISTENING=PASS_LIMITED
+P2_ON_MAIN_REVIEW=APPROVED_WITH_LIMITATIONS
+
+P2_OFF_AUTHORIZATION=RECEIVED_CONSUMED
+P2_OFF_DEVICE_RUNS=1
+P2_OFF_AGC_READBACK=FALSE_CONFIRMED
+P2_OFF_AUDIO_CONTINUITY=CONTIGUOUS_DRAINED_TAIL_PARTIAL
+P2_OFF_EXPORT=PASS_LOCAL_JSON_WAV
+P2_OFF_LISTENING_REVIEW=USER_REPORTED_POSSIBLE_POP_AND_DISTORTION_WORSE_THAN_ON
+P2_OFF_RESULT=PARTIAL
+
+P2_PAIR_OBSERVATION=AGC_OFF_WORSE_IN_THIS_RUN
+P2_COMPARABILITY=COMPARISON_LIMITED
+P2_AGC_HYPOTHESIS=UNKNOWN
+P2_MAIN_REVIEW=PENDING
+
+P1_RESULT=OFF_READBACK_AND_CONTROL_CHAIN_SUPPORTED
+P1_FINAL_TAIL=UNKNOWN
+T3_2_A_OFFLINE_ENGINEERING=ACCEPTED
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+SQ_M1=OPEN
+R3_M01=OPEN
+T3_2_A=BLOCKED
+T3_2_B=NOT_AUTHORIZED
+T3.3=NOT_STARTED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+```

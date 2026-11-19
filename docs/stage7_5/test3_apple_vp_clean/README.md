@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-19 [P2 AGC-OFF 单次执行及配对审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#8-p2-agc-off-单次执行及配对审核)记录 OFF 独立授权后录音 1 次、无播放，实际 AGC 关闭、双端 VP 开启，JSON/WAV 经原界面导出并正常退出。两臂各导出 14.88 秒连续 PCM，各有 5 个封存包未导出，覆盖均 PARTIAL。OFF 语句完整可懂，用户反馈听感比 ON 更差、疑似爆音和失真。配对观察 `AGC_OFF_WORSE_IN_THIS_RUN`、可比性 `COMPARISON_LIMITED`、AGC 假设 UNKNOWN。T3.2-A/Formal Test3 仍 BLOCKED，待主控独立审核。
+
 2026-11-19 [P2 AGC-ON 单次复执行审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#7-p2-agc-on-单次复执行审核)为 `PARTIAL`。已取得本轮独立授权，原面板语义核验及一次 `AXPress` 通过。录音 1 次，无播放，AGC 实际开启、VP 双端启用。JSON/WAV 分别经原界面导出，正常退出且设备空闲。用户确认语音首尾完整、清楚可懂，无所问异常。已导出 744 个连续包，覆盖 14.88 秒，封存另有 5 包未导出。OFF 未授权，配对未执行，交主控审核。
 
 2026-11-19 [P2 第一臂 AGC-ON 执行记录](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#6-p2-on-臂执行记录2026-11-19北京时间)为 `BLOCKED_BEFORE_CAPTURE`。本次授权后，冻结 App、实际加载身份和设备复核通过。临时 UI 控制在原录音确认按钮的名称校验处停止，随后确认按钮文案位于 `AXDescription`。取消原面板并经确切 PID 正常退出，设备空闲。Capture、Playback、JSON/WAV 导出均为 0。OFF 未授权，配对未执行。当前交主控审核。
