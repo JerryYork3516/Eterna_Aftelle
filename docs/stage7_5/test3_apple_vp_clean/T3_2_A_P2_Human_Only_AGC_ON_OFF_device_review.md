@@ -109,3 +109,60 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 ```
+
+## 6. P2 ON 臂执行记录（2026-11-19，北京时间）
+
+**裁定为 `BLOCKED_BEFORE_CAPTURE`。** 已收到本次 ON 臂的独立录音、本机 JSON/WAV 导出及就绪授权。冻结 App 启动 1 次，录音确认动作未发出。Capture、Playback、JSON 导出和 WAV 导出均为 0。OFF 未获授权，配对未开始。
+
+### 6.1 身份及前后只读核验
+
+| 项目 | 实际证据 |
+|---|---|
+| 执行起点 | `beb89c7429b1451f30dda5b343ed566763acdd2f`，开跑前 HEAD、upstream 与实时远端一致。App 树 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539`、工具树 `a687af8d5095a2c1230e9f08a57cc51212243677` 均匹配已接受的工程候选。FULL_CURRENT 21/21 为同源码树既有收据，本次未重建或重跑 |
+| 冻结构建与加载 | Launcher `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，Debug dylib `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4`。唯一参数 `--apple-vp-acoustic-test`。实际 PID 64759，经路径、加载映射、inode/device 和文件 SHA 核验通过 |
+| Route 与权限 | 前后均为同一默认 TinyUSB USB 输入 60% 和 Mac mini 内置扬声器 55% 未静音，两端在线、空闲。HAL 输出 scalar 符合登记精度。原麦克风权限检查流程未进入，实际 TCC 与运行态 Mic Mode 未核验 |
+| 保护与导出路径 | 冻结 Fixture 元数据与 M31 撤回源码身份匹配。原 7 项冲突、索引及 14 项未跟踪证据匹配登记。原 Caches 导出根目录为 0700，无软链接、Git 或禁用目录祖先。无本臂原始音频或 JSON |
+| 回滚点 | `23965d6c97058967898eeec8e5286cce48814e78`，Git 树与执行起点相同 |
+
+首次只读进程筛查把 Core Audio 系统驱动宿主误计为实验。先按确切 PID 核实实际系统可执行路径，再排除这一个宿主，仍要求默认设备空闲且无其他实验 App。完成复核后启动候选。工具检查另误带一次只读 NVRAM 列表命令，输出与错误均丢弃，无内容进入收据或提交，无配置写入。
+
+### 6.2 原确认界面和清理经过
+
+1. 在原 DEBUG 界面选择普通 B，读回 `phase=ready scenario=B`、`RECORDING`、`APPLE_VP_AGC_ON`，素材栏为空，无预热配置。临时 UI 脚本的两处属性解析错误均发生在发出录音确认之前。
+2. 通过原 `Start…` 打开可见面板 `Allow local test?`。面板说明 B 仅使用麦克风。临时脚本按按钮名称查找确认动作，实际辅助功能接口的名称和标题均为空，完整文案位于 `AXDescription`。脚本在发送确认动作前拒绝。界面仍为 `phase=ready scenario=B`、`run=UNKNOWN`、`packets=0 bytes=0`，音频 Stop/Seal 未执行。
+3. 确认面板打开时，第一次选择原 Quit 菜单未在观察时限内退出。只读核对原面板的两个按钮描述，点击原 `Cancel`，再通过确切 PID 的 `Aftelle → 退出 Aftelle` 清理。子进程 exit 0、PID 消失，退出后两端空闲。本次阻塞发生在 UI 自动化，原 App 确认门禁完整保留。
+4. 无 RunID、Generation 或 ConfigurationID。运行态 VP/AGC/bypass/mute、Native/PCM、首 Input 与讲话提示、时钟、drop/stale/reject、末尾守恒、JSON/WAV SHA 和试听均 `NOT_RUN`。准备界面的 AGC 请求值只能证明已选配置。
+
+控制收据仅留本机，核验摘要 SHA-256 为 `77945bf684009a531b3a5174022dfd4f47a6cc2718958652b40997c59622b9cb`。本次尝试已关闭。若主控另批新的 ON 尝试，发出原确认动作前应核验原面板语义及两个按钮的完整 `AXDescription`。无法核验时先取消面板，再正常退出。此校正只涉及临时控制脚本。
+
+### 6.3 本次状态
+
+仅追加本报告及 README 索引。Stage7 Forbidden Checklist 为 PASS。触碰红线为无，生产代码、测试、Runtime API、DR schema 和平台 target 均无改动，未进入 Stage 8。原准备阶段结果留在 §5，当前提交身份由 Git 历史和本机交付收据绑定。
+
+```ini
+P1_RESULT=OFF_READBACK_AND_CONTROL_CHAIN_SUPPORTED
+P1_FINAL_TAIL=UNKNOWN
+P2_PREFLIGHT=PASS
+P2_RESULT=BLOCKED_BEFORE_CAPTURE
+P2_ON_AUTHORIZATION=RECEIVED_ATTEMPT_CLOSED
+P2_ON_APP_LAUNCHES=1
+P2_ON_DEVICE_RUNS=0
+P2_ON_RESULT=BLOCKED_BEFORE_CAPTURE
+P2_OFF_AUTHORIZATION=NOT_RECEIVED
+P2_OFF_DEVICE_RUNS=0
+P2_OFF_RESULT=NOT_RUN
+P2_COMPARABILITY=NOT_RUN
+P2_AGC_HYPOTHESIS=UNKNOWN
+P2_MAIN_REVIEW=PENDING
+T3_2_A_OFFLINE_ENGINEERING=ACCEPTED
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+SQ_M1=OPEN
+R3_M01=OPEN
+T3_2_A=BLOCKED
+T3_2_B=NOT_AUTHORIZED
+T3.3=NOT_STARTED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+```

@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-19 [P2 第一臂 AGC-ON 执行记录](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#6-p2-on-臂执行记录2026-11-19北京时间)为 `BLOCKED_BEFORE_CAPTURE`。本次授权后，冻结 App、实际加载身份和设备复核通过。临时 UI 控制在原录音确认按钮的名称校验处停止，随后确认按钮文案位于 `AXDescription`。取消原面板并经确切 PID 正常退出，设备空闲。Capture、Playback、JSON/WAV 导出均为 0。OFF 未授权，配对未执行。当前交主控审核。
+
 2026-11-18 [P2 真人独讲 AGC ON→OFF 审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md)记录只读预检 PASS。冻结构建、TinyUSB 60%、Mac mini 内置扬声器 55% 未静音及私有导出路径已核验。沿用普通 B，两臂各最多一次 15 秒，分别授权，保持无播放。ON/OFF 实际运行均为 0，当前只等待 ON 臂的录音、本地 JSON/WAV 导出和就绪授权。P1 已获有限批准，尾部 UNKNOWN 保留。T3.2-A 与 Formal Test3 仍 BLOCKED。
 
 2026-11-18 P1唯一设备运行见 [AGC-OFF＋STATS_ONLY审核§8](T3_2_A_P1_AGC_OFF_STATS_ONLY_device_review.md)。输出经单独允许恢复后只读预检通过，随后取得本次精确授权；实际Capture/全零播放/JSON导出各1次，WAV为0，无重试。两运行点VP I/O开启、AGC=false、bypass/mute=false；Native 15.000秒，已drain744个连续20ms包，quiet覆盖3.86秒，PCM留存0、SHA=null，原UI的WAV按钮禁用；正常PID退出exit0、设备空闲。结论仅OFF_READBACK_AND_CONTROL_CHAIN_SUPPORTED。关闭前capture快照744/queued0与最终Native749相差5包，尾部守恒UNKNOWN；拆图后的identityChanges=1及原始字段全部保留，不改判完整尾部或声学PASS。只更新文档、生产零差异；AEC/CLOCK UNKNOWN、SQ-M1/R3-M01 OPEN、T3.2-A/Formal Test3 BLOCKED/false。交主控另审，不进入P2/P3/P4。
