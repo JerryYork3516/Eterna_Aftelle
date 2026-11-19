@@ -166,3 +166,79 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 ```
+
+## 7. P2 AGC-ON 单次复执行审核
+
+2026-11-19 21:32（北京时间），在取得本轮独立录音、JSON/WAV 本机导出及设备就绪确认后，执行一次普通场景 B。**结果为 `PARTIAL`，导出内语音经用户试听确认首尾完整、清楚可懂。** 已导出的 PCM 连续覆盖 14.88 秒，另有 5 个完整包留在封存队列。本节保留 §6 的前次阻塞及关闭记录。
+
+### 7.1 身份、设备及确认
+
+| 项目 | 实测 |
+|---|---|
+| 源码与冻结候选 | 起点 `159e46327e42dfb101c7a850a1a36827da336ef4`，启动前 HEAD/upstream/实时远端相同。App 树 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539`，工具树 `a687af8d5095a2c1230e9f08a57cc51212243677`，匹配已接受的 FULL_CURRENT 21/21 身份。既有收据继承，本次未重建或重跑回归 |
+| Debug 加载 | launcher `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，dylib `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4`。PID `66688` 的可执行路径、映射 inode/device 及 SHA 匹配。唯一启动参数为 `--apple-vp-acoustic-test` |
+| 设备 | 起止均为同一默认 TinyUSB 输入 60%、Mac mini 内置扬声器 55% 未静音，在线、空闲。运行态 Process Input/Output 查询和 PID 核验通过，输入登记为 `PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED`，输出为 `PROCESS_DEVICE_METADATA_MATCHES_DEFAULT`。物理绑定总项 `UNKNOWN_UNVERIFIED_BINDING`。公开 Mic Mode 读回 active/preferred 原始值均为 0 |
+| 准备状态 | `B / Human only`、`RECORDING`、`APPLE_VP_AGC_ON`，普通 B，无附加预热或素材。原 15 秒采集窗口，PCM 上限 720000 bytes |
+| 实际 AX 检查 | 在精确 PID 的原 `Allow local test?` 面板核对 B 的麦克风用途说明。两枚实际元素的 `AXRole` 为 `AXButton`，`AXTitle` 均为空，`AXDescription` 分别完整匹配原录音动作与 `Cancel`，均可用。按语义选择录音动作，再核查元素未变化后发出一次 `AXPress`，收到成功回执并观测到 running。原 TCC 检查随原入口执行 |
+| 次数与收尾 | App 启动 1、录音 1、播放 0、JSON 1、WAV 1，无重试。音频由原流程自动 Stop、Seal、Shutdown，之后原界面分别确认两项本机导出。确切 PID 从 App 退出菜单退出，exit 0，读回两端空闲且设备、音量一致 |
+
+临时控制脚本置于 Git 忽略目录，编译及 14 项离线用例通过。实际按钮核验使用同一已登记脚本 SHA-256 `08bc325d0c5792b7749b7f339d9c4bc889845c5d94bfbc8c523231fd1b13903b`。其预检收据 SHA-256 为 `eee899ff06bb4d58d0beb1ef3fcb41dce92c95cd9fafcdcc7e050f124194dc4a`。
+
+### 7.2 独立 Run 的控制、覆盖及尾部
+
+| 证据 | 实测 |
+|---|---|
+| 独立身份与 VP | RunID `0CB32C68-8D62-4612-B503-532F7933D257`，Capture Generation 1，ConfigurationID 2。唯一运行态读回为 `engineStarted`，与封存 Native 身份一致。AGC requested/actual=true，VP Input/Output=true，bypass=false，inputMuted=false |
+| Native 覆盖 | 150 个 buffer、240000 frames，16kHz / 3ch / Float32 非交错，帧量 15.000 秒。Native 覆盖标记有效，issues 为空，拒收各项（含 nativeClock/contentTime/packetClock）均为 0。运行态 graph client 16kHz/3ch，硬件侧读回 16kHz/2ch |
+| 控制与时钟 | Input 首 arrival `263683538080875` ns、首 content `263683406825708` ns。首次读到 `phase=running` 的 AX 查询区间相对首 content 为 −90.737 至 +179.486 ms。Input sample/host discontinuity、missing、backwards、duplicate 均为 0，最大相邻端点间隙 1167 ns。drop/stale、skippedUpdates、invalidBuffers、staleCallbacks 各为 0。AX 区间为查询锚，物理起音的精确时刻 UNKNOWN |
+| 封存及配置 | Engine 配置通知计数、其跳过计数及 routeChanged 均为 0，监听和 callbacks 已关闭。Ctrl 记录含各一次 Engine start、captureStopped，配置事件分布在启动前和停止后。封存汇总保留 `identityChanges=1`。JSON 的 `capture_state=capturing` 是 Shutdown 前快照，另有 sealed UI、正常退出和设备空闲收据 |
+| 已 drain PCM | 24kHz / Mono / PCM16 LE，原链 ch0。序号 1–744，逐包 20ms 和 960 bytes，序号、时间、大小均无不连续。首端 `263683406825708` ns，末包起点 `263698266825708` ns，末端开区间 `263698286825708` ns，连续覆盖 14.88 秒。保留 714240 bytes |
+| 尾部 | 本 Run 的 generated/drained/queued 为 749/744/5，完整包计数守恒。封存队列中的 5 包对应 100 ms，未进入导出。Native 用内容时钟观测的末端比导出末端晚约 119.941 ms。Converter partial-tail 字段为 null，采样数 UNKNOWN。没有补零或添加末次 drain |
+| 普通 B 的限制 | 居民播放次数 0，Playback generation、Player.play、非零 Render 的播放资格均为 N/A。共享 Tap 观察到 149 次回调、0 非零帧，已调度帧 0。Native/PCM 20 ms 同内容窗 `UNKNOWN_MISSING_STREAM`，专用 raw timestamp 诊断字段为 null。无法用这些字段定位 AGC 增益轨迹 |
+
+### 7.3 导出与用户试听
+
+| 本机文件 | 大小 | SHA-256 |
+|---|---:|---|
+| Run 统计 JSON | 64787 bytes | `e8bf92d5ecd38f224227205d134367cc29c9f6b07c2dca959018d37ab94b8e1f` |
+| Run 处理后 WAV | 714284 bytes | `4dc55a75a413f884bf18159d528fb9294502d49686f8ec3d96cd2a3d66c760c7` |
+
+两文件独立绑定本 Run，目录 0700、文件 0600。Codex 只核验 WAV 的文件身份与大小，试听由用户自行完成。用户现场回忆约 3 秒说完、之后安静约 10 秒。用户试听确认句首句尾完整、人声清楚可懂，对音量突变、消音、吞字及失真反馈「无」。现场时长为回忆值，物理语句末端未独立定时。只裁定本次导出的语音表现，封存尾部资格为 PARTIAL。P1 最终尾部独立保持 UNKNOWN。OFF 无授权及结果，AGC 参与历史异常的假设未验证。
+
+### 7.4 交付与状态
+
+本机核验摘要 SHA-256 `4788d8500501e884c87a059ab8ca33cb4ae8021a30c1b9fc8161fad87bd87306`。只追加本文和 README 索引。回滚检查点 `1b5f3ce4209a7a50a8ce37843f8548c079e27636` 与起始 Git 树相同。原 7 项冲突、索引、14 项受保护证据、Fixture 与 M31 撤回资格保持。隐私原件、原始 AX 收据与产物均留本机。
+
+Stage7 Forbidden Checklist 为 PASS。红线触碰为无，Git 修改文件仅本报告和 README。生产代码、正式测试、Runtime API、DR schema 与平台 target 零改动，未进入 Stage 8。本次交主控独立审核。
+
+```ini
+P2_ON_NEW_AUTHORIZATION=RECEIVED_CONSUMED
+P2_ON_AX_CONFIRMATION=PASS_AXPRESS_ONCE
+P2_ON_APP_LAUNCHES=1
+P2_ON_DEVICE_RUNS=1
+P2_ON_AGC_READBACK=TRUE_CONFIRMED
+P2_ON_AUDIO_CONTINUITY=CONTIGUOUS_DRAINED_TAIL_PARTIAL
+P2_ON_EXPORT=PASS_LOCAL_JSON_WAV
+P2_ON_LISTENING_REVIEW=USER_CONFIRMED_COMPLETE_CLEAR_NO_REPORTED_ANOMALIES
+P2_ON_RESULT=PARTIAL
+
+P2_OFF_AUTHORIZATION=NOT_RECEIVED
+P2_OFF_DEVICE_RUNS=0
+P2_OFF_RESULT=NOT_RUN
+P2_COMPARABILITY=NOT_RUN
+P2_AGC_HYPOTHESIS=UNKNOWN
+
+P1_RESULT=OFF_READBACK_AND_CONTROL_CHAIN_SUPPORTED
+P1_FINAL_TAIL=UNKNOWN
+T3_2_A_OFFLINE_ENGINEERING=ACCEPTED
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+SQ_M1=OPEN
+R3_M01=OPEN
+T3_2_A=BLOCKED
+T3_2_B=NOT_AUTHORIZED
+T3.3=NOT_STARTED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+```

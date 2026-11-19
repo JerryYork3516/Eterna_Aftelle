@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-19 [P2 AGC-ON 单次复执行审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#7-p2-agc-on-单次复执行审核)为 `PARTIAL`。已取得本轮独立授权，原面板语义核验及一次 `AXPress` 通过。录音 1 次，无播放，AGC 实际开启、VP 双端启用。JSON/WAV 分别经原界面导出，正常退出且设备空闲。用户确认语音首尾完整、清楚可懂，无所问异常。已导出 744 个连续包，覆盖 14.88 秒，封存另有 5 包未导出。OFF 未授权，配对未执行，交主控审核。
+
 2026-11-19 [P2 第一臂 AGC-ON 执行记录](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#6-p2-on-臂执行记录2026-11-19北京时间)为 `BLOCKED_BEFORE_CAPTURE`。本次授权后，冻结 App、实际加载身份和设备复核通过。临时 UI 控制在原录音确认按钮的名称校验处停止，随后确认按钮文案位于 `AXDescription`。取消原面板并经确切 PID 正常退出，设备空闲。Capture、Playback、JSON/WAV 导出均为 0。OFF 未授权，配对未执行。当前交主控审核。
 
 2026-11-18 [P2 真人独讲 AGC ON→OFF 审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md)记录只读预检 PASS。冻结构建、TinyUSB 60%、Mac mini 内置扬声器 55% 未静音及私有导出路径已核验。沿用普通 B，两臂各最多一次 15 秒，分别授权，保持无播放。ON/OFF 实际运行均为 0，当前只等待 ON 臂的录音、本地 JSON/WAV 导出和就绪授权。P1 已获有限批准，尾部 UNKNOWN 保留。T3.2-A 与 Formal Test3 仍 BLOCKED。
