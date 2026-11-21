@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-21 [P3 居民独讲声学设备审核](T3_2_A_P3_resident_only_acoustic_device_review.md)记录 `BLOCKED_BEFORE_CAPTURE`。冻结候选及固定 WAV 核验通过，App 启动 1 次。原文件选择器的打开按钮语义未匹配，未发出录音确认。采集、播放、JSON/WAV 导出均 0 次。PID 已消失，两端设备空闲，原 Quit 回执和退出码未取得。声学结论 `NOT_RUN`，T3.2-A/Formal Test3 仍 BLOCKED，交主控独立审核。
+
 2026-11-19 [P2 AGC-OFF 单次执行及配对审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#8-p2-agc-off-单次执行及配对审核)记录 OFF 独立授权后录音 1 次、无播放，实际 AGC 关闭、双端 VP 开启，JSON/WAV 经原界面导出并正常退出。两臂各导出 14.88 秒连续 PCM，各有 5 个封存包未导出，覆盖均 PARTIAL。OFF 语句完整可懂，用户反馈听感比 ON 更差、疑似爆音和失真。配对观察 `AGC_OFF_WORSE_IN_THIS_RUN`、可比性 `COMPARISON_LIMITED`、AGC 假设 UNKNOWN。T3.2-A/Formal Test3 仍 BLOCKED，待主控独立审核。
 
 2026-11-19 [P2 AGC-ON 单次复执行审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#7-p2-agc-on-单次复执行审核)为 `PARTIAL`。已取得本轮独立授权，原面板语义核验及一次 `AXPress` 通过。录音 1 次，无播放，AGC 实际开启、VP 双端启用。JSON/WAV 分别经原界面导出，正常退出且设备空闲。用户确认语音首尾完整、清楚可懂，无所问异常。已导出 744 个连续包，覆盖 14.88 秒，封存另有 5 包未导出。OFF 未授权，配对未执行，交主控审核。
