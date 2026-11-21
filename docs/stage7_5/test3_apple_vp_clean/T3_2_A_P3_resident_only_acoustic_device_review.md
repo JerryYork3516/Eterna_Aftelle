@@ -144,3 +144,76 @@ Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 FORMAL_TEST_DIFF=ZERO
 ```
+
+## 6. P3 无音频 UI 全链复检（重新授权）
+
+**本次 UI 预检通过，文件选择由用户协助完成。** 2026-11-21 取得新的单次无音频 UI 授权。北京时间 22:54:35 启动冻结 App 一次，23:00:35 正常退出。前五节保留之前两次尝试的原始结论。
+
+### 6.1 冻结候选与 PID 绑定
+
+| 项目 | 证据 |
+|---|---|
+| 源码 | 启动前 HEAD、upstream、GitHub 实时远端均为 `0cc469b225219774f53b9cebdd4c7be7bdfe24dc`。App 树 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539`、Tools 树 `a687af8d5095a2c1230e9f08a57cc51212243677` 与已接受的 FULL_CURRENT 21/21 候选一致 |
+| 冻结 App | 唯一启动参数为 `--apple-vp-acoustic-test`。原父进程持有子进程，核验实际加载映像、可执行路径和 SHA-256。Launcher `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，dylib `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4` |
+| 固定素材 | 原 `HOST_resident.wav`，SHA-256 `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`，24 kHz / Mono / PCM16LE，114032 帧，约 4.751333 秒。启动前、选择后和退出后复核 SHA 及文件元数据 |
+| 本机控制 | 以 `AXUIElementCreateApplication` 绑定原子进程 PID，核验父子 PID、启动时间、可执行路径及目标控件所属 PID。打开与取消面板的本机临时工具复核同一父子身份和实际加载映像。21 项离线选择规则通过，变更父或子进程启动时间的负控均拒绝操作 |
+| 设备 | 默认 TinyUSB USB 输入 60%，Mac mini 内置输出 55% 且未静音。退出后两端身份、格式、音量及静音读回与启动前一致，两端均在线且空闲 |
+
+### 6.2 原界面执行记录
+
+| 步骤 | 实际结果 |
+|---|---|
+| Prepare A | 实际标准窗口内通过 `AXDescription` 读到唯一、启用的 `Prepare A · Resident only` 按钮，执行一次。随即核验 `phase=ready scenario=A`、`RECORDING`、准备态 `APPLE_VP_AGC_ON`、无 warm-up、无 RunID、零包及零 PCM |
+| 原文件选择器 | 从确切 PID 的普通 A 窗口仅发出一次 `Select approved offline WAV…` 操作。AX 未返回成功回执，随后只读观察在返回控件的 PID 边界处以 `AX_PID_MISMATCH` 停止。该控件未被点击。完整选择器树、打开按钮字段和自动点击资格仍未知 |
+| 用户选择与 App 接收 | 用户确认已在原选择器从指定的完整目录打开 `HOST_resident.wav` 并回到主窗口。同一 PID 的只读回读确认面板已关、`file=HOST_resident.wav`、`ready/A`、无 RunID、零 PCM。选择证据来自用户精确路径见证、固定 SHA 和 App 状态 |
+| 素材证据边界 | 原 `NSOpenPanel` 的成功选择将 URL 直接交给 `selectAppleVPAcousticPlaybackURL`，公开状态显示文件名。本轮核验原界面接收选定素材，App 内部完整 URL 无直接读回，WAV 解码和播放资格留待另行授权执行 |
+| 原录音确认面板 | 从普通 A 主窗口只打开一次 `Start…` 外层面板。同一 PID 的 `AXSheet` 显示 `Allow local test?` 和原 A/C 说明。两个启用的 `AXButton` 分别以 `AXDescription` 暴露 `Use microphone, local capture and test playback` 和 `Cancel` |
+| Cancel | 仅向已核验的 Cancel 发出一次 `AXPress`。AX 未返回成功回执，随后的同 PID 快照确认面板关闭，仍为 `ready/A`，授权未挂起，无 RunID、代际、采集包或留存 PCM。取消以实际状态转换核验 |
+| 原菜单退出 | 模态面板关闭后，确切 PID 的原 Quit 菜单动作返回成功。原父进程得到真实退出码 0，随后确认 PID 消失并复核设备空闲 |
+| 音频与导出 | 采集、播放、音频预热、JSON 和 WAV 导出各 0 次。运行态 VP/AGC、内容时钟、Render、声学及试听均未执行 |
+
+关键本机证据 SHA-256。启动预检 `305e35e0561460dc1ed97330d86528e75ba17f199836fac85eaa5fe5f9b237c2`，素材路径见证与读回 `98cb93cd1f1a084bd2b24d5778e3db6a0228ed542d98297fc78cbb7ace3c9e31`，面板快照 `6d41a1047ab57555aa1a5064677cb7b117296b032751176451271395a6c3d12a`，取消后快照 `4847ebb8812ebd4ebff572e3761b1ac1403e02d58096c8606432ed9fe0676533`，Quit `778effb5625d2581f46ba59ab3a5e4752fd002992f21cdbe688089add765ea61`，设备收尾 `b179e7f7f2178e516ffd7a80e9d03a52d620a580bd134cd757937bc8385d4b81`。
+
+### 6.3 裁定与交付
+
+原文件选择器接受人工协助，录音确认和取消具备真实界面证据，菜单退出及设备释放成立。该流程可进入主控审核。文件选择自动化仍缺少同 PID 控件资格。正式声学运行需独立授权。既有 AEC、CLOCK、SQ-M1、R3-M01 和 T3.2-A 证据边界保持。
+
+Stage7 Forbidden Checklist 本轮为 `PASS`。代码红线、Runtime API、DR schema、平台 target 和 Stage 8 无变更。原 7 项冲突、索引、14 项受保护证据、Fixture 元数据及 M31 撤回身份均核验一致。回滚检查点 `d7ec29d3d278e7eb1307ce3c23bf4077e6efb730` 与执行基线 Git 树相同。仅追加本节并更新 Test3 README。原始 AX、设备身份、局部工具及本机路径留本机。
+
+```ini
+P3_BASIC_PREFLIGHT=PASS
+P3_UI_AUTHORIZATION=FRESH_UI_ONLY_ATTEMPT_CLOSED
+P3_UI_APP_LAUNCHES=1
+P3_UI_UNINTENDED_APP_LAUNCHES=0
+P3_UI_FILE_PANEL=PASS_WITH_USER_HANDOFF
+P3_UI_FILE_SELECTION=PASS
+P3_UI_FILE_SELECTION_AUTOMATION=AX_PID_MISMATCH
+P3_UI_ASSET_LOADED=PASS
+P3_UI_ASSET_EVIDENCE=MANUAL_PATH_WITNESS_AND_PID_BOUND_APP_READBACK
+P3_UI_WAV_DECODING=NOT_RUN
+P3_UI_RECORDING_CONFIRMATION=PASS
+P3_UI_SAFE_CANCEL=PASS_BY_POST_STATE
+P3_UI_CANCEL_AX_ACK=UNKNOWN
+P3_UI_PROCESS_EXIT=PASS
+P3_UI_FROZEN_APP_EXIT_CODE=0
+P3_UI_DEVICE_RELEASE=IDLE_AND_UNCHANGED
+P3_UI_AUDIO_CAPTURE_COUNT=0
+P3_UI_PLAYBACK_COUNT=0
+P3_UI_JSON_EXPORTS=0
+P3_UI_WAV_EXPORTS=0
+P3_UI_PREFLIGHT=PASS
+P3_PRECAPTURE_READY=true
+P3_MAIN_REVIEW=PENDING
+P3_DEVICE_RUNS=0
+P3_ACOUSTIC_RESULT=NOT_RUN
+P3_EXECUTION_AUTHORIZED=false
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+SQ_M1=OPEN
+R3_M01=OPEN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+FORMAL_TEST_DIFF=ZERO
+```
