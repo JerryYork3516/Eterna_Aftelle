@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-21 [P3 无音频 UI 全链预检](T3_2_A_P3_resident_only_acoustic_device_review.md#5-p3-ui全链预检与真实录音入口准入)记录 `BLOCKED_BEFORE_FILE_PANEL`，`P3_PRECAPTURE_READY=false`。冻结 App 启动一次。准备按钮未获语义匹配，文件选择、录音确认与 Cancel 均未执行。另有同名 App 误启动一次，两实例均已退出，设备空闲且路由、音量一致。冻结 App 退出码为 0，原菜单回执归属未证实。采集、播放及导出均为 0，声学结论仍为 `NOT_RUN`，交主控独立审核。
+
 2026-11-21 [P3 居民独讲声学设备审核](T3_2_A_P3_resident_only_acoustic_device_review.md)记录 `BLOCKED_BEFORE_CAPTURE`。冻结候选及固定 WAV 核验通过，App 启动 1 次。原文件选择器的打开按钮语义未匹配，未发出录音确认。采集、播放、JSON/WAV 导出均 0 次。PID 已消失，两端设备空闲，原 Quit 回执和退出码未取得。声学结论 `NOT_RUN`，T3.2-A/Formal Test3 仍 BLOCKED，交主控独立审核。
 
 2026-11-19 [P2 AGC-OFF 单次执行及配对审核](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#8-p2-agc-off-单次执行及配对审核)记录 OFF 独立授权后录音 1 次、无播放，实际 AGC 关闭、双端 VP 开启，JSON/WAV 经原界面导出并正常退出。两臂各导出 14.88 秒连续 PCM，各有 5 个封存包未导出，覆盖均 PARTIAL。OFF 语句完整可懂，用户反馈听感比 ON 更差、疑似爆音和失真。配对观察 `AGC_OFF_WORSE_IN_THIS_RUN`、可比性 `COMPARISON_LIMITED`、AGC 假设 UNKNOWN。T3.2-A/Formal Test3 仍 BLOCKED，待主控独立审核。

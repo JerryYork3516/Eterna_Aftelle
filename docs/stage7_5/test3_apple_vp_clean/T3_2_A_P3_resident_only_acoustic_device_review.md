@@ -68,3 +68,79 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 ```
+
+## 5. P3 UI全链预检与真实录音入口准入
+
+2026-11-21 取得独立的单次无音频 UI 授权，于北京时间 22:20 启动冻结 Debug App 一次。结果为 **`BLOCKED_BEFORE_FILE_PANEL`**。临时控件识别在主窗口的准备按钮处停止，录音入口准入失败。前四节保留上次声学执行尝试的独立记录。
+
+### 5.1 执行身份
+
+| 项目 | 实际核验 |
+|---|---|
+| 源码 | 执行基线 `34c512d585b145bd066a9d3fe6d636d9b19afe6d`，启动前 HEAD、upstream、GitHub 实时远端一致。App 树 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539` 与 Tools 树 `a687af8d5095a2c1230e9f08a57cc51212243677` 匹配既有 FULL_CURRENT 21/21 候选 |
+| 冻结 App | 唯一启动参数为 `--apple-vp-acoustic-test`。父进程持有确切 PID 并验证实际加载路径、映像身份及 SHA-256。Launcher `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，dylib `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4` |
+| 固定素材 | `HOST_resident.wav` 的磁盘 SHA-256 `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`，24 kHz / Mono / PCM16LE，114032 帧，约 4.751333 秒。文件核验通过，App 侧素材选择和接收未执行 |
+| 只读预检 | 默认输入 TinyUSB USB 60%，默认输出 Mac mini 内置扬声器 55%、未静音，输出 HAL scalar 约 0.55000013。两端在线且空闲。基础预检收据 SHA-256 `8a49b034e23c00099e965340a98b48069570d68b41bd240b54f52072139a1143` |
+
+### 5.2 实际界面与证据
+
+| 步骤 | 实际结果 |
+|---|---|
+| 冻结 App 主窗口 | 确切 PID 下实际窗口为 `Aftelle main-window`，无模态面板。初始 `phase=idle scenario=A`，显示 `RECORDING` 及准备配置 `APPLE_VP_AGC_ON`，素材栏为空，RunID 和代际均为 `UNKNOWN`，包数和留存 PCM 字节均为 0 |
+| `Prepare A · Resident only` | 观察到主窗口控件的 `AXRole=AXButton` 和启用状态。用于唯一匹配的 `AXTitle`、`AXDescription`、`AXIdentifier`、`AXHelp` 在枚举结果中均为空。识别返回 `Original control has no matching visible label (-2700)`，未按下准备按钮，未到达 `phase=ready` |
+| 原 `NSOpenPanel` 与打开动作 | `NOT_RUN`。本次未请求文件选择器，未观察其实际控件层级、选中路径或打开回执。上次文件选择器的失败原因仍为 `UNKNOWN` |
+| 素材加载、原 `Start…` 及 `Allow local test?` | `NOT_RUN`。未取得 App 侧素材身份，未打开录音确认面板，未调用录音确认 |
+| 原 Cancel | `NOT_RUN`。无录音确认面板可取消 |
+| 音频及导出 | 控制收据仅包含主窗口聚焦、准备按钮匹配失败和只读窗口检查。未触发 Capture、Playback、预热或导出。无新 RunID。采集、播放、JSON 导出、WAV 导出均为 0 次 |
+
+### 5.3 启动偏差、退出及设备释放
+
+为查看缺少 AX 标签的窗口而按应用名取视图时，工具启动了另一个构建的同名 App。这是一次超出本轮授权的误启动。实际共启动两个进程，其中一个为授权的冻结 App，另一个为误启动实例。误启动实例未操作音频控件。
+
+两实例并存时，向误启动 PID 请求原退出菜单后虽收到菜单动作回执，实际先消失的是冻结 App PID。原父进程于 22:25:01 收到冻结 App 的真实退出码 0，并确认其 PID 消失。并存时的菜单回执无法与冻结 PID 的实际退出可靠绑定，故原菜单退出链保持 `INCONCLUSIVE`。
+
+误启动实例成为唯一 Aftelle 进程后，经其确切 PID 和可执行路径复核，取得原 Quit 菜单动作回执并确认 PID 消失。该实例的真实退出码不可得。整个清理过程未使用强制终止。
+
+22:29:06 重新只读核验，未发现 Aftelle 或冲突音频实验进程。两端默认设备身份和格式与启动前一致，均在线且空闲。TinyUSB 输入 60%，Mac mini 内置扬声器 55% 未静音。收尾收据 SHA-256 `6b0737dc5b97cb3a7882c455cab8e8b229f398930770b2eb6cfd8e762d44d009`。两次设备快照记录路由及释放状态。界面控制收据和零 PCM 读回记录本次采集入口未执行。
+
+### 5.4 准入裁定与保护
+
+完整 UI 预检为 `FAIL`，本次启动机会已使用。准入仍缺少原文件选择器、App 素材绑定、录音面板、安全取消及冻结 PID 原菜单退出的完整证据。未执行声学实验。运行态 VP/AGC、时钟和输出参考均无本轮新证据。既有 P1、P2 结论及 M31 撤回状态保留，交主控独立审核。
+
+原 7 项冲突、索引及 14 项受保护证据与登记基线一致，Fixture 元数据与 M31 撤回身份一致。只追加本节并更新 Test3 README 索引。回滚检查点 `f6044ba2e3de36d5d3c2fc3e1809302539fdb7e2` 的 Git 树与基线相同。生产源码与正式测试差异均为零。`git diff --check` 和 Secret Guard 通过。Stage7 Forbidden Checklist 本轮执行裁定 `REWORK`，偏差为按应用名操作触发额外启动。代码红线、Runtime API、DR schema、平台 target、Stage 8 均无改动。后续任何 UI 尝试或真实录音均须另行批准。原始 AX、收据、设备身份及本机细节留本机。
+
+```ini
+P3_BASIC_PREFLIGHT=PASS
+P3_UI_AUTHORIZATION=RECEIVED_ATTEMPT_CLOSED
+P3_UI_APP_LAUNCHES=1
+P3_UI_UNINTENDED_APP_LAUNCHES=1
+P3_UI_TOTAL_APP_LAUNCHES=2
+P3_UI_EXECUTION_RESULT=BLOCKED_BEFORE_FILE_PANEL
+P3_UI_FILE_PANEL=NOT_RUN
+P3_UI_FILE_SELECTION=NOT_RUN
+P3_UI_ASSET_LOADED=NOT_RUN
+P3_UI_RECORDING_CONFIRMATION=NOT_RUN
+P3_UI_SAFE_CANCEL=NOT_RUN
+P3_UI_PROCESS_EXIT=INCONCLUSIVE
+P3_UI_FROZEN_APP_EXIT_CODE=0
+P3_UI_DEVICE_RELEASE=IDLE_AND_UNCHANGED
+P3_UI_AUDIO_CAPTURE_COUNT=0
+P3_UI_PLAYBACK_COUNT=0
+P3_UI_JSON_EXPORTS=0
+P3_UI_WAV_EXPORTS=0
+P3_UI_PREFLIGHT=FAIL
+P3_PRECAPTURE_READY=false
+P3_MAIN_REVIEW=PENDING
+P3_DEVICE_RUNS=0
+P3_ACOUSTIC_RESULT=NOT_RUN
+P3_EXECUTION_AUTHORIZED=false
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+SQ_M1=OPEN
+R3_M01=OPEN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+FORMAL_TEST_DIFF=ZERO
+```
