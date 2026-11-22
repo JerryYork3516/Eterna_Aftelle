@@ -424,3 +424,70 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 ~~~
+
+
+## 10. P3 Fail-Fast 单次正式设备复验
+
+2026-11-22（Asia/Shanghai）。本次取得新的单次真实录音、一次固定居民播放及本机 JSON/WAV 导出授权。冻结 App 启动 1 次，录音确认、Capture 和居民播放各 1 次。本轮 CLOCK 故障未复现，**P3_FAIL_FAST_TRIGGER=NOT_TRIGGERED**。原 15 秒收集流程正常停止并封存，WAV 为 14.88 秒。用户报告录音仍有一个很短、辨认不出内容的起音，其余听感正常。
+
+### 10.1 运行身份与原界面
+
+| 核验项 | 实测结果 |
+|---|---|
+| 基线 | 本地 HEAD、upstream 与 GitHub 实时远端为 34e9c1b994ff8fad35f33ba5441ecca5ea1df7e6。相对 §9 仅增加文档提交，App 与 Tools 树仍匹配 Fail-Fast 冻结源码 |
+| 构建与实例 | 受控子进程的启动身份、可执行路径与实际加载映像已核验。Launcher SHA-256 为 ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118，Debug dylib SHA-256 为 e419552e1b539db52c6a971e6b703aaa695cb503fdfbf479fe20c25c5586a132。原 Release 身份与 §8 一致 |
+| 素材及设备 | 原 HOST_resident.wav 身份及 SHA-256 774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea 匹配。本轮使用 TinyUSB USB 输入 60%，Mac mini 内置输出 55%、未静音，AGC-ON、两端 VP、无额外预热 |
+| 人工交接与录音确认 | 同 PID 的 Prepare A 到达 ready/A、0 包、无 RunID。先将已核验窗口切到前台，在无采集的状态下等待用户完成固定文件选择和外层 Start…。用户确认已选定登记文件并打开原面板。重新核验固定文件及原 Allow local test? 的录音、Cancel 两个动作后，原录音确认取得一次按键回执 |
+| Run 及运行态 | RunID 为 `82D1CEC7-056F-450A-9C8A-89D8DBA783C5`，Capture Generation 1、Playback Generation 1、ConfigurationID 2。Engine 启动及居民播放两次读回匹配该 Run 和进程。VP 双端、AGC 均为 ON，bypass 与 inputMuted 均为 false，active 和 preferred Mic Mode 读回均为 0 |
+
+### 10.2 CLOCK、封存及覆盖
+
+| 核验项 | 实测结果 |
+|---|---|
+| CLOCK 拒收及时间见证 | `native_clock=0`、`content_time=0`、`input_conversion=0`，Native 拒收全 0。Input 150 次、Player Render 149 次，两个见证均无缺时、重复、倒退、SampleTime 或 HostTime 断点。时序见证 skippedUpdates、invalidBuffers、staleCallbacks 均为 0 |
+| 首条故障与退出延迟 | Fail-Fast 错误标记、首条原始时间戳诊断及 Fail-Fast 最后 drain 字段均未产生。故障到 Stop 的延迟本轮不适用 |
+| 实际停止与封存 | 观测到 starting → running → sealed。监视器未发送 Stop；`captureStopped=1`，Native 为 sealed，回调已关闭，无故障错误。证据能计数停止事件，封存函数的调用次数没有独立计数 |
+| 时间预算 | Native 为 16 kHz 三声道 Float32，共 240000 帧、15.00 秒。首次 Input 回调抵达到 captureStopped 为 14.895 秒，Engine start 返回到该事件为 15.022 秒。两者是不同生命周期区间 |
+| PCM | 生成 749 个完整包，原正常停止快照中 5 包仍在队列，保存 744 包。序号从 1 连续，内容时间每包递增 20 ms，每包 960 bytes，无 Capture drop 或 stale。24 kHz 单声道 PCM16LE，共 714240 bytes、14.88 秒 |
+| 居民播放 | Player.play 与播放完成各记录 1 次，underrun 与 rejected callback 为 0。非零 Player Render 59964 帧，时间对应 WAV 约 1.258–5.006 秒，位于已保存 PCM 覆盖范围内。Player Tap 位于软件输出路径，Apple 内部 AEC 参考未被观测 |
+| 观测范围 | 53 条运行态快照无未恢复缺口，8 次重取恢复，跳过 3 个失效非关键 AX 节点。时序对象登记 2 次 configurationChanged 事件、1 次身份观察变化，Engine 配置变化通知计数为 0。运行态身份核验通过 |
+
+正常封存保留了连续至 14.88 秒的 PCM 和完整的居民非零 Render 时间范围。末端排队的 5 个完整包按原正常停止流程未写入 WAV。Fail-Fast 保留故障时有效 PCM 前缀和时间戳的分支仍只有既有离线验证证据。
+
+### 10.3 导出、释放及用户听感
+
+- JSON 和 WAV 的原导出按钮打开后均未返回 AX 按键回执。按同一 PID 只读核验实际出现的原导出面板、RunID、本机目标路径及两个按钮后，各确认一次。两份原界面导出均成功，JSON 80082 bytes，WAV 714284 bytes，权限各为 0600，目录为 0700。监督器起初因 JSON 面板 AX 回执不明确返回 1，其退出码独立于同 Run 的导出成功和 App 实际退出码。
+- 导出完成后，通过原 Quit 菜单关闭唯一 App。App exit 0，原 PID 消失、映像卸载，TinyUSB 与 Mac 内置输出均复核空闲，路由、音量及静音状态与前置核验一致。
+- 对当轮居民实际播放，用户反馈「听到了」。具体听音位置与实体扬声器起尾未另行描述。对本机 WAV，用户反馈「这次还是有起音，但是很快，听不出来是什么，其他的都正常」。有限听感结论为短促起音仍可闻，其声源及可辨居民语音均未证实。AEC 声学资格仍未建立，R3-M01 起音问题保持 OPEN。
+- Codex 仅读取本轮授权 JSON 的核验字段、WAV 文件头和长度。WAV 样本、导出原件及原始日志留在本机，未纳入 Git。
+
+### 10.4 交付与阶段状态
+
+可回滚检查点为 14ddea38ba0f5d2601087ad5e861b1d021de1db8，Git 树与执行基线相同。仅追加本报告并更新 Test3 README 索引。git diff --check、Secret Guard、Stage7 Forbidden Checklist 通过。原 7 项冲突、索引、14 项证据及 Fixture 元数据一致。触碰红线为 0，代码、Runtime API、DR schema、平台 target 和 Stage 8 无改动。本次单次授权已用，交主控审核 `NOT_TRIGGERED` 及听感，后续设备运行保持未授权。
+
+~~~ini
+P3_DEVICE_VALIDATION=COMPLETED_CLOCK_NOT_REPRODUCED
+P3_DEVICE_APP_LAUNCHES=1
+P3_DEVICE_RUNS=1
+P3_CAPTURE_CONFIRMATIONS=1
+P3_RESIDENT_PLAYBACKS=1
+P3_CLOCK_OBSERVATION=NOT_REPRODUCED
+P3_FAIL_FAST_TRIGGER=NOT_TRIGGERED
+P3_FAIL_FAST_STOP_LATENCY=NOT_APPLICABLE
+P3_NORMAL_CAPTURE_STOP_EVENTS=1
+P3_SEAL=OBSERVED
+P3_VALID_PCM_SECONDS=14.88
+P3_LOCAL_JSON_EXPORTS=1
+P3_LOCAL_WAV_EXPORTS=1
+P3_EXACT_PID_EXIT_CODE=0
+P3_DEVICE_RELEASE=PASS_IDLE_AND_UNCHANGED
+P3_ACOUSTIC_QUALIFICATION=NOT_ESTABLISHED
+R3_M01=OPEN
+P3_EXECUTION_AUTHORIZED=false
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+~~~
