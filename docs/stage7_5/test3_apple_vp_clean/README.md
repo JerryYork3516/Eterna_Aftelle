@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-22 [P3 CLOCK 离线重放](T3_2_A_P3_clock_offline_replay.md)复现时钟拒收及 2.68 秒 PCM 截断。五条实测记录核验换算一致，四个相邻区间中有 3 次 HostTime 越界；全程封存计数为 18 次。用五条实测时间戳加合成前后段重放，原链路重现 123 次内容时间拒收和 134 个有效 PCM 包。CLOCK 根因仍 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED，交主控审核。
+
 2026-11-22 [正式 P3 设备审核](T3_2_A_P3_resident_only_acoustic_device_review.md#7-正式-p3-设备执行与时钟拒收复核)为 `FAIL_NATIVE_CLOCK_CONTENT_TIME`。同一冻结 App 下两次 AX 监视中断均封存，修复后第三次执行未触发监视 Stop。现场确认完整外放正常；本机 WAV 只保存 2.68 秒，用户听到居民「这」字起音。第三次 Native 帧量 15 秒，首次 host 偏差约 +2.413 ms，随后 `native_clock=18`、`content_time=123`。声学结果 `INCONCLUSIVE`，CLOCK 根因仍 UNKNOWN，T3.2-A/Formal Test3 仍 BLOCKED，交主控独立审核。
 
 2026-11-21 [P3 无音频 UI 全链复检](T3_2_A_P3_resident_only_acoustic_device_review.md#6-p3-无音频-ui-全链复检重新授权)通过，`P3_PRECAPTURE_READY=true`。冻结 App 启动 1 次，确切 PID 控制通过。原文件选择器经用户协助打开固定 WAV，App 状态读回匹配。原录音确认面板仅操作 Cancel，关闭后无 RunID、零 PCM。原 Quit 已确认，真实退出码 0，设备空闲。采集、播放及导出均为 0，声学结果 `NOT_RUN`，交主控审核。
