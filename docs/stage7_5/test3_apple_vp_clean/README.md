@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-22 [P3 CLOCK Fail-Fast 离线审核](T3_2_A_P3_clock_fail_fast_review.md)验证普通 DEBUG P3 居民独讲在当前 Run、采集代际及配置的内容时钟失效确证后，经原 Stop／Seal 停止并保全有效 PCM 前缀和首次故障。新增 Fake 10 例／68 项，M08/M09、相邻 DEBUG 回归及 Debug/Release 构建通过。设备执行 0 次，CLOCK 根因仍 UNKNOWN，T3.2-A／Formal Test3 仍 BLOCKED，交主控独立审核。
+
 2026-11-22 [P3 CLOCK 时间模型审核](T3_2_A_P3_clock_timebase_review.md)用五条实测时间戳核验固定间隔、RateScalar 与 SampleTime 锚定模型。SDK 与整数 timebase 换算一致。RateScalar 可解释后一段 +0.199417 ms，首个偏差在已观测标量范围内仍至少 +2.213520 ms。已确认 Tap 输入的双时钟关系偏差和同代际拒收链。合法上游重锚、系统时间戳来源及 Converter 误拒仍 UNKNOWN。本轮设备运行 0 次，生产零差异，T3.2-A 与 Formal Test3 仍 BLOCKED，交主控审核。
 
 2026-11-22 [P3 CLOCK 离线重放](T3_2_A_P3_clock_offline_replay.md)复现时钟拒收及 2.68 秒 PCM 截断。五条实测记录核验换算一致，四个相邻区间中有 3 次 HostTime 越界；全程封存计数为 18 次。用五条实测时间戳加合成前后段重放，原链路重现 123 次内容时间拒收和 134 个有效 PCM 包。CLOCK 根因仍 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED，交主控审核。

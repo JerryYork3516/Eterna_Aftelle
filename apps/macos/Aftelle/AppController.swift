@@ -314,6 +314,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate var pcm = Data()
         fileprivate var packets: [[UInt64]] = []
         fileprivate var generation: UInt64?
+        fileprivate var p3CaptureConfigurationID: UInt64?
         fileprivate var playbackGeneration: UInt64?
         fileprivate var stopGeneration: UInt64 = 0
         fileprivate var authorizationRunID: UUID?
@@ -321,7 +322,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate var playbackSHA256: String?
         fileprivate var route = MacSpeechAudioHostSnapshot.initial
         fileprivate var captureFinal = MacSpeechAudioHostSnapshot.initial
-        fileprivate var macAECFinalDrain: [String: UInt64]?
+        fileprivate var finalDrain: [String: UInt64]?
         fileprivate var playbackFinal = MacSpeechAudioOutputHostSnapshot.initial
         fileprivate var native: MacSpeechNativeVoiceDebugSnapshot?
         fileprivate var lastRefresh: UInt64 = 0
@@ -338,6 +339,16 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         fileprivate(set) var humanSpeechCueAtNanoseconds: UInt64?
         fileprivate var guideStartedAt: UInt64?
         fileprivate var guideEvents: [String: UInt64] = [:]
+
+        fileprivate var p3ClockFailed: Bool {
+            errorCode == AppleVPAcousticTestError.contentClockInvalidated.rawValue
+        }
+
+        fileprivate func matchesP3Capture(_ snapshot: MacSpeechNativeVoiceDebugSnapshot) -> Bool {
+            guard let p3CaptureConfigurationID else { return false }
+            return snapshot.runID == runID && snapshot.captureGeneration == generation
+                && snapshot.configurationID == p3CaptureConfigurationID
+        }
 
         var isAcousticBatch: Bool {
             btAcousticBatch || humanAcousticBatch || macAECBatch != nil || adaptation != nil || allocation != nil
@@ -469,6 +480,7 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         case captureDropped = "capture_frame_drop"
         case playbackFailed = "playback_failed"
         case invalidPacket = "invalid_processed_packet"
+        case contentClockInvalidated = "capture_content_clock_invalidated"
         case capacityExceeded = "processed_pcm_capacity_exceeded"
     }
 
@@ -8097,7 +8109,7 @@ final class AppController: ObservableObject {
                 appleVPAcousticRun.macAECCancelled = true
                 appleVPAcousticRun.errorCode = "cancelled"
             }
-            if appleVPAcousticRun.isBusy {
+            if appleVPAcousticRun.isBusy, !appleVPAcousticRun.p3ClockFailed {
                 appleVPAcousticRun.phase = .stopping
                 appleVPAcousticRun.errorCode = "cancelled"
             }
@@ -8251,6 +8263,7 @@ final class AppController: ObservableObject {
                 throw AppleVPAcousticTestError.voiceProcessingUnavailable
             }
             try validateAppleVPRuntimeDiagnostics(runID: runID)
+            try await bindP3CaptureForClockCheck(runID: runID, configurationID: voice.configurationID)
             if appleVPAcousticRun.comprehensiveC {
                 try beginAppleVPAcousticScoring(runID: runID, generation: generation)
                 return
@@ -8359,6 +8372,7 @@ final class AppController: ObservableObject {
                 }
                 appleVPAcousticRun.native = appleVPAcousticTestCapture?.nativeVoiceDebugSnapshot(runID: runID)
                 guard appleVPAcousticRun.native?.sealReason == nil else { throw AppleVPAcousticTestError.routeChanged }
+                try await validateP3ContentClock(runID: runID)
                 if appleVPAcousticRun.warmupProfile != nil {
                     guard let voice = appleVPAcousticTestCapture?.voiceProcessingSnapshot(),
                           appleVPAcousticRun.processingProfile.accepts(voice),
@@ -8377,6 +8391,23 @@ final class AppController: ObservableObject {
                 }
                 try await Task.sleep(for: .milliseconds(20))
             }
+        }
+
+        private func bindP3CaptureForClockCheck(runID: UUID, configurationID: UInt64) async throws {
+            guard appleVPAcousticRun.scenario == .residentOnly, appleVPAcousticRun.dataMode == .recording,
+                  appleVPAcousticRun.processingProfile == .agcOn, appleVPSilentSmokeScenario == nil,
+                  !appleVPAcousticRun.comprehensiveC, !appleVPAcousticRun.isAcousticBatch else { return }
+            appleVPAcousticRun.p3CaptureConfigurationID = configurationID
+            try await validateP3ContentClock(runID: runID)
+        }
+
+        private func validateP3ContentClock(runID: UUID) async throws {
+            guard let native = appleVPAcousticRun.native, appleVPAcousticRun.matchesP3Capture(native),
+                  !native.isSealed, native.inputContentClockInvalidated,
+                  native.rawTimestampDiagnostic?.fault != nil, native.rejections["input_conversion", default: 0] == 0,
+                  await speechAudioHost.isCaptureGenerationActive(native.captureGeneration) else { return }
+            try checkAppleVPAcousticRun(runID)
+            throw AppleVPAcousticTestError.contentClockInvalidated
         }
 
         private func advanceAppleVPAcousticPlaybackPlan(playback: Data?, runID: UUID) async throws {
@@ -8630,12 +8661,10 @@ final class AppController: ObservableObject {
                             ?? AppleVPAcousticTestError.externalPlaybackControl.rawValue
                     }
                 }
-                await finishMacAECBatchCapture()
+                await finishAppleVPAcousticCapture()
                 appleVPAcousticRun.captureFinal = await speechAudioHost.currentSnapshot()
                 appleVPAcousticRun.playbackFinal = await speechAudioOutputHost.currentSnapshot()
-                if let runID = appleVPAcousticRun.runID {
-                    appleVPAcousticRun.native = appleVPAcousticTestCapture?.sealNativeVoiceDebug(runID: runID)
-                }
+                sealAppleVPAcousticEvidence()
                 if appleVPAcousticRun.errorCode == nil, appleVPAcousticRun.native?.coverageValid != true {
                     appleVPAcousticRun.errorCode = "native_coverage_unverified"
                 }
@@ -8655,25 +8684,45 @@ final class AppController: ObservableObject {
             publishAppleVPAcousticState(force: true)
         }
 
-        private func finishMacAECBatchCapture() async {
-            guard appleVPAcousticRun.macAECBatch != nil || appleVPAcousticRun.adaptation != nil
-                || appleVPAcousticRun.allocation != nil,
-                appleVPAcousticRun.errorCode == nil else { return }
+        private func sealAppleVPAcousticEvidence() {
+            guard let runID = appleVPAcousticRun.runID else { return }
+            let sealed = if appleVPAcousticRun.p3ClockFailed, appleVPAcousticRun.finalDrain != nil {
+                appleVPAcousticTestCapture?.nativeVoiceDebugSnapshot(runID: runID)
+            } else {
+                appleVPAcousticTestCapture?.sealNativeVoiceDebug(runID: runID)
+            }
+            // Keep the last confirmed fault if stop or seal cannot supply matching evidence.
+            if appleVPAcousticRun.p3ClockFailed {
+                guard let sealed, sealed.isSealed, appleVPAcousticRun.matchesP3Capture(sealed),
+                      sealed.rawTimestampDiagnostic?.fault != nil else { return }
+            }
+            appleVPAcousticRun.native = sealed
+        }
+
+        private func finishAppleVPAcousticCapture() async {
+            let p3ClockFailed = appleVPAcousticRun.p3ClockFailed
+            let needsBatchDrain = appleVPAcousticRun.macAECBatch != nil || appleVPAcousticRun.adaptation != nil
+                || appleVPAcousticRun.allocation != nil
+            guard p3ClockFailed || (needsBatchDrain && appleVPAcousticRun.errorCode == nil) else { return }
             guard let runID = appleVPAcousticRun.runID, let generation = appleVPAcousticRun.generation,
                   let drained = await speechAudioHost.finishDebugCapture(runID: runID, generation: generation) else {
-                appleVPAcousticRun.errorCode = "debug_final_drain_unverified"
+                if !p3ClockFailed {
+                    appleVPAcousticRun.errorCode = "debug_final_drain_unverified"
+                }
                 return
             }
             do {
                 for frame in drained.frames {
                     try appendAppleVPAcousticFrame(frame)
                 }
-                appleVPAcousticRun.macAECFinalDrain = [
+                appleVPAcousticRun.finalDrain = [
                     "generation": generation,
                     "pending_before": UInt64(drained.pending), "drained": UInt64(drained.frames.count)
                 ]
             } catch {
-                appleVPAcousticRun.errorCode = AppleVPAcousticTestError.invalidPacket.rawValue
+                if !p3ClockFailed {
+                    appleVPAcousticRun.errorCode = AppleVPAcousticTestError.invalidPacket.rawValue
+                }
             }
         }
 
@@ -8866,9 +8915,11 @@ final class AppController: ObservableObject {
             result["processing_profile"] = appleVPAcousticRun.processingProfile.rawValue
             result["requested_agc_enabled"] = appleVPAcousticRun.processingProfile.automaticGainControlEnabled
             result["external_playback_control"] = appleVPScoreControl == nil ? "DISABLED" : "DEBUG_PIPE_BOUND"
+            result["clock_fail_fast_final_drain"] = appleVPAcousticRun.p3ClockFailed
+                ? appleVPAcousticRun.finalDrain ?? NSNull() as Any : nil
             if let batch = appleVPAcousticRun.macAECBatch {
                 result["mac_aec_batch"] = batch.manifest
-                result["mac_aec_final_drain"] = appleVPAcousticRun.macAECFinalDrain ?? NSNull() as Any
+                result["mac_aec_final_drain"] = appleVPAcousticRun.finalDrain ?? NSNull() as Any
             }
             appendAdaptationManifest(to: &result)
             appendChannelAllocationManifest(to: &result)
@@ -8916,7 +8967,7 @@ final class AppController: ObservableObject {
                 result["channel_allocation_witness"] = appleVPAcousticRun.runID.flatMap {
                     realtimeSpeechDiagnosticAudioEngine?.channelAllocationSnapshot(runID: $0)
                 } ?? NSNull() as Any
-                result["channel_allocation_final_drain"] = appleVPAcousticRun.macAECFinalDrain ?? NSNull() as Any
+                result["channel_allocation_final_drain"] = appleVPAcousticRun.finalDrain ?? NSNull() as Any
             }
         }
 
@@ -8924,7 +8975,7 @@ final class AppController: ObservableObject {
             guard let adaptation = appleVPAcousticRun.adaptation else { return }
             result["adaptation_experiment"] = adaptation.manifest
             result["adaptation_plays"] = appleVPAcousticRun.adaptationPlays
-            result["adaptation_final_drain"] = appleVPAcousticRun.macAECFinalDrain ?? NSNull() as Any
+            result["adaptation_final_drain"] = appleVPAcousticRun.finalDrain ?? NSNull() as Any
         }
 
         private func appleVPAcousticShortWindowManifest(_ state: AppleVPAcousticTestState) -> [String: Any] {

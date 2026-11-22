@@ -211,8 +211,9 @@ enum RawTimestampDiagnosticsTests {
         for (configuration, generation): (UInt64, UInt64) in [(3, 6), (4, 7)] {
             stats.recordRawTimestamp(buffer, time: stamp, content: (nil, 99),
                                      arrival: 1, identity: (configuration, generation))
+            stats.rejectContentTime(acceptedInputTime: nil, configurationID: configuration, generation: generation)
         }
-        expect(stats.snapshot == before, "stale metadata changes neither window nor original rejection counts")
+        expect(stats.snapshot == before, "stale evidence changes neither the clock latch, window nor counts")
         observe(&stats, buffer: buffer, time: time(index: 1, sampleGap: 1))
         expect(stats.snapshot.rawTimestampDiagnostic?.current?.samplePosition == 321, "sample discontinuity captured")
         expect(stats.snapshot.rejections["native_clock"] == 1, "real sample discontinuity still rejected")
@@ -264,6 +265,8 @@ private extension RawTimestampDiagnosticsTests {
                 try assertPCMParity(observedOutput.samples, unobservedOutput.samples,
                                     timestamp: timestamp, converters: (observedPCM, unobservedPCM))
             }
+            observeContentClockRejection(&enabledStats, output: observedOutput, expected: index >= 5)
+            observeContentClockRejection(&disabledStats, output: unobservedOutput, expected: index >= 5)
         }
         expect(
             enabledStats.snapshot.rejections == disabledStats.snapshot.rejections,
@@ -279,6 +282,19 @@ private extension RawTimestampDiagnosticsTests {
             "only diagnostic evidence differs"
         )
         try assertResetParity(observed, unobserved, buffer: buffer)
+    }
+
+    static func observeContentClockRejection(
+        _ stats: inout MacSpeechNativeVoiceDebugStats, output: MacSpeechFloatMono48kConverter.Output,
+        expected: Bool
+    ) {
+        if output.hostTimeNanoseconds == nil {
+            stats.rejectContentTime(
+                acceptedInputTime: output.acceptedInputContentTime, configurationID: 3, generation: 7
+            )
+        }
+        expect(stats.snapshot.inputContentClockInvalidated == expected,
+               "loss of the input anchor is confirmed on the first rejected callback")
     }
 
     static func assertResetParity(

@@ -122,6 +122,7 @@ if [[ "$mode" == "d1-only" ]]; then
   rg -qx 'd1_only_cases=40' "$output"
   rg -qx 'd1_only_checks=290' "$output"
   rg -qx 'c_preparation_fake=PASS' "$output"
+  rg -qx 'p3_clock_fail_fast_device_access=ZERO' "$output"
   exit 0
 fi
 CFFIXED_USER_HOME="$runtime_home" \

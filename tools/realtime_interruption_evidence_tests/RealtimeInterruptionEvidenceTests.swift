@@ -43,6 +43,148 @@ private extension RealtimeInterruptionEvidenceTests {
         try await testAcousticAGCProfiles()
         try await testWarmupPreparation()
         try await testScoreControl()
+        try await testP3ClockFailFast()
+    }
+
+    static func testP3ClockFailFast() async throws {
+        let originalCases = cases, originalChecks = checks
+        let source = try d1SyntheticPlayback()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let clock = ComprehensiveCClock()
+        let stack = D1ControllerStack(clock: { clock.now })
+        try await verifyP3ClockStop(stack, source: source)
+        try await verifyP3ClockIsolation(stack, source: source)
+        try await verifyP3ClockSealUnavailable(stack, source: source)
+        expect(clock.elapsed == 0, "the test clock never reaches the 15-second deadline")
+        print("p3_clock_fail_fast_cases=\(cases - originalCases)")
+        print("p3_clock_fail_fast_checks=\(checks - originalChecks)")
+        print("p3_clock_fail_fast_device_access=ZERO")
+    }
+
+    static func startP3ClockTest(_ stack: D1ControllerStack, source: URL, discard: Bool = false) async {
+        expect(stack.controller.prepareAppleVPAcousticTest(.residentOnly, discardPreviousResult: discard),
+               "the ordinary DEBUG P3 A recording prepares")
+        expect(stack.controller.selectAppleVPAcousticPlaybackURL(source), "P3 selects the synthetic source")
+        startD1(stack.controller)
+        await waitUntil("P3 running with fake playback") {
+            stack.controller.appleVPAcousticTestState.phase == .running
+                && stack.player.startCount == stack.capture.startCount
+        }
+    }
+
+    static func verifyP3ClockStop(_ stack: D1ControllerStack, source: URL) async throws {
+        cases += 1
+        await startP3ClockTest(stack, source: source)
+        let runID = stack.controller.appleVPAcousticTestState.runID!
+        stack.capture.emitPackets(1, marker: 1)
+        await waitUntil("P3 drains the first valid packet") {
+            stack.controller.appleVPAcousticTestState.packetCount == 1
+        }
+        let finalDrainGate = DispatchSemaphore(value: 0)
+        stack.capture.holdNextDebugSeal(finalDrainGate)
+        let capture = stack.capture
+        capture.useNextNativeSnapshot {
+            capture.emitPackets(2, marker: 2)
+            capture.recordP3ClockFault()
+            return nil
+        }
+        await waitUntil("P3 reaches the original shutdown before the deadline") {
+            stack.controller.appleVPAcousticTestState.phase == .stopping
+        }
+        let stopAgain = Task { await stack.controller.stopAppleVPAcousticTest() }
+        try? await Task.sleep(for: .milliseconds(10))
+        expect(stack.controller.appleVPAcousticTestState.errorCode == "capture_content_clock_invalidated",
+               "a repeated Stop during sealing preserves the original clock failure")
+        finalDrainGate.signal()
+        await stopAgain.value
+        await waitUntil("P3 clock failure seals") { stack.controller.appleVPAcousticTestState.phase == .sealed }
+        await stack.controller.stopAppleVPAcousticTest()
+        expectD1Cleanup(stack)
+        expect(stack.capture.stopCount == 1 && stack.player.stopCount == 1, "clock failure stops capture/output once")
+        expect(stack.controller.appleVPAcousticTestState.runID == runID, "the failed Run identity is retained")
+        try verifyP3ClockEvidence(stack, runID: runID)
+    }
+
+    static func verifyP3ClockEvidence(_ stack: D1ControllerStack, runID: UUID) throws {
+        let manifest = try JSONSerialization.jsonObject(with: stack.controller.appleVPAcousticTestManifestData())
+            as? [String: Any]
+        let native = manifest?["native"] as? [String: Any]
+        let raw = native?["raw_timestamp_diagnostic"] as? [String: Any]
+        let finalDrain = manifest?["clock_fail_fast_final_drain"] as? [String: UInt64]
+        let generation = manifest?["capture_generation"] as? UInt64
+        expect(raw?["first_fault"] as? String == "native_clock" && raw?["run_id"] as? String == runID.uuidString
+            && raw?["generation"] as? UInt64 == generation && raw?["configuration_id"] as? UInt64 == 1,
+            "original clock reason and raw timestamp identity are retained")
+        expect((raw?["callbacks"] as? [[String: Any]])?.count == 1
+            && raw?["following_status"] as? String == "unavailable_after_seal"
+            && raw?["sealed"] as? Bool == true, "seal preserves captured evidence and reports missing future rows")
+        expect(finalDrain?["pending_before"] == 2 && finalDrain?["drained"] == 2
+            && finalDrain?["generation"] == generation && manifest?["capture_queued_at_seal"] as? Int == 0,
+            "the original final drain includes the two valid queued packets")
+        let wav = try stack.controller.appleVPAcousticTestProcessedWAVData()
+        let expected = Data([UInt8(1), 2, 2].flatMap { marker in (0 ..< 480).flatMap { _ in [marker, 0] } })
+        expect(wav.dropFirst(44) == expected, "only the byte-identical valid prefix is available to local export")
+        expect(manifest?["error"] as? String == "capture_content_clock_invalidated",
+               "sealed P3 carries the original clock error")
+        try expectD1ExportConsent(stack.controller, expected: wav)
+    }
+
+    static func verifyP3ClockIsolation(_ stack: D1ControllerStack, source: URL) async throws {
+        cases += 1
+        await startP3ClockTest(stack, source: source, discard: true)
+        let runID = stack.controller.appleVPAcousticTestState.runID!
+        let capture = stack.capture
+        let current = capture.nativeVoiceDebugSnapshot(runID: runID)!
+        let generation = current.captureGeneration
+        let witnesses = [
+            capture.p3ClockWitness(runID: UUID(), generation: generation, configurationID: 1),
+            capture.p3ClockWitness(runID: runID, generation: generation - 1, configurationID: 1),
+            capture.p3ClockWitness(runID: runID, generation: generation, configurationID: 2),
+            capture.p3ClockWitness(runID: runID, generation: generation, configurationID: 1, acceptedInputTime: 1),
+            capture.p3ClockWitness(runID: runID, generation: generation, configurationID: 1, conversionFailed: true)
+        ]
+        expect(witnesses.prefix(3).allSatisfy(\.inputContentClockInvalidated)
+            && !witnesses[3].inputContentClockInvalidated, "only identity distinguishes stale latched failures")
+        for (index, witness) in witnesses.enumerated() {
+            capture.useNextNativeSnapshot { witness }
+            capture.emitPackets(1)
+            await waitUntil("P3 continues draining after unqualified evidence") {
+                stack.controller.appleVPAcousticTestState.packetCount == index + 1
+            }
+            expect(stack.controller.appleVPAcousticTestState.phase == .running
+                && stack.controller.appleVPAcousticTestState.errorCode == nil && capture.stopCount == 1,
+                "unqualified clock evidence cannot stop the new run")
+        }
+        capture.emitPackets(1)
+        await waitUntil("P3 keeps draining after every unqualified witness") {
+            stack.controller.appleVPAcousticTestState.packetCount == witnesses.count + 1
+        }
+        await stack.controller.stopAppleVPAcousticTest()
+        await stack.controller.stopAppleVPAcousticTest()
+        expectD1Cleanup(stack)
+        expect(capture.stopCount == 2 && stack.controller.appleVPAcousticTestState.errorCode == "cancelled",
+               "manual cancellation of the healthy run still follows the original one-stop cleanup")
+    }
+
+    static func verifyP3ClockSealUnavailable(_ stack: D1ControllerStack, source: URL) async throws {
+        cases += 1
+        stack.capture.omitsSeal = true
+        await startP3ClockTest(stack, source: source, discard: true)
+        stack.capture.emitPackets(1)
+        stack.capture.recordP3ClockFault()
+        await waitUntil("P3 still releases resources if the final drain cannot be verified") {
+            stack.controller.appleVPAcousticTestState.phase == .sealed
+        }
+        expectD1Cleanup(stack)
+        let manifest = try JSONSerialization.jsonObject(with: stack.controller.appleVPAcousticTestManifestData())
+            as? [String: Any]
+        let native = manifest?["native"] as? [String: Any]
+        let raw = native?["raw_timestamp_diagnostic"] as? [String: Any]
+        expect(manifest?["error"] as? String == "capture_content_clock_invalidated"
+            && manifest?["clock_fail_fast_final_drain"] is NSNull && raw?["first_fault"] as? String == "native_clock",
+            "an unavailable final seal leaves the first witness and an unverified drain")
+        expect(stack.capture.stopCount == 3 && stack.controller.appleVPAcousticTestState.packetCount == 1,
+               "cleanup still stops once and preserves the already-drained prefix")
     }
 
     static func testD2SilentSmoke() async throws {
@@ -2226,6 +2368,8 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     var supportsAGCProfile = true
     var supportsWarmupWindows = true
     var contentStartOverride: UInt64?
+    private var nextNativeSnapshot: (@Sendable () -> MacSpeechNativeVoiceDebugSnapshot?)?
+    private var nextDebugSealGate: DispatchSemaphore?
     private var processingProfile = MacSpeechAppleVPDebugProfile.agcOn
 
     init(failsStart: Bool = false) {
@@ -2300,7 +2444,64 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     }
 
     func nativeVoiceDebugSnapshot(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
-        lock.withLock { stats?.snapshot.runID == runID ? stats?.snapshot : nil }
+        let next = lock.withLock {
+            let next = nextNativeSnapshot
+            nextNativeSnapshot = nil
+            return next
+        }
+        if let snapshot = next?() {
+            return snapshot
+        }
+        return lock.withLock { stats?.snapshot.runID == runID ? stats?.snapshot : nil }
+    }
+
+    func useNextNativeSnapshot(_ action: @escaping @Sendable () -> MacSpeechNativeVoiceDebugSnapshot?) {
+        lock.withLock { nextNativeSnapshot = action }
+    }
+
+    func holdNextDebugSeal(_ gate: DispatchSemaphore) {
+        lock.withLock { nextDebugSealGate = gate }
+    }
+
+    func recordP3ClockFault() {
+        lock.withLock {
+            guard var witness = stats else { return }
+            Self.recordP3ClockFault(&witness, acceptedInputTime: nil)
+            stats = witness
+        }
+    }
+
+    func p3ClockWitness(
+        runID: UUID, generation: UInt64, configurationID: UInt64,
+        acceptedInputTime: UInt64? = nil, conversionFailed: Bool = false
+    ) -> MacSpeechNativeVoiceDebugSnapshot {
+        lock.withLock {
+            var witness = MacSpeechNativeVoiceDebugStats(runID: runID, generation: generation)
+            witness.bind(configurationID: configurationID, voiceProcessing: makeVoiceProcessingSnapshot())
+            if conversionFailed {
+                witness.reject("input_conversion")
+            }
+            Self.recordP3ClockFault(&witness, acceptedInputTime: acceptedInputTime)
+            return witness.snapshot
+        }
+    }
+
+    private static func recordP3ClockFault(
+        _ witness: inout MacSpeechNativeVoiceDebugStats, acceptedInputTime: UInt64?
+    ) {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960)!
+        buffer.frameLength = 960
+        let time = AVAudioTime(hostTime: 1_000_000, sampleTime: 960, atRate: 48000)
+        let configuration = witness.configurationID!, generation = witness.captureGeneration
+        witness.recordRawTimestamp(
+            buffer, time: time, content: (1_000_000, 960), arrival: 1_002_413,
+            identity: (configuration, generation)
+        )
+        witness.reject("native_clock")
+        witness.rejectContentTime(
+            acceptedInputTime: acceptedInputTime, configurationID: configuration, generation: generation
+        )
     }
 
     func sealNativeVoiceDebug(runID: UUID) -> MacSpeechNativeVoiceDebugSnapshot? {
@@ -2313,6 +2514,14 @@ private final class D1AudioCapture: MacSpeechAudioCapturing, @unchecked Sendable
     }
 
     func stopAndSealNativeVoiceDebug(runID: UUID, generation expected: UInt64) -> MacSpeechNativeVoiceDebugSnapshot? {
+        let gate = lock.withLock {
+            let gate = nextDebugSealGate
+            nextDebugSealGate = nil
+            return gate
+        }
+        if let gate, gate.wait(timeout: .now() + .seconds(5)) == .timedOut {
+            return nil
+        }
         guard lock.withLock({ generation == expected }),
               let sealed = sealNativeVoiceDebug(runID: runID) else { return nil }
         stop()

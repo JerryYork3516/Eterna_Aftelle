@@ -1675,6 +1675,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         let firstPacketTime: UInt64?
         let lastPacketTime: UInt64?
         let rejections: [String: UInt64]
+        let inputContentClockInvalidated: Bool
         let acousticWindows: MacSpeechAcousticWindowStats?
         let rawTimestampDiagnostic: MacSpeechRawTimestampDiagnostic?
         var shortWindows: MacSpeechShortWindowSnapshot?
@@ -1733,6 +1734,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
         private var lastPacketTime: UInt64?
         private var acousticWindows: MacSpeechAcousticWindowStats?
         private var rawTimestampDiagnostic = MacSpeechRawTimestampDiagnostic()
+        private var inputContentClockInvalidated = false
         private var shortWindows = MacSpeechShortWindowStats(source: .native)
 
         init(
@@ -1866,6 +1868,17 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
             }
         }
 
+        mutating func rejectContentTime(
+            acceptedInputTime: UInt64?, configurationID: UInt64, generation: UInt64
+        ) {
+            guard !isSealed, self.configurationID == configurationID, captureGeneration == generation else { return }
+            reject("content_time")
+            // A successful conversion with no accepted input time has lost its clock anchor for this generation.
+            if acceptedInputTime == nil {
+                inputContentClockInvalidated = true
+            }
+        }
+
         mutating func reject(_ reason: String) {
             guard !isSealed else { return }
             let index = Self.reasons.firstIndex(of: reason) ?? Self.reasons.count - 1
@@ -1902,6 +1915,7 @@ nonisolated struct MacSpeechVoiceProcessingSnapshot: Sendable, Equatable {
                 firstNativeHostTime: firstNativeHostTime, lastNativeHostTime: lastNativeHostTime,
                 firstNativeSampleTime: firstNativeSampleTime, lastNativeSampleTime: lastNativeSampleTime,
                 firstPacketTime: firstPacketTime, lastPacketTime: lastPacketTime, rejections: rejections,
+                inputContentClockInvalidated: inputContentClockInvalidated,
                 acousticWindows: acousticWindows,
                 rawTimestampDiagnostic: rawTimestampDiagnostic.fault == nil ? nil : rawTimestampDiagnostic,
                 shortWindows: isSealed ? shortWindows.snapshot(identity: .init(
@@ -3921,7 +3935,10 @@ nonisolated final class SystemMacSpeechVoiceProcessingEngine:
         #endif
         guard let contentTime = converted.hostTimeNanoseconds else {
             #if DEBUG
-                nativeVoiceDebug?.reject("content_time")
+                nativeVoiceDebug?.rejectContentTime(
+                    acceptedInputTime: converted.acceptedInputContentTime,
+                    configurationID: configurationID, generation: generation
+                )
             #endif
             return nil
         }
