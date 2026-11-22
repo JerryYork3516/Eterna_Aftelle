@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-22 [R3-M01 声源隔离实验方案](T3_2_A_R3_M01_source_isolation_plan.md)设计态。优先复用既有 P3/R3-M01 及静默证据；仍缺同配置对照时，候选为普通 P3 A 的等长全零→固定居民两轮，最多 2×15 秒、仅 1 次有声播放。每轮留原 CLOCK Fail-Fast 和授权、Stop、封存流程。空气声路、启动状态和外部声源对照各有独立准入及停止条件，独立近端声场目前未具备。设备执行 0 次，R3-M01 OPEN，AEC/CLOCK UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
+
 2026-11-22 [R3-M01 真实音频稳定 NCC 复核](T3_2_A_R3_M01_real_audio_reanalysis_review.md)在本轮明确授权及三份 SHA-256 匹配后，使用独立稳定分析器完整重搜 20／40／80 毫秒及原负控。原带 80 毫秒 −0.664574 在 7201 个候选中仍列第 1，最佳偏移零变化。独立 20 毫秒子窗仍无一通过原确认条件，归属维持 `SUSPECTED_RESIDENT_LEAK`。R3-M01 OPEN，AEC/CLOCK 根因 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
 
 2026-11-22 [R3-M01 稳定短窗 NCC 实现审核](T3_2_A_R3_M01_stable_ncc_analyzer_review.md)新增独立离线工具，逐窗中心化并分块直接枚举 20／40／80 毫秒模板的全部候选时移。合成复现恢复 −0.600 与 0.200（绝对值），正确重排假峰。新增 11 项与原 M20 18 项离线测试通过，80 毫秒单窗搜索 P50 26.98 毫秒，跟踪峰值 2.96 MiB。冻结 M20 与阶段状态保持，私人音频读取及设备执行均为 0。
