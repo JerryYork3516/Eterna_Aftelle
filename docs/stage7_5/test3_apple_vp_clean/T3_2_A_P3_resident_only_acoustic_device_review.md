@@ -217,3 +217,89 @@ Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 FORMAL_TEST_DIFF=ZERO
 ```
+
+## 7. 正式 P3 设备执行与时钟拒收复核
+
+**正式 P3 技术结果为 `FAIL_NATIVE_CLOCK_CONTENT_TIME`。** 2026-11-22，用户独立批准正式 P3，并在两次界面监视中断后分别要求或明确授权重新执行。全部尝试使用同一个冻结 App，均在原可见录音面板发出一次确认，各自分配 RunID。第三次走完整个原 15 秒采集窗口并由 App 自行封存，Native 共 240000 帧。有效导出 PCM 为前 2.68 秒。用户在现场听到完整、正常的外放，在局部 WAV 中听到了居民「这」字的起音。
+
+### 7.1 身份、授权及各次结果
+
+执行基线 `4f2e08f343c02d7f9885bb57b020e0a2859052c4`。启动前及两次重新准备前复核 HEAD、upstream、GitHub 实时远端和原隔离工作区。App 树 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539`、Tools 树 `a687af8d5095a2c1230e9f08a57cc51212243677` 均与已接受的 FULL_CURRENT 21/21 候选一致。实际映像的 launcher SHA-256 为 `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，dylib 为 `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4`。唯一启动参数为 `--apple-vp-acoustic-test`。原父进程持续持有同一冻结 PID `51862`，所有操作核验其身份。
+
+普通 A 为 `RECORDING`、AGC-ON、无 warm-up，每次上限为 15 秒及 720000 PCM bytes。TinyUSB USB 输入 60%，Mac mini 内置输出 55% 且未静音。用户在原选择器手动选中登记目录的 `HOST_resident.wav`，同一 PID 读回文件名。重新准备经原 `Discard result?` 面板执行，先核验旧证据已经导出，原准备逻辑保留所选 URL。三份 JSON 都读回原素材 SHA-256 `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`。固定素材为 24 kHz / Mono / PCM16LE、114032 帧、4.751333 秒，含一秒零前导。
+
+| 尝试与 RunID | 启动和封存 | 本次 Player 事件 | 本机导出 |
+|---|---|---|---|
+| 1 · `06F4FADD-682E-4648-99F0-81A45ABF89D8` | Capture generation 1 / configuration 2。实时界面 `AXValue` 读回失败，外部控制脚本发出原 Stop。Native 0 帧，PCM 0 包，`cancelled` | `Player.play` 0 次，非零 Render 0 帧 | JSON 21931 bytes。原 WAV 按钮禁用 |
+| 2 · `99C3D5E3-8D5C-40E7-AA31-B17544F22208` | Capture generation 2 / Playback generation 3 / configuration 5。读到运行态后，外部监视在 `AXRole` 收到 `-25202`，发出原 Stop。Native 11200 帧，29 个连续 PCM 包、0.58 秒，`cancelled` | `Player.play` 1 次，完成事件 0，非零 Render 0 帧 | JSON 39104 bytes，WAV 27884 bytes |
+| 3 · `1CBF4340-9F8D-4096-BE49-B894D692E6D6` | Capture generation 3 / Playback generation 5 / configuration 8。外部监视取得 starting、running、sealed，无 Stop 请求。App 原流程封存，`native_coverage_unverified` | `Player.play` 1 次，完成事件 1，非零 Render 59964 帧。进程累计播放启动计数为 2 | JSON 54124 bytes，WAV 128684 bytes |
+
+### 7.2 本机监视整改
+
+前两次由外部 AX 监视器停止，封存错误为 `cancelled`，它们均无 Native 或 PCM 时钟拒收。首轮监视器在状态刷新中读取旧 AX 节点的一项值失败即触发 Stop。第一次整改对可恢复的值读取失败做有界只读复取。第二次实际错误明确为 `kAXErrorInvalidUIElement (-25202)`，发生在角色读取。
+
+第二次整改将监视限制在确切 PID 的主测试窗口和关键文字状态。已失效的非关键旧节点可丢弃，每次有效读回仍须包含唯一的 phase、RunID、错误、VP、AGC、丢包和计数等字段。关键字段缺失时限时重新获取快照，持续失读、PID 不符或实际技术异常仍触发原停止规则。离线验证覆盖过期节点、缺失关键字段、重复 RunID、身份变化及技术错误保留。同一 PID 的 6 次空闲读回通过。第三次设备执行取得 36 次状态读回，遇到 1 个过期节点且关键字段完整，未发出 Stop。整改只存在本机忽略目录，原音频实现及门禁未改。
+
+### 7.3 第三次实际运行与拒收链
+
+| 项目 | 实际证据 |
+|---|---|
+| VP、AGC、Mic Mode | Engine 启动与居民播放启动两点的实际读回身份相符。VP Input/Output 均开启，要求及实际 AGC=true，bypass=false、inputMuted=false。两次 active/preferred Mic Mode 均为 0（Standard）。16 kHz/3ch Float32 非交错 client 格式，硬件侧输出 16 kHz/2ch，读回一致 |
+| 设备及释放 | 两点的输入为 `PROCESS_SHARED_IO_DEVICE_SET_METADATA_QUALIFIED`，输出为 `PROCESS_DEVICE_METADATA_MATCHES_DEFAULT`。Engine 运行期配置通知、跳过通知与 Route 变化为 0；监听已关闭。原 Stop/Seal/Shutdown、确切 PID 的 Quit、父进程退码 0 及空闲设备核验均取得。输入输出、音量及静音与启动前一致 |
+| Native 与首个异常 | 150 个 buffers、240000 frames，帧量 15.000 秒。首个拒收出现在第 28 个 callback（零基序号 27），约为有效 PCM 起点后 2.702 秒。相邻 sampleTime 增量为 1600 帧；host 间隔由名义 100.000000 ms 变为 102.412958 ms，偏差 2.412958 ms，高于 16 kHz 的一采样周期 0.0625 ms。该处有完整五行 raw timestamp 诊断 |
+| 内容时间与连续性 | `native_clock=18`、`content_time=123`，其它拒收为 0。Input/Render 各观测到 18 次 host 不连续，sample 跳变、缺时、重复、倒退及见证器跳过均为 0。冻结的 `continuousInputHostTimeLocked` 在越界后令该代际 `sampleTimeContinuityValid=false`，后续无法给出有效内容时间，与剩余 123 个回调及 PCM 停止生成相符。硬件或系统为何产生该时间跳变仍待查明 |
+| 已存 PCM 与尾部 | 134 个完整 20 ms 包从序号 1 到 134，连续 128640 bytes、2.68 秒。generated/drained/queued 为 134/134/0。Converter partial tail 字段为 null。有效存储为前缀，缺失由时间资格拒收解释，完整居民播放末端及其后静音均无 PCM 覆盖。Native/PCM 短窗为 `UNKNOWN_MISSING_STREAM` |
+| Render | 软件非零 Render 相对有效 PCM 起点约为 +1.226 至 +4.976 秒。该时间关系受 host 不连续限制。Render 软件完成及非零帧数用于说明播放链事件；用户现场观察单独登记。Apple 内部 AEC 参考不可直接观测 |
+
+### 7.4 外放、试听及审核边界
+
+用户确认在 Mac 旁完整听到内置扬声器的居民语音，现场听感正常。用户独立试听第三次导出的局部 WAV，反馈其余听感正常，能辨认居民「这」字大约几十毫秒的起音。时长是用户的主观估计，未进行音频样本分析或字词定时。该回报支持本次现有片段中存在可闻居民起音。完整回声、录音尾部的声学资格及 R3-M01 仍待完整证据。正式 P3 的总体声学结果为 `INCONCLUSIVE`，技术结果为 `FAIL_NATIVE_CLOCK_CONTENT_TIME`。
+
+本机证据均通过原界面确认导出，目录 0700、文件 0600。WAV 只核验格式头、大小、SHA 和与 JSON 的 PCM 摘要一致性。原 WAV、JSON、设备身份、完整 AX 记录及本机路径留本机。
+
+| 证据 | SHA-256 |
+|---|---|
+| 尝试 1 JSON | `c373c39048555db2e9b0d5adfbd28fc4306c7c3430e8cb1ab0afc54e8785773c` |
+| 尝试 2 JSON / WAV | `dc565726d0176f9ee244840f70bb773886ce892cb39eab005ab1091755789f7d` / `bd98680576ec6a6657bb6db477867e6264d94877cb3fce9d549bac47177c777b` |
+| 尝试 3 JSON / WAV | `26bc59f836ca9f2706dfba0b8e59e47e0a0efbbd9599164636ec286ed4d2f165` / `06386cc4754548d30f41908092705de90e856e624b0c597cbb452e5d839e91ed` |
+| 退出和设备释放 | `cedf7b27742c094d27ea953ffc1b5c02856e995f52a50e5008a1b03034dd56c1` / `c305001bcbb98108cc9d509a7fa16695e3483051de1455326b0d5c40f8049a64` |
+
+唯一建议下一步为使用本次已封存的五行时间戳元数据做定向离线 CLOCK replay，复核既有 Converter 时间映射拒收，保持原时钟容差，交主控裁定新的工程范围。P4 及 Human Gate 尚未准入。
+
+仅追加本报告，更新 Test3 README 索引。回滚检查点 `cc07cf2fd5d557786f2b14dc623a313d605fca15` 与执行基线的 Git 树相同。原 7 项冲突、索引、14 项保护证据、Fixture 元数据及 M31 撤回身份一致。Stage7 Forbidden Checklist 为 `PASS`，代码红线、Runtime API、DR schema、平台 target 及 Stage 8 无变化。
+
+```ini
+P3_PREFLIGHT=PASS
+P3_USER_AUTHORIZATION=RECEIVED_AND_CONSUMED_PER_ATTEMPT
+P3_APP_LAUNCHES=1
+P3_DEVICE_RUNS=3
+P3_PLAYBACK_RUNS=2
+P3_PLAYBACK_COMPLETED_RUNS=1
+P3_JSON_EXPORTS=3
+P3_WAV_EXPORTS=2
+P3_AGC_READBACK=TRUE_CONFIRMED
+P3_VP_CONFIGURATION=IO_ON_BYPASS_FALSE_MUTED_FALSE
+P3_UI_MONITOR_FIX=OBSERVED_ON_RUN_3
+P3_AUDIO_CONTINUITY=CONTIGUOUS_PCM_PREFIX_ONLY
+P3_FINAL_TAIL=NOT_COVERED_CLOCK_REJECTION
+P3_PHYSICAL_PLAYBACK_WITNESS=ON_SITE_COMPLETE_NORMAL_RUN_3
+P3_LISTENING_REVIEW=USER_REPORTED_AUDIBLE_RESIDENT_ONSET_IN_PARTIAL_WAV
+P3_TECHNICAL_RESULT=FAIL_NATIVE_CLOCK_CONTENT_TIME
+P3_ACOUSTIC_RESULT=INCONCLUSIVE
+P3_MAIN_REVIEW=PENDING
+P3_EXECUTION_AUTHORIZED=false
+P1_RESULT=OFF_READBACK_AND_CONTROL_CHAIN_SUPPORTED
+P2_MAIN_REVIEW=APPROVED_WITH_LIMITATIONS
+M31_WITHDRAWAL=COMPLETED_OFFLINE_VERIFIED
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+SQ_M1=OPEN
+R3_M01=OPEN
+T3_2_A=BLOCKED
+T3_2_B=NOT_AUTHORIZED
+T3.3=NOT_STARTED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+FORMAL_TEST_DIFF=ZERO
+```
