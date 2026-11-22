@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-22 [R3-M01 真实音频稳定 NCC 复核](T3_2_A_R3_M01_real_audio_reanalysis_review.md)在本轮明确授权及三份 SHA-256 匹配后，使用独立稳定分析器完整重搜 20／40／80 毫秒及原负控。原带 80 毫秒 −0.664574 在 7201 个候选中仍列第 1，最佳偏移零变化。独立 20 毫秒子窗仍无一通过原确认条件，归属维持 `SUSPECTED_RESIDENT_LEAK`。R3-M01 OPEN，AEC/CLOCK 根因 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
+
 2026-11-22 [R3-M01 稳定短窗 NCC 实现审核](T3_2_A_R3_M01_stable_ncc_analyzer_review.md)新增独立离线工具，逐窗中心化并分块直接枚举 20／40／80 毫秒模板的全部候选时移。合成复现恢复 −0.600 与 0.200（绝对值），正确重排假峰。新增 11 项与原 M20 18 项离线测试通过，80 毫秒单窗搜索 P50 26.98 毫秒，跟踪峰值 2.96 MiB。冻结 M20 与阶段状态保持，私人音频读取及设备执行均为 0。
 
 2026-11-22 [R3-M01 NCC 数值稳定性审核](T3_2_A_R3_M01_ncc_stability_review.md)用纯合成数据复现低能量窗快算 −1.000、直接计算 −0.600，定位到滚动方差抵消与裁剪前排序。上轮原带 80 毫秒 `|NCC|=0.665` 已在该位置经直接点积核对，归属维持 `SUSPECTED_RESIDENT_LEAK`。建议短窗逐窗中心化后直接计算，正式 M20 判据原样保留。R3-M01 仍 OPEN，AEC/CLOCK 根因 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
