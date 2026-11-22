@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-22 [R3-M01 全零与固定居民对照准入审核](T3_2_A_R3_M01_zero_vs_resident_readiness.md)裁定 `READY_FOR_DEVICE_PREFLIGHT`。复用已核验的 114032 帧全零原件，两臂使用普通 Prepare A、原播放链及 P3 CLOCK Fail-Fast。旧工具固定居民文件名，全零臂需经原界面人工交接。设备与 UI 预检待单独批准，实际设备执行与私人音频读取均为 0。R3-M01 OPEN，AEC/CLOCK UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
+
 2026-11-22 [R3-M01 声源隔离实验方案](T3_2_A_R3_M01_source_isolation_plan.md)设计态。优先复用既有 P3/R3-M01 及静默证据；仍缺同配置对照时，候选为普通 P3 A 的等长全零→固定居民两轮，最多 2×15 秒、仅 1 次有声播放。每轮留原 CLOCK Fail-Fast 和授权、Stop、封存流程。空气声路、启动状态和外部声源对照各有独立准入及停止条件，独立近端声场目前未具备。设备执行 0 次，R3-M01 OPEN，AEC/CLOCK UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
 
 2026-11-22 [R3-M01 真实音频稳定 NCC 复核](T3_2_A_R3_M01_real_audio_reanalysis_review.md)在本轮明确授权及三份 SHA-256 匹配后，使用独立稳定分析器完整重搜 20／40／80 毫秒及原负控。原带 80 毫秒 −0.664574 在 7201 个候选中仍列第 1，最佳偏移零变化。独立 20 毫秒子窗仍无一通过原确认条件，归属维持 `SUSPECTED_RESIDENT_LEAK`。R3-M01 OPEN，AEC/CLOCK 根因 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
