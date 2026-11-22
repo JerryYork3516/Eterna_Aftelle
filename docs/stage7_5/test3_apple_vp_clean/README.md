@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-22 [R3-M01 起音归属离线审核](T3_2_A_R3_M01_onset_attribution_review.md)在 P3 WAV 的 1.395–1.500 秒定位到约 105 毫秒事件。居民开头 80 毫秒模板的原带 |NCC| 为 0.665，超过反向、错时和静音对照，短窗反向仍有高相似度。归属为 `SUSPECTED_RESIDENT_LEAK`，后续按本次判据未检出可信居民残留。R3-M01 OPEN，AEC/CLOCK 根因 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
+
 2026-11-22 [P3 Fail-Fast 单次正式设备复验](T3_2_A_P3_resident_only_acoustic_device_review.md#10-p3-fail-fast-单次正式设备复验)实际采集及固定播放各 1 次。CLOCK 未复现，`P3_FAIL_FAST_TRIGGER=NOT_TRIGGERED`。原流程封存 14.88 秒连续 PCM，覆盖居民非零 Render，JSON/WAV 均安全导出，App exit 0、设备空闲。用户试听仍有很短、不可辨的起音，其他正常。CLOCK 根因 UNKNOWN，R3-M01 OPEN，T3.2-A 与 Formal Test3 仍 BLOCKED。
 
 2026-11-22 [P3 Fail-Fast 单次设备验证](T3_2_A_P3_resident_only_acoustic_device_review.md#9-p3-fail-fast-单次设备验证)在素材选择和外层确认的人工交接处超时。同一 PID 的加载身份和 ready/A 零采集状态已核验，原 Quit 退出码 0，设备空闲。采集、播放和导出各 0 次，CLOCK 与 Fail-Fast 实机验证均为 NOT_RUN。CLOCK 根因仍为 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
