@@ -303,3 +303,63 @@ Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 FORMAL_TEST_DIFF=ZERO
 ```
+
+## 8. P3 Fail-Fast 实机预检
+
+2026-11-22（Asia/Shanghai）。**P3_DEVICE_PREFLIGHT=PASS。** 本轮独立授权仅覆盖一次无音频 UI 预检。新 Fail-Fast Debug App 实际启动一次。用户协助完成原文件选择器和外层确认入口。原录音确认面板只执行一次 Cancel。应用经原菜单退出，退出码为 0，设备空闲。
+
+### 8.1 源码、构建、素材及设备
+
+| 项目 | 本轮实证 |
+|---|---|
+| Git 基线 | 启动前 HEAD、upstream 与 GitHub 实时远端均为 574fc735ca239c9b334029debbdee546cda18d49。App 树 1357af24f89912f1e625252b2314f5a5f33df416，Tools 树 8b62a19b888f59a4554f694eb36d04daa16172da，核验匹配 Fail-Fast 离线交付 |
+| Debug 实际加载 | 原监督进程持有唯一子进程。进程启动身份、可执行路径、实际映像 inode/device 和 SHA 匹配。Launcher SHA-256 **ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118**，Fail-Fast dylib SHA-256 **e419552e1b539db52c6a971e6b703aaa695cb503fdfbf479fe20c25c5586a132**。唯一启动参数为 --apple-vp-acoustic-test |
+| Release 隔离 | 对应 Release SHA-256 为 d7c557f825394aa4064b209ec338a8837e3819afb3290c95e410231d60cd671d。DEBUG 声学入口、静音烟测入口和 P3 Fail-Fast 标记只在 Debug 检出。Release Route Guard 通过 |
+| 固定素材 | 原登记 HOST_resident.wav 文件标识和 SHA-256 774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea 匹配。24 kHz、单声道、PCM16LE、114032 帧、约 4.751333 秒，首 24000 帧为零。启动前、人工选定后及退出后复核 |
+| 设备与路由 | 默认输入 TinyUSB USB，16 kHz 单声道，系统输入 60%。默认输出 Mac mini 内置扬声器，48 kHz 双声道，55% 且未静音。两端启动前后身份、格式、音量和在线状态一致，均空闲。启动前及退出后无其他实验进程 |
+| 麦克风权限 | 系统设置只读观察 Aftelle 麦克风开关为 ON。Bundle ID、启动器字节和签名指定要求均与此前已验证的启动身份一致。应用内的有效授权状态在原录音入口才会读回，本轮为 NOT_RUN。 [Apple 签名指定要求说明](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements/) |
+
+预启动实时 Git 核验遇到一次 TLS 连接中断，当时 App 启动计数为 0，授权尚未消耗。重新完成只读核验后，原监督进程执行唯一一次启动。既有确切 PID 工具的 21 项离线选择规则和父子进程身份负控通过，本轮实际界面操作绑定同一子进程。
+
+### 8.2 同一 PID 的 UI 全链
+
+| 步骤 | 实际结果 |
+|---|---|
+| Prepare A | 唯一启用的 Prepare A · Resident only 执行一次。读回 ready/A、RECORDING、准备态 APPLE_VP_AGC_ON、无预热、无 RunID、零包和零 PCM |
+| 固定文件选择 | 工具在查找原文件选择按钮的标签时退出（-2700），未发送按压，窗体仍无面板。用户从同一 App 的原文件选择器手动选定登记目录内的 HOST_resident.wav。文件身份再核验匹配。确切 PID 确认已回主窗口，读回 file=HOST_resident.wav，保持 ready/A 和零采集 |
+| 外层 Start… | 原工具在查找外层 Start… 按钮的标签时退出（-2700），未发送按压。只读窗口核验无面板。用户在同一主窗口点击一次外层 Start…，停在原确认面板 |
+| 原面板语义 | 同一 PID 读到唯一原面板 Allow local test? 及 A/C 固定素材说明。两个启用的 AXButton 分别以 AXDescription 暴露 “Use microphone, local capture and test playback” 和 “Cancel” |
+| Cancel | 原 Cancel 执行一次，AX 回执成功。面板关闭，回到 ready/A，素材仍在。授权未挂起，RunID、Capture Generation 和 ConfigurationID 未生成，包计数及留存 PCM 均为零 |
+| Quit 与释放 | 同一 PID 的原 Quit 菜单执行一次，监督进程实得 exit 0，PID 消失且实际映像已卸载。默认输入与输出均复核空闲，原路由及音量保持。Capture、Playback、JSON 导出和 WAV 导出各 0 次，音频证据目录的既有导出清单一致 |
+
+文件选择身份由用户提交的完整路径见证、原文件身份及同 PID 文件名读回共同支持。App 的公开状态仅提供文件名。本轮 UI 结论依赖文件选择及外层 Start… 两处人工协助。实际 VP/AGC、声学表现、运行态权限与 CLOCK 停止延迟为 NOT_RUN。
+
+动态映像核验回执 SHA-256 e65571495021b7120870193d9578d229f94c86a25c9e971539b751cd4b460e67。确认面板、Cancel 与取消后快照依次为 f7525009149f7e2e8ea067cc081901b6d5c4d362f2b085899c4861d814cc4e6c、c99815207ae8de3229cd56ff85a5e8bdfb6738878370ad1713adfdc58a223699、9cdd5b3e88687a7de50c146d9403afadd188c384dfc1846253feeff0c2b2574b。退出码与设备复核为 ac884f151aa92feb4e05a2b8961dbbf1791cd8f8298b99ff7b727ec79d8bae99、b70d32b4ccce1f3aa3dab4f402d14061ad9705c6c564d357c7a9987cc0230228。原始 AX、进程、设备和路径回执仅保留本机，目录 0700，文件 0600。
+
+### 8.3 交付与阶段状态
+
+原 7 项冲突、索引、14 项保护证据及 Fixture 元数据复核一致。仅追加本节并更新 Test3 README。Stage7 Forbidden Checklist 为 PASS，触碰红线为 0，代码、Runtime API、DR schema、平台 target 和 Stage 8 均无改动。git diff --check 和 Secret Guard 通过。回滚检查点为 4999d72e842b07ccafee028da8862cd00e4a116f，Git 树与执行基线一致。预检交主控独立审核。
+
+~~~ini
+P3_DEVICE_PREFLIGHT=PASS
+P3_UI_PREFLIGHT=PASS_WITH_MANUAL_HANDOFF
+P3_UI_AUTHORIZATION=CONSUMED_UI_ONLY
+P3_UI_APP_LAUNCHES=1
+P3_UI_UNINTENDED_APP_LAUNCHES=0
+P3_UI_CAPTURE_COUNT=0
+P3_UI_PLAYBACK_COUNT=0
+P3_UI_RUN_ID=NOT_GENERATED
+P3_UI_JSON_EXPORTS=0
+P3_UI_WAV_EXPORTS=0
+P3_UI_EXIT_CODE=0
+P3_UI_DEVICE_RELEASE=IDLE_AND_UNCHANGED
+P3_DEVICE_RUNS=0
+P3_EXECUTION_AUTHORIZED=false
+M31_WITHDRAWAL=COMPLETED_OFFLINE_VERIFIED
+CLOCK_ROOT_CAUSE=UNKNOWN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+FORMAL_TEST_DIFF=ZERO
+~~~
