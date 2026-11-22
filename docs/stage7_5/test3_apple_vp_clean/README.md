@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-22 [P3 Fail-Fast 单次设备验证](T3_2_A_P3_resident_only_acoustic_device_review.md#9-p3-fail-fast-单次设备验证)在素材选择和外层确认的人工交接处超时。同一 PID 的加载身份和 ready/A 零采集状态已核验，原 Quit 退出码 0，设备空闲。采集、播放和导出各 0 次，CLOCK 与 Fail-Fast 实机验证均为 NOT_RUN。CLOCK 根因仍为 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
+
 2026-11-22 [P3 Fail-Fast 实机预检](T3_2_A_P3_resident_only_acoustic_device_review.md#8-p3-fail-fast-实机预检)通过。单次启动已核验新 Debug 实际加载身份，普通 A 为 AGC-ON、RECORDING、无预热。用户手动选定原固定 WAV 并打开外层确认，原面板仅点击 Cancel。无 RunID，采集、播放和导出各 0 次，原 Quit exit 0、设备空闲。P3 正式执行未授权，CLOCK 根因 UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED，交主控审核。
 
 2026-11-22 [P3 CLOCK Fail-Fast 离线审核](T3_2_A_P3_clock_fail_fast_review.md)验证普通 DEBUG P3 居民独讲在当前 Run、采集代际及配置的内容时钟失效确证后，经原 Stop／Seal 停止并保全有效 PCM 前缀和首次故障。新增 Fake 10 例／68 项，M08/M09、相邻 DEBUG 回归及 Debug/Release 构建通过。设备执行 0 次，CLOCK 根因仍 UNKNOWN，T3.2-A／Formal Test3 仍 BLOCKED，交主控独立审核。

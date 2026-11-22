@@ -363,3 +363,64 @@ Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 FORMAL_TEST_DIFF=ZERO
 ~~~
+
+
+## 9. P3 Fail-Fast 单次设备验证
+
+2026-11-22（Asia/Shanghai）。**P3_DEVICE_VALIDATION=BLOCKED_BEFORE_CAPTURE。** 本轮独立授权覆盖一次真实录音、一次固定居民外放、最多 15 秒及本机 JSON/WAV 导出。实际启动冻结 App 一次。App 到达 ready/A 后，监督器设置的 240 秒人工交接等待到期，未取得素材选择和原确认面板回执。录音确认未发出。本轮实机采集、播放和导出均为 0，CLOCK 与 Fail-Fast 实机分支均为 NOT_RUN。
+
+### 9.1 启动准入与交接
+
+| 项目 | 实际结果 |
+|---|---|
+| 执行基线 | 启动前本地 HEAD、upstream、GitHub 实时远端均为 672b2db550378a09b0ef8491277530adfed750ef。App 与 Tools 的树身份匹配 §8 的冻结源码 |
+| 实际加载身份 | 唯一受控子进程的启动身份、可执行路径和映像身份已核验。Debug 启动器 SHA-256 **ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118**，Fail-Fast dylib SHA-256 **e419552e1b539db52c6a971e6b703aaa695cb503fdfbf479fe20c25c5586a132**。唯一启动参数为 --apple-vp-acoustic-test。Release 产物 SHA 与 §8 一致 |
+| 固定素材 | HOST_resident.wav 文件身份、格式及 SHA-256 **774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea** 匹配。24 kHz 单声道 PCM16LE，114032 帧，首 24000 帧为零。计划为 AGC-ON、两端 VP、无额外预热。运行态 VP/AGC 与 App 内的有效麦克风授权读回均为 NOT_RUN |
+| 只读设备及隐私 | TinyUSB USB 输入 60%，Mac mini 内置输出 55%、未静音。启动前两端在线且空闲，无冲突实例。私有会话和原导出目录均为 0700，临时会话文件均为 0600 |
+| Prepare A | 通过原 Prepare A · Resident only 执行一次并取得 READY_A_ZERO_CAPTURE=VERIFIED。模式为 RECORDING、普通 A、准备态 AGC-ON |
+| 手动文件选择及外层 Start | 交接请求指向原选择器、固定素材和外层 Start…。等待后段执行一次同 PID 前台切换，读回仍为 ready/A、file=、run=UNKNOWN、0 包／0 bytes。240 秒窗口内未收到交接确认，本轮未验证原 Allow local test? 面板 |
+| 正常退出 | 原 Quit 菜单操作获回执，受控进程退出码 0、PID 消失、映像卸载。输入和输出复核在线、空闲，路由、音量及静音状态匹配启动前。本轮授权随该次尝试结束 |
+
+确切 PID 选择规则离线自检 21 项及失效／外来 PID 负控通过，原录音／导出控制离线自检 21 项通过，原只读 AX 监视重取负控通过。映像核验回执 SHA-256 16a74577c1ebc0159143885f4db128882a2c9c04f578b8873cdffabb007041c2，零采集 ready 回执 3e10197c25f699db092dbd4600c429dc1cfdbf25d8ce1184fd9d1e4714012f42，退出与设备读回依次为 01d9a352ebc5adc0090d87d4cffd9d3df6451465e68cd9b1614f3584cd99e06d 和 119850d6f1949cb4c23e117aaab8da2cd84514bea0fc80a956db47d414d4c3a1。原始回执和本机监督器留在受控忽略目录。
+
+### 9.2 实测资格与证据缺口
+
+| 验收项 | 实际结论 |
+|---|---|
+| CLOCK 故障及 Fail-Fast | NOT_RUN。Capture 未启动，本轮没有 CLOCK 故障样本或触发观察 |
+| Stop／Seal 与停止延迟 | NOT_RUN。未生成 RunID、Capture Generation 或 ConfigurationID。无 Stop／Seal 次数、首条故障时间戳或延迟可记录 |
+| PCM 前缀及导出 | NOT_RUN。无留存 PCM，原 JSON/WAV 各导出 0 次 |
+| 实际外放与听感 | NOT_RUN。居民播放 0 次，无本轮回声、起音、尾音和异常声音反馈 |
+| 资源释放 | PASS。原菜单正常退出，两端设备空闲，路由与音量保持 |
+
+建议主控审核本轮人工交接阻塞。如另行批准验证，先确认用户可在 Mac 旁即时完成素材与外层 Start 的人工操作，并将已核验 PID 的准备窗口置于前台，再按新授权执行一次。既有 CLOCK 离线证据见 [P3 CLOCK Fail-Fast 离线审核](T3_2_A_P3_clock_fail_fast_review.md)。
+
+### 9.3 Git 与正式状态
+
+可回滚检查点为 f38d98b078493b32a75ccd496eba299993202da4，树身份与执行基线相同。本轮只追加本报告并更新 Test3 README 索引。原 7 项冲突、索引、14 项受保护证据及 Fixture 元数据检查一致。git diff --check、Secret Guard 与 Stage7 Forbidden Checklist 检查通过。触碰红线为 0，代码、Runtime API、DR schema、平台 target 和 Stage 8 无改动。
+
+~~~ini
+P3_DEVICE_VALIDATION=BLOCKED_BEFORE_CAPTURE
+P3_UI_HANDOFF=TIMED_OUT_BEFORE_CONFIRMATION
+P3_DEVICE_APP_LAUNCHES=1
+P3_DEVICE_RUNS=0
+P3_CAPTURE_CONFIRMATIONS=0
+P3_RESIDENT_PLAYBACKS=0
+P3_RUN_ID=NOT_GENERATED
+P3_CLOCK_OBSERVATION=NOT_RUN
+P3_FAIL_FAST_TRIGGER=NOT_RUN
+P3_STOP_SEAL=NOT_RUN
+P3_STOP_LATENCY=NOT_RUN
+P3_PCM_COVERAGE=NOT_RUN
+P3_LOCAL_JSON_EXPORTS=0
+P3_LOCAL_WAV_EXPORTS=0
+P3_EXACT_PID_EXIT_CODE=0
+P3_DEVICE_RELEASE=PASS_IDLE_AND_UNCHANGED
+P3_ACOUSTIC_RESULT=NOT_RUN
+P3_EXECUTION_AUTHORIZED=false
+CLOCK_ROOT_CAUSE=UNKNOWN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRODUCTION_DIFF=ZERO
+~~~
