@@ -550,3 +550,64 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 PRIVATE_AUDIO_READS=0
 ~~~
+
+## 12. P3 单次声学观察收口与 P4 准入审核
+
+2026-11-23（Asia/Shanghai）。以基线 `5a2b3108cecc8e81a4d1d14d5db5fe3b67ecacc6` 归档 P3 唯一 Run `EB6534D7-671D-4118-B8D0-391B76382DA1`。按用户正式试听确认和已传达的主控裁定，**P3_ACOUSTIC_RESULT=PASS_LIMITED，P3_RERECORD=NOT_REQUIRED**。本次是同轮居民独讲的一次有限观察，跨运行稳定性仍无结论。此前各轮结果原样保留。
+
+### 12.1 同 Run 技术回执、用户试听及主控裁定
+
+| 证据 | 本轮归档 |
+|---|---|
+| 已完成的技术回执 | 沿用 §11 的冻结 Debug 构建和 TinyUSB／Mac mini 路线。App 启动、录音确认及固定居民播放各 1 次。保存 744 个连续 20 ms 包，共 714240 bytes、14.88 秒。非零软件 Render 位于 WAV 起点后约 1.226–4.974 秒，完整落入保存范围。CLOCK 拒收、Capture drop/stale、播放欠载均为 0。原 Stop／Seal 和本机 JSON/WAV 导出成功，App exit 0，两端资源释放。Fail-Fast 未触发 |
+| 同 Run 现场见证 | 用户确认在 Mac 旁全程保持安静，内置扬声器的居民语音从起音到尾音完整播出，现场听感正常。物理外放以该见证为据，软件 Render 用于核对 PCM 覆盖 |
+| 用户正式试听确认 | “导出的WAV中听不到可辨认的居民语音回声，起音和尾音都可以接受。” |
+| 主控此前附件独立分析 | 仅本 Run 的 WAV 经用户授权提交主控。主控初审未发现明显起音爆音或数字削波，波形峰值为 −46.45 dBFS。受可靠语音听辨能力限制，其附件独立回声判定为 `INCONCLUSIVE` |
+| 本次主控声学裁定 | 用户明确补充同一 WAV 的可辨回声及起尾试听结论后，本次传达的主控裁定为 `PASS_LIMITED`。证据组合为同 Run 的现场外放与静默见证、现场用户独立试听、既有合格技术回执。附件分析的听辨限制继续保留 |
+
+本次收口无需重录 P3。历史失败、历史强起音归因、R3-M01 及 AEC/CLOCK 根因状态继续保留。已保存窗口内的 PCM 连续性和软件播放覆盖已核实；本轮结果的适用范围限于上述 Run、配置和路线。本次归档基于既有技术回执、用户正式确认及主控裁定，私人 WAV、录音 JSON 和样本均未重新读取，原始载荷留在各自已授权的保存位置。 [单次 P3 原判据](T3_2_A_acoustic_qualification_readiness_review.md#7-p3--居民纯回声与起音)
+
+### 12.2 P4 准入与无音频 UI 预检清单
+
+**P4_ADMISSION=PENDING_UI_PREFLIGHT。** P3 的同轮纯居民证据已收口，P4 综合 C 的静态入口、候选身份和目标配置已核对。P4 的设备与无音频 UI 预检尚未执行，仍需独立批准；真实采集、外放及导出保留其独立授权。
+
+| 待核验项 | 无音频 UI 预检的条件 |
+|---|---|
+| 范围与冻结身份 | 待主控确认预检范围并取得用户本次仅无音频 UI 的授权。复核同一候选及干净工作区。构建基线 `574fc735ca239c9b334029debbdee546cda18d49`，完整 `apps` 树 `1357af24f89912f1e625252b2314f5a5f33df416`。本轮磁盘 launcher `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`、dylib `e419552e1b539db52c6a971e6b703aaa695cb503fdfbf479fe20c25c5586a132` 的 SHA-256 均匹配。获批预检时只用原 `--apple-vp-acoustic-test`，核验唯一 App 的确切 PID 及实际加载映像 |
+| 只读设备与固定素材 | 核对默认 TinyUSB USB 输入 60%、Mac mini 内置扬声器输出 55% 且未静音、两端在线空闲、无冲突进程、系统权限和设备就绪。核对原固定 `HOST_resident.wav` 的登记身份，SHA-256 `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`，24 kHz 单声道 PCM16LE，114032 帧。路线、权限或素材不符时停止。 [固定候选与路线](T3_2_A_candidate_and_evidence_reuse_review.md) |
+| 原综合 C 准备态 | 原选择器设置 AGC-ON 与 `Original C · no warm-up comparison`，使用 `Prepare comprehensive C · Guided single run`。核验同一 PID 的综合 C 引导、`ready/C`、`RECORDING`、实际准备态 `APPLE_VP_AGC_ON` 及无额外预热。普通 C、STATS_ONLY、WARMUP 实验、批次和静默烟测均不用于本项。 [原入口](../../../apps/macos/Aftelle/ContentView.swift#L851) · [准备态约束](../../../apps/macos/Aftelle/AppController.swift#L7918) |
+| 人工交接与原面板 | 用户从指定目录选定固定素材并手动打开外层 Start…。同一 PID 核验文件名、当前 C 准备态、唯一 `Allow local test?` 原面板及授权按钮和 Cancel 的语义。旧 P3 面板核验限定 `scenario=A`；预检须能可靠核验 C，无法唯一识别则停止。 [原确认面板](../../../apps/macos/Aftelle/ContentView.swift#L722) |
+| 取消及释放证明 | 仅点一次 Cancel，以实际界面回读确认取消。核验面板关闭且回到 `ready/C`，授权未挂起，无 RunID 或 Capture/Playback 代际，包与留存 PCM 为 0，采集、播放、JSON/WAV 导出各 0。原菜单 Quit 后收据为 exit 0、确切 PID 消失、设备空闲。按钮回执不明确时核验真实状态，保留一次动作记录 |
+| 预检边界 | 系统设置和原面板可核验当前权限条件与用户控制，应用内有效录音权限、双端 VP／AGC 实际运行态、物理外放／双讲及有声导出只能在另行获批的实机 Run 中取证。本轮所有这些项目保持 `NOT_RUN` |
+
+### 12.3 另行获批后才适用的 P4 验收及停止边界
+
+- **一次、最多 15 秒。** 固定同一设备、音量、摆位、环境、素材、双端 VP、AGC-ON、`RECORDING` 及 nil warm-up。获批后另取本次真实采集、一次居民外放和本机导出的明确同意。有效 Run 中读取实际 VP／AGC、bypass=false、inputMuted=false 和设备/格式及 Mic Mode；模式不可读时仍按原合同记 UNKNOWN 并限制归因。执行保持原 PCM 限额 720000 bytes。 [原 P4 一次运行合同](T3_2_A_acoustic_qualification_readiness_review.md#8-p4--真人持续双讲)
+- **同 Run 的物理证据。** 真人按原综合 C 引导自然持续讲话至停止提示，现场确认能听到实体扬声器，并见证两个声源实际重叠超过 1 秒。分别记录真实讲话起止、现场外放区间、重叠和不确定度。用同一 RunID、Capture/Playback 代际及 configurationID 绑定相关技术收据和用户见证。0–3／3–9／9–11／11–15 秒是软件引导，score+3 秒是播放请求。保留非零 Render 与连续 Native／PCM 的实际覆盖，仅用作内容和时间核对。 [原综合 C 引导](../../../apps/macos/Aftelle/AppController.swift#L8472)
+- **试听与判定。** 用户本机独立试听，分别确认人声可懂、首尾及关键内容保留、音量稳定、无错误静音或明显失真，以及居民回声、起音和尾音是否可接受。物理重叠、关键语音或覆盖、试听未充分核验时保留 `INCONCLUSIVE` 或原 `PARTIAL`；明确人声损伤、可闻残留或异常增益按原判据保留 `FAIL`。历史综合 C 已有声学失败，继续留档。 [历史综合 C](T3_2_A_comprehensive_C_real_acoustic_review.md#6-用户反馈与逐项状态)
+- **异常即停止。** 监测身份、权限、路由、配置、播放、CLOCK／包连续性、必要覆盖、音量和听感；异常、用户不适或取消时用原 Stop → Seal → Shutdown，保留首个故障与有效前缀，核验进程和设备释放。禁止自动重试。P3 专用 Fail-Fast 仅绑定普通 A，综合 C 保留原门禁与停止链。本轮只核对该机制；P4 实际运行和停止验证仍未授权。 [普通 A Fail-Fast 资格](../../../apps/macos/Aftelle/AppController.swift#L8396) · [原综合 C 收尾](../../../apps/macos/Aftelle/AppController.swift#L8637)
+- **正式 Gate。** P4 如经独立批准，仅是 T3.2-A 的一次工程声学观察。正式 53-C 的 53-B 内至少 3 次双讲、`doubleTalkFrameCount >= 1` 和同 Runtime／Provider 会话连续条件原样有效。本次正式 Gate 计数为 0。 [正式 53-C](../../r8_5_unified_human_gate_checklist.md#53-c--dedicated-double-talk)
+
+### 12.4 交付状态
+
+启动本次文档归档前，HEAD、upstream 与 GitHub 实时远端均为上述基线。空回滚点 `4cd88ccd5312d4ffea8f1a1e1ae18a4add405850` 与基线同树。仅追加本节与 Test3 README 索引。原 7 项冲突、索引、14 项保护证据及 Fixture 元数据保持一致。Stage7 Forbidden Checklist 为 `PASS`，六条红线均未触碰，生产及测试代码、Runtime API、DR schema、平台 target 和 Stage 8 无变化。 [Stage7 Forbidden Checklist](../../stage7_forbidden_checklist.md)
+
+~~~ini
+P3_ARCHIVE=COMPLETED
+P3_ACOUSTIC_RESULT=PASS_LIMITED
+P3_RERECORD=NOT_REQUIRED
+P3_CAPTURE_AUTHORIZED=false
+P4_ADMISSION=PENDING_UI_PREFLIGHT
+P4_UI_PREFLIGHT=NOT_RUN
+P4_UI_PREFLIGHT_AUTHORIZED=false
+P4_EXECUTION=NOT_AUTHORIZED
+P4_FORMAL_53_C_RUNS=0
+R3_M01=OPEN
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+DEVICE_RUNS=0
+PRIVATE_AUDIO_READS=0
+~~~

@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-23 [P3 单次声学观察收口](T3_2_A_P3_resident_only_acoustic_device_review.md#12-p3-单次声学观察收口与-p4-准入审核)。Run `EB6534D7-671D-4118-B8D0-391B76382DA1` 的既有技术回执、现场见证及正式试听已归档，主控裁定 `PASS_LIMITED`，P3 无需重录。[P4 准入与无音频 UI 预检清单](T3_2_A_P3_resident_only_acoustic_device_review.md#122-p4-准入与无音频-ui-预检清单) 为 `PENDING_UI_PREFLIGHT`，实际预检尚未执行、真实采集未授权。R3-M01、AEC/CLOCK 根因及正式 Gate 状态保持。
+
 2026-11-23 [P3 居民独讲设备与无音频 UI 预检](T3_2_A_P3_resident_only_acoustic_device_review.md#11-p3-居民独讲设备与无音频-ui-预检) 为 `PASS`。唯一 Fail-Fast Debug 实例的实际加载身份、固定素材及设备检查通过。用户手动选定素材和打开外层 Start… 后，仅执行一次原 Cancel，回到 ready/A。RunID 未生成，采集、播放和导出均为 0；原 Quit exit 0，设备空闲。P3 声学执行仍需独立授权。
 
 2026-11-23 [T3.2-A 候选与证据复用裁定](T3_2_A_candidate_and_evidence_reuse_review.md)。固定 Fail-Fast 候选及 TinyUSB／Mac mini 既有路线。P2 AGC-ON 独讲有限复用，最小路径无需重录。P3 同 Run 证据仍不足，优先核实既有见证与试听缺项，无法闭合时另批一次普通 A。P4 准入未成立、未获执行授权，T3.2-A 与 Formal Test3 保持 `BLOCKED`，交主控审核。
