@@ -7,7 +7,7 @@
 | 绑定项 | 核验结果 |
 |---|---|
 | 分支和起点 | `Test3-AppleVP-Clean`。隔离工作区 HEAD、upstream 与 GitHub 实时远端起点均为 `a5d0c20e1e6b0a76b2a04dc78cc4e0c5ce4a31f8` |
-| 候选源码 | Fail-Fast 构建基线 `574fc735ca239c9b334029debbdee546cda18d49`。该提交、R3 报告起点 `07460f5bba577a9e547475918fe1070e574c1eb8` 及本轮起点的完整 `apps` 树同为 `1dfde4af53b0c764b1b584f59d72800ee71cd31a`，macOS App 树同为 `1357af24f89912f1e625252b2314f5a5f33df416`。当前 Tools 树相对构建时增加了独立 NCC 分析器及其测试 |
+| 候选源码 | Fail-Fast 构建基线 `574fc735ca239c9b334029debbdee546cda18d49`。该提交、R3 报告起点 `07460f5bba577a9e547475918fe1070e574c1eb8` 及本轮起点的完整 `apps` 树同为 `1357af24f89912f1e625252b2314f5a5f33df416`，`apps/macos/Aftelle` 子树同为 `1dfde4af53b0c764b1b584f59d72800ee71cd31a`。当前 Tools 树相对构建时增加了独立 NCC 分析器及其测试 |
 | 冻结 Debug 磁盘映像 | 本轮复算 launcher SHA-256 `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，dylib SHA-256 `e419552e1b539db52c6a971e6b703aaa695cb503fdfbf479fe20c25c5586a132`，与已登记映像均匹配。原入口为 `--apple-vp-acoustic-test`，既有加载映像核验见 P3 §10.1 |
 | Release 对照 | 磁盘可执行文件 SHA-256 `d7c557f825394aa4064b209ec338a8837e3819afb3290c95e410231d60cd671d`，与原隔离回执匹配 |
 | 固定设备角色 | TinyUSB USB 输入 60%，Mac mini 内置扬声器输出 55%、未静音。沿用原摆位与环境要求。既有收据覆盖默认设备及 process I/O 元数据、同 PID 核验和释放。TinyUSB process input 的共享设备集元数据仍有限，独立物理绑定和实时声压不可据此确认 |
@@ -18,7 +18,7 @@
 
 ## 2. P2 AGC-ON 普通 B 可限域复用
 
-旧 P2 ON 实测基线为 `159e46327e42dfb101c7a850a1a36827da336ef4`，App 树 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539` 等于完成 21/21 的工程源码。旧加载 launcher 与当前哈希相同，dylib 为 `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4`。按两个实际受测身份对比完整 `apps` 树，差异限于 `AppController.swift` 和 `MacSpeechAudioCapture.swift` 的 DEBUG 路径。Capture／Output Host、Output Player 与准备界面源文件对象一致。 [P2 §7](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#7-p2-agc-on-单次复执行审核) · [Fail-Fast 变更及回归](T3_2_A_P3_clock_fail_fast_review.md)
+旧 P2 ON 实测基线为 `159e46327e42dfb101c7a850a1a36827da336ef4`，完整 `apps` 树 `446e2ef9e63d60dd14bf5fd6d70079e6f18c0539` 及 `apps/macos/Aftelle` 子树 `1d1626086a8a1875dcd5e7bf58036ae9f231bd0d` 均与完成 21/21 的工程源码匹配。旧加载 launcher 与当前哈希相同，dylib 为 `de8d24e6c8633da395bf29339d8e1b4887acc22c71aa95acd396a18285195df4`。按两个实际受测身份对比完整 `apps` 树，差异限于 `AppController.swift` 和 `MacSpeechAudioCapture.swift` 的 DEBUG 路径。Capture／Output Host、Output Player 与准备界面源文件对象一致。 [P2 §7](T3_2_A_P2_Human_Only_AGC_ON_OFF_device_review.md#7-p2-agc-on-单次复执行审核) · [Fail-Fast 变更及回归](T3_2_A_P3_clock_fail_fast_review.md)
 
 | 核对项 | 实际源码差异及 B 的可达行为 |
 |---|---|
