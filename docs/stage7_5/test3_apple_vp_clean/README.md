@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-23 [Step 2 三声道 PCM 映射审核](T3_2_A_3_channel_pcm_mapping_audit.md)。原 Converter 在登记的 16 kHz 离散三声道格式读取默认映射 `[0,0,0]`，三路与同 SRC 单声道对照逐位一致。原 Output 回归 238 项通过。探针保留 1 项严格直流误差失败及近满幅阶跃超幅证据。硬件 3→2 矩阵与 Apple VP 参考仍为 `UNKNOWN`，设备运行 0，交主控审核。
+
 2026-11-23 [Step 1 历史 Native 起音对比](T3_2_A_historical_native_onset_comparison.md)。五份技术 JSON 与先前登记摘要一致。P4 的 Native ch0 精确零前缀为 1.420–1.432 秒，随后两个 20 ms 窗合计 21 个满幅样本，均早于居民非零 Render。P2／P3 缺少 Native 短窗，跨轮起音模式及 AGC／VP 归因均为 `UNKNOWN`。指定 P3 CLOCK 复验无拒收，P4 受控双讲仍为 `INCONCLUSIVE`。交主控审核。
 
 2026-11-23 [P4 单次真实双讲设备审核](T3_2_A_P4_real_double_talk_device_review.md)。实际 Capture 和固定居民播放各一次，原 Stop／Seal／Shutdown 后保存 14.88 秒连续 PCM，本机 JSON/WAV、进程退出与设备释放均已核验。用户反馈未按引导讲话，实际物理重叠时长 UNKNOWN。试听报告人声受压且有微弱居民声，听感 `FAIL`，受控双讲验收 `INCONCLUSIVE`，正式 53-C 计数为 0。单次授权已用完，交主控审核。
