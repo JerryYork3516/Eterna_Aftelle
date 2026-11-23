@@ -491,3 +491,62 @@ Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 PRODUCTION_DIFF=ZERO
 ~~~
+
+## 11. P3 居民独讲设备与无音频 UI 预检
+
+2026-11-23（Asia/Shanghai）。**P3_DEVICE_PREFLIGHT=PASS。** 本次授权仅覆盖一次无音频 UI 预检。唯一冻结 Debug App 经人工选择素材、人工打开外层 Start…、核验原面板、一次 Cancel、同一 PID 的原 Quit 完成。Capture、Playback 和导出均为 0。
+
+### 11.1 冻结身份与只读设备检查
+
+| 核验项 | 实际结果 |
+|---|---|
+| Git 与源码 | 启动前 HEAD、upstream 和 GitHub 实时远端均为 `68c2822111f1a2026390203b7f1a2e9e81b9edd9`，目标分支为 Test3-AppleVP-Clean。完整 `apps` 树 `1357af24f89912f1e625252b2314f5a5f33df416`、`apps/macos/Aftelle` 子树 `1dfde4af53b0c764b1b584f59d72800ee71cd31a`，核验与构建基线 `574fc735ca239c9b334029debbdee546cda18d49` 匹配。 [候选审核](T3_2_A_candidate_and_evidence_reuse_review.md) |
+| 唯一 Debug 实例 | 仅使用 `--apple-vp-acoustic-test`，启动前无其他实验进程或冻结映像占用。监督进程持有唯一子进程，实际 PID、启动身份、可执行路径和已加载映像对象核验通过。Launcher SHA-256 `ba9089464f20f26666c387772ee3829dd3242f89c7764aca208cba552a25e118`，Fail-Fast dylib SHA-256 `e419552e1b539db52c6a971e6b703aaa695cb503fdfbf479fe20c25c5586a132` |
+| 固定居民 WAV | 原 `HOST_resident.wav` 的已登记文件身份、SHA-256 `774e450ce1ff92402051f89ae4fcd537d74367deff9c2f92670ba0f6637d47ea`、24 kHz 单声道 PCM16LE、114032 帧及 1 秒零前导均匹配。启动前、人工交接后、退出后三次核验 |
+| 默认输入与输出 | TinyUSB USB 输入为 16 kHz 单声道、系统输入 60%；Mac mini 内置扬声器为 48 kHz 双声道、系统输出 55% 且未静音。两端均在线、无运行占用；设备身份和格式匹配原登记，未发现冲突实验进程。退出后只读复核与启动前相同 |
+| 系统权限 | 在 macOS 系统设置的“麦克风”页只读确认 Aftelle 开关为 ON。核对冻结 App 的 Bundle ID 和启动器签名指定要求。录音确认后的应用内有效权限读回为 `NOT_RUN` |
+
+### 11.2 原 UI 与取消结果
+
+| 步骤 | 实际结果 |
+|---|---|
+| Prepare A | 在确切 PID 的唯一合格主窗按一次 `Prepare A · Resident only`。确认 `ready/A`、`RECORDING`、准备态 `APPLE_VP_AGC_ON`、无额外预热、无 RunID 和零 PCM，再以前台窗口交接 |
+| 人工文件选择和外层 Start… | 用户从指定目录手动选定固定 `HOST_resident.wav`，在同一 App 点击一次外层 `Start…`，停在 `Allow local test?`。固定文件身份复核一致；同一 PID 的应用公开状态为 `file=HOST_resident.wav` |
+| 原确认面板 | 绑定同一 PID，核验唯一原面板及 A/C 使用所选离线素材的说明。两个可用按钮的 AXDescription 分别为 `Use microphone, local capture and test playback`、`Cancel`。核验面板时按压为 0 |
+| Cancel 的回执及实际状态 | 原 `Cancel` 一次 AXPress，回执成功。同一 PID 的随后快照确认面板已消失，返回 `ready/A`，素材仍在，授权未挂起。RunID、Capture Generation、ConfigurationID 均未生成，0 包、0 bytes、0 留存 PCM。录音确认按压 0 次 |
+| Quit 与资源释放 | 同一 PID 的原 `Quit Aftelle` 菜单执行一次，监督进程实得 App exit 0。PID 消失，冻结 launcher 无映射占用，两端设备复核在线且空闲，原路线及音量一致。音频证据导出清单一致，JSON、WAV 各新增 0 |
+
+文件路径由本轮人工交接见证和素材 SHA 绑定，应用可见状态只回读文件名。预检覆盖真实界面与取消、退出链。WAV 解码、运行态 VP/AGC、真实物理发声、PCM 覆盖、本机试听及 CLOCK 故障触发均为 `NOT_RUN`。后续最多 15 秒的独立声学验收仍需主控及用户对该次有声执行、采集与导出的新批准。 [既定声学准入与停止合同](T3_2_A_acoustic_qualification_readiness_review.md)
+
+本轮复用既有确切 PID 工具。其 21 项离线选择条件、父子身份及过期／外来 PID 负控通过。本机监督器仅在 Git 忽略目录登记本轮基线，文件选择和外层 Start… 均留给人工。目录权限为 0700，回执为 0600。实际加载回执 SHA-256 为 `c1e71662cc88be3db5d6c36a636f77b150e13a4a2d73b4077b3f7e5ce62f6da5`；原面板和取消后状态分别为 `440afb9407e0d7b839dde82970f8659ac23caec0e14eca7b765cf1522ffc67ca` 和 `f0c7d4b71bef610ca195379af538fa82abb8675df1d3851db7162f7091e0e571`；退出和释放分别为 `a1ee15b5ef47d8cb4902199c7a0634defb850c8404683e14e01339184f27a73e` 和 `b70d32b4ccce1f3aa3dab4f402d14061ad9705c6c564d357c7a9987cc0230228`。原始 UI、设备与路径回执仅本机保留。
+
+### 11.3 交付与状态
+
+空回滚点 `05286064f77eea278aedf0d9fd8a17d7dd4dd461` 与基线同树。原 7 项冲突、索引、14 项保护证据及 Fixture 元数据一致。仅追加本节和 Test3 README 索引。`git diff --check`、Secret Guard 与 [Stage7 Forbidden Checklist](../../stage7_forbidden_checklist.md) 通过。触碰红线为零，生产代码、测试、Runtime API、DR schema、平台 target 和 Stage 8 均无改动。本轮预检已结束，交主控审核。
+
+~~~ini
+P3_DEVICE_PREFLIGHT=PASS
+P3_UI_PREFLIGHT=PASS_WITH_MANUAL_HANDOFF
+P3_UI_AUTHORIZATION=CONSUMED_UI_ONLY
+P3_UI_APP_LAUNCHES=1
+P3_UI_RECORDING_CONFIRMATIONS=0
+P3_UI_CANCEL_COUNT=1
+P3_UI_READY_A_AFTER_CANCEL=VERIFIED
+P3_UI_RUN_ID=NOT_GENERATED
+P3_UI_CAPTURE_COUNT=0
+P3_UI_PLAYBACK_COUNT=0
+P3_UI_JSON_EXPORTS=0
+P3_UI_WAV_EXPORTS=0
+P3_UI_EXACT_PID_EXIT_CODE=0
+P3_UI_DEVICE_RELEASE=PASS_IDLE_AND_UNCHANGED
+P3_ACOUSTIC_VALIDATION=NOT_RUN
+P3_CAPTURE_AUTHORIZED=false
+P4_EXECUTION=NOT_AUTHORIZED
+R3_M01=OPEN
+AEC_ROOT_CAUSE=UNKNOWN
+CLOCK_ROOT_CAUSE=UNKNOWN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+PRIVATE_AUDIO_READS=0
+~~~
