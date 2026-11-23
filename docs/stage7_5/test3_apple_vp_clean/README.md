@@ -2,6 +2,8 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
+2026-11-23 [T3.2-A 总体 Gate 缺口审核](T3_2_A_gate_gap_review.md)。离线工程继续 `ACCEPTED`，A 仍 `BLOCKED`。主要缺口是固定候选有现场外放见证的纯回声及起尾验收、合格真人双讲，以及既有 ON 独讲证据对当前候选的适用性核定。当前没有已定位的必修生产改动。P4 准入未成立、未获执行授权，Formal Test3 保持 `BLOCKED`，交主控独立审核。
+
 2026-11-23 [R3-M01 全零与固定居民对照执行及离线复核](T3_2_A_R3_M01_zero_vs_resident_result_review.md)。两轮各执行一次，各保留 14.88 秒连续 PCM，时钟拒收和丢包均为 0。按原时间窗、稳定 NCC 和负控复核，此前 105 毫秒起音 `NOT_REPRODUCED`，居民回灌归属 `UNKNOWN`，R3-M01 保持 `OPEN`。原始 JSON/WAV 仅留本机，交主控审核。
 
 2026-11-22 [R3-M01 全零与固定居民对照准入审核](T3_2_A_R3_M01_zero_vs_resident_readiness.md)裁定 `READY_FOR_DEVICE_PREFLIGHT`。复用已核验的 114032 帧全零原件，两臂使用普通 Prepare A、原播放链及 P3 CLOCK Fail-Fast。旧工具固定居民文件名，全零臂需经原界面人工交接。设备与 UI 预检待单独批准，实际设备执行与私人音频读取均为 0。R3-M01 OPEN，AEC/CLOCK UNKNOWN，T3.2-A 与 Formal Test3 仍 BLOCKED。
