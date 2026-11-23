@@ -2,7 +2,9 @@
 
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
-2026-11-23 [P4 综合 C 无音频 UI 预检](T3_2_A_P4_double_talk_ui_preflight_review.md)为 `PASS`。唯一冻结实例实际加载身份匹配，综合 C 为 AGC-ON、RECORDING、无额外预热。用户选定固定居民 WAV 并打开原确认面板，Cancel 一次后同 PID 回到 ready/C。RunID 未生成，录音确认、采集、播放和导出均为 0。原 Quit exit 0，两端设备空闲。P4 真实执行仍为 `NOT_AUTHORIZED`，交主控审核。
+2026-11-23 [P4 单次真实双讲设备审核](T3_2_A_P4_real_double_talk_device_review.md)。实际 Capture 和固定居民播放各一次，原 Stop／Seal／Shutdown 后保存 14.88 秒连续 PCM，本机 JSON/WAV、进程退出与设备释放均已核验。用户反馈未按引导讲话，实际物理重叠时长 UNKNOWN。试听报告人声受压且有微弱居民声，听感 `FAIL`，受控双讲验收 `INCONCLUSIVE`，正式 53-C 计数为 0。单次授权已用完，交主控审核。
+
+2026-11-23 [P4 综合 C 无音频 UI 预检](T3_2_A_P4_double_talk_ui_preflight_review.md)为 `PASS`。唯一冻结实例实际加载身份匹配，综合 C 为 AGC-ON、RECORDING、无额外预热。用户选定固定居民 WAV 并打开原确认面板，Cancel 一次后同 PID 回到 ready/C。该次预检未生成 RunID，录音确认、采集、播放和导出均为 0。原 Quit exit 0，两端设备空闲。该次授权仅覆盖无音频 UI 预检。
 
 2026-11-23 [P3 单次声学观察收口](T3_2_A_P3_resident_only_acoustic_device_review.md#12-p3-单次声学观察收口与-p4-准入审核)。Run `EB6534D7-671D-4118-B8D0-391B76382DA1` 的既有技术回执、现场见证及正式试听已归档，主控裁定 `PASS_LIMITED`，P3 无需重录。该次归档登记 [P4 准入与无音频 UI 预检清单](T3_2_A_P3_resident_only_acoustic_device_review.md#122-p4-准入与无音频-ui-预检清单)，当时状态为 `PENDING_UI_PREFLIGHT`。R3-M01、AEC/CLOCK 根因及正式 Gate 状态保持。
 
