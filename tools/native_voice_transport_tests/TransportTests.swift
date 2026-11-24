@@ -1,23 +1,22 @@
 import Foundation
 
 @main
-private struct TransportTests {
+struct TransportTests {
     private nonisolated(unsafe) static var checks = 0
-    private static let anchor: UInt64 = 10_000_000_000
+    static let anchor: UInt64 = 10_000_000_000
 
-    private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+    static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         checks += 1
         precondition(condition(), message)
     }
 
-    private static func identity(_ token: UInt64 = 1, configuration: UInt64 = 1) -> NativeVoiceIdentity {
+    static func identity(_ token: UInt64 = 1, configuration: UInt64 = 1) -> NativeVoiceIdentity {
         NativeVoiceIdentity(
-            runtimeGeneration: token,
-            routeEpoch: token,
-            playbackEpoch: token,
+            authority: .init(runtimeGeneration: token, routeEpoch: token, configurationID: configuration),
             captureGeneration: token,
-            configurationID: configuration,
-            transportToken: token
+            captureToken: token,
+            playbackEpoch: token,
+            playbackToken: token
         )
     }
 
@@ -32,11 +31,16 @@ private struct TransportTests {
         try identityReset()
         try captureGap()
         try bufferedWorker()
+        try playbackLifecycle()
+        try directionalFences()
+        for rate in [16000.0, 24000, 44100, 48000] {
+            try timestampChangesPreservePCM(rate: rate)
+        }
         print("native_voice_transport_checks=\(checks)")
         print("native_voice_rate_pairs=12\nnative_voice_device_access=ZERO")
     }
 
-    private static func wave(_ count: Int, rate: Double) -> [Float] {
+    static func wave(_ count: Int, rate: Double) -> [Float] {
         (0 ..< count).map { Float(0.35 * sin(2 * Double.pi * 431 * Double($0) / rate)) }
     }
 
@@ -86,11 +90,13 @@ private struct TransportTests {
                 wave(size, rate: rate),
                 sampleTime: Int64(index * size),
                 hostTime: anchor + UInt64(Double(index * size) * 1e9 / rate),
-                identity: identity()
+                identity: identity().capture
             )
         }
-        packets += try worker.finishCapture(identity: identity())
-        expect(packets.count >= 12, "20ms output survives timing qualification")
+        packets += try worker.finishCapture(identity: identity().capture)
+        let outputFrames = Int(Double(size * 15) * 24000 / rate)
+        expect(packets.count == outputFrames / 480, "timing acquisition preserves every complete packet")
+        expect(worker.discardedCaptureTailSamples == outputFrames % 480, "only the incomplete EOS tail is discarded")
         expect(packets.allSatisfy { $0.bytes.count == 960 }, "480 mono PCM16LE samples")
         let valid = packets.filter { $0.timingStatus == .valid }
         expect(!valid.isEmpty, "observed clock acquires mapping")
@@ -198,20 +204,20 @@ private extension TransportTests {
             [Float](repeating: 0.8, count: 500),
             sampleTime: 0,
             hostTime: anchor,
-            identity: identity()
+            identity: identity().capture
         )
-        _ = try worker.playback(NativeVoicePCM16.encode([Float](repeating: 0.9, count: 300)), identity: identity())
+        _ = try worker.playback(
+            NativeVoicePCM16.encode([Float](repeating: 0.9, count: 300)),
+            identity: identity().playback
+        )
         try worker.reset(identity: identity(2), nativeRate: 48000)
         do {
-            _ = try worker.playback(Data([0, 0]), identity: identity()); preconditionFailure("old generation")
+            _ = try worker.playback(Data([0, 0]), identity: identity().playback); preconditionFailure("old generation")
         } catch NativeVoiceTransportError.staleIdentity {}
-        let mismatched = NativeVoiceIdentity(
-            runtimeGeneration: 2,
-            routeEpoch: 999,
-            playbackEpoch: 2,
-            captureGeneration: 2,
-            configurationID: 1,
-            transportToken: 2
+        let mismatched = NativeVoiceIdentity.Capture(
+            authority: .init(runtimeGeneration: 2, routeEpoch: 999, configurationID: 1),
+            generation: 2,
+            token: 2
         )
         do {
             _ = try worker
@@ -222,8 +228,8 @@ private extension TransportTests {
                     identity: mismatched
                 ); preconditionFailure("old route/config")
         } catch NativeVoiceTransportError.staleIdentity {}
-        var silence = try worker.playback(Data(repeating: 0, count: 9600), identity: identity(2))
-        silence += try worker.finishPlayback(identity: identity(2))
+        var silence = try worker.playback(Data(repeating: 0, count: 9600), identity: identity(2).playback)
+        silence += try worker.finishPlayback(identity: identity(2).playback)
         expect(silence.allSatisfy { $0 == 0 }, "old SRC filter tail does not revive after reset")
         do {
             try worker.reset(identity: identity(3), nativeRate: 44100); preconditionFailure("rate identity")
@@ -237,16 +243,16 @@ private extension TransportTests {
             [Float](repeating: 0.4, count: 479),
             sampleTime: 0,
             hostTime: nil,
-            identity: identity()
+            identity: identity().capture
         )
         let packets = try gapWorker.capture(
             [Float](repeating: -0.4, count: 480),
             sampleTime: 960,
             hostTime: nil,
-            identity: identity(),
+            identity: identity().capture,
             droppedFrames: 481
         )
-        let tail = try gapWorker.finishCapture(identity: identity())
+        let tail = try gapWorker.finishCapture(identity: identity().capture)
         expect((packets + tail).count == 1, "loss cannot join partial packets or create zero packets")
         let decoded = try NativeVoicePCM16.decode((packets + tail)[0].bytes)
         expect(decoded.allSatisfy { abs($0 + 0.4) < 0.001 }, "pre-gap samples not replayed")
@@ -270,7 +276,7 @@ private extension TransportTests {
                 packets += try worker.drainCapture(ring, maxFrames: 113)
             }
         }
-        packets += try worker.finishCapture(identity: identity())
+        packets += try worker.finishCapture(identity: identity().capture)
         expect(packets.contains { $0.timingStatus == .valid }, "ring metadata maps through worker")
         expect(nvt_ring_invalidate(ring, 2), "control invalidation")
         do {

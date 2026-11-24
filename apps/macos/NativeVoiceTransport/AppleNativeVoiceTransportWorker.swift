@@ -1,18 +1,43 @@
 import Foundation
 
-/// A mirror of the existing owners' IDs. transportToken only fences this buffer.
-nonisolated struct NativeVoiceIdentity: Equatable {
-    let runtimeGeneration: UInt64
-    let routeEpoch: UInt64
-    let playbackEpoch: UInt64
-    let captureGeneration: UInt64
-    let configurationID: UInt64
-    let transportToken: UInt64
+/// Mirrors external authority. Each token fences only its own ring and SRC.
+nonisolated struct NativeVoiceIdentity {
+    struct Authority: Equatable {
+        let runtimeGeneration: UInt64
+        let routeEpoch: UInt64
+        let configurationID: UInt64
+    }
+
+    struct Capture: Equatable {
+        let authority: Authority
+        let generation: UInt64
+        let token: UInt64
+    }
+
+    struct Playback: Equatable {
+        let authority: Authority
+        let epoch: UInt64
+        let token: UInt64
+    }
+
+    let capture: Capture
+    let playback: Playback
+
+    init(
+        authority: Authority,
+        captureGeneration: UInt64,
+        captureToken: UInt64,
+        playbackEpoch: UInt64,
+        playbackToken: UInt64
+    ) {
+        capture = Capture(authority: authority, generation: captureGeneration, token: captureToken)
+        playback = Playback(authority: authority, epoch: playbackEpoch, token: playbackToken)
+    }
 }
 
 nonisolated struct NativeVoiceCapturePacket {
     let bytes: Data
-    let identity: NativeVoiceIdentity
+    let identity: NativeVoiceIdentity.Capture
     let segment: UInt64
     let sampleCount: UInt64
     let hostTimeNanoseconds: UInt64?
@@ -32,14 +57,15 @@ final nonisolated class AppleNativeVoiceTransportWorker {
     private var playbackSRC: NativeVoiceStreamingSRC
     private var clock: NativeVoiceClock
     private var pending: [Float] = []
-    private var sourceStart: Int64?
+    private var timingAnchor: (inputFrame: Int, sampleTime: Int64)?
     private var packetSampleCount: UInt64 = 0
     private var segment: UInt64 = 0
-    private var timingStatus: NativeVoiceTimingStatus = .unknown
     private(set) var discardedCaptureTailSamples = 0
 
     init(identity: NativeVoiceIdentity, nativeRate: Double) throws {
-        guard identity.transportToken > 0 else { throw NativeVoiceTransportError.staleIdentity }
+        guard identity.capture.token > 0, identity.playback.token > 0 else {
+            throw NativeVoiceTransportError.staleIdentity
+        }
         self.identity = identity
         self.nativeRate = nativeRate
         captureSRC = try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000)
@@ -47,56 +73,71 @@ final nonisolated class AppleNativeVoiceTransportWorker {
         clock = NativeVoiceClock(sampleRate: nativeRate)
     }
 
+    /// The control owner advances only the affected ring tokens. A new utterance can advance
+    /// the playback token even when its enclosing playback epoch has not changed.
     func reset(identity next: NativeVoiceIdentity, nativeRate: Double) throws {
-        guard next.transportToken > identity.transportToken,
-              next.configurationID != identity.configurationID || nativeRate == self.nativeRate
+        let captureChanged = next.capture != identity.capture
+        let playbackChanged = next.playback != identity.playback
+        let configurationChanged = next.capture.authority.configurationID != identity.capture.authority.configurationID
+        guard captureChanged || playbackChanged,
+              !captureChanged || next.capture.token > identity.capture.token,
+              !playbackChanged || next.playback.token > identity.playback.token,
+              configurationChanged || nativeRate == self.nativeRate
         else {
             throw NativeVoiceTransportError.staleIdentity
         }
-        let capture = try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000)
-        let playback = try NativeVoiceStreamingSRC(inputRate: 24000, outputRate: nativeRate)
-        discardPending()
+        let capture = captureChanged ? try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000) : nil
+        let playback = playbackChanged ? try NativeVoiceStreamingSRC(inputRate: 24000, outputRate: nativeRate) : nil
+        if let capture {
+            discardPending()
+            captureSRC = capture
+            clock = NativeVoiceClock(sampleRate: nativeRate)
+        }
+        if let playback {
+            playbackSRC = playback
+        }
         identity = next
         self.nativeRate = nativeRate
-        captureSRC = capture
-        playbackSRC = playback
-        clock = NativeVoiceClock(sampleRate: nativeRate)
-        sourceStart = nil
-        timingStatus = .unknown
     }
 
     func capture(
         _ samples: [Float],
         sampleTime: Int64?,
         hostTime: UInt64?,
-        identity: NativeVoiceIdentity,
+        identity: NativeVoiceIdentity.Capture,
         droppedFrames: UInt64 = 0,
         independentHostObservation: Bool = true
     ) throws -> [NativeVoiceCapturePacket] {
-        try require(identity)
+        guard identity == self.identity.capture else { throw NativeVoiceTransportError.staleIdentity }
         guard !samples.isEmpty else { return [] }
-        let observation = clock.observe(
+        var observedClock = clock
+        let observation = observedClock.observe(
             sampleTime: sampleTime,
             frames: samples.count,
             hostTime: hostTime,
             droppedFrames: droppedFrames,
             independentHostObservation: independentHostObservation
         )
-        if observation.discontinuity || observation.status != timingStatus {
+        let converter = observation.discontinuity
+            ? try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000) : captureSRC
+        let inputStart = converter.inputFrames
+        let output = try converter.append(samples)
+        if observation.discontinuity {
             discardPending()
-            captureSRC = try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000)
-            sourceStart = nil
+            captureSRC = converter
         }
-        timingStatus = observation.status
-        if sourceStart == nil {
-            sourceStart = sampleTime
+        clock = observedClock
+        if observation.status != .valid {
+            timingAnchor = nil
+        } else if timingAnchor == nil, let sampleTime {
+            timingAnchor = (inputStart, sampleTime)
         }
-        pending += try captureSRC.append(samples)
+        pending += output
         return packets()
     }
 
-    func finishCapture(identity: NativeVoiceIdentity) throws -> [NativeVoiceCapturePacket] {
-        try require(identity)
+    func finishCapture(identity: NativeVoiceIdentity.Capture) throws -> [NativeVoiceCapturePacket] {
+        guard identity == self.identity.capture else { throw NativeVoiceTransportError.staleIdentity }
         pending += try captureSRC.finish()
         let result = packets()
         // Never pad a partial 20ms packet, including after a real capture gap.
@@ -105,26 +146,27 @@ final nonisolated class AppleNativeVoiceTransportWorker {
         return result
     }
 
-    func playback(_ pcm16LE: Data, identity: NativeVoiceIdentity) throws -> [Float] {
-        try require(identity)
+    func playback(_ pcm16LE: Data, identity: NativeVoiceIdentity.Playback) throws -> [Float] {
+        guard identity == self.identity.playback else { throw NativeVoiceTransportError.staleIdentity }
         return try playbackSRC.append(NativeVoicePCM16.decode(pcm16LE))
     }
 
-    func finishPlayback(identity: NativeVoiceIdentity) throws -> [Float] {
-        try require(identity)
+    func finishPlayback(identity: NativeVoiceIdentity.Playback) throws -> [Float] {
+        guard identity == self.identity.playback else { throw NativeVoiceTransportError.staleIdentity }
         return try playbackSRC.finish()
     }
 
     /// Consumer endpoint only. Original callback stamps survive arbitrary read sizes.
     func drainCapture(_ ring: OpaquePointer, maxFrames: Int) throws -> [NativeVoiceCapturePacket] {
         guard maxFrames > 0, maxFrames <= 1_048_576 else { throw NativeVoiceTransportError.invalidPCM }
-        guard nvt_ring_active_token(ring) == identity.transportToken
+        let captureIdentity = identity.capture
+        guard nvt_ring_active_token(ring) == captureIdentity.token
         else { throw NativeVoiceTransportError.staleIdentity }
         var samples = [Float](repeating: 0, count: maxFrames)
         var frames = [NVTFrame](repeating: NVTFrame(), count: maxFrames)
         let result = nvt_ring_read(ring, &samples, &frames, maxFrames, false, false)
         guard !result.invalidated,
-              result.token == identity.transportToken else { throw NativeVoiceTransportError.staleIdentity }
+              result.token == captureIdentity.token else { throw NativeVoiceTransportError.staleIdentity }
         var packets: [NativeVoiceCapturePacket] = []
         var start = 0
         while start < result.copied {
@@ -146,12 +188,12 @@ final nonisolated class AppleNativeVoiceTransportWorker {
                 Array(samples[start ..< end]),
                 sampleTime: sampleTime,
                 hostTime: hostTime,
-                identity: identity,
+                identity: captureIdentity,
                 independentHostObservation: frame.offset == 0
             )
             start = end
         }
-        guard nvt_ring_active_token(ring) == identity.transportToken
+        guard nvt_ring_active_token(ring) == captureIdentity.token
         else { throw NativeVoiceTransportError.staleIdentity }
         return packets
     }
@@ -159,16 +201,16 @@ final nonisolated class AppleNativeVoiceTransportWorker {
     private func packets() -> [NativeVoiceCapturePacket] {
         var result: [NativeVoiceCapturePacket] = []
         while pending.count >= 480 {
-            let host = sourceStart.flatMap {
-                clock.qualifiedHost(sampleTime: $0, offsetFrames: Double(packetSampleCount) * nativeRate / 24000)
-            }
+            let host = packetHostTime()
+            let status: NativeVoiceTimingStatus = host != nil ? .valid :
+                (clock.status == .invalid ? .invalid : .unknown)
             result.append(NativeVoiceCapturePacket(
                 bytes: NativeVoicePCM16.encode(Array(pending.prefix(480))),
-                identity: identity,
+                identity: identity.capture,
                 segment: segment,
                 sampleCount: packetSampleCount,
                 hostTimeNanoseconds: host,
-                timingStatus: timingStatus
+                timingStatus: status
             ))
             pending.removeFirst(480)
             packetSampleCount += 480
@@ -176,14 +218,19 @@ final nonisolated class AppleNativeVoiceTransportWorker {
         return result
     }
 
-    private func require(_ candidate: NativeVoiceIdentity) throws {
-        guard candidate == identity else { throw NativeVoiceTransportError.staleIdentity }
+    private func packetHostTime() -> UInt64? {
+        guard let timingAnchor else { return nil }
+        // SRC may return pre-anchor content after qualification. Check the packet's source position.
+        let offset = Double(packetSampleCount) * nativeRate / captureSRC.outputRate - Double(timingAnchor.inputFrame)
+        guard offset >= 0 else { return nil }
+        return clock.qualifiedHost(sampleTime: timingAnchor.sampleTime, offsetFrames: offset)
     }
 
     private func discardPending() {
         discardedCaptureTailSamples += pending.count + captureSRC.unreleasedContentFrames
         pending.removeAll(keepingCapacity: true)
         packetSampleCount = 0
+        timingAnchor = nil
         segment += 1
     }
 }

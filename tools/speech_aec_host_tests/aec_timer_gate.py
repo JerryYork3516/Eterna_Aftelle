@@ -72,6 +72,30 @@ def block(rows, kind, name, owner=None):
     return declaration(rows, kind, name, within)
 
 
+def unique_window(rows, window):
+    words = [row[0] for row in rows]
+    positions = [i for i in range(len(words) - len(window) + 1) if words[i:i + len(window)] == window]
+    if len(positions) != 1:
+        raise GateFailure("SNAPSHOT_CALLER_CONTRACT")
+    return positions[0]
+
+
+def reviewed_stats_value(capture, snapshot):
+    # 574fc735 forwards one stored Bool through the existing DEBUG value initializer.
+    # Require that insertion verbatim in token order, then apply the original getter pin.
+    field = "inputContentClockInvalidated"
+    _, start, end = block(capture, "struct", "MacSpeechNativeVoiceDebugStats")
+    unique_window(capture[start:end], [
+        "private", "var", "rawTimestampDiagnostic", "=", "MacSpeechRawTimestampDiagnostic", "(", ")",
+        "private", "var", field, "=", "false", "private", "var", "shortWindows", "=",
+    ])
+    before = ["rejections", ":", "rejections", ","]
+    addition = [field, ":", field, ","]
+    after = ["acousticWindows", ":", "acousticWindows", ","]
+    offset = unique_window(snapshot, before + addition + after) + len(before)
+    return snapshot[:offset] + snapshot[offset + len(addition):]
+
+
 def validate(capture, aec, controller):
     sources = {"capture": capture, "aec": aec, "controller": controller}
     rows = {key: tokens(value) for key, value in sources.items()}
@@ -150,7 +174,10 @@ def validate(capture, aec, controller):
                 previous -= 1
             if [r[0] for r in rows[file][previous + 1:decl]] != ["private"]:
                 raise GateFailure("CONTROL_ACTOR_CONTRACT")
-        if digest(rows[file][decl:end + 1]) != entry["sha256"]:
+        pinned = rows[file][decl:end + 1]
+        if key == "stats_value":
+            pinned = reviewed_stats_value(rows["capture"], pinned)
+        if digest(pinned) != entry["sha256"]:
             reason = "SNAPSHOT_BOUND_CONTRACT" if key == "acquire" else (
                 "SNAPSHOT_WAIT_CONTRACT" if key == "snapshot" else "SNAPSHOT_CALLER_CONTRACT")
             raise GateFailure(reason)

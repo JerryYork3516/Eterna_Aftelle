@@ -22,6 +22,7 @@ swiftc -parse-as-library -swift-version 6 -default-isolation MainActor -warn-con
   "${swift_flags[@]}" -import-objc-header "$src/NativeVoiceRing.h" -framework AVFoundation \
   "$src/NativeVoiceClock.swift" "$src/NativeVoiceStreamingSRC.swift" \
   "$src/AppleNativeVoiceTransportWorker.swift" "$root/tools/native_voice_transport_tests/TransportTests.swift" \
+  "$root/tools/native_voice_transport_tests/TransportContinuityTests.swift" \
   "$build_dir/ring.o" -o "$build_dir/transport"
 "$build_dir/transport"
 python3 "$root/tools/native_voice_transport_tests/guard.py"

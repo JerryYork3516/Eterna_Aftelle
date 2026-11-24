@@ -58,6 +58,21 @@ class TimerGateTests(unittest.TestCase):
         self.assertIn("if attempt < 19", self.source[0])
         self.check(self.source)
 
+    def test_reviewed_flag_is_an_exact_stored_read(self):
+        argument = "inputContentClockInvalidated: inputContentClockInvalidated,"
+        for replacement in ("", argument + argument, argument.replace(": ", ": !"),
+                            argument.replace(": inputContentClockInvalidated", ": readClockFlag()")):
+            with self.subTest(replacement=replacement):
+                self.check(self.change("stats_value", argument, replacement), "SNAPSHOT_CALLER_CONTRACT")
+        self.check(self.change("stats_value", "coverageValid: configurationID != nil", "coverageValid: true"), "SNAPSHOT_CALLER_CONTRACT")
+
+    def test_reviewed_flag_cannot_access_a_computed_value(self):
+        source = self.source.copy()
+        old = "private var inputContentClockInvalidated = false"
+        self.assertEqual(source[0].count(old), 1)
+        source[0] = source[0].replace(old, "private var inputContentClockInvalidated: Bool { readClockFlag() }")
+        self.check(source, "SNAPSHOT_CALLER_CONTRACT")
+
     def test_comments_and_formatting(self):
         source = self.source.copy()
         source[0] = source[0].replace("Thread.sleep(forTimeInterval:", "Thread\n . sleep ( forTimeInterval:")
