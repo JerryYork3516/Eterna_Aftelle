@@ -1,5 +1,11 @@
 # DEVLOG.md — Aftelle 开发日志(给我自己看)
 
+## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P2
+
+- 新增独立 AVAudioEngine、Apple VP、Sink/C11/Source 实时路径及受控生命周期。保留 P1 单级 SRC、会话采集连续性与 Runtime 权威。设备与 Aggregate 快照验证决定是否停图，重建需要新身份和明确调用。
+- P1/P2 的 Normal、Release、TSan、ASan/UBSan、回调 IR 审计及扩大后的隔离 Guard 均通过。FULL_CURRENT 21/21 本轮通过，含 Debug/Release 与产物隔离，生产切换与设备运行均为 0。
+- 原索引、7 项冲突、14 份证据、fixture 和历史收据一致。P1 PASS，P2 REVIEW_PENDING，P3 NOT_STARTED，Formal Test3 BLOCKED。[P2 工程报告](docs/stage7_5/test3_apple_vp_clean/AppleNativeVoiceTransport_P2_engineering_review.md)
+
 ## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P1 收口
 
 - 分开采集和播放 token，播放 EOS、同 epoch 的下一轮和取消均保留采集 SRC、时钟和半包。HostTime 资格变化保留 PCM，跨界包无有效时间。
