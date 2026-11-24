@@ -1,5 +1,9 @@
 # Eterna Aftelle · Test3 Apple VP Clean · 正式计划入口 v2
 
+## 2026-11-24 · AppleNativeVoiceTransport P1 工程交付
+
+[独立缓冲、单级SRC、代际与时钟工程报告](AppleNativeVoiceTransport_P1_engineering_review.md)：P1四组离线验收、独立安全回归和Debug/Release通过；生产零切换。FULL_CURRENT实际8 PASS / 1 FAIL / 12 NOT_RUN，原Timer审核指纹在授权基线也失败，完整工程准入PARTIAL，未改旧门禁。P1 REVIEW_PENDING；P2 NOT_STARTED；DEVICE_RUNS=0。AEC/CLOCK UNKNOWN、SQ-M1 OPEN，T3.2-A/Formal Test3 BLOCKED，execution_authorized=false。此P1为新架构工程内核，不是历史AGC/Warm-up声学P1；本轮到此停止待主控审核。
+
 日期：2026-10-16（Asia/Shanghai）。当前口径：**T3.1-R2 / Apple Native Voice Experience**。
 
 2026-11-24 [Step 3 VoiceProcessingIO 设备绑定审核](T3_2_A_voice_processing_io_device_binding_audit.md)。同一 AU 设备 ID 与成对 VP 行为相容，Process 方向集合支持 TinyUSB 参与输入。唯一物理输入端点及 Apple VP 内部 AEC 参考仍为 `UNKNOWN`。报告区分图内 16 kHz 三声道与 HAL 16/48 kHz 的读回口径，登记最小只读验证方案。设备运行 0，交主控审核。

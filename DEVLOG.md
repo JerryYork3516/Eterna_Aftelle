@@ -1,5 +1,12 @@
 # DEVLOG.md — Aftelle 开发日志(给我自己看)
 
+## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P1
+
+- 新增独立C11实时帧环、O(1)代际失效/消费确认、串行单级系统SRC、双时间坐标与480-sample组包；仅入现有target编译，生产调用方零新增。
+- P1 Normal/Release/TSan/ASan+UBSan四组通过，各100万SPSC帧、3万次失效、2个受控竞争、1216项Swift检查；新增格式/lint零违规，三Guard通过。独立Input32/210、Cancel1/62、Latency/Stale1/68、Debug/Release及原产物隔离通过。
+- FULL_CURRENT实际8 PASS / 1 FAIL / 12 NOT_RUN：原Timer Gate的SNAPSHOT_CALLER_CONTRACT在授权基线086835a6也复现，未改旧源码/审核指纹，不冒称全量通过。完整离线准入PARTIAL。
+- [工程报告与实际收据](docs/stage7_5/test3_apple_vp_clean/AppleNativeVoiceTransport_P1_engineering_review.md)。保护索引/7冲突/14证据与fixture元数据保持；P1 REVIEW_PENDING，P2 NOT_STARTED，DEVICE_RUNS=0，AEC/CLOCK UNKNOWN、SQ-M1 OPEN、T3.2-A/Formal Test3 BLOCKED、execution_authorized=false。推送后停止待主控审核。
+
 > 这份是给我自己的,不是给 AI 自动读的。
 > 三个作用:① 提醒我做到哪、为什么这么定;② 每次开 GPT/Dify/新对话时,把"当前状态"那段粘过去当背景;③ 防止我忘了当初的决定又推翻重来。
 > **规则:每次做完一件事、或讨论出一个结论、或改完一个 bug,就来记一笔。不用长,几行即可。**
