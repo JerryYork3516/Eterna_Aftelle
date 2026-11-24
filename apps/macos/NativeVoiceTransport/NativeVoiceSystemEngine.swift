@@ -5,7 +5,6 @@ extension AppleNativeVoiceTransport {
     static func macOS(limits: Limits = Limits()) -> AppleNativeVoiceTransport {
         AppleNativeVoiceTransport(
             makeEngine: { NativeVoiceSystemEngine() },
-            makeMonitor: { SystemMacSpeechDeviceMonitor() },
             authorized: { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized },
             limits: limits
         )
@@ -19,18 +18,26 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
     private var source: AVAudioSourceNode?
     private var sink: AVAudioSinkNode?
     private var configurationObserver: NSObjectProtocol?
+    private var preparedDefaults: NativeVoiceGraphSnapshot.Defaults?
+    private var negotiatedInput: AVAudioFormat?
 
     func negotiate() throws -> NativeVoiceGraphPlan {
         guard !engine.isRunning else { throw NativeVoiceSessionError.state }
+        preparedDefaults = try NativeVoiceHALRoute.defaultDevices()
         engine.isAutoShutdownEnabled = false
         let input = engine.inputNode
         try input.setVoiceProcessingEnabled(true)
         input.isVoiceProcessingBypassed = false
         input.isVoiceProcessingAGCEnabled = true
         input.isVoiceProcessingInputMuted = false
-        _ = engine.mainMixerNode
         try requireVoiceProcessing()
-        return plan()
+        let negotiated = try Self.negotiateVP(
+            readInput: { input.outputFormat(forBus: 0) },
+            readOutput: { self.engine.outputNode.inputFormat(forBus: 0) },
+            connectMixer: { nvt_negotiate_voice_output(self.engine, $0) }
+        )
+        negotiatedInput = negotiated.input
+        return negotiated.plan
     }
 
     func install(
@@ -40,8 +47,8 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
     ) throws {
         let capture = engine.inputNode.outputFormat(forBus: 0)
         let render = engine.outputNode.inputFormat(forBus: 0)
-        guard source == nil, sink == nil, !engine.isRunning,
-              Self.describe(capture) == plan.capture, Self.describe(render) == plan.render,
+        guard source == nil, sink == nil, !engine.isRunning, let negotiatedInput, capture.isEqual(negotiatedInput),
+              try Self.matchedPlan(capture, render) == plan,
               let mono = AVAudioFormat(standardFormatWithSampleRate: plan.source.sampleRate, channels: 1)
         else { throw NativeVoiceSessionError.format }
 
@@ -49,8 +56,9 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
         let source = lease.factory.makeSource(with: mono)
         self.sink = sink
         self.source = source
-        guard nvt_connect_voice_graph(engine, sink, source, capture, mono, render)
+        guard nvt_connect_voice_graph(engine, sink, source, capture, mono)
         else { throw NativeVoiceSessionError.format }
+        _ = try connectedPlan()
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { _ in configurationChanged() }
@@ -59,28 +67,29 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
     func start() throws {
         guard source != nil, sink != nil, !engine.isRunning else { throw NativeVoiceSessionError.state }
         try requireVoiceProcessing()
+        _ = try connectedPlan()
+        guard try NativeVoiceHALRoute.defaultDevices() == preparedDefaults else { throw NativeVoiceSessionError.route }
         engine.prepare()
         try engine.start()
     }
 
     func snapshot() throws -> NativeVoiceGraphSnapshot {
-        guard engine.isRunning, let sink, let source else { throw NativeVoiceSessionError.state }
+        guard engine.isRunning else { throw NativeVoiceSessionError.state }
         try requireVoiceProcessing()
-        let graph = plan()
-        guard Self.describe(sink.inputFormat(forBus: 0)) == graph.capture,
-              Self.describe(source.outputFormat(forBus: 0)) == graph.source,
-              Self.describe(engine.mainMixerNode.outputFormat(forBus: 0)) == graph.render
-        else { throw NativeVoiceSessionError.format }
+        let graph = try connectedPlan()
+        let defaults = try NativeVoiceHALRoute.defaultDevices()
+        guard defaults == preparedDefaults else { throw NativeVoiceSessionError.route }
         let input = try NativeVoiceHALRoute.currentDevice(engine.inputNode.audioUnit)
         let output = try NativeVoiceHALRoute.currentDevice(engine.outputNode.audioUnit)
+        let bindings = try NativeVoiceHALRoute.bindings(roots: [defaults.input, defaults.output, input, output])
         return try NativeVoiceGraphSnapshot(
-            plan: graph, inputDevice: input, outputDevice: output,
-            bindings: NativeVoiceHALRoute.bindings(input: input, output: output)
+            plan: graph, defaults: defaults, inputUnitDevice: input, outputUnitDevice: output,
+            bindings: bindings, streams: NativeVoiceHALRoute.streamBindings(bindings)
         )
     }
 
     func watchDevices(_ snapshot: NativeVoiceGraphSnapshot, changed: @escaping @Sendable () -> Void) throws {
-        try devices.start(snapshot.bindings, changed: changed)
+        try devices.start(snapshot, changed: changed)
     }
 
     func stop() {
@@ -98,6 +107,8 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
         }
         sink = nil
         source = nil
+        preparedDefaults = nil
+        negotiatedInput = nil
     }
 
     private func requireVoiceProcessing() throws {
@@ -107,11 +118,37 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
         else { throw NativeVoiceSessionError.voiceProcessing }
     }
 
-    private func plan() -> NativeVoiceGraphPlan {
-        NativeVoiceGraphPlan(
-            capture: Self.describe(engine.inputNode.outputFormat(forBus: 0)),
-            render: Self.describe(engine.outputNode.inputFormat(forBus: 0))
-        )
+    private func connectedPlan() throws -> NativeVoiceGraphPlan {
+        guard let sink, let source, let negotiatedInput else { throw NativeVoiceSessionError.state }
+        let capture = engine.inputNode.outputFormat(forBus: 0)
+        let render = engine.outputNode.inputFormat(forBus: 0)
+        let graph = try Self.matchedPlan(capture, render)
+        guard capture.isEqual(negotiatedInput), capture.isEqual(sink.inputFormat(forBus: 0)),
+              render.isEqual(engine.mainMixerNode.outputFormat(forBus: 0)),
+              Self.describe(source.outputFormat(forBus: 0)) == graph.source
+        else { throw NativeVoiceSessionError.format }
+        return graph
+    }
+
+    /// Shared with the offline regression. Only the caller's stopped graph may apply the connection.
+    static func negotiateVP(
+        readInput: () -> AVAudioFormat,
+        readOutput: () -> AVAudioFormat,
+        connectMixer: (AVAudioFormat) -> Bool
+    ) throws -> (plan: NativeVoiceGraphPlan, input: AVAudioFormat) {
+        let proposed = readInput()
+        guard describe(proposed).supported, connectMixer(proposed) else { throw NativeVoiceSessionError.format }
+        let input = readInput()
+        let output = readOutput()
+        guard proposed.isEqual(input) else { throw NativeVoiceSessionError.format }
+        return try (matchedPlan(input, output), input)
+    }
+
+    private static func matchedPlan(_ capture: AVAudioFormat, _ render: AVAudioFormat) throws -> NativeVoiceGraphPlan {
+        let input = describe(capture)
+        let output = describe(render)
+        guard input.supported, input == output, capture.isEqual(render) else { throw NativeVoiceSessionError.format }
+        return NativeVoiceGraphPlan(capture: input, render: output)
     }
 
     private static func describe(_ format: AVAudioFormat) -> NativeVoiceIOFormat {

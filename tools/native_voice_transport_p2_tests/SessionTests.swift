@@ -6,21 +6,24 @@ struct SessionTests {
     private static var checks = 0
 
     static func main() async throws {
+        try negotiationContract()
+        try listenerContract()
         try await continuousSession()
         try await observedCaptureLoss()
         try await deviceLifecycle()
+        try await liveRouteChanges()
         try await startupFailures()
         try await permissionLifecycle()
         print("native_voice_p2_session_checks=\(checks)")
         print("native_voice_p2_fake_engine_device_access=ZERO")
     }
 
-    private static func expect(_ success: Bool, _ message: String) {
+    static func expect(_ success: Bool, _ message: String) {
         checks += 1
         precondition(success, message)
     }
 
-    private static func identity(_ number: UInt64 = 1) -> NativeVoiceIdentity {
+    static func identity(_ number: UInt64 = 1) -> NativeVoiceIdentity {
         NativeVoiceIdentity(
             authority: .init(runtimeGeneration: 3, routeEpoch: number, configurationID: number),
             captureGeneration: number, captureToken: number, playbackEpoch: number, playbackToken: number
@@ -84,7 +87,7 @@ struct SessionTests {
         expect(graph.read().starts == 1 && graph.read().stops == 0, "turns reuse the same graph")
         await transport.close()
         await transport.close()
-        expect(graph.read().stops == 1 && hardware.update { $0.monitorStops } == 1, "close tears down once")
+        expect(graph.read().stops == 1, "close tears down once")
         graph.capture([9], sampleTime: offset, hostTime: ticks(offset, rate: 44100))
         expect(graph.render(19).allSatisfy { $0 == 0 }, "old graph renders silence after close")
         print("native_voice_p2_continuous_session=PASS")
@@ -203,16 +206,9 @@ private extension SessionTests {
         try await transport.start(identity: identity())
         let old = hardware.update { $0.graphs[0] }
         let before = old.read().snapshots
-        let event = hardware.update { state -> (@Sendable () -> Void) in
-            state.route = .init(
-                input: state.route.input,
-                output: .init(identifier: state.route.output.identifier, name: "Renamed", isAvailable: true)
-            )
-            return state.monitorChanged!
-        }
-        event()
+        old.read().deviceChanged?() // A devices-list notification without a route or format change.
         try await eventually { old.read().snapshots > before }
-        await expect(transport.state == .running && old.read().stops == 0, "cosmetic enumeration is harmless")
+        await expect(transport.state == .running && old.read().stops == 0, "unrelated device enumeration is harmless")
 
         hardware.update { $0.snapshot = FakeVoiceHardware.makeSnapshot(members: [6, 8]) }
         old.read().deviceChanged?()
@@ -265,7 +261,7 @@ private extension SessionTests {
             expect(hardware.update { $0.graphs.count } == 1, "failure never schedules another attempt")
             await transport.close()
             await transport.close()
-            expect(graph.read().stops == 1 && hardware.update { $0.monitorStops } == 1, "failed stop is idempotent")
+            expect(graph.read().stops == 1, "failed stop is idempotent")
         }
     }
 
@@ -293,7 +289,9 @@ private extension SessionTests {
         await expect(transport.state == .closed && graph.read().stops == 1, "revocation closes once")
         expect(graph.render(19).allSatisfy { $0 == 0 }, "revocation mutes the old graph")
     }
+}
 
+extension SessionTests {
     static func eventually(_ check: () async -> Bool) async throws {
         for _ in 0 ..< 250 {
             if await check() {

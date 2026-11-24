@@ -38,10 +38,29 @@ nonisolated struct NativeVoiceDeviceBinding: Equatable, Sendable {
 }
 
 nonisolated struct NativeVoiceGraphSnapshot: Equatable, Sendable {
+    struct Defaults: Equatable, Sendable {
+        let input: UInt32
+        let output: UInt32
+    }
+
     let plan: NativeVoiceGraphPlan
-    let inputDevice: UInt32
-    let outputDevice: UInt32
+    let defaults: Defaults
+    // Global CurrentDevice readbacks may both identify an Aggregate. Neither is physical source evidence.
+    let inputUnitDevice: UInt32
+    let outputUnitDevice: UInt32
     let bindings: [NativeVoiceDeviceBinding]
+    let streams: [NativeVoiceStreamBinding]
+}
+
+nonisolated struct NativeVoiceStreamBinding: Equatable, Sendable {
+    struct Format: Equatable, Sendable {
+        let sampleRateBits: UInt64
+        let encoding: [UInt32]
+    }
+
+    let id: UInt32
+    let virtualFormat: Format
+    let physicalFormat: Format
 }
 
 /// Owns the preallocated C context. The node blocks lease the same allocation.

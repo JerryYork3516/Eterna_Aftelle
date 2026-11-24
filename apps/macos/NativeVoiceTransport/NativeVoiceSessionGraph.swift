@@ -10,29 +10,23 @@ final nonisolated class NativeVoiceSessionGraph {
     }
 
     let engine: any NativeVoiceGraphBackend
-    let monitor: any MacSpeechDeviceRouteMonitoring
     let lease: NativeVoiceCallbackLease
     let worker: AppleNativeVoiceTransportWorker
     let binding: NativeVoiceGraphSnapshot
-    let defaults: MacSpeechDeviceRoute
     var pending: Pending?
     var playback: AppleNativeVoiceTransport.PlaybackState = .idle
     private var closed = false
 
     init(
         engine: any NativeVoiceGraphBackend,
-        monitor: any MacSpeechDeviceRouteMonitoring,
         lease: NativeVoiceCallbackLease,
         worker: AppleNativeVoiceTransportWorker,
-        binding: NativeVoiceGraphSnapshot,
-        defaults: MacSpeechDeviceRoute
+        binding: NativeVoiceGraphSnapshot
     ) {
         self.engine = engine
-        self.monitor = monitor
         self.lease = lease
         self.worker = worker
         self.binding = binding
-        self.defaults = defaults
     }
 
     deinit { close() }
@@ -45,7 +39,6 @@ final nonisolated class NativeVoiceSessionGraph {
         guard !closed else { return }
         closed = true
         lease.close()
-        monitor.stop()
         engine.stop()
         pending = nil
     }

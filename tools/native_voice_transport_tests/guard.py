@@ -63,13 +63,16 @@ for name in p2:
 engine = (sources / "NativeVoiceSystemEngine.swift").read_text()
 assert swift.count("AVAudioEngine()") == 1
 for contract in ("setVoiceProcessingEnabled(true)", "isVoiceProcessingAGCEnabled = true",
-                 "isVoiceProcessingBypassed = false", "isAutoShutdownEnabled = false", "nvt_connect_voice_graph("):
+                 "isVoiceProcessingBypassed = false", "isAutoShutdownEnabled = false",
+                 "nvt_negotiate_voice_output(", "nvt_connect_voice_graph("):
     assert engine.count(contract) == 1, contract
+assert "capture.isEqual(render)" in engine and "proposed.isEqual(input)" in engine
+assert "SystemMacSpeechDeviceMonitor" not in swift
 bridge = (sources / "NativeVoiceRealtimeLease.mm").read_text()
 for contract in ("initWithReceiverBlock:", "initWithFormat:format renderBlock:",
                  "connect:engine.inputNode to:sink format:capture",
                  "connect:source to:engine.mainMixerNode format:sourceFormat",
-                 "connect:engine.mainMixerNode to:engine.outputNode format:render"):
+                 "connect:engine.mainMixerNode to:engine.outputNode format:capture"):
     assert bridge.count(contract) == 1, contract
 
 ring = (sources / "NativeVoiceRing.c").read_text()

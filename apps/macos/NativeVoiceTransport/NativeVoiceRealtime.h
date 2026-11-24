@@ -57,8 +57,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (AVAudioSinkNode *)makeSink;
 - (AVAudioSourceNode *)makeSourceWithFormat:(AVAudioFormat *)format;
 @end
+FOUNDATION_EXPORT BOOL nvt_negotiate_voice_output(AVAudioEngine *engine, AVAudioFormat *capture);
 FOUNDATION_EXPORT BOOL nvt_connect_voice_graph(AVAudioEngine *engine, AVAudioSinkNode *sink, AVAudioSourceNode *source,
-                                               AVAudioFormat *capture, AVAudioFormat *sourceFormat, AVAudioFormat *render);
+                                               AVAudioFormat *capture, AVAudioFormat *sourceFormat);
 NS_ASSUME_NONNULL_END
 #endif
 #endif

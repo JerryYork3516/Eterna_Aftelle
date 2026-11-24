@@ -10,12 +10,8 @@ final nonisolated class FakeVoiceHardware: @unchecked Sendable {
         var authorized = true
         var failure: FakeVoiceFailure?
         var graphs: [FakeVoiceEngine] = []
-        var route = MacSpeechDeviceRoute(
-            input: .init(identifier: "fake-input", name: "Mic", isAvailable: true),
-            output: .init(identifier: "fake-output", name: "Speaker", isAvailable: true)
-        )
-        var monitorChanged: (@Sendable () -> Void)?
-        var monitorStops = 0
+        var routeAvailable = true
+        var changeDuringRegistration: NativeVoiceGraphSnapshot?
         var snapshot = FakeVoiceHardware.makeSnapshot()
     }
 
@@ -33,47 +29,44 @@ final nonisolated class FakeVoiceHardware: @unchecked Sendable {
                 self.update { $0.graphs.append(graph) }
                 return graph
             },
-            makeMonitor: { FakeVoiceMonitor(hardware: self) },
             authorized: { self.update { $0.authorized } },
             limits: .init(ringFrames: ringFrames, callbackFrames: 2048, captureChannel: 1)
         )
     }
 
     static func makeSnapshot(
-        capture: Double = 44100, render: Double = 48000, members: [UInt32] = [6, 9]
+        capture: Double = 44100, render: Double = 48000, members: [UInt32] = [6, 9],
+        defaultOutput: UInt32 = 16, physicalBits: UInt32 = 32
     ) -> NativeVoiceGraphSnapshot {
         let plan = NativeVoiceGraphPlan(
             capture: .init(sampleRate: capture, channels: 2, interleaved: true, float32: true),
             render: .init(sampleRate: render, channels: 2, interleaved: false, float32: true)
         )
-        let binding = NativeVoiceDeviceBinding(
+        let aggregate = NativeVoiceDeviceBinding(
             id: 50, uid: "fake-aggregate", nominalRate: capture, inputStreams: [51], outputStreams: [52],
-            inputChannels: [2], outputChannels: [2], aggregateUIDs: ["fake-input", "fake-output"],
-            activeMembers: members, clockMemberUID: "fake-input"
+            inputChannels: [2], outputChannels: [2], aggregateUIDs: members.map { "member-\($0)" },
+            activeMembers: members, clockMemberUID: "member-6"
         )
-        return .init(plan: plan, inputDevice: 50, outputDevice: 50, bindings: [binding])
-    }
-}
-
-final nonisolated class FakeVoiceMonitor: MacSpeechDeviceRouteMonitoring {
-    let hardware: FakeVoiceHardware
-    init(hardware: FakeVoiceHardware) {
-        self.hardware = hardware
-    }
-
-    func currentRoute() -> MacSpeechDeviceRoute {
-        hardware.update { $0.route }
-    }
-
-    func start(onChange: @escaping @Sendable () -> Void) {
-        hardware.update { $0.monitorChanged = onChange }
-    }
-
-    func stop() {
-        hardware.update {
-            $0.monitorChanged = nil
-            $0.monitorStops += 1
+        let endpoints = Set(members + [6, defaultOutput]).sorted().map { id in
+            let isInput = id == 6
+            return NativeVoiceDeviceBinding(
+                id: id, uid: "device-\(id)", nominalRate: capture,
+                inputStreams: isInput ? [id * 10] : [], outputStreams: isInput ? [] : [id * 10],
+                inputChannels: isInput ? [2] : [], outputChannels: isInput ? [] : [2],
+                aggregateUIDs: nil, activeMembers: [], clockMemberUID: nil
+            )
         }
+        let bindings = endpoints + [aggregate]
+        let streams = bindings.flatMap { $0.inputStreams + $0.outputStreams }.sorted().map { id in
+            NativeVoiceStreamBinding(
+                id: id, virtualFormat: .init(sampleRateBits: capture.bitPattern, encoding: [32]),
+                physicalFormat: .init(sampleRateBits: capture.bitPattern, encoding: [physicalBits])
+            )
+        }
+        return .init(
+            plan: plan, defaults: .init(input: 6, output: defaultOutput), inputUnitDevice: 50, outputUnitDevice: 50,
+            bindings: bindings, streams: streams
+        )
     }
 }
 
@@ -134,6 +127,7 @@ final nonisolated class FakeVoiceEngine: NativeVoiceGraphBackend, @unchecked Sen
         if hardware!.update({ $0.failure == .snapshot }) {
             throw FakeVoiceFailure.snapshot
         }
+        guard hardware!.update({ $0.routeAvailable }) else { throw NativeVoiceSessionError.route }
         return hardware!.update { $0.snapshot }
     }
 
@@ -141,6 +135,11 @@ final nonisolated class FakeVoiceEngine: NativeVoiceGraphBackend, @unchecked Sen
         lock.withLock { state.deviceChanged = changed }
         if hardware!.update({ $0.failure == .watch }) {
             throw FakeVoiceFailure.watch
+        }
+        hardware!.update { state in
+            if let changed = state.changeDuringRegistration {
+                state.snapshot = changed
+            }
         }
     }
 

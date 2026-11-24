@@ -40,13 +40,22 @@
 @end
 
 BOOL nvt_connect_voice_graph(AVAudioEngine *engine, AVAudioSinkNode *sink, AVAudioSourceNode *source,
-                             AVAudioFormat *capture, AVAudioFormat *sourceFormat, AVAudioFormat *render) {
+                             AVAudioFormat *capture, AVAudioFormat *sourceFormat) {
     @try {
         [engine attachNode:sink];
         [engine attachNode:source];
         [engine connect:engine.inputNode to:sink format:capture];
         [engine connect:source to:engine.mainMixerNode format:sourceFormat];
-        [engine connect:engine.mainMixerNode to:engine.outputNode format:render];
+        return YES;
+    } @catch (NSException *) {
+        return NO;
+    }
+}
+
+BOOL nvt_negotiate_voice_output(AVAudioEngine *engine, AVAudioFormat *capture) {
+    if (engine.isRunning) return NO;
+    @try {
+        [engine connect:engine.mainMixerNode to:engine.outputNode format:capture];
         return YES;
     } @catch (NSException *) {
         return NO;

@@ -24,7 +24,7 @@ done
 clang++ -std=c++20 -fobjc-arc -Wall -Wextra -Werror "${c[@]}" -c "$src/NativeVoiceRealtimeLease.mm" -o "$dir/lease.o"
 swiftc -parse-as-library -swift-version 6 -default-isolation MainActor -warn-concurrency -strict-concurrency=complete \
   "${swift[@]}" -import-objc-header "$src/NativeVoiceRealtime.h" -framework AVFoundation -framework CoreAudio \
-  -framework AudioToolbox -lc++ "$src/"*.swift "$root/apps/macos/Aftelle/MacSpeechDeviceMonitor.swift" \
+  -framework AudioToolbox -lc++ "$src/"*.swift \
   "$tests/"*.swift "$dir/"*.o -o "$dir/session"
 "$dir/session"
 python3 "$root/tools/native_voice_transport_tests/guard.py"

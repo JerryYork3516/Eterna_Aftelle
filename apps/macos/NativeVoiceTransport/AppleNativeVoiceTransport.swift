@@ -26,7 +26,6 @@ actor AppleNativeVoiceTransport {
     }
 
     private let makeEngine: @Sendable () -> any NativeVoiceGraphBackend
-    private let makeMonitor: @Sendable () -> any MacSpeechDeviceRouteMonitoring
     private let authorized: @Sendable () -> Bool
     private let limits: Limits
     private var lastIdentity: NativeVoiceIdentity?
@@ -35,12 +34,10 @@ actor AppleNativeVoiceTransport {
 
     init(
         makeEngine: @escaping @Sendable () -> any NativeVoiceGraphBackend,
-        makeMonitor: @escaping @Sendable () -> any MacSpeechDeviceRouteMonitoring,
         authorized: @escaping @Sendable () -> Bool,
         limits: Limits = Limits()
     ) {
         self.makeEngine = makeEngine
-        self.makeMonitor = makeMonitor
         self.authorized = authorized
         self.limits = limits
     }
@@ -163,11 +160,8 @@ private extension AppleNativeVoiceTransport {
         }
         lastIdentity = identity
         let engine = makeEngine()
-        let monitor = makeMonitor()
         var lease: NativeVoiceCallbackLease?
         do {
-            let defaults = monitor.currentRoute()
-            guard defaults.input.isAvailable, defaults.output.isAvailable else { throw NativeVoiceSessionError.route }
             let plan = try engine.negotiate()
             let callbacks = try makeLease(plan, identity: identity)
             lease = callbacks
@@ -177,17 +171,14 @@ private extension AppleNativeVoiceTransport {
             try installAndStart(engine, lease: callbacks, plan: plan, captureToken: identity.capture.token)
             let binding = try engine.snapshot()
             guard binding.plan == plan else { throw NativeVoiceSessionError.format }
-            try watchRoute(engine, monitor: monitor, binding: binding, token: identity.capture.token)
+            try watchRoute(engine, binding: binding, token: identity.capture.token)
             guard authorized() else { throw NativeVoiceSessionError.permission }
-            guard sameDefaults(defaults, monitor.currentRoute()), try engine.snapshot() == binding,
+            guard try engine.snapshot() == binding,
                   nvt_rt_activate(callbacks.context) else { throw NativeVoiceSessionError.route }
-            live = NativeVoiceSessionGraph(
-                engine: engine, monitor: monitor, lease: callbacks, worker: worker, binding: binding, defaults: defaults
-            )
+            live = NativeVoiceSessionGraph(engine: engine, lease: callbacks, worker: worker, binding: binding)
             state = .running
         } catch {
             lease?.close()
-            monitor.stop()
             engine.stop()
             state = authorized() ? .rebuildRequired : .closed
             throw error
@@ -207,27 +198,18 @@ private extension AppleNativeVoiceTransport {
     }
 
     func watchRoute(
-        _ engine: any NativeVoiceGraphBackend, monitor: any MacSpeechDeviceRouteMonitoring,
-        binding: NativeVoiceGraphSnapshot, token: UInt64
+        _ engine: any NativeVoiceGraphBackend, binding: NativeVoiceGraphSnapshot, token: UInt64
     ) throws {
-        let changed: @Sendable () -> Void = { [weak self] in
+        try engine.watchDevices(binding) { [weak self] in
             Task { await self?.deviceEvent(token, graphInvalidated: false) }
         }
-        try engine.watchDevices(binding, changed: changed)
-        monitor.start(onChange: changed)
     }
 
     func deviceEvent(_ token: UInt64, graphInvalidated: Bool) {
         guard let live, live.worker.identity.capture.token == token else { return }
         guard authorized() else { tearDown(.closed); return }
         guard !graphInvalidated, nvt_rt_active(live.context),
-              sameDefaults(live.defaults, live.monitor.currentRoute()),
               (try? live.engine.snapshot()) == live.binding else { tearDown(.rebuildRequired); return }
-    }
-
-    func sameDefaults(_ left: MacSpeechDeviceRoute, _ right: MacSpeechDeviceRoute) -> Bool {
-        right.input.isAvailable && right.output.isAvailable
-            && left.input.identifier == right.input.identifier && left.output.identifier == right.output.identifier
     }
 
     func running() throws -> NativeVoiceSessionGraph {
