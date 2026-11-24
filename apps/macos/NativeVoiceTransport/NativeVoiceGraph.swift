@@ -33,7 +33,7 @@ nonisolated struct NativeVoiceDeviceBinding: Equatable, Sendable {
     let inputChannels: [UInt32]
     let outputChannels: [UInt32]
     let aggregateUIDs: [String]?
-    let activeMembers: [UInt32]
+    let activeMembers: [UInt32]?
     let clockMemberUID: String?
 }
 

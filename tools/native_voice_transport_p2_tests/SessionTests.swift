@@ -8,6 +8,7 @@ struct SessionTests {
     static func main() async throws {
         try negotiationContract()
         try listenerContract()
+        try automaticAggregateContract()
         try await continuousSession()
         try await observedCaptureLoss()
         try await deviceLifecycle()
@@ -59,7 +60,7 @@ struct SessionTests {
         expect(installed.capture.channels == 2 && installed.capture.interleaved, "negotiated sink layout")
         expect(
             installed.capture.sampleRate == 44100 && installed.source.sampleRate == 48000,
-            "independent VP I/O rates"
+            "independent fake I/O rates exercise P1 SRC"
         )
         expect(installed.source.channels == 1 && installed.source.float32, "mono float source for mixer")
         let counts = [193, 501, 977, 613, 803, 1009, 367, 631, 509, 769]

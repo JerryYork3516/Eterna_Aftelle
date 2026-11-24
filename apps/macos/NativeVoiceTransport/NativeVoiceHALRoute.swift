@@ -4,6 +4,12 @@ import Foundation
 
 /// Checked HAL reads and registrations. Owned by the non-realtime graph control.
 final nonisolated class NativeVoiceHALRoute {
+    struct AggregateReadback {
+        let active: [AudioDeviceID]?
+        let full: [String]?
+        let clock: String?
+    }
+
     struct Registration {
         let hasProperty: (AudioObjectID, AudioObjectPropertyAddress) -> Bool
         let add: (AudioObjectID, AudioObjectPropertyAddress, DispatchQueue, @escaping AudioObjectPropertyListenerBlock)
@@ -86,7 +92,7 @@ final nonisolated class NativeVoiceHALRoute {
             }
             let device = try binding(id)
             result[id] = device
-            pending.append(contentsOf: device.activeMembers)
+            pending.append(contentsOf: device.activeMembers ?? [])
         }
         return result.values.sorted { $0.id < $1.id }
     }
@@ -108,7 +114,7 @@ final nonisolated class NativeVoiceHALRoute {
             snapshot.inputUnitDevice,
             snapshot.outputUnitDevice
         ]
-        let members = snapshot.bindings.flatMap(\.activeMembers)
+        let members = snapshot.bindings.flatMap { $0.activeMembers ?? [] }
         let streams = snapshot.bindings.flatMap { $0.inputStreams + $0.outputStreams }
         guard Set(roots + members).isSubset(of: Set(snapshot.bindings.map(\.id))),
               Set(streams) == Set(snapshot.streams.map(\.id)) else { throw NativeVoiceSessionError.route }
@@ -161,25 +167,13 @@ final nonisolated class NativeVoiceHALRoute {
                 try watch(binding.id, Self.address(selector, scope: scope), required: required, listener: listener)
             }
         }
-        if binding.aggregateUIDs != nil {
-            try watch(
-                binding.id,
-                Self.address(kAudioAggregateDevicePropertyActiveSubDeviceList),
-                required: true,
-                listener: listener
-            )
-            try watch(
-                binding.id,
-                Self.address(kAudioAggregateDevicePropertyFullSubDeviceList),
-                required: true,
-                listener: listener
-            )
-            try watch(
-                binding.id,
-                Self.address(kAudioAggregateDevicePropertyMainSubDevice),
-                required: binding.clockMemberUID != nil,
-                listener: listener
-            )
+        let aggregateProperties = [
+            (kAudioAggregateDevicePropertyActiveSubDeviceList, binding.activeMembers != nil),
+            (kAudioAggregateDevicePropertyFullSubDeviceList, binding.aggregateUIDs != nil),
+            (kAudioAggregateDevicePropertyMainSubDevice, binding.clockMemberUID != nil)
+        ]
+        for (selector, exposed) in aggregateProperties where exposed {
+            try watch(binding.id, Self.address(selector), required: true, listener: listener)
         }
     }
 
@@ -196,6 +190,19 @@ final nonisolated class NativeVoiceHALRoute {
         guard registration.add(id, address, queue, listener) == noErr else { throw NativeVoiceSessionError.route }
         watches.append(Watch(id: id, address: address, listener: listener))
     }
+
+    static func aggregateReadback(
+        _ transport: UInt32, read: () throws -> AggregateReadback
+    ) throws -> AggregateReadback {
+        guard transport == kAudioDeviceTransportTypeAggregate || transport == kAudioDeviceTransportTypeAutoAggregate
+        else { return .init(active: nil, full: nil, clock: nil) }
+        let properties = try read()
+        // Automatically created devices may expose only part of the Aggregate metadata.
+        guard transport != kAudioDeviceTransportTypeAggregate
+            || (properties.active?.isEmpty == false && properties.full?.isEmpty == false)
+        else { throw NativeVoiceSessionError.route }
+        return properties
+    }
 }
 
 private extension NativeVoiceHALRoute {
@@ -204,20 +211,30 @@ private extension NativeVoiceHALRoute {
         let transport = try read(id, address(kAudioDevicePropertyTransportType), initial: UInt32(0))
         let rate = try read(id, address(kAudioDevicePropertyNominalSampleRate), initial: Double(0))
         guard alive != 0, rate.isFinite, rate > 0 else { throw NativeVoiceSessionError.route }
-        let aggregate = transport == kAudioDeviceTransportTypeAggregate
-        let members = aggregate ? try ids(id, address(kAudioAggregateDevicePropertyActiveSubDeviceList)) : []
-        let uids: [String]? = aggregate ? try object(id, address(kAudioAggregateDevicePropertyFullSubDeviceList)) : nil
-        var main = address(kAudioAggregateDevicePropertyMainSubDevice)
-        let clock: String? = aggregate && AudioObjectHasProperty(id, &main) ? try object(id, main) : nil
-        guard !aggregate || (!members.isEmpty && uids?.isEmpty == false) else { throw NativeVoiceSessionError.route }
+        let aggregate = try aggregateReadback(transport) {
+            try AggregateReadback(
+                active: available(id, kAudioAggregateDevicePropertyActiveSubDeviceList, read: ids),
+                full: available(id, kAudioAggregateDevicePropertyFullSubDeviceList, read: object),
+                clock: available(id, kAudioAggregateDevicePropertyMainSubDevice, read: object)
+            )
+        }
         return try NativeVoiceDeviceBinding(
             id: id, uid: object(id, address(kAudioDevicePropertyDeviceUID)), nominalRate: rate,
             inputStreams: ids(id, address(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput)),
             outputStreams: ids(id, address(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeOutput)),
             inputChannels: channels(id, scope: kAudioObjectPropertyScopeInput),
             outputChannels: channels(id, scope: kAudioObjectPropertyScopeOutput),
-            aggregateUIDs: uids, activeMembers: members, clockMemberUID: clock
+            aggregateUIDs: aggregate.full, activeMembers: aggregate.active, clockMemberUID: aggregate.clock
         )
+    }
+
+    nonisolated static func available<T>(
+        _ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
+        read: (AudioObjectID, AudioObjectPropertyAddress) throws -> T
+    ) throws -> T? {
+        var property = address(selector)
+        guard AudioObjectHasProperty(id, &property) else { return nil }
+        return try read(id, property)
     }
 
     nonisolated static func streamFormat(

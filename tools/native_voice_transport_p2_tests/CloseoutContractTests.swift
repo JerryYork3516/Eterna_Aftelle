@@ -78,6 +78,34 @@ extension SessionTests {
         print("native_voice_p2_listener_registration=PASS")
     }
 
+    static func automaticAggregateContract() throws {
+        let transport = kAudioDeviceTransportTypeAutoAggregate
+        let active = try NativeVoiceHALRoute.aggregateReadback(transport) {
+            .init(active: [6, 9], full: nil, clock: nil)
+        }
+        expect(active.active == [6, 9] && active.full == nil, "auto Aggregate exposes active member IDs independently")
+        let hidden = try NativeVoiceHALRoute.aggregateReadback(transport) { .init(active: nil, full: nil, clock: nil) }
+        expect(hidden.active == nil && hidden.full == nil, "unexposed auto Aggregate membership stays unknown")
+        do {
+            _ = try NativeVoiceHALRoute.aggregateReadback(kAudioDeviceTransportTypeAggregate) { hidden }
+            preconditionFailure("public Aggregate without member readback was accepted")
+        } catch NativeVoiceSessionError.route {
+            expect(true, "ordinary Aggregate requires its member readback")
+        }
+
+        let fullList = WatchAddress(50, kAudioAggregateDevicePropertyFullSubDeviceList)
+        let activeList = WatchAddress(50, kAudioAggregateDevicePropertyActiveSubDeviceList)
+        let member = WatchAddress(9, kAudioDevicePropertyDeviceIsAlive)
+        let graph = FakeVoiceHardware.makeSnapshot(members: active.active!, exposesFullAggregateList: false)
+        let records = ListenerRecords()
+        let watcher = records.watcher(missing: fullList)
+        try watcher.start(graph, changed: {})
+        expect(Set([activeList, member]).isSubset(of: Set(records.added)), "active-only auto Aggregate is watched")
+        watcher.stop()
+        try listenerRejected(graph, missing: activeList)
+        print("native_voice_p2_automatic_aggregate=PASS")
+    }
+
     static func liveRouteChanges() async throws {
         let hardware = FakeVoiceHardware()
         hardware.update { $0.changeDuringRegistration = FakeVoiceHardware.makeSnapshot(defaultOutput: 22) }

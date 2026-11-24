@@ -36,7 +36,7 @@ final nonisolated class FakeVoiceHardware: @unchecked Sendable {
 
     static func makeSnapshot(
         capture: Double = 44100, render: Double = 48000, members: [UInt32] = [6, 9],
-        defaultOutput: UInt32 = 16, physicalBits: UInt32 = 32
+        defaultOutput: UInt32 = 16, physicalBits: UInt32 = 32, exposesFullAggregateList: Bool = true
     ) -> NativeVoiceGraphSnapshot {
         let plan = NativeVoiceGraphPlan(
             capture: .init(sampleRate: capture, channels: 2, interleaved: true, float32: true),
@@ -44,7 +44,8 @@ final nonisolated class FakeVoiceHardware: @unchecked Sendable {
         )
         let aggregate = NativeVoiceDeviceBinding(
             id: 50, uid: "fake-aggregate", nominalRate: capture, inputStreams: [51], outputStreams: [52],
-            inputChannels: [2], outputChannels: [2], aggregateUIDs: members.map { "member-\($0)" },
+            inputChannels: [2], outputChannels: [2],
+            aggregateUIDs: exposesFullAggregateList ? members.map { "member-\($0)" } : nil,
             activeMembers: members, clockMemberUID: "member-6"
         )
         let endpoints = Set(members + [6, defaultOutput]).sorted().map { id in
@@ -53,7 +54,7 @@ final nonisolated class FakeVoiceHardware: @unchecked Sendable {
                 id: id, uid: "device-\(id)", nominalRate: capture,
                 inputStreams: isInput ? [id * 10] : [], outputStreams: isInput ? [] : [id * 10],
                 inputChannels: isInput ? [2] : [], outputChannels: isInput ? [] : [2],
-                aggregateUIDs: nil, activeMembers: [], clockMemberUID: nil
+                aggregateUIDs: nil, activeMembers: nil, clockMemberUID: nil
             )
         }
         let bindings = endpoints + [aggregate]
