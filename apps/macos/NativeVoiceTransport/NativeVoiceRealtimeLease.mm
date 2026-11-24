@@ -30,9 +30,9 @@
 - (AVAudioSourceNode *)makeSourceWithFormat:(AVAudioFormat *)format {
     const auto lease = _context;
     return [[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(
-        BOOL *isSilent, const AudioTimeStamp *, AVAudioFrameCount frames, AudioBufferList *output) {
+        BOOL *isSilent, const AudioTimeStamp *time, AVAudioFrameCount frames, AudioBufferList *output) {
         bool silent = true;
-        OSStatus status = nvt_rt_render(lease.get(), &silent, frames, output);
+        OSStatus status = nvt_rt_render_at_time(lease.get(), &silent, time, frames, output);
         *isSilent = silent;
         return status;
     }];

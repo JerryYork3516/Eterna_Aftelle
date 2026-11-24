@@ -35,6 +35,19 @@ nonisolated struct MacSpeechAudioOutputEvent: Sendable, Equatable {
     let generation: UInt64
     let sequence: UInt64?
     let error: MacSpeechAudioOutputHostError?
+    let isSourceHandoff: Bool
+
+    init(
+        ordinal: UInt64, kind: MacSpeechAudioOutputEventKind, generation: UInt64, sequence: UInt64?,
+        error: MacSpeechAudioOutputHostError?, isSourceHandoff: Bool = false
+    ) {
+        self.ordinal = ordinal
+        self.kind = kind
+        self.generation = generation
+        self.sequence = sequence
+        self.error = error
+        self.isSourceHandoff = isSourceHandoff
+    }
 }
 
 nonisolated struct MacSpeechAudioOutputHostSnapshot: Sendable, Equatable {

@@ -79,6 +79,8 @@
 		A07B12000000000000000005 /* NativeVoiceSystemEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000015 /* NativeVoiceSystemEngine.swift */; };
 		A07B12000000000000000006 /* NativeVoiceRealtime.c in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000016 /* NativeVoiceRealtime.c */; settings = {COMPILER_FLAGS = "-std=c11"; }; };
 		A07B12000000000000000007 /* NativeVoiceRealtimeLease.mm in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000017 /* NativeVoiceRealtimeLease.mm */; };
+		A07B13000000000000000001 /* MacSpeechNativeRealtimeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B13000000000000000011 /* MacSpeechNativeRealtimeSession.swift */; };
+		A07B13000000000000000002 /* MacSpeechNativeRealtimeFacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B13000000000000000012 /* MacSpeechNativeRealtimeFacts.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -158,6 +160,8 @@
 		A07B12000000000000000015 /* NativeVoiceSystemEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../NativeVoiceTransport/NativeVoiceSystemEngine.swift; sourceTree = SOURCE_ROOT; };
 		A07B12000000000000000016 /* NativeVoiceRealtime.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ../NativeVoiceTransport/NativeVoiceRealtime.c; sourceTree = SOURCE_ROOT; };
 		A07B12000000000000000017 /* NativeVoiceRealtimeLease.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = ../NativeVoiceTransport/NativeVoiceRealtimeLease.mm; sourceTree = SOURCE_ROOT; };
+		A07B13000000000000000011 /* MacSpeechNativeRealtimeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechNativeRealtimeSession.swift; sourceTree = "<group>"; };
+		A07B13000000000000000012 /* MacSpeechNativeRealtimeFacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechNativeRealtimeFacts.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -190,6 +194,8 @@
 				A0754A200000000000000011 /* MacSpeechNativeOutputBridge.swift */,
 				A079A100000000000000011 /* MacSpeechRealtimeBrainInputBridge.swift */,
 				A079A100000000000000012 /* MacSpeechRealtimeBrainOutputBridge.swift */,
+				A07B13000000000000000011 /* MacSpeechNativeRealtimeSession.swift */,
+				A07B13000000000000000012 /* MacSpeechNativeRealtimeFacts.swift */,
 				A07B11000000000000000014 /* AppleNativeVoiceTransportWorker.swift */,
 				A07B11000000000000000013 /* NativeVoiceStreamingSRC.swift */,
 				A07B11000000000000000012 /* NativeVoiceClock.swift */,
@@ -406,6 +412,8 @@
 				A070C0000000000000000001 /* AftelleApp.swift in Sources */,
 				A070C0000000000000000003 /* ContentView.swift in Sources */,
 				A070C0000000000000000028 /* AppController.swift in Sources */,
+				A07B13000000000000000001 /* MacSpeechNativeRealtimeSession.swift in Sources */,
+				A07B13000000000000000002 /* MacSpeechNativeRealtimeFacts.swift in Sources */,
 				A070C0000000000000000120 /* ProviderKeychainStore.swift in Sources */,
 				A070C0000000000000000026 /* AppModels.swift in Sources */,
 				A070C0000000000000000130 /* ResidentVisualIntent.swift in Sources */,

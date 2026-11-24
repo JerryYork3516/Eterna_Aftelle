@@ -16,13 +16,21 @@ actor AppleNativeVoiceTransport {
         let playback: PlaybackState
         let token: UInt64
         let consumerAcknowledged: Bool
+        let renderClearAcknowledged: Bool
         let renderHandoff: Bool
+        let droppedRenderFacts: UInt64
         let idleFrames: UInt64
         let cancelledFrames: UInt64
         let underrunFrames: UInt64
         let captureDroppedFrames: UInt64
         let captureOverflowEvents: UInt64
         let rejectedOutputFrames: UInt64
+    }
+
+    struct ServiceBatch: Sendable {
+        let packets: [NativeVoiceCapturePacket]
+        let render: [NativeVoiceRenderFact]
+        let progress: Progress
     }
 
     private let makeEngine: @Sendable () -> any NativeVoiceGraphBackend
@@ -91,6 +99,35 @@ actor AppleNativeVoiceTransport {
         try transitionPlayback(graph, to: next, cancelling: true)
     }
 
+    /// Runtime has completed N+1 after Source acknowledged the old playback clear.
+    func advanceGeneration(from current: NativeVoiceIdentity, to next: NativeVoiceIdentity) throws {
+        let graph = try running()
+        let authority = current.capture.authority
+        let successor = next.capture.authority
+        guard graph.worker.identity.capture == current.capture,
+              graph.worker.identity.playback == current.playback,
+              graph.playback == .cancelled,
+              nvt_rt_stats(graph.context).rendered_clear_token == current.playback.token,
+              successor.configurationID == authority.configurationID, successor.routeEpoch == authority.routeEpoch,
+              authority.runtimeGeneration < UInt64.max, successor.runtimeGeneration == authority.runtimeGeneration + 1,
+              next.capture.generation == current.capture.generation,
+              next.capture.token > current.capture.token, next.playback.token > current.playback.token,
+              next.playback.epoch == current.playback.epoch else { throw NativeVoiceTransportError.staleIdentity }
+        do {
+            guard nvt_rt_set_capture(graph.context, next.capture.token),
+                  nvt_rt_set_playback(graph.context, next.playback.token, true)
+            else { throw NativeVoiceTransportError.staleIdentity }
+            try graph.worker.reset(
+                identity: next, nativeRate: graph.binding.plan.capture.sampleRate,
+                playbackRate: graph.binding.plan.render.sampleRate
+            )
+            lastIdentity = next
+        } catch {
+            tearDown(.rebuildRequired)
+            throw error
+        }
+    }
+
     /// False leaves this chunk unaccepted so the same bytes can be retried on the serial worker.
     func enqueuePlayback(_ pcm: Data, identity: NativeVoiceIdentity.Playback) throws -> Bool {
         let graph = try running()
@@ -136,6 +173,16 @@ actor AppleNativeVoiceTransport {
         return packets
     }
 
+    func bridgeService(maxCaptureFrames: Int) throws -> ServiceBatch {
+        try ServiceBatch(
+            packets: service(maxCaptureFrames: maxCaptureFrames), render: takeRenderFacts(), progress: progress()
+        )
+    }
+
+    func configuredPlan() throws -> NativeVoiceGraphPlan {
+        try running().binding.plan
+    }
+
     /// Handoff reports an EOS observed by the source callback. Physical playback completion is unknown.
     func progress() throws -> Progress {
         let graph = try running()
@@ -144,11 +191,28 @@ actor AppleNativeVoiceTransport {
         return Progress(
             playback: graph.playback, token: stats.active_token,
             consumerAcknowledged: stats.acknowledged_token == stats.active_token,
+            renderClearAcknowledged: stats.rendered_clear_token == stats.active_token,
             renderHandoff: stats.rendered_end_token == stats.active_token,
+            droppedRenderFacts: stats.dropped_render_facts,
             idleFrames: stats.idle_frames, cancelledFrames: stats.cancelled_frames,
             underrunFrames: stats.underrun_frames, captureDroppedFrames: stats.rejected_input_frames,
             captureOverflowEvents: capture.overflow_events, rejectedOutputFrames: stats.rejected_output_frames
         )
+    }
+
+    func takeRenderFacts() throws -> [NativeVoiceRenderFact] {
+        let graph = try running()
+        let playback = graph.worker.identity.playback
+        var record = NVTRenderFact()
+        var facts: [NativeVoiceRenderFact] = []
+        // One bounded pass even if Source keeps publishing while this worker drains.
+        for _ in 0 ..< Int(NVT_RENDER_FACT_CAPACITY) {
+            guard nvt_rt_take_render_fact(graph.context, &record) else { break }
+            guard record.playback_token == playback.token,
+                  record.configuration_id == playback.authority.configurationID else { continue }
+            facts.append(NativeVoiceRenderFact(record, playback: playback))
+        }
+        return facts
     }
 }
 
@@ -168,10 +232,10 @@ private extension AppleNativeVoiceTransport {
             let worker = try AppleNativeVoiceTransportWorker(
                 identity: identity, nativeRate: plan.capture.sampleRate, playbackRate: plan.render.sampleRate
             )
-            try installAndStart(engine, lease: callbacks, plan: plan, captureToken: identity.capture.token)
+            try installAndStart(engine, lease: callbacks, plan: plan)
             let binding = try engine.snapshot()
             guard binding.plan == plan else { throw NativeVoiceSessionError.format }
-            try watchRoute(engine, binding: binding, token: identity.capture.token)
+            try watchRoute(engine, binding: binding, lease: callbacks)
             guard authorized() else { throw NativeVoiceSessionError.permission }
             guard try engine.snapshot() == binding,
                   nvt_rt_activate(callbacks.context) else { throw NativeVoiceSessionError.route }
@@ -187,26 +251,26 @@ private extension AppleNativeVoiceTransport {
 
     func installAndStart(
         _ engine: any NativeVoiceGraphBackend, lease: NativeVoiceCallbackLease,
-        plan: NativeVoiceGraphPlan, captureToken: UInt64
+        plan: NativeVoiceGraphPlan
     ) throws {
         try engine.install(plan, lease: lease) { [weak self] in
             lease.close()
-            Task { await self?.deviceEvent(captureToken, graphInvalidated: true) }
+            Task { await self?.deviceEvent(lease, graphInvalidated: true) }
         }
         guard authorized() else { throw NativeVoiceSessionError.permission }
         try engine.start()
     }
 
     func watchRoute(
-        _ engine: any NativeVoiceGraphBackend, binding: NativeVoiceGraphSnapshot, token: UInt64
+        _ engine: any NativeVoiceGraphBackend, binding: NativeVoiceGraphSnapshot, lease: NativeVoiceCallbackLease
     ) throws {
         try engine.watchDevices(binding) { [weak self] in
-            Task { await self?.deviceEvent(token, graphInvalidated: false) }
+            Task { await self?.deviceEvent(lease, graphInvalidated: false) }
         }
     }
 
-    func deviceEvent(_ token: UInt64, graphInvalidated: Bool) {
-        guard let live, live.worker.identity.capture.token == token else { return }
+    func deviceEvent(_ lease: NativeVoiceCallbackLease, graphInvalidated: Bool) {
+        guard let live, live.lease === lease else { return }
         guard authorized() else { tearDown(.closed); return }
         guard !graphInvalidated, nvt_rt_active(live.context),
               (try? live.engine.snapshot()) == live.binding else { tearDown(.rebuildRequired); return }

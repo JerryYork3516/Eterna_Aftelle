@@ -19,8 +19,11 @@ struct NVTRTIO {
     NVTRing *capture, *playback;
     float *capture_scratch;
     uint64_t lost_before;  // Sink producer only; committed with its next accepted block.
+    uint64_t lost_token;
     atomic_uint state;
     Counter playing, primed, cancelling, rendered_end, idle, cancelled, underrun, rejected_input, rejected_output;
+    Counter rendered_clear, render_read, render_written, render_dropped;
+    NVTRenderFact render_facts[NVT_RENDER_FACT_CAPACITY];
 };
 
 static uint64_t value(const Counter *counter) {
@@ -45,7 +48,8 @@ NVTRTIO *nvt_rt_create(NVTRTConfig config) {
     io->config = config;
     atomic_init(&io->state, PREPARED);
     Counter *fields[] = {&io->playing, &io->primed, &io->cancelling, &io->rendered_end, &io->idle, &io->cancelled,
-                         &io->underrun, &io->rejected_input, &io->rejected_output};
+                         &io->underrun, &io->rejected_input, &io->rejected_output,
+                         &io->rendered_clear, &io->render_read, &io->render_written, &io->render_dropped};
     for (size_t i = 0; i < sizeof(fields) / sizeof(*fields); ++i) {
         atomic_init(fields[i], 0);
         if (!atomic_is_lock_free(fields[i])) { nvt_rt_destroy(io); return NULL; }
@@ -74,7 +78,7 @@ bool nvt_rt_activate(NVTRTIO *io) {
 }
 void nvt_rt_close(NVTRTIO *io) {
     atomic_store_explicit(&io->state, CLOSED, memory_order_release);
-    // A graph never advances its capture token while active. Reserve its final token for close.
+    // UINT64_MAX is reserved for retirement.
     nvt_ring_invalidate(io->capture, UINT64_MAX);
 }
 bool nvt_rt_active(const NVTRTIO *io) {
@@ -82,6 +86,10 @@ bool nvt_rt_active(const NVTRTIO *io) {
 }
 NVTRing *nvt_rt_capture_ring(NVTRTIO *io) { return io->capture; }
 NVTRingStats nvt_rt_capture_stats(const NVTRTIO *io) { return nvt_ring_stats(io->capture); }
+
+bool nvt_rt_set_capture(NVTRTIO *io, uint64_t token) {
+    return nvt_rt_active(io) && token < UINT64_MAX && nvt_ring_invalidate(io->capture, token);
+}
 
 bool nvt_rt_set_playback(NVTRTIO *io, uint64_t token, bool cancelled) {
     uint64_t active = nvt_ring_active_token(io->playback);
@@ -106,10 +114,20 @@ NVTRTStats nvt_rt_stats(const NVTRTIO *io) {
         .active_token = nvt_ring_active_token(io->playback),
         .acknowledged_token = nvt_ring_acknowledged_token(io->playback),
         .rendered_end_token = value(&io->rendered_end),
+        .rendered_clear_token = value(&io->rendered_clear),
+        .dropped_render_facts = value(&io->render_dropped),
         .idle_frames = value(&io->idle), .cancelled_frames = value(&io->cancelled),
         .underrun_frames = value(&io->underrun), .rejected_input_frames = value(&io->rejected_input),
         .rejected_output_frames = value(&io->rejected_output)
     };
+}
+
+bool nvt_rt_take_render_fact(NVTRTIO *io, NVTRenderFact *fact) {
+    uint64_t read = value(&io->render_read);
+    if (read == value(&io->render_written)) return false;
+    *fact = io->render_facts[read % NVT_RENDER_FACT_CAPACITY];
+    publish(&io->render_read, read + 1);
+    return true;
 }
 
 static bool has_float_frames(const AudioBuffer *buffer, uint32_t channels, uint32_t frames) {
@@ -167,8 +185,12 @@ static void lost_input(NVTRTIO *io, uint32_t frames) {
 }
 
 OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames, const AudioBufferList *input) {
+    const uint64_t token = nvt_ring_active_token(io->capture);
     if (!frames || !nvt_rt_active(io)) return noErr;
-    const uint64_t token = io->config.capture_token;
+    if (token != io->lost_token) {
+        io->lost_token = token;
+        io->lost_before = 0;
+    }
     const float *mono = capture_mono(io, input, frames);
     if (!mono) { lost_input(io, frames); return noErr; }
 
@@ -186,20 +208,46 @@ OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames
     return noErr;
 }
 
-OSStatus nvt_rt_render(NVTRTIO *io, bool *silence, uint32_t frames, AudioBufferList *output) {
+// Only Source writes records. A full queue drops facts, never PCM or the clear fence.
+static void publish_render(NVTRTIO *io, const AudioTimeStamp *time, NVTRenderFact fact) {
+    uint64_t write = value(&io->render_written);
+    if (write - value(&io->render_read) >= NVT_RENDER_FACT_CAPACITY) {
+        count(&io->render_dropped, 1);
+        return;
+    }
+    if (time) {
+        fact.time_flags = time->mFlags;
+        fact.sample_time = time->mSampleTime;
+        fact.host_time = time->mHostTime;
+        if ((time->mFlags & kAudioTimeStampHostTimeValid) && time->mHostTime)
+            host_nanos(&io->config, time->mHostTime, &fact.host_time_ns);
+    }
+    io->render_facts[write % NVT_RENDER_FACT_CAPACITY] = fact;
+    publish(&io->render_written, write + 1);
+}
+
+OSStatus nvt_rt_render_at_time(NVTRTIO *io, bool *silence, const AudioTimeStamp *time,
+                              uint32_t frames, AudioBufferList *output) {
     const uint64_t token = nvt_ring_active_token(io->playback);
     const bool enabled = nvt_rt_active(io);
     const bool expected = value(&io->primed) == token;
     *silence = true;
     if (!frames) return noErr;
+    NVTRenderFact fact = {
+        .configuration_id = io->config.configuration_id, .playback_token = token, .frame_count = frames
+    };
     if (!output || output->mNumberBuffers != 1 || !has_float_frames(&output->mBuffers[0], 1, frames)) {
         count(&io->rejected_output, frames);
+        fact.flags = NVT_RENDER_REJECTED;
+        if (enabled) publish_render(io, time, fact);
         return kAudio_ParamError;
     }
     float *samples = output->mBuffers[0].mData;
     if (frames > io->config.max_callback_frames) {
         __builtin_memset(samples, 0, (size_t)frames * sizeof(float));
         count(&io->rejected_output, frames);
+        fact.flags = NVT_RENDER_REJECTED;
+        if (enabled) publish_render(io, time, fact);
         return noErr;
     }
 
@@ -207,15 +255,48 @@ OSStatus nvt_rt_render(NVTRTIO *io, bool *silence, uint32_t frames, AudioBufferL
     IO_HOOK(3);
     if (enabled) read = nvt_ring_read_for_token(io->playback, samples, frames, token);
     if (read.copied < frames) __builtin_memset(samples + read.copied, 0, (frames - read.copied) * sizeof(float));
+    for (uint32_t i = 0; i < read.copied; ++i) {
+        if (samples[i] == 0.0f) continue;
+        if (!fact.nonzero_frames) fact.first_nonzero = i;
+        fact.nonzero_end = i + 1;
+        ++fact.nonzero_frames;
+    }
     IO_HOOK(2);
     bool invalid = enabled && (read.invalidated || token != nvt_ring_active_token(io->playback) || !nvt_rt_active(io));
     size_t copied = invalid ? 0 : read.copied;
     size_t missing = frames - copied;
-    if (invalid && read.copied) __builtin_memset(samples, 0, read.copied * sizeof(float));
-    if (invalid || value(&io->cancelling) == token) count(&io->cancelled, missing);
-    else if (enabled && expected && !read.reached_end) count(&io->underrun, missing);
-    else count(&io->idle, missing);
-    if (!invalid && read.reached_end) publish(&io->rendered_end, token);
+    if (invalid) {
+        if (read.copied) __builtin_memset(samples, 0, read.copied * sizeof(float));
+        fact.first_nonzero = fact.nonzero_end = fact.nonzero_frames = 0;
+    }
+    bool cancelling = value(&io->cancelling) == token;
+    if (invalid || cancelling) {
+        fact.flags |= NVT_RENDER_CANCELLED;
+        count(&io->cancelled, missing);
+    } else if (enabled && expected && !read.reached_end) {
+        if (missing) fact.flags |= NVT_RENDER_UNDERRUN;
+        count(&io->underrun, missing);
+    } else {
+        if (missing) fact.flags |= NVT_RENDER_IDLE;
+        count(&io->idle, missing);
+    }
+    if (enabled && !invalid) {
+        fact.acknowledged_token = nvt_ring_acknowledged_token(io->playback);
+        if (read.reached_end) {
+            fact.flags |= NVT_RENDER_END;
+            publish(&io->rendered_end, token);
+        }
+        if (cancelling && !copied && fact.acknowledged_token == token) {
+            fact.flags |= NVT_RENDER_CLEAR;
+            publish(&io->rendered_clear, token);
+        }
+    }
+    fact.submitted_frames = (uint32_t)copied;
+    if (enabled) publish_render(io, time, fact);
     *silence = copied == 0;
     return noErr;
+}
+
+OSStatus nvt_rt_render(NVTRTIO *io, bool *silence, uint32_t frames, AudioBufferList *output) {
+    return nvt_rt_render_at_time(io, silence, NULL, frames, output);
 }

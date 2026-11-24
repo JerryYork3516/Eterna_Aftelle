@@ -1,24 +1,81 @@
 #!/usr/bin/env python3
-"""P1 realtime constraints plus the exact P2 graph membership. No audio or device access."""
+"""P1 realtime constraints, P2 graph membership and the bounded P3 integration surface."""
 from pathlib import Path
+import os
 import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 FROZEN = "574fc735ca239c9b334029debbdee546cda18d49"
 P1 = "5ef549f634a0cb75eaca6e49c0a903214261119a"
+P3_BASE = "8d4d2a6cbc1566dacba5229826bf98adac9b00c9"
 
 
 def git(*args):
-    return subprocess.check_output(["git", "-C", str(ROOT), *args])
+    return subprocess.check_output(["git", "-C", str(ROOT), *args], env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
 
 
 header = "apps/macos/Aftelle/Aftelle-Bridging-Header.h"
 project = "apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
+app = "apps/macos/Aftelle/"
+candidate = app + "MacSpeechNativeRealtimeSession.swift"
+facts = app + "MacSpeechNativeRealtimeFacts.swift"
+p3 = (ROOT / candidate).is_file()
+integration = {app + name for name in (
+    "AppController.swift", "MacSpeechRealtimeBrainInputBridge.swift", "MacSpeechAudioOutputHost.swift",
+)} if p3 else set()
 compile_files = [line for line in git("ls-tree", "-r", "--name-only", FROZEN, "apps").decode().splitlines()
                  if line not in {header, project}]
 for name in compile_files:
-    assert (ROOT / name).read_bytes() == git("show", FROZEN + ":" + name), name
+    if name not in integration:
+        assert (ROOT / name).read_bytes() == git("show", FROZEN + ":" + name), name
+
+if p3:
+    changed = set(git("diff", "--name-only", P3_BASE, "--", "apps").decode().splitlines())
+    changed.update(git("ls-files", "--others", "--exclude-standard", "--", "apps").decode().splitlines())
+    permitted = {candidate, facts, project} | integration | {
+        "apps/macos/NativeVoiceTransport/" + name for name in (
+            "AppleNativeVoiceTransport.swift", "NativeVoiceSessionGraph.swift", "NativeVoiceRealtime.c",
+            "NativeVoiceRealtime.h", "NativeVoiceRealtimeLease.mm",
+        )
+    }
+    assert changed <= permitted, changed - permitted
+    controller = (ROOT / (app + "AppController.swift")).read_text()
+    frozen_controller = git("show", FROZEN + ":" + app + "AppController.swift").decode()
+    shipped_initializer = "    init() {"
+    assert controller.split(shipped_initializer)[1].split("    init(", 1)[0] == (
+        frozen_controller.split(shipped_initializer)[1].split("    init(", 1)[0]
+    )
+    assert controller.count("case .appleNativeCandidate") == 1
+    assert controller.count("realtimeAudioBackend = MacSpeechRealtimeAudioBackend.frozen") == 1
+    assert controller.count("self.realtimeAudioBackend = realtimeAudioBackend") == 2
+    assert "AppleNativeVoiceTransport.macOS()" not in controller
+    for required in (
+        "await ensureRealtimeMicrophoneAuthorization()", "await speechAudioHost.prepareCaptureGeneration()",
+        "prepared = await speechAudioOutputHost.prepare()", "clearedOutput = await speechAudioOutputHost.clear()",
+        ".completeRealtimeResidentBrainInterruption(decision)",
+    ):
+        assert required in controller, required
+    start = controller.split("    func startRealtimeResidentBrainRoute() async {", 1)[1].split(
+        "    private func ensureRealtimeMicrophoneAuthorization", 1
+    )[0]
+    assert start.index("await ensureRealtimeMicrophoneAuthorization()") < start.index(
+        "await candidate.reserveCaptureGeneration()"
+    ) < start.index(".startRealtimeResidentBrainInput()") < start.index("await candidate.startCapture(")
+    output_host = app + "MacSpeechAudioOutputHost.swift"
+    old_host = git("show", FROZEN + ":" + output_host)
+    before = b"nonisolated struct MacSpeechAudioOutputEvent:"
+    after = b"nonisolated struct MacSpeechAudioOutputHostSnapshot:"
+    current_host = (ROOT / output_host).read_bytes()
+    assert old_host.split(before)[0] == current_host.split(before)[0]
+    assert old_host.split(after)[1] == current_host.split(after)[1]
+    candidate_source = (ROOT / candidate).read_text()
+    assert candidate_source.count("AppleNativeVoiceTransport.macOS()") == 1
+    assert "isSourceHandoff: handoff" in candidate_source
+    assert "renderClearAcknowledged" in candidate_source
+    assert candidate_source.count("#if NATIVE_VOICE_P3_OFFLINE_TEST") == 1
+    assert (ROOT / facts).read_text().count("#if NATIVE_VOICE_P3_OFFLINE_TEST") == 2
+    assert b"NATIVE_VOICE_P3_OFFLINE_TEST" not in (ROOT / project).read_bytes()
 
 assert (ROOT / header).read_bytes() == git("show", FROZEN + ":" + header) + (
     b'#include "../NativeVoiceTransport/NativeVoiceRing.h"\n'
@@ -27,6 +84,13 @@ assert (ROOT / header).read_bytes() == git("show", FROZEN + ":" + header) + (
 p2 = ["AppleNativeVoiceTransport.swift", "NativeVoiceGraph.swift", "NativeVoiceSessionGraph.swift",
       "NativeVoiceHALRoute.swift", "NativeVoiceSystemEngine.swift", "NativeVoiceRealtime.c", "NativeVoiceRealtimeLease.mm"]
 project_lines = (ROOT / project).read_bytes().splitlines(keepends=True)
+if p3:
+    p3_members = [line for line in project_lines if re.match(rb"\s*A07B130000000000000000[01][12] ", line)]
+    assert len(p3_members) == 8
+    for member in (candidate, facts):
+        assert sum(Path(member).name.encode() in line for line in p3_members) == 4
+    project_lines = [line for line in project_lines if line not in p3_members]
+    assert b"".join(project_lines) == git("show", P3_BASE + ":" + project)
 members = [line for line in project_lines if re.match(rb"\s*A07B120000000000000000[01][1-7] ", line)]
 assert b"".join(line for line in project_lines if line not in members) == git("show", P1 + ":" + project)
 assert len(members) == 4 * len(p2)
@@ -82,7 +146,9 @@ for forbidden in ("malloc(", "calloc(", "free(", "pthread_", "printf(", "sleep("
                   "fopen(", "AudioObject", "AVAudio"):
     assert forbidden not in realtime, forbidden
 
-print("native_voice_frozen_existing_app_files=" + str(len(compile_files)))
+print("native_voice_frozen_existing_app_files=" + str(len(compile_files) - len(integration)))
+if p3:
+    print("native_voice_p3_integrated_legacy_files=3")
 print("native_voice_production_switches=0")
 print("native_voice_p2_graph_members=7")
 print("native_voice_isolation_guard=PASS")

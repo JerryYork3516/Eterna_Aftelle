@@ -1,4 +1,34 @@
+import AudioToolbox
 import Foundation
+
+nonisolated struct NativeVoiceRenderFact: Sendable {
+    let playback: NativeVoiceIdentity.Playback
+    let timeFlags: UInt32
+    let sampleTime: Double?
+    let hostTime: UInt64?
+    let hostTimeNanoseconds: UInt64?
+    let frameCount: UInt32
+    let submittedFrames: UInt32
+    let nonzeroFrames: UInt32
+    let nonzeroSpan: Range<UInt32>?
+    let acknowledgedToken: UInt64
+    let flags: UInt32
+
+    init(_ fact: NVTRenderFact, playback: NativeVoiceIdentity.Playback) {
+        self.playback = playback
+        timeFlags = fact.time_flags
+        let time = AudioTimeStampFlags(rawValue: timeFlags)
+        sampleTime = time.contains(.sampleTimeValid) && fact.sample_time.isFinite ? fact.sample_time : nil
+        hostTime = time.contains(.hostTimeValid) && fact.host_time != 0 ? fact.host_time : nil
+        hostTimeNanoseconds = fact.host_time_ns != 0 ? fact.host_time_ns : nil
+        frameCount = fact.frame_count
+        submittedFrames = fact.submitted_frames
+        nonzeroFrames = fact.nonzero_frames
+        nonzeroSpan = nonzeroFrames > 0 ? fact.first_nonzero ..< fact.nonzero_end : nil
+        acknowledgedToken = fact.acknowledged_token
+        flags = fact.flags
+    }
+}
 
 /// Owned exclusively by the transport actor. Retired callbacks keep their original C allocation.
 final nonisolated class NativeVoiceSessionGraph {

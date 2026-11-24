@@ -827,6 +827,43 @@ enum ParticleColorSource: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+nonisolated protocol MacSpeechRealtimePlaybackHosting: Sendable {
+    func setEventSink(_ sink: @escaping MacSpeechAudioOutputHost.EventSink) async
+    func currentSnapshot() async -> MacSpeechAudioOutputHostSnapshot
+    func enqueue(pcm16Bytes: Data, sequence: UInt64, generation: UInt64) async -> MacSpeechAudioOutputHostSnapshot
+    func start() async -> MacSpeechAudioOutputHostSnapshot
+    func finishProviderResponse(generation: UInt64) async -> MacSpeechAudioOutputHostSnapshot
+    func clear() async -> MacSpeechAudioOutputHostSnapshot
+    func close() async -> MacSpeechAudioOutputHostSnapshot
+}
+
+extension MacSpeechAudioOutputHost: MacSpeechRealtimePlaybackHosting {}
+
+nonisolated protocol MacSpeechRealtimeAudioCandidate: MacSpeechAudioFrameSourcing, MacSpeechRealtimePlaybackHosting {
+    func reserveCaptureGeneration() async -> UInt64?
+    func cancelPreparedCapture(generation: UInt64) async
+    func startCapture(
+        session: RealtimeBrainSessionIdentity, generation: UInt64,
+        failed: @escaping @Sendable (String) async -> Void
+    ) async throws -> MacSpeechAudioHostSnapshot
+    func preparePlayback(identity: RealtimeBrainEventIdentity) async -> MacSpeechAudioOutputHostSnapshot
+    func clearConfirmed(
+        _ decision: RealtimeConfirmedInterruption, confirmedAt: UInt64
+    ) async -> MacSpeechAudioOutputHostSnapshot
+    func advanceGeneration(from: RealtimeBrainSessionIdentity, to: RealtimeBrainSessionIdentity) async throws
+    func matchesAcousticObservation(_ observation: RealtimeAcousticObservation) async -> Bool
+}
+
+nonisolated enum MacSpeechRealtimeAudioBackend: Sendable {
+    case frozen
+    case appleNativeCandidate(any MacSpeechRealtimeAudioCandidate)
+
+    var candidate: (any MacSpeechRealtimeAudioCandidate)? {
+        if case .appleNativeCandidate(let candidate) = self { return candidate }
+        return nil
+    }
+}
+
 @MainActor
 final class AppController: ObservableObject {
     private static let residentBookmarkKey = "aftelle.activeResidentBookmark.v1"
@@ -1005,6 +1042,11 @@ final class AppController: ObservableObject {
     private var providerConfigurationGeneration = 0
     private let speechAudioHost: MacSpeechAudioHost
     private let speechAudioOutputHost: MacSpeechAudioOutputHost
+    private var realtimeAudioBackend = MacSpeechRealtimeAudioBackend.frozen
+    private var realtimeBrainAudioOutput: any MacSpeechRealtimePlaybackHosting {
+        if let candidate = realtimeAudioBackend.candidate { return candidate }
+        return speechAudioOutputHost
+    }
     private var speechHostLifecycleOperationCount = 0
     private var speechHostStopGeneration: UInt64 = 0
     private var speechAudioHostShutdownOperation:
@@ -1096,8 +1138,14 @@ final class AppController: ObservableObject {
 
     private func makeRealtimeBrainInputBridge() -> MacSpeechRealtimeBrainInputBridge {
         let orchestrationKernel = self.orchestrationKernel
+        let source: any MacSpeechAudioFrameSourcing
+        if let candidate = realtimeAudioBackend.candidate {
+            source = candidate
+        } else {
+            source = speechAudioHost
+        }
         return MacSpeechRealtimeBrainInputBridge(
-            source: speechAudioHost,
+            source: source,
             sendFrameWithActivity: { [orchestrationKernel] frame, activity in
                 await orchestrationKernel.sendRealtimeResidentBrainAudio(
                     frame,
@@ -1297,7 +1345,11 @@ final class AppController: ObservableObject {
         #endif
     }
 
-    init(orchestrationKernel: OrchestrationKernel) {
+    init(
+        orchestrationKernel: OrchestrationKernel,
+        realtimeAudioBackend: MacSpeechRealtimeAudioBackend = .frozen
+    ) {
+        self.realtimeAudioBackend = realtimeAudioBackend
         #if DEBUG
             isAppleVPAcousticTestMode = false
             appleVPSilentSmokeScenario = nil
@@ -1345,8 +1397,10 @@ final class AppController: ObservableObject {
             nativeSpeechDiagnosticBuffer: NativeSpeechDiagnosticBuffer =
                 NativeSpeechDiagnosticBuffer(),
             realtimeSpeechDiagnosticAudioEngine:
-            SystemMacSpeechVoiceProcessingEngine? = nil
+            SystemMacSpeechVoiceProcessingEngine? = nil,
+            realtimeAudioBackend: MacSpeechRealtimeAudioBackend = .frozen
         ) {
+            self.realtimeAudioBackend = realtimeAudioBackend
             isAppleVPAcousticTestMode = false
             appleVPSilentSmokeScenario = nil
             normalDependenciesFactory = {
@@ -3856,13 +3910,15 @@ final class AppController: ObservableObject {
         guard await prepareRealtimeSpeechAudioBackend(attemptID: attemptID) else {
             return
         }
-        let preparedCaptureGeneration =
-            await speechAudioHost.prepareCaptureGeneration()
+        let preparedCaptureGeneration: UInt64?
+        if let candidate = realtimeAudioBackend.candidate {
+            preparedCaptureGeneration = await candidate.reserveCaptureGeneration()
+        } else {
+            preparedCaptureGeneration = await speechAudioHost.prepareCaptureGeneration()
+        }
         guard realtimeBrainRouteAttemptID == attemptID else {
             if let preparedCaptureGeneration {
-                _ = await speechAudioHost.cancelPreparedCapture(
-                    generation: preparedCaptureGeneration
-                )
+                await cancelRealtimeBrainPreparedCapture(preparedCaptureGeneration)
             }
             return
         }
@@ -3887,8 +3943,7 @@ final class AppController: ObservableObject {
         guard case .success(let session) = startResult else {
             realtimeBrainRouteAttemptID = nil
             realtimeBrainPreparedCaptureGeneration = nil
-            speechAudioHostSnapshot = await speechAudioHost
-                .cancelPreparedCapture(generation: captureGeneration)
+            await cancelRealtimeBrainPreparedCapture(captureGeneration)
             if case .failure(let error) = startResult {
                 publishRealtimeResidentBrainRouteFailure(
                     Self.realtimeResidentBrainErrorCode(error)
@@ -3915,7 +3970,7 @@ final class AppController: ObservableObject {
         refreshResidentVisualIntent(
             visualStateMode: ResidentVisualIntent.listening.rawValue
         )
-        await speechAudioOutputHost.setEventSink { [weak self] event in
+        await realtimeBrainAudioOutput.setEventSink { [weak self] event in
             await self?.consumeRealtimeResidentBrainPlaybackEvent(
                 event,
                 attemptID: attemptID,
@@ -3926,14 +3981,29 @@ final class AppController: ObservableObject {
             attemptID: attemptID,
             session: session
         ) else { return }
+        if let candidate = realtimeAudioBackend.candidate {
+            do {
+                let capture = try await candidate.startCapture(session: session, generation: captureGeneration) {
+                    [weak self] code in
+                    await self?.stopRealtimeResidentBrainRoute(expectedAttemptID: attemptID, errorCode: code)
+                }
+                guard isCurrentRealtimeBrainRoute(attemptID: attemptID, session: session) else { return }
+                speechAudioHostSnapshot = capture
+            } catch {
+                await stopRealtimeResidentBrainRoute(expectedAttemptID: attemptID, errorCode: "capture_start_failed")
+                return
+            }
+        }
         realtimeBrainOutputBridgeSnapshot = await realtimeBrainOutputBridge
             .start(session: binding.session)
         guard isCurrentRealtimeBrainRoute(
             attemptID: attemptID,
             session: session
         ) else { return }
-        speechAudioHostSnapshot = await speechAudioHost
-            .startPreparedCapture(generation: captureGeneration)
+        if realtimeAudioBackend.candidate == nil {
+            speechAudioHostSnapshot = await speechAudioHost
+                .startPreparedCapture(generation: captureGeneration)
+        }
         guard isCurrentRealtimeBrainRoute(
             attemptID: attemptID,
             session: session
@@ -3987,6 +4057,7 @@ final class AppController: ObservableObject {
     }
 
     private func prepareRealtimeSpeechAudioBackend(attemptID: UUID) async -> Bool {
+        if realtimeAudioBackend.candidate != nil { return realtimeBrainRouteAttemptID == attemptID }
         do {
             try await selectSpeechAudioProcessingMode(
                 .appleVoiceProcessing,
@@ -4137,6 +4208,14 @@ final class AppController: ObservableObject {
         }
     }
 
+    private func cancelRealtimeBrainPreparedCapture(_ generation: UInt64) async {
+        if let candidate = realtimeAudioBackend.candidate {
+            await candidate.cancelPreparedCapture(generation: generation)
+        } else {
+            speechAudioHostSnapshot = await speechAudioHost.cancelPreparedCapture(generation: generation)
+        }
+    }
+
     private func settleAbandonedRealtimeBrainStart(
         result: Result<
             RealtimeBrainSessionIdentity,
@@ -4145,8 +4224,7 @@ final class AppController: ObservableObject {
         captureGeneration: UInt64
     ) async {
         realtimeBrainPreparedCaptureGeneration = nil
-        speechAudioHostSnapshot = await speechAudioHost
-            .cancelPreparedCapture(generation: captureGeneration)
+        await cancelRealtimeBrainPreparedCapture(captureGeneration)
         guard case .success(let session) = result else { return }
         let closeResult = await orchestrationKernel
             .stopRealtimeResidentBrainInput(session: session)
@@ -4252,12 +4330,16 @@ final class AppController: ObservableObject {
             realtimeBrainPlaybackProviderFinishedResponseID = nil
             realtimeBrainPlaybackGeneration = nil
             if shouldClearPlayback {
-                let snapshot = await speechAudioOutputHost.clear()
+                let snapshot = await realtimeBrainAudioOutput.clear()
                 guard isCurrentRealtimeBrainRoute(
                     attemptID: attemptID,
                     session: binding.session
                 ) else { return }
                 speechAudioOutputHostSnapshot = snapshot
+                if realtimeAudioBackend.candidate != nil, snapshot.state == .failed {
+                    await stopRealtimeResidentBrainRoute(expectedAttemptID: attemptID, errorCode: snapshot.lastError)
+                    return
+                }
             }
             #if DEBUG
             let recoverableErrorCode = Self.realtimeResidentBrainErrorCode(
@@ -4397,9 +4479,15 @@ final class AppController: ObservableObject {
                   attemptID: attemptID,
                   session: binding.session
               ) else { return }
-        guard let currentAcousticSnapshot = await speechAudioHost
-            .residentAcousticSnapshot(),
-              observation.matchesCurrentPlayback(currentAcousticSnapshot),
+        let matchesPlayback: Bool
+        if let candidate = realtimeAudioBackend.candidate {
+            matchesPlayback = await candidate.matchesAcousticObservation(observation.observation)
+        } else if let currentAcousticSnapshot = await speechAudioHost.residentAcousticSnapshot() {
+            matchesPlayback = observation.matchesCurrentPlayback(currentAcousticSnapshot)
+        } else {
+            matchesPlayback = false
+        }
+        guard matchesPlayback,
               realtimeBrainRouteAttemptID == attemptID,
               realtimeBrainInputBinding == binding,
               realtimeBrainPlaybackEventIdentity == playbackIdentity,
@@ -4495,7 +4583,7 @@ final class AppController: ObservableObject {
                 )
                 return
             }
-            let current = await speechAudioOutputHost.currentSnapshot()
+            let current = await realtimeBrainAudioOutput.currentSnapshot()
             guard isCurrentRealtimeBrainRoute(
                 attemptID: attemptID,
                 session: binding.session
@@ -4521,7 +4609,7 @@ final class AppController: ObservableObject {
                 attemptID: attemptID,
                 session: binding.session
             ), realtimeBrainGenerationTransitionID == nil else { return }
-            let settled = await speechAudioOutputHost.currentSnapshot()
+            let settled = await realtimeBrainAudioOutput.currentSnapshot()
             guard isCurrentRealtimeBrainRoute(
                 attemptID: attemptID,
                 session: binding.session
@@ -4546,7 +4634,12 @@ final class AppController: ObservableObject {
         }
 
         if realtimeBrainPlaybackResponseID == nil {
-            let prepared = await speechAudioOutputHost.prepare()
+            let prepared: MacSpeechAudioOutputHostSnapshot
+            if let candidate = realtimeAudioBackend.candidate {
+                prepared = await candidate.preparePlayback(identity: identity)
+            } else {
+                prepared = await speechAudioOutputHost.prepare()
+            }
             guard isCurrentRealtimeBrainRoute(
                 attemptID: attemptID,
                 session: binding.session
@@ -4591,7 +4684,7 @@ final class AppController: ObservableObject {
             identity.session.generation, playbackGeneration, audio.sequence
         )
         #endif
-        var snapshot = await speechAudioOutputHost.enqueue(
+        var snapshot = await realtimeBrainAudioOutput.enqueue(
             pcm16Bytes: audio.bytes,
             sequence: audio.sequence,
             generation: playbackGeneration
@@ -4605,7 +4698,7 @@ final class AppController: ObservableObject {
             return
         }
         if snapshot.state == .prepared || snapshot.state == .completed {
-            snapshot = await speechAudioOutputHost.start()
+            snapshot = await realtimeBrainAudioOutput.start()
             guard isCurrentRealtimeBrainRoute(
                 attemptID: attemptID,
                 session: binding.session
@@ -4637,7 +4730,7 @@ final class AppController: ObservableObject {
               let playbackGeneration = realtimeBrainPlaybackGeneration else {
             return
         }
-        let snapshot = await speechAudioOutputHost
+        let snapshot = await realtimeBrainAudioOutput
             .finishProviderResponse(generation: playbackGeneration)
         guard isCurrentRealtimeBrainRoute(
             attemptID: attemptID,
@@ -4806,6 +4899,7 @@ final class AppController: ObservableObject {
             return
         }
 
+        let confirmedAt = DispatchTime.now().uptimeNanoseconds
         let transitionID = UUID()
         realtimeBrainGenerationTransitionID = transitionID
         realtimeBrainSubtitlePresentation.retire(
@@ -4842,7 +4936,16 @@ final class AppController: ObservableObject {
         realtimeBrainPlaybackProviderFinishedResponseID = nil
         realtimeBrainPlaybackGeneration = nil
         resumeRealtimeBrainPlaybackDrainWaiter()
-        let clearedOutput = await speechAudioOutputHost.clear()
+        let clearedOutput: MacSpeechAudioOutputHostSnapshot
+        if let candidate = realtimeAudioBackend.candidate {
+            // Suspending either Bridge may cancel the task that delivered this decision.
+            let clearTask = Task {
+                await candidate.clearConfirmed(decision, confirmedAt: confirmedAt)
+            }
+            clearedOutput = await clearTask.value
+        } else {
+            clearedOutput = await speechAudioOutputHost.clear()
+        }
         guard realtimeBrainGenerationTransitionID == transitionID,
               isCurrentRealtimeBrainRoute(
                   attemptID: attemptID,
@@ -4854,6 +4957,10 @@ final class AppController: ObservableObject {
             return
         }
         speechAudioOutputHostSnapshot = clearedOutput
+        if realtimeAudioBackend.candidate != nil, clearedOutput.state == .failed {
+            await stopRealtimeResidentBrainRoute(expectedAttemptID: attemptID, errorCode: clearedOutput.lastError)
+            return
+        }
 
         let transitionTask = Task { [orchestrationKernel] in
             await orchestrationKernel
@@ -4885,12 +4992,24 @@ final class AppController: ObservableObject {
             return
         }
 
+        if let candidate = realtimeAudioBackend.candidate {
+            do {
+                try await candidate.advanceGeneration(from: binding.session, to: nextIdentity)
+            } catch {
+                await stopRealtimeResidentBrainRoute(
+                    expectedAttemptID: attemptID, errorCode: "audio_generation_rebind_failed"
+                )
+                return
+            }
+            guard realtimeBrainGenerationTransitionID == transitionID,
+                  isCurrentRealtimeBrainRoute(attemptID: attemptID, session: binding.session) else { return }
+        }
         let nextBinding = MacSpeechRealtimeBrainInputBinding(
             session: nextIdentity,
             captureGeneration: binding.captureGeneration
         )
         realtimeBrainInputBinding = nextBinding
-        await speechAudioOutputHost.setEventSink { [weak self] event in
+        await realtimeBrainAudioOutput.setEventSink { [weak self] event in
             await self?.consumeRealtimeResidentBrainPlaybackEvent(
                 event,
                 attemptID: attemptID,
@@ -4989,14 +5108,15 @@ final class AppController: ObservableObject {
             .stopForwarding()
         realtimeBrainOutputBridgeSnapshot = await realtimeBrainOutputBridge
             .stop()
-        speechAudioOutputHostSnapshot = await speechAudioOutputHost.close()
+        speechAudioOutputHostSnapshot = await realtimeBrainAudioOutput.close()
         if let preparedCaptureGeneration {
-            speechAudioHostSnapshot = await speechAudioHost
-                .cancelPreparedCapture(
-                    generation: preparedCaptureGeneration
-                )
+            await cancelRealtimeBrainPreparedCapture(preparedCaptureGeneration)
         }
-        speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+        if realtimeAudioBackend.candidate == nil {
+            speechAudioHostSnapshot = await speechAudioHost.stopCapture()
+        } else {
+            speechAudioHostSnapshot = await speechAudioHost.currentSnapshot()
+        }
 
         var closeIdentity = binding?.session
         if let generationTransitionTask {

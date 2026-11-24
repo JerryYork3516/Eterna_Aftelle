@@ -1,5 +1,10 @@
 import Foundation
 
+nonisolated protocol MacSpeechRealtimeAcousticFactSourcing: MacSpeechAudioFrameSourcing {
+    func acousticMetrics(for frame: MacSpeechAudioFrame) async -> RealtimeAcousticMetrics?
+    func matchesAcousticObservation(_ observation: RealtimeAcousticObservation) async -> Bool
+}
+
 nonisolated struct MacSpeechRealtimeBrainInputBinding: Sendable, Equatable {
     let session: RealtimeBrainSessionIdentity
     let captureGeneration: UInt64
@@ -611,6 +616,7 @@ actor MacSpeechRealtimeBrainInputBridge {
                     capturedAcousticSnapshot: frame.acousticSnapshot,
                     observerOnly: false,
                     sourceGatedPacketTrace: sourceGatedPacketTrace,
+                    frame: frame,
                     binding: binding,
                     pumpID: pumpID
                 )
@@ -770,9 +776,21 @@ actor MacSpeechRealtimeBrainInputBridge {
         observerOnly: Bool,
         sourceGatedPacketTrace:
             MacSpeechRealtimeBrainAcousticPacketTrace? = nil,
+        frame: MacSpeechAudioFrame? = nil,
         binding: MacSpeechRealtimeBrainInputBinding,
         pumpID: UUID
     ) async {
+        if let nativeSource = source as? any MacSpeechRealtimeAcousticFactSourcing {
+            guard !observerOnly, let frame,
+                  let metrics = await nativeSource.acousticMetrics(for: frame),
+                  let capturedAt = metrics.captureTimestampNanoseconds,
+                  activeBinding == binding, activePumpID == pumpID else { return }
+            evaluateResidentAcoustics(
+                metrics: metrics, timestamp: capturedAt, frameIndex: frame.sequenceNumber,
+                observerOnly: false, sourceGatedPacketTrace: nil, snapshot: nil, binding: binding, pumpID: pumpID
+            )
+            return
+        }
         if observerOnly {
             guard fallbackTimestampNanoseconds
                     >= nextResidentAcousticSnapshotPollNanoseconds else {
@@ -932,6 +950,18 @@ actor MacSpeechRealtimeBrainInputBridge {
             inputDeviceAvailable: snapshot.inputDeviceAvailable,
             outputDeviceAvailable: snapshot.outputDeviceAvailable
         )
+        evaluateResidentAcoustics(
+            metrics: metrics, timestamp: timestamp, frameIndex: snapshot.captureFrameIndex,
+            observerOnly: observerOnly, sourceGatedPacketTrace: sourceGatedPacketTrace,
+            snapshot: snapshot, binding: binding, pumpID: pumpID
+        )
+    }
+
+    private func evaluateResidentAcoustics(
+        metrics: RealtimeAcousticMetrics, timestamp: UInt64, frameIndex: UInt64, observerOnly: Bool,
+        sourceGatedPacketTrace: MacSpeechRealtimeBrainAcousticPacketTrace?,
+        snapshot: MacSpeechResidentAcousticSnapshot?, binding: MacSpeechRealtimeBrainInputBinding, pumpID: UUID
+    ) {
         let classification = RealtimeAcousticClassifier.classify(
             metrics: metrics,
             observationTimestampNanoseconds: timestamp
@@ -1022,16 +1052,16 @@ actor MacSpeechRealtimeBrainInputBridge {
               pendingEligibleAcousticObservation == nil,
               let observeResidentAcoustics else { return }
         let cadenceReached = lastResidentObservationFrameIndex == 0
-            || snapshot.captureFrameIndex
+            || frameIndex
                 >= lastResidentObservationFrameIndex &+ 10
         guard cadenceReached else { return }
         guard residentAcousticObservationTask == nil else {
-            lastResidentObservationFrameIndex = snapshot.captureFrameIndex
+            lastResidentObservationFrameIndex = frameIndex
             droppedResidentAcousticObservationCount &+= 1
             return
         }
 
-        lastResidentObservationFrameIndex = snapshot.captureFrameIndex
+        lastResidentObservationFrameIndex = frameIndex
         let deliveryID = UUID()
         residentAcousticObservationTaskID = deliveryID
         residentAcousticObservationTask = Task { [weak self] in
@@ -1129,7 +1159,21 @@ actor MacSpeechRealtimeBrainInputBridge {
                 == binding.captureGeneration,
               activeBinding == binding,
               activePumpID == pumpID else { return }
-        let currentSnapshot = await source.residentAcousticSnapshot()
+        let staleReason: String?
+        if let nativeSource = source as? any MacSpeechRealtimeAcousticFactSourcing {
+            let matches = await nativeSource.matchesAcousticObservation(observation)
+            let timestamp = observation.identity.timestampNanoseconds
+            let now = monotonicNow()
+            let fresh = timestamp <= now && now - timestamp
+                <= RealtimeAcousticInterruptionEligibilityGate.observationFreshnessNanoseconds
+            staleReason = matches && fresh ? nil : "stale_native_acoustic_fact"
+        } else {
+            staleReason = Self.acousticEvidenceStaleReason(
+                snapshot: await source.residentAcousticSnapshot(),
+                binding: binding, observation: observation, eligibilityEpoch: eligibilityEpoch,
+                receivedAtNanoseconds: monotonicNow()
+            )
+        }
         guard activeBinding == binding,
               activePumpID == pumpID,
               pendingEligibleAcousticObservation?.identity
@@ -1137,13 +1181,6 @@ actor MacSpeechRealtimeBrainInputBridge {
               pendingEligibilitySourceGateEpoch == eligibilityEpoch else {
             return
         }
-        let staleReason = Self.acousticEvidenceStaleReason(
-            snapshot: currentSnapshot,
-            binding: binding,
-            observation: observation,
-            eligibilityEpoch: eligibilityEpoch,
-            receivedAtNanoseconds: monotonicNow()
-        )
         if let staleReason {
             if let pendingEligibilityGateBeforeIssue {
                 acousticEligibilityGate = pendingEligibilityGateBeforeIssue

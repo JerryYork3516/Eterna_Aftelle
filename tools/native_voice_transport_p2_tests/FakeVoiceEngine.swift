@@ -166,17 +166,21 @@ final nonisolated class FakeVoiceEngine: NativeVoiceGraphBackend, @unchecked Sen
         }
     }
 
-    func render(_ count: Int) -> [Float] {
+    func render(_ count: Int, sampleTime: Double = 0, hostTime: UInt64 = 0, flags: UInt32 = 0) -> [Float] {
         let lease = read().lease!
         var buffer = [Float](repeating: 1, count: count)
         var silence = false
+        var time = AudioTimeStamp()
+        time.mSampleTime = sampleTime
+        time.mHostTime = hostTime
+        time.mFlags = AudioTimeStampFlags(rawValue: flags)
         buffer.withUnsafeMutableBufferPointer { samples in
             var list = AudioBufferList(
                 mNumberBuffers: 1, mBuffers: AudioBuffer(
                     mNumberChannels: 1, mDataByteSize: UInt32(samples.count * 4), mData: samples.baseAddress
                 )
             )
-            precondition(nvt_rt_render(lease.context, &silence, UInt32(count), &list) == noErr)
+            precondition(nvt_rt_render_at_time(lease.context, &silence, &time, UInt32(count), &list) == noErr)
         }
         return buffer
     }
