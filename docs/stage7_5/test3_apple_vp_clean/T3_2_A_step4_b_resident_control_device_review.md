@@ -91,3 +91,50 @@ T3_2_A=BLOCKED
 Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 ```
+
+## 6. 主控批准的单次 B 轮重跑
+
+**本次采集按计划封存，CLOCK 未复现，居民播放完整覆盖。** Run `CDEF4D74-68FE-4B8B-BFE0-7C9F4766E37F`。本次基线 `366103e8779e0d6392e86b733ede84b95b0c5055`，实际加载映像仍为 §2 冻结 Debug 构建，`apps` 树与源码 `574fc735ca239c9b334029debbdee546cda18d49` 一致。复核 TinyUSB 输入 60%、Mac mini 内置扬声器 55% 未静音、固定居民和 Windows 参考素材 SHA、系统权限及导出目录。通过系统设置只读画面确认 Aftelle 麦克风权限已开。
+
+冻结 App 启动一次。用户在同一 App 通过原文件选择器选定固定居民 WAV，再打开原确认面板。确切 PID 核验面板后才通知 Windows 播放；用户确认按 A 组方式从头播放并授予本次单次采集与本机导出权限，随后原确认仅派发一次。Mac 侧提示前的本地标记至原录音确认派发约 **19.64 秒**，只用于记录交接流程。实际 Windows 起播时间和相对 A 轮的数字相位偏差尚未测定。封存后已提醒停止 Windows 播放。
+
+| 检查项 | 本次实测 |
+| --- | --- |
+| 运行合同 | 原综合 C、RECORDING、AGC ON、双端 VP ON、bypass=false、inputMuted=false、无额外预热。Capture / Playback Generation 为 1 / 1，ConfigurationID 为 2，两个运行态读回身份一致。 |
+| 采集与封存 | 原计时流程正常 Stop/Seal。744 个连续 20 ms 包，保存 714,240 PCM 字节，共 **14.88 秒**。生成 749 包，封存时 5 包留在队列，导出 744 包，账目守恒。 |
+| 时钟与短窗 | Native 150 次回调、240,000 帧。Native 时钟拒收、内容时间拒收、Capture 掉包、过期包、Playback 欠载均为 0。Native/PCM 同内容匹配 **744/744**，时钟可信。Player 和 Capture 时间见证未见 host/sample 不连续。 |
+| 居民内容 | 选材 SHA 与 §2 固定居民一致。排程 76,010 帧，非零 59,964 帧；Player Tap 观测非零帧同为 59,964。播放启动和完成各一次。 |
+| 覆盖 | PCM 内容零点下，软件播放启动至完成为 **3.108750–7.989351 秒**，Player 非零 Render 为 **4.234088–7.981746 秒**，两者完整落在连续 PCM 中。A 轮投影窗为 4.234175–7.981831 秒，软件窗口边界相差不到 0.1 ms。物理发声时序和男女声实际重叠仍未独立测量。 |
+| 设备与清理 | 未见路由变化或 Engine 配置变化通知。封存之后的导出监视器异常使控制器以 SIGTERM 结束本次 PID，退出状态 −15。确切 PID 已消失，设备恢复空闲，路由及音量快照与预检一致。 |
+
+### WAV 导出监视器异常及落盘独立核验
+
+原 UI 已核验 WAV 导出目标并派发一次确认。控制器的文件就绪检查返回 `LOCAL_EXPORT_FILE_INELIGIBLE`，未在记账中加入 WAV，随后出现 `UNEXPECTED_EXPORT_INVENTORY`。该检查见目标文件出现就立即读大小；原导出器先以独占方式创建，再写入并同步。**现象与监视器早于写完读取文件一致。** 当次瞬时文件大小没有单独记录。此异常发生在采集封存之后。
+
+进程结束后独立核验同 Run 的两份稳定文件，均为当前用户拥有的 0600 常规文件。WAV 已完整落盘。WAV 头为 24 kHz / Mono / PCM16LE、357,120 帧，PCM 字节数与数据摘要均和 JSON 一致。未重新导出、重启 App 或重跑。
+
+| 本机导出 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| WAV | 714284 | `1fbb1755cd2a705f5dec4cbdb907eac0bec01712c6fc48b7cd03224f45cc8ed4` |
+| 技术 JSON | 1059256 | `d5c2b2f1076d89d835d6b16642d3427f02e4c22399f9775ef5d2b9c305f456e9` |
+
+本节只记录采集资格、技术证据和导出异常。只做素材及导出完整性核验，未试听、转写或执行男声信号分析。原始文件及过程收据留本机。未调整代码、阈值或设备配置，未重跑 A 组，未发起 Gemini 审核。Stage 7 Forbidden Checklist 自审 PASS，受保护工作区复核一致。
+
+```ini
+STEP4_B_FOLLOWUP_CAPTURE=COMPLETED_ONCE
+STEP4_B_FOLLOWUP_CLOCK=NOT_REPRODUCED
+STEP4_B_FOLLOWUP_RESIDENT_RENDER_COVERAGE=PASS
+STEP4_B_FOLLOWUP_EXPORT_MONITOR=ERROR_AFTER_SEAL
+STEP4_B_FOLLOWUP_LOCAL_EXPORT_INTEGRITY=VERIFIED
+STEP4_B_FOLLOWUP_DEVICE_RELEASE=VERIFIED_AFTER_SIGTERM
+STEP4_B_WINDOWS_PHASE_OFFSET=UNKNOWN
+STEP4_B_AUDIO_ANALYSIS=AWAITING_INDEPENDENT_AUTHORIZATION
+STEP4_B_FOLLOWUP_DEVICE_CAPTURES=1
+STEP4_B_FOLLOWUP_RETRIES=0
+P4_FORMAL_53_C_RUNS=0
+CLOCK_ROOT_CAUSE=UNKNOWN
+AEC_ROOT_CAUSE=UNKNOWN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+```
