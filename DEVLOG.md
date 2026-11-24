@@ -1,5 +1,11 @@
 # DEVLOG.md — Aftelle 开发日志(给我自己看)
 
+## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P1 收口
+
+- 分开采集和播放 token，播放 EOS、同 epoch 的下一轮和取消均保留采集 SRC、时钟和半包。HostTime 资格变化保留 PCM，跨界包无有效时间。
+- Timer Gate 唯一失配源于 `574fc735` 给 DEBUG 快照转发私有存储 Bool。门禁限定精确增量并保留原 getter 指纹、等待预算和调用链。原失败仍归档。
+- 本轮 FULL_CURRENT 21/21 实际执行通过，含 Debug/Release 与产物隔离。P1 四组 1,770 项 Swift 检查、并发和 sanitizer 通过。生产路径切换与设备运行均为 0，原工作区与证据校验一致。P1 收口交主控复核，P2 NOT_STARTED。[收口记录](docs/stage7_5/test3_apple_vp_clean/AppleNativeVoiceTransport_P1_closeout_review.md)
+
 ## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P1
 
 - 新增独立C11实时帧环、O(1)代际失效/消费确认、串行单级系统SRC、双时间坐标与480-sample组包；仅入现有target编译，生产调用方零新增。

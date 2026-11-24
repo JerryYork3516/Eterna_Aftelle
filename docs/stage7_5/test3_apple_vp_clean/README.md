@@ -1,5 +1,9 @@
 # Eterna Aftelle · Test3 Apple VP Clean · 正式计划入口 v2
 
+## 2026-11-24 · AppleNativeVoiceTransport P1 收口
+
+播放生命周期与采集隔离，HostTime 资格变化保持 PCM 连续。Timer Gate 保留原审核指纹，仅核准冻结源码一处存储 Bool 转发。FULL_CURRENT 本轮 21/21 实际通过，包含 Debug/Release 与产物隔离。P1 收口交主控复核，P2 NOT_STARTED，DEVICE_RUNS=0，正式 Test3 仍 BLOCKED。[收口记录](AppleNativeVoiceTransport_P1_closeout_review.md)
+
 ## 2026-11-24 · AppleNativeVoiceTransport P1 工程交付
 
 [独立缓冲、单级SRC、代际与时钟工程报告](AppleNativeVoiceTransport_P1_engineering_review.md)：P1四组离线验收、独立安全回归和Debug/Release通过；生产零切换。FULL_CURRENT实际8 PASS / 1 FAIL / 12 NOT_RUN，原Timer审核指纹在授权基线也失败，完整工程准入PARTIAL，未改旧门禁。P1 REVIEW_PENDING；P2 NOT_STARTED；DEVICE_RUNS=0。AEC/CLOCK UNKNOWN、SQ-M1 OPEN，T3.2-A/Formal Test3 BLOCKED，execution_authorized=false。此P1为新架构工程内核，不是历史AGC/Warm-up声学P1；本轮到此停止待主控审核。
