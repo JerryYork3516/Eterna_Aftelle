@@ -1,5 +1,11 @@
 # DEVLOG.md — Aftelle 开发日志(给我自己看)
 
+## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P3 工程
+
+- 现有 Controller、Orchestration 与两个 Realtime Bridge 接入可选候选。冻结后端为默认值。采集与播放共用 P2 Engine，Source 保留实际时间、非零范围、EOS handoff 与清空确认。
+- 同一 Runtime 决定只清空一次。Fake 正控在 Provider ACK 挂起期间取得 Source 回执，确认到清空 3.58–4.01ms。共享代际由 Runtime 推进，取消和 N+1 保持会话 Engine。Apple VP 私有声学事实保持 UNKNOWN。
+- P1/P2/P3 共 12 组通过，FULL_CURRENT 21/21，Debug／Release 与 Guard 通过。受保护工作树、fixture 和历史收据相符。设备运行 0。P3 REVIEW_PENDING，P4 NOT_STARTED。[P3 工程审核](docs/stage7_5/test3_apple_vp_clean/AppleNativeVoiceTransport_P3_engineering_review.md)
+
 ## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P2 收口
 
 - 根据 SDK 与 D2-F1 恢复 stopped VP 协商。Sink 使用实际 VP 输入格式，mono Source 使用协商采样率。默认设备、AU 返回设备、可读 Aggregate 活动成员与流均进入核查，必要监听注册失败回滚。
