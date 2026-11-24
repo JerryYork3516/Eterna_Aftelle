@@ -50,3 +50,44 @@ T3_2_A=BLOCKED
 Formal_Test3=BLOCKED
 Test3.execution_authorized=false
 ```
+
+## 5. 提前停止原因复核
+
+复核基线 `1be1261797c300021b1d1d904a320be6621c90a5`。只使用本 Run 已封存的五条 Native 时间戳、同代身份、故障计数和监视器回执。核对 §4 JSON SHA-256，仅以合成零缓冲离线重放。实际 WAV/PCM 样本读取、设备启动和追加采集均为 0。
+
+**直接原因已确认。** 监视器在有 59 个已保存包的运行态看到本代 `coverage=false`，发出原 Stop。这个覆盖读回伴随真实的 `native_clock` 和 `content_time` 拒收。既有 Converter 在输入 HostTime 首次超限后锁存本代内容时钟失效。后续缓冲可产生数值 SRC 输出，因缺可信内容时标，在进 Host/PCM 前被截断。首次异常在居民排程前，选材内容尚未进入 Player。 [内容锚点与资格检查](../../../apps/macos/Aftelle/MacSpeechAudioCapture.swift#L916) · [内容时间拒收出口](../../../apps/macos/Aftelle/MacSpeechAudioCapture.swift#L3922)
+
+| 相对首故障回调 | SampleTime 步长 | HostTime 间隔 (ms) | 固定名义间隔残差 (ms) | 以当前 RateScalar 预测的残差 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| −1 | 1600 帧 | 99.999292 | −0.000708 | +0.000037 |
+| 0 | 1600 帧 | 102.834375 | +2.834375 | +2.435239 |
+| +1 | 1600 帧 | 100.399125 | +0.399125 | −0.000011 |
+| +2 | 1600 帧 | 98.937792 | −1.062208 | −1.461344 |
+
+按冻结路径及独立整数 mach timebase（125/3 ns/tick）对照，五条 SDK 换算与原封存纳秒值一致。首故障区间所需平均 RateScalar 约 1.028344，两端实测约 0.999993 和 1.003991。若整个区间位于两个端点值之间，倍率修正后仍偏离至少 **2.435 ms**，超过原一采样周期 **62.5 µs**。后一段的速率项解释不了此前的差值。保留 SampleTime 连续而 HostTime 资格失败的观测，产生配对偏差的上游机制仍未知。 [Apple RateScalar 定义](https://developer.apple.com/documentation/coreaudiotypes/audiotimestamp/mratescalar) · [既有 P3 时间模型结论](T3_2_A_P3_clock_timebase_review.md)
+
+窄窗系统日志只对照本次进程及 coreaudiod 在原确认前后的记录。A、B 两轮均有时钟域相关条目，所查窗口内未找到可定位首个跳变原因的 discontinuity、overload 或 reanchor 条目。日志没有提供逐帧物理时钟见证。
+
+| 离线验证 | 实测 |
+| --- | --- |
+| SDK 和整数 timebase 复核 | 5/5 一致，最大残差 0 ns |
+| 当前实际 Converter 与 Native 统计重放 | 五条实测数据复现 3 次 Native 拒收、3 次内容拒收 |
+| 计数对照 | 10 条名义合成前置回调加五条实测时标，复现 59 个连续包、1.18 秒。合成前置只用于计数对照 |
+| 对照及锁存 | 名义 HostTime 正控全通过，仅改 RateScalar 不改变旧规则判定。同代际后续名义间隔仍拒收，原代际复位可恢复健康新输入 |
+| 定向回归 | 定点重放 5 cases / 240 checks 通过。原 M08 和 M09 通过，未触及设备。临时重放驱动初次编译的空后缀适配错误已修正 |
+
+**修复及 B 轮重跑暂缓。** 现有数据没有确认可在冻结构建、原设备和原时钟合同下安全修复的 Aftelle 缺陷。修改现有停止条件仍会留下 PCM 截断。按 SampleTime 强行重锚或放宽容差会接受本例未经证实的 HostTime 配对。单独修改 B 轮时钟处理也会改变与 A 轮的对照条件。若要验证修复，应先取得能独立检验 Input Tap 的 SampleTime/HostTime 配对的上游时钟证据，再评估能同时保留拒收、身份和 PCM 证据资格的候选。任何重跑使用新的单次授权。
+
+本节仅追加脱敏复核结论。未更改生产代码、监视器门槛、设备配置或正式 Gate，Stage 7 Forbidden Checklist 自审 PASS。重放向量和日志留本机。
+
+```ini
+STEP4_B_STOP_TRIGGER=CONFIRMED_NATIVE_CONTENT_CLOCK_REJECTION
+STEP4_B_CLOCK_REPLAY=PASS
+STEP4_B_FIX=BLOCKED_UPSTREAM_CLOCK_CAUSE_UNKNOWN
+STEP4_B_RERUN=NOT_RUN
+STEP4_B_CONTRAST_QUALIFICATION=INCONCLUSIVE
+CLOCK_ROOT_CAUSE=UNKNOWN
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+Test3.execution_authorized=false
+```
