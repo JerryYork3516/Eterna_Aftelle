@@ -1,5 +1,9 @@
 # Eterna Aftelle · Test3 Apple VP Clean · 正式计划入口 v2
 
+## 2026-11-24 · AppleNativeVoiceTransport P2 收口
+
+恢复停止状态的 VP I/O 协商，补齐默认设备、AU 返回设备及自动 Aggregate 活动成员监听。P1／P2、sanitizer、FULL_CURRENT 21/21、Debug／Release 和 Guard 通过。生产切换与设备运行均为 0，P2 收口待主控复核，P3 NOT_STARTED。[收口报告](AppleNativeVoiceTransport_P2_closeout_review.md)
+
 ## 2026-11-24 · AppleNativeVoiceTransport P2 工程交付
 
 单 Engine Apple VP 独立图与 C 实时桥完成，沿用 P1 SRC 和代际机制。Fake、sanitizer、FULL_CURRENT 21/21 及 Debug/Release 通过。生产切换 0，设备运行 0。P1 PASS，P2 REVIEW_PENDING，P3 NOT_STARTED，Formal Test3 BLOCKED。[P2 工程报告](AppleNativeVoiceTransport_P2_engineering_review.md)

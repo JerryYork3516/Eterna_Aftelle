@@ -1,5 +1,11 @@
 # DEVLOG.md — Aftelle 开发日志(给我自己看)
 
+## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P2 收口
+
+- 根据 SDK 与 D2-F1 恢复 stopped VP 协商。Sink 使用实际 VP 输入格式，mono Source 使用协商采样率。默认设备、AU 返回设备、可读 Aggregate 活动成员与流均进入核查，必要监听注册失败回滚。
+- P1 四配置各 1,770 项，P2 四配置各 114 项。TSan、ASan／UBSan、FULL_CURRENT 21/21、Debug／Release 与 Guard 通过。本轮生产切换、设备运行均为 0。P3 的实际 Source Render 交接事实已登记。
+- 原冲突工作树、fixture 和历史收据核对一致。另一个干净的主工作树索引出现 SHA-256 变化，HEAD、暂存树及 Git 状态一致。P2 收口 REVIEW_PENDING，P3 NOT_STARTED。[收口报告](docs/stage7_5/test3_apple_vp_clean/AppleNativeVoiceTransport_P2_closeout_review.md)
+
 ## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P2
 
 - 新增独立 AVAudioEngine、Apple VP、Sink/C11/Source 实时路径及受控生命周期。保留 P1 单级 SRC、会话采集连续性与 Runtime 权威。设备与 Aggregate 快照验证决定是否停图，重建需要新身份和明确调用。
