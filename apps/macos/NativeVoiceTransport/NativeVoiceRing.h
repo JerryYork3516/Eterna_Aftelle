@@ -13,9 +13,17 @@ typedef struct {
     uint32_t flags;
 } NVTStamp;
 typedef struct {
+    double raw_sample_time;
+    uint64_t raw_host_time;
+    uint64_t configuration_id;
+    uint64_t dropped_before;
+    uint32_t raw_flags;
+} NVTIngress;
+typedef struct {
     float sample;
     uint32_t offset;
     NVTStamp origin;
+    NVTIngress ingress;
 } NVTFrame;
 typedef enum {
     NVT_WRITE_OK, NVT_WRITE_STALE, NVT_WRITE_AWAITING_CLEAR,
@@ -26,6 +34,7 @@ typedef struct {
     size_t silence;
     uint64_t token;
     bool invalidated;
+    bool reached_end;
 } NVTReadResult;
 typedef struct {
     uint64_t overflow_events, dropped_frames, stale_frames;
@@ -41,9 +50,15 @@ bool nvt_ring_atomics_lock_free(const NVTRing *ring);
 // Bind each token to the full external generation/route/configuration identity.
 bool nvt_ring_invalidate(NVTRing *ring, uint64_t next_token);
 uint64_t nvt_ring_active_token(const NVTRing *ring);
+uint64_t nvt_ring_acknowledged_token(const NVTRing *ring);
+size_t nvt_ring_write_space(const NVTRing *ring, uint64_t token);
 // Sole producer. All-or-nothing; new-token writes wait for consumer acknowledgement.
 NVTWriteStatus nvt_ring_write(NVTRing *ring, const float *samples, size_t count,
                              NVTStamp stamp, uint64_t token);
+NVTWriteStatus nvt_ring_write_capture(NVTRing *ring, const float *samples, size_t count,
+                                     NVTStamp stamp, NVTIngress ingress, uint64_t token);
+// Commit the last samples and EOS together. An empty tail is legal.
+NVTWriteStatus nvt_ring_write_end(NVTRing *ring, const float *samples, size_t count, uint64_t token);
 // Sole consumer. O(1) logical flush; control never writes either cursor.
 uint64_t nvt_ring_consumer_sync(NVTRing *ring);
 // Work bounded by capacity + count; no allocation, locks, waiting, or SRC.
@@ -51,6 +66,8 @@ uint64_t nvt_ring_consumer_sync(NVTRing *ring);
 // frames may be NULL for playback; samples must hold count floats.
 NVTReadResult nvt_ring_read(NVTRing *ring, float *samples, NVTFrame *frames,
                             size_t count, bool fill_silence, bool expected_audio);
+// A callback that began before a clear can acknowledge it, but cannot read its successor.
+NVTReadResult nvt_ring_read_for_token(NVTRing *ring, float *samples, size_t count, uint64_t token);
 // Approximate concurrent telemetry, never a correctness/clear-completion fence.
 NVTRingStats nvt_ring_stats(const NVTRing *ring);
 

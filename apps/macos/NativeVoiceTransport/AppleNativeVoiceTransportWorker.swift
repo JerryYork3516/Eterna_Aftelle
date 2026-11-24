@@ -1,20 +1,20 @@
 import Foundation
 
 /// Mirrors external authority. Each token fences only its own ring and SRC.
-nonisolated struct NativeVoiceIdentity {
-    struct Authority: Equatable {
+nonisolated struct NativeVoiceIdentity: Sendable {
+    struct Authority: Equatable, Sendable {
         let runtimeGeneration: UInt64
         let routeEpoch: UInt64
         let configurationID: UInt64
     }
 
-    struct Capture: Equatable {
+    struct Capture: Equatable, Sendable {
         let authority: Authority
         let generation: UInt64
         let token: UInt64
     }
 
-    struct Playback: Equatable {
+    struct Playback: Equatable, Sendable {
         let authority: Authority
         let epoch: UInt64
         let token: UInt64
@@ -35,7 +35,7 @@ nonisolated struct NativeVoiceIdentity {
     }
 }
 
-nonisolated struct NativeVoiceCapturePacket {
+nonisolated struct NativeVoiceCapturePacket: Sendable {
     let bytes: Data
     let identity: NativeVoiceIdentity.Capture
     let segment: UInt64
@@ -49,10 +49,11 @@ nonisolated struct NativeVoiceCapturePacket {
     }
 }
 
-/// P1 has no engine, nodes, tasks or production caller. Invoke on one serial worker.
+/// Conversion and packetization on the serial non-realtime worker.
 final nonisolated class AppleNativeVoiceTransportWorker {
     private(set) var identity: NativeVoiceIdentity
     private(set) var nativeRate: Double
+    private(set) var playbackRate: Double
     private var captureSRC: NativeVoiceStreamingSRC
     private var playbackSRC: NativeVoiceStreamingSRC
     private var clock: NativeVoiceClock
@@ -62,32 +63,34 @@ final nonisolated class AppleNativeVoiceTransportWorker {
     private var segment: UInt64 = 0
     private(set) var discardedCaptureTailSamples = 0
 
-    init(identity: NativeVoiceIdentity, nativeRate: Double) throws {
+    init(identity: NativeVoiceIdentity, nativeRate: Double, playbackRate: Double? = nil) throws {
         guard identity.capture.token > 0, identity.playback.token > 0 else {
             throw NativeVoiceTransportError.staleIdentity
         }
         self.identity = identity
         self.nativeRate = nativeRate
+        self.playbackRate = playbackRate ?? nativeRate
         captureSRC = try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000)
-        playbackSRC = try NativeVoiceStreamingSRC(inputRate: 24000, outputRate: nativeRate)
+        playbackSRC = try NativeVoiceStreamingSRC(inputRate: 24000, outputRate: self.playbackRate)
         clock = NativeVoiceClock(sampleRate: nativeRate)
     }
 
     /// The control owner advances only the affected ring tokens. A new utterance can advance
     /// the playback token even when its enclosing playback epoch has not changed.
-    func reset(identity next: NativeVoiceIdentity, nativeRate: Double) throws {
+    func reset(identity next: NativeVoiceIdentity, nativeRate: Double, playbackRate: Double? = nil) throws {
+        let outputRate = playbackRate ?? nativeRate
         let captureChanged = next.capture != identity.capture
         let playbackChanged = next.playback != identity.playback
         let configurationChanged = next.capture.authority.configurationID != identity.capture.authority.configurationID
         guard captureChanged || playbackChanged,
               !captureChanged || next.capture.token > identity.capture.token,
               !playbackChanged || next.playback.token > identity.playback.token,
-              configurationChanged || nativeRate == self.nativeRate
+              configurationChanged || (nativeRate == self.nativeRate && outputRate == self.playbackRate)
         else {
             throw NativeVoiceTransportError.staleIdentity
         }
         let capture = captureChanged ? try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000) : nil
-        let playback = playbackChanged ? try NativeVoiceStreamingSRC(inputRate: 24000, outputRate: nativeRate) : nil
+        let playback = playbackChanged ? try NativeVoiceStreamingSRC(inputRate: 24000, outputRate: outputRate) : nil
         if let capture {
             discardPending()
             captureSRC = capture
@@ -98,6 +101,7 @@ final nonisolated class AppleNativeVoiceTransportWorker {
         }
         identity = next
         self.nativeRate = nativeRate
+        self.playbackRate = outputRate
     }
 
     func capture(
@@ -157,7 +161,9 @@ final nonisolated class AppleNativeVoiceTransportWorker {
     }
 
     /// Consumer endpoint only. Original callback stamps survive arbitrary read sizes.
-    func drainCapture(_ ring: OpaquePointer, maxFrames: Int) throws -> [NativeVoiceCapturePacket] {
+    func drainCapture(
+        _ ring: OpaquePointer, maxFrames: Int, requiresConfiguration: Bool = false
+    ) throws -> [NativeVoiceCapturePacket] {
         guard maxFrames > 0, maxFrames <= 1_048_576 else { throw NativeVoiceTransportError.invalidPCM }
         let captureIdentity = identity.capture
         guard nvt_ring_active_token(ring) == captureIdentity.token
@@ -171,6 +177,8 @@ final nonisolated class AppleNativeVoiceTransportWorker {
         var start = 0
         while start < result.copied {
             let frame = frames[start]
+            guard !requiresConfiguration || frame.ingress.configuration_id == captureIdentity.authority.configurationID
+            else { throw NativeVoiceTransportError.staleIdentity }
             var end = start + 1
             while end < result.copied, frames[end].origin.sample_time == frame.origin.sample_time,
                   frames[end].origin.host_time_ns == frame.origin.host_time_ns,
@@ -189,6 +197,7 @@ final nonisolated class AppleNativeVoiceTransportWorker {
                 sampleTime: sampleTime,
                 hostTime: hostTime,
                 identity: captureIdentity,
+                droppedFrames: frame.offset == 0 ? frame.ingress.dropped_before : 0,
                 independentHostObservation: frame.offset == 0
             )
             start = end
