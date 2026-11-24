@@ -1,6 +1,6 @@
 # T3.2-A · Step 4-A 全零对照设备审核
 
-## 1. 结果
+## 1. 首次准备的历史结果
 
 **BLOCKED_UI_PREPARATION。** 冻结 App 启动一次，加载映像与进程身份核验通过。准备综合 C 时，辅助功能读取该进程的 `AXWindows` 失败（`AX_COLLECTION_UNAVAILABLE_AXWindows`），综合 C 就绪状态未建立。故障出现在打开素材选择器和录音确认面板之前，界面读取失败的具体原因仍未知。
 
@@ -39,6 +39,43 @@ STEP4_A_NEAR_END_SUPPRESSION=UNKNOWN
 DEVICE_CAPTURES=0
 MAC_PLAYBACKS=0
 LOCAL_AUDIO_EXPORTS=0
+P4_FORMAL_53_C_RUNS=0
+T3_2_A=BLOCKED
+Formal_Test3=BLOCKED
+```
+
+## 5. 本次单次对照结果
+
+**技术证据核验通过，等待独立音频分析。** 本次基线为 `876779b21ef03e3880386c5228c37acdfe03c7cd`，沿用 §2 冻结构建和素材身份。只读预检通过。先观察到冻结 App PID 的前台窗口稳定，再读取其 AX 树并核验原综合 C、RECORDING、AGC ON、无额外预热和未生成 RunID。原文件选择器的自动操作未能稳定确认结果，用户在同一 App 通过原界面选定全零 WAV 并打开确认面板。同一 PID 核验选材及原确认面板通过。用户随后确认 Windows 已开始播放上一轮的男声 WAV，并授权本次单次采集和本机导出。仅确认一次原面板，封存后提示用户停止 Windows 播放。
+
+| 检查项 | 本次实测 |
+| --- | --- |
+| Run 与同代身份 | `558699DC-E5B2-4F9C-846A-EA491A936968`；Capture / Playback Generation = 1 / 1，ConfigurationID = 2。 |
+| 固定路线与处理 | TinyUSB 输入 60%，Mac mini 内置扬声器输出 55%、未静音。运行期两个读回与同代身份一致，Input/Output VP 和 AGC 均为 ON；bypass、inputMuted 均为 false。Native 与 Player client 为 16 kHz / 3ch。 |
+| 全零素材与排程 | 原 App 读回选材 SHA 与 §2 全零文件相符。原 Player 排程 **76,010 帧**、其中非零 **0 帧**，Playback 启动及完成各一次。 |
+| Player Render | 149 次回调，扫描 238,400 帧，非零 0 帧，首尾非零时间为空。该证据覆盖 Player Tap 的观测范围，下游物理状态无独立测量。 |
+| 保存与时钟 | 744 个连续 20 ms PCM 包、714,240 字节，共 14.88 秒。生成、封存、导出包数一致，余队列 0。744/744 个 Native/PCM 短窗匹配，内容时钟可信，时钟拒收、掉包、过期包和播放欠载均为 0。 |
+| 停止和设备释放 | 原计时流程正常 Stop/Seal，未触发监视器 Stop。路由与 Engine 配置通知数均为 0；封存记录中的最后一次配置递增在 `captureStopped` 后约 75 µs。通过原 UI 导出，App exit 0，PID 消失，设备空闲且前后快照相同。 |
+
+以保存 PCM 第一包为零点，A 轮软件 `playbackStarted` 到 `playbackCompleted` 为 **3.109087–7.979930 秒**。以 A 轮 `playbackStarted` 为锚点，加上居民轮非零窗口相对同名事件的偏移 **1.125088–4.872744 秒**，得到软件对照窗口 **4.234175–7.981831 秒**。该窗口含约 1.9 ms 的完成后边界，实际调度段与投影窗均被连续 PCM 完整覆盖。Player 的非零 Render 字段继续为空。本方案对齐软件事件，不测量实际 Windows 起播相位或声学时延。
+
+| 本机导出 | 大小 | SHA-256 |
+| --- | ---: | --- |
+| WAV（24 kHz、Mono、PCM16LE） | 714284 字节 | `a1265cf86f8aa52476549a6ae7ae91b3b26f7164f437cbcdc38aaa61c251d821` |
+| 技术 JSON | 1060795 字节 | `a07a4b4ddebe2819321d8cf1f9c5a3c2f25166be9e57769c31d5893f0f7ba9df` |
+
+WAV 规格、长度及 PCM 数据摘要与 JSON 一致。原始 WAV、技术 JSON、Native 短窗、时序和设备快照仅留本机。Windows 实际播放由用户见证，播放相位和麦克风处声压未独立测量。本次仅做证据完整性核验，未试听，未重新进行男声模板匹配。全零条件下是否仍有男声压制，保留 `UNKNOWN`，待独立分析授权。无重试、无 B 组、无正式 P4 或 Gate 53-C 计次。Stage 7 Forbidden Checklist 自审 PASS，保护工作区及导出清单复核通过。
+
+```ini
+STEP4_A_UI_PREFLIGHT=PASS_WITH_MANUAL_FILE_SELECTION
+STEP4_A_EXECUTION=COMPLETED_ONCE
+STEP4_A_TECHNICAL_EVIDENCE=PASS
+STEP4_A_RENDER_ZERO=VERIFIED_AT_PLAYER_TAP
+STEP4_A_NEAR_END_SUPPRESSION=UNKNOWN
+STEP4_A_AUDIO_ANALYSIS=AWAITING_INDEPENDENT_AUTHORIZATION
+DEVICE_CAPTURES=1
+MAC_PLAYBACKS=1
+LOCAL_AUDIO_EXPORTS=2
 P4_FORMAL_53_C_RUNS=0
 T3_2_A=BLOCKED
 Formal_Test3=BLOCKED
