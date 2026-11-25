@@ -379,7 +379,8 @@ actor MacSpeechRealtimeBrainInputBridge {
     }
 
     func resumeAfterGenerationTransition(
-        session: RealtimeBrainSessionIdentity
+        session: RealtimeBrainSessionIdentity,
+        captureAlreadyFenced: Bool = false
     ) async -> MacSpeechRealtimeBrainInputBridgeSnapshot {
         guard let previous = suspendedBinding,
               let transitionID = generationTransitionID,
@@ -389,10 +390,12 @@ actor MacSpeechRealtimeBrainInputBridge {
             lastError = "invalid_identity"
             return makeSnapshot()
         }
-        await source.discardPendingAudioForGenerationTransition()
-        _ = await source.drainFrames(
-            maxCount: MacSpeechAudioInputFormat.frameCapacity
-        )
+        if !captureAlreadyFenced {
+            await source.discardPendingAudioForGenerationTransition()
+            _ = await source.drainFrames(
+                maxCount: MacSpeechAudioInputFormat.frameCapacity
+            )
+        }
         guard suspendedBinding == previous,
               generationTransitionID == transitionID else {
             return makeSnapshot()

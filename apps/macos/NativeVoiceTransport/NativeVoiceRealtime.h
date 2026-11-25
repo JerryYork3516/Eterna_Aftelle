@@ -18,6 +18,8 @@ typedef struct {
     uint64_t rendered_clear_token, dropped_render_facts;
     uint64_t idle_frames, cancelled_frames, underrun_frames;
     uint64_t rejected_input_frames, rejected_output_frames;
+    uint64_t capture_minimum_host_ns, capture_callbacks, accepted_input_frames;
+    uint64_t capture_fence_missing_frames, capture_fence_old_frames, capture_stale_frames;
 } NVTRTStats;
 
 enum {
@@ -52,7 +54,7 @@ NVTRing *nvt_rt_capture_ring(NVTRTIO *io);
 NVTRTStats nvt_rt_stats(const NVTRTIO *io);
 
 // Serial non-realtime control and playback producer. Only the sink publishes capture.
-bool nvt_rt_set_capture(NVTRTIO *io, uint64_t token);
+bool nvt_rt_set_capture(NVTRTIO *io, uint64_t token, uint64_t minimum_host_ns);
 bool nvt_rt_set_playback(NVTRTIO *io, uint64_t token, bool cancelled);
 size_t nvt_rt_playback_space(const NVTRTIO *io, uint64_t token);
 NVTWriteStatus nvt_rt_enqueue(NVTRTIO *io, const float * _Nullable samples, size_t count, uint64_t token, bool end);

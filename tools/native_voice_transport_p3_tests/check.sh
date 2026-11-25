@@ -38,7 +38,7 @@ hosts=(
 for i in "${!hosts[@]}"; do hosts[i]="$app/${hosts[i]}"; done
 # Keep the existing Fake Provider and fixture private to the combined offline harness.
 cat tools/realtime_interruption_evidence_tests/RealtimeInterruptionEvidenceTests.swift \
-  "$tests/ControllerCases.swift" >"$work/ControllerTests.swift"
+  "$tests/ControllerCases.swift" tools/native_voice_transport_p4_tests/CloseoutCases.swift >"$work/ControllerTests.swift"
 swiftc -D DEBUG -D NATIVE_VOICE_P3_OFFLINE_TEST -parse-as-library -module-cache-path "$work/modules" \
   -warn-concurrency -strict-concurrency=complete -import-objc-header "$src/NativeVoiceRealtime.h" \
   -framework AVFoundation -framework CoreAudio -framework AppKit -framework Security -framework UniformTypeIdentifiers \
@@ -47,5 +47,29 @@ swiftc -D DEBUG -D NATIVE_VOICE_P3_OFFLINE_TEST -parse-as-library -module-cache-
   tools/native_voice_transport_p2_tests/FakeVoiceEngine.swift "$work/ControllerTests.swift" "$work/"*.o -o "$work/controller"
 mkdir "$work/runtime-home"
 CFFIXED_USER_HOME="$work/runtime-home" "$work/controller" --native-voice-p3
+mkdir "$work/p4-runtime-home"
+CFFIXED_USER_HOME="$work/p4-runtime-home" "$work/controller" --native-voice-p4
+if [[ "$mode" == normal ]]; then
+  # These builds are type-checked only. The production factory is never invoked here.
+  preflight=(
+    -typecheck -parse-as-library -module-cache-path "$work/modules" -swift-version 5 -default-isolation MainActor
+    -import-objc-header "$src/NativeVoiceRealtime.h" -D APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED
+    "$src/"*.swift apps/macos/RuntimeCore/*.swift "${hosts[@]}"
+  )
+  swiftc "${preflight[@]}" -D DEBUG
+  reject_incompatible() {
+    local incompatible="$1"
+    shift
+    if swiftc "${preflight[@]}" "$@" >"$work/$incompatible.log" 2>&1 ||
+       ! grep -q 'error: Device execution and offline Shadow cannot share a build' "$work/$incompatible.log"; then
+      cat "$work/$incompatible.log"
+      exit 1
+    fi
+  }
+  reject_incompatible release
+  reject_incompatible shadow -D DEBUG -D NATIVE_VOICE_P3_OFFLINE_TEST
+  echo "native_voice_p4_device_build_preflight=TYPECHECKED_DEBUG_RELEASE_AND_SHADOW_REJECTED"
+fi
 python3 tools/native_voice_transport_tests/guard.py
 echo "native_voice_p3_mode=$mode"
+echo "native_voice_p4_mode=$mode"

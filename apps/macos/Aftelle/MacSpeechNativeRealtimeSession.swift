@@ -9,13 +9,7 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
         var eosDeadline: UInt64?
     }
 
-    private struct Capture {
-        let frame: MacSpeechAudioFrame
-        let packet: NativeVoiceCapturePacket
-    }
-
     private let makeTransport: @Sendable () -> AppleNativeVoiceTransport
-    private let capacity = MacSpeechAudioInputFormat.frameCapacity
     private let playbackTimeout = MacSpeechPCMPlaybackConfiguration.standard.consumerTimeoutNanoseconds
     private var transport: AppleNativeVoiceTransport?
     private var session: RealtimeBrainSessionIdentity?
@@ -23,9 +17,11 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
     private var configurationSerial: UInt64 = 0
     private var preparedGeneration: UInt64?
     private var serviceTask: Task<Void, Never>?
-    private var capture: [Capture] = []
     private var facts = MacSpeechNativeRealtimeFacts()
-    private var captureSequence: UInt64 = 0
+    #if DEBUG
+        private var sealedTransport: NativeVoiceTransportReadback?
+        private var terminalReason: String?
+    #endif
     private var outputState = MacSpeechAudioOutputHostState.idle
     private var outputError: MacSpeechAudioOutputHostError?
     private var playback: Playback?
@@ -74,15 +70,20 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
         transport = graph
         outputState = .idle
         outputError = nil
-        captureSequence = 0
         facts = MacSpeechNativeRealtimeFacts()
+        #if DEBUG
+            sealedTransport = nil
+            terminalReason = nil
+        #endif
         lastClearCompletedAtNanoseconds = nil
         do {
             try await graph.start(identity: initial)
-            let plan = try await graph.configuredPlan()
+            let binding = try await graph.configuredGraph()
             guard transport === graph else { throw NativeVoiceTransportError.staleIdentity }
+            let route = MacSpeechDeviceRoute(nativeVoiceDefaults: binding.defaults)
+            counters = MacSpeechNativePlaybackCounters(outputDevice: route.output)
             installService(graph, failed: failed)
-            return .nativeVoiceCapture(plan.capture)
+            return .nativeVoiceCapture(binding, route: route)
         } catch {
             if transport === graph { _ = await close() }
             throw error
@@ -96,21 +97,7 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
     }
 
     func drainFrames(maxCount: Int) -> [MacSpeechAudioFrame] {
-        let count = min(max(0, maxCount), capture.count)
-        let frames = capture.prefix(count)
-        facts.deliveredCapture = Dictionary(uniqueKeysWithValues: frames.map { ($0.frame.sequenceNumber, $0.packet) })
-        let result = frames.map(\.frame)
-        capture.removeFirst(count)
-        return result
-    }
-
-    func discardPendingAudioForGenerationTransition() async {
-        discardCapture()
-    }
-
-    private func discardCapture() {
-        capture.removeAll(keepingCapacity: true)
-        facts.deliveredCapture.removeAll(keepingCapacity: true)
+        facts.drainCapture(maxCount: maxCount)
     }
 
     func advanceGeneration(
@@ -131,7 +118,7 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
         guard transport === graph, session == previous else { throw NativeVoiceTransportError.staleIdentity }
         identity = successor
         session = next
-        discardCapture()
+        facts.discardCapture(forTransition: true)
         facts.invalidatePlayback()
     }
 
@@ -150,7 +137,7 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
         identity = next
         playback = Playback(response: response)
         facts.invalidatePlayback()
-        counters = MacSpeechNativePlaybackCounters()
+        counters = MacSpeechNativePlaybackCounters(outputDevice: counters.outputDevice)
         do {
             try await graph.beginPlayback(next.playback)
             guard isCurrent(graph, next.playback) else { return snapshot() }
@@ -214,6 +201,9 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
 
     func close() async -> MacSpeechAudioOutputHostSnapshot {
         let graph = transport
+        #if DEBUG
+            let closingConfiguration = configurationSerial
+        #endif
         transport = nil
         session = nil
         identity = nil
@@ -223,10 +213,16 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
         playback = nil
         facts.invalidatePlayback()
         eventSink = nil
-        discardCapture()
+        facts.discardCapture(forTransition: false)
+        counters.outputDevice = .unavailable
         outputState = .closed
         outputError = nil
         await graph?.close()
+        #if DEBUG
+            if let readback = await graph?.readback(), configurationSerial == closingConfiguration, transport == nil {
+                sealedTransport = readback
+            }
+        #endif
         return snapshot()
     }
 }
@@ -303,30 +299,22 @@ private extension MacSpeechNativeRealtimeSession {
         do {
             let batch = try await graph.bridgeService(maxCaptureFrames: 8192)
             guard transport === graph, let identity else { return false }
-            bufferCapture(batch.packets, expected: identity.capture)
+            facts.bufferCapture(batch.packets, expected: identity.capture)
+            #if DEBUG
+                facts.recordSource(batch.render, expected: identity.playback)
+            #endif
             try await observeRender(batch, playback: identity.playback)
             return transport === graph
         } catch {
             guard transport === graph else { return false }
-            _ = await close()
             let reason = (error as? NativeVoiceSessionError) == .permission
                 ? "microphone_permission_revoked" : "native_audio_transport_failed"
+            #if DEBUG
+                terminalReason = reason
+            #endif
+            _ = await close()
             Task { await failed(reason) }
             return false
-        }
-    }
-
-    func bufferCapture(_ packets: [NativeVoiceCapturePacket], expected: NativeVoiceIdentity.Capture) {
-        let arrival = DispatchTime.now().uptimeNanoseconds
-        for packet in packets where packet.identity == expected {
-            captureSequence &+= 1
-            // Runtime's PCM envelope is ordered by arrival. Acoustic eligibility uses packet HostTime separately.
-            let frame = MacSpeechAudioFrame(
-                captureGeneration: expected.generation, sequenceNumber: captureSequence,
-                monotonicTimestampNanoseconds: arrival, pcm16Bytes: packet.bytes, activity: 0
-            )
-            if capture.count == capacity { capture.removeFirst() }
-            capture.append(Capture(frame: frame, packet: packet))
         }
     }
 
@@ -372,6 +360,20 @@ private extension MacSpeechNativeRealtimeSession {
 }
 
 extension MacSpeechNativeRealtimeSession {
+    #if DEBUG
+        func nativeVoiceDiagnosticData() async throws -> Data {
+            let graph = transport
+            let observed = await graph?.readback()
+            return try JSONEncoder().encode(MacSpeechNativeVoiceDiagnosticReadback(
+                sealed: transport == nil && sealedTransport != nil, terminalReason: terminalReason,
+                transport: graph === transport ? observed ?? sealedTransport : sealedTransport,
+                captureQueue: facts.captureQueue, lastSource: facts.lastSource,
+                lastDigitalHandoff: facts.lastDigitalHandoff,
+                lastClearObservedAtNanoseconds: lastClearCompletedAtNanoseconds
+            ))
+        }
+    #endif
+
     func acousticMetrics(for frame: MacSpeechAudioFrame) -> RealtimeAcousticMetrics? {
         guard let identity else { return nil }
         return facts.metrics(
@@ -388,7 +390,7 @@ extension MacSpeechNativeRealtimeSession {
         return facts.matches(observation.metrics, playback: expected.playback)
     }
 
-    /// App composition defaults to the frozen route. This constructor is explicit injection only.
+    /// Selected explicitly by the authorized DEBUG foreground route.
     nonisolated static func appleVoiceProcessing() -> MacSpeechNativeRealtimeSession {
         MacSpeechNativeRealtimeSession(makeTransport: { AppleNativeVoiceTransport.macOS() })
     }

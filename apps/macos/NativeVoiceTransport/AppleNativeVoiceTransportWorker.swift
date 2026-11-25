@@ -1,20 +1,20 @@
 import Foundation
 
 /// Mirrors external authority. Each token fences only its own ring and SRC.
-nonisolated struct NativeVoiceIdentity: Sendable {
-    struct Authority: Equatable, Sendable {
+nonisolated struct NativeVoiceIdentity: Encodable, Sendable {
+    struct Authority: Encodable, Equatable, Sendable {
         let runtimeGeneration: UInt64
         let routeEpoch: UInt64
         let configurationID: UInt64
     }
 
-    struct Capture: Equatable, Sendable {
+    struct Capture: Encodable, Equatable, Sendable {
         let authority: Authority
         let generation: UInt64
         let token: UInt64
     }
 
-    struct Playback: Equatable, Sendable {
+    struct Playback: Encodable, Equatable, Sendable {
         let authority: Authority
         let epoch: UInt64
         let token: UInt64
@@ -32,6 +32,29 @@ nonisolated struct NativeVoiceIdentity: Sendable {
     ) {
         capture = Capture(authority: authority, generation: captureGeneration, token: captureToken)
         playback = Playback(authority: authority, epoch: playbackEpoch, token: playbackToken)
+    }
+}
+
+nonisolated struct NativeVoiceSinkFact: Encodable, Sendable {
+    let identity: NativeVoiceIdentity.Capture
+    let sampleTime: Int64?
+    let hostTime: UInt64?
+    let hostTimeNanoseconds: UInt64?
+    let rawFlags: UInt32
+    let callbackFrames: UInt32
+    let workerFrameOffset: UInt32
+    let droppedBefore: UInt64
+
+    init(frame: NVTFrame, identity: NativeVoiceIdentity.Capture) {
+        self.identity = identity
+        sampleTime = frame.origin.flags & UInt32(NVT_SAMPLE_TIME_VALID) != 0 ? frame.origin.sample_time : nil
+        let validHost = frame.origin.flags & UInt32(NVT_HOST_TIME_VALID) != 0
+        hostTime = validHost ? frame.ingress.raw_host_time : nil
+        hostTimeNanoseconds = validHost ? frame.origin.host_time_ns : nil
+        rawFlags = frame.ingress.raw_flags
+        callbackFrames = frame.ingress.callback_frames
+        workerFrameOffset = frame.offset
+        droppedBefore = frame.ingress.dropped_before
     }
 }
 
@@ -62,6 +85,12 @@ final nonisolated class AppleNativeVoiceTransportWorker {
     private var packetSampleCount: UInt64 = 0
     private var segment: UInt64 = 0
     private(set) var discardedCaptureTailSamples = 0
+    private(set) var captureDiscontinuities: UInt64 = 0
+    private(set) var lastSinkFact: NativeVoiceSinkFact?
+    private(set) var captureTimingStatus = NativeVoiceTimingStatus.unknown
+    private(set) var producedCapturePackets: UInt64 = 0
+
+    var pendingCaptureTailSamples: Int { pending.count + captureSRC.unreleasedContentFrames }
 
     init(identity: NativeVoiceIdentity, nativeRate: Double, playbackRate: Double? = nil) throws {
         guard identity.capture.token > 0, identity.playback.token > 0 else {
@@ -95,6 +124,8 @@ final nonisolated class AppleNativeVoiceTransportWorker {
             discardPending()
             captureSRC = capture
             clock = NativeVoiceClock(sampleRate: nativeRate)
+            lastSinkFact = nil
+            captureTimingStatus = .unknown
         }
         if let playback {
             playbackSRC = playback
@@ -127,10 +158,12 @@ final nonisolated class AppleNativeVoiceTransportWorker {
         let inputStart = converter.inputFrames
         let output = try converter.append(samples)
         if observation.discontinuity {
+            captureDiscontinuities &+= 1
             discardPending()
             captureSRC = converter
         }
         clock = observedClock
+        captureTimingStatus = observation.status
         if observation.status != .valid {
             timingAnchor = nil
         } else if timingAnchor == nil, let sampleTime {
@@ -166,11 +199,14 @@ final nonisolated class AppleNativeVoiceTransportWorker {
     ) throws -> [NativeVoiceCapturePacket] {
         guard maxFrames > 0, maxFrames <= 1_048_576 else { throw NativeVoiceTransportError.invalidPCM }
         let captureIdentity = identity.capture
-        guard nvt_ring_active_token(ring) == captureIdentity.token
+        guard nvt_ring_active_token(ring) == captureIdentity.token,
+              nvt_ring_consumer_sync(ring) == captureIdentity.token
         else { throw NativeVoiceTransportError.staleIdentity }
-        var samples = [Float](repeating: 0, count: maxFrames)
-        var frames = [NVTFrame](repeating: NVTFrame(), count: maxFrames)
-        let result = nvt_ring_read(ring, &samples, &frames, maxFrames, false, false)
+        let count = Int(min(UInt64(maxFrames), nvt_ring_stats(ring).water_frames))
+        guard count > 0 else { return [] }
+        var samples = [Float](repeating: 0, count: count)
+        var frames = [NVTFrame](repeating: NVTFrame(), count: count)
+        let result = nvt_ring_read(ring, &samples, &frames, count, false, false)
         guard !result.invalidated,
               result.token == captureIdentity.token else { throw NativeVoiceTransportError.staleIdentity }
         var packets: [NativeVoiceCapturePacket] = []
@@ -200,6 +236,9 @@ final nonisolated class AppleNativeVoiceTransportWorker {
                 droppedFrames: frame.offset == 0 ? frame.ingress.dropped_before : 0,
                 independentHostObservation: frame.offset == 0
             )
+            if requiresConfiguration {
+                lastSinkFact = NativeVoiceSinkFact(frame: frame, identity: captureIdentity)
+            }
             start = end
         }
         guard nvt_ring_active_token(ring) == captureIdentity.token
@@ -221,6 +260,7 @@ final nonisolated class AppleNativeVoiceTransportWorker {
                 hostTimeNanoseconds: host,
                 timingStatus: status
             ))
+            producedCapturePackets &+= 1
             pending.removeFirst(480)
             packetSampleCount += 480
         }

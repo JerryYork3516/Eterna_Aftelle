@@ -75,7 +75,7 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
 
     func snapshot() throws -> NativeVoiceGraphSnapshot {
         guard engine.isRunning else { throw NativeVoiceSessionError.state }
-        try requireVoiceProcessing()
+        let voiceProcessing = try requireVoiceProcessing()
         let graph = try connectedPlan()
         let defaults = try NativeVoiceHALRoute.defaultDevices()
         guard defaults == preparedDefaults else { throw NativeVoiceSessionError.route }
@@ -84,7 +84,7 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
         let bindings = try NativeVoiceHALRoute.bindings(roots: [defaults.input, defaults.output, input, output])
         return try NativeVoiceGraphSnapshot(
             plan: graph, defaults: defaults, inputUnitDevice: input, outputUnitDevice: output,
-            bindings: bindings, streams: NativeVoiceHALRoute.streamBindings(bindings)
+            bindings: bindings, streams: NativeVoiceHALRoute.streamBindings(bindings), voiceProcessing: voiceProcessing
         )
     }
 
@@ -111,11 +111,18 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
         negotiatedInput = nil
     }
 
-    private func requireVoiceProcessing() throws {
+    @discardableResult
+    private func requireVoiceProcessing() throws -> NativeVoiceProcessingReadback {
         let input = engine.inputNode
-        guard input.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled,
-              input.isVoiceProcessingAGCEnabled, !input.isVoiceProcessingBypassed, !input.isVoiceProcessingInputMuted
+        let processing = NativeVoiceProcessingReadback(
+            inputEnabled: input.isVoiceProcessingEnabled, outputEnabled: engine.outputNode.isVoiceProcessingEnabled,
+            agcEnabled: input.isVoiceProcessingAGCEnabled, bypassed: input.isVoiceProcessingBypassed,
+            inputMuted: input.isVoiceProcessingInputMuted
+        )
+        guard processing.inputEnabled, processing.outputEnabled,
+              processing.agcEnabled, !processing.bypassed, !processing.inputMuted
         else { throw NativeVoiceSessionError.voiceProcessing }
+        return processing
     }
 
     private func connectedPlan() throws -> NativeVoiceGraphPlan {

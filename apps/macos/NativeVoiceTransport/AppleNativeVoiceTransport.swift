@@ -3,7 +3,7 @@ import Foundation
 
 /// Serial non-realtime control and conversion. Callers supply authority and drive bounded service.
 actor AppleNativeVoiceTransport {
-    enum State: Equatable, Sendable { case idle, running, rebuildRequired, closed }
+    enum State: String, Equatable, Sendable { case idle, running, rebuildRequired, closed }
     enum PlaybackState: Equatable, Sendable { case idle, playing, ending, cancelled }
 
     struct Limits: Sendable {
@@ -38,6 +38,7 @@ actor AppleNativeVoiceTransport {
     private let limits: Limits
     private var lastIdentity: NativeVoiceIdentity?
     private var live: NativeVoiceSessionGraph?
+    private var retiredReadback: NativeVoiceTransportReadback?
     private(set) var state: State = .idle
 
     init(
@@ -114,7 +115,8 @@ actor AppleNativeVoiceTransport {
               next.capture.token > current.capture.token, next.playback.token > current.playback.token,
               next.playback.epoch == current.playback.epoch else { throw NativeVoiceTransportError.staleIdentity }
         do {
-            guard nvt_rt_set_capture(graph.context, next.capture.token),
+            let boundary = DispatchTime.now().uptimeNanoseconds
+            guard nvt_rt_set_capture(graph.context, next.capture.token, boundary),
                   nvt_rt_set_playback(graph.context, next.playback.token, true)
             else { throw NativeVoiceTransportError.staleIdentity }
             try graph.worker.reset(
@@ -179,8 +181,12 @@ actor AppleNativeVoiceTransport {
         )
     }
 
-    func configuredPlan() throws -> NativeVoiceGraphPlan {
-        try running().binding.plan
+    func configuredGraph() throws -> NativeVoiceGraphSnapshot {
+        try running().binding
+    }
+
+    func readback() -> NativeVoiceTransportReadback? {
+        live?.readback(state: state.rawValue) ?? retiredReadback
     }
 
     /// Handoff reports an EOS observed by the source callback. Physical playback completion is unknown.
@@ -284,7 +290,10 @@ private extension AppleNativeVoiceTransport {
     }
 
     func tearDown(_ next: State) {
-        live?.close()
+        if let live {
+            live.close()
+            retiredReadback = live.readback(state: next.rawValue)
+        }
         live = nil
         state = next
     }

@@ -17,7 +17,7 @@ typedef struct {
     uint64_t raw_host_time;
     uint64_t configuration_id;
     uint64_t dropped_before;
-    uint32_t raw_flags;
+    uint32_t raw_flags, callback_frames;
 } NVTIngress;
 typedef struct {
     float sample;

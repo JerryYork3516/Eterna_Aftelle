@@ -23,6 +23,8 @@ struct NVTRTIO {
     atomic_uint state;
     Counter playing, primed, cancelling, rendered_end, idle, cancelled, underrun, rejected_input, rejected_output;
     Counter rendered_clear, render_read, render_written, render_dropped;
+    Counter capture_minimum_host, capture_callbacks, accepted_input;
+    Counter capture_fence_missing, capture_fence_old, capture_stale;
     NVTRenderFact render_facts[NVT_RENDER_FACT_CAPACITY];
 };
 
@@ -49,7 +51,9 @@ NVTRTIO *nvt_rt_create(NVTRTConfig config) {
     atomic_init(&io->state, PREPARED);
     Counter *fields[] = {&io->playing, &io->primed, &io->cancelling, &io->rendered_end, &io->idle, &io->cancelled,
                          &io->underrun, &io->rejected_input, &io->rejected_output,
-                         &io->rendered_clear, &io->render_read, &io->render_written, &io->render_dropped};
+                         &io->rendered_clear, &io->render_read, &io->render_written, &io->render_dropped,
+                         &io->capture_minimum_host, &io->capture_callbacks, &io->accepted_input,
+                         &io->capture_fence_missing, &io->capture_fence_old, &io->capture_stale};
     for (size_t i = 0; i < sizeof(fields) / sizeof(*fields); ++i) {
         atomic_init(fields[i], 0);
         if (!atomic_is_lock_free(fields[i])) { nvt_rt_destroy(io); return NULL; }
@@ -87,8 +91,12 @@ bool nvt_rt_active(const NVTRTIO *io) {
 NVTRing *nvt_rt_capture_ring(NVTRTIO *io) { return io->capture; }
 NVTRingStats nvt_rt_capture_stats(const NVTRTIO *io) { return nvt_ring_stats(io->capture); }
 
-bool nvt_rt_set_capture(NVTRTIO *io, uint64_t token) {
-    return nvt_rt_active(io) && token < UINT64_MAX && nvt_ring_invalidate(io->capture, token);
+bool nvt_rt_set_capture(NVTRTIO *io, uint64_t token, uint64_t minimum_host_ns) {
+    if (!nvt_rt_active(io) || token >= UINT64_MAX || token <= nvt_ring_active_token(io->capture) ||
+        !minimum_host_ns || minimum_host_ns < value(&io->capture_minimum_host)) return false;
+    // Acquiring the successor ring token also acquires its content-time lower bound.
+    publish(&io->capture_minimum_host, minimum_host_ns);
+    return nvt_ring_invalidate(io->capture, token);
 }
 
 bool nvt_rt_set_playback(NVTRTIO *io, uint64_t token, bool cancelled) {
@@ -118,7 +126,12 @@ NVTRTStats nvt_rt_stats(const NVTRTIO *io) {
         .dropped_render_facts = value(&io->render_dropped),
         .idle_frames = value(&io->idle), .cancelled_frames = value(&io->cancelled),
         .underrun_frames = value(&io->underrun), .rejected_input_frames = value(&io->rejected_input),
-        .rejected_output_frames = value(&io->rejected_output)
+        .rejected_output_frames = value(&io->rejected_output),
+        .capture_minimum_host_ns = value(&io->capture_minimum_host),
+        .capture_callbacks = value(&io->capture_callbacks), .accepted_input_frames = value(&io->accepted_input),
+        .capture_fence_missing_frames = value(&io->capture_fence_missing),
+        .capture_fence_old_frames = value(&io->capture_fence_old),
+        .capture_stale_frames = value(&io->capture_stale)
     };
 }
 
@@ -172,7 +185,8 @@ static NVTStamp stamp_for(const NVTRTConfig *config, const AudioTimeStamp *time,
             stamp.flags |= NVT_SAMPLE_TIME_VALID;
         }
     }
-    if ((time->mFlags & kAudioTimeStampHostTimeValid) && host_nanos(config, time->mHostTime, &stamp.host_time_ns)) {
+    if ((time->mFlags & kAudioTimeStampHostTimeValid) && time->mHostTime &&
+        host_nanos(config, time->mHostTime, &stamp.host_time_ns) && stamp.host_time_ns) {
         stamp.flags |= NVT_HOST_TIME_VALID;
     }
     return stamp;
@@ -187,24 +201,47 @@ static void lost_input(NVTRTIO *io, uint32_t frames) {
 OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames, const AudioBufferList *input) {
     const uint64_t token = nvt_ring_active_token(io->capture);
     if (!frames || !nvt_rt_active(io)) return noErr;
+    const uint64_t minimum_host = value(&io->capture_minimum_host);
+    count(&io->capture_callbacks, 1);
     if (token != io->lost_token) {
         io->lost_token = token;
         io->lost_before = 0;
     }
+    NVTStamp stamp = stamp_for(&io->config, time, frames);
+    if (minimum_host) {
+        if (stamp.flags != (NVT_SAMPLE_TIME_VALID | NVT_HOST_TIME_VALID)) {
+            count(&io->capture_fence_missing, frames);
+            lost_input(io, frames);
+            return noErr;
+        }
+        if (stamp.host_time_ns < minimum_host) {
+            count(&io->capture_fence_old, frames);
+            lost_input(io, frames);
+            return noErr;
+        }
+    }
     const float *mono = capture_mono(io, input, frames);
     if (!mono) { lost_input(io, frames); return noErr; }
 
-    NVTStamp stamp = stamp_for(&io->config, time, frames);
     NVTIngress ingress = {
         .configuration_id = io->config.configuration_id, .dropped_before = io->lost_before,
         .raw_sample_time = time ? time->mSampleTime : 0, .raw_host_time = time ? time->mHostTime : 0,
-        .raw_flags = time ? time->mFlags : 0
+        .raw_flags = time ? time->mFlags : 0, .callback_frames = frames
     };
     IO_HOOK(1);
-    if (!nvt_rt_active(io) || token != nvt_ring_active_token(io->capture)) return noErr;
+    if (!nvt_rt_active(io) || token != nvt_ring_active_token(io->capture)) {
+        count(&io->capture_stale, frames);
+        count(&io->rejected_input, frames);
+        return noErr;
+    }
     NVTWriteStatus status = nvt_ring_write_capture(io->capture, mono, frames, stamp, ingress, token);
-    if (status == NVT_WRITE_OK) io->lost_before = 0;
-    else lost_input(io, frames);
+    if (status == NVT_WRITE_OK) {
+        io->lost_before = 0;
+        count(&io->accepted_input, frames);
+    } else {
+        if (status == NVT_WRITE_STALE) count(&io->capture_stale, frames);
+        lost_input(io, frames);
+    }
     return noErr;
 }
 

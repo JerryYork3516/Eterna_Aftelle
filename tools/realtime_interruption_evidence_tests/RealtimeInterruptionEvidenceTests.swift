@@ -4517,6 +4517,10 @@ private struct RealtimeInterruptionEvidenceTests {
                 try await runNativeVoiceP3()
                 return
             }
+            if CommandLine.arguments.dropFirst().elementsEqual(["--native-voice-p4"]) {
+                try await runNativeVoiceP4()
+                return
+            }
         #endif
         if try await runWithdrawalTestMode() {
             return

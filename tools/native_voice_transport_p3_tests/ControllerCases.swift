@@ -35,7 +35,7 @@
                 "ineligible clock and private Apple facts cannot open acoustic eligibility")
         }
 
-        static func testNativeVoicePlaybackAndClear() async throws {
+        static func testNativeVoicePlaybackAndClear(verifyCloseout: Bool = false) async throws {
             let hardware = FakeVoiceHardware()
             let adapter = MacSpeechNativeRealtimeSession(makeTransport: { hardware.makeTransport(ringFrames: 1024) })
             let events = NativeVoiceTestEvents()
@@ -67,6 +67,9 @@
                     return snapshot.state == .completed
                 }
                 _ = await eos.value
+                if verifyCloseout {
+                    try await verifyNativeVoiceHandoff(adapter, generation: prepared.generation)
+                }
             }
             let handoffs = await events.output.filter { $0.kind == .playbackCompleted }
             expect(handoffs.count == 2 && handoffs.allSatisfy(\.isSourceHandoff), "EOS is recorded as Source handoff")
@@ -149,7 +152,7 @@
                    "partial startup rolls back and leaves no active source")
         }
 
-        static func testNativeVoiceController() async throws {
+        static func testNativeVoiceController(verifyCloseout: Bool = false) async throws {
             let hardware = FakeVoiceHardware()
             let adapter = MacSpeechNativeRealtimeSession(makeTransport: { hardware.makeTransport() })
             let provider = R81RealtimeProvider()
@@ -279,6 +282,9 @@
             }
             let afterOldWire = await adapter.currentSnapshot()
             expect(afterOldWire.state == .prepared, "old Runtime PCM and EOS never arm native rendering")
+            if verifyCloseout {
+                try await verifyNativeVoiceContentFence(adapter, engine: engine, provider: provider)
+            }
             let newStart = monotonicNow()
             try await feedNativeCapture(engine, packets: 5, samplePosition: 10 * 882, hostStart: newStart)
             await waitUntil("N+1 packets cross the same graph") {
@@ -287,12 +293,19 @@
             let interrupts = await provider.interruptCount()
             expect(interrupts == 1 && engine.read().starts == 1 && engine.read().stops == 0,
                    "only Runtime confirmed once, reusing the session graph")
+            if verifyCloseout {
+                let next = await provider.lastAudioFrame()!.identity
+                try await verifyNativeVoiceControllerEOS(adapter, provider: provider, controller: controller, next: next)
+            }
             hardware.update { $0.authorized = false }
             await waitUntil("permission revoke closes Runtime and audio") {
                 let closeCount = await provider.closeCount()
                 return closeCount == 1 && controller.realtimeFullDuplexSpeechStatus.phase == .failed
             }
             expect(engine.read().stops == 1, "permission revoke retires the engine")
+            if verifyCloseout {
+                try await verifyNativeVoiceSealed(adapter, controller: controller, generation: session.generation + 1)
+            }
         }
 
         nonisolated static func shadowMetrics(

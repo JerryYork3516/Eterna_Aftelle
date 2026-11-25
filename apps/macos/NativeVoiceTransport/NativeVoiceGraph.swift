@@ -4,7 +4,7 @@ nonisolated enum NativeVoiceSessionError: Error {
     case permission, state, format, route, voiceProcessing
 }
 
-nonisolated struct NativeVoiceIOFormat: Equatable, Sendable {
+nonisolated struct NativeVoiceIOFormat: Encodable, Equatable, Sendable {
     let sampleRate: Double
     let channels: UInt32
     let interleaved: Bool
@@ -38,7 +38,7 @@ nonisolated struct NativeVoiceDeviceBinding: Equatable, Sendable {
 }
 
 nonisolated struct NativeVoiceGraphSnapshot: Equatable, Sendable {
-    struct Defaults: Equatable, Sendable {
+    struct Defaults: Encodable, Equatable, Sendable {
         let input: UInt32
         let output: UInt32
     }
@@ -50,6 +50,15 @@ nonisolated struct NativeVoiceGraphSnapshot: Equatable, Sendable {
     let outputUnitDevice: UInt32
     let bindings: [NativeVoiceDeviceBinding]
     let streams: [NativeVoiceStreamBinding]
+    let voiceProcessing: NativeVoiceProcessingReadback?
+}
+
+nonisolated struct NativeVoiceProcessingReadback: Encodable, Equatable, Sendable {
+    let inputEnabled: Bool
+    let outputEnabled: Bool
+    let agcEnabled: Bool
+    let bypassed: Bool
+    let inputMuted: Bool
 }
 
 nonisolated struct NativeVoiceStreamBinding: Equatable, Sendable {

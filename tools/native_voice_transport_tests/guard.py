@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P1 realtime constraints, P2 graph membership and the bounded P3 integration surface."""
+"""P1/P2 realtime constraints and the bounded P3/P4 host integration surface."""
 from pathlib import Path
 import os
 import re
@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FROZEN = "574fc735ca239c9b334029debbdee546cda18d49"
 P1 = "5ef549f634a0cb75eaca6e49c0a903214261119a"
 P3_BASE = "8d4d2a6cbc1566dacba5229826bf98adac9b00c9"
+P4_BASE = "b1dedd8b02680eb5bfa4c676421cd0da421e1afe"
 
 
 def git(*args):
@@ -31,21 +32,50 @@ for name in compile_files:
         assert (ROOT / name).read_bytes() == git("show", FROZEN + ":" + name), name
 
 if p3:
+    p4_transport = {
+        "apps/macos/NativeVoiceTransport/" + name for name in (
+            "NativeVoiceRing.h", "NativeVoiceRealtime.c", "NativeVoiceRealtime.h", "NativeVoiceGraph.swift",
+            "NativeVoiceSystemEngine.swift", "NativeVoiceSessionGraph.swift", "AppleNativeVoiceTransport.swift",
+            "AppleNativeVoiceTransportWorker.swift",
+        )
+    }
     changed = set(git("diff", "--name-only", P3_BASE, "--", "apps").decode().splitlines())
     changed.update(git("ls-files", "--others", "--exclude-standard", "--", "apps").decode().splitlines())
-    permitted = {candidate, facts, project} | integration | {
+    permitted = {candidate, facts, project} | integration | p4_transport | {
         "apps/macos/NativeVoiceTransport/" + name for name in (
             "AppleNativeVoiceTransport.swift", "NativeVoiceSessionGraph.swift", "NativeVoiceRealtime.c",
             "NativeVoiceRealtime.h", "NativeVoiceRealtimeLease.mm",
         )
     }
     assert changed <= permitted, changed - permitted
+    p4_changed = set(git("diff", "--name-only", P4_BASE, "--", "apps").decode().splitlines())
+    p4_changed.update(git("ls-files", "--others", "--exclude-standard", "--", "apps").decode().splitlines())
+    p4_permitted = {candidate, facts, app + "AppController.swift",
+                    app + "MacSpeechRealtimeBrainInputBridge.swift"} | p4_transport
+    assert p4_changed <= p4_permitted, p4_changed - p4_permitted
+    assert (ROOT / project).read_bytes() == git("show", P4_BASE + ":" + project)
     controller = (ROOT / (app + "AppController.swift")).read_text()
     frozen_controller = git("show", FROZEN + ":" + app + "AppController.swift").decode()
     shipped_initializer = "    init() {"
-    assert controller.split(shipped_initializer)[1].split("    init(", 1)[0] == (
-        frozen_controller.split(shipped_initializer)[1].split("    init(", 1)[0]
-    )
+    shipped = controller.split(shipped_initializer)[1].split("    init(", 1)[0]
+    frozen = frozen_controller.split(shipped_initializer)[1].split("    init(", 1)[0]
+    release_start = "        #else\n            let credentialStore = ProviderKeychainStore()"
+    assert shipped.split(release_start, 1)[1] == frozen.split(release_start, 1)[1]
+    assert shipped.split(release_start, 1)[0] == """
+        #if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            let admission = AppleNativeVoiceDebugAdmission.resolve(
+                arguments: arguments, deviceBuildAuthorized: AppleNativeVoiceDebugAdmission.deviceBuildAuthorized
+            )
+            nativeVoiceDebugAdmission = admission
+            isAppleVPAcousticTestMode = admission == .off
+                && AppleVPAcousticTestLaunchMode.isEnabled(arguments: arguments)
+            #if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED
+                realtimeAudioBackend = admission.backend {
+                    MacSpeechNativeRealtimeSession.appleVoiceProcessing()
+                }
+            #endif
+"""
     assert controller.count("case .appleNativeCandidate") == 1
     assert controller.count("realtimeAudioBackend = MacSpeechRealtimeAudioBackend.frozen") == 1
     assert controller.count("self.realtimeAudioBackend = realtimeAudioBackend") == 2
@@ -59,7 +89,9 @@ if p3:
     start = controller.split("    func startRealtimeResidentBrainRoute() async {", 1)[1].split(
         "    private func ensureRealtimeMicrophoneAuthorization", 1
     )[0]
-    assert start.index("await ensureRealtimeMicrophoneAuthorization()") < start.index(
+    assert start.index("native_voice_candidate_not_authorized") < start.index(
+        "await ensureRealtimeMicrophoneAuthorization()"
+    ) < start.index(
         "await candidate.reserveCaptureGeneration()"
     ) < start.index(".startRealtimeResidentBrainInput()") < start.index("await candidate.startCapture(")
     output_host = app + "MacSpeechAudioOutputHost.swift"
@@ -76,6 +108,12 @@ if p3:
     assert candidate_source.count("#if NATIVE_VOICE_P3_OFFLINE_TEST") == 1
     assert (ROOT / facts).read_text().count("#if NATIVE_VOICE_P3_OFFLINE_TEST") == 2
     assert b"NATIVE_VOICE_P3_OFFLINE_TEST" not in (ROOT / project).read_bytes()
+    assert b"APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED" not in (ROOT / project).read_bytes()
+    assert "#if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED && (!DEBUG || NATIVE_VOICE_P3_OFFLINE_TEST)" in (
+        ROOT / facts
+    ).read_text()
+    assert controller.count("MacSpeechNativeRealtimeSession.appleVoiceProcessing()") == 1
+    assert "event.isSourceHandoff == (realtimeAudioBackend.candidate != nil)" in controller
 
 assert (ROOT / header).read_bytes() == git("show", FROZEN + ":" + header) + (
     b'#include "../NativeVoiceTransport/NativeVoiceRing.h"\n'
@@ -149,6 +187,7 @@ for forbidden in ("malloc(", "calloc(", "free(", "pthread_", "printf(", "sleep("
 print("native_voice_frozen_existing_app_files=" + str(len(compile_files) - len(integration)))
 if p3:
     print("native_voice_p3_integrated_legacy_files=3")
+    print("native_voice_p4_debug_device_authorization=SEALED")
 print("native_voice_production_switches=0")
 print("native_voice_p2_graph_members=7")
 print("native_voice_isolation_guard=PASS")

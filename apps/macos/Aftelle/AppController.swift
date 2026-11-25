@@ -220,6 +220,33 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         }
     }
 
+    nonisolated enum AppleNativeVoiceDebugAdmission: Equatable {
+        case off, sealed, admitted
+
+        static let argument = "--apple-native-voice-candidate"
+
+        static var deviceBuildAuthorized: Bool {
+            #if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED
+                true
+            #else
+                false
+            #endif
+        }
+
+        static func resolve(arguments: [String], deviceBuildAuthorized: Bool) -> Self {
+            let requests = arguments.filter { $0 == argument || $0.hasPrefix(argument + "=") }
+            guard !requests.isEmpty else { return .off }
+            guard deviceBuildAuthorized, requests == [argument],
+                  !arguments.contains(where: { $0.hasPrefix("--apple-vp-") }) else { return .sealed }
+            return .admitted
+        }
+
+        func backend(makeCandidate: () -> any MacSpeechRealtimeAudioCandidate) -> MacSpeechRealtimeAudioBackend {
+            guard self == .admitted else { return .frozen }
+            return .appleNativeCandidate(makeCandidate())
+        }
+    }
+
     nonisolated enum AppleVPAcousticTestScenario: String, CaseIterable {
         case residentOnly = "A"
         case humanOnly = "B"
@@ -852,6 +879,9 @@ nonisolated protocol MacSpeechRealtimeAudioCandidate: MacSpeechAudioFrameSourcin
     ) async -> MacSpeechAudioOutputHostSnapshot
     func advanceGeneration(from: RealtimeBrainSessionIdentity, to: RealtimeBrainSessionIdentity) async throws
     func matchesAcousticObservation(_ observation: RealtimeAcousticObservation) async -> Bool
+    #if DEBUG
+        func nativeVoiceDiagnosticData() async throws -> Data
+    #endif
 }
 
 nonisolated enum MacSpeechRealtimeAudioBackend: Sendable {
@@ -1043,6 +1073,9 @@ final class AppController: ObservableObject {
     private let speechAudioHost: MacSpeechAudioHost
     private let speechAudioOutputHost: MacSpeechAudioOutputHost
     private var realtimeAudioBackend = MacSpeechRealtimeAudioBackend.frozen
+    #if DEBUG
+        private var nativeVoiceDebugAdmission = AppleNativeVoiceDebugAdmission.off
+    #endif
     private var realtimeBrainAudioOutput: any MacSpeechRealtimePlaybackHosting {
         if let candidate = realtimeAudioBackend.candidate { return candidate }
         return speechAudioOutputHost
@@ -1298,9 +1331,18 @@ final class AppController: ObservableObject {
 
     init() {
         #if DEBUG
-            isAppleVPAcousticTestMode = AppleVPAcousticTestLaunchMode.isEnabled(
-                arguments: ProcessInfo.processInfo.arguments
+            let arguments = ProcessInfo.processInfo.arguments
+            let admission = AppleNativeVoiceDebugAdmission.resolve(
+                arguments: arguments, deviceBuildAuthorized: AppleNativeVoiceDebugAdmission.deviceBuildAuthorized
             )
+            nativeVoiceDebugAdmission = admission
+            isAppleVPAcousticTestMode = admission == .off
+                && AppleVPAcousticTestLaunchMode.isEnabled(arguments: arguments)
+            #if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED
+                realtimeAudioBackend = admission.backend {
+                    MacSpeechNativeRealtimeSession.appleVoiceProcessing()
+                }
+            #endif
         #else
             let credentialStore = ProviderKeychainStore()
         #endif
@@ -1874,6 +1916,18 @@ final class AppController: ObservableObject {
             let url = directoryURL.appendingPathComponent(
                 self.realtimeSpeechDiagnosticFileName(exportedAt: exportedAt)
             )
+            if let candidate = self.realtimeAudioBackend.candidate {
+                Task { @MainActor in
+                    do {
+                        let facts = try await candidate.nativeVoiceDiagnosticData()
+                        try self.writeRealtimeSpeechDiagnostics(to: url, exportedAt: exportedAt, nativeVoiceData: facts)
+                        self.realtimeSpeechDiagnosticStatusKey = "particleDebug.realtimeDiagnostics.status.exported"
+                    } catch {
+                        self.realtimeSpeechDiagnosticStatusKey = "particleDebug.realtimeDiagnostics.status.exportFailed"
+                    }
+                }
+                return
+            }
             do {
                 try self.writeRealtimeSpeechDiagnostics(
                     to: url,
@@ -1890,6 +1944,7 @@ final class AppController: ObservableObject {
 
     func armRealtimeSpeechAudioCapsule() {
             guard !isAppleVPAcousticTestMode else { return }
+        guard realtimeAudioBackend.candidate == nil, nativeVoiceDebugAdmission == .off else { return }
         guard let routeAttemptID = realtimeBrainRouteAttemptID,
               let binding = realtimeBrainInputBinding,
               isCurrentRealtimeBrainRoute(
@@ -2334,9 +2389,28 @@ final class AppController: ObservableObject {
 
     func writeRealtimeSpeechDiagnostics(
         to url: URL,
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        nativeVoiceData: Data? = nil
     ) throws {
             guard !isAppleVPAcousticTestMode else { throw CocoaError(.featureUnsupported) }
+        if let nativeVoiceData {
+            guard realtimeAudioBackend.candidate != nil else { throw CocoaError(.featureUnsupported) }
+            let build = Self.runningBuildBinary()
+            let evidence: [String: Any] = [
+                "schemaVersion": 1,
+                "backend": "apple_native_voice_transport",
+                "exportedAt": ISO8601DateFormatter().string(from: exportedAt),
+                "buildBinaryName": build.name,
+                "buildBinarySHA256": build.sha256,
+                "facts": try JSONSerialization.jsonObject(with: nativeVoiceData)
+            ]
+            try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+                .write(to: url, options: .atomic)
+            return
+        }
+        guard realtimeAudioBackend.candidate == nil, nativeVoiceDebugAdmission == .off else {
+            throw CocoaError(.featureUnsupported)
+        }
         let expectedReplayAttemptID = realtimeSpeechReplayCaptureAttemptID
         let pendingCapsule = nativeSpeechDiagnosticBuffer
             .realtimeAudioCapsuleSnapshot()
@@ -3815,6 +3889,10 @@ final class AppController: ObservableObject {
     func startRealtimeResidentBrainRoute() async {
         #if DEBUG
             guard !isAppleVPAcousticTestMode else { return }
+            guard nativeVoiceDebugAdmission != .sealed else {
+                publishRealtimeResidentBrainRouteFailure("native_voice_candidate_not_authorized")
+                return
+            }
         #endif
         if realtimeBrainRouteAttemptID != nil || realtimeBrainStartInFlight {
             return
@@ -4780,6 +4858,8 @@ final class AppController: ObservableObject {
                 visualStateMode: ResidentVisualIntent.speaking.rawValue
             )
         case .playbackCompleted:
+            guard event.isSourceHandoff == (realtimeAudioBackend.candidate != nil) else { return }
+            // Source handoff releases the response presentation slot. Physical completion is unobserved.
             if let completedIdentity = realtimeBrainPlaybackEventIdentity {
                 orchestrationKernel
                     .settleRealtimeResidentBrainPlaybackTarget(
@@ -5035,7 +5115,9 @@ final class AppController: ObservableObject {
             return
         }
         realtimeBrainInputBridgeSnapshot = await realtimeBrainInputBridge
-            .resumeAfterGenerationTransition(session: nextIdentity)
+            .resumeAfterGenerationTransition(
+                session: nextIdentity, captureAlreadyFenced: realtimeAudioBackend.candidate != nil
+            )
         guard realtimeBrainInputBridgeSnapshot.hasActivePump,
               realtimeBrainGenerationTransitionID == transitionID,
               isCurrentRealtimeBrainRoute(

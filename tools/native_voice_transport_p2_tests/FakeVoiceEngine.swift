@@ -66,7 +66,7 @@ final nonisolated class FakeVoiceHardware: @unchecked Sendable {
         }
         return .init(
             plan: plan, defaults: .init(input: 6, output: defaultOutput), inputUnitDevice: 50, outputUnitDevice: 50,
-            bindings: bindings, streams: streams
+            bindings: bindings, streams: streams, voiceProcessing: nil
         )
     }
 }

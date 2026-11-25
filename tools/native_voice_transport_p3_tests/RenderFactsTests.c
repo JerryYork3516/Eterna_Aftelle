@@ -72,10 +72,14 @@ static void sample_facts(void) {
     nvt_rt_destroy(io);
 }
 
-static void *late_capture(void *context) {
+static void capture(NVTRTIO *io, const AudioTimeStamp *stamp) {
     float input[4] = {1, 2, 3, 4};
     AudioBufferList list = {1, {{1, sizeof input, input}}};
-    assert(nvt_rt_capture(context, NULL, 4, &list) == noErr);
+    assert(nvt_rt_capture(io, stamp, 4, &list) == noErr);
+}
+
+static void *late_capture(void *context) {
+    capture(context, NULL);
     return NULL;
 }
 
@@ -85,7 +89,7 @@ static void shared_generation_fence(void) {
     atomic_store(&blocked_point, 1);
     assert(pthread_create(&thread, NULL, late_capture, io) == 0);
     while (!atomic_load(&entered)) sched_yield();
-    assert(nvt_rt_set_capture(io, 5));
+    assert(nvt_rt_set_capture(io, 5, 100000));
     assert(nvt_ring_consumer_sync(nvt_rt_capture_ring(io)) == 5);
     atomic_store(&resume_callback, 1);
     assert(pthread_join(thread, NULL) == 0);
@@ -93,10 +97,52 @@ static void shared_generation_fence(void) {
     NVTFrame metadata[4];
     assert(nvt_ring_read(nvt_rt_capture_ring(io), samples, metadata, 4, false, false).copied == 0);
     atomic_store(&blocked_point, 0);
-    late_capture(io);
+    AudioTimeStamp boundary = {.mSampleTime = 100, .mHostTime = 2400, .mFlags = 3};
+    capture(io, &boundary);
     assert(nvt_ring_read(nvt_rt_capture_ring(io), samples, metadata, 4, false, false).copied == 4);
     assert(samples[0] == 1 && samples[3] == 4);
     assert(nvt_ring_stats(nvt_rt_capture_ring(io)).active_token == 5);
+    assert(nvt_rt_stats(io).capture_stale_frames == 4);
+    nvt_rt_destroy(io);
+}
+
+static void content_time_fence(void) {
+    NVTRTIO *io = context();
+    NVTRing *ring = nvt_rt_capture_ring(io);
+    assert(!nvt_rt_set_capture(io, 5, 0));
+    capture(io, NULL);
+    float samples[4];
+    NVTFrame metadata[4];
+    assert(nvt_ring_read(ring, samples, metadata, 4, false, false).copied == 4);
+    assert(nvt_rt_set_capture(io, 5, 100000));
+    assert(!nvt_rt_set_capture(io, 5, 110000));
+    assert(!nvt_rt_set_capture(io, 6, 99999));
+    assert(nvt_ring_consumer_sync(ring) == 5);
+
+    AudioTimeStamp stamp = {.mSampleTime = 104, .mHostTime = 2399, .mFlags = 3};
+    capture(io, &stamp);  // The callback sees the new token but carries pre-fence content.
+    capture(io, NULL);
+    stamp.mHostTime = 0;
+    capture(io, &stamp);
+    stamp.mHostTime = 2400;
+    stamp.mFlags = kAudioTimeStampHostTimeValid;
+    capture(io, &stamp);
+    stamp.mFlags = 3;
+    stamp.mSampleTime = 104.5;
+    capture(io, &stamp);
+    assert(nvt_ring_read(ring, samples, metadata, 4, false, false).copied == 0);
+    NVTRTStats stats = nvt_rt_stats(io);
+    assert(stats.capture_minimum_host_ns == 100000);
+    assert(stats.capture_fence_old_frames == 4 && stats.capture_fence_missing_frames == 16);
+    assert(stats.accepted_input_frames == 4 && stats.rejected_input_frames == 20);
+
+    stamp.mSampleTime = 108;
+    capture(io, &stamp);
+    assert(nvt_ring_read(ring, samples, metadata, 4, false, false).copied == 4);
+    assert(metadata[0].origin.host_time_ns == 100000 && metadata[0].ingress.callback_frames == 4);
+    assert(metadata[0].ingress.dropped_before == 20);
+    stats = nvt_rt_stats(io);
+    assert(stats.capture_callbacks == 7 && stats.accepted_input_frames == 8);
     nvt_rt_destroy(io);
 }
 
@@ -131,6 +177,8 @@ int main(void) {
     sample_facts();
     shared_generation_fence();
     concurrent_fact_reader();
+    content_time_fence();
     puts("native_voice_p3_realtime_fact_suites=3");
+    puts("native_voice_p4_content_time_fence=PASS");
     puts("native_voice_p3_realtime_device_access=ZERO");
 }

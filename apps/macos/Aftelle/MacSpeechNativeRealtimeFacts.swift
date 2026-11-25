@@ -1,10 +1,23 @@
 import Foundation
 
+#if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED && (!DEBUG || NATIVE_VOICE_P3_OFFLINE_TEST)
+    #error("Device execution and offline Shadow cannot share a build")
+#endif
+
 /// Short-lived readback owned by the session worker. Source submissions are digital evidence.
 nonisolated struct MacSpeechNativeRealtimeFacts {
+    private struct BufferedCapture {
+        let frame: MacSpeechAudioFrame
+        let packet: NativeVoiceCapturePacket
+    }
+
+    private var capture: [BufferedCapture] = []
+    private(set) var captureQueue = MacSpeechNativeCaptureQueueReadback()
     var deliveredCapture: [UInt64: NativeVoiceCapturePacket] = [:]
     private(set) var lastNonzero: NativeVoiceRenderFact?
     private(set) var lastMetrics: RealtimeAcousticMetrics?
+    private(set) var lastSource: NativeVoiceRenderFact?
+    private(set) var lastDigitalHandoff: NativeVoiceRenderFact?
     private var droppedRenders: UInt64 = 0
 
     #if NATIVE_VOICE_P3_OFFLINE_TEST
@@ -12,6 +25,64 @@ nonisolated struct MacSpeechNativeRealtimeFacts {
             -> RealtimeAcousticMetrics?
         var shadowEvidence: ShadowEvidence?
     #endif
+
+    mutating func bufferCapture(_ packets: [NativeVoiceCapturePacket], expected: NativeVoiceIdentity.Capture) {
+        let arrival = DispatchTime.now().uptimeNanoseconds
+        for packet in packets {
+            guard packet.identity == expected else {
+                captureQueue.stalePackets &+= 1
+                continue
+            }
+            captureQueue.generatedPackets &+= 1
+            captureQueue.lastContentSegment = packet.segment
+            captureQueue.lastPacketStartSample = packet.sampleCount
+            // Runtime orders delivery by arrival; packet HostTime alone drives acoustic freshness.
+            let frame = MacSpeechAudioFrame(
+                captureGeneration: expected.generation, sequenceNumber: captureQueue.generatedPackets,
+                monotonicTimestampNanoseconds: arrival, pcm16Bytes: packet.bytes, activity: 0
+            )
+            if capture.count == MacSpeechAudioInputFormat.frameCapacity {
+                capture.removeFirst()
+                captureQueue.overflowPackets &+= 1
+            }
+            capture.append(BufferedCapture(frame: frame, packet: packet))
+            captureQueue.highWaterPackets = max(captureQueue.highWaterPackets, capture.count)
+        }
+        captureQueue.pendingPackets = capture.count
+    }
+
+    mutating func drainCapture(maxCount: Int) -> [MacSpeechAudioFrame] {
+        let count = min(max(0, maxCount), capture.count)
+        let frames = capture.prefix(count)
+        deliveredCapture = Dictionary(uniqueKeysWithValues: frames.map { ($0.frame.sequenceNumber, $0.packet) })
+        let result = frames.map(\.frame)
+        capture.removeFirst(count)
+        captureQueue.pendingPackets = capture.count
+        captureQueue.deliveredPackets &+= UInt64(count)
+        return result
+    }
+
+    mutating func discardCapture(forTransition: Bool) {
+        if forTransition {
+            captureQueue.transitionDiscardedPackets &+= UInt64(capture.count)
+            captureQueue.lastContentSegment = nil
+            captureQueue.lastPacketStartSample = nil
+        } else {
+            captureQueue.closeDiscardedPackets &+= UInt64(capture.count)
+        }
+        capture.removeAll(keepingCapacity: true)
+        deliveredCapture.removeAll(keepingCapacity: true)
+        captureQueue.pendingPackets = 0
+    }
+
+    mutating func recordSource(_ render: [NativeVoiceRenderFact], expected: NativeVoiceIdentity.Playback) {
+        if let observed = render.last(where: { $0.playback == expected }) {
+            lastSource = observed
+        }
+        if let handoff = render.last(where: { $0.playback == expected && $0.isDigitalHandoff }) {
+            lastDigitalHandoff = handoff
+        }
+    }
 
     mutating func invalidatePlayback() {
         lastNonzero = nil
@@ -91,6 +162,40 @@ nonisolated struct MacSpeechNativeRealtimeFacts {
     }
 }
 
+nonisolated struct MacSpeechNativeCaptureQueueReadback: Encodable, Sendable {
+    var generatedPackets: UInt64 = 0
+    var deliveredPackets: UInt64 = 0
+    var overflowPackets: UInt64 = 0
+    var stalePackets: UInt64 = 0
+    var transitionDiscardedPackets: UInt64 = 0
+    var closeDiscardedPackets: UInt64 = 0
+    var highWaterPackets = 0
+    var pendingPackets = 0
+    var lastContentSegment: UInt64?
+    var lastPacketStartSample: UInt64?
+}
+
+#if DEBUG
+    nonisolated struct MacSpeechNativeVoiceDiagnosticReadback: Encodable, Sendable {
+        let sealed: Bool
+        let terminalReason: String?
+        let physicalPlayback = "UNKNOWN"
+        let humanSource = "UNKNOWN"
+        let transport: NativeVoiceTransportReadback?
+        let captureQueue: MacSpeechNativeCaptureQueueReadback
+        let lastSource: NativeVoiceRenderFact?
+        let lastDigitalHandoff: NativeVoiceRenderFact?
+        let lastClearObservedAtNanoseconds: UInt64?
+    }
+#endif
+
+nonisolated extension MacSpeechDeviceRoute {
+    init(nativeVoiceDefaults defaults: NativeVoiceGraphSnapshot.Defaults) {
+        input = MacSpeechAudioDevice(identifier: String(defaults.input), name: "Core Audio", isAvailable: true)
+        output = MacSpeechAudioDevice(identifier: String(defaults.output), name: "Core Audio", isAvailable: true)
+    }
+}
+
 nonisolated extension NativeVoiceIdentity.Authority {
     init(realtime session: RealtimeBrainSessionIdentity, configuration: UInt64) {
         self.init(runtimeGeneration: session.generation, routeEpoch: session.routeEpoch, configurationID: configuration)
@@ -107,11 +212,11 @@ nonisolated extension NativeVoiceIdentity {
 }
 
 nonisolated extension MacSpeechAudioHostSnapshot {
-    static func nativeVoiceCapture(_ format: NativeVoiceIOFormat) -> Self {
+    static func nativeVoiceCapture(_ graph: NativeVoiceGraphSnapshot, route: MacSpeechDeviceRoute) -> Self {
         .init(
             authorization: .authorized, state: .capturing, isCapturing: true,
-            inputDevice: .unavailable, outputDevice: .unavailable,
-            actualSampleRate: format.sampleRate, actualChannelCount: format.channels,
+            inputDevice: route.input, outputDevice: route.output,
+            actualSampleRate: graph.plan.capture.sampleRate, actualChannelCount: graph.plan.capture.channels,
             normalizedOutputFormat: MacSpeechAudioInputFormat.description, generatedFrameCount: 0,
             droppedFrameCount: 0, rejectedStaleFrameCount: 0, queuedFrameCount: 0, latestActivity: 0, lastError: nil
         )
@@ -122,6 +227,7 @@ nonisolated struct MacSpeechNativePlaybackCounters {
     var chunkCount = 0
     var byteCount = 0
     var pressureWaits = 0
+    var outputDevice = MacSpeechAudioDevice.unavailable
 }
 
 nonisolated extension MacSpeechAudioOutputHostSnapshot {
@@ -130,7 +236,7 @@ nonisolated extension MacSpeechAudioOutputHostSnapshot {
         started: Bool, error: MacSpeechAudioOutputHostError?
     ) -> Self {
         .init(
-            state: state, generation: token, outputDevice: .unavailable,
+            state: state, generation: token, outputDevice: counters.outputDevice,
             providerFormat: MacSpeechPCMOutputFormat.description, localFormat: "Apple VP Source",
             queueCapacity: 1, queueDepth: 0, bufferedDurationMilliseconds: 0, scheduledChunkCount: 0,
             enqueuedChunkCount: counters.chunkCount, enqueuedByteCount: counters.byteCount, playedChunkCount: 0,
