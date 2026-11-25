@@ -56,6 +56,11 @@ static void sample_facts(void) {
     assert(fact.flags & NVT_RENDER_END);
     assert(!(fact.flags & NVT_RENDER_UNDERRUN));
 
+    render(io, output, 6, &time);
+    assert(nvt_rt_take_render_fact(io, &fact));
+    assert(fact.flags == NVT_RENDER_IDLE && fact.submitted_frames == 0 && fact.frame_count == 6);
+    assert(nvt_rt_stats(io).rendered_end_token == 2);
+
     for (unsigned j = 0; j < NVT_RENDER_FACT_CAPACITY + 1; ++j) render(io, output, 7, NULL);
     assert(nvt_rt_stats(io).dropped_render_facts == 1);
     assert(nvt_rt_set_playback(io, 3, true));

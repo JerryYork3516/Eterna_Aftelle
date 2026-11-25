@@ -176,9 +176,10 @@ actor AppleNativeVoiceTransport {
     }
 
     func bridgeService(maxCaptureFrames: Int) throws -> ServiceBatch {
-        try ServiceBatch(
-            packets: service(maxCaptureFrames: maxCaptureFrames), render: takeRenderFacts(), progress: progress()
-        )
+        let packets = try service(maxCaptureFrames: maxCaptureFrames)
+        // An acquired EOS ACK already published its Source fact, unless the bounded queue overflowed.
+        let progress = try progress()
+        return try ServiceBatch(packets: packets, render: takeRenderFacts(), progress: progress)
     }
 
     func configuredGraph() throws -> NativeVoiceGraphSnapshot {

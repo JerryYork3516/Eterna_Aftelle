@@ -319,10 +319,7 @@ OSStatus nvt_rt_render_at_time(NVTRTIO *io, bool *silence, const AudioTimeStamp 
     }
     if (enabled && !invalid) {
         fact.acknowledged_token = nvt_ring_acknowledged_token(io->playback);
-        if (read.reached_end) {
-            fact.flags |= NVT_RENDER_END;
-            publish(&io->rendered_end, token);
-        }
+        if (read.reached_end && value(&io->rendered_end) != token) fact.flags |= NVT_RENDER_END;
         if (cancelling && !copied && fact.acknowledged_token == token) {
             fact.flags |= NVT_RENDER_CLEAR;
             publish(&io->rendered_clear, token);
@@ -330,6 +327,8 @@ OSStatus nvt_rt_render_at_time(NVTRTIO *io, bool *silence, const AudioTimeStamp 
     }
     fact.submitted_frames = (uint32_t)copied;
     if (enabled) publish_render(io, time, fact);
+    // Following idle callbacks must not overwrite the originating EOS time.
+    if (fact.flags & NVT_RENDER_END) publish(&io->rendered_end, token);
     *silence = copied == 0;
     return noErr;
 }
