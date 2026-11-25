@@ -83,6 +83,12 @@
             expect(source?["hostTime"] != nil && source?["sampleTime"] != nil
                 && source?["frameCount"] as? Int == 193 && playback?["token"] as? UInt64 == generation,
                 "actual callback EOS readback carries Source time, frames and the exact playback token")
+            let submit = facts["lastNonzeroSubmission"] as? [String: Any]
+            let submitPlayback = submit?["playback"] as? [String: Any]
+            let idle = facts["lastSource"] as? [String: Any]
+            expect(idle?["nonzeroFrames"] as? Int == 0 && (submit?["nonzeroFrames"] as? Int ?? 0) > 0
+                && submit?["nonzeroSpan"] != nil && submitPlayback?["token"] as? UInt64 == generation,
+                "idle renders preserve the last positive digital submission and its own playback identity")
             expect(facts["physicalPlayback"] as? String == "UNKNOWN" && facts["humanSource"] as? String == "UNKNOWN"
                 && transport?["voiceProcessing"] == nil && route?["active"] as? Bool == true
                 && route?["inputUnitDevice"] as? Int == 50 && route?["inputActiveMembers"] as? [Int] == [6, 9],

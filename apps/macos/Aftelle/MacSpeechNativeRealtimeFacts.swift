@@ -17,6 +17,7 @@ nonisolated struct MacSpeechNativeRealtimeFacts {
     private(set) var lastNonzero: NativeVoiceRenderFact?
     private(set) var lastMetrics: RealtimeAcousticMetrics?
     private(set) var lastSource: NativeVoiceRenderFact?
+    private(set) var lastNonzeroSubmission: NativeVoiceRenderFact?
     private(set) var lastDigitalHandoff: NativeVoiceRenderFact?
     private var droppedRenders: UInt64 = 0
 
@@ -78,6 +79,9 @@ nonisolated struct MacSpeechNativeRealtimeFacts {
     mutating func recordSource(_ render: [NativeVoiceRenderFact], expected: NativeVoiceIdentity.Playback) {
         if let observed = render.last(where: { $0.playback == expected }) {
             lastSource = observed
+        }
+        if let submitted = render.last(where: { $0.playback == expected && $0.nonzeroFrames > 0 }) {
+            lastNonzeroSubmission = submitted
         }
         if let handoff = render.last(where: { $0.playback == expected && $0.isDigitalHandoff }) {
             lastDigitalHandoff = handoff
@@ -184,6 +188,7 @@ nonisolated struct MacSpeechNativeCaptureQueueReadback: Encodable, Sendable {
         let transport: NativeVoiceTransportReadback?
         let captureQueue: MacSpeechNativeCaptureQueueReadback
         let lastSource: NativeVoiceRenderFact?
+        let lastNonzeroSubmission: NativeVoiceRenderFact?
         let lastDigitalHandoff: NativeVoiceRenderFact?
         let lastClearObservedAtNanoseconds: UInt64?
     }

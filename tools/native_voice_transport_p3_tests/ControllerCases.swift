@@ -68,6 +68,12 @@
                 }
                 _ = await eos.value
                 if verifyCloseout {
+                    _ = engine.render(77, sampleTime: Double(turn * 48_000 + 12_000),
+                                      hostTime: mach_absolute_time(), flags: 3)
+                    await waitUntil("idle callback reaches bounded diagnostic readback") {
+                        let facts = try? await nativeVoiceDiagnostic(adapter)
+                        return (facts?["lastSource"] as? [String: Any])?["frameCount"] as? Int == 77
+                    }
                     try await verifyNativeVoiceHandoff(adapter, generation: prepared.generation)
                 }
             }

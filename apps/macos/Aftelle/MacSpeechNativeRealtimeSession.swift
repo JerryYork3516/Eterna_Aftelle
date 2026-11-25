@@ -368,6 +368,7 @@ extension MacSpeechNativeRealtimeSession {
                 sealed: transport == nil && sealedTransport != nil, terminalReason: terminalReason,
                 transport: graph === transport ? observed ?? sealedTransport : sealedTransport,
                 captureQueue: facts.captureQueue, lastSource: facts.lastSource,
+                lastNonzeroSubmission: facts.lastNonzeroSubmission,
                 lastDigitalHandoff: facts.lastDigitalHandoff,
                 lastClearObservedAtNanoseconds: lastClearCompletedAtNanoseconds
             ))
