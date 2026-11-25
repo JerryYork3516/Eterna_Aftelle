@@ -1,5 +1,11 @@
 # DEVLOG.md — Aftelle 开发日志(给我自己看)
 
+## 2026-11-25 · Stage 7.5.11 · 最小声学证据补充
+
+- 专用 DEBUG 候选新增一次会话独立授权。保留实际 VP 后上行、居民原幅下行和已有技术读回，非实时有界录证，用户另外确认本机封存。
+- 32 项合成回归、三种编译产物隔离和 Guard 通过。冻结实时内核、原默认后端与受保护证据相符。设备运行 0，FULL_CURRENT 重跑 0。
+- [工程交付与更新后的首次实机执行单](docs/stage7_5/test3_apple_vp_clean/AppleNativeVoiceTransport_acoustic_evidence_review.md)。本地交主控复核，实际运行及私人音频另须用户明确授权。
+
 ## 2026-11-25 · Stage 7.5.11 · AppleNativeVoiceTransport P4 收口
 
 - N+1 采集内容时间栅栏在 Sink 最终提交执行。会话分别跟踪内容缺口、环溢出和组包队列丢失。播放 EOS 释放呈现槽，实际数字提交与物理资格分开。
