@@ -1,5 +1,9 @@
 # Eterna Aftelle · Test3 Apple VP Clean · 正式计划入口 v2
 
+## 2026-11-25 · Stage 7.5.11 · AppleNativeVoiceTransport P4 收口
+
+[P1–P4 工程冻结与独立审核](AppleNativeVoiceTransport_P4_engineering_review.md)。候选源码 `c9838c99a5fd2d965587f5601a5c0377e1f58026`。N+1 内容栅栏、有界封存和专用 DEBUG 准入完成，P1–P4 四配置、FULL_CURRENT 21/21、Debug／Release 和 Guard 通过。P3 ACCEPTED_PENDING_FINAL_CLOSEOUT，P4 REVIEW_PENDING，DEVICE_RUNS=0，SQ-M1 OPEN，T3.2-A 与 Formal Test3 BLOCKED，Test3 执行仍未获授权。
+
 ## 2026-11-24 · AppleNativeVoiceTransport P3 工程交付
 
 候选通过现有 Realtime Input／Output Bridge 接入。默认冻结后端，候选通过构造注入。复用 Runtime 唯一取消权威，Source 消费侧确认支撑同图 N+1。P1/P2/P3、sanitizer、FULL_CURRENT 21/21、Debug／Release 和 Guard 均通过。P3 REVIEW_PENDING，P4 NOT_STARTED，设备运行 0，执行仍未授权。[P3 工程审核](AppleNativeVoiceTransport_P3_engineering_review.md)

@@ -1,5 +1,11 @@
 # DEVLOG.md — Aftelle 开发日志(给我自己看)
 
+## 2026-11-25 · Stage 7.5.11 · AppleNativeVoiceTransport P4 收口
+
+- N+1 采集内容时间栅栏在 Sink 最终提交执行。会话分别跟踪内容缺口、环溢出和组包队列丢失。播放 EOS 释放呈现槽，实际数字提交与物理资格分开。
+- DEBUG 候选入口需授权条件和精确参数，Shadow 编译互斥。标准构建保持冻结默认，设备运行与真实 Provider 请求为 0。
+- P1–P4 四种配置通过。FULL_CURRENT 21/21 全部执行，Debug／Release、Guard 与保护核验通过。P3 ACCEPTED_PENDING_FINAL_CLOSEOUT，P4 REVIEW_PENDING，等待 Gemini 独立架构审核。[工程收口与审核包](docs/stage7_5/test3_apple_vp_clean/AppleNativeVoiceTransport_P4_engineering_review.md)
+
 ## 2026-11-24 · Stage 7.5.11 · AppleNativeVoiceTransport P3 工程
 
 - 现有 Controller、Orchestration 与两个 Realtime Bridge 接入可选候选。冻结后端为默认值。采集与播放共用 P2 Engine，Source 保留实际时间、非零范围、EOS handoff 与清空确认。
