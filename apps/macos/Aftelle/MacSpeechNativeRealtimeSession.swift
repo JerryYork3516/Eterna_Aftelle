@@ -2,13 +2,6 @@ import Foundation
 
 /// The realtime Bridges share this session's one transport. The Controller supplies Runtime identities.
 actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeechRealtimeAcousticFactSourcing {
-    private struct Playback {
-        let response: RealtimeBrainEventIdentity
-        var lastSequence: UInt64 = 0
-        var started = false
-        var eosDeadline: UInt64?
-    }
-
     private let makeTransport: @Sendable () -> AppleNativeVoiceTransport
     private let playbackTimeout = MacSpeechPCMPlaybackConfiguration.standard.consumerTimeoutNanoseconds
     private var transport: AppleNativeVoiceTransport?
@@ -18,13 +11,16 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
     private var preparedGeneration: UInt64?
     private var serviceTask: Task<Void, Never>?
     private var facts = MacSpeechNativeRealtimeFacts()
+    #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+        nonisolated let acousticEvidence = MacSpeechNativeAcousticEvidence()
+    #endif
     #if DEBUG
         private var sealedTransport: NativeVoiceTransportReadback?
         private var terminalReason: String?
     #endif
     private var outputState = MacSpeechAudioOutputHostState.idle
     private var outputError: MacSpeechAudioOutputHostError?
-    private var playback: Playback?
+    private var playback: MacSpeechNativePlayback?
     private var eventSink: MacSpeechAudioOutputHost.EventSink?
     private var eventOrdinal: UInt64 = 0
     private var counters = MacSpeechNativePlaybackCounters()
@@ -82,6 +78,9 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
             guard transport === graph else { throw NativeVoiceTransportError.staleIdentity }
             let route = MacSpeechDeviceRoute(nativeVoiceDefaults: binding.defaults)
             counters = MacSpeechNativePlaybackCounters(outputDevice: route.output)
+            #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                acousticEvidence.bind(session, capture: initial.capture)
+            #endif
             installService(graph, failed: failed)
             return .nativeVoiceCapture(binding, route: route)
         } catch {
@@ -97,7 +96,13 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
     }
 
     func drainFrames(maxCount: Int) -> [MacSpeechAudioFrame] {
-        facts.drainCapture(maxCount: maxCount)
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            defer {
+                let renderedPlayback = playback != nil ? identity?.playback : nil
+                acousticEvidence.rememberCapture(facts.deliveredCapture, playback: renderedPlayback)
+            }
+        #endif
+        return facts.drainCapture(maxCount: maxCount)
     }
 
     func advanceGeneration(
@@ -109,6 +114,9 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
               current.capture.token < UInt64.max - 1, current.playback.token < UInt64.max else {
             throw NativeVoiceTransportError.staleIdentity
         }
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            acousticEvidence.stop(.identityChanged)
+        #endif
         let successor = NativeVoiceIdentity(
             authority: .init(realtime: next, configuration: current.capture.authority.configurationID),
             captureGeneration: current.capture.generation, captureToken: current.capture.token + 1,
@@ -135,7 +143,7 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
         }
         let next = current.replacingPlayback(cancelled: false)
         identity = next
-        playback = Playback(response: response)
+        playback = MacSpeechNativePlayback(response: response)
         facts.invalidatePlayback()
         counters = MacSpeechNativePlaybackCounters(outputDevice: counters.outputDevice)
         do {
@@ -200,6 +208,9 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
     }
 
     func close() async -> MacSpeechAudioOutputHostSnapshot {
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            acousticEvidence.stop(.sessionClosed)
+        #endif
         let graph = transport
         #if DEBUG
             let closingConfiguration = configurationSerial
@@ -361,17 +372,13 @@ private extension MacSpeechNativeRealtimeSession {
 
 extension MacSpeechNativeRealtimeSession {
     #if DEBUG
-        func nativeVoiceDiagnosticData() async throws -> Data {
+        func nativeVoiceDiagnosticReadback() async -> MacSpeechNativeVoiceDiagnosticReadback {
             let graph = transport
             let observed = await graph?.readback()
-            return try JSONEncoder().encode(MacSpeechNativeVoiceDiagnosticReadback(
-                sealed: transport == nil && sealedTransport != nil, terminalReason: terminalReason,
+            return facts.diagnosticReadback(
                 transport: graph === transport ? observed ?? sealedTransport : sealedTransport,
-                captureQueue: facts.captureQueue, lastSource: facts.lastSource,
-                lastNonzeroSubmission: facts.lastNonzeroSubmission,
-                lastDigitalHandoff: facts.lastDigitalHandoff,
-                lastClearObservedAtNanoseconds: lastClearCompletedAtNanoseconds
-            ))
+                sealed: transport == nil && sealedTransport != nil,
+                terminalReason: terminalReason, clearedAt: lastClearCompletedAtNanoseconds)
         }
     #endif
 
@@ -389,10 +396,5 @@ extension MacSpeechNativeRealtimeSession {
               let progress = try? await graph.progress(), progress.token == expected.playback.token,
               transport === graph, identity?.playback == expected.playback, playback != nil else { return false }
         return facts.matches(observation.metrics, playback: expected.playback)
-    }
-
-    /// Selected explicitly by the authorized DEBUG foreground route.
-    nonisolated static func appleVoiceProcessing() -> MacSpeechNativeRealtimeSession {
-        MacSpeechNativeRealtimeSession(makeTransport: { AppleNativeVoiceTransport.macOS() })
     }
 }

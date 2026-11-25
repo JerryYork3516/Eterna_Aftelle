@@ -1076,6 +1076,11 @@ final class AppController: ObservableObject {
     #if DEBUG
         private var nativeVoiceDebugAdmission = AppleNativeVoiceDebugAdmission.off
     #endif
+    #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+        private var nativeVoiceEvidenceSession: MacSpeechNativeRealtimeSession? {
+            realtimeAudioBackend.candidate as? MacSpeechNativeRealtimeSession
+        }
+    #endif
     private var realtimeBrainAudioOutput: any MacSpeechRealtimePlaybackHosting {
         if let candidate = realtimeAudioBackend.candidate { return candidate }
         return speechAudioOutputHost
@@ -1942,8 +1947,23 @@ final class AppController: ObservableObject {
         }
     }
 
+    var realtimeSpeechAudioEvidenceTitle: String {
+        #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+            if nativeVoiceDebugAdmission == .admitted, nativeVoiceEvidenceSession != nil {
+                return String(localized: "nativeVoiceAcousticEvidence.title")
+            }
+        #endif
+        return String(localized: "particleDebug.realtimeDiagnostics.captureAudio")
+    }
+
     func armRealtimeSpeechAudioCapsule() {
             guard !isAppleVPAcousticTestMode else { return }
+        #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+            if nativeVoiceDebugAdmission == .admitted, let candidate = nativeVoiceEvidenceSession {
+                presentNativeVoiceAcousticEvidence(candidate)
+                return
+            }
+        #endif
         guard realtimeAudioBackend.candidate == nil, nativeVoiceDebugAdmission == .off else { return }
         guard let routeAttemptID = realtimeBrainRouteAttemptID,
               let binding = realtimeBrainInputBinding,
@@ -2727,7 +2747,7 @@ final class AppController: ObservableObject {
         return try manifest.encodedData()
     }
 
-    private static func runningBuildBinary() -> (
+    private nonisolated static func runningBuildBinary() -> (
         name: String,
         sha256: String
     ) {
@@ -2752,7 +2772,7 @@ final class AppController: ObservableObject {
         hexString(SHA256.hash(data: data))
     }
 
-    private static func hexString<S: Sequence>(_ bytes: S) -> String
+    private nonisolated static func hexString<S: Sequence>(_ bytes: S) -> String
         where S.Element == UInt8 {
         bytes.map { String(format: "%02x", $0) }.joined()
     }
@@ -3945,6 +3965,9 @@ final class AppController: ObservableObject {
         }
         realtimeBrainStartInFlight = true
         defer {
+            #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+                nativeVoiceEvidenceSession?.acousticEvidence.endUnboundGrant()
+            #endif
             realtimeBrainStartInFlight = false
             objectWillChange.send()
         }
@@ -4762,11 +4785,20 @@ final class AppController: ObservableObject {
             identity.session.generation, playbackGeneration, audio.sequence
         )
         #endif
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            let evidence = nativeVoiceEvidenceSession?.acousticEvidence
+            let evidenceTicket = evidence?.recordProvider(audio, identity: identity, playbackToken: playbackGeneration)
+        #endif
         var snapshot = await realtimeBrainAudioOutput.enqueue(
             pcm16Bytes: audio.bytes,
             sequence: audio.sequence,
             generation: playbackGeneration
         )
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            if let evidenceTicket {
+                evidence?.completeProvider(evidenceTicket, snapshot: snapshot)
+            }
+        #endif
         guard isCurrentRealtimeBrainRoute(
             attemptID: attemptID,
             session: binding.session
@@ -5164,6 +5196,9 @@ final class AppController: ObservableObject {
                 || binding != nil
                 || preparedCaptureGeneration != nil else { return }
 
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            nativeVoiceEvidenceSession?.acousticEvidence.stop(.sessionClosed)
+        #endif
         realtimeBrainRouteAttemptID = nil
         realtimeBrainStopping = true
         resetRealtimeBrainMissingSpeechStopPresentation()
@@ -9354,7 +9389,7 @@ final class AppController: ObservableObject {
         }
     }
 
-    private enum AppleVPAcousticEvidenceExport {
+    private nonisolated enum AppleVPAcousticEvidenceExport {
         static func destination(runID: UUID, asWAV: Bool) throws -> URL {
             let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
             let expectedCache = home.appendingPathComponent("Library/Caches", isDirectory: true)
@@ -9367,7 +9402,7 @@ final class AppController: ObservableObject {
                 .appendingPathComponent("run-\(runID.uuidString).\(asWAV ? "wav" : "json")")
         }
 
-        static func write(_ bytes: Data, to url: URL, expected: URL) throws {
+        static func write(_ bytes: Data, to url: URL, expected: URL, sealed: Bool = false) throws {
             guard url.isFileURL, url.host?.isEmpty != false, url.query == nil, url.fragment == nil,
                   url.path == url.standardizedFileURL.path, url.path == expected.path
             else {
@@ -9376,7 +9411,8 @@ final class AppController: ObservableObject {
             let directory = try openDirectory(expected.deletingLastPathComponent())
             defer { Darwin.close(directory) }
             let flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC
-            let descriptor = openat(directory, expected.lastPathComponent, flags, 0o600)
+            let name = sealed ? ".sealing-\(UUID().uuidString)" : expected.lastPathComponent
+            let descriptor = openat(directory, name, flags, 0o600)
             guard descriptor >= 0 else { throw currentError() }
             let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             do {
@@ -9384,9 +9420,12 @@ final class AppController: ObservableObject {
                 try file.write(contentsOf: bytes)
                 try file.synchronize()
                 try file.close()
+                if sealed, renameatx_np(directory, name, directory, expected.lastPathComponent, UInt32(RENAME_EXCL)) != 0 {
+                    throw currentError()
+                }
             } catch {
                 try? file.close()
-                unlinkat(directory, expected.lastPathComponent, 0)
+                unlinkat(directory, name, 0)
                 throw error
             }
         }
@@ -9450,6 +9489,145 @@ final class AppController: ObservableObject {
 
         private static func currentError() -> NSError {
             NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+    }
+#endif
+
+#if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+    private nonisolated struct NativeVoiceEvidenceFile: Encodable {
+        let schemaVersion = 1
+        let backend = "apple_native_voice_transport"
+        let encoding = "pcm16le"
+        let sampleRate = 24_000
+        let channels = 1
+        let buildBinaryName: String
+        let buildBinarySHA256: String
+        let technicalReadbackAtUptimeNanoseconds: UInt64
+        let technicalReadbackMatchesScope: Bool
+        let technical: MacSpeechNativeVoiceDiagnosticReadback?
+        let evidence: NativeVoiceEvidenceArchive
+    }
+
+    extension AppController {
+        nonisolated static func writeNativeVoiceEvidence(
+            _ evidence: NativeVoiceEvidenceArchive,
+            technical: MacSpeechNativeVoiceDiagnosticReadback,
+            observedAt: UInt64
+        ) throws -> URL {
+            let url = try nativeVoiceEvidenceCache()
+                .appendingPathComponent("com.eterna.aftelle.debug-native-voice-evidence", isDirectory: true)
+                .appendingPathComponent("run-\(evidence.runID.uuidString).json")
+            let build = runningBuildBinary()
+            guard build.sha256.count == 64 else { throw CocoaError(.fileReadUnknown) }
+            let matchesScope = technical.transport?.identity.capture == evidence.capture
+            let manifest = NativeVoiceEvidenceFile(
+                buildBinaryName: build.name, buildBinarySHA256: build.sha256,
+                technicalReadbackAtUptimeNanoseconds: observedAt, technicalReadbackMatchesScope: matchesScope,
+                technical: matchesScope ? technical : nil,
+                evidence: evidence
+            )
+            try AppleVPAcousticEvidenceExport.write(JSONEncoder().encode(manifest), to: url, expected: url, sealed: true)
+            return url
+        }
+
+        private nonisolated static func nativeVoiceEvidenceCache() throws -> URL {
+            #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                guard let syntheticHome = ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"],
+                      syntheticHome.hasPrefix("/private/tmp/aftelle-voice-evidence."),
+                      syntheticHome.hasSuffix("/runtime-home"), syntheticHome.split(separator: "/").count == 4
+                else { throw CocoaError(.fileWriteNoPermission) }
+                return URL(fileURLWithPath: syntheticHome, isDirectory: true)
+                    .appendingPathComponent("Library/Caches", isDirectory: true)
+            #else
+                guard let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+                      cache.pathComponents.suffix(2).elementsEqual(["Library", "Caches"])
+                else { throw CocoaError(.fileWriteNoPermission) }
+                return cache
+            #endif
+        }
+    }
+#endif
+
+#if DEBUG && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+    private extension AppController {
+        func presentNativeVoiceAcousticEvidence(_ candidate: MacSpeechNativeRealtimeSession) {
+            guard let window = NSApp.keyWindow, window.attachedSheet == nil else { return }
+            let evidence = candidate.acousticEvidence
+            let alert = NSAlert()
+            alert.messageText = String(localized: "nativeVoiceAcousticEvidence.title")
+            switch evidence.phase {
+            case .off:
+                guard realtimeBrainRouteAttemptID == nil, !realtimeBrainStartInFlight, !realtimeBrainStopping else {
+                    realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.beforeSession"
+                    return
+                }
+                alert.informativeText = String(localized: "nativeVoiceAcousticEvidence.consent")
+                alert.addButton(withTitle: String(localized: "nativeVoiceAcousticEvidence.arm"))
+                alert.addButton(withTitle: String(localized: "nativeVoiceAcousticEvidence.cancel"))
+                alert.beginSheetModal(for: window) { [weak self] response in
+                    guard response == .alertFirstButtonReturn else { return }
+                    Task { @MainActor in
+                        guard let self, self.realtimeBrainRouteAttemptID == nil,
+                              !self.realtimeBrainStartInFlight, !self.realtimeBrainStopping else {
+                            return
+                        }
+                        let armed = candidate.acousticEvidence.arm()
+                        self.realtimeSpeechDiagnosticStatusKey = armed
+                            ? "nativeVoiceAcousticEvidence.armed" : "nativeVoiceAcousticEvidence.beforeSession"
+                    }
+                }
+            case .armed, .recording, .ended:
+                manageArmedNativeVoiceEvidence(candidate, alert: alert, window: window)
+            case .revoked, .saving, .saved:
+                return
+            }
+        }
+
+        func manageArmedNativeVoiceEvidence(_ candidate: MacSpeechNativeRealtimeSession, alert: NSAlert, window: NSWindow) {
+            let evidence = candidate.acousticEvidence
+            let saving = evidence.phase == .ended
+            alert.informativeText = saving
+                ? String(localized: "nativeVoiceAcousticEvidence.saveNotice")
+                : String(localized: "nativeVoiceAcousticEvidence.stopNotice")
+            alert.addButton(withTitle: saving ? String(localized: "nativeVoiceAcousticEvidence.save")
+                : String(localized: "nativeVoiceAcousticEvidence.stop"))
+            alert.addButton(withTitle: String(localized: "nativeVoiceAcousticEvidence.revoke"))
+            alert.addButton(withTitle: String(localized: "nativeVoiceAcousticEvidence.cancel"))
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard let self else { return }
+                if response == .alertSecondButtonReturn {
+                    guard evidence.revoke() else { return }
+                    Task.detached(priority: .utility) { evidence.discardRevoked() }
+                    self.realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.revoked"
+                } else if response == .alertFirstButtonReturn {
+                    if saving {
+                        self.saveNativeVoiceAcousticEvidence(candidate)
+                    } else {
+                        evidence.stop(.userStopped)
+                        self.realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.ended"
+                    }
+                }
+            }
+        }
+
+        func saveNativeVoiceAcousticEvidence(_ candidate: MacSpeechNativeRealtimeSession) {
+            Task { @MainActor in
+                let facts = await candidate.nativeVoiceDiagnosticReadback()
+                let observedAt = DispatchTime.now().uptimeNanoseconds
+                let saved = await Task.detached(priority: .utility) {
+                    guard let archive = candidate.acousticEvidence.takeForSave() else { return false }
+                    do {
+                        _ = try Self.writeNativeVoiceEvidence(archive, technical: facts, observedAt: observedAt)
+                        candidate.acousticEvidence.finishSave(succeeded: true)
+                        return true
+                    } catch {
+                        candidate.acousticEvidence.finishSave(succeeded: false)
+                        return false
+                    }
+                }.value
+                realtimeSpeechDiagnosticStatusKey = saved
+                    ? "nativeVoiceAcousticEvidence.saved" : "nativeVoiceAcousticEvidence.saveFailed"
+            }
         }
     }
 #endif

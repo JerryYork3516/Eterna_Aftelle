@@ -4,14 +4,18 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 export GIT_OPTIONAL_LOCKS=0
 mode="${1:-normal}"
-work="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-voice-p3.XXXXXX")"
+if [[ "$mode" == evidence ]]; then
+  work="$(mktemp -d "/private/tmp/aftelle-voice-evidence.XXXXXX")"
+else
+  work="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-voice-p3.XXXXXX")"
+fi
 trap 'rm -rf "$work"' EXIT
 src=apps/macos/NativeVoiceTransport
 tests=tools/native_voice_transport_p3_tests
 c=(-O0)
 swift=(-Onone)
 case "$mode" in
-  normal) ;;
+  normal|evidence) ;;
   release) c=(-O2); swift=(-O) ;;
   tsan) c=(-g -O1 -fsanitize=thread); swift=(-g -sanitize=thread) ;;
   asan) c=(-g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all); swift=(-g -sanitize=address) ;;
@@ -34,18 +38,50 @@ hosts=(
   MacSpeechAudioOutputHost.swift MacSpeechRealtimeBrainInputBridge.swift MacSpeechRealtimeBrainOutputBridge.swift
   MacSpeechNativeInputBridge.swift MacSpeechNativeOutputBridge.swift RealtimeSpeechPresentationMapper.swift
   AppController.swift MacSpeechNativeRealtimeSession.swift MacSpeechNativeRealtimeFacts.swift
+  MacSpeechNativeAcousticEvidence.swift
 )
 for i in "${!hosts[@]}"; do hosts[i]="$app/${hosts[i]}"; done
 # Keep the existing Fake Provider and fixture private to the combined offline harness.
 cat tools/realtime_interruption_evidence_tests/RealtimeInterruptionEvidenceTests.swift \
   "$tests/ControllerCases.swift" tools/native_voice_transport_p4_tests/CloseoutCases.swift >"$work/ControllerTests.swift"
-swiftc -D DEBUG -D NATIVE_VOICE_P3_OFFLINE_TEST -parse-as-library -module-cache-path "$work/modules" \
+defs=(-D DEBUG -D NATIVE_VOICE_P3_OFFLINE_TEST)
+if [[ "$mode" == evidence ]]; then
+  defs+=(-D NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+  cat tools/native_voice_acoustic_evidence_tests/EvidenceCases.swift >>"$work/ControllerTests.swift"
+fi
+swiftc "${defs[@]}" -parse-as-library -module-cache-path "$work/modules" \
   -warn-concurrency -strict-concurrency=complete -import-objc-header "$src/NativeVoiceRealtime.h" \
   -framework AVFoundation -framework CoreAudio -framework AppKit -framework Security -framework UniformTypeIdentifiers \
   -lc++ "${swift[@]}" "$src/"*.swift apps/macos/RuntimeCore/*.swift "${hosts[@]}" \
   tools/speech_audio_output_tests/FakeMacSpeechAudioOutputPlayer.swift \
   tools/native_voice_transport_p2_tests/FakeVoiceEngine.swift "$work/ControllerTests.swift" "$work/"*.o -o "$work/controller"
 mkdir "$work/runtime-home"
+if [[ "$mode" == evidence ]]; then
+  mkdir -p "$work/runtime-home/Library/Caches"
+  CFFIXED_USER_HOME="$work/runtime-home" "$work/controller" --native-voice-acoustic-evidence
+  preflight=(
+    -typecheck -parse-as-library -module-cache-path "$work/modules" -swift-version 5 -default-isolation MainActor
+    -import-objc-header "$src/NativeVoiceRealtime.h" -D APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+    "$src/"*.swift apps/macos/RuntimeCore/*.swift "${hosts[@]}"
+  )
+  swiftc "${preflight[@]}" -D DEBUG -D APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED
+  reject_evidence() {
+    local case_name="$1"
+    shift
+    if swiftc "${preflight[@]}" "$@" >"$work/$case_name.log" 2>&1 ||
+       ! grep -Eq 'error: (Native acoustic evidence|Device execution and offline Shadow)' "$work/$case_name.log"; then
+      cat "$work/$case_name.log"
+      exit 1
+    fi
+  }
+  reject_evidence ordinary-debug -D DEBUG
+  reject_evidence release -D APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED
+  reject_evidence shadow -D DEBUG -D APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED -D NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+  reject_evidence p3-shadow -D DEBUG -D APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED -D NATIVE_VOICE_P3_OFFLINE_TEST
+  echo "native_voice_acoustic_evidence_build_isolation=PASS"
+  python3 tools/native_voice_transport_tests/guard.py
+  exit 0
+fi
 CFFIXED_USER_HOME="$work/runtime-home" "$work/controller" --native-voice-p3
 mkdir "$work/p4-runtime-home"
 CFFIXED_USER_HOME="$work/p4-runtime-home" "$work/controller" --native-voice-p4

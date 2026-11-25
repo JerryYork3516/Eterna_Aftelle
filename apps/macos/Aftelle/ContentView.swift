@@ -1144,6 +1144,7 @@ struct ParticleDebugWindow: View {
                 controller.stopSpeechAudioCapture,
             exportRealtimeSpeechDiagnostics:
                 controller.exportRealtimeSpeechDiagnostics,
+            realtimeSpeechAudioEvidenceTitle: controller.realtimeSpeechAudioEvidenceTitle,
             armRealtimeSpeechAudioCapsule:
                 controller.armRealtimeSpeechAudioCapsule,
             clearRealtimeSpeechDiagnostics:
@@ -1319,6 +1320,7 @@ private struct ParticleDebugPanel: View {
     let startRealtimeResidentBrainRoute: () async -> Void
     let stopSpeechAudioCapture: () async -> Void
     let exportRealtimeSpeechDiagnostics: () -> Void
+    let realtimeSpeechAudioEvidenceTitle: String
     let armRealtimeSpeechAudioCapsule: () -> Void
     let clearRealtimeSpeechDiagnostics: () -> Void
     let copyDialogueAudit: () -> Void
@@ -1583,6 +1585,7 @@ private struct ParticleDebugPanel: View {
                                 stopCapture: stopSpeechAudioCapture,
                                 exportDiagnostics:
                                     exportRealtimeSpeechDiagnostics,
+                                audioEvidenceTitle: realtimeSpeechAudioEvidenceTitle,
                                 armAudioCapsule:
                                     armRealtimeSpeechAudioCapsule,
                                 clearDiagnostics:
@@ -2620,6 +2623,7 @@ private struct SpeechAudioHostDebugView: View {
     let startRealtimeBrain: () async -> Void
     let stopCapture: () async -> Void
     let exportDiagnostics: () -> Void
+    let audioEvidenceTitle: String
     let armAudioCapsule: () -> Void
     let clearDiagnostics: () -> Void
 
@@ -3113,13 +3117,7 @@ private struct SpeechAudioHostDebugView: View {
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         Spacer()
-                        Button(
-                            String(
-                                localized:
-                                    "particleDebug.realtimeDiagnostics.captureAudio"
-                            ),
-                            action: armAudioCapsule
-                        )
+                        Button(audioEvidenceTitle, action: armAudioCapsule)
                         Button(
                             String(
                                 localized:

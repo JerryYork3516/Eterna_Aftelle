@@ -4512,6 +4512,12 @@ private struct RealtimeInterruptionEvidenceTests {
     }
 
     static func main() async throws {
+        #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+            if CommandLine.arguments.dropFirst().elementsEqual(["--native-voice-acoustic-evidence"]) {
+                try await runNativeVoiceAcousticEvidence()
+                return
+            }
+        #endif
         #if NATIVE_VOICE_P3_OFFLINE_TEST
             if CommandLine.arguments.dropFirst().elementsEqual(["--native-voice-p3"]) {
                 try await runNativeVoiceP3()

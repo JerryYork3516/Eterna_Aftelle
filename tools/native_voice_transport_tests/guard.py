@@ -10,6 +10,7 @@ FROZEN = "574fc735ca239c9b334029debbdee546cda18d49"
 P1 = "5ef549f634a0cb75eaca6e49c0a903214261119a"
 P3_BASE = "8d4d2a6cbc1566dacba5229826bf98adac9b00c9"
 P4_BASE = "b1dedd8b02680eb5bfa4c676421cd0da421e1afe"
+P4_SOURCE = "c9838c99a5fd2d965587f5601a5c0377e1f58026"
 
 
 def git(*args):
@@ -21,6 +22,55 @@ project = "apps/macos/Aftelle/Aftelle.xcodeproj/project.pbxproj"
 app = "apps/macos/Aftelle/"
 candidate = app + "MacSpeechNativeRealtimeSession.swift"
 facts = app + "MacSpeechNativeRealtimeFacts.swift"
+evidence = app + "MacSpeechNativeAcousticEvidence.swift"
+evidence_strings = {app + name + ".lproj/Localizable.strings" for name in ("en", "zh-Hans")}
+evidence_view = app + "ContentView.swift"
+evidence_ui = evidence_strings | {evidence_view}
+evidence_members = []
+project_data = (ROOT / project).read_bytes()
+if (ROOT / evidence).is_file():
+    evidence_members = [line for line in project_data.splitlines(keepends=True)
+                        if b"MacSpeechNativeAcousticEvidence.swift" in line]
+    expected_members = [line.replace(b"MacSpeechNativeRealtimeFacts.swift", b"MacSpeechNativeAcousticEvidence.swift")
+                        .replace(b"A07B13000000000000000002", b"A07B13000000000000000003")
+                        .replace(b"A07B13000000000000000012", b"A07B13000000000000000013")
+                        for line in git("show", P4_SOURCE + ":" + project).splitlines(keepends=True)
+                        if b"MacSpeechNativeRealtimeFacts.swift" in line]
+    assert evidence_members == expected_members and len(evidence_members) == 4
+    project_data = b"".join(line for line in project_data.splitlines(keepends=True) if line not in evidence_members)
+    evidence_changes = set(git("diff", "--name-only", P4_SOURCE, "--", "apps", "brain", "shared-protocol")
+                           .decode().splitlines())
+    evidence_changes.update(git("ls-files", "--others", "--exclude-standard", "--", "apps", "brain", "shared-protocol")
+                            .decode().splitlines())
+    evidence_permitted = evidence_ui | {
+        evidence, candidate, facts, app + "AppController.swift", app + "MacSpeechRealtimeBrainInputBridge.swift", project
+    }
+    assert evidence_changes <= evidence_permitted, evidence_changes - evidence_permitted
+    for name in evidence_strings:
+        original = git("show", P4_SOURCE + ":" + name)
+        current = (ROOT / name).read_bytes()
+        assert current.startswith(original)
+        assert all(not line or line.startswith(b'"nativeVoiceAcousticEvidence.')
+                   for line in current[len(original):].splitlines())
+    original = git("show", P4_SOURCE + ":" + evidence_view)
+    current = (ROOT / evidence_view).read_bytes()
+    for exclusive in (
+        b"            realtimeSpeechAudioEvidenceTitle: controller.realtimeSpeechAudioEvidenceTitle,\n",
+        b"    let realtimeSpeechAudioEvidenceTitle: String\n",
+        b"                                audioEvidenceTitle: realtimeSpeechAudioEvidenceTitle,\n",
+        b"    let audioEvidenceTitle: String\n",
+    ):
+        assert current.count(exclusive) == 1
+        current = current.replace(exclusive, b"")
+    current = current.replace(
+        b"                        Button(audioEvidenceTitle, action: armAudioCapsule)\n",
+        b'                        Button(\n                            String(\n                                localized:\n'
+        b'                                    "particleDebug.realtimeDiagnostics.captureAudio"\n'
+        b"                            ),\n                            action: armAudioCapsule\n                        )\n"
+    )
+    assert current == original
+else:
+    evidence_ui = set()
 p3 = (ROOT / candidate).is_file()
 integration = {app + name for name in (
     "AppController.swift", "MacSpeechRealtimeBrainInputBridge.swift", "MacSpeechAudioOutputHost.swift",
@@ -28,7 +78,7 @@ integration = {app + name for name in (
 compile_files = [line for line in git("ls-tree", "-r", "--name-only", FROZEN, "apps").decode().splitlines()
                  if line not in {header, project}]
 for name in compile_files:
-    if name not in integration:
+    if name not in integration | evidence_ui:
         assert (ROOT / name).read_bytes() == git("show", FROZEN + ":" + name), name
 
 if p3:
@@ -41,7 +91,7 @@ if p3:
     }
     changed = set(git("diff", "--name-only", P3_BASE, "--", "apps").decode().splitlines())
     changed.update(git("ls-files", "--others", "--exclude-standard", "--", "apps").decode().splitlines())
-    permitted = {candidate, facts, project} | integration | p4_transport | {
+    permitted = {candidate, facts, project, evidence} | integration | p4_transport | evidence_ui | {
         "apps/macos/NativeVoiceTransport/" + name for name in (
             "AppleNativeVoiceTransport.swift", "NativeVoiceSessionGraph.swift", "NativeVoiceRealtime.c",
             "NativeVoiceRealtime.h", "NativeVoiceRealtimeLease.mm",
@@ -50,10 +100,10 @@ if p3:
     assert changed <= permitted, changed - permitted
     p4_changed = set(git("diff", "--name-only", P4_BASE, "--", "apps").decode().splitlines())
     p4_changed.update(git("ls-files", "--others", "--exclude-standard", "--", "apps").decode().splitlines())
-    p4_permitted = {candidate, facts, app + "AppController.swift",
-                    app + "MacSpeechRealtimeBrainInputBridge.swift"} | p4_transport
+    p4_permitted = {candidate, facts, app + "AppController.swift", project, evidence,
+                    app + "MacSpeechRealtimeBrainInputBridge.swift"} | p4_transport | evidence_ui
     assert p4_changed <= p4_permitted, p4_changed - p4_permitted
-    assert (ROOT / project).read_bytes() == git("show", P4_BASE + ":" + project)
+    assert project_data == git("show", P4_BASE + ":" + project)
     controller = (ROOT / (app + "AppController.swift")).read_text()
     frozen_controller = git("show", FROZEN + ":" + app + "AppController.swift").decode()
     shipped_initializer = "    init() {"
@@ -102,7 +152,7 @@ if p3:
     assert old_host.split(before)[0] == current_host.split(before)[0]
     assert old_host.split(after)[1] == current_host.split(after)[1]
     candidate_source = (ROOT / candidate).read_text()
-    assert candidate_source.count("AppleNativeVoiceTransport.macOS()") == 1
+    assert (candidate_source + (ROOT / facts).read_text()).count("AppleNativeVoiceTransport.macOS()") == 1
     assert "isSourceHandoff: handoff" in candidate_source
     assert "renderClearAcknowledged" in candidate_source
     assert candidate_source.count("#if NATIVE_VOICE_P3_OFFLINE_TEST") == 1
@@ -121,7 +171,7 @@ assert (ROOT / header).read_bytes() == git("show", FROZEN + ":" + header) + (
 )
 p2 = ["AppleNativeVoiceTransport.swift", "NativeVoiceGraph.swift", "NativeVoiceSessionGraph.swift",
       "NativeVoiceHALRoute.swift", "NativeVoiceSystemEngine.swift", "NativeVoiceRealtime.c", "NativeVoiceRealtimeLease.mm"]
-project_lines = (ROOT / project).read_bytes().splitlines(keepends=True)
+project_lines = project_data.splitlines(keepends=True)
 if p3:
     p3_members = [line for line in project_lines if re.match(rb"\s*A07B130000000000000000[01][12] ", line)]
     assert len(p3_members) == 8
@@ -188,6 +238,11 @@ print("native_voice_frozen_existing_app_files=" + str(len(compile_files) - len(i
 if p3:
     print("native_voice_p3_integrated_legacy_files=3")
     print("native_voice_p4_debug_device_authorization=SEALED")
+if evidence_members:
+    assert b"APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED" not in (ROOT / project).read_bytes()
+    library = (ROOT / evidence).read_text()
+    assert "lock.try()" in library and "installTap(" not in library
+    print("native_voice_acoustic_evidence_frozen_core=PASS")
 print("native_voice_production_switches=0")
 print("native_voice_p2_graph_members=7")
 print("native_voice_isolation_guard=PASS")

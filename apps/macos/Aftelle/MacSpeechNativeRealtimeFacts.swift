@@ -180,6 +180,18 @@ nonisolated struct MacSpeechNativeCaptureQueueReadback: Encodable, Sendable {
 }
 
 #if DEBUG
+    extension MacSpeechNativeRealtimeFacts {
+        func diagnosticReadback(
+            transport: NativeVoiceTransportReadback?, sealed: Bool, terminalReason: String?, clearedAt: UInt64?
+        ) -> MacSpeechNativeVoiceDiagnosticReadback {
+            .init(
+                sealed: sealed, terminalReason: terminalReason, transport: transport, captureQueue: captureQueue,
+                lastSource: lastSource, lastNonzeroSubmission: lastNonzeroSubmission,
+                lastDigitalHandoff: lastDigitalHandoff, lastClearObservedAtNanoseconds: clearedAt
+            )
+        }
+    }
+
     nonisolated struct MacSpeechNativeVoiceDiagnosticReadback: Encodable, Sendable {
         let sealed: Bool
         let terminalReason: String?
@@ -249,5 +261,25 @@ nonisolated extension MacSpeechAudioOutputHostSnapshot {
             underrunCount: 0, pressureWaitCount: counters.pressureWaits, rejectedCallbackCount: 0,
             lastError: error?.rawValue, recentEvents: []
         )
+    }
+}
+
+nonisolated struct MacSpeechNativePlayback {
+    let response: RealtimeBrainEventIdentity
+    var lastSequence: UInt64 = 0
+    var started = false
+    var eosDeadline: UInt64?
+}
+
+extension MacSpeechNativeRealtimeSession {
+    #if DEBUG
+        func nativeVoiceDiagnosticData() async throws -> Data {
+            try JSONEncoder().encode(await nativeVoiceDiagnosticReadback())
+        }
+    #endif
+
+    /// Selected explicitly by the authorized DEBUG foreground route.
+    nonisolated static func appleVoiceProcessing() -> MacSpeechNativeRealtimeSession {
+        MacSpeechNativeRealtimeSession(makeTransport: { AppleNativeVoiceTransport.macOS() })
     }
 }

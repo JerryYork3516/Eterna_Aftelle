@@ -614,3 +614,19 @@
 "M20_QUIET_GUIDE" = "Remain quiet throughout: 4 seconds warm-up, then 15 seconds score. Resident playback is requested at score +3 seconds. Render is not physical speaker proof.";
 "Prepare M20 A · AGC-ON · WARMUP_4S" = "Prepare M20 A · AGC-ON · WARMUP_4S";
 "M20 Mac-only AEC · round %lld of %lld" = "M20 Mac-only AEC · round %lld of %lld";
+
+"nativeVoiceAcousticEvidence.title" = "Candidate acoustic evidence";
+"nativeVoiceAcousticEvidence.consent" = "Capture VP-processed uplink and resident downlink digital audio for the next candidate session. This grant lasts up to 180 seconds from now and allows up to 20 MiB total. Audio stays in memory until you confirm saving.";
+"nativeVoiceAcousticEvidence.arm" = "Authorize one capture";
+"nativeVoiceAcousticEvidence.cancel" = "Close";
+"nativeVoiceAcousticEvidence.beforeSession" = "Authorize acoustic evidence before starting the candidate session.";
+"nativeVoiceAcousticEvidence.armed" = "Evidence capture is authorized for the next candidate session.";
+"nativeVoiceAcousticEvidence.saveNotice" = "Seal the collected digital audio and technical evidence in the private local cache.";
+"nativeVoiceAcousticEvidence.stopNotice" = "End evidence capture, or revoke the grant and discard evidence held in memory.";
+"nativeVoiceAcousticEvidence.save" = "Confirm local seal";
+"nativeVoiceAcousticEvidence.stop" = "End capture";
+"nativeVoiceAcousticEvidence.revoke" = "Revoke and discard";
+"nativeVoiceAcousticEvidence.revoked" = "The evidence grant was revoked and unsealed evidence was discarded.";
+"nativeVoiceAcousticEvidence.ended" = "Evidence capture ended. Open Candidate acoustic evidence again to confirm saving.";
+"nativeVoiceAcousticEvidence.saved" = "Acoustic evidence was sealed in the private local cache.";
+"nativeVoiceAcousticEvidence.saveFailed" = "No evidence file was sealed. Check that capture produced evidence and the private local cache is available.";

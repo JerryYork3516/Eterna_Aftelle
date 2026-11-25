@@ -614,3 +614,19 @@
 "M20_QUIET_GUIDE" = "全程保持安静：先预热4秒，再评分15秒，评分第3秒请求居民播放。软件Render不等于扬声器物理发声证明。";
 "Prepare M20 A · AGC-ON · WARMUP_4S" = "Prepare M20 A · AGC-ON · WARMUP_4S";
 "M20 Mac-only AEC · round %lld of %lld" = "M20 Mac-only AEC · 第%lld轮／最多%lld轮";
+
+"nativeVoiceAcousticEvidence.title" = "候选声学证据";
+"nativeVoiceAcousticEvidence.consent" = "为下一次候选会话采集 VP 处理后的上行及居民下行数字音频。本次授权从现在起最多 180 秒，合计最多 20 MiB。音频只留在内存，保存须再确认。";
+"nativeVoiceAcousticEvidence.arm" = "授权一次采集";
+"nativeVoiceAcousticEvidence.cancel" = "关闭";
+"nativeVoiceAcousticEvidence.beforeSession" = "请在候选会话开始前单独授权声学证据采集。";
+"nativeVoiceAcousticEvidence.armed" = "本次声学证据已授权，等待下一次候选会话开始。";
+"nativeVoiceAcousticEvidence.saveNotice" = "将已结束的数字音频及技术证据封存到本机私有缓存。";
+"nativeVoiceAcousticEvidence.stopNotice" = "结束本次证据采集，或撤回授权并丢弃内存中的证据。";
+"nativeVoiceAcousticEvidence.save" = "确认本机封存";
+"nativeVoiceAcousticEvidence.stop" = "结束采集";
+"nativeVoiceAcousticEvidence.revoke" = "撤回并丢弃";
+"nativeVoiceAcousticEvidence.revoked" = "声学证据授权已撤回，本次未封存证据已丢弃。";
+"nativeVoiceAcousticEvidence.ended" = "证据采集已结束。再次打开候选声学证据可单独确认封存。";
+"nativeVoiceAcousticEvidence.saved" = "声学证据已封存到本机私有缓存。";
+"nativeVoiceAcousticEvidence.saveFailed" = "未生成封存文件。请核对是否已有采集内容及本机私有缓存状态。";

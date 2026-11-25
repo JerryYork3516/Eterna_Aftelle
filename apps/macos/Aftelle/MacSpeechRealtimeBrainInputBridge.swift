@@ -212,6 +212,9 @@ actor MacSpeechRealtimeBrainInputBridge {
     typealias MonotonicNow = @Sendable () -> UInt64
 
     private let source: any MacSpeechAudioFrameSourcing
+    #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+        private let acousticEvidence: MacSpeechNativeAcousticEvidence?
+    #endif
     private let sendFrame: SendFrameWithActivity
     private let confirmAcceptedLocalActivity:
         ConfirmAcceptedLocalActivity?
@@ -283,6 +286,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         }
     ) {
         self.source = source
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            acousticEvidence = (source as? MacSpeechNativeRealtimeSession)?.acousticEvidence
+        #endif
         self.sendFrame = { frame, _ in
             await sendFrame(frame)
         }
@@ -308,6 +314,9 @@ actor MacSpeechRealtimeBrainInputBridge {
         }
     ) {
         self.source = source
+        #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+            acousticEvidence = (source as? MacSpeechNativeRealtimeSession)?.acousticEvidence
+        #endif
         self.sendFrame = sendFrameWithActivity
         self.confirmAcceptedLocalActivity = confirmAcceptedLocalActivity
         self.stopInput = stopInput
@@ -626,11 +635,19 @@ actor MacSpeechRealtimeBrainInputBridge {
                 guard !Task.isCancelled,
                       activeBinding == binding,
                       activePumpID == pumpID else { return }
+                #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+                    let evidenceTicket = acousticEvidence?.recordUplink(realtimeFrame, captureSequence: frame.sequenceNumber)
+                #endif
                 let sendStartedAt = DispatchTime.now().uptimeNanoseconds
                 let result = await sendFrame(
                     realtimeFrame,
                     inputActivity
                 )
+                #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+                    if let evidenceTicket {
+                        acousticEvidence?.completeUplink(evidenceTicket, result: result)
+                    }
+                #endif
                 let sendDuration = (
                     DispatchTime.now().uptimeNanoseconds &- sendStartedAt
                 ) / 1_000_000
