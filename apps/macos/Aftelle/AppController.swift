@@ -4,6 +4,9 @@ import Foundation
 import AppKit
 import CryptoKit
     import Darwin
+    #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+        import Security
+    #endif
 import UniformTypeIdentifiers
 #endif
 
@@ -9472,6 +9475,80 @@ final class AppController: ObservableObject {
             }
         }
 
+        #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+            fileprivate static let nativeVoiceEvidenceDirectoryName = "com.eterna.aftelle.debug-native-voice-evidence"
+        #endif
+
+        #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+            fileprivate static func openNativeVoiceDirectory(in cache: URL) throws -> Int32 {
+                try requireNativeVoiceContainerCache(cache)
+                var ancestor = URL(fileURLWithPath: "/", isDirectory: true)
+                var expected = stat()
+                for component in cache.pathComponents.dropFirst() {
+                    try rejectUnsafeLocation(
+                        component: component, directory: AT_FDCWD,
+                        markerPath: ancestor.appendingPathComponent(".git").path
+                    )
+                    ancestor.appendPathComponent(component, isDirectory: true)
+                    guard lstat(ancestor.path, &expected) == 0 else { throw currentError() }
+                    guard expected.st_mode & S_IFMT == S_IFDIR else { throw CocoaError(.fileWriteNoPermission) }
+                }
+
+                let anchor = open(cache.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC)
+                guard anchor >= 0 else { throw currentError() }
+                defer { Darwin.close(anchor) }
+                var status = stat()
+                guard fstat(anchor, &status) == 0, status.st_uid == getuid(),
+                      status.st_dev == expected.st_dev, status.st_ino == expected.st_ino
+                else { throw CocoaError(.fileWriteNoPermission) }
+
+                try rejectUnsafeLocation(component: nativeVoiceEvidenceDirectoryName, directory: anchor)
+                let directory = try openChild(nativeVoiceEvidenceDirectoryName, directory: anchor, canCreate: true)
+                do {
+                    try rejectUnsafeLocation(component: "", directory: directory)
+                    guard fstat(directory, &status) == 0, status.st_uid == getuid(),
+                          status.st_mode & 0o7777 == 0o700
+                    else { throw CocoaError(.fileWriteNoPermission) }
+                    return directory
+                } catch {
+                    Darwin.close(directory)
+                    throw error
+                }
+            }
+
+            private static func requireNativeVoiceContainerCache(_ cache: URL) throws {
+                guard let task = SecTaskCreateFromSelf(nil),
+                      SecTaskCopyValueForEntitlement(task, "com.apple.security.app-sandbox" as CFString, nil) as? Bool == true,
+                      let identifier = Bundle.main.bundleIdentifier, !identifier.isEmpty,
+                      identifier != ".", identifier != "..", !identifier.contains("/"),
+                      let accountHome = accountHomeDirectory(), accountHome.hasPrefix("/")
+                else { throw CocoaError(.fileWriteNoPermission) }
+
+                let container = URL(fileURLWithPath: accountHome, isDirectory: true)
+                    .appendingPathComponent("Library/Containers", isDirectory: true)
+                    .appendingPathComponent(identifier, isDirectory: true)
+                    .appendingPathComponent("Data", isDirectory: true)
+                let expected = container.appendingPathComponent("Library/Caches", isDirectory: true)
+                guard FileManager.default.homeDirectoryForCurrentUser.path == container.path,
+                      cache.isFileURL, cache.host?.isEmpty != false, cache.query == nil, cache.fragment == nil,
+                      cache.path == expected.path, cache.path == cache.standardizedFileURL.path
+                else { throw CocoaError(.fileWriteNoPermission) }
+            }
+
+            private static func accountHomeDirectory() -> String? {
+                var account = passwd()
+                var found: UnsafeMutablePointer<passwd>?
+                var buffer = [CChar](repeating: 0, count: max(sysconf(_SC_GETPW_R_SIZE_MAX), 16_384))
+                return buffer.withUnsafeMutableBufferPointer { storage in
+                    guard let start = storage.baseAddress,
+                          getpwuid_r(getuid(), &account, start, storage.count, &found) == 0,
+                          found != nil, let directory = account.pw_dir
+                    else { return nil }
+                    return String(validatingCString: directory)
+                }
+            }
+        #endif
+
         private static func openChild(_ name: String, directory: Int32, canCreate: Bool) throws -> Int32 {
             let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
             var child = openat(directory, name, flags)
@@ -9483,14 +9560,14 @@ final class AppController: ObservableObject {
             return child
         }
 
-        private static func rejectUnsafeLocation(component: String, directory: Int32) throws {
+        private static func rejectUnsafeLocation(component: String, directory: Int32, markerPath: String = ".git") throws {
             let forbidden = [".git", "mobile documents", "cloudstorage", "dropbox", "onedrive", "google drive",
                              "googledrive", "icloud drive", "session", "sessions", "memory"]
             guard !forbidden.contains(component.lowercased()), !component.hasSuffix(".digital_resident") else {
                 throw CocoaError(.fileWriteNoPermission)
             }
             var marker = stat()
-            let result = fstatat(directory, ".git", &marker, AT_SYMLINK_NOFOLLOW)
+            let result = fstatat(directory, markerPath, &marker, AT_SYMLINK_NOFOLLOW)
             guard result < 0, errno == ENOENT else { throw CocoaError(.fileWriteNoPermission) }
         }
 
@@ -9565,9 +9642,15 @@ final class AppController: ObservableObject {
 
         private let descriptor: Int32
         private static let stagingPrefix = ".sealing-"
+        let url: URL
 
-        init(_ url: URL) throws {
-            descriptor = try AppleVPAcousticEvidenceExport.openDirectory(url)
+        init(cache: URL) throws {
+            url = cache.appendingPathComponent(AppleVPAcousticEvidenceExport.nativeVoiceEvidenceDirectoryName, isDirectory: true)
+            #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                descriptor = try AppleVPAcousticEvidenceExport.openDirectory(url)
+            #else
+                descriptor = try AppleVPAcousticEvidenceExport.openNativeVoiceDirectory(in: cache)
+            #endif
         }
 
         deinit { Darwin.close(descriptor) }
@@ -9896,9 +9979,8 @@ final class AppController: ObservableObject {
         private nonisolated static func sealNativeVoiceEvidence(
             _ bytes: Data, runID: UUID, recorder: MacSpeechNativeAcousticEvidence
         ) throws -> URL {
-            let folder = try nativeVoiceEvidenceFolder()
-            let directory = try NativeVoiceEvidenceDirectory(folder)
-            let url = folder.appendingPathComponent("run-\(runID.uuidString).json")
+            let directory = try NativeVoiceEvidenceDirectory(cache: nativeVoiceEvidenceCache())
+            let url = directory.url.appendingPathComponent("run-\(runID.uuidString).json")
             try directory.withRecovery {
                 try directory.seal(bytes, runID: runID, recorder: recorder)
             }
@@ -9911,13 +9993,8 @@ final class AppController: ObservableObject {
         #endif
 
         nonisolated static func recoverNativeVoiceEvidence() throws {
-            let directory = try NativeVoiceEvidenceDirectory(nativeVoiceEvidenceFolder())
+            let directory = try NativeVoiceEvidenceDirectory(cache: nativeVoiceEvidenceCache())
             try directory.withRecovery {}
-        }
-
-        private nonisolated static func nativeVoiceEvidenceFolder() throws -> URL {
-            try nativeVoiceEvidenceCache()
-                .appendingPathComponent("com.eterna.aftelle.debug-native-voice-evidence", isDirectory: true)
         }
 
         private nonisolated static func nativeVoiceEvidenceCache() throws -> URL {
@@ -9929,8 +10006,7 @@ final class AppController: ObservableObject {
                 return URL(fileURLWithPath: syntheticHome, isDirectory: true)
                     .appendingPathComponent("Library/Caches", isDirectory: true)
             #else
-                guard let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
-                      cache.pathComponents.suffix(2).elementsEqual(["Library", "Caches"])
+                guard let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
                 else { throw CocoaError(.fileWriteNoPermission) }
                 return cache
             #endif
