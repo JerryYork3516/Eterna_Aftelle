@@ -169,6 +169,13 @@ actor MacSpeechNativeRealtimeSession: MacSpeechRealtimeAudioCandidate, MacSpeech
                     try await graph.enqueuePlayback(slice, identity: current)
                 }
             }
+            #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+                if self.playback?.lastSequence == sequence {
+                    acousticEvidence.recordPlaybackEnqueued(
+                        sequence: sequence, playback: current, firstByte: counters.byteCount, byteCount: pcm16Bytes.count
+                    )
+                }
+            #endif
             counters.chunkCount += 1
             counters.byteCount += pcm16Bytes.count
             return snapshot()

@@ -1081,6 +1081,9 @@ final class AppController: ObservableObject {
             realtimeAudioBackend.candidate as? MacSpeechNativeRealtimeSession
         }
     #endif
+    #if DEBUG && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+        private var nativeVoiceEvidenceStartupRecovery: Task<Void, Never>?
+    #endif
     private var realtimeBrainAudioOutput: any MacSpeechRealtimePlaybackHosting {
         if let candidate = realtimeAudioBackend.candidate { return candidate }
         return speechAudioOutputHost
@@ -1560,6 +1563,17 @@ final class AppController: ObservableObject {
                 startAppleVPAcousticMode()
                 return
             }
+            #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+                if nativeVoiceDebugAdmission == .admitted, nativeVoiceEvidenceStartupRecovery == nil {
+                    nativeVoiceEvidenceStartupRecovery = Task { @MainActor [weak self] in
+                        do {
+                            try await Self.recoverNativeVoiceEvidenceOffMain()
+                        } catch {
+                            self?.realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.cleanupFailed"
+                        }
+                    }
+                }
+            #endif
         #endif
         startupState = .loading
         refreshResidentVisualIntent()
@@ -9402,7 +9416,7 @@ final class AppController: ObservableObject {
                 .appendingPathComponent("run-\(runID.uuidString).\(asWAV ? "wav" : "json")")
         }
 
-        static func write(_ bytes: Data, to url: URL, expected: URL, sealed: Bool = false) throws {
+        static func write(_ bytes: Data, to url: URL, expected: URL) throws {
             guard url.isFileURL, url.host?.isEmpty != false, url.query == nil, url.fragment == nil,
                   url.path == url.standardizedFileURL.path, url.path == expected.path
             else {
@@ -9411,7 +9425,7 @@ final class AppController: ObservableObject {
             let directory = try openDirectory(expected.deletingLastPathComponent())
             defer { Darwin.close(directory) }
             let flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC
-            let name = sealed ? ".sealing-\(UUID().uuidString)" : expected.lastPathComponent
+            let name = expected.lastPathComponent
             let descriptor = openat(directory, name, flags, 0o600)
             guard descriptor >= 0 else { throw currentError() }
             let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
@@ -9420,17 +9434,20 @@ final class AppController: ObservableObject {
                 try file.write(contentsOf: bytes)
                 try file.synchronize()
                 try file.close()
-                if sealed, renameatx_np(directory, name, directory, expected.lastPathComponent, UInt32(RENAME_EXCL)) != 0 {
-                    throw currentError()
-                }
             } catch {
                 try? file.close()
-                unlinkat(directory, name, 0)
+                try unlinkFile(name, directory: directory)
                 throw error
             }
         }
 
-        private static func openDirectory(_ url: URL) throws -> Int32 {
+        fileprivate static func unlinkFile(_ name: String, directory: Int32) throws {
+            if unlinkat(directory, name, 0) != 0, errno != ENOENT {
+                throw currentError()
+            }
+        }
+
+        fileprivate static func openDirectory(_ url: URL) throws -> Int32 {
             var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard descriptor >= 0 else { throw currentError() }
             let homeDepth = FileManager.default.homeDirectoryForCurrentUser.pathComponents.count - 1
@@ -9477,7 +9494,8 @@ final class AppController: ObservableObject {
             guard result < 0, errno == ENOENT else { throw CocoaError(.fileWriteNoPermission) }
         }
 
-        private static func validateFile(_ descriptor: Int32) throws {
+        @discardableResult
+        fileprivate static func validateFile(_ descriptor: Int32) throws -> stat {
             var status = stat()
             guard fchmod(descriptor, 0o600) == 0, fstat(descriptor, &status) == 0,
                   status.st_uid == getuid(), status.st_nlink == 1,
@@ -9485,19 +9503,360 @@ final class AppController: ObservableObject {
             else {
                 throw CocoaError(.fileWriteNoPermission)
             }
+            return status
         }
 
-        private static func currentError() -> NSError {
+        fileprivate static func currentError() -> NSError {
             NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
     }
 #endif
 
 #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
+    nonisolated enum NativeVoiceEvidenceRevocationStep: String, CaseIterable {
+        case beforeMarker, markerCreated, markerSynced, beforeTargetUnlink, targetUnlinked
+        case targetVerified, beforeMarkerUnlink, markerUnlinked
+
+        #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+            static let testEnvironmentKey = "AFTELLE_EVIDENCE_REVOCATION_EXIT_STEP"
+            static let testExitCode: Int32 = 86
+        #endif
+
+        func checkpoint() {
+            #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                if ProcessInfo.processInfo.environment[Self.testEnvironmentKey] == rawValue {
+                    _exit(Self.testExitCode)
+                }
+            #endif
+        }
+    }
+
+    private final nonisolated class NativeVoiceEvidenceDirectory: Sendable {
+        private nonisolated struct Revocation: Sendable {
+            static let prefix = ".revoke-"
+            private static let versionPrefix = prefix + "v1."
+            let runID: UUID
+            let device: dev_t
+            let inode: ino_t
+
+            var target: String { "run-\(runID.uuidString).json" }
+
+            // A complete intent appears in one exclusive create, with no file payload.
+            var marker: String { Self.versionPrefix + "\(runID.uuidString).\(device).\(inode).\(target)" }
+
+            init(runID: UUID, target: stat) {
+                self.runID = runID
+                device = target.st_dev
+                inode = target.st_ino
+            }
+
+            init?(marker: String) {
+                guard marker.hasPrefix(Self.versionPrefix) else { return nil }
+                let fields = marker.dropFirst(Self.versionPrefix.count)
+                    .split(separator: ".", maxSplits: 3, omittingEmptySubsequences: false)
+                guard fields.count == 4, let runID = UUID(uuidString: String(fields[0])),
+                      let device = dev_t(fields[1]), let inode = ino_t(fields[2]) else { return nil }
+                self.runID = runID
+                self.device = device
+                self.inode = inode
+                guard self.marker == marker else { return nil }
+            }
+        }
+
+        private let descriptor: Int32
+        private static let stagingPrefix = ".sealing-"
+
+        init(_ url: URL) throws {
+            descriptor = try AppleVPAcousticEvidenceExport.openDirectory(url)
+        }
+
+        deinit { Darwin.close(descriptor) }
+
+        func withRecovery<T>(_ body: () throws -> T) throws -> T {
+            try withDirectoryLock(LOCK_EX | LOCK_NB) {
+                do {
+                    // Both cleanup passes use the same fully read and closed directory snapshot.
+                    let snapshot = try visitEntries()
+                    try recoverRevocations(snapshot.revocations)
+                    try recoverStaging(snapshot.staging)
+                } catch {
+                    throw NativeVoiceEvidenceSealError.cleanupFailed(error)
+                }
+                return try body()
+            }
+        }
+
+        private func withDirectoryLock<T>(_ operation: Int32, _ body: () throws -> T) throws -> T {
+            let lockDescriptor = openat(descriptor, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard lockDescriptor >= 0 else { throw AppleVPAcousticEvidenceExport.currentError() }
+            defer { Darwin.close(lockDescriptor) }
+            guard flock(lockDescriptor, operation) == 0 else { throw AppleVPAcousticEvidenceExport.currentError() }
+            return try body()
+        }
+
+        private func visitEntries() throws -> (revocations: [String], staging: [String]) {
+            let copy = openat(descriptor, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard copy >= 0 else { throw AppleVPAcousticEvidenceExport.currentError() }
+            #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                let testMode = ProcessInfo.processInfo.environment[AppController.nativeVoiceEvidenceMultiRecoveryTestKey]
+                let stream: UnsafeMutablePointer<DIR>?
+                if testMode == "directory-open-emfile" {
+                    errno = EMFILE
+                    stream = nil
+                } else {
+                    stream = fdopendir(copy)
+                }
+            #else
+                let stream = fdopendir(copy)
+            #endif
+            guard let entries = stream else {
+                let code = errno
+                Darwin.close(copy)
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+
+            // fdopendir transferred the descriptor to the stream.
+            let scan = Result {
+                var revocations: [String] = []
+                var staging: [String] = []
+                while true {
+                    errno = 0
+                    #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                        let item = readDirectoryEntryForTesting(entries, mode: testMode, markersRead: revocations.count)
+                    #else
+                        let item = readdir(entries)
+                    #endif
+                    let code = errno
+                    guard let entry = item else {
+                        guard code == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
+                        return (revocations: revocations, staging: staging)
+                    }
+                    let name = withUnsafeBytes(of: entry.pointee.d_name) {
+                        String(decoding: $0.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
+                    }
+                    if name.hasPrefix(Revocation.prefix) { revocations.append(name) }
+                    else if name.hasPrefix(Self.stagingPrefix) { staging.append(name) }
+                    #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                        if testMode == "directory-stale-errno" { errno = EACCES }
+                    #endif
+                }
+            }
+            #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                let closed = closeDirectoryForTesting(entries, mode: testMode)
+            #else
+                let closed = closedir(entries)
+            #endif
+            let closeCode = errno
+            let snapshot = try scan.get()
+            guard closed == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(closeCode)) }
+            return snapshot
+        }
+
+        #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+            private func readDirectoryEntryForTesting(
+                _ entries: UnsafeMutablePointer<DIR>, mode: String?, markersRead: Int
+            ) -> UnsafeMutablePointer<dirent>? {
+                if mode == "directory-read-eio", markersRead == 2 {
+                    errno = EIO
+                    return nil
+                }
+                guard mode == "directory-stale-errno" else { return readdir(entries) }
+                // Model a reader that leaves the incoming errno untouched on normal EOF.
+                let incoming = errno
+                errno = 0
+                let item = readdir(entries)
+                if item == nil, errno == 0 { errno = incoming }
+                return item
+            }
+
+            private func closeDirectoryForTesting(_ entries: UnsafeMutablePointer<DIR>, mode: String?) -> Int32 {
+                let result = closedir(entries)
+                if result == 0, mode == "directory-close-eio" {
+                    errno = EIO
+                    return -1
+                }
+                return result
+            }
+        #endif
+
+        private func recoverStaging(_ names: [String]) throws {
+            for name in names {
+                let suffix = name.dropFirst(Self.stagingPrefix.count)
+                let transactional = suffix.hasSuffix(".tmp")
+                let id = String(transactional ? suffix.dropLast(4) : suffix)
+                guard UUID(uuidString: id)?.uuidString == id else { continue }
+                // The previous writer did not lock this directory, so its files need manual review.
+                guard transactional else { throw CocoaError(.fileWriteNoPermission) }
+                try remove(name)
+            }
+        }
+
+        private func recoverRevocations(_ names: [String]) throws {
+            #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                var names = names
+                let testMode = ProcessInfo.processInfo.environment[AppController.nativeVoiceEvidenceMultiRecoveryTestKey]
+                if testMode == "ascending" { names.sort() }
+                if testMode == "descending" || testMode == "interrupt" { names.sort(by: >) }
+            #endif
+            var runIDs: Set<UUID> = []
+            let pending = try names.map { name -> Revocation in
+                guard let intent = Revocation(marker: name), runIDs.insert(intent.runID).inserted else {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                return intent
+            }.sorted { $0.marker < $1.marker }
+
+            for intent in pending {
+                try finishRevocation(intent, createMarker: false)
+                #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                    if testMode == "interrupt", intent.runID == pending.first?.runID {
+                        try FileHandle.standardOutput.write(contentsOf: Data([1]))
+                        guard try FileHandle.standardInput.read(upToCount: 1) == Data([1]) else {
+                            throw CocoaError(.fileReadUnknown)
+                        }
+                        _exit(NativeVoiceEvidenceRevocationStep.testExitCode)
+                    }
+                #endif
+            }
+        }
+
+        private func finishRevocation(_ intent: Revocation, createMarker: Bool) throws {
+            let marker = try syncMarker(intent.marker, createIfMissing: createMarker)
+            if let target = try entry(intent.target) {
+                guard target.st_dev == intent.device, target.st_ino == intent.inode else {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                NativeVoiceEvidenceRevocationStep.beforeTargetUnlink.checkpoint()
+                try AppleVPAcousticEvidenceExport.unlinkFile(intent.target, directory: descriptor)
+                NativeVoiceEvidenceRevocationStep.targetUnlinked.checkpoint()
+            }
+            guard try entry(intent.target) == nil else { throw CocoaError(.fileWriteNoPermission) }
+            NativeVoiceEvidenceRevocationStep.targetVerified.checkpoint()
+            // Persist the target's absence before making the intent removable.
+            try sync(descriptor)
+            NativeVoiceEvidenceRevocationStep.beforeMarkerUnlink.checkpoint()
+            try remove(intent.marker, matching: marker)
+            NativeVoiceEvidenceRevocationStep.markerUnlinked.checkpoint()
+            try sync(descriptor)
+        }
+
+        private func syncMarker(_ name: String, createIfMissing: Bool) throws -> stat {
+            let previous = try entry(name)
+            guard previous != nil || createIfMissing else { throw CocoaError(.fileWriteNoPermission) }
+            let flags = O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                | (previous == nil ? O_WRONLY | O_CREAT | O_EXCL : O_RDONLY)
+            let fd = openat(descriptor, name, flags, 0o600)
+            guard fd >= 0 else { throw AppleVPAcousticEvidenceExport.currentError() }
+            defer { Darwin.close(fd) }
+
+            var status = stat()
+            if let previous {
+                guard fstat(fd, &status) == 0 else { throw AppleVPAcousticEvidenceExport.currentError() }
+                guard status.st_dev == previous.st_dev, status.st_ino == previous.st_ino else {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            } else {
+                status = try AppleVPAcousticEvidenceExport.validateFile(fd)
+                NativeVoiceEvidenceRevocationStep.markerCreated.checkpoint()
+            }
+            guard status.st_size == 0 else { throw CocoaError(.fileWriteNoPermission) }
+            try sync(fd)
+            try sync(descriptor)
+            NativeVoiceEvidenceRevocationStep.markerSynced.checkpoint()
+            return status
+        }
+
+        private func sync(_ fd: Int32) throws {
+            guard fsync(fd) == 0 else { throw AppleVPAcousticEvidenceExport.currentError() }
+        }
+
+        private func entry(_ name: String) throws -> stat? {
+            var status = stat()
+            if fstatat(descriptor, name, &status, AT_SYMLINK_NOFOLLOW) != 0 {
+                if errno == ENOENT { return nil }
+                throw AppleVPAcousticEvidenceExport.currentError()
+            }
+            guard status.st_uid == getuid(), status.st_nlink == 1,
+                  status.st_mode & S_IFMT == S_IFREG, status.st_mode & 0o7777 == 0o600
+            else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            return status
+        }
+
+        private func remove(_ name: String, matching expected: stat? = nil) throws {
+            guard let status = try entry(name) else { return }
+            if let expected, status.st_dev != expected.st_dev || status.st_ino != expected.st_ino {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            try AppleVPAcousticEvidenceExport.unlinkFile(name, directory: descriptor)
+        }
+
+        func seal(_ bytes: Data, runID: UUID, recorder: MacSpeechNativeAcousticEvidence) throws {
+            let temporary = Self.stagingPrefix + UUID().uuidString + ".tmp"
+            let flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC
+            recorder.sealCheckpoint(.preparing)
+            let fd = try recorder.createStaging({
+                let fd = openat(descriptor, temporary, flags, 0o600)
+                guard fd >= 0 else { throw AppleVPAcousticEvidenceExport.currentError() }
+                return fd
+            }, remove: {
+                try self.remove(temporary)
+            })
+            let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            do {
+                let published = try AppleVPAcousticEvidenceExport.validateFile(fd)
+                let revocation = Revocation(runID: runID, target: published)
+                try writeStaging(bytes, file: file, recorder: recorder)
+                recorder.sealCheckpoint(.beforeRename)
+                try recorder.publishSeal({
+                    recorder.sealCheckpoint(.renaming)
+                    guard let staging = try entry(temporary),
+                          staging.st_dev == published.st_dev, staging.st_ino == published.st_ino
+                    else { throw CocoaError(.fileWriteNoPermission) }
+                    guard renameatx_np(descriptor, temporary, descriptor, revocation.target, UInt32(RENAME_EXCL)) == 0 else {
+                        throw AppleVPAcousticEvidenceExport.currentError()
+                    }
+                }, remove: {
+                    try self.withDirectoryLock(LOCK_EX) {
+                        NativeVoiceEvidenceRevocationStep.beforeMarker.checkpoint()
+                        try self.finishRevocation(revocation, createMarker: true)
+                    }
+                })
+            } catch {
+                try? file.close()
+                throw error
+            }
+        }
+
+        private func writeStaging(
+            _ bytes: Data, file: FileHandle, recorder: MacSpeechNativeAcousticEvidence
+        ) throws {
+            let chunkBytes = 64 * 1024
+            for start in stride(from: bytes.startIndex, to: bytes.endIndex, by: chunkBytes) {
+                try recorder.requireSaving()
+                try file.write(contentsOf: bytes[start ..< min(start + chunkBytes, bytes.endIndex)])
+                if start == bytes.startIndex { recorder.sealCheckpoint(.writing) }
+            }
+            try recorder.requireSaving()
+            try file.synchronize()
+            recorder.sealCheckpoint(.synchronized)
+            try recorder.requireSaving()
+            try file.close()
+        }
+    }
+
     private nonisolated struct NativeVoiceEvidenceFile: Encodable {
-        let schemaVersion = 1
+        nonisolated struct DownlinkEvidence: Encodable {
+            let providerReceivedPCM = "runtimeAcceptedUnmodifiedDelta"
+            let playbackEnqueuedPCM = "fullDeltaAcceptedAtNativeTransport24kInput"
+            let sourceConsumedPCM = "UNKNOWN"
+        }
+
+        let schemaVersion = 2
         let backend = "apple_native_voice_transport"
         let encoding = "pcm16le"
+        let downlinkEvidence = DownlinkEvidence()
         let sampleRate = 24_000
         let channels = 1
         let buildBinaryName: String
@@ -9511,23 +9870,54 @@ final class AppController: ObservableObject {
     extension AppController {
         nonisolated static func writeNativeVoiceEvidence(
             _ evidence: NativeVoiceEvidenceArchive,
+            recorder: MacSpeechNativeAcousticEvidence,
             technical: MacSpeechNativeVoiceDiagnosticReadback,
             observedAt: UInt64
         ) throws -> URL {
-            let url = try nativeVoiceEvidenceCache()
-                .appendingPathComponent("com.eterna.aftelle.debug-native-voice-evidence", isDirectory: true)
-                .appendingPathComponent("run-\(evidence.runID.uuidString).json")
-            let build = runningBuildBinary()
-            guard build.sha256.count == 64 else { throw CocoaError(.fileReadUnknown) }
-            let matchesScope = technical.transport?.identity.capture == evidence.capture
-            let manifest = NativeVoiceEvidenceFile(
-                buildBinaryName: build.name, buildBinarySHA256: build.sha256,
-                technicalReadbackAtUptimeNanoseconds: observedAt, technicalReadbackMatchesScope: matchesScope,
-                technical: matchesScope ? technical : nil,
-                evidence: evidence
-            )
-            try AppleVPAcousticEvidenceExport.write(JSONEncoder().encode(manifest), to: url, expected: url, sealed: true)
+            do {
+                try recorder.requireSaving()
+                let build = runningBuildBinary()
+                guard build.sha256.count == 64 else { throw CocoaError(.fileReadUnknown) }
+                let matchesScope = technical.transport?.identity.capture == evidence.capture
+                let manifest = NativeVoiceEvidenceFile(
+                    buildBinaryName: build.name, buildBinarySHA256: build.sha256,
+                    technicalReadbackAtUptimeNanoseconds: observedAt, technicalReadbackMatchesScope: matchesScope,
+                    technical: matchesScope ? technical : nil,
+                    evidence: evidence
+                )
+                let bytes = try JSONEncoder().encode(manifest)
+                return try sealNativeVoiceEvidence(bytes, runID: evidence.runID, recorder: recorder)
+            } catch {
+                try recorder.abandonSeal()
+                throw error
+            }
+        }
+
+        private nonisolated static func sealNativeVoiceEvidence(
+            _ bytes: Data, runID: UUID, recorder: MacSpeechNativeAcousticEvidence
+        ) throws -> URL {
+            let folder = try nativeVoiceEvidenceFolder()
+            let directory = try NativeVoiceEvidenceDirectory(folder)
+            let url = folder.appendingPathComponent("run-\(runID.uuidString).json")
+            try directory.withRecovery {
+                try directory.seal(bytes, runID: runID, recorder: recorder)
+            }
+            recorder.sealCheckpoint(.afterRename)
             return url
+        }
+
+        #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+            nonisolated static let nativeVoiceEvidenceMultiRecoveryTestKey = "AFTELLE_EVIDENCE_MULTI_RECOVERY"
+        #endif
+
+        nonisolated static func recoverNativeVoiceEvidence() throws {
+            let directory = try NativeVoiceEvidenceDirectory(nativeVoiceEvidenceFolder())
+            try directory.withRecovery {}
+        }
+
+        private nonisolated static func nativeVoiceEvidenceFolder() throws -> URL {
+            try nativeVoiceEvidenceCache()
+                .appendingPathComponent("com.eterna.aftelle.debug-native-voice-evidence", isDirectory: true)
         }
 
         private nonisolated static func nativeVoiceEvidenceCache() throws -> URL {
@@ -9550,6 +9940,12 @@ final class AppController: ObservableObject {
 
 #if DEBUG && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
     private extension AppController {
+        nonisolated static func recoverNativeVoiceEvidenceOffMain() async throws {
+            try await Task.detached(priority: .utility) {
+                try Self.recoverNativeVoiceEvidence()
+            }.value
+        }
+
         func presentNativeVoiceAcousticEvidence(_ candidate: MacSpeechNativeRealtimeSession) {
             guard let window = NSApp.keyWindow, window.attachedSheet == nil else { return }
             let evidence = candidate.acousticEvidence
@@ -9571,6 +9967,15 @@ final class AppController: ObservableObject {
                               !self.realtimeBrainStartInFlight, !self.realtimeBrainStopping else {
                             return
                         }
+                        await self.nativeVoiceEvidenceStartupRecovery?.value
+                        do {
+                            try await Self.recoverNativeVoiceEvidenceOffMain()
+                        } catch {
+                            self.realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.cleanupFailed"
+                            return
+                        }
+                        guard self.realtimeBrainRouteAttemptID == nil,
+                              !self.realtimeBrainStartInFlight, !self.realtimeBrainStopping else { return }
                         let armed = candidate.acousticEvidence.arm()
                         self.realtimeSpeechDiagnosticStatusKey = armed
                             ? "nativeVoiceAcousticEvidence.armed" : "nativeVoiceAcousticEvidence.beforeSession"
@@ -9578,7 +9983,14 @@ final class AppController: ObservableObject {
                 }
             case .armed, .recording, .ended:
                 manageArmedNativeVoiceEvidence(candidate, alert: alert, window: window)
-            case .revoked, .saving, .saved:
+            case .saving, .saved, .cleanupFailed:
+                alert.informativeText = String(localized: "nativeVoiceAcousticEvidence.revokeNotice")
+                alert.addButton(withTitle: String(localized: "nativeVoiceAcousticEvidence.revoke"))
+                alert.addButton(withTitle: String(localized: "nativeVoiceAcousticEvidence.cancel"))
+                alert.beginSheetModal(for: window) { [weak self] response in
+                    if response == .alertFirstButtonReturn { self?.revokeNativeVoiceAcousticEvidence(evidence) }
+                }
+            case .revoking, .revoked:
                 return
             }
         }
@@ -9596,9 +10008,7 @@ final class AppController: ObservableObject {
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard let self else { return }
                 if response == .alertSecondButtonReturn {
-                    guard evidence.revoke() else { return }
-                    Task.detached(priority: .utility) { evidence.discardRevoked() }
-                    self.realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.revoked"
+                    self.revokeNativeVoiceAcousticEvidence(evidence)
                 } else if response == .alertFirstButtonReturn {
                     if saving {
                         self.saveNativeVoiceAcousticEvidence(candidate)
@@ -9610,23 +10020,54 @@ final class AppController: ObservableObject {
             }
         }
 
+        func revokeNativeVoiceAcousticEvidence(_ evidence: MacSpeechNativeAcousticEvidence) {
+            Task { @MainActor in
+                let revoked = await Task.detached(priority: .utility) {
+                    defer { evidence.discardRevoked() }
+                    do { return try evidence.revoke() } catch { return false }
+                }.value
+                updateNativeVoiceEvidenceStatus(
+                    evidence, fallback: revoked
+                        ? "nativeVoiceAcousticEvidence.revoked" : "nativeVoiceAcousticEvidence.revokeFailed"
+                )
+            }
+        }
+
         func saveNativeVoiceAcousticEvidence(_ candidate: MacSpeechNativeRealtimeSession) {
             Task { @MainActor in
+                let evidence = candidate.acousticEvidence
                 let facts = await candidate.nativeVoiceDiagnosticReadback()
                 let observedAt = DispatchTime.now().uptimeNanoseconds
-                let saved = await Task.detached(priority: .utility) {
-                    guard let archive = candidate.acousticEvidence.takeForSave() else { return false }
+                let status = await Task.detached(priority: .utility) {
+                    defer { evidence.discardRevoked() }
+                    guard let archive = evidence.takeForSave() else { return "nativeVoiceAcousticEvidence.saveFailed" }
                     do {
-                        _ = try Self.writeNativeVoiceEvidence(archive, technical: facts, observedAt: observedAt)
-                        candidate.acousticEvidence.finishSave(succeeded: true)
-                        return true
+                        _ = try Self.writeNativeVoiceEvidence(
+                            archive, recorder: evidence, technical: facts, observedAt: observedAt
+                        )
+                        return "nativeVoiceAcousticEvidence.saved"
+                    } catch NativeVoiceEvidenceSealError.cleanupFailed {
+                        return "nativeVoiceAcousticEvidence.cleanupFailed"
                     } catch {
-                        candidate.acousticEvidence.finishSave(succeeded: false)
-                        return false
+                        return "nativeVoiceAcousticEvidence.saveFailed"
                     }
                 }.value
-                realtimeSpeechDiagnosticStatusKey = saved
-                    ? "nativeVoiceAcousticEvidence.saved" : "nativeVoiceAcousticEvidence.saveFailed"
+                updateNativeVoiceEvidenceStatus(evidence, fallback: status)
+            }
+        }
+
+        func updateNativeVoiceEvidenceStatus(_ evidence: MacSpeechNativeAcousticEvidence, fallback: String) {
+            switch evidence.phase {
+            case .revoking:
+                return
+            case .revoked:
+                realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.revoked"
+            case .saved:
+                realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.saved"
+            case .cleanupFailed:
+                realtimeSpeechDiagnosticStatusKey = "nativeVoiceAcousticEvidence.cleanupFailed"
+            default:
+                realtimeSpeechDiagnosticStatusKey = fallback
             }
         }
     }

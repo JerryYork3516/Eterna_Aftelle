@@ -626,7 +626,10 @@
 "nativeVoiceAcousticEvidence.save" = "Confirm local seal";
 "nativeVoiceAcousticEvidence.stop" = "End capture";
 "nativeVoiceAcousticEvidence.revoke" = "Revoke and discard";
-"nativeVoiceAcousticEvidence.revoked" = "The evidence grant was revoked and unsealed evidence was discarded.";
+"nativeVoiceAcousticEvidence.revoked" = "The grant was revoked and this run's evidence was removed.";
+"nativeVoiceAcousticEvidence.revokeNotice" = "Revoke the grant and remove this run's evidence from the private cache.";
+"nativeVoiceAcousticEvidence.revokeFailed" = "The evidence grant could not be revoked.";
+"nativeVoiceAcousticEvidence.cleanupFailed" = "Private evidence cleanup failed. Manually verify the archive and any revocation marker in the private cache before retrying.";
 "nativeVoiceAcousticEvidence.ended" = "Evidence capture ended. Open Candidate acoustic evidence again to confirm saving.";
 "nativeVoiceAcousticEvidence.saved" = "Acoustic evidence was sealed in the private local cache.";
 "nativeVoiceAcousticEvidence.saveFailed" = "No evidence file was sealed. Check that capture produced evidence and the private local cache is available.";

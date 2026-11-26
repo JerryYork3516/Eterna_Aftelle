@@ -626,7 +626,10 @@
 "nativeVoiceAcousticEvidence.save" = "确认本机封存";
 "nativeVoiceAcousticEvidence.stop" = "结束采集";
 "nativeVoiceAcousticEvidence.revoke" = "撤回并丢弃";
-"nativeVoiceAcousticEvidence.revoked" = "声学证据授权已撤回，本次未封存证据已丢弃。";
+"nativeVoiceAcousticEvidence.revoked" = "声学证据授权已撤回，本次证据已清理。";
+"nativeVoiceAcousticEvidence.revokeNotice" = "撤回授权并清理本机私有缓存中的本次证据。";
+"nativeVoiceAcousticEvidence.revokeFailed" = "无法撤回声学证据授权。";
+"nativeVoiceAcousticEvidence.cleanupFailed" = "私有证据清理失败。请人工核验本机私有缓存中的档案和撤权标记后重试。";
 "nativeVoiceAcousticEvidence.ended" = "证据采集已结束。再次打开候选声学证据可单独确认封存。";
 "nativeVoiceAcousticEvidence.saved" = "声学证据已封存到本机私有缓存。";
 "nativeVoiceAcousticEvidence.saveFailed" = "未生成封存文件。请核对是否已有采集内容及本机私有缓存状态。";

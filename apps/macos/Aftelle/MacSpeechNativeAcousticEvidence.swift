@@ -27,6 +27,21 @@
         }
     }
 
+    nonisolated struct NativeVoiceEvidenceEnqueue: Encodable, Sendable {
+        let playback: NativeVoiceIdentity.Playback
+        let firstSample24k: Int
+        let sampleCount24k: Int
+    }
+
+    nonisolated enum NativeVoiceEvidenceSealError: Error {
+        case revoked
+        case cleanupFailed(any Error)
+    }
+
+    nonisolated enum NativeVoiceEvidenceSealStage: CaseIterable, Sendable {
+        case preparing, writing, synchronized, beforeRename, renaming, afterRename
+    }
+
     nonisolated struct NativeVoiceEvidencePacket: Encodable, Sendable {
         enum Direction: String, Encodable, Sendable { case uplink, providerReference }
         enum Disposition: String, Encodable, Sendable {
@@ -45,6 +60,7 @@
         var playbackToken: UInt64?
         var hostEnqueueState: String?
         var hostReturnedToken: UInt64?
+        var playbackEnqueuedPCM: NativeVoiceEvidenceEnqueue?
         var disposition = Disposition.pending
     }
 
@@ -74,7 +90,7 @@
     /// Bridge offers never wait for the evidence lock. The scope is spent after its first session.
     final nonisolated class MacSpeechNativeAcousticEvidence: @unchecked Sendable {
         enum Phase: UInt8, Sendable {
-            case off, armed, recording, ended, revoked, saving, saved
+            case off, armed, recording, ended, revoking, revoked, saving, saved, cleanupFailed
         }
 
         enum StopReason: UInt8, Sendable {
@@ -90,6 +106,11 @@
         }
 
         private let lock = NSLock()
+        private let sealLock = NSLock()
+        private var removeSealFile: (@Sendable () throws -> Void)?
+        #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+            var sealStageForTesting: (@Sendable (NativeVoiceEvidenceSealStage) -> Void)?
+        #endif
         private let state = Atomic<UInt8>(Phase.off.rawValue)
         private let terminalReason = Atomic<UInt8>(0)
         private let deadline = Atomic<UInt64>(0)
@@ -157,18 +178,74 @@
             }
         }
 
-        func revoke() -> Bool {
-            while true {
-                let previous = rawPhase
-                guard previous == .armed || previous == .recording || previous == .ended else { return false }
-                if change(previous, to: .revoked) { return true }
+        func revoke() throws -> Bool {
+            try sealLock.withLock {
+                while true {
+                    let previous = rawPhase
+                    guard previous != .off else { return false }
+                    if previous == .revoked { return true }
+                    // This transition withdraws consent under the same lock as rename.
+                    if change(previous, to: .revoking) { break }
+                }
+                try removeSealFileLocked()
+                state.store(Phase.revoked.rawValue, ordering: .releasing)
+                return true
             }
         }
 
         func discardRevoked() {
             lock.withLock {
-                if rawPhase == .revoked { run = nil }
+                if rawPhase == .revoked || rawPhase == .cleanupFailed { run = nil }
             }
+        }
+
+        func requireSaving() throws {
+            guard rawPhase == .saving else { throw NativeVoiceEvidenceSealError.revoked }
+        }
+
+        func createStaging(
+            _ create: () throws -> Int32, remove: @escaping @Sendable () throws -> Void
+        ) throws -> Int32 {
+            try sealLock.withLock {
+                try requireSaving()
+                let descriptor = try create()
+                removeSealFile = remove
+                return descriptor
+            }
+        }
+
+        func publishSeal(_ rename: () throws -> Void, remove: @escaping @Sendable () throws -> Void) throws {
+            try sealLock.withLock {
+                try requireSaving()
+                try rename()
+                removeSealFile = remove
+                state.store(Phase.saved.rawValue, ordering: .releasing)
+            }
+            lock.withLock { run = nil }
+        }
+
+        func abandonSeal() throws {
+            try sealLock.withLock {
+                guard rawPhase == .saving else { return }
+                try removeSealFileLocked()
+                state.store(Phase.ended.rawValue, ordering: .releasing)
+            }
+        }
+
+        private func removeSealFileLocked() throws {
+            do {
+                try removeSealFile?()
+                removeSealFile = nil
+            } catch {
+                state.store(Phase.cleanupFailed.rawValue, ordering: .releasing)
+                throw NativeVoiceEvidenceSealError.cleanupFailed(error)
+            }
+        }
+
+        func sealCheckpoint(_ stage: NativeVoiceEvidenceSealStage) {
+            #if NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST
+                sealStageForTesting?(stage)
+            #endif
         }
 
         func rememberCapture(_ packets: [UInt64: NativeVoiceCapturePacket], playback: NativeVoiceIdentity.Playback?) {
@@ -225,6 +302,25 @@
             complete(ticket, disposition: .hostEnqueueReturned, hostSnapshot: snapshot)
         }
 
+        func recordPlaybackEnqueued(
+            sequence: UInt64, playback: NativeVoiceIdentity.Playback, firstByte: Int, byteCount: Int
+        ) {
+            guard phase == .recording else { return }
+            guard lock.try() else {
+                _ = contendedResults.wrappingAdd(1, ordering: .relaxed)
+                return
+            }
+            defer { lock.unlock() }
+            guard phase == .recording, let run, run.capture?.authority == playback.authority,
+                  let index = run.lastProviderIndex, run.packets[index].sequence == sequence,
+                  run.packets[index].playbackToken == playback.token,
+                  run.packets[index].pcm.count == byteCount,
+                  run.packets[index].playbackEnqueuedPCM == nil else { return }
+            run.packets[index].playbackEnqueuedPCM = NativeVoiceEvidenceEnqueue(
+                playback: playback, firstSample24k: firstByte / 2, sampleCount24k: byteCount / 2
+            )
+        }
+
         func takeForSave() -> NativeVoiceEvidenceArchive? {
             guard phase == .ended else { return nil }
             return lock.withLock {
@@ -245,12 +341,6 @@
                     deadlineUptimeNanoseconds: run.deadline, endReason: String(describing: reason),
                     pcmBytes: run.bytes, packets: run.packets, evidenceLoss: loss
                 )
-            }
-        }
-
-        func finishSave(succeeded: Bool) {
-            lock.withLock {
-                if change(.saving, to: succeeded ? .saved : .ended), succeeded { run = nil }
             }
         }
 
@@ -299,6 +389,7 @@
             var capture: NativeVoiceIdentity.Capture?
             var captureBatch: [UInt64: NativeVoiceEvidenceContent] = [:]
             var packets: [NativeVoiceEvidencePacket] = []
+            var lastProviderIndex: Int?
             var bytes = 0
             var loss = NativeVoiceEvidenceLoss()
 
@@ -344,6 +435,7 @@
             describe(&row, run)
             let ticket = run.packets.count
             run.packets.append(row)
+            if direction == .providerReference { run.lastProviderIndex = ticket }
             run.bytes += row.pcm.count
             return ticket
         }
