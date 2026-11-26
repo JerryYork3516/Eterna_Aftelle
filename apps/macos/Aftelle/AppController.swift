@@ -237,6 +237,11 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
         }
 
         static func resolve(arguments: [String], deviceBuildAuthorized: Bool) -> Self {
+            if AppleNativeVoiceAcousticLabLaunch.isRequested(arguments) {
+                return AppleNativeVoiceAcousticLabLaunch.isAllowed(
+                    arguments, deviceBuildAuthorized: deviceBuildAuthorized
+                ) ? .admitted : .sealed
+            }
             let requests = arguments.filter { $0 == argument || $0.hasPrefix(argument + "=") }
             guard !requests.isEmpty else { return .off }
             guard deviceBuildAuthorized, requests == [argument],
@@ -249,6 +254,84 @@ nonisolated enum Stage75QwenRealtimeModel: String, CaseIterable, Sendable {
             return .appleNativeCandidate(makeCandidate())
         }
     }
+
+    nonisolated enum AppleNativeVoiceAcousticLabLaunch {
+        static let argument = "--apple-native-voice-acoustic-lab"
+
+        static func isRequested(_ arguments: [String]) -> Bool {
+            arguments.dropFirst().contains { $0 == argument || $0.hasPrefix(argument + "=") }
+        }
+
+        static func isAllowed(_ arguments: [String], deviceBuildAuthorized: Bool) -> Bool {
+            #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+                deviceBuildAuthorized && arguments.dropFirst().elementsEqual([argument])
+            #else
+                false
+            #endif
+        }
+    }
+
+    #if APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+        nonisolated enum NativeVoiceAcousticLabPreflight: String {
+            case checking, ready, runtimeUnavailable, deviceUnavailable, microphoneRequired, microphoneUnavailable, cleanupFailed
+
+            static func assess(
+                devices: MacSpeechAudioHostSnapshot?, hasRuntime: Bool, cleanupFailed: Bool
+            ) -> Self {
+                guard let devices else { return .checking }
+                guard !cleanupFailed else { return .cleanupFailed }
+                guard hasRuntime else { return .runtimeUnavailable }
+                if devices.authorization == .notDetermined { return .microphoneRequired }
+                guard devices.authorization == .authorized else { return .microphoneUnavailable }
+                guard devices.inputDevice.isAvailable, devices.outputDevice.isAvailable else {
+                    return .deviceUnavailable
+                }
+                return .ready
+            }
+        }
+
+        nonisolated struct NativeVoiceAcousticLabFailure {
+            enum Stage: String {
+                case runtimeSession, providerConnection, formatNegotiation, engineStart, captureStartup, microphoneCapture, playback, unknown
+            }
+
+            let stage: Stage
+            let code: String
+            var domain: String?
+            var underlyingCode: Int?
+
+            static func captureStartup(_ error: any Error) -> Self {
+                let code = "capture_start_failed"
+                switch error {
+                case NativeVoiceSessionError.format, NativeVoiceTransportError.unsupportedFormat:
+                    return .init(stage: .formatNegotiation, code: code)
+                case NativeVoiceSessionError.permission:
+                    return .init(stage: .microphoneCapture, code: code)
+                case NativeVoiceSessionError.state, NativeVoiceSessionError.route, NativeVoiceSessionError.voiceProcessing,
+                     is NativeVoiceTransportError:
+                    return .init(stage: .captureStartup, code: code)
+                default:
+                    let nativeError = error as NSError
+                    return .init(stage: .captureStartup, code: code, domain: nativeError.domain, underlyingCode: nativeError.code)
+                }
+            }
+
+            static func fromRouteError(_ code: String) -> Self {
+                let stage: Stage = switch code {
+                case "resident_unavailable", "unavailable", "voice_binding_unavailable", "invalid_identity",
+                     "invalid_context_revision", "operation_in_flight", "transport_failure": .runtimeSession
+                case "provider_failure": .providerConnection
+                case "invalid_input_format": .formatNegotiation
+                case "audio_engine_start_failed": .engineStart
+                case "input_bridge_start_failed", "capture_unavailable", "microphone_permission_required",
+                     "microphone_permission_denied", "microphone_permission_unavailable": .microphoneCapture
+                case let value where value.hasPrefix("playback_"): .playback
+                default: .unknown
+                }
+                return .init(stage: stage, code: code)
+            }
+        }
+    #endif
 
     nonisolated enum AppleVPAcousticTestScenario: String, CaseIterable {
         case residentOnly = "A"
@@ -1078,6 +1161,7 @@ final class AppController: ObservableObject {
     private var realtimeAudioBackend = MacSpeechRealtimeAudioBackend.frozen
     #if DEBUG
         private var nativeVoiceDebugAdmission = AppleNativeVoiceDebugAdmission.off
+        private var isNativeVoiceAcousticLabMode = false
     #endif
     #if DEBUG && (APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED || NATIVE_VOICE_ACOUSTIC_EVIDENCE_OFFLINE_TEST)
         private var nativeVoiceEvidenceSession: MacSpeechNativeRealtimeSession? {
@@ -1086,6 +1170,9 @@ final class AppController: ObservableObject {
     #endif
     #if DEBUG && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
         private var nativeVoiceEvidenceStartupRecovery: Task<Void, Never>?
+        @Published private(set) var nativeVoiceAcousticLabDevices: MacSpeechAudioHostSnapshot?
+        @Published private var nativeVoiceAcousticLabGraph: NativeVoiceTransportReadback?
+        @Published private var nativeVoiceAcousticLabCaptureFailure: NativeVoiceAcousticLabFailure?
     #endif
     private var realtimeBrainAudioOutput: any MacSpeechRealtimePlaybackHosting {
         if let candidate = realtimeAudioBackend.candidate { return candidate }
@@ -1347,6 +1434,8 @@ final class AppController: ObservableObject {
                 arguments: arguments, deviceBuildAuthorized: AppleNativeVoiceDebugAdmission.deviceBuildAuthorized
             )
             nativeVoiceDebugAdmission = admission
+            isNativeVoiceAcousticLabMode = admission == .admitted
+                && AppleNativeVoiceAcousticLabLaunch.isRequested(arguments)
             isAppleVPAcousticTestMode = admission == .off
                 && AppleVPAcousticTestLaunchMode.isEnabled(arguments: arguments)
             #if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED
@@ -1357,7 +1446,13 @@ final class AppController: ObservableObject {
         #else
             let credentialStore = ProviderKeychainStore()
         #endif
-        let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
+        #if DEBUG && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+            let speechAudioEngine = isNativeVoiceAcousticLabMode
+                ? SystemMacSpeechVoiceProcessingEngine(audioProcessingMode: .appleVoiceProcessing)
+                : SystemMacSpeechVoiceProcessingEngine()
+        #else
+            let speechAudioEngine = SystemMacSpeechVoiceProcessingEngine()
+        #endif
         let speechCapture = SystemMacSpeechAudioCapture(audioEngine: speechAudioEngine)
         speechAudioHost = MacSpeechAudioHost(capture: speechCapture)
         #if DEBUG
@@ -1594,6 +1689,14 @@ final class AppController: ObservableObject {
 
         let restoreResult = orchestrationKernel.restoreMostRecentSession()
         if restoreResult.didRestore {
+            #if DEBUG
+                if isNativeVoiceAcousticLabMode {
+                    loadedResidentID = restoreResult.residentID
+                    loadedSessionID = restoreResult.sessionID
+                    startupState = .loaded
+                    return
+                }
+            #endif
             let restoredDisplayName = avatarState.residentID == restoreResult.residentID
                 ? avatarState.displayName
                 : ""
@@ -1706,6 +1809,81 @@ final class AppController: ObservableObject {
                 || realtimeBrainRouteAttemptID != nil
                 || realtimeBrainPreparedCaptureGeneration != nil)
     }
+
+    #if DEBUG && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+        var nativeVoiceAcousticLabPreflight: NativeVoiceAcousticLabPreflight {
+            .assess(
+                devices: nativeVoiceAcousticLabDevices, hasRuntime: isResidentTextInputAvailable,
+                cleanupFailed: realtimeSpeechDiagnosticStatusKey == "nativeVoiceAcousticEvidence.cleanupFailed"
+            )
+        }
+
+        var nativeVoiceAcousticLabEvidencePhase: MacSpeechNativeAcousticEvidence.Phase {
+            nativeVoiceEvidenceSession?.acousticEvidence.phase ?? .off
+        }
+
+        func manageNativeVoiceAcousticLabEvidence() {
+            guard isNativeVoiceAcousticLabMode, let candidate = nativeVoiceEvidenceSession else { return }
+            if candidate.acousticEvidence.phase == .off, nativeVoiceAcousticLabPreflight != .ready { return }
+            presentNativeVoiceAcousticEvidence(candidate)
+        }
+
+        var nativeVoiceAcousticLabProviderSessionOpen: Bool {
+            realtimeBrainInputBinding != nil && !realtimeBrainStopping
+                && realtimeFullDuplexSpeechStatus.phase != .failed
+        }
+
+        var nativeVoiceAcousticLabLiveGraph: NativeVoiceTransportReadback? {
+            guard nativeVoiceAcousticLabProviderSessionOpen, nativeVoiceAcousticLabGraph?.route.active == true else {
+                return nil
+            }
+            return nativeVoiceAcousticLabGraph
+        }
+
+        var nativeVoiceAcousticLabFailure: NativeVoiceAcousticLabFailure? {
+            guard let code = realtimeFullDuplexSpeechStatus.lastErrorCode else { return nil }
+            if code == "capture_start_failed", let nativeVoiceAcousticLabCaptureFailure {
+                return nativeVoiceAcousticLabCaptureFailure
+            }
+            return .fromRouteError(code)
+        }
+
+        func prepareNativeVoiceAcousticLab() async {
+            guard isNativeVoiceAcousticLabMode, nativeVoiceAcousticLabDevices == nil else { return }
+            start()
+            await nativeVoiceEvidenceStartupRecovery?.value
+            await refreshNativeVoiceAcousticLabReadback()
+        }
+
+        func refreshNativeVoiceAcousticLabReadback() async {
+            guard isNativeVoiceAcousticLabMode, !realtimeBrainStopping else { return }
+            if nativeVoiceAcousticLabProviderSessionOpen, let candidate = nativeVoiceEvidenceSession {
+                nativeVoiceAcousticLabGraph = await candidate.nativeVoiceDiagnosticReadback().transport
+            } else if !canStopRealtimeFullDuplexSpeech {
+                nativeVoiceAcousticLabDevices = await speechAudioHost.refreshAuthorization()
+            }
+        }
+
+        func requestNativeVoiceAcousticLabMicrophone() async {
+            guard isNativeVoiceAcousticLabMode, nativeVoiceAcousticLabPreflight == .microphoneRequired else { return }
+            await requestMicrophoneAuthorization()
+            nativeVoiceAcousticLabDevices = speechAudioHostSnapshot
+        }
+
+        var canStartNativeVoiceAcousticLab: Bool {
+            nativeVoiceAcousticLabPreflight == .ready && canStartRealtimeFullDuplexSpeech
+                && nativeVoiceAcousticLabEvidencePhase == .armed
+        }
+
+        func startNativeVoiceAcousticLab() async {
+            guard isNativeVoiceAcousticLabMode, nativeVoiceEvidenceSession != nil,
+                  canStartNativeVoiceAcousticLab else { return }
+            nativeVoiceAcousticLabCaptureFailure = nil
+            nativeVoiceAcousticLabGraph = nil
+            await startRealtimeFullDuplexSpeech()
+            await refreshNativeVoiceAcousticLabReadback()
+        }
+    #endif
 
     private var hasActiveAlternateSpeechRoute: Bool {
         #if DEBUG
@@ -3895,6 +4073,10 @@ final class AppController: ObservableObject {
         #endif
         await stopRealtimeResidentBrainRoute()
         #if DEBUG
+        if isNativeVoiceAcousticLabMode {
+            await speechAudioHost.shutdown()
+            return
+        }
         await cancelFormalSpeechRoute()
         if nativeSpeechPlaybackBinding != nil {
             playbackStopClearCount &+= 1
@@ -4108,6 +4290,11 @@ final class AppController: ObservableObject {
                 guard isCurrentRealtimeBrainRoute(attemptID: attemptID, session: session) else { return }
                 speechAudioHostSnapshot = capture
             } catch {
+                #if DEBUG && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+                    if isNativeVoiceAcousticLabMode, isCurrentRealtimeBrainRoute(attemptID: attemptID, session: session) {
+                        nativeVoiceAcousticLabCaptureFailure = .captureStartup(error)
+                    }
+                #endif
                 await stopRealtimeResidentBrainRoute(expectedAttemptID: attemptID, errorCode: "capture_start_failed")
                 return
             }
@@ -5385,6 +5572,9 @@ final class AppController: ObservableObject {
     }
 
     private func syncRealtimeBrainSubtitlePresentation() {
+        #if DEBUG
+            guard !isNativeVoiceAcousticLabMode else { return }
+        #endif
         let displayText = realtimeBrainSubtitlePresentation.displayText
         let subtitleState = displayText.map {
             ParticleSubtitleState(text: $0, phase: .showing)
@@ -7631,6 +7821,12 @@ final class AppController: ObservableObject {
 
         loadedResidentID = result.residentID
         loadedSessionID = result.sessionID?.rawValue ?? ""
+        #if DEBUG
+            if isNativeVoiceAcousticLabMode {
+                startupState = .loaded
+                return
+            }
+        #endif
         particleExpressionInput = .neutral
         particleColorProfile = ParticleColorProfile.make(fromDRData: drData)
         particleDRColorPalette = Self.drColorPalette(from: drData)
@@ -7837,7 +8033,7 @@ final class AppController: ObservableObject {
 
     func persistForNormalTerminationIfPossible() {
         #if DEBUG
-            guard !isAppleVPAcousticTestMode else { return }
+            guard !isAppleVPAcousticTestMode, !isNativeVoiceAcousticLabMode else { return }
         #endif
         guard !loadedResidentID.isEmpty, !loadedSessionID.isEmpty else { return }
         orchestrationKernel.saveCurrentSession(
@@ -7903,6 +8099,9 @@ final class AppController: ObservableObject {
     }
 
     private func refreshResidentVisualIntent(visualStateMode: String? = nil) {
+        #if DEBUG
+            guard !isNativeVoiceAcousticLabMode else { return }
+        #endif
         residentVisualIntent = AppResidentVisualIntentMapper.map(
             visualStateMode: visualStateMode,
             avatarState: avatarState,
@@ -7913,6 +8112,9 @@ final class AppController: ObservableObject {
     }
 
     private func refreshParticleDebugSnapshot() {
+        #if DEBUG
+            guard !isNativeVoiceAcousticLabMode else { return }
+        #endif
         let renderState = latestParticleRenderMetrics.currentVisualState
         let mappedState = String(describing: residentVisualIntent)
         let renderResolution = ParticleRenderResolution.resolve(requested: particleRenderKind)
