@@ -42,6 +42,14 @@ When a task touches SwiftUI, Metal, FileManager, Keychain, HIG, or Accessibility
 - Record: [Pre-excitation pair readiness audit](stage7_5/test3_apple_vp_clean/Stage_7_5_11_remote_preexcitation_pair_readiness_audit_2026-11-27.md).
 - Boundary: Documentation only. Device runs and formal Test3 remain unauthorized.
 
+## 7.5.11 Independent acoustic witness design
+
+- Date: 2026-11-28
+- Scope: Compare independent near-end and physical loudspeaker references, time alignment, calibration and local evidence handling.
+- Result: `CONDITIONAL`. The selected dual-channel design requires verified hardware, timing, isolation and non-interference. The six-pair experiment remains `NOT_READY`.
+- Record: [Independent acoustic witness design](stage7_5/test3_apple_vp_clean/Stage_7_5_11_independent_acoustic_witness_design_2026-11-28.md).
+- Boundary: Design and static review only. Device runs and formal Test3 remain unauthorized.
+
 ## 7.5-realtime-speech-documentation-reconciliation
 
 - Stage: 7.5 documentation authority reconciliation
