@@ -2,6 +2,16 @@
 
 Use this file to record each Codex task before closing the loop.
 
+## Authorized Task Delivery
+
+After an explicitly authorized task produces a substantive deliverable and passes its applicable checks, commit it and push it to the task's designated branch without asking again. A task-specific stop or read-only instruction takes precedence. This convention grants no scope beyond the task, including later stages, device experiments, or Provider calls.
+
+1. Review the final diff, evidence links, redaction, and verification results.
+2. Stage only the task's files or hunks. Preserve unrelated staged and unstaged work.
+3. Commit with a clear description of the change and its remaining evidence limits. Record a no-change result without an empty commit.
+4. Push by normal fast-forward to the designated branch. If the remote has advanced, inspect the added commits and continue from the verified tip when safe. Preserve existing history and user changes. Force pushes are prohibited.
+5. Read the live remote branch SHA after pushing and verify that it equals the delivery commit. If committing or pushing fails, report the failed operation, the work saved, and the blocker.
+
 ## Record Template
 
 - Stage:
@@ -16,6 +26,13 @@ Use this file to record each Codex task before closing the loop.
 ## Apple Official Reference Rule
 
 When a task touches SwiftUI, Metal, FileManager, Keychain, HIG, or Accessibility, read only the current-node minimum Apple official reference listed in `docs/apple_official_reference_stage7.md`. Do not system-learn iOS / visionOS / ARKit / RealityKit, do not add platform targets, and do not treat Apple docs as a new Aftelle architecture source.
+
+## 7.5.11 AEC static audit evidence revision
+
+- Date: 2026-11-27
+- Scope: Static audit wording, historical evidence receipts, and this delivery convention.
+- Record: [AEC static audit](stage7_5/test3_apple_vp_clean/Stage_7_5_11_AEC_end_to_end_static_audit_2026-11-27.md) and [sanitized evidence](stage7_5/test3_apple_vp_clean/Stage_7_5_11_AEC_static_audit_evidence_2026-11-27.md).
+- Boundary: Documentation-only review. New acoustic validation and formal barge-in remain outside this task.
 
 ## 7.5-realtime-speech-documentation-reconciliation
 

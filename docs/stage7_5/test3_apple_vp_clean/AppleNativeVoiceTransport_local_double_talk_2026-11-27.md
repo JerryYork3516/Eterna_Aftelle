@@ -44,3 +44,9 @@
 - 本提交归档该试次的脱敏报告。实验宿主代码保留在独立本地工作树，原始录证留在本机。
 - Stage 7 Forbidden Checklist 的本次归档范围检查为 `PASS`，提交只包含此报告，Runtime API、DR Schema、平台 target 和阶段边界保持原状。
 - `SQ_M1 = OPEN`，`Formal_Test3 = BLOCKED`，`Test3.execution_authorized = false`。
+
+## 后续定量分析
+
+本试次报告于 2026-11-27 15:22:34（+08:00）首次归档。上文 `NOT_RUN` 保留该时点尚未作定量分析的记录。随后经独立授权离线分析同一份证据，初算及交叉核对结果留存于同日 15:45:57 和 15:48:35（+08:00）。后续结果记录混合能量变化和间歇居民相关分量。独立真人衰减量、ERLE 与 Apple VP 内部归因仍未测得。
+
+[后续定量分析留存](Stage_7_5_11_AEC_static_audit_evidence_2026-11-27.md#11-月-27-日定量分析留存)
