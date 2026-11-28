@@ -341,49 +341,113 @@ private struct NativeVoiceSameFrameLabView: View {
     @State private var resident: Data?
     @State private var fileName: String?
     @State private var consent = false
+    @State private var retainWAV = false
+    @State private var localStorageReady: Bool?
     @State private var task: Task<Void, Never>?
     @State private var report: DiagnosticExport?
+    @State private var wav: Data?
+    @State private var savedFolder: URL?
+    @State private var saveStatus: SaveStatus = .idle
     @State private var status = "choose"
 
-    private struct DiagnosticExport: Encodable, Sendable {
-        let schemaVersion = 1
+    private enum SaveStatus { case idle, saving, saved, failed }
+
+    private nonisolated struct DiagnosticExport: Encodable, Sendable {
+        let schemaVersion = 2
         let runID: UUID
         let residentWAVSHA256: String
         let buildBinarySHA256: String?
         let outcome: String
         let transport: NativeVoiceTransportReadback
+        let captureWAV: NativeVoiceSameFrameCapture.Summary?
+        let captureWAVSHA256: String?
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(String(localized: String.LocalizationValue("nativeVoiceSameFrame." + status)))
                 .font(.headline)
-            if let fileName { Text(fileName).textSelection(.enabled) }
+            if let fileName {
+                Text(fileName).textSelection(.enabled)
+            }
+            Toggle(String(localized: "nativeVoiceSameFrame.retainWAV"), isOn: $retainWAV)
+                .disabled(task != nil || saveStatus == .saving || localStorageReady != true)
+            Text(storageStatus)
+                .foregroundStyle(.secondary)
             HStack {
                 Button(String(localized: "nativeVoiceSameFrame.choose")) { chooseResident() }
-                    .disabled(task != nil)
+                    .disabled(task != nil || saveStatus == .saving)
                 Button(String(localized: "nativeVoiceAcousticLab.start")) { consent = true }
-                    .disabled(task != nil || resident == nil)
+                    .disabled(task != nil || resident == nil || saveStatus == .saving || localStorageReady != true)
                 Button(String(localized: "nativeVoiceAcousticLab.stop")) { task?.cancel() }
                     .disabled(task == nil)
             }
             if let report {
-                Button(String(localized: "nativeVoiceSameFrame.export")) { export(report) }
+                exportControls(report)
             }
         }
         .padding(20)
         .frame(minWidth: 420, minHeight: 190)
-        .onDisappear { task?.cancel() }
+        .task {
+            localStorageReady = await Task.detached(priority: .utility) {
+                (try? AppController.preflightSameFrameLocalExport()) != nil
+            }.value
+        }
+        .onDisappear {
+            task?.cancel()
+            if savedFolder == nil {
+                report = nil
+            }
+            wav = nil
+        }
         .alert(String(localized: "nativeVoiceSameFrame.title"), isPresented: $consent) {
             Button(String(localized: "nativeVoiceAcousticLab.start")) {
-                guard task == nil, let resident else { return }
+                guard task == nil, localStorageReady == true, let resident else { return }
                 report = nil
+                wav = nil
+                savedFolder = nil
+                saveStatus = .idle
                 status = "starting"
-                task = Task { await run(resident) }
+                let enabled = retainWAV
+                task = Task { await run(resident, retainWAV: enabled) }
             }
             Button(String(localized: "nativeVoiceAcousticEvidence.cancel"), role: .cancel) {}
         } message: {
-            Text(String(localized: "nativeVoiceSameFrame.consent"))
+            Text(retainWAV
+                ? String(localized: "nativeVoiceSameFrame.wavConsent")
+                : String(localized: "nativeVoiceSameFrame.consent"))
+        }
+    }
+
+    private var storageStatus: String {
+        switch localStorageReady {
+        case .some(true): String(localized: "nativeVoiceSameFrame.storageReady")
+        case .some(false): String(localized: "nativeVoiceSameFrame.storageUnavailable")
+        case .none: String(localized: "nativeVoiceSameFrame.storageChecking")
+        }
+    }
+
+    @ViewBuilder
+    private func exportControls(_ report: DiagnosticExport) -> some View {
+        if let savedFolder {
+            Button(String(localized: "nativeVoiceSameFrame.reveal")) {
+                let name = report.captureWAVSHA256 == nil
+                    ? NativeVoiceSameFrameFiles.jsonName : NativeVoiceSameFrameFiles.wavName
+                NSWorkspace.shared.activateFileViewerSelecting([savedFolder.appendingPathComponent(name)])
+            }
+        } else {
+            if let capture = report.captureWAV {
+                Text(capture.state == .complete
+                    ? String(localized: "nativeVoiceSameFrame.wavReady")
+                    : String(localized: "nativeVoiceSameFrame.wavIncomplete"))
+            }
+            Button(wav == nil
+                ? String(localized: "nativeVoiceSameFrame.export")
+                : String(localized: "nativeVoiceSameFrame.exportWAV")) { export(report) }
+                .disabled(saveStatus == .saving)
+            if saveStatus == .failed {
+                Text(String(localized: "nativeVoiceSameFrame.saveFailed"))
+            }
         }
     }
 
@@ -394,21 +458,23 @@ private struct NativeVoiceSameFrameLabView: View {
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            defer {
+                if scoped {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
             resident = try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess])
             fileName = resident == nil ? nil : url.lastPathComponent
             status = resident == nil ? "failed" : "ready"
         }
     }
 
-    private func run(_ bookmark: Data) async {
+    private func run(_ bookmark: Data, retainWAV: Bool) async {
         defer { task = nil }
         guard let source = try? AppController.readSameFrameResidentWAV(bookmark),
-              source.pcm.count <= 12 * 48_000 else {
-            status = "failed"
-            return
-        }
-        guard await AVCaptureDevice.requestAccess(for: .audio), !Task.isCancelled else {
+              source.pcm.count <= 12 * 48000,
+              await AVCaptureDevice.requestAccess(for: .audio), !Task.isCancelled
+        else {
             status = "failed"
             return
         }
@@ -419,10 +485,11 @@ private struct NativeVoiceSameFrameLabView: View {
             captureGeneration: 1, captureToken: 1, playbackEpoch: 1, playbackToken: 1
         )
         let runID = UUID()
+        var capture = retainWAV ? NativeVoiceSameFrameCapture(identity: identity.capture) : nil
         let outcome: String
         do {
             try await graph.start(identity: identity)
-            outcome = try await playAndObserve(source.pcm, using: graph, playback: identity.playback)
+            outcome = try await playAndObserve(source.pcm, using: graph, playback: identity.playback, capture: &capture)
                 ? "finished" : "incomplete"
         } catch is CancellationError {
             outcome = "stopped"
@@ -431,9 +498,14 @@ private struct NativeVoiceSameFrameLabView: View {
         }
         await graph.close()
         if let result = await graph.readback(), result.sameFrameDiagnostics != nil {
+            let recording = capture?.finish(endedNormally: outcome == "finished" && result.state == "closed"
+                && !Task.isCancelled)
+            let recordingWAV = recording?.pcm.map { AppController.encodeSameFrameWAV($0) }
+            wav = recordingWAV?.bytes
             report = DiagnosticExport(
                 runID: runID, residentWAVSHA256: source.sha256,
-                buildBinarySHA256: AppController.sameFrameBuildSHA256(), outcome: outcome, transport: result
+                buildBinarySHA256: AppController.sameFrameBuildSHA256(), outcome: outcome, transport: result,
+                captureWAV: recording?.summary, captureWAVSHA256: recordingWAV?.sha256
             )
             status = outcome == "finished" && result.sameFrameDiagnostics?.complete == true
                 ? "finished" : "incomplete"
@@ -443,7 +515,8 @@ private struct NativeVoiceSameFrameLabView: View {
     }
 
     private func playAndObserve(
-        _ pcm: Data, using graph: AppleNativeVoiceTransport, playback: NativeVoiceIdentity.Playback
+        _ pcm: Data, using graph: AppleNativeVoiceTransport, playback: NativeVoiceIdentity.Playback,
+        capture: inout NativeVoiceSameFrameCapture?
     ) async throws -> Bool {
         let clock = ContinuousClock()
         var deadline = clock.now + .seconds(5)
@@ -463,6 +536,7 @@ private struct NativeVoiceSameFrameLabView: View {
                 deadline = cue + .seconds(15)
                 status = "speak"
             }
+            capture?.append(batch.packets)
             if status == "speak", clock.now >= deadline - .seconds(4) {
                 status = "quiet"
             }
@@ -480,26 +554,44 @@ private struct NativeVoiceSameFrameLabView: View {
                     sentEOS = try await graph.finishPlayback(identity: playback)
                 }
             }
-            if batch.render.contains(where: { $0.nonzeroFrames > 0 }) { sawNonzero = true }
-            if batch.progress.renderHandoff { sawEOS = true }
+            sawNonzero = sawNonzero || batch.render.contains { $0.nonzeroFrames > 0 }
+            sawEOS = sawEOS || batch.progress.renderHandoff
             try await Task.sleep(for: .milliseconds(5))
         }
         status = "ending"
+        if playAt != nil, capture?.needsPackets == true {
+            try Task.checkCancellation()
+            // Read anything already queued at the deadline without waiting for more audio.
+            let final = try await graph.bridgeService(maxCaptureFrames: 8192)
+            capture?.append(final.packets)
+            sawNonzero = sawNonzero || final.render.contains { $0.nonzeroFrames > 0 }
+            sawEOS = sawEOS || final.progress.renderHandoff
+        }
         return sawNonzero && sawEOS
     }
 
     private func export(_ report: DiagnosticExport) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "native-voice-same-frame-" + report.runID.uuidString + ".json"
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
+        guard saveStatus != .saving else { return }
+        let audio = wav
+        guard (audio == nil) == (report.captureWAVSHA256 == nil) else {
+            saveStatus = .failed
+            return
+        }
+        saveStatus = .saving
+        Task {
             do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.sortedKeys]
-                try encoder.encode(report).write(to: url, options: [.atomic])
+                let directory = try await Task.detached(priority: .utility) {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    return try AppController.saveSameFrameLocalExport(
+                        json: encoder.encode(report), wav: audio, runID: report.runID
+                    )
+                }.value
+                savedFolder = directory
+                wav = nil
+                saveStatus = .saved
             } catch {
-                status = "failed"
+                saveStatus = .failed
             }
         }
     }

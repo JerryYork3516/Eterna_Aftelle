@@ -713,4 +713,14 @@
 "nativeVoiceSameFrame.finished" = "诊断结束";
 "nativeVoiceSameFrame.incomplete" = "诊断已结束，证据不完整";
 "nativeVoiceSameFrame.failed" = "诊断未能完成";
-"nativeVoiceSameFrame.export" = "导出诊断 JSON";
+"nativeVoiceSameFrame.export" = "保存技术 JSON 到本机";
+"nativeVoiceSameFrame.exportWAV" = "保存 WAV 和 JSON 到本机";
+"nativeVoiceSameFrame.retainWAV" = "保留 15 秒 VP 处理后麦克风录音";
+"nativeVoiceSameFrame.wavConsent" = "开启一次本地麦克风和扬声器会话。VP 处理后麦克风音频最多在内存保留 15 秒。实验结束后，可单独确认将 WAV 和技术 JSON 保存到这台 Mac。";
+"nativeVoiceSameFrame.storageReady" = "本机私有保存目录已就绪";
+"nativeVoiceSameFrame.storageUnavailable" = "本机私有保存目录不可用";
+"nativeVoiceSameFrame.storageChecking" = "正在检查本机私有保存目录…";
+"nativeVoiceSameFrame.wavReady" = "完整 15 秒麦克风录音可保存";
+"nativeVoiceSameFrame.wavIncomplete" = "未取得完整 15 秒录音，可保存技术 JSON。";
+"nativeVoiceSameFrame.saveFailed" = "本机保存失败，可以重试保存当前证据。";
+"nativeVoiceSameFrame.reveal" = "在访达中显示已保存证据";

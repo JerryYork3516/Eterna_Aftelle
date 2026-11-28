@@ -713,4 +713,14 @@
 "nativeVoiceSameFrame.finished" = "Diagnostics finished";
 "nativeVoiceSameFrame.incomplete" = "Diagnostics ended with incomplete evidence";
 "nativeVoiceSameFrame.failed" = "Diagnostics could not finish";
-"nativeVoiceSameFrame.export" = "Export diagnostic JSON";
+"nativeVoiceSameFrame.export" = "Save diagnostic JSON locally";
+"nativeVoiceSameFrame.exportWAV" = "Save WAV and JSON locally";
+"nativeVoiceSameFrame.retainWAV" = "Keep 15 seconds of processed microphone audio";
+"nativeVoiceSameFrame.wavConsent" = "Run one local microphone and speaker session. Up to 15 seconds of processed microphone audio will be kept in memory. Saving is a separate step that writes the WAV and diagnostics on this Mac.";
+"nativeVoiceSameFrame.storageReady" = "Private local storage is ready";
+"nativeVoiceSameFrame.storageUnavailable" = "Private local storage is unavailable";
+"nativeVoiceSameFrame.storageChecking" = "Checking private local storage…";
+"nativeVoiceSameFrame.wavReady" = "15 seconds of processed microphone audio are ready to save";
+"nativeVoiceSameFrame.wavIncomplete" = "A complete 15-second recording is unavailable. Diagnostic JSON is ready.";
+"nativeVoiceSameFrame.saveFailed" = "Local save failed. You can try saving the current evidence again.";
+"nativeVoiceSameFrame.reveal" = "Show saved evidence in Finder";

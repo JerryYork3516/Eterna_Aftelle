@@ -17,20 +17,23 @@ struct SameFrameTests {
         try await unusableTimestamps()
         try impulseContentAlignment()
         try quantizationAndAdmission()
+        try await captureFromExistingWorker()
+        captureRejectsGaps()
+        try localEvidencePublication()
         print("native_voice_same_frame_swift_checks=\(checks)")
     }
 
-    private static func check(_ condition: Bool, _ label: String) {
+    static func check(_ condition: Bool, _ label: String) {
         precondition(condition, label)
         checks += 1
     }
 
-    private static let captureIdentity = NativeVoiceIdentity(
+    static let captureIdentity = NativeVoiceIdentity(
         authority: .init(runtimeGeneration: 1, routeEpoch: 1, configurationID: 9),
         captureGeneration: 1, captureToken: 1, playbackEpoch: 1, playbackToken: 1
     )
 
-    private static func graph(
+    static func graph(
         channelCount: UInt32, interleaved: Bool, rate: Double, diagnostics: Bool
     ) -> (AppleNativeVoiceTransport, FakeVoiceHardware) {
         let hardware = FakeVoiceHardware()
@@ -57,7 +60,7 @@ struct SameFrameTests {
         return (transport, hardware)
     }
 
-    private static func inject(
+    static func inject(
         _ lanes: [[Float]], into context: OpaquePointer, at sample: Int, rate: Double, interleaved: Bool,
         timeFlags: AudioTimeStampFlags = [.sampleTimeValid, .hostTimeValid]
     ) {

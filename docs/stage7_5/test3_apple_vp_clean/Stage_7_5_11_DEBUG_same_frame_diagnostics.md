@@ -21,13 +21,20 @@ Source 部分复用现有事实队列，保留 playback token、configurationID�
 
 - Sink 在既有 ABL 检查后复制，每个 graph 16 槽，样本区最多 2 MiB，配套内存在激活前分配和触页。回调只增加有界内存拷贝和无锁原子操作。Worker 消费槽后归零，Source 回调逻辑无改动。
 - 统计预算 16,384 条，内容映射缓存最多 32,768 个帧。满载丢弃诊断，正式 PCM 不依赖诊断队列。无 ABL 见证、旧块、映射缺口、尾段、实际传输丢帧和诊断丢失各有单独字段。关闭时若有最后一批 Sink 待消费，报告据实标记不完整。Lab 不自动重试。
-- 默认关闭。只有授权 Debug 的专用入口启用。不追加 PCM 到 JSON，不保存原始诊断音频。导出需要本地保存面板确认，报告只含技术统计、身份和指定 WAV 的摘要。采集只在本地窗口得到确认和麦克风系统权限后开始。专用模式跳过正常产品初始化和 Runtime／Provider。
+- 默认关闭。只有授权 Debug 的专用入口启用。技术 JSON 保留统计、身份和时间证据，采集需要窗口确认和麦克风系统权限。专用模式跳过正常产品初始化和 Runtime／Provider。可选择留存最终上行 PCM 供本机回听。
 
 ## 经授权后使用
 
 1. 使用现有签名及 entitlement，在独立目录里建立 Debug。保留 `DEBUG AFTELLE_WEBRTC_AEC3 NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED`。C 诊断宏由 Debug project 设置提供。
 2. 以唯一参数 `--apple-native-voice-same-frame-diagnostics` 调用实际 Debug 可执行文件。窗口内显式选择本地 24 kHz Mono PCM16LE WAV，最长 12 秒。保留恢复窗时选明显短于 12 秒的素材。混用已知 Lab／Shadow 或其它启动参数会拒绝此入口。
-3. 获得本轮授权后点开始。实际采集包到达才显示讲话提示，提示后约 3 秒开始向现有 Worker 入队，不改变 WAV 增益。以提示为起点运行最多 15 秒，亦可手动停止。关闭后可手动导出本地技术 JSON。时序分析采用真实事实，界面提示和宿主排程只作操作提示。[入口](../../../apps/macos/Aftelle/AftelleApp.swift#L38) · [Lab](../../../apps/macos/Aftelle/AftelleApp.swift#L329)
+3. 检查窗口显示本机私有保存目录已就绪。希望回听时勾选「保留 15 秒 VP 处理后麦克风录音」。获得本轮授权后点开始。首批采集包到达才显示讲话提示，提示后约 3 秒向现有 Worker 入队，WAV 增益保持原样。第 11 秒提示停讲，以提示为起点运行 15 秒，亦可手动停止。时序分析采用实际 Source 和采集事实。[入口](../../../apps/macos/Aftelle/AftelleApp.swift#L38) · [Lab](../../../apps/macos/Aftelle/AftelleApp.swift#L329)
+
+## 完整 WAV 和本机导出
+
+- WAV 使用触发讲话提示的首批上行 PCM。仅取同一采集身份、同一 segment 从 sampleCount 0 开始的前 750 个连续包，即 360,000 个 24 kHz 单声道 PCM16LE 样本。采集到期可立即消费一次已入队数据，收集上限保持 15.000 秒。缺包、重新分段、格式错误、提前停止或播放未完成时保留技术 JSON，完整录音不发布。PCM 连续性和 HostTime 资格单独判定，完整 WAV 可以与诊断尾块覆盖缺口并存。
+- 停止后点「保存 WAV 和 JSON 到本机」。每轮在验证后的 App 私有缓存中以同一目录发布 `capture.wav` 和 `diagnostics.json`。技术 JSON 记录采集范围、状态及完整 WAV 的 SHA-256，格式版本升为 2。可点「在访达中显示已保存证据」打开本机文件。未勾选录音时只保存 JSON。打开窗口的保存预检仅检查空文件，不采集或持久化音频。
+- 目录 0700、文件 0600。暂存目录写完才原子发布，重复保存同一轮不能覆盖原文件。原始 Sink 各通道仅用于统计。WAV 使用已有 DEBUG 编码器，生产音频主链未改动。
+- 本次合成专项在普通、TSan 和 ASan/UBSan 下各通过 150 项 Swift 断言及 C SPSC 用例。验证 Worker 现有包逐字节保留、缺口／停止拒绝、实际 RIFF 15 秒解析、仅 JSON 保存、文件权限、符号链接拒绝和重复发布保护。签名 Debug、Release 构建及产物隔离检查通过。实际签名窗口的私有存储探针通过，选入原幅居民 WAV 并核验录音确认，随后取消到待机。`DEVICE_RUNS_THIS_TASK = 0`。
 
 ## 判读合同
 

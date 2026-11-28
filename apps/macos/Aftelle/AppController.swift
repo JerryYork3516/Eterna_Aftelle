@@ -10361,6 +10361,40 @@ extension AppController {
         return try AppleVPAcousticWAV.read(url: url)
     }
 
+    static func encodeSameFrameWAV(_ pcm: Data) -> (bytes: Data, sha256: String) {
+        let bytes = AppleVPAcousticWAV.encoded(pcm: pcm)
+        return (bytes, AppleVPAcousticWAV.digest(bytes))
+    }
+
+    nonisolated static func preflightSameFrameLocalExport() throws {
+        try withSameFrameExportFolder { folder, _ in
+            try NativeVoiceSameFrameFiles.checkWritable(in: folder)
+        }
+    }
+
+    nonisolated static func saveSameFrameLocalExport(
+        json: Data, wav: Data?, runID: UUID
+    ) throws -> URL {
+        try withSameFrameExportFolder { folder, url in
+            try NativeVoiceSameFrameFiles.publish(json: json, wav: wav, runID: runID, in: folder)
+            return url.appendingPathComponent(NativeVoiceSameFrameFiles.trialName(runID), isDirectory: true)
+        }
+    }
+
+    private nonisolated static func withSameFrameExportFolder<T>(
+        _ operation: (Int32, URL) throws -> T
+    ) throws -> T {
+        let cache = try nativeVoiceEvidenceCache()
+        let anchor = try AppleVPAcousticEvidenceExport.openNativeVoiceDirectory(in: cache)
+        defer { Darwin.close(anchor) }
+        let folder = try NativeVoiceSameFrameFiles.openFolder(in: anchor)
+        defer { Darwin.close(folder) }
+        let url = cache.appendingPathComponent(AppleVPAcousticEvidenceExport.nativeVoiceEvidenceDirectoryName,
+                                               isDirectory: true)
+            .appendingPathComponent(NativeVoiceSameFrameFiles.folderName, isDirectory: true)
+        return try operation(folder, url)
+    }
+
     nonisolated static func sameFrameBuildSHA256() -> String? {
         let sha256 = runningBuildBinary().sha256
         return sha256.count == 64 ? sha256 : nil

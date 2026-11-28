@@ -27,7 +27,7 @@ swiftc -parse-as-library -swift-version 6 -default-isolation MainActor -warn-con
   -import-objc-header "$src/NativeVoiceRealtime.h" -module-cache-path "$work/modules" \
   -framework AVFoundation -framework CoreAudio -framework AudioToolbox -lc++ "${swift[@]}" \
   "$src/"*.swift "$root/tools/native_voice_transport_p2_tests/FakeVoiceEngine.swift" \
-  "$tests/SameFrameTests.swift" "$work/"*.o -o "$work/session"
+  "$tests/SameFrameTests.swift" "$tests/SameFrameWAVTests.swift" "$work/"*.o -o "$work/session"
 "$work/session"
 if [[ "$mode" == normal ]]; then
   python3 "$root/tools/native_voice_transport_p2_tests/audit_callbacks.py"
