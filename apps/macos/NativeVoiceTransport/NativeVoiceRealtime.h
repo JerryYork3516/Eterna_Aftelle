@@ -99,6 +99,9 @@ OSStatus nvt_direct_vpio_capture(void *reference, AudioUnitRenderActionFlags *fl
 OSStatus nvt_direct_vpio_render(void *reference, AudioUnitRenderActionFlags *flags,
                                 const AudioTimeStamp *time, UInt32 bus, UInt32 frames,
                                 AudioBufferList * _Nullable output);
+OSStatus nvt_split_vpio_silence(void *reference, AudioUnitRenderActionFlags *flags,
+                                 const AudioTimeStamp *time, UInt32 bus, UInt32 frames,
+                                 AudioBufferList * _Nullable output);
 void nvt_direct_vpio_changed(void *reference, AudioUnit unit, AudioUnitPropertyID property,
                              AudioUnitScope scope, AudioUnitElement bus);
 #endif

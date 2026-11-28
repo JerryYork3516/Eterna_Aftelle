@@ -133,6 +133,44 @@ static void render(void) {
     release_context(context);
 }
 
+static void split_auhal_callbacks(void) {
+    NVTDirectVPIO *context = make_context(1, false);
+    const AudioTimeStamp silent_time = {
+        .mSampleTime = 2, .mHostTime = 100, .mFlags = kAudioTimeStampSampleHostTimeValid
+    };
+    const AudioTimeStamp speaker_time = {
+        .mSampleTime = 300, .mHostTime = 9000, .mFlags = kAudioTimeStampSampleTimeValid
+    };
+    AudioUnitRenderActionFlags flags = kAudioUnitRenderAction_PreRender;
+    float samples[] = {99, 99, 99, 99};
+    AudioBufferList output = {1, {{1, sizeof(samples), samples}}};
+    CHECK(nvt_rt_activate(io) && nvt_rt_set_playback(io, 21, false));
+    const float content[] = {0.25f, -0.5f};
+    CHECK(nvt_rt_enqueue(io, content, 2, 21, true) == NVT_WRITE_OK);
+    CHECK(nvt_split_vpio_silence(context, &flags, &silent_time, 0, 4, &output) == noErr);
+    for (unsigned i = 0; i < 4; ++i) CHECK(samples[i] == 0);
+    CHECK((flags & kAudioUnitRenderAction_OutputIsSilence) && (flags & kAudioUnitRenderAction_PreRender));
+    NVTRenderFact fact;
+    CHECK(!nvt_rt_take_render_fact(io, &fact) && nvt_rt_stats(io).rendered_end_token == 0);
+    CHECK(nvt_direct_vpio_render(context, &flags, &speaker_time, 0, 4, &output) == noErr);
+    CHECK(samples[0] == 0.25f && samples[1] == -0.5f && samples[3] == 0);
+    CHECK(nvt_rt_take_render_fact(io, &fact) && fact.playback_token == 21 && fact.configuration_id == 17);
+    CHECK(fact.sample_time == 300 && fact.host_time == 9000 && fact.host_time_ns == 0);
+    CHECK(fact.time_flags == kAudioTimeStampSampleTimeValid && (fact.flags & NVT_RENDER_END));
+    CHECK(nvt_rt_set_playback(io, 22, true));
+    CHECK(nvt_split_vpio_silence(context, &flags, &silent_time, 0, 4, &output) == noErr);
+    CHECK(nvt_rt_stats(io).rendered_clear_token == 0);
+    CHECK(!nvt_rt_take_render_fact(io, &fact));
+    CHECK(nvt_direct_vpio_render(context, &flags, &speaker_time, 0, 4, &output) == noErr);
+    CHECK(nvt_rt_stats(io).rendered_clear_token == 22);
+
+    output.mBuffers[0].mDataByteSize = sizeof(float);
+    samples[1] = 9;
+    CHECK(nvt_split_vpio_silence(context, &flags, &silent_time, 0, 4, &output) == kAudio_ParamError);
+    CHECK(samples[1] == 9 && !nvt_rt_active(io));
+    release_context(context);
+}
+
 static void capture_failure(enum Pull failure, uint32_t frames, OSStatus error) {
     NVTDirectVPIO *context = make_context(2, true);
     const AudioTimeStamp stamp = {.mFlags = kAudioTimeStampSampleTimeValid};
@@ -151,6 +189,7 @@ int main(void) {
     capture(3, true);
     capture(5, false);
     render();
+    split_auhal_callbacks();
     capture_failure(PCM, 17, kAudioUnitErr_TooManyFramesToProcess);
     capture_failure(BAD_ABL, 4, kAudio_ParamError);
     capture_failure(ERROR, 4, kAudioUnitErr_NoConnection);

@@ -2,52 +2,6 @@
 import AudioToolbox
 import Foundation
 
-nonisolated enum NativeVoiceSameFrameLaunch {
-    static let argument = "--apple-native-voice-same-frame-diagnostics"
-
-    static func isRequested(_ arguments: [String]) -> Bool {
-        #if NATIVE_VOICE_DIRECT_VPIO
-        if NativeVoiceDirectVPIOLaunch.isRequested(arguments) {
-            return true
-        }
-        #endif
-        return arguments.dropFirst().contains { $0 == argument || $0.hasPrefix(argument + "=") }
-    }
-
-    static func isAllowed(_ arguments: [String], authorized: Bool) -> Bool {
-        authorized && (arguments.dropFirst().elementsEqual([argument]) || usesDirectVPIO(arguments))
-    }
-
-    private static func usesDirectVPIO(_ arguments: [String]) -> Bool {
-        #if NATIVE_VOICE_DIRECT_VPIO
-        NativeVoiceDirectVPIOLaunch.isAllowed(arguments, authorized: true)
-        #else
-        false
-        #endif
-    }
-
-    static func backendTag(_ arguments: [String]) -> String? {
-        #if NATIVE_VOICE_DIRECT_VPIO
-        usesDirectVPIO(arguments) ? "direct_voice_processing_io" : nil
-        #else
-        nil
-        #endif
-    }
-
-    @MainActor
-    static func makeTransport(
-        _ arguments: [String], cleanup: NativeVoiceDirectVPIOCleanup?
-    ) -> AppleNativeVoiceTransport {
-        let limits = AppleNativeVoiceTransport.Limits(sameFrameDiagnostics: true)
-        #if NATIVE_VOICE_DIRECT_VPIO
-        if usesDirectVPIO(arguments) {
-            return .directVPIO(limits: limits, cleanup: cleanup ?? .init())
-        }
-        #endif
-        return .macOS(limits: limits)
-    }
-}
-
 nonisolated protocol NativeVoiceSameFrameSystemReading {
     func sameFrameSystemState() -> NativeVoiceSameFrameDiagnostics.SystemState
 }
@@ -193,6 +147,11 @@ final nonisolated class NativeVoiceSameFrameDiagnostics {
         }
     }
 
+    struct SplitAUHAL: Encodable, Sendable {
+        let device: UInt32?
+        let clientFormat, vpioSilentRenderFormat: NativeVoiceIOFormat?
+    }
+
     struct SystemState: Encodable, Sendable {
         let uptimeNanoseconds: UInt64
         let activeMicMode, preferredMicMode: Int?
@@ -202,6 +161,7 @@ final nonisolated class NativeVoiceSameFrameDiagnostics {
         let voiceProcessingRequested, voiceProcessingReadback: NativeVoiceProcessingReadback?
         let ducking: Ducking?
         let deviceControls: [DeviceControls]
+        var splitAUHAL: SplitAUHAL?
 
         struct Ducking: Encodable, Sendable {
             let advanced: Bool

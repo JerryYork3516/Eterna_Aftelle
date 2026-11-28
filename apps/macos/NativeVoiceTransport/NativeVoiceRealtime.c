@@ -551,6 +551,24 @@ OSStatus nvt_direct_vpio_render(void *reference, AudioUnitRenderActionFlags *fla
     return status;
 }
 
+OSStatus nvt_split_vpio_silence(void *reference, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,
+                                 UInt32 bus, UInt32 frames, AudioBufferList *output) {
+    (void)time;
+    if (flags) *flags |= kAudioUnitRenderAction_OutputIsSilence;
+    if (!frames) return noErr;
+    NVTDirectVPIO *context = reference;
+    if (bus != 0 || !output || output->mNumberBuffers != 1 || !has_float_frames(&output->mBuffers[0], 1, frames)) {
+        nvt_rt_close(context->io);
+        return kAudio_ParamError;
+    }
+    __builtin_memset(output->mBuffers[0].mData, 0, (size_t)frames * sizeof(float));
+    if (frames > context->io->config.max_callback_frames) {
+        nvt_rt_close(context->io);
+        return kAudioUnitErr_TooManyFramesToProcess;
+    }
+    return noErr;
+}
+
 void nvt_direct_vpio_changed(void *reference, AudioUnit unit, AudioUnitPropertyID property,
                              AudioUnitScope scope, AudioUnitElement bus) {
     (void)unit;

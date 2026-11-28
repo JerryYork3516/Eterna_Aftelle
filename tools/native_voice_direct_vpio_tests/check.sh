@@ -27,7 +27,7 @@ swiftc -parse-as-library -swift-version 6 -default-isolation MainActor -warn-con
   -module-cache-path "$work/modules" -framework AVFoundation -framework CoreAudio -framework AudioToolbox \
   -lc++ "${swift[@]}" "$src/"*.swift "$tests/"*.swift "$work/"*.o -o "$work/contract"
 "$work/contract"
-for fault in stop removeListener uninitialize dispose dispose-before-install stop-after-start-failure; do
+for fault in stop removeListener uninitialize dispose dispose-before-install stop-after-start-failure split-output-stop split-voice-stop; do
   echo "native_voice_direct_vpio_cleanup_case=$fault"
   "$work/contract" "$fault"
 done
@@ -35,7 +35,7 @@ if [[ "$mode" == normal ]]; then
   python3 "$root/tools/native_voice_transport_p2_tests/audit_callbacks.py" --direct-vpio
   clang -std=c11 -Wall -Wextra -Werror -O2 -c "$src/NativeVoiceRealtime.c" -o "$work/release.o"
   nm "$work/release.o" >"$work/release-symbols"
-  if grep -Eq 'nvt_direct_vpio|AudioUnitRender' "$work/release-symbols"; then
+  if grep -Eq 'nvt_direct_vpio|nvt_split_vpio_silence|AudioUnitRender' "$work/release-symbols"; then
     echo "direct VoiceProcessingIO callbacks present in Release C object" >&2
     exit 1
   fi

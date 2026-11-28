@@ -13,7 +13,11 @@ struct DirectVPIOTests {
 
     static func main() async throws {
         if let mode = CommandLine.arguments.dropFirst().first {
-            try await isolatedReleaseFailure(mode)
+            if mode.hasPrefix("split-") {
+                try await splitReleaseFailure(mode)
+            } else {
+                try await isolatedReleaseFailure(mode)
+            }
         } else {
             admission()
             try await session()
@@ -24,6 +28,7 @@ struct DirectVPIOTests {
             }
             try await enableIOCompatibility()
             try await cleanRelease()
+            try await splitAUHAL()
         }
         print("native_voice_direct_vpio_swift_checks=\(checks)")
     }
@@ -199,7 +204,7 @@ final nonisolated class FakeDirectVPIO: @unchecked Sendable {
     }
 
     let failure: Failure
-    let unit = AudioUnit(bitPattern: 17)!
+    let unit: AudioUnit
     var acceptedRate: Double?
     var configure: ((inout NativeVoiceDirectVPIO.UnitAPI) -> Void)?
     var lifecycle: [String] = []
@@ -210,8 +215,9 @@ final nonisolated class FakeDirectVPIO: @unchecked Sendable {
     private var values = [Key: Data]()
     private var listeners = [AudioUnitPropertyID: (AudioUnitPropertyListenerProc, UnsafeMutableRawPointer?)]()
 
-    init(_ failure: Failure = .none) {
+    init(_ failure: Failure = .none, unitID: UInt = 17) {
         self.failure = failure
+        unit = AudioUnit(bitPattern: unitID)!
         put(.captureFormat, pcm(rate: 44100, channels: 4))
         put(.renderFormat, pcm(rate: 48000, channels: 1))
         put(.init(kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1), UInt32(0))
@@ -220,8 +226,10 @@ final nonisolated class FakeDirectVPIO: @unchecked Sendable {
         put(.init(kAudioUnitProperty_MaximumFramesPerSlice), UInt32(64))
     }
 
-    func transport(cleanup: NativeVoiceDirectVPIOCleanup = .init()) -> AppleNativeVoiceTransport {
-        .init(makeEngine: { [self] in makeEngine(cleanup: cleanup) },
+    func transport(
+        cleanup: NativeVoiceDirectVPIOCleanup = .init(), splitOutput: FakeDirectVPIO? = nil
+    ) -> AppleNativeVoiceTransport {
+        .init(makeEngine: { [self] in makeEngine(cleanup: cleanup, splitPlaybackAPI: splitOutput?.unitAPI()) },
               authorized: { true }, limits: .init(callbackFrames: 128))
     }
 
@@ -267,7 +275,9 @@ final nonisolated class FakeDirectVPIO: @unchecked Sendable {
         return api
     }
 
-    private func makeEngine(cleanup: NativeVoiceDirectVPIOCleanup) -> NativeVoiceDirectVPIO {
+    private func makeEngine(
+        cleanup: NativeVoiceDirectVPIOCleanup, splitPlaybackAPI: NativeVoiceDirectVPIO.UnitAPI?
+    ) -> NativeVoiceDirectVPIO {
         let routes = NativeVoiceDirectVPIO.RouteAPI(
             defaults: { .init(input: 101, output: 202) },
             bindings: { _ in
@@ -288,7 +298,8 @@ final nonisolated class FakeDirectVPIO: @unchecked Sendable {
         )
         return NativeVoiceDirectVPIO(
             callbackLimit: 128, api: unitAPI(), route: routes,
-            devices: NativeVoiceHALRoute(registration: registration), cleanup: cleanup
+            devices: NativeVoiceHALRoute(registration: registration), cleanup: cleanup,
+            splitPlaybackAPI: splitPlaybackAPI
         )
     }
 
@@ -361,11 +372,11 @@ final nonisolated class FakeDirectVPIO: @unchecked Sendable {
         return (samples, flags.contains(.unitRenderAction_OutputIsSilence))
     }
 
-    private func put<T>(_ key: Key, _ value: T) {
+    func put<T>(_ key: Key, _ value: T) {
         values[key] = withUnsafeBytes(of: value) { Data($0) }
     }
 
-    private func pcm(rate: Double, channels: UInt32) -> AudioStreamBasicDescription {
+    func pcm(rate: Double, channels: UInt32) -> AudioStreamBasicDescription {
         .init(
             mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,

@@ -351,6 +351,7 @@ private struct NativeVoiceSameFrameLabView: View {
     @State private var status = "choose"
     @State private var directFailure: String?
     @State private var directCleanup: NativeVoiceDirectVPIOCleanup.Report?
+    @State private var splitAUHALCleanup: NativeVoiceDirectVPIOCleanup.Report?
     private let backend = NativeVoiceSameFrameLaunch.backendTag(ProcessInfo.processInfo.arguments)
 
     private enum SaveStatus { case idle, saving, saved, failed }
@@ -362,6 +363,7 @@ private struct NativeVoiceSameFrameLabView: View {
         let buildBinarySHA256: String?
         let backend: String?
         let directVPIOCleanup: NativeVoiceDirectVPIOCleanup.Report?
+        let splitAUHALCleanup: NativeVoiceDirectVPIOCleanup.Report?
         let outcome: String
         let transport: NativeVoiceTransportReadback
         let captureWAV: NativeVoiceSameFrameCapture.Summary?
@@ -371,15 +373,21 @@ private struct NativeVoiceSameFrameLabView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if backend != nil {
-                Text(verbatim: "AUVoiceProcessingIO")
+                Text(verbatim: isSplitAUHAL ? "AUHAL + AUVoiceProcessingIO" : "AUVoiceProcessingIO")
             }
             if let directFailure {
-                Text(verbatim: "DIRECT_VPIO_CANDIDATE = BLOCKED · " + directFailure)
+                let candidate = isSplitAUHAL ? "SPLIT_AUHAL_CANDIDATE" : "DIRECT_VPIO_CANDIDATE"
+                Text(verbatim: candidate + " = BLOCKED · " + directFailure)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
             }
             if let directCleanup {
                 Text(verbatim: directCleanup.detail)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+            if let splitAUHALCleanup {
+                Text(verbatim: splitAUHALCleanup.detail(unit: "AUHAL"))
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
             }
@@ -431,6 +439,7 @@ private struct NativeVoiceSameFrameLabView: View {
                 status = "starting"
                 directFailure = nil
                 directCleanup = nil
+                splitAUHALCleanup = nil
                 let enabled = retainWAV
                 task = Task { await run(resident, retainWAV: enabled) }
             }
@@ -527,7 +536,8 @@ private extension NativeVoiceSameFrameLabView {
         }
         await graph.close()
         directCleanup = cleanup?.report
-        outcome = directCleanup?.outcome(after: outcome) ?? outcome
+        splitAUHALCleanup = cleanup?.splitPlaybackReport
+        if directCleanup?.failed == true || splitAUHALCleanup?.failed == true { outcome = "cleanup_failed" }
         if let result = await graph.readback(), result.sameFrameDiagnostics != nil {
             let recording = capture?.finish(endedNormally: outcome == "finished" && result.state == "closed"
                 && !Task.isCancelled)
@@ -536,11 +546,12 @@ private extension NativeVoiceSameFrameLabView {
             report = DiagnosticExport(
                 runID: runID, residentWAVSHA256: source.sha256,
                 buildBinarySHA256: AppController.sameFrameBuildSHA256(), backend: backend,
-                directVPIOCleanup: directCleanup, outcome: outcome, transport: result,
+                directVPIOCleanup: directCleanup, splitAUHALCleanup: splitAUHALCleanup,
+                outcome: outcome, transport: result,
                 captureWAV: recording?.summary, captureWAVSHA256: recordingWAV?.sha256
             )
             let complete = outcome == "finished" && result.sameFrameDiagnostics?.complete == true
-            status = directCleanup?.failed == true ? "failed" : (complete ? "finished" : "incomplete")
+            status = outcome == "cleanup_failed" ? "failed" : (complete ? "finished" : "incomplete")
         } else {
             status = "failed"
         }
@@ -600,6 +611,14 @@ private extension NativeVoiceSameFrameLabView {
             sawEOS = sawEOS || final.progress.renderHandoff
         }
         return sawNonzero && sawEOS
+    }
+
+    private var isSplitAUHAL: Bool {
+        #if NATIVE_VOICE_DIRECT_VPIO
+        backend == NativeVoiceSameFrameLaunch.splitAUHALBackend
+        #else
+        false
+        #endif
     }
 
     func failureDetail(_ error: Error) -> String {

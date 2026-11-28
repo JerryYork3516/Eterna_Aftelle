@@ -27,10 +27,12 @@ final nonisolated class NativeVoiceDirectVPIOCleanup: Sendable {
             failed ? "cleanup_failed" : sessionOutcome
         }
 
-        var detail: String {
+        var detail: String { detail(unit: "Direct VPIO") }
+
+        func detail(unit: String) -> String {
             let listeners = removePropertyListeners.map { "\($0.property)=\($0.status)" }.joined(separator: ", ")
             return [
-                failed ? "Direct VPIO cleanup_failed" : "Direct VPIO cleanup",
+                failed ? "\(unit) cleanup_failed" : "\(unit) cleanup",
                 "AudioOutputUnitStop: \(stop.map(String.init) ?? "not_attempted")",
                 "AudioUnitRemovePropertyListenerWithUserData: \(listeners.isEmpty ? "not_attempted" : listeners)",
                 "AudioUnitUninitialize: \(uninitialize.map(String.init) ?? "not_attempted")",
@@ -40,15 +42,15 @@ final nonisolated class NativeVoiceDirectVPIOCleanup: Sendable {
     }
 
     private let saved = OSAllocatedUnfairLock<Report?>(initialState: nil)
+    private let savedSplitPlayback = OSAllocatedUnfairLock<Report?>(initialState: nil)
 
-    var report: Report? {
-        saved.withLock { $0 }
-    }
+    var report: Report? { saved.withLock { $0 } }
+    var splitPlaybackReport: Report? { savedSplitPlayback.withLock { $0 } }
 
     #if NATIVE_VOICE_DIRECT_VPIO
     func release(
         _ unit: AudioUnit, api: NativeVoiceDirectVPIO.UnitAPI, callbacks: OpaquePointer?,
-        watched: [AudioUnitPropertyID], phase: (startAttempted: Bool, initialized: Bool)
+        watched: [AudioUnitPropertyID], phase: (startAttempted: Bool, initialized: Bool), splitPlayback: Bool = false
     ) -> Report {
         let stop = phase.startAttempted ? api.stop(unit) : nil
         let listeners: [ListenerResult] = callbacks.map { context in
@@ -61,7 +63,7 @@ final nonisolated class NativeVoiceDirectVPIOCleanup: Sendable {
         let report = Report(
             stop: stop, removePropertyListeners: listeners, uninitialize: uninitialize, dispose: api.dispose(unit)
         )
-        saved.withLock { $0 = report }
+        (splitPlayback ? savedSplitPlayback : saved).withLock { $0 = report }
         return report
     }
     #endif
@@ -69,9 +71,16 @@ final nonisolated class NativeVoiceDirectVPIOCleanup: Sendable {
 
 #if NATIVE_VOICE_DIRECT_VPIO
 extension AppleNativeVoiceTransport {
-    static func directVPIO(limits: Limits, cleanup: NativeVoiceDirectVPIOCleanup) -> AppleNativeVoiceTransport {
+    static func directVPIO(
+        limits: Limits, cleanup: NativeVoiceDirectVPIOCleanup, splitPlayback: Bool = false
+    ) -> AppleNativeVoiceTransport {
         AppleNativeVoiceTransport(
-            makeEngine: { NativeVoiceDirectVPIO(callbackLimit: limits.callbackFrames, cleanup: cleanup) },
+            makeEngine: {
+                NativeVoiceDirectVPIO(
+                    callbackLimit: limits.callbackFrames, cleanup: cleanup,
+                    splitPlaybackAPI: splitPlayback ? .init(create: NativeVoiceSplitAUHAL.createUnit) : nil
+                )
+            },
             authorized: { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized },
             limits: limits
         )

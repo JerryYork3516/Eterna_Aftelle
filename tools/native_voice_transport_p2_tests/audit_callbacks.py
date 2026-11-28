@@ -62,7 +62,7 @@ def audit(opt):
     for callback in callbacks:
         visit(2, callback)
     if direct_vpio:
-        for callback in ("nvt_direct_vpio_capture", "nvt_direct_vpio_render", "nvt_direct_vpio_changed"):
+        for callback in ("nvt_direct_vpio_capture", "nvt_direct_vpio_render", "nvt_direct_vpio_changed", "nvt_split_vpio_silence"):
             visit(1, callback)
         print(f"native_voice_direct_vpio_callback_ir_{opt[1:]}_functions={len(visited)}")
     if same_frame and opt == "-O0":

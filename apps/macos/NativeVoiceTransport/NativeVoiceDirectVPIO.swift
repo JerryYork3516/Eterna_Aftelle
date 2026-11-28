@@ -46,7 +46,7 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
         var streams = NativeVoiceHALRoute.streamBindings
     }
 
-    private struct Property {
+    struct Property {
         let id: AudioUnitPropertyID
         let scope: AudioUnitScope
         let bus: AudioUnitElement
@@ -68,6 +68,8 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
         static let outputIO = Property(kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0)
         static let captureFormat = Property(kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1)
         static let renderFormat = Property(kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0)
+        static let deviceRenderFormat = Property(kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0)
+        static let playbackChannelMap = Property(kAudioOutputUnitProperty_ChannelMap, kAudioUnitScope_Output, 0)
         static let inputDevice = Property(kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 1)
         static let outputDevice = Property(kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0)
     }
@@ -91,16 +93,19 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
     private var startAttempted = false
     private var ownsSlot = false
     private var stopped = false
+    private let splitPlayback: NativeVoiceSplitAUHAL?
 
     init(
         callbackLimit: UInt32, api: UnitAPI = .init(), route: RouteAPI = .init(),
-        devices: NativeVoiceHALRoute = .init(), cleanup: NativeVoiceDirectVPIOCleanup = .init()
+        devices: NativeVoiceHALRoute = .init(), cleanup: NativeVoiceDirectVPIOCleanup = .init(),
+        splitPlaybackAPI: UnitAPI? = nil
     ) {
         self.callbackLimit = callbackLimit
         self.api = api
         self.route = route
         self.devices = devices
         self.cleanup = cleanup
+        splitPlayback = splitPlaybackAPI.map { NativeVoiceSplitAUHAL(api: $0, callbackLimit: callbackLimit) }
     }
 
     deinit { stop() }
@@ -133,9 +138,12 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
         try writeVoice(unit, kAUVoiceIOProperty_VoiceProcessingEnableAGC, 1)
         try writeVoice(unit, kAUVoiceIOProperty_BypassVoiceProcessing, 0)
         try writeVoice(unit, kAUVoiceIOProperty_MuteOutput, 0)
-        let plan = try configureFormats(unit)
-        self.plan = plan
-        return plan
+        let voicePlan = try configureFormats(unit)
+        let sessionPlan = try splitPlayback?.negotiate(
+            referenceDevice: targets.output, voicePlan: voicePlan, voiceUnit: unit
+        ) ?? voicePlan
+        plan = sessionPlan
+        return sessionPlan
     }
 
     func install(
@@ -154,8 +162,14 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
         let ref = UnsafeMutableRawPointer(context)
         try write(unit, Property(kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 1),
                   AURenderCallbackStruct(inputProc: nvt_direct_vpio_capture, inputProcRefCon: ref))
+        let renderCallback: AURenderCallback
+        if splitPlayback == nil {
+            renderCallback = nvt_direct_vpio_render
+        } else {
+            renderCallback = nvt_split_vpio_silence
+        }
         try write(unit, Property(kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0),
-                  AURenderCallbackStruct(inputProc: nvt_direct_vpio_render, inputProcRefCon: ref))
+                  AURenderCallbackStruct(inputProc: renderCallback, inputProcRefCon: ref))
         try Self.check(api.initialize(unit), "initialize")
         initialized = true
         // The unit can invalidate the lease synchronously even before the HAL listener or actor runs.
@@ -163,6 +177,7 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
             try Self.check(api.listen(unit, id, nvt_direct_vpio_changed, ref), "listen.\(id)")
             watched.append(id)
         }
+        try splitPlayback?.install(ref)
     }
 
     func start() throws {
@@ -170,12 +185,14 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
         _ = try validatedSnapshot(unit)
         startAttempted = true
         try Self.check(api.start(unit), "start")
+        try splitPlayback?.start()
     }
 
     func snapshot() throws -> NativeVoiceGraphSnapshot {
         guard let unit, startAttempted else { throw NativeVoiceSessionError.state }
         guard try read(unit, Property(kAudioOutputUnitProperty_IsRunning), UInt32(0)) != 0
         else { throw NativeVoiceDirectVPIOFailure(stage: "unit_not_running") }
+        try splitPlayback?.requireRunning()
         return try validatedSnapshot(unit)
     }
 
@@ -188,14 +205,16 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
         stopped = true
         retainedLease?.takeUnretainedValue().close()
         devices.stop()
+        let playbackReleased = splitPlayback?.release(callbacks: callbacks, cleanup: cleanup) ?? true
         if let unit {
             self.unit = nil
             let result = cleanup.release(
                 unit, api: api, callbacks: callbacks, watched: watched, phase: (startAttempted, initialized)
             )
-            // Uncertain callback quiescence requires keeping the closed lease and slot until process exit.
             guard !result.failed else { return }
         }
+        // Either unit can still hold the reference after a failed release.
+        guard playbackReleased else { return }
         nvt_direct_vpio_destroy(callbacks)
         callbacks = nil
         retainedLease?.release()
@@ -209,9 +228,9 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
 
 private extension NativeVoiceDirectVPIO {
     nonisolated func validatedSnapshot(_ unit: AudioUnit) throws -> NativeVoiceGraphSnapshot {
-        let actualPlan = try formats(unit)
+        let voicePlan = try formats(unit)
         let maximum = try read(unit, Property(kAudioUnitProperty_MaximumFramesPerSlice), UInt32(0))
-        guard actualPlan == plan, maximum > 0, maximum <= callbackLimit
+        guard maximum > 0, maximum <= callbackLimit, splitPlayback != nil || voicePlan == plan
         else { throw NativeVoiceDirectVPIOFailure(stage: "client_format_or_callback_capacity") }
         let processing = try voiceProcessing(unit)
         guard processing == Self.processing else { throw NativeVoiceSessionError.voiceProcessing }
@@ -220,6 +239,10 @@ private extension NativeVoiceDirectVPIO {
         let current = try route.defaults()
         guard current == defaults, input != 0, output != 0, input == current.input, output == current.output
         else { throw NativeVoiceDirectVPIOFailure(stage: "directional_route_unverified") }
+        let actualPlan = try splitPlayback?.validatedPlan(referenceDevice: output, voicePlan: voicePlan) ?? voicePlan
+        guard actualPlan == plan else {
+            throw NativeVoiceDirectVPIOFailure(stage: "split_auhal.client_format_changed")
+        }
         let bindings = try route.bindings([input, output])
         guard bindings.contains(where: { $0.id == input && $0.inputChannels.contains(where: { $0 > 0 }) }),
               bindings.contains(where: { $0.id == output && $0.outputChannels.contains(where: { $0 > 0 }) })
@@ -263,35 +286,6 @@ private extension NativeVoiceDirectVPIO {
         return NativeVoiceGraphPlan(capture: capture, render: render)
     }
 
-    private nonisolated static func floatFormat(
-        _ rate: Double, _ channels: UInt32, _ planar: Bool
-    ) -> AudioStreamBasicDescription {
-        let bytes: UInt32 = 4 * (planar ? 1 : channels)
-        return .init(
-            mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
-                | (planar ? kAudioFormatFlagIsNonInterleaved : 0),
-            mBytesPerPacket: bytes, mFramesPerPacket: 1, mBytesPerFrame: bytes,
-            mChannelsPerFrame: channels, mBitsPerChannel: 32, mReserved: 0
-        )
-    }
-
-    private nonisolated static func describe(_ format: AudioStreamBasicDescription) throws -> NativeVoiceIOFormat {
-        let interleaved = format.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
-        let float = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
-        guard format.mSampleRate.isFinite, format.mSampleRate > 0, (1 ... 32).contains(format.mChannelsPerFrame),
-              format.mFormatID == kAudioFormatLinearPCM, format.mFormatFlags & float == float,
-              format.mFormatFlags & kAudioFormatFlagIsBigEndian == 0,
-              format.mBitsPerChannel == 32, format.mFramesPerPacket == 1,
-              format.mBytesPerPacket == format.mBytesPerFrame,
-              format.mBytesPerFrame == 4 * (interleaved ? format.mChannelsPerFrame : 1)
-        else { throw NativeVoiceDirectVPIOFailure(stage: "unsupported_client_format") }
-        return .init(
-            sampleRate: format.mSampleRate, channels: format.mChannelsPerFrame,
-            interleaved: interleaved, float32: true
-        )
-    }
-
     private nonisolated func voiceProcessing(_ unit: AudioUnit) throws -> NativeVoiceProcessingReadback {
         let agc = try voiceProperty(kAUVoiceIOProperty_VoiceProcessingEnableAGC) { try read(unit, $0, UInt32(0)) }
         let bypass = try voiceProperty(kAUVoiceIOProperty_BypassVoiceProcessing) { try read(unit, $0, UInt32(0)) }
@@ -318,40 +312,15 @@ private extension NativeVoiceDirectVPIO {
     }
 
     private nonisolated func read<T>(_ unit: AudioUnit, _ property: Property, _ initial: T) throws -> T {
-        var bytes = UInt32(MemoryLayout<T>.size)
-        var value = initial
-        let status = withUnsafeMutableBytes(of: &value) { buffer in
-            api.get(unit, property.id, property.scope, property.bus, buffer.baseAddress!, &bytes)
-        }
-        try Self.check(status, "read.\(property.address)")
-        guard bytes == MemoryLayout<T>.size else {
-            throw NativeVoiceDirectVPIOFailure(stage: "property_size.\(property.address)")
-        }
-        return value
+        try api.read(unit, property, initial)
     }
 
     private nonisolated func write<T>(_ unit: AudioUnit, _ property: Property, _ value: T) throws {
-        let status = withUnsafeBytes(of: value) { buffer in
-            api.set(unit, property.id, property.scope, property.bus, buffer.baseAddress!, UInt32(buffer.count))
-        }
-        try Self.check(status, "write.\(property.address)")
-    }
-
-    private nonisolated static func check(_ status: OSStatus, _ operation: String) throws {
-        guard status == noErr else { throw NativeVoiceDirectVPIOFailure(stage: operation, code: status) }
+        try api.write(unit, property, value)
     }
 
     private nonisolated static func createUnit() throws -> AudioUnit {
-        var type = AudioComponentDescription(
-            componentType: kAudioUnitType_Output, componentSubType: kAudioUnitSubType_VoiceProcessingIO,
-            componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0
-        )
-        guard let component = AudioComponentFindNext(nil, &type)
-        else { throw NativeVoiceDirectVPIOFailure(stage: "component_unavailable") }
-        var instance: AudioUnit?
-        try check(AudioComponentInstanceNew(component, &instance), "create")
-        guard let instance else { throw NativeVoiceDirectVPIOFailure(stage: "unit_unavailable") }
-        return instance
+        try createUnit(kAudioUnitSubType_VoiceProcessingIO)
     }
 }
 
@@ -383,7 +352,8 @@ extension NativeVoiceDirectVPIO {
             deviceControls: NativeVoiceHALRoute.sameFrameControls(
                 inputs: inputRoots + (inputMembers ?? []),
                 outputs: outputRoots + (outputMembers ?? []), bindings: bindings
-            )
+            ),
+            splitAUHAL: splitPlayback?.systemState(voiceRender: unit.flatMap { try? formats($0).render })
         )
     }
 }
