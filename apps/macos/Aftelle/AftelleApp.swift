@@ -352,12 +352,15 @@ private struct NativeVoiceSameFrameLabView: View {
     @State private var directFailure: String?
     @State private var directCleanup: NativeVoiceDirectVPIOCleanup.Report?
     @State private var splitAUHALCleanup: NativeVoiceDirectVPIOCleanup.Report?
+    @State private var historyArm: NativeVoiceOnsetHistory.Arm = .firstVoiced
+    @State private var experimentID = UUID()
     private let backend = NativeVoiceSameFrameLaunch.backendTag(ProcessInfo.processInfo.arguments)
+    private let isOnsetHistory = NativeVoiceSameFrameLaunch.isOnsetHistory(ProcessInfo.processInfo.arguments)
 
     private enum SaveStatus { case idle, saving, saved, failed }
 
     private nonisolated struct DiagnosticExport: Encodable, Sendable {
-        let schemaVersion = 2
+        var schemaVersion = 2
         let runID: UUID
         let residentWAVSHA256: String
         let buildBinarySHA256: String?
@@ -365,9 +368,11 @@ private struct NativeVoiceSameFrameLabView: View {
         let directVPIOCleanup: NativeVoiceDirectVPIOCleanup.Report?
         let splitAUHALCleanup: NativeVoiceDirectVPIOCleanup.Report?
         let outcome: String
-        let transport: NativeVoiceTransportReadback
+        let transport: NativeVoiceTransportReadback?
         let captureWAV: NativeVoiceSameFrameCapture.Summary?
         let captureWAVSHA256: String?
+        var onsetHistory: NativeVoiceOnsetHistory.Evidence?
+        var failureDetail: String?
     }
 
     var body: some View {
@@ -391,6 +396,7 @@ private struct NativeVoiceSameFrameLabView: View {
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
             }
+            if isOnsetHistory { historyControls }
             Text(String(localized: String.LocalizationValue("nativeVoiceSameFrame." + status)))
                 .font(.headline)
             if let fileName {
@@ -407,6 +413,7 @@ private struct NativeVoiceSameFrameLabView: View {
                     .disabled(
                         task != nil || resident == nil || saveStatus == .saving || localStorageReady != true
                             || directCleanup?.failed == true
+                            || (isOnsetHistory && (!retainWAV || splitAUHALCleanup?.failed == true))
                     )
                 Button(String(localized: "nativeVoiceAcousticLab.stop")) { task?.cancel() }
                     .disabled(task == nil)
@@ -445,9 +452,28 @@ private struct NativeVoiceSameFrameLabView: View {
             }
             Button(String(localized: "nativeVoiceAcousticEvidence.cancel"), role: .cancel) {}
         } message: {
-            Text(retainWAV
-                ? String(localized: "nativeVoiceSameFrame.wavConsent")
-                : String(localized: "nativeVoiceSameFrame.consent"))
+            if isOnsetHistory {
+                Text(String(localized: "nativeVoiceSameFrame.historyConsent"))
+            } else {
+                Text(retainWAV
+                    ? String(localized: "nativeVoiceSameFrame.wavConsent")
+                    : String(localized: "nativeVoiceSameFrame.consent"))
+            }
+        }
+    }
+
+    private var historyControls: some View {
+        VStack(alignment: .leading) {
+            Picker(String(localized: "nativeVoiceSameFrame.historyArm"), selection: $historyArm) {
+                Text(String(localized: "nativeVoiceSameFrame.historyFirst"))
+                    .tag(NativeVoiceOnsetHistory.Arm.firstVoiced)
+                Text(String(localized: "nativeVoiceSameFrame.historyShort")).tag(NativeVoiceOnsetHistory.Arm.shortGap)
+                Text(String(localized: "nativeVoiceSameFrame.historyLong")).tag(NativeVoiceOnsetHistory.Arm.longGap)
+            }
+            .disabled(task != nil || saveStatus == .saving)
+            Text(experimentID.uuidString)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
         }
     }
 
@@ -506,15 +532,33 @@ private extension NativeVoiceSameFrameLabView {
     func run(_ bookmark: Data, retainWAV: Bool) async {
         defer { task = nil }
         guard let source = try? AppController.readSameFrameResidentWAV(bookmark),
-              source.pcm.count <= 12 * 48000,
-              await AVCaptureDevice.requestAccess(for: .audio), !Task.isCancelled
+              source.pcm.count <= 12 * 48000
         else {
+            status = "failed"
+            return
+        }
+        if isOnsetHistory, !NativeVoiceOnsetHistory.acceptsResident(source.pcm, sha256: source.sha256) {
+            status = "historyWrongWAV"
+            return
+        }
+        guard await AVCaptureDevice.requestAccess(for: .audio), !Task.isCancelled else {
             status = "failed"
             return
         }
 
         let cleanup = backend.map { _ in NativeVoiceDirectVPIOCleanup() }
         let graph = NativeVoiceSameFrameLaunch.makeTransport(ProcessInfo.processInfo.arguments, cleanup: cleanup)
+        if isOnsetHistory {
+            await runOnsetHistory(source, using: graph, cleanup: cleanup)
+        } else {
+            await runOrdinarySameFrame(source, using: graph, cleanup: cleanup, retainWAV: retainWAV)
+        }
+    }
+
+    func runOrdinarySameFrame(
+        _ source: (pcm: Data, sha256: String), using graph: AppleNativeVoiceTransport,
+        cleanup: NativeVoiceDirectVPIOCleanup?, retainWAV: Bool
+    ) async {
         let identity = NativeVoiceIdentity(
             authority: .init(runtimeGeneration: 0, routeEpoch: 0, configurationID: 1),
             captureGeneration: 1, captureToken: 1, playbackEpoch: 1, playbackToken: 1
@@ -554,6 +598,44 @@ private extension NativeVoiceSameFrameLabView {
             status = outcome == "cleanup_failed" ? "failed" : (complete ? "finished" : "incomplete")
         } else {
             status = "failed"
+        }
+    }
+
+    func runOnsetHistory(
+        _ source: (pcm: Data, sha256: String), using graph: AppleNativeVoiceTransport,
+        cleanup: NativeVoiceDirectVPIOCleanup?
+    ) async {
+        let runID = UUID()
+        var history = NativeVoiceOnsetHistory(experimentID: experimentID, arm: historyArm, resident: source.pcm)
+        let error = await history.run(using: graph) { cue in
+            switch cue {
+            case .waiting: status = "historyWaiting"
+            case .speak: status = "speak"
+            case .quiet: status = "quiet"
+            case .ending: status = "ending"
+            }
+        }
+        directFailure = error.map(failureDetail)
+        directCleanup = cleanup?.report
+        splitAUHALCleanup = cleanup?.splitPlaybackReport
+        if directCleanup?.failed == true || splitAUHALCleanup?.failed == true { history.cleanupFailed() }
+        let finished = history.evidence.outcome == .finished && !Task.isCancelled
+        let recording = history.recording?.finish(endedNormally: finished)
+        let encoded = recording?.pcm.map { AppController.encodeSameFrameWAV($0) }
+        wav = encoded?.bytes
+        report = DiagnosticExport(
+            schemaVersion: 3, runID: runID, residentWAVSHA256: source.sha256,
+            buildBinarySHA256: AppController.sameFrameBuildSHA256(), backend: backend,
+            directVPIOCleanup: directCleanup, splitAUHALCleanup: splitAUHALCleanup,
+            outcome: history.evidence.outcome.rawValue, transport: await graph.readback(),
+            captureWAV: recording?.summary, captureWAVSHA256: encoded?.sha256,
+            onsetHistory: history.evidence, failureDetail: directFailure
+        )
+        switch history.evidence.outcome {
+        case .finished: status = "finished"
+        case .invalid: status = "incomplete"
+        case .stopped: status = "historyStopped"
+        default: status = "failed"
         }
     }
 

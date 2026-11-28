@@ -724,3 +724,11 @@
 "nativeVoiceSameFrame.wavIncomplete" = "未取得完整 15 秒录音，可保存技术 JSON。";
 "nativeVoiceSameFrame.saveFailed" = "本机保存失败，可以重试保存当前证据。";
 "nativeVoiceSameFrame.reveal" = "在访达中显示已保存证据";
+"nativeVoiceSameFrame.historyArm" = "起音实验臂";
+"nativeVoiceSameFrame.historyFirst" = "A · 首次有声";
+"nativeVoiceSameFrame.historyShort" = "B · 短间隔重播";
+"nativeVoiceSameFrame.historyLong" = "C · 长静音后重播";
+"nativeVoiceSameFrame.historyWaiting" = "请保持安静，直到讲话提示。铺垫槽可能有声音。";
+"nativeVoiceSameFrame.historyStopped" = "本臂已停止。";
+"nativeVoiceSameFrame.historyWrongWAV" = "请选择本实验固定的原幅居民 WAV。";
+"nativeVoiceSameFrame.historyConsent" = "运行一次约 30 秒的本机起音实验。请依讲话和停讲提示操作。仅可留存目标段 15 秒录音，保存需在本机另行操作。";

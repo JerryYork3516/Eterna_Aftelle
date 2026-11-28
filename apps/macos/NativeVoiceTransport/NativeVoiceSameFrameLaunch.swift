@@ -3,6 +3,7 @@ nonisolated enum NativeVoiceSameFrameLaunch {
     static let argument = "--apple-native-voice-same-frame-diagnostics"
     #if NATIVE_VOICE_DIRECT_VPIO
     static let splitAUHALArgument = "--apple-native-voice-split-auhal-candidate"
+    static let onsetHistoryArgument = "--apple-native-voice-split-auhal-onset-history"
     static let splitAUHALBackend = "split_auhal_voice_processing_io"
     #endif
 
@@ -10,6 +11,7 @@ nonisolated enum NativeVoiceSameFrameLaunch {
         #if NATIVE_VOICE_DIRECT_VPIO
         let splitRequested = arguments.dropFirst().contains {
             $0 == splitAUHALArgument || $0.hasPrefix(splitAUHALArgument + "=")
+                || $0 == onsetHistoryArgument || $0.hasPrefix(onsetHistoryArgument + "=")
         }
         if splitRequested || NativeVoiceDirectVPIOLaunch.isRequested(arguments) { return true }
         #endif
@@ -28,9 +30,19 @@ nonisolated enum NativeVoiceSameFrameLaunch {
         #endif
     }
 
+    static func isOnsetHistory(_ arguments: [String]) -> Bool {
+        #if NATIVE_VOICE_DIRECT_VPIO
+        arguments.dropFirst().elementsEqual([onsetHistoryArgument])
+        #else
+        false
+        #endif
+    }
+
     static func backendTag(_ arguments: [String]) -> String? {
         #if NATIVE_VOICE_DIRECT_VPIO
-        if arguments.dropFirst().elementsEqual([splitAUHALArgument]) { return splitAUHALBackend }
+        if isOnsetHistory(arguments) || arguments.dropFirst().elementsEqual([splitAUHALArgument]) {
+            return splitAUHALBackend
+        }
         return usesDirectVPIO(arguments) ? "direct_voice_processing_io" : nil
         #else
         nil

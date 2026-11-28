@@ -20,6 +20,7 @@ struct SameFrameTests {
         try await captureFromExistingWorker()
         captureRejectsGaps()
         try localEvidencePublication()
+        try await onsetHistory()
         print("native_voice_same_frame_swift_checks=\(checks)")
     }
 

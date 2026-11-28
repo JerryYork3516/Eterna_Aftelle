@@ -4,6 +4,7 @@ import Foundation
 extension DirectVPIOTests {
     static func splitAUHAL() async throws {
         splitAdmission()
+        onsetAdmission()
         try await splitSession()
         for fault in [FakeDirectVPIO.Failure.create, .format, .callback, .initialize, .listen, .start] {
             try await splitRollback(voice: FakeDirectVPIO(), output: splitOutput(fault))
@@ -31,6 +32,34 @@ extension DirectVPIOTests {
         let malformed = ["Aftelle", split + "=true"]
         check(NativeVoiceSameFrameLaunch.isRequested(malformed)
             && !NativeVoiceSameFrameLaunch.isAllowed(malformed, authorized: true), "intercept malformed split launch")
+    }
+
+    private static func onsetAdmission() {
+        let onset = NativeVoiceSameFrameLaunch.onsetHistoryArgument
+        let args = ["Aftelle", onset]
+        check(NativeVoiceSameFrameLaunch.isRequested(args) && NativeVoiceSameFrameLaunch.isOnsetHistory(args),
+              "exact onset launch routes to the lab")
+        let authorized = NativeVoiceSameFrameLaunch.isAllowed(args, authorized: true)
+        let unauthorized = NativeVoiceSameFrameLaunch.isAllowed(args, authorized: false)
+        check(authorized && !unauthorized, "onset launch retains authorization gate")
+        check(NativeVoiceSameFrameLaunch.backendTag(args) == NativeVoiceSameFrameLaunch.splitAUHALBackend,
+              "onset entry selects the split backend")
+        let ordinaryFlags = [
+            NativeVoiceSameFrameLaunch.splitAUHALArgument,
+            NativeVoiceDirectVPIOLaunch.argument,
+            NativeVoiceSameFrameLaunch.argument
+        ]
+        let conflicts = [["Aftelle", onset + "=true"]] + (ordinaryFlags + [onset]).map { args + [$0] }
+        for wrong in conflicts {
+            check(NativeVoiceSameFrameLaunch.isRequested(wrong)
+                && !NativeVoiceSameFrameLaunch.isAllowed(wrong, authorized: true), "ambiguous onset entry fails closed")
+        }
+        for flag in ordinaryFlags {
+            let ordinary = ["Aftelle", flag]
+            let ordinaryAuthorized = NativeVoiceSameFrameLaunch.isAllowed(ordinary, authorized: true)
+            check(!NativeVoiceSameFrameLaunch.isOnsetHistory(ordinary) && ordinaryAuthorized,
+                  "ordinary lab flags stay independent")
+        }
     }
 
     private static func splitOutput(_ failure: FakeDirectVPIO.Failure = .none) -> FakeDirectVPIO {

@@ -24,13 +24,15 @@ nonisolated struct NativeVoiceSameFrameCapture {
     }
 
     private let identity: NativeVoiceIdentity.Capture
+    private let firstSampleCount: UInt64
     private var segment: UInt64?
     private var pcm = Data(capacity: pcmBytes)
     private var count = 0
     private var discontinuous = false
 
-    init(identity: NativeVoiceIdentity.Capture) {
+    init(identity: NativeVoiceIdentity.Capture, firstSampleCount: UInt64 = 0) {
         self.identity = identity
+        self.firstSampleCount = firstSampleCount
     }
 
     var needsPackets: Bool {
@@ -41,7 +43,8 @@ nonisolated struct NativeVoiceSameFrameCapture {
         for packet in packets {
             guard needsPackets else { return }
             guard packet.identity == identity, segment == nil || segment == packet.segment,
-                  packet.sampleCount == UInt64(count * Self.framesPerPacket),
+                  packet.sampleCount >= firstSampleCount,
+                  packet.sampleCount - firstSampleCount == UInt64(count * Self.framesPerPacket),
                   packet.bytes.count == Self.framesPerPacket * 2
             else {
                 discontinuous = true
@@ -65,7 +68,7 @@ nonisolated struct NativeVoiceSameFrameCapture {
         }
         let summary = Summary(
             state: state, identity: identity, segment: segment,
-            firstSampleCount: count > 0 ? 0 : nil, frames: count * Self.framesPerPacket
+            firstSampleCount: count > 0 ? firstSampleCount : nil, frames: count * Self.framesPerPacket
         )
         return (summary, state == .complete ? pcm : nil)
     }

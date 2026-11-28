@@ -724,3 +724,11 @@
 "nativeVoiceSameFrame.wavIncomplete" = "A complete 15-second recording is unavailable. Diagnostic JSON is ready.";
 "nativeVoiceSameFrame.saveFailed" = "Local save failed. You can try saving the current evidence again.";
 "nativeVoiceSameFrame.reveal" = "Show saved evidence in Finder";
+"nativeVoiceSameFrame.historyArm" = "Onset history arm";
+"nativeVoiceSameFrame.historyFirst" = "A · First voiced playback";
+"nativeVoiceSameFrame.historyShort" = "B · Short gap";
+"nativeVoiceSameFrame.historyLong" = "C · Long silence";
+"nativeVoiceSameFrame.historyWaiting" = "Stay quiet until the speaking prompt. You may hear a lead-in slot.";
+"nativeVoiceSameFrame.historyStopped" = "The arm was stopped.";
+"nativeVoiceSameFrame.historyWrongWAV" = "Choose the fixed, original resident WAV for this experiment.";
+"nativeVoiceSameFrame.historyConsent" = "Run one local onset-history arm for about 30 seconds. Follow the speaking and stop prompts. Only the 15-second target recording can be saved, and saving is a separate local action.";
