@@ -25,8 +25,12 @@ swiftc -parse-as-library -swift-version 6 -default-isolation MainActor -warn-con
   -warnings-as-errors -D DEBUG -D NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS -D NATIVE_VOICE_DIRECT_VPIO \
   -Xcc "${defines[0]}" -Xcc "${defines[1]}" -import-objc-header "$src/NativeVoiceRealtime.h" \
   -module-cache-path "$work/modules" -framework AVFoundation -framework CoreAudio -framework AudioToolbox \
-  -lc++ "${swift[@]}" "$src/"*.swift "$tests/DirectVPIOTests.swift" "$work/"*.o -o "$work/contract"
+  -lc++ "${swift[@]}" "$src/"*.swift "$tests/"*.swift "$work/"*.o -o "$work/contract"
 "$work/contract"
+for fault in stop removeListener uninitialize dispose dispose-before-install stop-after-start-failure; do
+  echo "native_voice_direct_vpio_cleanup_case=$fault"
+  "$work/contract" "$fault"
+done
 if [[ "$mode" == normal ]]; then
   python3 "$root/tools/native_voice_transport_p2_tests/audit_callbacks.py" --direct-vpio
   clang -std=c11 -Wall -Wextra -Werror -O2 -c "$src/NativeVoiceRealtime.c" -o "$work/release.o"

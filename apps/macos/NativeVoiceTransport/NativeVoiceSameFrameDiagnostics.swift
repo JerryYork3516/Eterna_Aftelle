@@ -35,11 +35,13 @@ nonisolated enum NativeVoiceSameFrameLaunch {
     }
 
     @MainActor
-    static func makeTransport(_ arguments: [String]) -> AppleNativeVoiceTransport {
+    static func makeTransport(
+        _ arguments: [String], cleanup: NativeVoiceDirectVPIOCleanup?
+    ) -> AppleNativeVoiceTransport {
         let limits = AppleNativeVoiceTransport.Limits(sameFrameDiagnostics: true)
         #if NATIVE_VOICE_DIRECT_VPIO
         if usesDirectVPIO(arguments) {
-            return .directVPIO(limits: limits)
+            return .directVPIO(limits: limits, cleanup: cleanup ?? .init())
         }
         #endif
         return .macOS(limits: limits)

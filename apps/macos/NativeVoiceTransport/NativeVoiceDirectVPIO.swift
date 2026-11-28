@@ -25,16 +25,6 @@ nonisolated struct NativeVoiceDirectVPIOFailure: Error {
     }
 }
 
-extension AppleNativeVoiceTransport {
-    static func directVPIO(limits: Limits) -> AppleNativeVoiceTransport {
-        AppleNativeVoiceTransport(
-            makeEngine: { NativeVoiceDirectVPIO(callbackLimit: limits.callbackFrames) },
-            authorized: { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized },
-            limits: limits
-        )
-    }
-}
-
 /// A single stopped Audio Unit is negotiated before the transport allocates its Worker.
 final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVoiceSameFrameSystemReading {
     struct UnitAPI {
@@ -90,6 +80,7 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
     private let api: UnitAPI
     private let route: RouteAPI
     private let devices: NativeVoiceHALRoute
+    private let cleanup: NativeVoiceDirectVPIOCleanup
     private var defaults: NativeVoiceGraphSnapshot.Defaults?
     private var plan: NativeVoiceGraphPlan?
     private var unit: AudioUnit?
@@ -99,21 +90,23 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
     private var initialized = false
     private var startAttempted = false
     private var ownsSlot = false
+    private var stopped = false
 
     init(
         callbackLimit: UInt32, api: UnitAPI = .init(), route: RouteAPI = .init(),
-        devices: NativeVoiceHALRoute = .init()
+        devices: NativeVoiceHALRoute = .init(), cleanup: NativeVoiceDirectVPIOCleanup = .init()
     ) {
         self.callbackLimit = callbackLimit
         self.api = api
         self.route = route
         self.devices = devices
+        self.cleanup = cleanup
     }
 
     deinit { stop() }
 
     func negotiate() throws -> NativeVoiceGraphPlan {
-        guard !ownsSlot else { throw NativeVoiceSessionError.state }
+        guard !ownsSlot, !stopped else { throw NativeVoiceSessionError.state }
         let targets = try route.defaults()
         ownsSlot = Self.slot.withLock { inUse in
             guard !inUse else { return false }
@@ -125,8 +118,16 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
         let unit = try api.create()
         self.unit = unit
         defaults = targets
-        try write(unit, .inputIO, UInt32(1))
-        try write(unit, .outputIO, UInt32(1))
+        for direction in [Property.inputIO, .outputIO] {
+            var enabled = try read(unit, direction, UInt32(0))
+            if enabled == 0 {
+                try write(unit, direction, UInt32(1))
+                enabled = try read(unit, direction, UInt32(0))
+            }
+            guard enabled == 1 else {
+                throw NativeVoiceDirectVPIOFailure(stage: "enable_io.\(direction.address)")
+            }
+        }
         try write(unit, .inputDevice, targets.input)
         try write(unit, .outputDevice, targets.output)
         try writeVoice(unit, kAUVoiceIOProperty_VoiceProcessingEnableAGC, 1)
@@ -183,26 +184,17 @@ final nonisolated class NativeVoiceDirectVPIO: NativeVoiceGraphBackend, NativeVo
     }
 
     func stop() {
+        guard !stopped else { return }
+        stopped = true
         retainedLease?.takeUnretainedValue().close()
         devices.stop()
         if let unit {
             self.unit = nil
-            if startAttempted {
-                _ = api.stop(unit)
-            }
-            if let callbacks {
-                for id in watched.reversed() {
-                    _ = api.unlisten(unit, id, nvt_direct_vpio_changed, UnsafeMutableRawPointer(callbacks))
-                }
-            }
-            if initialized {
-                _ = api.uninitialize(unit)
-            }
-            // If disposal fails, the unit may still hold refCon. Retire it closed
-            // and keep the lease, callback storage and exclusive slot until process exit.
-            guard api.dispose(unit) == noErr else { return }
-        } else if callbacks != nil {
-            return
+            let result = cleanup.release(
+                unit, api: api, callbacks: callbacks, watched: watched, phase: (startAttempted, initialized)
+            )
+            // Uncertain callback quiescence requires keeping the closed lease and slot until process exit.
+            guard !result.failed else { return }
         }
         nvt_direct_vpio_destroy(callbacks)
         callbacks = nil

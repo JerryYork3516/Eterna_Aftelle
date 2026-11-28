@@ -80,6 +80,7 @@
 		A07B12000000000000000004 /* NativeVoiceHALRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000014 /* NativeVoiceHALRoute.swift */; };
 		A07B12000000000000000005 /* NativeVoiceSystemEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000015 /* NativeVoiceSystemEngine.swift */; };
 		A07B12000000000000000008 /* NativeVoiceDirectVPIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000018 /* NativeVoiceDirectVPIO.swift */; };
+		A07B12000000000000000009 /* NativeVoiceDirectVPIOCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000019 /* NativeVoiceDirectVPIOCleanup.swift */; };
 		A07B12000000000000000006 /* NativeVoiceRealtime.c in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000016 /* NativeVoiceRealtime.c */; settings = {COMPILER_FLAGS = "-std=c11"; }; };
 		A07B12000000000000000007 /* NativeVoiceRealtimeLease.mm in Sources */ = {isa = PBXBuildFile; fileRef = A07B12000000000000000017 /* NativeVoiceRealtimeLease.mm */; };
 		A07B13000000000000000001 /* MacSpeechNativeRealtimeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07B13000000000000000011 /* MacSpeechNativeRealtimeSession.swift */; };
@@ -165,6 +166,7 @@
 		A07B12000000000000000014 /* NativeVoiceHALRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../NativeVoiceTransport/NativeVoiceHALRoute.swift; sourceTree = SOURCE_ROOT; };
 		A07B12000000000000000015 /* NativeVoiceSystemEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../NativeVoiceTransport/NativeVoiceSystemEngine.swift; sourceTree = SOURCE_ROOT; };
 		A07B12000000000000000018 /* NativeVoiceDirectVPIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../NativeVoiceTransport/NativeVoiceDirectVPIO.swift; sourceTree = SOURCE_ROOT; };
+		A07B12000000000000000019 /* NativeVoiceDirectVPIOCleanup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../NativeVoiceTransport/NativeVoiceDirectVPIOCleanup.swift; sourceTree = SOURCE_ROOT; };
 		A07B12000000000000000016 /* NativeVoiceRealtime.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ../NativeVoiceTransport/NativeVoiceRealtime.c; sourceTree = SOURCE_ROOT; };
 		A07B12000000000000000017 /* NativeVoiceRealtimeLease.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = ../NativeVoiceTransport/NativeVoiceRealtimeLease.mm; sourceTree = SOURCE_ROOT; };
 		A07B13000000000000000011 /* MacSpeechNativeRealtimeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSpeechNativeRealtimeSession.swift; sourceTree = "<group>"; };
@@ -215,6 +217,7 @@
 				A07B12000000000000000016 /* NativeVoiceRealtime.c */,
 				A07B12000000000000000015 /* NativeVoiceSystemEngine.swift */,
 				A07B12000000000000000018 /* NativeVoiceDirectVPIO.swift */,
+				A07B12000000000000000019 /* NativeVoiceDirectVPIOCleanup.swift */,
 				A07B12000000000000000014 /* NativeVoiceHALRoute.swift */,
 				A07B12000000000000000013 /* NativeVoiceSessionGraph.swift */,
 				A07B12000000000000000012 /* NativeVoiceGraph.swift */,
@@ -387,6 +390,7 @@
 				A07B12000000000000000006 /* NativeVoiceRealtime.c in Sources */,
 				A07B12000000000000000005 /* NativeVoiceSystemEngine.swift in Sources */,
 				A07B12000000000000000008 /* NativeVoiceDirectVPIO.swift in Sources */,
+				A07B12000000000000000009 /* NativeVoiceDirectVPIOCleanup.swift in Sources */,
 				A07B12000000000000000004 /* NativeVoiceHALRoute.swift in Sources */,
 				A07B12000000000000000003 /* NativeVoiceSessionGraph.swift in Sources */,
 				A07B12000000000000000002 /* NativeVoiceGraph.swift in Sources */,

@@ -6,23 +6,29 @@ import Foundation
 @MainActor
 struct DirectVPIOTests {
     private static var checks = 0
-    private static let identity = NativeVoiceIdentity(
+    static let identity = NativeVoiceIdentity(
         authority: .init(runtimeGeneration: 0, routeEpoch: 0, configurationID: 41),
         captureGeneration: 1, captureToken: 1, playbackEpoch: 1, playbackToken: 1
     )
 
     static func main() async throws {
-        admission()
-        try await session()
-        try await fallbackFormat()
-        try await exclusive()
-        for failure in FakeDirectVPIO.Failure.allCases where failure != .none {
-            try await rollback(failure)
+        if let mode = CommandLine.arguments.dropFirst().first {
+            try await isolatedReleaseFailure(mode)
+        } else {
+            admission()
+            try await session()
+            try await fallbackFormat()
+            try await exclusive()
+            for failure in FakeDirectVPIO.Failure.allCases where failure != .none {
+                try await rollback(failure)
+            }
+            try await enableIOCompatibility()
+            try await cleanRelease()
         }
         print("native_voice_direct_vpio_swift_checks=\(checks)")
     }
 
-    private static func check(_ test: Bool, _ message: String) {
+    static func check(_ test: Bool, _ message: String) {
         precondition(test, message)
         checks += 1
     }
@@ -169,10 +175,10 @@ struct DirectVPIOTests {
         check(fake.lifecycle == cleanup, "cleanup repeated")
     }
 
-    private enum Unexpected: Error { case success }
+    enum Unexpected: Error { case success }
 }
 
-private final nonisolated class FakeDirectVPIO: @unchecked Sendable {
+final nonisolated class FakeDirectVPIO: @unchecked Sendable {
     struct Key: Hashable {
         let id: AudioUnitPropertyID
         let scope: AudioUnitScope
@@ -195,6 +201,7 @@ private final nonisolated class FakeDirectVPIO: @unchecked Sendable {
     let failure: Failure
     let unit = AudioUnit(bitPattern: 17)!
     var acceptedRate: Double?
+    var configure: ((inout NativeVoiceDirectVPIO.UnitAPI) -> Void)?
     var lifecycle: [String] = []
     var writes: [(key: Key, bytes: Data)] = []
     var captureCallback, renderCallback: AURenderCallbackStruct?
@@ -207,12 +214,15 @@ private final nonisolated class FakeDirectVPIO: @unchecked Sendable {
         self.failure = failure
         put(.captureFormat, pcm(rate: 44100, channels: 4))
         put(.renderFormat, pcm(rate: 48000, channels: 1))
+        put(.init(kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1), UInt32(0))
+        put(.init(kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0), UInt32(0))
         put(.init(kAudioOutputUnitProperty_IsRunning), UInt32(0))
         put(.init(kAudioUnitProperty_MaximumFramesPerSlice), UInt32(64))
     }
 
-    func transport() -> AppleNativeVoiceTransport {
-        .init(makeEngine: { [self] in makeEngine() }, authorized: { true }, limits: .init(callbackFrames: 128))
+    func transport(cleanup: NativeVoiceDirectVPIOCleanup = .init()) -> AppleNativeVoiceTransport {
+        .init(makeEngine: { [self] in makeEngine(cleanup: cleanup) },
+              authorized: { true }, limits: .init(callbackFrames: 128))
     }
 
     private func unitAPI() -> NativeVoiceDirectVPIO.UnitAPI {
@@ -253,10 +263,11 @@ private final nonisolated class FakeDirectVPIO: @unchecked Sendable {
             return noErr
         }
 
+        configure?(&api)
         return api
     }
 
-    private func makeEngine() -> NativeVoiceDirectVPIO {
+    private func makeEngine(cleanup: NativeVoiceDirectVPIOCleanup) -> NativeVoiceDirectVPIO {
         let routes = NativeVoiceDirectVPIO.RouteAPI(
             defaults: { .init(input: 101, output: 202) },
             bindings: { _ in
@@ -276,7 +287,8 @@ private final nonisolated class FakeDirectVPIO: @unchecked Sendable {
             remove: { [self] _, address, _, _ in removed.append(address.mSelector) }
         )
         return NativeVoiceDirectVPIO(
-            callbackLimit: 128, api: unitAPI(), route: routes, devices: NativeVoiceHALRoute(registration: registration)
+            callbackLimit: 128, api: unitAPI(), route: routes,
+            devices: NativeVoiceHALRoute(registration: registration), cleanup: cleanup
         )
     }
 

@@ -350,6 +350,7 @@ private struct NativeVoiceSameFrameLabView: View {
     @State private var saveStatus: SaveStatus = .idle
     @State private var status = "choose"
     @State private var directFailure: String?
+    @State private var directCleanup: NativeVoiceDirectVPIOCleanup.Report?
     private let backend = NativeVoiceSameFrameLaunch.backendTag(ProcessInfo.processInfo.arguments)
 
     private enum SaveStatus { case idle, saving, saved, failed }
@@ -360,6 +361,7 @@ private struct NativeVoiceSameFrameLabView: View {
         let residentWAVSHA256: String
         let buildBinarySHA256: String?
         let backend: String?
+        let directVPIOCleanup: NativeVoiceDirectVPIOCleanup.Report?
         let outcome: String
         let transport: NativeVoiceTransportReadback
         let captureWAV: NativeVoiceSameFrameCapture.Summary?
@@ -376,6 +378,11 @@ private struct NativeVoiceSameFrameLabView: View {
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
             }
+            if let directCleanup {
+                Text(verbatim: directCleanup.detail)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+            }
             Text(String(localized: String.LocalizationValue("nativeVoiceSameFrame." + status)))
                 .font(.headline)
             if let fileName {
@@ -389,7 +396,10 @@ private struct NativeVoiceSameFrameLabView: View {
                 Button(String(localized: "nativeVoiceSameFrame.choose")) { chooseResident() }
                     .disabled(task != nil || saveStatus == .saving)
                 Button(String(localized: "nativeVoiceAcousticLab.start")) { consent = true }
-                    .disabled(task != nil || resident == nil || saveStatus == .saving || localStorageReady != true)
+                    .disabled(
+                        task != nil || resident == nil || saveStatus == .saving || localStorageReady != true
+                            || directCleanup?.failed == true
+                    )
                 Button(String(localized: "nativeVoiceAcousticLab.stop")) { task?.cancel() }
                     .disabled(task == nil)
             }
@@ -420,6 +430,7 @@ private struct NativeVoiceSameFrameLabView: View {
                 saveStatus = .idle
                 status = "starting"
                 directFailure = nil
+                directCleanup = nil
                 let enabled = retainWAV
                 task = Task { await run(resident, retainWAV: enabled) }
             }
@@ -493,14 +504,15 @@ private extension NativeVoiceSameFrameLabView {
             return
         }
 
-        let graph = NativeVoiceSameFrameLaunch.makeTransport(ProcessInfo.processInfo.arguments)
+        let cleanup = backend.map { _ in NativeVoiceDirectVPIOCleanup() }
+        let graph = NativeVoiceSameFrameLaunch.makeTransport(ProcessInfo.processInfo.arguments, cleanup: cleanup)
         let identity = NativeVoiceIdentity(
             authority: .init(runtimeGeneration: 0, routeEpoch: 0, configurationID: 1),
             captureGeneration: 1, captureToken: 1, playbackEpoch: 1, playbackToken: 1
         )
         let runID = UUID()
         var capture = retainWAV ? NativeVoiceSameFrameCapture(identity: identity.capture) : nil
-        let outcome: String
+        var outcome: String
         do {
             try await graph.start(identity: identity)
             outcome = try await playAndObserve(source.pcm, using: graph, playback: identity.playback, capture: &capture)
@@ -514,6 +526,8 @@ private extension NativeVoiceSameFrameLabView {
             }
         }
         await graph.close()
+        directCleanup = cleanup?.report
+        outcome = directCleanup?.outcome(after: outcome) ?? outcome
         if let result = await graph.readback(), result.sameFrameDiagnostics != nil {
             let recording = capture?.finish(endedNormally: outcome == "finished" && result.state == "closed"
                 && !Task.isCancelled)
@@ -522,11 +536,11 @@ private extension NativeVoiceSameFrameLabView {
             report = DiagnosticExport(
                 runID: runID, residentWAVSHA256: source.sha256,
                 buildBinarySHA256: AppController.sameFrameBuildSHA256(), backend: backend,
-                outcome: outcome, transport: result,
+                directVPIOCleanup: directCleanup, outcome: outcome, transport: result,
                 captureWAV: recording?.summary, captureWAVSHA256: recordingWAV?.sha256
             )
-            status = outcome == "finished" && result.sameFrameDiagnostics?.complete == true
-                ? "finished" : "incomplete"
+            let complete = outcome == "finished" && result.sameFrameDiagnostics?.complete == true
+            status = directCleanup?.failed == true ? "failed" : (complete ? "finished" : "incomplete")
         } else {
             status = "failed"
         }
