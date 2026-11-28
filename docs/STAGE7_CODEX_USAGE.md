@@ -50,6 +50,14 @@ When a task touches SwiftUI, Metal, FileManager, Keychain, HIG, or Accessibility
 - Record: [Independent acoustic witness design](stage7_5/test3_apple_vp_clean/Stage_7_5_11_independent_acoustic_witness_design_2026-11-28.md).
 - Boundary: Design and static review only. Device runs and formal Test3 remain unauthorized.
 
+## 7.5.11 Apple Voice Processing official comparison
+
+- Date: 2026-11-28
+- Scope: Compare published Apple contracts and AVEchoTouch source with Native Voice integration and historical evidence.
+- Result: `FINDINGS`. Current channel and system-state evidence gaps remain. No current reproducible API violation or production repair was established.
+- Record: [Apple VP integration comparison](stage7_5/test3_apple_vp_clean/Stage_7_5_11_Apple_VP_official_integration_comparison.md).
+- Boundary: Static review only. Device execution and formal Test3 remain unauthorized.
+
 ## 7.5-realtime-speech-documentation-reconciliation
 
 - Stage: 7.5 documentation authority reconciliation
