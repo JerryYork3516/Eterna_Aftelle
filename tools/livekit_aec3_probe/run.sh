@@ -3,9 +3,23 @@ set -euo pipefail
 umask 077
 
 if [[ "$(uname -s)" != Darwin ]]; then
-  echo 'The offline probe requires macOS and Xcode command-line tools.' >&2
+  echo 'The audio probe requires macOS and Xcode command-line tools.' >&2
   exit 1
 fi
+
+usage() {
+  echo 'Usage: run.sh [--offline | --device-self-test | --device --authorize-device --standard-mic-mode RESIDENT.wav RECORDING.wav]' >&2
+}
+
+mode="${1:---offline}"
+case "$mode" in
+  --offline|--device-self-test) [[ "$#" -le 1 ]] || { usage; exit 64; } ;;
+  --device)
+    [[ "$#" == 5 && "$2" == --authorize-device && "$3" == --standard-mic-mode ]] ||
+      { usage; exit 64; }
+    ;;
+  *) usage; exit 64 ;;
+esac
 
 probe_dir="$(cd "$(dirname "$0")" && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/aftelle-livekit-aec3.XXXXXX")"
@@ -31,10 +45,23 @@ library="$framework_dir/LiveKitWebRTC.framework/LiveKitWebRTC"
 printf 'package=%s archive_sha256=%s framework_sha256=%s\n' \
   "$version" "$observed" "$(shasum -a 256 < "$library" | awk '{print $1}')"
 
+sources=("$probe_dir/ProbeSupport.mm")
+link_flags=(-framework LiveKitWebRTC -framework AVFoundation -framework Foundation)
+if [[ "$mode" == --offline ]]; then
+  sources+=("$probe_dir/Probe.mm")
+else
+  sources+=("$probe_dir/DeviceProbe.mm" "$probe_dir/DeviceRoute.mm" "$probe_dir/WaveFile.cpp")
+  link_flags+=(-framework CoreAudio -framework AudioToolbox
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$probe_dir/Info.plist")
+fi
+
 xcrun --sdk macosx clang++ -std=c++17 -mmacosx-version-min=13.0 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fobjc-arc \
-  -F "$framework_dir" -Wl,-rpath,"$framework_dir" \
-  -framework LiveKitWebRTC -framework AVFoundation -framework Foundation \
-  "$probe_dir/Probe.mm" -o "$scratch/probe"
+  -F "$framework_dir" -Wl,-rpath,"$framework_dir" "${link_flags[@]}" "${sources[@]}" -o "$scratch/probe"
+
+if [[ "$mode" != --offline ]]; then
+  "$scratch/probe" "$library" "$@"
+  exit
+fi
 
 capture_path="$scratch/capture.pcm"
 "$scratch/probe" "$library" "$capture_path"

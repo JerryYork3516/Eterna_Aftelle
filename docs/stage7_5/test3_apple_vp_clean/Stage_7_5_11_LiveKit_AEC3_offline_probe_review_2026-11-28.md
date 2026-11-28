@@ -26,6 +26,14 @@ tools/livekit_aec3_probe/run.sh
 
 本轮验收从本地 ZIP 构建，并在进程出站网络禁用的沙盒中运行。Codex 默认沙盒的一次尝试在创建 AVAudioEngine 的 manual I/O 组件时由 AVFAudio 拒绝。使用允许该组件、继续禁网的沙盒后，完整验收通过。探针只允许 SDK manual rendering 图，采集端验收要求创建时已处于 manual 模式、无输入 Source、无 VP，设备模式的输出配置入口被拒绝。Factory 可以注册 Core Audio 设备变化监听，本轮未打开设备采放流。[手动引擎初始化与设备观察](https://github.com/webrtc-sdk/webrtc/blob/7c1a802ab4e0d74f28ee997678346b3e753ef42a/modules/audio_device/audio_engine_device.mm#L354-L422) · [manual 图](https://github.com/webrtc-sdk/webrtc/blob/7c1a802ab4e0d74f28ee997678346b3e753ef42a/modules/audio_device/audio_engine_device.mm#L1880-L1940)
 
+禁网复现可使用缓存的固定归档。命令仍对 ZIP 执行完整校验，且只跑 manual 路径。
+
+```bash
+archive='/absolute/path/LiveKitWebRTC.xcframework.zip'
+sandbox-exec -p '(version 1) (allow default) (deny network*)' /usr/bin/env \
+  LIVEKIT_WEBRTC_ARCHIVE="$archive" tools/livekit_aec3_probe/run.sh
+```
+
 ## 配置与数据路径
 
 每个测试臂有一个 Factory，各自持有同一双向链所用的 AudioEngine ADM、AudioTransport 和原生 APM。测试臂之间销毁整个 Factory，以隔离 AEC3 自适应历史。探针在 Factory 初始化后重新应用五个开关。启动前后分别从注入实例的原生 `GetConfig()` 和 Factory 的逐项 `softwareActive` 读回交叉校验。软件 AEC 臂读回 AEC 开、独立 NS／GC1／GC2／HPF 关。ADM 平台 VP 策略与 requested 均为关，manual 图报告无 active VP、AEC、NS 或 AGC。这些 active 值来自无设备状态，实机状态待实机核验。[Factory 原生装配](https://github.com/webrtc-sdk/webrtc/blob/7c1a802ab4e0d74f28ee997678346b3e753ef42a/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.mm#L174-L189) · [启动时默认配置](https://github.com/webrtc-sdk/webrtc/blob/7c1a802ab4e0d74f28ee997678346b3e753ef42a/media/engine/webrtc_voice_engine.cc#L529-L554) · [原生配置读回](https://github.com/webrtc-sdk/webrtc/blob/7c1a802ab4e0d74f28ee997678346b3e753ef42a/sdk/objc/components/audio/RTCDefaultAudioProcessingModule.mm#L89-L99) · [VP 状态来源](https://github.com/webrtc-sdk/webrtc/blob/7c1a802ab4e0d74f28ee997678346b3e753ef42a/modules/audio_device/audio_engine_device.mm#L1177-L1225)
@@ -57,7 +65,7 @@ tools/livekit_aec3_probe/run.sh
 - **配置失败和释放。** 错配在启动前被拒绝。主动拒绝 manual 图输入配置时，原生启动返回 `-7701`，图创建和释放各一次，无 PCM 回调。正常停止后解除 observer 和 APM 委托，Factory 作用域覆盖停止和解绑。
 - **生产隔离。** 相对交接基线，`apps/`、`platform-macos/`、`brain/`、`shared-protocol/` 无差异。没有生产工程或包清单引用探针。Release Route Guard `PASS`。已有 Native Voice Guard 在基线和交付树同样在 `tools/native_voice_transport_tests/guard.py:48` 失败，原因是 P4 冻结路径白名单与基线中既有的后续 Native Voice 资产不一致。白名单未改。仅执行相关 Guard 与探针回归。
 
-这两种停止见证限定在探针自身生命周期。生产级打断、声源门、末级代际隔离和 `clear ACK ≤50 ms` 仍是接入门槛。SDK 的设备端实际 PCM、时标、路由和清空回执尚未取证。
+这两种停止见证限定在探针自身生命周期。停止后计数稳定只是观测结果。SDK 的 manual render 线程由其内部停止逻辑回收，公开接口没有跨设备模式的全部音频回调退出契约。生产级打断、声源门、末级代际隔离和 `clear ACK ≤50 ms` 仍是接入门槛。SDK 的设备端实际 PCM、时标、路由和清空回执尚未取证。
 
 ## 后续实机操作
 

@@ -1,36 +1,28 @@
 #import <AVFoundation/AVFoundation.h>
-#import <LiveKitWebRTC/LiveKitWebRTC.h>
-#import <objc/runtime.h>
+
+#include "ProbeSupport.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
 #include <thread>
 #include <vector>
 
 namespace {
+using namespace probe;
 constexpr size_t sampleRate = 48000;
 constexpr size_t blockFrames = sampleRate / 100;
 constexpr size_t maxManualFrames = 3072;
-constexpr size_t fixtureTicksPerSecond = 96000;
-constexpr size_t fixtureTicksPerFrame = 4;
 constexpr size_t fixtureFrames = 599 * (blockFrames / 2) + 173;
 constexpr size_t warmupBlocks = 15;
 constexpr std::array<size_t, 3> renderRates{16000, 32000, 48000};
 constexpr size_t captureFrames = 630 * blockFrames;
 constexpr NSInteger graphRejected = -7701;
 constexpr auto settleTime = std::chrono::milliseconds(35);
-static_assert(std::atomic<bool>::is_always_lock_free);
-std::atomic<bool> interrupted{false};
-
-void Interrupt(int) { interrupted.store(true, std::memory_order_relaxed); }
-
 bool Require(bool condition, const char *message) {
   if (!condition) std::fprintf(stderr, "FAIL %s\n", message);
   return condition;
@@ -49,22 +41,6 @@ struct ProbePcm {
   size_t renderRate = 0;
   size_t firstPadding = 0;
 };
-
-std::vector<int16_t> ResampleFixture(const std::vector<int16_t> &fixture, size_t rate) {
-  const size_t step = fixtureTicksPerSecond / rate;
-  const size_t end = fixture.size() * fixtureTicksPerFrame;
-  std::vector<int16_t> output;
-  output.reserve((end + step - 1) / step);
-  for (size_t tick = 0; tick < end; tick += step) {
-    const size_t frame = tick / fixtureTicksPerFrame;
-    const int fraction = tick % fixtureTicksPerFrame;
-    const int current = fixture[frame];
-    const int next = fixture[std::min(frame + 1, fixture.size() - 1)];
-    const int weight = static_cast<int>(fixtureTicksPerFrame);
-    output.push_back((current * (weight - fraction) + next * fraction) / weight);
-  }
-  return output;
-}
 
 bool CheckFixtureResampling() {
   const std::vector<int16_t> input{0, 1200, -600, 0};
@@ -299,30 +275,10 @@ enum class RunMode { matched, silentReference, aecOff, cancel, rejectConfig, rej
 @end
 
 namespace {
-bool ConfigMatches(LKRTCDefaultAudioProcessingModule *apm,
-                   LKRTCPeerConnectionFactory *factory, bool echo) {
-  LKRTCAudioProcessingConfig *actual = apm.config;
-  LKRTCAudioProcessingState *state = factory.audioProcessingState;
-  return actual && state.hasAudioProcessingModule &&
-      actual.isEchoCancellationEnabled == echo && state.echoCancellation.isSoftwareActive == echo &&
-      !actual.isNoiseSuppressionEnabled && !state.noiseSuppression.isSoftwareActive &&
-      !actual.isAutoGainControl1Enabled && !actual.isAutoGainControl2Enabled &&
-      !state.autoGainControl.isSoftwareActive &&
-      !actual.isHighpassFilterEnabled && !state.highPassFilter.isSoftwareActive;
-}
-
 bool PrepareAdm(LKRTCAudioDeviceModule *adm) {
   return adm && !adm.isRecording && !adm.isPlaying &&
       [adm setManualRenderingMode:YES] == 0 && adm.isManualRenderingMode &&
       [adm setPlatformVoiceProcessingAllowed:NO] == 0 && !adm.isPlatformVoiceProcessingAllowed;
-}
-
-bool ManualPolicyMatches(LKRTCAudioDeviceModule *adm) {
-  LKRTCPlatformAudioProcessingState *state = adm.platformAudioProcessingState;
-  return adm.isManualRenderingMode && !adm.isPlatformVoiceProcessingAllowed && state &&
-      !state.isVoiceProcessingEnabledRequested && !state.isVoiceProcessingEnabledActive &&
-      !state.echoCancellation.isActive && !state.noiseSuppression.isActive &&
-      !state.autoGainControl.isActive;
 }
 
 bool WaitForCapture(ProbePcm &pcm, size_t frames) {
@@ -355,9 +311,9 @@ bool CheckCounts(const ProbePcm &pcm, RunMode mode) {
                    pcm.renderOffset > 0 && pcm.paddedFrames == 0, "cancel before end of fixture");
   }
 
-  const size_t step = pcm.renderRate ? fixtureTicksPerSecond / pcm.renderRate : 0;
+  const size_t step = pcm.renderRate ? probe::fixtureTicksPerSecond / pcm.renderRate : 0;
   if (!step) return Require(false, "render-pre did not consume a fixture");
-  const size_t expected = (fixtureFrames * fixtureTicksPerFrame + step - 1) / step;
+  const size_t expected = (fixtureFrames * probe::fixtureTicksPerFrame + step - 1) / step;
   const size_t hookFrames = pcm.renderRate / 100;
   const size_t expectedPadding = (hookFrames - expected % hookFrames) % hookFrames;
   return Require(pcm.captured == captureFrames && pcm.inputOffset == captureFrames &&
@@ -391,13 +347,7 @@ bool RunCase(ProbePcm &pcm, RunMode mode, const char *label) {
     if (!Require(PrepareAdm(adm) && apm.renderPreProcessingDelegate == render &&
                  apm.capturePostProcessingDelegate == capture, "manual ADM and APM hook setup")) return false;
 
-    LKRTCAudioProcessingConfig *config = [LKRTCAudioProcessingConfig new];
-    config.isEchoCancellationEnabled = echo && mode != RunMode::rejectConfig;
-    config.isNoiseSuppressionEnabled = NO;
-    config.isAutoGainControl1Enabled = NO;
-    config.isAutoGainControl2Enabled = NO;
-    config.isHighpassFilterEnabled = NO;
-    apm.config = config;
+    ConfigureApm(apm, echo && mode != RunMode::rejectConfig);
     if (mode == RunMode::rejectConfig) {
       const bool rejected = !ConfigMatches(apm, factory, true) && ConfigMatches(apm, factory, false);
       if (!Require(rejected && !adm.isRecording && !pcm.renderBlocks && !pcm.captured,
@@ -419,7 +369,7 @@ bool RunCase(ProbePcm &pcm, RunMode mode, const char *label) {
     }
 
     bool valid = Require(mode != RunMode::rejectGraph && ConfigMatches(apm, factory, echo) &&
-                         adm.isRecording && ManualPolicyMatches(adm),
+                         adm.isRecording && adm.isManualRenderingMode && PlatformPolicyOff(adm),
                          "native APM config after manual ADM start");
     if (valid) valid = WaitForCapture(pcm, mode == RunMode::cancel ? 30 * blockFrames : captureFrames);
     const bool stopped = CheckStopped(adm, observer, pcm);
@@ -465,15 +415,6 @@ bool CheckSignals(const ProbePcm &matched, const ProbePcm &silent, const ProbePc
               "AEC3 capture responds to matched render reference");
 }
 
-bool CheckLinkedImage(const char *expected) {
-  Method method = class_getInstanceMethod(LKRTCDefaultAudioProcessingModule.class, @selector(config));
-  Dl_info info{};
-  if (!method || !dladdr(reinterpret_cast<const void *>(method_getImplementation(method)), &info)) return false;
-  NSString *expectedPath = [[NSString stringWithUTF8String:expected] stringByResolvingSymlinksInPath];
-  NSString *loadedPath = [[NSString stringWithUTF8String:info.dli_fname] stringByResolvingSymlinksInPath];
-  return [expectedPath isEqualToString:loadedPath];
-}
-
 bool Export(const std::vector<int16_t> &capture, const char *path) {
   FILE *file = std::fopen(path, "wb");
   if (!file) return false;
@@ -485,11 +426,8 @@ bool Export(const std::vector<int16_t> &capture, const char *path) {
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
-    if (!Require(argc == 3 && CheckLinkedImage(argv[1]), "loaded APM image matches verified framework")) return 1;
-    if (!CheckFixtureResampling()) return 1;
-    std::setvbuf(stdout, nullptr, _IOLBF, 0);
-    std::signal(SIGINT, Interrupt);
-    std::signal(SIGTERM, Interrupt);
+    if (!Require(argc == 3, "manual arguments") || !probe::InitializeProcess(argv[1]) ||
+        !CheckFixtureResampling()) return 1;
     ProbePcm negative, rejected, canceled, matched, silent, disabled;
     if (!RunCase(negative, RunMode::rejectConfig, "reject_config") ||
         !RunCase(rejected, RunMode::rejectGraph, "reject_graph") ||

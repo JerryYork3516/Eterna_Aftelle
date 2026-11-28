@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.eterna.aftelle.livekit-aec3-probe</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>在你明确启动的 15 秒 AEC3 双讲试验中将麦克风采集保存为本机 WAV。</string>
+</dict>
+</plist>
