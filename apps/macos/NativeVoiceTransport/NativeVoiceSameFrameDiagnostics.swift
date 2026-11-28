@@ -6,13 +6,51 @@ nonisolated enum NativeVoiceSameFrameLaunch {
     static let argument = "--apple-native-voice-same-frame-diagnostics"
 
     static func isRequested(_ arguments: [String]) -> Bool {
-        arguments.dropFirst().contains { $0 == argument || $0.hasPrefix(argument + "=") }
+        #if NATIVE_VOICE_DIRECT_VPIO
+        if NativeVoiceDirectVPIOLaunch.isRequested(arguments) {
+            return true
+        }
+        #endif
+        return arguments.dropFirst().contains { $0 == argument || $0.hasPrefix(argument + "=") }
     }
 
     static func isAllowed(_ arguments: [String], authorized: Bool) -> Bool {
-        authorized && arguments.dropFirst().elementsEqual([argument])
+        authorized && (arguments.dropFirst().elementsEqual([argument]) || usesDirectVPIO(arguments))
+    }
+
+    private static func usesDirectVPIO(_ arguments: [String]) -> Bool {
+        #if NATIVE_VOICE_DIRECT_VPIO
+        NativeVoiceDirectVPIOLaunch.isAllowed(arguments, authorized: true)
+        #else
+        false
+        #endif
+    }
+
+    static func backendTag(_ arguments: [String]) -> String? {
+        #if NATIVE_VOICE_DIRECT_VPIO
+        usesDirectVPIO(arguments) ? "direct_voice_processing_io" : nil
+        #else
+        nil
+        #endif
+    }
+
+    @MainActor
+    static func makeTransport(_ arguments: [String]) -> AppleNativeVoiceTransport {
+        let limits = AppleNativeVoiceTransport.Limits(sameFrameDiagnostics: true)
+        #if NATIVE_VOICE_DIRECT_VPIO
+        if usesDirectVPIO(arguments) {
+            return .directVPIO(limits: limits)
+        }
+        #endif
+        return .macOS(limits: limits)
     }
 }
+
+nonisolated protocol NativeVoiceSameFrameSystemReading {
+    func sameFrameSystemState() -> NativeVoiceSameFrameDiagnostics.SystemState
+}
+
+extension NativeVoiceSystemEngine: NativeVoiceSameFrameSystemReading {}
 
 /// One serial Worker owns the statistics. Raw copies are consumed in memory and never encoded.
 final nonisolated class NativeVoiceSameFrameDiagnostics {

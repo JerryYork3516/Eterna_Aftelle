@@ -1,6 +1,7 @@
 #include "NativeVoiceRealtime.h"
 #include <math.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #ifdef NVT_IO_TESTING
@@ -299,8 +300,8 @@ static void lost_input(NVTRTIO *io, uint32_t frames) {
     count(&io->rejected_input, frames);
 }
 
-OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames, const AudioBufferList *input) {
-    const uint64_t token = nvt_ring_active_token(io->capture);
+static OSStatus nvt_rt_capture_for_token(NVTRTIO *io, uint64_t token, const AudioTimeStamp *time,
+                                         uint32_t frames, const AudioBufferList *input) {
     if (!frames || !nvt_rt_active(io)) return noErr;
 #ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
     const uint64_t diagnostic_playback = io->same_frame ? nvt_ring_active_token(io->playback) : 0;
@@ -353,6 +354,10 @@ OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames
         lost_input(io, frames);
     }
     return noErr;
+}
+
+OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames, const AudioBufferList *input) {
+    return nvt_rt_capture_for_token(io, nvt_ring_active_token(io->capture), time, frames, input);
 }
 
 // Only Source writes records. A full queue drops facts, never PCM or the clear fence.
@@ -446,3 +451,113 @@ OSStatus nvt_rt_render_at_time(NVTRTIO *io, bool *silence, const AudioTimeStamp 
 OSStatus nvt_rt_render(NVTRTIO *io, bool *silence, uint32_t frames, AudioBufferList *output) {
     return nvt_rt_render_at_time(io, silence, NULL, frames, output);
 }
+
+#if defined(NATIVE_VOICE_DIRECT_VPIO) && defined(NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS)
+struct NVTDirectVPIO {
+    NVTRTIO *io;
+    AudioUnit unit;
+    AudioBufferList *input;
+    float *samples;
+};
+
+NVTDirectVPIO *nvt_direct_vpio_create(NVTRTIO *io, AudioUnit unit) {
+    uint32_t channels = io->config.capture_channels;
+    uint32_t frames = io->config.max_callback_frames;
+    if (!unit || channels > 32) return NULL;
+    uint32_t buffers = io->config.capture_interleaved ? 1 : channels;
+    NVTDirectVPIO *context = calloc(1, sizeof(*context));
+    if (!context) return NULL;
+    context->io = io;
+    context->unit = unit;
+    context->input = calloc(1, offsetof(AudioBufferList, mBuffers) + buffers * sizeof(AudioBuffer));
+    context->samples = calloc((size_t)frames * channels, sizeof(float));
+    if (!context->input || !context->samples) {
+        nvt_direct_vpio_destroy(context);
+        return NULL;
+    }
+    volatile float *memory = context->samples;
+    for (size_t i = 0; i < (size_t)frames * channels; i += 1024) memory[i] = 0;
+    return context;
+}
+
+void nvt_direct_vpio_destroy(NVTDirectVPIO *context) {
+    if (!context) return;
+    free(context->input);
+    free(context->samples);
+    free(context);
+}
+
+OSStatus nvt_direct_vpio_capture(void *reference, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,
+                                 UInt32 bus, UInt32 frames, AudioBufferList *ignored) {
+    (void)bus;
+    (void)ignored;
+    NVTDirectVPIO *context = reference;
+    NVTRTIO *io = context->io;
+    const uint64_t token = nvt_ring_active_token(io->capture);
+    if (!frames || !nvt_rt_active(io)) return noErr;
+    const NVTRTConfig *format = &io->config;
+    if (!time || frames > format->max_callback_frames) {
+        nvt_rt_capture_for_token(io, token, time, frames, NULL);
+        nvt_rt_close(io);
+        return frames > format->max_callback_frames ? kAudioUnitErr_TooManyFramesToProcess : kAudio_ParamError;
+    }
+
+    const uint32_t buffers = format->capture_interleaved ? 1 : format->capture_channels;
+    const uint32_t channels = format->capture_interleaved ? format->capture_channels : 1;
+    const uint32_t bytes = frames * channels * sizeof(float);
+    const size_t stride = (size_t)format->max_callback_frames * channels;
+    AudioBufferList *input = context->input;
+    AudioBuffer *planes = input->mBuffers;
+    input->mNumberBuffers = buffers;
+    for (uint32_t i = 0; i < buffers; ++i) {
+        planes[i] = (AudioBuffer){channels, bytes, context->samples + i * stride};
+    }
+
+    AudioUnitRenderActionFlags action = flags ? *flags & ~kAudioUnitRenderAction_OutputIsSilence : 0;
+    OSStatus status = AudioUnitRender(context->unit, &action, time, 1, frames, input);
+    if (status == noErr && input->mNumberBuffers != buffers) status = kAudio_ParamError;
+    for (uint32_t i = 0; status == noErr && i < buffers; ++i) {
+        if (planes[i].mData != context->samples + i * stride || planes[i].mNumberChannels != channels ||
+            planes[i].mDataByteSize != bytes) {
+            status = kAudio_ParamError;
+        } else if (action & kAudioUnitRenderAction_OutputIsSilence) {
+            __builtin_memset(planes[i].mData, 0, bytes);
+        }
+    }
+    // AudioUnitRender may overlap a capture-generation advance. Never relabel that callback.
+    if (token != nvt_ring_active_token(io->capture)) {
+        count(&io->capture_stale, frames);
+        count(&io->rejected_input, frames);
+    } else {
+        nvt_rt_capture_for_token(io, token, time, frames, status == noErr ? input : NULL);
+    }
+    if (status != noErr) nvt_rt_close(io);
+    return status;
+}
+
+OSStatus nvt_direct_vpio_render(void *reference, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,
+                                UInt32 bus, UInt32 frames, AudioBufferList *output) {
+    NVTDirectVPIO *context = reference;
+    NVTRTIO *io = context->io;
+    bool silence = true;
+    OSStatus status = bus != 0 ? kAudio_ParamError :
+        frames > io->config.max_callback_frames ? kAudioUnitErr_TooManyFramesToProcess :
+        nvt_rt_render_at_time(io, &silence, time, frames, output);
+    if (flags) {
+        *flags = silence ? *flags | kAudioUnitRenderAction_OutputIsSilence
+                         : *flags & ~kAudioUnitRenderAction_OutputIsSilence;
+    }
+    if (status != noErr) nvt_rt_close(io);
+    return status;
+}
+
+void nvt_direct_vpio_changed(void *reference, AudioUnit unit, AudioUnitPropertyID property,
+                             AudioUnitScope scope, AudioUnitElement bus) {
+    (void)unit;
+    (void)property;
+    (void)scope;
+    (void)bus;
+    NVTDirectVPIO *context = reference;
+    nvt_rt_close(context->io);
+}
+#endif

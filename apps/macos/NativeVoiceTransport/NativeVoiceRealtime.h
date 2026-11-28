@@ -87,6 +87,21 @@ OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp * _Nullable time, uint
 OSStatus nvt_rt_render(NVTRTIO *io, bool *silence, uint32_t frames, AudioBufferList * _Nullable output);
 OSStatus nvt_rt_render_at_time(NVTRTIO *io, bool *silence, const AudioTimeStamp * _Nullable time,
                               uint32_t frames, AudioBufferList * _Nullable output);
+
+#if defined(NATIVE_VOICE_DIRECT_VPIO) && defined(NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS)
+typedef struct NVTDirectVPIO NVTDirectVPIO;
+// The controller retains the underlying lease through AudioComponentInstanceDispose.
+NVTDirectVPIO * _Nullable nvt_direct_vpio_create(NVTRTIO *io, AudioUnit unit);
+void nvt_direct_vpio_destroy(NVTDirectVPIO * _Nullable context);
+OSStatus nvt_direct_vpio_capture(void *reference, AudioUnitRenderActionFlags *flags,
+                                 const AudioTimeStamp *time, UInt32 bus, UInt32 frames,
+                                 AudioBufferList * _Nullable ignored);
+OSStatus nvt_direct_vpio_render(void *reference, AudioUnitRenderActionFlags *flags,
+                                const AudioTimeStamp *time, UInt32 bus, UInt32 frames,
+                                AudioBufferList * _Nullable output);
+void nvt_direct_vpio_changed(void *reference, AudioUnit unit, AudioUnitPropertyID property,
+                             AudioUnitScope scope, AudioUnitElement bus);
+#endif
 CF_ASSUME_NONNULL_END
 #ifdef __cplusplus
 }

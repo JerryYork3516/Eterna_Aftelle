@@ -349,6 +349,8 @@ private struct NativeVoiceSameFrameLabView: View {
     @State private var savedFolder: URL?
     @State private var saveStatus: SaveStatus = .idle
     @State private var status = "choose"
+    @State private var directFailure: String?
+    private let backend = NativeVoiceSameFrameLaunch.backendTag(ProcessInfo.processInfo.arguments)
 
     private enum SaveStatus { case idle, saving, saved, failed }
 
@@ -357,6 +359,7 @@ private struct NativeVoiceSameFrameLabView: View {
         let runID: UUID
         let residentWAVSHA256: String
         let buildBinarySHA256: String?
+        let backend: String?
         let outcome: String
         let transport: NativeVoiceTransportReadback
         let captureWAV: NativeVoiceSameFrameCapture.Summary?
@@ -365,6 +368,14 @@ private struct NativeVoiceSameFrameLabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if backend != nil {
+                Text(verbatim: "AUVoiceProcessingIO")
+            }
+            if let directFailure {
+                Text(verbatim: "DIRECT_VPIO_CANDIDATE = BLOCKED · " + directFailure)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+            }
             Text(String(localized: String.LocalizationValue("nativeVoiceSameFrame." + status)))
                 .font(.headline)
             if let fileName {
@@ -408,6 +419,7 @@ private struct NativeVoiceSameFrameLabView: View {
                 savedFolder = nil
                 saveStatus = .idle
                 status = "starting"
+                directFailure = nil
                 let enabled = retainWAV
                 task = Task { await run(resident, retainWAV: enabled) }
             }
@@ -468,8 +480,10 @@ private struct NativeVoiceSameFrameLabView: View {
             status = resident == nil ? "failed" : "ready"
         }
     }
+}
 
-    private func run(_ bookmark: Data, retainWAV: Bool) async {
+private extension NativeVoiceSameFrameLabView {
+    func run(_ bookmark: Data, retainWAV: Bool) async {
         defer { task = nil }
         guard let source = try? AppController.readSameFrameResidentWAV(bookmark),
               source.pcm.count <= 12 * 48000,
@@ -479,7 +493,7 @@ private struct NativeVoiceSameFrameLabView: View {
             return
         }
 
-        let graph = AppleNativeVoiceTransport.macOS(limits: .init(sameFrameDiagnostics: true))
+        let graph = NativeVoiceSameFrameLaunch.makeTransport(ProcessInfo.processInfo.arguments)
         let identity = NativeVoiceIdentity(
             authority: .init(runtimeGeneration: 0, routeEpoch: 0, configurationID: 1),
             captureGeneration: 1, captureToken: 1, playbackEpoch: 1, playbackToken: 1
@@ -495,6 +509,9 @@ private struct NativeVoiceSameFrameLabView: View {
             outcome = "stopped"
         } catch {
             outcome = "failed"
+            if backend != nil {
+                directFailure = failureDetail(error)
+            }
         }
         await graph.close()
         if let result = await graph.readback(), result.sameFrameDiagnostics != nil {
@@ -504,7 +521,8 @@ private struct NativeVoiceSameFrameLabView: View {
             wav = recordingWAV?.bytes
             report = DiagnosticExport(
                 runID: runID, residentWAVSHA256: source.sha256,
-                buildBinarySHA256: AppController.sameFrameBuildSHA256(), outcome: outcome, transport: result,
+                buildBinarySHA256: AppController.sameFrameBuildSHA256(), backend: backend,
+                outcome: outcome, transport: result,
                 captureWAV: recording?.summary, captureWAVSHA256: recordingWAV?.sha256
             )
             status = outcome == "finished" && result.sameFrameDiagnostics?.complete == true
@@ -514,7 +532,7 @@ private struct NativeVoiceSameFrameLabView: View {
         }
     }
 
-    private func playAndObserve(
+    func playAndObserve(
         _ pcm: Data, using graph: AppleNativeVoiceTransport, playback: NativeVoiceIdentity.Playback,
         capture: inout NativeVoiceSameFrameCapture?
     ) async throws -> Bool {
@@ -568,6 +586,15 @@ private struct NativeVoiceSameFrameLabView: View {
             sawEOS = sawEOS || final.progress.renderHandoff
         }
         return sawNonzero && sawEOS
+    }
+
+    func failureDetail(_ error: Error) -> String {
+        #if NATIVE_VOICE_DIRECT_VPIO
+        if let unit = error as? NativeVoiceDirectVPIOFailure {
+            return unit.detail
+        }
+        #endif
+        return (error as? NativeVoiceSessionError).map { String(describing: $0) } ?? "transport_failed"
     }
 
     private func export(_ report: DiagnosticExport) {

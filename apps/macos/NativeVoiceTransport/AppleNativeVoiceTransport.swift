@@ -260,8 +260,8 @@ private extension AppleNativeVoiceTransport {
             live = NativeVoiceSessionGraph(engine: engine, lease: callbacks, worker: worker, binding: binding)
             state = .running
             #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
-                if let diagnostic = worker.sameFrame, let system = engine as? NativeVoiceSystemEngine {
-                    diagnostic.initialSystemState = system.sameFrameSystemState()
+                if let system = engine as? any NativeVoiceSameFrameSystemReading {
+                    worker.sameFrame?.initialSystemState = system.sameFrameSystemState()
                 }
             #endif
         } catch {
@@ -309,8 +309,8 @@ private extension AppleNativeVoiceTransport {
     func tearDown(_ next: State) {
         if let live {
             #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
-                if let diagnostic = live.worker.sameFrame, let system = live.engine as? NativeVoiceSystemEngine {
-                    diagnostic.finalSystemState = system.sameFrameSystemState()
+                if let system = live.engine as? any NativeVoiceSameFrameSystemReading {
+                    live.worker.sameFrame?.finalSystemState = system.sameFrameSystemState()
                 }
             #endif
             live.close()
