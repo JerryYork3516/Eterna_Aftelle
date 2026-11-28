@@ -463,6 +463,9 @@ private struct NativeVoiceSameFrameLabView: View {
                 deadline = cue + .seconds(15)
                 status = "speak"
             }
+            if status == "speak", clock.now >= deadline - .seconds(4) {
+                status = "quiet"
+            }
             if !began, let playAt, clock.now >= playAt {
                 try await graph.beginPlayback(playback)
                 began = true

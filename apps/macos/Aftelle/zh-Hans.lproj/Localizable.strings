@@ -707,7 +707,8 @@
 "nativeVoiceSameFrame.ready" = "居民 WAV 已就绪";
 "nativeVoiceSameFrame.consent" = "开启一次本地麦克风和扬声器会话。导出仅包含信号统计与技术时标。";
 "nativeVoiceSameFrame.starting" = "等待采集就绪";
-"nativeVoiceSameFrame.speak" = "现在讲话。三秒后播放居民声音。";
+"nativeVoiceSameFrame.speak" = "现在讲话。听到居民声音时继续讲话，直到停止提示。";
+"nativeVoiceSameFrame.quiet" = "现在停止讲话。请保持安静，直到诊断结束。";
 "nativeVoiceSameFrame.ending" = "正在停止诊断";
 "nativeVoiceSameFrame.finished" = "诊断结束";
 "nativeVoiceSameFrame.incomplete" = "诊断已结束，证据不完整";
