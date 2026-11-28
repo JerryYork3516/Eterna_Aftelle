@@ -702,3 +702,14 @@
 "nativeVoiceAcousticLab.windows.nearEndOnly" = "确认居民停止播放后，手动播放 Windows 测试音频。近端单讲结束时停止播放。";
 "nativeVoiceAcousticLab.windows.doubleTalk" = "居民正在讲话时，手动播放 Windows 测试音频。双讲结束时停止播放。";
 "nativeVoiceAcousticLab.windows.multiTurn" = "先停止 Windows 音频，再完成连续多轮交流。";
+"nativeVoiceSameFrame.title" = "Native Voice 同帧诊断";
+"nativeVoiceSameFrame.choose" = "选择居民 WAV";
+"nativeVoiceSameFrame.ready" = "居民 WAV 已就绪";
+"nativeVoiceSameFrame.consent" = "开启一次本地麦克风和扬声器会话。导出仅包含信号统计与技术时标。";
+"nativeVoiceSameFrame.starting" = "等待采集就绪";
+"nativeVoiceSameFrame.speak" = "现在讲话。三秒后播放居民声音。";
+"nativeVoiceSameFrame.ending" = "正在停止诊断";
+"nativeVoiceSameFrame.finished" = "诊断结束";
+"nativeVoiceSameFrame.incomplete" = "诊断已结束，证据不完整";
+"nativeVoiceSameFrame.failed" = "诊断未能完成";
+"nativeVoiceSameFrame.export" = "导出诊断 JSON";

@@ -702,3 +702,14 @@
 "nativeVoiceAcousticLab.windows.nearEndOnly" = "Once the resident stops, play the test audio on Windows. Stop it when near-end-only speech is complete.";
 "nativeVoiceAcousticLab.windows.doubleTalk" = "Play the test audio on Windows while the resident is speaking. Stop it when double talk is complete.";
 "nativeVoiceAcousticLab.windows.multiTurn" = "Stop Windows audio before continuing with multiple turns.";
+"nativeVoiceSameFrame.title" = "Native Voice same-frame diagnostics";
+"nativeVoiceSameFrame.choose" = "Choose resident WAV";
+"nativeVoiceSameFrame.ready" = "Resident WAV ready";
+"nativeVoiceSameFrame.consent" = "Run one local microphone and speaker session. Only signal statistics and technical timing can be exported.";
+"nativeVoiceSameFrame.starting" = "Waiting for capture";
+"nativeVoiceSameFrame.speak" = "Speak now. Resident playback starts in three seconds.";
+"nativeVoiceSameFrame.ending" = "Stopping diagnostics";
+"nativeVoiceSameFrame.finished" = "Diagnostics finished";
+"nativeVoiceSameFrame.incomplete" = "Diagnostics ended with incomplete evidence";
+"nativeVoiceSameFrame.failed" = "Diagnostics could not finish";
+"nativeVoiceSameFrame.export" = "Export diagnostic JSON";

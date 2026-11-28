@@ -171,3 +171,54 @@ final nonisolated class NativeVoiceSystemEngine: NativeVoiceGraphBackend {
         )
     }
 }
+
+#if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+extension NativeVoiceSystemEngine {
+    nonisolated func sameFrameSystemState() -> NativeVoiceSameFrameDiagnostics.SystemState {
+        let input = engine.inputNode
+        let output = engine.outputNode
+        let voiceProcessing = NativeVoiceProcessingReadback(
+            inputEnabled: input.isVoiceProcessingEnabled, outputEnabled: output.isVoiceProcessingEnabled,
+            agcEnabled: input.isVoiceProcessingAGCEnabled, bypassed: input.isVoiceProcessingBypassed,
+            inputMuted: input.isVoiceProcessingInputMuted
+        )
+        let defaults = try? NativeVoiceHALRoute.defaultDevices()
+        let inputID = try? NativeVoiceHALRoute.currentDevice(input.audioUnit)
+        let outputID = try? NativeVoiceHALRoute.currentDevice(output.audioUnit)
+        let inputRoots = [defaults?.input, inputID].compactMap { $0 }
+        let outputRoots = [defaults?.output, outputID].compactMap { $0 }
+        let bindings = (try? NativeVoiceHALRoute.bindings(roots: inputRoots + outputRoots)) ?? []
+        let inputMembers = bindings.first { $0.id == inputID }?.activeMembers
+        let outputMembers = bindings.first { $0.id == outputID }?.activeMembers
+        let controls = NativeVoiceHALRoute.sameFrameControls(
+            inputs: inputRoots + (inputMembers ?? []), outputs: outputRoots + (outputMembers ?? []),
+            bindings: bindings
+        )
+        let ducking: NativeVoiceSameFrameDiagnostics.SystemState.Ducking?
+        if #available(macOS 14.0, *), voiceProcessing.inputEnabled {
+            let config = input.voiceProcessingOtherAudioDuckingConfiguration
+            ducking = .init(advanced: config.enableAdvancedDucking.boolValue, level: Int(config.duckingLevel.rawValue))
+        } else {
+            ducking = nil
+        }
+        let active: Int?, preferred: Int?
+        if #available(macOS 12.0, *) {
+            active = AVCaptureDevice.activeMicrophoneMode.rawValue
+            preferred = AVCaptureDevice.preferredMicrophoneMode.rawValue
+        } else {
+            active = nil
+            preferred = nil
+        }
+        return .init(
+            uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            activeMicMode: active, preferredMicMode: preferred, defaults: defaults,
+            inputUnitDevice: inputID, outputUnitDevice: outputID,
+            inputActiveMembers: inputMembers, outputActiveMembers: outputMembers,
+            voiceProcessingRequested: .init(
+                inputEnabled: true, outputEnabled: true, agcEnabled: true, bypassed: false, inputMuted: false
+            ),
+            voiceProcessingReadback: voiceProcessing, ducking: ducking, deviceControls: controls
+        )
+    }
+}
+#endif

@@ -89,6 +89,10 @@ final nonisolated class AppleNativeVoiceTransportWorker {
     private(set) var lastSinkFact: NativeVoiceSinkFact?
     private(set) var captureTimingStatus = NativeVoiceTimingStatus.unknown
     private(set) var producedCapturePackets: UInt64 = 0
+    #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+        var sameFrame: NativeVoiceSameFrameDiagnostics?
+        private var diagnosticIngress: NVTFrame?
+    #endif
 
     var pendingCaptureTailSamples: Int { pending.count + captureSRC.unreleasedContentFrames }
 
@@ -156,7 +160,23 @@ final nonisolated class AppleNativeVoiceTransportWorker {
         let converter = observation.discontinuity
             ? try NativeVoiceStreamingSRC(inputRate: nativeRate, outputRate: 24000) : captureSRC
         let inputStart = converter.inputFrames
+        #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+            let diagnosticSegment = observation.discontinuity ? segment + 1 : segment
+            let outputStart = converter.outputFrames
+            sameFrame?.recordInput(
+                diagnosticIngress, selected: samples, capture: identity,
+                segment: diagnosticSegment, nativeStart: inputStart
+            )
+            var conversionSucceeded = false
+            defer { if !conversionSucceeded { sameFrame?.conversionFailed() } }
+        #endif
         let output = try converter.append(samples)
+        #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+            conversionSucceeded = true
+            sameFrame?.recordRelease(
+                output, start: outputStart, converter: converter, capture: identity, segment: diagnosticSegment
+            )
+        #endif
         if observation.discontinuity {
             captureDiscontinuities &+= 1
             discardPending()
@@ -175,7 +195,19 @@ final nonisolated class AppleNativeVoiceTransportWorker {
 
     func finishCapture(identity: NativeVoiceIdentity.Capture) throws -> [NativeVoiceCapturePacket] {
         guard identity == self.identity.capture else { throw NativeVoiceTransportError.staleIdentity }
-        pending += try captureSRC.finish()
+        #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+            let outputStart = captureSRC.outputFrames
+            var conversionSucceeded = false
+            defer { if !conversionSucceeded { sameFrame?.conversionFailed() } }
+        #endif
+        let output = try captureSRC.finish()
+        #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+            conversionSucceeded = true
+            sameFrame?.recordRelease(
+                output, start: outputStart, converter: captureSRC, capture: identity, segment: segment, finishing: true
+            )
+        #endif
+        pending += output
         let result = packets()
         // Never pad a partial 20ms packet, including after a real capture gap.
         discardedCaptureTailSamples += pending.count
@@ -220,6 +252,9 @@ final nonisolated class AppleNativeVoiceTransportWorker {
                   frames[end].origin.host_time_ns == frame.origin.host_time_ns,
                   frames[end].origin.flags == frame.origin.flags,
                   frames[end].offset == frame.offset + UInt32(end - start) {
+                #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                    if frames[end].ingress.diagnostic_block != frame.ingress.diagnostic_block { break }
+                #endif
                 end += 1
             }
             let sampleTime = frame.origin.flags & UInt32(NVT_SAMPLE_TIME_VALID) != 0
@@ -228,6 +263,10 @@ final nonisolated class AppleNativeVoiceTransportWorker {
             let time = frame.origin.host_time_ns.addingReportingOverflow(offsetNS)
             let hostTime = frame.origin.flags & UInt32(NVT_HOST_TIME_VALID) != 0 && !time.overflow ? time
                 .partialValue : nil
+            #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                diagnosticIngress = sameFrame == nil ? nil : frame
+                defer { diagnosticIngress = nil }
+            #endif
             packets += try capture(
                 Array(samples[start ..< end]),
                 sampleTime: sampleTime,
@@ -252,14 +291,19 @@ final nonisolated class AppleNativeVoiceTransportWorker {
             let host = packetHostTime()
             let status: NativeVoiceTimingStatus = host != nil ? .valid :
                 (clock.status == .invalid ? .invalid : .unknown)
-            result.append(NativeVoiceCapturePacket(
-                bytes: NativeVoicePCM16.encode(Array(pending.prefix(480))),
+            let samples = Array(pending.prefix(480))
+            let packet = NativeVoiceCapturePacket(
+                bytes: NativeVoicePCM16.encode(samples),
                 identity: identity.capture,
                 segment: segment,
                 sampleCount: packetSampleCount,
                 hostTimeNanoseconds: host,
                 timingStatus: status
-            ))
+            )
+            #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                sameFrame?.recordPacket(packet, samples: samples)
+            #endif
+            result.append(packet)
             producedCapturePackets &+= 1
             pending.removeFirst(480)
             packetSampleCount += 480

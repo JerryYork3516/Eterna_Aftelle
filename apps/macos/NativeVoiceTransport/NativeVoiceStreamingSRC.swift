@@ -18,6 +18,12 @@ final nonisolated class NativeVoiceStreamingSRC {
     private(set) var discardedFilterTailFrames = 0
     private(set) var finished = false
     private var failed = false
+    #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+        var sameFramePrimeInfo: AVAudioConverterPrimeInfo? {
+            inputRate == outputRate ? nil : converter.primeInfo
+        }
+    #endif
+
     var fractionalOutputFrames: Double {
         Double(inputFrames) * outputRate / inputRate - Double(expectedFrames)
     }

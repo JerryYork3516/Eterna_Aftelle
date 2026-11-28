@@ -321,3 +321,45 @@ private extension NativeVoiceHALRoute {
         }
     }
 }
+
+#if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+extension NativeVoiceHALRoute {
+    nonisolated static func sameFrameControls(
+        inputs: [UInt32], outputs: [UInt32], bindings: [NativeVoiceDeviceBinding]
+    ) -> [NativeVoiceSameFrameDiagnostics.DeviceControls] {
+        Set(inputs).sorted().map { sameFrameControls(device: $0, bindings: bindings, input: true) }
+            + Set(outputs).sorted().map { sameFrameControls(device: $0, bindings: bindings, input: false) }
+    }
+
+    private nonisolated static func sameFrameControls(
+        device: UInt32, bindings: [NativeVoiceDeviceBinding], input: Bool
+    ) -> NativeVoiceSameFrameDiagnostics.DeviceControls {
+        let scope = input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput
+        let binding = bindings.first { $0.id == device }
+        let channels = (input ? binding?.inputChannels : binding?.outputChannels) ?? []
+        let count = channels.reduce(0) { $0 + Int($1) }
+        let elements = (0 ..< min(count + 1, 33)).map { index in
+            let number = UInt32(index)
+            let scalar = sameFrameProperty(device, kAudioDevicePropertyVolumeScalar, scope, number, Float32(0))
+            let decibels = sameFrameProperty(device, kAudioDevicePropertyVolumeDecibels, scope, number, Float32(0))
+            let mute = sameFrameProperty(device, kAudioDevicePropertyMute, scope, number, UInt32(0))
+            return NativeVoiceSameFrameDiagnostics.DeviceControls.Element(
+                number: number, volumeScalar: scalar.flatMap { $0.isFinite ? $0 : nil },
+                volumeDecibels: decibels.flatMap { $0.isFinite ? $0 : nil },
+                muted: mute.map { $0 != 0 }
+            )
+        }
+        return .init(device: device, direction: input ? "input" : "output",
+                     elements: elements, channelControlsTruncated: count > 32)
+    }
+
+    private nonisolated static func sameFrameProperty<T>(
+        _ device: UInt32, _ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope,
+        _ number: UInt32, _ initial: T
+    ) -> T? {
+        var property = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: number)
+        guard AudioObjectHasProperty(device, &property) else { return nil }
+        return try? read(device, property, initial: initial)
+    }
+}
+#endif

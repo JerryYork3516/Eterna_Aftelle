@@ -18,6 +18,9 @@ typedef struct {
     uint64_t configuration_id;
     uint64_t dropped_before;
     uint32_t raw_flags, callback_frames;
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+    uint64_t diagnostic_block;
+#endif
 } NVTIngress;
 typedef struct {
     float sample;

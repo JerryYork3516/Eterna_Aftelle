@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+#if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS && APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+@preconcurrency import AVFoundation
+import UniformTypeIdentifiers
+#endif
+
 @MainActor
 private final class AftelleApplicationDelegate: NSObject,
     NSApplicationDelegate {
@@ -33,6 +38,18 @@ private enum AftelleEntry {
     static func main() {
         #if DEBUG
             let arguments = ProcessInfo.processInfo.arguments
+            #if NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                if NativeVoiceSameFrameLaunch.isRequested(arguments) {
+                    #if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+                        if NativeVoiceSameFrameLaunch.isAllowed(
+                            arguments, authorized: AppleNativeVoiceDebugAdmission.deviceBuildAuthorized
+                        ) {
+                            NativeVoiceSameFrameLabApp.main()
+                        }
+                    #endif
+                    return
+                }
+            #endif
             if AppleNativeVoiceAcousticLabLaunch.isRequested(arguments) {
                 #if APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
                     if AppleNativeVoiceAcousticLabLaunch.isAllowed(
@@ -305,6 +322,183 @@ private struct NativeVoiceAcousticLabView: View {
         guard let format else { return "UNKNOWN" }
         let layout = text(format.interleaved ? "format.interleaved" : "format.planar")
         return "\(format.sampleRate.formatted()) Hz · \(format.channels) ch · Float32 · \(layout)"
+    }
+}
+#endif
+
+#if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS && APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+private struct NativeVoiceSameFrameLabApp: App {
+    var body: some Scene {
+        Window(String(localized: "nativeVoiceSameFrame.title"), id: "native-voice-same-frame") {
+            NativeVoiceSameFrameLabView()
+        }
+        .defaultSize(width: 460, height: 260)
+        .windowResizability(.contentMinSize)
+    }
+}
+
+private struct NativeVoiceSameFrameLabView: View {
+    @State private var resident: Data?
+    @State private var fileName: String?
+    @State private var consent = false
+    @State private var task: Task<Void, Never>?
+    @State private var report: DiagnosticExport?
+    @State private var status = "choose"
+
+    private struct DiagnosticExport: Encodable, Sendable {
+        let schemaVersion = 1
+        let runID: UUID
+        let residentWAVSHA256: String
+        let buildBinarySHA256: String?
+        let outcome: String
+        let transport: NativeVoiceTransportReadback
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(String(localized: String.LocalizationValue("nativeVoiceSameFrame." + status)))
+                .font(.headline)
+            if let fileName { Text(fileName).textSelection(.enabled) }
+            HStack {
+                Button(String(localized: "nativeVoiceSameFrame.choose")) { chooseResident() }
+                    .disabled(task != nil)
+                Button(String(localized: "nativeVoiceAcousticLab.start")) { consent = true }
+                    .disabled(task != nil || resident == nil)
+                Button(String(localized: "nativeVoiceAcousticLab.stop")) { task?.cancel() }
+                    .disabled(task == nil)
+            }
+            if let report {
+                Button(String(localized: "nativeVoiceSameFrame.export")) { export(report) }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 420, minHeight: 190)
+        .onDisappear { task?.cancel() }
+        .alert(String(localized: "nativeVoiceSameFrame.title"), isPresented: $consent) {
+            Button(String(localized: "nativeVoiceAcousticLab.start")) {
+                guard task == nil, let resident else { return }
+                report = nil
+                status = "starting"
+                task = Task { await run(resident) }
+            }
+            Button(String(localized: "nativeVoiceAcousticEvidence.cancel"), role: .cancel) {}
+        } message: {
+            Text(String(localized: "nativeVoiceSameFrame.consent"))
+        }
+    }
+
+    private func chooseResident() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.wav]
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            resident = try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess])
+            fileName = resident == nil ? nil : url.lastPathComponent
+            status = resident == nil ? "failed" : "ready"
+        }
+    }
+
+    private func run(_ bookmark: Data) async {
+        defer { task = nil }
+        guard let source = try? AppController.readSameFrameResidentWAV(bookmark),
+              source.pcm.count <= 12 * 48_000 else {
+            status = "failed"
+            return
+        }
+        guard await AVCaptureDevice.requestAccess(for: .audio), !Task.isCancelled else {
+            status = "failed"
+            return
+        }
+
+        let graph = AppleNativeVoiceTransport.macOS(limits: .init(sameFrameDiagnostics: true))
+        let identity = NativeVoiceIdentity(
+            authority: .init(runtimeGeneration: 0, routeEpoch: 0, configurationID: 1),
+            captureGeneration: 1, captureToken: 1, playbackEpoch: 1, playbackToken: 1
+        )
+        let runID = UUID()
+        let outcome: String
+        do {
+            try await graph.start(identity: identity)
+            outcome = try await playAndObserve(source.pcm, using: graph, playback: identity.playback)
+                ? "finished" : "incomplete"
+        } catch is CancellationError {
+            outcome = "stopped"
+        } catch {
+            outcome = "failed"
+        }
+        await graph.close()
+        if let result = await graph.readback(), result.sameFrameDiagnostics != nil {
+            report = DiagnosticExport(
+                runID: runID, residentWAVSHA256: source.sha256,
+                buildBinarySHA256: AppController.sameFrameBuildSHA256(), outcome: outcome, transport: result
+            )
+            status = outcome == "finished" && result.sameFrameDiagnostics?.complete == true
+                ? "finished" : "incomplete"
+        } else {
+            status = "failed"
+        }
+    }
+
+    private func playAndObserve(
+        _ pcm: Data, using graph: AppleNativeVoiceTransport, playback: NativeVoiceIdentity.Playback
+    ) async throws -> Bool {
+        let clock = ContinuousClock()
+        var deadline = clock.now + .seconds(5)
+        var playAt: ContinuousClock.Instant?
+        var sentEOS = false
+        var began = false
+        var offset = 0
+        var sawNonzero = false
+        var sawEOS = false
+        while clock.now < deadline {
+            try Task.checkCancellation()
+            let batch = try await graph.bridgeService(maxCaptureFrames: 8192)
+            try Task.checkCancellation()
+            if playAt == nil, !batch.packets.isEmpty {
+                let cue = clock.now
+                playAt = cue + .seconds(3)
+                deadline = cue + .seconds(15)
+                status = "speak"
+            }
+            if !began, let playAt, clock.now >= playAt {
+                try await graph.beginPlayback(playback)
+                began = true
+            }
+            if began, !sentEOS {
+                if offset < pcm.count {
+                    let end = min(pcm.count, offset + 4800)
+                    if try await graph.enqueuePlayback(pcm.subdata(in: offset ..< end), identity: playback) {
+                        offset = end
+                    }
+                } else {
+                    sentEOS = try await graph.finishPlayback(identity: playback)
+                }
+            }
+            if batch.render.contains(where: { $0.nonzeroFrames > 0 }) { sawNonzero = true }
+            if batch.progress.renderHandoff { sawEOS = true }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        status = "ending"
+        return sawNonzero && sawEOS
+    }
+
+    private func export(_ report: DiagnosticExport) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "native-voice-same-frame-" + report.runID.uuidString + ".json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                try encoder.encode(report).write(to: url, options: [.atomic])
+            } catch {
+                status = "failed"
+            }
+        }
     }
 }
 #endif

@@ -14,6 +14,17 @@ _Static_assert(ATOMIC_INT_LOCK_FREE == 2 && ATOMIC_LLONG_LOCK_FREE == 2, "RT ato
 typedef _Atomic unsigned long long Counter;
 enum { PREPARED, ACTIVE, CLOSED };
 
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+enum { SAME_FRAME_SLOTS = 16, SAME_FRAME_SAMPLE_BUDGET = 524288 };
+typedef struct {
+    uint32_t frames_per_slot;
+    size_t samples_per_slot;
+    float *samples;
+    Counter read, written, dropped, dropped_frames;
+    NVTSameFrameBlock blocks[SAME_FRAME_SLOTS];
+} SameFrameQueue;
+#endif
+
 struct NVTRTIO {
     NVTRTConfig config;
     NVTRing *capture, *playback;
@@ -26,6 +37,9 @@ struct NVTRTIO {
     Counter capture_minimum_host, capture_callbacks, accepted_input;
     Counter capture_fence_missing, capture_fence_old, capture_stale;
     NVTRenderFact render_facts[NVT_RENDER_FACT_CAPACITY];
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+    SameFrameQueue *same_frame;
+#endif
 };
 
 static uint64_t value(const Counter *counter) {
@@ -68,11 +82,98 @@ NVTRTIO *nvt_rt_create(NVTRTConfig config) {
     return io;
 }
 
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+bool nvt_rt_enable_same_frame(NVTRTIO *io) {
+    if (io->same_frame || atomic_load_explicit(&io->state, memory_order_acquire) != PREPARED) return false;
+    size_t max_frames = SAME_FRAME_SAMPLE_BUDGET / SAME_FRAME_SLOTS / io->config.capture_channels;
+    if (!max_frames) return false;
+    SameFrameQueue *queue = calloc(1, sizeof(*queue));
+    if (!queue) return false;
+    queue->frames_per_slot = max_frames < io->config.max_callback_frames
+        ? (uint32_t)max_frames : io->config.max_callback_frames;
+    queue->samples_per_slot = (size_t)queue->frames_per_slot * io->config.capture_channels;
+    queue->samples = calloc(SAME_FRAME_SLOTS * queue->samples_per_slot, sizeof(float));
+    atomic_init(&queue->read, 0);
+    atomic_init(&queue->written, 0);
+    atomic_init(&queue->dropped, 0);
+    atomic_init(&queue->dropped_frames, 0);
+    if (!queue->samples) { free(queue); return false; }
+    // Touch the arena on the control side before a hardware callback can write it.
+    volatile float *memory = queue->samples;
+    for (size_t i = 0; i < SAME_FRAME_SLOTS * queue->samples_per_slot; i += 1024) memory[i] = 0;
+    io->same_frame = queue;
+    return true;
+}
+
+bool nvt_rt_peek_same_frame(const NVTRTIO *io, NVTSameFrameBlock *block) {
+    const SameFrameQueue *queue = io->same_frame;
+    if (!queue || !nvt_rt_active(io)) return false;
+    uint64_t read = value(&queue->read);
+    if (read == value(&queue->written)) return false;
+    *block = queue->blocks[read % SAME_FRAME_SLOTS];
+    return true;
+}
+
+void nvt_rt_release_same_frame(NVTRTIO *io) {
+    SameFrameQueue *queue = io->same_frame;
+    if (!queue) return;
+    uint64_t read = value(&queue->read);
+    if (read == value(&queue->written)) return;
+    size_t slot = read % SAME_FRAME_SLOTS;
+    size_t samples = (size_t)queue->blocks[slot].frames * io->config.capture_channels;
+    __builtin_memset(queue->samples + slot * queue->samples_per_slot, 0, samples * sizeof(float));
+    publish(&queue->read, read + 1);
+}
+
+NVTSameFrameStats nvt_rt_same_frame_stats(const NVTRTIO *io) {
+    const SameFrameQueue *queue = io->same_frame;
+    if (!queue) return (NVTSameFrameStats){0};
+    return (NVTSameFrameStats){ value(&queue->dropped), value(&queue->dropped_frames),
+                                value(&queue->written) - value(&queue->read) };
+}
+
+// Only the Sink writes. Publish before the PCM block so the Worker can join by ID.
+static void offer_same_frame(NVTRTIO *io, const AudioBufferList *input, uint64_t id,
+                             uint64_t capture, uint64_t playback, uint32_t frames) {
+    SameFrameQueue *queue = io->same_frame;
+    uint64_t written = value(&queue->written);
+    if (frames > queue->frames_per_slot || written - value(&queue->read) == SAME_FRAME_SLOTS) {
+        count(&queue->dropped, 1);
+        count(&queue->dropped_frames, frames);
+        return;
+    }
+    size_t slot = written % SAME_FRAME_SLOTS;
+    float *dest = queue->samples + slot * queue->samples_per_slot;
+    uint32_t channels = io->config.capture_channels;
+    if (io->config.capture_interleaved) {
+        __builtin_memcpy(dest, input->mBuffers[0].mData, (size_t)frames * channels * sizeof(float));
+    } else {
+        for (uint32_t channel = 0; channel < channels; ++channel) {
+            __builtin_memcpy(dest + (size_t)channel * frames, input->mBuffers[channel].mData,
+                             (size_t)frames * sizeof(float));
+        }
+    }
+    queue->blocks[slot] = (NVTSameFrameBlock){
+        .id = id, .configuration_id = io->config.configuration_id,
+        .capture_token = capture, .playback_token = playback,
+        .frames = frames, .channels = channels, .selected_channel = io->config.capture_channel,
+        .interleaved = io->config.capture_interleaved, .samples = dest
+    };
+    publish(&queue->written, written + 1);
+}
+#endif
+
 void nvt_rt_destroy(NVTRTIO *io) {
     if (!io) return;
     nvt_ring_destroy(io->capture);
     nvt_ring_destroy(io->playback);
     free(io->capture_scratch);
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+    if (io->same_frame) {
+        free(io->same_frame->samples);
+        free(io->same_frame);
+    }
+#endif
     free(io);
 }
 bool nvt_rt_activate(NVTRTIO *io) {
@@ -201,6 +302,9 @@ static void lost_input(NVTRTIO *io, uint32_t frames) {
 OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames, const AudioBufferList *input) {
     const uint64_t token = nvt_ring_active_token(io->capture);
     if (!frames || !nvt_rt_active(io)) return noErr;
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+    const uint64_t diagnostic_playback = io->same_frame ? nvt_ring_active_token(io->playback) : 0;
+#endif
     const uint64_t minimum_host = value(&io->capture_minimum_host);
     count(&io->capture_callbacks, 1);
     if (token != io->lost_token) {
@@ -228,6 +332,12 @@ OSStatus nvt_rt_capture(NVTRTIO *io, const AudioTimeStamp *time, uint32_t frames
         .raw_sample_time = time ? time->mSampleTime : 0, .raw_host_time = time ? time->mHostTime : 0,
         .raw_flags = time ? time->mFlags : 0, .callback_frames = frames
     };
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+    if (io->same_frame) {
+        ingress.diagnostic_block = value(&io->capture_callbacks);
+        offer_same_frame(io, input, ingress.diagnostic_block, token, diagnostic_playback, frames);
+    }
+#endif
     IO_HOOK(1);
     if (!nvt_rt_active(io) || token != nvt_ring_active_token(io->capture)) {
         count(&io->capture_stale, frames);

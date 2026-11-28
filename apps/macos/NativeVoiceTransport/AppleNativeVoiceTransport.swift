@@ -10,6 +10,9 @@ actor AppleNativeVoiceTransport {
         var ringFrames = 16384
         var callbackFrames: UInt32 = 8192
         var captureChannel: UInt32 = 0
+        #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+            var sameFrameDiagnostics = false
+        #endif
     }
 
     struct Progress: Sendable {
@@ -215,6 +218,9 @@ actor AppleNativeVoiceTransport {
         // One bounded pass even if Source keeps publishing while this worker drains.
         for _ in 0 ..< Int(NVT_RENDER_FACT_CAPACITY) {
             guard nvt_rt_take_render_fact(graph.context, &record) else { break }
+            #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                graph.worker.sameFrame?.recordRender(record, configuration: playback.authority.configurationID)
+            #endif
             guard record.playback_token == playback.token,
                   record.configuration_id == playback.authority.configurationID else { continue }
             facts.append(NativeVoiceRenderFact(record, playback: playback))
@@ -239,6 +245,11 @@ private extension AppleNativeVoiceTransport {
             let worker = try AppleNativeVoiceTransportWorker(
                 identity: identity, nativeRate: plan.capture.sampleRate, playbackRate: plan.render.sampleRate
             )
+            #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                if limits.sameFrameDiagnostics {
+                    worker.sameFrame = NativeVoiceSameFrameDiagnostics(context: callbacks.context)
+                }
+            #endif
             try installAndStart(engine, lease: callbacks, plan: plan)
             let binding = try engine.snapshot()
             guard binding.plan == plan else { throw NativeVoiceSessionError.format }
@@ -248,6 +259,11 @@ private extension AppleNativeVoiceTransport {
                   nvt_rt_activate(callbacks.context) else { throw NativeVoiceSessionError.route }
             live = NativeVoiceSessionGraph(engine: engine, lease: callbacks, worker: worker, binding: binding)
             state = .running
+            #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                if let diagnostic = worker.sameFrame, let system = engine as? NativeVoiceSystemEngine {
+                    diagnostic.initialSystemState = system.sameFrameSystemState()
+                }
+            #endif
         } catch {
             lease?.close()
             engine.stop()
@@ -292,6 +308,11 @@ private extension AppleNativeVoiceTransport {
 
     func tearDown(_ next: State) {
         if let live {
+            #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+                if let diagnostic = live.worker.sameFrame, let system = live.engine as? NativeVoiceSystemEngine {
+                    diagnostic.finalSystemState = system.sameFrameSystemState()
+                }
+            #endif
             live.close()
             retiredReadback = live.readback(state: next.rawValue)
         }

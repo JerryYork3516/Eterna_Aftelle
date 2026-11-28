@@ -44,6 +44,26 @@ typedef struct {
 extern "C" {
 #endif
 CF_ASSUME_NONNULL_BEGIN
+#ifdef NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+typedef struct {
+    uint64_t id, configuration_id, capture_token, playback_token;
+    uint32_t frames, channels, selected_channel;
+    bool interleaved;
+    const float * _Nullable samples;
+} NVTSameFrameBlock;
+
+typedef struct {
+    uint64_t dropped_blocks, dropped_frames, pending_blocks;
+} NVTSameFrameStats;
+
+// Configure once before activation. The serial Worker owns the read endpoint.
+// A peeked pointer is valid until that endpoint releases its block.
+bool nvt_rt_enable_same_frame(NVTRTIO *io);
+bool nvt_rt_peek_same_frame(const NVTRTIO *io, NVTSameFrameBlock *block);
+void nvt_rt_release_same_frame(NVTRTIO *io);
+NVTSameFrameStats nvt_rt_same_frame_stats(const NVTRTIO *io);
+#endif
+
 // The owner creates one context per graph. An old graph can only close, never reopen.
 NVTRTIO * _Nullable nvt_rt_create(NVTRTConfig config);
 void nvt_rt_destroy(NVTRTIO * _Nullable io);

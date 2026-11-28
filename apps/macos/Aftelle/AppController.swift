@@ -10350,3 +10350,20 @@ final class AppController: ObservableObject {
         }
     }
 #endif
+
+#if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS && APPLE_NATIVE_VOICE_P4_DEVICE_AUTHORIZED && APPLE_NATIVE_VOICE_ACOUSTIC_EVIDENCE_AUTHORIZED
+extension AppController {
+    static func readSameFrameResidentWAV(_ bookmark: Data) throws -> (pcm: Data, sha256: String) {
+        var stale = false
+        let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
+                          relativeTo: nil, bookmarkDataIsStale: &stale)
+        guard !stale else { throw CocoaError(.fileReadNoSuchFile) }
+        return try AppleVPAcousticWAV.read(url: url)
+    }
+
+    nonisolated static func sameFrameBuildSHA256() -> String? {
+        let sha256 = runningBuildBinary().sha256
+        return sha256.count == 64 ? sha256 : nil
+    }
+}
+#endif

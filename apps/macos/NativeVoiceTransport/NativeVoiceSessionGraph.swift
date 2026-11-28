@@ -53,6 +53,9 @@ nonisolated struct NativeVoiceTransportReadback: Encodable, Sendable {
     let captureCounters: [String: UInt64]
     let sourceCounters: [String: UInt64]
     let lastConsumedSink: NativeVoiceSinkFact?
+    #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+        var sameFrameDiagnostics: NativeVoiceSameFrameDiagnostics.Report? = nil
+    #endif
 }
 
 /// Owned exclusively by the transport actor. Retired callbacks keep their original C allocation.
@@ -105,7 +108,7 @@ final nonisolated class NativeVoiceSessionGraph {
     func readback(state: String) -> NativeVoiceTransportReadback {
         let stats = nvt_rt_stats(context)
         let capture = nvt_rt_capture_stats(context)
-        return NativeVoiceTransportReadback(
+        let readback = NativeVoiceTransportReadback(
             state: state,
             identity: worker.identity,
             formats: ["sink": binding.plan.capture, "source": binding.plan.source, "output": binding.plan.render],
@@ -144,6 +147,18 @@ final nonisolated class NativeVoiceSessionGraph {
             ],
             lastConsumedSink: worker.lastSinkFact
         )
+        #if DEBUG && NATIVE_VOICE_SAME_FRAME_DIAGNOSTICS
+            var diagnosticReadback = readback
+            if !readback.route.active {
+                diagnosticReadback.sameFrameDiagnostics = worker.sameFrame?.report(
+                    terminal: state, pendingTail: worker.pendingCaptureTailSamples,
+                    discardedTail: worker.discardedCaptureTailSamples
+                )
+            }
+            return diagnosticReadback
+        #else
+            return readback
+        #endif
     }
 
     private func members(for id: UInt32) -> [UInt32]? {

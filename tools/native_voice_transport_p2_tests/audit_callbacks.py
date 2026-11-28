@@ -3,6 +3,10 @@
 from pathlib import Path
 import re
 import subprocess
+import sys
+
+same_frame = sys.argv[1:] == ["--same-frame"]
+assert not sys.argv[1:] or same_frame
 
 src = Path(__file__).resolve().parents[2] / "apps/macos/NativeVoiceTransport"
 symbol = r'@(?:"([^"]+)"|([\w.$]+))'
@@ -17,6 +21,8 @@ def audit(opt):
     modules = []
     for name in ("NativeVoiceRing.c", "NativeVoiceRealtime.c", "NativeVoiceRealtimeLease.mm"):
         compiler = ["clang++", "-std=c++20", "-fobjc-arc"] if name.endswith(".mm") else ["clang", "-std=c11"]
+        if same_frame:
+            compiler.append("-DNATIVE_VOICE_SAME_FRAME_DIAGNOSTICS=1")
         ir = subprocess.check_output(
             [*compiler, opt, "-mmacosx-version-min=26.5", "-S", "-emit-llvm", str(src / name), "-o", "-"],
             text=True,
@@ -50,6 +56,8 @@ def audit(opt):
 
     for callback in callbacks:
         visit(2, callback)
+    if same_frame and opt == "-O0":
+        assert (1, "offer_same_frame") in visited
     print(f"native_voice_p2_callback_ir_{opt[1:]}_functions={len(visited)}")
 
 

@@ -58,6 +58,13 @@ When a task touches SwiftUI, Metal, FileManager, Keychain, HIG, or Accessibility
 - Record: [Apple VP integration comparison](stage7_5/test3_apple_vp_clean/Stage_7_5_11_Apple_VP_official_integration_comparison.md).
 - Boundary: Static review only. Device execution and formal Test3 remain unauthorized.
 
+## 7.5.11 Native Voice DEBUG 同帧诊断
+
+- 日期 2026-11-28。
+- 范围为 Native Transport 的四点同源采样统计、非实时系统读回及本地 DEBUG Lab 准入。
+- 专项普通、TSan 和 ASan/UBSan 各 126 项 Swift 断言，加一组 C SPSC 用例。Debug、Release、产物隔离与 Stage 7 边界检查通过。历史阶段 Guard 的基线失败在报告中保留。
+- [实现、验证与诊断用法](stage7_5/test3_apple_vp_clean/Stage_7_5_11_DEBUG_same_frame_diagnostics.md)。设备运行 0，正式 Test3 仍为 BLOCKED。
+
 ## 7.5-realtime-speech-documentation-reconciliation
 
 - Stage: 7.5 documentation authority reconciliation
